@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>重置 — Machi</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+         display: flex; min-height: 100dvh; align-items: center; justify-content: center;
+         margin: 0; padding: 24px; background: #f4f5f7; color: #1f2329; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #101216; color: #f0f2f6; }
+    .card { background: #1c1f26; }
+    .muted { color: #93a0b4 !important; }
+  }
+  .card { max-width: 28rem; width: 100%; padding: 32px; border-radius: 18px;
+          background: #fff; box-shadow: 0 10px 40px rgba(0,0,0,0.08); text-align: center; }
+  h1 { margin: 0 0 8px; font-size: 22px; }
+  p  { margin: 0 0 18px; color: #6b7280; line-height: 1.6; font-size: 14px; }
+  .muted { color: #6b7280; font-size: 12px; }
+  button, a.btn { background: #3c40c6; color: white; border: 0; padding: 10px 18px;
+                  border-radius: 9999px; font-weight: 700; font-size: 14px;
+                  cursor: pointer; text-decoration: none; display: inline-flex;
+                  align-items: center; gap: 6px; }
+  button:hover, a.btn:hover { filter: brightness(1.05); }
+  .ghost { background: transparent; color: inherit; border: 1px solid currentColor; opacity: 0.7; }
+  .row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .status { font-size: 13px; margin-top: 12px; min-height: 1.2em; }
+  .ok { color: #15803d; }
+  .err { color: #b91c1c; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>清空本地缓存</h1>
+    <p>如果页面一直显示错误，点下面的按钮可以清掉旧的 Service Worker 和缓存，再回首页。</p>
+    <div class="row">
+      <button id="reset">清空并刷新</button>
+      <a class="btn ghost" href="/">回首页</a>
+    </div>
+    <p class="status" id="status">&nbsp;</p>
+    <p class="muted">技术说明：unregister Service Worker、删除全部 caches、清空 localStorage / sessionStorage 后回到首页。</p>
+  </div>
+<script>
+(function () {
+  var btn = document.getElementById('reset');
+  var status = document.getElementById('status');
+  function setStatus(text, klass) {
+    status.textContent = text;
+    status.className = 'status' + (klass ? ' ' + klass : '');
+  }
+  btn.addEventListener('click', async function () {
+    btn.disabled = true;
+    setStatus('正在清理…');
+    try {
+      if ('serviceWorker' in navigator) {
+        var regs = await navigator.serviceWorker.getRegistrations();
+        await Promise.all(regs.map(function (r) { return r.unregister().catch(function () { return false; }); }));
+      }
+    } catch (_) {}
+    try {
+      if (window.caches) {
+        var keys = await caches.keys();
+        await Promise.all(keys.map(function (k) { return caches.delete(k).catch(function () { return false; }); }));
+      }
+    } catch (_) {}
+    try { localStorage.clear(); } catch (_) {}
+    try { sessionStorage.clear(); } catch (_) {}
+    setStatus('已清空，正在回首页…', 'ok');
+    setTimeout(function () { window.location.replace('/'); }, 400);
+  });
+})();
+</script>
+</body>
+</html>

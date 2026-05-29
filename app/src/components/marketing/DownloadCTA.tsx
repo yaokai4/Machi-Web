@@ -1,0 +1,244 @@
+"use client";
+
+import { AlertCircle, Bell, CheckCircle2, Loader2, Mail, Send, ShieldCheck, Sparkles } from "lucide-react";
+import { useState } from "react";
+import { Button } from "./Button";
+import { BrandPhrase } from "./BrandText";
+import { StoreButton } from "./StoreButtons";
+import { useMarketingI18n } from "./MarketingI18n";
+
+type FormState =
+  | { kind: "idle" }
+  | { kind: "sending" }
+  | { kind: "success" }
+  | { kind: "error"; message: string };
+
+// Production-quality email check: not a full RFC validator, just rules
+// out the obvious typos that would otherwise make a waitlist email
+// undeliverable.
+const EMAIL_RE = /^[^\s@]+@[^\s@.]+\.[^\s@.]+$/;
+
+export function DownloadCTA() {
+  const { copy } = useMarketingI18n();
+  const [email, setEmail] = useState("");
+  const [state, setState] = useState<FormState>({ kind: "idle" });
+
+  const isSending = state.kind === "sending";
+  const isSuccess = state.kind === "success";
+  const isError = state.kind === "error";
+  const inputState: "default" | "focus" | "error" | "success" | "sending" =
+    isSuccess ? "success" : isSending ? "sending" : isError ? "error" : "default";
+
+  async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (isSending) return;
+    const value = email.trim();
+    if (!EMAIL_RE.test(value)) {
+      setState({ kind: "error", message: copy.download.errorInvalid });
+      return;
+    }
+    setState({ kind: "sending" });
+    try {
+      // Mock submit. Wire to a real endpoint when ready — the shape is
+      // intentionally minimal so it's a drop-in for any waitlist backend.
+      await new Promise((resolve) => setTimeout(resolve, 720));
+      setState({ kind: "success" });
+    } catch {
+      setState({ kind: "error", message: copy.download.errorSubmit });
+    }
+  }
+
+  return (
+    <section id="download" className="px-5 py-14 sm:px-6 lg:px-16 lg:py-20 xl:px-20">
+      <div className="mx-auto max-w-[1180px]">
+        <div className="relative overflow-hidden rounded-[32px] border border-white/70 bg-white/75 p-3 shadow-[0_30px_90px_-58px_rgba(15,23,42,0.6)] backdrop-blur-xl sm:rounded-[36px] sm:p-4 dark:border-white/10 dark:bg-white/[0.05]">
+          <div className="mc-map-grid pointer-events-none absolute inset-0 opacity-30 dark:opacity-10" />
+          <div className="pointer-events-none absolute left-8 top-8 h-32 w-32 rounded-full bg-indigo-500/15 blur-3xl" />
+          <div className="pointer-events-none absolute bottom-6 right-8 h-36 w-36 rounded-full bg-sky-400/15 blur-3xl" />
+
+          <div className="relative grid items-stretch gap-4 lg:grid-cols-2">
+            {/* ─────────── LEFT — dark pitch ─────────── */}
+            <div className="relative overflow-hidden rounded-[28px] bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 px-6 py-8 text-white shadow-[0_24px_80px_-48px_rgba(15,23,42,0.9)] sm:px-9 sm:py-10 lg:px-10">
+              <div className="pointer-events-none absolute -left-24 -top-24 h-64 w-64 rounded-full bg-indigo-500/25 blur-3xl" />
+              <div className="pointer-events-none absolute -bottom-28 left-1/3 h-64 w-64 rounded-full bg-sky-400/20 blur-3xl" />
+
+              <div className="relative flex h-full flex-col">
+                <p className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-sky-200">
+                  <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                  {copy.download.label}
+                </p>
+                <h2 className="mt-4 max-w-xl text-3xl font-black leading-[1.1] sm:text-[2.5rem]">
+                  <BrandPhrase text={copy.download.title} />
+                </h2>
+                <p className="mt-5 max-w-xl text-base leading-7 text-white/70 sm:text-lg">
+                  <BrandPhrase text={copy.download.body} />
+                </p>
+
+                <div className="mt-7 max-w-sm">
+                  <Button
+                    href="#waitlist-form"
+                    size="lg"
+                    fullWidth
+                    className="h-14 text-base font-black"
+                    iconLeft={<Bell className="h-5 w-5" />}
+                  >
+                    {copy.download.primary}
+                  </Button>
+                </div>
+
+                <div className="mt-auto pt-8">
+                  <div className="flex flex-wrap items-end gap-5">
+                    <StoreButton
+                      kind="app-store"
+                      label={copy.download.appStore}
+                      caption={copy.download.appStore}
+                      href="#waitlist-form"
+                      dark
+                      className="items-start"
+                    />
+                    <StoreButton
+                      kind="google-play"
+                      label={copy.download.googlePlay}
+                      caption={copy.download.googlePlay}
+                      href="#waitlist-form"
+                      dark
+                      className="items-start"
+                    />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* ─────────── RIGHT — form + benefits ─────────── */}
+            <div className="rounded-[28px] border border-white/70 bg-white/95 p-5 text-slate-950 shadow-[0_18px_70px_-54px_rgba(15,23,42,0.8)] sm:p-7 dark:border-white/15 dark:bg-white/[0.06] dark:text-white">
+              <div className="flex items-center gap-3">
+                <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 via-violet-600 to-sky-500 text-white shadow-[0_18px_34px_-18px_rgba(79,70,229,0.75)]">
+                  <Mail className="h-5 w-5" aria-hidden="true" />
+                </span>
+                <div>
+                  <p className="text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                    {copy.download.formLabel}
+                  </p>
+                  <h3 className="text-2xl font-black">{copy.download.formTitle}</h3>
+                </div>
+              </div>
+
+              <form
+                id="waitlist-form"
+                className="mt-6 space-y-3"
+                onSubmit={onSubmit}
+                noValidate
+                aria-busy={isSending}
+              >
+                <label className="block">
+                  <span className="sr-only">{copy.download.email}</span>
+                  {/* Email field — explicit visual states:
+                      default / focus / error / success / sending. */}
+                  <div className="relative">
+                    <input
+                      name="email"
+                      type="email"
+                      autoComplete="email"
+                      inputMode="email"
+                      spellCheck={false}
+                      required
+                      disabled={isSending || isSuccess}
+                      aria-invalid={isError || undefined}
+                      aria-describedby={isError ? "waitlist-error" : isSuccess ? "waitlist-success" : undefined}
+                      data-state={inputState}
+                      className="h-14 w-full rounded-2xl border bg-white px-4 pr-12 text-base font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 disabled:cursor-not-allowed disabled:opacity-70 dark:bg-white/[0.06] dark:text-white dark:placeholder:text-slate-400
+                                 border-slate-300 focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100
+                                 data-[state=error]:border-rose-400 data-[state=error]:ring-2 data-[state=error]:ring-rose-100
+                                 data-[state=success]:border-emerald-300 data-[state=success]:ring-2 data-[state=success]:ring-emerald-100
+                                 dark:border-white/15 dark:focus:ring-indigo-500/20
+                                 dark:data-[state=error]:border-rose-400/40 dark:data-[state=error]:ring-rose-500/15
+                                 dark:data-[state=success]:border-emerald-400/40 dark:data-[state=success]:ring-emerald-500/15"
+                      placeholder={copy.download.email}
+                      value={email}
+                      onChange={(event) => {
+                        setEmail(event.target.value);
+                        if (state.kind !== "idle" && state.kind !== "sending") {
+                          setState({ kind: "idle" });
+                        }
+                      }}
+                    />
+                    <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 dark:text-slate-500">
+                      {isSending ? (
+                        <Loader2 className="h-5 w-5 animate-spin text-indigo-500" aria-hidden="true" />
+                      ) : isSuccess ? (
+                        <CheckCircle2 className="h-5 w-5 text-emerald-500" aria-hidden="true" />
+                      ) : isError ? (
+                        <AlertCircle className="h-5 w-5 text-rose-500" aria-hidden="true" />
+                      ) : (
+                        <Mail className="h-5 w-5" aria-hidden="true" />
+                      )}
+                    </span>
+                  </div>
+                </label>
+                <Button
+                  type="submit"
+                  fullWidth
+                  size="lg"
+                  className="h-14 text-base font-black disabled:cursor-not-allowed disabled:opacity-70"
+                  iconLeft={
+                    isSending ? <Loader2 className="h-5 w-5 animate-spin" aria-hidden="true" /> : <Send className="h-5 w-5" aria-hidden="true" />
+                  }
+                  disabled={isSending || isSuccess}
+                >
+                  {isSending ? copy.download.sending : isSuccess ? copy.download.success.split("，")[0].split(".")[0] : copy.download.notify}
+                </Button>
+              </form>
+
+              <div className="mt-3 min-h-[2.5rem]" aria-live="polite">
+                {isSuccess ? (
+                  <div
+                    id="waitlist-success"
+                    role="status"
+                    className="flex items-center gap-2 rounded-2xl bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-700 ring-1 ring-emerald-100 dark:bg-emerald-400/10 dark:text-emerald-200 dark:ring-emerald-300/20"
+                  >
+                    <CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span>{copy.download.success}</span>
+                  </div>
+                ) : null}
+                {isError ? (
+                  <div
+                    id="waitlist-error"
+                    role="alert"
+                    className="flex items-center gap-2 rounded-2xl bg-rose-50 px-4 py-3 text-sm font-bold text-rose-700 ring-1 ring-rose-100 dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-300/20"
+                  >
+                    <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+                    <span>{state.message}</span>
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="mt-6 border-t border-slate-200/80 pt-6 dark:border-white/10">
+                <p className="text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+                  {copy.download.benefitsTitle}
+                </p>
+                <ul className="mt-4 space-y-3">
+                  {copy.download.benefits.map(([title, body]) => (
+                    <li key={title} className="flex items-start gap-3">
+                      <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:ring-emerald-400/20">
+                        <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-black text-slate-950 dark:text-white">{title}</p>
+                        <p className="mt-0.5 text-xs leading-5 text-slate-500 dark:text-slate-400">{body}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+
+                <p className="mt-5 flex items-start gap-2 rounded-2xl bg-slate-50 px-3 py-2.5 text-[11px] leading-5 text-slate-500 ring-1 ring-slate-200/70 dark:bg-white/[0.04] dark:text-slate-400 dark:ring-white/10">
+                  <ShieldCheck className="mt-0.5 h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-300" aria-hidden="true" />
+                  <span>{copy.download.privacy}</span>
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}

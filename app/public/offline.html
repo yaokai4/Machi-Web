@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>离线 — Machi</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", system-ui, sans-serif;
+         display: flex; min-height: 100dvh; align-items: center; justify-content: center;
+         margin: 0; padding: 24px; background: #f4f5f7; color: #1f2329; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #101216; color: #f0f2f6; }
+    .card { background: #1c1f26; }
+  }
+  .card { max-width: 28rem; width: 100%; padding: 32px; border-radius: 18px;
+          background: #fff; box-shadow: 0 10px 40px rgba(0,0,0,0.08); text-align: center; }
+  h1 { margin: 0 0 8px; font-size: 22px; }
+  p  { margin: 0 0 18px; color: #6b7280; line-height: 1.6; font-size: 14px; }
+  button { background: #3c40c6; color: white; border: 0; padding: 10px 18px;
+           border-radius: 9999px; font-weight: 600; font-size: 14px; cursor: pointer; }
+  button:hover { filter: brightness(1.1); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>你目前是离线状态</h1>
+    <p>Machi 暂时连不上服务器。检查网络后再试。已缓存的内容仍然可以浏览。</p>
+    <button onclick="location.reload()">重新连接</button>
+  </div>
+</body>
+</html>

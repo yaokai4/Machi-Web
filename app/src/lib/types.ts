@@ -1,0 +1,479 @@
+// All shapes here mirror what the unified Python backend returns
+// (server.py serialize_* functions). The same field names are used
+// by the iOS App's domain models so behavior stays in lockstep.
+
+import { z } from "zod";
+
+export const UserSchema = z.object({
+  id: z.string(),
+  remote_id: z.string().optional(),
+  handle: z.string(),
+  username: z.string().optional(),
+  display_name: z.string(),
+  email: z.string().optional(),
+  bio: z.string().optional(),
+  location: z.string().optional(),
+  avatar_symbol: z.string().optional(),
+  avatar_color: z.string().optional(),
+  avatar_url: z.string().optional(),
+  cover_url: z.string().optional(),
+  membership_tier: z.string().optional(),
+  is_verified: z.boolean().optional(),
+  role: z.string().optional(),
+  country: z.string().optional(),
+  province: z.string().optional(),
+  city: z.string().optional(),
+  current_region_code: z.string().optional(),
+  recent_region_codes: z.array(z.string()).optional(),
+  total_heat: z.number().optional(),
+  creator_badge: z.string().optional(),
+  is_merchant: z.boolean().optional(),
+  merchant_verified: z.boolean().optional(),
+  profile_view_count: z.number().optional(),
+  joined_at: z.string().nullable().optional(),
+  created_at: z.string().nullable().optional(),
+  updated_at: z.string().nullable().optional(),
+  follower_count: z.number().optional(),
+  following_count: z.number().optional(),
+  post_count: z.number().optional(),
+  is_following: z.boolean().optional(),
+  is_blocked: z.boolean().optional(),
+});
+export type KXUser = z.infer<typeof UserSchema>;
+
+export interface KXCountry {
+  code: string;
+  name: string;
+  emoji: string;
+  tier: number;
+  has_provinces: boolean;
+}
+
+export interface KXProvince {
+  code: string;
+  name: string;
+}
+
+export interface KXCity {
+  code: string;
+  name: string;
+}
+
+export interface KXRegion {
+  region_code: string;
+  country_code: string;
+  country_name: string;
+  country_emoji: string;
+  province_code: string;
+  province_name: string;
+  city_code: string;
+  city_name: string;
+}
+
+export const MediaSchema = z.object({
+  id: z.string(),
+  owner_id: z.string(),
+  type: z.enum(["image", "video"]),
+  url: z.string(),
+  thumb_url: z.string(),
+  mime: z.string(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  duration: z.number().optional(),
+  byte_size: z.number().optional(),
+  created_at: z.string(),
+});
+export type KXMedia = z.infer<typeof MediaSchema>;
+
+export const CONTENT_TYPES = [
+  "dynamic", "image_post", "long_post",
+  "news", "local_info", "guide", "question", "rant",
+  "secondhand", "housing", "roommate",
+  "job_seek", "job_post", "referral",
+  "meetup", "dining", "event",
+  "service", "merchant", "coupon",
+  "warning", "poll", "anonymous",
+] as const;
+export type ContentType = (typeof CONTENT_TYPES)[number];
+
+export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
+  dynamic: "动态",
+  image_post: "图文",
+  long_post: "长文",
+  news: "新闻",
+  local_info: "本地资讯",
+  guide: "攻略",
+  question: "问答",
+  rant: "吐槽",
+  secondhand: "二手",
+  housing: "租房",
+  roommate: "找室友",
+  job_seek: "找工作",
+  job_post: "招聘",
+  referral: "内推",
+  meetup: "搭子",
+  dining: "约饭",
+  event: "活动",
+  service: "服务",
+  merchant: "商家",
+  coupon: "优惠",
+  warning: "避坑",
+  poll: "投票",
+  anonymous: "树洞",
+};
+
+export const PostSchema: z.ZodType<KXPost> = z.lazy(() =>
+  z.object({
+    id: z.string(),
+    remote_id: z.string().optional(),
+    author_id: z.string(),
+    content: z.string(),
+    created_at: z.string(),
+    updated_at: z.string(),
+    deleted_at: z.string().nullable().optional(),
+    repost_of_id: z.string().nullable().optional(),
+    view_count: z.number(),
+    like_count: z.number(),
+    repost_count: z.number(),
+    bookmark_count: z.number(),
+    comment_count: z.number(),
+    heat_score: z.number(),
+    liked: z.boolean(),
+    bookmarked: z.boolean(),
+    reposted: z.boolean(),
+    tags: z.array(z.string()),
+    media: z.array(MediaSchema),
+    author: UserSchema.nullable().optional(),
+    original_post: PostSchema.nullable().optional(),
+    status: z.string().optional(),
+    country: z.string().optional(),
+    province: z.string().optional(),
+    city: z.string().optional(),
+    region_code: z.string().optional(),
+    content_type: z.enum(CONTENT_TYPES).optional(),
+    attributes: z.record(z.string(), z.unknown()).optional(),
+    report_count: z.number().optional(),
+    is_boosted: z.boolean().optional(),
+    boost_weight: z.number().optional(),
+    boosted_until: z.string().optional(),
+    language: z.string().optional(),
+    poll: z.object({
+      options: z.array(z.string()),
+      counts: z.array(z.number()),
+      total: z.number(),
+      my_vote: z.number().nullable().optional(),
+      closed: z.boolean().optional(),
+      expires_at: z.string().optional(),
+    }).nullable().optional(),
+  }),
+);
+
+export interface KXPost {
+  id: string;
+  remote_id?: string;
+  author_id: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+  deleted_at?: string | null;
+  repost_of_id?: string | null;
+  view_count: number;
+  like_count: number;
+  repost_count: number;
+  bookmark_count: number;
+  comment_count: number;
+  heat_score: number;
+  liked: boolean;
+  bookmarked: boolean;
+  reposted: boolean;
+  tags: string[];
+  media: KXMedia[];
+  author?: KXUser | null;
+  original_post?: KXPost | null;
+  status?: string;
+  country?: string;
+  province?: string;
+  city?: string;
+  region_code?: string;
+  content_type?: ContentType;
+  attributes?: Record<string, unknown>;
+  report_count?: number;
+  is_boosted?: boolean;
+  boost_weight?: number;
+  boosted_until?: string;
+  language?: string;
+  poll?: {
+    options: string[];
+    counts: number[];
+    total: number;
+    my_vote?: number | null;
+    closed?: boolean;
+    expires_at?: string;
+  } | null;
+}
+
+export const CommentSchema = z.object({
+  id: z.string(),
+  post_id: z.string(),
+  author_id: z.string(),
+  content: z.string(),
+  parent_comment_id: z.string().nullable().optional(),
+  reply_to_user_id: z.string().nullable().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+  deleted_at: z.string().nullable().optional(),
+  like_count: z.number(),
+  liked: z.boolean(),
+  author: UserSchema.nullable().optional(),
+  post: PostSchema.nullable().optional(),
+});
+export type KXComment = z.infer<typeof CommentSchema>;
+
+export const NotificationSchema = z.object({
+  id: z.string(),
+  type: z.enum(["like", "comment", "reply", "repost", "follow", "mention", "bookmark", "system"]),
+  actor_id: z.string(),
+  user_id: z.string(),
+  target_post_id: z.string().nullable().optional(),
+  target_comment_id: z.string().nullable().optional(),
+  content: z.string().optional(),
+  is_read: z.boolean(),
+  created_at: z.string(),
+  actor: UserSchema.nullable().optional(),
+});
+export type KXNotification = z.infer<typeof NotificationSchema>;
+
+export const MessageSchema = z.object({
+  id: z.string(),
+  conversation_id: z.string(),
+  sender_id: z.string(),
+  content: z.string(),
+  created_at: z.string(),
+  is_read: z.boolean(),
+  media: z.array(MediaSchema).optional(),
+});
+export type KXMessage = z.infer<typeof MessageSchema>;
+
+export const ConversationSchema = z.object({
+  id: z.string(),
+  participant_a: z.string(),
+  participant_b: z.string(),
+  participants: z.array(z.string()),
+  peer: UserSchema.nullable().optional(),
+  last_message: MessageSchema.nullable().optional(),
+  unread_count: z.number(),
+  updated_at: z.string(),
+});
+export type KXConversation = z.infer<typeof ConversationSchema>;
+
+export const SettingsSchema = z.object({
+  user_id: z.string(),
+  language: z.string(),
+  appearance: z.enum(["system", "light", "dark"]),
+  push_likes: z.boolean(),
+  push_comments: z.boolean(),
+  push_follows: z.boolean(),
+  push_messages: z.boolean(),
+  privacy_protect: z.boolean(),
+  privacy_allow_dm: z.enum(["everyone", "following", "nobody"]),
+  recommend_following: z.boolean(),
+  recommend_topics: z.boolean(),
+  updated_at: z.string(),
+});
+export type KXSettings = z.infer<typeof SettingsSchema>;
+
+export const TrendingTopicSchema = z.object({
+  tag: z.string(),
+  post_count: z.number(),
+});
+export type KXTrendingTopic = z.infer<typeof TrendingTopicSchema>;
+
+export const DeviceSchema = z.object({
+  id: z.string(),
+  token: z.string(),
+  device_name: z.string(),
+  user_agent: z.string(),
+  ip: z.string(),
+  created_at: z.string(),
+  last_seen_at: z.string(),
+  expires_at: z.string(),
+});
+export type KXDevice = z.infer<typeof DeviceSchema>;
+
+export const DraftSchema = z.object({
+  id: z.string(),
+  content: z.string(),
+  media_ids: z.array(z.string()),
+  tags: z.array(z.string()),
+  updated_at: z.string(),
+});
+export type KXDraft = z.infer<typeof DraftSchema>;
+
+export type FeedMode = "recommend" | "local" | "following" | "hot";
+export type ProfileSegment = "posts" | "replies" | "media" | "likes" | "bookmarks";
+
+// Content language enum — mirrors iOS `ContentLanguage`. `followApp`
+// resolves to whatever the UI language is; `multi` disables filtering;
+// the rest map to a BCP-47-ish short tag (`zh` / `en` / `ja` / …).
+export const CONTENT_LANGUAGES = [
+  "followApp",
+  "zh",
+  "en",
+  "ja",
+  "ko",
+  "fr",
+  "es",
+  "multi",
+] as const;
+export type ContentLanguage = (typeof CONTENT_LANGUAGES)[number];
+
+export const CONTENT_LANGUAGE_LABELS: Record<ContentLanguage, string> = {
+  followApp: "跟随 App 语言",
+  zh: "中文",
+  en: "English",
+  ja: "日本語",
+  ko: "한국어",
+  fr: "Français",
+  es: "Español",
+  multi: "多语言内容",
+};
+
+export const CONTENT_LANGUAGE_LABELS_EN: Record<ContentLanguage, string> = {
+  followApp: "Follow app language",
+  zh: "Chinese",
+  en: "English",
+  ja: "Japanese",
+  ko: "Korean",
+  fr: "French",
+  es: "Spanish",
+  multi: "Multilingual",
+};
+
+/// Server tag actually written to `posts.language`. Sentinels return
+/// empty.
+export function contentLanguageServerTag(lang: ContentLanguage): string {
+  if (lang === "followApp" || lang === "multi") return "";
+  return lang;
+}
+
+// Primary categories used by the city channel — mirrors iOS
+// `CityChannel.Primary`.
+export const CITY_PRIMARY_CATEGORIES = [
+  "recommend",
+  "life",
+  "marketplace",
+  "work",
+  "social",
+  "info",
+] as const;
+export type CityPrimary = (typeof CITY_PRIMARY_CATEGORIES)[number];
+export const CITY_CHANNELS = [
+  "recommend",
+  "dynamic",
+  "news",
+  "guide",
+  "secondhand",
+  "housing",
+  "jobSeek",
+  "jobPost",
+  "meetup",
+  "dining",
+  "event",
+  "question",
+  "service",
+  "merchant",
+  "coupon",
+  "warning",
+  "hot",
+] as const;
+export type CityChannelKey = (typeof CITY_CHANNELS)[number];
+
+export const CITY_PRIMARY_LABELS: Record<CityPrimary, string> = {
+  recommend: "推荐",
+  life: "生活",
+  marketplace: "交易",
+  work: "工作",
+  social: "社交",
+  info: "资讯",
+};
+
+export const CITY_CHANNEL_LABELS: Record<CityChannelKey, string> = {
+  recommend: "推荐",
+  dynamic: "动态",
+  news: "新闻",
+  guide: "攻略",
+  secondhand: "二手",
+  housing: "租房",
+  jobSeek: "找工作",
+  jobPost: "招聘",
+  meetup: "搭子",
+  dining: "约饭",
+  event: "活动",
+  question: "问答",
+  service: "服务",
+  merchant: "商家",
+  coupon: "优惠",
+  warning: "避坑",
+  hot: "热榜",
+};
+
+export const CITY_CHANNEL_DESCRIPTIONS: Record<CityChannelKey, string> = {
+  recommend: "按当前城市热度和时间排序,展示最值得先看的本地内容。",
+  dynamic: "日常动态、图文、长文、吐槽、树洞和投票。",
+  news: "本地快讯、政策提醒、交通提醒、安全提醒。",
+  guide: "租房、签证、银行卡、手机卡、找工作和生活经验。",
+  secondhand: "闲置转让、求购、搬家甩卖、免费赠送。",
+  housing: "找房、转租、合租、找室友、租房避坑。",
+  jobSeek: "兼职、全职、实习、远程、求职经验。",
+  jobPost: "本地商家、企业、机构发布招聘和内推。",
+  meetup: "学习、运动、摄影、语言交换、游戏搭子。",
+  dining: "约饭、咖啡、探店、周末饭局。",
+  event: "展览、Citywalk、桌游、运动、线下聚会。",
+  question: "签证、租房、工作、学校、医疗等本地求助。",
+  service: "搬家、翻译、签证、留学、保险、维修、报税。",
+  merchant: "本地店铺、服务商和认证商家内容。",
+  coupon: "本地商家折扣、团购、限时优惠。",
+  warning: "防诈骗、踩雷、交易和租房安全提醒。",
+  hot: "最近 24 小时当前城市热度最高的内容。",
+};
+
+export const CITY_CHANNEL_CONTENT_TYPES: Record<CityChannelKey, ContentType[] | undefined> = {
+  recommend: undefined,
+  dynamic: ["dynamic", "image_post", "long_post", "rant", "anonymous", "poll"],
+  news: ["news", "local_info"],
+  guide: ["guide"],
+  secondhand: ["secondhand"],
+  housing: ["housing", "roommate"],
+  jobSeek: ["job_seek"],
+  jobPost: ["job_post", "referral"],
+  meetup: ["meetup"],
+  dining: ["dining"],
+  event: ["event"],
+  question: ["question"],
+  service: ["service"],
+  merchant: ["merchant"],
+  coupon: ["coupon"],
+  warning: ["warning"],
+  hot: undefined,
+};
+
+/// Channels grouped under each primary — order matters so the first
+/// entry is the default landing channel when a primary is selected.
+export const CITY_PRIMARY_CHANNELS: Record<CityPrimary, CityChannelKey[]> = {
+  recommend: ["recommend", "hot", "dynamic"],
+  life: ["dynamic", "guide", "question", "warning"],
+  marketplace: ["secondhand", "housing", "coupon"],
+  work: ["jobSeek", "jobPost"],
+  social: ["meetup", "dining", "event"],
+  info: ["news", "service", "merchant"],
+};
+
+export interface Paginated<T> {
+  items: T[];
+  next_cursor: string | null;
+}
+
+export interface APIErrorPayload {
+  code: string;
+  message: string;
+}

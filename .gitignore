@@ -1,0 +1,29 @@
+# Machi City backend (web/) — keep secrets, the database, and runtime
+# artifacts out of version control.
+
+# Secrets / environment — commit only the example, never the real file.
+.env
+.env.*
+!.env.example
+
+# SQLite database + WAL/SHM sidecars.
+kaix.db
+kaix.db-shm
+kaix.db-wal
+*.sqlite
+*.sqlite3
+
+# Dev email outbox (verification codes / reset links land here).
+dev_outbox/
+
+# GeoIP databases (large binaries; license-restricted).
+*.mmdb
+
+# Python bytecode / caches.
+__pycache__/
+*.py[cod]
+.mypy_cache/
+.pytest_cache/
+
+# macOS filesystem metadata.
+.DS_Store

@@ -1,0 +1,232 @@
+"use client";
+
+import { useState } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Bell,
+  Heart,
+  MessageCircle,
+  Reply,
+  Repeat2,
+  UserPlus,
+  AtSign,
+  Bookmark,
+  CheckCheck,
+  Trash2,
+} from "lucide-react";
+import clsx from "clsx";
+import { api, APIError } from "@/lib/api";
+import { AppShell } from "@/components/shell/AppShell";
+import { Avatar } from "@/components/design/Avatar";
+import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
+import { NavTabs } from "@/components/design/NavTabs";
+import { relativeTime } from "@/lib/format";
+import { useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
+import type { KXNotification } from "@/lib/types";
+
+const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  like: Heart,
+  comment: MessageCircle,
+  reply: Reply,
+  repost: Repeat2,
+  follow: UserPlus,
+  mention: AtSign,
+  bookmark: Bookmark,
+  system: Bell,
+};
+
+export default function NotificationsPage() {
+  const [filter, setFilter] = useState("all");
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const router = useRouter();
+  const { t } = useI18n();
+  const FILTERS = [
+    { value: "all", label: t("notif_filter_all") },
+    { value: "like", label: t("notif_filter_like") },
+    { value: "comment", label: t("notif_filter_comment") },
+    { value: "reply", label: t("notif_filter_reply") },
+    { value: "repost", label: t("notif_filter_repost") },
+    { value: "follow", label: t("notif_filter_follow") },
+    { value: "system", label: t("notif_filter_system") },
+  ];
+  const notif = useQuery({
+    queryKey: ["notifications", filter],
+    queryFn: () => api.notifications(filter),
+  });
+
+  // Group consecutive same-type notifications by post — this is what
+  // the iOS app calls "通知聚合".
+  const grouped: { key: string; items: KXNotification[]; kind: string }[] = [];
+  for (const item of notif.data?.items || []) {
+    const key = `${item.type}-${item.target_post_id || item.actor_id}`;
+    const last = grouped[grouped.length - 1];
+    if (last && last.key === key && last.items.length < 6 && item.type !== "system") {
+      last.items.push(item);
+    } else {
+      grouped.push({ key, kind: item.type, items: [item] });
+    }
+  }
+
+  const markAll = async () => {
+    try {
+      await api.markNotificationsRead({ all: true });
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    } catch (err) {
+      pushToast({ kind: "error", message: (err as APIError).message });
+    }
+  };
+
+  const remove = async (id: string) => {
+    try {
+      await api.deleteNotification(id);
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    } catch (err) {
+      pushToast({ kind: "error", message: (err as APIError).message });
+    }
+  };
+
+  const markIds = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    try {
+      await api.markNotificationsRead({ ids });
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+    } catch {
+      // silent
+    }
+  };
+
+  return (
+    <AppShell>
+      <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
+        <h1 className="text-lg font-bold">{t("nav_notifications")}</h1>
+        {notif.data && notif.data.unread_count > 0 ? (
+          <button onClick={markAll} className="ml-auto kx-button-ghost text-xs h-8">
+            <CheckCheck className="w-3.5 h-3.5" /> {t("action_mark_all_read")}
+          </button>
+        ) : null}
+      </header>
+
+      <div className="sticky top-[52px] z-20">
+        <NavTabs
+          items={FILTERS.map((f) => ({ value: f.value, label: f.label }))}
+          value={filter}
+          onChange={setFilter}
+        />
+      </div>
+
+      {notif.isLoading ? (
+        <InlineLoading />
+      ) : notif.isError ? (
+        <ErrorState onRetry={() => notif.refetch()} />
+      ) : grouped.length === 0 ? (
+        <EmptyState title={t("notif_empty_title")} subtitle={t("notif_empty_subtitle")} icon={Bell} />
+      ) : (
+        <ul className="divide-y divide-kx-stroke/30">
+          {grouped.map((group) => {
+            const main = group.items[0];
+            const Icon = ICONS[group.kind] || Bell;
+            const moreCount = group.items.length - 1;
+            const unread = group.items.some((i) => !i.is_read);
+            return (
+              <li
+                key={group.key}
+                className={clsx("px-3 sm:px-4 py-3 flex gap-3 group items-start transition hover:bg-kx-soft/40 cursor-pointer", unread && "bg-kx-accentSoft/40")}
+                onClick={(e) => {
+                  // Allow nested links / buttons to take over.
+                  if ((e.target as HTMLElement).closest("a, button")) return;
+                  markIds(group.items.filter((i) => !i.is_read).map((i) => i.id));
+                  if (main.target_post_id) router.push(`/p/${main.target_post_id}`);
+                  else if (main.actor) router.push(`/u/${main.actor.handle}`);
+                }}
+              >
+                <div className="mt-0.5">
+                  <Icon className={clsx(
+                    "w-5 h-5",
+                    group.kind === "like" && "text-kx-like",
+                    group.kind === "repost" && "text-kx-repost",
+                    group.kind === "comment" && "text-kx-accent",
+                    group.kind === "reply" && "text-kx-accent",
+                    group.kind === "follow" && "text-kx-accent",
+                    group.kind === "system" && "text-kx-muted",
+                  )} />
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center -space-x-2 mb-1.5">
+                    {group.items.slice(0, 5).map((i) =>
+                      i.actor ? (
+                        <Link
+                          key={i.id}
+                          href={`/u/${i.actor.handle}`}
+                          onClick={(e) => e.stopPropagation()}
+                          className="ring-2 ring-kx-bg rounded-kx-sm hover:scale-110 transition-transform"
+                        >
+                          <Avatar user={i.actor} size={28} />
+                        </Link>
+                      ) : (
+                        <Avatar key={i.id} user={undefined} size={28} />
+                      ),
+                    )}
+                  </div>
+                  <div className="text-sm text-kx-text leading-snug">
+                    {main.actor ? (
+                      <Link
+                        href={`/u/${main.actor.handle}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="font-semibold hover:underline"
+                      >
+                        {main.actor.display_name}
+                      </Link>
+                    ) : (
+                      <strong>用户</strong>
+                    )}
+                    {moreCount > 0 ? <span className="text-kx-muted"> 等 {moreCount + 1} 位 </span> : <span className="text-kx-muted"> </span>}
+                    <NotifVerb kind={group.kind} />
+                    {main.target_post_id ? (
+                      <Link
+                        href={`/p/${main.target_post_id}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="kx-link ml-1"
+                      >
+                        查看帖子
+                      </Link>
+                    ) : null}
+                  </div>
+                  {main.content ? <div className="text-xs text-kx-subtle mt-1 line-clamp-2">{main.content}</div> : null}
+                  <div className="text-xs text-kx-muted mt-1">{relativeTime(main.created_at)}</div>
+                </div>
+                <button
+                  className="text-kx-muted hover:text-kx-danger opacity-0 group-hover:opacity-100 transition"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    remove(main.id);
+                  }}
+                  aria-label="删除"
+                >
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </AppShell>
+  );
+}
+
+function NotifVerb({ kind }: { kind: string }) {
+  switch (kind) {
+    case "like": return <>赞了你的帖子</>;
+    case "comment": return <>评论了你的帖子</>;
+    case "reply": return <>回复了你</>;
+    case "repost": return <>转发了你的帖子</>;
+    case "follow": return <>关注了你</>;
+    case "bookmark": return <>收藏了你的帖子</>;
+    case "mention": return <>提到了你</>;
+    case "system": return <>系统通知</>;
+    default: return <>{kind}</>;
+  }
+}

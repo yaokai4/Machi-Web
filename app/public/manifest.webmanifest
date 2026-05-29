@@ -1,0 +1,12 @@
+{
+  "name": "Machi City",
+  "short_name": "Machi",
+  "description": "Discover local life in every city.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f5f7",
+  "theme_color": "#3c40c6",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}

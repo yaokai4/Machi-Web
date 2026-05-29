@@ -1,0 +1,41 @@
+[Unit]
+Description=KaiX Web client (Next.js)
+After=network.target kaix-backend.service
+Wants=network-online.target
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=kaix
+Group=kaix
+WorkingDirectory=/opt/kaix/web/app
+EnvironmentFile=/etc/kaix.env
+# `next start` honors PORT.
+Environment=NODE_ENV=production
+Environment=PORT=3000
+# Bump Node's old-space GC so a viral page doesn't OOM under load.
+Environment=NODE_OPTIONS=--max-old-space-size=1024
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+# next start writes to .next/cache for ISR / fetch cache + app/build
+# tracing. Whitelist the whole .next dir so runtime writes succeed.
+ReadWritePaths=/opt/kaix/web/app/.next
+LimitNOFILE=65536
+MemoryHigh=1200M
+MemoryMax=1500M
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kaix-web
+
+[Install]
+WantedBy=multi-user.target

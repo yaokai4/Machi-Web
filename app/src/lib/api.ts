@@ -1,0 +1,697 @@
+// Single HTTP client for the unified Machi backend. Used by both
+// React Query hooks and any imperative call paths. All requests
+// go through here so auth header, error normalisation, JSON parsing
+// and base URL handling stay consistent.
+
+import type {
+  APIErrorPayload,
+  KXComment,
+  KXConversation,
+  KXDevice,
+  KXDraft,
+  KXMedia,
+  KXMessage,
+  KXNotification,
+  KXPost,
+  KXSettings,
+  KXTrendingTopic,
+  KXUser,
+  KXCountry,
+  KXProvince,
+  KXCity,
+  KXRegion,
+  FeedMode,
+  Paginated,
+  ProfileSegment,
+  ContentType,
+} from "./types";
+
+const TOKEN_KEY = "machi.token";
+const LEGACY_TOKEN_KEY = "kaix.token";
+
+export const apiBase = ""; // requests proxied through next.config rewrites
+
+export class APIError extends Error {
+  status: number;
+  code: string;
+  constructor(payload: APIErrorPayload, status: number) {
+    super(payload.message || "请求失败");
+    this.status = status;
+    this.code = payload.code || "unknown";
+  }
+}
+
+export function readToken(): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const token = window.localStorage.getItem(TOKEN_KEY);
+    if (token) return token;
+    const legacyToken = window.localStorage.getItem(LEGACY_TOKEN_KEY);
+    if (legacyToken) {
+      try {
+        window.localStorage.setItem(TOKEN_KEY, legacyToken);
+        window.localStorage.removeItem(LEGACY_TOKEN_KEY);
+      } catch {
+        // quota / privacy mode — keep using the legacy slot
+      }
+      return legacyToken;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function writeToken(token: string | null): void {
+  if (typeof window === "undefined") return;
+  try {
+    if (token) {
+      window.localStorage.setItem(TOKEN_KEY, token);
+      window.localStorage.removeItem(LEGACY_TOKEN_KEY);
+    } else {
+      window.localStorage.removeItem(TOKEN_KEY);
+      window.localStorage.removeItem(LEGACY_TOKEN_KEY);
+    }
+  } catch {
+    // quota / privacy mode — non-fatal
+  }
+  if (!token) {
+    // On logout (or 401-induced token wipe) instruct the service
+    // worker to drop its API response cache. Without this, the SW
+    // could serve user A's cached /api/auth/me or /api/notifications
+    // to user B because cache keys are URLs, not bearer tokens.
+    try {
+      if (typeof navigator !== "undefined" && navigator.serviceWorker?.controller) {
+        navigator.serviceWorker.controller.postMessage({ type: "clear-api-cache" });
+      }
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+export type MarketingCopyBlock = {
+  id: string;
+  page_key: string;
+  locale: string;
+  title: string;
+  body: string;
+  status: "draft" | "published";
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+};
+
+// Returned by /api/auth/login/start. Either the account requires an emailed
+// code (two-step), or — when the account has no email and the server isn't
+// enforcing codes — a session is issued directly.
+export type LoginStartResult =
+  | { requires_code: true; challenge_id: string; email_hint: string; expires_in: number }
+  | { requires_code: false; token: string; user: KXUser };
+
+// Admin-only visitor access-log row. The full IP + resolved region are
+// included here intentionally — this endpoint is gated behind require_admin
+// on the server and is never reachable by ordinary users.
+export type VisitorLogEntry = {
+  id: string;
+  created_at: string;
+  ip: string;
+  method: string;
+  path: string;
+  status: number;
+  user_id: string | null;
+  user_agent: string;
+  referer: string;
+  country: string;
+  region: string;
+  city: string;
+  org: string;
+};
+
+export type VisitorSummary = {
+  total: number;
+  unique_visitors: number;
+  logged_in_users: number;
+  days: number;
+  top_countries: Array<{ country: string; count: number }>;
+  top_cities: Array<{ city: string; country: string; count: number }>;
+  geoip: string;
+};
+
+const DEFAULT_TIMEOUT_MS = 20_000;
+const RETRYABLE_METHODS = new Set(["GET", "HEAD"]);
+
+async function request<T>(method: string, path: string, body?: unknown, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...(init?.headers as Record<string, string> | undefined),
+  };
+  if (body !== undefined && !(body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+  const token = readToken();
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const upperMethod = method.toUpperCase();
+  const maxAttempts = RETRYABLE_METHODS.has(upperMethod) ? 2 : 1;
+
+  let lastError: unknown = null;
+  let res: Response | null = null;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = controller
+      ? setTimeout(() => {
+          try {
+            controller.abort();
+          } catch {
+            // ignore
+          }
+        }, DEFAULT_TIMEOUT_MS)
+      : null;
+    try {
+      res = await fetch(`${apiBase}${path}`, {
+        method,
+        headers,
+        body:
+          body === undefined
+            ? undefined
+            : body instanceof FormData
+              ? body
+              : JSON.stringify(body),
+        credentials: "omit",
+        cache: "no-store",
+        signal: controller?.signal,
+        ...init,
+      });
+      break;
+    } catch (err) {
+      lastError = err;
+      res = null;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (attempt < maxAttempts - 1) {
+      await new Promise((r) => setTimeout(r, 400));
+    }
+  }
+
+  if (!res) {
+    const aborted = lastError instanceof DOMException && lastError.name === "AbortError";
+    throw new APIError(
+      {
+        code: aborted ? "timeout" : "network_error",
+        message: aborted ? "请求超时，请稍后重试。" : "无法连接服务器，请检查网络后重试。",
+      },
+      0,
+    );
+  }
+
+  const ct = res.headers.get("Content-Type") || "";
+  if (!res.ok) {
+    let payload: APIErrorPayload = { code: "http_error", message: `请求失败 (${res.status})` };
+    if (ct.includes("application/json")) {
+      try {
+        const data = await res.json();
+        if (data?.error) payload = data.error;
+      } catch {
+        // fallthrough
+      }
+    }
+    if (res.status === 401) {
+      writeToken(null);
+    }
+    throw new APIError(payload, res.status);
+  }
+  if (res.status === 204) return undefined as T;
+  if (ct.includes("application/json")) {
+    try {
+      return (await res.json()) as T;
+    } catch {
+      throw new APIError({ code: "parse_error", message: "服务器响应格式异常。" }, res.status);
+    }
+  }
+  return (await res.text()) as unknown as T;
+}
+
+// ---- auth ----
+export const api = {
+  async login(handle: string, password: string): Promise<{ token: string; user: KXUser }> {
+    const data = await request<{ token: string; user: KXUser }>("POST", "/api/auth/login", { handle, password });
+    writeToken(data.token);
+    return data;
+  },
+  async register(payload: {
+    handle: string;
+    display_name: string;
+    password: string;
+    email?: string;
+    // Email verification code. Required by the backend only when the server
+    // enforces verification (KAIX_REQUIRE_EMAIL_VERIFICATION) or whenever a
+    // code is supplied; older callers that omit it keep the legacy flow.
+    code?: string;
+    country?: string;
+    province?: string;
+    city?: string;
+    current_region_code?: string;
+  }) {
+    const data = await request<{ token: string; user: KXUser }>("POST", "/api/auth/register", payload);
+    writeToken(data.token);
+    return data;
+  },
+  // Request an email verification / reset code. The response never contains
+  // the code itself — only whether it was accepted and how long it lasts.
+  async sendEmailCode(
+    email: string,
+    purpose: "register" | "reset" = "register",
+    locale?: string,
+  ): Promise<{ ok: boolean; expires_in: number }> {
+    return request("POST", "/api/auth/email/send-code", { email, purpose, locale });
+  },
+  // Step 1 of two-step login: verify the password, then (if the account has
+  // an email) email a one-time code. Persists the token only on the direct
+  // no-code path; the code path persists it in loginVerify.
+  async loginStart(payload: {
+    handle?: string;
+    email?: string;
+    password: string;
+    locale?: string;
+  }): Promise<LoginStartResult> {
+    const data = await request<LoginStartResult>("POST", "/api/auth/login/start", payload);
+    if (data.requires_code === false && data.token) writeToken(data.token);
+    return data;
+  },
+  // Step 2 of two-step login: exchange a valid code for a session.
+  async loginVerify(challengeId: string, code: string): Promise<{ token: string; user: KXUser }> {
+    const data = await request<{ token: string; user: KXUser }>("POST", "/api/auth/login/verify", {
+      challenge_id: challengeId,
+      code,
+    });
+    writeToken(data.token);
+    return data;
+  },
+  // Change the current user's password. The server verifies the old password,
+  // enforces strength, and revokes every OTHER session.
+  async changePassword(oldPassword: string, newPassword: string): Promise<void> {
+    await request<{ ok: boolean }>("POST", "/api/auth/change-password", {
+      old_password: oldPassword,
+      new_password: newPassword,
+    });
+  },
+  // Request a reset code by email. Always resolves (the server responds
+  // generically so this can't be used to enumerate registered addresses).
+  async forgotPassword(email: string, locale?: string): Promise<{ ok: boolean; expires_in: number }> {
+    return request("POST", "/api/auth/forgot-password", { email, locale });
+  },
+  // Complete a password reset with the emailed code. Revokes ALL sessions.
+  async resetPassword(email: string, code: string, newPassword: string): Promise<void> {
+    await request<{ ok: boolean }>("POST", "/api/auth/reset-password", {
+      email,
+      code,
+      new_password: newPassword,
+    });
+  },
+  async logout(): Promise<void> {
+    try {
+      await request<void>("POST", "/api/auth/logout");
+    } finally {
+      writeToken(null);
+    }
+  },
+  async me(): Promise<KXUser> {
+    const { user } = await request<{ user: KXUser }>("GET", "/api/auth/me");
+    return user;
+  },
+  async updateMe(patch: Partial<KXUser> & { password?: string }): Promise<KXUser> {
+    const { user } = await request<{ user: KXUser }>("PATCH", "/api/auth/me", patch);
+    return user;
+  },
+  async deleteMe(): Promise<void> {
+    await request<void>("DELETE", "/api/auth/me");
+    writeToken(null);
+  },
+
+  // ---- bootstrap ----
+  async bootstrap(): Promise<{ user: KXUser; feed: KXPost[]; unread_notifications: number; server_time: string }> {
+    return request("GET", "/api/bootstrap");
+  },
+
+  // ---- realtime ----
+  async issueEventsToken(): Promise<{ token: string; expires_in: number }> {
+    return request("POST", "/api/events/token");
+  },
+
+  // ---- regions ----
+  async countries(): Promise<KXCountry[]> {
+    const { items } = await request<{ items: KXCountry[] }>("GET", "/api/regions/countries");
+    return items;
+  },
+  async provinces(country: string): Promise<{ country: string; has_provinces: boolean; items: KXProvince[] }> {
+    return request("GET", `/api/regions/provinces?country=${encodeURIComponent(country)}`);
+  },
+  async cities(country: string, province?: string): Promise<{ country: string; province: string; items: KXCity[] }> {
+    const params = new URLSearchParams({ country });
+    if (province) params.set("province", province);
+    return request("GET", `/api/regions/cities?${params.toString()}`);
+  },
+  async popularRegions(): Promise<KXRegion[]> {
+    const { items } = await request<{ items: KXRegion[] }>("GET", "/api/regions/popular");
+    return items;
+  },
+  async marketingCopy(page: string, locale: string): Promise<MarketingCopyBlock[]> {
+    const usp = new URLSearchParams({ page, locale });
+    const { items } = await request<{ items: MarketingCopyBlock[] }>("GET", `/api/marketing-copy?${usp.toString()}`);
+    return items;
+  },
+  async resolveRegion(code: string): Promise<KXRegion> {
+    return request("GET", `/api/regions/resolve?code=${encodeURIComponent(code)}`);
+  },
+
+  // ---- users ----
+  async userDetail(id: string): Promise<KXUser> {
+    const { user } = await request<{ user: KXUser }>("GET", `/api/users/${encodeURIComponent(id)}`);
+    return user;
+  },
+  async userPosts(id: string, opts: { cursor?: string; segment?: ProfileSegment } = {}): Promise<Paginated<KXPost> | Paginated<KXComment>> {
+    const segment = opts.segment || "posts";
+    const params = new URLSearchParams();
+    if (opts.cursor) params.set("cursor", opts.cursor);
+    const path = `/api/users/${encodeURIComponent(id)}/${segment}?${params.toString()}`;
+    return request("GET", path);
+  },
+  async follow(id: string, on: boolean): Promise<void> {
+    await request<void>(on ? "POST" : "DELETE", `/api/users/${encodeURIComponent(id)}/follow`);
+  },
+  async block(id: string, on: boolean): Promise<void> {
+    await request<void>(on ? "POST" : "DELETE", `/api/users/${encodeURIComponent(id)}/block`);
+  },
+  async reportUser(id: string, reason: string, note?: string): Promise<void> {
+    await request<void>("POST", `/api/users/${encodeURIComponent(id)}/report`, { reason, note });
+  },
+  async followers(id: string): Promise<KXUser[]> {
+    const { items } = await request<{ items: KXUser[] }>("GET", `/api/users/${encodeURIComponent(id)}/followers`);
+    return items;
+  },
+  async following(id: string): Promise<KXUser[]> {
+    const { items } = await request<{ items: KXUser[] }>("GET", `/api/users/${encodeURIComponent(id)}/following`);
+    return items;
+  },
+  async blocks(): Promise<KXUser[]> {
+    const { items } = await request<{ items: KXUser[] }>("GET", `/api/blocks`);
+    return items;
+  },
+
+  // ---- feed / posts ----
+  async feed(mode: FeedMode, cursor?: string, opts: {
+    country?: string;
+    province?: string;
+    city?: string;
+    region_code?: string;
+    content_type?: ContentType | ContentType[];
+  } = {}): Promise<Paginated<KXPost> & { mode: FeedMode }> {
+    const params = new URLSearchParams({ mode });
+    if (cursor) params.set("cursor", cursor);
+    if (opts.country) params.set("country", opts.country);
+    if (opts.province) params.set("province", opts.province);
+    if (opts.city) params.set("city", opts.city);
+    if (opts.region_code) params.set("region_code", opts.region_code);
+    if (opts.content_type) params.set("content_type", Array.isArray(opts.content_type) ? opts.content_type.join(",") : opts.content_type);
+    return request("GET", `/api/feed?${params.toString()}`);
+  },
+  async createPost(payload: {
+    content: string;
+    media_ids?: string[];
+    tags?: string[];
+    repost_of_id?: string;
+    country?: string;
+    province?: string;
+    city?: string;
+    region_code?: string;
+    content_type?: ContentType;
+    attributes?: Record<string, unknown>;
+    language?: string;
+  }): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>("POST", `/api/posts`, payload);
+    return post;
+  },
+  async post(id: string): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>("GET", `/api/posts/${encodeURIComponent(id)}`);
+    return post;
+  },
+  async editPost(id: string, content: string): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>("PATCH", `/api/posts/${encodeURIComponent(id)}`, { content });
+    return post;
+  },
+  async deletePost(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/posts/${encodeURIComponent(id)}`);
+  },
+  async toggleLike(id: string, on: boolean): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>(on ? "POST" : "DELETE", `/api/posts/${encodeURIComponent(id)}/like`);
+    return post;
+  },
+  async toggleBookmark(id: string, on: boolean): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>(on ? "POST" : "DELETE", `/api/posts/${encodeURIComponent(id)}/bookmark`);
+    return post;
+  },
+  async toggleRepost(id: string, on: boolean): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>(on ? "POST" : "DELETE", `/api/posts/${encodeURIComponent(id)}/repost`);
+    return post;
+  },
+  async votePoll(id: string, optionIndex: number): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>(
+      "POST",
+      `/api/posts/${encodeURIComponent(id)}/poll/vote`,
+      { option_index: optionIndex },
+    );
+    return post;
+  },
+  async quoteRepost(originalId: string, content: string): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>("POST", `/api/posts`, { content, repost_of_id: originalId });
+    return post;
+  },
+  async viewPost(id: string): Promise<void> {
+    await request<void>("POST", `/api/posts/${encodeURIComponent(id)}/view`);
+  },
+  async reportPost(id: string, reason: string, note?: string): Promise<void> {
+    await request<void>("POST", `/api/posts/${encodeURIComponent(id)}/report`, { reason, note });
+  },
+
+  // ---- comments ----
+  async comments(postId: string, sort: "top" | "new" = "top"): Promise<KXComment[]> {
+    const { items } = await request<{ items: KXComment[] }>("GET", `/api/posts/${encodeURIComponent(postId)}/comments?sort=${sort}`);
+    return items;
+  },
+  async createComment(postId: string, payload: { content: string; parent_comment_id?: string; reply_to_user_id?: string }): Promise<KXComment> {
+    const { comment } = await request<{ comment: KXComment }>("POST", `/api/posts/${encodeURIComponent(postId)}/comments`, payload);
+    return comment;
+  },
+  async deleteComment(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/comments/${encodeURIComponent(id)}`);
+  },
+  async toggleCommentLike(id: string, on: boolean): Promise<void> {
+    await request<void>(on ? "POST" : "DELETE", `/api/comments/${encodeURIComponent(id)}/like`);
+  },
+  async reportComment(id: string, reason: string, note?: string): Promise<void> {
+    await request<void>("POST", `/api/comments/${encodeURIComponent(id)}/report`, { reason, note });
+  },
+
+  // ---- search / topics ----
+  async search(q: string, kind: "all" | "post" | "user" | "topic" = "all"): Promise<{ posts: KXPost[]; users: KXUser[]; topics: KXTrendingTopic[] }> {
+    const params = new URLSearchParams({ q, kind });
+    return request("GET", `/api/search?${params.toString()}`);
+  },
+  async searchHistory(): Promise<string[]> {
+    const { items } = await request<{ items: string[] }>("GET", `/api/search/history`);
+    return items;
+  },
+  async clearSearchHistory(): Promise<void> {
+    await request<void>("DELETE", `/api/search/history`);
+  },
+  async trending(): Promise<{ posts: KXPost[]; topics: KXTrendingTopic[]; users: KXUser[] }> {
+    return request("GET", `/api/trending`);
+  },
+  async topic(tag: string): Promise<{ tag: string; items: KXPost[] }> {
+    return request("GET", `/api/topics/${encodeURIComponent(tag.replace(/^#/, ""))}`);
+  },
+
+  // ---- notifications ----
+  async notifications(kind: string = "all"): Promise<{ items: KXNotification[]; unread_count: number }> {
+    const params = new URLSearchParams({ kind });
+    return request("GET", `/api/notifications?${params.toString()}`);
+  },
+  async markNotificationsRead(input: { ids?: string[]; all?: boolean }): Promise<void> {
+    await request<void>("POST", `/api/notifications/read`, input);
+  },
+  async deleteNotification(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/notifications/${encodeURIComponent(id)}`);
+  },
+
+  // ---- conversations / messages ----
+  async conversations(): Promise<KXConversation[]> {
+    const { items } = await request<{ items: KXConversation[] }>("GET", `/api/conversations`);
+    return items;
+  },
+  async openConversation(peerId: string): Promise<KXConversation> {
+    const { conversation } = await request<{ conversation: KXConversation }>("POST", `/api/conversations`, { peer_id: peerId });
+    return conversation;
+  },
+  async deleteConversation(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/conversations/${encodeURIComponent(id)}`);
+  },
+  async messages(conversationId: string): Promise<KXMessage[]> {
+    const { items } = await request<{ items: KXMessage[] }>("GET", `/api/conversations/${encodeURIComponent(conversationId)}/messages`);
+    return items;
+  },
+  async sendMessage(conversationId: string, content: string, mediaIds: string[] = []): Promise<KXMessage> {
+    const { message } = await request<{ message: KXMessage }>(
+      "POST",
+      `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
+      { content, media_ids: mediaIds },
+    );
+    return message;
+  },
+  async deleteMessage(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/messages/${encodeURIComponent(id)}`);
+  },
+  async markConversationRead(id: string): Promise<void> {
+    await request<void>("POST", `/api/conversations/${encodeURIComponent(id)}/read`);
+  },
+
+  // ---- media ----
+  async uploadMediaBase64(file: File): Promise<KXMedia> {
+    const form = new FormData();
+    form.append("file", file, file.name || "upload");
+    const { media } = await request<{ media: KXMedia }>("POST", `/api/media/upload`, form);
+    return media;
+  },
+  async deleteMedia(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/media/${encodeURIComponent(id)}`);
+  },
+
+  // ---- settings ----
+  async settings(): Promise<KXSettings> {
+    const { settings } = await request<{ settings: KXSettings }>("GET", `/api/settings`);
+    return settings;
+  },
+  async updateSettings(patch: Partial<KXSettings>): Promise<KXSettings> {
+    const { settings } = await request<{ settings: KXSettings }>("PATCH", `/api/settings`, patch);
+    return settings;
+  },
+  async clearCache(): Promise<void> {
+    await request<void>("POST", `/api/cache/clear`);
+  },
+  async exportData(): Promise<unknown> {
+    return request("GET", `/api/export`);
+  },
+  async submitFeedback(payload: { category: string; content: string }): Promise<void> {
+    await request<void>("POST", `/api/feedback`, payload);
+  },
+
+  // ---- devices ----
+  async devices(): Promise<KXDevice[]> {
+    const { items } = await request<{ items: KXDevice[] }>("GET", `/api/devices`);
+    return items;
+  },
+  async revokeDevice(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/devices/${encodeURIComponent(id)}`);
+  },
+
+  // ---- admin ----
+  async adminStats(): Promise<{ stats: Record<string, unknown> }> {
+    return request("GET", `/api/admin/stats`);
+  },
+  // Admin-only access log (visitor IP + resolved region + rollups). Requires
+  // an admin session; ordinary users get 401/403 from the server.
+  async adminVisitors(opts: { limit?: number; days?: number; q?: string } = {}): Promise<{
+    items: VisitorLogEntry[];
+    summary: VisitorSummary;
+  }> {
+    const usp = new URLSearchParams();
+    if (opts.limit) usp.set("limit", String(opts.limit));
+    if (opts.days) usp.set("days", String(opts.days));
+    if (opts.q) usp.set("q", opts.q);
+    return request("GET", `/api/admin/visitors?${usp.toString()}`);
+  },
+  async adminUsers(q?: string): Promise<KXUser[]> {
+    const usp = new URLSearchParams();
+    if (q) usp.set("q", q);
+    const { items } = await request<{ items: KXUser[] }>("GET", `/api/admin/users?${usp.toString()}`);
+    return items;
+  },
+  async adminUpdateUser(id: string, patch: { is_verified?: boolean; role?: string; membership_tier?: string; creator_badge?: string; is_merchant?: boolean; merchant_verified?: boolean }): Promise<KXUser> {
+    const { user } = await request<{ user: KXUser }>("PATCH", `/api/admin/users/${encodeURIComponent(id)}`, patch);
+    return user;
+  },
+  async adminSuspendUser(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/users/${encodeURIComponent(id)}`);
+  },
+  async adminPosts(q?: string, opts: { status?: string; content_type?: ContentType; country?: string; city?: string; region_code?: string } = {}): Promise<KXPost[]> {
+    const usp = new URLSearchParams();
+    if (q) usp.set("q", q);
+    if (opts.status) usp.set("status", opts.status);
+    if (opts.content_type) usp.set("content_type", opts.content_type);
+    if (opts.country) usp.set("country", opts.country);
+    if (opts.city) usp.set("city", opts.city);
+    if (opts.region_code) usp.set("region_code", opts.region_code);
+    const { items } = await request<{ items: KXPost[] }>("GET", `/api/admin/posts?${usp.toString()}`);
+    return items;
+  },
+  async adminUpdatePost(id: string, patch: { status?: string; is_boosted?: boolean; boost_weight?: number; boosted_until?: string }): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>("PATCH", `/api/admin/posts/${encodeURIComponent(id)}`, patch);
+    return post;
+  },
+  async adminDeletePost(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/posts/${encodeURIComponent(id)}`);
+  },
+  async adminComments(): Promise<KXComment[]> {
+    const { items } = await request<{ items: KXComment[] }>("GET", `/api/admin/comments`);
+    return items;
+  },
+  async adminDeleteComment(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/comments/${encodeURIComponent(id)}`);
+  },
+  async adminReports(): Promise<Array<{ id: string; reporter: KXUser | null; target_kind: string; target_id: string; reason: string; note: string; created_at: string; preview: { content?: string; author?: KXUser | null } }>> {
+    const { items } = await request<{ items: unknown[] }>("GET", `/api/admin/reports`);
+    return items as never;
+  },
+  async adminResolveReport(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/reports/${encodeURIComponent(id)}`);
+  },
+  async adminFeedback(): Promise<Array<{ id: string; category: string; content: string; created_at: string; user: KXUser | null }>> {
+    const { items } = await request<{ items: unknown[] }>("GET", `/api/admin/feedback`);
+    return items as never;
+  },
+  async adminMarketingCopy(): Promise<MarketingCopyBlock[]> {
+    const { items } = await request<{ items: MarketingCopyBlock[] }>("GET", `/api/admin/marketing-copy`);
+    return items;
+  },
+  async adminCreateMarketingCopy(payload: {
+    page_key: string;
+    locale: string;
+    title: string;
+    body: string;
+    status?: "draft" | "published";
+    sort_order?: number;
+  }): Promise<MarketingCopyBlock> {
+    const { item } = await request<{ item: MarketingCopyBlock }>("POST", `/api/admin/marketing-copy`, payload);
+    return item;
+  },
+  async adminUpdateMarketingCopy(id: string, patch: Partial<Pick<MarketingCopyBlock, "page_key" | "locale" | "title" | "body" | "status" | "sort_order">>): Promise<MarketingCopyBlock> {
+    const { item } = await request<{ item: MarketingCopyBlock }>("PATCH", `/api/admin/marketing-copy/${encodeURIComponent(id)}`, patch);
+    return item;
+  },
+  async adminDeleteMarketingCopy(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/marketing-copy/${encodeURIComponent(id)}`);
+  },
+
+  // ---- drafts ----
+  async drafts(): Promise<KXDraft[]> {
+    const { items } = await request<{ items: KXDraft[] }>("GET", `/api/drafts`);
+    return items;
+  },
+  async saveDraft(payload: Partial<KXDraft>): Promise<{ id: string }> {
+    return request("POST", `/api/drafts`, payload);
+  },
+  async deleteDraft(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/drafts/${encodeURIComponent(id)}`);
+  },
+};
