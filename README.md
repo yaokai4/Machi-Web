@@ -1,4 +1,4 @@
-# KaiX Web
+# Machi Web
 
 生产级 Web 客户端，与 iOS App 共享同一套账号、数据库、API。
 
@@ -19,7 +19,7 @@ web/
 # 1. 启动后端（端口 8787，提供 /api 与 /media）
 cd web
 python3 server.py
-# KaiX backend running at http://127.0.0.1:8787
+# Machi backend starting on http://127.0.0.1:8787 (env=development)
 
 # 2. 另开一个终端启动 Web 客户端（端口 3000，开发模式）
 cd web/app
