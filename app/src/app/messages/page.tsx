@@ -8,6 +8,7 @@ import { Mail, PenSquare, Search, Trash2 } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
+import { showVerifiedBadge } from "@/lib/types";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { Dialog } from "@/components/design/Dialog";
 import { relativeTime } from "@/lib/format";
@@ -84,7 +85,7 @@ export default function MessagesPage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
                       <span className="font-semibold truncate">{peer?.display_name || "用户"}</span>
-                      {peer?.is_verified ? <VerifiedBadge /> : null}
+                      {showVerifiedBadge(peer) ? <VerifiedBadge /> : null}
                       <span className="text-kx-muted text-xs truncate">@{peer?.handle}</span>
                       {conv.last_message ? (
                         <span className="ml-auto text-xs text-kx-muted shrink-0">
@@ -138,7 +139,7 @@ export default function MessagesPage() {
                 <div className="min-w-0 flex-1 text-left">
                   <div className="font-semibold text-sm truncate flex items-center gap-1">
                     {u.display_name}
-                    {u.is_verified ? <VerifiedBadge /> : null}
+                    {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                   </div>
                   <div className="text-xs text-kx-muted">@{u.handle}</div>
                 </div>

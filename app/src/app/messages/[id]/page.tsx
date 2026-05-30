@@ -13,6 +13,7 @@ import { MediaGrid } from "@/components/design/MediaGrid";
 import { relativeTime } from "@/lib/format";
 import { useSession, useToasts } from "@/lib/store";
 import type { KXMedia, KXMessage } from "@/lib/types";
+import { showVerifiedBadge } from "@/lib/types";
 
 const EMOJI_CHOICES = ["😀", "😂", "😍", "🥹", "👍", "🙏", "👏", "🔥", "🎉", "❤️", "💜", "✨", "😮", "😢", "😡", "🤝", "☕", "🍜", "🏠", "📍"];
 
@@ -134,7 +135,7 @@ export default function ConversationPage() {
             <div className="min-w-0">
               <div className="font-semibold truncate flex items-center gap-1">
                 {peer.display_name}
-                {peer.is_verified ? <VerifiedBadge /> : null}
+                {showVerifiedBadge(peer) ? <VerifiedBadge /> : null}
               </div>
               <div className="text-xs text-kx-muted truncate">@{peer.handle}</div>
             </div>

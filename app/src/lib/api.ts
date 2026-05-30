@@ -24,6 +24,13 @@ import type {
   Paginated,
   ProfileSegment,
   ContentType,
+  KXMembershipMe,
+  KXMembershipPlan,
+  KXCreateOrderResult,
+  KXOrderStatus,
+  KXMembershipStatus,
+  KXMembershipInsights,
+  PaymentProvider,
 } from "./types";
 
 const TOKEN_KEY = "machi.token";
@@ -683,6 +690,41 @@ export const api = {
     await request<void>("DELETE", `/api/admin/marketing-copy/${encodeURIComponent(id)}`);
   },
 
+  // ---- admin: City Seed Bot (城市内容助手) ----
+  async adminSeedGenerate(payload: {
+    country?: string; city?: string; regionCode?: string; language: string;
+    contentType: string; count: number; tone: string; publishNow: boolean;
+  }): Promise<{ batch: SeedBatch; requested: number; created: number }> {
+    return request("POST", `/api/admin/seed-content/generate`, payload);
+  },
+  async adminSeedBatches(opts: { region_code?: string; status?: string; limit?: number } = {}): Promise<SeedBatch[]> {
+    const usp = new URLSearchParams();
+    if (opts.region_code) usp.set("region_code", opts.region_code);
+    if (opts.status) usp.set("status", opts.status);
+    if (opts.limit) usp.set("limit", String(opts.limit));
+    const { items } = await request<{ items: SeedBatch[] }>("GET", `/api/admin/seed-content/batches?${usp.toString()}`);
+    return items;
+  },
+  async adminSeedBatch(id: string): Promise<SeedBatch> {
+    const { batch } = await request<{ batch: SeedBatch }>("GET", `/api/admin/seed-content/batches/${encodeURIComponent(id)}`);
+    return batch;
+  },
+  async adminSeedPublish(id: string): Promise<{ published: number; batch: SeedBatch }> {
+    return request("POST", `/api/admin/seed-content/batches/${encodeURIComponent(id)}/publish`, {});
+  },
+  // Clear requires confirm=true server-side; the UI also gates it behind a
+  // destructive ConfirmDialog. Only ever soft-deletes is_seed_content rows.
+  async adminSeedClear(id: string): Promise<{ cleared: number; batch: SeedBatch }> {
+    return request("POST", `/api/admin/seed-content/batches/${encodeURIComponent(id)}/clear`, { confirm: true });
+  },
+  async adminSeedClearCity(payload: { regionCode?: string; country?: string; city?: string; language?: string; contentType?: string }): Promise<{ cleared: number; region_code: string }> {
+    return request("POST", `/api/admin/seed-content/clear-city`, { ...payload, confirm: true });
+  },
+  async adminSeedLogs(limit = 50): Promise<SeedLog[]> {
+    const { items } = await request<{ items: SeedLog[] }>("GET", `/api/admin/seed-content/logs?limit=${limit}`);
+    return items;
+  },
+
   // ---- drafts ----
   async drafts(): Promise<KXDraft[]> {
     const { items } = await request<{ items: KXDraft[] }>("GET", `/api/drafts`);
@@ -694,4 +736,133 @@ export const api = {
   async deleteDraft(id: string): Promise<void> {
     await request<void>("DELETE", `/api/drafts/${encodeURIComponent(id)}`);
   },
+
+  // ---- Machi Verified membership + payments ----
+  async membershipPlan(): Promise<{ plan: KXMembershipPlan | null; requires_membership_content_types: string[]; apple_product_id: string; available_providers: PaymentProvider[] }> {
+    return request("GET", `/api/membership/plan`);
+  },
+  async membershipMe(): Promise<KXMembershipMe> {
+    return request("GET", `/api/membership/me`);
+  },
+  async membershipInsights(): Promise<KXMembershipInsights> {
+    return request("GET", `/api/membership/insights`);
+  },
+  async createPaymentOrder(provider: PaymentProvider, planKey?: string): Promise<KXCreateOrderResult> {
+    return request("POST", `/api/payments/create-order`, { provider, clientType: "web", planKey });
+  },
+  async orderStatus(orderNo: string): Promise<KXOrderStatus> {
+    return request("GET", `/api/payments/order-status?orderNo=${encodeURIComponent(orderNo)}`);
+  },
+  // Confirm a Stripe payment on return to the success page (no webhook needed).
+  async confirmStripe(sessionId: string): Promise<KXOrderStatus> {
+    return request("POST", `/api/payments/stripe/confirm`, { sessionId });
+  },
+  // Recover any paid-but-pending Stripe order for the current user (called
+  // on the membership page so a missed redirect/webhook still activates).
+  async reconcileStripe(): Promise<{ membershipActive: boolean; currentPeriodEnd: string; status: string }> {
+    return request("POST", `/api/payments/stripe/reconcile`, {});
+  },
+  // Dev-only: settle a mock order (server refuses outside dev mock mode).
+  async mockConfirmOrder(orderNo: string): Promise<KXOrderStatus & { mock: boolean }> {
+    return request("POST", `/api/payments/mock/confirm?order_no=${encodeURIComponent(orderNo)}`);
+  },
+
+  // ---- admin: membership management ----
+  async adminMemberships(opts: { status?: string; q?: string; limit?: number } = {}): Promise<AdminMembershipRow[]> {
+    const params = new URLSearchParams();
+    if (opts.status) params.set("status", opts.status);
+    if (opts.q) params.set("q", opts.q);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const { items } = await request<{ items: AdminMembershipRow[] }>("GET", `/api/admin/memberships?${params.toString()}`);
+    return items;
+  },
+  async adminGrantMembership(payload: { userId?: string; handle?: string; months?: number }): Promise<{ membership: KXMembershipStatus; user: KXUser }> {
+    return request("POST", `/api/admin/memberships/grant`, payload);
+  },
+  async adminCancelMembership(payload: { userId?: string; handle?: string; immediate?: boolean }): Promise<{ membership: KXMembershipStatus; user: KXUser }> {
+    return request("POST", `/api/admin/memberships/cancel`, payload);
+  },
+  async adminPaymentOrders(opts: { status?: string; provider?: string; limit?: number } = {}): Promise<AdminPaymentOrderRow[]> {
+    const params = new URLSearchParams();
+    if (opts.status) params.set("status", opts.status);
+    if (opts.provider) params.set("provider", opts.provider);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const { items } = await request<{ items: AdminPaymentOrderRow[] }>("GET", `/api/admin/payment-orders?${params.toString()}`);
+    return items;
+  },
+};
+
+export type AdminMembershipRow = {
+  membership_id: string;
+  user_id: string;
+  handle: string;
+  display_name: string;
+  email: string;
+  status: string;
+  plan_key: string;
+  source: string;
+  current_period_end: string | null;
+  cancel_at_period_end: boolean;
+  started_at: string | null;
+  updated_at: string | null;
+};
+
+export type AdminPaymentOrderRow = {
+  order_no: string;
+  user_id: string;
+  handle: string;
+  display_name: string;
+  amount: number;
+  currency: string;
+  status: string;
+  provider: string;
+  provider_trade_no: string;
+  created_at: string | null;
+  paid_at: string | null;
+};
+
+// ---- City Seed Bot (城市内容助手) ----
+export type SeedBatchItem = {
+  id: string;
+  content: string;
+  content_type: string;
+  status: string;
+  language: string;
+  author_type: string;
+  created_at: string;
+};
+
+export type SeedBatch = {
+  id: string;
+  country: string;
+  province: string;
+  city: string;
+  region_code: string;
+  language: string;
+  content_type: string;
+  tone: string;
+  count: number;
+  status: string;
+  created_by_admin_id: string;
+  created_count: number;
+  published_count: number;
+  cleared_count: number;
+  created_at: string;
+  updated_at: string;
+  items?: SeedBatchItem[];
+};
+
+export type SeedLog = {
+  id: string;
+  admin_id: string;
+  action: string;
+  batch_id: string;
+  country: string;
+  city: string;
+  region_code: string;
+  language: string;
+  content_type: string;
+  count: number;
+  metadata: Record<string, unknown>;
+  created_at: string;
 };

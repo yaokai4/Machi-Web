@@ -21,8 +21,11 @@ import {
   HardDrive,
   Globe,
   MapPin,
+  Sparkles,
+  Send,
+  Eraser,
 } from "lucide-react";
-import { api, APIError, type MarketingCopyBlock } from "@/lib/api";
+import { api, APIError, type MarketingCopyBlock, type SeedBatch, type SeedLog } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
@@ -31,10 +34,10 @@ import { NavTabs } from "@/components/design/NavTabs";
 import { useSession, useToasts } from "@/lib/store";
 import { fullDateTime, relativeTime, compactNumber } from "@/lib/format";
 import { useDebounce } from "@/lib/hooks";
-import { CONTENT_TYPE_LABELS, CONTENT_TYPES, type ContentType } from "@/lib/types";
+import { CONTENT_TYPE_LABELS, CONTENT_TYPES, showVerifiedBadge, type ContentType } from "@/lib/types";
 import { marketingPageLabels, type MarketingPageId } from "@/data/marketing-pages";
 
-type Tab = "overview" | "users" | "posts" | "reports" | "feedback" | "visitors" | "site";
+type Tab = "overview" | "users" | "posts" | "reports" | "feedback" | "visitors" | "seed" | "site";
 
 const TABS: { value: Tab; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
   { value: "overview", label: "总览",  icon: Activity },
@@ -43,6 +46,7 @@ const TABS: { value: Tab; label: string; icon: React.ComponentType<{ className?:
   { value: "reports",  label: "举报",  icon: Flag },
   { value: "feedback", label: "反馈",  icon: MessageSquareWarning },
   { value: "visitors", label: "访客",  icon: MapPin },
+  { value: "seed",     label: "城市内容助手", icon: Sparkles },
   { value: "site",     label: "官网文案", icon: Globe },
 ];
 
@@ -104,6 +108,7 @@ export default function AdminPage() {
         {tab === "reports"  ? <ReportsPanel /> : null}
         {tab === "feedback" ? <FeedbackPanel /> : null}
         {tab === "visitors" ? <VisitorsPanel /> : null}
+        {tab === "seed"     ? <SeedBotPanel /> : null}
         {tab === "site"     ? <SiteCopyPanel /> : null}
       </div>
     </AppShell>
@@ -192,6 +197,14 @@ function UsersPanel() {
       pushToast({ kind: "success", message: "已封禁" });
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
   };
+  // Manually grant / extend a Machi Verified membership by one month.
+  const grantMembership = async (id: string) => {
+    try {
+      await api.adminGrantMembership({ userId: id, months: 1 });
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      pushToast({ kind: "success", message: "已开通 / 延长 1 个月认证会员" });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
 
   return (
     <div className="space-y-3">
@@ -223,7 +236,7 @@ function UsersPanel() {
                         <div className="min-w-0">
                           <div className="font-semibold truncate inline-flex items-center gap-1 group-hover:underline">
                             {u.display_name}
-                            {u.is_verified ? <VerifiedBadge /> : null}
+                            {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                           </div>
                           <div className="text-xs text-kx-muted truncate">@{u.handle}</div>
                           <div className="text-xs text-kx-muted truncate">
@@ -258,6 +271,13 @@ function UsersPanel() {
                         >
                           商家{u.merchant_verified ? "已认证" : "认证"}
                         </button>
+                        <button
+                          className={clsx("kx-button-ghost h-8 px-3 text-xs", u.is_verified_member && "bg-kx-verified/15 text-kx-verified")}
+                          onClick={() => grantMembership(u.id)}
+                          title={u.verified_member_until ? `有效期至 ${u.verified_member_until.slice(0, 10)}` : undefined}
+                        >
+                          会员{u.is_verified_member ? "+1月" : "开通"}
+                        </button>
                         <button className="kx-button-ghost h-8 px-3 text-xs text-kx-danger" onClick={() => setPendingBan(u.id)}>
                           <Ban className="w-3.5 h-3.5" /> 封禁
                         </button>
@@ -281,7 +301,7 @@ function UsersPanel() {
                   <div className="min-w-0 flex-1">
                     <Link href={`/u/${u.handle}`} className="font-semibold inline-flex items-center gap-1 hover:underline">
                       {u.display_name}
-                      {u.is_verified ? <VerifiedBadge /> : null}
+                      {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                     </Link>
                     <div className="text-xs text-kx-muted">@{u.handle}</div>
                     <div className="text-xs text-kx-muted mt-1 flex gap-3">
@@ -304,6 +324,13 @@ function UsersPanel() {
                     onClick={() => update(u.id, { is_verified: !u.is_verified })}
                   >
                     <CheckCircle2 className="w-3.5 h-3.5" /> {u.is_verified ? "已认证" : "认证"}
+                  </button>
+                  <button
+                    className={clsx("kx-button-ghost h-8 px-3 text-xs", u.is_verified_member && "bg-kx-verified/15 text-kx-verified")}
+                    onClick={() => grantMembership(u.id)}
+                    title={u.verified_member_until ? `有效期至 ${u.verified_member_until.slice(0, 10)}` : undefined}
+                  >
+                    会员{u.is_verified_member ? "+1月" : "开通"}
                   </button>
                   <button className="kx-button-ghost h-8 px-3 text-xs text-kx-danger" onClick={() => setPendingBan(u.id)}>
                     <Ban className="w-3.5 h-3.5" /> 封禁
@@ -391,7 +418,7 @@ function PostsPanel() {
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-semibold inline-flex items-center gap-1">
                     {p.author?.display_name || "用户"}
-                    {p.author?.is_verified ? <VerifiedBadge /> : null}
+                    {showVerifiedBadge(p.author) ? <VerifiedBadge /> : null}
                     <span className="text-xs text-kx-muted ml-1">@{p.author?.handle} · {relativeTime(p.created_at)}</span>
                     {p.deleted_at ? <span className="text-xs text-kx-danger ml-1">[已删除]</span> : null}
                   </div>
@@ -860,6 +887,307 @@ function SiteCopyPanel() {
         confirmLabel="删除"
         onConfirm={remove}
         onCancel={() => setPendingDelete(null)}
+      />
+    </div>
+  );
+}
+
+const SEED_CITY_PRESETS = [
+  { value: "jp.tokyo.tokyo", label: "东京 Tokyo" },
+  { value: "jp.osaka.osaka", label: "大阪 Osaka" },
+  { value: "cn.shanghai.shanghai", label: "上海 Shanghai" },
+  { value: "cn.zhejiang.hangzhou", label: "杭州 Hangzhou" },
+  { value: "us.ca.la", label: "洛杉矶 Los Angeles" },
+  { value: "ca.quebec.montreal", label: "蒙特利尔 Montreal" },
+];
+const SEED_LANG_OPTIONS = [
+  { value: "zh", label: "中文" }, { value: "en", label: "English" }, { value: "ja", label: "日本語" },
+];
+const SEED_TYPE_OPTIONS = [
+  { value: "mixed", label: "综合（推荐分布）" },
+  { value: "city_square", label: "城市广场" }, { value: "qa", label: "本地问答" },
+  { value: "guide", label: "城市指南" }, { value: "housing_tip", label: "租房提醒" },
+  { value: "secondhand", label: "二手" }, { value: "jobs_tip", label: "工作/兼职" },
+  { value: "food", label: "美食发现" }, { value: "meetup", label: "搭子/约饭" },
+  { value: "event", label: "活动推荐" }, { value: "local_service", label: "本地服务" },
+  { value: "alert", label: "本地提醒" }, { value: "daily_life", label: "生活日常" },
+];
+const SEED_TONE_OPTIONS = [
+  { value: "natural", label: "普通真实" }, { value: "helpful", label: "实用经验" },
+  { value: "local", label: "本地人" }, { value: "newcomer", label: "新人求助" },
+  { value: "editorial", label: "编辑部" }, { value: "casual", label: "轻松" },
+  { value: "question", label: "提问" }, { value: "warning", label: "避坑" },
+];
+
+function seedStatusPill(status: string) {
+  const map: Record<string, string> = {
+    draft: "bg-amber-500/10 text-amber-700",
+    published: "bg-emerald-500/10 text-emerald-700",
+    cleared: "bg-kx-soft text-kx-muted",
+  };
+  return <span className={clsx("rounded-full px-2 py-0.5 text-xs font-semibold", map[status] || "bg-kx-soft text-kx-muted")}>{status}</span>;
+}
+
+function SeedBotPanel() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const [form, setForm] = useState({
+    regionCode: "jp.tokyo.tokyo", language: "zh", contentType: "mixed", count: 30, tone: "natural", publishNow: false,
+  });
+  const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
+  const [pendingClear, setPendingClear] = useState<string | null>(null);
+  const [cityForm, setCityForm] = useState({ regionCode: "", language: "", contentType: "" });
+  const [pendingCityClear, setPendingCityClear] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const batches = useQuery({ queryKey: ["admin-seed-batches"], queryFn: () => api.adminSeedBatches({ limit: 50 }) });
+  const logs = useQuery({ queryKey: ["admin-seed-logs"], queryFn: () => api.adminSeedLogs(30) });
+  const detail = useQuery({
+    queryKey: ["admin-seed-batch", selectedBatchId],
+    queryFn: () => api.adminSeedBatch(selectedBatchId as string),
+    enabled: !!selectedBatchId,
+  });
+
+  const refresh = async () => {
+    await queryClient.invalidateQueries({ queryKey: ["admin-seed-batches"] });
+    await queryClient.invalidateQueries({ queryKey: ["admin-seed-logs"] });
+    if (selectedBatchId) await queryClient.invalidateQueries({ queryKey: ["admin-seed-batch", selectedBatchId] });
+  };
+
+  const generate = async () => {
+    setBusy(true);
+    try {
+      const r = await api.adminSeedGenerate({
+        regionCode: form.regionCode, language: form.language, contentType: form.contentType,
+        count: form.count, tone: form.tone, publishNow: form.publishNow,
+      });
+      setSelectedBatchId(r.batch.id);
+      await refresh();
+      pushToast({ kind: "success", message: `已生成 ${r.created} 条（请求 ${r.requested}${r.created < r.requested ? "，去重后库存不足" : ""}）` });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally { setBusy(false); }
+  };
+
+  const publish = async (id: string) => {
+    try {
+      const r = await api.adminSeedPublish(id);
+      await refresh();
+      pushToast({ kind: "success", message: `已发布 ${r.published} 条` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
+
+  const clearBatch = async () => {
+    if (!pendingClear) return;
+    try {
+      const r = await api.adminSeedClear(pendingClear);
+      setPendingClear(null);
+      await refresh();
+      pushToast({ kind: "success", message: `已清除 ${r.cleared} 条 seed 内容` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
+
+  const clearCity = async () => {
+    setPendingCityClear(false);
+    try {
+      const r = await api.adminSeedClearCity({
+        regionCode: cityForm.regionCode,
+        language: cityForm.language || undefined,
+        contentType: cityForm.contentType || undefined,
+      });
+      await refresh();
+      pushToast({ kind: "success", message: `已清除 ${r.cleared} 条 seed 内容（${r.region_code}）` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
+
+  const list = batches.data || [];
+  const detailItems = detail.data?.items || [];
+
+  return (
+    <div className="space-y-3">
+      <div className="kx-card border border-kx-accent/20 bg-kx-accentSoft/40">
+        <div className="flex items-start gap-2">
+          <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-kx-accent" />
+          <p className="text-xs leading-5 text-kx-subtle">
+            城市内容助手用于早期冷启动。所有内容均由官方账号（Machi 城市助手 / 编辑部）发布，
+            并在数据库标记为 <code className="rounded bg-kx-soft px-1">seed_content</code>，可按批次预览、发布、清除。
+            清除只影响系统生成内容，<b>永远不会删除真实用户内容</b>。
+          </p>
+        </div>
+      </div>
+
+      <div className="grid gap-3 lg:grid-cols-[minmax(0,380px)_1fr]">
+        <section className="kx-card">
+          <h2 className="text-base font-bold">生成内容</h2>
+          <div className="mt-4 grid gap-3">
+            <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+              城市
+              <select className="kx-input h-10" value={SEED_CITY_PRESETS.some((p) => p.value === form.regionCode) ? form.regionCode : ""}
+                      onChange={(e) => e.target.value && setForm((f) => ({ ...f, regionCode: e.target.value }))}>
+                {SEED_CITY_PRESETS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                <option value="">自定义…</option>
+              </select>
+            </label>
+            <input className="kx-input h-9 text-xs" value={form.regionCode}
+                   onChange={(e) => setForm((f) => ({ ...f, regionCode: e.target.value.trim() }))}
+                   placeholder="region_code，例如 cn.beijing.beijing" />
+            <div className="grid grid-cols-2 gap-2">
+              <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+                语言
+                <select className="kx-input h-10" value={form.language} onChange={(e) => setForm((f) => ({ ...f, language: e.target.value }))}>
+                  {SEED_LANG_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </label>
+              <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+                语气
+                <select className="kx-input h-10" value={form.tone} onChange={(e) => setForm((f) => ({ ...f, tone: e.target.value }))}>
+                  {SEED_TONE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </label>
+            </div>
+            <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+              内容类型
+              <select className="kx-input h-10" value={form.contentType} onChange={(e) => setForm((f) => ({ ...f, contentType: e.target.value }))}>
+                {SEED_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </label>
+            <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+              数量（最多 100）
+              <input className="kx-input h-10" type="number" min={1} max={100} value={form.count}
+                     onChange={(e) => setForm((f) => ({ ...f, count: Math.max(1, Math.min(100, Number(e.target.value) || 1)) }))} />
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={form.publishNow} onChange={(e) => setForm((f) => ({ ...f, publishNow: e.target.checked }))} />
+              生成后直接发布（否则进入 draft 草稿）
+            </label>
+            <button className="kx-button-primary h-10 inline-flex items-center justify-center gap-1.5" disabled={busy || !form.regionCode} onClick={generate}>
+              <Sparkles className="h-4 w-4" /> {busy ? "生成中…" : "一键生成"}
+            </button>
+          </div>
+        </section>
+
+        <section className="kx-card">
+          <div className="flex items-center justify-between gap-2">
+            <h2 className="text-base font-bold">内容预览</h2>
+            {detail.data ? <span className="flex items-center gap-1.5 text-xs text-kx-muted">{detail.data.region_code} · {detail.data.language} {seedStatusPill(detail.data.status)}</span> : null}
+          </div>
+          {!selectedBatchId ? (
+            <p className="mt-6 text-center text-sm text-kx-subtle">生成或选择一个批次后在此预览内容。</p>
+          ) : detail.isLoading ? <InlineLoading /> : (
+            <ul className="mt-3 max-h-[440px] space-y-2 overflow-y-auto pr-1">
+              {detailItems.map((it) => (
+                <li key={it.id} className="rounded-xl bg-kx-soft/60 px-3 py-2">
+                  <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-kx-muted">
+                    <span className="rounded-full bg-kx-accentSoft px-1.5 py-0.5 font-semibold text-kx-accent">{it.content_type}</span>
+                    <span>{it.author_type === "editorial" ? "编辑部整理" : "城市助手"}</span>
+                    {seedStatusPill(it.status)}
+                  </div>
+                  <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-kx-text">{it.content}</p>
+                </li>
+              ))}
+              {detailItems.length === 0 ? <li className="py-6 text-center text-sm text-kx-subtle">该批次没有内容。</li> : null}
+            </ul>
+          )}
+        </section>
+      </div>
+
+      <section className="kx-card">
+        <div className="flex items-center justify-between">
+          <h2 className="text-base font-bold">批次</h2>
+          <button className="kx-button-ghost h-8 px-3 text-xs" onClick={() => batches.refetch()}>刷新</button>
+        </div>
+        {batches.isError ? <ErrorState onRetry={() => batches.refetch()} /> : !batches.data ? <InlineLoading /> : list.length === 0 ? (
+          <p className="py-8 text-center text-sm text-kx-subtle">还没有批次，先在左侧生成一批。</p>
+        ) : (
+          <div className="mt-3 overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="text-left text-xs text-kx-muted">
+                <tr>
+                  <th className="px-2 py-2">城市 / 语言</th><th className="px-2 py-2">类型</th>
+                  <th className="px-2 py-2">数量</th><th className="px-2 py-2">状态</th>
+                  <th className="px-2 py-2">创建</th><th className="px-2 py-2 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {list.map((b) => (
+                  <tr key={b.id} className={clsx("border-t border-kx-soft", selectedBatchId === b.id && "bg-kx-accentSoft/30")}>
+                    <td className="px-2 py-2.5"><div className="font-medium">{b.region_code}</div><div className="text-xs text-kx-muted">{b.language} · {b.tone}</div></td>
+                    <td className="px-2 py-2.5">{b.content_type}</td>
+                    <td className="px-2 py-2.5 tabular-nums">{b.created_count}<span className="text-xs text-kx-muted">/{b.count}</span></td>
+                    <td className="px-2 py-2.5">{seedStatusPill(b.status)}</td>
+                    <td className="px-2 py-2.5 text-xs text-kx-muted">{relativeTime(b.created_at)}</td>
+                    <td className="px-2 py-2.5">
+                      <div className="flex justify-end gap-1.5">
+                        <button className="kx-button-ghost h-8 px-2 text-xs" onClick={() => setSelectedBatchId(b.id)}>预览</button>
+                        {b.status !== "cleared" ? (
+                          <button className="kx-button-ghost h-8 px-2 text-xs text-emerald-700 disabled:opacity-40" disabled={b.status === "published"} onClick={() => publish(b.id)}>
+                            <Send className="h-3.5 w-3.5" /> 发布
+                          </button>
+                        ) : null}
+                        {b.status !== "cleared" ? (
+                          <button className="kx-button-ghost h-8 px-2 text-xs text-kx-danger" onClick={() => setPendingClear(b.id)}>
+                            <Eraser className="h-3.5 w-3.5" /> 清除
+                          </button>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
+
+      <section className="kx-card border border-kx-danger/20">
+        <h2 className="text-base font-bold text-kx-danger">按城市清除 seed 内容</h2>
+        <p className="mt-1 text-xs text-kx-muted">此操作只会清除系统生成的 seed 内容，不会删除真实用户内容。请确认城市、语言和批次。</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto_auto]">
+          <input className="kx-input h-10" value={cityForm.regionCode} onChange={(e) => setCityForm((f) => ({ ...f, regionCode: e.target.value.trim() }))} placeholder="region_code，例如 jp.tokyo.tokyo" />
+          <select className="kx-input h-10" value={cityForm.language} onChange={(e) => setCityForm((f) => ({ ...f, language: e.target.value }))}>
+            <option value="">全部语言</option>
+            {SEED_LANG_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <select className="kx-input h-10" value={cityForm.contentType} onChange={(e) => setCityForm((f) => ({ ...f, contentType: e.target.value }))}>
+            <option value="">全部类型</option>
+            {SEED_TYPE_OPTIONS.filter((o) => o.value !== "mixed").map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <button className="kx-button-ghost h-10 px-4 text-kx-danger disabled:opacity-40" disabled={!cityForm.regionCode} onClick={() => setPendingCityClear(true)}>
+            <Trash2 className="h-4 w-4" /> 清除
+          </button>
+        </div>
+      </section>
+
+      <section className="kx-card">
+        <h2 className="text-base font-bold">操作日志</h2>
+        {logs.isError ? <ErrorState onRetry={() => logs.refetch()} /> : !logs.data ? <InlineLoading /> : logs.data.length === 0 ? (
+          <p className="py-6 text-center text-sm text-kx-subtle">暂无操作记录。</p>
+        ) : (
+          <ul className="mt-3 space-y-1.5 text-xs">
+            {logs.data.map((lg) => (
+              <li key={lg.id} className="flex items-center gap-2 text-kx-subtle">
+                <span className="rounded bg-kx-soft px-1.5 py-0.5 font-semibold text-kx-text">{lg.action}</span>
+                <span>{lg.region_code || "-"}</span>
+                <span className="text-kx-muted">{lg.language} {lg.content_type}</span>
+                <span className="tabular-nums">×{lg.count}</span>
+                <span className="ml-auto text-kx-muted">{relativeTime(lg.created_at)}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+
+      <ConfirmDialog
+        open={!!pendingClear}
+        title="清除这个批次的 seed 内容？"
+        description="此操作只会清除系统生成的 seed 内容（软删除），不会删除任何真实用户内容。"
+        destructive confirmLabel="清除" onConfirm={clearBatch} onCancel={() => setPendingClear(null)}
+      />
+      <ConfirmDialog
+        open={pendingCityClear}
+        title={`清除 ${cityForm.regionCode} 的 seed 内容？`}
+        description="此操作只会清除该城市系统生成的 seed 内容（软删除），不会删除真实用户内容。请再次确认城市、语言和类型。"
+        destructive confirmLabel="确认清除" onConfirm={clearCity} onCancel={() => setPendingCityClear(false)}
       />
     </div>
   );

@@ -1,0 +1,13 @@
+# The Machi backend (server.py) runs on the Python standard library alone.
+#
+# The ONLY optional dependency is `cryptography`, required when you enable
+# the REAL WeChat Pay / Alipay providers:
+#   - WeChat Pay v3: RSA request signing + AES-GCM webhook decryption
+#   - Alipay: RSA2 signing + signature verification
+#   - Apple IAP: JWS (ES256) signature verification for Production txns
+#
+# It is NOT needed for mock mode (PAYMENT_MOCK_ENABLED=1, dev only) or if
+# you only use Apple IAP on iOS in Sandbox.
+#
+# Install on the server with:  sudo python3 -m pip install -r requirements.txt
+cryptography>=42.0

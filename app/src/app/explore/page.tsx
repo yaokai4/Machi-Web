@@ -14,7 +14,7 @@ import { compactNumber } from "@/lib/format";
 import { useSession, useToasts } from "@/lib/store";
 import { useState } from "react";
 import type { ComponentType, ReactNode } from "react";
-import { CONTENT_TYPE_LABELS, type ContentType, type KXPost, type KXRegion } from "@/lib/types";
+import { CONTENT_TYPE_LABELS, showVerifiedBadge, type ContentType, type KXPost, type KXRegion } from "@/lib/types";
 import { countryName, hotCitiesForCountry, normalizeRegion, regionFromUser, type RegionInfo } from "@/lib/regions";
 
 export default function ExplorePage() {
@@ -220,7 +220,7 @@ export default function ExplorePage() {
                   <div className="min-w-0 flex-1">
                     <Link href={`/u/${u.handle}`} className="font-semibold text-sm hover:underline truncate flex items-center gap-1">
                       {u.display_name}
-                      {u.is_verified ? <VerifiedBadge /> : null}
+                      {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                     </Link>
                     <div className="text-kx-muted text-xs truncate">@{u.handle}</div>
                   </div>

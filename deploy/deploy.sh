@@ -28,6 +28,8 @@ tar \
   --exclude="$PROJECT_NAME/web/kaix.db" \
   --exclude="$PROJECT_NAME/web/kaix.db-shm" \
   --exclude="$PROJECT_NAME/web/kaix.db-wal" \
+  --exclude="$PROJECT_NAME/web/.env" \
+  --exclude="$PROJECT_NAME/web/.env.local" \
   --exclude="*/__pycache__" \
   --exclude="*/.DS_Store" \
   --exclude="*/.git" \

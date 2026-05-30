@@ -8,6 +8,7 @@ import { Calendar, Camera, Edit3, Flag, Loader2, MapPin, MessageSquarePlus, Shie
 import { api, APIError } from "@/lib/api";
 import type { KXPost, KXUser, ProfileSegment, KXComment } from "@/lib/types";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
+import { showVerifiedBadge } from "@/lib/types";
 import { EmptyState, ErrorState, PostSkeleton } from "@/components/design/States";
 import { PostCard } from "@/components/feed/PostCard";
 import { Dialog, ConfirmDialog } from "@/components/design/Dialog";
@@ -191,7 +192,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
           <div className="mt-3">
             <h1 className="text-xl font-bold inline-flex items-center gap-1.5">
               {user.display_name}
-              {user.is_verified ? <VerifiedBadge /> : null}
+              {showVerifiedBadge(user) ? <VerifiedBadge /> : null}
             </h1>
             <div className="text-kx-muted text-sm">@{user.handle}</div>
             {user.bio ? <p className="mt-2 text-kx-text text-sm whitespace-pre-wrap break-words">{user.bio}</p> : null}

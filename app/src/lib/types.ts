@@ -19,6 +19,14 @@ export const UserSchema = z.object({
   cover_url: z.string().optional(),
   membership_tier: z.string().optional(),
   is_verified: z.boolean().optional(),
+  // Machi Verified membership cache (synced from user_memberships on the
+  // server). is_verified_member drives the blue badge; the rest power the
+  // profile/settings membership panel.
+  is_verified_member: z.boolean().optional(),
+  verified_member_until: z.string().optional(),
+  membership_status: z.string().optional(),
+  membership_plan_key: z.string().optional(),
+  verified_badge_type: z.string().optional(),
   role: z.string().optional(),
   country: z.string().optional(),
   province: z.string().optional(),
@@ -40,6 +48,84 @@ export const UserSchema = z.object({
   is_blocked: z.boolean().optional(),
 });
 export type KXUser = z.infer<typeof UserSchema>;
+
+// Whether to show the blue Machi Verified badge next to a user. True for
+// active verified members AND for legacy/admin-verified accounts, so the
+// existing `is_verified` badge behaviour is preserved while membership
+// now also lights it up. Single source of truth for every badge site.
+export function showVerifiedBadge(
+  user?: { is_verified?: boolean; is_verified_member?: boolean } | null,
+): boolean {
+  return !!(user && (user.is_verified || user.is_verified_member));
+}
+
+// ---- membership + payments (mirrors server.py serialize_* shapes) ----
+export interface KXMembershipStatus {
+  is_active: boolean;
+  status: string; // inactive | active | expired | canceled | grace_period | refunded | pending
+  plan_key: string;
+  current_period_end: string;
+  source: string;
+  cancel_at_period_end: boolean;
+  membership_id?: string;
+}
+
+export interface KXMembershipPlan {
+  plan_key: string;
+  name_zh: string;
+  name_en: string;
+  name_ja: string;
+  amount: number;
+  amount_cents: number;
+  currency: string;
+  billing_cycle: string;
+}
+
+export interface KXMembershipMe {
+  membership: KXMembershipStatus;
+  plan: KXMembershipPlan | null;
+  user: KXUser;
+}
+
+export type PaymentProvider = "wechat_pay" | "alipay" | "stripe";
+
+export interface KXCreateOrderResult {
+  orderNo: string;
+  provider: PaymentProvider;
+  amount: number;
+  currency: string;
+  expiresAt: string;
+  qr_code_url?: string; // wechat (Native QR target)
+  pay_url?: string; // alipay (redirect) or dev mock-confirm link
+  mock?: boolean;
+}
+
+export interface KXOrderStatus {
+  orderNo: string;
+  status: "pending" | "paid" | "failed" | "closed" | "refunded";
+  membershipActive: boolean;
+  currentPeriodEnd: string;
+}
+
+export interface KXMembershipInsights {
+  totals: {
+    post_count: number;
+    total_views: number;
+    total_likes: number;
+    total_bookmarks: number;
+    total_reposts: number;
+    total_comments: number;
+  };
+  top_posts: Array<{
+    id: string;
+    content: string;
+    content_type?: string;
+    view_count: number;
+    like_count: number;
+    comment_count: number;
+    bookmark_count: number;
+  }>;
+}
 
 export interface KXCountry {
   code: string;
@@ -95,6 +181,17 @@ export const CONTENT_TYPES = [
   "warning", "poll", "anonymous",
 ] as const;
 export type ContentType = (typeof CONTENT_TYPES)[number];
+
+// High-trust content types that require an active Machi Verified
+// membership to publish. Mirrors REQUIRES_VERIFIED_MEMBERSHIP in
+// server.py — the server is authoritative (returns 403
+// MEMBERSHIP_REQUIRED); the client uses this only to gate the UX.
+export const MEMBERSHIP_REQUIRED_CONTENT_TYPES: readonly ContentType[] = [
+  "job_post", "housing", "roommate", "service", "coupon", "merchant", "referral",
+];
+export function contentTypeRequiresMembership(ct?: ContentType | string | null): boolean {
+  return !!ct && (MEMBERSHIP_REQUIRED_CONTENT_TYPES as readonly string[]).includes(ct);
+}
 
 export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
   dynamic: "动态",

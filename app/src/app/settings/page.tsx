@@ -171,6 +171,12 @@ export default function SettingsPage() {
       <div className="px-3 sm:px-4 py-3 space-y-3">
         <Section title="账号">
           <Row icon={UserIcon} label="编辑资料" sub={`@${user?.handle}`} href="/me" />
+          <Row
+            icon={Sparkles}
+            label={t("mem_title")}
+            sub={user?.is_verified_member ? t("mem_status_active") : t("mem_status_inactive")}
+            href="/membership"
+          />
           <Row icon={KeyRound} label="修改密码" onClick={() => setPwOpen(true)} />
           <Row icon={Smartphone} label="登录设备" href="/settings/devices" />
         </Section>

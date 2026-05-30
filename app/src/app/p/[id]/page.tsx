@@ -16,6 +16,7 @@ import { compactNumber, relativeTime } from "@/lib/format";
 import { useSession, useToasts } from "@/lib/store";
 import { ConfirmDialog } from "@/components/design/Dialog";
 import type { KXComment } from "@/lib/types";
+import { showVerifiedBadge } from "@/lib/types";
 
 export default function PostDetailPage() {
   const params = useParams<{ id: string }>();
@@ -185,7 +186,7 @@ export default function PostDetailPage() {
                           <Link href={`/u/${c.author?.handle}`} className="font-semibold text-sm truncate hover:underline">
                             {c.author?.display_name || "用户"}
                           </Link>
-                          {c.author?.is_verified ? <VerifiedBadge /> : null}
+                          {showVerifiedBadge(c.author) ? <VerifiedBadge /> : null}
                           <span className="text-kx-muted text-xs truncate">@{c.author?.handle} · {relativeTime(c.created_at)}</span>
                         </div>
                         <p className="text-sm text-kx-text whitespace-pre-wrap break-words mt-0.5">{c.content}</p>

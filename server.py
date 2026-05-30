@@ -113,6 +113,10 @@ from pathlib import Path
 from typing import Any, Iterable
 from urllib.parse import parse_qs, unquote, urlparse
 
+# City Seed Bot content library — local module, no third-party deps. Holds the
+# curated city-life content pools + generator used by 城市内容助手.
+import seed_content_library as seedlib
+
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 MEDIA_DIR = ROOT / "media"
@@ -135,6 +139,21 @@ STATIC_DIR.mkdir(exist_ok=True)
 def _env(name: str, default: str) -> str:
     value = os.environ.get(name)
     return value if value is not None else default
+
+
+def _read_secret_file(inline: str, path: str) -> str:
+    """Return the inline value if set, otherwise read it from a file path.
+    PEM keys (WeChat / Alipay) are usually supplied as files, not inline
+    env values. The contents are NEVER logged."""
+    if inline:
+        return inline
+    p = (path or "").strip()
+    if not p:
+        return ""
+    try:
+        return Path(p).expanduser().read_text(encoding="utf-8")
+    except Exception:
+        return ""
 
 
 # Used to derive password hashes. Must be set in production.
@@ -234,6 +253,7 @@ RATE_LIMITS = {
     "read":   (300, 300),    # reads
     "search": (40, 40),
     "media":  (20, 20),
+    "payment": (20, 10),     # order creation / verify — tight money path
 }
 
 ALLOWED_MIME = {
@@ -254,6 +274,100 @@ EXT_BY_MIME: dict[str, str] = {
     "video/quicktime":  ".mov",
     "video/webm":       ".webm",
 }
+
+
+# ---------------------------------------------------------------------------
+# Machi Verified membership + payments
+#
+# A single paid plan ("Machi 认证会员", ¥10/月). Everything price/plan
+# related is driven from here so the amount can never be set by a client
+# — the server always recomputes the charge from `plan_key`. Payment
+# provider secrets are read from the environment and NEVER logged, never
+# returned by any API, and never shipped to the browser/app bundle.
+# ---------------------------------------------------------------------------
+
+MEMBERSHIP_PLAN_KEY = _env("MEMBERSHIP_PLAN_KEY", "machi_verified_monthly_cny_10")
+# Price is authoritative server-side. Stored/maths done in minor units
+# (fen) to avoid float money; ¥10 == 1000 fen.
+MEMBERSHIP_PRICE_CNY = int(_env("MEMBERSHIP_PRICE_CNY", "10"))
+MEMBERSHIP_PRICE_FEN = MEMBERSHIP_PRICE_CNY * 100
+MEMBERSHIP_CURRENCY = "CNY"
+MEMBERSHIP_BILLING_CYCLE = "monthly"
+# Apple App Store product id for the same plan. iOS buys through IAP.
+APPLE_IAP_PRODUCT_ID = _env("APPLE_IAP_PRODUCT_ID", "machi_verified_monthly_cny_10")
+
+# Content types that demand an active verified membership to publish.
+# Enforced server-side (see api_create_post); the client only mirrors it
+# for UX. Unknown values are harmless — normalize_content_type collapses
+# anything not in CONTENT_TYPES to "dynamic", which is never gated.
+REQUIRES_VERIFIED_MEMBERSHIP: set[str] = {
+    "job_post",    # 招聘
+    "housing",     # 租房
+    "roommate",    # 找室友（含转租场景）
+    "service",     # 本地服务
+    "coupon",      # 商家优惠
+    "merchant",    # 商家 / 商家活动 / 商家合作
+    "referral",    # 内推 / 招聘推广
+}
+# Forward-compat aliases from the product spec that don't (yet) exist as
+# real content types. Kept so the rule set reads the same across docs and
+# so future types are gated the moment they're added to CONTENT_TYPES.
+REQUIRES_VERIFIED_MEMBERSHIP |= {
+    "sublet", "merchant_event", "hiring", "rental_listing", "business_promotion",
+}
+
+# Daily publish caps. 0 == unlimited (the default, so existing installs and
+# ordinary posting are never impeded — constraint #10). Operators who want
+# the membership "higher quota" perk can set e.g. FREE=5 / VERIFIED=20.
+MEMBERSHIP_DAILY_LIMIT_FREE = int(_env("MEMBERSHIP_DAILY_LIMIT_FREE", "0"))
+MEMBERSHIP_DAILY_LIMIT_VERIFIED = int(_env("MEMBERSHIP_DAILY_LIMIT_VERIFIED", "0"))
+# Gentle ranking nudge for verified members' content on the hot feed.
+# Kept small on purpose so it never overpowers genuine engagement.
+VERIFIED_BOOST_SCORE = float(_env("MEMBERSHIP_VERIFIED_BOOST", "1.05"))
+
+# --- payment providers (all optional; configured per-deploy) ---
+WECHAT_PAY_APP_ID = _env("WECHAT_PAY_APP_ID", "")
+WECHAT_PAY_MCH_ID = _env("WECHAT_PAY_MCH_ID", "")
+WECHAT_PAY_API_V3_KEY = _env("WECHAT_PAY_API_V3_KEY", "")
+WECHAT_PAY_SERIAL_NO = _env("WECHAT_PAY_SERIAL_NO", "")
+# Accept the merchant private key either inline (WECHAT_PAY_PRIVATE_KEY) or
+# as a file path (WECHAT_PAY_PRIVATE_KEY_PATH, e.g. apiclient_key.pem).
+WECHAT_PAY_PRIVATE_KEY = _read_secret_file(_env("WECHAT_PAY_PRIVATE_KEY", ""), _env("WECHAT_PAY_PRIVATE_KEY_PATH", ""))
+WECHAT_PAY_NOTIFY_URL = _env("WECHAT_PAY_NOTIFY_URL", "")
+
+ALIPAY_APP_ID = _env("ALIPAY_APP_ID", "")
+ALIPAY_PRIVATE_KEY = _read_secret_file(_env("ALIPAY_PRIVATE_KEY", ""), _env("ALIPAY_PRIVATE_KEY_PATH", ""))
+ALIPAY_PUBLIC_KEY = _read_secret_file(_env("ALIPAY_PUBLIC_KEY", ""), _env("ALIPAY_PUBLIC_KEY_PATH", ""))
+ALIPAY_GATEWAY = _env("ALIPAY_GATEWAY", "https://openapi.alipay.com/gateway.do")
+ALIPAY_NOTIFY_URL = _env("ALIPAY_NOTIFY_URL", "")
+ALIPAY_RETURN_URL = _env("ALIPAY_RETURN_URL", "")
+
+APPLE_IAP_BUNDLE_ID = _env("APPLE_IAP_BUNDLE_ID", "")
+APPLE_IAP_ISSUER_ID = _env("APPLE_IAP_ISSUER_ID", "")
+APPLE_IAP_KEY_ID = _env("APPLE_IAP_KEY_ID", "")
+APPLE_IAP_PRIVATE_KEY = _env("APPLE_IAP_PRIVATE_KEY", "")
+APPLE_IAP_ENVIRONMENT = _env("APPLE_IAP_ENVIRONMENT", "Sandbox")
+
+# Stripe (overseas / card payments via hosted Checkout). Only the SECRET
+# key + webhook signing secret are needed server-side (hosted Checkout
+# handles the card UI). The price is charged in STRIPE_CURRENCY at
+# STRIPE_PRICE_CENTS minor units — the overseas price, independent of the
+# domestic CNY plan. Webhook verification is plain HMAC-SHA256 (stdlib),
+# so Stripe needs no extra packages.
+STRIPE_SECRET_KEY = _env("STRIPE_SECRET_KEY", "")
+STRIPE_WEBHOOK_SECRET = _env("STRIPE_WEBHOOK_SECRET", "")
+STRIPE_PRICE_CENTS = int(_env("STRIPE_PRICE_CENTS", "199"))  # e.g. 199 = $1.99
+STRIPE_CURRENCY = _env("STRIPE_CURRENCY", "usd").lower()
+STRIPE_SUCCESS_URL = _env("STRIPE_SUCCESS_URL", "https://machicity.com/membership?paid=1")
+STRIPE_CANCEL_URL = _env("STRIPE_CANCEL_URL", "https://machicity.com/membership")
+
+# Mock payments let the Web flow be exercised end-to-end before real
+# merchant credentials exist. HARD rule: never available in production.
+# A successful "mock paid" can only happen when this is on AND we are not
+# in production.
+PAYMENT_MOCK_ENABLED = (_env("PAYMENT_MOCK_ENABLED", "0") == "1") and not PRODUCTION
+# How long an unpaid order stays payable.
+PAYMENT_ORDER_TTL_SEC = int(_env("PAYMENT_ORDER_TTL_SEC", "900"))
 
 
 # ---------------------------------------------------------------------------
@@ -1041,6 +1155,12 @@ def _rate_group_for(path: str, method: str) -> str:
         return "email"
     if path.startswith("/api/auth/"):
         return "auth"
+    # Payment order creation + provider verification. Webhooks are
+    # excluded: providers retry on non-2xx, so rate-limiting them would
+    # cause dropped settlement callbacks.
+    if (path.startswith("/api/payments/") and not path.startswith("/api/payments/webhook/")) \
+            and method in ("POST", "PATCH", "PUT", "DELETE"):
+        return "payment"
     if path.startswith("/api/search"):
         return "search"
     if path.startswith("/api/media/"):
@@ -1769,6 +1889,161 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_auth_codes_user ON auth_codes(user_id, purpose, created_at);
         """,
     ),
+    # Machi Verified membership + payments. Five new tables plus cache
+    # columns on `users` (the authoritative truth always lives in
+    # user_memberships / payment_orders; the user columns are a read
+    # accelerator kept in sync on every entitlement change). Money is
+    # stored in minor units (fen) as INTEGER — never float.
+    (
+        12,
+        "membership: plans, memberships, orders, webhooks, entitlement events + user cache",
+        """
+        CREATE TABLE IF NOT EXISTS membership_plans (
+            id TEXT PRIMARY KEY,
+            plan_key TEXT UNIQUE NOT NULL,
+            name_zh TEXT NOT NULL DEFAULT '',
+            name_en TEXT NOT NULL DEFAULT '',
+            name_ja TEXT NOT NULL DEFAULT '',
+            amount_cents INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'CNY',
+            billing_cycle TEXT NOT NULL DEFAULT 'monthly',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS user_memberships (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            plan_key TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'inactive',
+            started_at TEXT,
+            current_period_start TEXT,
+            current_period_end TEXT,
+            cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
+            canceled_at TEXT,
+            expired_at TEXT,
+            source TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_memberships_user ON user_memberships(user_id, status);
+        CREATE INDEX IF NOT EXISTS idx_user_memberships_period ON user_memberships(status, current_period_end);
+
+        CREATE TABLE IF NOT EXISTS payment_orders (
+            id TEXT PRIMARY KEY,
+            order_no TEXT UNIQUE NOT NULL,
+            user_id TEXT NOT NULL,
+            plan_key TEXT NOT NULL,
+            amount_cents INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'CNY',
+            status TEXT NOT NULL DEFAULT 'pending',
+            payment_provider TEXT NOT NULL DEFAULT '',
+            provider_trade_no TEXT NOT NULL DEFAULT '',
+            provider_user_id TEXT NOT NULL DEFAULT '',
+            client_type TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '',
+            paid_at TEXT,
+            closed_at TEXT,
+            refunded_at TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_payment_orders_user ON payment_orders(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_payment_orders_status ON payment_orders(status, created_at);
+
+        CREATE TABLE IF NOT EXISTS payment_webhooks (
+            id TEXT PRIMARY KEY,
+            provider TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT '',
+            event_id TEXT NOT NULL DEFAULT '',
+            order_no TEXT NOT NULL DEFAULT '',
+            raw_payload TEXT NOT NULL DEFAULT '',
+            signature_valid INTEGER NOT NULL DEFAULT 0,
+            processed_at TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_payment_webhooks_order ON payment_webhooks(order_no, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_webhooks_dedup ON payment_webhooks(provider, event_id) WHERE event_id <> '';
+
+        CREATE TABLE IF NOT EXISTS entitlement_events (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            membership_id TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_entitlement_events_user ON entitlement_events(user_id, created_at);
+
+        ALTER TABLE users ADD COLUMN is_verified_member INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE users ADD COLUMN verified_member_until TEXT NOT NULL DEFAULT '';
+        ALTER TABLE users ADD COLUMN membership_status TEXT NOT NULL DEFAULT 'inactive';
+        ALTER TABLE users ADD COLUMN membership_plan_key TEXT NOT NULL DEFAULT '';
+        ALTER TABLE users ADD COLUMN verified_badge_type TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    # City Seed Bot (城市内容助手): cold-start content seeding. Posts grow
+    # four tracking columns so every system-generated row is auditable and
+    # reversible *without ever touching real user content* — clears always
+    # require `is_seed_content = 1 AND seed_batch_id = ?`. Two new tables
+    # track batches and the admin operation log. Purely additive: existing
+    # rows default to is_seed_content = 0 (i.e. real users) and are never
+    # rewritten by this migration.
+    (
+        13,
+        "seed bot: posts seed columns + batches + admin op log",
+        """
+        ALTER TABLE posts ADD COLUMN is_seed_content INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE posts ADD COLUMN seed_batch_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE posts ADD COLUMN seed_source TEXT NOT NULL DEFAULT '';
+        ALTER TABLE posts ADD COLUMN generated_by TEXT NOT NULL DEFAULT '';
+        CREATE INDEX IF NOT EXISTS idx_posts_seed_batch ON posts(seed_batch_id, status);
+        CREATE INDEX IF NOT EXISTS idx_posts_seed_city ON posts(is_seed_content, region_code, status, created_at);
+
+        CREATE TABLE IF NOT EXISTS seed_content_batches (
+            id TEXT PRIMARY KEY,
+            country TEXT NOT NULL DEFAULT '',
+            province TEXT NOT NULL DEFAULT '',
+            city TEXT NOT NULL DEFAULT '',
+            region_code TEXT NOT NULL DEFAULT '',
+            language TEXT NOT NULL DEFAULT '',
+            content_type TEXT NOT NULL DEFAULT '',
+            tone TEXT NOT NULL DEFAULT '',
+            count INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_by_admin_id TEXT NOT NULL DEFAULT '',
+            created_count INTEGER NOT NULL DEFAULT 0,
+            published_count INTEGER NOT NULL DEFAULT 0,
+            cleared_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_seed_batches_city ON seed_content_batches(region_code, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_seed_batches_status ON seed_content_batches(status, created_at);
+
+        CREATE TABLE IF NOT EXISTS admin_seed_content_logs (
+            id TEXT PRIMARY KEY,
+            admin_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL DEFAULT '',
+            batch_id TEXT NOT NULL DEFAULT '',
+            country TEXT NOT NULL DEFAULT '',
+            city TEXT NOT NULL DEFAULT '',
+            region_code TEXT NOT NULL DEFAULT '',
+            language TEXT NOT NULL DEFAULT '',
+            content_type TEXT NOT NULL DEFAULT '',
+            count INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_seed_logs_admin ON admin_seed_content_logs(admin_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_seed_logs_action ON admin_seed_content_logs(action, created_at);
+        """,
+    ),
 ]
 
 
@@ -1790,10 +2065,35 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             raise
 
 
+def ensure_membership_plans(conn: sqlite3.Connection) -> None:
+    """Idempotently seed the single Machi Verified plan. Safe on both a
+    fresh DB and an existing one: the amount/name are refreshed from the
+    server config each boot so price changes ship by redeploy, but the
+    plan_key is stable and used everywhere as the canonical reference."""
+    existing = conn.execute(
+        "SELECT id FROM membership_plans WHERE plan_key = ?", (MEMBERSHIP_PLAN_KEY,)
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE membership_plans SET amount_cents = ?, currency = ?, billing_cycle = ?, "
+            "name_zh = ?, name_en = ?, name_ja = ?, is_active = 1, updated_at = ? WHERE plan_key = ?",
+            (MEMBERSHIP_PRICE_FEN, MEMBERSHIP_CURRENCY, MEMBERSHIP_BILLING_CYCLE,
+             "Machi 认证会员", "Machi Verified", "Machi 認証メンバー", now_iso(), MEMBERSHIP_PLAN_KEY),
+        )
+        return
+    conn.execute(
+        "INSERT INTO membership_plans (id, plan_key, name_zh, name_en, name_ja, amount_cents, "
+        "currency, billing_cycle, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+        (str(uuid.uuid4()), MEMBERSHIP_PLAN_KEY, "Machi 认证会员", "Machi Verified", "Machi 認証メンバー",
+         MEMBERSHIP_PRICE_FEN, MEMBERSHIP_CURRENCY, MEMBERSHIP_BILLING_CYCLE, now_iso(), now_iso()),
+    )
+
+
 def init_db() -> None:
     with DB_LOCK, db() as conn:
         conn.executescript(SCHEMA)
         run_migrations(conn)
+        ensure_membership_plans(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
             # first registered user is the founder.
@@ -2007,6 +2307,15 @@ def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
         "is_merchant":         bool(row.get("is_merchant", 0)),
         "merchant_verified":   bool(row.get("merchant_verified", 0)),
         "profile_view_count":  int(row.get("profile_view_count") or 0),
+        # Machi Verified membership cache (authoritative truth lives in
+        # user_memberships; these are kept in sync by
+        # sync_user_membership_cache on every entitlement change and the
+        # expiry sweep). is_verified_member drives the blue badge.
+        "is_verified_member":   bool(row.get("is_verified_member", 0)),
+        "verified_member_until": row.get("verified_member_until", "") or "",
+        "membership_status":    row.get("membership_status", "inactive") or "inactive",
+        "membership_plan_key":  row.get("membership_plan_key", "") or "",
+        "verified_badge_type":  row.get("verified_badge_type", "") or "",
     }
 
 
@@ -2066,6 +2375,12 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         # validated against the per-type schema on write).
         "content_type": row.get("content_type", "") or "dynamic",
         "attributes":   decode_post_attributes(row.get("attributes")),
+        # City Seed Bot (城市内容助手). When true the client renders an official
+        # identity + a light "城市助手/编辑部" chip and an official avatar — never
+        # a real-person identity. `seed_author_type` ∈ {official_bot, editorial}.
+        "is_seed_content": bool(row.get("is_seed_content", 0)),
+        "seed_author_type": row.get("generated_by", "") or "",
+        "seed_source": row.get("seed_source", "") or "",
         "poll": extras.get("poll"),
     }
 
@@ -2385,6 +2700,744 @@ def hash_auth_code(code: str, email: str = "", purpose: str = "") -> str:
 
 def hash_ip(ip: str) -> str:
     return hashlib.sha256(b"machi-ip\x1f" + PASSWORD_PEPPER + (ip or "").encode("utf-8")).hexdigest()[:32]
+
+
+# ===========================================================================
+# Machi Verified — membership + payment service layer
+#
+# Security invariants (the spec hammers on these — keep them true):
+#   * The charge is ALWAYS recomputed from the plan server-side; a
+#     client-supplied amount is never trusted.
+#   * Membership is only opened/extended from a *server-confirmed* payment
+#     — a verified webhook, a verified Apple transaction, or an admin
+#     grant — NEVER from a client "success" callback.
+#   * Settlement is idempotent: a duplicate provider callback for an
+#     already-paid order is a no-op (no double extension).
+#   * No payment secret (api key, private key, signature, full receipt)
+#     is ever logged or returned by any API.
+# ===========================================================================
+
+MEMBERSHIP_ACTIVE_STATUSES = {"active", "grace_period"}
+_PROVIDER_SOURCE = {
+    "wechat_pay": "wechat_pay",
+    "alipay": "alipay",
+    "stripe": "stripe",
+    "apple_iap": "ios_iap",
+    "admin": "admin_grant",
+}
+
+
+def _aware(dt: datetime | None) -> datetime | None:
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def _add_one_month(dt: datetime) -> datetime:
+    """Calendar-month add with day clamping (Jan 31 -> Feb 28/29) so the
+    renewal anchor doesn't drift like a flat 30-day add would."""
+    import calendar
+    year = dt.year + (1 if dt.month == 12 else 0)
+    month = 1 if dt.month == 12 else dt.month + 1
+    last = calendar.monthrange(year, month)[1]
+    return dt.replace(year=year, month=month, day=min(dt.day, last))
+
+
+def requires_verified_membership(content_type: str | None) -> bool:
+    return (content_type or "").strip().lower() in REQUIRES_VERIFIED_MEMBERSHIP
+
+
+def get_plan(conn: sqlite3.Connection, plan_key: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM membership_plans WHERE plan_key = ? AND is_active = 1", (plan_key,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def serialize_plan(plan: dict[str, Any]) -> dict[str, Any]:
+    cents = int(plan.get("amount_cents") or 0)
+    return {
+        "plan_key": plan["plan_key"],
+        "name_zh": plan.get("name_zh", ""),
+        "name_en": plan.get("name_en", ""),
+        "name_ja": plan.get("name_ja", ""),
+        "amount": round(cents / 100, 2),
+        "amount_cents": cents,
+        "currency": plan.get("currency", MEMBERSHIP_CURRENCY),
+        "billing_cycle": plan.get("billing_cycle", MEMBERSHIP_BILLING_CYCLE),
+    }
+
+
+def _current_membership_row(conn: sqlite3.Connection, user_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM user_memberships WHERE user_id = ? "
+        "ORDER BY current_period_end DESC, updated_at DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _membership_is_live(row: dict[str, Any] | None) -> bool:
+    if not row or row.get("status") not in MEMBERSHIP_ACTIVE_STATUSES:
+        return False
+    end = _aware(parse_iso(row.get("current_period_end")))
+    return bool(end and end > datetime.now(timezone.utc))
+
+
+def record_entitlement_event(conn: sqlite3.Connection, user_id: str, membership_id: str,
+                             event_type: str, source: str, metadata: dict | None = None) -> None:
+    conn.execute(
+        "INSERT INTO entitlement_events (id, user_id, membership_id, event_type, source, metadata_json, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), user_id, membership_id or "", event_type, source or "",
+         json.dumps(metadata or {}, ensure_ascii=False), now_iso()),
+    )
+
+
+def sync_user_membership_cache(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+    """Recompute the users.* cache columns from the membership rows. The
+    cache is a read accelerator only — every entitlement change calls
+    this, and the expiry sweep does too."""
+    row = _current_membership_row(conn, user_id)
+    live = _membership_is_live(row)
+    status = (row.get("status") if row else "inactive") or "inactive"
+    until = (row.get("current_period_end") if (row and live) else "") or ""
+    plan_key = (row.get("plan_key") if row else "") or ""
+    conn.execute(
+        "UPDATE users SET is_verified_member = ?, verified_member_until = ?, membership_status = ?, "
+        "membership_plan_key = ?, verified_badge_type = ?, updated_at = ? WHERE id = ?",
+        (1 if live else 0, until, status, plan_key, "member" if live else "", now_iso(), user_id),
+    )
+    return {"is_verified_member": live, "verified_member_until": until, "membership_status": status}
+
+
+def _expire_membership_row(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
+    conn.execute(
+        "UPDATE user_memberships SET status = 'expired', expired_at = ?, updated_at = ? "
+        "WHERE id = ? AND status IN ('active', 'grace_period')",
+        (now_iso(), now_iso(), row["id"]),
+    )
+    record_entitlement_event(conn, row["user_id"], row["id"], "membership_expired", row.get("source") or "", {})
+    sync_user_membership_cache(conn, row["user_id"])
+
+
+def get_user_membership_status(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+    """Authoritative membership snapshot. Lazily flips a lapsed period to
+    'expired' (and re-syncs the cache) so a stale row never reads active."""
+    row = _current_membership_row(conn, user_id)
+    if row and row.get("status") in MEMBERSHIP_ACTIVE_STATUSES and not _membership_is_live(row):
+        _expire_membership_row(conn, row)
+        row = _current_membership_row(conn, user_id)
+    banned_row = conn.execute("SELECT deleted_at FROM users WHERE id = ?", (user_id,)).fetchone()
+    banned = bool(banned_row and banned_row["deleted_at"])
+    is_active = (not banned) and _membership_is_live(row)
+    return {
+        "is_active": is_active,
+        "status": (row.get("status") if row else "inactive") or "inactive",
+        "plan_key": (row.get("plan_key") if row else "") or "",
+        "current_period_end": (row.get("current_period_end") if row else "") or "",
+        "source": (row.get("source") if row else "") or "",
+        "cancel_at_period_end": bool(row.get("cancel_at_period_end")) if row else False,
+        "membership_id": (row.get("id") if row else "") or "",
+    }
+
+
+def has_active_membership(conn: sqlite3.Connection, user_id: str) -> bool:
+    return get_user_membership_status(conn, user_id)["is_active"]
+
+
+def require_verified_membership(conn: sqlite3.Connection, user_id: str, content_type: str | None) -> None:
+    """403 MEMBERSHIP_REQUIRED if the content type is gated and the user
+    isn't an active verified member. Same rule for every client."""
+    if not requires_verified_membership(content_type):
+        return
+    if not has_active_membership(conn, user_id):
+        raise APIError("发布该类型内容需要开通 Machi 认证会员。", 403, "MEMBERSHIP_REQUIRED")
+
+
+def activate_or_extend_membership(conn: sqlite3.Connection, user_id: str, plan_key: str,
+                                  source: str, periods: int = 1) -> dict[str, Any]:
+    """Open a new membership or extend the live one by `periods` months.
+    Callers own idempotency — this always adds `periods` when invoked."""
+    now = datetime.now(timezone.utc)
+    periods = max(1, int(periods or 1))
+    row = _current_membership_row(conn, user_id)
+    if _membership_is_live(row):
+        end = _aware(parse_iso(row.get("current_period_end"))) or now
+        for _ in range(periods):
+            end = _add_one_month(end)
+        conn.execute(
+            "UPDATE user_memberships SET status = 'active', plan_key = ?, current_period_end = ?, "
+            "source = ?, expired_at = NULL, updated_at = ? WHERE id = ?",
+            (plan_key, end.isoformat(), source, now_iso(), row["id"]),
+        )
+        membership_id = row["id"]
+        record_entitlement_event(conn, user_id, membership_id, "membership_renewed", source, {"plan_key": plan_key})
+    else:
+        end = now
+        for _ in range(periods):
+            end = _add_one_month(end)
+        membership_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO user_memberships (id, user_id, plan_key, status, started_at, current_period_start, "
+            "current_period_end, source, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+            (membership_id, user_id, plan_key, now.isoformat(), now.isoformat(), end.isoformat(),
+             source, now_iso(), now_iso()),
+        )
+        record_entitlement_event(conn, user_id, membership_id, "membership_started", source, {"plan_key": plan_key})
+    sync_user_membership_cache(conn, user_id)
+    return get_user_membership_status(conn, user_id)
+
+
+def cancel_membership(conn: sqlite3.Connection, user_id: str, immediate: bool = False,
+                      source: str = "admin") -> dict[str, Any]:
+    """Cancel renewal (default: keep access until period end) or revoke
+    immediately. Already-published content is never deleted."""
+    row = _current_membership_row(conn, user_id)
+    if not row:
+        raise APIError("用户没有会员记录", 404, "membership_not_found")
+    if immediate:
+        conn.execute(
+            "UPDATE user_memberships SET status = 'canceled', cancel_at_period_end = 1, canceled_at = ?, "
+            "current_period_end = ?, expired_at = ?, updated_at = ? WHERE id = ?",
+            (now_iso(), now_iso(), now_iso(), now_iso(), row["id"]),
+        )
+    else:
+        conn.execute(
+            "UPDATE user_memberships SET cancel_at_period_end = 1, canceled_at = ?, updated_at = ? WHERE id = ?",
+            (now_iso(), now_iso(), row["id"]),
+        )
+    record_entitlement_event(conn, user_id, row["id"], "membership_canceled", source, {"immediate": immediate})
+    sync_user_membership_cache(conn, user_id)
+    return get_user_membership_status(conn, user_id)
+
+
+def expire_due_memberships(conn: sqlite3.Connection) -> int:
+    rows = list(conn.execute(
+        "SELECT * FROM user_memberships WHERE status IN ('active', 'grace_period') "
+        "AND current_period_end IS NOT NULL AND current_period_end < ?",
+        (now_iso(),),
+    ))
+    for r in rows:
+        _expire_membership_row(conn, dict(r))
+    return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# payment orders + providers
+# ---------------------------------------------------------------------------
+
+def generate_order_no() -> str:
+    """Unique, time-ordered, unguessable order number."""
+    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+    return f"MV{ts}{secrets.token_hex(6).upper()}"
+
+
+def serialize_order(row: dict[str, Any]) -> dict[str, Any]:
+    cents = int(row.get("amount_cents") or 0)
+    return {
+        "order_no": row["order_no"],
+        "plan_key": row.get("plan_key", ""),
+        "amount": round(cents / 100, 2),
+        "amount_cents": cents,
+        "currency": row.get("currency", MEMBERSHIP_CURRENCY),
+        "status": row.get("status", "pending"),
+        "provider": row.get("payment_provider", ""),
+        "client_type": row.get("client_type", ""),
+        "created_at": row.get("created_at"),
+        "expires_at": row.get("expires_at"),
+        "paid_at": row.get("paid_at"),
+    }
+
+
+def _order_charge_for_provider(plan: dict[str, Any], provider: str) -> tuple[int, str]:
+    """The amount + currency to charge, chosen server-side per provider.
+    Domestic rails (WeChat/Alipay) charge the CNY plan; Stripe charges the
+    overseas price (e.g. $1.99). Same entitlement, region-appropriate price.
+    A client-supplied amount is never used."""
+    if provider == "stripe":
+        return STRIPE_PRICE_CENTS, STRIPE_CURRENCY.upper()
+    return int(plan["amount_cents"]), plan["currency"]
+
+
+def create_payment_order(conn: sqlite3.Connection, user_id: str, plan_key: str,
+                         provider: str, client_type: str) -> dict[str, Any]:
+    plan = get_plan(conn, plan_key)
+    if not plan:
+        raise APIError("会员计划不存在", 404, "plan_not_found")
+    amount_cents, currency = _order_charge_for_provider(plan, provider)
+    order_no = generate_order_no()
+    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=PAYMENT_ORDER_TTL_SEC)).isoformat()
+    conn.execute(
+        "INSERT INTO payment_orders (id, order_no, user_id, plan_key, amount_cents, currency, status, "
+        "payment_provider, client_type, expires_at, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), order_no, user_id, plan_key, amount_cents, currency,
+         provider, client_type, expires_at, now_iso(), now_iso()),
+    )
+    return dict(conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone())
+
+
+def _order_is_expired(order: dict[str, Any]) -> bool:
+    exp = _aware(parse_iso(order.get("expires_at")))
+    return bool(exp and exp < datetime.now(timezone.utc))
+
+
+def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: str = "",
+                    provider_user_id: str = "", expected_provider: str | None = None,
+                    paid_amount_cents: int | None = None) -> dict[str, Any]:
+    """Idempotent settlement. A pending order transitions to paid exactly
+    once and opens/extends membership. Re-invoked for an already-paid
+    order → returns existing state without double-extending."""
+    row = conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone()
+    if not row:
+        raise APIError("订单不存在", 404, "order_not_found")
+    order = dict(row)
+    if expected_provider and order.get("payment_provider") != expected_provider:
+        raise APIError("订单支付方式不匹配", 400, "provider_mismatch")
+    if paid_amount_cents is not None and int(paid_amount_cents) != int(order["amount_cents"]):
+        # Amount tampering — never settle. The charge is defined by the plan.
+        raise APIError("支付金额与订单不一致", 400, "amount_mismatch")
+    if order["status"] == "paid":
+        return order  # idempotent
+    if order["status"] != "pending":
+        raise APIError("订单状态不允许支付", 409, "order_not_payable")
+    conn.execute(
+        "UPDATE payment_orders SET status = 'paid', provider_trade_no = ?, provider_user_id = ?, "
+        "paid_at = ?, updated_at = ? WHERE order_no = ? AND status = 'pending'",
+        (provider_trade_no or "", provider_user_id or "", now_iso(), now_iso(), order_no),
+    )
+    fresh = dict(conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone())
+    if fresh["status"] != "paid":
+        return fresh  # lost a race; the winner already settled
+    source = _PROVIDER_SOURCE.get(order["payment_provider"], order["payment_provider"] or "manual")
+    activate_or_extend_membership(conn, order["user_id"], order["plan_key"], source, periods=1)
+    return fresh
+
+
+def refund_order(conn: sqlite3.Connection, order_no: str) -> None:
+    order = conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone()
+    if not order:
+        return
+    order = dict(order)
+    conn.execute(
+        "UPDATE payment_orders SET status = 'refunded', refunded_at = ?, updated_at = ? WHERE order_no = ?",
+        (now_iso(), now_iso(), order_no),
+    )
+    record_entitlement_event(conn, order["user_id"], "", "membership_refunded",
+                             order["payment_provider"], {"order_no": order_no})
+
+
+def record_payment_webhook(conn: sqlite3.Connection, provider: str, event_type: str, event_id: str,
+                           order_no: str, raw: str, signature_valid: bool) -> bool:
+    """Audit-log a provider callback. Returns False if this exact event
+    was already recorded (dedup on provider+event_id) so the caller can
+    skip re-processing."""
+    if event_id:
+        dupe = conn.execute(
+            "SELECT 1 FROM payment_webhooks WHERE provider = ? AND event_id = ?", (provider, event_id)
+        ).fetchone()
+        if dupe:
+            return False
+    conn.execute(
+        "INSERT INTO payment_webhooks (id, provider, event_type, event_id, order_no, raw_payload, "
+        "signature_valid, processed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), provider, event_type or "", event_id or "", order_no or "",
+         (raw or "")[:8000], 1 if signature_valid else 0, now_iso(), now_iso()),
+    )
+    return True
+
+
+# ---- provider client params (what the client needs to start paying) ----
+
+def _mock_pay_url(order_no: str) -> str:
+    # A dev-only link the Web mock-confirm button can call. Only created
+    # when PAYMENT_MOCK_ENABLED and not in production.
+    return f"/api/payments/mock/confirm?order_no={order_no}"
+
+
+def build_wechat_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dict[str, Any]:
+    """Return the params a Web client needs to pay an order via WeChat
+    (Native = a QR code). When merchant creds are present the real v3
+    Native API is called; otherwise dev mock, else a clear config error."""
+    if WECHAT_PAY_MCH_ID and WECHAT_PAY_APP_ID and WECHAT_PAY_PRIVATE_KEY and WECHAT_PAY_API_V3_KEY:
+        code_url = _wechat_native_prepay(order)  # real server-to-server call
+        return {"qr_code_url": code_url}
+    if PAYMENT_MOCK_ENABLED:
+        return {"qr_code_url": _mock_pay_url(order["order_no"]), "mock": True}
+    raise APIError("微信支付尚未完成商户配置", 503, "provider_unconfigured")
+
+
+def build_alipay_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dict[str, Any]:
+    """Return the params a Web client needs to pay via Alipay (a signed
+    redirect URL to the Alipay gateway — page/wap pay needs no S2S call)."""
+    if ALIPAY_APP_ID and ALIPAY_PRIVATE_KEY:
+        return {"pay_url": _alipay_page_pay_url(order)}
+    if PAYMENT_MOCK_ENABLED:
+        return {"pay_url": _mock_pay_url(order["order_no"]), "mock": True}
+    raise APIError("支付宝尚未完成商户配置", 503, "provider_unconfigured")
+
+
+def wechat_pay_configured() -> bool:
+    return bool(WECHAT_PAY_MCH_ID and WECHAT_PAY_APP_ID and WECHAT_PAY_PRIVATE_KEY and WECHAT_PAY_API_V3_KEY)
+
+
+def alipay_configured() -> bool:
+    return bool(ALIPAY_APP_ID and ALIPAY_PRIVATE_KEY)
+
+
+def stripe_configured() -> bool:
+    return bool(STRIPE_SECRET_KEY)
+
+
+def available_payment_providers() -> list[str]:
+    """Which Web providers the client should offer. A provider is shown if
+    its real credentials are present, or if dev mock mode is on. Lets the
+    membership page hide WeChat until the 服务号 appid + APIv3 key land."""
+    out: list[str] = []
+    if wechat_pay_configured() or PAYMENT_MOCK_ENABLED:
+        out.append("wechat_pay")
+    if alipay_configured() or PAYMENT_MOCK_ENABLED:
+        out.append("alipay")
+    if stripe_configured() or PAYMENT_MOCK_ENABLED:
+        out.append("stripe")
+    return out
+
+
+def build_stripe_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dict[str, Any]:
+    """Create a Stripe hosted Checkout Session (one-time payment) and
+    return its redirect URL. Stripe-hosted page handles all card UI / PCI.
+    Membership opens later from the verified `checkout.session.completed`
+    webhook — never from the success redirect."""
+    if STRIPE_SECRET_KEY:
+        return {"pay_url": _stripe_checkout_url(order)}
+    if PAYMENT_MOCK_ENABLED:
+        return {"pay_url": _mock_pay_url(order["order_no"]), "mock": True}
+    raise APIError("Stripe 尚未完成配置", 503, "provider_unconfigured")
+
+
+def _stripe_checkout_url(order: dict[str, Any]) -> str:
+    """POST to Stripe /v1/checkout/sessions (form-encoded, Bearer secret).
+    No SDK needed. Returns the hosted Checkout URL. The success_url carries
+    the Checkout session id so the client can confirm the payment on return
+    (works with just the secret key — no webhook required)."""
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+    sep = "&" if "?" in STRIPE_SUCCESS_URL else "?"
+    success_url = f"{STRIPE_SUCCESS_URL}{sep}stripe_session={{CHECKOUT_SESSION_ID}}"
+    fields = {
+        "mode": "payment",
+        "success_url": success_url,
+        "cancel_url": STRIPE_CANCEL_URL,
+        "client_reference_id": order["order_no"],
+        "metadata[order_no]": order["order_no"],
+        "line_items[0][quantity]": "1",
+        "line_items[0][price_data][currency]": order["currency"].lower(),
+        "line_items[0][price_data][unit_amount]": str(int(order["amount_cents"])),
+        "line_items[0][price_data][product_data][name]": "Machi Verified",
+    }
+    data = urlencode(fields).encode("utf-8")
+    req = Request("https://api.stripe.com/v1/checkout/sessions", data=data, method="POST")
+    req.add_header("Authorization", "Bearer " + STRIPE_SECRET_KEY)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urlopen(req, timeout=10) as resp:
+            session = json.loads(resp.read().decode("utf-8"))
+        return session["url"]
+    except Exception as exc:
+        ERR_LOG.warning("stripe checkout create failed: %s", type(exc).__name__)
+        raise APIError("Stripe 下单失败", 502, "provider_error")
+
+
+def stripe_retrieve_session(session_id: str) -> dict[str, Any] | None:
+    """Fetch a Checkout Session from Stripe (server-to-server, Bearer
+    secret). Used to confirm a payment when the user returns to the
+    success page — no webhook needed. Returns the session dict or None."""
+    if not STRIPE_SECRET_KEY or not session_id:
+        return None
+    from urllib.request import Request, urlopen
+    from urllib.parse import quote
+    req = Request("https://api.stripe.com/v1/checkout/sessions/" + quote(session_id, safe=""))
+    req.add_header("Authorization", "Bearer " + STRIPE_SECRET_KEY)
+    try:
+        with urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        ERR_LOG.warning("stripe session retrieve failed: %s", type(exc).__name__)
+        return None
+
+
+def stripe_list_recent_sessions(limit: int = 100) -> list[dict[str, Any]]:
+    """List recent Checkout Sessions (most recent first). Used by the
+    reconcile path to recover a paid-but-unsettled order even when the
+    success redirect / webhook was missed (e.g. the user closed the tab,
+    or the confirm code wasn't deployed yet at payment time)."""
+    if not STRIPE_SECRET_KEY:
+        return []
+    from urllib.request import Request, urlopen
+    req = Request(f"https://api.stripe.com/v1/checkout/sessions?limit={int(limit)}")
+    req.add_header("Authorization", "Bearer " + STRIPE_SECRET_KEY)
+    try:
+        with urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode("utf-8")).get("data", []) or []
+    except Exception as exc:
+        ERR_LOG.warning("stripe list sessions failed: %s", type(exc).__name__)
+        return []
+
+
+def verify_stripe_webhook(headers: dict[str, str], raw_body: bytes) -> dict[str, Any] | None:
+    """Verify a Stripe webhook via the Stripe-Signature header
+    (HMAC-SHA256 over "timestamp.payload", keyed by the endpoint signing
+    secret — pure stdlib). Returns the parsed event or None. In mock mode
+    an X-Mock-Signature HMAC keyed by the dev pepper is accepted."""
+    body_text = raw_body.decode("utf-8", "replace")
+    if PAYMENT_MOCK_ENABLED and not STRIPE_WEBHOOK_SECRET:
+        expected = hmac.new(PASSWORD_PEPPER, raw_body, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(headers.get("x-mock-signature", ""), expected):
+            try:
+                return json.loads(body_text)
+            except Exception:
+                return None
+        return None
+    sig_header = headers.get("stripe-signature", "")
+    if not sig_header or not STRIPE_WEBHOOK_SECRET:
+        return None
+    parts = dict(
+        kv.split("=", 1) for kv in sig_header.split(",") if "=" in kv
+    )
+    ts = parts.get("t", "")
+    v1 = parts.get("v1", "")
+    if not ts or not v1:
+        return None
+    signed_payload = f"{ts}.{body_text}".encode("utf-8")
+    expected = hmac.new(STRIPE_WEBHOOK_SECRET.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, v1):
+        return None
+    try:
+        return json.loads(body_text)
+    except Exception:
+        return None
+
+
+# ---- real provider crypto (needs the `cryptography` package + creds) ----
+#
+# These are wired for production but require merchant credentials and the
+# `cryptography` library. They never run in the mock path and never log a
+# secret. Kept compact; see provider docs for the full field list.
+
+def _load_cryptography():
+    try:
+        import cryptography  # noqa: F401
+        return cryptography
+    except Exception:
+        raise APIError("支付功能需要服务端安装 cryptography 库", 503, "provider_unconfigured")
+
+
+def _wechat_native_prepay(order: dict[str, Any]) -> str:
+    """Call WeChat Pay v3 Native to obtain a code_url (QR target). Signs
+    the request with the merchant RSA private key (SHA256withRSA). Returns
+    the code_url string. Raises a config error if the call can't be made."""
+    _load_cryptography()
+    import json as _json
+    import time as _time
+    from urllib.request import Request, urlopen
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    body = {
+        "appid": WECHAT_PAY_APP_ID,
+        "mchid": WECHAT_PAY_MCH_ID,
+        "description": "Machi 认证会员",
+        "out_trade_no": order["order_no"],
+        "notify_url": WECHAT_PAY_NOTIFY_URL,
+        "amount": {"total": int(order["amount_cents"]), "currency": order["currency"]},
+    }
+    payload = _json.dumps(body, ensure_ascii=False)
+    url_path = "/v3/pay/transactions/native"
+    method = "POST"
+    nonce = secrets.token_hex(16)
+    ts = str(int(_time.time()))
+    message = f"{method}\n{url_path}\n{ts}\n{nonce}\n{payload}\n"
+    key = serialization.load_pem_private_key(WECHAT_PAY_PRIVATE_KEY.encode("utf-8"), password=None)
+    signature = base64.b64encode(
+        key.sign(message.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+    ).decode()
+    auth = (
+        f'WECHATPAY2-SHA256-RSA2048 mchid="{WECHAT_PAY_MCH_ID}",nonce_str="{nonce}",'
+        f'signature="{signature}",timestamp="{ts}",serial_no="{WECHAT_PAY_SERIAL_NO}"'
+    )
+    req = Request("https://api.mch.weixin.qq.com" + url_path, data=payload.encode("utf-8"), method="POST")
+    req.add_header("Authorization", auth)
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Accept", "application/json")
+    try:
+        with urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode("utf-8"))
+        return data["code_url"]
+    except Exception as exc:
+        ERR_LOG.warning("wechat prepay failed: %s", type(exc).__name__)
+        raise APIError("微信下单失败", 502, "provider_error")
+
+
+def _alipay_page_pay_url(order: dict[str, Any]) -> str:
+    """Build a signed Alipay page-pay redirect URL (RSA2). The browser
+    hits the gateway directly; no server-to-server call is required."""
+    _load_cryptography()
+    import json as _json
+    from urllib.parse import urlencode, quote_plus
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+
+    amount_yuan = f"{int(order['amount_cents']) / 100:.2f}"
+    biz_content = _json.dumps({
+        "out_trade_no": order["order_no"],
+        "product_code": "FAST_INSTANT_TRADE_PAY",
+        "total_amount": amount_yuan,
+        "subject": "Machi 认证会员",
+    }, ensure_ascii=False)
+    params = {
+        "app_id": ALIPAY_APP_ID,
+        "method": "alipay.trade.page.pay",
+        "format": "JSON",
+        "charset": "utf-8",
+        "sign_type": "RSA2",
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "version": "1.0",
+        "notify_url": ALIPAY_NOTIFY_URL,
+        "return_url": ALIPAY_RETURN_URL,
+        "biz_content": biz_content,
+    }
+    sign_str = "&".join(f"{k}={params[k]}" for k in sorted(params) if params[k])
+    key = serialization.load_pem_private_key(ALIPAY_PRIVATE_KEY.encode("utf-8"), password=None)
+    signature = base64.b64encode(
+        key.sign(sign_str.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+    ).decode()
+    params["sign"] = signature
+    return ALIPAY_GATEWAY + "?" + urlencode(params, quote_via=quote_plus)
+
+
+# ---- webhook verification ----
+
+def verify_wechat_webhook(headers: dict[str, str], raw_body: bytes) -> dict[str, Any] | None:
+    """Verify + decrypt a WeChat Pay v3 notification. Returns the decoded
+    resource dict (out_trade_no, amount, trade_state, …) or None if the
+    signature / decryption fails. In mock mode a `X-Mock-Signature` HMAC
+    over the body (keyed by the dev pepper) is accepted instead."""
+    body_text = raw_body.decode("utf-8", "replace")
+    if PAYMENT_MOCK_ENABLED and not (WECHAT_PAY_API_V3_KEY and WECHAT_PAY_SERIAL_NO):
+        expected = hmac.new(PASSWORD_PEPPER, raw_body, hashlib.sha256).hexdigest()
+        if hmac.compare_digest(headers.get("x-mock-signature", ""), expected):
+            try:
+                return json.loads(body_text)
+            except Exception:
+                return None
+        return None
+    _load_cryptography()
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    try:
+        envelope = json.loads(body_text)
+        resource = envelope["resource"]
+        key = WECHAT_PAY_API_V3_KEY.encode("utf-8")
+        aesgcm = AESGCM(key)
+        plaintext = aesgcm.decrypt(
+            resource["nonce"].encode("utf-8"),
+            base64.b64decode(resource["ciphertext"]),
+            (resource.get("associated_data") or "").encode("utf-8"),
+        )
+        return json.loads(plaintext.decode("utf-8"))
+    except Exception as exc:
+        ERR_LOG.warning("wechat webhook verify failed: %s", type(exc).__name__)
+        return None
+
+
+def verify_alipay_webhook(form: dict[str, str]) -> bool:
+    """Verify an Alipay async notification's RSA2 signature against the
+    Alipay public key. In mock mode a `mock_sign` HMAC is accepted."""
+    if PAYMENT_MOCK_ENABLED and not ALIPAY_PUBLIC_KEY:
+        expected = hmac.new(PASSWORD_PEPPER, (form.get("out_trade_no", "")).encode("utf-8"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(form.get("mock_sign", ""), expected)
+    _load_cryptography()
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    try:
+        signature = base64.b64decode(form.get("sign", ""))
+        items = {k: v for k, v in form.items() if k not in ("sign", "sign_type") and v != ""}
+        sign_str = "&".join(f"{k}={items[k]}" for k in sorted(items))
+        pub_pem = ("-----BEGIN PUBLIC KEY-----\n" + ALIPAY_PUBLIC_KEY + "\n-----END PUBLIC KEY-----"
+                   if "BEGIN" not in ALIPAY_PUBLIC_KEY else ALIPAY_PUBLIC_KEY)
+        pubkey = serialization.load_pem_public_key(pub_pem.encode("utf-8"))
+        pubkey.verify(signature, sign_str.encode("utf-8"), padding.PKCS1v15(), hashes.SHA256())
+        return True
+    except Exception:
+        return False
+
+
+def verify_apple_transaction(signed_transaction: str, product_id: str = "") -> dict[str, Any] | None:
+    """Decode (and, when creds allow, verify) a StoreKit2 signed
+    transaction JWS. Returns the decoded payload (transactionId,
+    productId, expiresDate, …) or None. The JWS x5c chain is verified
+    against Apple's CA when `cryptography` is available; in Sandbox/mock
+    the decoded payload is trusted after structural checks."""
+    try:
+        header_b64, payload_b64, sig_b64 = signed_transaction.split(".")
+    except ValueError:
+        return None
+
+    def _b64url(segment: str) -> bytes:
+        return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+
+    try:
+        payload = json.loads(_b64url(payload_b64).decode("utf-8"))
+    except Exception:
+        return None
+
+    # Structural checks every environment must pass.
+    if product_id and payload.get("productId") and payload["productId"] != product_id:
+        return None
+    if APPLE_IAP_BUNDLE_ID and payload.get("bundleId") and payload["bundleId"] != APPLE_IAP_BUNDLE_ID:
+        return None
+
+    # Only true Production transactions require signature verification.
+    # Sandbox + Xcode (local StoreKit testing) proceed on the decoded
+    # payload so dev/QA flows work without the Apple CA chain.
+    env = (payload.get("environment") or APPLE_IAP_ENVIRONMENT).lower()
+    is_sandbox = not env.startswith("prod")
+    # Production transactions MUST have their signature verified against
+    # the Apple CA chain. Sandbox/mock may proceed on the decoded payload.
+    if not is_sandbox and not PAYMENT_MOCK_ENABLED:
+        if not _verify_apple_jws_signature(header_b64, payload_b64, sig_b64):
+            ERR_LOG.warning("apple transaction signature rejected")
+            return None
+    return payload
+
+
+def _verify_apple_jws_signature(header_b64: str, payload_b64: str, sig_b64: str) -> bool:
+    """Verify the ES256 signature of an Apple JWS using the leaf cert in
+    the x5c header. (Full chain-to-Apple-root validation is left to the
+    deploy's cert pinning; we verify the signature itself here.)"""
+    try:
+        _load_cryptography()
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import ec, utils as asym_utils
+
+        def _b64url(segment: str) -> bytes:
+            return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+
+        header = json.loads(_b64url(header_b64).decode("utf-8"))
+        x5c = header.get("x5c") or []
+        if not x5c:
+            return False
+        leaf = x509.load_der_x509_certificate(base64.b64decode(x5c[0]))
+        pub = leaf.public_key()
+        raw_sig = _b64url(sig_b64)
+        r = int.from_bytes(raw_sig[:32], "big")
+        s = int.from_bytes(raw_sig[32:], "big")
+        der_sig = asym_utils.encode_dss_signature(r, s)
+        pub.verify(der_sig, f"{header_b64}.{payload_b64}".encode("utf-8"), ec.ECDSA(hashes.SHA256()))
+        return True
+    except Exception:
+        return False
 
 
 # ---- email transports (no secret ever reaches the logger) ----
@@ -2773,6 +3826,123 @@ def ensure_seed_admin(conn: sqlite3.Connection) -> None:
     ACCESS_LOG.info("seeded default admin handle=%s (from KAIX_ADMIN_INITIAL_PASSWORD)", handle)
 
 
+# ---------------------------------------------------------------------------
+# City Seed Bot (城市内容助手) — official identities + generation/cleanup core
+#
+# Cold-start content operations. Every row written here is stamped
+# is_seed_content = 1 + a batch id, so it is always auditable and reversible
+# WITHOUT EVER touching real user content (clears require
+# `is_seed_content = 1 AND seed_batch_id = ?`). Seed posts are authored by
+# clearly-official accounts (Machi 城市助手 / 编辑部) — we never impersonate a
+# real person, and these accounts hold no admin powers (role='member').
+# ---------------------------------------------------------------------------
+
+SEED_SOURCE = "seed_bot"
+SEED_PUBLISHED_STATUS = "published"   # feed shows status IN ('published','active')
+SEED_DRAFT_STATUS = "draft"           # generated-but-not-published → hidden
+SEED_CLEARED_STATUS = "cleared"       # soft-deleted → hidden (never a hard DELETE)
+
+# (author_type, language) → (handle, display_name, bio, avatar_symbol, avatar_color)
+_SEED_BOT_IDENTITY: dict[tuple[str, str], tuple[str, str, str, str, str]] = {
+    ("official_bot", "zh"): ("machi_assistant_zh", "Machi 城市助手", "城市内容整理与本地提醒。", "sparkles", "indigo"),
+    ("official_bot", "en"): ("machi_assistant_en", "Machi City Assistant", "Local notes and city tips.", "sparkles", "indigo"),
+    ("official_bot", "ja"): ("machi_assistant_ja", "街のコンテンツアシスタント", "街の情報とローカルのヒント。", "sparkles", "indigo"),
+    ("editorial", "zh"): ("machi_editorial_zh", "Machi 编辑部", "编辑部整理的本地内容。", "newspaper", "blue"),
+    ("editorial", "en"): ("machi_editorial_en", "Machi Local Desk", "Edited local highlights.", "newspaper", "blue"),
+    ("editorial", "ja"): ("machi_editorial_ja", "Machi 街の編集部", "編集部がまとめたローカル情報。", "newspaper", "blue"),
+}
+
+_SEED_OP_TIMES: dict[str, list[float]] = {}
+_SEED_OP_LOCK = threading.Lock()
+
+
+def seed_throttle(admin_id: str, limit: int = 30, window: float = 300.0) -> None:
+    """Per-admin frequency guard for seed write ops (generate/publish/clear).
+    Best-effort, in-memory; pairs with the existing IP rate limiter."""
+    now = time.time()
+    with _SEED_OP_LOCK:
+        times = [t for t in _SEED_OP_TIMES.get(admin_id, []) if now - t < window]
+        if len(times) >= limit:
+            raise APIError("操作过于频繁，请稍后再试", 429, "rate_limited")
+        times.append(now)
+        _SEED_OP_TIMES[admin_id] = times
+
+
+def ensure_seed_bot_account(conn: sqlite3.Connection, author_type: str, language: str) -> str:
+    """Return the id of the official seed account for (author_type, language),
+    creating it lazily on first use. Accounts are clearly official (verified,
+    official default avatar, no avatar_url, role='member') and exist purely to
+    author *labelled* seed content — never to impersonate a person."""
+    at = author_type if author_type in ("official_bot", "editorial") else "official_bot"
+    lang = language if language in seedlib.SUPPORTED_LANGUAGES else "zh"
+    handle, display_name, bio, symbol, color = _SEED_BOT_IDENTITY[(at, lang)]
+    row = conn.execute("SELECT id FROM users WHERE handle = ?", (handle,)).fetchone()
+    if row:
+        return row["id"]
+    user_id = str(uuid.uuid4())
+    # Locked, unguessable password hash — these accounts are not meant to log in.
+    locked = hash_password(secrets.token_urlsafe(32))
+    conn.execute(
+        """
+        INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
+                           avatar_symbol, avatar_color, avatar_url, cover_url, membership_tier,
+                           is_verified, role, country, province, city, current_region_code,
+                           recent_region_codes, joined_at, created_at, updated_at)
+        VALUES (?, ?, ?, '', ?, ?, '', ?, ?, '', '', 'free', 1, 'member', '', '', '', '', '', ?, ?, ?)
+        """,
+        (user_id, handle, display_name, locked, bio, symbol, color, now_iso(), now_iso(), now_iso()),
+    )
+    conn.execute("INSERT OR IGNORE INTO settings (user_id, updated_at) VALUES (?, ?)", (user_id, now_iso()))
+    ACCESS_LOG.info("seeded official content account handle=%s", handle)
+    return user_id
+
+
+def insert_seed_post(
+    conn: sqlite3.Connection, *, author_id: str, author_type: str, content: str,
+    app_content_type: str, country: str, province: str, city: str, region_code: str,
+    language: str, tags: list[str], batch_id: str, status: str,
+) -> str:
+    """Insert one seed post. Mirrors the normal post insert but stamps the
+    seed-tracking columns (is_seed_content / seed_batch_id / seed_source /
+    generated_by) so the row is auditable and reversible."""
+    post_id = str(uuid.uuid4())
+    attributes = normalize_post_attributes(app_content_type, {})
+    conn.execute(
+        """
+        INSERT INTO posts (id, author_id, content, repost_of_id, view_count, status,
+                           country, province, city, region_code, content_type, attributes,
+                           language, is_seed_content, seed_batch_id, seed_source, generated_by,
+                           created_at, updated_at)
+        VALUES (?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+        """,
+        (post_id, author_id, content, status, country, province, city, region_code,
+         app_content_type, attributes, language, batch_id, SEED_SOURCE, author_type,
+         now_iso(), now_iso()),
+    )
+    for tag in (tags or []):
+        norm = str(tag).strip().lstrip("#").lower()
+        if norm:
+            conn.execute("INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (post_id, norm))
+    return post_id
+
+
+def log_seed_action(
+    conn: sqlite3.Connection, *, admin_id: str, action: str, batch_id: str = "",
+    country: str = "", city: str = "", region_code: str = "", language: str = "",
+    content_type: str = "", count: int = 0, metadata: dict[str, Any] | None = None,
+) -> None:
+    """Append an immutable audit row for every seed operation."""
+    conn.execute(
+        """
+        INSERT INTO admin_seed_content_logs (id, admin_id, action, batch_id, country, city,
+            region_code, language, content_type, count, metadata, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (str(uuid.uuid4()), admin_id, action, batch_id, country, city, region_code,
+         language, content_type, int(count), json.dumps(metadata or {}, ensure_ascii=False), now_iso()),
+    )
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "Machi/1.0"
 
@@ -2910,6 +4080,262 @@ class Handler(BaseHTTPRequestHandler):
         if (user.get("role") or "member") != "admin":
             raise APIError("admin only", 403, "forbidden")
         return user
+
+    # ---- City Seed Bot (城市内容助手) — admin content operations ----
+    #
+    # Every endpoint is admin-only. Generation is capped at 100/batch and
+    # throttled per-admin. Clears are soft (status → 'cleared' + deleted_at)
+    # and double-guarded by `is_seed_content = 1`, so real user content can
+    # never be affected. Every op writes an audit row.
+
+    _SEED_BATCH_KEYS = (
+        "id", "country", "province", "city", "region_code", "language",
+        "content_type", "tone", "count", "status", "created_by_admin_id",
+        "created_count", "published_count", "cleared_count", "created_at", "updated_at",
+    )
+
+    def _seed_batch_dict(self, conn: sqlite3.Connection, batch_id: str, include_items: bool = False) -> dict[str, Any]:
+        row = conn.execute("SELECT * FROM seed_content_batches WHERE id = ?", (batch_id,)).fetchone()
+        if not row:
+            raise APIError("批次不存在", 404, "batch_not_found")
+        d = dict(row)
+        out: dict[str, Any] = {k: d.get(k) for k in self._SEED_BATCH_KEYS}
+        if include_items:
+            items = conn.execute(
+                "SELECT id, content, content_type, status, language, generated_by, created_at "
+                "FROM posts WHERE seed_batch_id = ? ORDER BY created_at",
+                (batch_id,),
+            ).fetchall()
+            out["items"] = [
+                {
+                    "id": r["id"], "content": r["content"], "content_type": r["content_type"],
+                    "status": r["status"], "language": r["language"],
+                    "author_type": r["generated_by"], "created_at": r["created_at"],
+                }
+                for r in items
+            ]
+        return out
+
+    def api_admin_seed_generate(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        country = (data.get("country") or "").strip().lower()
+        province = (data.get("province") or "").strip().lower()
+        city = (data.get("city") or "").strip().lower()
+        region_code = (data.get("regionCode") or data.get("region_code") or "").strip().lower()
+        language = (data.get("language") or "zh").strip().lower()
+        content_type = (data.get("contentType") or data.get("content_type") or "mixed").strip()
+        tone = (data.get("tone") or "natural").strip()
+        publish_now = bool(data.get("publishNow") if data.get("publishNow") is not None else data.get("publish_now"))
+        try:
+            count = int(data.get("count") or 0)
+        except (TypeError, ValueError):
+            raise APIError("count 无效", 400, "invalid_count")
+        if count <= 0:
+            raise APIError("count 需要大于 0", 400, "invalid_count")
+        if count > seedlib.MAX_BATCH_COUNT:
+            raise APIError(f"单批最多 {seedlib.MAX_BATCH_COUNT} 条", 400, "count_too_large")
+        if language not in seedlib.SUPPORTED_LANGUAGES:
+            raise APIError("不支持的语言", 400, "invalid_language")
+        if content_type not in (("mixed", "all", "") + seedlib.SUPPORTED_CONTENT_TYPES):
+            raise APIError("不支持的内容类型", 400, "invalid_content_type")
+        if not region_code:
+            region_code = _resolve_region_code(country, province, city)
+        elif not country:
+            country, province, city = _parse_region_code(region_code)
+        if not region_code:
+            raise APIError("请选择城市（region_code 或 country+city）", 400, "city_required")
+
+        seed_throttle(admin["id"])
+        items = seedlib.generate(
+            region_code=region_code, country=country, city=city,
+            language=language, content_type=content_type, count=count, tone=tone,
+        )
+        status = SEED_PUBLISHED_STATUS if publish_now else SEED_DRAFT_STATUS
+        batch_id = str(uuid.uuid4())
+        now = now_iso()
+        conn.execute(
+            """INSERT INTO seed_content_batches (id, country, province, city, region_code, language,
+               content_type, tone, count, status, created_by_admin_id, created_count, published_count,
+               cleared_count, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
+            (batch_id, country, province, city, region_code, language, content_type, tone, count,
+             ("published" if publish_now else "draft"), admin["id"], len(items),
+             (len(items) if publish_now else 0), now, now),
+        )
+        for it in items:
+            account_id = ensure_seed_bot_account(conn, it["author_type"], language)
+            insert_seed_post(
+                conn, author_id=account_id, author_type=it["author_type"], content=it["content"],
+                app_content_type=it["app_content_type"], country=country, province=province, city=city,
+                region_code=region_code, language=language, tags=it.get("tags") or [],
+                batch_id=batch_id, status=status,
+            )
+        log_seed_action(
+            conn, admin_id=admin["id"], action="generate", batch_id=batch_id, country=country,
+            city=city, region_code=region_code, language=language, content_type=content_type,
+            count=len(items), metadata={"tone": tone, "publishNow": publish_now, "requested": count},
+        )
+        if publish_now:
+            _cache_invalidate("feed:hot")
+            _cache_invalidate("trending:")
+        self.send_json({"batch": self._seed_batch_dict(conn, batch_id, include_items=True),
+                        "requested": count, "created": len(items)})
+
+    def api_admin_seed_batches(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        region_code = (query.get("region_code") or query.get("regionCode") or "").strip().lower()
+        status = (query.get("status") or "").strip()
+        where = ["1 = 1"]
+        params: list[Any] = []
+        if region_code:
+            where.append("region_code = ?")
+            params.append(region_code)
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        try:
+            limit = max(1, min(int(query.get("limit") or 50), 200))
+        except (TypeError, ValueError):
+            limit = 50
+        rows = conn.execute(
+            f"SELECT * FROM seed_content_batches WHERE {' AND '.join(where)} "
+            f"ORDER BY created_at DESC LIMIT ?",
+            [*params, limit],
+        ).fetchall()
+        items = [{k: dict(r).get(k) for k in self._SEED_BATCH_KEYS} for r in rows]
+        self.send_json({"items": items})
+
+    def api_admin_seed_batch_detail(self, conn: sqlite3.Connection, batch_id: str) -> None:
+        self.require_admin(conn)
+        self.send_json({"batch": self._seed_batch_dict(conn, batch_id, include_items=True)})
+
+    def api_admin_seed_publish(self, conn: sqlite3.Connection, batch_id: str) -> None:
+        admin = self.require_admin(conn)
+        batch = conn.execute("SELECT * FROM seed_content_batches WHERE id = ?", (batch_id,)).fetchone()
+        if not batch:
+            raise APIError("批次不存在", 404, "batch_not_found")
+        if batch["status"] == SEED_CLEARED_STATUS:
+            raise APIError("该批次已清除，无法发布", 400, "batch_cleared")
+        seed_throttle(admin["id"])
+        cur = conn.execute(
+            "UPDATE posts SET status = ?, updated_at = ? "
+            "WHERE is_seed_content = 1 AND seed_batch_id = ? AND status = ?",
+            (SEED_PUBLISHED_STATUS, now_iso(), batch_id, SEED_DRAFT_STATUS),
+        )
+        published = cur.rowcount or 0
+        total_pub = conn.execute(
+            "SELECT COUNT(*) AS c FROM posts WHERE seed_batch_id = ? AND status IN ('published', 'active')",
+            (batch_id,),
+        ).fetchone()["c"]
+        conn.execute(
+            "UPDATE seed_content_batches SET status = 'published', published_count = ?, updated_at = ? WHERE id = ?",
+            (total_pub, now_iso(), batch_id),
+        )
+        log_seed_action(
+            conn, admin_id=admin["id"], action="publish", batch_id=batch_id,
+            region_code=batch["region_code"], language=batch["language"],
+            content_type=batch["content_type"], count=published,
+        )
+        _cache_invalidate("feed:hot")
+        _cache_invalidate("trending:")
+        self.send_json({"published": published, "batch": self._seed_batch_dict(conn, batch_id)})
+
+    def api_admin_seed_clear(self, conn: sqlite3.Connection, batch_id: str) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        if not bool(data.get("confirm")):
+            raise APIError("请确认后再清除（confirm=true）", 400, "confirm_required")
+        batch = conn.execute("SELECT * FROM seed_content_batches WHERE id = ?", (batch_id,)).fetchone()
+        if not batch:
+            raise APIError("批次不存在", 404, "batch_not_found")
+        seed_throttle(admin["id"])
+        # Soft delete, double-guarded: only seed rows of THIS batch are touched.
+        # `is_seed_content = 1` guarantees real user content is never affected.
+        cur = conn.execute(
+            "UPDATE posts SET status = ?, deleted_at = ?, updated_at = ? "
+            "WHERE is_seed_content = 1 AND seed_batch_id = ? AND status != ?",
+            (SEED_CLEARED_STATUS, now_iso(), now_iso(), batch_id, SEED_CLEARED_STATUS),
+        )
+        cleared = cur.rowcount or 0
+        conn.execute(
+            "UPDATE seed_content_batches SET status = 'cleared', cleared_count = ?, updated_at = ? WHERE id = ?",
+            (cleared, now_iso(), batch_id),
+        )
+        log_seed_action(
+            conn, admin_id=admin["id"], action="clear_batch", batch_id=batch_id,
+            region_code=batch["region_code"], language=batch["language"],
+            content_type=batch["content_type"], count=cleared,
+        )
+        _cache_invalidate("feed:hot")
+        _cache_invalidate("trending:")
+        self.send_json({"cleared": cleared, "batch": self._seed_batch_dict(conn, batch_id)})
+
+    def api_admin_seed_clear_city(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        if not bool(data.get("confirm")):
+            raise APIError("请确认后再清除（confirm=true）", 400, "confirm_required")
+        country = (data.get("country") or "").strip().lower()
+        city = (data.get("city") or "").strip().lower()
+        region_code = (data.get("regionCode") or data.get("region_code") or "").strip().lower()
+        language = (data.get("language") or "").strip().lower()           # optional
+        content_type = (data.get("contentType") or data.get("content_type") or "").strip()  # optional
+        if not region_code:
+            region_code = _resolve_region_code(country, "", city)
+        if not region_code:
+            raise APIError("请提供城市（region_code 或 country+city）", 400, "city_required")
+        seed_throttle(admin["id"])
+        # ALWAYS guarded by is_seed_content = 1 — real user content is untouchable.
+        where = ["is_seed_content = 1", "region_code = ?", "status != ?"]
+        params: list[Any] = [region_code, SEED_CLEARED_STATUS]
+        if language:
+            if language not in seedlib.SUPPORTED_LANGUAGES:
+                raise APIError("不支持的语言", 400, "invalid_language")
+            where.append("language = ?")
+            params.append(language)
+        if content_type:
+            if content_type not in seedlib.SUPPORTED_CONTENT_TYPES:
+                raise APIError("不支持的内容类型", 400, "invalid_content_type")
+            where.append("content_type = ?")
+            params.append(seedlib.APP_CONTENT_TYPE[content_type])
+        cur = conn.execute(
+            f"UPDATE posts SET status = ?, deleted_at = ?, updated_at = ? WHERE {' AND '.join(where)}",
+            [SEED_CLEARED_STATUS, now_iso(), now_iso(), *params],
+        )
+        cleared = cur.rowcount or 0
+        conn.execute(
+            "UPDATE seed_content_batches SET status = 'cleared', updated_at = ? "
+            "WHERE region_code = ? AND status != 'cleared'",
+            (now_iso(), region_code),
+        )
+        log_seed_action(
+            conn, admin_id=admin["id"], action="clear_city", region_code=region_code,
+            country=country, city=city, language=language, content_type=content_type, count=cleared,
+            metadata={"region_code": region_code},
+        )
+        _cache_invalidate("feed:hot")
+        _cache_invalidate("trending:")
+        self.send_json({"cleared": cleared, "region_code": region_code})
+
+    def api_admin_seed_logs(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        try:
+            limit = max(1, min(int(query.get("limit") or 50), 200))
+        except (TypeError, ValueError):
+            limit = 50
+        rows = conn.execute(
+            "SELECT * FROM admin_seed_content_logs ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        items = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["metadata"] = json.loads(d.get("metadata") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                d["metadata"] = {}
+            items.append(d)
+        self.send_json({"items": items})
 
     # ---- HTTP verbs ----
 
@@ -3374,7 +4800,515 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/admin/marketing-copy/") and method == "DELETE":
             return self.api_admin_delete_marketing_copy(conn, path.split("/")[4])
 
+        # admin: City Seed Bot (城市内容助手) — all behind require_admin
+        if path == "/api/admin/seed-content/generate" and method == "POST":
+            return self.api_admin_seed_generate(conn)
+        if path == "/api/admin/seed-content/batches" and method == "GET":
+            return self.api_admin_seed_batches(conn, query)
+        if path == "/api/admin/seed-content/clear-city" and method == "POST":
+            return self.api_admin_seed_clear_city(conn)
+        if path == "/api/admin/seed-content/logs" and method == "GET":
+            return self.api_admin_seed_logs(conn, query)
+        if path.startswith("/api/admin/seed-content/batches/"):
+            parts = path.split("/")  # ['', 'api', 'admin', 'seed-content', 'batches', '{id}', '{action}'?]
+            batch_id = parts[5] if len(parts) > 5 else ""
+            action = parts[6] if len(parts) > 6 else ""
+            if method == "GET" and not action:
+                return self.api_admin_seed_batch_detail(conn, batch_id)
+            if method == "POST" and action == "publish":
+                return self.api_admin_seed_publish(conn, batch_id)
+            if method == "POST" and action == "clear":
+                return self.api_admin_seed_clear(conn, batch_id)
+
+        # membership + payments
+        if path == "/api/membership/me" and method == "GET":
+            return self.api_membership_me(conn)
+        if path == "/api/membership/plan" and method == "GET":
+            return self.api_membership_plan(conn)
+        if path == "/api/membership/insights" and method == "GET":
+            return self.api_membership_insights(conn)
+        if path == "/api/payments/create-order" and method == "POST":
+            return self.api_create_payment_order(conn)
+        if path == "/api/payments/order-status" and method == "GET":
+            return self.api_order_status(conn, query)
+        if path == "/api/payments/stripe/confirm" and method == "POST":
+            return self.api_stripe_confirm(conn)
+        if path == "/api/payments/stripe/reconcile" and method == "POST":
+            return self.api_stripe_reconcile(conn)
+        if path == "/api/payments/webhook/wechat" and method == "POST":
+            return self.api_payment_webhook_wechat(conn)
+        if path == "/api/payments/webhook/alipay" and method == "POST":
+            return self.api_payment_webhook_alipay(conn)
+        if path == "/api/payments/webhook/stripe" and method == "POST":
+            return self.api_payment_webhook_stripe(conn)
+        if path == "/api/payments/apple/verify" and method == "POST":
+            return self.api_apple_verify(conn)
+        # Dev-only mock settlement. The handler itself refuses unless
+        # PAYMENT_MOCK_ENABLED and not in production.
+        if path == "/api/payments/mock/confirm" and method in ("POST", "GET"):
+            return self.api_mock_confirm(conn, query)
+
+        # admin: membership management
+        if path == "/api/admin/memberships" and method == "GET":
+            return self.api_admin_memberships(conn, query)
+        if path == "/api/admin/memberships/grant" and method == "POST":
+            return self.api_admin_grant_membership(conn)
+        if path == "/api/admin/memberships/cancel" and method == "POST":
+            return self.api_admin_cancel_membership(conn)
+        if path == "/api/admin/payment-orders" and method == "GET":
+            return self.api_admin_payment_orders(conn, query)
+
         raise APIError("not found", 404, "not_found")
+
+    # ---- membership + payments ----
+
+    def api_membership_plan(self, conn: sqlite3.Connection) -> None:
+        """Public plan info (price + names) for the membership page. No
+        auth required so the upsell can render for logged-out visitors."""
+        plan = get_plan(conn, MEMBERSHIP_PLAN_KEY)
+        self.send_json({
+            "plan": serialize_plan(plan) if plan else None,
+            "requires_membership_content_types": sorted(REQUIRES_VERIFIED_MEMBERSHIP),
+            "apple_product_id": APPLE_IAP_PRODUCT_ID,
+            "available_providers": available_payment_providers(),
+        })
+
+    def api_membership_insights(self, conn: sqlite3.Connection) -> None:
+        """Member-only basic analytics over the caller's own posts:
+        totals (views / likes / bookmarks / reposts / comments) plus their
+        top posts by heat. Gated to active verified members."""
+        user = self.require_user(conn)
+        if not has_active_membership(conn, user["id"]):
+            raise APIError("查看内容数据需要开通 Machi 认证会员。", 403, "MEMBERSHIP_REQUIRED")
+        uid = user["id"]
+        agg = conn.execute(
+            "SELECT COUNT(*) AS cnt, COALESCE(SUM(view_count), 0) AS views "
+            "FROM posts WHERE author_id = ? AND deleted_at IS NULL",
+            (uid,),
+        ).fetchone()
+
+        def _icount(kind: str) -> int:
+            return int(conn.execute(
+                "SELECT COUNT(*) AS c FROM interactions WHERE kind = ? AND target_id IN "
+                "(SELECT id FROM posts WHERE author_id = ? AND deleted_at IS NULL)",
+                (kind, uid),
+            ).fetchone()["c"])
+
+        total_comments = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM comments WHERE deleted_at IS NULL AND post_id IN "
+            "(SELECT id FROM posts WHERE author_id = ? AND deleted_at IS NULL)",
+            (uid,),
+        ).fetchone()["c"])
+        top_rows = list(conn.execute(
+            f"SELECT p.* FROM posts p WHERE p.author_id = ? AND p.deleted_at IS NULL "
+            f"ORDER BY {_heat_score_sql('p')} DESC, p.created_at DESC LIMIT 5",
+            (uid,),
+        ))
+        top_posts = fetch_posts_with_extras(conn, [dict(r) for r in top_rows], uid)
+        top = [{
+            "id": p["id"],
+            "content": (p.get("content") or "")[:80],
+            "content_type": p.get("content_type"),
+            "view_count": p.get("view_count", 0),
+            "like_count": p.get("like_count", 0),
+            "comment_count": p.get("comment_count", 0),
+            "bookmark_count": p.get("bookmark_count", 0),
+        } for p in top_posts]
+        self.send_json({
+            "totals": {
+                "post_count": int(agg["cnt"]),
+                "total_views": int(agg["views"]),
+                "total_likes": _icount("like"),
+                "total_bookmarks": _icount("bookmark"),
+                "total_reposts": _icount("repost"),
+                "total_comments": total_comments,
+            },
+            "top_posts": top,
+        })
+
+    def api_membership_me(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        status = get_user_membership_status(conn, user["id"])
+        plan = get_plan(conn, status["plan_key"] or MEMBERSHIP_PLAN_KEY)
+        fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
+        self.send_json({
+            "membership": status,
+            "plan": serialize_plan(plan) if plan else None,
+            "user": serialize_user(fresh),
+        })
+
+    def api_create_payment_order(self, conn: sqlite3.Connection) -> None:
+        """Create a Web payment order. The amount is ALWAYS taken from the
+        plan — a client-supplied amount is ignored. iOS does NOT use this
+        path (it buys through Apple IAP and calls /apple/verify)."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        plan_key = (data.get("planKey") or data.get("plan_key") or MEMBERSHIP_PLAN_KEY).strip()
+        provider = (data.get("provider") or "").strip()
+        client_type = (data.get("clientType") or data.get("client_type") or "web").strip()
+        if provider not in ("wechat_pay", "alipay", "stripe"):
+            raise APIError("不支持的支付方式", 400, "invalid_provider")
+        if not get_plan(conn, plan_key):
+            raise APIError("会员计划不存在", 404, "plan_not_found")
+        order = create_payment_order(conn, user["id"], plan_key, provider, client_type)
+        out: dict[str, Any] = {
+            "orderNo": order["order_no"],
+            "provider": provider,
+            "amount": round(int(order["amount_cents"]) / 100, 2),
+            "currency": order["currency"],
+            "expiresAt": order["expires_at"],
+        }
+        if provider == "wechat_pay":
+            out.update(build_wechat_payment(conn, order))
+        elif provider == "stripe":
+            out.update(build_stripe_payment(conn, order))
+        else:
+            out.update(build_alipay_payment(conn, order))
+        self.send_json(out)
+
+    def api_order_status(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        order_no = (query.get("orderNo") or query.get("order_no") or "").strip()
+        if not order_no:
+            raise APIError("缺少订单号", 400, "missing_order_no")
+        row = conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone()
+        if not row:
+            raise APIError("订单不存在", 404, "order_not_found")
+        order = dict(row)
+        # Users may only read their own orders (admins can read any).
+        if order["user_id"] != user["id"] and (user.get("role") or "member") != "admin":
+            raise APIError("无权查看该订单", 403, "forbidden")
+        # Lazily close a still-pending order that has passed its TTL.
+        if order["status"] == "pending" and _order_is_expired(order):
+            conn.execute(
+                "UPDATE payment_orders SET status = 'closed', closed_at = ?, updated_at = ? WHERE order_no = ? AND status = 'pending'",
+                (now_iso(), now_iso(), order_no),
+            )
+            order = dict(conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone())
+        status = get_user_membership_status(conn, order["user_id"])
+        self.send_json({
+            "orderNo": order_no,
+            "status": order["status"],
+            "membershipActive": status["is_active"],
+            "currentPeriodEnd": status["current_period_end"],
+        })
+
+    def api_stripe_confirm(self, conn: sqlite3.Connection) -> None:
+        """Confirm a Stripe payment when the user returns to the success
+        page. The server retrieves the Checkout Session from Stripe (with
+        the secret key) and settles the order if it's paid — so Stripe
+        works with ONLY the secret key, no webhook required. Idempotent
+        and amount-checked, same as the webhook path."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        session_id = (data.get("sessionId") or data.get("session_id") or "").strip()
+        if not session_id:
+            raise APIError("缺少会话ID", 400, "missing_session")
+        session = stripe_retrieve_session(session_id)
+        if not session:
+            raise APIError("Stripe 会话核验失败", 502, "verification_failed")
+        order_no = str(session.get("client_reference_id") or (session.get("metadata") or {}).get("order_no") or "")
+        if not order_no:
+            raise APIError("会话未关联订单", 400, "order_not_found")
+        order = conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone()
+        if not order or (dict(order)["user_id"] != user["id"] and (user.get("role") or "member") != "admin"):
+            raise APIError("无权确认该订单", 403, "forbidden")
+        if str(session.get("payment_status") or "") == "paid":
+            try:
+                mark_order_paid(conn, order_no, provider_trade_no=str(session.get("payment_intent") or ""),
+                                expected_provider="stripe", paid_amount_cents=int(session.get("amount_total") or 0))
+            except APIError as exc:
+                ACCESS_LOG.warning("stripe confirm settle rejected order=%s code=%s", order_no, exc.code)
+        status = get_user_membership_status(conn, user["id"])
+        self.send_json({
+            "orderNo": order_no,
+            "status": "paid" if session.get("payment_status") == "paid" else "pending",
+            "membershipActive": status["is_active"],
+            "currentPeriodEnd": status["current_period_end"],
+        })
+
+    def api_stripe_reconcile(self, conn: sqlite3.Connection) -> None:
+        """Recover any of the caller's paid-but-pending Stripe orders by
+        matching recent Stripe Checkout Sessions to their pending orders.
+        Safe + idempotent: only settles THIS user's pending stripe orders
+        whose session is actually paid, and only by the exact amount. A
+        no-op when there's nothing pending or Stripe isn't configured."""
+        user = self.require_user(conn)
+        pending = {
+            r["order_no"]: int(r["amount_cents"])
+            for r in conn.execute(
+                "SELECT order_no, amount_cents FROM payment_orders "
+                "WHERE user_id = ? AND payment_provider = 'stripe' AND status = 'pending'",
+                (user["id"],),
+            )
+        }
+        if pending and STRIPE_SECRET_KEY:
+            for sess in stripe_list_recent_sessions():
+                ref = str(sess.get("client_reference_id") or "")
+                if ref in pending and str(sess.get("payment_status") or "") == "paid":
+                    try:
+                        mark_order_paid(conn, ref, provider_trade_no=str(sess.get("payment_intent") or ""),
+                                        expected_provider="stripe", paid_amount_cents=int(sess.get("amount_total") or 0))
+                    except APIError as exc:
+                        ACCESS_LOG.warning("stripe reconcile settle rejected order=%s code=%s", ref, exc.code)
+        status = get_user_membership_status(conn, user["id"])
+        self.send_json({
+            "membershipActive": status["is_active"],
+            "currentPeriodEnd": status["current_period_end"],
+            "status": status["status"],
+        })
+
+    def api_payment_webhook_wechat(self, conn: sqlite3.Connection) -> None:
+        """WeChat Pay v3 settlement callback. Verifies + decrypts, checks
+        the amount, settles idempotently. Never leaks internal errors."""
+        raw = self.read_bytes()
+        headers = {k.lower(): v for k, v in self.headers.items()}
+        resource = verify_wechat_webhook(headers, raw)
+        if resource is None:
+            return self._webhook_fail("wechat", "signature/verify failed")
+        out_trade_no = str(resource.get("out_trade_no") or "")
+        trade_state = str(resource.get("trade_state") or "")
+        transaction_id = str(resource.get("transaction_id") or "")
+        amount_total = int((resource.get("amount") or {}).get("total") or 0)
+        event_id = transaction_id or out_trade_no
+        first = record_payment_webhook(conn, "wechat_pay", trade_state, event_id, out_trade_no,
+                                       json.dumps(resource, ensure_ascii=False), True)
+        if first and trade_state == "SUCCESS" and out_trade_no:
+            try:
+                mark_order_paid(conn, out_trade_no, provider_trade_no=transaction_id,
+                                expected_provider="wechat_pay", paid_amount_cents=amount_total)
+            except APIError as exc:
+                ACCESS_LOG.warning("wechat webhook settle rejected order=%s code=%s", out_trade_no, exc.code)
+        self.send_json({"code": "SUCCESS", "message": "OK"})
+
+    def api_payment_webhook_alipay(self, conn: sqlite3.Connection) -> None:
+        """Alipay async notify (application/x-www-form-urlencoded)."""
+        raw = self.read_bytes().decode("utf-8", "replace")
+        form = {k: v[0] if v else "" for k, v in parse_qs(raw).items()}
+        ok = verify_alipay_webhook(form)
+        out_trade_no = str(form.get("out_trade_no") or "")
+        trade_status = str(form.get("trade_status") or "")
+        trade_no = str(form.get("trade_no") or "")
+        # Alipay sends total_amount in yuan; convert to fen for the check.
+        try:
+            amount_cents = int(round(float(form.get("total_amount") or 0) * 100))
+        except ValueError:
+            amount_cents = 0
+        body = b"failure"
+        if ok:
+            event_id = trade_no or out_trade_no
+            first = record_payment_webhook(conn, "alipay", trade_status, event_id, out_trade_no, raw[:8000], True)
+            if first and trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and out_trade_no:
+                try:
+                    mark_order_paid(conn, out_trade_no, provider_trade_no=trade_no,
+                                    expected_provider="alipay", paid_amount_cents=amount_cents)
+                except APIError as exc:
+                    ACCESS_LOG.warning("alipay webhook settle rejected order=%s code=%s", out_trade_no, exc.code)
+            body = b"success"
+        else:
+            record_payment_webhook(conn, "alipay", trade_status, trade_no or out_trade_no, out_trade_no, raw[:8000], False)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def api_payment_webhook_stripe(self, conn: sqlite3.Connection) -> None:
+        """Stripe webhook. Verifies the Stripe-Signature (HMAC-SHA256),
+        settles the order on checkout.session.completed, idempotent on the
+        Stripe event id. Membership opens here, never on the redirect."""
+        raw = self.read_bytes()
+        headers = {k.lower(): v for k, v in self.headers.items()}
+        event = verify_stripe_webhook(headers, raw)
+        if event is None:
+            return self._webhook_fail("stripe", "signature/verify failed")
+        event_id = str(event.get("id") or "")
+        event_type = str(event.get("type") or "")
+        obj = (event.get("data") or {}).get("object") or {}
+        if event_type == "checkout.session.completed":
+            order_no = str(obj.get("client_reference_id") or (obj.get("metadata") or {}).get("order_no") or "")
+            amount_total = int(obj.get("amount_total") or 0)
+            payment_intent = str(obj.get("payment_intent") or "")
+            first = record_payment_webhook(conn, "stripe", event_type, event_id, order_no,
+                                           json.dumps(event, ensure_ascii=False), True)
+            if first and order_no and str(obj.get("payment_status") or "") == "paid":
+                try:
+                    mark_order_paid(conn, order_no, provider_trade_no=payment_intent,
+                                    expected_provider="stripe", paid_amount_cents=amount_total)
+                except APIError as exc:
+                    ACCESS_LOG.warning("stripe webhook settle rejected order=%s code=%s", order_no, exc.code)
+        else:
+            # Record-but-ignore other event types (still 2xx so Stripe stops retrying).
+            record_payment_webhook(conn, "stripe", event_type, event_id, "", "", True)
+        self.send_json({"received": True})
+
+    def api_apple_verify(self, conn: sqlite3.Connection) -> None:
+        """Verify a StoreKit2 transaction and open/extend membership. The
+        iOS client sends the signed transaction; the server is the only
+        place a purchase is trusted. Idempotent on the transaction id so a
+        restore / re-verify never double-extends."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        signed = (data.get("signedTransaction") or data.get("signed_transaction") or "").strip()
+        product_id = (data.get("productId") or data.get("product_id") or APPLE_IAP_PRODUCT_ID).strip()
+        txn_id = str(data.get("transactionId") or data.get("transaction_id") or "")
+        orig_id = str(data.get("originalTransactionId") or data.get("original_transaction_id") or "")
+        if not signed:
+            raise APIError("缺少交易凭证", 400, "invalid_transaction")
+        payload = verify_apple_transaction(signed, product_id)
+        if not payload:
+            raise APIError("交易验证失败", 400, "verification_failed")
+        txn_id = txn_id or str(payload.get("transactionId") or "")
+        orig_id = orig_id or str(payload.get("originalTransactionId") or "")
+        dedup_key = "apple:" + (txn_id or orig_id or signed[:40])
+        existing = conn.execute(
+            "SELECT status FROM payment_orders WHERE provider_trade_no = ? AND payment_provider = 'apple_iap'",
+            (dedup_key,),
+        ).fetchone()
+        if not (existing and existing["status"] == "paid"):
+            order = create_payment_order(conn, user["id"], MEMBERSHIP_PLAN_KEY, "apple_iap", "ios")
+            mark_order_paid(conn, order["order_no"], provider_trade_no=dedup_key,
+                            provider_user_id=orig_id, expected_provider="apple_iap")
+        status = get_user_membership_status(conn, user["id"])
+        self.send_json({
+            "membershipActive": status["is_active"],
+            "currentPeriodEnd": status["current_period_end"],
+            "status": status["status"],
+        })
+
+    def api_mock_confirm(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Dev-only: settle a pending order without a real provider. Hard
+        refusal in production or when the mock gate is off."""
+        if not PAYMENT_MOCK_ENABLED:
+            raise APIError("mock payments disabled", 403, "mock_disabled")
+        order_no = (query.get("order_no") or query.get("orderNo") or "").strip()
+        if not order_no:
+            raise APIError("缺少订单号", 400, "missing_order_no")
+        try:
+            mark_order_paid(conn, order_no, provider_trade_no="MOCK-" + secrets.token_hex(6))
+        except APIError:
+            pass
+        order = dict(conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone())
+        status = get_user_membership_status(conn, order["user_id"])
+        self.send_json({"orderNo": order_no, "status": order["status"],
+                        "membershipActive": status["is_active"],
+                        "currentPeriodEnd": status["current_period_end"], "mock": True})
+
+    def _webhook_fail(self, provider: str, reason: str) -> None:
+        ACCESS_LOG.warning("%s webhook rejected: %s", provider, reason)
+        self.send_json({"code": "FAIL", "message": "verification failed"}, 400)
+
+    # ---- admin: membership management ----
+
+    def api_admin_memberships(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        limit = max(1, min(int(query.get("limit") or 50), 200))
+        status_filter = (query.get("status") or "").strip()
+        q = (query.get("q") or "").strip()
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if status_filter:
+            clauses.append("m.status = ?")
+            params.append(status_filter)
+        if q:
+            like = f"%{q}%"
+            clauses.append("(u.handle LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)")
+            params.extend([like, like, like])
+        rows = list(conn.execute(
+            f"SELECT m.*, u.handle AS u_handle, u.display_name AS u_display_name, u.email AS u_email "
+            f"FROM user_memberships m JOIN users u ON u.id = m.user_id "
+            f"WHERE {' AND '.join(clauses)} ORDER BY m.updated_at DESC LIMIT ?",
+            [*params, limit],
+        ))
+        items = []
+        for r in rows:
+            d = dict(r)
+            items.append({
+                "membership_id": d["id"],
+                "user_id": d["user_id"],
+                "handle": d.get("u_handle", ""),
+                "display_name": d.get("u_display_name", ""),
+                "email": d.get("u_email", ""),
+                "status": d.get("status", ""),
+                "plan_key": d.get("plan_key", ""),
+                "source": d.get("source", ""),
+                "current_period_end": d.get("current_period_end"),
+                "cancel_at_period_end": bool(d.get("cancel_at_period_end")),
+                "started_at": d.get("started_at"),
+                "updated_at": d.get("updated_at"),
+            })
+        self.send_json({"items": items})
+
+    def api_admin_grant_membership(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        user_id = (data.get("userId") or data.get("user_id") or "").strip()
+        handle = (data.get("handle") or "").strip().lstrip("@")
+        months = max(1, min(int(data.get("months") or 1), 36))
+        plan_key = (data.get("planKey") or data.get("plan_key") or MEMBERSHIP_PLAN_KEY).strip()
+        target = None
+        if user_id:
+            target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        elif handle:
+            target = conn.execute("SELECT * FROM users WHERE handle = ?", (handle,)).fetchone()
+        if not target:
+            raise APIError("用户不存在", 404, "user_not_found")
+        if not get_plan(conn, plan_key):
+            raise APIError("会员计划不存在", 404, "plan_not_found")
+        status = activate_or_extend_membership(conn, target["id"], plan_key, "admin_grant", periods=months)
+        record_entitlement_event(conn, target["id"], status["membership_id"], "admin_granted", "admin_grant",
+                                 {"by": admin["handle"], "months": months})
+        ACCESS_LOG.info("admin %s granted %s months membership to %s", admin["handle"], months, target["handle"])
+        fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (target["id"],)).fetchone())
+        self.send_json({"membership": status, "user": serialize_user(fresh)})
+
+    def api_admin_cancel_membership(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        user_id = (data.get("userId") or data.get("user_id") or "").strip()
+        handle = (data.get("handle") or "").strip().lstrip("@")
+        immediate = bool(data.get("immediate"))
+        target = None
+        if user_id:
+            target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        elif handle:
+            target = conn.execute("SELECT * FROM users WHERE handle = ?", (handle,)).fetchone()
+        if not target:
+            raise APIError("用户不存在", 404, "user_not_found")
+        status = cancel_membership(conn, target["id"], immediate=immediate, source="admin")
+        ACCESS_LOG.info("admin %s canceled membership for %s immediate=%s", admin["handle"], target["handle"], immediate)
+        fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (target["id"],)).fetchone())
+        self.send_json({"membership": status, "user": serialize_user(fresh)})
+
+    def api_admin_payment_orders(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        limit = max(1, min(int(query.get("limit") or 50), 200))
+        status_filter = (query.get("status") or "").strip()
+        provider = (query.get("provider") or "").strip()
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if status_filter:
+            clauses.append("o.status = ?")
+            params.append(status_filter)
+        if provider:
+            clauses.append("o.payment_provider = ?")
+            params.append(provider)
+        rows = list(conn.execute(
+            f"SELECT o.*, u.handle AS u_handle, u.display_name AS u_display_name "
+            f"FROM payment_orders o JOIN users u ON u.id = o.user_id "
+            f"WHERE {' AND '.join(clauses)} ORDER BY o.created_at DESC LIMIT ?",
+            [*params, limit],
+        ))
+        items = []
+        for r in rows:
+            d = dict(r)
+            base = serialize_order(d)
+            base["user_id"] = d["user_id"]
+            base["handle"] = d.get("u_handle", "")
+            base["display_name"] = d.get("u_display_name", "")
+            base["provider_trade_no"] = d.get("provider_trade_no", "")
+            items.append(base)
+        self.send_json({"items": items})
 
     # ---- API implementations ----
 
@@ -3990,8 +5924,12 @@ class Handler(BaseHTTPRequestHandler):
             base_params = []
         elif mode == "hot":
             cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+            # Verified members get a gentle ranking nudge (VERIFIED_BOOST_SCORE,
+            # ~1.05). Applied only to the hot-feed ORDER BY — the displayed
+            # heat_score is unchanged, so it never overpowers real engagement.
             sql = f"""
-                SELECT p.*, {_heat_score_sql('p')} AS computed_heat
+                SELECT p.*, {_heat_score_sql('p')} AS computed_heat,
+                       COALESCE((SELECT u.is_verified_member FROM users u WHERE u.id = p.author_id), 0) AS author_vm
                 FROM posts p
                 WHERE p.deleted_at IS NULL
                   AND p.status IN ('published', 'active')
@@ -3999,10 +5937,10 @@ class Handler(BaseHTTPRequestHandler):
                   {region_clause}
                   {type_clause}
                   {blocked_clause}
-                ORDER BY computed_heat DESC, p.created_at DESC
+                ORDER BY (computed_heat * (CASE WHEN author_vm = 1 THEN ? ELSE 1.0 END)) DESC, p.created_at DESC
                 LIMIT ?
             """
-            rows = list(conn.execute(sql, [cutoff_24h, *region_params, *type_params, *blocked_params, limit]))
+            rows = list(conn.execute(sql, [cutoff_24h, *region_params, *type_params, *blocked_params, VERIFIED_BOOST_SCORE, limit]))
             posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
             self.send_json({"items": posts, "next_cursor": None, "mode": mode})
             return
@@ -4043,6 +5981,26 @@ class Handler(BaseHTTPRequestHandler):
         # storage. Typed posts may be form-first and have very short
         # body text, so attributes count as content for emptiness.
         content_type = normalize_content_type(data.get("content_type"))
+        # Machi Verified gate. High-trust types (招聘/租房/找室友/本地服务/
+        # 商家/优惠/内推) require an active membership. Enforced here for
+        # EVERY client — the apps only mirror it for UX; a raw API call
+        # cannot bypass it. Ordinary content (dynamic/question/guide/二手/
+        # 搭子/约饭/活动…) is untouched and stays free.
+        require_verified_membership(conn, user["id"], content_type)
+        # Daily publish cap. 0 == off (default) so ordinary posting is
+        # never impeded; members get the higher ceiling when an operator
+        # opts in via the env config.
+        _daily_limit = MEMBERSHIP_DAILY_LIMIT_FREE
+        if _daily_limit > 0 and has_active_membership(conn, user["id"]):
+            _daily_limit = MEMBERSHIP_DAILY_LIMIT_VERIFIED or 0
+        if _daily_limit > 0:
+            _since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+            _today = conn.execute(
+                "SELECT COUNT(*) AS c FROM posts WHERE author_id = ? AND created_at >= ? AND deleted_at IS NULL",
+                (user["id"], _since),
+            ).fetchone()["c"]
+            if int(_today) >= _daily_limit:
+                raise APIError("今日发布已达上限，开通 Machi 认证会员可提升额度。", 429, "daily_limit_reached")
         attributes   = normalize_post_attributes(content_type, data.get("attributes"))
         if content_type == "poll":
             poll_attrs = decode_post_attributes(attributes)

@@ -24,6 +24,7 @@ import { compactNumber, relativeTime, tokenizeContent } from "@/lib/format";
 import { useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import type { KXPost } from "@/lib/types";
+import { showVerifiedBadge } from "@/lib/types";
 import { useQueryClient } from "@tanstack/react-query";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { MediaGrid } from "@/components/design/MediaGrid";
@@ -240,7 +241,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
             >
               {displayAuthor?.display_name || t("unknown_user")}
             </Link>
-            {displayAuthor?.is_verified ? <VerifiedBadge /> : null}
+            {showVerifiedBadge(displayAuthor) ? <VerifiedBadge /> : null}
             <span className="text-kx-muted text-kx-meta truncate">
               @{displayAuthor?.handle || "unknown"} · {relativeTime(displayPost.created_at)}
             </span>
@@ -834,7 +835,7 @@ function QuotedPreview({ post }: { post: KXPost }) {
       <div className="flex items-center gap-1.5 min-w-0">
         <Avatar user={author || undefined} size={20} />
         <span className="font-semibold text-sm text-kx-text truncate">{author?.display_name || "未知用户"}</span>
-        {author?.is_verified ? <VerifiedBadge /> : null}
+        {showVerifiedBadge(author) ? <VerifiedBadge /> : null}
         <span className="text-kx-muted text-xs truncate">@{author?.handle || "unknown"}</span>
       </div>
       <p className="text-sm text-kx-text mt-1 line-clamp-4 whitespace-pre-wrap break-words">{post.content}</p>

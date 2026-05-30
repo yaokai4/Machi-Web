@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { BarChart3, Image as ImageIcon, Hash, X, Loader2, Send, FileWarning, Languages, Play, Plus } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { useCompose, useLanguagePreference, useSession, useToasts } from "@/lib/store";
 import { Dialog } from "@/components/design/Dialog";
-import { Avatar } from "@/components/design/Avatar";
+import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "@/lib/i18n";
 import clsx from "clsx";
@@ -14,6 +15,7 @@ import {
   CONTENT_TYPES,
   CONTENT_TYPE_LABELS,
   contentLanguageServerTag,
+  contentTypeRequiresMembership,
   type ContentLanguage,
   type ContentType,
   type KXMedia,
@@ -152,6 +154,9 @@ export function Composer() {
   const hasGenericPayload = content.trim().length > 0 || media.length > 0 || tags.length > 0;
   const strictStructuredPost = contentType === "poll";
   const canPublish = (missingRequired.length === 0 && (hasAttributes || hasGenericPayload)) || (!strictStructuredPost && hasGenericPayload);
+  // Machi Verified gate: high-trust types need an active membership. The
+  // server enforces it too (403 MEMBERSHIP_REQUIRED) — this just gates UX.
+  const needsMembership = contentTypeRequiresMembership(contentType) && !user?.is_verified_member;
 
   const onFiles = async (files: FileList | File[]) => {
     const array = Array.from(files);
@@ -195,6 +200,10 @@ export function Composer() {
       });
       return;
     }
+    if (needsMembership) {
+      pushToast({ kind: "error", message: t("compose_membership_required") });
+      return;
+    }
     setSubmitting(true);
     try {
       const finalAttributes =
@@ -225,11 +234,15 @@ export function Composer() {
       queryClient.invalidateQueries({ queryKey: ["drafts"] });
       close();
     } catch (err) {
-      pushToast({ kind: "error", message: (err as APIError).message });
+      const e = err as APIError;
+      pushToast({
+        kind: "error",
+        message: e.code === "MEMBERSHIP_REQUIRED" ? t("compose_membership_required") : e.message,
+      });
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, content, media, tags, draftId, pushToast, queryClient, close, contentType, attributes, user, selectedLanguage, canPublish, missingRequired, t]);
+  }, [submitting, content, media, tags, draftId, pushToast, queryClient, close, contentType, attributes, user, selectedLanguage, canPublish, needsMembership, missingRequired, t]);
 
   // Cmd/Ctrl+Enter publishes and matches the rest of Machi's shortcut convention.
   useEffect(() => {
@@ -295,10 +308,10 @@ export function Composer() {
           <button
             className={clsx(
               "kx-button-primary inline-flex items-center gap-1.5",
-              !canPublish && "opacity-60 cursor-not-allowed",
+              (!canPublish || needsMembership) && "opacity-60 cursor-not-allowed",
             )}
             onClick={publish}
-            disabled={submitting || !canPublish}
+            disabled={submitting || !canPublish || needsMembership}
             title={!canPublish && missingRequired.length > 0 ? `还差: ${missingRequired.join(" · ")}` : undefined}
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
@@ -344,6 +357,21 @@ export function Composer() {
                 <div className="truncate">{[user?.country, user?.province, user?.city].filter(Boolean).join(" / ") || "发布后可在 App 设置当前地区"}</div>
               </div>
             </div>
+            {needsMembership ? (
+              <div className="mb-3 rounded-kx-md border border-kx-verified/30 bg-kx-accentSoft px-3 py-2 text-xs">
+                <div className="flex items-start gap-1.5 text-kx-text">
+                  <VerifiedBadge />
+                  <span>{t("compose_membership_required")}</span>
+                </div>
+                <Link
+                  href="/membership"
+                  className="mt-1.5 inline-block font-bold text-kx-accent hover:underline"
+                  onClick={close}
+                >
+                  {t("compose_membership_cta")}
+                </Link>
+              </div>
+            ) : null}
             <label className="block mb-3 text-xs font-semibold text-kx-muted">
               <span className="inline-flex items-center gap-1">
                 <Languages className="w-3.5 h-3.5" /> 帖子语言

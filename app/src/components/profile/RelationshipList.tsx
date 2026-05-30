@@ -11,6 +11,7 @@ import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { useSession, useToasts } from "@/lib/store";
 import type { KXUser } from "@/lib/types";
+import { showVerifiedBadge } from "@/lib/types";
 
 interface RelationshipListProps {
   handle: string;
@@ -87,7 +88,7 @@ export function RelationshipList({ handle, kind }: RelationshipListProps) {
                 <div className="flex-1 min-w-0">
                   <Link href={`/u/${u.handle}`} className="font-semibold inline-flex items-center gap-1 hover:underline">
                     {u.display_name}
-                    {u.is_verified ? <VerifiedBadge /> : null}
+                    {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                   </Link>
                   <div className="text-xs text-kx-muted">@{u.handle}</div>
                   {u.bio ? <p className="text-sm text-kx-subtle line-clamp-2 mt-1">{u.bio}</p> : null}
