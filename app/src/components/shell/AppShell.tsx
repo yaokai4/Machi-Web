@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   Sun,
   Moon,
+  Newspaper,
   User as UserIcon,
   Hash,
   X,
@@ -42,6 +43,7 @@ interface AppShellProps {
 const NAV_ITEMS = [
   { href: "/home", labelKey: "nav_home" as I18nKey, icon: Home, key: "home", badgeKey: undefined as undefined | "notifications" | "messages" },
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
+  { href: "/news", labelKey: "nav_news" as I18nKey, icon: Newspaper, key: "news", badgeKey: undefined },
   { href: "/search", labelKey: "nav_search" as I18nKey, icon: Search, key: "search", badgeKey: undefined },
   { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
   { href: "/messages", labelKey: "nav_messages" as I18nKey, icon: Mail, key: "messages", badgeKey: "messages" as const },

@@ -125,7 +125,7 @@ export const REGION_CITIES: Record<string, RegionCity[]> = {
   ma: [{ code: "boston", name: "波士顿" }],
   nj: [{ code: "newark", name: "纽瓦克" }],
   uk: [{ code: "london", name: "伦敦" }, { code: "manchester", name: "曼彻斯特" }, { code: "edinburgh", name: "爱丁堡" }],
-  ca_flat: [{ code: "toronto", name: "多伦多" }, { code: "vancouver", name: "温哥华" }],
+  ca_flat: [{ code: "toronto", name: "多伦多" }, { code: "vancouver", name: "温哥华" }, { code: "montreal", name: "蒙特利尔" }],
   au: [{ code: "sydney", name: "悉尼" }, { code: "melbourne", name: "墨尔本" }, { code: "brisbane", name: "布里斯班" }, { code: "perth", name: "珀斯" }],
   sg: [{ code: "singapore", name: "新加坡" }],
   kr: [{ code: "seoul", name: "首尔" }, { code: "busan", name: "釜山" }],
@@ -150,7 +150,7 @@ export const POPULAR_REGION_CODES = [
   "jp.tokyo.tokyo", "jp.osaka.osaka",
   "jp.kyoto.kyoto", "jp.fukuoka.fukuoka", "jp.aichi.nagoya",
   "us.ny.nyc", "us.ca.la", "us.ca.sf", "us.wa.seattle",
-  "ca.toronto", "ca.vancouver",
+  "ca.toronto", "ca.vancouver", "ca.montreal",
   "au.sydney", "au.melbourne",
   "uk.london",
   "sg.singapore", "kr.seoul",
@@ -273,7 +273,7 @@ export function hotCitiesForCountry(country?: string): RegionInfo[] {
           "cn.beijing.beijing", "cn.shanghai.shanghai", "cn.guangdong.shenzhen",
           "cn.guangdong.guangzhou", "cn.zhejiang.hangzhou", "cn.sichuan.chengdu",
           "jp.tokyo.tokyo", "jp.osaka.osaka", "us.ny.nyc", "us.ca.la",
-          "uk.london", "ca.vancouver",
+          "uk.london", "ca.vancouver", "ca.montreal",
         ];
   return codes.map((code) => resolveRegion(code)).filter((region): region is RegionInfo => Boolean(region));
 }

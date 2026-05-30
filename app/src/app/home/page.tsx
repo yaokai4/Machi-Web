@@ -14,6 +14,7 @@ import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
 import { useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import { Avatar } from "@/components/design/Avatar";
+import { LocalNewsStrip } from "@/components/news/LocalNewsStrip";
 import { regionFromUser, regionHeaderLabel, type RegionInfo } from "@/lib/regions";
 import clsx from "clsx";
 
@@ -188,6 +189,11 @@ export default function HomePage() {
       </div>
 
       <div className="px-3 sm:px-4 py-3 space-y-3">
+        <LocalNewsStrip
+          country={currentRegion?.country_code || userCountry}
+          city={currentRegion?.city_code || userCity}
+          title="本地资讯台"
+        />
         {feed.isLoading ? (
           <>
             <PostSkeleton />

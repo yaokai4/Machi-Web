@@ -15,6 +15,7 @@ const ZH_HANS = {
   appName: "Machi",
   nav_home: "首页",
   nav_explore: "发现",
+  nav_news: "资讯",
   nav_search: "搜索",
   nav_notifications: "通知",
   nav_messages: "私信",
@@ -251,6 +252,7 @@ type Dict = Record<DictKey, string>;
 const ZH_HANT: Partial<Dict> = {
   nav_home: "首頁",
   nav_explore: "發現",
+  nav_news: "資訊",
   nav_search: "搜尋",
   nav_notifications: "通知",
   nav_messages: "私訊",
@@ -316,6 +318,7 @@ const ZH_HANT: Partial<Dict> = {
 const EN: Partial<Dict> = {
   nav_home: "Home",
   nav_explore: "Explore",
+  nav_news: "News",
   nav_search: "Search",
   nav_notifications: "Notifications",
   nav_messages: "Messages",
@@ -528,6 +531,7 @@ const EN: Partial<Dict> = {
 const JA: Partial<Dict> = {
   nav_home: "ホーム",
   nav_explore: "発見",
+  nav_news: "ニュース",
   nav_search: "検索",
   nav_notifications: "通知",
   nav_messages: "メッセージ",

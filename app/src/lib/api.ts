@@ -145,6 +145,147 @@ export type VisitorSummary = {
   geoip: string;
 };
 
+export type NewsCategory =
+  | "local_news" | "traffic_alert" | "weather_alert" | "earthquake_alert" | "typhoon_alert"
+  | "policy_update" | "immigration_visa" | "city_event" | "life_notice" | "housing_notice"
+  | "housing_market" | "work_study" | "public_safety" | "editor_pick" | "weekly_digest" | "other";
+
+export type NewsSource = {
+  id: string;
+  name: string;
+  source_key: string;
+  source_type: "rss" | "webpage" | "html_list" | "manual";
+  source_url: string;
+  homepage_url: string;
+  allowed_domain: string;
+  country: string;
+  city: string;
+  language: string;
+  default_category: NewsCategory;
+  credibility_level: "official" | "media" | "community" | "commercial";
+  copyright_policy_note: string;
+  crawl_strategy: "rss" | "meta_only" | "html_list" | "manual";
+  list_selector?: string | null;
+  item_selector?: string | null;
+  title_selector?: string | null;
+  link_selector?: string | null;
+  summary_selector?: string | null;
+  date_selector?: string | null;
+  date_format?: string | null;
+  timezone: string;
+  robots_policy: "respect" | "manual_checked";
+  crawl_interval_minutes: number;
+  max_items_per_run: number;
+  request_timeout_ms: number;
+  is_active: boolean;
+  require_manual_review: boolean;
+  last_fetched_at?: string | null;
+  last_success_at?: string | null;
+  last_error: string;
+  deleted_at?: string | null;
+  deleted?: boolean;
+  created_by_admin_id: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type NewsItem = {
+  id: string;
+  source_id: string;
+  external_id?: string | null;
+  source_name: string;
+  source_url: string;
+  original_url: string;
+  original_title: string;
+  original_summary?: string | null;
+  original_language: string;
+  published_at?: string | null;
+  fetched_at: string;
+  country: string;
+  city: string;
+  category: NewsCategory;
+  hash_key: string;
+  raw_metadata?: Record<string, unknown>;
+  error_message?: string;
+  status: "fetched" | "draft_created" | "ignored" | "duplicate" | "error" | "deleted";
+  created_at: string;
+  updated_at: string;
+};
+
+export type EditorialPost = {
+  id: string;
+  news_item_id?: string | null;
+  author_type: "local_desk" | "city_editor" | "tokyo_editorial" | "osaka_editorial" | "japan_editorial" | "admin";
+  author_display_name: string;
+  country: string;
+  city: string;
+  language: string;
+  category: NewsCategory;
+  title: string;
+  summary: string;
+  body: string;
+  source_name?: string | null;
+  source_url?: string | null;
+  original_url?: string | null;
+  source_published_at?: string | null;
+  status: "draft" | "pending_review" | "published" | "hidden" | "deleted";
+  review_status: "none" | "needs_review" | "approved" | "rejected";
+  reviewed_by_admin_id?: string | null;
+  reviewed_at?: string | null;
+  published_at?: string | null;
+  view_count: number;
+  share_count: number;
+  click_source_count: number;
+  risk_level: "low" | "medium" | "high";
+  official_source_required: boolean;
+  is_ai_assisted: boolean;
+  ai_model?: string | null;
+  ai_prompt_version?: string | null;
+  created_by_admin_id: string;
+  created_at: string;
+  updated_at: string;
+  tags: string[];
+  save_count: number;
+  comment_count: number;
+  saved: boolean;
+};
+
+export type EditorialComment = {
+  id: string;
+  editorial_post_id: string;
+  author_id: string;
+  content: string;
+  created_at: string;
+  updated_at: string;
+  author?: KXUser | null;
+};
+
+export type NewsDeskDashboard = {
+  stats: {
+    today_fetched: number;
+    today_new?: number;
+    duplicates?: number;
+    pending_items?: number;
+    pending_drafts: number;
+    published: number;
+    failed_sources: number;
+  };
+  recent_posts: EditorialPost[];
+  recent_logs: Array<Record<string, unknown>>;
+};
+
+export type NewsItemsQuery = {
+  source_id?: string;
+  country?: string;
+  city?: string;
+  language?: string;
+  category?: string;
+  status?: string;
+  keyword?: string;
+  page?: number;
+  limit?: number;
+};
+
 const DEFAULT_TIMEOUT_MS = 20_000;
 const RETRYABLE_METHODS = new Set(["GET", "HEAD"]);
 
@@ -371,6 +512,49 @@ export const api = {
   },
   async resolveRegion(code: string): Promise<KXRegion> {
     return request("GET", `/api/regions/resolve?code=${encodeURIComponent(code)}`);
+  },
+
+  // ---- Local News Desk (public) ----
+  async news(opts: {
+    country?: string;
+    city?: string;
+    language?: string;
+    category?: NewsCategory | string;
+    sort?: "latest" | "popular";
+    page?: number;
+    limit?: number;
+  } = {}): Promise<{ items: EditorialPost[]; page: number; limit: number; total: number }> {
+    const usp = new URLSearchParams();
+    for (const [key, value] of Object.entries(opts)) {
+      if (value !== undefined && value !== "") usp.set(key, String(value));
+    }
+    return request("GET", `/api/news?${usp.toString()}`);
+  },
+  async newsDetail(id: string): Promise<{ post: EditorialPost; related: EditorialPost[] }> {
+    return request("GET", `/api/news/${encodeURIComponent(id)}`);
+  },
+  async saveNews(id: string, on: boolean): Promise<EditorialPost> {
+    const { post } = await request<{ post: EditorialPost }>(
+      on ? "POST" : "DELETE",
+      `/api/news/${encodeURIComponent(id)}/save`,
+    );
+    return post;
+  },
+  async shareNews(id: string): Promise<EditorialPost> {
+    const { post } = await request<{ post: EditorialPost }>("POST", `/api/news/${encodeURIComponent(id)}/share`, {});
+    return post;
+  },
+  async trackNewsSourceClick(id: string): Promise<EditorialPost> {
+    const { post } = await request<{ post: EditorialPost }>("POST", `/api/news/${encodeURIComponent(id)}/source-click`, {});
+    return post;
+  },
+  async newsComments(id: string): Promise<EditorialComment[]> {
+    const { items } = await request<{ items: EditorialComment[] }>("GET", `/api/news/${encodeURIComponent(id)}/comments`);
+    return items;
+  },
+  async createNewsComment(id: string, content: string): Promise<EditorialComment> {
+    const { comment } = await request<{ comment: EditorialComment }>("POST", `/api/news/${encodeURIComponent(id)}/comments`, { content });
+    return comment;
   },
 
   // ---- users ----
@@ -688,6 +872,146 @@ export const api = {
   },
   async adminDeleteMarketingCopy(id: string): Promise<void> {
     await request<void>("DELETE", `/api/admin/marketing-copy/${encodeURIComponent(id)}`);
+  },
+
+  // ---- admin: Local News Desk (本地资讯台) ----
+  async adminNewsDesk(): Promise<NewsDeskDashboard> {
+    return request("GET", `/api/admin/news-desk`);
+  },
+  async adminNewsSources(opts: { q?: string; country?: string; city?: string } = {}): Promise<NewsSource[]> {
+    const usp = new URLSearchParams();
+    if (opts.q) usp.set("q", opts.q);
+    if (opts.country) usp.set("country", opts.country);
+    if (opts.city) usp.set("city", opts.city);
+    const { items } = await request<{ items: NewsSource[] }>("GET", `/api/admin/news-sources?${usp.toString()}`);
+    return items;
+  },
+  async adminCreateNewsSource(payload: Partial<NewsSource>): Promise<NewsSource> {
+    const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/news-sources`, payload);
+    return source;
+  },
+  async adminUpdateNewsSource(id: string, patch: Partial<NewsSource>): Promise<NewsSource> {
+    const { source } = await request<{ source: NewsSource }>("PATCH", `/api/admin/news-sources/${encodeURIComponent(id)}`, patch);
+    return source;
+  },
+  async adminToggleNewsSource(id: string): Promise<NewsSource> {
+    const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/news-sources/${encodeURIComponent(id)}/toggle`, {});
+    return source;
+  },
+  async adminFetchNewsSource(id: string): Promise<{ source: NewsSource; log: Record<string, unknown> }> {
+    return request("POST", `/api/admin/news-sources/${encodeURIComponent(id)}/fetch`, {});
+  },
+  async adminFetchAllNewsSources(): Promise<{ items: Array<Record<string, unknown>> }> {
+    return request("POST", `/api/admin/news-sources/fetch-all`, {});
+  },
+  async adminNewsSourceDetail(id: string): Promise<{ source: NewsSource; recent_logs: Array<Record<string, unknown>> }> {
+    return request("GET", `/api/admin/news-sources/${encodeURIComponent(id)}`);
+  },
+  async adminDeleteNewsSource(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/news-sources/${encodeURIComponent(id)}`);
+  },
+  async adminNewsItems(opts: NewsItemsQuery = {}): Promise<{ items: NewsItem[]; page: number; limit: number; total: number }> {
+    const usp = new URLSearchParams();
+    for (const [key, value] of Object.entries(opts)) {
+      if (value !== undefined && value !== "") usp.set(key, String(value));
+    }
+    return request("GET", `/api/admin/news-items?${usp.toString()}`);
+  },
+  async adminCreateEditorialDraftFromItem(id: string): Promise<EditorialPost> {
+    const { post } = await request<{ post: EditorialPost }>("POST", `/api/admin/news-items/${encodeURIComponent(id)}/create-draft`, {});
+    return post;
+  },
+  async adminUpdateNewsItemStatus(id: string, status: "ignored" | "duplicate"): Promise<NewsItem> {
+    const { item } = await request<{ item: NewsItem }>("POST", `/api/admin/news-items/${encodeURIComponent(id)}/${status === "ignored" ? "ignore" : "duplicate"}`, {});
+    return item;
+  },
+  async adminDeleteNewsItem(id: string): Promise<NewsItem> {
+    const { item } = await request<{ item: NewsItem }>("DELETE", `/api/admin/news-items/${encodeURIComponent(id)}`);
+    return item;
+  },
+  async adminEditorialPosts(opts: {
+    status?: string; country?: string; city?: string; language?: string; category?: string; keyword?: string; page?: number; limit?: number;
+  } = {}): Promise<{ items: EditorialPost[]; page: number; limit: number; total: number }> {
+    const usp = new URLSearchParams();
+    for (const [key, value] of Object.entries(opts)) {
+      if (value !== undefined && value !== "") usp.set(key, String(value));
+    }
+    return request("GET", `/api/admin/editorial-posts?${usp.toString()}`);
+  },
+  async adminCreateEditorialPost(payload: Partial<EditorialPost>): Promise<EditorialPost> {
+    const { post } = await request<{ post: EditorialPost }>("POST", `/api/admin/editorial-posts`, payload);
+    return post;
+  },
+  async adminUpdateEditorialPost(id: string, patch: Partial<EditorialPost>): Promise<EditorialPost> {
+    const { post } = await request<{ post: EditorialPost }>("PATCH", `/api/admin/editorial-posts/${encodeURIComponent(id)}`, patch);
+    return post;
+  },
+  async adminEditorialAiAssist(id: string, payload: { task?: string; language?: string; note?: string; apply?: boolean } = {}): Promise<{ assist: Record<string, unknown>; post: EditorialPost }> {
+    return request("POST", `/api/admin/editorial-posts/${encodeURIComponent(id)}/ai-assist`, payload);
+  },
+  async adminEditorialTransition(id: string, action: "submit-review" | "approve" | "reject" | "publish" | "hide" | "restore"): Promise<EditorialPost> {
+    const { post } = await request<{ post: EditorialPost }>("POST", `/api/admin/editorial-posts/${encodeURIComponent(id)}/${action}`, {});
+    return post;
+  },
+  async adminDeleteEditorialPost(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/editorial-posts/${encodeURIComponent(id)}`);
+  },
+  async adminNewsDeskLogs(limit = 80): Promise<{ fetch_logs: Array<Record<string, unknown>>; action_logs: Array<Record<string, unknown>> }> {
+    return request("GET", `/api/admin/news-desk/logs?limit=${limit}`);
+  },
+  async japanNewsCrawlerDashboard(): Promise<NewsDeskDashboard> {
+    return request("GET", `/api/admin/japan-news-crawler/dashboard`);
+  },
+  async japanNewsCrawlerSources(opts: { q?: string; country?: string; city?: string } = {}): Promise<NewsSource[]> {
+    const usp = new URLSearchParams();
+    if (opts.q) usp.set("q", opts.q);
+    if (opts.country) usp.set("country", opts.country);
+    if (opts.city) usp.set("city", opts.city);
+    const { items } = await request<{ items: NewsSource[] }>("GET", `/api/admin/japan-news-crawler/sources?${usp.toString()}`);
+    return items;
+  },
+  async japanNewsCrawlerCreateSource(payload: Partial<NewsSource>): Promise<NewsSource> {
+    const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/japan-news-crawler/sources`, payload);
+    return source;
+  },
+  async japanNewsCrawlerUpdateSource(id: string, patch: Partial<NewsSource>): Promise<NewsSource> {
+    const { source } = await request<{ source: NewsSource }>("PATCH", `/api/admin/japan-news-crawler/sources/${encodeURIComponent(id)}`, patch);
+    return source;
+  },
+  async japanNewsCrawlerDeleteSource(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/japan-news-crawler/sources/${encodeURIComponent(id)}`);
+  },
+  async japanNewsCrawlerToggleSource(id: string): Promise<NewsSource> {
+    const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/japan-news-crawler/sources/${encodeURIComponent(id)}/toggle`, {});
+    return source;
+  },
+  async japanNewsCrawlerFetchSource(id: string): Promise<{ source: NewsSource; log: Record<string, unknown> }> {
+    return request("POST", `/api/admin/japan-news-crawler/sources/${encodeURIComponent(id)}/fetch`, {});
+  },
+  async japanNewsCrawlerFetchAll(): Promise<{ items: Array<Record<string, unknown>> }> {
+    return request("POST", `/api/admin/japan-news-crawler/fetch-all`, {});
+  },
+  async japanNewsCrawlerItems(opts: NewsItemsQuery = {}): Promise<{ items: NewsItem[]; page: number; limit: number; total: number }> {
+    const usp = new URLSearchParams();
+    for (const [key, value] of Object.entries(opts || {})) {
+      if (value !== undefined && value !== "") usp.set(key, String(value));
+    }
+    return request("GET", `/api/admin/japan-news-crawler/items?${usp.toString()}`);
+  },
+  async japanNewsCrawlerCreateDraftFromItem(id: string): Promise<EditorialPost> {
+    const { post } = await request<{ post: EditorialPost }>("POST", `/api/admin/japan-news-crawler/items/${encodeURIComponent(id)}/create-draft`, {});
+    return post;
+  },
+  async japanNewsCrawlerUpdateItemStatus(id: string, status: "ignored" | "duplicate"): Promise<NewsItem> {
+    const { item } = await request<{ item: NewsItem }>("POST", `/api/admin/japan-news-crawler/items/${encodeURIComponent(id)}/${status === "ignored" ? "ignore" : "duplicate"}`, {});
+    return item;
+  },
+  async japanNewsCrawlerDeleteItem(id: string): Promise<NewsItem> {
+    const { item } = await request<{ item: NewsItem }>("DELETE", `/api/admin/japan-news-crawler/items/${encodeURIComponent(id)}`);
+    return item;
+  },
+  async japanNewsCrawlerLogs(limit = 80): Promise<{ fetch_logs: Array<Record<string, unknown>>; action_logs: Array<Record<string, unknown>> }> {
+    return request("GET", `/api/admin/japan-news-crawler/logs?limit=${limit}`);
   },
 
   // ---- admin: City Seed Bot (城市内容助手) ----
