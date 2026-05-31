@@ -246,7 +246,7 @@ export function regionDisplayName(region?: RegionInfo): string {
 }
 
 export function regionHeaderLabel(region?: RegionInfo): string {
-  return region ? `${region.country_emoji} ${region.city_name}` : "选择城市";
+  return region ? `${region.country_emoji} ${region.country_name} · ${region.city_name}` : "选择国家 / 城市";
 }
 
 export function regionShortLabel(region?: RegionInfo): string {

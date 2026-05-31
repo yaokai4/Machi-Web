@@ -19,6 +19,14 @@ function newsCityLabel(city?: string | null): string {
   return "Japan-wide";
 }
 
+function newsLanguageLabel(language?: string | null): string {
+  const normalized = String(language || "").trim().toLowerCase();
+  if (normalized.startsWith("ja")) return "日本語";
+  if (normalized.startsWith("zh")) return "中文";
+  if (normalized.startsWith("en")) return "English";
+  return language || "多语言";
+}
+
 function editorialNote(post: EditorialPost) {
   if (post.official_source_required || post.risk_level === "high") {
     return {
@@ -140,7 +148,7 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
         <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-bold text-kx-muted">
           <span className="rounded-full bg-kx-accentSoft px-2 py-1 text-kx-accent">{NEWS_CATEGORY_LABELS[post.category] || post.category}</span>
           <span>{newsCityLabel(post.city)}</span>
-          <span>{post.language}</span>
+          <span>{newsLanguageLabel(post.language)}</span>
           {post.published_at ? <span>{relativeTime(post.published_at)}</span> : null}
           {post.is_ai_assisted ? <span className="rounded-full bg-sky-400/10 px-2 py-1 text-sky-700 dark:text-sky-300">AI 辅助整理</span> : null}
         </div>

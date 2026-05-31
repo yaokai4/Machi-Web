@@ -4,9 +4,8 @@ import { ChevronRight, MapPin } from "lucide-react";
 import { useSession } from "@/lib/store";
 import { regionDisplayName, regionFromUser } from "@/lib/regions";
 
-/// Card surfacing the user's currently-browsing region. Mirrors the iOS
-/// `CurrentRegionCard` and gives the discover landing page a clear
-/// "you're here" frame.
+/// Lightweight current-region strip. It keeps the country / city context
+/// visible without adding another heavy bordered card to the page.
 export function CurrentRegionCard({ onChange }: { onChange?: () => void }) {
   const user = useSession((s) => s.user);
   const region = regionFromUser(user);
@@ -16,25 +15,25 @@ export function CurrentRegionCard({ onChange }: { onChange?: () => void }) {
     <button
       type="button"
       onClick={onChange}
-      className="block w-full rounded-kx-sheet bg-kx-card border border-kx-stroke/70 p-4 text-left shadow-kx hover:border-kx-accent/30 transition"
+      className="block w-full px-1 py-2 text-left transition hover:bg-kx-soft/45"
     >
       <div className="flex items-center gap-3">
-        <span className="grid place-items-center w-12 h-12 rounded-full bg-kx-card/75 border border-kx-stroke/50 text-2xl shrink-0">
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-kx-soft text-2xl">
           {region?.country_emoji || "⌖"}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-bold text-kx-text truncate">
+          <div className="truncate text-base font-black text-kx-text">
             {region ? title : regionDisplayName(region)}
           </div>
-          <div className="text-[11px] text-kx-muted truncate">
+          <div className="truncate text-xs font-semibold text-kx-muted">
             {region
               ? `正在浏览${region.city_name}的本地动态和生活信息`
               : "选择城市后，首页、发现和热榜会围绕本地内容展开"}
           </div>
         </div>
-        <div className="flex items-center gap-1 shrink-0">
+        <div className="flex shrink-0 items-center gap-1 text-kx-accent">
           <MapPin className="w-3.5 h-3.5 text-kx-accent" />
-          <span className="text-xs font-bold text-kx-accent">切换城市</span>
+          <span className="text-xs font-bold">切换国家</span>
           <ChevronRight className="w-3.5 h-3.5 text-kx-muted" />
         </div>
       </div>

@@ -182,7 +182,7 @@ export default function SettingsPage() {
         </Section>
 
         <Section title="偏好">
-          <RowSwitch icon={MapPin} label="地区设置" valueLabel={regionDisplayName(currentRegion)}>
+          <RowSwitch icon={MapPin} label="国家 / 城市" valueLabel={regionDisplayName(currentRegion)}>
             <button type="button" onClick={() => setRegionOpen(true)} className="text-kx-accent text-sm font-bold hover:underline">
               切换
             </button>
@@ -348,7 +348,7 @@ export default function SettingsPage() {
         onClose={() => setRegionOpen(false)}
         onSelect={onSelectRegion}
         initialCountry={user?.country || currentRegion?.country_code}
-        allowsAnyCountry={!user?.country}
+        allowsAnyCountry
         recentCodes={user?.recent_region_codes}
       />
     </AppShell>

@@ -258,7 +258,7 @@ export default function ExplorePage() {
         onClose={() => setRegionPickerOpen(false)}
         onSelect={persistRegion}
         initialCountry={user?.country || currentRegion?.country_code}
-        allowsAnyCountry={!user?.country}
+        allowsAnyCountry
         recentCodes={user?.recent_region_codes}
       />
     </AppShell>

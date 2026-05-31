@@ -41,6 +41,8 @@ def main() -> None:
         ("japan-immigration-visa", "", "immigration_visa", "zh-CN", "在留签证相关公开信息更新", "面向在日生活、学习、工作用户。"),
         ("tokyo-life-notice", "tokyo", "life_notice", "zh-CN", "东京生活手续提醒", "请查看对应官方页面确认最新办理要求。"),
         ("osaka-city-event", "osaka", "city_event", "zh-CN", "大阪公开活动信息", "大阪地区公共活动信息摘要。"),
+        ("tokyo-life-notice-ja", "tokyo", "life_notice", "ja", "東京都の暮らし関連窓口、週内の確認ポイント", "区役所や公共施設を利用する前に、対象地域、受付時間、必要な持ち物を確認してください。"),
+        ("osaka-traffic-alert-ja", "osaka", "traffic_alert", "ja", "大阪エリアの移動前に見ておきたい交通情報", "通勤、通学、週末の外出に影響する可能性があるため、運行会社と自治体の発表を確認してください。"),
     ]
     with server.DB_LOCK, server.db() as conn:
         admin = conn.execute("SELECT id FROM users WHERE role = 'admin' ORDER BY created_at LIMIT 1").fetchone()
@@ -50,7 +52,18 @@ def main() -> None:
             published_at = (now - timedelta(minutes=idx * 9)).isoformat()
             author_type = server._news_author_type_for_scope("jp", city)
             author_name = server._news_author_display_name("jp", city, language, author_type)
-            body = server._safe_editorial_body(language, DEMO_SOURCE, f"https://machicity.com/demo-news/{key}")
+            original_url = f"https://machicity.com/demo-news/{key}"
+            generated = server._editorial_longform_from_source(
+                language=language,
+                city=city,
+                category=category,
+                source_name=DEMO_SOURCE,
+                source_url=original_url,
+                title=title,
+                summary=summary,
+                published_at=published_at,
+            )
+            body = generated["body"]
             existing = conn.execute("SELECT id FROM editorial_posts WHERE id = ?", (post_id,)).fetchone()
             if existing:
                 conn.execute(
@@ -59,13 +72,18 @@ def main() -> None:
                        SET author_type = ?, author_display_name = ?, country = 'jp', city = ?,
                            language = ?, category = ?, title = ?, summary = ?, body = ?,
                            source_name = ?, source_url = ?, original_url = ?, status = 'published',
-                           review_status = 'approved', published_at = ?, is_demo = 1, updated_at = ?
+                           review_status = 'approved', published_at = ?, is_demo = 1,
+                           is_ai_assisted = 1, ai_prompt_version = ?,
+                           quality_score = ?, editorial_disclaimer = ?,
+                           updated_at = ?
                      WHERE id = ?
                     """,
                     (
                         author_type, author_name, city, language, category, title, summary, body,
-                        DEMO_SOURCE, "https://machicity.com/demo-news", f"https://machicity.com/demo-news/{key}",
-                        published_at, server.now_iso(), post_id,
+                        DEMO_SOURCE, "https://machicity.com/demo-news", original_url,
+                        published_at, server.NEWS_DESK_PROMPT_VERSION,
+                        int(generated.get("quality_score") or 0), generated.get("editorial_disclaimer") or "",
+                        server.now_iso(), post_id,
                     ),
                 )
             else:
@@ -76,15 +94,19 @@ def main() -> None:
                          language, category, title, summary, body, source_name, source_url,
                          original_url, source_published_at, status, review_status,
                          reviewed_by_admin_id, reviewed_at, published_at, view_count,
-                         is_ai_assisted, created_by_admin_id, is_demo, created_at, updated_at)
+                         is_ai_assisted, created_by_admin_id, is_demo, ai_prompt_version,
+                         quality_score, editorial_disclaimer, created_at, updated_at)
                     VALUES (?, NULL, ?, ?, 'jp', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published',
-                            'approved', ?, ?, ?, 0, 0, ?, 1, ?, ?)
+                            'approved', ?, ?, ?, 0, 1, ?, 1, ?,
+                            ?, ?, ?, ?)
                     """,
                     (
                         post_id, author_type, author_name, city, language, category, title, summary,
                         body, DEMO_SOURCE, "https://machicity.com/demo-news",
-                        f"https://machicity.com/demo-news/{key}", published_at, admin_id,
-                        published_at, published_at, admin_id, server.now_iso(), server.now_iso(),
+                        original_url, published_at, admin_id,
+                        published_at, published_at, admin_id, server.NEWS_DESK_PROMPT_VERSION,
+                        int(generated.get("quality_score") or 0), generated.get("editorial_disclaimer") or "",
+                        server.now_iso(), server.now_iso(),
                     ),
                 )
     print(f"seeded {len(entries)} published Japan news demo posts into {server.DB_PATH}")

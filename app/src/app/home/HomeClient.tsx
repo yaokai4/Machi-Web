@@ -27,7 +27,7 @@ import { useAuthPrompt, useCompose, useSession, useSettings, useToasts } from "@
 import { useI18n, useUiLocale, type Locale } from "@/lib/i18n";
 import { Avatar } from "@/components/design/Avatar";
 import { LocalNewsStrip } from "@/components/news/LocalNewsStrip";
-import { regionFromUser, regionHeaderLabel, type RegionInfo } from "@/lib/regions";
+import { regionFromUser, type RegionInfo } from "@/lib/regions";
 import clsx from "clsx";
 
 type HotScope = "city" | "country" | "all";
@@ -316,7 +316,7 @@ export default function HomeClient() {
   const langLabel = contentLangLabel(locale);
   const cityName = currentRegion?.city_name || "东京";
   const countryName = currentRegion?.country_name || "日本";
-  const cityButtonLabel = currentRegion ? regionHeaderLabel(currentRegion) : cityName;
+  const countryEmoji = currentRegion?.country_emoji || "🇯🇵";
   const goPublish = () => (user ? compose() : openAuthPrompt("publish"));
   const goPickCity = () => (user ? setRegionPickerOpen(true) : openAuthPrompt("generic"));
   const setTabSmooth = (next: HomeTab) => {
@@ -548,11 +548,14 @@ export default function HomeClient() {
           <button
             type="button"
             onClick={goPickCity}
-            className="inline-flex items-center gap-1 h-9 px-3 rounded-full bg-kx-soft text-sm font-bold text-kx-text hover:bg-kx-stroke/40 transition"
-            title="切换城市"
+            className="inline-flex h-9 min-w-0 items-center gap-1.5 rounded-full bg-kx-soft px-3 text-sm font-bold text-kx-text transition hover:bg-kx-stroke/40"
+            title="切换国家 / 城市"
           >
             <MapPin className="w-3.5 h-3.5 text-kx-accent" />
-            <span className="max-w-[7rem] truncate">{cityButtonLabel}</span>
+            <span className="shrink-0">{countryEmoji}</span>
+            <span className="hidden max-w-[4.75rem] truncate text-kx-subtle sm:inline">{countryName}</span>
+            <span className="hidden text-kx-muted sm:inline">·</span>
+            <span className="max-w-[4.75rem] truncate">{cityName}</span>
           </button>
           <LanguageMenu label={langLabel} current={locale} />
           <div className="ml-auto flex items-center gap-1">
@@ -711,7 +714,7 @@ export default function HomeClient() {
         onClose={() => setRegionPickerOpen(false)}
         onSelect={persistRegion}
         initialCountry={user?.country || currentRegion?.country_code}
-        allowsAnyCountry={!user?.country}
+        allowsAnyCountry
         recentCodes={user?.recent_region_codes}
       />
     </AppShell>

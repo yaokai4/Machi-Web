@@ -9,7 +9,6 @@ import {
   citiesFor,
   countryByCode,
   hotCitiesForCountry,
-  popularRegions,
   provincesFor,
   regionDisplayName,
   regionHeaderLabel,
@@ -19,6 +18,32 @@ import {
   type RegionInfo,
   type RegionProvince,
 } from "@/lib/regions";
+
+const FIRST_TIER_REGION_CODES: Record<string, string[]> = {
+  cn: ["cn.beijing.beijing", "cn.shanghai.shanghai", "cn.guangdong.shenzhen", "cn.guangdong.guangzhou"],
+  jp: ["jp.tokyo.tokyo", "jp.osaka.osaka", "jp.kyoto.kyoto", "jp.aichi.nagoya", "jp.fukuoka.fukuoka"],
+  us: ["us.ny.nyc", "us.ca.la", "us.ca.sf", "us.wa.seattle", "us.tx.austin"],
+  uk: ["uk.london", "uk.manchester", "uk.edinburgh"],
+  ca: ["ca.toronto", "ca.vancouver", "ca.montreal"],
+  au: ["au.sydney", "au.melbourne", "au.brisbane"],
+  sg: ["sg.singapore"],
+  kr: ["kr.seoul", "kr.busan"],
+  th: ["th.bangkok"],
+  my: ["my.kl", "my.penang"],
+  de: ["de.berlin", "de.munich", "de.hamburg"],
+  fr: ["fr.paris", "fr.lyon"],
+  nl: ["nl.amsterdam"],
+};
+
+function firstTierRegionsForCountry(countryCode?: string): RegionInfo[] {
+  const code = countryCode?.toLowerCase() || "jp";
+  const configured = FIRST_TIER_REGION_CODES[code] || [];
+  const regions = configured
+    .map((regionCode) => resolveRegion(regionCode))
+    .filter((region): region is RegionInfo => Boolean(region));
+  if (regions.length) return regions;
+  return hotCitiesForCountry(code).slice(0, 5);
+}
 
 interface RegionPickerDialogProps {
   open: boolean;
@@ -42,22 +67,24 @@ export function RegionPickerDialog({
   const [province, setProvince] = useState<RegionProvince | null>(null);
   const [mounted, setMounted] = useState(false);
   const allowedCountry = allowsAnyCountry ? undefined : initialCountry?.toLowerCase();
+  const homeCountryCode = (initialCountry || allowedCountry || "jp").toLowerCase();
 
   const availableCountries = useMemo(
     () => (allowedCountry ? REGION_COUNTRIES.filter((item) => item.code === allowedCountry) : REGION_COUNTRIES),
     [allowedCountry],
   );
   const currentPopular = useMemo(
-    () => (allowedCountry ? hotCitiesForCountry(allowedCountry) : popularRegions()),
-    [allowedCountry],
+    () => firstTierRegionsForCountry(homeCountryCode),
+    [homeCountryCode],
   );
   const recentRegions = useMemo(
     () =>
       recentCodes
         .map((code) => resolveRegion(code))
         .filter((region): region is RegionInfo => Boolean(region))
+        .filter((region) => region.country_code === homeCountryCode)
         .slice(0, 8),
-    [recentCodes],
+    [recentCodes, homeCountryCode],
   );
   const matches = useMemo(() => searchRegions(query, allowedCountry), [query, allowedCountry]);
 
@@ -101,7 +128,7 @@ export function RegionPickerDialog({
     if (country && !allowedCountry) setCountry(null);
   };
 
-  const title = province?.name || country?.name || "选择地区";
+  const title = province?.name || country?.name || "选择国家 / 城市";
   const canGoBack = Boolean(province || (country && !allowedCountry));
 
   const node = (
@@ -161,6 +188,7 @@ export function RegionPickerDialog({
           ) : (
             <RegionPickerLanding
               availableCountries={availableCountries}
+              homeCountryCode={homeCountryCode}
               currentPopular={currentPopular}
               recentRegions={recentRegions}
               onCountry={setCountry}
@@ -177,43 +205,33 @@ export function RegionPickerDialog({
 
 function RegionPickerLanding({
   availableCountries,
+  homeCountryCode,
   currentPopular,
   recentRegions,
   onCountry,
   onSelect,
 }: {
   availableCountries: RegionCountry[];
+  homeCountryCode: string;
   currentPopular: RegionInfo[];
   recentRegions: RegionInfo[];
   onCountry: (country: RegionCountry) => void;
   onSelect: (region: RegionInfo) => void;
 }) {
-  const domestic = currentPopular.filter((region) => region.country_code === "cn");
-  const overseas = currentPopular.filter((region) => region.country_code !== "cn");
+  const homeCountry = countryByCode(homeCountryCode);
 
   return (
     <div className="space-y-5">
-      {recentRegions.length ? <RegionChipSection title="最近地区" regions={recentRegions} onSelect={onSelect} /> : null}
-      {domestic.length ? <RegionChipSection title="热门国内城市" regions={domestic} onSelect={onSelect} /> : null}
-      {overseas.length ? (
-        <section className="space-y-3">
-          <h3 className="kx-section-title px-0">海外热门城市</h3>
-          <div className="space-y-3">
-            {REGION_COUNTRIES.filter((country) => country.code !== "cn").map((country) => {
-              const regions = overseas.filter((region) => region.country_code === country.code);
-              if (!regions.length) return null;
-              return (
-                <div key={country.code} className="space-y-2">
-                  <div className="text-xs font-black text-kx-muted">{country.emoji} {country.name}</div>
-                  <RegionChipGrid regions={regions} onSelect={onSelect} />
-                </div>
-              );
-            })}
-          </div>
-        </section>
+      {currentPopular.length ? (
+        <RegionChipSection
+          title={`${homeCountry?.emoji || ""} 本国热门城市`}
+          regions={currentPopular}
+          onSelect={onSelect}
+        />
       ) : null}
+      {recentRegions.length ? <RegionChipSection title="最近选择" regions={recentRegions} onSelect={onSelect} /> : null}
       <section>
-        <h3 className="kx-section-title mb-2 px-0">全部国家</h3>
+        <h3 className="kx-section-title mb-2 px-0">按国家切换</h3>
         <div className="overflow-hidden rounded-kx-lg bg-kx-card ring-1 ring-kx-stroke/70">
           {availableCountries.map((country) => (
             <button
