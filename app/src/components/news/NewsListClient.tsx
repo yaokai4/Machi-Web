@@ -30,6 +30,9 @@ const CATEGORIES: Array<{ value: "" | NewsCategory; label: string }> = [
   { value: "education", label: "教育" },
   { value: "health", label: "健康" },
   { value: "travel", label: "旅行" },
+  { value: "resident_service", label: "居民服务" },
+  { value: "train_delay", label: "列车延误" },
+  { value: "disaster_prevention", label: "防灾" },
   { value: "editor_pick", label: "精选" },
 ];
 

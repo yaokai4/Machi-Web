@@ -279,7 +279,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
       </div>
 
       <div className="mt-4">
-        <div className="sticky top-0 z-30 border-y border-kx-stroke/40 bg-kx-bg/85 px-3 py-2 backdrop-blur supports-[backdrop-filter]:bg-kx-bg/70">
+        <div className="sticky top-0 z-30 bg-kx-bg/90 px-3 backdrop-blur supports-[backdrop-filter]:bg-kx-bg/75">
           <NavTabs
             items={filteredSegments.map((s) => ({ value: s.value, label: s.label }))}
             value={segment}

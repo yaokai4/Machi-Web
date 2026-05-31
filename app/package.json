@@ -15,7 +15,8 @@
     "test:home:ssr": "node scripts/check-home-ssr.mjs",
     "type-check": "tsc --noEmit --incremental false",
     "typecheck": "tsc --noEmit --incremental false",
-    "seed:japan-news-demo": "python3 ../scripts/seed_japan_news_demo.py"
+    "seed:japan-news-demo": "python3 ../scripts/seed_japan_news_demo.py",
+    "seed:japan-news-sources": "python3 ../scripts/seed_japan_news_sources.py"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.0",

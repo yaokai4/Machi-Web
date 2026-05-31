@@ -34,7 +34,7 @@ type HotScope = "city" | "country" | "all";
 // Home tabs are the real feed modes plus a dedicated 资讯 view (rendered
 // from api.news rather than the post feed).
 type HomeTab = FeedMode | "news";
-const HOME_TAB_VALUES: HomeTab[] = ["recommend", "plaza", "news", "local", "hot", "following"];
+const HOME_TAB_VALUES: HomeTab[] = ["recommend", "news", "local", "hot", "following"];
 
 function isHomeTab(value: string | null): value is HomeTab {
   return !!value && HOME_TAB_VALUES.includes(value as HomeTab);
@@ -332,6 +332,11 @@ export default function HomeClient() {
   useEffect(() => {
     const applyTabFromLocation = () => {
       const next = new URLSearchParams(window.location.search).get("tab");
+      if (next === "plaza") {
+        setTab("recommend");
+        router.replace("/home", { scroll: false });
+        return;
+      }
       if (!isHomeTab(next)) return;
       if (next === "following" && !user) {
         openAuthPrompt("follow");
@@ -342,11 +347,16 @@ export default function HomeClient() {
     applyTabFromLocation();
     window.addEventListener("popstate", applyTabFromLocation);
     return () => window.removeEventListener("popstate", applyTabFromLocation);
-  }, [user, openAuthPrompt]);
+  }, [user, openAuthPrompt, router]);
 
   useEffect(() => {
     const onHomeTab = (event: Event) => {
       const detail = (event as CustomEvent).detail;
+      if (detail === "plaza") {
+        startTransition(() => setTab("recommend"));
+        router.replace("/home", { scroll: false });
+        return;
+      }
       if (!isHomeTab(detail)) return;
       if (detail === "following" && !user) {
         openAuthPrompt("follow");
@@ -379,7 +389,6 @@ export default function HomeClient() {
 
   const TABS: { value: HomeTab; label: string }[] = [
     { value: "recommend", label: t("tab_recommend") },
-    { value: "plaza", label: "广场" },
     { value: "news", label: t("nav_news") },
     { value: "local", label: t("tab_local") },
     { value: "hot", label: t("tab_hot") },

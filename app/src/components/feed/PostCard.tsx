@@ -339,7 +339,6 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
             onRepost={handleRepost}
             onQuote={() => (currentUser ? setQuoteOpen(true) : openAuthPrompt("generic"))}
             onComment={openPost}
-            onShare={handleShare}
           />
         </div>
 
@@ -890,7 +889,6 @@ function InteractionBar({
   onRepost,
   onQuote,
   onComment,
-  onShare,
 }: {
   post: KXPost;
   onLike: () => void;
@@ -898,7 +896,6 @@ function InteractionBar({
   onRepost: (mode: "repost" | "undo") => void;
   onQuote: () => void;
   onComment: () => void;
-  onShare: () => void;
 }) {
   const { t } = useI18n();
   const [repostMenu, setRepostMenu] = useState(false);
@@ -957,9 +954,6 @@ function InteractionBar({
       <span className="kx-metric text-kx-heat/85">
         <Flame className="w-4 h-4" /> {compactNumber(post.heat_score)}
       </span>
-      <button className="kx-metric" onClick={onShare} aria-label={t("action_share")}>
-        <Share2 className="w-4 h-4" />
-      </button>
     </div>
   );
 }

@@ -417,19 +417,33 @@ POST_STATUSES: set[str] = {"published", "active", "hidden", "deleted", "under_re
 # user posts: editorial content is authored by official desk identities,
 # keeps source attribution, and never impersonates ordinary users.
 NEWS_DESK_USER_AGENT = _env("KAIX_NEWS_DESK_USER_AGENT", "MachiBot/1.0 (+https://machicity.com)")
-NEWS_DESK_PROMPT_VERSION = "machi_editorial_city_brief_v2"
-NEWS_SOURCE_TYPES = {"rss", "webpage", "html_list", "manual"}
-NEWS_CRAWL_STRATEGIES = {"rss", "meta_only", "html_list", "manual"}
-NEWS_CREDIBILITY_LEVELS = {"official", "media", "community", "commercial"}
+NEWS_DESK_PROMPT_VERSION = "machi_japan_local_editorial_v2"
+NEWS_SOURCE_TYPES = {"rss", "webpage", "metadata", "html_list", "manual", "manual_reference", "api"}
+NEWS_CRAWL_STRATEGIES = {"rss", "meta_only", "metadata", "html_list", "manual"}
+NEWS_CREDIBILITY_LEVELS = {"official", "media", "community", "commercial", "event_platform"}
+NEWS_SOURCE_TIERS = {
+    "tier_1_official", "tier_2_city_official", "tier_3_public_media",
+    "tier_4_event_lifestyle", "tier_5_manual_reference",
+}
+NEWS_COPYRIGHT_POLICIES = {
+    "metadata_only", "official_attribution", "cc_by", "redistribution_restricted",
+    "manual_review_only", "unknown",
+}
 NEWS_CATEGORIES = {
     "local_news", "traffic_alert", "weather_alert", "earthquake_alert", "typhoon_alert",
     "policy_update", "immigration_visa", "city_event", "life_notice", "housing_notice",
     "housing_market", "work_study", "public_safety", "economy", "technology", "culture",
     "sports", "education", "health", "travel", "editor_pick", "weekly_digest", "other",
+    "digital_life", "national_notice", "legal_notice", "residence_card", "visa_policy",
+    "foreign_resident_notice", "labor_policy", "resident_service", "garbage_rule",
+    "child_support", "local_event", "train_delay", "commute", "disaster",
+    "disaster_prevention", "food", "weekend", "exhibition", "meetup", "language_exchange",
 }
 HIGH_RISK_NEWS_CATEGORIES = {
     "weather_alert", "earthquake_alert", "typhoon_alert", "immigration_visa",
     "policy_update", "public_safety", "health", "legal", "medical", "finance", "crime",
+    "legal_notice", "residence_card", "visa_policy", "foreign_resident_notice",
+    "disaster", "disaster_prevention",
 }
 NEWS_ITEM_STATUSES = {"fetched", "draft_created", "ignored", "duplicate", "error", "deleted"}
 EDITORIAL_AUTHOR_TYPES = {"local_desk", "city_editor", "tokyo_editorial", "osaka_editorial", "japan_editorial", "admin"}
@@ -2470,6 +2484,54 @@ MIGRATIONS: list[tuple[int, str, str]] = [
          WHERE appearance IS NULL OR appearance NOT IN ('light', 'dark');
         """,
     ),
+    (
+        18,
+        "japan news crawler: tiers, compliance flags, scoring and editorial quality gates",
+        """
+        ALTER TABLE news_sources ADD COLUMN source_tier TEXT NOT NULL DEFAULT 'tier_3_public_media';
+        ALTER TABLE news_sources ADD COLUMN copyright_policy TEXT NOT NULL DEFAULT 'metadata_only';
+        ALTER TABLE news_sources ADD COLUMN allow_auto_draft INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE news_sources ADD COLUMN allow_auto_publish INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE news_sources ADD COLUMN content_rewrite_required INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE news_sources ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'low';
+        ALTER TABLE news_sources ADD COLUMN sub_city TEXT NOT NULL DEFAULT '';
+        UPDATE news_sources
+           SET source_tier = CASE
+                WHEN source_type = 'manual' OR crawl_strategy = 'manual' THEN 'tier_5_manual_reference'
+                WHEN credibility_level = 'official' AND city <> '' THEN 'tier_2_city_official'
+                WHEN credibility_level = 'official' THEN 'tier_1_official'
+                WHEN credibility_level IN ('media','community') THEN 'tier_3_public_media'
+                ELSE 'tier_4_event_lifestyle'
+           END,
+               copyright_policy = CASE
+                WHEN copyright_policy_note LIKE '%restrict%' OR copyright_policy_note LIKE '%禁止%' THEN 'redistribution_restricted'
+                ELSE 'metadata_only'
+           END,
+               allow_auto_draft = COALESCE(auto_create_draft, 0),
+               allow_auto_publish = COALESCE(official_auto_publish, 0),
+               risk_level = CASE
+                WHEN default_category IN ('weather_alert','earthquake_alert','typhoon_alert','immigration_visa','policy_update','public_safety','health') THEN 'high'
+                WHEN default_category IN ('traffic_alert','work_study') THEN 'medium'
+                ELSE 'low'
+           END;
+        CREATE INDEX IF NOT EXISTS idx_news_sources_tier ON news_sources(source_tier, credibility_level, is_active);
+
+        ALTER TABLE news_items ADD COLUMN source_tier TEXT NOT NULL DEFAULT 'tier_3_public_media';
+        ALTER TABLE news_items ADD COLUMN sub_city TEXT NOT NULL DEFAULT '';
+        ALTER TABLE news_items ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'low';
+        ALTER TABLE news_items ADD COLUMN relevance_score INTEGER NOT NULL DEFAULT 50;
+        ALTER TABLE news_items ADD COLUMN relevance_reason TEXT NOT NULL DEFAULT '';
+        ALTER TABLE news_items ADD COLUMN quality_score INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_news_items_relevance ON news_items(relevance_score, quality_score, status);
+
+        ALTER TABLE editorial_posts ADD COLUMN sub_city TEXT NOT NULL DEFAULT '';
+        ALTER TABLE editorial_posts ADD COLUMN source_tier TEXT NOT NULL DEFAULT 'tier_3_public_media';
+        ALTER TABLE editorial_posts ADD COLUMN relevance_score INTEGER NOT NULL DEFAULT 50;
+        ALTER TABLE editorial_posts ADD COLUMN quality_score INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE editorial_posts ADD COLUMN editorial_disclaimer TEXT NOT NULL DEFAULT '';
+        CREATE INDEX IF NOT EXISTS idx_editorial_posts_quality ON editorial_posts(status, quality_score, relevance_score, published_at);
+        """,
+    ),
 ]
 
 
@@ -2515,7 +2577,7 @@ def ensure_membership_plans(conn: sqlite3.Connection) -> None:
     )
 
 
-def ensure_news_source_presets(conn: sqlite3.Connection) -> None:
+def ensure_news_source_presets(conn: sqlite3.Connection) -> dict[str, int]:
     """Seed suggested Local News Desk sources as editable config rows.
     Operators can replace URLs or disable rows from admin; runtime logic
     reads the database only, never hardcoded source lists."""
@@ -2746,6 +2808,79 @@ def ensure_news_source_presets(conn: sqlite3.Connection) -> None:
         {"name": "Keio University News", "source_key": "keio-university-news", "homepage_url": "https://www.keio.ac.jp/en/news/", "allowed_domain": "www.keio.ac.jp", "country": "jp", "city": "tokyo", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
         {"name": "Osaka University News", "source_key": "osaka-university-news", "homepage_url": "https://www.osaka-u.ac.jp/en/news", "allowed_domain": "www.osaka-u.ac.jp", "country": "jp", "city": "osaka", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
     ])
+    presets.extend([
+        {"name": "Ministry of Justice Japan", "source_key": "moj-japan-rss", "homepage_url": "https://www.moj.go.jp/", "allowed_domain": "www.moj.go.jp", "country": "jp", "city": "", "language": "ja", "default_category": "legal_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Japan Today", "source_key": "japan-today-reference", "homepage_url": "https://japantoday.com/", "allowed_domain": "japantoday.com", "country": "jp", "city": "", "language": "en", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 180},
+        {"name": "Tokyo Taito City Official", "source_key": "taito-city", "homepage_url": "https://www.city.taito.lg.jp/", "allowed_domain": "www.city.taito.lg.jp", "country": "jp", "city": "tokyo", "sub_city": "taito", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
+        {"name": "Tokyo Chiyoda City Official", "source_key": "chiyoda-city", "homepage_url": "https://www.city.chiyoda.lg.jp/", "allowed_domain": "www.city.chiyoda.lg.jp", "country": "jp", "city": "tokyo", "sub_city": "chiyoda", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
+        {"name": "Tokyo Suginami City Official", "source_key": "suginami-city", "homepage_url": "https://www.city.suginami.tokyo.jp/", "allowed_domain": "www.city.suginami.tokyo.jp", "country": "jp", "city": "tokyo", "sub_city": "suginami", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
+        {"name": "Osaka Chuo Ward Official", "source_key": "osaka-chuo-ward", "homepage_url": "https://www.city.osaka.lg.jp/chuo/", "allowed_domain": "www.city.osaka.lg.jp", "country": "jp", "city": "osaka", "sub_city": "chuo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
+        {"name": "Osaka Kita Ward Official", "source_key": "osaka-kita-ward", "homepage_url": "https://www.city.osaka.lg.jp/kita/", "allowed_domain": "www.city.osaka.lg.jp", "country": "jp", "city": "osaka", "sub_city": "kita", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
+    ])
+    source_overrides: dict[str, dict[str, Any]] = {
+        "digital-agency-japan": {
+            "source_type": "rss", "crawl_strategy": "rss", "source_url": "https://www.digital.go.jp/rss/news.xml",
+            "source_tier": "tier_1_official", "copyright_policy": "metadata_only",
+            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium",
+            "crawl_interval_minutes": 240, "max_items_per_run": 20, "default_category": "digital_life",
+        },
+        "japan-cabinet": {
+            "source_tier": "tier_1_official", "copyright_policy": "official_attribution",
+            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high",
+            "crawl_interval_minutes": 240, "default_category": "policy_update",
+        },
+        "jma-japan-weather": {
+            "source_type": "metadata", "crawl_strategy": "meta_only", "source_url": "https://www.jma.go.jp/jma/index.html",
+            "source_tier": "tier_1_official", "copyright_policy": "metadata_only",
+            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high",
+            "crawl_interval_minutes": 30, "max_items_per_run": 20,
+        },
+        "moj-japan-rss": {
+            "source_type": "metadata", "crawl_strategy": "meta_only", "source_url": "https://www.moj.go.jp/",
+            "source_tier": "tier_1_official", "copyright_policy": "metadata_only",
+            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high",
+            "max_items_per_run": 20,
+        },
+        "japan-immigration-services-agency": {
+            "source_type": "metadata", "crawl_strategy": "meta_only", "source_url": "https://www.moj.go.jp/isa/",
+            "source_tier": "tier_1_official", "copyright_policy": "metadata_only",
+            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high",
+            "crawl_interval_minutes": 360, "max_items_per_run": 20,
+        },
+        "mhlw-japan": {
+            "source_type": "manual_reference", "crawl_strategy": "manual",
+            "source_tier": "tier_5_manual_reference", "copyright_policy": "redistribution_restricted",
+            "allow_auto_draft": False, "auto_create_draft": False, "allow_auto_publish": False,
+            "official_auto_publish": False, "risk_level": "high",
+            "copyright_policy_note": "MHLW RSS redistribution is restricted. Keep this as a manual editorial reference only.",
+            "crawl_interval_minutes": 720, "max_items_per_run": 10,
+        },
+        "tokyo-metropolitan-government": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 240, "max_items_per_run": 30},
+        "tokyo-disaster-prevention": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high", "crawl_interval_minutes": 60, "max_items_per_run": 20},
+        "tokyo-tourism-events": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event", "crawl_interval_minutes": 360},
+        "osaka-city": {"source_tier": "tier_2_city_official", "copyright_policy": "cc_by", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 240, "max_items_per_run": 30},
+        "osaka-government": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 240, "max_items_per_run": 30},
+        "osaka-tourism-events": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event", "crawl_interval_minutes": 360},
+        "jr-east": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30, "max_items_per_run": 30},
+        "jr-west": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30, "max_items_per_run": 20},
+        "tokyo-metro": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30},
+        "toei-transportation": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30},
+        "osaka-metro": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30},
+        "nhk-news": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "allow_auto_publish": False, "official_auto_publish": False, "crawl_interval_minutes": 120},
+        "nhk-shutoken": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 120},
+        "nhk-kansai": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 120},
+        "japan-times": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 180},
+        "japan-today-reference": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 180},
+        "nippon-com": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 240},
+        "time-out-tokyo": {"source_tier": "tier_4_event_lifestyle", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event", "crawl_interval_minutes": 360},
+        "tokyo-art-beat": {"source_tier": "tier_4_event_lifestyle", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event", "crawl_interval_minutes": 360},
+        "peatix-tokyo-public-events": {"source_tier": "tier_4_event_lifestyle", "credibility_level": "event_platform", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event"},
+        "peatix-osaka-public-events": {"source_tier": "tier_4_event_lifestyle", "credibility_level": "event_platform", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event"},
+        "meetup-tokyo-public-events": {"source_tier": "tier_4_event_lifestyle", "credibility_level": "event_platform", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event"},
+        "meetup-osaka-public-events": {"source_tier": "tier_4_event_lifestyle", "credibility_level": "event_platform", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event"},
+    }
+    for src in presets:
+        src.update(source_overrides.get(src.get("source_key", ""), {}))
     for src in presets:
         src.setdefault("source_type", "webpage")
         src.setdefault("crawl_strategy", "meta_only")
@@ -2754,13 +2889,31 @@ def ensure_news_source_presets(conn: sqlite3.Connection) -> None:
             src["source_url"] = src["homepage_url"]
         if src.get("source_type") == "manual" and src.get("source_url"):
             src["source_type"] = "webpage"
-        if src.get("crawl_strategy") == "manual" and src.get("source_url"):
+        if src.get("source_type") == "manual_reference":
+            src["crawl_strategy"] = "manual"
+        if src.get("crawl_strategy") == "manual" and src.get("source_url") and src.get("source_type") not in {"manual", "manual_reference"}:
             src["crawl_strategy"] = "meta_only"
         src.setdefault("copyright_policy_note", "Store metadata and source links only; do not republish full text.")
+        src.setdefault("copyright_policy", _normalize_copyright_policy(src.get("copyright_policy"), src.get("copyright_policy_note")))
+        src.setdefault("sub_city", "")
         src.setdefault("max_items_per_run", 30)
         src.setdefault("request_timeout_ms", 15000)
         src.setdefault("require_manual_review", True)
+        src.setdefault("allow_auto_draft", bool(src.get("auto_create_draft", False)))
+        src.setdefault("allow_auto_publish", bool(src.get("official_auto_publish", False)))
+        src.setdefault("auto_create_draft", bool(src.get("allow_auto_draft", False)))
+        src.setdefault("official_auto_publish", bool(src.get("allow_auto_publish", False)))
+        src.setdefault("content_rewrite_required", True)
+        src.setdefault("source_tier", _normalize_source_tier(
+            src.get("source_tier"),
+            credibility=_normalize_credibility(src.get("credibility_level")),
+            city=_normalize_news_city(src.get("city")),
+            source_type=_normalize_source_type(src.get("source_type")),
+            crawl_strategy=_normalize_crawl_strategy(src.get("crawl_strategy"), _normalize_source_type(src.get("source_type"))),
+        ))
+        src.setdefault("risk_level", _normalize_risk_level(src.get("risk_level"), _normalize_news_category(src.get("default_category"))))
         src.setdefault("is_active", True)
+    result = {"created": 0, "updated": 0, "skipped": 0, "total_presets": len(presets)}
     for src in presets:
         existing = conn.execute("SELECT id FROM news_sources WHERE source_key = ?", (src["source_key"],)).fetchone()
         if existing:
@@ -2771,7 +2924,9 @@ def ensure_news_source_presets(conn: sqlite3.Connection) -> None:
                        country = ?, city = ?, language = ?, default_category = ?,
                        credibility_level = ?, copyright_policy_note = ?, crawl_strategy = ?,
                        max_items_per_run = ?, request_timeout_ms = ?, require_manual_review = ?,
-                       is_active = ?, updated_at = ?
+                       is_active = ?, source_tier = ?, copyright_policy = ?, allow_auto_draft = ?,
+                       allow_auto_publish = ?, auto_create_draft = ?, official_auto_publish = ?,
+                       content_rewrite_required = ?, risk_level = ?, sub_city = ?, updated_at = ?
                  WHERE source_key = ?
                 """,
                 (
@@ -2779,9 +2934,14 @@ def ensure_news_source_presets(conn: sqlite3.Connection) -> None:
                     src["country"], src["city"], src["language"], src["default_category"],
                     src["credibility_level"], src["copyright_policy_note"], src["crawl_strategy"],
                     src["max_items_per_run"], src["request_timeout_ms"], 1 if src["require_manual_review"] else 0,
-                    1 if src["is_active"] else 0, now, src["source_key"],
+                    1 if src["is_active"] else 0, src["source_tier"], src["copyright_policy"],
+                    1 if src["allow_auto_draft"] else 0, 1 if src["allow_auto_publish"] else 0,
+                    1 if src["auto_create_draft"] else 0, 1 if src["official_auto_publish"] else 0,
+                    1 if src["content_rewrite_required"] else 0, src["risk_level"], src.get("sub_city", ""),
+                    now, src["source_key"],
                 ),
             )
+            result["updated"] += 1
             continue
         conn.execute(
             """
@@ -2789,8 +2949,10 @@ def ensure_news_source_presets(conn: sqlite3.Connection) -> None:
                 (id, name, source_key, source_type, source_url, homepage_url, allowed_domain,
                  country, city, language, default_category, credibility_level, copyright_policy_note,
                  crawl_strategy, crawl_interval_minutes, max_items_per_run, request_timeout_ms,
-                 is_active, require_manual_review, created_by_admin_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+                 is_active, require_manual_review, auto_create_draft, official_auto_publish,
+                 source_tier, copyright_policy, allow_auto_draft, allow_auto_publish,
+                 content_rewrite_required, risk_level, sub_city, created_by_admin_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 str(uuid.uuid4()), src["name"], src["source_key"], src["source_type"], src["source_url"],
@@ -2798,9 +2960,14 @@ def ensure_news_source_presets(conn: sqlite3.Connection) -> None:
                 src["default_category"], src["credibility_level"], src["copyright_policy_note"],
                 src["crawl_strategy"], src["crawl_interval_minutes"], src["max_items_per_run"],
                 src["request_timeout_ms"], 1 if src["is_active"] else 0, 1 if src["require_manual_review"] else 0,
-                now, now,
+                1 if src["auto_create_draft"] else 0, 1 if src["official_auto_publish"] else 0,
+                src["source_tier"], src["copyright_policy"], 1 if src["allow_auto_draft"] else 0,
+                1 if src["allow_auto_publish"] else 0, 1 if src["content_rewrite_required"] else 0,
+                src["risk_level"], src.get("sub_city", ""), now, now,
             ),
         )
+        result["created"] += 1
+    return result
 
 
 def init_db() -> None:
@@ -4901,11 +5068,13 @@ def _normalize_source_type(raw: Any) -> str:
 
 def _normalize_crawl_strategy(raw: Any, source_type: str = "manual") -> str:
     value = str(raw or "").strip().lower()
+    if value == "metadata":
+        value = "meta_only"
     if value in NEWS_CRAWL_STRATEGIES:
         return value
     if source_type == "rss":
         return "rss"
-    if source_type == "webpage":
+    if source_type in {"webpage", "metadata", "api"}:
         return "meta_only"
     if source_type == "html_list":
         return "html_list"
@@ -4915,6 +5084,61 @@ def _normalize_crawl_strategy(raw: Any, source_type: str = "manual") -> str:
 def _normalize_credibility(raw: Any) -> str:
     value = str(raw or "official").strip().lower()
     return value if value in NEWS_CREDIBILITY_LEVELS else "official"
+
+
+def _normalize_source_tier(raw: Any, *, credibility: str = "", city: str = "", source_type: str = "", crawl_strategy: str = "") -> str:
+    value = str(raw or "").strip().lower().replace("-", "_")
+    if value in NEWS_SOURCE_TIERS:
+        return value
+    if source_type in {"manual", "manual_reference"} or crawl_strategy == "manual":
+        return "tier_5_manual_reference"
+    if credibility == "official" and city:
+        return "tier_2_city_official"
+    if credibility == "official":
+        return "tier_1_official"
+    if credibility in {"media", "community"}:
+        return "tier_3_public_media"
+    return "tier_4_event_lifestyle"
+
+
+def _normalize_copyright_policy(raw: Any, note: Any = "") -> str:
+    value = str(raw or "").strip().lower().replace("-", "_")
+    if value in NEWS_COPYRIGHT_POLICIES:
+        return value
+    note_l = str(note or "").lower()
+    if any(word in note_l for word in ("restrict", "restricted", "禁止", "不允许", "再分发")):
+        return "redistribution_restricted"
+    if "cc-by" in note_l or "cc by" in note_l or "creative commons" in note_l:
+        return "cc_by"
+    if "official" in note_l or "source" in note_l:
+        return "official_attribution"
+    return "metadata_only"
+
+
+def _normalize_risk_level(raw: Any, category: str = "") -> str:
+    value = str(raw or "").strip().lower()
+    if value in {"low", "medium", "high"}:
+        return value
+    if category in HIGH_RISK_NEWS_CATEGORIES:
+        return "high"
+    if category in {"traffic_alert", "train_delay", "commute", "work_study"}:
+        return "medium"
+    return "low"
+
+
+def _boolish(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
 
 
 def _slug_key(value: str) -> str:
@@ -4953,6 +5177,77 @@ def _risk_level_for_category(category: str) -> str:
 
 def _source_required_for_category(category: str) -> bool:
     return category in HIGH_RISK_NEWS_CATEGORIES
+
+
+_NEWS_CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    ("immigration_visa", ("在留", "ビザ", "visa", "residence card", "出入国", "入管", "immigration", "residence status")),
+    ("traffic_alert", ("運行", "遅延", "見合わせ", "train", "metro", "rail", "traffic", "commute", "通勤", "交通", "delay")),
+    ("earthquake_alert", ("地震", "earthquake", "震度", "津波")),
+    ("typhoon_alert", ("台風", "typhoon", "storm")),
+    ("weather_alert", ("気象", "天気", "大雨", "警報", "weather", "warning", "heatstroke", "熱中症")),
+    ("public_safety", ("防災", "避難", "安全", "safety", "crime", "災害", "disaster", "alert")),
+    ("policy_update", ("制度", "政策", "申請", "マイナンバー", "digital", "行政", "policy", "procedure", "手续", "手続")),
+    ("city_event", ("イベント", "祭", "festival", "market", "exhibition", "展覧", "週末", "weekend", "event")),
+    ("life_notice", ("ごみ", "粗大", "保育", "補助", "区役所", "市役所", "生活", "resident", "service", "garbage", "child support")),
+    ("work_study", ("仕事", "雇用", "労働", "学生", "留学", "work", "study", "job", "student")),
+    ("housing_notice", ("引越", "住宅", "家賃", "rent", "housing", "moving", "搬家", "租房")),
+    ("health", ("健康", "医療", "感染", "health", "medical", "hospital")),
+    ("travel", ("観光", "travel", "tourism", "airport")),
+]
+
+_NEWS_HIGH_RELEVANCE_WORDS = (
+    "租房", "搬家", "在留", "签证", "打工", "工作", "交通", "地震", "台风", "天气警报",
+    "活动", "市集", "展览", "区役所", "手续", "垃圾", "补助", "留学生", "外国居民",
+    "公共服务", "防灾", "安全", "生活成本", "ビザ", "在留", "留学生", "外国人",
+    "区役所", "市役所", "ごみ", "防災", "避難", "遅延", "運休", "申請",
+    "visa", "immigration", "residence", "train", "delay", "commute", "earthquake",
+    "typhoon", "weather", "resident", "garbage", "subsidy", "event", "market",
+)
+_NEWS_LOW_RELEVANCE_WORDS = (
+    "入札", "調達", "公告", "会議", "議事", "人事", "職員募集", "統計", "報告書",
+    "采购", "招标", "会议", "任免", "内部", "统计", "长报表", "企业 pr",
+    "procurement", "tender", "council minutes", "personnel", "statistics", "press release",
+)
+
+
+def _classify_news_category(title: str, summary: str, default_category: str) -> str:
+    default = _normalize_news_category(default_category)
+    text = f"{title} {summary}".lower()
+    for category, keywords in _NEWS_CATEGORY_KEYWORDS:
+        if any(keyword.lower() in text for keyword in keywords):
+            return _normalize_news_category(category)
+    return default
+
+
+def _score_news_relevance(title: str, summary: str, category: str, city: str, source_tier: str) -> tuple[int, str]:
+    text = f"{title} {summary}".lower()
+    score = 45
+    reasons: list[str] = []
+    if source_tier in {"tier_1_official", "tier_2_city_official"}:
+        score += 14
+        reasons.append("official_source")
+    elif source_tier == "tier_3_public_media":
+        score += 5
+        reasons.append("public_media")
+    elif source_tier == "tier_5_manual_reference":
+        score -= 12
+        reasons.append("manual_reference")
+    if city:
+        score += 8
+        reasons.append("city_scoped")
+    if category in {"traffic_alert", "weather_alert", "earthquake_alert", "typhoon_alert", "immigration_visa", "life_notice", "city_event", "public_safety", "work_study", "housing_notice"}:
+        score += 14
+        reasons.append("city_life_category")
+    high_hits = [word for word in _NEWS_HIGH_RELEVANCE_WORDS if word.lower() in text][:6]
+    low_hits = [word for word in _NEWS_LOW_RELEVANCE_WORDS if word.lower() in text][:6]
+    if high_hits:
+        score += min(24, 6 + len(high_hits) * 4)
+        reasons.append("useful_terms:" + ",".join(high_hits[:3]))
+    if low_hits:
+        score -= min(28, 10 + len(low_hits) * 5)
+        reasons.append("low_value_terms:" + ",".join(low_hits[:3]))
+    score = max(0, min(100, score))
+    return score, ",".join(reasons or ["default"])
 
 
 def _news_author_type_for_scope(country: str, city: str) -> str:
@@ -5036,6 +5331,41 @@ def _editorial_quality_issues(body: str, language: str) -> list[str]:
     return [f"banned:{word}" for word in found]
 
 
+def _editorial_quality_score(body: str, language: str, *, source_name: str = "", city: str = "", category: str = "", relevance_score: int = 50) -> int:
+    text = body or ""
+    normalized = re.sub(r"\s+", " ", text).strip()
+    score = 58
+    if language == "en":
+        words = len(re.findall(r"\b\w+\b", normalized))
+        if words >= 800:
+            score += 15
+        elif words >= 420:
+            score += 8
+        else:
+            score -= 20
+    else:
+        length = len(normalized)
+        if length >= 900:
+            score += 15
+        elif length >= 650:
+            score += 8
+        else:
+            score -= 20
+    headings = len(re.findall(r"(^|\n)\s*(一、|二、|三、|四、|五、|六、|#{1,3}\s+|[0-9]+\.\s+)", text))
+    score += min(12, headings * 3)
+    checklist_terms = ("适合", "注意", "下一步", "来源", "官方", "who", "next", "source", "check", "注意したい", "出典", "確認")
+    score += min(12, sum(1 for term in checklist_terms if term.lower() in normalized.lower()) * 2)
+    if source_name:
+        score += 5
+    if city:
+        score += 4
+    if category in HIGH_RISK_NEWS_CATEGORIES and ("官方" in normalized or "official" in normalized.lower() or "公式" in normalized):
+        score += 5
+    score += max(-8, min(8, (int(relevance_score or 50) - 50) // 5))
+    score -= len(_editorial_quality_issues(text, language)) * 18
+    return max(0, min(100, score))
+
+
 def _editorial_longform_from_source(
     *, language: str, city: str, category: str, source_name: str, source_url: str,
     title: str, summary: str, published_at: str | None = None, admin_notes: str = "",
@@ -5116,6 +5446,15 @@ def _editorial_longform_from_source(
         "machi-local-desk",
         "life-guide",
     ]
+    relevance_guess = 82 if _normalize_news_city(city) else 72
+    quality_score = _editorial_quality_score(
+        body,
+        lang,
+        source_name=source,
+        city=_normalize_news_city(city),
+        category=_normalize_news_category(category),
+        relevance_score=relevance_guess,
+    )
     return {
         "title": out_title[:140],
         "summary": out_summary[:360],
@@ -5127,6 +5466,7 @@ def _editorial_longform_from_source(
         "source_note": f"{source} / {source_date}".strip(" /"),
         "editorial_disclaimer": disclaimer_zh,
         "quality_issues": _editorial_quality_issues(body, lang),
+        "quality_score": quality_score,
     }
 
 
@@ -5297,12 +5637,26 @@ def _news_author_display_name(country: str, city: str, language: str, author_typ
 
 def serialize_news_source(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     d = dict(row)
+    source_type = _normalize_source_type(d.get("source_type") or "manual")
+    crawl_strategy = _normalize_crawl_strategy(d.get("crawl_strategy") or "", source_type)
+    credibility = _normalize_credibility(d.get("credibility_level") or "official")
+    city = _normalize_news_city(d.get("city") or "")
+    source_tier = _normalize_source_tier(d.get("source_tier"), credibility=credibility, city=city, source_type=source_type, crawl_strategy=crawl_strategy)
+    copyright_policy = _normalize_copyright_policy(d.get("copyright_policy"), d.get("copyright_policy_note"))
+    allow_auto_draft = bool(d.get("allow_auto_draft", d.get("auto_create_draft", 0)))
+    allow_auto_publish = bool(d.get("allow_auto_publish", d.get("official_auto_publish", 0)))
     return {
         **d,
         "is_active": bool(d.get("is_active", 0)),
         "require_manual_review": bool(d.get("require_manual_review", 1)),
-        "auto_create_draft": bool(d.get("auto_create_draft", 0)),
-        "official_auto_publish": bool(d.get("official_auto_publish", 0)),
+        "allow_auto_draft": allow_auto_draft,
+        "allow_auto_publish": allow_auto_publish,
+        "auto_create_draft": allow_auto_draft,
+        "official_auto_publish": allow_auto_publish,
+        "content_rewrite_required": bool(d.get("content_rewrite_required", 1)),
+        "source_tier": source_tier,
+        "copyright_policy": copyright_policy,
+        "risk_level": _normalize_risk_level(d.get("risk_level"), _normalize_news_category(d.get("default_category"))),
         "crawl_interval_minutes": int(d.get("crawl_interval_minutes") or 0),
         "max_items_per_run": int(d.get("max_items_per_run") or 30),
         "request_timeout_ms": int(d.get("request_timeout_ms") or 15000),
@@ -5311,7 +5665,7 @@ def serialize_news_source(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "last_duplicate_count": int(d.get("last_duplicate_count") or 0),
         "last_error_count": int(d.get("last_error_count") or 0),
         "allowed_domain": d.get("allowed_domain") or normalize_allowed_domain(d),
-        "crawl_strategy": d.get("crawl_strategy") or _normalize_crawl_strategy("", d.get("source_type") or "manual"),
+        "crawl_strategy": crawl_strategy,
         "deleted": bool(d.get("deleted_at")),
     }
 
@@ -5324,6 +5678,10 @@ def serialize_news_item(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
             d["raw_metadata"] = json.loads(raw or "{}")
         except Exception:
             d["raw_metadata"] = {}
+    d["source_tier"] = _normalize_source_tier(d.get("source_tier"))
+    d["risk_level"] = _normalize_risk_level(d.get("risk_level"), _normalize_news_category(d.get("category")))
+    d["relevance_score"] = int(d.get("relevance_score") or 0)
+    d["quality_score"] = int(d.get("quality_score") or 0)
     return d
 
 
@@ -5366,11 +5724,19 @@ def serialize_editorial_post(conn: sqlite3.Connection, row: sqlite3.Row | dict[s
         part for part in [d.get("source_name") or "", d.get("source_published_at") or d.get("published_at") or ""] if part
     )
     risk_level = d.get("risk_level") or _risk_level_for_category(str(d.get("category") or ""))
+    quality_score = int(d.get("quality_score") or _editorial_quality_score(
+        str(d.get("body") or ""),
+        str(d.get("language") or "zh-CN"),
+        source_name=str(d.get("source_name") or ""),
+        city=str(d.get("city") or ""),
+        category=str(d.get("category") or ""),
+        relevance_score=int(d.get("relevance_score") or 50),
+    ))
     official_source_required = bool(d.get("official_source_required", 0))
     editorial_disclaimer = (
-        "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。"
+        d.get("editorial_disclaimer") or "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。"
         if official_source_required or risk_level == "high"
-        else "此内容来自公开来源，Machi 保留来源名称、时间和原文入口，方便继续查证。"
+        else d.get("editorial_disclaimer") or "此内容来自公开来源，Machi 保留来源名称、时间和原文入口，方便继续查证。"
     )
     return {
         **d,
@@ -5393,6 +5759,14 @@ def serialize_editorial_post(conn: sqlite3.Connection, row: sqlite3.Row | dict[s
         "viewCount": int(d.get("view_count") or 0),
         "risk_level": risk_level,
         "riskLevel": risk_level,
+        "source_tier": d.get("source_tier") or "tier_3_public_media",
+        "sourceTier": d.get("source_tier") or "tier_3_public_media",
+        "sub_city": d.get("sub_city") or "",
+        "subCity": d.get("sub_city") or "",
+        "relevance_score": int(d.get("relevance_score") or 50),
+        "relevanceScore": int(d.get("relevance_score") or 50),
+        "quality_score": quality_score,
+        "qualityScore": quality_score,
         "official_source_required": official_source_required,
         "officialSourceRequired": official_source_required,
         "is_demo": bool(d.get("is_demo", 0)),
@@ -5485,34 +5859,57 @@ def fetch_news_source(conn: sqlite3.Connection, source_id: str, admin_id: str = 
                 duplicate_count += 1
                 continue
             item_id = str(uuid.uuid4())
+            source_type = _normalize_source_type(source.get("source_type") or "manual")
+            source_tier = _normalize_source_tier(
+                source.get("source_tier"),
+                credibility=_normalize_credibility(source.get("credibility_level")),
+                city=_normalize_news_city(source.get("city")),
+                source_type=source_type,
+                crawl_strategy=_normalize_crawl_strategy(source.get("crawl_strategy"), source_type),
+            )
+            summary_text = _news_clean_text(item.summary, 500)
+            category = _classify_news_category(title, summary_text, source.get("default_category") or "local_news")
+            risk_level = _normalize_risk_level(source.get("risk_level"), category)
+            relevance_score, relevance_reason = _score_news_relevance(title, summary_text, category, source.get("city") or "", source_tier)
+            item_quality_score = min(100, max(0, 35 + (20 if summary_text else 0) + (15 if published_at else 0) + (15 if original_url else 0) + (15 if relevance_score >= 80 else 0)))
+            item_status = "ignored" if relevance_score < 40 else "fetched"
             try:
                 conn.execute(
                     """
                     INSERT INTO news_items
                         (id, source_id, external_id, source_name, source_url, original_url,
                          original_title, original_summary, original_language, published_at,
-                         fetched_at, country, city, category, hash_key, status, raw_metadata,
+                         fetched_at, country, city, sub_city, category, source_tier, risk_level,
+                         relevance_score, relevance_reason, quality_score, hash_key, status, raw_metadata,
                          error_message, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'fetched', ?, '', ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
                     """,
                     (
                         item_id, source["id"], item.external_id or "", source.get("name") or "",
-                        source.get("source_url") or "", original_url, title, _news_clean_text(item.summary, 500),
+                        source.get("source_url") or "", original_url, title, summary_text,
                         source.get("language") or "", published_at, now, source.get("country") or "",
-                        source.get("city") or "", _normalize_news_category(source.get("default_category")),
-                        hash_key, json.dumps(item.raw_metadata or {}, ensure_ascii=False), now, now,
+                        source.get("city") or "", source.get("sub_city") or "", category, source_tier, risk_level,
+                        relevance_score, relevance_reason, item_quality_score,
+                        hash_key, item_status, json.dumps(item.raw_metadata or {}, ensure_ascii=False), now, now,
                     ),
                 )
                 new_count += 1
-                if source.get("auto_create_draft"):
+                if item_status == "fetched" and relevance_score >= 80 and (source.get("allow_auto_draft") or source.get("auto_create_draft")):
                     try:
                         post = _draft_from_news_item(conn, item_id, admin_id or source.get("created_by_admin_id") or "")
                         created_draft_count += 1
-                        if source.get("official_auto_publish") and source.get("credibility_level") == "official":
+                        if (source.get("allow_auto_publish") or source.get("official_auto_publish")) and source.get("credibility_level") == "official":
                             fresh_post = dict(conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post["id"],)).fetchone())
                             required_ok = all(str(fresh_post.get(k) or "").strip() for k in ("title", "summary", "body", "country", "language", "category"))
                             source_ok = bool(fresh_post.get("source_name") and (fresh_post.get("original_url") or fresh_post.get("source_url")))
-                            if required_ok and source_ok:
+                            auto_publish_ok = (
+                                required_ok and source_ok
+                                and source_tier in {"tier_1_official", "tier_2_city_official"}
+                                and risk_level != "high"
+                                and _normalize_copyright_policy(source.get("copyright_policy"), source.get("copyright_policy_note")) != "redistribution_restricted"
+                                and int(fresh_post.get("quality_score") or 0) >= 85
+                            )
+                            if auto_publish_ok:
                                 stamp = now_iso()
                                 conn.execute(
                                     """
@@ -5712,6 +6109,16 @@ def _draft_from_news_item(
     category = _normalize_news_category(generated.get("category") or item_d.get("category"))
     risk_level = str(generated.get("risk_level") or _risk_level_for_category(category))
     source_required = 1 if _source_required_for_category(category) else 0
+    relevance_score = int(item_d.get("relevance_score") or 50)
+    quality_score = int(generated.get("quality_score") or _editorial_quality_score(
+        body,
+        language,
+        source_name=str(item_d.get("source_name") or ""),
+        city=city,
+        category=category,
+        relevance_score=relevance_score,
+    ))
+    disclaimer = str(generated.get("editorial_disclaimer") or "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。")
     post_id = str(uuid.uuid4())
     now = now_iso()
     conn.execute(
@@ -5720,13 +6127,16 @@ def _draft_from_news_item(
             (id, news_item_id, author_type, author_display_name, country, city, language,
              category, title, summary, body, source_name, source_url, original_url,
              source_published_at, status, review_status, risk_level, official_source_required,
+             source_tier, sub_city, relevance_score, quality_score, editorial_disclaimer,
              is_ai_assisted, ai_model, ai_prompt_version, created_by_admin_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'needs_review', ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'needs_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             post_id, item_id, author_type, author, country, city,
             language, category, title, summary, body, item_d.get("source_name"), item_d.get("source_url"),
             item_d.get("original_url"), item_d.get("published_at"), risk_level, source_required,
+            item_d.get("source_tier") or "tier_3_public_media", item_d.get("sub_city") or "",
+            relevance_score, quality_score, disclaimer,
             0 if create_mode == "summary_only" else 1,
             "" if create_mode == "summary_only" else "local_news_desk_rule_assist_v2",
             "" if create_mode == "summary_only" else NEWS_DESK_PROMPT_VERSION,
@@ -5767,7 +6177,8 @@ def _local_news_assist(post: dict[str, Any], task: str, language: str, extra_not
         "risk_level": generated["risk_level"],
         "sourceNote": generated["source_note"],
         "editorialDisclaimer": generated["editorial_disclaimer"],
-        "quality": {"issues": generated["quality_issues"], "passed": not generated["quality_issues"]},
+        "quality_score": generated.get("quality_score", 0),
+        "quality": {"score": generated.get("quality_score", 0), "issues": generated["quality_issues"], "passed": not generated["quality_issues"] and int(generated.get("quality_score") or 0) >= 70},
     }
 
 
@@ -6182,7 +6593,7 @@ class Handler(BaseHTTPRequestHandler):
         source_type = _normalize_source_type(data.get("source_type", existing.get("source_type", "manual")))
         source_url = str(data.get("source_url", existing.get("source_url", "")) or "").strip()[:800]
         homepage_url = str(data.get("homepage_url", existing.get("homepage_url", "")) or "").strip()[:800]
-        if source_type in ("rss", "webpage", "html_list") and not source_url:
+        if source_type in ("rss", "webpage", "metadata", "html_list", "api") and not source_url:
             raise APIError("RSS / webpage 来源需要 source_url", 400, "source_url_required")
         for key, value in (("source_url", source_url), ("homepage_url", homepage_url)):
             if value:
@@ -6202,6 +6613,19 @@ class Handler(BaseHTTPRequestHandler):
         city = _normalize_news_city(data.get("city", existing.get("city", "")))
         language = _normalize_news_language(data.get("language", existing.get("language", "zh-CN")))
         category = _normalize_news_category(data.get("default_category", existing.get("default_category", "local_news")))
+        source_tier = _normalize_source_tier(
+            data.get("source_tier", existing.get("source_tier", "")),
+            credibility=credibility,
+            city=city,
+            source_type=source_type,
+            crawl_strategy=crawl_strategy,
+        )
+        copyright_note = _news_clean_text(data.get("copyright_policy_note", existing.get("copyright_policy_note", "")), 1000)
+        copyright_policy = _normalize_copyright_policy(
+            data.get("copyright_policy", existing.get("copyright_policy", "")),
+            copyright_note,
+        )
+        risk_level = _normalize_risk_level(data.get("risk_level", existing.get("risk_level", "")), category)
         try:
             interval = int(data.get("crawl_interval_minutes", existing.get("crawl_interval_minutes", 180)) or 180)
         except (TypeError, ValueError):
@@ -6218,6 +6642,20 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("请求超时时间不合法", 400, "invalid_timeout")
         timeout_ms = max(1000, min(timeout_ms, 30000))
         is_active_default = bool(existing.get("is_active")) if existing else False
+        allow_auto_draft = _boolish(
+            data.get("allow_auto_draft", data.get("auto_create_draft", existing.get("allow_auto_draft", existing.get("auto_create_draft", False)))),
+            False,
+        )
+        allow_auto_publish = _boolish(
+            data.get("allow_auto_publish", data.get("official_auto_publish", existing.get("allow_auto_publish", existing.get("official_auto_publish", False)))),
+            False,
+        )
+        content_rewrite_required = _boolish(data.get("content_rewrite_required", existing.get("content_rewrite_required", True)), True)
+        if source_tier == "tier_5_manual_reference" or copyright_policy == "redistribution_restricted":
+            allow_auto_draft = False
+            allow_auto_publish = False
+        if allow_auto_publish and (credibility != "official" or source_tier not in {"tier_1_official", "tier_2_city_official"} or risk_level == "high"):
+            raise APIError("自动发布仅允许低/中风险官方 tier_1/tier_2 来源", 400, "auto_publish_not_allowed")
         return {
             "name": name,
             "source_key": source_key,
@@ -6230,8 +6668,11 @@ class Handler(BaseHTTPRequestHandler):
             "language": language,
             "default_category": category,
             "credibility_level": credibility,
-            "copyright_policy_note": _news_clean_text(data.get("copyright_policy_note", existing.get("copyright_policy_note", "")), 1000),
+            "source_tier": source_tier,
+            "copyright_policy": copyright_policy,
+            "copyright_policy_note": copyright_note,
             "crawl_strategy": crawl_strategy,
+            "sub_city": _news_clean_text(data.get("sub_city", existing.get("sub_city", "")), 80).lower(),
             "list_selector": _news_clean_text(data.get("list_selector", existing.get("list_selector", "")), 300),
             "item_selector": _news_clean_text(data.get("item_selector", existing.get("item_selector", "")), 300),
             "title_selector": _news_clean_text(data.get("title_selector", existing.get("title_selector", "")), 300),
@@ -6245,9 +6686,13 @@ class Handler(BaseHTTPRequestHandler):
             "max_items_per_run": max_items,
             "request_timeout_ms": timeout_ms,
             "is_active": 1 if data.get("is_active", is_active_default) else 0,
-            "require_manual_review": 1 if data.get("require_manual_review", existing.get("require_manual_review", True)) else 0,
-            "auto_create_draft": 1 if data.get("auto_create_draft", existing.get("auto_create_draft", False)) else 0,
-            "official_auto_publish": 1 if data.get("official_auto_publish", existing.get("official_auto_publish", False)) else 0,
+            "require_manual_review": 1 if _boolish(data.get("require_manual_review", existing.get("require_manual_review", True)), True) else 0,
+            "allow_auto_draft": 1 if allow_auto_draft else 0,
+            "allow_auto_publish": 1 if allow_auto_publish else 0,
+            "auto_create_draft": 1 if allow_auto_draft else 0,
+            "official_auto_publish": 1 if allow_auto_publish else 0,
+            "content_rewrite_required": 1 if content_rewrite_required else 0,
+            "risk_level": risk_level,
         }
 
     def api_admin_news_desk(self, conn: sqlite3.Connection) -> None:
@@ -6263,6 +6708,11 @@ class Handler(BaseHTTPRequestHandler):
             "failed_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND last_error <> ''").fetchone()["c"],
             "sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL").fetchone()["c"],
             "active_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND is_active = 1").fetchone()["c"],
+            "successful_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND last_success_at IS NOT NULL").fetchone()["c"],
+            "crawler_items": conn.execute("SELECT COUNT(*) AS c FROM news_items WHERE status != 'deleted'").fetchone()["c"],
+            "front_visible": conn.execute("SELECT COUNT(*) AS c FROM editorial_posts WHERE status = 'published' AND country = 'jp'").fetchone()["c"],
+            "auto_draft_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND allow_auto_draft = 1").fetchone()["c"],
+            "auto_publish_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND allow_auto_publish = 1").fetchone()["c"],
         }
         if stats["published"] == 0 and stats["pending_drafts"]:
             stats["diagnostic_hint"] = "已有草稿，尚未发布。"
@@ -6281,7 +6731,45 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT * FROM news_fetch_logs ORDER BY created_at DESC LIMIT 8"
             )
         ]
-        self.send_json({"stats": stats, "recent_posts": recent_posts, "recent_logs": recent_logs})
+        failure_reasons = [
+            {"reason": r["reason"] or "unknown", "count": int(r["c"])}
+            for r in conn.execute(
+                """
+                SELECT COALESCE(NULLIF(parser_status, ''), NULLIF(skipped_reason, ''), NULLIF(error_message, ''), status) AS reason,
+                       COUNT(*) AS c
+                  FROM news_fetch_logs
+                 WHERE status NOT IN ('success','partial_success') OR error_count > 0
+                 GROUP BY reason
+                 ORDER BY c DESC
+                 LIMIT 8
+                """
+            )
+        ]
+        source_tiers = [
+            {"source_tier": r["source_tier"], "count": int(r["c"])}
+            for r in conn.execute(
+                "SELECT source_tier, COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL GROUP BY source_tier ORDER BY c DESC"
+            )
+        ]
+        top_issues: list[str] = []
+        if stats["active_sources"] == 0:
+            top_issues.append("没有启用的日本资讯源")
+        if stats["successful_sources"] == 0 and stats["active_sources"]:
+            top_issues.append("还没有成功抓取记录，请先执行一次官方/东京/大阪来源抓取")
+        if stats["crawler_items"] and stats["pending_drafts"] == 0:
+            top_issues.append("内容池已有采集结果，但自动草稿或批量生成还没有产出")
+        if stats["pending_drafts"] and stats["published"] == 0:
+            top_issues.append("已有编辑部草稿，但尚未审核发布")
+        if stats["failed_sources"]:
+            top_issues.append("存在失败来源，需要查看 robots/http/parser/timeout 日志")
+        if stats["auto_publish_sources"] == 0:
+            top_issues.append("自动发布开关仍全部关闭；如需自动发布，请只给低/中风险官方来源开启")
+        diagnostics = {
+            "failure_reasons": failure_reasons,
+            "source_tiers": source_tiers,
+            "top_issues": top_issues[:10],
+        }
+        self.send_json({"stats": stats, "diagnostics": diagnostics, "recent_posts": recent_posts, "recent_logs": recent_logs})
 
     def api_admin_news_sources(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
@@ -6298,6 +6786,9 @@ class Handler(BaseHTTPRequestHandler):
         if query.get("city"):
             where.append("city = ?")
             params.append(_normalize_news_city(query["city"]))
+        if query.get("source_tier") or query.get("sourceTier"):
+            where.append("source_tier = ?")
+            params.append(_normalize_source_tier(query.get("source_tier") or query.get("sourceTier")))
         rows = conn.execute(
             f"SELECT * FROM news_sources WHERE {' AND '.join(where)} ORDER BY updated_at DESC",
             params,
@@ -6319,11 +6810,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_admin_seed_news_source_presets(self, conn: sqlite3.Connection) -> None:
         admin = self.require_admin(conn)
-        ensure_news_source_presets(conn)
+        result = ensure_news_source_presets(conn)
         total = conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND country = ?", ("jp",)).fetchone()["c"]
         active = conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND country = ? AND is_active = 1", ("jp",)).fetchone()["c"]
-        log_editorial_action(conn, admin_id=admin["id"], action="seed_japan_sources", target_type="crawler_source", target_id="jp", metadata={"total": int(total), "active": int(active)})
-        self.send_json({"total": int(total), "active": int(active)})
+        log_editorial_action(conn, admin_id=admin["id"], action="seed_japan_sources", target_type="crawler_source", target_id="jp", metadata={**result, "total": int(total), "active": int(active)})
+        self.send_json({"total": int(total), "active": int(active), **result})
 
     def api_admin_create_news_source(self, conn: sqlite3.Connection) -> None:
         admin = self.require_admin(conn)
@@ -6335,24 +6826,27 @@ class Handler(BaseHTTPRequestHandler):
             INSERT INTO news_sources
                 (id, name, source_key, source_type, source_url, homepage_url, allowed_domain,
                  country, city, language, default_category, credibility_level, copyright_policy_note,
-                 crawl_strategy, list_selector, item_selector, title_selector, link_selector,
+                 source_tier, copyright_policy, crawl_strategy, sub_city, list_selector, item_selector, title_selector, link_selector,
                  summary_selector, date_selector, date_format, timezone, robots_policy,
                  crawl_interval_minutes, max_items_per_run, request_timeout_ms, is_active,
-                 require_manual_review, auto_create_draft, official_auto_publish,
+                 require_manual_review, allow_auto_draft, allow_auto_publish, auto_create_draft, official_auto_publish,
+                 content_rewrite_required, risk_level,
                  created_by_admin_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id, cleaned["name"], cleaned["source_key"], cleaned["source_type"],
                 cleaned["source_url"], cleaned["homepage_url"], cleaned["allowed_domain"],
                 cleaned["country"], cleaned["city"], cleaned["language"], cleaned["default_category"],
-                cleaned["credibility_level"], cleaned["copyright_policy_note"], cleaned["crawl_strategy"],
+                cleaned["credibility_level"], cleaned["copyright_policy_note"], cleaned["source_tier"],
+                cleaned["copyright_policy"], cleaned["crawl_strategy"], cleaned["sub_city"],
                 cleaned["list_selector"], cleaned["item_selector"], cleaned["title_selector"],
                 cleaned["link_selector"], cleaned["summary_selector"], cleaned["date_selector"],
                 cleaned["date_format"], cleaned["timezone"], cleaned["robots_policy"],
                 cleaned["crawl_interval_minutes"], cleaned["max_items_per_run"], cleaned["request_timeout_ms"],
-                cleaned["is_active"], cleaned["require_manual_review"], cleaned["auto_create_draft"],
-                cleaned["official_auto_publish"], admin["id"], now, now,
+                cleaned["is_active"], cleaned["require_manual_review"], cleaned["allow_auto_draft"],
+                cleaned["allow_auto_publish"], cleaned["auto_create_draft"], cleaned["official_auto_publish"],
+                cleaned["content_rewrite_required"], cleaned["risk_level"], admin["id"], now, now,
             ),
         )
         log_editorial_action(conn, admin_id=admin["id"], action="create_source", target_type="crawler_source", target_id=source_id)
@@ -6369,25 +6863,28 @@ class Handler(BaseHTTPRequestHandler):
             UPDATE news_sources
                SET name = ?, source_key = ?, source_type = ?, source_url = ?, homepage_url = ?,
                    allowed_domain = ?, country = ?, city = ?, language = ?, default_category = ?,
-                   credibility_level = ?, copyright_policy_note = ?, crawl_strategy = ?,
-                   list_selector = ?, item_selector = ?, title_selector = ?, link_selector = ?,
+                   credibility_level = ?, copyright_policy_note = ?, source_tier = ?, copyright_policy = ?,
+                   crawl_strategy = ?, sub_city = ?, list_selector = ?, item_selector = ?, title_selector = ?, link_selector = ?,
                    summary_selector = ?, date_selector = ?, date_format = ?, timezone = ?,
                    robots_policy = ?, crawl_interval_minutes = ?, max_items_per_run = ?,
                    request_timeout_ms = ?, is_active = ?, require_manual_review = ?,
-                   auto_create_draft = ?, official_auto_publish = ?, updated_at = ?
+                   allow_auto_draft = ?, allow_auto_publish = ?, auto_create_draft = ?,
+                   official_auto_publish = ?, content_rewrite_required = ?, risk_level = ?, updated_at = ?
              WHERE id = ?
             """,
             (
                 cleaned["name"], cleaned["source_key"], cleaned["source_type"], cleaned["source_url"],
                 cleaned["homepage_url"], cleaned["allowed_domain"], cleaned["country"], cleaned["city"],
                 cleaned["language"], cleaned["default_category"], cleaned["credibility_level"],
-                cleaned["copyright_policy_note"], cleaned["crawl_strategy"], cleaned["list_selector"],
+                cleaned["copyright_policy_note"], cleaned["source_tier"], cleaned["copyright_policy"],
+                cleaned["crawl_strategy"], cleaned["sub_city"], cleaned["list_selector"],
                 cleaned["item_selector"], cleaned["title_selector"], cleaned["link_selector"],
                 cleaned["summary_selector"], cleaned["date_selector"], cleaned["date_format"],
                 cleaned["timezone"], cleaned["robots_policy"], cleaned["crawl_interval_minutes"],
                 cleaned["max_items_per_run"], cleaned["request_timeout_ms"], cleaned["is_active"],
-                cleaned["require_manual_review"], cleaned["auto_create_draft"],
-                cleaned["official_auto_publish"], now_iso(), source_id,
+                cleaned["require_manual_review"], cleaned["allow_auto_draft"], cleaned["allow_auto_publish"],
+                cleaned["auto_create_draft"], cleaned["official_auto_publish"],
+                cleaned["content_rewrite_required"], cleaned["risk_level"], now_iso(), source_id,
             ),
         )
         log_editorial_action(conn, admin_id=admin["id"], action="update_source", target_type="crawler_source", target_id=source_id)
@@ -6495,12 +6992,79 @@ class Handler(BaseHTTPRequestHandler):
         log_editorial_action(conn, admin_id=admin["id"], action="fetch_japan_all", target_type="crawler_batch", target_id="jp", metadata=result)
         self.send_json(result)
 
+    def api_admin_fetch_japan_scope_news_sources(self, conn: sqlite3.Connection, scope: str) -> None:
+        admin = self.require_admin(conn)
+        where = ["is_active = 1", "deleted_at IS NULL", "country = ?"]
+        params: list[Any] = ["jp"]
+        action = "fetch_japan_scope"
+        if scope == "official":
+            where.append("credibility_level = 'official'")
+            where.append("source_tier IN ('tier_1_official','tier_2_city_official')")
+            action = "fetch_japan_official"
+        elif scope == "tokyo":
+            where.append("(city = 'tokyo' OR city = '')")
+            action = "fetch_japan_tokyo"
+        elif scope == "osaka":
+            where.append("(city = 'osaka' OR city = '')")
+            action = "fetch_japan_osaka"
+        else:
+            raise APIError("未知抓取范围", 400, "invalid_scope")
+        rows = [
+            dict(r) for r in conn.execute(
+                f"""
+                SELECT id, name, allowed_domain, source_url, homepage_url
+                  FROM news_sources
+                 WHERE {' AND '.join(where)}
+                 ORDER BY updated_at DESC
+                """,
+                params,
+            )
+        ]
+        logs: list[dict[str, Any]] = []
+        domain_locks: dict[str, threading.Semaphore] = {}
+        for row in rows:
+            domain = normalize_allowed_domain(row) or row["id"]
+            domain_locks.setdefault(domain, threading.Semaphore(NEWS_CRAWLER_PER_DOMAIN_CONCURRENCY))
+
+        def _run(row: dict[str, Any]) -> dict[str, Any]:
+            domain = normalize_allowed_domain(row) or row["id"]
+            with domain_locks[domain]:
+                try:
+                    with DB_LOCK, db() as worker_conn:
+                        return fetch_news_source(worker_conn, row["id"], admin_id=admin["id"], force=False)["log"]
+                except APIError as exc:
+                    return {
+                        "source_id": row["id"], "source_name": row.get("name") or "",
+                        "status": "failed", "fetched_count": 0, "new_count": 0,
+                        "duplicate_count": 0, "error_count": 1, "error_message": str(exc),
+                    }
+
+        if rows:
+            with _DBLockReleased():
+                with ThreadPoolExecutor(max_workers=NEWS_CRAWLER_MAX_CONCURRENCY) as pool:
+                    futures = [pool.submit(_run, row) for row in rows]
+                    for future in as_completed(futures):
+                        logs.append(future.result())
+        result = {
+            "scope": scope,
+            "total_sources": len(rows),
+            "success_sources": sum(1 for log in logs if str(log.get("status")) in {"success", "partial_success", "skipped"}),
+            "failed_sources": sum(1 for log in logs if str(log.get("status")) == "failed"),
+            "fetched_count": sum(int(log.get("fetched_count") or 0) for log in logs),
+            "new_count": sum(int(log.get("new_count") or 0) for log in logs),
+            "duplicate_count": sum(int(log.get("duplicate_count") or 0) for log in logs),
+            "error_count": sum(int(log.get("error_count") or 0) for log in logs),
+            "logs": logs,
+        }
+        log_editorial_action(conn, admin_id=admin["id"], action=action, target_type="crawler_batch", target_id=f"jp:{scope}", metadata=result)
+        self.send_json(result)
+
     def api_admin_news_items(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
         status_filter = (query.get("status") or "").strip()
         where = ["1 = 1"] if status_filter == "deleted" else ["status != 'deleted'"]
         params: list[Any] = []
-        for key, column in (("sourceId", "source_id"), ("source_id", "source_id"), ("country", "country"), ("city", "city"), ("language", "original_language"), ("category", "category"), ("status", "status")):
+        for key, column in (("sourceId", "source_id"), ("source_id", "source_id"), ("country", "country"), ("city", "city"), ("language", "original_language"), ("category", "category"), ("source_tier", "source_tier"), ("risk_level", "risk_level"), ("status", "status")):
             value = (query.get(key) or "").strip()
             if value:
                 where.append(f"{column} = ?")
@@ -6512,8 +7076,18 @@ class Handler(BaseHTTPRequestHandler):
                     params.append(_normalize_news_category(value))
                 elif column == "original_language":
                     params.append(_normalize_news_language(value))
+                elif column == "source_tier":
+                    params.append(_normalize_source_tier(value))
+                elif column == "risk_level":
+                    params.append(_normalize_risk_level(value))
                 else:
                     params.append(value)
+        if query.get("minRelevance") or query.get("min_relevance"):
+            where.append("relevance_score >= ?")
+            params.append(max(0, min(100, int(query.get("minRelevance") or query.get("min_relevance") or 0))))
+        if query.get("minQuality") or query.get("min_quality"):
+            where.append("quality_score >= ?")
+            params.append(max(0, min(100, int(query.get("minQuality") or query.get("min_quality") or 0))))
         keyword = (query.get("keyword") or query.get("q") or "").strip()
         if keyword:
             where.append("(original_title LIKE ? OR original_summary LIKE ? OR source_name LIKE ?)")
@@ -6591,6 +7165,11 @@ class Handler(BaseHTTPRequestHandler):
         if risk_level not in {"low", "medium", "high"}:
             risk_level = _risk_level_for_category(category)
         official_required_default = _source_required_for_category(category)
+        relevance_score = int(data.get("relevance_score", existing.get("relevance_score", 50)) or 50)
+        relevance_score = max(0, min(100, relevance_score))
+        quality_score = int(data.get("quality_score", existing.get("quality_score", 0)) or 0)
+        if not quality_score and body:
+            quality_score = _editorial_quality_score(body, language, source_name=str(data.get("source_name", existing.get("source_name", "")) or ""), city=city, category=category, relevance_score=relevance_score)
         return {
             "author_type": author_type,
             "author_display_name": author,
@@ -6598,6 +7177,11 @@ class Handler(BaseHTTPRequestHandler):
             "city": city,
             "language": language,
             "category": category,
+            "sub_city": _news_clean_text(data.get("sub_city", existing.get("sub_city", "")), 80).lower(),
+            "source_tier": _normalize_source_tier(data.get("source_tier", existing.get("source_tier", ""))),
+            "relevance_score": relevance_score,
+            "quality_score": quality_score,
+            "editorial_disclaimer": _news_clean_text(data.get("editorial_disclaimer", existing.get("editorial_disclaimer", "")), 800),
             "title": title,
             "summary": summary,
             "body": body,
@@ -6658,15 +7242,18 @@ class Handler(BaseHTTPRequestHandler):
                 (id, news_item_id, author_type, author_display_name, country, city, language,
                  category, title, summary, body, source_name, source_url, original_url,
                  source_published_at, status, review_status, risk_level, official_source_required,
+                 source_tier, sub_city, relevance_score, quality_score, editorial_disclaimer,
                  created_by_admin_id, created_at, updated_at)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 post_id, cleaned["author_type"], cleaned["author_display_name"], cleaned["country"],
                 cleaned["city"], cleaned["language"], cleaned["category"], cleaned["title"],
                 cleaned["summary"], cleaned["body"], cleaned["source_name"], cleaned["source_url"],
                 cleaned["original_url"], cleaned["source_published_at"], status, review_status,
-                cleaned["risk_level"], cleaned["official_source_required"], admin["id"], now, now,
+                cleaned["risk_level"], cleaned["official_source_required"], cleaned["source_tier"],
+                cleaned["sub_city"], cleaned["relevance_score"], cleaned["quality_score"],
+                cleaned["editorial_disclaimer"], admin["id"], now, now,
             ),
         )
         replace_editorial_tags(conn, post_id, cleaned["tags"])
@@ -6692,14 +7279,17 @@ class Handler(BaseHTTPRequestHandler):
                SET author_type = ?, author_display_name = ?, country = ?, city = ?, language = ?,
                    category = ?, title = ?, summary = ?, body = ?, source_name = ?, source_url = ?,
                    original_url = ?, source_published_at = ?, status = ?, review_status = ?,
-                   risk_level = ?, official_source_required = ?, updated_at = ?
+                   risk_level = ?, official_source_required = ?, source_tier = ?, sub_city = ?,
+                   relevance_score = ?, quality_score = ?, editorial_disclaimer = ?, updated_at = ?
              WHERE id = ?
             """,
             (
                 cleaned["author_type"], cleaned["author_display_name"], cleaned["country"], cleaned["city"],
                 cleaned["language"], cleaned["category"], cleaned["title"], cleaned["summary"], cleaned["body"],
                 cleaned["source_name"], cleaned["source_url"], cleaned["original_url"], cleaned["source_published_at"],
-                status, review_status, cleaned["risk_level"], cleaned["official_source_required"], now_iso(), post_id,
+                status, review_status, cleaned["risk_level"], cleaned["official_source_required"],
+                cleaned["source_tier"], cleaned["sub_city"], cleaned["relevance_score"],
+                cleaned["quality_score"], cleaned["editorial_disclaimer"], now_iso(), post_id,
             ),
         )
         if "tags" in data:
@@ -6722,11 +7312,13 @@ class Handler(BaseHTTPRequestHandler):
                 """
                 UPDATE editorial_posts
                    SET summary = ?, body = ?, category = ?, city = COALESCE(NULLIF(?, ''), city),
+                       risk_level = ?, quality_score = ?, editorial_disclaimer = ?,
                        is_ai_assisted = 1, ai_model = ?, ai_prompt_version = ?, updated_at = ?
                  WHERE id = ?
                 """,
                 (
                     result["summary"], result["body"], result["category"], result["city"],
+                    result["risk_level"], int(result.get("quality_score") or 0), result["editorialDisclaimer"],
                     result["model"], result["prompt_version"], now_iso(), post_id,
                 ),
             )
@@ -6762,6 +7354,16 @@ class Handler(BaseHTTPRequestHandler):
                 raise APIError("发布前请补齐标题、摘要、正文、国家、语言和分类", 400, "publish_fields_required")
             if post.get("news_item_id") and (not post.get("source_name") or not post.get("original_url")):
                 raise APIError("采集来源文章发布前必须保留来源名称和原文链接", 400, "source_required")
+            quality_score = int(post.get("quality_score") or _editorial_quality_score(
+                str(post.get("body") or ""),
+                str(post.get("language") or "zh-CN"),
+                source_name=str(post.get("source_name") or ""),
+                city=str(post.get("city") or ""),
+                category=str(post.get("category") or ""),
+                relevance_score=int(post.get("relevance_score") or 50),
+            ))
+            if quality_score < 70:
+                raise APIError("内容质量不足，请重新生成或人工编辑", 400, "quality_score_too_low")
             if post.get("is_ai_assisted"):
                 issues = _editorial_quality_issues(str(post.get("body") or ""), str(post.get("language") or "zh-CN"))
                 if issues:
@@ -6823,6 +7425,17 @@ class Handler(BaseHTTPRequestHandler):
             source_ok = bool(post.get("source_name") and (post.get("original_url") or post.get("source_url")))
             if not required_ok or not source_ok:
                 skipped.append({"id": post["id"], "reason": "missing_required_fields_or_source"})
+                continue
+            quality_score = int(post.get("quality_score") or _editorial_quality_score(
+                str(post.get("body") or ""),
+                str(post.get("language") or "zh-CN"),
+                source_name=str(post.get("source_name") or ""),
+                city=str(post.get("city") or ""),
+                category=str(post.get("category") or ""),
+                relevance_score=int(post.get("relevance_score") or 50),
+            ))
+            if quality_score < 70:
+                skipped.append({"id": post["id"], "reason": "quality_score_too_low"})
                 continue
             if post.get("is_ai_assisted"):
                 issues = _editorial_quality_issues(str(post.get("body") or ""), str(post.get("language") or "zh-CN"))
@@ -6901,6 +7514,10 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 where.append("category = ?")
                 params.append(category)
+        source_tier_raw = (query.get("sourceTier") or query.get("source_tier") or "").strip()
+        if source_tier_raw:
+            where.append("source_tier = ?")
+            params.append(_normalize_source_tier(source_tier_raw))
         page = max(1, int(query.get("page") or 1))
         limit = max(1, min(int(query.get("limit") or 20), 50))
         sort = (query.get("sort") or "latest").strip()
@@ -7519,6 +8136,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_news_desk(conn)
         if path == "/api/admin/japan-news-crawler/fetch-japan-all" and method == "POST":
             return self.api_admin_fetch_japan_all_news_sources(conn)
+        if path == "/api/admin/japan-news-crawler/fetch-official" and method == "POST":
+            return self.api_admin_fetch_japan_scope_news_sources(conn, "official")
+        if path == "/api/admin/japan-news-crawler/fetch-tokyo" and method == "POST":
+            return self.api_admin_fetch_japan_scope_news_sources(conn, "tokyo")
+        if path == "/api/admin/japan-news-crawler/fetch-osaka" and method == "POST":
+            return self.api_admin_fetch_japan_scope_news_sources(conn, "osaka")
         if path == "/api/admin/japan-news-crawler/fetch-all" and method == "POST":
             return self.api_admin_fetch_all_news_sources(conn)
         if path == "/api/admin/japan-news-crawler/sources" and method == "GET":
@@ -7567,6 +8190,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_fetch_all_news_sources(conn)
         if path == "/api/admin/news-sources/fetch-japan-all" and method == "POST":
             return self.api_admin_fetch_japan_all_news_sources(conn)
+        if path == "/api/admin/news-sources/fetch-official" and method == "POST":
+            return self.api_admin_fetch_japan_scope_news_sources(conn, "official")
+        if path == "/api/admin/news-sources/fetch-tokyo" and method == "POST":
+            return self.api_admin_fetch_japan_scope_news_sources(conn, "tokyo")
+        if path == "/api/admin/news-sources/fetch-osaka" and method == "POST":
+            return self.api_admin_fetch_japan_scope_news_sources(conn, "osaka")
         if path == "/api/admin/news-sources" and method == "GET":
             return self.api_admin_news_sources(conn, query)
         if path == "/api/admin/news-sources" and method == "POST":

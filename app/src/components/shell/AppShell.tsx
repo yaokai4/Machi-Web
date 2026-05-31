@@ -23,7 +23,6 @@ import {
   Sun,
   Moon,
   Newspaper,
-  UserCheck,
   UserPlus,
   User as UserIcon,
   Hash,
@@ -78,7 +77,6 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
     items: [
       { href: "/notifications", labelKey: "nav_notifications", icon: Bell, key: "notifications", badgeKey: "notifications" },
       { href: "/messages", labelKey: "nav_messages", icon: Mail, key: "messages", badgeKey: "messages" },
-      { href: "/home?tab=following", labelKey: "tab_following", icon: UserCheck, key: "following" },
     ],
   },
   {
@@ -91,7 +89,7 @@ const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
   },
 ];
 
-const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings", "following"]);
+const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings"]);
 
 function currentPathForRedirect(pathname: string | null) {
   if (typeof window === "undefined") return pathname || "/home";
@@ -213,11 +211,6 @@ function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) 
         key={item.key}
         href={item.href}
         className={itemClass}
-        onClick={() => {
-          if (item.key === "following") {
-            window.dispatchEvent(new CustomEvent("machi:home-tab", { detail: "following" }));
-          }
-        }}
       >
         {content}
       </Link>

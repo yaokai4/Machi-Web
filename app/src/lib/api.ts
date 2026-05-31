@@ -153,23 +153,37 @@ export type NewsCategory =
   | "local_news" | "traffic_alert" | "weather_alert" | "earthquake_alert" | "typhoon_alert"
   | "policy_update" | "immigration_visa" | "city_event" | "life_notice" | "housing_notice"
   | "housing_market" | "work_study" | "public_safety" | "economy" | "technology" | "culture"
-  | "sports" | "education" | "health" | "travel" | "editor_pick" | "weekly_digest" | "other";
+  | "sports" | "education" | "health" | "travel" | "editor_pick" | "weekly_digest" | "other"
+  | "digital_life" | "national_notice" | "legal_notice" | "residence_card" | "visa_policy"
+  | "foreign_resident_notice" | "labor_policy" | "resident_service" | "garbage_rule"
+  | "child_support" | "local_event" | "train_delay" | "commute" | "disaster"
+  | "disaster_prevention" | "food" | "weekend" | "exhibition" | "meetup" | "language_exchange";
+
+export type NewsSourceTier =
+  | "tier_1_official"
+  | "tier_2_city_official"
+  | "tier_3_public_media"
+  | "tier_4_event_lifestyle"
+  | "tier_5_manual_reference";
 
 export type NewsSource = {
   id: string;
   name: string;
   source_key: string;
-  source_type: "rss" | "webpage" | "html_list" | "manual";
+  source_type: "rss" | "webpage" | "metadata" | "html_list" | "manual" | "manual_reference" | "api";
   source_url: string;
   homepage_url: string;
   allowed_domain: string;
   country: string;
   city: string;
+  sub_city?: string;
   language: string;
   default_category: NewsCategory;
-  credibility_level: "official" | "media" | "community" | "commercial";
+  source_tier: NewsSourceTier;
+  credibility_level: "official" | "media" | "community" | "commercial" | "event_platform";
+  copyright_policy: "metadata_only" | "official_attribution" | "cc_by" | "redistribution_restricted" | "manual_review_only" | "unknown";
   copyright_policy_note: string;
-  crawl_strategy: "rss" | "meta_only" | "html_list" | "manual";
+  crawl_strategy: "rss" | "meta_only" | "metadata" | "html_list" | "manual";
   list_selector?: string | null;
   item_selector?: string | null;
   title_selector?: string | null;
@@ -184,8 +198,12 @@ export type NewsSource = {
   request_timeout_ms: number;
   is_active: boolean;
   require_manual_review: boolean;
+  allow_auto_draft?: boolean;
+  allow_auto_publish?: boolean;
   auto_create_draft?: boolean;
   official_auto_publish?: boolean;
+  content_rewrite_required?: boolean;
+  risk_level?: "low" | "medium" | "high";
   last_fetched_at?: string | null;
   last_success_at?: string | null;
   last_error: string;
@@ -217,7 +235,13 @@ export type NewsItem = {
   fetched_at: string;
   country: string;
   city: string;
+  sub_city?: string;
   category: NewsCategory;
+  source_tier?: NewsSourceTier;
+  risk_level?: "low" | "medium" | "high";
+  relevance_score?: number;
+  relevance_reason?: string;
+  quality_score?: number;
   hash_key: string;
   raw_metadata?: Record<string, unknown>;
   error_message?: string;
@@ -235,8 +259,16 @@ export type EditorialPost = {
   authorDisplayName?: string;
   country: string;
   city: string;
+  sub_city?: string;
+  subCity?: string;
   language: string;
   category: NewsCategory;
+  source_tier?: NewsSourceTier;
+  sourceTier?: NewsSourceTier;
+  relevance_score?: number;
+  relevanceScore?: number;
+  quality_score?: number;
+  qualityScore?: number;
   title: string;
   summary: string;
   body: string;
@@ -309,7 +341,17 @@ export type NewsDeskDashboard = {
     failed_sources: number;
     sources?: number;
     active_sources?: number;
+    successful_sources?: number;
+    crawler_items?: number;
+    front_visible?: number;
+    auto_draft_sources?: number;
+    auto_publish_sources?: number;
     diagnostic_hint?: string;
+  };
+  diagnostics?: {
+    failure_reasons?: Array<{ reason: string; count: number }>;
+    source_tiers?: Array<{ source_tier: NewsSourceTier | string; count: number }>;
+    top_issues?: string[];
   };
   recent_posts: EditorialPost[];
   recent_logs: Array<Record<string, unknown>>;
@@ -321,6 +363,10 @@ export type NewsItemsQuery = {
   city?: string;
   language?: string;
   category?: string;
+  source_tier?: string;
+  risk_level?: string;
+  minRelevance?: number;
+  minQuality?: number;
   status?: string;
   keyword?: string;
   page?: number;
@@ -949,7 +995,7 @@ export const api = {
     const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/news-sources`, payload);
     return source;
   },
-  async adminSeedNewsSourcePresets(): Promise<{ total: number; active: number }> {
+  async adminSeedNewsSourcePresets(): Promise<{ total: number; active: number; created?: number; updated?: number; skipped?: number; total_presets?: number }> {
     return request("POST", `/api/admin/news-sources/seed-presets`, {});
   },
   async adminUpdateNewsSource(id: string, patch: Partial<NewsSource>): Promise<NewsSource> {
@@ -968,6 +1014,15 @@ export const api = {
   },
   async adminFetchJapanAllNewsSources(): Promise<Record<string, unknown>> {
     return request("POST", `/api/admin/news-sources/fetch-japan-all`, {});
+  },
+  async adminFetchJapanOfficialNewsSources(): Promise<Record<string, unknown>> {
+    return request("POST", `/api/admin/news-sources/fetch-official`, {});
+  },
+  async adminFetchTokyoNewsSources(): Promise<Record<string, unknown>> {
+    return request("POST", `/api/admin/news-sources/fetch-tokyo`, {});
+  },
+  async adminFetchOsakaNewsSources(): Promise<Record<string, unknown>> {
+    return request("POST", `/api/admin/news-sources/fetch-osaka`, {});
   },
   async adminNewsSourceDetail(id: string): Promise<{ source: NewsSource; recent_logs: Array<Record<string, unknown>> }> {
     return request("GET", `/api/admin/news-sources/${encodeURIComponent(id)}`);
@@ -1045,7 +1100,7 @@ export const api = {
     const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/japan-news-crawler/sources`, payload);
     return source;
   },
-  async japanNewsCrawlerSeedSourcePresets(): Promise<{ total: number; active: number }> {
+  async japanNewsCrawlerSeedSourcePresets(): Promise<{ total: number; active: number; created?: number; updated?: number; skipped?: number; total_presets?: number }> {
     return request("POST", `/api/admin/japan-news-crawler/sources/seed-presets`, {});
   },
   async japanNewsCrawlerUpdateSource(id: string, patch: Partial<NewsSource>): Promise<NewsSource> {
@@ -1067,6 +1122,15 @@ export const api = {
   },
   async japanNewsCrawlerFetchJapanAll(): Promise<Record<string, unknown>> {
     return request("POST", `/api/admin/japan-news-crawler/fetch-japan-all`, {});
+  },
+  async japanNewsCrawlerFetchOfficial(): Promise<Record<string, unknown>> {
+    return request("POST", `/api/admin/japan-news-crawler/fetch-official`, {});
+  },
+  async japanNewsCrawlerFetchTokyo(): Promise<Record<string, unknown>> {
+    return request("POST", `/api/admin/japan-news-crawler/fetch-tokyo`, {});
+  },
+  async japanNewsCrawlerFetchOsaka(): Promise<Record<string, unknown>> {
+    return request("POST", `/api/admin/japan-news-crawler/fetch-osaka`, {});
   },
   async japanNewsCrawlerItems(opts: NewsItemsQuery = {}): Promise<{ items: NewsItem[]; page: number; limit: number; total: number }> {
     const usp = new URLSearchParams();

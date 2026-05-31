@@ -549,7 +549,7 @@ def crawl_source(source: dict[str, Any], *, force: bool = False) -> CrawlResult:
         if last and datetime.now(timezone.utc) - last < timedelta(minutes=interval):
             raise CrawlerSkipped("crawl interval has not elapsed", "crawl_interval")
 
-    if source_type == "manual" or strategy == "manual":
+    if source_type in {"manual", "manual_reference"} or strategy == "manual":
         return CrawlResult(source_id=source_id, source_name=source_name, status="skipped", items=[], skipped_reason="manual_source", source_url=source_url, duration_ms=int((time.monotonic() - started) * 1000))
     if not source_url:
         raise CrawlerError("source_url is required", "missing_source_url")
