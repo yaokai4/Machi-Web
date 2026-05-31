@@ -1,7 +1,7 @@
 import clsx from "clsx";
 
 export function BrandText({
-  children = "Machi City",
+  children = "Machi",
   className,
 }: {
   children?: React.ReactNode;
@@ -31,11 +31,11 @@ export function BrandPhrase({
   text: string;
   className?: string;
 }) {
-  const parts = text.split(/(Machi City|Machi)/g);
+  const parts = text.split(/(Machi|Machi)/g);
   return (
     <>
       {parts.map((part, index) =>
-        part === "Machi City" || part === "Machi" ? (
+        part === "Machi" || part === "Machi" ? (
           <BrandText key={`${part}-${index}`} className={className}>{part}</BrandText>
         ) : (
           part

@@ -4,9 +4,9 @@ import { MarketingPageContent } from "@/components/marketing/MarketingPageConten
 import { marketingCopy } from "@/data/machi-home";
 import { localeAlternates } from "@/lib/marketing-locale";
 
-const title = "Machi City | すべての街で、暮らしのこだまを見つける";
+const title = "Machi｜すべての街で、暮らしの響きを見つける｜ローカル生活・ソーシャルコミュニティ";
 const description =
-  "Machi City は、国・都市・コンテンツ言語でつながるローカルライフプラットフォームです。ニュース、生活ガイド、賃貸、中古品、仕事、求人、イベント、Q&A、ローカルサービス、クーポン、話題の投稿を見つけられます。";
+  "Machi は都市と言語で整理されたローカル生活・ソーシャルコミュニティです。住まい、中古、仕事、求人、イベント、食事、Q&A、生活情報、地域サービスを見つけ、同じ街の友達、食事仲間、イベント仲間、言語交換パートナーともつながれます。";
 
 export const metadata: Metadata = {
   title: { absolute: title },
@@ -18,9 +18,9 @@ export const metadata: Metadata = {
   openGraph: {
     title,
     description,
-    url: "https://machicity.com/ja",
-    siteName: "Machi City",
-    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi City" }],
+    url: "https://www.machicity.com/ja",
+    siteName: "Machi",
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi" }],
     locale: "ja_JP",
     type: "website",
   },
@@ -37,8 +37,8 @@ export default function JapaneseLandingPage() {
   const ld = {
     "@context": "https://schema.org",
     "@type": "WebSite",
-    name: "Machi City",
-    url: "https://machicity.com/ja",
+    name: "Machi",
+    url: "https://www.machicity.com/ja",
     description,
     inLanguage: "ja-JP",
   };

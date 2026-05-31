@@ -2,14 +2,16 @@ import { NextResponse, type NextRequest } from "next/server";
 
 // Surface the URL pathname (and a derived locale) to server components.
 // Without this, layout.tsx has no way to know whether the request is
-// for `/`, `/en` or `/ja` — only pages get that information through
+// for `/`, `/zh`, `/en` or `/ja` — only pages get that information through
 // route segments. Setting a header lets resolveMarketingLocale prefer
 // the URL prefix over the cookie, which is the right precedence.
 export function middleware(req: NextRequest) {
   const requestHeaders = new Headers(req.headers);
   const path = req.nextUrl.pathname;
   requestHeaders.set("x-machi-pathname", path);
-  if (path === "/en" || path.startsWith("/en/")) {
+  if (path === "/zh" || path.startsWith("/zh/")) {
+    requestHeaders.set("x-machi-locale", "zh");
+  } else if (path === "/en" || path.startsWith("/en/")) {
     requestHeaders.set("x-machi-locale", "en");
   } else if (path === "/ja" || path.startsWith("/ja/")) {
     requestHeaders.set("x-machi-locale", "ja");

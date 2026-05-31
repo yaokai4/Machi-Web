@@ -83,7 +83,7 @@ export default function SettingsPage() {
       const next = await api.updateSettings(input);
       queryClient.setQueryData(["settings"], next);
       setSettings(next);
-      if (input.appearance) setAppearance(input.appearance);
+      if (input.appearance === "light" || input.appearance === "dark") setAppearance(input.appearance);
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
     }
@@ -220,13 +220,12 @@ export default function SettingsPage() {
               <option value="multi">多语言内容</option>
             </select>
           </RowSwitch>
-          <RowSwitch icon={Palette} label={t("settings_appearance")} valueLabel={s.appearance === "system" ? t("settings_appearance_system") : s.appearance === "dark" ? t("settings_appearance_dark") : t("settings_appearance_light")}>
+          <RowSwitch icon={Palette} label={t("settings_appearance")} valueLabel={s.appearance === "dark" ? t("settings_appearance_dark") : t("settings_appearance_light")}>
             <select
               className="kx-input h-8 px-2 w-32"
-              value={s.appearance}
-              onChange={(e) => patch({ appearance: e.target.value as typeof s.appearance })}
+              value={s.appearance === "dark" ? "dark" : "light"}
+              onChange={(e) => patch({ appearance: e.target.value as "light" | "dark" })}
             >
-              <option value="system">{t("settings_appearance_system")}</option>
               <option value="light">{t("settings_appearance_light")}</option>
               <option value="dark">{t("settings_appearance_dark")}</option>
             </select>

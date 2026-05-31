@@ -28,17 +28,18 @@ export function FeatureChannelGrid() {
         <div className="mt-12 grid gap-6 lg:grid-cols-3">
           {copy.featureSection.groups.map((group) => {
             const channels = group.channels.map((key) => byKey[key]).filter(Boolean);
+            const socialGroup = group.title.toLowerCase().includes("social") || group.title.includes("线下") || group.title.includes("つながり");
             return (
               <section
                 key={group.title}
-                className="mc-reveal mc-glass relative overflow-hidden p-5 sm:p-6"
+                className={socialGroup ? "mc-reveal relative overflow-hidden rounded-[28px] bg-[#151515] p-5 text-white shadow-[0_28px_80px_-48px_rgba(21,21,21,0.8)] sm:p-6" : "mc-reveal mc-glass relative overflow-hidden p-5 sm:p-6"}
               >
-                <div className="pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full bg-indigo-300/20 blur-2xl dark:bg-indigo-500/15" />
+                <div className={socialGroup ? "pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full bg-orange-400/20 blur-2xl" : "pointer-events-none absolute -right-12 -top-12 h-32 w-32 rounded-full bg-orange-300/20 blur-2xl dark:bg-orange-500/15"} />
                 <header>
-                  <h3 className="text-xl font-black text-slate-950 dark:text-white">
+                  <h3 className={socialGroup ? "text-xl font-black text-white" : "text-xl font-black text-slate-950 dark:text-white"}>
                     {group.title}
                   </h3>
-                  <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-400">
+                  <p className={socialGroup ? "mt-2 text-sm leading-6 text-white/65" : "mt-2 text-sm leading-6 text-slate-600 dark:text-slate-400"}>
                     {group.description}
                   </p>
                 </header>

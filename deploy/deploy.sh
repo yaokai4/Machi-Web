@@ -115,4 +115,12 @@ else
 fi
 
 if curl -fsS -o /dev/null http://127.0.0.1:3000/about; then
-  echo "    ✅ web /
+  echo "    ✅ web /about 200"
+else
+  echo "    ⚠️  web /about 未返回 200（非致命，不阻断部署）"
+fi
+
+echo "    ✅ 部署完成（backend + web 已重启并通过健康检查）"
+REMOTE
+
+echo "==> [本地] 部署流程结束"

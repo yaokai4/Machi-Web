@@ -1,4 +1,4 @@
-import { ArrowUpRight, MapPin } from "lucide-react";
+import { ArrowUpRight, Languages, MapPin, Sparkles } from "lucide-react";
 import clsx from "clsx";
 import type { City } from "@/data/machi-home";
 
@@ -39,10 +39,28 @@ export function CityCard({ city }: CityCardProps) {
           </span>
           <ArrowUpRight className="h-5 w-5 text-slate-400 transition group-hover:translate-x-0.5 group-hover:-translate-y-0.5 dark:text-slate-500" aria-hidden="true" />
         </div>
-        <div className="mt-8">
-          <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">{city.country}</p>
+        <div className="mt-7">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-semibold text-slate-500 dark:text-slate-400">{city.country}</p>
+            {city.sampleLabel ? (
+              <span className="rounded-full bg-white/80 px-2.5 py-1 text-[10px] font-black uppercase text-orange-700 ring-1 ring-orange-100 dark:bg-orange-500/10 dark:text-orange-200 dark:ring-orange-300/20">
+                {city.sampleLabel}
+              </span>
+            ) : null}
+          </div>
           <h3 className="mt-2 text-[1.45rem] font-black leading-tight text-slate-950 dark:text-white">{city.name}</h3>
+          {city.status ? (
+            <p className="mt-2 inline-flex rounded-full bg-slate-950 px-3 py-1.5 text-xs font-black text-white dark:bg-white dark:text-slate-950">
+              {city.status}
+            </p>
+          ) : null}
           <p className="mt-4 text-sm leading-6 text-slate-600 dark:text-slate-300">{city.description}</p>
+          {city.highlight ? (
+            <p className="mt-3 flex items-start gap-2 text-xs font-bold leading-5 text-slate-500 dark:text-slate-400">
+              <Sparkles className="mt-0.5 h-3.5 w-3.5 shrink-0 text-orange-500" aria-hidden="true" />
+              {city.highlight}
+            </p>
+          ) : null}
         </div>
         <div className="mt-auto flex flex-wrap items-center gap-2 pt-6">
           <span className="rounded-full bg-white/80 px-3 py-1.5 text-xs font-bold text-slate-700 ring-1 ring-white/80 dark:bg-white/10 dark:text-slate-200 dark:ring-white/10">
@@ -51,6 +69,17 @@ export function CityCard({ city }: CityCardProps) {
           <span className="rounded-full bg-slate-950/5 px-3 py-1.5 text-xs font-bold text-slate-700 dark:bg-white/5 dark:text-slate-300">
             {city.heat}
           </span>
+          {city.languageTags?.map((language) => (
+            <span key={language} className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2.5 py-1.5 text-xs font-black text-indigo-700 ring-1 ring-indigo-100 dark:bg-indigo-500/10 dark:text-indigo-200 dark:ring-indigo-300/20">
+              <Languages className="h-3 w-3" aria-hidden="true" />
+              {language}
+            </span>
+          ))}
+          {city.sceneTags?.map((tag) => (
+            <span key={tag} className="rounded-full bg-white/70 px-2.5 py-1.5 text-xs font-bold text-slate-600 ring-1 ring-white/80 dark:bg-white/10 dark:text-slate-300 dark:ring-white/10">
+              {tag}
+            </span>
+          ))}
         </div>
       </div>
     </article>

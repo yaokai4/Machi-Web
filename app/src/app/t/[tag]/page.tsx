@@ -19,7 +19,7 @@ export default function TopicPage() {
   });
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
         <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label="返回">
           <ArrowLeft className="w-4 h-4" />

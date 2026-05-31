@@ -63,13 +63,17 @@ export function CityShowcaseSection() {
           </ul>
         </div>
 
-        <div className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="mt-8 grid gap-4 md:grid-cols-3">
           {copy.cities.map((city) => (
             <div className="mc-reveal" key={city.name}>
               <CityCard city={city} />
             </div>
           ))}
         </div>
+
+        <p className="mc-reveal mt-5 text-xs leading-6 text-slate-500 dark:text-slate-400">
+          {copy.citySection.sampleNote}
+        </p>
       </div>
     </section>
   );

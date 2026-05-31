@@ -47,7 +47,14 @@ export function useRequireAuth(): boolean {
   const user = useSession((s) => s.user);
   const router = useRouter();
   useEffect(() => {
-    if (status === "unauthed") router.replace("/login");
+    if (status === "unauthed") {
+      const redirect =
+        typeof window !== "undefined"
+          ? `${window.location.pathname}${window.location.search}`
+          : "/home";
+      const safeRedirect = redirect.startsWith("/") && !redirect.startsWith("//") ? redirect : "/home";
+      router.replace(`/login?redirect=${encodeURIComponent(safeRedirect)}`);
+    }
   }, [status, router]);
   return !!user;
 }

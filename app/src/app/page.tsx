@@ -15,11 +15,11 @@ import {
 
 const META: Record<"zh" | "en" | "ja", { title: string; description: string; keywords: string[] }> = {
   zh: {
-    title: "Machi City | 在每一座城市，找到生活的回声",
+    title: "Machi｜在每一座城市，找到生活的回声｜本地生活与同城社交社区",
     description:
-      "Machi City 是一个按城市组织真实生活经验的城市社区。切换国家和城市，发现当地新闻、租房、二手、工作、约饭、活动、问答和避坑经验。让散落在群聊、社交平台和朋友间的城市信息重新被看见、被找到、被回应。",
+      "Machi 是按城市和语言组织的本地生活与同城社交社区，帮助用户发现租房、二手、工作、招聘、活动、约饭、问答、避坑经验和本地服务，也能认识同城朋友、饭搭子、活动搭子和语言交换伙伴。",
     keywords: [
-      "Machi City",
+      "Machi",
       "Machi",
       "城市社区",
       "城市经验",
@@ -38,11 +38,11 @@ const META: Record<"zh" | "en" | "ja", { title: string; description: string; key
     ],
   },
   en: {
-    title: "Machi City | Find the echoes of life in every city",
+    title: "Machi | Find the Echoes of Life in Every City | Local Life & Social Community",
     description:
-      "Machi City is a city experience network — a community organised by city, language, topic and trust. Discover news, housing, jobs, secondhand, dining, events, Q&A and what to avoid in every city you care about.",
+      "Machi is a local life and social community organized by city and language, helping people discover housing, jobs, secondhand deals, events, dining, Q&A, local tips and trusted services — and meet local friends, dining buddies, event companions and language exchange partners.",
     keywords: [
-      "Machi City",
+      "Machi",
       "Machi",
       "city community",
       "city experience",
@@ -59,11 +59,11 @@ const META: Record<"zh" | "en" | "ja", { title: string; description: string; key
     ],
   },
   ja: {
-    title: "Machi City | すべての街で、暮らしのこだまを見つける",
+    title: "Machi｜すべての街で、暮らしの響きを見つける｜ローカル生活・ソーシャルコミュニティ",
     description:
-      "Machi City は街ごとに整理されたリアル経験のコミュニティです。国と都市を切り替えて、ニュース、住まい、中古、仕事、食事、イベント、Q&A、避けたい落とし穴を発見できます。",
+      "Machi は都市と言語で整理されたローカル生活・ソーシャルコミュニティです。住まい、中古、仕事、求人、イベント、食事、Q&A、生活情報、地域サービスを見つけ、同じ街の友達、食事仲間、イベント仲間、言語交換パートナーともつながれます。",
     keywords: [
-      "Machi City",
+      "Machi",
       "Machi",
       "街のコミュニティ",
       "海外生活",
@@ -94,15 +94,15 @@ export async function generateMetadata(): Promise<Metadata> {
       description: meta.description,
       url:
         locale === "zh"
-          ? "https://machicity.com"
-          : `https://machicity.com/${locale}`,
-      siteName: "Machi City",
+          ? "https://www.machicity.com/zh"
+          : `https://www.machicity.com/${locale}`,
+      siteName: "Machi",
       images: [
         {
           url: "/og-image.png",
           width: 1200,
           height: 630,
-          alt: "Machi City",
+          alt: "Machi",
         },
       ],
       locale: locale === "zh" ? "zh_CN" : locale === "ja" ? "ja_JP" : "en_US",
@@ -123,24 +123,29 @@ export default async function LandingPage() {
   const ld = {
     "@context": "https://schema.org",
     "@type": "WebSite",
-    name: "Machi City",
-    url: "https://machicity.com",
+    name: "Machi",
+    url: "https://www.machicity.com",
     description: META[locale].description,
     inLanguage: locale === "zh" ? "zh-CN" : locale === "ja" ? "ja-JP" : "en-US",
     potentialAction: {
       "@type": "SearchAction",
-      target: "https://machicity.com/search?q={search_term_string}",
+      target: "https://www.machicity.com/search?q={search_term_string}",
       "query-input": "required name=search_term_string",
     },
   };
   const org = {
     "@context": "https://schema.org",
     "@type": "Organization",
-    name: "Machi City",
-    url: "https://machicity.com",
-    logo: "https://machicity.com/icon.svg",
+    name: "Machi",
+    url: "https://www.machicity.com",
+    logo: "https://www.machicity.com/icon.svg",
     slogan: copy.brandStory.title,
-    sameAs: ["https://machicity.com"],
+    founder: {
+      "@type": "Person",
+      name: "Yao Kai / YAOKAI",
+      jobTitle: "Founder",
+    },
+    sameAs: ["https://www.machicity.com"],
   };
 
   return (

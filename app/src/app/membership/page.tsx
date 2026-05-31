@@ -11,11 +11,11 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { BadgeCheck, Check, Loader2, ShieldAlert } from "lucide-react";
-import { api, APIError } from "@/lib/api";
+import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { VerifiedBadge } from "@/components/design/Avatar";
-import { useSession, useToasts } from "@/lib/store";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import type { KXCreateOrderResult, PaymentProvider } from "@/lib/types";
 
@@ -33,6 +33,7 @@ const BENEFIT_KEYS = [
 export default function MembershipPage() {
   const user = useSession((s) => s.user);
   const setUser = useSession((s) => s.setUser);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const { t } = useI18n();
   const queryClient = useQueryClient();
@@ -50,9 +51,14 @@ export default function MembershipPage() {
   const [order, setOrder] = useState<KXCreateOrderResult | null>(null);
   const [creating, setCreating] = useState<PaymentProvider | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollStartedAtRef = useRef(0);
 
   const plan = planQuery.data?.plan;
-  const availableProviders: PaymentProvider[] = planQuery.data?.available_providers ?? ["wechat_pay", "alipay"];
+  // Only ever show payment methods the server reports as actually configured
+  // (`available_providers`). Empty fallback during load so we never flash an
+  // unconfigured method (WeChat/Alipay) that would "time out" on click — on
+  // production only Stripe is configured, so only Stripe shows.
+  const availableProviders: PaymentProvider[] = planQuery.data?.available_providers ?? [];
   const membership = meQuery.data?.membership;
   const isActive = !!membership?.is_active;
   const insightsQuery = useQuery({
@@ -86,8 +92,14 @@ export default function MembershipPage() {
   useEffect(() => {
     if (!order) return;
     stopPolling();
+    pollStartedAtRef.current = Date.now();
     pollRef.current = setInterval(async () => {
       try {
+        if (Date.now() - pollStartedAtRef.current > 180_000) {
+          stopPolling();
+          pushToast({ kind: "error", message: "订单确认超时，请刷新会员状态或重新创建订单。" });
+          return;
+        }
         const status = await api.orderStatus(order.orderNo);
         if (status.status === "paid" || status.membershipActive) {
           await refreshAfterPaid();
@@ -99,7 +111,7 @@ export default function MembershipPage() {
       } catch {
         /* transient; keep polling */
       }
-    }, 2500);
+    }, 4000);
     return stopPolling;
   }, [order, stopPolling, refreshAfterPaid, pushToast, t]);
 
@@ -149,7 +161,7 @@ export default function MembershipPage() {
 
   const startPurchase = async (provider: PaymentProvider) => {
     if (!user) {
-      pushToast({ kind: "error", message: t("mem_login_required") });
+      openAuthPrompt("generic");
       return;
     }
     setCreating(provider);
@@ -162,6 +174,10 @@ export default function MembershipPage() {
         window.location.href = result.pay_url;
       }
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("generic");
+        return;
+      }
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
       setCreating(null);
@@ -181,7 +197,7 @@ export default function MembershipPage() {
   const priceLabel = plan ? `¥${plan.amount} ${t("mem_price_unit")}` : "¥10 / 月";
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
         <BadgeCheck className="w-5 h-5 text-kx-verified" />
         <h1 className="text-lg font-bold">{t("mem_title")}</h1>
@@ -254,13 +270,26 @@ export default function MembershipPage() {
                   </li>
                 ))}
               </ul>
+              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                <Link href="/membership/benefits" className="kx-button-ghost justify-center">权益详情</Link>
+                {user ? (
+                  <Link href="/membership/exclusive" className="kx-button-ghost justify-center">会员专属</Link>
+                ) : (
+                  <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-ghost justify-center">会员专属</button>
+                )}
+                {user ? (
+                  <Link href="/membership/orders" className="kx-button-ghost justify-center">会员订单</Link>
+                ) : (
+                  <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-ghost justify-center">会员订单</button>
+                )}
+              </div>
             </section>
 
             {/* Purchase / status-driven CTA */}
             {!user ? (
-              <Link href="/login" className="kx-button-primary w-full justify-center">
+              <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-primary w-full justify-center">
                 {t("mem_login_required")}
-              </Link>
+              </button>
             ) : isActive ? (
               <div className="kx-card text-center text-kx-subtle">
                 <div className="flex items-center justify-center gap-1.5 font-bold text-kx-text">

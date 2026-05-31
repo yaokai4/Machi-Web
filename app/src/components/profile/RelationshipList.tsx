@@ -5,11 +5,11 @@ import { useQuery } from "@tanstack/react-query";
 import { ArrowLeft, UserCheck, UserPlus, Users } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { api, APIError } from "@/lib/api";
+import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
-import { useSession, useToasts } from "@/lib/store";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import type { KXUser } from "@/lib/types";
 import { showVerifiedBadge } from "@/lib/types";
 
@@ -20,6 +20,7 @@ interface RelationshipListProps {
 
 export function RelationshipList({ handle, kind }: RelationshipListProps) {
   const me = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const router = useRouter();
 
@@ -39,7 +40,10 @@ export function RelationshipList({ handle, kind }: RelationshipListProps) {
   const [busy, setBusy] = useState<string | null>(null);
 
   const toggle = async (uid: string, current: boolean) => {
-    if (!me) return router.push("/login");
+    if (!me) {
+      openAuthPrompt("follow");
+      return;
+    }
     const next = !current;
     setFollowing((prev) => ({ ...prev, [uid]: next }));
     setBusy(uid);
@@ -47,6 +51,10 @@ export function RelationshipList({ handle, kind }: RelationshipListProps) {
       await api.follow(uid, next);
     } catch (e) {
       setFollowing((prev) => ({ ...prev, [uid]: current }));
+      if (isAuthRequiredError(e)) {
+        openAuthPrompt("follow");
+        return;
+      }
       pushToast({ kind: "error", message: (e as APIError).message });
     } finally {
       setBusy(null);
@@ -56,7 +64,7 @@ export function RelationshipList({ handle, kind }: RelationshipListProps) {
   const title = kind === "followers" ? "粉丝" : "关注";
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
         <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label="返回">
           <ArrowLeft className="w-4 h-4" />

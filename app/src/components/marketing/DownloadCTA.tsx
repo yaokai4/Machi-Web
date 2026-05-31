@@ -1,10 +1,9 @@
 "use client";
 
 import { AlertCircle, Bell, CheckCircle2, Loader2, Mail, Send, ShieldCheck, Sparkles } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "./Button";
 import { BrandPhrase } from "./BrandText";
-import { StoreButton } from "./StoreButtons";
 import { useMarketingI18n } from "./MarketingI18n";
 
 type FormState =
@@ -21,13 +20,26 @@ const EMAIL_RE = /^[^\s@]+@[^\s@.]+\.[^\s@.]+$/;
 export function DownloadCTA() {
   const { copy } = useMarketingI18n();
   const [email, setEmail] = useState("");
+  const [city, setCity] = useState(copy.download.cityOptions[0]);
+  const [language, setLanguage] = useState(copy.download.languageOptions[0]);
+  const [intent, setIntent] = useState(copy.download.intentOptions[0]);
   const [state, setState] = useState<FormState>({ kind: "idle" });
+  const webBetaFeatures = useMemo(
+    () => ["city home", "discovery and search", "notifications", "messages", "posting", "profiles", "local connections"],
+    [],
+  );
 
   const isSending = state.kind === "sending";
   const isSuccess = state.kind === "success";
   const isError = state.kind === "error";
   const inputState: "default" | "focus" | "error" | "success" | "sending" =
     isSuccess ? "success" : isSending ? "sending" : isError ? "error" : "default";
+
+  useEffect(() => {
+    setCity(copy.download.cityOptions[0]);
+    setLanguage(copy.download.languageOptions[0]);
+    setIntent(copy.download.intentOptions[0]);
+  }, [copy.download.cityOptions, copy.download.languageOptions, copy.download.intentOptions]);
 
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -39,6 +51,8 @@ export function DownloadCTA() {
     }
     setState({ kind: "sending" });
     try {
+      const payload = { email: value, city, language, intent };
+      void payload;
       // Mock submit. Wire to a real endpoint when ready — the shape is
       // intentionally minimal so it's a drop-in for any waitlist backend.
       await new Promise((resolve) => setTimeout(resolve, 720));
@@ -74,6 +88,14 @@ export function DownloadCTA() {
                   <BrandPhrase text={copy.download.body} />
                 </p>
 
+                <div className="mt-6 grid gap-2 sm:grid-cols-2">
+                  {webBetaFeatures.map((feature) => (
+                    <span key={feature} className="rounded-2xl bg-white/8 px-3 py-2 text-xs font-black text-white/72 ring-1 ring-white/10">
+                      {feature}
+                    </span>
+                  ))}
+                </div>
+
                 <div className="mt-7 max-w-sm">
                   <Button
                     href="#waitlist-form"
@@ -87,23 +109,12 @@ export function DownloadCTA() {
                 </div>
 
                 <div className="mt-auto pt-8">
-                  <div className="flex flex-wrap items-end gap-5">
-                    <StoreButton
-                      kind="app-store"
-                      label={copy.download.appStore}
-                      caption={copy.download.appStore}
-                      href="#waitlist-form"
-                      dark
-                      className="items-start"
-                    />
-                    <StoreButton
-                      kind="google-play"
-                      label={copy.download.googlePlay}
-                      caption={copy.download.googlePlay}
-                      href="#waitlist-form"
-                      dark
-                      className="items-start"
-                    />
+                  <div className="flex flex-wrap gap-2">
+                    {[copy.download.appStore, copy.download.googlePlay, copy.download.webBeta].map((status) => (
+                      <span key={status} className="rounded-full bg-white/10 px-3 py-2 text-xs font-black text-white/74 ring-1 ring-white/10">
+                        {status}
+                      </span>
+                    ))}
                   </div>
                 </div>
               </div>
@@ -131,7 +142,7 @@ export function DownloadCTA() {
                 aria-busy={isSending}
               >
                 <label className="block">
-                  <span className="sr-only">{copy.download.email}</span>
+                  <span className="mb-1.5 block text-xs font-black uppercase text-slate-500 dark:text-slate-400">{copy.download.email}</span>
                   {/* Email field — explicit visual states:
                       default / focus / error / success / sending. */}
                   <div className="relative">
@@ -174,6 +185,49 @@ export function DownloadCTA() {
                       )}
                     </span>
                   </div>
+                </label>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-black uppercase text-slate-500 dark:text-slate-400">{copy.download.cityLabel}</span>
+                    <select
+                      value={city}
+                      onChange={(event) => setCity(event.target.value)}
+                      disabled={isSending || isSuccess}
+                      className="h-12 w-full rounded-2xl border border-slate-300 bg-white px-3 text-sm font-bold text-slate-950 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/15 dark:bg-white/[0.06] dark:text-white dark:focus:ring-indigo-500/20"
+                    >
+                      {copy.download.cityOptions.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block">
+                    <span className="mb-1.5 block text-xs font-black uppercase text-slate-500 dark:text-slate-400">{copy.download.languageLabel}</span>
+                    <select
+                      value={language}
+                      onChange={(event) => setLanguage(event.target.value)}
+                      disabled={isSending || isSuccess}
+                      className="h-12 w-full rounded-2xl border border-slate-300 bg-white px-3 text-sm font-bold text-slate-950 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/15 dark:bg-white/[0.06] dark:text-white dark:focus:ring-indigo-500/20"
+                    >
+                      {copy.download.languageOptions.map((option) => (
+                        <option key={option} value={option}>{option}</option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+
+                <label className="block">
+                  <span className="mb-1.5 block text-xs font-black uppercase text-slate-500 dark:text-slate-400">{copy.download.intentLabel}</span>
+                  <select
+                    value={intent}
+                    onChange={(event) => setIntent(event.target.value)}
+                    disabled={isSending || isSuccess}
+                    className="h-12 w-full rounded-2xl border border-slate-300 bg-white px-3 text-sm font-bold text-slate-950 outline-none transition focus:border-indigo-400 focus:ring-4 focus:ring-indigo-100 disabled:cursor-not-allowed disabled:opacity-70 dark:border-white/15 dark:bg-white/[0.06] dark:text-white dark:focus:ring-indigo-500/20"
+                  >
+                    {copy.download.intentOptions.map((option) => (
+                      <option key={option} value={option}>{option}</option>
+                    ))}
+                  </select>
                 </label>
                 <Button
                   type="submit"

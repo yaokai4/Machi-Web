@@ -21,7 +21,7 @@ type Kind = "all" | "post" | "user" | "topic";
 /// Same Suspense gating as /login — Next.js 15 wants the boundary.
 export default function SearchPage() {
   return (
-    <Suspense fallback={<AppShell><InlineLoading /></AppShell>}>
+    <Suspense fallback={<AppShell requireAuth={false}><InlineLoading /></AppShell>}>
       <SearchPageInner />
     </Suspense>
   );
@@ -63,7 +63,7 @@ function SearchPageInner() {
   const history = useQuery({
     queryKey: ["search-history"],
     queryFn: () => api.searchHistory(),
-    enabled: !!user,
+    enabled: true,
   });
   const popularRegions = useQuery({
     queryKey: ["popular-regions"],
@@ -76,7 +76,7 @@ function SearchPageInner() {
     queryKey: ["trending"],
     queryFn: () => api.trending(),
     staleTime: 60_000,
-    enabled: !!user && !showResults,
+    enabled: !showResults,
   });
 
   const clearHistory = async () => {
@@ -89,7 +89,7 @@ function SearchPageInner() {
   };
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-3">
         <div className="mx-auto flex max-w-kx-feed items-center gap-2">
           <div className="kx-glass-capsule flex h-12 flex-1 items-center gap-2.5 px-3.5">

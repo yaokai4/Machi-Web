@@ -68,15 +68,15 @@ export function htmlLangFor(locale: MarketingLocale): string {
 /// Build the alternates.languages object Next expects, plus x-default.
 export function localeAlternates(
   pathSuffix: string,
-  baseUrl: string = "https://machicity.com",
+  baseUrl: string = "https://www.machicity.com",
 ): Record<string, string> {
   const trimmed = pathSuffix.replace(/^\/+/, "");
   const slash = trimmed ? `/${trimmed}` : "";
   return {
-    "zh-CN": `${baseUrl}${slash || "/"}`,
+    zh: `${baseUrl}/zh${slash}`,
     en: `${baseUrl}/en${slash}`,
     ja: `${baseUrl}/ja${slash}`,
-    "x-default": `${baseUrl}${slash || "/"}`,
+    "x-default": `${baseUrl}/en${slash}`,
   };
 }
 
@@ -102,28 +102,28 @@ export async function buildSubPageMetadata(
   const cleanTitle = titleText.replace(/[。.!？？！]+$/, "");
   const description = page?.intro || titleText;
   const path = options.canonicalPath ?? `/${pathSuffix.replace(/^\/+/, "")}`;
-  // `title.absolute` bypasses the root layout's `%s | Machi City`
+  // `title.absolute` bypasses the root layout's `%s | Machi`
   // template — without it, the page title would double-up to
-  // "X | Machi City | Machi City".
+  // "X | Machi | Machi".
   return {
-    title: { absolute: `${cleanTitle} | Machi City` },
+    title: { absolute: `${cleanTitle} | Machi` },
     description,
     alternates: {
       canonical: path,
       languages: localeAlternates(pathSuffix),
     },
     openGraph: {
-      title: `${cleanTitle} | Machi City`,
+      title: `${cleanTitle} | Machi`,
       description,
-      url: `https://machicity.com${path}`,
-      siteName: "Machi City",
+      url: `https://www.machicity.com${path}`,
+      siteName: "Machi",
       locale: OG_LOCALE[locale],
       type: "website",
-      images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi City" }],
+      images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi" }],
     },
     twitter: {
       card: "summary_large_image",
-      title: `${cleanTitle} | Machi City`,
+      title: `${cleanTitle} | Machi`,
       description,
       images: ["/og-image.png"],
     },

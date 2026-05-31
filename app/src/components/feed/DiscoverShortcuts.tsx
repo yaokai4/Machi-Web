@@ -1,7 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Book,
   Briefcase,
@@ -74,7 +75,7 @@ export function ShortcutTile({ spec }: { spec: ShortcutSpec }) {
   const user = useSession((s) => s.user);
   const region = regionFromUser(user);
   const channel = channelForType(spec.type);
-  const href = region ? `/c/${encodeURIComponent(region.region_code)}?channel=${channel}` : "/settings#region";
+  const href = region ? `/c/${encodeURIComponent(region.region_code)}?channel=${channel}` : `/search?q=${encodeURIComponent(spec.title)}`;
 
   return (
     <Link
@@ -164,16 +165,34 @@ export function DiscoverShortcutGrid() {
 }
 
 function MoreChannelSheet({ onClose }: { onClose: () => void }) {
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/40 backdrop-blur-sm p-2 sm:p-4 animate-kx-slide-up"
-      onClick={onClose}
-      role="dialog"
-      aria-modal="true"
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        className="w-full sm:max-w-2xl max-h-[85vh] overflow-y-auto rounded-t-3xl sm:rounded-3xl bg-kx-card p-4 text-kx-text border border-kx-stroke shadow-xl"
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    const previousOverflow = document.body.style.overflow;
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [onClose]);
+
+  if (!mounted) return null;
+
+  return createPortal(
+    <>
+      <button type="button" aria-label="关闭" onClick={onClose} className="fixed inset-0 z-[80] bg-black/40" />
+      <section
+        className="fixed inset-x-0 bottom-0 z-[90] max-h-[80dvh] overflow-y-auto overflow-x-hidden rounded-t-3xl bg-kx-card p-4 text-kx-text border border-kx-stroke shadow-xl animate-kx-slide-up sm:left-1/2 sm:top-1/2 sm:bottom-auto sm:max-w-2xl sm:-translate-x-1/2 sm:-translate-y-1/2 sm:rounded-3xl"
+        role="dialog"
+        aria-modal="true"
       >
         <div className="flex items-center justify-between mb-3">
           <h3 className="text-base font-bold">全部频道</h3>
@@ -186,7 +205,8 @@ function MoreChannelSheet({ onClose }: { onClose: () => void }) {
             <ShortcutTile key={spec.id} spec={spec} />
           ))}
         </div>
-      </div>
-    </div>
+      </section>
+    </>,
+    document.body,
   );
 }

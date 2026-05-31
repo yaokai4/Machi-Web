@@ -9,6 +9,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { NEWS_CATEGORY_LABELS } from "@/components/news/LocalNewsStrip";
 import { relativeTime } from "@/lib/format";
+import { useSession } from "@/lib/store";
 
 const CATEGORIES: Array<{ value: "" | NewsCategory; label: string }> = [
   { value: "", label: "全部" },
@@ -22,6 +23,13 @@ const CATEGORIES: Array<{ value: "" | NewsCategory; label: string }> = [
   { value: "city_event", label: "活动" },
   { value: "life_notice", label: "生活" },
   { value: "public_safety", label: "安全" },
+  { value: "economy", label: "经济" },
+  { value: "technology", label: "科技" },
+  { value: "culture", label: "文化" },
+  { value: "sports", label: "体育" },
+  { value: "education", label: "教育" },
+  { value: "health", label: "健康" },
+  { value: "travel", label: "旅行" },
   { value: "editor_pick", label: "精选" },
 ];
 
@@ -38,6 +46,13 @@ const JAPAN_CITIES = [
   { value: "osaka", label: "Osaka" },
 ];
 
+function cityLabel(city?: string | null): string {
+  const normalized = String(city || "").trim().toLowerCase();
+  if (normalized === "tokyo") return "Tokyo";
+  if (normalized === "osaka") return "Osaka";
+  return "Japan-wide";
+}
+
 export function NewsListClient({ presetCity = "", title = "本地资讯", subtitle = "看看这座城市最近发生了什么。" }: {
   presetCity?: "" | "tokyo" | "osaka";
   title?: string;
@@ -47,6 +62,7 @@ export function NewsListClient({ presetCity = "", title = "本地资讯", subtit
   const [language, setLanguage] = useState("");
   const [sort, setSort] = useState<"latest" | "popular">("latest");
   const [city, setCity] = useState(presetCity);
+  const user = useSession((s) => s.user);
 
   const opts = useMemo(() => ({
     country: "jp",
@@ -64,7 +80,7 @@ export function NewsListClient({ presetCity = "", title = "本地资讯", subtit
   });
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-4 py-3">
         <div className="flex items-center gap-2">
           <Newspaper className="h-5 w-5 text-kx-accent" />
@@ -108,7 +124,15 @@ export function NewsListClient({ presetCity = "", title = "本地资讯", subtit
         ) : list.isError ? (
           <ErrorState onRetry={() => list.refetch()} subtitle="无法加载本地资讯，请稍后重试。" />
         ) : !list.data?.items.length ? (
-          <EmptyState title="暂无本地资讯" subtitle="编辑部发布后会显示在这里。" />
+          <div className="space-y-3">
+            <EmptyState title="暂无本地资讯" subtitle="请在后台抓取并发布内容。" />
+            {user?.role === "admin" ? (
+              <div className="kx-card border-amber-400/30 bg-amber-400/10">
+                <div className="text-sm font-bold text-kx-text">{String(list.data?.diagnostics?.hint || "暂无本地资讯。请在后台抓取并发布内容。")}</div>
+                <Link href="/admin/japan-news-crawler" className="kx-button-primary mt-3 inline-flex h-9">去后台抓取日本资讯</Link>
+              </div>
+            ) : null}
+          </div>
         ) : (
           <div className="space-y-3">
             {list.data.items.map((item) => (
@@ -121,7 +145,7 @@ export function NewsListClient({ presetCity = "", title = "本地资讯", subtit
                     <div className="mb-1 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-kx-muted">
                       <span>{NEWS_CATEGORY_LABELS[item.category] || item.category}</span>
                       <span>·</span>
-                      <span>{item.city || "Japan-wide"}</span>
+                      <span>{cityLabel(item.city)}</span>
                       <span>·</span>
                       <span>{item.author_display_name}</span>
                       {item.published_at ? <><span>·</span><span>{relativeTime(item.published_at)}</span></> : null}

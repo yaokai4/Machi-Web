@@ -1,16 +1,18 @@
 import {
-  BadgePercent,
   BriefcaseBusiness,
   CalendarDays,
-  Handshake,
   Home,
+  Languages,
   LucideIcon,
   Map,
   MessageCircleQuestion,
+  MessagesSquare,
   Newspaper,
   Repeat2,
+  TriangleAlert,
   Utensils,
   UserRoundPlus,
+  UsersRound,
   Wrench,
 } from "lucide-react";
 import clsx from "clsx";
@@ -27,12 +29,14 @@ const iconMap: Record<string, LucideIcon> = {
   Home,
   BriefcaseBusiness,
   UserRoundPlus,
-  Handshake,
   Utensils,
   CalendarDays,
   MessageCircleQuestion,
+  MessagesSquare,
   Wrench,
-  BadgePercent,
+  TriangleAlert,
+  Languages,
+  UsersRound,
 };
 
 const tones: Record<FeatureChannel["tone"], string> = {

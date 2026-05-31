@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { Globe2, Menu, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import clsx from "clsx";
@@ -20,13 +20,37 @@ export function Header() {
   const [scrolled, setScrolled] = useState(false);
   const { copy, locale, setLocale } = useMarketingI18n();
   const pathname = usePathname();
-  const localePrefix = pathname === "/en" || pathname.startsWith("/en/") ? "/en" : pathname === "/ja" || pathname.startsWith("/ja/") ? "/ja" : "";
+  const router = useRouter();
+  const explicitLocale = pathname === "/zh" || pathname.startsWith("/zh/")
+    ? "zh"
+    : pathname === "/en" || pathname.startsWith("/en/")
+      ? "en"
+      : pathname === "/ja" || pathname.startsWith("/ja/")
+        ? "ja"
+        : null;
+  const stripLocalePrefix = (path: string) => {
+    const stripped = path.replace(/^\/(zh|en|ja)(?=\/|$)/, "");
+    return stripped || "/";
+  };
+  const prefixFor = (targetLocale: "zh" | "en" | "ja") => `/${targetLocale}`;
+  const routeLocale = explicitLocale ?? locale;
+  const localePrefix = explicitLocale ? prefixFor(routeLocale) : routeLocale === "zh" ? "" : prefixFor(routeLocale);
   const hrefFor = (href: string) => {
     if (href.startsWith("#")) return pathname !== "/" ? `${localePrefix || ""}/${href}` : href;
     if (!localePrefix || !href.startsWith("/")) return href;
     if (href === "/") return localePrefix;
     if (href.startsWith("/#")) return `${localePrefix}${href}`;
     return `${localePrefix}${href}`;
+  };
+  const hrefForLocale = (targetLocale: "zh" | "en" | "ja") => {
+    const stripped = stripLocalePrefix(pathname);
+    if (stripped === "/") return prefixFor(targetLocale);
+    return `${prefixFor(targetLocale)}${stripped}`;
+  };
+  const switchLocale = (targetLocale: "zh" | "en" | "ja") => {
+    setLocale(targetLocale);
+    router.push(hrefForLocale(targetLocale));
+    setOpen(false);
   };
 
   useEffect(() => {
@@ -104,12 +128,12 @@ export function Header() {
       >
         <div className="flex items-center justify-between gap-3">
           <Link
-            href="/"
+            href={hrefFor("/")}
             className="flex shrink-0 items-center gap-2.5 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-500"
           >
             <BrandMark className="h-9 w-9 text-sm sm:h-10 sm:w-10 sm:text-base" />
             <span className="hidden leading-none min-[360px]:flex">
-              <BrandText className="whitespace-nowrap text-base font-black sm:text-lg">Machi City</BrandText>
+              <BrandText className="whitespace-nowrap text-base font-black sm:text-lg">Machi</BrandText>
             </span>
           </Link>
 
@@ -135,7 +159,7 @@ export function Header() {
                 <button
                   key={option.value}
                   type="button"
-                  onClick={() => setLocale(option.value)}
+                  onClick={() => switchLocale(option.value)}
                   className={clsx(
                     "h-8 rounded-full px-2.5 text-xs font-black transition",
                     locale === option.value
@@ -207,7 +231,7 @@ export function Header() {
               <button
                 key={option.value}
                 type="button"
-                onClick={() => setLocale(option.value)}
+                onClick={() => switchLocale(option.value)}
                 className={clsx(
                   "h-10 rounded-2xl text-sm font-black ring-1 transition active:scale-[0.98]",
                   locale === option.value

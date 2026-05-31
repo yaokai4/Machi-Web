@@ -1,6 +1,6 @@
 import type { MetadataRoute } from "next";
 
-const SITE = process.env.NEXT_PUBLIC_SITE_URL || "https://machicity.com";
+const SITE = process.env.NEXT_PUBLIC_SITE_URL || "https://www.machicity.com";
 
 // Static sitemap covering the public surface area in all three locales.
 // Per-post and per-user URLs are intentionally NOT enumerated here so
@@ -26,15 +26,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
   ] as const;
 
   const make = (path: string) => (path ? `${SITE}/${path}` : `${SITE}/`);
-  const altMake = (lang: "en" | "ja", path: string) =>
+  const altMake = (lang: "zh" | "en" | "ja", path: string) =>
     path ? `${SITE}/${lang}/${path}` : `${SITE}/${lang}`;
 
   const localizedAlternates = (path: string) => ({
     languages: {
-      "zh-CN": make(path),
+      zh: altMake("zh", path),
       en: altMake("en", path),
       ja: altMake("ja", path),
-      "x-default": make(path),
+      "x-default": altMake("en", path),
     },
   });
 
@@ -48,9 +48,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
     }),
   );
 
-  // Standalone /en and /ja landing entries — only the root has
-  // dedicated locale routes today; sub-pages serve via cookie/UI.
+  // Standalone locale landing entries.
   const localeRoots: MetadataRoute.Sitemap = [
+    {
+      url: `${SITE}/zh`,
+      lastModified: now,
+      changeFrequency: "daily",
+      priority: 0.9,
+      alternates: localizedAlternates(""),
+    },
     {
       url: `${SITE}/en`,
       lastModified: now,

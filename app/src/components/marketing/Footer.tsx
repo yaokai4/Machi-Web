@@ -23,7 +23,13 @@ const groupHrefs: string[][] = [
 export function Footer() {
   const { copy } = useMarketingI18n();
   const pathname = usePathname();
-  const localePrefix = pathname === "/en" || pathname.startsWith("/en/") ? "/en" : pathname === "/ja" || pathname.startsWith("/ja/") ? "/ja" : "";
+  const localePrefix = pathname === "/zh" || pathname.startsWith("/zh/")
+    ? "/zh"
+    : pathname === "/en" || pathname.startsWith("/en/")
+      ? "/en"
+      : pathname === "/ja" || pathname.startsWith("/ja/")
+        ? "/ja"
+        : "";
   const hrefFor = (href: string) => {
     if (!localePrefix) return href;
     if (href === "/") return localePrefix;
@@ -37,14 +43,14 @@ export function Footer() {
           <Link href={hrefFor("/")} className="inline-flex items-center gap-3">
             <BrandMark className="h-12 w-12 text-lg" />
             <span>
-              <BrandText className="block text-xl font-black">Machi City</BrandText>
+              <BrandText className="block text-xl font-black">Machi</BrandText>
               <span className="mt-1 block text-sm font-semibold text-slate-500 dark:text-slate-400">{copy.footer.tagline}</span>
             </span>
           </Link>
           <p className="mt-6 max-w-sm text-sm leading-6 text-slate-600 dark:text-slate-400">
             <BrandPhrase text={copy.footer.description} />
           </p>
-          <ul className="mt-6 flex flex-wrap gap-2" aria-label="Machi City social channels">
+          <ul className="mt-6 flex flex-wrap gap-2" aria-label="Machi social channels">
             {socials.map((social) => (
               <li key={social}>
                 <a
@@ -84,7 +90,7 @@ export function Footer() {
       </div>
 
       <div className="mx-auto mt-10 flex max-w-[1120px] flex-col gap-3 pt-6 text-sm font-semibold text-slate-500 sm:flex-row sm:items-center sm:justify-between dark:text-slate-500">
-        <p>© 2026 <BrandText className="font-black">Machi City</BrandText>. All rights reserved.</p>
+        <p>© 2026 <BrandText className="font-black">Machi</BrandText>. All rights reserved.</p>
         <p>machicity.com</p>
       </div>
     </footer>

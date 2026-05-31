@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import { useRouter } from "next/navigation";
+import { Suspense, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   AlertCircle,
@@ -9,6 +9,7 @@ import {
   Eye,
   EyeOff,
   Loader2,
+  Mail,
   MapPin,
   UserPlus,
 } from "lucide-react";
@@ -22,12 +23,14 @@ import {
   EMAIL_RE,
   HANDLE_RE,
   PASSWORD_MIN,
+  RESERVED_HANDLES,
   isRegisterValid,
   sanitizeRegisterHandle,
   validateRegister,
 } from "@/lib/authValidation";
 
-type Errors = Partial<Record<"handle" | "displayName" | "email" | "password" | "region", string>>;
+type Errors = Partial<Record<"handle" | "displayName" | "email" | "password" | "code" | "terms" | "region", string>>;
+type Availability = { status: "idle" | "checking" | "available" | "unavailable"; message: string };
 
 // Maps backend errors into a field + friendly message. The server has
 // codes for the common cases — `handle_taken`, `weak_password`,
@@ -39,7 +42,10 @@ function mapRegisterError(err: unknown): { field?: keyof Errors; message: string
       return { field: "handle", message: "这个用户名已被使用，换一个试试。" };
     }
     if (err.code === "invalid_handle" || /handle/i.test(err.message)) {
-      return { field: "handle", message: "用户名只能用小写字母、数字和下划线，2–24 位。" };
+      return { field: "handle", message: "用户名只能用小写字母、数字、下划线和点，3–20 位。" };
+    }
+    if (err.code === "reserved_handle") {
+      return { field: "handle", message: "这个用户名不可使用。" };
     }
     if (err.code === "weak_password") {
       return { field: "password", message: "密码强度不足，请尝试更长或加入数字 / 符号。" };
@@ -49,6 +55,9 @@ function mapRegisterError(err: unknown): { field?: keyof Errors; message: string
     }
     if (err.code === "email_taken") {
       return { field: "email", message: "这个邮箱已被注册过。" };
+    }
+    if (err.code === "invalid_code" || err.code === "code_expired") {
+      return { field: "code", message: err.message || "验证码无效或已过期。" };
     }
     if (err.status === 429 || err.code === "rate_limited") {
       return { message: "尝试过多，请稍等 30 秒后再试。" };
@@ -65,61 +74,160 @@ function mapRegisterError(err: unknown): { field?: keyof Errors; message: string
 }
 
 export default function RegisterPage() {
+  return (
+    <Suspense fallback={<div className="min-h-dvh grid place-items-center text-kx-muted text-sm">加载中…</div>}>
+      <RegisterForm />
+    </Suspense>
+  );
+}
+
+function safeRedirectPath(raw: string | null) {
+  if (!raw) return "/home";
+  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("://")) return "/home";
+  return raw;
+}
+
+function RegisterForm() {
   const router = useRouter();
+  const search = useSearchParams();
   const setUser = useSession((s) => s.setUser);
   const status = useSession((s) => s.status);
   const pushToast = useToasts((s) => s.push);
   const [handle, setHandle] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [email, setEmail] = useState("");
+  const [code, setCode] = useState("");
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [selectedRegion, setSelectedRegion] = useState<RegionInfo | null>(null);
   const [regionOpen, setRegionOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [sendingCode, setSendingCode] = useState(false);
+  const [codeCooldown, setCodeCooldown] = useState(0);
+  const [handleAvailability, setHandleAvailability] = useState<Availability>({ status: "idle", message: "" });
+  const [emailAvailability, setEmailAvailability] = useState<Availability>({ status: "idle", message: "" });
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [serverError, setServerError] = useState<{ field?: keyof Errors; message: string } | null>(null);
+  const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
 
   useEffect(() => {
-    if (status === "authed") router.replace("/home");
-  }, [status, router]);
+    if (status === "authed") router.replace(redirect);
+  }, [status, router, redirect]);
+
+  useEffect(() => {
+    if (codeCooldown <= 0) return;
+    const timer = window.setTimeout(() => setCodeCooldown((v) => Math.max(0, v - 1)), 1000);
+    return () => window.clearTimeout(timer);
+  }, [codeCooldown]);
+
+  useEffect(() => {
+    const value = handle.trim();
+    if (!value || !HANDLE_RE.test(value) || RESERVED_HANDLES.has(value)) {
+      setHandleAvailability({ status: "idle", message: "" });
+      return;
+    }
+    setHandleAvailability({ status: "checking", message: "正在检查用户名…" });
+    const timer = window.setTimeout(() => {
+      api.checkUsername(value)
+        .then((res) => setHandleAvailability({ status: res.available ? "available" : "unavailable", message: res.message }))
+        .catch(() => setHandleAvailability({ status: "idle", message: "" }));
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [handle]);
+
+  useEffect(() => {
+    const value = email.trim();
+    if (!value || !EMAIL_RE.test(value)) {
+      setEmailAvailability({ status: "idle", message: "" });
+      return;
+    }
+    setEmailAvailability({ status: "checking", message: "正在检查邮箱…" });
+    const timer = window.setTimeout(() => {
+      api.checkEmail(value)
+        .then((res) => setEmailAvailability({ status: res.available ? "available" : "unavailable", message: res.message }))
+        .catch(() => setEmailAvailability({ status: "idle", message: "" }));
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [email]);
 
   const errors: Errors = useMemo(() => {
     return validateRegister(
-      { handle, displayName, email, password, hasRegion: !!selectedRegion },
+      { handle, displayName, email, password, confirmPassword, code, acceptedTerms, hasRegion: !!selectedRegion },
       touched,
     );
-  }, [touched, handle, displayName, email, password, selectedRegion]);
+  }, [touched, handle, displayName, email, password, confirmPassword, code, acceptedTerms, selectedRegion]);
 
-  const isValid = isRegisterValid({ handle, displayName, email, password, hasRegion: !!selectedRegion });
-  const canSubmit = !loading;
+  const isValid = isRegisterValid({ handle, displayName, email, password, confirmPassword, code, acceptedTerms, hasRegion: !!selectedRegion });
+  const canSubmit =
+    !loading &&
+    isValid &&
+    handleAvailability.status === "available" &&
+    emailAvailability.status === "available";
 
   const fieldError = (k: keyof Errors): string | undefined => {
     if (errors[k]) return errors[k];
     if (serverError?.field === k) return serverError.message;
+    if (k === "handle" && handleAvailability.status === "unavailable") return handleAvailability.message;
+    if (k === "email" && emailAvailability.status === "unavailable") return emailAvailability.message;
     return undefined;
+  };
+
+  const fieldSuccess = (k: "handle" | "email"): string | undefined => {
+    const state = k === "handle" ? handleAvailability : emailAvailability;
+    if (state.status === "available") return state.message;
+    if (state.status === "checking") return state.message;
+    return undefined;
+  };
+
+  const sendCode = async () => {
+    setTouched((t) => ({ ...t, email: true }));
+    if (!EMAIL_RE.test(email.trim())) return;
+    setSendingCode(true);
+    setServerError(null);
+    try {
+      const check = await api.checkEmail(email.trim());
+      if (!check.available) {
+        setEmailAvailability({ status: "unavailable", message: check.message });
+        return;
+      }
+      await api.sendEmailCode(email.trim(), "register");
+      setCodeCooldown(60);
+      pushToast({ kind: "success", message: "验证码已发送，请检查邮箱" });
+    } catch (err) {
+      setServerError(mapRegisterError(err));
+    } finally {
+      setSendingCode(false);
+    }
   };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    setTouched({ handle: true, displayName: true, email: true, password: true, region: true });
-    if (!isValid) return;
+    setTouched({ handle: true, displayName: true, email: true, password: true, code: true, terms: true });
+    if (!canSubmit) return;
     setLoading(true);
     setServerError(null);
     try {
-      const { user } = await api.register({
+      const payload = {
         handle,
-        display_name: displayName.trim(),
+        display_name: displayName.trim() || handle,
         password,
-        email: email.trim() || undefined,
-        country: selectedRegion!.country_code,
-        province: selectedRegion!.province_code,
-        city: selectedRegion!.city_code,
-        current_region_code: selectedRegion!.region_code,
-      });
+        email: email.trim(),
+        code: code.trim(),
+        ...(selectedRegion
+          ? {
+              country: selectedRegion.country_code,
+              province: selectedRegion.province_code,
+              city: selectedRegion.city_code,
+              current_region_code: selectedRegion.region_code,
+            }
+          : {}),
+      };
+      const { user } = await api.register(payload);
       setUser(user);
       pushToast({ kind: "success", message: `欢迎加入 Machi，${user.display_name}` });
-      router.replace("/home");
+      router.replace(redirect);
     } catch (err) {
       setServerError(mapRegisterError(err));
     } finally {
@@ -136,7 +244,7 @@ export default function RegisterPage() {
             <div className="inline-flex items-center gap-3">
               <BrandMark className="h-14 w-14 rounded-[18px] text-2xl" />
               <div>
-                <div className="text-3xl font-black tracking-tight"><BrandText>Machi City</BrandText></div>
+                <div className="text-3xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
                 <p className="mt-1 text-sm font-semibold text-kx-subtle">在每一座城市，找到生活的回声。</p>
               </div>
             </div>
@@ -185,7 +293,7 @@ export default function RegisterPage() {
             <div className="mb-5 flex items-center gap-3 lg:hidden">
               <BrandMark className="h-12 w-12 rounded-[16px] text-xl" />
               <div>
-                <div className="text-2xl font-black tracking-tight"><BrandText>Machi City</BrandText></div>
+                <div className="text-2xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
                 <p className="text-sm font-semibold text-kx-subtle">在每一座城市，找到生活的回声。</p>
               </div>
             </div>
@@ -212,8 +320,8 @@ export default function RegisterPage() {
               label="用户名"
               htmlFor="reg-handle"
               error={fieldError("handle")}
-              hint="a–z, 0–9, _，2–24 位"
-              success={!fieldError("handle") && HANDLE_RE.test(handle)}
+              hint={fieldSuccess("handle") || "a–z, 0–9, _ 和 .，3–20 位"}
+              success={!fieldError("handle") && handleAvailability.status === "available"}
             >
               <input
                 id="reg-handle"
@@ -232,7 +340,7 @@ export default function RegisterPage() {
                 onBlur={() => setTouched((t) => ({ ...t, handle: true }))}
                 aria-invalid={!!fieldError("handle") || undefined}
                 aria-describedby={fieldError("handle") ? "reg-handle-error" : undefined}
-                maxLength={24}
+                maxLength={20}
               />
             </FieldShell>
 
@@ -240,7 +348,7 @@ export default function RegisterPage() {
               label="显示名称"
               htmlFor="reg-displayName"
               error={fieldError("displayName")}
-              hint="支持中文"
+              hint="可选 · 支持中文"
               success={!fieldError("displayName") && displayName.trim().length > 0}
             >
               <input
@@ -263,26 +371,62 @@ export default function RegisterPage() {
               label="邮箱"
               htmlFor="reg-email"
               error={fieldError("email")}
-              hint="可选 · 找回密码用"
-              success={!fieldError("email") && !!email && EMAIL_RE.test(email)}
+              hint={fieldSuccess("email") || "必填 · 用于验证码和找回密码"}
+              success={!fieldError("email") && emailAvailability.status === "available"}
+              className="sm:col-span-2"
+            >
+              <div className="flex gap-2">
+                <input
+                  id="reg-email"
+                  className="kx-input min-w-0 flex-1"
+                  type="email"
+                  autoComplete="email"
+                  inputMode="email"
+                  spellCheck={false}
+                  value={email}
+                  onChange={(e) => {
+                    setEmail(e.target.value);
+                    if (serverError?.field === "email") setServerError(null);
+                  }}
+                  onBlur={() => setTouched((t) => ({ ...t, email: true }))}
+                  placeholder="you@example.com"
+                  aria-invalid={!!fieldError("email") || undefined}
+                  aria-describedby={fieldError("email") ? "reg-email-error" : undefined}
+                />
+                <button
+                  type="button"
+                  onClick={sendCode}
+                  disabled={sendingCode || codeCooldown > 0 || !!fieldError("email") || !EMAIL_RE.test(email.trim())}
+                  className="kx-button-ghost h-11 shrink-0 px-3 text-sm disabled:opacity-60"
+                >
+                  {sendingCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
+                  <span className="hidden sm:inline">{codeCooldown > 0 ? `${codeCooldown}s` : "发送验证码"}</span>
+                </button>
+              </div>
+            </FieldShell>
+
+            <FieldShell
+              label="邮箱验证码"
+              htmlFor="reg-code"
+              error={fieldError("code")}
+              hint="检查邮箱中的 6 位数字"
+              success={!fieldError("code") && code.trim().length >= 4}
               className="sm:col-span-2"
             >
               <input
-                id="reg-email"
+                id="reg-code"
                 className="kx-input"
-                type="email"
-                autoComplete="email"
-                inputMode="email"
-                spellCheck={false}
-                value={email}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                value={code}
                 onChange={(e) => {
-                  setEmail(e.target.value);
-                  if (serverError?.field === "email") setServerError(null);
+                  setCode(e.target.value.replace(/\D/g, "").slice(0, 8));
+                  if (serverError?.field === "code") setServerError(null);
                 }}
-                onBlur={() => setTouched((t) => ({ ...t, email: true }))}
-                placeholder="you@example.com"
-                aria-invalid={!!fieldError("email") || undefined}
-                aria-describedby={fieldError("email") ? "reg-email-error" : undefined}
+                onBlur={() => setTouched((t) => ({ ...t, code: true }))}
+                placeholder="输入验证码"
+                aria-invalid={!!fieldError("code") || undefined}
+                aria-describedby={fieldError("code") ? "reg-code-error" : undefined}
               />
             </FieldShell>
 
@@ -290,8 +434,8 @@ export default function RegisterPage() {
               label="密码"
               htmlFor="reg-password"
               error={fieldError("password")}
-              hint="至少 6 位"
-              success={!fieldError("password") && password.length >= PASSWORD_MIN}
+              hint={`至少 ${PASSWORD_MIN} 位，包含字母和数字`}
+              success={!fieldError("password") && password.length >= PASSWORD_MIN && /[A-Za-z]/.test(password) && /\d/.test(password)}
               className="sm:col-span-2"
             >
               <div className="relative">
@@ -306,7 +450,7 @@ export default function RegisterPage() {
                     if (serverError?.field === "password") setServerError(null);
                   }}
                   onBlur={() => setTouched((t) => ({ ...t, password: true }))}
-                  placeholder="6 位以上，建议混合数字 / 符号"
+                  placeholder="8 位以上，包含字母和数字"
                   maxLength={128}
                   aria-invalid={!!fieldError("password") || undefined}
                   aria-describedby={fieldError("password") ? "reg-password-error" : undefined}
@@ -323,6 +467,28 @@ export default function RegisterPage() {
               </div>
               <PasswordStrength value={password} />
             </FieldShell>
+
+            <FieldShell
+              label="确认密码"
+              htmlFor="reg-confirm-password"
+              error={confirmPassword && confirmPassword !== password ? "两次输入的密码不一致" : undefined}
+              hint="再次输入密码"
+              success={!!confirmPassword && confirmPassword === password}
+              className="sm:col-span-2"
+            >
+              <input
+                id="reg-confirm-password"
+                className="kx-input"
+                type={showPw ? "text" : "password"}
+                autoComplete="new-password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                onBlur={() => setTouched((t) => ({ ...t, password: true }))}
+                placeholder="再次输入密码"
+                maxLength={128}
+                aria-invalid={(!!confirmPassword && confirmPassword !== password) || undefined}
+              />
+            </FieldShell>
           </div>
 
           <section className="mt-5">
@@ -334,7 +500,7 @@ export default function RegisterPage() {
               {fieldError("region") ? null : selectedRegion ? (
                 <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-300">已选择</span>
               ) : (
-                <span className="text-[11px] font-semibold text-kx-muted">必填</span>
+                <span className="text-[11px] font-semibold text-kx-muted">可选</span>
               )}
             </div>
             <button
@@ -355,7 +521,7 @@ export default function RegisterPage() {
                   {selectedRegion ? regionDisplayName(selectedRegion) : "选择国家 / 城市"}
                 </span>
                 <span className="mt-0.5 block truncate text-xs font-semibold text-kx-muted">
-                  {selectedRegion ? "首页、发现和热榜将同步到该地区" : "选择后自动同步 Web 和 App 的地区内容"}
+                  {selectedRegion ? "首页、发现和热榜将同步到该地区" : "不选也可以先注册，之后在设置里切换"}
                 </span>
               </span>
               <ChevronRight className="h-4 w-4 shrink-0 text-kx-muted" />
@@ -368,6 +534,30 @@ export default function RegisterPage() {
             ) : null}
           </section>
 
+          <label className="mt-5 flex items-start gap-3 rounded-2xl bg-kx-soft px-3 py-3 text-sm font-semibold text-kx-subtle">
+            <input
+              type="checkbox"
+              className="mt-1 h-4 w-4 rounded border-kx-stroke accent-kx-accent"
+              checked={acceptedTerms}
+              onChange={(e) => {
+                setAcceptedTerms(e.target.checked);
+                setTouched((t) => ({ ...t, terms: true }));
+              }}
+            />
+            <span>
+              我已阅读并同意
+              <Link href="/legal/terms" className="kx-link mx-1">《服务条款》</Link>
+              和
+              <Link href="/legal/privacy" className="kx-link ml-1">《隐私政策》</Link>
+            </span>
+          </label>
+          {fieldError("terms") ? (
+            <p role="alert" className="mt-1.5 flex items-center gap-1 text-xs font-bold text-rose-600 dark:text-rose-300">
+              <AlertCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+              {fieldError("terms")}
+            </p>
+          ) : null}
+
           <button
             type="submit"
             className="kx-button-primary mt-6 h-12 w-full text-base disabled:opacity-60"
@@ -376,15 +566,10 @@ export default function RegisterPage() {
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
             <span>{loading ? "正在创建账号…" : "注册"}</span>
           </button>
-          <p className="mt-4 text-center text-xs text-kx-muted">
-            注册即表示同意我们的
-            <Link href="/legal/terms" className="kx-link mx-1">用户协议</Link>
-            与
-            <Link href="/legal/privacy" className="kx-link ml-1">隐私政策</Link>
-          </p>
+          <p className="mt-4 text-center text-xs text-kx-muted">注册成功后 Web 与 iOS 会共享同一套账号、城市、会员和内容数据。</p>
           <div className="mt-4 text-center text-sm text-kx-subtle">
             已有账号？
-            <Link className="kx-link ml-1 font-bold" href="/login">直接登录</Link>
+            <Link className="kx-link ml-1 font-bold" href={`/login?redirect=${encodeURIComponent(redirect)}`}>直接登录</Link>
           </div>
         </form>
       </div>

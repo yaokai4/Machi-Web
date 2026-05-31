@@ -95,7 +95,7 @@ export function MarketingCard({
     >
       {title ? <h2 className="text-2xl font-black text-slate-950 sm:text-3xl dark:text-white"><BrandPhrase text={title} /></h2> : null}
       {subtitle ? (
-        <p className="mt-3 max-w-2xl text-sm leading-7 text-slate-600 sm:text-base dark:text-slate-300"><BrandPhrase text={subtitle} /></p>
+        <p className="mt-3 max-w-2xl whitespace-pre-line text-sm leading-7 text-slate-600 sm:text-base dark:text-slate-300"><BrandPhrase text={subtitle} /></p>
       ) : null}
       {children}
     </article>

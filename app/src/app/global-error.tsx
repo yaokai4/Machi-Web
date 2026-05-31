@@ -91,7 +91,7 @@ export default function GlobalError({
         <style
           dangerouslySetInnerHTML={{
             __html: `
-              :root { color-scheme: light dark; }
+              :root { color-scheme: light; }
               html, body { height: 100%; }
               body {
                 margin: 0;
@@ -102,11 +102,6 @@ export default function GlobalError({
                 align-items: center;
                 justify-content: center;
                 padding: 24px;
-              }
-              @media (prefers-color-scheme: dark) {
-                body { background: #101216; color: #f0f2f6; }
-                .card { background: #1c1f26 !important; }
-                .muted { color: #93a0b4 !important; }
               }
               .card {
                 max-width: 28rem;

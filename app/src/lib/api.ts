@@ -48,6 +48,10 @@ export class APIError extends Error {
   }
 }
 
+export function isAuthRequiredError(err: unknown): err is APIError {
+  return err instanceof APIError && (err.status === 401 || err.code === "AUTH_REQUIRED");
+}
+
 export function readToken(): string | null {
   if (typeof window === "undefined") return null;
   try {
@@ -148,7 +152,8 @@ export type VisitorSummary = {
 export type NewsCategory =
   | "local_news" | "traffic_alert" | "weather_alert" | "earthquake_alert" | "typhoon_alert"
   | "policy_update" | "immigration_visa" | "city_event" | "life_notice" | "housing_notice"
-  | "housing_market" | "work_study" | "public_safety" | "editor_pick" | "weekly_digest" | "other";
+  | "housing_market" | "work_study" | "public_safety" | "economy" | "technology" | "culture"
+  | "sports" | "education" | "health" | "travel" | "editor_pick" | "weekly_digest" | "other";
 
 export type NewsSource = {
   id: string;
@@ -179,9 +184,18 @@ export type NewsSource = {
   request_timeout_ms: number;
   is_active: boolean;
   require_manual_review: boolean;
+  auto_create_draft?: boolean;
+  official_auto_publish?: boolean;
   last_fetched_at?: string | null;
   last_success_at?: string | null;
   last_error: string;
+  last_fetched_count?: number;
+  last_new_count?: number;
+  last_duplicate_count?: number;
+  last_error_count?: number;
+  last_robots_status?: string;
+  last_http_status?: number | null;
+  last_parser_status?: string;
   deleted_at?: string | null;
   deleted?: boolean;
   created_by_admin_id: string;
@@ -248,6 +262,7 @@ export type EditorialPost = {
   save_count: number;
   comment_count: number;
   saved: boolean;
+  is_demo?: boolean;
 };
 
 export type EditorialComment = {
@@ -269,6 +284,9 @@ export type NewsDeskDashboard = {
     pending_drafts: number;
     published: number;
     failed_sources: number;
+    sources?: number;
+    active_sources?: number;
+    diagnostic_hint?: string;
   };
   recent_posts: EditorialPost[];
   recent_logs: Array<Record<string, unknown>>;
@@ -361,11 +379,15 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
       try {
         const data = await res.json();
         if (data?.error) payload = data.error;
+        else if (data?.message || data?.code) {
+          payload = { code: data.code || "http_error", message: data.message || `请求失败 (${res.status})` };
+        }
       } catch {
         // fallthrough
       }
     }
     if (res.status === 401) {
+      payload = { code: "AUTH_REQUIRED", message: "请登录后继续" };
       writeToken(null);
     }
     throw new APIError(payload, res.status);
@@ -406,6 +428,12 @@ export const api = {
     writeToken(data.token);
     return data;
   },
+  async checkUsername(username: string): Promise<{ available: boolean; message: string; code?: string }> {
+    return request("GET", `/api/auth/check-username?username=${encodeURIComponent(username)}`);
+  },
+  async checkEmail(email: string): Promise<{ available: boolean; message: string; code?: string }> {
+    return request("GET", `/api/auth/check-email?email=${encodeURIComponent(email)}`);
+  },
   // Request an email verification / reset code. The response never contains
   // the code itself — only whether it was accepted and how long it lasts.
   async sendEmailCode(
@@ -414,6 +442,9 @@ export const api = {
     locale?: string,
   ): Promise<{ ok: boolean; expires_in: number }> {
     return request("POST", "/api/auth/email/send-code", { email, purpose, locale });
+  },
+  async verifyEmailCode(email: string, code: string, purpose: "register" | "reset" = "register"): Promise<{ ok: boolean; success?: boolean; message?: string }> {
+    return request("POST", "/api/auth/verify-code", { email, code, purpose });
   },
   // Step 1 of two-step login: verify the password, then (if the account has
   // an email) email a one-time code. Persists the token only on the direct
@@ -523,7 +554,7 @@ export const api = {
     sort?: "latest" | "popular";
     page?: number;
     limit?: number;
-  } = {}): Promise<{ items: EditorialPost[]; page: number; limit: number; total: number }> {
+  } = {}): Promise<{ items: EditorialPost[]; page: number; limit: number; total: number; diagnostics?: Record<string, unknown> }> {
     const usp = new URLSearchParams();
     for (const [key, value] of Object.entries(opts)) {
       if (value !== undefined && value !== "") usp.set(key, String(value));
@@ -699,6 +730,9 @@ export const api = {
   },
   async trending(): Promise<{ posts: KXPost[]; topics: KXTrendingTopic[]; users: KXUser[] }> {
     return request("GET", `/api/trending`);
+  },
+  async topics(): Promise<{ topics: KXTrendingTopic[]; items: KXTrendingTopic[] }> {
+    return request("GET", `/api/topics`);
   },
   async topic(tag: string): Promise<{ tag: string; items: KXPost[] }> {
     return request("GET", `/api/topics/${encodeURIComponent(tag.replace(/^#/, ""))}`);
@@ -890,6 +924,9 @@ export const api = {
     const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/news-sources`, payload);
     return source;
   },
+  async adminSeedNewsSourcePresets(): Promise<{ total: number; active: number }> {
+    return request("POST", `/api/admin/news-sources/seed-presets`, {});
+  },
   async adminUpdateNewsSource(id: string, patch: Partial<NewsSource>): Promise<NewsSource> {
     const { source } = await request<{ source: NewsSource }>("PATCH", `/api/admin/news-sources/${encodeURIComponent(id)}`, patch);
     return source;
@@ -903,6 +940,9 @@ export const api = {
   },
   async adminFetchAllNewsSources(): Promise<{ items: Array<Record<string, unknown>> }> {
     return request("POST", `/api/admin/news-sources/fetch-all`, {});
+  },
+  async adminFetchJapanAllNewsSources(): Promise<Record<string, unknown>> {
+    return request("POST", `/api/admin/news-sources/fetch-japan-all`, {});
   },
   async adminNewsSourceDetail(id: string): Promise<{ source: NewsSource; recent_logs: Array<Record<string, unknown>> }> {
     return request("GET", `/api/admin/news-sources/${encodeURIComponent(id)}`);
@@ -920,6 +960,9 @@ export const api = {
   async adminCreateEditorialDraftFromItem(id: string): Promise<EditorialPost> {
     const { post } = await request<{ post: EditorialPost }>("POST", `/api/admin/news-items/${encodeURIComponent(id)}/create-draft`, {});
     return post;
+  },
+  async adminCreateEditorialDraftsFromItems(payload: { itemIds: string[]; targetLanguage?: string; authorDisplayName?: string; createMode?: "summary_only" | "editor_template" }): Promise<{ items: EditorialPost[]; created: number; errors: Array<Record<string, string>> }> {
+    return request("POST", `/api/admin/news-items/create-drafts`, payload);
   },
   async adminUpdateNewsItemStatus(id: string, status: "ignored" | "duplicate"): Promise<NewsItem> {
     const { item } = await request<{ item: NewsItem }>("POST", `/api/admin/news-items/${encodeURIComponent(id)}/${status === "ignored" ? "ignore" : "duplicate"}`, {});
@@ -953,6 +996,9 @@ export const api = {
     const { post } = await request<{ post: EditorialPost }>("POST", `/api/admin/editorial-posts/${encodeURIComponent(id)}/${action}`, {});
     return post;
   },
+  async adminEditorialBulkPublish(payload: { postIds?: string[]; confirmMedia?: boolean } = {}): Promise<{ published: number; skipped: Array<Record<string, string>> }> {
+    return request("POST", `/api/admin/editorial-posts/bulk-publish`, payload);
+  },
   async adminDeleteEditorialPost(id: string): Promise<void> {
     await request<void>("DELETE", `/api/admin/editorial-posts/${encodeURIComponent(id)}`);
   },
@@ -974,6 +1020,9 @@ export const api = {
     const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/japan-news-crawler/sources`, payload);
     return source;
   },
+  async japanNewsCrawlerSeedSourcePresets(): Promise<{ total: number; active: number }> {
+    return request("POST", `/api/admin/japan-news-crawler/sources/seed-presets`, {});
+  },
   async japanNewsCrawlerUpdateSource(id: string, patch: Partial<NewsSource>): Promise<NewsSource> {
     const { source } = await request<{ source: NewsSource }>("PATCH", `/api/admin/japan-news-crawler/sources/${encodeURIComponent(id)}`, patch);
     return source;
@@ -991,6 +1040,9 @@ export const api = {
   async japanNewsCrawlerFetchAll(): Promise<{ items: Array<Record<string, unknown>> }> {
     return request("POST", `/api/admin/japan-news-crawler/fetch-all`, {});
   },
+  async japanNewsCrawlerFetchJapanAll(): Promise<Record<string, unknown>> {
+    return request("POST", `/api/admin/japan-news-crawler/fetch-japan-all`, {});
+  },
   async japanNewsCrawlerItems(opts: NewsItemsQuery = {}): Promise<{ items: NewsItem[]; page: number; limit: number; total: number }> {
     const usp = new URLSearchParams();
     for (const [key, value] of Object.entries(opts || {})) {
@@ -1001,6 +1053,9 @@ export const api = {
   async japanNewsCrawlerCreateDraftFromItem(id: string): Promise<EditorialPost> {
     const { post } = await request<{ post: EditorialPost }>("POST", `/api/admin/japan-news-crawler/items/${encodeURIComponent(id)}/create-draft`, {});
     return post;
+  },
+  async japanNewsCrawlerCreateDraftsFromItems(payload: { itemIds: string[]; targetLanguage?: string; authorDisplayName?: string; createMode?: "summary_only" | "editor_template" }): Promise<{ items: EditorialPost[]; created: number; errors: Array<Record<string, string>> }> {
+    return request("POST", `/api/admin/japan-news-crawler/items/create-drafts`, payload);
   },
   async japanNewsCrawlerUpdateItemStatus(id: string, status: "ignored" | "duplicate"): Promise<NewsItem> {
     const { item } = await request<{ item: NewsItem }>("POST", `/api/admin/japan-news-crawler/items/${encodeURIComponent(id)}/${status === "ignored" ? "ignore" : "duplicate"}`, {});
@@ -1067,6 +1122,15 @@ export const api = {
   },
   async membershipMe(): Promise<KXMembershipMe> {
     return request("GET", `/api/membership/me`);
+  },
+  async membershipBenefits(): Promise<{ benefits: Array<{ key: string; title: string; description: string }>; plan: KXMembershipPlan | null; disclaimer: string; requires_membership_content_types: string[] }> {
+    return request("GET", `/api/membership/benefits`);
+  },
+  async membershipExclusive(): Promise<{ membership: KXMembershipStatus; items: EditorialPost[]; guides: Array<{ key: string; title: string; description: string }> }> {
+    return request("GET", `/api/membership/exclusive`);
+  },
+  async membershipOrders(): Promise<{ items: Array<Record<string, unknown>> }> {
+    return request("GET", `/api/membership/orders`);
   },
   async membershipInsights(): Promise<KXMembershipInsights> {
     return request("GET", `/api/membership/insights`);

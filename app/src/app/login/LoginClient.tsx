@@ -56,6 +56,12 @@ function mapLoginError(err: unknown): { field?: "handle" | "password"; message: 
   return { message: "登录失败，请稍后再试。" };
 }
 
+function safeRedirectPath(raw: string | null) {
+  if (!raw) return "/home";
+  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("://")) return "/home";
+  return raw;
+}
+
 function LoginForm() {
   const router = useRouter();
   const search = useSearchParams();
@@ -68,13 +74,13 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [serverError, setServerError] = useState<{ field?: "handle" | "password"; message: string } | null>(null);
   const [touched, setTouched] = useState<{ handle: boolean; password: boolean }>({ handle: false, password: false });
+  const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
 
   useEffect(() => {
     if (status === "authed") {
-      const next = search.get("next") || "/home";
-      router.replace(next);
+      router.replace(redirect);
     }
-  }, [status, router, search]);
+  }, [status, router, redirect]);
 
   const errors = useMemo(() => {
     return validateLogin({ handle, password }, touched);
@@ -94,8 +100,7 @@ function LoginForm() {
       const { user } = await api.login(_h, _p);
       setUser(user);
       pushToast({ kind: "success", message: `欢迎回来，${user.display_name}` });
-      const next = search.get("next") || "/home";
-      router.replace(next);
+      router.replace(redirect);
     } catch (err) {
       const mapped = mapLoginError(err);
       setServerError(mapped);
@@ -119,7 +124,7 @@ function LoginForm() {
             <div className="inline-flex items-center gap-3">
               <BrandMark className="h-14 w-14 rounded-[18px] text-2xl" />
               <div>
-                <div className="text-3xl font-black tracking-tight"><BrandText>Machi City</BrandText></div>
+                <div className="text-3xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
                 <p className="mt-1 text-sm font-semibold text-kx-subtle">在每一座城市，找到生活的回声。</p>
               </div>
             </div>
@@ -158,7 +163,7 @@ function LoginForm() {
             <div className="mb-5 flex items-center gap-3 lg:hidden">
               <BrandMark className="h-12 w-12 rounded-[16px] text-xl" />
               <div>
-                <div className="text-2xl font-black tracking-tight"><BrandText>Machi City</BrandText></div>
+                <div className="text-2xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
                 <p className="text-sm font-semibold text-kx-subtle">在每一座城市，找到生活的回声。</p>
               </div>
             </div>
@@ -249,7 +254,7 @@ function LoginForm() {
 
           <div className="mt-5 text-center text-sm text-kx-subtle">
             还没有账号？
-            <Link className="kx-link ml-1 font-bold" href="/register">立即注册</Link>
+            <Link className="kx-link ml-1 font-bold" href={`/register?redirect=${encodeURIComponent(redirect)}`}>立即注册</Link>
           </div>
           <div className="mt-5 flex items-center justify-center gap-3 text-xs text-kx-muted">
             <Link href="/legal/terms" className="hover:underline">用户协议</Link>

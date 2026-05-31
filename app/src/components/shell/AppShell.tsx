@@ -3,12 +3,15 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import clsx from "clsx";
 import {
   Bell,
+  BadgeCheck,
   Bookmark,
   Compass,
   Home,
+  LogIn,
   LogOut,
   Mail,
   MoreHorizontal,
@@ -19,54 +22,69 @@ import {
   Sun,
   Moon,
   Newspaper,
+  UserPlus,
   User as UserIcon,
   Hash,
   X,
+  type LucideIcon,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { useCompose, useSession, useSettings, useToasts } from "@/lib/store";
+import { useAuthPrompt, useCompose, useSession, useSettings, useToasts, type AuthPromptKind } from "@/lib/store";
 import { Avatar } from "@/components/design/Avatar";
 import { Toaster } from "@/components/design/Toaster";
 import { Composer } from "@/components/compose/Composer";
+import { AuthRequiredDialog, authRedirectHref } from "@/components/auth/AuthRequiredDialog";
 import { BrandText } from "@/components/marketing/BrandText";
 import { useRealtime } from "@/lib/realtime";
 import { useGlobalShortcuts } from "@/lib/keyboard";
 import { ErrorBoundary } from "@/components/design/ErrorBoundary";
 import { useI18n, type I18nKey } from "@/lib/i18n";
+import type { KXUser } from "@/lib/types";
 
 interface AppShellProps {
   children: React.ReactNode;
   right?: React.ReactNode;
+  requireAuth?: boolean;
 }
 
 const NAV_ITEMS = [
   { href: "/home", labelKey: "nav_home" as I18nKey, icon: Home, key: "home", badgeKey: undefined as undefined | "notifications" | "messages" },
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
   { href: "/news", labelKey: "nav_news" as I18nKey, icon: Newspaper, key: "news", badgeKey: undefined },
+  { href: "/membership", labelKey: "mem_title" as I18nKey, icon: BadgeCheck, key: "membership", badgeKey: undefined },
   { href: "/search", labelKey: "nav_search" as I18nKey, icon: Search, key: "search", badgeKey: undefined },
   { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
   { href: "/messages", labelKey: "nav_messages" as I18nKey, icon: Mail, key: "messages", badgeKey: "messages" as const },
   { href: "/settings", labelKey: "nav_settings" as I18nKey, icon: Settings, key: "settings", badgeKey: undefined },
 ];
 
-export function AppShell({ children, right }: AppShellProps) {
+const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings"]);
+
+function currentPathForRedirect(pathname: string | null) {
+  if (typeof window === "undefined") return pathname || "/home";
+  const candidate = `${window.location.pathname}${window.location.search}`;
+  return candidate.startsWith("/") && !candidate.startsWith("//") ? candidate : pathname || "/home";
+}
+
+export function AppShell({ children, right, requireAuth = true }: AppShellProps) {
   const user = useSession((s) => s.user);
   const status = useSession((s) => s.status);
   const router = useRouter();
   const pathname = usePathname();
 
   useEffect(() => {
-    if (status === "unauthed") {
-      const next = pathname && pathname !== "/" && pathname !== "/login" ? `?next=${encodeURIComponent(pathname)}` : "";
+    if (requireAuth && status === "unauthed") {
+      const redirect = currentPathForRedirect(pathname);
+      const next = redirect !== "/" && redirect !== "/login" ? `?redirect=${encodeURIComponent(redirect)}` : "";
       router.replace(`/login${next}`);
     }
-  }, [status, router, pathname]);
+  }, [status, router, pathname, requireAuth]);
 
   useRealtime();
   useGlobalShortcuts();
 
-  if (status === "loading" || status === "idle") {
+  if (status === "loading" || status === "idle" || (requireAuth && status === "unauthed")) {
     return (
       <div className="min-h-dvh flex items-center justify-center text-kx-muted">
         <span className="kx-skeleton w-32 h-4" />
@@ -78,10 +96,11 @@ export function AppShell({ children, right }: AppShellProps) {
     <div className="min-h-dvh">
       <Toaster />
       <Composer />
+      <AuthRequiredDialog />
       <div className="mx-auto max-w-kx-shell flex">
         <Sidebar pathname={pathname} user={user} />
         <main className="flex-1 min-w-0 border-x border-kx-stroke/35 lg:max-w-kx-feed bg-kx-bg/35">
-          <div className="pb-28 md:pb-8">
+          <div className="pb-28 md:pb-8 kx-page-enter">
             <ErrorBoundary>{children}</ErrorBoundary>
           </div>
         </main>
@@ -92,8 +111,9 @@ export function AppShell({ children, right }: AppShellProps) {
   );
 }
 
-function Sidebar({ pathname, user }: { pathname: string; user: import("@/lib/types").KXUser | null }) {
+function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) {
   const compose = useCompose((s) => s.open);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const appearance = useSettings((s) => s.appearance);
   const setAppearance = useSettings((s) => s.setAppearance);
   const pushToast = useToasts((s) => s.push);
@@ -102,6 +122,7 @@ function Sidebar({ pathname, user }: { pathname: string; user: import("@/lib/typ
   const router = useRouter();
 
   const { t } = useI18n();
+  const redirect = currentPathForRedirect(pathname);
   const notif = useQuery({
     queryKey: ["notifications", "all"],
     queryFn: () => api.notifications("all"),
@@ -140,16 +161,9 @@ function Sidebar({ pathname, user }: { pathname: string; user: import("@/lib/typ
           const active = pathname?.startsWith(item.href);
           const Icon = item.icon;
           const badge = item.badgeKey ? badges[item.badgeKey] : 0;
-          return (
-            <Link
-              key={item.key}
-              href={item.href}
-              className={clsx(
-                "flex items-center gap-3 px-3 py-2.5 rounded-full font-semibold text-base transition relative",
-                "hover:bg-kx-soft",
-                active && "bg-kx-accentSoft text-kx-accent",
-              )}
-            >
+          const requiresLogin = AUTH_REQUIRED_NAV.has(item.key);
+          const content = (
+            <>
               <span className="relative">
                 <Icon className="w-5 h-5" />
                 {badge > 0 ? (
@@ -159,6 +173,32 @@ function Sidebar({ pathname, user }: { pathname: string; user: import("@/lib/typ
                 ) : null}
               </span>
               <span className="hidden lg:inline">{t(item.labelKey)}</span>
+            </>
+          );
+          const itemClass = clsx(
+            "flex items-center gap-3 px-3 py-2.5 rounded-full font-semibold text-base transition relative",
+            "hover:bg-kx-soft",
+            active && "bg-kx-accentSoft text-kx-accent",
+          );
+          if (!user && requiresLogin) {
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => openAuthPrompt(item.key === "messages" ? "message" : "generic")}
+                className={clsx(itemClass, "text-left")}
+              >
+                {content}
+              </button>
+            );
+          }
+          return (
+            <Link
+              key={item.key}
+              href={item.href}
+              className={itemClass}
+            >
+              {content}
             </Link>
           );
         })}
@@ -175,7 +215,7 @@ function Sidebar({ pathname, user }: { pathname: string; user: import("@/lib/typ
           </Link>
         ) : null}
       </nav>
-      <button onClick={() => compose()} className="kx-button-primary mt-3 h-11 px-4 text-base">
+      <button onClick={() => (user ? compose() : openAuthPrompt("publish"))} className="kx-button-primary mt-3 h-11 px-4 text-base">
         <PenSquare className="w-4 h-4" />
         <span className="hidden lg:inline">{t("action_compose")}</span>
       </button>
@@ -216,7 +256,24 @@ function Sidebar({ pathname, user }: { pathname: string; user: import("@/lib/typ
               <LogOut className="w-4 h-4" />
             </button>
           </div>
-        ) : null}
+        ) : (
+          <div className="flex flex-col gap-1 rounded-kx-lg bg-kx-soft/60 p-2">
+            <Link
+              href={authRedirectHref("/login", redirect)}
+              className="flex items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold text-kx-text hover:bg-kx-surface"
+            >
+              <LogIn className="h-4 w-4" />
+              <span className="hidden lg:inline">登录</span>
+            </Link>
+            <Link
+              href={authRedirectHref("/register", redirect)}
+              className="flex items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold text-kx-accent hover:bg-kx-accentSoft"
+            >
+              <UserPlus className="h-4 w-4" />
+              <span className="hidden lg:inline">注册</span>
+            </Link>
+          </div>
+        )}
       </div>
     </aside>
   );
@@ -246,6 +303,20 @@ function DefaultRight() {
   }
   return (
     <>
+      <section className="kx-card">
+        <div className="flex items-start gap-3">
+          <span className="mt-0.5 inline-flex h-9 w-9 items-center justify-center rounded-full bg-kx-verified/15 text-kx-verified">
+            <BadgeCheck className="h-5 w-5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="font-black text-kx-text">Machi 认证会员</h3>
+            <p className="mt-1 text-xs leading-5 text-kx-muted">认证标识、高信任发布、优先审核和会员专属城市内容。</p>
+            <Link href="/membership" className="mt-3 inline-flex text-xs font-bold text-kx-accent hover:underline">
+              查看权益
+            </Link>
+          </div>
+        </div>
+      </section>
       {/* Topics — ranked, numbered, denser. Replaces the old plain
           bullet list which read as "secondary clutter" on PC. */}
       <section className="kx-card">
@@ -306,6 +377,7 @@ function MobileTabBar({ pathname }: { pathname: string }) {
   const hideOn = ["/messages/", "/admin"];
   const hidden = hideOn.some((p) => pathname?.startsWith(p));
   const compose = useCompose((s) => s.open);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const user = useSession((s) => s.user);
   const { t } = useI18n();
   const [moreOpen, setMoreOpen] = useState(false);
@@ -314,16 +386,6 @@ function MobileTabBar({ pathname }: { pathname: string }) {
   useEffect(() => {
     setMoreOpen(false);
   }, [pathname]);
-
-  // Disable background scroll while the More sheet is open.
-  useEffect(() => {
-    if (!moreOpen) return;
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = prev;
-    };
-  }, [moreOpen]);
 
   const notif = useQuery({
     queryKey: ["notifications", "all"],
@@ -343,90 +405,95 @@ function MobileTabBar({ pathname }: { pathname: string }) {
   const unreadNotif = notif.data?.unread_count ?? 0;
   const unreadMsg = (conv.data || []).reduce((sum, c) => sum + (c.unread_count || 0), 0);
 
-  // 5 slots: Home / Explore / [Compose] / Notifications / More
-  // "More" opens a sheet with Search / Messages / Bookmarks / Settings / Profile / Logout etc.
+  // 5 slots for the mobile app shell: Home / Discover / Publish /
+  // Messages / Mine. News and the richer "More" surface stay available
+  // from the Mine sheet so older routes are not orphaned.
   const items = [
     { kind: "link" as const, href: "/home", label: t("nav_home"), icon: Home, badge: 0 },
     { kind: "link" as const, href: "/explore", label: t("nav_explore"), icon: Compass, badge: 0 },
     { kind: "compose" as const },
-    { kind: "link" as const, href: "/notifications", label: t("nav_notifications"), icon: Bell, badge: unreadNotif },
-    { kind: "more" as const, label: "更多", icon: MoreHorizontal, badge: unreadMsg },
+    { kind: "messages" as const, href: "/messages", label: t("nav_messages"), icon: Mail, badge: unreadMsg },
+    { kind: "mine" as const, label: t("nav_profile"), icon: user ? UserIcon : MoreHorizontal, badge: unreadNotif },
   ];
 
   return (
     <>
       <nav
-        className="kx-glass-capsule md:hidden fixed left-1/2 z-40 w-[min(calc(100vw-4.5rem),22rem)] -translate-x-1/2 px-1 py-0.5 shadow-[0_16px_34px_-24px_rgba(15,23,42,0.46)]"
-        style={{ bottom: "max(0.45rem, env(safe-area-inset-bottom))" }}
+        className="kx-glass-capsule md:hidden fixed left-1/2 z-40 w-[min(calc(100vw-1rem),24rem)] -translate-x-1/2 px-2 py-1 shadow-[0_16px_40px_-22px_rgba(15,23,42,0.5)]"
+        style={{ bottom: "max(1.1rem, calc(env(safe-area-inset-bottom) + 0.35rem))" }}
       >
-        <ul className="flex h-[3.3rem] items-stretch justify-between gap-0 px-0">
+        <ul className="flex h-[3.9rem] items-stretch justify-between px-1">
           {items.map((item, idx) => {
+            // Center compose: gradient blue + soft blue glow,极度想点击.
             if (item.kind === "compose") {
               return (
-                <li key={`compose-${idx}`} className="flex items-center justify-center w-1/5">
+                <li key={`compose-${idx}`} className="flex flex-1 flex-col items-center justify-center gap-0.5 px-1">
                   <button
-                    className="relative flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border border-kx-accent/35 bg-kx-accent text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_10px_22px_-16px_rgba(37,99,235,0.62)] active:scale-95 transition"
-                    onClick={() => compose()}
-                    aria-label="投稿"
+                    className="relative flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-tr from-kx-accent to-blue-500 text-white shadow-[0_8px_24px_-6px_rgb(var(--kx-accent)/0.6)] hover:shadow-[0_12px_30px_-6px_rgb(var(--kx-accent)/0.85)] active:scale-95 transition-all duration-200"
+                    onClick={() => (user ? compose() : openAuthPrompt("publish"))}
+                    aria-label="发布"
                   >
-                    <PenSquare className="h-[18px] w-[18px]" />
+                    <PenSquare className="h-5 w-5" strokeWidth={2.25} />
                   </button>
+                  <span className="text-[10px] font-bold leading-none text-kx-accent">发布</span>
                 </li>
               );
             }
-            if (item.kind === "more") {
-              const Icon = item.icon;
-              return (
-                <li key="more" className="flex-1">
-                  <button
-                    type="button"
-                    onClick={() => setMoreOpen(true)}
-                    aria-label={item.label}
-                    aria-expanded={moreOpen}
-                    className={clsx(
-                      "flex h-full w-full flex-col items-center justify-center gap-0 text-[10px] font-semibold relative active:scale-[0.97] transition",
-                      moreOpen ? "text-kx-accent" : "text-kx-text",
-                    )}
-                  >
-                    <span
-                      data-active={moreOpen ? "true" : "false"}
-                      className="kx-liquid-button relative inline-flex h-7 min-w-7 items-center justify-center px-1.5"
-                    >
-                      <Icon className="h-[18px] w-[18px]" />
-                      {item.badge > 0 ? (
-                        <span className="absolute -top-1.5 -right-2 min-w-4 h-4 px-1 rounded-full bg-kx-danger text-white text-[10px] font-bold inline-flex items-center justify-center">
-                          {item.badge > 99 ? "99+" : item.badge}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span>{item.label}</span>
-                  </button>
-                </li>
-              );
-            }
-            const active = pathname?.startsWith(item.href);
+            // Clean line icons — no circle wrapper. Active = brand blue +
+            // bolder stroke + a 4px dot underneath; inactive = muted thin line.
+            const active =
+              item.kind === "mine"
+                ? moreOpen || pathname?.startsWith("/me") || pathname?.startsWith("/settings")
+                : pathname?.startsWith(item.href);
             const Icon = item.icon;
+            const badge = item.badge;
+            const navClass = clsx(
+              "flex h-full w-full flex-col items-center justify-center gap-0.5 active:scale-90 transition-transform duration-150",
+              active ? "text-kx-accent" : "text-kx-muted hover:text-kx-text",
+            );
+            const iconInner = (
+              <>
+                <span className="relative inline-flex items-center justify-center">
+                  <Icon className="h-[22px] w-[22px]" strokeWidth={active ? 2.5 : 1.75} />
+                  {badge > 0 ? (
+                    <span className="absolute -top-1.5 -right-2 min-w-4 h-4 px-1 rounded-full bg-kx-danger text-white text-[10px] font-bold inline-flex items-center justify-center">
+                      {badge > 99 ? "99+" : badge}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="max-w-[3.75rem] truncate text-[10px] font-bold leading-none">
+                  {item.label}
+                </span>
+                <span
+                  className={clsx(
+                    "h-1 w-1 rounded-full bg-kx-accent transition-all duration-200",
+                    active ? "scale-100 opacity-100" : "scale-0 opacity-0",
+                  )}
+                />
+              </>
+            );
+            if (item.kind === "mine") {
+              return (
+                <li key="mine" className="flex-1">
+                  <button type="button" onClick={() => setMoreOpen(true)} aria-label={item.label} aria-expanded={moreOpen} className={navClass}>
+                    {iconInner}
+                  </button>
+                </li>
+              );
+            }
+            if (item.kind === "messages" && !user) {
+              return (
+                <li key={item.href} className="flex-1">
+                  <button type="button" onClick={() => openAuthPrompt("message")} aria-label={item.label} className={navClass}>
+                    {iconInner}
+                  </button>
+                </li>
+              );
+            }
             return (
               <li key={item.href} className="flex-1">
-                <Link
-                  href={item.href}
-                  className={clsx(
-                    "flex h-full flex-col items-center justify-center gap-0 text-[10px] font-semibold relative active:scale-[0.97] transition",
-                    active ? "text-kx-accent" : "text-kx-text",
-                  )}
-                >
-                  <span
-                    data-active={active ? "true" : "false"}
-                    className="kx-liquid-button relative inline-flex h-7 min-w-7 items-center justify-center px-1.5"
-                  >
-                    <Icon className="h-[18px] w-[18px]" />
-                    {item.badge > 0 ? (
-                      <span className="absolute -top-1.5 -right-2 min-w-4 h-4 px-1 rounded-full bg-kx-danger text-white text-[10px] font-bold inline-flex items-center justify-center">
-                        {item.badge > 99 ? "99+" : item.badge}
-                      </span>
-                    ) : null}
-                  </span>
-                  <span>{item.label}</span>
+                <Link href={item.href} aria-label={item.label} className={navClass}>
+                  {iconInner}
                 </Link>
               </li>
             );
@@ -437,6 +504,7 @@ function MobileTabBar({ pathname }: { pathname: string }) {
         open={moreOpen}
         onClose={() => setMoreOpen(false)}
         user={user}
+        unreadNotif={unreadNotif}
         unreadMsg={unreadMsg}
         pathname={pathname}
         t={t}
@@ -449,23 +517,50 @@ function MobileMoreSheet({
   open,
   onClose,
   user,
+  unreadNotif,
   unreadMsg,
   pathname,
   t,
 }: {
   open: boolean;
   onClose: () => void;
-  user: import("@/lib/types").KXUser | null;
+  user: KXUser | null;
+  unreadNotif: number;
   unreadMsg: number;
   pathname: string;
   t: (key: I18nKey) => string;
 }) {
+  const [mounted, setMounted] = useState(false);
   const queryClient = useQueryClient();
   const router = useRouter();
   const setSessionUser = useSession((s) => s.setUser);
   const pushToast = useToasts((s) => s.push);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const appearance = useSettings((s) => s.appearance);
   const setAppearance = useSettings((s) => s.setAppearance);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    const body = document.body;
+    const previousOverflow = body.style.overflow;
+    const previousPaddingRight = body.style.paddingRight;
+    const scrollbarGap = window.innerWidth - document.documentElement.clientWidth;
+    document.addEventListener("keydown", onKey);
+    body.style.overflow = "hidden";
+    if (scrollbarGap > 0) body.style.paddingRight = `${scrollbarGap}px`;
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      body.style.overflow = previousOverflow;
+      body.style.paddingRight = previousPaddingRight;
+    };
+  }, [open, onClose]);
 
   const onLogout = async () => {
     try { await api.logout(); } catch { /* ignore */ }
@@ -476,46 +571,64 @@ function MobileMoreSheet({
     router.replace("/login");
   };
 
-  const links: Array<{ href: string; label: string; icon: typeof Search; badge?: number }> = [
-    { href: "/search", label: t("nav_search"), icon: Search },
-    { href: "/messages", label: t("nav_messages"), icon: Mail, badge: unreadMsg },
-    { href: "/bookmarks", label: t("action_bookmark"), icon: Bookmark },
-    { href: "/me", label: t("nav_profile"), icon: UserIcon },
-    { href: "/settings", label: t("nav_settings"), icon: Settings },
-  ];
+  const redirect = currentPathForRedirect(pathname);
+  const loginItem = { href: authRedirectHref("/login", redirect), label: "登录", icon: LogIn };
+  const registerItem = { href: authRedirectHref("/register", redirect), label: "注册", icon: UserPlus };
+  const links: Array<{ href?: string; label: string; icon: LucideIcon; badge?: number; authKind?: AuthPromptKind }> = user
+    ? [
+        { href: "/me", label: t("nav_profile"), icon: UserIcon },
+        { href: "/membership", label: t("mem_title"), icon: BadgeCheck },
+        { href: "/membership/exclusive", label: "会员专属", icon: BadgeCheck },
+        { href: "/bookmarks", label: t("action_bookmark"), icon: Bookmark },
+        { href: "/home?tab=following", label: "关注", icon: UserIcon },
+        { href: "/notifications", label: t("nav_notifications"), icon: Bell, badge: unreadNotif },
+        { href: "/messages", label: t("nav_messages"), icon: Mail, badge: unreadMsg },
+        { href: "/settings", label: t("nav_settings"), icon: Settings },
+        { href: "/search", label: t("nav_search"), icon: Search },
+      ]
+    : [
+        loginItem,
+        registerItem,
+        { href: "/membership", label: t("mem_title"), icon: BadgeCheck },
+        { href: "/news", label: t("nav_news"), icon: Newspaper },
+        { href: "/search", label: t("nav_search"), icon: Search },
+        { label: t("action_bookmark"), icon: Bookmark, authKind: "bookmark" },
+        { label: t("nav_notifications"), icon: Bell, authKind: "generic" },
+        { label: t("nav_messages"), icon: Mail, authKind: "message" },
+        { label: t("nav_settings"), icon: Settings, authKind: "generic" },
+      ];
   if (user?.role === "admin") {
     links.push({ href: "/admin", label: "管理后台", icon: ShieldCheck });
   }
 
-  return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-hidden={!open}
-      className={clsx(
-        "md:hidden fixed inset-0 z-50 transition-opacity duration-200",
-        open ? "pointer-events-auto opacity-100" : "pointer-events-none opacity-0",
-      )}
-    >
+  const promptLogin = (kind: AuthPromptKind) => {
+    onClose();
+    setTimeout(() => openAuthPrompt(kind), 0);
+  };
+
+  if (!mounted || !open) return null;
+
+  const sheet = (
+    <>
       <button
         type="button"
         onClick={onClose}
         aria-label="关闭"
-        className="absolute inset-0 bg-slate-950/40 backdrop-blur-sm"
+        className="fixed inset-0 z-[80] bg-slate-950/45 opacity-100 transition-opacity duration-200 md:hidden"
       />
-      <div
-        className={clsx(
-          "absolute inset-x-0 bottom-0 rounded-t-3xl bg-kx-surface shadow-[0_-20px_60px_-20px_rgba(15,23,42,0.35)]",
-          "transform-gpu transition-transform duration-[260ms] ease-out",
-          open ? "translate-y-0" : "translate-y-full",
-        )}
+      <section
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mobile-more-title"
+        className="fixed inset-x-0 bottom-0 z-[90] max-h-[80dvh] overflow-y-auto overflow-x-hidden overscroll-contain rounded-t-3xl bg-kx-surface shadow-[0_-20px_60px_-20px_rgba(15,23,42,0.35)] transform-gpu animate-kx-slide-up md:hidden"
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 12px)" }}
+        onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-2">
           <div className="h-1 w-10 rounded-full bg-kx-stroke/70 mx-auto" />
         </div>
         <div className="flex items-center justify-between px-5 pt-1 pb-3">
-          <h2 className="text-base font-black text-kx-text">更多</h2>
+          <h2 id="mobile-more-title" className="text-base font-black text-kx-text">更多</h2>
           <button
             type="button"
             onClick={onClose}
@@ -528,28 +641,37 @@ function MobileMoreSheet({
         <nav className="px-3 pb-2">
           <ul>
             {links.map((link) => {
-              const active = pathname?.startsWith(link.href);
+              const hrefPath = link.href?.split("?")[0] ?? "";
+              const active = hrefPath && pathname?.startsWith(hrefPath);
               const Icon = link.icon;
+              const rowClass = clsx(
+                "flex w-full items-center gap-3 rounded-2xl px-3 py-3 font-semibold text-[15px] transition",
+                active ? "bg-kx-accentSoft text-kx-accent" : "text-kx-text hover:bg-kx-soft",
+              );
+              const rowContent = (
+                <>
+                  <span className="relative inline-flex w-9 h-9 items-center justify-center rounded-full bg-kx-soft text-kx-subtle">
+                    <Icon className="w-5 h-5" />
+                    {link.badge && link.badge > 0 ? (
+                      <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-kx-danger text-white text-[10px] font-bold inline-flex items-center justify-center">
+                        {link.badge > 99 ? "99+" : link.badge}
+                      </span>
+                    ) : null}
+                  </span>
+                  <span className="flex-1 text-left">{link.label}</span>
+                </>
+              );
               return (
-                <li key={link.href}>
-                  <Link
-                    href={link.href}
-                    onClick={onClose}
-                    className={clsx(
-                      "flex items-center gap-3 rounded-2xl px-3 py-3 font-semibold text-[15px] transition",
-                      active ? "bg-kx-accentSoft text-kx-accent" : "text-kx-text hover:bg-kx-soft",
-                    )}
-                  >
-                    <span className="relative inline-flex w-9 h-9 items-center justify-center rounded-full bg-kx-soft text-kx-subtle">
-                      <Icon className="w-5 h-5" />
-                      {link.badge && link.badge > 0 ? (
-                        <span className="absolute -top-1 -right-1 min-w-4 h-4 px-1 rounded-full bg-kx-danger text-white text-[10px] font-bold inline-flex items-center justify-center">
-                          {link.badge > 99 ? "99+" : link.badge}
-                        </span>
-                      ) : null}
-                    </span>
-                    <span className="flex-1">{link.label}</span>
-                  </Link>
+                <li key={link.href ?? link.label}>
+                  {link.href ? (
+                    <Link href={link.href} onClick={onClose} className={rowClass}>
+                      {rowContent}
+                    </Link>
+                  ) : (
+                    <button type="button" onClick={() => promptLogin(link.authKind ?? "generic")} className={rowClass}>
+                      {rowContent}
+                    </button>
+                  )}
                 </li>
               );
             })}
@@ -581,7 +703,9 @@ function MobileMoreSheet({
             </button>
           ) : null}
         </div>
-      </div>
-    </div>
+      </section>
+    </>
   );
+
+  return createPortal(sheet, document.body);
 }

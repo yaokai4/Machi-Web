@@ -13,7 +13,7 @@ export default function MePage() {
   const router = useRouter();
 
   useEffect(() => {
-    if (status === "unauthed") router.replace("/login");
+    if (status === "unauthed") router.replace("/login?redirect=/me");
   }, [status, router]);
 
   if (!user) {

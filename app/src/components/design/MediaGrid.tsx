@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, memo } from "react";
+import Image from "next/image";
 import clsx from "clsx";
 import { Play } from "lucide-react";
 import type { KXMedia } from "@/lib/types";
@@ -72,14 +73,7 @@ function MediaGridImpl({ items, onOpen, rounded = true }: MediaGridProps) {
                   </span>
                 </>
               ) : (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={media.thumb_url || media.url}
-                  alt=""
-                  loading="lazy"
-                  decoding="async"
-                  className="w-full h-full object-cover transition-transform duration-500 group-hover/media:scale-[1.03]"
-                />
+                <MediaImage src={media.thumb_url || media.url} />
               )}
               {index === 8 && items.length > 9 ? (
                 <span className="absolute inset-0 flex items-center justify-center bg-black/55 text-white text-base font-semibold">
@@ -94,6 +88,26 @@ function MediaGridImpl({ items, onOpen, rounded = true }: MediaGridProps) {
         <Lightbox items={items} startIndex={lightboxIndex} onClose={() => setLightboxIndex(null)} />
       ) : null}
     </>
+  );
+}
+
+/** next/image (AVIF/WebP + responsive srcset, lazy by default) with a
+ *  blur-up reveal: starts blurred + slightly scaled over the bg-kx-soft
+ *  placeholder, then sharpens in on load. */
+function MediaImage({ src }: { src: string }) {
+  const [loaded, setLoaded] = useState(false);
+  return (
+    <Image
+      src={src}
+      alt=""
+      fill
+      sizes="(max-width: 768px) 100vw, 640px"
+      onLoad={() => setLoaded(true)}
+      className={clsx(
+        "object-cover transition-[opacity,filter,transform] duration-500 ease-out group-hover/media:scale-[1.03]",
+        loaded ? "opacity-100 blur-0 scale-100" : "opacity-0 blur-md scale-[1.04]",
+      )}
+    />
   );
 }
 

@@ -1,254 +1,116 @@
-"use client";
+import type { Metadata } from "next";
+import HomeClient from "./HomeClient";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { useInfiniteQuery, keepPreviousData, useQueryClient } from "@tanstack/react-query";
-import Link from "next/link";
-import { Bell, MapPin } from "lucide-react";
-import { api, APIError } from "@/lib/api";
-import type { FeedMode, KXPost, Paginated } from "@/lib/types";
-import { AppShell } from "@/components/shell/AppShell";
-import { PostCard } from "@/components/feed/PostCard";
-import { EmptyState, ErrorState, PostSkeleton } from "@/components/design/States";
-import { ChannelEmptyState } from "@/components/feed/ChannelEmptyState";
-import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
-import { useSession, useToasts } from "@/lib/store";
-import { useI18n } from "@/lib/i18n";
-import { Avatar } from "@/components/design/Avatar";
-import { LocalNewsStrip } from "@/components/news/LocalNewsStrip";
-import { regionFromUser, regionHeaderLabel, type RegionInfo } from "@/lib/regions";
-import clsx from "clsx";
+const title = "Machi | 在每一座城市，找到生活的回声 | Machi City Home";
+const description =
+  "Machi 是按城市和语言组织的本地生活与同城社交社区。用户可以发现城市里的租房、二手、工作、活动、问答和本地经验，也能认识城市里的人，寻找饭搭子、活动搭子、语言交换和本地互助。";
 
-type HotScope = "city" | "country" | "all";
+export const metadata: Metadata = {
+  title: { absolute: title },
+  description,
+  alternates: {
+    canonical: "/home",
+    languages: {
+      "zh-CN": "/home",
+      en: "/home?lang=en",
+      ja: "/home?lang=ja",
+      "x-default": "/home",
+    },
+  },
+  openGraph: {
+    title,
+    description,
+    url: "https://www.machicity.com/home",
+    siteName: "Machi",
+    type: "website",
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi City home" }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+    images: ["/og-image.png"],
+  },
+};
+
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "WebApplication",
+  name: "Machi",
+  alternateName: "Machi City",
+  applicationCategory: "SocialNetworkingApplication",
+  operatingSystem: "Web, iOS",
+  url: "https://www.machicity.com/home",
+  description,
+  inLanguage: ["zh-CN", "en", "ja"],
+  offers: { "@type": "Offer", price: "0", priceCurrency: "JPY" },
+  featureList: [
+    "City-based local life feed",
+    "Local questions and answers",
+    "Dining buddies and event companions",
+    "Language exchange",
+    "Housing, secondhand, jobs and events",
+    "Messages, notifications and user profiles",
+  ],
+  potentialAction: {
+    "@type": "SearchAction",
+    target: "https://www.machicity.com/search?q={search_term_string}",
+    "query-input": "required name=search_term_string",
+  },
+};
+
+function HomeSsrSnapshot() {
+  return (
+    <section className="sr-only" aria-label="Machi Web App home summary">
+      <h1>Machi</h1>
+      <p>在每一座城市，找到生活的回声。</p>
+      <p>Machi City · Find the echoes of life in every city.</p>
+      <p>Machi City · すべての街で、暮らしの響きを見つける。</p>
+      <p>Machi 是按城市和语言组织的本地生活与同城社交社区。用户可以发现城市里的信息，也认识城市里的人。</p>
+      <h2>Today in City / City Pulse</h2>
+      <p>Tokyo 今天正在发生：找饭搭子、问租房、看活动、找语言交换、发现本地经验。</p>
+      <p>Tokyo · Dining · 周五涩谷有人一起吃拉面吗？ 3 replies · 中文 / EN</p>
+      <p>Tokyo · Housing · 新宿租房有哪些坑要避开？ 28 answers · 中文</p>
+      <p>Tokyo · Language Exchange · Looking for Japanese-English exchange near Shibuya. 12 replies · EN / 日本語</p>
+      <h2>不只是找信息，也是在城市里认识人。</h2>
+      <p>More than local information — meet people in your city.</p>
+      <p>情報を探すだけでなく、同じ街の人とつながる。</p>
+      <p>找饭搭子、找咖啡搭子、找活动搭子、找运动搭子、找语言交换、找周末同行、找新朋友、本地互助、同城兴趣小组、初到城市的生活支持。</p>
+      <h2>City Life</h2>
+      <p>本地新闻、城市指南、问答、避坑经验、本地服务。</p>
+      <h2>Social &amp; Offline</h2>
+      <p>同城社交、同城搭子、约饭、活动、语言交换。</p>
+      <h2>Opportunities</h2>
+      <p>租房、二手、找工作、招聘、优惠。</p>
+      <h2>搜索城市问题、频道和人</h2>
+      <p>搜索租房、饭搭子、语言交换、工作、活动、本地问题...</p>
+      <p>搜索结果包括帖子、用户、活动、频道、城市、商家、问答。</p>
+      <h2>发布入口</h2>
+      <p>问一个本地问题、找饭搭子、找活动搭子、找语言交换、发布二手、发布租房、发布招聘、发布活动、分享避坑经验。</p>
+      <h2>消息、通知和个人主页</h2>
+      <p>还没有消息。加入一个饭局、发起一次语言交换，城市里的回声会从这里开始。</p>
+      <p>No messages yet. Join a dinner plan or start a language exchange — the city will echo back here.</p>
+      <h2>界面语言与内容语言分开</h2>
+      <p>界面语言：中文。内容语言：中文 + English + 日本語。城市：Tokyo。全部语言、只看中文、Only English、日本語のみ、自动翻译入口预留。</p>
+      <h2>安全和信任</h2>
+      <p>举报、拉黑、隐私设置、线下见面提醒、饭局安全提示、语言交换安全提示、虚假房源提醒、招聘诈骗提醒、商家认证、用户认证。</p>
+      <h2>商家入口</h2>
+      <p>创建商家主页、发布活动、发布优惠、发布招聘、申请认证、查看线索。餐厅发起 ramen meetup，语言学校发起 language exchange night，健身房发起 weekend running group，招聘者发布 local hiring。</p>
+      <h2>Feed tabs</h2>
+      <p>For You, City Pulse, Social, Questions, Opportunities, Latest, Trending.</p>
+    </section>
+  );
+}
 
 export default function HomePage() {
-  const [mode, setMode] = useState<FeedMode>("recommend");
-  const [hotScope, setHotScope] = useState<HotScope>("city");
-  const [regionPickerOpen, setRegionPickerOpen] = useState(false);
-  const [, startTransition] = useTransition();
-  const setModeSmooth = (next: FeedMode) => startTransition(() => setMode(next));
-  const user = useSession((s) => s.user);
-  const setUser = useSession((s) => s.setUser);
-  const pushToast = useToasts((s) => s.push);
-  const queryClient = useQueryClient();
-  const userCountry = user?.country;
-  const userProvince = user?.province;
-  const userCity = user?.city;
-  const userRegionCode = user?.current_region_code;
-  const currentRegion = regionFromUser(user);
-  const { t } = useI18n();
-  const MODES: { value: FeedMode; label: string }[] = [
-    { value: "recommend", label: t("tab_recommend") },
-    { value: "local", label: t("tab_local") },
-    { value: "following", label: t("tab_following") },
-    { value: "hot", label: t("tab_hot") },
-  ];
-  const HOT_SCOPES: { value: HotScope; label: string }[] = [
-    { value: "city", label: "城市" },
-    { value: "country", label: "国家" },
-    { value: "all", label: "全站" },
-  ];
-  // Memo'd so the feed query's useMemo deps don't see a fresh object
-  // reference on every render — without this the feed re-derives the
-  // ranking context on every hover/key event.
-  const regionOpts = useMemo(
-    () =>
-      userCountry || userProvince || userCity || userRegionCode
-        ? {
-            country: userCountry,
-            province: userProvince,
-            city: userCity,
-            region_code: userRegionCode,
-          }
-        : {},
-    [userCountry, userProvince, userCity, userRegionCode],
-  );
-  // For the hot tab the user picks the scope explicitly (city /
-  // country / all). For the local tab we always filter by region.
-  // Other modes default to country so the feed is at least continent-
-  // aware without being all-world.
-  const feedRegionOpts = useMemo(() => {
-    if (mode === "local") return regionOpts;
-    if (mode === "hot") {
-      if (hotScope === "city") return { region_code: regionOpts.region_code, country: regionOpts.country };
-      if (hotScope === "country") return { country: regionOpts.country };
-      return {} as typeof regionOpts;
-    }
-    return { country: regionOpts.country };
-  }, [mode, hotScope, regionOpts]);
-
-  const feed = useInfiniteQuery<Paginated<KXPost> & { mode: FeedMode }>({
-    queryKey: [
-      "feed",
-      mode,
-      mode === "hot" ? hotScope : "",
-      mode === "local" ? (regionOpts.region_code || regionOpts.city || "") : (regionOpts.country || ""),
-    ],
-    initialPageParam: undefined as string | undefined,
-    queryFn: ({ pageParam }) => api.feed(mode, pageParam as string | undefined, feedRegionOpts),
-    getNextPageParam: (last) => last.next_cursor ?? undefined,
-    enabled: !!user && (mode !== "local" || !!(regionOpts.region_code || regionOpts.city)),
-    // Show the old feed while a new mode is being fetched — no flash to
-    // blank skeleton when switching 推荐 / 关注 / 热度.
-    placeholderData: keepPreviousData,
-    // Keep feed in cache for 30s — switching back/forth between tabs
-    // no longer triggers a fresh request and the scroll position
-    // survives. Garbage-collect after 5 min.
-    staleTime: 30_000,
-    gcTime: 5 * 60_000,
-  });
-
-  const sentinelRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!feed.hasNextPage || feed.isFetching) return;
-    const el = sentinelRef.current;
-    if (!el) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries[0].isIntersecting) feed.fetchNextPage();
-      },
-      { rootMargin: "1200px 0px 1200px 0px" },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [feed]);
-
-  const items = feed.data?.pages.flatMap((p) => p.items) ?? [];
-
-  const persistRegion = async (region: RegionInfo) => {
-    try {
-      const next = await api.updateMe({
-        country: region.country_code,
-        province: region.province_code,
-        city: region.city_code,
-        current_region_code: region.region_code,
-      });
-      setUser(next);
-      queryClient.invalidateQueries({ queryKey: ["feed"] });
-      queryClient.invalidateQueries({ queryKey: ["explore-hot-city"] });
-      pushToast({ kind: "success", message: `已切换到 ${region.city_name}` });
-    } catch (err) {
-      pushToast({ kind: "error", message: (err as APIError).message });
-    }
-  };
-
   return (
-    <AppShell>
-      <div className="sticky top-0 z-30 kx-glass-bar px-3 pt-2 pb-2 flex flex-col gap-2">
-        <div className="flex items-center gap-2">
-          {user ? (
-            <Link href="/me" aria-label="我的">
-              <Avatar user={user} size={44} />
-            </Link>
-          ) : null}
-          <h1 className="text-[28px] sm:text-[34px] font-black tracking-tight shrink-0 leading-none">Machi</h1>
-          <button
-            type="button"
-            onClick={() => setRegionPickerOpen(true)}
-            className="ml-auto inline-flex items-center gap-1 h-10 px-3 rounded-full bg-kx-soft text-xs font-bold text-kx-text hover:bg-kx-stroke/40 transition"
-            title="切换地区"
-          >
-            <MapPin className="w-3.5 h-3.5 text-kx-accent" />
-            <span className="max-w-[7rem] truncate">
-              {regionHeaderLabel(currentRegion)}
-            </span>
-          </button>
-          <Link
-            href="/notifications"
-            className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-kx-soft hover:bg-kx-stroke/40 transition"
-            aria-label={t("nav_notifications")}
-          >
-            <Bell className="w-4 h-4 text-kx-text" />
-          </Link>
-        </div>
-        <div className="flex items-center gap-1 p-1 rounded-full bg-kx-soft kx-tap self-start">
-          {MODES.map((m) => (
-            <button
-              key={m.value}
-              className={clsx("kx-tab", "px-2.5 sm:px-3.5 h-8 text-sm")}
-              data-active={mode === m.value}
-              onClick={() => setModeSmooth(m.value)}
-            >
-              {m.label}
-            </button>
-          ))}
-        </div>
-        {mode === "hot" ? (
-          <div className="flex items-center gap-1 self-start">
-            {HOT_SCOPES.map((s) => (
-              <button
-                key={s.value}
-                className="kx-tab px-2.5 h-7 text-xs"
-                data-active={hotScope === s.value}
-                onClick={() => startTransition(() => setHotScope(s.value))}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
-      </div>
-
-      <div className="px-3 sm:px-4 py-3 space-y-3">
-        <LocalNewsStrip
-          country={currentRegion?.country_code || userCountry}
-          city={currentRegion?.city_code || userCity}
-          title="本地资讯台"
-        />
-        {feed.isLoading ? (
-          <>
-            <PostSkeleton />
-            <PostSkeleton />
-            <PostSkeleton />
-          </>
-        ) : feed.isError ? (
-          <ErrorState onRetry={() => feed.refetch()} subtitle="无法加载 Feed，请检查后端是否运行。" />
-        ) : items.length === 0 ? (
-          mode === "following" ? (
-            <EmptyState
-              title={t("empty_following_title")}
-              subtitle={t("empty_following_subtitle")}
-            />
-          ) : mode === "local" && !currentRegion ? (
-            <div className="flex flex-col items-center justify-center px-6 py-16 text-center text-kx-subtle">
-              <div className="rounded-full bg-kx-soft p-3">
-                <MapPin className="h-6 w-6 text-kx-accent" />
-              </div>
-              <div className="mt-3 text-base font-semibold text-kx-text">选择当前城市</div>
-              <div className="mt-2 max-w-sm text-sm text-kx-subtle">同城流会根据你的当前地区展示本地动态、新闻、攻略、租房、工作、二手和活动。</div>
-              <button type="button" className="kx-button-primary mt-4" onClick={() => setRegionPickerOpen(true)}>
-                选择城市
-              </button>
-            </div>
-          ) : (
-            // Empty feed → invite the user to publish. Mirrors iOS
-            // ChannelEmptyState.
-            <ChannelEmptyState contentType="dynamic" />
-          )
-        ) : (
-          items.map((post, i) => (
-            <div
-              key={post.id}
-              className="animate-kx-slide-up"
-              style={{ animationDelay: `${Math.min(i, 5) * 30}ms`, animationFillMode: "both" }}
-            >
-              <PostCard post={post} />
-            </div>
-          ))
-        )}
-        <div ref={sentinelRef} />
-        {feed.isFetchingNextPage ? <PostSkeleton /> : null}
-        {!feed.hasNextPage && items.length > 0 ? (
-          <div className="text-center text-kx-muted text-xs py-6">{t("no_more")}</div>
-        ) : null}
-      </div>
-      <RegionPickerDialog
-        open={regionPickerOpen}
-        onClose={() => setRegionPickerOpen(false)}
-        onSelect={persistRegion}
-        initialCountry={user?.country || currentRegion?.country_code}
-        allowsAnyCountry={!user?.country}
-        recentCodes={user?.recent_region_codes}
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
-    </AppShell>
+      <HomeSsrSnapshot />
+      <HomeClient />
+    </>
   );
 }

@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { MessageSquare, ShieldAlert } from "lucide-react";
-import { api, APIError } from "@/lib/api";
-import { useSession, useToasts } from "@/lib/store";
+import { api, APIError, isAuthRequiredError } from "@/lib/api";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { CONTENT_TYPE_LABELS, type ContentType, type KXPost } from "@/lib/types";
 
 /// Mirrors iOS `PostSpecificDetailSection`. Renders the typed
@@ -14,13 +14,14 @@ import { CONTENT_TYPE_LABELS, type ContentType, type KXPost } from "@/lib/types"
 export function PostSpecificDetailSection({ post }: { post: KXPost }) {
   const rows = detailRows(post);
   const me = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const router = useRouter();
   const [openingDm, setOpeningDm] = useState(false);
 
   const openDm = async () => {
     if (!me) {
-      router.push("/login");
+      openAuthPrompt("message");
       return;
     }
     if (post.author_id === me.id) {
@@ -32,6 +33,10 @@ export function PostSpecificDetailSection({ post }: { post: KXPost }) {
       const c = await api.openConversation(post.author_id);
       router.push(`/messages/${c.id}?ref=post:${post.id}`);
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("message");
+        return;
+      }
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
       setOpeningDm(false);
@@ -40,13 +45,17 @@ export function PostSpecificDetailSection({ post }: { post: KXPost }) {
 
   const reportPost = async () => {
     if (!me) {
-      router.push("/login");
+      openAuthPrompt("generic");
       return;
     }
     try {
       await api.reportPost(post.id, "user_report", "from detail page");
       pushToast({ kind: "success", message: "已收到举报,我们会尽快处理" });
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("generic");
+        return;
+      }
       pushToast({ kind: "error", message: (err as APIError).message });
     }
   };

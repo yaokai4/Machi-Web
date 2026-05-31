@@ -4,18 +4,26 @@ import { use, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Bookmark, ChevronLeft, ExternalLink, MessageCircle, Send, Share2 } from "lucide-react";
-import { api, APIError } from "@/lib/api";
+import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { NEWS_CATEGORY_LABELS } from "@/components/news/LocalNewsStrip";
 import { fullDateTime, relativeTime } from "@/lib/format";
-import { useSession, useToasts } from "@/lib/store";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+
+function newsCityLabel(city?: string | null): string {
+  const normalized = String(city || "").trim().toLowerCase();
+  if (normalized === "tokyo") return "Tokyo";
+  if (normalized === "osaka") return "Osaka";
+  return "Japan-wide";
+}
 
 export default function NewsDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const user = useSession((s) => s.user);
   const [comment, setComment] = useState("");
 
@@ -35,7 +43,13 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
       queryClient.invalidateQueries({ queryKey: ["news-detail", id] });
       queryClient.invalidateQueries({ queryKey: ["news"] });
     },
-    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
+    onError: (e) => {
+      if (isAuthRequiredError(e)) {
+        openAuthPrompt("bookmark");
+        return;
+      }
+      pushToast({ kind: "error", message: (e as APIError).message });
+    },
   });
   const shareMetric = useMutation({
     mutationFn: () => api.shareNews(id),
@@ -52,7 +66,13 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
       comments.refetch();
       queryClient.invalidateQueries({ queryKey: ["news-detail", id] });
     },
-    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
+    onError: (e) => {
+      if (isAuthRequiredError(e)) {
+        openAuthPrompt("comment");
+        return;
+      }
+      pushToast({ kind: "error", message: (e as APIError).message });
+    },
   });
 
   const copyLink = async () => {
@@ -66,16 +86,16 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
   };
 
   if (detail.isLoading) {
-    return <AppShell><InlineLoading /></AppShell>;
+    return <AppShell requireAuth={false}><InlineLoading /></AppShell>;
   }
   if (detail.isError || !detail.data) {
-    return <AppShell><ErrorState onRetry={() => detail.refetch()} subtitle="这条资讯可能已隐藏或删除。" /></AppShell>;
+    return <AppShell requireAuth={false}><ErrorState onRetry={() => detail.refetch()} subtitle="这条资讯可能已隐藏或删除。" /></AppShell>;
   }
 
   const post = detail.data.post;
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
         <Link href="/news" className="grid h-9 w-9 place-items-center rounded-full bg-kx-soft text-kx-muted hover:text-kx-text">
           <ChevronLeft className="h-4 w-4" />
@@ -92,7 +112,7 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
       <article className="px-4 py-4">
         <div className="mb-3 flex flex-wrap items-center gap-2 text-xs font-bold text-kx-muted">
           <span className="rounded-full bg-kx-accentSoft px-2 py-1 text-kx-accent">{NEWS_CATEGORY_LABELS[post.category] || post.category}</span>
-          {post.city ? <span>{post.city}</span> : null}
+          <span>{newsCityLabel(post.city)}</span>
           <span>{post.language}</span>
           {post.published_at ? <span>{relativeTime(post.published_at)}</span> : null}
         </div>
@@ -144,7 +164,13 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
         <div className="mt-5 flex items-center gap-2 border-y border-kx-stroke/40 py-3">
           <button
             type="button"
-            onClick={() => save.mutate(!post.saved)}
+            onClick={() => {
+              if (!user) {
+                openAuthPrompt("bookmark");
+                return;
+              }
+              save.mutate(!post.saved);
+            }}
             className="kx-button-ghost h-9"
             disabled={save.isPending}
           >
@@ -163,8 +189,27 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
         </h3>
         <div className="mb-3 flex gap-2">
           {user ? <Avatar user={user} size={34} /> : null}
-          <input className="kx-input h-10 flex-1" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="写一条评论" />
-          <button className="kx-button-primary h-10 px-3" disabled={!comment.trim() || sendComment.isPending} onClick={() => sendComment.mutate()}>
+          <input
+            className="kx-input h-10 flex-1"
+            value={comment}
+            onChange={(e) => setComment(e.target.value)}
+            onFocus={() => {
+              if (!user) openAuthPrompt("comment");
+            }}
+            placeholder={user ? "写一条评论" : "登录后可以评论"}
+            readOnly={!user}
+          />
+          <button
+            className="kx-button-primary h-10 px-3"
+            disabled={user ? !comment.trim() || sendComment.isPending : sendComment.isPending}
+            onClick={() => {
+              if (!user) {
+                openAuthPrompt("comment");
+                return;
+              }
+              sendComment.mutate();
+            }}
+          >
             <Send className="h-4 w-4" />
           </button>
         </div>

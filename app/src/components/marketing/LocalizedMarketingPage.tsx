@@ -1,5 +1,6 @@
 "use client";
 
+import { Fragment } from "react";
 import Link from "next/link";
 import { ArrowRight, Mail, MonitorSmartphone } from "lucide-react";
 import { marketingPages, type MarketingPageBlock, type MarketingPageId } from "@/data/marketing-pages";
@@ -9,6 +10,10 @@ import { MarketingLocaleProvider, useMarketingI18n } from "./MarketingI18n";
 import { MarketingCmsBlocks } from "./MarketingCmsBlocks";
 import { MarketingCard, MarketingPageFrame } from "./PageShell";
 import { StoreButton } from "./StoreButtons";
+import { DownloadCTA } from "./DownloadCTA";
+import { FounderSection } from "./FounderSection";
+
+const CONTACT_EMAIL = "hi@machicity.com";
 
 export function LocalizedMarketingPage({
   pageId,
@@ -30,15 +35,21 @@ function LocalizedMarketingPageInner({ pageId }: { pageId: MarketingPageId }) {
 
   return (
     <MarketingPageFrame eyebrow={page.eyebrow} title={page.title} intro={page.intro}>
-      {page.blocks.map((block) => (
-        <MarketingBlock key={block.title} block={block} openLabel={copy.common.open} />
+      {page.blocks.map((block, index) => (
+        <Fragment key={block.title}>
+          <MarketingBlock block={block} openLabel={copy.common.open} />
+          {pageId === "about" && index === 0 ? <FounderSection variant="full" inFrame /> : null}
+        </Fragment>
       ))}
+      {pageId === "download" ? <DownloadCTA /> : null}
       <MarketingCmsBlocks pageId={pageId} />
     </MarketingPageFrame>
   );
 }
 
 function MarketingBlock({ block, openLabel }: { block: MarketingPageBlock; openLabel: string }) {
+  const bodyParagraphs = block.subtitle && block.body ? block.body.split("\n\n") : [];
+
   if (block.variant === "store") {
     return (
       <MarketingCard title={block.title} subtitle={block.body} className="mc-reveal">
@@ -54,11 +65,11 @@ function MarketingBlock({ block, openLabel }: { block: MarketingPageBlock; openL
     return (
       <MarketingCard title={block.title} subtitle={block.body} className="mc-reveal">
         <Link
-          href="mailto:hello@machicity.com"
+          href={`mailto:${CONTACT_EMAIL}`}
           className="mt-6 inline-flex min-h-11 items-center gap-2 rounded-full bg-gradient-to-r from-indigo-600 via-violet-600 to-sky-500 px-5 text-sm font-black text-white shadow-[0_18px_46px_-26px_rgba(79,70,229,0.95)] transition hover:-translate-y-0.5"
         >
           <Mail className="h-4 w-4" aria-hidden="true" />
-          hello@machicity.com
+          {CONTACT_EMAIL}
         </Link>
       </MarketingCard>
     );
@@ -66,6 +77,15 @@ function MarketingBlock({ block, openLabel }: { block: MarketingPageBlock; openL
 
   return (
     <MarketingCard title={block.title} subtitle={block.subtitle ?? block.body} className="mc-reveal">
+      {bodyParagraphs.length ? (
+        <div className="mt-5 max-w-3xl space-y-4 text-sm leading-7 text-slate-600 sm:text-base dark:text-slate-300">
+          {bodyParagraphs.map((paragraph) => (
+            <p key={paragraph} className="whitespace-pre-line">
+              <BrandPhrase text={paragraph} />
+            </p>
+          ))}
+        </div>
+      ) : null}
       {block.items?.length ? (
         <div className={block.variant === "list" || block.variant === "legal" ? "mt-6 space-y-3" : "mt-6 grid gap-3 sm:grid-cols-2 lg:grid-cols-3"}>
           {block.items.map((item) => (

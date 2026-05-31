@@ -1,7 +1,7 @@
 "use client";
 
 import { PlusCircle } from "lucide-react";
-import { useCompose } from "@/lib/store";
+import { useAuthPrompt, useCompose, useSession } from "@/lib/store";
 import { CONTENT_TYPE_LABELS, type ContentType } from "@/lib/types";
 
 interface Copy {
@@ -43,6 +43,8 @@ const COPY: Partial<Record<ContentType, Copy>> = {
 /// reads compose store).
 export function ChannelEmptyState({ contentType }: { contentType: ContentType }) {
   const open = useCompose((s) => s.open);
+  const user = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const copy = COPY[contentType] || {
     icon: "✨",
     title: `还没有${CONTENT_TYPE_LABELS[contentType]}内容`,
@@ -58,14 +60,18 @@ export function ChannelEmptyState({ contentType }: { contentType: ContentType })
       <div className="text-sm text-kx-muted mt-1.5 mx-auto max-w-md">{copy.body}</div>
       <button
         type="button"
-        onClick={() =>
+        onClick={() => {
+          if (!user) {
+            openAuthPrompt("publish");
+            return;
+          }
           open({
             // Pre-fill an empty draft pre-selecting this channel's
             // content type so the composer lands on the right form.
             initialTags: [],
             initialContentType: contentType,
-          })
-        }
+          });
+        }}
         className={`mt-4 inline-flex items-center gap-1.5 px-4 h-10 rounded-full text-white text-sm font-bold ${copy.tint} hover:opacity-95`}
       >
         <PlusCircle className="w-4 h-4" />

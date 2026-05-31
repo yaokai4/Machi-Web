@@ -19,9 +19,9 @@ import {
   Loader2,
   Quote,
 } from "lucide-react";
-import { api, APIError } from "@/lib/api";
+import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { compactNumber, relativeTime, tokenizeContent } from "@/lib/format";
-import { useSession, useToasts } from "@/lib/store";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import type { KXPost } from "@/lib/types";
 import { showVerifiedBadge } from "@/lib/types";
@@ -43,6 +43,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
   const router = useRouter();
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const currentUser = useSession((s) => s.user);
   const { t } = useI18n();
   const [isPending, startTransition] = useTransition();
@@ -91,48 +92,58 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
   };
 
   const handleLike = () => {
-    if (!currentUser) return router.push("/login");
+    if (!currentUser) return openAuthPrompt("like");
+    const liked = Boolean(post.liked);
     const optimistic = {
       ...post,
-      liked: !post.liked,
-      like_count: post.like_count + (post.liked ? -1 : 1),
+      liked: !liked,
+      like_count: Math.max(0, (post.like_count || 0) + (liked ? -1 : 1)),
     };
     onUpdate?.(optimistic);
     startTransition(() => {
       api
-        .toggleLike(post.id, !post.liked)
+        .toggleLike(post.id, !liked)
         .then(mutate)
         .catch((err) => {
           onUpdate?.(post);
+          if (isAuthRequiredError(err)) {
+            openAuthPrompt("like");
+            return;
+          }
           pushToast({ kind: "error", message: (err as APIError).message });
         });
     });
   };
 
   const handleBookmark = () => {
-    if (!currentUser) return router.push("/login");
+    if (!currentUser) return openAuthPrompt("bookmark");
+    const bookmarked = Boolean(post.bookmarked);
     const optimistic = {
       ...post,
-      bookmarked: !post.bookmarked,
-      bookmark_count: post.bookmark_count + (post.bookmarked ? -1 : 1),
+      bookmarked: !bookmarked,
+      bookmark_count: Math.max(0, (post.bookmark_count || 0) + (bookmarked ? -1 : 1)),
     };
     onUpdate?.(optimistic);
     api
-      .toggleBookmark(post.id, !post.bookmarked)
+      .toggleBookmark(post.id, !bookmarked)
       .then(mutate)
       .catch((err) => {
         onUpdate?.(post);
+        if (isAuthRequiredError(err)) {
+          openAuthPrompt("bookmark");
+          return;
+        }
         pushToast({ kind: "error", message: (err as APIError).message });
       });
   };
 
   const handleRepost = (mode: "repost" | "undo") => {
-    if (!currentUser) return router.push("/login");
+    if (!currentUser) return openAuthPrompt("generic");
     const on = mode === "repost";
     const optimistic = {
       ...post,
       reposted: on,
-      repost_count: post.repost_count + (on ? 1 : -1),
+      repost_count: Math.max(0, (post.repost_count || 0) + (on ? 1 : -1)),
     };
     onUpdate?.(optimistic);
     api
@@ -140,12 +151,16 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
       .then(mutate)
       .catch((err) => {
         onUpdate?.(post);
+        if (isAuthRequiredError(err)) {
+          openAuthPrompt("generic");
+          return;
+        }
         pushToast({ kind: "error", message: (err as APIError).message });
       });
   };
 
   const handleQuote = () => {
-    if (!currentUser) return router.push("/login");
+    if (!currentUser) return openAuthPrompt("generic");
     const trimmed = quoteText.trim();
     if (!trimmed) return;
     api
@@ -156,7 +171,13 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
         pushToast({ kind: "success", message: t("post_quote_done") });
         queryClient.invalidateQueries({ queryKey: ["feed"] });
       })
-      .catch((err) => pushToast({ kind: "error", message: (err as APIError).message }));
+      .catch((err) => {
+        if (isAuthRequiredError(err)) {
+          openAuthPrompt("generic");
+          return;
+        }
+        pushToast({ kind: "error", message: (err as APIError).message });
+      });
   };
 
   const handleDelete = () => {
@@ -168,7 +189,13 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
         queryClient.invalidateQueries({ queryKey: ["feed"] });
         pushToast({ kind: "success", message: t("post_deleted") });
       })
-      .catch((err) => pushToast({ kind: "error", message: (err as APIError).message }));
+      .catch((err) => {
+        if (isAuthRequiredError(err)) {
+          openAuthPrompt("generic");
+          return;
+        }
+        pushToast({ kind: "error", message: (err as APIError).message });
+      });
   };
 
   const handleEdit = () => {
@@ -191,6 +218,10 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
   };
 
   const handleReport = () => {
+    if (!currentUser) {
+      openAuthPrompt("generic");
+      return;
+    }
     api
       .reportPost(post.id, reportReason)
       .then(() => {
@@ -219,7 +250,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
   return (
     <article
       className={clsx(
-        "kx-card cursor-pointer hover:bg-kx-card/95 transition relative",
+        "kx-card cursor-pointer hover:bg-kx-card/95 hover:-translate-y-0.5 transition duration-200 relative",
         compact && "p-3",
         isPending && "opacity-90",
       )}
@@ -306,7 +337,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
             onLike={handleLike}
             onBookmark={handleBookmark}
             onRepost={handleRepost}
-            onQuote={() => setQuoteOpen(true)}
+            onQuote={() => (currentUser ? setQuoteOpen(true) : openAuthPrompt("generic"))}
             onComment={openPost}
             onShare={handleShare}
           />
@@ -329,7 +360,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
               isOwner={isOwner}
               onEdit={() => setEditOpen(true)}
               onDelete={() => setConfirmDelete(true)}
-              onReport={() => setReportOpen(true)}
+              onReport={() => (currentUser ? setReportOpen(true) : openAuthPrompt("generic"))}
               onShare={handleShare}
             />
           ) : null}
@@ -450,17 +481,17 @@ function PostMetadata({ post }: { post: KXPost }) {
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
       {type !== "dynamic" ? (
-        <span className={clsx("px-2.5 py-1 rounded-full text-xs font-bold border", style)}>
+        <span className={clsx("px-2.5 py-1 rounded-full text-xs font-bold", style)}>
           {CONTENT_TYPE_LABELS[type as keyof typeof CONTENT_TYPE_LABELS] || type}
         </span>
       ) : null}
       {location ? (
-        <span className="px-2.5 py-1 rounded-full bg-kx-soft text-kx-subtle text-xs font-semibold border border-kx-stroke/50">
+        <span className="px-2.5 py-1 rounded-full bg-kx-accent/10 text-kx-accent text-xs font-semibold">
           {location}
         </span>
       ) : null}
       {post.is_boosted ? (
-        <span className="px-2.5 py-1 rounded-full bg-kx-heat/10 text-kx-heat text-xs font-semibold border border-kx-heat/15">
+        <span className="px-2.5 py-1 rounded-full bg-kx-heat/10 text-kx-heat text-xs font-semibold">
           Boost +{post.boost_weight || 0}
         </span>
       ) : null}
@@ -565,8 +596,8 @@ function contentTypeTint(type: string): { bg: string; border: string } {
 }
 
 function PostPoll({ post, onVoted }: { post: KXPost; onVoted?: (post: KXPost) => void }) {
-  const router = useRouter();
   const currentUser = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const [busyIndex, setBusyIndex] = useState<number | null>(null);
   const [localPost, setLocalPost] = useState(post);
@@ -580,7 +611,7 @@ function PostPoll({ post, onVoted }: { post: KXPost; onVoted?: (post: KXPost) =>
 
   const vote = async (index: number) => {
     if (!currentUser) {
-      router.push("/login");
+      openAuthPrompt("generic");
       return;
     }
     if (poll.closed || busyIndex !== null) return;
@@ -596,6 +627,10 @@ function PostPoll({ post, onVoted }: { post: KXPost; onVoted?: (post: KXPost) =>
     } catch (err) {
       setLocalPost(previous);
       onVoted?.(previous);
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("generic");
+        return;
+      }
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
       setBusyIndex(null);
@@ -792,7 +827,7 @@ function ContentText({ content }: { content: string }) {
   if (!content) return null;
   const segments = tokenizeContent(content);
   return (
-    <p className="mt-2 text-[15.5px] leading-6 text-kx-text whitespace-pre-wrap break-words">
+    <p className="mt-2 text-[15.5px] leading-relaxed text-kx-text whitespace-pre-wrap break-words">
       {segments.map((seg, i) => {
         if (seg.kind === "hashtag") {
           return (
@@ -879,7 +914,7 @@ function InteractionBar({
   }, [repostMenu]);
 
   return (
-    <div className="mt-3 flex items-center justify-between gap-1 max-w-md text-kx-subtle">
+    <div className="mt-3 flex max-w-full flex-wrap items-center justify-start gap-1 text-kx-subtle sm:max-w-md sm:flex-nowrap sm:justify-between">
       <button className="kx-metric" onClick={onComment} aria-label={t("action_comment")}>
         <MessageCircle className="w-4 h-4" /> {compactNumber(post.comment_count)}
       </button>
@@ -897,7 +932,7 @@ function InteractionBar({
           <Repeat2 className="w-4 h-4" /> {compactNumber(post.repost_count)}
         </button>
         {repostMenu ? (
-          <div className="absolute z-10 left-0 top-full mt-1 kx-glass-surface p-1 w-40 text-sm animate-kx-scale-in">
+          <div className="absolute z-50 left-0 top-full mt-1 kx-glass-surface p-1 w-40 text-sm animate-kx-scale-in">
             <button
               className="w-full text-left px-3 py-2 rounded-kx-sm hover:bg-kx-soft text-kx-danger transition"
               onClick={() => { setRepostMenu(false); onRepost("undo"); }}
@@ -976,7 +1011,7 @@ function PostMenu({
   const wrap = (fn: () => void) => () => { fn(); onClose(); };
 
   return (
-    <div ref={menuRef} className="absolute right-0 top-8 z-10 kx-glass-surface w-44 p-1 text-sm animate-kx-scale-in">
+    <div ref={menuRef} className="absolute right-0 top-8 z-50 kx-glass-surface w-44 p-1 text-sm animate-kx-scale-in">
       <button className="w-full text-left px-3 py-2 rounded-kx-sm hover:bg-kx-soft inline-flex items-center gap-2 transition" onClick={wrap(onShare)}>
         <Share2 className="w-4 h-4" /> {t("action_share")}
       </button>

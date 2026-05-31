@@ -5,7 +5,7 @@ import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Calendar, Camera, Edit3, Flag, Loader2, MapPin, MessageSquarePlus, Shield, UserCheck, UserPlus, X } from "lucide-react";
-import { api, APIError } from "@/lib/api";
+import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import type { KXPost, KXUser, ProfileSegment, KXComment } from "@/lib/types";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { showVerifiedBadge } from "@/lib/types";
@@ -14,7 +14,7 @@ import { PostCard } from "@/components/feed/PostCard";
 import { Dialog, ConfirmDialog } from "@/components/design/Dialog";
 import { NavTabs } from "@/components/design/NavTabs";
 import { fullDateTime, compactNumber, relativeTime } from "@/lib/format";
-import { useSession, useToasts } from "@/lib/store";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useRouter } from "next/navigation";
 import { BrandPhrase } from "@/components/marketing/BrandText";
 import { regionDisplayName, regionFromUser } from "@/lib/regions";
@@ -36,6 +36,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   const router = useRouter();
   const pushToast = useToasts((s) => s.push);
   const me = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const setSessionUser = useSession((s) => s.setUser);
   const queryClient = useQueryClient();
 
@@ -91,24 +92,39 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   const filteredSegments = isSelf ? SEGMENTS : SEGMENTS.filter((s) => s.value !== "bookmarks");
 
   const toggleFollow = async () => {
-    if (!me) return router.push("/login");
+    if (!me) {
+      openAuthPrompt("follow");
+      return;
+    }
     const next = !following;
     setFollowing(next);
     try {
       await api.follow(user.id, next);
     } catch (err) {
       setFollowing(!next);
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("follow");
+        return;
+      }
       pushToast({ kind: "error", message: (err as APIError).message });
     }
   };
 
   const submitBlock = async () => {
+    if (!me) {
+      openAuthPrompt("generic");
+      return;
+    }
     try {
       await api.block(user.id, !blocked);
       setBlocked(!blocked);
       setBlockOpen(false);
       pushToast({ kind: "success", message: !blocked ? "已拉黑" : "已解除拉黑" });
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("generic");
+        return;
+      }
       pushToast({ kind: "error", message: (err as APIError).message });
     }
   };
@@ -121,6 +137,10 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
       setEditOpen(false);
       pushToast({ kind: "success", message: "已保存" });
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("message");
+        return;
+      }
       pushToast({ kind: "error", message: (err as APIError).message });
     }
   };
@@ -148,6 +168,10 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   };
 
   const openDM = async () => {
+    if (!me) {
+      openAuthPrompt("message");
+      return;
+    }
     try {
       const conv = await api.openConversation(user.id);
       router.push(`/messages/${conv.id}`);
@@ -242,10 +266,10 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
             ) : null}
             {!isSelf ? (
               <div className="mt-3 flex items-center gap-2 text-xs">
-                <button className="text-kx-muted hover:text-kx-danger inline-flex items-center gap-1" onClick={() => setReportOpen(true)}>
+                <button className="text-kx-muted hover:text-kx-danger inline-flex items-center gap-1" onClick={() => (me ? setReportOpen(true) : openAuthPrompt("generic"))}>
                   <Flag className="w-3.5 h-3.5" /> 举报
                 </button>
-                <button className="text-kx-muted hover:text-kx-danger inline-flex items-center gap-1" onClick={() => setBlockOpen(true)}>
+                <button className="text-kx-muted hover:text-kx-danger inline-flex items-center gap-1" onClick={() => (me ? setBlockOpen(true) : openAuthPrompt("generic"))}>
                   <Shield className="w-3.5 h-3.5" /> {blocked ? "解除拉黑" : "拉黑"}
                 </button>
               </div>
@@ -388,6 +412,10 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                 setReportOpen(false);
                 pushToast({ kind: "success", message: "举报已提交" });
               } catch (err) {
+                if (isAuthRequiredError(err)) {
+                  openAuthPrompt("generic");
+                  return;
+                }
                 pushToast({ kind: "error", message: (err as APIError).message });
               }
             }}>提交</button>

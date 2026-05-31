@@ -114,7 +114,7 @@ export default function CityChannelPage({
   const items = feed.data?.pages.flatMap((p) => p.items) ?? [];
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 pt-2 pb-2">
         <div className="flex items-center gap-2">
           <Link href="/explore" className="grid place-items-center w-8 h-8 rounded-full bg-kx-soft text-kx-muted hover:text-kx-text">

@@ -4,9 +4,9 @@ import { MarketingPageContent } from "@/components/marketing/MarketingPageConten
 import { marketingCopy } from "@/data/machi-home";
 import { localeAlternates } from "@/lib/marketing-locale";
 
-const title = "Machi City | Find the echoes of life in every city";
+const title = "Machi | Find the Echoes of Life in Every City | Local Life & Social Community";
 const description =
-  "Machi City is a local city life platform organized by country, city, and content language. Discover local news, guides, housing, jobs, secondhand items, events, services, deals, and what is trending nearby.";
+  "Machi is a local life and social community organized by city and language, helping people discover housing, jobs, secondhand deals, events, dining, Q&A, local tips and trusted services — and meet local friends, dining buddies, event companions and language exchange partners.";
 
 export const metadata: Metadata = {
   title: { absolute: title },
@@ -18,9 +18,9 @@ export const metadata: Metadata = {
   openGraph: {
     title,
     description,
-    url: "https://machicity.com/en",
-    siteName: "Machi City",
-    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi City" }],
+    url: "https://www.machicity.com/en",
+    siteName: "Machi",
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi" }],
     locale: "en_US",
     type: "website",
   },
@@ -37,8 +37,8 @@ export default function EnglishLandingPage() {
   const ld = {
     "@context": "https://schema.org",
     "@type": "WebSite",
-    name: "Machi City",
-    url: "https://machicity.com/en",
+    name: "Machi",
+    url: "https://www.machicity.com/en",
     description,
     inLanguage: "en-US",
   };

@@ -17,12 +17,12 @@ type ButtonProps = {
 
 const variants: Record<ButtonVariant, string> = {
   primary:
-    "bg-gradient-to-r from-indigo-600 via-violet-600 to-sky-500 text-white shadow-[0_18px_46px_-24px_rgba(79,70,229,0.95)] hover:shadow-[0_22px_52px_-24px_rgba(79,70,229,1)]",
+    "bg-gradient-to-r from-[#ff6b4a] via-[#ff7043] to-[#4f46e5] text-white shadow-[0_18px_46px_-24px_rgba(255,107,74,0.95)] hover:shadow-[0_22px_52px_-24px_rgba(255,107,74,1)]",
   secondary:
     "bg-white/90 text-slate-950 ring-1 ring-slate-200/80 shadow-[0_16px_38px_-28px_rgba(15,23,42,0.7)] backdrop-blur hover:bg-white dark:bg-white/10 dark:text-white dark:ring-white/15 dark:hover:bg-white/15",
   ghost:
     "bg-slate-950/5 text-slate-800 ring-1 ring-slate-900/10 hover:bg-slate-950/10 dark:bg-white/10 dark:text-slate-100 dark:ring-white/15 dark:hover:bg-white/15",
-  text: "bg-transparent text-indigo-700 hover:text-indigo-950 dark:text-sky-300 dark:hover:text-white",
+  text: "bg-transparent text-orange-700 hover:text-stone-950 dark:text-orange-300 dark:hover:text-white",
   dark: "bg-slate-950 text-white shadow-[0_18px_44px_-26px_rgba(15,23,42,0.95)] hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200",
 };
 
@@ -59,7 +59,7 @@ export function Button({
   const content = (
     <>
       {iconLeft ? <span className="shrink-0">{iconLeft}</span> : null}
-      <span>{children}</span>
+      <span className="min-w-0 text-center leading-tight">{children}</span>
       {iconRight ? <span className="shrink-0 transition group-hover:translate-x-0.5">{iconRight}</span> : null}
     </>
   );

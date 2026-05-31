@@ -62,6 +62,62 @@ export const useToasts = create<ToastState>((set) => ({
   dismiss: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 }));
 
+export type AuthPromptKind = "generic" | "like" | "bookmark" | "comment" | "follow" | "message" | "publish";
+
+export interface AuthPromptCopy {
+  title: string;
+  body: string;
+}
+
+export const AUTH_PROMPT_COPY: Record<AuthPromptKind, AuthPromptCopy> = {
+  generic: {
+    title: "登录后继续",
+    body: "登录后可以发布内容、评论、收藏、关注和使用更多 Machi 功能。",
+  },
+  like: {
+    title: "登录后点赞",
+    body: "登录后可以点赞、收藏和参与城市讨论。",
+  },
+  bookmark: {
+    title: "登录后收藏",
+    body: "登录后可以保存租房、资讯、攻略和本地生活信息。",
+  },
+  comment: {
+    title: "登录后评论",
+    body: "登录后可以参与讨论，分享你的经验和问题。",
+  },
+  follow: {
+    title: "登录后关注",
+    body: "登录后可以关注你感兴趣的城市账号和本地用户。",
+  },
+  message: {
+    title: "登录后发送私信",
+    body: "登录后可以和对方联系。",
+  },
+  publish: {
+    title: "登录后发布",
+    body: "登录后可以发布本地动态、租房、二手、工作、搭子和生活经验。",
+  },
+};
+
+interface AuthPromptState {
+  prompt: AuthPromptCopy | null;
+  open: (input?: AuthPromptKind | Partial<AuthPromptCopy> & { kind?: AuthPromptKind }) => void;
+  close: () => void;
+}
+
+export const useAuthPrompt = create<AuthPromptState>((set) => ({
+  prompt: null,
+  open: (input = "generic") => {
+    const next =
+      typeof input === "string"
+        ? AUTH_PROMPT_COPY[input]
+        : { ...AUTH_PROMPT_COPY[input.kind ?? "generic"], ...input };
+    set({ prompt: next });
+  },
+  close: () => set({ prompt: null }),
+}));
+
 interface ComposeState {
   isOpen: boolean;
   draftId: string | null;
@@ -103,19 +159,17 @@ export const useCompose = create<ComposeState>((set) => ({
 }));
 
 interface SettingsState {
-  appearance: "system" | "light" | "dark";
+  appearance: "light" | "dark";
   settings: KXSettings | null;
   setAppearance: (value: SettingsState["appearance"]) => void;
   setSettings: (settings: KXSettings | null) => void;
 }
 
 export const useSettings = create<SettingsState>((set) => ({
-  appearance: "system",
+  appearance: "light",
   settings: null,
   setAppearance: (appearance) => set({ appearance }),
-  setSettings: (settings) => {
-    set({ settings, appearance: settings?.appearance ?? "system" });
-  },
+  setSettings: (settings) => set({ settings }),
 }));
 
 // MARK: - LanguageManager

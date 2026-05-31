@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Building2, CalendarDays, Flame, Hash, Search, ShoppingBag, Tag, TrendingUp, UserPlus } from "lucide-react";
-import { api, APIError } from "@/lib/api";
+import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
@@ -11,7 +11,7 @@ import { CurrentRegionCard } from "@/components/feed/CurrentRegionCard";
 import { DiscoverShortcutGrid } from "@/components/feed/DiscoverShortcuts";
 import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
 import { compactNumber } from "@/lib/format";
-import { useSession, useToasts } from "@/lib/store";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useState } from "react";
 import type { ComponentType, ReactNode } from "react";
 import { CONTENT_TYPE_LABELS, showVerifiedBadge, type ContentType, type KXPost, type KXRegion } from "@/lib/types";
@@ -20,6 +20,7 @@ import { countryName, hotCitiesForCountry, normalizeRegion, regionFromUser, type
 export default function ExplorePage() {
   const user = useSession((s) => s.user);
   const setUser = useSession((s) => s.setUser);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const [followBusy, setFollowBusy] = useState<string | null>(null);
   const [regionPickerOpen, setRegionPickerOpen] = useState(false);
@@ -28,7 +29,7 @@ export default function ExplorePage() {
     queryKey: ["trending"],
     queryFn: () => api.trending(),
     staleTime: 60_000,
-    enabled: !!user,
+    enabled: true,
   });
   const cityHot = useQuery({
     queryKey: ["explore-hot-city", user?.current_region_code || user?.city || ""],
@@ -46,7 +47,7 @@ export default function ExplorePage() {
     queryKey: ["popular-regions"],
     queryFn: () => api.popularRegions(),
     staleTime: 5 * 60_000,
-    enabled: !!user,
+    enabled: true,
   });
   const popularCities = hotCitiesForCountry(user?.country);
   const popularRegionItems = (popularRegions.data || [])
@@ -54,12 +55,19 @@ export default function ExplorePage() {
     .slice(0, 12);
 
   const toggleFollow = async (id: string, current?: boolean) => {
-    if (!user) return;
+    if (!user) {
+      openAuthPrompt("follow");
+      return;
+    }
     setFollowBusy(id);
     try {
       await api.follow(id, !current);
       trending.refetch();
     } catch (e) {
+      if (isAuthRequiredError(e)) {
+        openAuthPrompt("follow");
+        return;
+      }
       pushToast({ kind: "error", message: (e as APIError).message });
     } finally {
       setFollowBusy(null);
@@ -67,6 +75,10 @@ export default function ExplorePage() {
   };
 
   const persistRegion = async (region: RegionInfo) => {
+    if (!user) {
+      openAuthPrompt("generic");
+      return;
+    }
     try {
       const next = await api.updateMe({
         country: region.country_code,
@@ -79,12 +91,16 @@ export default function ExplorePage() {
       countryHot.refetch();
       pushToast({ kind: "success", message: `已切换到 ${region.city_name}` });
     } catch (e) {
+      if (isAuthRequiredError(e)) {
+        openAuthPrompt("generic");
+        return;
+      }
       pushToast({ kind: "error", message: (e as APIError).message });
     }
   };
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-4 py-3">
         <div className="flex items-center gap-3">
           {user ? <Avatar user={user} size={40} href="/me" /> : null}
@@ -102,7 +118,7 @@ export default function ExplorePage() {
       ) : (
         <div className="px-3 sm:px-4 py-3 space-y-3">
           {/* 1) 当前地区（小巧，提示用户上下文） */}
-          <CurrentRegionCard onChange={() => setRegionPickerOpen(true)} />
+          <CurrentRegionCard onChange={() => (user ? setRegionPickerOpen(true) : openAuthPrompt("generic"))} />
 
           {/* 2) 快捷入口 — 用户要求置顶 */}
           <DiscoverShortcutGrid />

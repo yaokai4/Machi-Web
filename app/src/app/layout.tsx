@@ -9,30 +9,27 @@ import { SiteSplash } from "@/components/marketing/SiteSplash";
 import { htmlLangFor, resolveMarketingLocale } from "@/lib/marketing-locale";
 
 export const metadata: Metadata = {
-  metadataBase: new URL("https://machicity.com"),
+  metadataBase: new URL("https://www.machicity.com"),
   title: {
-    default: "Machi City",
-    template: "%s | Machi City",
+    default: "Machi",
+    template: "%s | Machi",
   },
-  description: "Machi City — 按城市组织真实生活经验的城市社区。在每一座城市，找到生活的回声。",
-  applicationName: "Machi City",
-  appleWebApp: { capable: true, title: "Machi City", statusBarStyle: "default" },
+  description: "Machi 是按城市和语言组织的本地生活与同城社交社区。在每一座城市，找到生活的回声。",
+  applicationName: "Machi",
+  appleWebApp: { capable: true, title: "Machi", statusBarStyle: "default" },
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
     apple: [{ url: "/icon.svg" }],
   },
   formatDetection: { email: false, address: false, telephone: false },
-  authors: [{ name: "Machi City" }],
-  creator: "Machi City",
-  publisher: "Machi City",
+  authors: [{ name: "Machi" }],
+  creator: "Machi",
+  publisher: "Machi",
 };
 
 export const viewport: Viewport = {
-  themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#f4f5f7" },
-    { media: "(prefers-color-scheme: dark)", color: "#101216" },
-  ],
+  themeColor: "#f4f5f7",
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
@@ -49,18 +46,16 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             __html: `(function(){
               try {
                 function safeParse(raw){
-                  if(raw===null||raw===undefined||raw==='')return null;
-                  if(raw==='light'||raw==='dark'||raw==='system')return raw;
-                  try{var p=JSON.parse(raw);return p==null?null:p;}catch(_){return null;}
+                  if(raw==='light'||raw==='dark')return raw;
+                  return null;
                 }
                 var stored=null;
-                try{stored=safeParse(localStorage.getItem('machi-appearance'));}catch(_){}
-                if(stored==null){try{stored=safeParse(localStorage.getItem('kaix-appearance'));}catch(_){}}
-                var mode=stored==='light'||stored==='dark'||stored==='system'?stored:'system';
-                var sys='light';
-                try{sys=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}catch(_){}
-                var target=mode==='system'?sys:mode;
+                try{stored=safeParse(localStorage.getItem('machi_theme'));}catch(_){}
+                var target=stored==='dark'?'dark':'light';
+                if(stored!==target){try{localStorage.setItem('machi_theme',target);}catch(_){}}
+                try{localStorage.removeItem('machi-appearance');localStorage.removeItem('kaix-appearance');}catch(_){}
                 document.documentElement.classList.toggle('dark',target==='dark');
+                document.documentElement.dataset.theme=target;
               } catch(e) {}
             })()`,
           }}

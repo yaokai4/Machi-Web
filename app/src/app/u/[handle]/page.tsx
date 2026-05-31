@@ -18,7 +18,7 @@ export default function HandlePage() {
     enabled: !!handle,
   });
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       {userQuery.isLoading ? (
         <InlineLoading />
       ) : userQuery.isError || !userQuery.data ? (

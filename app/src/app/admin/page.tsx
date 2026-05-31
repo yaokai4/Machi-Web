@@ -66,7 +66,7 @@ export default function AdminPage() {
   // Auth + admin gate. While session bootstrapping, we render nothing
   // so we don't flash 403 to the actual admin.
   useEffect(() => {
-    if (status === "unauthed") router.replace("/login?next=/admin");
+    if (status === "unauthed") router.replace("/login?redirect=/admin");
   }, [status, router]);
 
   if (status === "loading" || status === "idle") {
@@ -731,6 +731,13 @@ const NEWS_CATEGORIES: Array<{ value: NewsCategory; label: string }> = [
   { value: "housing_market", label: "租房市场" },
   { value: "work_study", label: "工作留学" },
   { value: "public_safety", label: "公共安全" },
+  { value: "economy", label: "经济" },
+  { value: "technology", label: "科技" },
+  { value: "culture", label: "文化" },
+  { value: "sports", label: "体育" },
+  { value: "education", label: "教育" },
+  { value: "health", label: "健康" },
+  { value: "travel", label: "旅行" },
   { value: "editor_pick", label: "编辑精选" },
   { value: "weekly_digest", label: "本周摘要" },
   { value: "other", label: "其他" },
@@ -820,11 +827,13 @@ function NewsSourcesPanel() {
     default_category: "local_news",
     credibility_level: "official",
     crawl_interval_minutes: 120,
-    max_items_per_run: 20,
-    request_timeout_ms: 10000,
+    max_items_per_run: 30,
+    request_timeout_ms: 15000,
     robots_policy: "respect",
     require_manual_review: true,
-    is_active: false,
+    is_active: true,
+    auto_create_draft: false,
+    official_auto_publish: false,
   });
   const sources = useQuery({ queryKey: ["admin-news-sources"], queryFn: () => api.adminNewsSources() });
   const refresh = () => {
@@ -867,12 +876,32 @@ function NewsSourcesPanel() {
       pushToast({ kind: "success", message: "批量抓取已执行" });
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
   };
+  const fetchJapanAll = async () => {
+    try {
+      const res = await api.adminFetchJapanAllNewsSources();
+      queryClient.invalidateQueries({ queryKey: ["admin-news-items"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-news-logs"] });
+      refresh();
+      pushToast({ kind: "success", message: `日本来源抓取完成：新增 ${String(res.new_count ?? 0)} 条，失败 ${String(res.failed_sources ?? 0)} 个来源` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
+  const seedPresets = async () => {
+    try {
+      const res = await api.adminSeedNewsSourcePresets();
+      refresh();
+      pushToast({ kind: "success", message: `已初始化 ${res.total} 个日本来源，启用 ${res.active} 个` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
   return (
     <div className="space-y-3">
       <section className="kx-card">
         <div className="mb-3 flex items-center justify-between">
           <h3 className="kx-section-title px-0 inline-flex items-center gap-1.5"><Plus className="h-4 w-4" /> 新增资讯源</h3>
-          <button className="kx-button-ghost h-8" onClick={fetchAll}><RefreshCw className="h-4 w-4" /> 抓取全部启用来源</button>
+          <div className="flex flex-wrap gap-1.5">
+            <button className="kx-button-ghost h-8" onClick={seedPresets}><Plus className="h-4 w-4" /> 初始化日本资讯源</button>
+            <button className="kx-button-ghost h-8" onClick={fetchJapanAll}><RefreshCw className="h-4 w-4" /> 抓取日本全部启用来源</button>
+            <button className="kx-button-ghost h-8" onClick={fetchAll}><RefreshCw className="h-4 w-4" /> 抓取全部启用来源</button>
+          </div>
         </div>
         <div className="grid gap-2 md:grid-cols-4">
           <input className="kx-input h-9" placeholder="名称" value={draft.name || ""} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
@@ -894,16 +923,37 @@ function NewsSourcesPanel() {
             {NEWS_CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
           </select>
           <input className="kx-input h-9" type="number" min={30} placeholder="抓取间隔分钟" value={draft.crawl_interval_minutes || 120} onChange={(e) => setDraft({ ...draft, crawl_interval_minutes: Number(e.target.value) || 120 })} />
-          <input className="kx-input h-9" type="number" min={1} max={50} placeholder="每次最大数量" value={draft.max_items_per_run || 20} onChange={(e) => setDraft({ ...draft, max_items_per_run: Number(e.target.value) || 20 })} />
-          <input className="kx-input h-9" type="number" min={1000} max={30000} placeholder="超时 ms" value={draft.request_timeout_ms || 10000} onChange={(e) => setDraft({ ...draft, request_timeout_ms: Number(e.target.value) || 10000 })} />
+          <input className="kx-input h-9" type="number" min={1} max={50} placeholder="每次最大数量" value={draft.max_items_per_run || 30} onChange={(e) => setDraft({ ...draft, max_items_per_run: Number(e.target.value) || 30 })} />
+          <input className="kx-input h-9" type="number" min={1000} max={30000} placeholder="超时 ms" value={draft.request_timeout_ms || 15000} onChange={(e) => setDraft({ ...draft, request_timeout_ms: Number(e.target.value) || 15000 })} />
         </div>
         <div className="mt-2 grid gap-2 md:grid-cols-4">
-          <input className="kx-input h-9" placeholder="item_selector (phase 2)" value={draft.item_selector || ""} onChange={(e) => setDraft({ ...draft, item_selector: e.target.value })} />
+          <input className="kx-input h-9" placeholder="list_selector" value={draft.list_selector || ""} onChange={(e) => setDraft({ ...draft, list_selector: e.target.value })} />
+          <input className="kx-input h-9" placeholder="item_selector" value={draft.item_selector || ""} onChange={(e) => setDraft({ ...draft, item_selector: e.target.value })} />
           <input className="kx-input h-9" placeholder="title_selector" value={draft.title_selector || ""} onChange={(e) => setDraft({ ...draft, title_selector: e.target.value })} />
           <input className="kx-input h-9" placeholder="link_selector" value={draft.link_selector || ""} onChange={(e) => setDraft({ ...draft, link_selector: e.target.value })} />
           <input className="kx-input h-9" placeholder="summary_selector" value={draft.summary_selector || ""} onChange={(e) => setDraft({ ...draft, summary_selector: e.target.value })} />
+          <input className="kx-input h-9" placeholder="date_selector" value={draft.date_selector || ""} onChange={(e) => setDraft({ ...draft, date_selector: e.target.value })} />
+          <input className="kx-input h-9" placeholder="date_format" value={draft.date_format || ""} onChange={(e) => setDraft({ ...draft, date_format: e.target.value })} />
         </div>
         <textarea className="kx-input mt-2 min-h-20 py-2" placeholder="版权/审核说明" value={draft.copyright_policy_note || ""} onChange={(e) => setDraft({ ...draft, copyright_policy_note: e.target.value })} />
+        <div className="mt-2 flex flex-wrap items-center gap-4 text-sm font-semibold">
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={!!draft.is_active} onChange={(e) => setDraft({ ...draft, is_active: e.target.checked })} />
+            启用
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={!!draft.require_manual_review} onChange={(e) => setDraft({ ...draft, require_manual_review: e.target.checked })} />
+            需要人工审核
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={!!draft.auto_create_draft} onChange={(e) => setDraft({ ...draft, auto_create_draft: e.target.checked })} />
+            抓取后自动创建草稿
+          </label>
+          <label className="inline-flex items-center gap-2">
+            <input type="checkbox" checked={!!draft.official_auto_publish} onChange={(e) => setDraft({ ...draft, official_auto_publish: e.target.checked })} />
+            官方来源自动发布（默认关闭）
+          </label>
+        </div>
         <button className="kx-button-primary mt-3" onClick={create}><Plus className="h-4 w-4" /> 创建来源</button>
       </section>
 
@@ -917,6 +967,7 @@ function NewsSourcesPanel() {
                   <div className="text-xs text-kx-muted">{source.source_type} / {source.crawl_strategy} · {source.country || "jp"} / {source.city || "Japan-wide"} · {source.language} · {source.default_category}</div>
                   <div className="mt-1 truncate text-xs text-kx-muted">{source.source_url || source.homepage_url || "manual source"}</div>
                   <div className="mt-1 text-xs text-kx-muted">domain: {source.allowed_domain || "-"} · interval: {source.crawl_interval_minutes}m · max {source.max_items_per_run}</div>
+                  <div className="mt-1 text-xs text-kx-muted">last: fetched {source.last_fetched_count ?? 0} · new {source.last_new_count ?? 0} · duplicate {source.last_duplicate_count ?? 0} · robots {source.last_robots_status || "-"} · http {source.last_http_status ?? "-"} · parser {source.last_parser_status || "-"}</div>
                   {source.last_error ? <div className="mt-1 text-xs text-kx-danger">{source.last_error}</div> : null}
                 </div>
                 <div className="flex flex-wrap gap-1.5">
@@ -939,8 +990,16 @@ function NewsItemsPanel() {
   const pushToast = useToasts((s) => s.push);
   const [status, setStatus] = useState("fetched");
   const [keyword, setKeyword] = useState("");
+  const [sourceId, setSourceId] = useState("");
+  const [city, setCity] = useState("");
+  const [language, setLanguage] = useState("");
+  const [category, setCategory] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const debouncedKeyword = useDebounce(keyword, 300);
-  const q = useQuery({ queryKey: ["admin-news-items", status, debouncedKeyword], queryFn: () => api.adminNewsItems({ status, keyword: debouncedKeyword, limit: 80 }) });
+  const q = useQuery({
+    queryKey: ["admin-news-items", status, debouncedKeyword, sourceId, city, language, category],
+    queryFn: () => api.adminNewsItems({ status, keyword: debouncedKeyword, source_id: sourceId, city, language, category, limit: 80 }),
+  });
   const createDraft = async (id: string) => {
     try {
       await api.adminCreateEditorialDraftFromItem(id);
@@ -955,18 +1014,66 @@ function NewsItemsPanel() {
   const remove = async (id: string) => {
     try { await api.adminDeleteNewsItem(id); q.refetch(); } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
   };
+  const toggleSelected = (id: string) => {
+    setSelectedIds((ids) => ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id]);
+  };
+  const bulkCreateDrafts = async () => {
+    if (!selectedIds.length) return;
+    try {
+      const res = await api.adminCreateEditorialDraftsFromItems({ itemIds: selectedIds, targetLanguage: "zh-CN", createMode: "editor_template" });
+      setSelectedIds([]);
+      queryClient.invalidateQueries({ queryKey: ["admin-news-items"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-editorial-posts"] });
+      pushToast({ kind: "success", message: `已创建 ${res.created} 条草稿` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
+  const bulkMark = async (next: "ignored" | "duplicate") => {
+    await Promise.all(selectedIds.map((id) => api.adminUpdateNewsItemStatus(id, next).catch(() => null)));
+    setSelectedIds([]);
+    q.refetch();
+  };
+  const bulkDelete = async () => {
+    await Promise.all(selectedIds.map((id) => api.adminDeleteNewsItem(id).catch(() => null)));
+    setSelectedIds([]);
+    q.refetch();
+  };
   return (
     <section className="kx-card p-0 overflow-hidden">
-      <div className="border-b border-kx-stroke/35 p-3 flex items-center gap-2">
+      <div className="border-b border-kx-stroke/35 p-3 flex flex-wrap items-center gap-2">
         <select className="kx-input h-9 w-44" value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="fetched">fetched</option><option value="draft_created">draft_created</option><option value="ignored">ignored</option><option value="duplicate">duplicate</option><option value="error">error</option><option value="deleted">deleted</option>
         </select>
         <input className="kx-input h-9 max-w-xs" placeholder="搜索标题 / 来源" value={keyword} onChange={(e) => setKeyword(e.target.value)} />
+        <input className="kx-input h-9 w-44" placeholder="source_id" value={sourceId} onChange={(e) => setSourceId(e.target.value)} />
+        <select className="kx-input h-9 w-36" value={city} onChange={(e) => setCity(e.target.value)}>
+          <option value="">全部城市</option><option value="tokyo">Tokyo</option><option value="osaka">Osaka</option>
+        </select>
+        <select className="kx-input h-9 w-36" value={language} onChange={(e) => setLanguage(e.target.value)}>
+          <option value="">全部语言</option><option value="ja">ja</option><option value="zh-CN">zh-CN</option><option value="en">en</option>
+        </select>
+        <select className="kx-input h-9 w-44" value={category} onChange={(e) => setCategory(e.target.value)}>
+          <option value="">全部分类</option>
+          {NEWS_CATEGORIES.map((cat) => <option key={cat.value} value={cat.value}>{cat.label}</option>)}
+        </select>
         <span className="text-xs text-kx-muted">{q.data?.total ?? 0} 条</span>
+        <button className="kx-button-primary h-9" disabled={!selectedIds.length} onClick={bulkCreateDrafts}>创建草稿 {selectedIds.length ? `(${selectedIds.length})` : ""}</button>
+        <button className="kx-button-ghost h-9" disabled={!selectedIds.length} onClick={() => bulkMark("ignored")}>忽略</button>
+        <button className="kx-button-ghost h-9" disabled={!selectedIds.length} onClick={() => bulkMark("duplicate")}>标记重复</button>
+        <button className="kx-button-ghost h-9 text-kx-danger" disabled={!selectedIds.length} onClick={bulkDelete}>删除</button>
       </div>
       {q.isError ? <ErrorState onRetry={() => q.refetch()} /> : !q.data ? <InlineLoading /> : (
         <div className="divide-y divide-kx-stroke/35">
-          {q.data.items.map((item) => <NewsItemRow key={item.id} item={item} onCreateDraft={createDraft} onMark={mark} onDelete={remove} />)}
+          {q.data.items.map((item) => (
+            <NewsItemRow
+              key={item.id}
+              item={item}
+              selected={selectedIds.includes(item.id)}
+              onToggleSelected={toggleSelected}
+              onCreateDraft={createDraft}
+              onMark={mark}
+              onDelete={remove}
+            />
+          ))}
           {q.data.items.length === 0 ? <div className="p-6 text-center text-sm text-kx-muted">暂无采集内容</div> : null}
         </div>
       )}
@@ -974,14 +1081,17 @@ function NewsItemsPanel() {
   );
 }
 
-function NewsItemRow({ item, onCreateDraft, onMark, onDelete }: {
+function NewsItemRow({ item, selected, onToggleSelected, onCreateDraft, onMark, onDelete }: {
   item: NewsItem;
+  selected: boolean;
+  onToggleSelected: (id: string) => void;
   onCreateDraft: (id: string) => void;
   onMark: (id: string, next: "ignored" | "duplicate") => void;
   onDelete: (id: string) => void;
 }) {
   return (
     <div className="p-3 flex flex-col gap-2 md:flex-row md:items-start">
+      <input className="mt-1 h-4 w-4" type="checkbox" checked={selected} onChange={() => onToggleSelected(item.id)} aria-label="选择采集内容" />
       <div className="min-w-0 flex-1">
         <div className="font-bold line-clamp-2">{item.original_title}</div>
         <div className="mt-1 text-xs text-kx-muted">{item.source_name} · {item.country || "all"} / {item.city || "all"} · {item.category} · {item.status}</div>
@@ -990,6 +1100,7 @@ function NewsItemRow({ item, onCreateDraft, onMark, onDelete }: {
       </div>
       <div className="flex flex-wrap gap-1.5">
         <button className="kx-button-primary h-8" onClick={() => onCreateDraft(item.id)}>创建草稿</button>
+        <button className="kx-button-ghost h-8" onClick={() => onCreateDraft(item.id)}>发布到本地资讯</button>
         <button className="kx-button-ghost h-8" onClick={() => onMark(item.id, "ignored")}>忽略</button>
         <button className="kx-button-ghost h-8" onClick={() => onMark(item.id, "duplicate")}>重复</button>
         <button className="kx-button-ghost h-8 text-kx-danger" onClick={() => onDelete(item.id)}>删除</button>
@@ -1044,6 +1155,13 @@ function EditorialPostsPanel({ status }: { status: "draft" | "published" }) {
       pushToast({ kind: "success", message: "已生成编辑部文案" });
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
   };
+  const bulkPublishOfficial = async () => {
+    try {
+      const res = await api.adminEditorialBulkPublish({ postIds: visibleItems.map((item) => item.id) });
+      refresh();
+      pushToast({ kind: "success", message: `已发布 ${res.published} 条官方来源草稿` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
   const remove = async () => {
     if (!selected) return;
     try {
@@ -1058,7 +1176,10 @@ function EditorialPostsPanel({ status }: { status: "draft" | "published" }) {
   return (
     <div className="grid gap-3 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
       <section className="kx-card p-0 overflow-hidden">
-        <div className="border-b border-kx-stroke/35 p-3 text-sm font-bold">{status === "published" ? "已发布内容" : "草稿 / 待审核"}</div>
+        <div className="flex items-center justify-between gap-2 border-b border-kx-stroke/35 p-3 text-sm font-bold">
+          <span>{status === "published" ? "已发布内容" : "草稿 / 待审核"}</span>
+          {status !== "published" ? <button className="kx-button-ghost h-8 text-xs" onClick={bulkPublishOfficial}>发布已审核官方来源草稿</button> : null}
+        </div>
         <div className="divide-y divide-kx-stroke/35">
           {visibleItems.map((post) => (
             <button key={post.id} className={clsx("block w-full p-3 text-left hover:bg-kx-soft/60", selected?.id === post.id && "bg-kx-accentSoft/70")} onClick={() => setSelectedId(post.id)}>

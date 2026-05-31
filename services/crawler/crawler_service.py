@@ -22,10 +22,10 @@ from urllib.parse import urljoin, urlparse
 USER_AGENT = (
     os.environ.get("NEWS_CRAWLER_USER_AGENT")
     or os.environ.get("KAIX_NEWS_DESK_USER_AGENT")
-    or "MachiCityBot/1.0 (+https://machicity.com)"
+    or "MachiBot/1.0 (+https://machicity.com)"
 )
-DEFAULT_TIMEOUT_MS = int(os.environ.get("NEWS_CRAWLER_DEFAULT_TIMEOUT_MS") or "10000")
-DEFAULT_MAX_ITEMS = int(os.environ.get("NEWS_CRAWLER_DEFAULT_MAX_ITEMS") or "20")
+DEFAULT_TIMEOUT_MS = int(os.environ.get("NEWS_CRAWLER_DEFAULT_TIMEOUT_MS") or "15000")
+DEFAULT_MAX_ITEMS = int(os.environ.get("NEWS_CRAWLER_DEFAULT_MAX_ITEMS") or "30")
 RESPECT_ROBOTS = (os.environ.get("NEWS_CRAWLER_RESPECT_ROBOTS") or "true").lower() != "false"
 MAX_RESPONSE_BYTES = 512_000
 
@@ -63,6 +63,18 @@ class CrawlResult:
     error_count: int = 0
     error_message: str = ""
     skipped_reason: str = ""
+    robots_status: str = ""
+    http_status: int | None = None
+    parser_status: str = ""
+    source_url: str = ""
+    duration_ms: int = 0
+
+
+@dataclass
+class FetchResponse:
+    text: str
+    http_status: int | None
+    robots_status: str
 
 
 def clean_text(raw: Any, cap: int) -> str:
@@ -192,13 +204,14 @@ def _robots_can_fetch(target_url: str, timeout: float) -> tuple[bool, str]:
     return True, ""
 
 
-def _fetch_public_text(url: str, timeout_ms: int, retries: int = 2) -> str:
+def _fetch_public_text(url: str, timeout_ms: int, retries: int = 2) -> FetchResponse:
     timeout = max(1.0, timeout_ms / 1000)
     if not _is_public_host(urlparse(url).hostname or ""):
         raise CrawlerError(f"refusing to fetch non-public/internal host: {url}", "blocked_host")
     allowed, reason = _robots_can_fetch(url, timeout)
     if not allowed:
         raise CrawlerSkipped(f"robots.txt disallows {url}", reason)
+    robots_status = reason or "allowed"
     last_error = ""
     for attempt in range(retries + 1):
         try:
@@ -207,10 +220,11 @@ def _fetch_public_text(url: str, timeout_ms: int, retries: int = 2) -> str:
                 "Accept": "application/rss+xml, application/atom+xml, text/xml, text/html;q=0.8, */*;q=0.5",
             })
             with _opener().open(req, timeout=timeout) as resp:
+                status = getattr(resp, "status", None) or getattr(resp, "code", None)
                 raw = resp.read(MAX_RESPONSE_BYTES + 1)
             if len(raw) > MAX_RESPONSE_BYTES:
                 raw = raw[:MAX_RESPONSE_BYTES]
-            return raw.decode("utf-8", "ignore")
+            return FetchResponse(text=raw.decode("utf-8", "ignore"), http_status=int(status or 0) or None, robots_status=robots_status)
         except OSError as exc:
             # OSError covers urllib URLError/HTTPError, socket.timeout (which
             # is NOT a TimeoutError on Python 3.9), ssl.SSLError and connection
@@ -339,7 +353,187 @@ def parse_webpage_metadata(html_text: str, source_url: str, allowed_domain: str,
     )]
 
 
+@dataclass
+class _HtmlNode:
+    tag: str
+    attrs: dict[str, str]
+    parent: "_HtmlNode | None" = None
+    children: list["_HtmlNode"] = field(default_factory=list)
+    text_parts: list[str] = field(default_factory=list)
+
+    def text(self) -> str:
+        parts = list(self.text_parts)
+        for child in self.children:
+            parts.append(child.text())
+        return clean_text(" ".join(parts), 1000)
+
+
+class _TreeParser(HTMLParser):
+    VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.root = _HtmlNode("document", {})
+        self.stack: list[_HtmlNode] = [self.root]
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        node = _HtmlNode(tag.lower(), {k.lower(): (v or "") for k, v in attrs}, self.stack[-1])
+        self.stack[-1].children.append(node)
+        if tag.lower() not in self.VOID_TAGS:
+            self.stack.append(node)
+
+    def handle_endtag(self, tag: str) -> None:
+        tag = tag.lower()
+        for idx in range(len(self.stack) - 1, 0, -1):
+            if self.stack[idx].tag == tag:
+                del self.stack[idx:]
+                break
+
+    def handle_data(self, data: str) -> None:
+        if data.strip():
+            self.stack[-1].text_parts.append(data)
+
+
+def _selector_token_match(node: _HtmlNode, token: str) -> bool:
+    token = token.strip()
+    if not token or token == "*":
+        return True
+    attr_name = attr_value = ""
+    if "[" in token and token.endswith("]"):
+        token, attr = token.split("[", 1)
+        attr = attr[:-1]
+        if "=" in attr:
+            attr_name, attr_value = attr.split("=", 1)
+            attr_value = attr_value.strip("'\"")
+        else:
+            attr_name = attr
+    tag = ""
+    ident = ""
+    classes: list[str] = []
+    buf = ""
+    mode = "tag"
+    for ch in token:
+        if ch == "#":
+            if mode == "tag":
+                tag = buf
+            elif mode == "class":
+                classes.append(buf)
+            buf = ""
+            mode = "id"
+        elif ch == ".":
+            if mode == "tag":
+                tag = buf
+            elif mode == "id":
+                ident = buf
+            elif mode == "class":
+                classes.append(buf)
+            buf = ""
+            mode = "class"
+        else:
+            buf += ch
+    if mode == "tag":
+        tag = buf
+    elif mode == "id":
+        ident = buf
+    elif mode == "class":
+        classes.append(buf)
+    if tag and tag.lower() != node.tag:
+        return False
+    if ident and node.attrs.get("id") != ident:
+        return False
+    class_set = set((node.attrs.get("class") or "").split())
+    if any(cls and cls not in class_set for cls in classes):
+        return False
+    if attr_name:
+        actual = node.attrs.get(attr_name.lower())
+        if actual is None:
+            return False
+        if attr_value and actual != attr_value:
+            return False
+    return True
+
+
+def _iter_nodes(node: _HtmlNode) -> list[_HtmlNode]:
+    out: list[_HtmlNode] = []
+    for child in node.children:
+        out.append(child)
+        out.extend(_iter_nodes(child))
+    return out
+
+
+def _select_nodes(root: _HtmlNode, selector: str) -> list[_HtmlNode]:
+    tokens = [tok for tok in re.split(r"\s+", selector.strip()) if tok]
+    if not tokens:
+        return []
+    current = [root]
+    for token in tokens:
+        next_nodes: list[_HtmlNode] = []
+        for node in current:
+            for candidate in _iter_nodes(node):
+                if _selector_token_match(candidate, token):
+                    next_nodes.append(candidate)
+        current = next_nodes
+    return current
+
+
+def _first_selected_text(root: _HtmlNode, selector: str, fallback: _HtmlNode | None = None) -> str:
+    nodes = _select_nodes(root, selector) if selector else []
+    if nodes:
+        return nodes[0].text()
+    return fallback.text() if fallback else ""
+
+
+def _first_selected_url(root: _HtmlNode, selector: str, source_url: str, fallback: _HtmlNode | None = None) -> str:
+    nodes = _select_nodes(root, selector) if selector else []
+    if not nodes and fallback:
+        if fallback.tag == "a":
+            nodes = [fallback]
+        else:
+            nodes = _select_nodes(fallback, "a")
+    if not nodes:
+        return ""
+    node = nodes[0]
+    href = node.attrs.get("href") or node.attrs.get("data-href") or ""
+    return urljoin(source_url, href.strip()) if href else ""
+
+
+def parse_html_list_items(html_text: str, source_url: str, allowed_domain: str, max_items: int, source_id: str, selectors: dict[str, str]) -> list[CrawlItem]:
+    item_selector = (selectors.get("item_selector") or selectors.get("list_selector") or "").strip()
+    title_selector = (selectors.get("title_selector") or "").strip()
+    link_selector = (selectors.get("link_selector") or title_selector or "a").strip()
+    if not item_selector or not title_selector:
+        raise CrawlerError("html_list requires item_selector/list_selector and title_selector", "selector_required")
+    parser = _TreeParser()
+    parser.feed(html_text[:MAX_RESPONSE_BYTES])
+    item_nodes = _select_nodes(parser.root, item_selector)
+    if not item_nodes:
+        raise CrawlerError(f"html_list selector matched no items: {item_selector}", "selector_no_items", status="partial_success")
+    items: list[CrawlItem] = []
+    for node in item_nodes[:max_items]:
+        title = clean_text(_first_selected_text(node, title_selector, node), 300)
+        if not title:
+            continue
+        original_url = _first_selected_url(node, link_selector, source_url, node) or source_url
+        if not _domain_allowed(original_url, allowed_domain):
+            continue
+        summary = clean_text(_first_selected_text(node, selectors.get("summary_selector") or "", None), 500)
+        published_at = parse_date(_first_selected_text(node, selectors.get("date_selector") or "", None))
+        items.append(CrawlItem(
+            title=title,
+            summary=summary,
+            url=original_url,
+            published_at=published_at,
+            external_id=original_url,
+            raw_metadata={"kind": "html_list_item", "selectors": selectors},
+            hash_key=_hash_item(source_id, original_url, title, published_at),
+        ))
+    if not items:
+        raise CrawlerError("html_list parsed zero usable items", "selector_no_usable_items", status="partial_success")
+    return items
+
+
 def crawl_source(source: dict[str, Any], *, force: bool = False) -> CrawlResult:
+    started = time.monotonic()
     source_id = str(source.get("id") or "")
     source_name = str(source.get("name") or "")
     source_type = str(source.get("source_type") or "manual").strip().lower()
@@ -356,9 +550,7 @@ def crawl_source(source: dict[str, Any], *, force: bool = False) -> CrawlResult:
             raise CrawlerSkipped("crawl interval has not elapsed", "crawl_interval")
 
     if source_type == "manual" or strategy == "manual":
-        return CrawlResult(source_id=source_id, source_name=source_name, status="skipped", items=[], skipped_reason="manual_source")
-    if source_type == "html_list" or strategy == "html_list":
-        return CrawlResult(source_id=source_id, source_name=source_name, status="skipped", items=[], skipped_reason="html_list_phase_two")
+        return CrawlResult(source_id=source_id, source_name=source_name, status="skipped", items=[], skipped_reason="manual_source", source_url=source_url, duration_ms=int((time.monotonic() - started) * 1000))
     if not source_url:
         raise CrawlerError("source_url is required", "missing_source_url")
     parsed = urlparse(source_url)
@@ -367,10 +559,34 @@ def crawl_source(source: dict[str, Any], *, force: bool = False) -> CrawlResult:
     if not _domain_allowed(source_url, allowed_domain):
         raise CrawlerError("source_url is outside allowed_domain", "domain_disallowed")
 
-    text = _fetch_public_text(source_url, timeout_ms=timeout_ms)
+    fetch = _fetch_public_text(source_url, timeout_ms=timeout_ms)
+    parser_status = ""
     if source_type == "rss" or strategy == "rss":
-        items = parse_rss_items(text, source_url, allowed_domain, max_items, source_id)
+        items = parse_rss_items(fetch.text, source_url, allowed_domain, max_items, source_id)
+        parser_status = "rss_ok" if items else "rss_zero_items"
+    elif source_type == "html_list" or strategy == "html_list":
+        items = parse_html_list_items(fetch.text, source_url, allowed_domain, max_items, source_id, {
+            "list_selector": str(source.get("list_selector") or ""),
+            "item_selector": str(source.get("item_selector") or ""),
+            "title_selector": str(source.get("title_selector") or ""),
+            "link_selector": str(source.get("link_selector") or ""),
+            "summary_selector": str(source.get("summary_selector") or ""),
+            "date_selector": str(source.get("date_selector") or ""),
+        })
+        parser_status = "html_list_ok" if items else "html_list_zero_items"
     else:
-        items = parse_webpage_metadata(text, source_url, allowed_domain, source_id)
+        items = parse_webpage_metadata(fetch.text, source_url, allowed_domain, source_id)
+        parser_status = "metadata_ok" if items else "metadata_zero_items"
     status = "success" if items else "partial_success"
-    return CrawlResult(source_id=source_id, source_name=source_name, status=status, items=items, fetched_count=len(items))
+    return CrawlResult(
+        source_id=source_id,
+        source_name=source_name,
+        status=status,
+        items=items,
+        fetched_count=len(items),
+        robots_status=fetch.robots_status,
+        http_status=fetch.http_status,
+        parser_status=parser_status,
+        source_url=source_url,
+        duration_ms=int((time.monotonic() - started) * 1000),
+    )

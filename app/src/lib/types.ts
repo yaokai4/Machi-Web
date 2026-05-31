@@ -366,7 +366,7 @@ export type KXConversation = z.infer<typeof ConversationSchema>;
 export const SettingsSchema = z.object({
   user_id: z.string(),
   language: z.string(),
-  appearance: z.enum(["system", "light", "dark"]),
+  appearance: z.enum(["light", "dark"]),
   push_likes: z.boolean(),
   push_comments: z.boolean(),
   push_follows: z.boolean(),

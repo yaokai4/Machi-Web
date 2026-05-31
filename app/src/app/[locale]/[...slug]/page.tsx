@@ -34,8 +34,8 @@ type PageProps = {
   params: Promise<Params>;
 };
 
-function isLocalizedMarketingLocale(value: string): value is Exclude<MarketingLocale, "zh"> {
-  return value === "en" || value === "ja";
+function isLocalizedMarketingLocale(value: string): value is MarketingLocale {
+  return value === "zh" || value === "en" || value === "ja";
 }
 
 function pageIdForParams(params: Params): MarketingPageId | null {
@@ -45,7 +45,7 @@ function pageIdForParams(params: Params): MarketingPageId | null {
 
 export function generateStaticParams() {
   return localizedMarketingPages.flatMap(({ slug }) =>
-    SUPPORTED_LOCALES.filter((locale) => locale !== "zh").map((locale) => ({
+    SUPPORTED_LOCALES.map((locale) => ({
       locale,
       slug,
     })),

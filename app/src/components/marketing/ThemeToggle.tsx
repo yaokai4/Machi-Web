@@ -1,72 +1,65 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Moon, Sun, Monitor } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Moon, Sun } from "lucide-react";
 import clsx from "clsx";
 
-type Mode = "system" | "light" | "dark";
-const STORAGE_KEY = "machi-appearance";
+type Mode = "light" | "dark";
+const STORAGE_KEY = "machi_theme";
 
 function applyMode(mode: Mode) {
   if (typeof document === "undefined") return;
-  const sys = window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
-  const target = mode === "system" ? sys : mode;
-  document.documentElement.classList.toggle("dark", target === "dark");
+  document.documentElement.classList.toggle("dark", mode === "dark");
+  document.documentElement.dataset.theme = mode;
 }
 
 function readStored(): Mode {
-  if (typeof window === "undefined") return "system";
+  if (typeof window === "undefined") return "light";
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    const parsed = raw ? JSON.parse(raw) : null;
-    if (parsed === "light" || parsed === "dark" || parsed === "system") return parsed;
+    if (raw === "light" || raw === "dark") return raw;
+    localStorage.setItem(STORAGE_KEY, "light");
+    localStorage.removeItem("machi-appearance");
+    localStorage.removeItem("kaix-appearance");
   } catch {}
-  return "system";
+  return "light";
 }
 
 /// Marketing-site appearance toggle. Persists to the same
-/// `machi-appearance` key the inline head script reads so there's no
+/// `machi_theme` key the inline head script reads so there's no
 /// flash of incorrect theme on cold load.
 export function ThemeToggle({ compact = false }: { compact?: boolean }) {
-  const [mode, setMode] = useState<Mode>("system");
-  const modeRef = useRef<Mode>("system");
+  const [mode, setMode] = useState<Mode>("light");
 
   useEffect(() => {
     const initial = readStored();
-    modeRef.current = initial;
     setMode(initial);
     applyMode(initial);
-    const mq = window.matchMedia("(prefers-color-scheme: dark)");
-    const onChange = () => {
-      if (modeRef.current === "system") applyMode("system");
-    };
-    mq.addEventListener("change", onChange);
-    return () => mq.removeEventListener("change", onChange);
   }, []);
 
   const change = (next: Mode) => {
-    modeRef.current = next;
     setMode(next);
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      localStorage.setItem(STORAGE_KEY, next);
+      localStorage.removeItem("machi-appearance");
+      localStorage.removeItem("kaix-appearance");
     } catch {}
     applyMode(next);
   };
 
   const options: { value: Mode; Icon: React.ComponentType<{ className?: string }>; label: string }[] = [
     { value: "light", Icon: Sun, label: "Light" },
-    { value: "system", Icon: Monitor, label: "System" },
     { value: "dark", Icon: Moon, label: "Dark" },
   ];
 
   if (compact) {
     // Single-button cycle through modes — used in tight headers.
-    const Icon = mode === "dark" ? Moon : mode === "light" ? Sun : Monitor;
+    const Icon = mode === "dark" ? Moon : Sun;
     return (
       <button
         type="button"
         aria-label="切换主题"
-        onClick={() => change(mode === "light" ? "dark" : mode === "dark" ? "system" : "light")}
+        onClick={() => change(mode === "light" ? "dark" : "light")}
         className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-950/5 text-slate-700 ring-1 ring-slate-900/10 transition hover:bg-slate-950/10 dark:bg-white/10 dark:text-slate-100 dark:ring-white/15 dark:hover:bg-white/20"
       >
         <Icon className="h-4 w-4" />

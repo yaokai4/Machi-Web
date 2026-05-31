@@ -30,6 +30,7 @@ API contract (all JSON, all snake_case unless noted):
     POST   /api/users/:id/report
 
     GET    /api/feed                  ?mode=recommend|local|following|hot&country=&province=&city=&content_type=
+    GET    /api/posts                 ?mode=recommend|local|following|hot&country=&province=&city=&content_type=
     POST   /api/posts
     GET    /api/posts/:id
     PATCH  /api/posts/:id
@@ -51,6 +52,7 @@ API contract (all JSON, all snake_case unless noted):
 
     GET    /api/search                ?q=...&kind=post|user|topic
     GET    /api/trending
+    GET    /api/topics
     GET    /api/topics/:tag
 
     GET    /api/notifications
@@ -110,6 +112,7 @@ import urllib.request
 import urllib.error
 import urllib.robotparser
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from html.parser import HTMLParser
@@ -222,7 +225,7 @@ LOGIN_REQUIRE_CODE = _env("KAIX_LOGIN_REQUIRE_CODE", "0") == "1"
 # git-ignored dev outbox so codes can be read during development WITHOUT ever
 # being written to the logger. Production should use "smtp" or "resend".
 EMAIL_TRANSPORT = _env("KAIX_EMAIL_TRANSPORT", "console_file").lower()
-EMAIL_FROM = _env("KAIX_EMAIL_FROM", "Machi City <no-reply@machi.city>")
+EMAIL_FROM = _env("KAIX_EMAIL_FROM", "Machi <no-reply@machi.city>")
 EMAIL_REPLY_TO = (_env("KAIX_EMAIL_REPLY_TO", "") or "").strip()
 SMTP_HOST = _env("KAIX_SMTP_HOST", "")
 SMTP_PORT = int(_env("KAIX_SMTP_PORT", "587"))
@@ -413,25 +416,29 @@ POST_STATUSES: set[str] = {"published", "active", "hidden", "deleted", "under_re
 # Machi Local News Desk / 本地资讯台. This is deliberately separate from
 # user posts: editorial content is authored by official desk identities,
 # keeps source attribution, and never impersonates ordinary users.
-NEWS_DESK_USER_AGENT = _env("KAIX_NEWS_DESK_USER_AGENT", "MachiCityBot/1.0 (+https://machicity.com)")
-NEWS_DESK_PROMPT_VERSION = "local_news_desk_v1"
+NEWS_DESK_USER_AGENT = _env("KAIX_NEWS_DESK_USER_AGENT", "MachiBot/1.0 (+https://machicity.com)")
+NEWS_DESK_PROMPT_VERSION = "machi_editorial_xhs_style_v1"
 NEWS_SOURCE_TYPES = {"rss", "webpage", "html_list", "manual"}
 NEWS_CRAWL_STRATEGIES = {"rss", "meta_only", "html_list", "manual"}
 NEWS_CREDIBILITY_LEVELS = {"official", "media", "community", "commercial"}
 NEWS_CATEGORIES = {
     "local_news", "traffic_alert", "weather_alert", "earthquake_alert", "typhoon_alert",
     "policy_update", "immigration_visa", "city_event", "life_notice", "housing_notice",
-    "housing_market", "work_study", "public_safety", "editor_pick", "weekly_digest",
-    "other",
+    "housing_market", "work_study", "public_safety", "economy", "technology", "culture",
+    "sports", "education", "health", "travel", "editor_pick", "weekly_digest", "other",
 }
 HIGH_RISK_NEWS_CATEGORIES = {
     "weather_alert", "earthquake_alert", "typhoon_alert", "immigration_visa",
-    "policy_update", "public_safety", "legal", "medical", "finance", "crime",
+    "policy_update", "public_safety", "health", "legal", "medical", "finance", "crime",
 }
 NEWS_ITEM_STATUSES = {"fetched", "draft_created", "ignored", "duplicate", "error", "deleted"}
 EDITORIAL_AUTHOR_TYPES = {"local_desk", "city_editor", "tokyo_editorial", "osaka_editorial", "japan_editorial", "admin"}
 EDITORIAL_POST_STATUSES = {"draft", "pending_review", "published", "hidden", "deleted"}
 EDITORIAL_REVIEW_STATUSES = {"none", "needs_review", "approved", "rejected"}
+NEWS_CRAWLER_ENABLED = _env("NEWS_CRAWLER_ENABLED", "true").lower() == "true"
+NEWS_CRAWLER_AUTO_FETCH = _env("NEWS_CRAWLER_AUTO_FETCH", "false").lower() == "true"
+NEWS_CRAWLER_MAX_CONCURRENCY = max(1, min(int(_env("NEWS_CRAWLER_MAX_CONCURRENCY", "3") or "3"), 8))
+NEWS_CRAWLER_PER_DOMAIN_CONCURRENCY = max(1, min(int(_env("NEWS_CRAWLER_PER_DOMAIN_CONCURRENCY", "1") or "1"), 4))
 
 # Per-type attribute schema: {attribute_name: ("str"|"int"|"float", max_len_for_str)}.
 # Any field present that isn't listed is silently dropped (so a buggy
@@ -756,6 +763,12 @@ def _sniff_mime(data: bytes) -> str | None:
     return None
 
 DB_LOCK = threading.RLock()
+
+# A write request that cannot acquire the global write lock within this many
+# seconds fails fast with 503 instead of hanging the connection forever.
+# Normal writes hold the lock for milliseconds — this is purely a safety
+# valve so one stuck/slow holder can never wedge the whole backend again.
+DB_WRITE_LOCK_TIMEOUT_SEC = float(_env("KAIX_DB_WRITE_LOCK_TIMEOUT_SEC", "20"))
 
 
 class _DBLockReleased:
@@ -1202,7 +1215,7 @@ def rate_check(ip: str, group: str) -> bool:
 def _rate_group_for(path: str, method: str) -> str:
     # Code-sending endpoints get the tightest bucket so an attacker can't
     # spray verification emails or probe which addresses exist.
-    if path in ("/api/auth/email/send-code", "/api/auth/forgot-password", "/api/auth/login/start"):
+    if path in ("/api/auth/email/send-code", "/api/auth/send-verification-code", "/api/auth/forgot-password", "/api/auth/login/start"):
         return "email"
     if path.startswith("/api/auth/"):
         return "auth"
@@ -1317,7 +1330,12 @@ def normalize_handle(value: str) -> str:
     return (value or "").strip().lstrip("@").lower()
 
 
-HANDLE_RE = re.compile(r"^[a-z0-9_]{2,24}$")
+HANDLE_RE = re.compile(r"^[a-z0-9_.]{3,20}$")
+RESERVED_HANDLES = {
+    "admin", "administrator", "root", "machi", "machicity", "kaix",
+    "official", "support", "help", "news", "localdesk", "local_desk",
+    "machi_editorial", "machi_news", "machi_support",
+}
 TAG_RE = re.compile(r"#([\w一-鿿]+)", re.UNICODE)
 
 
@@ -1577,7 +1595,7 @@ CREATE TABLE IF NOT EXISTS media (
 CREATE TABLE IF NOT EXISTS settings (
     user_id TEXT PRIMARY KEY,
     language TEXT NOT NULL DEFAULT 'zh-Hans',
-    appearance TEXT NOT NULL DEFAULT 'system',
+    appearance TEXT NOT NULL DEFAULT 'light',
     push_likes INTEGER NOT NULL DEFAULT 1,
     push_comments INTEGER NOT NULL DEFAULT 1,
     push_follows INTEGER NOT NULL DEFAULT 1,
@@ -2389,8 +2407,8 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE news_sources ADD COLUMN date_format TEXT;
         ALTER TABLE news_sources ADD COLUMN timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo';
         ALTER TABLE news_sources ADD COLUMN robots_policy TEXT NOT NULL DEFAULT 'respect';
-        ALTER TABLE news_sources ADD COLUMN max_items_per_run INTEGER NOT NULL DEFAULT 20;
-        ALTER TABLE news_sources ADD COLUMN request_timeout_ms INTEGER NOT NULL DEFAULT 10000;
+        ALTER TABLE news_sources ADD COLUMN max_items_per_run INTEGER NOT NULL DEFAULT 30;
+        ALTER TABLE news_sources ADD COLUMN request_timeout_ms INTEGER NOT NULL DEFAULT 15000;
         ALTER TABLE news_sources ADD COLUMN deleted_at TEXT;
         UPDATE news_sources
            SET allowed_domain = COALESCE(NULLIF(allowed_domain, ''), replace(replace(substr(COALESCE(NULLIF(source_url, ''), homepage_url), instr(COALESCE(NULLIF(source_url, ''), homepage_url), '://') + 3), 'www.', ''), '/', ''))
@@ -2418,6 +2436,38 @@ MIGRATIONS: list[tuple[int, str, str]] = [
 
         ALTER TABLE news_fetch_logs ADD COLUMN source_name TEXT NOT NULL DEFAULT '';
         ALTER TABLE news_fetch_logs ADD COLUMN skipped_reason TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        16,
+        "japan news crawler: bulk flow, diagnostics, demo flags and source automation choices",
+        """
+        ALTER TABLE news_sources ADD COLUMN auto_create_draft INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE news_sources ADD COLUMN official_auto_publish INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE news_sources ADD COLUMN last_fetched_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE news_sources ADD COLUMN last_new_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE news_sources ADD COLUMN last_duplicate_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE news_sources ADD COLUMN last_error_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE news_sources ADD COLUMN last_robots_status TEXT NOT NULL DEFAULT '';
+        ALTER TABLE news_sources ADD COLUMN last_http_status INTEGER;
+        ALTER TABLE news_sources ADD COLUMN last_parser_status TEXT NOT NULL DEFAULT '';
+
+        ALTER TABLE news_fetch_logs ADD COLUMN source_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE news_fetch_logs ADD COLUMN robots_status TEXT NOT NULL DEFAULT '';
+        ALTER TABLE news_fetch_logs ADD COLUMN http_status INTEGER;
+        ALTER TABLE news_fetch_logs ADD COLUMN parser_status TEXT NOT NULL DEFAULT '';
+        ALTER TABLE news_fetch_logs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0;
+
+        ALTER TABLE editorial_posts ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
+    (
+        17,
+        "theme settings default to explicit light mode",
+        """
+        UPDATE settings
+           SET appearance = 'light'
+         WHERE appearance IS NULL OR appearance NOT IN ('light', 'dark');
         """,
     ),
 ]
@@ -2648,24 +2698,88 @@ def ensure_news_source_presets(conn: sqlite3.Connection) -> None:
             "crawl_interval_minutes": 360,
         },
     ]
+    presets.extend([
+        {"name": "Ministry of Health, Labour and Welfare", "source_key": "mhlw-japan", "homepage_url": "https://www.mhlw.go.jp/", "allowed_domain": "www.mhlw.go.jp", "country": "jp", "city": "", "language": "ja", "default_category": "health", "credibility_level": "official", "crawl_interval_minutes": 120},
+        {"name": "Ministry of Internal Affairs and Communications", "source_key": "mic-japan", "homepage_url": "https://www.soumu.go.jp/", "allowed_domain": "www.soumu.go.jp", "country": "jp", "city": "", "language": "ja", "default_category": "policy_update", "credibility_level": "official", "crawl_interval_minutes": 120},
+        {"name": "Ministry of Foreign Affairs of Japan", "source_key": "mofa-japan", "homepage_url": "https://www.mofa.go.jp/", "allowed_domain": "www.mofa.go.jp", "country": "jp", "city": "", "language": "en", "default_category": "travel", "credibility_level": "official", "crawl_interval_minutes": 120},
+        {"name": "Japan National Tourism Organization", "source_key": "jnto-japan", "homepage_url": "https://www.japan.travel/en/news/", "allowed_domain": "www.japan.travel", "country": "jp", "city": "", "language": "en", "default_category": "travel", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Tokyo Disaster Prevention", "source_key": "tokyo-disaster-prevention", "homepage_url": "https://www.bousai.metro.tokyo.lg.jp/", "allowed_domain": "www.bousai.metro.tokyo.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "public_safety", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Tokyo Convention & Visitors Bureau", "source_key": "tokyo-convention-visitors-bureau", "homepage_url": "https://www.gotokyo.org/en/", "allowed_domain": "www.gotokyo.org", "country": "jp", "city": "tokyo", "language": "en", "default_category": "travel", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Shinjuku City", "source_key": "shinjuku-city", "homepage_url": "https://www.city.shinjuku.lg.jp/", "allowed_domain": "www.city.shinjuku.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Shibuya City", "source_key": "shibuya-city", "homepage_url": "https://www.city.shibuya.tokyo.jp/", "allowed_domain": "www.city.shibuya.tokyo.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Toshima City", "source_key": "toshima-city", "homepage_url": "https://www.city.toshima.lg.jp/", "allowed_domain": "www.city.toshima.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Nakano City", "source_key": "nakano-city", "homepage_url": "https://www.city.tokyo-nakano.lg.jp/", "allowed_domain": "www.city.tokyo-nakano.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Setagaya City", "source_key": "setagaya-city", "homepage_url": "https://www.city.setagaya.lg.jp/", "allowed_domain": "www.city.setagaya.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Minato City", "source_key": "minato-city", "homepage_url": "https://www.city.minato.tokyo.jp/", "allowed_domain": "www.city.minato.tokyo.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Osaka City", "source_key": "osaka-city", "homepage_url": "https://www.city.osaka.lg.jp/", "allowed_domain": "www.city.osaka.lg.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Osaka Disaster Prevention", "source_key": "osaka-disaster-prevention", "homepage_url": "https://www.pref.osaka.lg.jp/kikikanri/", "allowed_domain": "www.pref.osaka.lg.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "public_safety", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Toei Transportation", "source_key": "toei-transportation", "homepage_url": "https://www.kotsu.metro.tokyo.jp/", "allowed_domain": "www.kotsu.metro.tokyo.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Osaka Metro", "source_key": "osaka-metro", "homepage_url": "https://subway.osakametro.co.jp/", "allowed_domain": "subway.osakametro.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Keio Railway", "source_key": "keio-railway", "homepage_url": "https://www.keio.co.jp/", "allowed_domain": "www.keio.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Odakyu Electric Railway", "source_key": "odakyu-railway", "homepage_url": "https://www.odakyu.jp/", "allowed_domain": "www.odakyu.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Tokyu Railways", "source_key": "tokyu-railways", "homepage_url": "https://www.tokyu.co.jp/", "allowed_domain": "www.tokyu.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Seibu Railway", "source_key": "seibu-railway", "homepage_url": "https://www.seiburailway.jp/", "allowed_domain": "www.seiburailway.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Tobu Railway", "source_key": "tobu-railway", "homepage_url": "https://www.tobu.co.jp/", "allowed_domain": "www.tobu.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Keisei Electric Railway", "source_key": "keisei-railway", "homepage_url": "https://www.keisei.co.jp/", "allowed_domain": "www.keisei.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Keikyu Corporation", "source_key": "keikyu-railway", "homepage_url": "https://www.keikyu.co.jp/", "allowed_domain": "www.keikyu.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Hankyu Railway", "source_key": "hankyu-railway", "homepage_url": "https://www.hankyu.co.jp/", "allowed_domain": "www.hankyu.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Hanshin Electric Railway", "source_key": "hanshin-railway", "homepage_url": "https://rail.hanshin.co.jp/", "allowed_domain": "rail.hanshin.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Kintetsu Railway", "source_key": "kintetsu-railway", "homepage_url": "https://www.kintetsu.co.jp/", "allowed_domain": "www.kintetsu.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Keihan Railway", "source_key": "keihan-railway", "homepage_url": "https://www.keihan.co.jp/", "allowed_domain": "www.keihan.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "Nankai Electric Railway", "source_key": "nankai-railway", "homepage_url": "https://www.nankai.co.jp/", "allowed_domain": "www.nankai.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
+        {"name": "NHK News", "source_key": "nhk-news", "source_type": "rss", "crawl_strategy": "rss", "source_url": "https://www3.nhk.or.jp/rss/news/cat0.xml", "homepage_url": "https://www3.nhk.or.jp/news/", "allowed_domain": "www3.nhk.or.jp", "country": "jp", "city": "", "language": "ja", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 60},
+        {"name": "NHK Shutoken", "source_key": "nhk-shutoken", "homepage_url": "https://www.nhk.or.jp/shutoken/", "allowed_domain": "www.nhk.or.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 60},
+        {"name": "NHK Kansai", "source_key": "nhk-kansai", "homepage_url": "https://www.nhk.or.jp/osaka/", "allowed_domain": "www.nhk.or.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 60},
+        {"name": "Kyodo News", "source_key": "kyodo-news", "homepage_url": "https://english.kyodonews.net/", "allowed_domain": "english.kyodonews.net", "country": "jp", "city": "", "language": "en", "default_category": "economy", "credibility_level": "media", "crawl_interval_minutes": 120},
+        {"name": "The Japan Times", "source_key": "japan-times", "source_type": "rss", "crawl_strategy": "rss", "source_url": "https://www.japantimes.co.jp/feed/", "homepage_url": "https://www.japantimes.co.jp/", "allowed_domain": "www.japantimes.co.jp", "country": "jp", "city": "", "language": "en", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 120},
+        {"name": "Nippon.com", "source_key": "nippon-com", "homepage_url": "https://www.nippon.com/en/", "allowed_domain": "www.nippon.com", "country": "jp", "city": "", "language": "en", "default_category": "culture", "credibility_level": "media", "crawl_interval_minutes": 120},
+        {"name": "Time Out Tokyo", "source_key": "time-out-tokyo", "homepage_url": "https://www.timeout.com/tokyo", "allowed_domain": "www.timeout.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "city_event", "credibility_level": "media", "crawl_interval_minutes": 360},
+        {"name": "Tokyo Cheapo", "source_key": "tokyo-cheapo", "homepage_url": "https://tokyocheapo.com/", "allowed_domain": "tokyocheapo.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "travel", "credibility_level": "media", "crawl_interval_minutes": 360},
+        {"name": "Savvy Tokyo", "source_key": "savvy-tokyo", "homepage_url": "https://savvytokyo.com/", "allowed_domain": "savvytokyo.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "life_notice", "credibility_level": "media", "crawl_interval_minutes": 360},
+        {"name": "Tokyo Art Beat", "source_key": "tokyo-art-beat", "homepage_url": "https://www.tokyoartbeat.com/en/events", "allowed_domain": "www.tokyoartbeat.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "culture", "credibility_level": "media", "crawl_interval_minutes": 360},
+        {"name": "Peatix Tokyo Public Events", "source_key": "peatix-tokyo-public-events", "homepage_url": "https://peatix.com/search?q=Tokyo", "allowed_domain": "peatix.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "city_event", "credibility_level": "commercial", "crawl_interval_minutes": 360},
+        {"name": "Peatix Osaka Public Events", "source_key": "peatix-osaka-public-events", "homepage_url": "https://peatix.com/search?q=Osaka", "allowed_domain": "peatix.com", "country": "jp", "city": "osaka", "language": "en", "default_category": "city_event", "credibility_level": "commercial", "crawl_interval_minutes": 360},
+        {"name": "Meetup Tokyo Public Events", "source_key": "meetup-tokyo-public-events", "homepage_url": "https://www.meetup.com/find/?location=jp--Tokyo", "allowed_domain": "www.meetup.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "city_event", "credibility_level": "commercial", "crawl_interval_minutes": 360},
+        {"name": "Meetup Osaka Public Events", "source_key": "meetup-osaka-public-events", "homepage_url": "https://www.meetup.com/find/?location=jp--Osaka", "allowed_domain": "www.meetup.com", "country": "jp", "city": "osaka", "language": "en", "default_category": "city_event", "credibility_level": "commercial", "crawl_interval_minutes": 360},
+        {"name": "University of Tokyo News", "source_key": "university-of-tokyo-news", "homepage_url": "https://www.u-tokyo.ac.jp/en/news/", "allowed_domain": "www.u-tokyo.ac.jp", "country": "jp", "city": "tokyo", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Waseda University News", "source_key": "waseda-university-news", "homepage_url": "https://www.waseda.jp/top/en/news", "allowed_domain": "www.waseda.jp", "country": "jp", "city": "tokyo", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Keio University News", "source_key": "keio-university-news", "homepage_url": "https://www.keio.ac.jp/en/news/", "allowed_domain": "www.keio.ac.jp", "country": "jp", "city": "tokyo", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
+        {"name": "Osaka University News", "source_key": "osaka-university-news", "homepage_url": "https://www.osaka-u.ac.jp/en/news", "allowed_domain": "www.osaka-u.ac.jp", "country": "jp", "city": "osaka", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
+    ])
+    for src in presets:
+        src.setdefault("source_type", "webpage")
+        src.setdefault("crawl_strategy", "meta_only")
+        src.setdefault("source_url", src.get("homepage_url", ""))
+        if not src.get("source_url") and src.get("homepage_url"):
+            src["source_url"] = src["homepage_url"]
+        if src.get("source_type") == "manual" and src.get("source_url"):
+            src["source_type"] = "webpage"
+        if src.get("crawl_strategy") == "manual" and src.get("source_url"):
+            src["crawl_strategy"] = "meta_only"
+        src.setdefault("copyright_policy_note", "Store metadata and source links only; do not republish full text.")
+        src.setdefault("max_items_per_run", 30)
+        src.setdefault("request_timeout_ms", 15000)
+        src.setdefault("require_manual_review", True)
+        src.setdefault("is_active", True)
     for src in presets:
         existing = conn.execute("SELECT id FROM news_sources WHERE source_key = ?", (src["source_key"],)).fetchone()
         if existing:
             conn.execute(
                 """
                 UPDATE news_sources
-                   SET name = ?, source_type = ?, homepage_url = ?, allowed_domain = ?,
+                   SET name = ?, source_type = ?, source_url = ?, homepage_url = ?, allowed_domain = ?,
                        country = ?, city = ?, language = ?, default_category = ?,
                        credibility_level = ?, copyright_policy_note = ?, crawl_strategy = ?,
-                       updated_at = ?,
-                       is_active = CASE WHEN created_by_admin_id = '' AND source_url = '' THEN 0 ELSE is_active END
+                       max_items_per_run = ?, request_timeout_ms = ?, require_manual_review = ?,
+                       is_active = ?, updated_at = ?
                  WHERE source_key = ?
                 """,
                 (
-                    src["name"], src["source_type"], src["homepage_url"], src["allowed_domain"],
+                    src["name"], src["source_type"], src["source_url"], src["homepage_url"], src["allowed_domain"],
                     src["country"], src["city"], src["language"], src["default_category"],
                     src["credibility_level"], src["copyright_policy_note"], src["crawl_strategy"],
-                    now, src["source_key"],
+                    src["max_items_per_run"], src["request_timeout_ms"], 1 if src["require_manual_review"] else 0,
+                    1 if src["is_active"] else 0, now, src["source_key"],
                 ),
             )
             continue
@@ -2676,13 +2790,14 @@ def ensure_news_source_presets(conn: sqlite3.Connection) -> None:
                  country, city, language, default_category, credibility_level, copyright_policy_note,
                  crawl_strategy, crawl_interval_minutes, max_items_per_run, request_timeout_ms,
                  is_active, require_manual_review, created_by_admin_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 20, 10000, 0, 1, '', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
             """,
             (
                 str(uuid.uuid4()), src["name"], src["source_key"], src["source_type"], src["source_url"],
                 src["homepage_url"], src["allowed_domain"], src["country"], src["city"], src["language"],
                 src["default_category"], src["credibility_level"], src["copyright_policy_note"],
-                src["crawl_strategy"], src["crawl_interval_minutes"],
+                src["crawl_strategy"], src["crawl_interval_minutes"], src["max_items_per_run"],
+                src["request_timeout_ms"], 1 if src["is_active"] else 0, 1 if src["require_manual_review"] else 0,
                 now, now,
             ),
         )
@@ -2702,6 +2817,66 @@ def init_db() -> None:
         # touches or downgrades any other account, so existing admins are
         # preserved exactly as-is.
         ensure_seed_admin(conn)
+
+
+_NEWS_CRAWLER_THREAD: threading.Thread | None = None
+
+
+def _crawler_interval_for_category(category: str) -> int:
+    if category in {"traffic_alert", "weather_alert", "earthquake_alert", "typhoon_alert"}:
+        return 30
+    if category in {"local_news", "policy_update", "immigration_visa"}:
+        return 120
+    if category in {"city_event", "life_notice"}:
+        return 360
+    return 180
+
+
+def start_news_crawler_scheduler() -> None:
+    """Optional deploy-time crawler runner. Disabled by default; when enabled
+    it only harvests metadata into the review pool and never makes content
+    public by itself."""
+    global _NEWS_CRAWLER_THREAD
+    if _NEWS_CRAWLER_THREAD is not None:
+        return
+    if not (NEWS_CRAWLER_ENABLED and NEWS_CRAWLER_AUTO_FETCH):
+        ACCESS_LOG.info("news crawler scheduler disabled (NEWS_CRAWLER_AUTO_FETCH=false)")
+        return
+
+    def _loop() -> None:
+        ACCESS_LOG.info("news crawler scheduler started")
+        while True:
+            try:
+                with DB_LOCK, db() as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT id, default_category, crawl_interval_minutes, last_fetched_at
+                          FROM news_sources
+                         WHERE is_active = 1 AND deleted_at IS NULL
+                         ORDER BY COALESCE(last_fetched_at, '1970-01-01T00:00:00+00:00')
+                         LIMIT 20
+                        """
+                    ).fetchall()
+                    for row in rows:
+                        last = None
+                        try:
+                            last = datetime.fromisoformat((row["last_fetched_at"] or "").replace("Z", "+00:00"))
+                        except Exception:
+                            last = None
+                        interval = int(row["crawl_interval_minutes"] or 0) or _crawler_interval_for_category(row["default_category"])
+                        interval = max(30, interval)
+                        if last and datetime.now(timezone.utc) - last.astimezone(timezone.utc) < timedelta(minutes=interval):
+                            continue
+                        try:
+                            fetch_news_source(conn, row["id"], admin_id="", force=False)
+                        except APIError:
+                            continue
+            except Exception:
+                ERR_LOG.exception("news crawler scheduler iteration failed")
+            time.sleep(60)
+
+    _NEWS_CRAWLER_THREAD = threading.Thread(target=_loop, name="news-crawler-scheduler", daemon=True)
+    _NEWS_CRAWLER_THREAD.start()
 
 
 def seed_region_for_location(location: str) -> tuple[str, str, str, str]:
@@ -2958,6 +3133,9 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         "liked": bool(extras.get("liked")),
         "bookmarked": bool(extras.get("bookmarked")),
         "reposted": bool(extras.get("reposted")),
+        "canInteract": bool(extras.get("can_interact")),
+        "can_interact": bool(extras.get("can_interact")),
+        "viewer": extras.get("viewer"),
         "tags": extras.get("tags") or [],
         "media": extras.get("media") or [],
         "author": extras.get("author"),
@@ -3181,6 +3359,8 @@ def hydrate_post_extras(conn: sqlite3.Connection, post_ids: list[str], current_u
             "liked": pid in user_likes,
             "reposted": pid in user_reposts,
             "bookmarked": pid in user_bookmarks,
+            "can_interact": bool(current_user_id),
+            "viewer": {"id": current_user_id} if current_user_id else None,
             "tags": tags_by_post.get(pid, []),
             "media": media_by_post.get(pid, []),
             "poll": poll_by_post.get(pid),
@@ -4110,19 +4290,19 @@ def send_email(to: str, subject: str, body: str) -> bool:
 
 _CODE_EMAIL_TEMPLATES = {
     "register": {
-        "zh": ("Machi City 注册验证码", "你的 Machi City 注册验证码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请忽略本邮件。"),
-        "en": ("Your Machi City sign-up code", "Your Machi City sign-up code is: {code}\n\nIt expires in {ttl} minutes. If this wasn't you, ignore this email."),
-        "ja": ("Machi City 登録コード", "Machi City の登録コードは {code} です。\n\n{ttl} 分間有効です。心当たりがない場合は無視してください。"),
+        "zh": ("Machi 注册验证码", "你的 Machi 注册验证码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请忽略本邮件。"),
+        "en": ("Your Machi sign-up code", "Your Machi sign-up code is: {code}\n\nIt expires in {ttl} minutes. If this wasn't you, ignore this email."),
+        "ja": ("Machi 登録コード", "Machi の登録コードは {code} です。\n\n{ttl} 分間有効です。心当たりがない場合は無視してください。"),
     },
     "login": {
-        "zh": ("Machi City 登录验证码", "你的 Machi City 登录验证码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请立即修改密码。"),
-        "en": ("Your Machi City login code", "Your Machi City login code is: {code}\n\nIt expires in {ttl} minutes. If this wasn't you, change your password now."),
-        "ja": ("Machi City ログインコード", "Machi City のログインコードは {code} です。\n\n{ttl} 分間有効です。心当たりがない場合はすぐにパスワードを変更してください。"),
+        "zh": ("Machi 登录验证码", "你的 Machi 登录验证码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请立即修改密码。"),
+        "en": ("Your Machi login code", "Your Machi login code is: {code}\n\nIt expires in {ttl} minutes. If this wasn't you, change your password now."),
+        "ja": ("Machi ログインコード", "Machi のログインコードは {code} です。\n\n{ttl} 分間有効です。心当たりがない場合はすぐにパスワードを変更してください。"),
     },
     "reset": {
-        "zh": ("Machi City 密码重置验证码", "你正在重置 Machi City 密码，验证码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请忽略本邮件，你的密码不会改变。"),
-        "en": ("Reset your Machi City password", "Your Machi City password reset code is: {code}\n\nIt expires in {ttl} minutes. If you didn't request this, ignore this email — your password won't change."),
-        "ja": ("Machi City パスワード再設定コード", "Machi City のパスワード再設定コードは {code} です。\n\n{ttl} 分間有効です。心当たりがない場合は無視してください。パスワードは変更されません。"),
+        "zh": ("Machi 密码重置验证码", "你正在重置 Machi 密码，验证码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请忽略本邮件，你的密码不会改变。"),
+        "en": ("Reset your Machi password", "Your Machi password reset code is: {code}\n\nIt expires in {ttl} minutes. If you didn't request this, ignore this email — your password won't change."),
+        "ja": ("Machi パスワード再設定コード", "Machi のパスワード再設定コードは {code} です。\n\n{ttl} 分間有効です。心当たりがない場合は無視してください。パスワードは変更されません。"),
     },
 }
 
@@ -4176,7 +4356,13 @@ def issue_auth_code(conn: sqlite3.Connection, *, purpose: str, email: str, ip: s
         (code_id, purpose, email_norm, user_id, hash_auth_code(code, email_norm, purpose),
          now_iso(), expires, (ip or "")[:64]),
     )
-    sent = send_verification_email(email_norm, code, purpose, locale)
+    # Send the email WITHOUT holding the global write lock. With a real
+    # SMTP / HTTP transport this network call can take seconds; holding
+    # DB_LOCK across it would stall every other writer. The verification
+    # row is already persisted above (autocommit), so dropping the lock
+    # here is safe. No-op release if the caller isn't under the lock.
+    with _DBLockReleased():
+        sent = send_verification_email(email_norm, code, purpose, locale)
     # `code` goes out of scope here and is never logged or returned.
     return {"challenge_id": code_id, "sent": bool(sent), "expires_in": EMAIL_CODE_TTL_SEC}
 
@@ -4445,7 +4631,7 @@ SEED_CLEARED_STATUS = "cleared"       # soft-deleted → hidden (never a hard DE
 # (author_type, language) → (handle, display_name, bio, avatar_symbol, avatar_color)
 _SEED_BOT_IDENTITY: dict[tuple[str, str], tuple[str, str, str, str, str]] = {
     ("official_bot", "zh"): ("machi_assistant_zh", "Machi 城市助手", "城市内容整理与本地提醒。", "sparkles", "indigo"),
-    ("official_bot", "en"): ("machi_assistant_en", "Machi City Assistant", "Local notes and city tips.", "sparkles", "indigo"),
+    ("official_bot", "en"): ("machi_assistant_en", "Machi Assistant", "Local notes and city tips.", "sparkles", "indigo"),
     ("official_bot", "ja"): ("machi_assistant_ja", "街のコンテンツアシスタント", "街の情報とローカルのヒント。", "sparkles", "indigo"),
     ("editorial", "zh"): ("machi_editorial_zh", "Machi 编辑部", "编辑部整理的本地内容。", "newspaper", "blue"),
     ("editorial", "en"): ("machi_editorial_en", "Machi Local Desk", "Edited local highlights.", "newspaper", "blue"),
@@ -4567,13 +4753,33 @@ def _normalize_news_city(raw: Any) -> str:
     aliases = {
         "tokyo": "tokyo", "東京": "tokyo", "东京": "tokyo",
         "osaka": "osaka", "大阪": "osaka",
-        "japan-wide": "", "japan_wide": "", "nationwide": "", "日本全国": "",
+        "japan-wide": "", "japan_wide": "", "japanwide": "", "nationwide": "",
+        "all-japan": "", "all_japan": "", "日本全国": "", "全国": "",
     }
     return aliases.get(value, value[:48])
 
 
 def _normalize_news_category(raw: Any) -> str:
     value = str(raw or "local_news").strip().lower()
+    aliases = {
+        "news": "local_news",
+        "本地资讯": "local_news",
+        "城市快讯": "local_news",
+        "traffic": "traffic_alert",
+        "weather": "weather_alert",
+        "earthquake": "earthquake_alert",
+        "typhoon": "typhoon_alert",
+        "policy": "policy_update",
+        "visa": "immigration_visa",
+        "immigration": "immigration_visa",
+        "event": "city_event",
+        "events": "city_event",
+        "safety": "public_safety",
+        "meetup": "city_event",
+        "food": "city_event",
+        "disaster": "weather_alert",
+    }
+    value = aliases.get(value, value)
     return value if value in NEWS_CATEGORIES else "local_news"
 
 
@@ -4636,6 +4842,181 @@ def _risk_level_for_category(category: str) -> str:
 
 def _source_required_for_category(category: str) -> bool:
     return category in HIGH_RISK_NEWS_CATEGORIES
+
+
+def _news_author_type_for_scope(country: str, city: str) -> str:
+    if country == "jp" and city == "tokyo":
+        return "tokyo_editorial"
+    if country == "jp" and city == "osaka":
+        return "osaka_editorial"
+    if country == "jp":
+        return "japan_editorial"
+    return "local_desk"
+
+
+def _safe_editorial_body(language: str, source_name: str, original_url: str) -> str:
+    source = source_name or "Machi Local Desk"
+    original = original_url or ""
+    if language == "ja":
+        return (
+            "Machi編集部が公開情報をもとに整理しました。生活、通勤、通学、外出に関わる可能性があるため、"
+            "最新情報は公式発表をご確認ください。\n\n"
+            f"出典：{source}\n"
+            f"原文：{original}"
+        )
+    if language == "en":
+        return (
+            "Machi Local Desk summarized this update from public sources. Please check the official source "
+            "for the latest details before making decisions.\n\n"
+            f"Source: {source}\n"
+            f"Original: {original}"
+        )
+    return (
+        "Machi 日本生活编辑部根据公开来源整理了这条资讯。该信息可能影响在日本生活、学习、工作或出行的用户。"
+        "建议查看官方来源确认最新内容。\n\n"
+        f"来源：{source}\n"
+        f"原文：{original}\n\n"
+        "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。"
+    )
+
+
+def _news_city_label(city: str, language: str = "zh-CN") -> str:
+    normalized = _normalize_news_city(city)
+    if normalized == "tokyo":
+        return "東京" if language == "ja" else "Tokyo"
+    if normalized == "osaka":
+        return "大阪" if language == "ja" else "Osaka"
+    return "日本全国" if language == "ja" else "Japan-wide"
+
+
+def _news_category_label(category: str, language: str = "zh-CN") -> str:
+    labels = {
+        "traffic_alert": ("交通提醒", "交通情報", "transport update"),
+        "weather_alert": ("天气灾害提醒", "天気・防災情報", "weather and safety update"),
+        "earthquake_alert": ("地震提醒", "地震情報", "earthquake update"),
+        "typhoon_alert": ("台风提醒", "台風情報", "typhoon update"),
+        "policy_update": ("政策更新", "制度・行政情報", "policy update"),
+        "immigration_visa": ("在留签证", "在留・ビザ情報", "visa and immigration update"),
+        "city_event": ("城市活动", "街のイベント", "local event"),
+        "life_notice": ("生活通知", "暮らしのお知らせ", "local life notice"),
+        "public_safety": ("公共安全", "安全情報", "public safety update"),
+        "travel": ("旅行出行", "旅行・おでかけ", "travel update"),
+    }
+    zh, ja, en = labels.get(_normalize_news_category(category), ("城市快讯", "ローカルニュース", "local news"))
+    if language == "ja":
+        return ja
+    if language == "en":
+        return en
+    return zh
+
+
+def _editorial_quality_issues(body: str, language: str) -> list[str]:
+    text = re.sub(r"\s+", " ", body or "").strip()
+    if language == "en":
+        if len(re.findall(r"\b\w+\b", text)) < 420:
+            return ["too_short"]
+    elif len(text) < 650:
+        return ["too_short"]
+    headings = len(re.findall(r"(^|\n)\s*(一、|二、|三、|四、|五、|六、|#{1,3}\s+|[0-9]+\.\s+)", body or ""))
+    if headings < 4:
+        return ["not_enough_sections"]
+    banned = ("作为一个 AI", "高效便捷", "全方位", "优质服务", "宝藏平台", "震惊", "不看后悔")
+    found = [word for word in banned if word in (body or "")]
+    return [f"banned:{word}" for word in found]
+
+
+def _editorial_longform_from_source(
+    *, language: str, city: str, category: str, source_name: str, source_url: str,
+    title: str, summary: str, published_at: str | None = None, admin_notes: str = "",
+) -> dict[str, Any]:
+    """Rule-based long-form draft used when no external AI key is present.
+    It expands only from public metadata and practical checklists; it never
+    invents facts, copies article text, or impersonates a normal user."""
+    lang = _normalize_news_language(language)
+    city_label = _news_city_label(city, lang)
+    category_label = _news_category_label(category, lang)
+    source = source_name or "Machi Local Desk"
+    original = source_url or ""
+    source_summary = _news_clean_text(summary or title, 700)
+    source_title = _news_clean_text(title or category_label, 160)
+    source_date = published_at or ""
+    risk = _risk_level_for_category(_normalize_news_category(category))
+    disclaimer_zh = "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。"
+    if lang == "ja":
+        body = (
+            f"{city_label}で暮らす人向けに、Machi編集部が「{source_title}」を公開情報から整理しました。"
+            f"出典は {source} です。内容は生活、通勤、通学、手続き、週末の予定に影響する可能性があるため、"
+            "本文では断定しすぎず、確認すべきポイントを中心にまとめます。\n\n"
+            f"一、まず確認したいこと\n{source_summary}\n\nこの情報は、対象地域、期間、対象者によって受け取り方が変わります。"
+            "自分の住んでいる区市町村、通勤・通学経路、利用しているサービスに関係があるかを先に確認してください。"
+            "日付が古い情報を見て判断しないよう、公開元ページの更新日時も見ておくと安心です。\n\n"
+            "二、暮らしのどこに影響しそうか\n通勤や通学、区役所での手続き、買い物、週末の外出、家族との連絡など、"
+            "影響が出やすい場面を書き出しておくと行動しやすくなります。特に天気、防災、交通、在留、行政手続きに関する情報は、"
+            "少し早めに確認するだけで当日の焦りを減らせます。\n\n"
+            "三、今日できる準備\n公式ページを保存し、必要なら翻訳して要点をメモします。交通系なら代替ルート、行政手続きなら必要書類、"
+            "イベントなら開催可否と場所、防災情報なら避難場所や連絡手段を確認してください。友人や同居人と共有する場合も、"
+            "元リンクを一緒に送ると誤解が少なくなります。\n\n"
+            "四、注意したい読み方\nSNSの短い投稿だけで判断せず、必ず公開元の説明を見てください。内容が高リスク分野の場合、"
+            "Machi編集部は生活者目線で整理しますが、最終判断は公式情報に基づいてください。条件、対象者、期間が変わることがあります。\n\n"
+            f"五、Machi編集部メモ\n{admin_notes or '日本で暮らす人にとって、こうした小さな更新は日常の予定に直結します。気になった情報は保存し、必要な人に早めに共有してください。'}\n\n"
+            f"出典：{source}\n原文：{original}\n{disclaimer_zh}"
+        )
+        out_title = source_title if len(source_title) > 12 else f"{city_label}の暮らしで確認したい{category_label}"
+        out_summary = f"{city_label}の{category_label}について、公開元情報をもとに生活者目線で確認ポイントを整理しました。"
+    elif lang == "en":
+        body = (
+            f"Machi Local Desk reviewed the public update “{source_title}” from {source} for people living, studying, working, or traveling in {city_label}. "
+            "This is not a copy of the source article and it is not a personal experience post. It is a practical reading guide so you can decide whether the update matters to your day.\n\n"
+            f"1. Start with the source context\n{source_summary}\n\nBefore acting on the update, check who it applies to, where it applies, and whether the timing still matches the latest official page. "
+            "Local notices can change quickly, especially for transport, weather, public safety, city procedures, visa-related information, and events. Save the original link so you can return to it later.\n\n"
+            "2. Where it may touch daily life\nThink through your commute, school schedule, workplace plans, city-office errands, housing arrangements, weekend trips, and family communication. "
+            "Even a small local update can matter if it affects a train line you use, an office you need to visit, a deadline, or an outdoor plan. If the update is not relevant to you today, it may still be useful to someone in your circle.\n\n"
+            "3. What to do next\nOpen the official page, check the publication date, and look for any concrete action: documents to prepare, routes to avoid, hours to confirm, application windows, safety instructions, or contact points. "
+            "For transport and weather updates, prepare a backup route or time buffer. For administrative updates, compare the requirement with your own status before making a decision.\n\n"
+            "4. Read carefully, especially for high-risk topics\nDo not rely only on screenshots or short social posts. If the topic involves safety, immigration, health, money, law, disasters, or public services, treat this Machi post as a starting point and verify details from the official source. "
+            "Conditions, eligibility, dates, and locations can change after the first announcement.\n\n"
+            f"5. Editor's note\n{admin_notes or 'For city life, the useful habit is not reading every notice. It is knowing which source to trust, which details to check, and when to share the update with someone who may need it.'}\n\n"
+            f"Source: {source}\nOriginal: {original}\nMachi Local Desk summarized this update from public sources. Please check the official source for the latest details."
+        )
+        out_title = source_title if len(source_title) > 12 else f"What to check in {city_label}: {category_label}"
+        out_summary = f"A practical {city_label} guide to this {category_label}, with source checks and next steps for local life."
+    else:
+        body = (
+            f"如果你最近在 {city_label} 生活、通勤、上学、找房、办手续或安排周末出门，这条来自「{source}」的公开信息可以先留意一下。"
+            f"Machi 编辑部不会把它写成普通用户体验，也不会复制原文全文；下面只根据公开标题、摘要和来源链接，把和城市生活有关的检查点整理出来。\n\n"
+            f"一、先看这条信息和谁有关\n{source_summary}\n\n这类{category_label}信息最容易被忽略的地方，是它通常只影响一部分人：某个城市、某条线路、某类手续、某段时间或某些具体场景。"
+            "如果你只看标题，很容易误以为和自己无关，或者反过来被过度提醒。建议先确认三件事：地区是否包含你所在的位置，时间是否还有效，适用对象是否和你的身份或计划有关。\n\n"
+            "二、它可能影响哪些日常场景\n在日本生活，很多小更新会落到很具体的日常里：通勤要不要换路线，区役所或学校材料要不要提前准备，租房搬家是否要确认日期，"
+            "周末活动是否改期，天气和防灾信息是否需要提前联系家人。你不需要把每条资讯都看完，但需要快速判断它会不会影响今天、这一周或接下来一个月的安排。\n\n"
+            "三、建议马上做的几个检查\n第一，打开原始来源，确认发布时间和更新说明。第二，把和自己相关的关键词记下来，比如城市、区名、车站、手续名称、日期和联系方式。"
+            "第三，如果涉及出行，提前准备一条替代路线；如果涉及行政或在留，先核对自己的材料和期限；如果是活动或生活通知，确认是否需要预约、是否有变更或取消说明。\n\n"
+            "四、不要只依赖截图和二手转述\n高风险内容尤其要谨慎。天气、地震、台风、在留、政策、公共安全、医疗和金钱相关信息，都不适合只看社交媒体上的一句话总结。"
+            "Machi 可以帮你把公开信息整理成更容易阅读的生活提醒，但最终仍然要以官方来源、主办方或服务提供方的最新说明为准。\n\n"
+            f"五、适合哪些人收藏\n刚到 {city_label} 的留学生、正在找房或搬家的人、每天跨区通勤的人、需要处理手续的在留人群、带家人一起生活的人，都可以把这类信息当作日常检查清单的一部分。"
+            "如果你身边有人正好住在相关区域，也可以把原始链接一起转发给对方，避免只转述造成误解。\n\n"
+            f"六、Machi 编辑部提示\n{admin_notes or '城市生活里真正有用的信息，往往不是一句“有事发生了”，而是你知道下一步该查什么、该问谁、该如何避免临时慌乱。'}\n\n"
+            f"来源：{source}\n原文：{original}\n{disclaimer_zh}"
+        )
+        out_title = source_title if len(source_title) > 12 else f"{city_label}生活提醒：这条{category_label}建议先确认"
+        out_summary = f"Machi 编辑部根据公开来源整理了 {city_label} 的{category_label}信息，并补充生活场景、检查步骤和注意事项。"
+    tags = [
+        _normalize_news_category(category),
+        _normalize_news_city(city) or "japan",
+        "machi-local-desk",
+        "life-guide",
+    ]
+    return {
+        "title": out_title[:140],
+        "summary": out_summary[:360],
+        "body": body,
+        "tags": [t for t in tags if t],
+        "category": _normalize_news_category(category),
+        "risk_level": risk,
+        "city_relevance": "high" if _normalize_news_city(city) else "medium",
+        "source_note": f"{source} / {source_date}".strip(" /"),
+        "editorial_disclaimer": disclaimer_zh,
+        "quality_issues": _editorial_quality_issues(body, lang),
+    }
 
 
 def _local_name(tag: str) -> str:
@@ -4809,9 +5190,15 @@ def serialize_news_source(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         **d,
         "is_active": bool(d.get("is_active", 0)),
         "require_manual_review": bool(d.get("require_manual_review", 1)),
+        "auto_create_draft": bool(d.get("auto_create_draft", 0)),
+        "official_auto_publish": bool(d.get("official_auto_publish", 0)),
         "crawl_interval_minutes": int(d.get("crawl_interval_minutes") or 0),
-        "max_items_per_run": int(d.get("max_items_per_run") or 20),
-        "request_timeout_ms": int(d.get("request_timeout_ms") or 10000),
+        "max_items_per_run": int(d.get("max_items_per_run") or 30),
+        "request_timeout_ms": int(d.get("request_timeout_ms") or 15000),
+        "last_fetched_count": int(d.get("last_fetched_count") or 0),
+        "last_new_count": int(d.get("last_new_count") or 0),
+        "last_duplicate_count": int(d.get("last_duplicate_count") or 0),
+        "last_error_count": int(d.get("last_error_count") or 0),
         "allowed_domain": d.get("allowed_domain") or normalize_allowed_domain(d),
         "crawl_strategy": d.get("crawl_strategy") or _normalize_crawl_strategy("", d.get("source_type") or "manual"),
         "deleted": bool(d.get("deleted_at")),
@@ -4875,6 +5262,7 @@ def serialize_editorial_post(conn: sqlite3.Connection, row: sqlite3.Row | dict[s
         "click_source_count": int(d.get("click_source_count") or 0),
         "risk_level": d.get("risk_level") or _risk_level_for_category(str(d.get("category") or "")),
         "official_source_required": bool(d.get("official_source_required", 0)),
+        "is_demo": bool(d.get("is_demo", 0)),
     }
 
 
@@ -4907,6 +5295,12 @@ def fetch_news_source(conn: sqlite3.Connection, source_id: str, admin_id: str = 
     fetched_count = new_count = duplicate_count = error_count = 0
     error_message = ""
     skipped_reason = ""
+    robots_status = ""
+    http_status: int | None = None
+    parser_status = ""
+    duration_ms = 0
+    created_draft_count = 0
+    published_count = 0
     try:
         # Network I/O must NOT hold the global write lock, or every other
         # writer (login, posting, …) blocks for the entire crawl. Drop the
@@ -4915,6 +5309,10 @@ def fetch_news_source(conn: sqlite3.Connection, source_id: str, admin_id: str = 
             crawl_result = crawl_source(source, force=force)
         status = crawl_result.status
         skipped_reason = crawl_result.skipped_reason
+        robots_status = crawl_result.robots_status
+        http_status = crawl_result.http_status
+        parser_status = crawl_result.parser_status
+        duration_ms = crawl_result.duration_ms
         fetched_count = crawl_result.fetched_count or len(crawl_result.items)
         for item in crawl_result.items:
             title = _news_clean_text(item.title, 300)
@@ -4928,10 +5326,14 @@ def fetch_news_source(conn: sqlite3.Connection, source_id: str, admin_id: str = 
                 SELECT id FROM news_items
                  WHERE source_id = ?
                    AND status != 'deleted'
-                   AND ((original_url <> '' AND original_url = ?) OR hash_key = ?)
+                   AND (
+                        (original_url <> '' AND original_url = ?)
+                        OR hash_key = ?
+                        OR (LOWER(original_title) = LOWER(?) AND COALESCE(published_at, '') = COALESCE(?, ''))
+                   )
                  LIMIT 1
                 """,
-                (source["id"], original_url, hash_key),
+                (source["id"], original_url, hash_key, title, published_at or ""),
             ).fetchone()
             if duplicate:
                 duplicate_count += 1
@@ -4956,6 +5358,29 @@ def fetch_news_source(conn: sqlite3.Connection, source_id: str, admin_id: str = 
                     ),
                 )
                 new_count += 1
+                if source.get("auto_create_draft"):
+                    try:
+                        post = _draft_from_news_item(conn, item_id, admin_id or source.get("created_by_admin_id") or "")
+                        created_draft_count += 1
+                        if source.get("official_auto_publish") and source.get("credibility_level") == "official":
+                            fresh_post = dict(conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post["id"],)).fetchone())
+                            required_ok = all(str(fresh_post.get(k) or "").strip() for k in ("title", "summary", "body", "country", "language", "category"))
+                            source_ok = bool(fresh_post.get("source_name") and (fresh_post.get("original_url") or fresh_post.get("source_url")))
+                            if required_ok and source_ok:
+                                stamp = now_iso()
+                                conn.execute(
+                                    """
+                                    UPDATE editorial_posts
+                                       SET status = 'published', review_status = 'approved',
+                                           published_at = COALESCE(published_at, ?), updated_at = ?
+                                     WHERE id = ?
+                                    """,
+                                    (stamp, stamp, post["id"]),
+                                )
+                                published_count += 1
+                    except APIError as draft_exc:
+                        error_count += 1
+                        error_message = (error_message + "; " + str(draft_exc)).strip("; ")
             except sqlite3.IntegrityError:
                 duplicate_count += 1
         if status in {"success", "partial_success", "skipped"}:
@@ -4964,34 +5389,53 @@ def fetch_news_source(conn: sqlite3.Connection, source_id: str, admin_id: str = 
                 UPDATE news_sources
                    SET last_fetched_at = ?, last_success_at = CASE WHEN ? IN ('success','partial_success') THEN ? ELSE last_success_at END,
                        last_error = CASE WHEN ? = 'skipped' THEN last_error ELSE '' END,
+                       last_fetched_count = ?, last_new_count = ?, last_duplicate_count = ?,
+                       last_error_count = ?, last_robots_status = ?, last_http_status = ?,
+                       last_parser_status = ?,
                        updated_at = ?
                  WHERE id = ?
                 """,
-                (now, status, now, status, now, source["id"]),
+                (
+                    now, status, now, status, fetched_count, new_count, duplicate_count,
+                    error_count, robots_status, http_status, parser_status, now, source["id"],
+                ),
             )
     except CrawlerSkipped as exc:
         status = "skipped"
         skipped_reason = exc.code
+        robots_status = exc.code if exc.code.startswith("robots") else robots_status
+        parser_status = "skipped"
         error_message = str(exc)
         conn.execute(
-            "UPDATE news_sources SET last_fetched_at = ?, updated_at = ? WHERE id = ?",
-            (now, now, source["id"]),
+            """
+            UPDATE news_sources
+               SET last_fetched_at = ?, last_error_count = 0, last_robots_status = ?,
+                   last_parser_status = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (now, skipped_reason, "skipped", now, source["id"]),
         )
     except CrawlerError as exc:
         status = exc.status or "failed"
         error_count = 1
         error_message = str(exc)
+        parser_status = getattr(exc, "code", "") or status
         conn.execute(
-            "UPDATE news_sources SET last_fetched_at = ?, last_error = ?, updated_at = ? WHERE id = ?",
-            (now, error_message[:500], now, source["id"]),
+            """
+            UPDATE news_sources
+               SET last_fetched_at = ?, last_error = ?, last_error_count = ?,
+                   last_parser_status = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (now, error_message[:500], error_count, getattr(exc, "code", "") or status, now, source["id"]),
         )
     except Exception as exc:
         status = "failed"
         error_count = 1
         error_message = f"{type(exc).__name__}: {exc}"
         conn.execute(
-            "UPDATE news_sources SET last_fetched_at = ?, last_error = ?, updated_at = ? WHERE id = ?",
-            (now, error_message[:500], now, source["id"]),
+            "UPDATE news_sources SET last_fetched_at = ?, last_error = ?, last_error_count = ?, updated_at = ? WHERE id = ?",
+            (now, error_message[:500], error_count, now, source["id"]),
         )
     finished = now_iso()
     log_id = str(uuid.uuid4())
@@ -4999,17 +5443,23 @@ def fetch_news_source(conn: sqlite3.Connection, source_id: str, admin_id: str = 
         """
         INSERT INTO news_fetch_logs
             (id, source_id, status, fetched_count, new_count, duplicate_count, error_count,
-             error_message, started_at, finished_at, created_at, source_name, skipped_reason)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             error_message, started_at, finished_at, created_at, source_name, skipped_reason,
+             source_url, robots_status, http_status, parser_status, duration_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (log_id, source["id"], status, fetched_count, new_count, duplicate_count,
          error_count, error_message[:1000], started, finished, finished,
-         source.get("name") or "", skipped_reason),
+         source.get("name") or "", skipped_reason, source.get("source_url") or "",
+         robots_status, http_status, parser_status, duration_ms),
     )
     if admin_id:
         log_editorial_action(
             conn, admin_id=admin_id, action="fetch_source", target_type="crawler_source", target_id=source["id"],
-            metadata={"status": status, "new": new_count, "duplicates": duplicate_count, "errors": error_count, "skipped_reason": skipped_reason},
+            metadata={
+                "status": status, "new": new_count, "duplicates": duplicate_count,
+                "errors": error_count, "skipped_reason": skipped_reason,
+                "created_drafts": created_draft_count, "published": published_count,
+            },
         )
     if status == "failed":
         raise APIError(error_message or "抓取失败", 502, "fetch_failed")
@@ -5028,6 +5478,13 @@ def fetch_news_source(conn: sqlite3.Connection, source_id: str, admin_id: str = 
             "finished_at": finished,
             "created_at": finished,
             "source_name": source.get("name") or "",
+            "source_url": source.get("source_url") or "",
+            "robots_status": robots_status,
+            "http_status": http_status,
+            "parser_status": parser_status,
+            "duration_ms": duration_ms,
+            "created_draft_count": created_draft_count,
+            "published_count": published_count,
         }
     }
 
@@ -5057,7 +5514,15 @@ def replace_editorial_tags(conn: sqlite3.Connection, post_id: str, tags: list[st
         )
 
 
-def _draft_from_news_item(conn: sqlite3.Connection, item_id: str, admin_id: str) -> dict[str, Any]:
+def _draft_from_news_item(
+    conn: sqlite3.Connection,
+    item_id: str,
+    admin_id: str,
+    *,
+    target_language: str | None = None,
+    author_display_name: str = "",
+    create_mode: str = "editor_template",
+) -> dict[str, Any]:
     item = conn.execute("SELECT * FROM news_items WHERE id = ?", (item_id,)).fetchone()
     if not item:
         raise APIError("采集内容不存在", 404, "item_not_found")
@@ -5067,14 +5532,39 @@ def _draft_from_news_item(conn: sqlite3.Connection, item_id: str, admin_id: str)
     existing = conn.execute("SELECT * FROM editorial_posts WHERE news_item_id = ? AND status != 'deleted'", (item_id,)).fetchone()
     if existing:
         return serialize_editorial_post(conn, existing)
-    language = _normalize_news_language(item_d.get("original_language"))
-    author = _news_author_display_name(item_d.get("country") or "", item_d.get("city") or "", language, "local_desk")
+    country = item_d.get("country") or ""
+    city = item_d.get("city") or ""
+    language = _normalize_news_language(target_language or item_d.get("original_language"))
+    author_type = _news_author_type_for_scope(country, city)
+    author = _news_clean_text(author_display_name, 80) or _news_author_display_name(country, city, language, author_type)
     title = _news_clean_text(item_d.get("original_title"), 160)
-    summary = _news_clean_text(item_d.get("original_summary"), 500)
-    body_parts = [summary] if summary else []
-    body_parts.append("编辑部会在发布前补充面向本地生活的说明。")
-    category = _normalize_news_category(item_d.get("category"))
-    risk_level = _risk_level_for_category(category)
+    summary = _news_clean_text(item_d.get("original_summary") or title, 500)
+    if create_mode == "summary_only":
+        body = _safe_editorial_body(language, item_d.get("source_name") or "", item_d.get("original_url") or "")
+        generated = {
+            "title": title,
+            "summary": summary,
+            "body": body,
+            "tags": [item_d.get("category") or "local_news", item_d.get("city") or "local"],
+            "category": _normalize_news_category(item_d.get("category")),
+            "risk_level": _risk_level_for_category(_normalize_news_category(item_d.get("category"))),
+        }
+    else:
+        generated = _editorial_longform_from_source(
+            language=language,
+            city=city,
+            category=str(item_d.get("category") or "local_news"),
+            source_name=str(item_d.get("source_name") or ""),
+            source_url=str(item_d.get("original_url") or item_d.get("source_url") or ""),
+            title=title,
+            summary=summary,
+            published_at=item_d.get("published_at"),
+        )
+    title = _news_clean_text(generated.get("title") or title, 160)
+    summary = _news_clean_text(generated.get("summary") or summary, 500)
+    body = str(generated.get("body") or body)
+    category = _normalize_news_category(generated.get("category") or item_d.get("category"))
+    risk_level = str(generated.get("risk_level") or _risk_level_for_category(category))
     source_required = 1 if _source_required_for_category(category) else 0
     post_id = str(uuid.uuid4())
     now = now_iso()
@@ -5084,52 +5574,54 @@ def _draft_from_news_item(conn: sqlite3.Connection, item_id: str, admin_id: str)
             (id, news_item_id, author_type, author_display_name, country, city, language,
              category, title, summary, body, source_name, source_url, original_url,
              source_published_at, status, review_status, risk_level, official_source_required,
-             created_by_admin_id, created_at, updated_at)
-        VALUES (?, ?, 'local_desk', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'needs_review', ?, ?, ?, ?, ?)
+             is_ai_assisted, ai_model, ai_prompt_version, created_by_admin_id, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'needs_review', ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
-            post_id, item_id, author, item_d.get("country") or "", item_d.get("city") or "",
-            language, category, title, summary,
-            "\n\n".join(body_parts), item_d.get("source_name"), item_d.get("source_url"),
+            post_id, item_id, author_type, author, country, city,
+            language, category, title, summary, body, item_d.get("source_name"), item_d.get("source_url"),
             item_d.get("original_url"), item_d.get("published_at"), risk_level, source_required,
+            0 if create_mode == "summary_only" else 1,
+            "" if create_mode == "summary_only" else "local_news_desk_rule_assist_v2",
+            "" if create_mode == "summary_only" else NEWS_DESK_PROMPT_VERSION,
             admin_id, now, now,
         ),
     )
     conn.execute("UPDATE news_items SET status = 'draft_created', updated_at = ? WHERE id = ?", (now, item_id))
-    replace_editorial_tags(conn, post_id, [item_d.get("category") or "local_news", item_d.get("city") or "local"])
+    replace_editorial_tags(conn, post_id, _editorial_tags_from_payload(generated.get("tags")))
     log_editorial_action(conn, admin_id=admin_id, action="create_draft", target_type="editorial_post", target_id=post_id, metadata={"news_item_id": item_id})
     fresh = conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone()
     return serialize_editorial_post(conn, fresh)
 
 
 def _local_news_assist(post: dict[str, Any], task: str, language: str, extra_note: str = "") -> dict[str, Any]:
-    source_name = post.get("source_name") or "the source"
     title = _news_clean_text(post.get("title"), 180)
     summary = _news_clean_text(post.get("summary") or post.get("body"), 420)
-    if language == "ja":
-        assisted_summary = f"{source_name} の公開情報によると、「{title}」に関する更新があります。生活への影響や必要な手続きは、公開元のリンクで確認してください。"
-        tone_body = f"{assisted_summary}\n\nMachi ローカルデスクは、公開されている概要とリンクをもとに整理しています。詳細は必ず公式情報をご確認ください。"
-    elif language == "en":
-        assisted_summary = f"{source_name} published an update about “{title}”. Check the original source for full details, timing, and any actions that may affect local life."
-        tone_body = f"{assisted_summary}\n\nMachi Local Desk summarizes public metadata and source links only. Please confirm details with the official source."
-    else:
-        assisted_summary = f"{source_name} 发布了与「{title}」相关的公开更新。建议关注时间、适用范围，以及是否会影响出行、手续或日常安排。"
-        tone_body = f"{assisted_summary}\n\nMachi 本地资讯台仅根据公开标题、摘要和来源链接整理，具体内容请以原始来源为准。"
-    if summary:
-        tone_body = f"{tone_body}\n\n来源摘要：{summary}"
-    if extra_note:
-        tone_body = f"{tone_body}\n\n编辑补充：{_news_clean_text(extra_note, 500)}"
-    tags = [post.get("category") or "local_news", post.get("city") or "local", "machi-local-desk"]
+    generated = _editorial_longform_from_source(
+        language=language,
+        city=str(post.get("city") or ""),
+        category=str(post.get("category") or "local_news"),
+        source_name=str(post.get("source_name") or "Machi Local Desk"),
+        source_url=str(post.get("original_url") or post.get("source_url") or ""),
+        title=title,
+        summary=summary,
+        published_at=post.get("source_published_at") or post.get("published_at"),
+        admin_notes=extra_note,
+    )
     return {
-        "summary": assisted_summary,
-        "body": tone_body,
-        "title_options": [title, f"本地提醒：{title}"[:120], f"Machi Local Desk: {title}"[:120]],
-        "tags": [str(t).lower() for t in tags if t],
-        "category": _normalize_news_category(post.get("category")),
+        "summary": generated["summary"],
+        "body": generated["body"],
+        "title_options": [generated["title"], title, f"Machi Local Desk: {title}"[:120]],
+        "tags": generated["tags"],
+        "category": generated["category"],
         "city": post.get("city") or "",
         "task": task or "rewrite",
         "prompt_version": NEWS_DESK_PROMPT_VERSION,
-        "model": "local_news_desk_rule_assist_v1",
+        "model": "local_news_desk_rule_assist_v2",
+        "risk_level": generated["risk_level"],
+        "sourceNote": generated["source_note"],
+        "editorialDisclaimer": generated["editorial_disclaimer"],
+        "quality": {"issues": generated["quality_issues"], "passed": not generated["quality_issues"]},
     }
 
 
@@ -5196,7 +5688,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
-        self.send_json({"error": {"code": code, "message": message}}, status)
+        self.send_json({
+            "success": False,
+            "ok": False,
+            "code": code,
+            "message": message,
+            "error": {"code": code, "message": message},
+        }, status)
 
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -5259,10 +5757,10 @@ class Handler(BaseHTTPRequestHandler):
     def require_user(self, conn: sqlite3.Connection) -> dict[str, Any]:
         session = self.current_session(conn)
         if not session:
-            raise APIError("login required", 401, "unauthorized")
+            raise APIError("请登录后继续", 401, "AUTH_REQUIRED")
         user = conn.execute("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL", (session["user_id"],)).fetchone()
         if not user:
-            raise APIError("login required", 401, "unauthorized")
+            raise APIError("请登录后继续", 401, "AUTH_REQUIRED")
         return dict(user)
 
     def require_admin(self, conn: sqlite3.Connection) -> dict[str, Any]:
@@ -5564,12 +6062,12 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("抓取间隔不合法", 400, "invalid_interval")
         interval = max(30, min(interval, 24 * 60))
         try:
-            max_items = int(data.get("max_items_per_run", existing.get("max_items_per_run", 20)) or 20)
+            max_items = int(data.get("max_items_per_run", existing.get("max_items_per_run", 30)) or 30)
         except (TypeError, ValueError):
             raise APIError("每次最大抓取数量不合法", 400, "invalid_max_items")
         max_items = max(1, min(max_items, 50))
         try:
-            timeout_ms = int(data.get("request_timeout_ms", existing.get("request_timeout_ms", 10000)) or 10000)
+            timeout_ms = int(data.get("request_timeout_ms", existing.get("request_timeout_ms", 15000)) or 15000)
         except (TypeError, ValueError):
             raise APIError("请求超时时间不合法", 400, "invalid_timeout")
         timeout_ms = max(1000, min(timeout_ms, 30000))
@@ -5602,6 +6100,8 @@ class Handler(BaseHTTPRequestHandler):
             "request_timeout_ms": timeout_ms,
             "is_active": 1 if data.get("is_active", is_active_default) else 0,
             "require_manual_review": 1 if data.get("require_manual_review", existing.get("require_manual_review", True)) else 0,
+            "auto_create_draft": 1 if data.get("auto_create_draft", existing.get("auto_create_draft", False)) else 0,
+            "official_auto_publish": 1 if data.get("official_auto_publish", existing.get("official_auto_publish", False)) else 0,
         }
 
     def api_admin_news_desk(self, conn: sqlite3.Connection) -> None:
@@ -5615,7 +6115,15 @@ class Handler(BaseHTTPRequestHandler):
             "pending_drafts": conn.execute("SELECT COUNT(*) AS c FROM editorial_posts WHERE status IN ('draft','pending_review')").fetchone()["c"],
             "published": conn.execute("SELECT COUNT(*) AS c FROM editorial_posts WHERE status = 'published'").fetchone()["c"],
             "failed_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND last_error <> ''").fetchone()["c"],
+            "sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL").fetchone()["c"],
+            "active_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND is_active = 1").fetchone()["c"],
         }
+        if stats["published"] == 0 and stats["pending_drafts"]:
+            stats["diagnostic_hint"] = "已有草稿，尚未发布。"
+        elif stats["published"] == 0 and stats["pending_items"]:
+            stats["diagnostic_hint"] = "已有采集内容，尚未创建草稿。"
+        elif stats["published"] == 0:
+            stats["diagnostic_hint"] = "暂无本地资讯。请在后台抓取并发布内容。"
         recent_posts = [
             serialize_editorial_post(conn, r)
             for r in conn.execute(
@@ -5663,6 +6171,14 @@ class Handler(BaseHTTPRequestHandler):
         ]
         self.send_json({"source": serialize_news_source(row), "recent_logs": logs})
 
+    def api_admin_seed_news_source_presets(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        ensure_news_source_presets(conn)
+        total = conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND country = ?", ("jp",)).fetchone()["c"]
+        active = conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND country = ? AND is_active = 1", ("jp",)).fetchone()["c"]
+        log_editorial_action(conn, admin_id=admin["id"], action="seed_japan_sources", target_type="crawler_source", target_id="jp", metadata={"total": int(total), "active": int(active)})
+        self.send_json({"total": int(total), "active": int(active)})
+
     def api_admin_create_news_source(self, conn: sqlite3.Connection) -> None:
         admin = self.require_admin(conn)
         cleaned = self._clean_news_source_payload(self.read_json())
@@ -5676,8 +6192,9 @@ class Handler(BaseHTTPRequestHandler):
                  crawl_strategy, list_selector, item_selector, title_selector, link_selector,
                  summary_selector, date_selector, date_format, timezone, robots_policy,
                  crawl_interval_minutes, max_items_per_run, request_timeout_ms, is_active,
-                 require_manual_review, created_by_admin_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 require_manual_review, auto_create_draft, official_auto_publish,
+                 created_by_admin_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 source_id, cleaned["name"], cleaned["source_key"], cleaned["source_type"],
@@ -5688,7 +6205,8 @@ class Handler(BaseHTTPRequestHandler):
                 cleaned["link_selector"], cleaned["summary_selector"], cleaned["date_selector"],
                 cleaned["date_format"], cleaned["timezone"], cleaned["robots_policy"],
                 cleaned["crawl_interval_minutes"], cleaned["max_items_per_run"], cleaned["request_timeout_ms"],
-                cleaned["is_active"], cleaned["require_manual_review"], admin["id"], now, now,
+                cleaned["is_active"], cleaned["require_manual_review"], cleaned["auto_create_draft"],
+                cleaned["official_auto_publish"], admin["id"], now, now,
             ),
         )
         log_editorial_action(conn, admin_id=admin["id"], action="create_source", target_type="crawler_source", target_id=source_id)
@@ -5709,7 +6227,8 @@ class Handler(BaseHTTPRequestHandler):
                    list_selector = ?, item_selector = ?, title_selector = ?, link_selector = ?,
                    summary_selector = ?, date_selector = ?, date_format = ?, timezone = ?,
                    robots_policy = ?, crawl_interval_minutes = ?, max_items_per_run = ?,
-                   request_timeout_ms = ?, is_active = ?, require_manual_review = ?, updated_at = ?
+                   request_timeout_ms = ?, is_active = ?, require_manual_review = ?,
+                   auto_create_draft = ?, official_auto_publish = ?, updated_at = ?
              WHERE id = ?
             """,
             (
@@ -5721,7 +6240,8 @@ class Handler(BaseHTTPRequestHandler):
                 cleaned["summary_selector"], cleaned["date_selector"], cleaned["date_format"],
                 cleaned["timezone"], cleaned["robots_policy"], cleaned["crawl_interval_minutes"],
                 cleaned["max_items_per_run"], cleaned["request_timeout_ms"], cleaned["is_active"],
-                cleaned["require_manual_review"], now_iso(), source_id,
+                cleaned["require_manual_review"], cleaned["auto_create_draft"],
+                cleaned["official_auto_publish"], now_iso(), source_id,
             ),
         )
         log_editorial_action(conn, admin_id=admin["id"], action="update_source", target_type="crawler_source", target_id=source_id)
@@ -5764,6 +6284,71 @@ class Handler(BaseHTTPRequestHandler):
                 results.append({"source_id": row["id"], "status": "failed", "error_message": str(exc)})
         self.send_json({"items": results})
 
+    def api_admin_fetch_japan_all_news_sources(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        rows = [
+            dict(r) for r in conn.execute(
+                """
+                SELECT id, name, allowed_domain, source_url, homepage_url
+                  FROM news_sources
+                 WHERE is_active = 1 AND deleted_at IS NULL AND country = ?
+                 ORDER BY updated_at DESC
+                """,
+                ("jp",),
+            )
+        ]
+        domain_locks: dict[str, threading.Semaphore] = {}
+        for row in rows:
+            domain = normalize_allowed_domain(row) or row["id"]
+            domain_locks.setdefault(domain, threading.Semaphore(NEWS_CRAWLER_PER_DOMAIN_CONCURRENCY))
+
+        def _run(row: dict[str, Any]) -> dict[str, Any]:
+            domain = normalize_allowed_domain(row) or row["id"]
+            with domain_locks[domain]:
+                try:
+                    with DB_LOCK, db() as worker_conn:
+                        return fetch_news_source(worker_conn, row["id"], admin_id=admin["id"], force=False)["log"]
+                except APIError as exc:
+                    return {
+                        "source_id": row["id"],
+                        "source_name": row.get("name") or "",
+                        "status": "failed",
+                        "fetched_count": 0,
+                        "new_count": 0,
+                        "duplicate_count": 0,
+                        "error_count": 1,
+                        "error_message": str(exc),
+                    }
+
+        logs: list[dict[str, Any]] = []
+        if rows:
+            # Each _run worker acquires DB_LOCK for its own writes. This
+            # request thread is itself a write request holding DB_LOCK, and
+            # it then blocks in as_completed() waiting for those workers — so
+            # if we kept the lock here the workers and this thread would
+            # deadlock (the bug that wedged the entire backend: 87 threads
+            # stuck on DB_LOCK). Drop the lock for the parallel section; it's
+            # re-acquired on exit for the log write below.
+            with _DBLockReleased():
+                with ThreadPoolExecutor(max_workers=NEWS_CRAWLER_MAX_CONCURRENCY) as pool:
+                    futures = [pool.submit(_run, row) for row in rows]
+                    for future in as_completed(futures):
+                        logs.append(future.result())
+        success_sources = sum(1 for log in logs if str(log.get("status")) in {"success", "partial_success", "skipped"})
+        failed_sources = sum(1 for log in logs if str(log.get("status")) == "failed")
+        result = {
+            "total_sources": len(rows),
+            "success_sources": success_sources,
+            "failed_sources": failed_sources,
+            "fetched_count": sum(int(log.get("fetched_count") or 0) for log in logs),
+            "new_count": sum(int(log.get("new_count") or 0) for log in logs),
+            "duplicate_count": sum(int(log.get("duplicate_count") or 0) for log in logs),
+            "error_count": sum(int(log.get("error_count") or 0) for log in logs),
+            "logs": logs,
+        }
+        log_editorial_action(conn, admin_id=admin["id"], action="fetch_japan_all", target_type="crawler_batch", target_id="jp", metadata=result)
+        self.send_json(result)
+
     def api_admin_news_items(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
         status_filter = (query.get("status") or "").strip()
@@ -5800,6 +6385,30 @@ class Handler(BaseHTTPRequestHandler):
     def api_admin_create_draft_from_news_item(self, conn: sqlite3.Connection, item_id: str) -> None:
         admin = self.require_admin(conn)
         self.send_json({"post": _draft_from_news_item(conn, item_id, admin["id"])}, 201)
+
+    def api_admin_create_drafts_from_news_items(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        item_ids = data.get("itemIds") or data.get("item_ids") or []
+        if not isinstance(item_ids, list) or not item_ids:
+            raise APIError("请选择采集内容", 400, "item_ids_required")
+        target_language = str(data.get("targetLanguage") or data.get("target_language") or "").strip() or None
+        author = _news_clean_text(data.get("authorDisplayName") or data.get("author_display_name") or "", 80)
+        create_mode = str(data.get("createMode") or data.get("create_mode") or "editor_template").strip()
+        if create_mode not in {"summary_only", "editor_template"}:
+            create_mode = "editor_template"
+        posts: list[dict[str, Any]] = []
+        errors: list[dict[str, str]] = []
+        for raw_id in item_ids[:100]:
+            item_id = str(raw_id or "").strip()
+            if not item_id:
+                continue
+            try:
+                posts.append(_draft_from_news_item(conn, item_id, admin["id"], target_language=target_language, author_display_name=author, create_mode=create_mode))
+            except APIError as exc:
+                errors.append({"item_id": item_id, "error": str(exc), "code": exc.code})
+        log_editorial_action(conn, admin_id=admin["id"], action="bulk_create_drafts", target_type="crawler_item", target_id="bulk", metadata={"requested": len(item_ids), "created": len(posts), "errors": errors})
+        self.send_json({"items": posts, "created": len(posts), "errors": errors}, 201)
 
     def api_admin_update_news_item_status(self, conn: sqlite3.Connection, item_id: str, status: str) -> None:
         admin = self.require_admin(conn)
@@ -6007,6 +6616,10 @@ class Handler(BaseHTTPRequestHandler):
                 raise APIError("发布前请补齐标题、摘要、正文、国家、语言和分类", 400, "publish_fields_required")
             if post.get("news_item_id") and (not post.get("source_name") or not post.get("original_url")):
                 raise APIError("采集来源文章发布前必须保留来源名称和原文链接", 400, "source_required")
+            if post.get("is_ai_assisted"):
+                issues = _editorial_quality_issues(str(post.get("body") or ""), str(post.get("language") or "zh-CN"))
+                if issues:
+                    raise APIError("内容质量检查未通过：" + ",".join(issues), 400, "quality_check_failed")
             if (post.get("official_source_required") or post.get("category") in HIGH_RISK_NEWS_CATEGORIES) and not (post.get("source_name") and (post.get("original_url") or post.get("source_url"))):
                 raise APIError("高风险内容发布前必须保留官方来源", 400, "official_source_required")
             conn.execute(
@@ -6026,6 +6639,65 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("未知操作", 400, "invalid_action")
         log_editorial_action(conn, admin_id=admin["id"], action=action, target_type="editorial_post", target_id=post_id)
         self.send_json({"post": serialize_editorial_post(conn, conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone())})
+
+    def api_admin_bulk_publish_editorial_posts(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        post_ids = data.get("postIds") or data.get("post_ids") or []
+        confirm_media = bool(data.get("confirmMedia") or data.get("confirm_media"))
+        params: list[Any] = []
+        where = ["p.status IN ('draft','pending_review')"]
+        if isinstance(post_ids, list) and post_ids:
+            clean_ids = [str(x or "").strip() for x in post_ids if str(x or "").strip()][:200]
+            placeholders = ",".join("?" for _ in clean_ids)
+            where.append(f"p.id IN ({placeholders})")
+            params.extend(clean_ids)
+        rows = conn.execute(
+            f"""
+            SELECT p.*, s.credibility_level
+              FROM editorial_posts p
+              LEFT JOIN news_items i ON i.id = p.news_item_id
+              LEFT JOIN news_sources s ON s.id = i.source_id
+             WHERE {' AND '.join(where)}
+             ORDER BY p.updated_at DESC
+             LIMIT 200
+            """,
+            params,
+        ).fetchall()
+        published = 0
+        skipped: list[dict[str, str]] = []
+        now = now_iso()
+        for row in rows:
+            post = dict(row)
+            credibility = post.get("credibility_level") or ("official" if not post.get("news_item_id") else "")
+            if credibility != "official" and not confirm_media:
+                skipped.append({"id": post["id"], "reason": "media_requires_manual_confirmation"})
+                continue
+            required_ok = all(str(post.get(k) or "").strip() for k in ("title", "summary", "body", "country", "language", "category"))
+            source_ok = bool(post.get("source_name") and (post.get("original_url") or post.get("source_url")))
+            if not required_ok or not source_ok:
+                skipped.append({"id": post["id"], "reason": "missing_required_fields_or_source"})
+                continue
+            if post.get("is_ai_assisted"):
+                issues = _editorial_quality_issues(str(post.get("body") or ""), str(post.get("language") or "zh-CN"))
+                if issues:
+                    skipped.append({"id": post["id"], "reason": "quality_check_failed:" + ",".join(issues)})
+                    continue
+            if (post.get("official_source_required") or post.get("category") in HIGH_RISK_NEWS_CATEGORIES) and not source_ok:
+                skipped.append({"id": post["id"], "reason": "official_source_required"})
+                continue
+            conn.execute(
+                """
+                UPDATE editorial_posts
+                   SET status = 'published', review_status = 'approved', reviewed_by_admin_id = ?,
+                       reviewed_at = ?, published_at = COALESCE(published_at, ?), updated_at = ?
+                 WHERE id = ?
+                """,
+                (admin["id"], now, now, now, post["id"]),
+            )
+            published += 1
+        log_editorial_action(conn, admin_id=admin["id"], action="bulk_publish", target_type="editorial_post", target_id="bulk", metadata={"published": published, "skipped": skipped})
+        self.send_json({"published": published, "skipped": skipped})
 
     def api_admin_delete_editorial_post(self, conn: sqlite3.Connection, post_id: str) -> None:
         admin = self.require_admin(conn)
@@ -6053,20 +6725,36 @@ class Handler(BaseHTTPRequestHandler):
     def api_news(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
+        viewer_is_admin = False
+        if viewer_id:
+            user_row = conn.execute("SELECT role FROM users WHERE id = ?", (viewer_id,)).fetchone()
+            viewer_is_admin = bool(user_row and user_row["role"] == "admin")
         where = ["status = 'published'"]
         params: list[Any] = []
-        for key in ("country", "city", "language", "category"):
-            value = (query.get(key) or "").strip()
-            if value:
-                where.append(f"{key} = ?")
-                if key == "country":
-                    params.append(_normalize_news_country(value))
-                elif key == "city":
-                    params.append(_normalize_news_city(value))
-                elif key == "category":
-                    params.append(_normalize_news_category(value))
-                elif key == "language":
-                    params.append(_normalize_news_language(value))
+        country = (query.get("country") or "").strip()
+        if country:
+            where.append("country = ?")
+            params.append(_normalize_news_country(country))
+        city_raw = (query.get("city") or "").strip()
+        if city_raw:
+            city = _normalize_news_city(city_raw)
+            if city:
+                where.append("city IN (?, '')")
+                params.append(city)
+            else:
+                where.append("city = ''")
+        language_raw = (query.get("language") or "").strip()
+        if language_raw and language_raw.lower() != "all":
+            where.append("language = ?")
+            params.append(_normalize_news_language(language_raw))
+        category_raw = (query.get("category") or "").strip()
+        if category_raw:
+            category = _normalize_news_category(category_raw)
+            if category == "local_news":
+                where.append("category IN ('local_news','policy_update','life_notice','public_safety','city_event')")
+            else:
+                where.append("category = ?")
+                params.append(category)
         page = max(1, int(query.get("page") or 1))
         limit = max(1, min(int(query.get("limit") or 20), 50))
         sort = (query.get("sort") or "latest").strip()
@@ -6079,7 +6767,18 @@ class Handler(BaseHTTPRequestHandler):
             [*params, limit, (page - 1) * limit],
         ).fetchall()
         total = conn.execute(f"SELECT COUNT(*) AS c FROM editorial_posts WHERE {' AND '.join(where)}", params).fetchone()["c"]
-        self.send_json({"items": [serialize_editorial_post(conn, r, viewer_id) for r in rows], "page": page, "limit": limit, "total": int(total)})
+        payload: dict[str, Any] = {"items": [serialize_editorial_post(conn, r, viewer_id) for r in rows], "page": page, "limit": limit, "total": int(total)}
+        if viewer_is_admin and int(total) == 0:
+            draft_count = conn.execute("SELECT COUNT(*) AS c FROM editorial_posts WHERE status IN ('draft','pending_review')").fetchone()["c"]
+            fetched_count = conn.execute("SELECT COUNT(*) AS c FROM news_items WHERE status = 'fetched'").fetchone()["c"]
+            source_count = conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL").fetchone()["c"]
+            payload["diagnostics"] = {
+                "draft_count": int(draft_count),
+                "fetched_count": int(fetched_count),
+                "source_count": int(source_count),
+                "hint": "已有草稿，尚未发布。" if draft_count else ("已有采集内容，尚未创建草稿。" if fetched_count else "暂无本地资讯。请在后台抓取并发布内容。"),
+            }
+        self.send_json(payload)
 
     def api_news_detail(self, conn: sqlite3.Connection, post_id: str) -> None:
         viewer = self.current_session(conn)
@@ -6296,14 +6995,20 @@ class Handler(BaseHTTPRequestHandler):
         # was the only "write inside a GET" — it's now throttled and
         # batched in memory (see _should_flush_last_seen).
         need_write_lock = method in ("POST", "PATCH", "PUT", "DELETE")
+        lock_held = False
         try:
             if need_write_lock:
-                DB_LOCK.acquire()
+                # Fail fast instead of hanging forever if the lock is wedged
+                # or under sustained contention — a stuck holder can no
+                # longer pile up connections and take the whole site down.
+                if not DB_LOCK.acquire(timeout=DB_WRITE_LOCK_TIMEOUT_SEC):
+                    raise APIError("服务器繁忙，请稍后再试", 503, "server_busy")
+                lock_held = True
             try:
                 with db() as conn:
                     response = self._route(conn, method, path, query)
             finally:
-                if need_write_lock:
+                if lock_held:
                     DB_LOCK.release()
             # The SSE handler defers the long-running stream until after
             # any lock has been released. If the route asked for an
@@ -6383,9 +7088,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_update_me(conn)
         if path == "/api/auth/me" and method == "DELETE":
             return self.api_delete_me(conn)
+        if path == "/api/auth/check-username" and method == "GET":
+            return self.api_check_username(conn, query)
+        if path == "/api/auth/check-email" and method == "GET":
+            return self.api_check_email(conn, query)
         # email verification + password recovery + 2-step login
-        if path == "/api/auth/email/send-code" and method == "POST":
+        if path in ("/api/auth/email/send-code", "/api/auth/send-verification-code") and method == "POST":
             return self.api_send_email_code(conn)
+        if path == "/api/auth/verify-code" and method == "POST":
+            return self.api_verify_code(conn)
         if path == "/api/auth/login/start" and method == "POST":
             return self.api_login_start(conn)
         if path == "/api/auth/login/verify" and method == "POST":
@@ -6402,6 +7113,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_bootstrap(conn)
 
         # users
+        if path == "/api/users/me" and method == "GET":
+            return self.api_me(conn)
+        if path == "/api/users/me" and method == "PATCH":
+            return self.api_update_me(conn)
         if path.startswith("/api/users/"):
             parts = path[len("/api/users/"):].split("/")
             user_id = unquote(parts[0])
@@ -6438,6 +7153,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_feed(conn, query)
 
         # posts
+        if path == "/api/posts" and method == "GET":
+            return self.api_feed(conn, query)
         if path == "/api/posts" and method == "POST":
             return self.api_create_post(conn)
         if path.startswith("/api/posts/"):
@@ -6457,6 +7174,10 @@ class Handler(BaseHTTPRequestHandler):
             if rest == "bookmark" and method == "POST":
                 return self.api_post_interaction(conn, post_id, "bookmark", True)
             if rest == "bookmark" and method == "DELETE":
+                return self.api_post_interaction(conn, post_id, "bookmark", False)
+            if rest == "save" and method == "POST":
+                return self.api_post_interaction(conn, post_id, "bookmark", True)
+            if rest == "save" and method == "DELETE":
                 return self.api_post_interaction(conn, post_id, "bookmark", False)
             if rest == "repost" and method == "POST":
                 return self.api_repost(conn, post_id, True)
@@ -6496,9 +7217,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_clear_search_history(conn)
         if path == "/api/trending" and method == "GET":
             return self.api_trending(conn)
+        if path == "/api/topics" and method == "GET":
+            return self.api_topics(conn)
         if path.startswith("/api/topics/") and method == "GET":
             tag = unquote(path[len("/api/topics/"):])
             return self.api_topic(conn, tag, query)
+        if path.startswith("/api/profile/") and method == "GET":
+            username = unquote(path[len("/api/profile/"):]).strip().lstrip("@")
+            return self.api_profile_by_username(conn, username)
 
         # notifications
         if path == "/api/notifications" and method == "GET":
@@ -6645,12 +7371,16 @@ class Handler(BaseHTTPRequestHandler):
         # storage surface while exposing product-specific crawler routes.
         if path == "/api/admin/japan-news-crawler/dashboard" and method == "GET":
             return self.api_admin_news_desk(conn)
+        if path == "/api/admin/japan-news-crawler/fetch-japan-all" and method == "POST":
+            return self.api_admin_fetch_japan_all_news_sources(conn)
         if path == "/api/admin/japan-news-crawler/fetch-all" and method == "POST":
             return self.api_admin_fetch_all_news_sources(conn)
         if path == "/api/admin/japan-news-crawler/sources" and method == "GET":
             return self.api_admin_news_sources(conn, query)
         if path == "/api/admin/japan-news-crawler/sources" and method == "POST":
             return self.api_admin_create_news_source(conn)
+        if path == "/api/admin/japan-news-crawler/sources/seed-presets" and method == "POST":
+            return self.api_admin_seed_news_source_presets(conn)
         if path.startswith("/api/admin/japan-news-crawler/sources/"):
             parts = path.split("/")
             source_id = unquote(parts[5]) if len(parts) > 5 else ""
@@ -6667,6 +7397,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_admin_fetch_news_source(conn, source_id)
         if path == "/api/admin/japan-news-crawler/items" and method == "GET":
             return self.api_admin_news_items(conn, query)
+        if path == "/api/admin/japan-news-crawler/items/create-drafts" and method == "POST":
+            return self.api_admin_create_drafts_from_news_items(conn)
         if path.startswith("/api/admin/japan-news-crawler/items/"):
             parts = path.split("/")
             item_id = unquote(parts[5]) if len(parts) > 5 else ""
@@ -6687,10 +7419,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_news_desk(conn)
         if path == "/api/admin/news-sources/fetch-all" and method == "POST":
             return self.api_admin_fetch_all_news_sources(conn)
+        if path == "/api/admin/news-sources/fetch-japan-all" and method == "POST":
+            return self.api_admin_fetch_japan_all_news_sources(conn)
         if path == "/api/admin/news-sources" and method == "GET":
             return self.api_admin_news_sources(conn, query)
         if path == "/api/admin/news-sources" and method == "POST":
             return self.api_admin_create_news_source(conn)
+        if path == "/api/admin/news-sources/seed-presets" and method == "POST":
+            return self.api_admin_seed_news_source_presets(conn)
         if path.startswith("/api/admin/news-sources/"):
             parts = path.split("/")
             source_id = unquote(parts[4]) if len(parts) > 4 else ""
@@ -6707,6 +7443,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_admin_fetch_news_source(conn, source_id)
         if path == "/api/admin/news-items" and method == "GET":
             return self.api_admin_news_items(conn, query)
+        if path == "/api/admin/news-items/create-drafts" and method == "POST":
+            return self.api_admin_create_drafts_from_news_items(conn)
         if path.startswith("/api/admin/news-items/"):
             parts = path.split("/")
             item_id = unquote(parts[4]) if len(parts) > 4 else ""
@@ -6723,6 +7461,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_editorial_posts(conn, query)
         if path == "/api/admin/editorial-posts" and method == "POST":
             return self.api_admin_create_editorial_post(conn)
+        if path == "/api/admin/editorial-posts/bulk-publish" and method == "POST":
+            return self.api_admin_bulk_publish_editorial_posts(conn)
         if path.startswith("/api/admin/editorial-posts/"):
             parts = path.split("/")
             editorial_id = unquote(parts[4]) if len(parts) > 4 else ""
@@ -6761,8 +7501,14 @@ class Handler(BaseHTTPRequestHandler):
         # membership + payments
         if path == "/api/membership/me" and method == "GET":
             return self.api_membership_me(conn)
-        if path == "/api/membership/plan" and method == "GET":
+        if path in ("/api/membership/plan", "/api/membership/plans") and method == "GET":
             return self.api_membership_plan(conn)
+        if path == "/api/membership/benefits" and method == "GET":
+            return self.api_membership_benefits(conn)
+        if path == "/api/membership/exclusive" and method == "GET":
+            return self.api_membership_exclusive(conn)
+        if path == "/api/membership/orders" and method == "GET":
+            return self.api_membership_orders(conn, query)
         if path == "/api/membership/insights" and method == "GET":
             return self.api_membership_insights(conn)
         if path == "/api/payments/create-order" and method == "POST":
@@ -6800,16 +7546,79 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- membership + payments ----
 
+    def _membership_benefits_payload(self) -> list[dict[str, str]]:
+        return [
+            {"key": "verified_badge", "title": "Machi 认证标识", "description": "个人主页和内容卡片展示 Machi 自有认证会员标识。"},
+            {"key": "trusted_publish", "title": "高信任内容发布", "description": "可发布招聘、租房、本地服务、活动推广等高信任内容类型。"},
+            {"key": "priority_review", "title": "优先审核", "description": "会员内容进入更高优先级的审核与处理队列。"},
+            {"key": "light_boost", "title": "轻量曝光提升", "description": "合规内容在本地推荐中获得温和曝光加成。"},
+            {"key": "insights", "title": "基础数据洞察", "description": "查看自己内容的浏览、互动、收藏、评论等基础统计。"},
+            {"key": "higher_quota", "title": "更高发帖额度", "description": "每日发布额度和收藏容量高于普通账号。"},
+            {"key": "exclusive", "title": "会员专属内容", "description": "访问编辑部整理的城市指南、租房避坑和本地生活精选。"},
+            {"key": "sync", "title": "Web / iOS 状态同步", "description": "会员状态写入同一套 user_memberships，Web 与 iOS 刷新后保持一致。"},
+        ]
+
     def api_membership_plan(self, conn: sqlite3.Connection) -> None:
         """Public plan info (price + names) for the membership page. No
         auth required so the upsell can render for logged-out visitors."""
         plan = get_plan(conn, MEMBERSHIP_PLAN_KEY)
+        plan_payload = serialize_plan(plan) if plan else None
         self.send_json({
-            "plan": serialize_plan(plan) if plan else None,
+            "plan": plan_payload,
+            "plans": [plan_payload] if plan_payload else [],
+            "items": [plan_payload] if plan_payload else [],
             "requires_membership_content_types": sorted(REQUIRES_VERIFIED_MEMBERSHIP),
             "apple_product_id": APPLE_IAP_PRODUCT_ID,
             "available_providers": available_payment_providers(),
         })
+
+    def api_membership_benefits(self, conn: sqlite3.Connection) -> None:
+        plan = get_plan(conn, MEMBERSHIP_PLAN_KEY)
+        self.send_json({
+            "benefits": self._membership_benefits_payload(),
+            "plan": serialize_plan(plan) if plan else None,
+            "disclaimer": "认证会员表示该账号已开通 Machi 认证权益，不代表 Machi 对其发布内容作出担保。",
+            "requires_membership_content_types": sorted(REQUIRES_VERIFIED_MEMBERSHIP),
+        })
+
+    def api_membership_exclusive(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        status = get_user_membership_status(conn, user["id"])
+        if not status["is_active"]:
+            raise APIError("访问会员专属内容需要开通 Machi 认证会员。", 403, "MEMBERSHIP_REQUIRED")
+        city = _normalize_news_city(user.get("city") or "")
+        country = _normalize_news_country(user.get("country") or "jp") or "jp"
+        params: list[Any] = [country]
+        city_clause = ""
+        if city:
+            city_clause = " AND (city = ? OR city = '')"
+            params.append(city)
+        posts = [
+            serialize_editorial_post(conn, r, user["id"])
+            for r in conn.execute(
+                "SELECT * FROM editorial_posts WHERE status = 'published' AND country = ?" + city_clause +
+                " ORDER BY published_at DESC, created_at DESC LIMIT 12",
+                params,
+            )
+        ]
+        self.send_json({
+            "membership": status,
+            "items": posts,
+            "guides": [
+                {"key": "housing", "title": "租房避坑合集", "description": "看房、初期费用、合同和搬家前后需要确认的事项。"},
+                {"key": "work", "title": "工作招聘发布入口", "description": "会员可发布招聘、打工、引荐等高信任内容。"},
+                {"key": "city", "title": "东京 / 大阪生活指南", "description": "编辑部整理的通勤、区役所、在留、交通和生活提醒。"},
+            ],
+        })
+
+    def api_membership_orders(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        limit = max(1, min(int(query.get("limit") or 30), 100))
+        rows = conn.execute(
+            "SELECT * FROM payment_orders WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+            (user["id"], limit),
+        ).fetchall()
+        self.send_json({"items": [serialize_order(dict(r)) for r in rows]})
 
     def api_membership_insights(self, conn: sqlite3.Connection) -> None:
         """Member-only basic analytics over the caller's own posts:
@@ -7250,6 +8059,74 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- API implementations ----
 
+    def api_check_username(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        raw = query.get("username") or query.get("handle") or ""
+        handle = normalize_handle(raw)
+        if not handle:
+            self.send_json({"available": False, "message": "请输入用户名", "code": "missing_username"})
+            return
+        if not HANDLE_RE.match(handle):
+            self.send_json({"available": False, "message": "用户名必须是 3-20 位字母、数字、下划线或点", "code": "invalid_handle"})
+            return
+        if handle in RESERVED_HANDLES:
+            self.send_json({"available": False, "message": "这个用户名不可使用", "code": "reserved_handle"})
+            return
+        exists = conn.execute("SELECT 1 FROM users WHERE handle = ? AND deleted_at IS NULL", (handle,)).fetchone()
+        self.send_json({
+            "available": exists is None,
+            "message": "这个用户名可以使用" if exists is None else "这个用户名已经被使用",
+            "code": "available" if exists is None else "handle_taken",
+        })
+
+    def api_check_email(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        email = (query.get("email") or "").strip()
+        if not email:
+            self.send_json({"available": False, "message": "请输入邮箱", "code": "missing_email"})
+            return
+        if not is_valid_email(email):
+            self.send_json({"available": False, "message": "邮箱格式不正确", "code": "invalid_email"})
+            return
+        exists = conn.execute(
+            "SELECT 1 FROM users WHERE lower(email) = ? AND deleted_at IS NULL",
+            (email.lower(),),
+        ).fetchone()
+        self.send_json({
+            "available": exists is None,
+            "message": "这个邮箱可以使用" if exists is None else "这个邮箱已经注册过",
+            "code": "available" if exists is None else "email_taken",
+        })
+
+    def api_verify_code(self, conn: sqlite3.Connection) -> None:
+        """Non-consuming code check for clients that want to validate an
+        email-code before submitting registration/reset. Registration and
+        reset still consume the code, so a preflight check cannot burn it."""
+        data = self.read_json()
+        purpose = (data.get("purpose") or "register").strip()
+        email = (data.get("email") or "").strip()
+        code = (data.get("code") or "").strip()
+        if purpose not in ("register", "reset"):
+            raise APIError("不支持的验证码类型", 400, "invalid_purpose")
+        if not is_valid_email(email):
+            raise APIError("请填写有效邮箱", 400, "invalid_email")
+        if not code:
+            raise APIError("请输入验证码", 400, "invalid_code")
+        row = conn.execute(
+            "SELECT * FROM auth_codes WHERE purpose = ? AND email = ? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1",
+            (purpose, email.lower()),
+        ).fetchone()
+        if not row:
+            raise APIError("验证码无效或已过期", 400, "invalid_code")
+        expires = parse_iso(row["expires_at"])
+        if expires and expires < datetime.now(timezone.utc):
+            raise APIError("验证码已过期", 400, "code_expired")
+        if int(row["attempts"] or 0) >= EMAIL_CODE_MAX_ATTEMPTS:
+            raise APIError("尝试次数过多，请重新获取验证码", 429, "too_many_attempts")
+        actual = hash_auth_code(code, row["email"], purpose)
+        if not hmac.compare_digest(row["code_hash"], actual):
+            conn.execute("UPDATE auth_codes SET attempts = attempts + 1 WHERE id = ?", (row["id"],))
+            raise APIError("验证码不正确", 400, "invalid_code")
+        self.send_json({"success": True, "ok": True, "message": "验证码有效"})
+
     def api_register(self, conn: sqlite3.Connection) -> None:
         data = self.read_json()
         handle = normalize_handle(data.get("handle") or data.get("username") or "")
@@ -7257,7 +8134,15 @@ class Handler(BaseHTTPRequestHandler):
         password = data.get("password") or ""
         email = (data.get("email") or "").strip()
         if not HANDLE_RE.match(handle):
-            raise APIError("用户名必须是 2-24 位字母、数字或下划线", 400, "invalid_handle")
+            raise APIError("用户名必须是 3-20 位字母、数字、下划线或点", 400, "invalid_handle")
+        existing_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
+        bootstrap_token = (data.get("bootstrap_token") or "").strip()
+        bootstrap_allowed = (
+            existing_count == 0
+            and (not ADMIN_BOOTSTRAP_TOKEN or (bootstrap_token and hmac.compare_digest(bootstrap_token, ADMIN_BOOTSTRAP_TOKEN)))
+        )
+        if handle in RESERVED_HANDLES and not bootstrap_allowed:
+            raise APIError("这个用户名不可使用", 400, "reserved_handle")
         if len(password) < 6:
             raise APIError("密码至少 6 位", 400, "invalid_password")
         if len(password) > 256:
@@ -7268,6 +8153,8 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("显示名称过长", 400, "invalid_display_name")
         if email and len(email) > 254:
             raise APIError("邮箱过长", 400, "invalid_email")
+        if email and not is_valid_email(email):
+            raise APIError("请填写有效邮箱", 400, "invalid_email")
         # Email verification gate. Enforced when KAIX_REQUIRE_EMAIL_VERIFICATION
         # is on, OR opportunistically whenever the client supplied a `code`
         # (so the hardened Web flow works even before the gate is flipped).
@@ -7281,6 +8168,8 @@ class Handler(BaseHTTPRequestHandler):
             consume_auth_code(conn, purpose="register", email=email, code=submitted_code)
         if conn.execute("SELECT 1 FROM users WHERE handle = ?", (handle,)).fetchone():
             raise APIError("用户名已存在", 409, "handle_taken")
+        if email and conn.execute("SELECT 1 FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email.lower(),)).fetchone():
+            raise APIError("这个邮箱已经注册过", 409, "email_taken")
         country, province, city, region_code, city_label = _normalize_region_payload(data)
         # Admin bootstrapping:
         # - If KAIX_ADMIN_BOOTSTRAP_TOKEN is set, the registration request
@@ -7290,8 +8179,6 @@ class Handler(BaseHTTPRequestHandler):
         #   become admin on a fresh install.
         # - If the env var is empty, fall back to the legacy behaviour
         #   so existing dev / single-operator deploys keep working.
-        existing_count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
-        bootstrap_token = (data.get("bootstrap_token") or "").strip()
         if ADMIN_BOOTSTRAP_TOKEN:
             if bootstrap_token and hmac.compare_digest(bootstrap_token, ADMIN_BOOTSTRAP_TOKEN):
                 role = "admin"
@@ -7544,7 +8431,7 @@ class Handler(BaseHTTPRequestHandler):
         if "handle" in data and data["handle"]:
             new_handle = normalize_handle(data["handle"])
             if not HANDLE_RE.match(new_handle):
-                raise APIError("用户名格式不正确", 400, "invalid_handle")
+                raise APIError("用户名必须是 3-20 位字母、数字、下划线或点", 400, "invalid_handle")
             if conn.execute("SELECT 1 FROM users WHERE handle = ? AND id != ?", (new_handle, user["id"])).fetchone():
                 raise APIError("用户名已存在", 409, "handle_taken")
             updates.append(("handle", new_handle))
@@ -7613,7 +8500,14 @@ class Handler(BaseHTTPRequestHandler):
             "is_following": is_following,
             "is_blocked": is_blocked,
         })
-        self.send_json({"user": payload})
+        viewer_id = viewer["user_id"] if viewer else None
+        self.send_json({"user": payload, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
+
+    def api_profile_by_username(self, conn: sqlite3.Connection, username: str) -> None:
+        handle = normalize_handle(username)
+        if not handle:
+            raise APIError("用户不存在", 404, "user_not_found")
+        return self.api_user_detail(conn, handle)
 
     def _user_posts_query(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str], *, where: str = "") -> tuple[list[dict[str, Any]], str | None]:
         viewer = self.current_session(conn)
@@ -7664,7 +8558,7 @@ class Handler(BaseHTTPRequestHandler):
         for row in rows:
             entry = dict(row)
             comments.append({**serialize_comment(entry), "post": posts_map.get(entry["post_id"])})
-        self.send_json({"items": comments, "next_cursor": None})
+        self.send_json({"items": comments, "next_cursor": None, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
     def api_user_media(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]) -> None:
         posts, next_cursor = self._user_posts_query(
@@ -7787,6 +8681,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_feed(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
+        viewer_payload = {"id": viewer_id} if viewer_id else None
+        can_interact = bool(viewer_id)
         mode = query.get("mode") or "recommend"
         limit = max(1, min(int(query.get("limit") or 20), 50))
         cursor = cursor_decode(query.get("cursor"))
@@ -7845,7 +8741,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if mode == "following":
             if not viewer_id:
-                raise APIError("login required", 401, "unauthorized")
+                raise APIError("请登录后继续", 401, "AUTH_REQUIRED")
             base = """
                 SELECT p.* FROM posts p
                 JOIN follows f ON f.following_id = p.author_id
@@ -7880,7 +8776,7 @@ class Handler(BaseHTTPRequestHandler):
             """
             rows = list(conn.execute(sql, [cutoff_24h, *region_params, *type_params, *blocked_params, VERIFIED_BOOST_SCORE, limit]))
             posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
-            self.send_json({"items": posts, "next_cursor": None, "mode": mode})
+            self.send_json({"items": posts, "next_cursor": None, "mode": mode, "viewer": viewer_payload, "canInteract": can_interact, "can_interact": can_interact})
             return
         else:
             base = """
@@ -7906,7 +8802,7 @@ class Handler(BaseHTTPRequestHandler):
             extra = rows.pop()
             next_cursor = cursor_encode(extra["created_at"], extra["id"])
         posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
-        self.send_json({"items": posts, "next_cursor": next_cursor, "mode": mode})
+        self.send_json({"items": posts, "next_cursor": next_cursor, "mode": mode, "viewer": viewer_payload, "canInteract": can_interact, "can_interact": can_interact})
 
     def api_create_post(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -8005,7 +8901,7 @@ class Handler(BaseHTTPRequestHandler):
             if not viewer_user or viewer_user["role"] != "admin":
                 raise APIError("帖子不存在", 404, "post_not_found")
         posts = fetch_posts_with_extras(conn, [row_dict_value], viewer_id)
-        self.send_json({"post": posts[0]})
+        self.send_json({"post": posts[0], "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
     def api_edit_post(self, conn: sqlite3.Connection, post_id: str) -> None:
         user = self.require_user(conn)
@@ -8249,7 +9145,7 @@ class Handler(BaseHTTPRequestHandler):
         q = (query.get("q") or "").strip()
         kind = query.get("kind") or "all"
         if not q:
-            self.send_json({"posts": [], "users": [], "topics": []})
+            self.send_json({"posts": [], "users": [], "topics": [], "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
             return
         if viewer_id:
             conn.execute(
@@ -8298,7 +9194,7 @@ class Handler(BaseHTTPRequestHandler):
                 params,
             ))
             topics = [{"tag": r["tag"], "post_count": int(r["post_count"])} for r in rows]
-        self.send_json({"posts": posts, "users": users, "topics": topics})
+        self.send_json({"posts": posts, "users": users, "topics": topics, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
     def api_search_history(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -8396,6 +9292,40 @@ class Handler(BaseHTTPRequestHandler):
             "posts": posts,
             "topics": cached_topics,
             "users": users,
+            "viewer": {"id": viewer_id} if viewer_id else None,
+            "canInteract": bool(viewer_id),
+            "can_interact": bool(viewer_id),
+        })
+
+    def api_topics(self, conn: sqlite3.Connection) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        viewer_country = ""
+        if viewer_id:
+            viewer_row = conn.execute("SELECT country FROM users WHERE id = ?", (viewer_id,)).fetchone()
+            viewer_country = (viewer_row["country"] if viewer_row else "") or ""
+        country_clause = "AND p.country = ?" if viewer_country else ""
+        params: tuple[Any, ...] = (viewer_country,) if viewer_country else ()
+        topics = [
+            {"tag": r["tag"], "post_count": int(r["c"])}
+            for r in conn.execute(
+                f"""
+                SELECT t.tag, COUNT(*) AS c
+                FROM post_tags t
+                JOIN posts p ON p.id = t.post_id
+                WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
+                  {country_clause}
+                GROUP BY t.tag ORDER BY c DESC LIMIT 50
+                """,
+                params,
+            )
+        ]
+        self.send_json({
+            "topics": topics,
+            "items": topics,
+            "viewer": {"id": viewer_id} if viewer_id else None,
+            "canInteract": bool(viewer_id),
+            "can_interact": bool(viewer_id),
         })
 
     def api_topic(self, conn: sqlite3.Connection, tag: str, query: dict[str, str]) -> None:
@@ -8414,7 +9344,7 @@ class Handler(BaseHTTPRequestHandler):
             (tag_clean,),
         ))
         posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
-        self.send_json({"tag": tag_clean, "items": posts})
+        self.send_json({"tag": tag_clean, "items": posts, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
     def api_notifications(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         user = self.require_user(conn)
@@ -8778,6 +9708,8 @@ class Handler(BaseHTTPRequestHandler):
         data["privacy_protect"] = bool(data["privacy_protect"])
         data["recommend_following"] = bool(data["recommend_following"])
         data["recommend_topics"] = bool(data["recommend_topics"])
+        if data.get("appearance") not in ("light", "dark"):
+            data["appearance"] = "light"
         self.send_json({"settings": data})
 
     def api_update_settings(self, conn: sqlite3.Connection) -> None:
@@ -8791,6 +9723,8 @@ class Handler(BaseHTTPRequestHandler):
         for key in allowed:
             if key in data:
                 value = data[key]
+                if key == "appearance" and value not in ("light", "dark"):
+                    value = "light"
                 if isinstance(value, bool):
                     value = 1 if value else 0
                 updates.append((key, value))
@@ -9545,6 +10479,7 @@ class Handler(BaseHTTPRequestHandler):
 def run() -> None:
     init_db()
     start_visitor_writer()
+    start_news_crawler_scheduler()
     host = _env("KAIX_HOST", "127.0.0.1")
     port = int(_env("KAIX_PORT", "8787"))
     server = ThreadingHTTPServer((host, port), Handler)

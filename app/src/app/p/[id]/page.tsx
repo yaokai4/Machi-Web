@@ -6,14 +6,14 @@ import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, MessageCircle, Trash2, Send, Flag } from "lucide-react";
 import clsx from "clsx";
-import { api, APIError } from "@/lib/api";
+import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { PostCard } from "@/components/feed/PostCard";
 import { PostSpecificDetailSection } from "@/components/feed/PostSpecificDetail";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { compactNumber, relativeTime } from "@/lib/format";
-import { useSession, useToasts } from "@/lib/store";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { ConfirmDialog } from "@/components/design/Dialog";
 import type { KXComment } from "@/lib/types";
 import { showVerifiedBadge } from "@/lib/types";
@@ -22,6 +22,7 @@ export default function PostDetailPage() {
   const params = useParams<{ id: string }>();
   const router = useRouter();
   const user = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
   const id = params?.id as string;
@@ -52,6 +53,10 @@ export default function PostDetailPage() {
   }, [id]);
 
   const submitReply = async () => {
+    if (!user) {
+      openAuthPrompt("comment");
+      return;
+    }
     const text = reply.trim();
     if (!text) return;
     try {
@@ -66,6 +71,10 @@ export default function PostDetailPage() {
       postQuery.refetch();
       pushToast({ kind: "success", message: "评论已发布" });
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("comment");
+        return;
+      }
       pushToast({ kind: "error", message: (err as APIError).message });
     }
   };
@@ -82,6 +91,10 @@ export default function PostDetailPage() {
   };
 
   const toggleCommentLike = async (c: KXComment) => {
+    if (!user) {
+      openAuthPrompt("like");
+      return;
+    }
     const next = !c.liked;
     queryClient.setQueryData<KXComment[]>(["comments", id, sort], (old) =>
       (old || []).map((x) => x.id === c.id ? { ...x, liked: next, like_count: c.like_count + (next ? 1 : -1) } : x),
@@ -89,13 +102,18 @@ export default function PostDetailPage() {
     try {
       await api.toggleCommentLike(c.id, next);
     } catch (err) {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("like");
+        commentsQuery.refetch();
+        return;
+      }
       pushToast({ kind: "error", message: (err as APIError).message });
       commentsQuery.refetch();
     }
   };
 
   return (
-    <AppShell>
+    <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 grid grid-cols-[2.25rem_1fr_2.25rem] items-center gap-2">
         <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label="返回">
           <ArrowLeft className="w-4 h-4" />
@@ -164,7 +182,7 @@ export default function PostDetailPage() {
               </div>
             ) : (
               <div className="text-sm text-kx-subtle text-center py-3">
-                <Link href="/login" className="kx-link">登录</Link> 后即可评论。
+                <button type="button" onClick={() => openAuthPrompt("comment")} className="kx-link font-bold">登录</button> 后即可评论。
               </div>
             )}
 
@@ -197,11 +215,13 @@ export default function PostDetailPage() {
                           <button
                             className="kx-metric h-7"
                             onClick={() =>
-                              setReplyTo({
+                              user
+                                ? setReplyTo({
                                 id: c.id,
                                 userId: c.author_id,
                                 name: c.author?.handle || "用户",
-                              })
+                                  })
+                                : openAuthPrompt("comment")
                             }
                           >
                             回复
@@ -214,10 +234,18 @@ export default function PostDetailPage() {
                             <button
                               className="kx-metric h-7"
                               onClick={async () => {
+                                if (!user) {
+                                  openAuthPrompt("generic");
+                                  return;
+                                }
                                 try {
                                   await api.reportComment(c.id, "inappropriate");
                                   pushToast({ kind: "success", message: "举报已提交" });
                                 } catch (err) {
+                                  if (isAuthRequiredError(err)) {
+                                    openAuthPrompt("generic");
+                                    return;
+                                  }
                                   pushToast({ kind: "error", message: (err as APIError).message });
                                 }
                               }}

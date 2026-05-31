@@ -41,7 +41,7 @@ const LOCALES: { value: string; label: string }[] = [
 
 const STORAGE_KEY = "machi-marketing-announcements-zh";
 
-/// Blog-style admin tool for posting Machi City marketing
+/// Blog-style admin tool for posting Machi marketing
 /// announcements. Lives behind `/admin/announcements`, gated by
 /// AppShell's auth guard + a role check. Persists to the same
 /// localStorage key the public AnnouncementSection consumes so the
@@ -146,7 +146,7 @@ export default function AdminAnnouncementsPage() {
         </Link>
         <div className="flex-1 min-w-0">
           <h1 className="text-lg font-bold truncate">公告管理</h1>
-          <p className="text-xs text-kx-muted truncate">发布、编辑或撤回 Machi City 官网首页的公告 / 通知 / 信息条目</p>
+          <p className="text-xs text-kx-muted truncate">发布、编辑或撤回 Machi 官网首页的公告 / 通知 / 信息条目</p>
         </div>
         <button
           type="button"

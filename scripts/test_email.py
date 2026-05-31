@@ -52,9 +52,9 @@ def main() -> None:
     else:
         ok = server.send_email(
             to,
-            "Machi City 邮件测试 / Email test",
-            "这是一封来自 Machi City 后端的测试邮件。\n"
-            "This is a test email from the Machi City backend.\n",
+            "Machi 邮件测试 / Email test",
+            "这是一封来自 Machi 后端的测试邮件。\n"
+            "This is a test email from the Machi backend.\n",
         )
 
     if ok:
