@@ -3050,25 +3050,36 @@ HUB = EventHub()
 
 
 def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    role = row.get("role", "member") or "member"
+    is_verified_member = bool(row.get("is_verified_member", 0))
+    is_official = role in {"admin", "moderator", "creator"} or bool(row.get("is_verified", 0))
+    payload = {
         "id": row["id"],
         "remote_id": row["id"],
         "handle": row["handle"],
         "username": row["handle"],
         "display_name": row["display_name"],
+        "displayName": row["display_name"],
         "email": row.get("email", ""),
         "bio": row.get("bio", ""),
         "location": row.get("location", ""),
         "avatar_symbol": row.get("avatar_symbol", "person.fill"),
         "avatar_color": row.get("avatar_color", "indigo"),
         "avatar_url": row.get("avatar_url", ""),
+        "avatarUrl": row.get("avatar_url", ""),
         "cover_url": row.get("cover_url", ""),
         "membership_tier": row.get("membership_tier", "free"),
         "is_verified": bool(row.get("is_verified", 0)),
-        "role": row.get("role", "member"),
+        "role": role,
+        "isOfficial": is_official,
+        "is_official": is_official,
+        "officialRole": role if is_official else "",
+        "official_role": role if is_official else "",
         "joined_at": row.get("joined_at"),
         "created_at": row.get("created_at"),
+        "createdAt": row.get("created_at"),
         "updated_at": row.get("updated_at"),
+        "updatedAt": row.get("updated_at"),
         # Phase 1: home / current region. Added via MIGRATIONS so the
         # columns exist on every running install; default-empty values
         # mean a user that hasn't picked a region yet just sees blanks.
@@ -3086,12 +3097,27 @@ def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
         # user_memberships; these are kept in sync by
         # sync_user_membership_cache on every entitlement change and the
         # expiry sweep). is_verified_member drives the blue badge.
-        "is_verified_member":   bool(row.get("is_verified_member", 0)),
+        "is_verified_member":   is_verified_member,
+        "isVerifiedMember":     is_verified_member,
         "verified_member_until": row.get("verified_member_until", "") or "",
+        "verifiedMemberUntil":  row.get("verified_member_until", "") or "",
         "membership_status":    row.get("membership_status", "inactive") or "inactive",
+        "membershipStatus":     row.get("membership_status", "inactive") or "inactive",
         "membership_plan_key":  row.get("membership_plan_key", "") or "",
+        "membershipPlanKey":    row.get("membership_plan_key", "") or "",
         "verified_badge_type":  row.get("verified_badge_type", "") or "",
+        "verifiedBadgeType":    row.get("verified_badge_type", "") or "",
+        "follower_count":       int(row.get("follower_count") or 0) if "follower_count" in row else 0,
+        "following_count":      int(row.get("following_count") or 0) if "following_count" in row else 0,
+        "post_count":           int(row.get("post_count") or 0) if "post_count" in row else 0,
+        "followerCount":        int(row.get("follower_count") or 0) if "follower_count" in row else 0,
+        "followingCount":       int(row.get("following_count") or 0) if "following_count" in row else 0,
+        "postCount":            int(row.get("post_count") or 0) if "post_count" in row else 0,
+        "isFollowing":          bool(row.get("is_following", 0)) if "is_following" in row else False,
+        "can_message":          True,
+        "canMessage":           True,
     }
+    return payload
 
 
 def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -3111,33 +3137,61 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         + _active_boost(row)
         + _time_decay(row.get("created_at")),
     ))
-    return {
+    media = extras.get("media") or []
+    content_type = row.get("content_type", "") or "dynamic"
+    viewer = extras.get("viewer") if isinstance(extras.get("viewer"), dict) else None
+    viewer_id = (viewer or {}).get("id")
+    can_manage = bool(viewer_id and viewer_id == row.get("author_id") and not row.get("deleted_at"))
+    payload = {
         "id": row["id"],
         "remote_id": row["id"],
         "author_id": row["author_id"],
         "content": row["content"],
         "created_at": row["created_at"],
+        "createdAt": row["created_at"],
         "updated_at": row["updated_at"],
+        "updatedAt": row["updated_at"],
         "deleted_at": row.get("deleted_at"),
         "repost_of_id": row.get("repost_of_id"),
         "view_count": view_count,
+        "viewCount": view_count,
         "like_count": like_count,
+        "likeCount": like_count,
         "repost_count": repost_count,
+        "repostCount": repost_count,
         "bookmark_count": bookmark_count,
+        "bookmarkCount": bookmark_count,
+        "save_count": bookmark_count,
+        "saveCount": bookmark_count,
         "comment_count": comment_count,
+        "commentCount": comment_count,
+        "share_count": 0,
+        "shareCount": 0,
         "heat_score": heat,
+        "heatScore": heat,
         "report_count": report_count,
         "is_boosted": bool(row.get("is_boosted", 0)),
         "boost_weight": int(row.get("boost_weight") or 0),
         "boosted_until": row.get("boosted_until", "") or "",
         "liked": bool(extras.get("liked")),
+        "isLiked": bool(extras.get("liked")),
         "bookmarked": bool(extras.get("bookmarked")),
+        "saved": bool(extras.get("bookmarked")),
+        "isSaved": bool(extras.get("bookmarked")),
         "reposted": bool(extras.get("reposted")),
+        "isReposted": bool(extras.get("reposted")),
+        "canEdit": can_manage,
+        "can_edit": can_manage,
+        "canDelete": can_manage,
+        "can_delete": can_manage,
         "canInteract": bool(extras.get("can_interact")),
         "can_interact": bool(extras.get("can_interact")),
         "viewer": extras.get("viewer"),
         "tags": extras.get("tags") or [],
-        "media": extras.get("media") or [],
+        "media": media,
+        "images": [m.get("url", "") for m in media if m.get("type") == "image" and m.get("url")],
+        "videoUrl": next((m.get("url", "") for m in media if m.get("type") == "video" and m.get("url")), ""),
+        "video_url": next((m.get("url", "") for m in media if m.get("type") == "video" and m.get("url")), ""),
         "author": extras.get("author"),
         "original_post": extras.get("original_post"),
         "status": row.get("status", "published"),
@@ -3147,12 +3201,20 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         "province":    row.get("province", "") or "",
         "city":        row.get("city", "") or "",
         "region_code": row.get("region_code", "") or "",
+        "cityPath": row.get("region_code", "") or "",
+        "city_path": row.get("region_code", "") or "",
         # Content type discriminator + typed attributes (phase 2).
         # `content_type` defaults to 'dynamic' for posts created before
         # this column existed; `attributes` is a decoded dict (already
         # validated against the per-type schema on write).
-        "content_type": row.get("content_type", "") or "dynamic",
+        "content_type": content_type,
+        "contentType": content_type,
+        "category": content_type,
         "attributes":   decode_post_attributes(row.get("attributes")),
+        "requiresMembership": requires_verified_membership(content_type),
+        "requires_membership": requires_verified_membership(content_type),
+        "sourceType": "city_seed" if bool(row.get("is_seed_content", 0)) else "user",
+        "source_type": "city_seed" if bool(row.get("is_seed_content", 0)) else "user",
         # City Seed Bot (城市内容助手). When true the client renders an official
         # identity + a light "城市助手/编辑部" chip and an official avatar — never
         # a real-person identity. `seed_author_type` ∈ {official_bot, editorial}.
@@ -3161,6 +3223,7 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         "seed_source": row.get("seed_source", "") or "",
         "poll": extras.get("poll"),
     }
+    return payload
 
 
 def serialize_comment(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -3611,13 +3674,44 @@ def get_user_membership_status(conn: sqlite3.Connection, user_id: str) -> dict[s
     banned_row = conn.execute("SELECT deleted_at FROM users WHERE id = ?", (user_id,)).fetchone()
     banned = bool(banned_row and banned_row["deleted_at"])
     is_active = (not banned) and _membership_is_live(row)
+    plan_key = (row.get("plan_key") if row else "") or ""
+    plan = get_plan(conn, plan_key) if plan_key else None
+    plan_payload = serialize_plan(plan) if plan else None
+    current_period_end = (row.get("current_period_end") if row else "") or ""
+    status = (row.get("status") if row else "inactive") or "inactive"
+    source = (row.get("source") if row else "") or ""
     return {
+        "user_id": user_id,
+        "userId": user_id,
         "is_active": is_active,
-        "status": (row.get("status") if row else "inactive") or "inactive",
-        "plan_key": (row.get("plan_key") if row else "") or "",
-        "current_period_end": (row.get("current_period_end") if row else "") or "",
-        "source": (row.get("source") if row else "") or "",
+        "isActive": is_active,
+        "status": status,
+        "plan_key": plan_key,
+        "planKey": plan_key,
+        "current_period_end": current_period_end,
+        "expires_at": current_period_end,
+        "expiresAt": current_period_end,
+        "started_at": (row.get("started_at") if row else "") or "",
+        "startedAt": (row.get("started_at") if row else "") or "",
+        "source": source,
+        "provider": source,
+        "price": float((plan_payload or {}).get("amount") or 0),
+        "currency": (plan_payload or {}).get("currency") or MEMBERSHIP_CURRENCY,
+        "benefits": ["verified_badge", "exclusive_page", "priority_review", "light_boost"] if is_active else [],
+        "verified_badge_type": "member" if is_active else "",
+        "verifiedBadgeType": "member" if is_active else "",
+        "can_post_high_trust_content": is_active,
+        "canPostHighTrustContent": is_active,
+        "can_access_exclusive_page": is_active,
+        "canAccessExclusivePage": is_active,
+        "daily_post_limit": MEMBERSHIP_DAILY_LIMIT_VERIFIED if is_active and MEMBERSHIP_DAILY_LIMIT_VERIFIED > 0 else MEMBERSHIP_DAILY_LIMIT_FREE,
+        "dailyPostLimit": MEMBERSHIP_DAILY_LIMIT_VERIFIED if is_active and MEMBERSHIP_DAILY_LIMIT_VERIFIED > 0 else MEMBERSHIP_DAILY_LIMIT_FREE,
+        "priority_review": is_active,
+        "priorityReview": is_active,
+        "light_boost": is_active,
+        "lightBoost": is_active,
         "cancel_at_period_end": bool(row.get("cancel_at_period_end")) if row else False,
+        "cancelAtPeriodEnd": bool(row.get("cancel_at_period_end")) if row else False,
         "membership_id": (row.get("id") if row else "") or "",
     }
 
@@ -3715,18 +3809,35 @@ def generate_order_no() -> str:
 
 def serialize_order(row: dict[str, Any]) -> dict[str, Any]:
     cents = int(row.get("amount_cents") or 0)
+    provider = row.get("payment_provider", "")
+    platform = row.get("client_type", "") or ("ios" if provider == "apple_iap" else "web")
     return {
+        "id": row.get("id", ""),
+        "user_id": row.get("user_id", ""),
+        "userId": row.get("user_id", ""),
         "order_no": row["order_no"],
+        "orderNo": row["order_no"],
         "plan_key": row.get("plan_key", ""),
+        "planKey": row.get("plan_key", ""),
         "amount": round(cents / 100, 2),
+        "price": round(cents / 100, 2),
         "amount_cents": cents,
         "currency": row.get("currency", MEMBERSHIP_CURRENCY),
         "status": row.get("status", "pending"),
-        "provider": row.get("payment_provider", ""),
+        "provider": provider,
+        "payment_provider": provider,
+        "platform": platform,
         "client_type": row.get("client_type", ""),
         "created_at": row.get("created_at"),
+        "createdAt": row.get("created_at"),
         "expires_at": row.get("expires_at"),
+        "expiresAt": row.get("expires_at"),
         "paid_at": row.get("paid_at"),
+        "paidAt": row.get("paid_at"),
+        "transaction_id": row.get("provider_trade_no", "") or "",
+        "transactionId": row.get("provider_trade_no", "") or "",
+        "error_message": row.get("error_message", "") or "",
+        "errorMessage": row.get("error_message", "") or "",
     }
 
 
@@ -5251,18 +5362,53 @@ def serialize_editorial_post(conn: sqlite3.Connection, row: sqlite3.Row | dict[s
             "SELECT 1 FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'news_save'",
             (d["id"], viewer_id),
         ).fetchone() is not None
+    source_note = " / ".join(
+        part for part in [d.get("source_name") or "", d.get("source_published_at") or d.get("published_at") or ""] if part
+    )
+    risk_level = d.get("risk_level") or _risk_level_for_category(str(d.get("category") or ""))
+    official_source_required = bool(d.get("official_source_required", 0))
+    editorial_disclaimer = (
+        "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。"
+        if official_source_required or risk_level == "high"
+        else "此内容来自公开来源，Machi 保留来源名称、时间和原文入口，方便继续查证。"
+    )
     return {
         **d,
         "tags": tags,
         "save_count": int(save_count or 0),
+        "saveCount": int(save_count or 0),
         "comment_count": int(comment_count or 0),
+        "commentCount": int(comment_count or 0),
         "saved": saved,
+        "is_saved": saved,
+        "isSaved": saved,
+        "can_interact": bool(viewer_id),
+        "canInteract": bool(viewer_id),
         "is_ai_assisted": bool(d.get("is_ai_assisted", 0)),
+        "isAiAssisted": bool(d.get("is_ai_assisted", 0)),
         "share_count": int(d.get("share_count") or 0),
+        "shareCount": int(d.get("share_count") or 0),
         "click_source_count": int(d.get("click_source_count") or 0),
-        "risk_level": d.get("risk_level") or _risk_level_for_category(str(d.get("category") or "")),
-        "official_source_required": bool(d.get("official_source_required", 0)),
+        "clickSourceCount": int(d.get("click_source_count") or 0),
+        "viewCount": int(d.get("view_count") or 0),
+        "risk_level": risk_level,
+        "riskLevel": risk_level,
+        "official_source_required": official_source_required,
+        "officialSourceRequired": official_source_required,
         "is_demo": bool(d.get("is_demo", 0)),
+        "authorDisplayName": d.get("author_display_name", ""),
+        "authorType": d.get("author_type", ""),
+        "sourceName": d.get("source_name") or "",
+        "sourceUrl": d.get("source_url") or "",
+        "originalUrl": d.get("original_url") or "",
+        "sourcePublishedAt": d.get("source_published_at") or "",
+        "publishedAt": d.get("published_at") or "",
+        "createdAt": d.get("created_at") or "",
+        "updatedAt": d.get("updated_at") or "",
+        "source_note": source_note,
+        "sourceNote": source_note,
+        "editorial_disclaimer": editorial_disclaimer,
+        "editorialDisclaimer": editorial_disclaimer,
     }
 
 
