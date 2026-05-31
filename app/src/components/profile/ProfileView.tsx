@@ -195,10 +195,11 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
             <div className="rounded-kx-lg ring-4 ring-kx-bg bg-kx-bg">
               <Avatar user={user} size={72} className="sm:!w-[88px] sm:!h-[88px]" />
             </div>
-            <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
+            <div className="mb-2 flex min-w-0 flex-wrap items-center justify-end gap-2">
               {isSelf ? (
-                <button className="kx-button-ghost" onClick={() => setEditOpen(true)}>
-                  <Edit3 className="w-4 h-4" /> 编辑资料
+                <button className="kx-button-ghost h-9 w-9 p-0 sm:w-auto sm:px-3" onClick={() => setEditOpen(true)} aria-label="编辑资料">
+                  <Edit3 className="w-4 h-4" />
+                  <span className="hidden sm:inline">编辑资料</span>
                 </button>
               ) : (
                 <>
@@ -297,22 +298,41 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
         ) : segmentQuery.isError ? (
           <ErrorState onRetry={() => segmentQuery.refetch()} />
         ) : !segmentQuery.data?.items?.length ? (
-          <EmptyState title="还没有内容" />
+          <EmptyState title={segment === "replies" ? "还没有回复" : "还没有内容"} />
         ) : segment === "replies" ? (
           (segmentQuery.data.items as KXComment[]).map((c) => (
-            <div key={c.id} className="kx-card">
-              <div className="flex items-center gap-1.5 text-sm">
-                <Avatar user={c.author || undefined} size={28} />
-                <span className="font-semibold">{c.author?.display_name}</span>
-                <span className="text-kx-muted text-xs">@{c.author?.handle} · {relativeTime(c.created_at)}</span>
+            <article key={c.id} className="kx-card overflow-hidden !p-0">
+              <div className="p-4 sm:p-5">
+                <div className="flex items-start gap-2.5">
+                  <Avatar user={c.author || undefined} size={34} />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-1.5 text-sm">
+                      <span className="truncate font-semibold text-kx-text">{c.author?.display_name || "未知用户"}</span>
+                      <span className="truncate text-xs text-kx-muted">
+                        @{c.author?.handle || "unknown"} · {relativeTime(c.created_at)}
+                      </span>
+                    </div>
+                    <div className="mt-0.5 text-xs font-semibold text-kx-muted">回复了一条帖子</div>
+                  </div>
+                </div>
+                <p className="mt-3 whitespace-pre-wrap break-words text-[15px] leading-7 text-kx-text">{c.content}</p>
               </div>
-              <p className="mt-1.5 text-kx-text text-sm whitespace-pre-wrap break-words">{c.content}</p>
               {c.post ? (
-                <Link href={`/p/${c.post.id}`} className="block mt-2 p-2.5 rounded-kx-md bg-kx-soft text-xs text-kx-subtle hover:bg-kx-stroke/30">
-                  评论于 @{c.post.author?.handle}：{c.post.content.slice(0, 80)}
+                <Link href={`/p/${c.post.id}`} className="block border-t border-kx-stroke/35 bg-kx-soft/55 px-4 py-3 text-xs text-kx-subtle transition hover:bg-kx-soft sm:px-5">
+                  <div className="mb-1 flex min-w-0 items-center gap-1.5 font-bold text-kx-muted">
+                    <span className="shrink-0">原帖</span>
+                    <span className="truncate">@{c.post.author?.handle || "unknown"}</span>
+                  </div>
+                  <div className="line-clamp-2 text-sm leading-6 text-kx-text">
+                    {(c.post.content || "这条帖子没有文字内容").slice(0, 120)}
+                  </div>
                 </Link>
-              ) : null}
-            </div>
+              ) : (
+                <div className="border-t border-kx-stroke/35 bg-kx-soft/45 px-4 py-3 text-xs font-semibold text-kx-muted sm:px-5">
+                  原帖暂时不可见
+                </div>
+              )}
+            </article>
           ))
         ) : (
           (segmentQuery.data.items as KXPost[]).map((p) => <PostCard key={p.id} post={p} />)

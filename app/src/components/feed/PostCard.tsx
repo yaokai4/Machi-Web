@@ -265,17 +265,22 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
       <header className="flex gap-3 items-start mt-1">
         <Avatar user={displayAuthor || undefined} size={42} href={displayAuthor ? `/u/${displayAuthor.handle}` : undefined} />
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 min-w-0">
-            <Link
-              href={displayAuthor ? `/u/${displayAuthor.handle}` : "#"}
-              className="font-semibold text-kx-text truncate hover:underline"
-            >
-              {displayAuthor?.display_name || t("unknown_user")}
-            </Link>
-            {showVerifiedBadge(displayAuthor) ? <VerifiedBadge /> : null}
-            <span className="text-kx-muted text-kx-meta truncate">
+          <div className="min-w-0">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Link
+                href={displayAuthor ? `/u/${displayAuthor.handle}` : "#"}
+                className="min-w-0 truncate font-semibold text-kx-text hover:underline"
+              >
+                {displayAuthor?.display_name || t("unknown_user")}
+              </Link>
+              {showVerifiedBadge(displayAuthor) ? <VerifiedBadge /> : null}
+              <span className="hidden min-w-0 truncate text-kx-meta text-kx-muted sm:inline">
+                @{displayAuthor?.handle || "unknown"} · {relativeTime(displayPost.created_at)}
+              </span>
+            </div>
+            <div className="mt-0.5 truncate text-xs text-kx-muted sm:hidden">
               @{displayAuthor?.handle || "unknown"} · {relativeTime(displayPost.created_at)}
-            </span>
+            </div>
           </div>
 
           <ContentText content={displayPost.content ?? ""} />
@@ -911,13 +916,13 @@ function InteractionBar({
   }, [repostMenu]);
 
   return (
-    <div className="mt-3 flex max-w-full flex-wrap items-center justify-start gap-1 text-kx-subtle sm:max-w-md sm:flex-nowrap sm:justify-between">
-      <button className="kx-metric" onClick={onComment} aria-label={t("action_comment")}>
+    <div className="mt-3 grid max-w-full grid-cols-4 items-center gap-1 text-kx-subtle sm:flex sm:max-w-md sm:flex-nowrap sm:justify-between">
+      <button className="kx-metric w-full justify-center sm:w-auto" onClick={onComment} aria-label={t("action_comment")}>
         <MessageCircle className="w-4 h-4" /> {compactNumber(post.comment_count)}
       </button>
-      <div className="relative kx-stop" ref={repostButtonRef}>
+      <div className="relative kx-stop min-w-0" ref={repostButtonRef}>
         <button
-          className="kx-metric"
+          className="kx-metric w-full justify-center sm:w-auto"
           data-active={post.reposted ? "repost" : undefined}
           aria-label={t("action_repost")}
           onClick={(e) => {
@@ -945,13 +950,13 @@ function InteractionBar({
           </div>
         ) : null}
       </div>
-      <button className="kx-metric" data-active={post.liked ? "like" : undefined} onClick={onLike} aria-label={t("action_like")}>
+      <button className="kx-metric w-full justify-center sm:w-auto" data-active={post.liked ? "like" : undefined} onClick={onLike} aria-label={t("action_like")}>
         <Heart className={clsx("w-4 h-4", post.liked && "fill-kx-like")} /> {compactNumber(post.like_count)}
       </button>
-      <button className="kx-metric" data-active={post.bookmarked ? "bookmark" : undefined} onClick={onBookmark} aria-label={t("action_bookmark")}>
+      <button className="kx-metric w-full justify-center sm:w-auto" data-active={post.bookmarked ? "bookmark" : undefined} onClick={onBookmark} aria-label={t("action_bookmark")}>
         <Bookmark className={clsx("w-4 h-4", post.bookmarked && "fill-kx-bookmark")} /> {compactNumber(post.bookmark_count)}
       </button>
-      <span className="kx-metric text-kx-heat/85">
+      <span className="kx-metric hidden text-kx-heat/85 sm:inline-flex">
         <Flame className="w-4 h-4" /> {compactNumber(post.heat_score)}
       </span>
     </div>

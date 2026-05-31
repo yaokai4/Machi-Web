@@ -611,7 +611,11 @@ export default function HomeClient() {
           {TABS.map((m) => (
             <button
               key={m.value}
-              className={clsx("kx-tab shrink-0", "px-2.5 sm:px-3.5 h-8 text-sm")}
+              className={clsx(
+                "kx-tab shrink-0",
+                "px-2.5 sm:px-3.5 h-8 text-sm",
+                m.value === "hot" && "hidden sm:inline-flex",
+              )}
               data-active={tab === m.value}
               onClick={() => (m.value === "following" && !user ? openAuthPrompt("follow") : setTabSmooth(m.value))}
             >
@@ -620,7 +624,7 @@ export default function HomeClient() {
           ))}
         </div>
         {tab === "hot" ? (
-          <div className="flex items-center gap-1 self-start">
+          <div className="hidden items-center gap-1 self-start sm:flex">
             {HOT_SCOPES.map((s) => (
               <button
                 key={s.value}

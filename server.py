@@ -9322,12 +9322,13 @@ class Handler(BaseHTTPRequestHandler):
             (user_id, limit),
         ))
         viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
         post_ids = list({r["post_id"] for r in rows})
         posts_map: dict[str, dict[str, Any]] = {}
         if post_ids:
             placeholders = ",".join("?" * len(post_ids))
             post_rows = list(conn.execute(f"SELECT * FROM posts WHERE id IN ({placeholders})", post_ids))
-            hydrated = fetch_posts_with_extras(conn, [dict(r) for r in post_rows], viewer["user_id"] if viewer else None)
+            hydrated = fetch_posts_with_extras(conn, [dict(r) for r in post_rows], viewer_id)
             posts_map = {p["id"]: p for p in hydrated}
         comments = []
         for row in rows:

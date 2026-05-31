@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { ArrowLeft, ChevronRight, Search, X } from "lucide-react";
 import clsx from "clsx";
 import {
@@ -39,6 +40,7 @@ export function RegionPickerDialog({
   const [query, setQuery] = useState("");
   const [country, setCountry] = useState<RegionCountry | null>(null);
   const [province, setProvince] = useState<RegionProvince | null>(null);
+  const [mounted, setMounted] = useState(false);
   const allowedCountry = allowsAnyCountry ? undefined : initialCountry?.toLowerCase();
 
   const availableCountries = useMemo(
@@ -58,6 +60,10 @@ export function RegionPickerDialog({
     [recentCodes],
   );
   const matches = useMemo(() => searchRegions(query, allowedCountry), [query, allowedCountry]);
+
+  useEffect(() => {
+    setMounted(true);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -80,7 +86,7 @@ export function RegionPickerDialog({
     };
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open || !mounted) return null;
 
   const deliver = (region: RegionInfo) => {
     onSelect(region);
@@ -98,16 +104,16 @@ export function RegionPickerDialog({
   const title = province?.name || country?.name || "选择地区";
   const canGoBack = Boolean(province || (country && !allowedCountry));
 
-  return (
+  const node = (
     <div
-      className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/45 p-0 backdrop-blur-sm sm:items-center sm:p-4"
+      className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-950/45 px-3 py-0 backdrop-blur-sm sm:items-center sm:px-4 sm:py-4"
       onMouseDown={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="选择地区"
     >
       <div
-        className="flex max-h-[88dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-[28px] bg-kx-bg shadow-2xl ring-1 ring-kx-stroke sm:rounded-[28px]"
+        className="flex max-h-[88dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-[28px] bg-kx-bg shadow-2xl ring-1 ring-kx-stroke sm:rounded-[28px]"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="kx-glass-bar flex items-center gap-2 px-4 py-3">
@@ -165,6 +171,8 @@ export function RegionPickerDialog({
       </div>
     </div>
   );
+
+  return createPortal(node, document.body);
 }
 
 function RegionPickerLanding({
@@ -212,10 +220,10 @@ function RegionPickerLanding({
               key={country.code}
               type="button"
               onClick={() => onCountry(country)}
-              className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
-            >
-              <span className="text-xl">{country.emoji}</span>
-              <span className="font-semibold">{country.name}</span>
+            className="flex w-full min-w-0 items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+          >
+            <span className="text-xl">{country.emoji}</span>
+              <span className="min-w-0 flex-1 truncate font-semibold">{country.name}</span>
               <ChevronRight className="ml-auto h-4 w-4 text-kx-muted" />
             </button>
           ))}
@@ -250,9 +258,9 @@ function CountryDrilldown({
           key={item.code}
           type="button"
           onClick={() => onProvince(item)}
-          className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+          className="flex w-full min-w-0 items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
         >
-          <span className="font-semibold">{item.name}</span>
+          <span className="min-w-0 flex-1 truncate font-semibold">{item.name}</span>
           <ChevronRight className="ml-auto h-4 w-4 text-kx-muted" />
         </button>
       ))}
@@ -281,11 +289,11 @@ function CityList({
             key={city.code}
             type="button"
             onClick={() => region && onSelect(region)}
-            className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+            className="flex w-full min-w-0 items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
             disabled={!region}
           >
-            <span className="font-semibold">{city.name}</span>
-            <span className="ml-auto text-xs font-semibold text-kx-muted">{region ? regionDisplayName(region) : ""}</span>
+            <span className="min-w-0 flex-1 truncate font-semibold">{city.name}</span>
+            <span className="ml-auto max-w-[65%] truncate text-xs font-semibold text-kx-muted">{region ? regionDisplayName(region) : ""}</span>
           </button>
         );
       })}
@@ -304,7 +312,7 @@ function SearchResultList({ matches, onSelect }: { matches: RegionInfo[]; onSele
           key={region.region_code}
           type="button"
           onClick={() => onSelect(region)}
-          className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+          className="flex w-full min-w-0 items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
         >
           <span className="text-xl">{region.country_emoji}</span>
           <span className="min-w-0 flex-1">
