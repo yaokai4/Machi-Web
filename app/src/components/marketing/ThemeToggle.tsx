@@ -5,7 +5,8 @@ import { Moon, Sun } from "lucide-react";
 import clsx from "clsx";
 
 type Mode = "light" | "dark";
-const STORAGE_KEY = "machi_theme";
+const STORAGE_KEY = "machi-theme";
+const LEGACY_STORAGE_KEY = "machi_theme";
 
 function applyMode(mode: Mode) {
   if (typeof document === "undefined") return;
@@ -16,9 +17,14 @@ function applyMode(mode: Mode) {
 function readStored(): Mode {
   if (typeof window === "undefined") return "light";
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw === "light" || raw === "dark") return raw;
+    const raw = localStorage.getItem(STORAGE_KEY) || localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (raw === "light" || raw === "dark") {
+      localStorage.setItem(STORAGE_KEY, raw);
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
+      return raw;
+    }
     localStorage.setItem(STORAGE_KEY, "light");
+    localStorage.removeItem(LEGACY_STORAGE_KEY);
     localStorage.removeItem("machi-appearance");
     localStorage.removeItem("kaix-appearance");
   } catch {}
@@ -26,7 +32,7 @@ function readStored(): Mode {
 }
 
 /// Marketing-site appearance toggle. Persists to the same
-/// `machi_theme` key the inline head script reads so there's no
+/// `machi-theme` key the inline head script reads so there's no
 /// flash of incorrect theme on cold load.
 export function ThemeToggle({ compact = false }: { compact?: boolean }) {
   const [mode, setMode] = useState<Mode>("light");
@@ -41,6 +47,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
     setMode(next);
     try {
       localStorage.setItem(STORAGE_KEY, next);
+      localStorage.removeItem(LEGACY_STORAGE_KEY);
       localStorage.removeItem("machi-appearance");
       localStorage.removeItem("kaix-appearance");
     } catch {}

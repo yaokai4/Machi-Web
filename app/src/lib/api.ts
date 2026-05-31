@@ -629,9 +629,11 @@ export const api = {
     city?: string;
     region_code?: string;
     content_type?: ContentType | ContentType[];
+    limit?: number;
   } = {}): Promise<Paginated<KXPost> & { mode: FeedMode }> {
     const params = new URLSearchParams({ mode });
     if (cursor) params.set("cursor", cursor);
+    if (opts.limit) params.set("limit", String(opts.limit));
     if (opts.country) params.set("country", opts.country);
     if (opts.province) params.set("province", opts.province);
     if (opts.city) params.set("city", opts.city);

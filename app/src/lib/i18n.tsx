@@ -6,9 +6,42 @@
 // /api/settings endpoint) so it matches the iOS LocalizationService.
 
 import { createContext, useContext, useEffect, useMemo } from "react";
-import { useSettings } from "./store";
+import { create } from "zustand";
+import { persist, createJSONStorage } from "zustand/middleware";
+import { useSettings, safeLocalStorage } from "./store";
 
 export type Locale = "zh-Hans" | "zh-Hant" | "en" | "ja";
+
+function isLocale(value: unknown): value is Locale {
+  return value === "zh-Hans" || value === "zh-Hant" || value === "en" || value === "ja";
+}
+
+// Manual UI-language override. Logged-in users get their language from
+// server settings; guests have no settings, so without this they were
+// stuck on zh-Hans. This local override lets *anyone* switch the
+// interface language instantly and have it persist, while still falling
+// back to the account's server language when no manual choice was made.
+// `skipHydration` keeps the first client render identical to the SSR
+// output (override = null) — the saved value is applied in an effect
+// after mount, so there is no hydration mismatch / flash-of-wrong-text.
+interface UiLocaleState {
+  override: Locale | null;
+  setOverride: (value: Locale | null) => void;
+}
+
+export const useUiLocale = create<UiLocaleState>()(
+  persist(
+    (set) => ({
+      override: null,
+      setOverride: (override) => set({ override }),
+    }),
+    {
+      name: "machi_lang",
+      storage: createJSONStorage(() => safeLocalStorage),
+      skipHydration: true,
+    },
+  ),
+);
 
 const ZH_HANS = {
   // global / nav
@@ -646,11 +679,18 @@ const Ctx = createContext<I18nContext>({ locale: "zh-Hans", t: (k) => ZH_HANS[k]
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const settings = useSettings((s) => s.settings);
-  const locale: Locale = (() => {
-    const raw = settings?.language;
-    if (raw === "zh-Hans" || raw === "zh-Hant" || raw === "en" || raw === "ja") return raw;
-    return "zh-Hans";
-  })();
+  const override = useUiLocale((s) => s.override);
+
+  // Apply the persisted manual choice after mount (see skipHydration note).
+  useEffect(() => {
+    void useUiLocale.persist.rehydrate();
+  }, []);
+
+  const locale: Locale = isLocale(override)
+    ? override
+    : isLocale(settings?.language)
+      ? (settings!.language as Locale)
+      : "zh-Hans";
 
   useEffect(() => {
     if (typeof document !== "undefined") {

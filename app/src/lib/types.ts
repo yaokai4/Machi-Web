@@ -406,7 +406,7 @@ export const DraftSchema = z.object({
 });
 export type KXDraft = z.infer<typeof DraftSchema>;
 
-export type FeedMode = "recommend" | "local" | "following" | "hot";
+export type FeedMode = "recommend" | "plaza" | "local" | "following" | "hot";
 export type ProfileSegment = "posts" | "replies" | "media" | "likes" | "bookmarks";
 
 // Content language enum — mirrors iOS `ContentLanguage`. `followApp`

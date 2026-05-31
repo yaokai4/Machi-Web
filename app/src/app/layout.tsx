@@ -50,9 +50,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   return null;
                 }
                 var stored=null;
-                try{stored=safeParse(localStorage.getItem('machi_theme'));}catch(_){}
+                try{stored=safeParse(localStorage.getItem('machi-theme')||localStorage.getItem('machi_theme'));}catch(_){}
                 var target=stored==='dark'?'dark':'light';
-                if(stored!==target){try{localStorage.setItem('machi_theme',target);}catch(_){}}
+                try{localStorage.setItem('machi-theme',target);localStorage.removeItem('machi_theme');}catch(_){}
                 try{localStorage.removeItem('machi-appearance');localStorage.removeItem('kaix-appearance');}catch(_){}
                 document.documentElement.classList.toggle('dark',target==='dark');
                 document.documentElement.dataset.theme=target;

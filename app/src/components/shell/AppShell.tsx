@@ -13,8 +13,9 @@ import {
   Home,
   LogIn,
   LogOut,
+  Languages,
   Mail,
-  MoreHorizontal,
+  MapPin,
   PenSquare,
   Search,
   Settings,
@@ -22,6 +23,7 @@ import {
   Sun,
   Moon,
   Newspaper,
+  UserCheck,
   UserPlus,
   User as UserIcon,
   Hash,
@@ -39,7 +41,7 @@ import { BrandText } from "@/components/marketing/BrandText";
 import { useRealtime } from "@/lib/realtime";
 import { useGlobalShortcuts } from "@/lib/keyboard";
 import { ErrorBoundary } from "@/components/design/ErrorBoundary";
-import { useI18n, type I18nKey } from "@/lib/i18n";
+import { useI18n, useUiLocale, type I18nKey, type Locale } from "@/lib/i18n";
 import type { KXUser } from "@/lib/types";
 
 interface AppShellProps {
@@ -48,18 +50,48 @@ interface AppShellProps {
   requireAuth?: boolean;
 }
 
-const NAV_ITEMS = [
-  { href: "/home", labelKey: "nav_home" as I18nKey, icon: Home, key: "home", badgeKey: undefined as undefined | "notifications" | "messages" },
-  { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
-  { href: "/news", labelKey: "nav_news" as I18nKey, icon: Newspaper, key: "news", badgeKey: undefined },
-  { href: "/membership", labelKey: "mem_title" as I18nKey, icon: BadgeCheck, key: "membership", badgeKey: undefined },
-  { href: "/search", labelKey: "nav_search" as I18nKey, icon: Search, key: "search", badgeKey: undefined },
-  { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
-  { href: "/messages", labelKey: "nav_messages" as I18nKey, icon: Mail, key: "messages", badgeKey: "messages" as const },
-  { href: "/settings", labelKey: "nav_settings" as I18nKey, icon: Settings, key: "settings", badgeKey: undefined },
+type NavItem = {
+  href: string;
+  labelKey: I18nKey;
+  icon: LucideIcon;
+  key: string;
+  badgeKey?: "notifications" | "messages";
+};
+
+// Grouped left-nav. Nothing is removed vs. the old flat list — items are
+// reordered into intent groups so 资讯 sits up front under 浏览, 私信/通知
+// read as 互动, and 认证会员 gets its own 信任与会员 group (no longer buried
+// between feed links). Section labels show only at the `lg` width where
+// the text labels are visible; the collapsed `w-16` rail just shows icons.
+const NAV_GROUPS: { label: string; items: NavItem[] }[] = [
+  {
+    label: "浏览",
+    items: [
+      { href: "/home", labelKey: "nav_home", icon: Home, key: "home" },
+      { href: "/explore", labelKey: "nav_explore", icon: Compass, key: "explore" },
+      { href: "/news", labelKey: "nav_news", icon: Newspaper, key: "news" },
+      { href: "/search", labelKey: "nav_search", icon: Search, key: "search" },
+    ],
+  },
+  {
+    label: "互动",
+    items: [
+      { href: "/notifications", labelKey: "nav_notifications", icon: Bell, key: "notifications", badgeKey: "notifications" },
+      { href: "/messages", labelKey: "nav_messages", icon: Mail, key: "messages", badgeKey: "messages" },
+      { href: "/home?tab=following", labelKey: "tab_following", icon: UserCheck, key: "following" },
+    ],
+  },
+  {
+    label: "信任与会员",
+    items: [{ href: "/membership", labelKey: "mem_title", icon: BadgeCheck, key: "membership" }],
+  },
+  {
+    label: "账户",
+    items: [{ href: "/settings", labelKey: "nav_settings", icon: Settings, key: "settings" }],
+  },
 ];
 
-const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings"]);
+const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings", "following"]);
 
 function currentPathForRedirect(pathname: string | null) {
   if (typeof window === "undefined") return pathname || "/home";
@@ -140,6 +172,57 @@ function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) 
     messages: (conv.data || []).reduce((sum, c) => sum + (c.unread_count || 0), 0),
   };
 
+  const renderNavItem = (item: NavItem) => {
+    const active = pathname?.startsWith(item.href);
+    const Icon = item.icon;
+    const badge = item.badgeKey ? badges[item.badgeKey] : 0;
+    const requiresLogin = AUTH_REQUIRED_NAV.has(item.key);
+    const content = (
+      <>
+        <span className="relative">
+          <Icon className="w-5 h-5" />
+          {badge > 0 ? (
+            <span className="absolute -top-1.5 -right-2 min-w-4 h-4 px-1 rounded-full bg-kx-danger text-white text-[10px] font-bold inline-flex items-center justify-center">
+              {badge > 99 ? "99+" : badge}
+            </span>
+          ) : null}
+        </span>
+        <span className="hidden lg:inline">{t(item.labelKey)}</span>
+      </>
+    );
+    const itemClass = clsx(
+      "flex items-center gap-3 px-3 py-2.5 rounded-full font-semibold text-base transition relative",
+      "hover:bg-kx-soft",
+      active && "bg-kx-accentSoft text-kx-accent",
+    );
+    if (!user && requiresLogin) {
+      return (
+        <button
+          key={item.key}
+          type="button"
+          onClick={() => openAuthPrompt(item.key === "messages" ? "message" : "generic")}
+          className={clsx(itemClass, "text-left")}
+        >
+          {content}
+        </button>
+      );
+    }
+    return (
+      <Link
+        key={item.key}
+        href={item.href}
+        className={itemClass}
+        onClick={() => {
+          if (item.key === "following") {
+            window.dispatchEvent(new CustomEvent("machi:home-tab", { detail: "following" }));
+          }
+        }}
+      >
+        {content}
+      </Link>
+    );
+  };
+
   const onLogout = async () => {
     try { await api.logout(); } catch { /* ignore */ }
     setSessionUser(null);
@@ -149,64 +232,27 @@ function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) 
   };
 
   return (
-    <aside className="hidden md:flex flex-col gap-1 w-16 lg:w-64 shrink-0 py-3 px-2 lg:px-3 sticky top-0 self-start h-dvh">
+    <aside className="hidden md:flex flex-col gap-1 w-16 lg:w-60 shrink-0 py-3 px-2 lg:px-3 sticky top-0 self-start h-dvh">
       <Link href="/home" className="px-3 py-3 inline-flex items-center gap-2 text-kx-text">
         <span className="w-9 h-9 rounded-kx-md bg-kx-accent text-white inline-flex items-center justify-center font-bold text-lg">
           M
         </span>
         <BrandText className="hidden text-base font-black lg:inline">Machi</BrandText>
       </Link>
-      <nav className="flex flex-col gap-0.5 mt-1">
-        {NAV_ITEMS.map((item) => {
-          const active = pathname?.startsWith(item.href);
-          const Icon = item.icon;
-          const badge = item.badgeKey ? badges[item.badgeKey] : 0;
-          const requiresLogin = AUTH_REQUIRED_NAV.has(item.key);
-          const content = (
-            <>
-              <span className="relative">
-                <Icon className="w-5 h-5" />
-                {badge > 0 ? (
-                  <span className="absolute -top-1.5 -right-2 min-w-4 h-4 px-1 rounded-full bg-kx-danger text-white text-[10px] font-bold inline-flex items-center justify-center">
-                    {badge > 99 ? "99+" : badge}
-                  </span>
-                ) : null}
-              </span>
-              <span className="hidden lg:inline">{t(item.labelKey)}</span>
-            </>
-          );
-          const itemClass = clsx(
-            "flex items-center gap-3 px-3 py-2.5 rounded-full font-semibold text-base transition relative",
-            "hover:bg-kx-soft",
-            active && "bg-kx-accentSoft text-kx-accent",
-          );
-          if (!user && requiresLogin) {
-            return (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => openAuthPrompt(item.key === "messages" ? "message" : "generic")}
-                className={clsx(itemClass, "text-left")}
-              >
-                {content}
-              </button>
-            );
-          }
-          return (
-            <Link
-              key={item.key}
-              href={item.href}
-              className={itemClass}
-            >
-              {content}
-            </Link>
-          );
-        })}
+      <nav className="flex flex-col mt-1">
+        {NAV_GROUPS.map((group) => (
+          <div key={group.label} className="flex flex-col gap-0.5">
+            <div className="hidden lg:block px-3 pt-3 pb-1 text-[11px] font-bold uppercase tracking-wide text-kx-muted/80">
+              {group.label}
+            </div>
+            {group.items.map(renderNavItem)}
+          </div>
+        ))}
         {user?.role === "admin" ? (
           <Link
             href="/admin"
             className={clsx(
-              "flex items-center gap-3 px-3 py-2.5 rounded-full font-semibold text-base transition relative hover:bg-kx-soft",
+              "mt-0.5 flex items-center gap-3 px-3 py-2.5 rounded-full font-semibold text-base transition relative hover:bg-kx-soft",
               pathname?.startsWith("/admin") && "bg-kx-accentSoft text-kx-accent",
             )}
           >
@@ -405,15 +451,15 @@ function MobileTabBar({ pathname }: { pathname: string }) {
   const unreadNotif = notif.data?.unread_count ?? 0;
   const unreadMsg = (conv.data || []).reduce((sum, c) => sum + (c.unread_count || 0), 0);
 
-  // 5 slots for the mobile app shell: Home / Discover / Publish /
-  // Messages / Mine. News and the richer "More" surface stay available
-  // from the Mine sheet so older routes are not orphaned.
+  // 5 slots for the mobile app shell: Home / Discover / Publish / News /
+  // Mine. 资讯 is now a first-class entry; 私信 stays reachable from the
+  // per-page top bar and the Mine "More" sheet so nothing is orphaned.
   const items = [
     { kind: "link" as const, href: "/home", label: t("nav_home"), icon: Home, badge: 0 },
     { kind: "link" as const, href: "/explore", label: t("nav_explore"), icon: Compass, badge: 0 },
     { kind: "compose" as const },
-    { kind: "messages" as const, href: "/messages", label: t("nav_messages"), icon: Mail, badge: unreadMsg },
-    { kind: "mine" as const, label: t("nav_profile"), icon: user ? UserIcon : MoreHorizontal, badge: unreadNotif },
+    { kind: "link" as const, href: "/news", label: t("nav_news"), icon: Newspaper, badge: 0 },
+    { kind: "mine" as const, label: user ? t("nav_profile") : "登录", icon: user ? UserIcon : LogIn, badge: unreadNotif },
   ];
 
   return (
@@ -481,15 +527,6 @@ function MobileTabBar({ pathname }: { pathname: string }) {
                 </li>
               );
             }
-            if (item.kind === "messages" && !user) {
-              return (
-                <li key={item.href} className="flex-1">
-                  <button type="button" onClick={() => openAuthPrompt("message")} aria-label={item.label} className={navClass}>
-                    {iconInner}
-                  </button>
-                </li>
-              );
-            }
             return (
               <li key={item.href} className="flex-1">
                 <Link href={item.href} aria-label={item.label} className={navClass}>
@@ -538,6 +575,9 @@ function MobileMoreSheet({
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const appearance = useSettings((s) => s.appearance);
   const setAppearance = useSettings((s) => s.setAppearance);
+  const setStoredSettings = useSettings((s) => s.setSettings);
+  const setLocaleOverride = useUiLocale((s) => s.setOverride);
+  const { locale } = useI18n();
 
   useEffect(() => {
     setMounted(true);
@@ -572,34 +612,51 @@ function MobileMoreSheet({
   };
 
   const redirect = currentPathForRedirect(pathname);
+  const localeOrder: Locale[] = ["zh-Hans", "en", "ja"];
+  const localeLabel = locale === "en" ? "English" : locale === "ja" ? "日本語" : "中文";
+  const switchLanguage = () => {
+    const next = localeOrder[(Math.max(0, localeOrder.indexOf(locale)) + 1) % localeOrder.length];
+    setLocaleOverride(next);
+    if (user) {
+      void api
+        .updateSettings({ language: next })
+        .then(setStoredSettings)
+        .catch(() => pushToast({ kind: "error", message: "语言已在本机切换，但同步到账号失败。" }));
+    }
+  };
+  const openCitySwitcher = () => {
+    onClose();
+    if (!pathname?.startsWith("/home")) {
+      router.push("/home");
+      setTimeout(() => window.dispatchEvent(new CustomEvent("machi:open-region-picker")), 120);
+      return;
+    }
+    window.dispatchEvent(new CustomEvent("machi:open-region-picker"));
+  };
   const loginItem = { href: authRedirectHref("/login", redirect), label: "登录", icon: LogIn };
   const registerItem = { href: authRedirectHref("/register", redirect), label: "注册", icon: UserPlus };
-  const links: Array<{ href?: string; label: string; icon: LucideIcon; badge?: number; authKind?: AuthPromptKind }> = user
-    ? [
-        { href: "/me", label: t("nav_profile"), icon: UserIcon },
-        { href: "/membership", label: t("mem_title"), icon: BadgeCheck },
-        { href: "/membership/exclusive", label: "会员专属", icon: BadgeCheck },
-        { href: "/bookmarks", label: t("action_bookmark"), icon: Bookmark },
-        { href: "/home?tab=following", label: "关注", icon: UserIcon },
-        { href: "/notifications", label: t("nav_notifications"), icon: Bell, badge: unreadNotif },
-        { href: "/messages", label: t("nav_messages"), icon: Mail, badge: unreadMsg },
-        { href: "/settings", label: t("nav_settings"), icon: Settings },
-        { href: "/search", label: t("nav_search"), icon: Search },
-      ]
-    : [
-        loginItem,
-        registerItem,
-        { href: "/membership", label: t("mem_title"), icon: BadgeCheck },
-        { href: "/news", label: t("nav_news"), icon: Newspaper },
-        { href: "/search", label: t("nav_search"), icon: Search },
-        { label: t("action_bookmark"), icon: Bookmark, authKind: "bookmark" },
-        { label: t("nav_notifications"), icon: Bell, authKind: "generic" },
-        { label: t("nav_messages"), icon: Mail, authKind: "message" },
-        { label: t("nav_settings"), icon: Settings, authKind: "generic" },
-      ];
+  const primaryLinks: Array<{ href?: string; label: string; icon: LucideIcon; badge?: number; authKind?: AuthPromptKind; onClick?: () => void; description?: string }> = [
+    { href: "/membership", label: t("mem_title"), icon: BadgeCheck, description: "高信任发布、优先审核、高级收藏" },
+    { href: "/search", label: t("nav_search"), icon: Search },
+    user
+      ? { href: "/notifications", label: t("nav_notifications"), icon: Bell, badge: unreadNotif }
+      : { label: t("nav_notifications"), icon: Bell, authKind: "generic" },
+    user
+      ? { href: "/messages", label: t("nav_messages"), icon: Mail, badge: unreadMsg }
+      : { label: t("nav_messages"), icon: Mail, authKind: "message" },
+    { label: "切换城市", icon: MapPin, onClick: openCitySwitcher },
+    { label: `切换语言 · ${localeLabel}`, icon: Languages, onClick: switchLanguage },
+    user ? { href: "/settings", label: t("nav_settings"), icon: Settings } : { label: t("nav_settings"), icon: Settings, authKind: "generic" },
+  ];
+  const secondaryLinks: typeof primaryLinks = [
+    ...(user ? [{ href: "/me", label: t("nav_profile"), icon: UserIcon }] : [loginItem, registerItem]),
+    ...(user ? [{ href: "/bookmarks", label: t("action_bookmark"), icon: Bookmark }] : []),
+  ];
+  const links = [...primaryLinks];
   if (user?.role === "admin") {
     links.push({ href: "/admin", label: "管理后台", icon: ShieldCheck });
   }
+  links.push(...secondaryLinks);
 
   const promptLogin = (kind: AuthPromptKind) => {
     onClose();
@@ -620,8 +677,8 @@ function MobileMoreSheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby="mobile-more-title"
-        className="fixed inset-x-0 bottom-0 z-[90] max-h-[80dvh] overflow-y-auto overflow-x-hidden overscroll-contain rounded-t-3xl bg-kx-surface shadow-[0_-20px_60px_-20px_rgba(15,23,42,0.35)] transform-gpu animate-kx-slide-up md:hidden"
-        style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 12px)" }}
+        className="fixed inset-x-0 bottom-0 z-[90] max-h-[70dvh] overflow-y-auto overflow-x-hidden overscroll-contain rounded-t-3xl bg-kx-surface shadow-[0_-20px_60px_-20px_rgba(15,23,42,0.35)] transform-gpu animate-kx-slide-up md:hidden"
+        style={{ paddingBottom: "calc(16px + env(safe-area-inset-bottom))" }}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-4 pt-3 pb-2">
@@ -658,7 +715,12 @@ function MobileMoreSheet({
                       </span>
                     ) : null}
                   </span>
-                  <span className="flex-1 text-left">{link.label}</span>
+                  <span className="min-w-0 flex-1 text-left">
+                    <span className="block truncate">{link.label}</span>
+                    {link.description ? (
+                      <span className="mt-0.5 block truncate text-xs font-semibold text-kx-muted">{link.description}</span>
+                    ) : null}
+                  </span>
                 </>
               );
               return (
@@ -667,6 +729,10 @@ function MobileMoreSheet({
                     <Link href={link.href} onClick={onClose} className={rowClass}>
                       {rowContent}
                     </Link>
+                  ) : link.onClick ? (
+                    <button type="button" onClick={link.onClick} className={rowClass}>
+                      {rowContent}
+                    </button>
                   ) : (
                     <button type="button" onClick={() => promptLogin(link.authKind ?? "generic")} className={rowClass}>
                       {rowContent}

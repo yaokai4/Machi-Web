@@ -8683,7 +8683,9 @@ class Handler(BaseHTTPRequestHandler):
         viewer_id = viewer["user_id"] if viewer else None
         viewer_payload = {"id": viewer_id} if viewer_id else None
         can_interact = bool(viewer_id)
-        mode = query.get("mode") or "recommend"
+        mode = (query.get("mode") or "recommend").strip().lower()
+        if mode not in {"recommend", "plaza", "local", "following", "hot"}:
+            mode = "recommend"
         limit = max(1, min(int(query.get("limit") or 20), 50))
         cursor = cursor_decode(query.get("cursor"))
 
@@ -8698,6 +8700,11 @@ class Handler(BaseHTTPRequestHandler):
         raw_types = query.get("content_type") or query.get("content_types") or ""
         content_types = [normalize_content_type(v) for v in raw_types.split(",") if v.strip()]
         content_types = [v for v in dict.fromkeys(content_types) if v in CONTENT_TYPES]
+        if mode == "plaza" and not content_types:
+            content_types = [
+                "dynamic", "local_info", "guide", "question", "rant",
+                "meetup", "dining", "event", "warning",
+            ]
         if content_types:
             type_clause = " AND p.content_type IN (%s)" % ",".join("?" * len(content_types))
             type_params.extend(content_types)
