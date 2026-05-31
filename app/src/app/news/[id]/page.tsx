@@ -3,8 +3,8 @@
 import { use, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bookmark, ChevronLeft, ExternalLink, MessageCircle, Send, Share2 } from "lucide-react";
-import { api, APIError, isAuthRequiredError } from "@/lib/api";
+import { Bookmark, BadgeCheck, ChevronLeft, ExternalLink, MessageCircle, Send, Share2, ShieldCheck, Sparkles } from "lucide-react";
+import { api, APIError, isAuthRequiredError, type EditorialPost } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
@@ -17,6 +17,31 @@ function newsCityLabel(city?: string | null): string {
   if (normalized === "tokyo") return "Tokyo";
   if (normalized === "osaka") return "Osaka";
   return "Japan-wide";
+}
+
+function editorialNote(post: EditorialPost) {
+  if (post.official_source_required || post.risk_level === "high") {
+    return {
+      Icon: ShieldCheck,
+      title: "官方来源优先",
+      body: "这类资讯会影响出行、安全或手续判断，Machi 保留原文入口，并建议以官方发布为最终依据。",
+      className: "border-amber-400/30 bg-amber-400/10 text-amber-800 dark:text-amber-200",
+    };
+  }
+  if (post.is_ai_assisted) {
+    return {
+      Icon: Sparkles,
+      title: "编辑部辅助整理",
+      body: "内容由公开来源整理并经编辑模板转写，重点信息、来源与原文入口会一并保留。",
+      className: "border-sky-400/30 bg-sky-400/10 text-sky-800 dark:text-sky-200",
+    };
+  }
+  return {
+    Icon: BadgeCheck,
+    title: "来源已标注",
+    body: "这条资讯来自公开来源，Machi 保留来源名称、时间和原文入口，方便继续查证。",
+    className: "border-emerald-400/30 bg-emerald-400/10 text-emerald-800 dark:text-emerald-200",
+  };
 }
 
 export default function NewsDetailPage({ params }: { params: Promise<{ id: string }> }) {
@@ -93,6 +118,8 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
   }
 
   const post = detail.data.post;
+  const note = editorialNote(post);
+  const NoteIcon = note.Icon;
 
   return (
     <AppShell requireAuth={false}>
@@ -115,29 +142,44 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
           <span>{newsCityLabel(post.city)}</span>
           <span>{post.language}</span>
           {post.published_at ? <span>{relativeTime(post.published_at)}</span> : null}
+          {post.is_ai_assisted ? <span className="rounded-full bg-sky-400/10 px-2 py-1 text-sky-700 dark:text-sky-300">AI 辅助整理</span> : null}
         </div>
 
         <h2 className="text-2xl font-black leading-tight tracking-normal text-kx-text">{post.title}</h2>
 
-        <div className="mt-4 flex items-center gap-2 rounded-kx-md bg-kx-soft/70 px-3 py-2">
+        <div className="mt-4 flex items-center gap-2 rounded-kx-lg border border-kx-stroke/50 bg-kx-card px-3 py-3">
           <div className="grid h-9 w-9 place-items-center rounded-kx-md bg-kx-accent text-white font-black">M</div>
           <div className="min-w-0">
             <div className="text-sm font-bold">{post.author_display_name}</div>
-            <div className="text-xs text-kx-muted">Machi 官方编辑部</div>
+            <div className="truncate text-xs text-kx-muted">
+              Machi 本地资讯台 · {post.source_name || "公开来源"}
+            </div>
           </div>
         </div>
 
         {post.summary ? (
-          <p className="mt-4 rounded-kx-md border border-kx-stroke/50 bg-kx-card px-3 py-3 text-sm font-semibold leading-6 text-kx-text">
+          <p className="mt-4 rounded-kx-lg border border-kx-stroke/50 bg-kx-card px-3 py-3 text-sm font-semibold leading-6 text-kx-text">
             {post.summary}
           </p>
         ) : null}
 
-        <div className="prose prose-sm max-w-none whitespace-pre-wrap py-5 leading-7 text-kx-text dark:prose-invert">
-          {post.body}
+        <div className={`mt-3 rounded-kx-lg border px-3 py-3 text-sm leading-6 ${note.className}`}>
+          <div className="flex items-start gap-2">
+            <NoteIcon className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <div className="font-black">{note.title}</div>
+              <div className="mt-0.5 text-xs font-semibold leading-5 opacity-90">{note.body}</div>
+            </div>
+          </div>
         </div>
 
-        <div className="rounded-kx-md border border-kx-stroke/60 bg-kx-soft/60 px-3 py-3 text-sm">
+        <div className="mt-4 rounded-kx-lg border border-kx-stroke/50 bg-kx-card px-3 py-4">
+          <div className="prose prose-sm max-w-none whitespace-pre-wrap leading-7 text-kx-text dark:prose-invert">
+            {post.body}
+          </div>
+        </div>
+
+        <div className="mt-3 rounded-kx-lg border border-kx-stroke/60 bg-kx-soft/60 px-3 py-3 text-sm">
           <div className="font-bold text-kx-text">来源：{post.source_name || "Machi Local Desk"}</div>
           {post.source_published_at ? <div className="mt-1 text-xs text-kx-muted">原文发布时间：{fullDateTime(post.source_published_at)}</div> : null}
           {(post.original_url || post.source_url) ? (
@@ -146,12 +188,6 @@ export default function NewsDetailPage({ params }: { params: Promise<{ id: strin
             </a>
           ) : null}
         </div>
-
-        {(post.official_source_required || post.risk_level === "high") ? (
-          <div className="mt-3 rounded-kx-md border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold leading-5 text-kx-text">
-            此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。
-          </div>
-        ) : null}
 
         {post.tags.length > 0 ? (
           <div className="mt-3 flex flex-wrap gap-1.5">

@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Bookmark, Languages, MapPin, Newspaper, SlidersHorizontal } from "lucide-react";
-import { api, type NewsCategory } from "@/lib/api";
+import { Bookmark, BadgeCheck, Languages, MapPin, Newspaper, ShieldCheck, SlidersHorizontal, Sparkles } from "lucide-react";
+import { api, type EditorialPost, type NewsCategory } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { NEWS_CATEGORY_LABELS } from "@/components/news/LocalNewsStrip";
@@ -53,6 +53,26 @@ function cityLabel(city?: string | null): string {
   return "Japan-wide";
 }
 
+function qualityTone(item: EditorialPost) {
+  if (item.official_source_required || item.risk_level === "high") {
+    return { label: "官方来源优先", className: "bg-amber-400/12 text-amber-700 dark:text-amber-300", Icon: ShieldCheck };
+  }
+  if (item.is_ai_assisted) {
+    return { label: "编辑部辅助整理", className: "bg-sky-400/12 text-sky-700 dark:text-sky-300", Icon: Sparkles };
+  }
+  return { label: "来源已标注", className: "bg-emerald-400/12 text-emerald-700 dark:text-emerald-300", Icon: BadgeCheck };
+}
+
+function QualityBadge({ item }: { item: EditorialPost }) {
+  const tone = qualityTone(item);
+  const Icon = tone.Icon;
+  return (
+    <span className={`inline-flex h-6 items-center gap-1 rounded-full px-2 text-[11px] font-bold ${tone.className}`}>
+      <Icon className="h-3 w-3" /> {tone.label}
+    </span>
+  );
+}
+
 export function NewsListClient({ presetCity = "", title = "本地资讯", subtitle = "看看这座城市最近发生了什么。" }: {
   presetCity?: "" | "tokyo" | "osaka";
   title?: string;
@@ -88,6 +108,12 @@ export function NewsListClient({ presetCity = "", title = "本地资讯", subtit
             <h1 className="text-xl font-black">{title}</h1>
             <p className="text-xs text-kx-muted">{subtitle}</p>
           </div>
+        </div>
+
+        <div className="mt-3 flex flex-wrap gap-1.5 text-[11px] font-semibold text-kx-muted">
+          <span className="rounded-kx-sm bg-kx-card/75 px-2 py-1.5">来源可追溯</span>
+          <span className="rounded-kx-sm bg-kx-card/75 px-2 py-1.5">城市维度</span>
+          <span className="rounded-kx-sm bg-kx-card/75 px-2 py-1.5">人工复核优先</span>
         </div>
 
         <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -136,7 +162,7 @@ export function NewsListClient({ presetCity = "", title = "本地资讯", subtit
         ) : (
           <div className="space-y-3">
             {list.data.items.map((item) => (
-              <Link key={item.id} href={`/news/${item.id}`} className="kx-card block hover:border-kx-accent/40 transition">
+              <Link key={item.id} href={`/news/${item.id}`} className="group block rounded-kx-lg border border-kx-stroke/60 bg-kx-card/90 p-3 shadow-sm transition hover:border-kx-accent/40 hover:bg-kx-soft/60">
                 <div className="flex items-start gap-3">
                   <div className="mt-1 grid h-9 w-9 shrink-0 place-items-center rounded-kx-md bg-kx-accentSoft text-kx-accent">
                     {item.category === "traffic_alert" ? <MapPin className="h-4 w-4" /> : item.category === "policy_update" ? <Languages className="h-4 w-4" /> : <Newspaper className="h-4 w-4" />}
@@ -147,13 +173,18 @@ export function NewsListClient({ presetCity = "", title = "本地资讯", subtit
                       <span>·</span>
                       <span>{cityLabel(item.city)}</span>
                       <span>·</span>
-                      <span>{item.author_display_name}</span>
+                      <span>{item.language}</span>
                       {item.published_at ? <><span>·</span><span>{relativeTime(item.published_at)}</span></> : null}
                     </div>
-                    <h2 className="line-clamp-2 text-base font-black leading-snug text-kx-text">{item.title}</h2>
+                    <h2 className="line-clamp-2 text-base font-black leading-snug text-kx-text group-hover:text-kx-accent">{item.title}</h2>
                     <p className="mt-1 line-clamp-3 text-sm leading-6 text-kx-subtle">{item.summary || item.body}</p>
+                    <div className="mt-3 flex flex-wrap items-center gap-1.5">
+                      <QualityBadge item={item} />
+                      <span className="inline-flex h-6 max-w-full items-center rounded-full bg-kx-soft px-2 text-[11px] font-semibold text-kx-muted">
+                        <span className="truncate">{item.source_name || "Machi Local Desk"}</span>
+                      </span>
+                    </div>
                     <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-kx-muted">
-                      <span>{item.source_name || "Machi Local Desk"}</span>
                       <span className="inline-flex items-center gap-1"><Bookmark className="h-3 w-3" /> {item.save_count}</span>
                       <span>分享 {item.share_count}</span>
                       <span>评论 {item.comment_count}</span>

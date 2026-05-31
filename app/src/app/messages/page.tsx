@@ -1,10 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
-import { Mail, PenSquare, Search, Trash2 } from "lucide-react";
+import { Mail, MessageCircle, PenSquare, Search, Trash2 } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
@@ -22,8 +22,9 @@ export default function MessagesPage() {
   const pushToast = useToasts((s) => s.push);
   const { t } = useI18n();
   const [newOpen, setNewOpen] = useState(false);
-  const [search, setSearch] = useState("");
-  const debouncedSearch = useDebounce(search, 250);
+  const [listFilter, setListFilter] = useState("");
+  const [peerSearchText, setPeerSearchText] = useState("");
+  const debouncedSearch = useDebounce(peerSearchText, 250);
 
   const convos = useQuery({
     queryKey: ["conversations"],
@@ -56,13 +57,46 @@ export default function MessagesPage() {
     }
   };
 
+  const visibleConvos = useMemo(() => {
+    const items = convos.data || [];
+    const q = listFilter.trim().toLowerCase();
+    if (!q) return items;
+    return items.filter((conv) => {
+      const peer = conv.peer;
+      const haystack = [
+        peer?.display_name,
+        peer?.handle,
+        conv.last_message?.content,
+        conv.last_message?.media?.length ? "图片 视频 附件 media" : "",
+      ].filter(Boolean).join(" ").toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [convos.data, listFilter]);
+
   return (
     <AppShell>
-      <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
-        <h1 className="text-lg font-bold">{t("msg_title")}</h1>
-        <button onClick={() => setNewOpen(true)} className="kx-button-ghost h-9 ml-auto" aria-label={t("msg_new")}>
-          <PenSquare className="w-4 h-4" /> {t("msg_new")}
-        </button>
+      <header className="sticky top-0 z-30 kx-glass-bar px-3 py-3">
+        <div className="flex items-center gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-kx-md bg-kx-accentSoft text-kx-accent">
+            <MessageCircle className="h-5 w-5" />
+          </div>
+          <div className="min-w-0">
+            <h1 className="text-lg font-black leading-tight">{t("msg_title")}</h1>
+            <p className="truncate text-xs text-kx-muted">朋友、商家和同城联系集中在这里</p>
+          </div>
+          <button onClick={() => setNewOpen(true)} className="kx-button-primary ml-auto h-9 shrink-0" aria-label={t("msg_new")}>
+            <PenSquare className="w-4 h-4" /> <span className="hidden sm:inline">{t("msg_new")}</span>
+          </button>
+        </div>
+        <label className="mt-3 flex h-10 items-center gap-2 rounded-kx-md border border-kx-stroke/70 bg-kx-card/80 px-3 text-sm text-kx-muted">
+          <Search className="h-4 w-4 shrink-0" />
+          <input
+            value={listFilter}
+            onChange={(e) => setListFilter(e.target.value)}
+            placeholder="搜索会话、用户名或消息内容"
+            className="min-w-0 flex-1 bg-transparent text-kx-text outline-none placeholder:text-kx-muted"
+          />
+        </label>
       </header>
 
       {convos.isLoading ? (
@@ -71,22 +105,24 @@ export default function MessagesPage() {
         <ErrorState onRetry={() => convos.refetch()} />
       ) : !convos.data?.length ? (
         <EmptyState title={t("msg_empty_title")} subtitle={t("msg_empty_subtitle")} icon={Mail} />
+      ) : !visibleConvos.length ? (
+        <EmptyState title="没有匹配的会话" subtitle="换个关键词试试，或者发起一条新私信。" icon={Search} />
       ) : (
-        <ul className="divide-y divide-kx-stroke/30">
-          {convos.data.map((conv) => {
+        <ul className="space-y-2 px-3 py-3 sm:px-4">
+          {visibleConvos.map((conv) => {
             const peer = conv.peer;
             return (
               <li key={conv.id} className="group">
                 <Link
                   href={`/messages/${conv.id}`}
-                  className="flex items-center gap-3 px-3 sm:px-4 py-3 hover:bg-kx-soft"
+                  className="flex items-center gap-3 rounded-kx-lg border border-kx-stroke/60 bg-kx-card/90 px-3 py-3 shadow-sm transition hover:border-kx-accent/35 hover:bg-kx-soft/70"
                 >
                   <Avatar user={peer || undefined} size={44} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className="font-semibold truncate">{peer?.display_name || "用户"}</span>
+                      <span className="min-w-0 truncate font-semibold">{peer?.display_name || "用户"}</span>
                       {showVerifiedBadge(peer) ? <VerifiedBadge /> : null}
-                      <span className="text-kx-muted text-xs truncate">@{peer?.handle}</span>
+                      <span className="min-w-0 truncate text-xs text-kx-muted">@{peer?.handle || "unknown"}</span>
                       {conv.last_message ? (
                         <span className="ml-auto text-xs text-kx-muted shrink-0">
                           {relativeTime(conv.last_message.created_at)}
@@ -98,12 +134,12 @@ export default function MessagesPage() {
                     </div>
                   </div>
                   {conv.unread_count > 0 ? (
-                    <span className="bg-kx-accent text-white text-xs rounded-full min-w-5 h-5 inline-flex items-center justify-center px-1.5">
+                    <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-kx-accent px-1.5 text-xs text-white">
                       {conv.unread_count}
                     </span>
                   ) : null}
                   <button
-                    className="opacity-0 group-hover:opacity-100 text-kx-muted hover:text-kx-danger p-1"
+                    className="rounded-full p-1 text-kx-muted opacity-100 transition hover:bg-kx-danger/10 hover:text-kx-danger sm:opacity-0 sm:group-hover:opacity-100"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -126,8 +162,8 @@ export default function MessagesPage() {
           <input
             className="kx-input flex-1"
             placeholder={t("msg_search_user")}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            value={peerSearchText}
+            onChange={(e) => setPeerSearchText(e.target.value)}
             autoFocus
           />
         </div>

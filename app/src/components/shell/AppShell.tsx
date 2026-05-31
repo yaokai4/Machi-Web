@@ -115,6 +115,7 @@ export function AppShell({ children, right, requireAuth = true }: AppShellProps)
 
   useRealtime();
   useGlobalShortcuts();
+  const ownsViewportBottom = ["/messages/", "/admin"].some((p) => pathname?.startsWith(p));
 
   if (status === "loading" || status === "idle" || (requireAuth && status === "unauthed")) {
     return (
@@ -132,7 +133,7 @@ export function AppShell({ children, right, requireAuth = true }: AppShellProps)
       <div className="mx-auto max-w-kx-shell flex">
         <Sidebar pathname={pathname} user={user} />
         <main className="flex-1 min-w-0 border-x border-kx-stroke/35 lg:max-w-kx-feed bg-kx-bg/35">
-          <div className="pb-28 md:pb-8 kx-page-enter">
+          <div className={clsx("kx-page-enter", ownsViewportBottom ? "pb-0" : "pb-28 md:pb-8")}>
             <ErrorBoundary>{children}</ErrorBoundary>
           </div>
         </main>

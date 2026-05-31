@@ -523,7 +523,10 @@ export default function HomeClient() {
   };
 
   return (
-    <AppShell requireAuth={false} right={<TodayInCityRail region={currentRegion} langLabel={langLabel} />}>
+    <AppShell
+      requireAuth={false}
+      right={tab === "recommend" ? <TodayInCityRail region={currentRegion} langLabel={langLabel} /> : undefined}
+    >
       <div data-scrolled={scrolled ? "true" : "false"} className="sticky top-0 z-30 kx-glass-bar px-3 pt-2 pb-2 flex flex-col gap-2">
         {/* Row 1 — city context: who's here, which city, which language. */}
         <div className="flex items-center gap-2">
@@ -625,12 +628,12 @@ export default function HomeClient() {
 
       <div className="px-3 sm:px-4 py-3 space-y-3">
         {/* City summary + news live in the right rail on `xl`; on narrower
-            screens they ride at the top of the single column. The news
-            strip is redundant while the 资讯 tab is active. */}
+            screens the city banner stays as context, while local news only
+            opens the recommendation surface instead of repeating on every tab. */}
         <div className="xl:hidden">
           <CityBanner cityName={cityName} countryName={countryName} langLabel={langLabel} onPublish={goPublish} />
         </div>
-        {!isNews ? (
+        {tab === "recommend" ? (
           <div className="xl:hidden">
             <LocalNewsStrip
               country={currentRegion?.country_code || userCountry}

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, RefreshCw, Rss } from "lucide-react";
+import { BadgeCheck, Clock3, ExternalLink, FileText, RefreshCw, Rss, ShieldCheck } from "lucide-react";
 import { api, APIError, type EditorialPost, type NewsItem, type NewsSource } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
@@ -29,6 +29,20 @@ const CATEGORY_OPTIONS = [
   "education", "health", "travel", "editor_pick", "weekly_digest", "other",
 ] as const;
 
+function cityName(city?: string | null) {
+  if (city === "tokyo") return "Tokyo";
+  if (city === "osaka") return "Osaka";
+  return "Japan-wide";
+}
+
+function itemStatusClass(status?: string) {
+  if (status === "fetched") return "bg-sky-400/12 text-sky-700 dark:text-sky-300";
+  if (status === "draft_created") return "bg-emerald-400/12 text-emerald-700 dark:text-emerald-300";
+  if (status === "ignored" || status === "duplicate") return "bg-kx-soft text-kx-muted";
+  if (status === "error") return "bg-kx-danger/10 text-kx-danger";
+  return "bg-kx-soft text-kx-muted";
+}
+
 export function JapanCrawlerRouteClient({ tab }: { tab: Tab }) {
   return (
     <AppShell>
@@ -36,6 +50,11 @@ export function JapanCrawlerRouteClient({ tab }: { tab: Tab }) {
         <header className="mb-3">
           <div className="text-xs font-bold text-kx-accent">Japan Local News Desk</div>
           <h1 className="text-2xl font-black">日本资讯爬虫</h1>
+          <div className="mt-2 grid gap-2 text-xs font-semibold text-kx-muted sm:grid-cols-3">
+            <span className="inline-flex items-center gap-1.5 rounded-kx-md bg-kx-card px-2.5 py-2"><Rss className="h-3.5 w-3.5 text-kx-accent" /> 采集队列</span>
+            <span className="inline-flex items-center gap-1.5 rounded-kx-md bg-kx-card px-2.5 py-2"><ShieldCheck className="h-3.5 w-3.5 text-emerald-600" /> 来源校验</span>
+            <span className="inline-flex items-center gap-1.5 rounded-kx-md bg-kx-card px-2.5 py-2"><FileText className="h-3.5 w-3.5 text-sky-600" /> 编辑草稿</span>
+          </div>
         </header>
         <div className="kx-card mb-3 p-2">
           <NavTabs
@@ -80,6 +99,32 @@ function Dashboard() {
           </div>
         ))}
       </div>
+      <section className="grid gap-3 md:grid-cols-3">
+        <div className="kx-card">
+          <div className="flex items-center gap-2 text-sm font-black"><Rss className="h-4 w-4 text-kx-accent" /> 采集</div>
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-semibold text-kx-muted">
+            <span className="rounded-full bg-kx-soft px-2 py-1">RSS</span>
+            <span className="rounded-full bg-kx-soft px-2 py-1">meta</span>
+            <span className="rounded-full bg-kx-soft px-2 py-1">html_list</span>
+          </div>
+        </div>
+        <div className="kx-card">
+          <div className="flex items-center gap-2 text-sm font-black"><BadgeCheck className="h-4 w-4 text-emerald-600" /> 去重</div>
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-semibold text-kx-muted">
+            <span className="rounded-full bg-kx-soft px-2 py-1">source</span>
+            <span className="rounded-full bg-kx-soft px-2 py-1">city</span>
+            <span className="rounded-full bg-kx-soft px-2 py-1">hash</span>
+          </div>
+        </div>
+        <div className="kx-card">
+          <div className="flex items-center gap-2 text-sm font-black"><FileText className="h-4 w-4 text-sky-600" /> 发布</div>
+          <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-semibold text-kx-muted">
+            <span className="rounded-full bg-kx-soft px-2 py-1">draft</span>
+            <span className="rounded-full bg-kx-soft px-2 py-1">review</span>
+            <span className="rounded-full bg-kx-soft px-2 py-1">publish</span>
+          </div>
+        </div>
+      </section>
       <section className="kx-card">
         <h2 className="mb-3 text-sm font-black">最近发布</h2>
         <div className="space-y-2">
@@ -276,7 +321,13 @@ function Items() {
   return (
     <section className="kx-card p-0">
       <div className="space-y-2 border-b border-kx-stroke/40 p-3">
-        <div className="text-sm font-black">内容池</div>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="text-sm font-black">内容池</div>
+            <div className="text-xs text-kx-muted">{selectedIds.length ? `已选择 ${selectedIds.length} 条` : "待处理抓取结果"}</div>
+          </div>
+          <button className="kx-button-primary h-9" disabled={!selectedIds.length} onClick={bulkCreate}>生成编辑部草稿</button>
+        </div>
         <div className="flex flex-wrap gap-2">
           <select className="kx-input h-9 w-36" value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="fetched">fetched</option><option value="draft_created">draft_created</option><option value="ignored">ignored</option><option value="duplicate">duplicate</option><option value="error">error</option><option value="deleted">deleted</option>
@@ -293,7 +344,6 @@ function Items() {
             <option value="">全部分类</option>
             {CATEGORY_OPTIONS.map((cat) => <option key={cat} value={cat}>{cat}</option>)}
           </select>
-          <button className="kx-button-primary h-9" disabled={!selectedIds.length} onClick={bulkCreate}>将选中内容创建为编辑部草稿</button>
           <button className="kx-button-ghost h-9" disabled={!selectedIds.length} onClick={() => bulkStatus("ignored")}>忽略</button>
           <button className="kx-button-ghost h-9" disabled={!selectedIds.length} onClick={() => bulkStatus("duplicate")}>标记重复</button>
           <button className="kx-button-ghost h-9 text-kx-danger" disabled={!selectedIds.length} onClick={bulkDelete}>删除</button>
@@ -304,13 +354,35 @@ function Items() {
           <div key={item.id} className="flex flex-col gap-2 p-3 md:flex-row md:items-start">
             <input className="mt-1 h-4 w-4" type="checkbox" checked={selectedIds.includes(item.id)} onChange={() => toggle(item.id)} aria-label="选择内容" />
             <div className="min-w-0 flex-1">
-              <div className="line-clamp-2 font-bold">{item.original_title}</div>
-              <div className="mt-1 text-xs text-kx-muted">{item.source_name} · {item.city || "Japan-wide"} · {item.category}</div>
+              <div className="mb-1 flex flex-wrap items-center gap-1.5">
+                <span className={`inline-flex h-6 items-center rounded-full px-2 text-[11px] font-bold ${itemStatusClass(item.status)}`}>
+                  {item.status}
+                </span>
+                <span className="inline-flex h-6 items-center gap-1 rounded-full bg-kx-soft px-2 text-[11px] font-semibold text-kx-muted">
+                  <Clock3 className="h-3 w-3" />
+                  {item.published_at ? relativeTime(item.published_at) : item.fetched_at ? relativeTime(item.fetched_at) : "no time"}
+                </span>
+              </div>
+              <div className="line-clamp-2 font-bold leading-snug">{item.original_title}</div>
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-kx-muted">
+                <span>{item.source_name}</span>
+                <span>·</span>
+                <span>{cityName(item.city)}</span>
+                <span>·</span>
+                <span>{item.original_language}</span>
+                <span>·</span>
+                <span>{item.category}</span>
+              </div>
               {item.original_summary ? <div className="mt-1 line-clamp-2 text-sm text-kx-subtle">{item.original_summary}</div> : null}
             </div>
-            {item.original_url ? <a className="kx-button-ghost h-8" href={item.original_url} target="_blank" rel="noreferrer"><ExternalLink className="h-4 w-4" /></a> : null}
-            <button className="kx-button-primary h-8" onClick={() => createDraft(item)}>创建草稿</button>
-            <button className="kx-button-ghost h-8" onClick={() => createDraft(item)}>发布到本地资讯</button>
+            <div className="flex shrink-0 flex-wrap gap-1.5 md:justify-end">
+              {item.original_url ? <a className="kx-button-ghost h-8" href={item.original_url} target="_blank" rel="noreferrer"><ExternalLink className="h-4 w-4" /> 原文</a> : null}
+              {item.status === "draft_created" ? (
+                <span className="inline-flex h-8 items-center rounded-kx-sm bg-emerald-400/12 px-2 text-xs font-bold text-emerald-700 dark:text-emerald-300">已建草稿</span>
+              ) : (
+                <button className="kx-button-primary h-8" onClick={() => createDraft(item)}>生成草稿</button>
+              )}
+            </div>
           </div>
         ))}
         {!q.data.items.length ? <EmptyState title="暂无待处理内容" /> : null}

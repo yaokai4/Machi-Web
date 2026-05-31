@@ -181,7 +181,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   };
 
   return (
-    <div>
+    <div className="min-w-0">
       <div className="relative">
         <div
           className="h-24 sm:h-40 w-full"
@@ -195,7 +195,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
             <div className="rounded-kx-lg ring-4 ring-kx-bg bg-kx-bg">
               <Avatar user={user} size={72} className="sm:!w-[88px] sm:!h-[88px]" />
             </div>
-            <div className="flex items-center gap-2 mb-2">
+            <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
               {isSelf ? (
                 <button className="kx-button-ghost" onClick={() => setEditOpen(true)}>
                   <Edit3 className="w-4 h-4" /> 编辑资料
@@ -278,13 +278,15 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
         </div>
       </div>
 
-      <div className="mt-4 sticky top-[52px] z-20">
-        <NavTabs
-          items={filteredSegments.map((s) => ({ value: s.value, label: s.label }))}
-          value={segment}
-          onChange={(v) => setSegment(v as ProfileSegment)}
-          equalWidth
-        />
+      <div className="mt-4">
+        <div className="sticky top-0 z-30 border-y border-kx-stroke/40 bg-kx-bg/85 px-3 py-2 backdrop-blur supports-[backdrop-filter]:bg-kx-bg/70">
+          <NavTabs
+            items={filteredSegments.map((s) => ({ value: s.value, label: s.label }))}
+            value={segment}
+            onChange={(v) => setSegment(v as ProfileSegment)}
+            equalWidth
+          />
+        </div>
       </div>
 
       <div className="px-3 sm:px-4 py-3 space-y-3">

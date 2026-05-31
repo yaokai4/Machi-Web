@@ -417,7 +417,7 @@ POST_STATUSES: set[str] = {"published", "active", "hidden", "deleted", "under_re
 # user posts: editorial content is authored by official desk identities,
 # keeps source attribution, and never impersonates ordinary users.
 NEWS_DESK_USER_AGENT = _env("KAIX_NEWS_DESK_USER_AGENT", "MachiBot/1.0 (+https://machicity.com)")
-NEWS_DESK_PROMPT_VERSION = "machi_editorial_xhs_style_v1"
+NEWS_DESK_PROMPT_VERSION = "machi_editorial_city_brief_v2"
 NEWS_SOURCE_TYPES = {"rss", "webpage", "html_list", "manual"}
 NEWS_CRAWL_STRATEGIES = {"rss", "meta_only", "html_list", "manual"}
 NEWS_CREDIBILITY_LEVELS = {"official", "media", "community", "commercial"}
