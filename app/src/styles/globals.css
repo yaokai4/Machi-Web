@@ -9,10 +9,6 @@
    ============================================================ */
 
 :root {
-  --kx-visual-viewport-height: 100dvh;
-  --kx-visual-viewport-offset-top: 0px;
-  --kx-keyboard-inset: 0px;
-
   /* base palette — light */
   --kx-bg: 246 247 249;             /* systemGroupedBackground */
   --kx-surface: 255 255 255;        /* cardBackground */
@@ -22,10 +18,10 @@
      light that on a white card it was barely visible. The new value
      is still soft (not a hard divider) but reads on first glance. */
   --kx-stroke: 172 181 195;
-  --kx-text: 51 51 51;
+  --kx-text: 18 20 24;
   --kx-subtle: 79 86 96;
   --kx-muted: 138 145 158;
-  --kx-accent: 29 78 216;
+  --kx-accent: 37 99 235;
   --kx-accent-soft: 231 238 255;
   --kx-heat: 204 112 37;
   --kx-like: 232 62 119;
@@ -92,42 +88,40 @@ body {
 
 body {
   min-height: 100dvh;
-  color: #333333;
-  background:
-    linear-gradient(45deg, #FFFEFC 0%, #FCF7F1 24%, #F8FBFF 48%, #F6FBF7 72%, #FFF9F4 100%);
-  background-size: 100% 100%;
+  background-image: linear-gradient(180deg, rgb(var(--kx-bg)) 0%, rgb(241 244 248) 100%);
 }
 
 :root.dark body, [data-theme="dark"] body {
-  background-color: #121019;
-  background-image:
-    linear-gradient(180deg, rgb(22 18 24) 0%, rgb(18 16 23) 48%, rgb(12 13 18) 100%);
-  background-size: 400% 400%;
+  background-image: linear-gradient(180deg, rgb(var(--kx-bg)) 0%, rgb(12 14 18) 100%);
 }
 
+/* Aurora depth: a barely-there drifting colour field that sits behind all
+   content (never intercepts clicks). Brand accent + two soft hues at very
+   low opacity so the glass cards read as floating. Drift is disabled under
+   prefers-reduced-motion (see below). */
 body::before {
-  content: none;
+  content: "";
+  position: fixed;
+  inset: -25vmax;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(38vmax 38vmax at 12% 6%, rgb(255 107 74 / 0.12), transparent 60%),
+    radial-gradient(32vmax 32vmax at 88% 2%, rgb(79 70 229 / 0.08), transparent 60%),
+    radial-gradient(42vmax 42vmax at 72% 96%, rgb(22 163 74 / 0.05), transparent 62%);
+  filter: blur(18px) saturate(1.04);
+  animation: kx-aurora 30s ease-in-out infinite alternate;
 }
-
-@keyframes ambientWarmth {
-  0% { background-position: 0% 50%; }
-  50% { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
+:root.dark body::before, [data-theme="dark"] body::before {
+  background:
+    radial-gradient(40vmax 40vmax at 10% 4%, rgb(255 107 74 / 0.18), transparent 60%),
+    radial-gradient(34vmax 34vmax at 90% 2%, rgb(79 70 229 / 0.14), transparent 60%),
+    radial-gradient(44vmax 44vmax at 72% 96%, rgb(22 163 74 / 0.08), transparent 62%);
 }
-
-@keyframes ambientPrism {
-  0% {
-    transform: translate3d(-1.5%, -1%, 0) scale(1);
-    background-position: 0% 44%, 96% 18%, 78% 92%, 18% 88%;
-  }
-  45% {
-    transform: translate3d(1.2%, 0.8%, 0) scale(1.035);
-    background-position: 18% 36%, 82% 28%, 88% 76%, 28% 72%;
-  }
-  100% {
-    transform: translate3d(-0.6%, 1.4%, 0) scale(1.06);
-    background-position: 6% 56%, 92% 12%, 68% 84%, 12% 78%;
-  }
+@keyframes kx-aurora {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(2%, 1.5%, 0) scale(1.06); }
+  100% { transform: translate3d(-1.5%, 2%, 0) scale(1.03); }
 }
 
 /* Accessibility + perf: honour the OS "reduce motion" setting. Animations
@@ -182,19 +176,22 @@ body::before {
 
 @layer components {
   .kx-glass-surface {
+    /* Borderless "无界悬浮": no 1px stroke — separation comes from a wide,
+       soft diffuse shadow + the card sitting lighter than the page bg.
+       Larger radius (kx-lg / 20px) for the premium feel. A whisper-thin
+       inset ring (invisible in light, a faint edge in dark) keeps cards
+       from melting into the dark surface. */
     @apply rounded-kx-lg text-kx-text;
-    background: #FFFFFF;
-    border: 1px solid rgba(0, 0, 0, 0.05);
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.03);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-
-  :root.dark .kx-glass-surface,
-  [data-theme="dark"] .kx-glass-surface {
-    background: rgb(var(--kx-card));
-    border-color: rgba(255, 255, 255, 0.08);
-    box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
+    background:
+      linear-gradient(180deg, rgb(var(--kx-card) / 0.99), rgb(var(--kx-card) / 0.96)),
+      linear-gradient(135deg, rgb(255 255 255 / 0.50), rgb(var(--kx-soft) / 0.30));
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.55),
+      inset 0 0 0 1px rgb(var(--kx-stroke) / 0.08),
+      0 1px 2px rgb(var(--kx-shadow) / 0.04),
+      0 10px 34px -14px rgb(var(--kx-shadow) / 0.12);
+    backdrop-filter: blur(16px) saturate(1.12);
+    -webkit-backdrop-filter: blur(16px) saturate(1.12);
   }
 
   .kx-glass-capsule {
@@ -211,179 +208,12 @@ body::before {
     -webkit-backdrop-filter: blur(28px) saturate(1.45);
   }
 
-  .kx-mobile-tabbar {
-    position: fixed;
-    left: 50%;
-    z-index: 46;
-    width: min(calc(100vw - 1.2rem), 23.5rem);
-    transform: translateX(-50%);
-    border: 1px solid rgba(255, 255, 255, 0.8);
-    border-radius: 999px;
-    background: rgba(255, 255, 255, 0.78);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.72),
-      0 10px 34px -18px rgba(15, 23, 42, 0.24);
-    backdrop-filter: blur(22px) saturate(1.2);
-    -webkit-backdrop-filter: blur(22px) saturate(1.2);
-  }
-
-  .kx-mobile-tabbar::before {
-    content: none;
-  }
-
-  .kx-mobile-tabbar-item {
-    position: relative;
-    display: inline-flex;
-    height: 2.75rem;
-    width: 2.75rem;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    color: #666666;
-    transition:
-      color 180ms ease,
-      background 180ms ease,
-      box-shadow 180ms ease,
-      transform 180ms ease;
-    -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
-  }
-
-  .kx-mobile-tabbar-item:active {
-    transform: scale(0.93);
-  }
-
-  .kx-mobile-tabbar-item[data-active="true"] {
-    color: #1D4ED8;
-    background: transparent !important;
-    box-shadow: none !important;
-  }
-
-  :root.dark .kx-mobile-tabbar-item,
-  [data-theme="dark"] .kx-mobile-tabbar-item {
-    color: rgb(190 196 210);
-  }
-
-  :root.dark .kx-mobile-tabbar-item[data-active="true"],
-  [data-theme="dark"] .kx-mobile-tabbar-item[data-active="true"] {
-    color: rgb(147 197 253);
-  }
-
-  .kx-mobile-tabbar-item[data-active="true"]::after {
-    content: "";
-    position: absolute;
-    bottom: 0.25rem;
-    left: 50%;
-    height: 4px;
-    width: 4px;
-    transform: translateX(-50%);
-    border-radius: 999px;
-    background: currentColor;
-    box-shadow: 0 0 10px rgb(var(--kx-accent) / 0.62);
-  }
-
-  .kx-mobile-tabbar-icon {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-  }
-
-  .kx-mobile-tabbar-icon svg {
-    height: 1.5rem;
-    width: 1.5rem;
-    fill: none !important;
-  }
-
-  .kx-mobile-tabbar-item[data-active="true"] svg {
-    stroke-width: 2.1;
-    filter: drop-shadow(0 3px 7px rgb(var(--kx-accent) / 0.16));
-  }
-
-  .kx-mobile-compose-button {
-    position: relative;
-    display: inline-flex;
-    height: 3rem;
-    width: 3rem;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    color: white;
-    background: linear-gradient(135deg, rgb(37 99 235), rgb(var(--kx-accent)) 52%, rgb(30 64 175));
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.18),
-      0 4px 14px rgba(29, 78, 216, 0.25);
-    transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
-    -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
-  }
-
-  .kx-mobile-compose-button::before {
-    content: none;
-  }
-
-  .kx-mobile-compose-button:active {
-    transform: scale(0.94);
-    filter: saturate(1.08);
-  }
-
-  .kx-mobile-floating-compose {
-    position: fixed;
-    right: max(1rem, calc(env(safe-area-inset-right) + 1rem));
-    bottom: max(5.95rem, calc(env(safe-area-inset-bottom) + 5.25rem));
-    z-index: 47;
-    display: inline-flex;
-    height: 3.25rem;
-    width: 3.25rem;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    color: white;
-    background:
-      linear-gradient(135deg, rgb(59 130 246), rgb(var(--kx-accent)) 54%, rgb(30 64 175));
-    border: 1px solid rgb(255 255 255 / 0.7);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.24),
-      0 16px 36px -18px rgb(var(--kx-accent) / 0.72);
-    transform: translateZ(0);
-    transition: transform 180ms ease, box-shadow 180ms ease, filter 180ms ease;
-    -webkit-tap-highlight-color: transparent;
-    touch-action: manipulation;
-  }
-
-  .kx-mobile-floating-compose:active {
-    transform: translateZ(0) scale(0.94);
-    filter: saturate(1.08);
-  }
-
-  :root.dark .kx-mobile-tabbar,
-  [data-theme="dark"] .kx-mobile-tabbar {
-    border-color: rgba(255, 255, 255, 0.12);
-    background: rgba(24, 26, 32, 0.62);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.22);
-  }
-
-  :root.dark .kx-mobile-floating-compose,
-  [data-theme="dark"] .kx-mobile-floating-compose {
-    border-color: rgba(255, 255, 255, 0.16);
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.14),
-      0 18px 40px -20px rgb(59 130 246 / 0.9);
-  }
-
-  :root.dark .kx-mobile-tabbar::before,
-  [data-theme="dark"] .kx-mobile-tabbar::before {
-    box-shadow:
-      inset 0 0 0 1px rgb(255 255 255 / 0.08),
-      inset 0 -10px 22px rgb(255 255 255 / 0.04);
-  }
-
   .kx-glass-bar {
     /* 丝滑吸顶: whisper-thin divider instead of a hard line. */
     @apply border-b border-kx-stroke/25;
     background:
-      linear-gradient(180deg, rgb(255 252 249 / 0.88), rgb(var(--kx-surface) / 0.64)),
-      linear-gradient(135deg, rgb(255 231 211 / 0.36), transparent 58%, rgb(255 255 255 / 0.22));
+      linear-gradient(180deg, rgb(var(--kx-surface) / 0.86), rgb(var(--kx-surface) / 0.64)),
+      linear-gradient(135deg, rgb(255 255 255 / 0.44), transparent 60%);
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.7),
       0 10px 28px -24px rgb(var(--kx-shadow) / 0.45);
@@ -398,16 +228,6 @@ body::before {
     box-shadow:
       inset 0 1px 0 rgb(255 255 255 / 0.7),
       0 16px 34px -22px rgb(var(--kx-shadow) / 0.6);
-  }
-
-  :root.dark .kx-glass-bar,
-  [data-theme="dark"] .kx-glass-bar {
-    background:
-      linear-gradient(180deg, rgb(31 30 38 / 0.86), rgb(var(--kx-surface) / 0.68)),
-      linear-gradient(135deg, rgb(180 83 54 / 0.14), transparent 58%, rgb(99 102 241 / 0.08));
-    box-shadow:
-      inset 0 1px 0 rgb(255 255 255 / 0.08),
-      0 10px 28px -24px rgb(0 0 0 / 0.7);
   }
 
   .kx-liquid-button {
@@ -435,104 +255,6 @@ body::before {
     @apply kx-glass-surface p-4 sm:p-5;
   }
 
-  .kx-sidebar-nav-item {
-    background: transparent !important;
-  }
-
-  .kx-sidebar-nav-item::before {
-    content: "";
-    position: absolute;
-    left: 0.125rem;
-    top: 50%;
-    height: 20px;
-    width: 3px;
-    border-radius: 9999px;
-    background: rgb(var(--kx-accent));
-    opacity: 0;
-    transform: translateY(-50%) scaleY(0.5);
-    transition:
-      opacity 180ms ease,
-      transform 180ms ease;
-  }
-
-  .kx-sidebar-nav-item:hover,
-  .kx-sidebar-nav-item[data-active="true"] {
-    color: rgb(var(--kx-accent));
-    background: transparent !important;
-  }
-
-  .kx-sidebar-nav-item:hover::before,
-  .kx-sidebar-nav-item[data-active="true"]::before {
-    opacity: 1;
-    transform: translateY(-50%) scaleY(1);
-  }
-
-  .kx-sidebar-nav-item:hover svg,
-  .kx-sidebar-nav-item[data-active="true"] svg {
-    fill: none !important;
-    stroke-width: 2.05;
-    filter: drop-shadow(0 3px 7px rgb(var(--kx-accent) / 0.14));
-  }
-
-  .kx-app-shell {
-    position: relative;
-    isolation: isolate;
-    min-height: 100dvh;
-  }
-
-  .kx-app-shell::before {
-    content: "";
-    position: fixed;
-    inset: -18vmax;
-    z-index: 0;
-    pointer-events: none;
-    background:
-      radial-gradient(42vmax 32vmax at 10% 18%, rgb(255 211 190 / 0.34), transparent 66%),
-      radial-gradient(38vmax 30vmax at 88% 14%, rgb(211 226 255 / 0.32), transparent 68%),
-      radial-gradient(40vmax 34vmax at 82% 84%, rgb(210 245 228 / 0.28), transparent 70%),
-      radial-gradient(34vmax 28vmax at 18% 82%, rgb(238 220 255 / 0.22), transparent 68%);
-    background-size: 118% 118%, 126% 126%, 122% 122%, 116% 116%;
-    filter: blur(34px) saturate(1.08);
-    opacity: 0.72;
-    transform: translate3d(0, 0, 0);
-    animation: ambientPrism 38s ease-in-out infinite alternate;
-  }
-
-  :root.dark .kx-app-shell::before,
-  [data-theme="dark"] .kx-app-shell::before {
-    opacity: 0.18;
-    filter: blur(42px) saturate(1.12);
-  }
-
-  .kx-shell-main {
-    background: rgba(255, 255, 255, 0.12);
-    backdrop-filter: none;
-    -webkit-backdrop-filter: none;
-  }
-
-  :root.dark .kx-shell-main,
-  [data-theme="dark"] .kx-shell-main {
-    background:
-      linear-gradient(180deg, rgb(24 26 32 / 0.52), rgb(var(--kx-bg) / 0.34)),
-      linear-gradient(135deg, rgb(180 83 54 / 0.08), transparent 58%);
-  }
-
-  .kx-grain {
-    position: fixed;
-    inset: 0;
-    z-index: 0;
-    pointer-events: none;
-    opacity: 0.04;
-    mix-blend-mode: overlay;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 140 140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.72' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.48'/%3E%3C/svg%3E");
-    background-size: 180px 180px;
-  }
-
-  :root.dark .kx-grain,
-  [data-theme="dark"] .kx-grain {
-    opacity: 0.014;
-  }
-
   .kx-section-title {
     @apply text-sm font-semibold tracking-tight text-kx-subtle px-1;
   }
@@ -541,14 +263,8 @@ body::before {
     @apply inline-flex items-center justify-center gap-1.5 rounded-full
            bg-kx-accent text-white font-semibold text-sm px-4 h-9
            border border-kx-accent hover:brightness-110 active:scale-[0.97]
-           transition-all duration-200 ease-out
+           transition-all duration-200 ease-out shadow-sm hover:shadow
            disabled:opacity-50 disabled:pointer-events-none;
-    background: linear-gradient(135deg, rgb(37 99 235), rgb(var(--kx-accent)) 52%, rgb(30 64 175));
-    box-shadow: 0 4px 14px rgba(29, 78, 216, 0.25);
-  }
-
-  .kx-button-primary:hover {
-    box-shadow: 0 6px 18px rgba(29, 78, 216, 0.30);
   }
 
   .kx-button-ghost {
@@ -670,35 +386,6 @@ body::before {
   .kx-metric[data-active] svg.fill-kx-repost {
     animation: kx-pop 320ms cubic-bezier(.34,1.56,.64,1);
   }
-
-  .kx-chat-page {
-    height: var(--kx-visual-viewport-height, 100dvh);
-    min-height: 0;
-  }
-
-  .kx-chat-scroll {
-    min-height: 0;
-    overflow-y: auto;
-    -webkit-overflow-scrolling: touch;
-    overscroll-behavior-y: contain;
-    scroll-padding-bottom: 8rem;
-  }
-
-  .kx-chat-composer {
-    background:
-      linear-gradient(180deg, rgb(var(--kx-bg) / 0.82), rgb(var(--kx-surface) / 0.96));
-    border-top: 1px solid rgb(var(--kx-stroke) / 0.42);
-    box-shadow: 0 -14px 32px -30px rgb(var(--kx-shadow) / 0.5);
-    backdrop-filter: blur(22px) saturate(1.18);
-    -webkit-backdrop-filter: blur(22px) saturate(1.18);
-  }
-
-  .kx-profile-tabs-sticky {
-    position: sticky;
-    top: 0;
-    z-index: 30;
-    padding: 0.5rem 0.75rem;
-  }
 }
 
 /* Honor reduce-motion preferences. */
@@ -724,10 +411,6 @@ body::before {
     min-height: 40px;
     padding-left: 0.625rem;
     padding-right: 0.625rem;
-  }
-
-  .kx-profile-tabs-sticky {
-    margin-top: 0.875rem;
   }
 }
 
@@ -775,54 +458,31 @@ body::before {
      - A near-white lavender / sky / pearl base.
      The blends stay under 0.18 opacity so foreground copy keeps
      full contrast over the gradient. */
-  /* Premium warm mesh: six warm hues — coral · marigold · terracotta ·
-     apricot · rose · gold — over a deeper warm-ivory base, covering the
-     corners AND the centre so there is no washed-out pale dead-zone. The
-     positions drift slowly (mc-bg-flow) so the field reads as a living,
-     refined gradient. Per-section tints layer their own hue on top. */
   background:
-    radial-gradient(40vmax 38vmax at 6% 4%, rgba(255, 118, 84, 0.34), transparent 55%),
-    radial-gradient(38vmax 34vmax at 94% 2%, rgba(255, 162, 66, 0.30), transparent 55%),
-    radial-gradient(44vmax 40vmax at 72% 30%, rgba(255, 130, 100, 0.24), transparent 55%),
-    radial-gradient(42vmax 40vmax at 24% 54%, rgba(255, 182, 128, 0.24), transparent 55%),
-    radial-gradient(48vmax 44vmax at 88% 82%, rgba(255, 104, 138, 0.28), transparent 56%),
-    radial-gradient(42vmax 40vmax at 12% 92%, rgba(255, 198, 112, 0.28), transparent 55%),
-    linear-gradient(155deg, #FFF2E6 0%, #FFE7D3 42%, #FFE2DA 70%, #FFEEE0 100%);
-  background-size: 200% 200%, 210% 210%, 220% 220%, 210% 210%, 200% 200%, 215% 215%, 100% 100%;
-  background-position: 0% 0%, 100% 0%, 60% 24%, 22% 50%, 100% 100%, 0% 100%, 0 0;
-  animation:
-    mc-page-enter 520ms cubic-bezier(.16, 1, .3, 1) both,
-    mc-bg-flow 34s ease-in-out infinite alternate;
+    radial-gradient(circle at 12% 22%, rgba(255, 107, 74, 0.18), transparent 30%),
+    radial-gradient(circle at 78% 18%, rgba(79, 70, 229, 0.13), transparent 34%),
+    radial-gradient(circle at 58% 82%, rgba(22, 163, 74, 0.08), transparent 28%),
+    linear-gradient(135deg, #FFF8F2 0%, #FFF7ED 48%, #F8FBFF 100%);
+  background-attachment: fixed;
+  animation: mc-page-enter 520ms cubic-bezier(.16, 1, .3, 1) both;
 }
 
 :root.dark .machi-site {
   color-scheme: dark;
   background:
-    radial-gradient(40vmax 38vmax at 6% 4%, rgba(255, 118, 84, 0.22), transparent 55%),
-    radial-gradient(38vmax 34vmax at 94% 2%, rgba(255, 156, 64, 0.16), transparent 55%),
-    radial-gradient(44vmax 40vmax at 72% 30%, rgba(255, 128, 100, 0.14), transparent 55%),
-    radial-gradient(42vmax 40vmax at 24% 54%, rgba(255, 168, 110, 0.12), transparent 55%),
-    radial-gradient(48vmax 44vmax at 88% 82%, rgba(255, 100, 134, 0.16), transparent 56%),
-    radial-gradient(42vmax 40vmax at 12% 92%, rgba(255, 180, 96, 0.14), transparent 55%),
-    linear-gradient(155deg, #161009 0%, #1c1410 52%, #120c0a 100%);
-  background-size: 200% 200%, 210% 210%, 220% 220%, 210% 210%, 200% 200%, 215% 215%, 100% 100%;
-  background-position: 0% 0%, 100% 0%, 60% 24%, 22% 50%, 100% 100%, 0% 100%, 0 0;
-  animation: mc-bg-flow 34s ease-in-out infinite alternate;
+    radial-gradient(circle at 12% 22%, rgba(255, 107, 74, 0.22), transparent 32%),
+    radial-gradient(circle at 78% 18%, rgba(79, 70, 229, 0.22), transparent 34%),
+    radial-gradient(circle at 58% 82%, rgba(22, 163, 74, 0.08), transparent 28%),
+    linear-gradient(135deg, #080b18 0%, #0b1124 52%, #080a14 100%);
+  background-attachment: fixed;
 }
 
-@keyframes mc-bg-flow {
-  0%   { background-position: 0% 0%, 100% 0%, 60% 24%, 22% 50%, 100% 100%, 0% 100%, 0 0; }
-  50%  { background-position: 18% 14%, 82% 12%, 52% 38%, 34% 40%, 86% 84%, 14% 86%, 0 0; }
-  100% { background-position: 8% 26%, 92% 22%, 68% 16%, 16% 62%, 94% 70%, 26% 92%, 0 0; }
-}
-
-/* Phones / coarse pointers: keep the multi-hue gradient but stop the drift
-   (animating a large multi-radial background-position re-rasterises every
-   frame and janks mobile Safari). The static six-hue field still reads warm
-   and varied. */
+/* On smaller screens `background-attachment: fixed` causes performance
+   problems in mobile Safari (the browser re-rasterises on every scroll).
+   Fall back to scroll-attached so phones stay smooth. */
 @media (max-width: 1023.98px), (pointer: coarse) {
-  .machi-site { animation: mc-page-enter 520ms cubic-bezier(.16, 1, .3, 1) both; }
-  :root.dark .machi-site { animation: none; }
+  .machi-site { background-attachment: scroll; }
+  :root.dark .machi-site { background-attachment: scroll; }
 }
 
 .mc-site-header {
@@ -877,7 +537,7 @@ body::before {
 
 .mc-brand-gradient {
   color: transparent;
-  background-image: linear-gradient(110deg, #1b1411 0%, #ff6b4a 30%, #ff8a3d 62%, #ff4d6d 100%);
+  background-image: linear-gradient(110deg, #151515 0%, #ff6b4a 28%, #4f46e5 58%, #16a34a 100%);
   background-size: 220% 100%;
   background-position: 0% 50%;
   -webkit-background-clip: text;
@@ -887,7 +547,7 @@ body::before {
 }
 
 :root.dark .mc-brand-gradient {
-  background-image: linear-gradient(110deg, #fdf4ee 0%, #ffb199 30%, #ffb24d 62%, #ff8aa0 100%);
+  background-image: linear-gradient(110deg, #f8fafc 0%, #ffb199 30%, #a5b4fc 65%, #86efac 100%);
   text-shadow: 0 18px 52px rgba(255, 107, 74, 0.18);
 }
 
@@ -985,9 +645,9 @@ body::before {
   font-weight: 800;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: rgb(210 80 47);
+  color: rgb(79 70 229);
 }
-:root.dark .mc-eyebrow { color: rgb(255 168 120); }
+:root.dark .mc-eyebrow { color: rgb(165 180 252); }
 
 .mc-section-title {
   font-size: clamp(1.85rem, 3.4vw, 2.75rem);

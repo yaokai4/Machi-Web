@@ -91,7 +91,7 @@ export function SocialConnectionSection() {
 
   return (
     <section id="social" className="relative overflow-hidden px-5 py-14 sm:px-6 lg:py-20">
-      <div className="absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(255,240,236,0)_0%,rgba(255,217,214,0.82)_45%,rgba(255,240,236,0)_100%)] dark:bg-[linear-gradient(180deg,rgba(11,13,18,0)_0%,rgba(42,22,26,0.55)_48%,rgba(11,13,18,0)_100%)]" />
+      <div className="absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(255,248,242,0)_0%,rgba(255,248,242,0.82)_45%,rgba(255,248,242,0)_100%)] dark:bg-[linear-gradient(180deg,rgba(11,13,18,0)_0%,rgba(28,25,23,0.55)_48%,rgba(11,13,18,0)_100%)]" />
       <div className="mx-auto grid max-w-[1180px] gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
         <div className="mc-reveal">
           <p className="mc-eyebrow">{copy.label}</p>

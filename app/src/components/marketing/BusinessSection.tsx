@@ -60,9 +60,9 @@ export function BusinessSection() {
 
         {/* ─────────── RIGHT — console mock ─────────── */}
         <div className="mc-reveal">
-          <div className="relative overflow-hidden rounded-[28px] bg-gradient-to-br from-stone-950 via-stone-900 to-[#3d1810] p-5 text-white shadow-[0_28px_80px_-44px_rgba(15,23,42,0.95)] sm:p-7">
-            <div className="pointer-events-none absolute -right-12 -top-12 h-44 w-44 rounded-full bg-orange-400/20 blur-3xl" aria-hidden="true" />
-            <div className="pointer-events-none absolute -bottom-12 -left-10 h-40 w-40 rounded-full bg-rose-400/15 blur-3xl" aria-hidden="true" />
+          <div className="relative overflow-hidden rounded-[28px] bg-gradient-to-br from-slate-950 via-slate-900 to-violet-950 p-5 text-white shadow-[0_28px_80px_-44px_rgba(15,23,42,0.95)] sm:p-7">
+            <div className="pointer-events-none absolute -right-12 -top-12 h-44 w-44 rounded-full bg-violet-400/20 blur-3xl" aria-hidden="true" />
+            <div className="pointer-events-none absolute -bottom-12 -left-10 h-40 w-40 rounded-full bg-indigo-400/15 blur-3xl" aria-hidden="true" />
 
             <div className="relative flex items-start justify-between gap-4">
               <div>
@@ -79,7 +79,7 @@ export function BusinessSection() {
 
             <div className="relative mt-6 space-y-3">
               {[
-                { icon: Megaphone, tone: "bg-orange-400/10 text-orange-200" },
+                { icon: Megaphone, tone: "bg-violet-400/10 text-violet-200" },
                 { icon: Building2, tone: "bg-amber-400/10 text-amber-200" },
                 { icon: Sparkles, tone: "bg-orange-400/10 text-orange-200" },
               ].map((item, index) => {
@@ -102,7 +102,7 @@ export function BusinessSection() {
                     </div>
                     <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/[0.08]">
                       <div
-                        className="h-full rounded-full bg-gradient-to-r from-orange-400 via-[#ff6b4a] to-rose-300"
+                        className="h-full rounded-full bg-gradient-to-r from-indigo-400 via-violet-400 to-sky-300"
                         style={{ width: `${fillPct}%` }}
                       />
                     </div>

@@ -14,12 +14,12 @@ export function BrandMark({ className }: { className?: string }) {
   return (
     <span
       className={clsx(
-        "relative inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#ff7a3d] via-[#ff6b4a] to-[#ff4d6d] font-black text-white shadow-[0_16px_42px_-22px_rgba(255,107,74,0.95)]",
+        "relative inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-600 via-violet-600 to-sky-500 font-black text-white shadow-[0_16px_42px_-22px_rgba(79,70,229,0.95)]",
         className,
       )}
     >
       M
-      <span className="absolute -right-1 -top-1 h-[28%] w-[28%] rounded-full bg-amber-300 ring-2 ring-white dark:ring-slate-950" />
+      <span className="absolute -right-1 -top-1 h-[28%] w-[28%] rounded-full bg-orange-400 ring-2 ring-white dark:ring-slate-950" />
     </span>
   );
 }

@@ -29,7 +29,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#fdf6f0",
+  themeColor: "#f4f5f7",
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
@@ -184,7 +184,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         </QueryProvider>
         <ServiceWorkerRegistrar />
         <SiteSplash />
-        <div className="kx-grain" aria-hidden="true" />
       </body>
     </html>
   );

@@ -17,7 +17,7 @@ type ButtonProps = {
 
 const variants: Record<ButtonVariant, string> = {
   primary:
-    "bg-gradient-to-r from-[#ff6b4a] via-[#ff7a45] to-[#ff4d6d] text-white shadow-[0_18px_46px_-24px_rgba(255,107,74,0.95)] hover:shadow-[0_22px_52px_-24px_rgba(255,107,74,1)]",
+    "bg-gradient-to-r from-[#ff6b4a] via-[#ff7043] to-[#4f46e5] text-white shadow-[0_18px_46px_-24px_rgba(255,107,74,0.95)] hover:shadow-[0_22px_52px_-24px_rgba(255,107,74,1)]",
   secondary:
     "bg-white/90 text-slate-950 ring-1 ring-slate-200/80 shadow-[0_16px_38px_-28px_rgba(15,23,42,0.7)] backdrop-blur hover:bg-white dark:bg-white/10 dark:text-white dark:ring-white/15 dark:hover:bg-white/15",
   ghost:
