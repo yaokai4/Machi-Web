@@ -70,6 +70,28 @@ export const REGION_PROVINCES: Record<string, RegionProvince[]> = {
     { code: "kyoto", name: "京都府" },
     { code: "fukuoka", name: "福冈县" },
     { code: "aichi", name: "爱知县" },
+    { code: "kanagawa", name: "神奈川县" },
+    { code: "saitama", name: "埼玉县" },
+    { code: "chiba", name: "千叶县" },
+    { code: "hyogo", name: "兵库县" },
+    { code: "hokkaido", name: "北海道" },
+    { code: "miyagi", name: "宫城县" },
+    { code: "hiroshima", name: "广岛县" },
+    { code: "okinawa", name: "冲绳县" },
+    { code: "shizuoka", name: "静冈县" },
+    { code: "ibaraki", name: "茨城县" },
+    { code: "nara", name: "奈良县" },
+    { code: "mie", name: "三重县" },
+    { code: "kumamoto", name: "熊本县" },
+    { code: "kagoshima", name: "鹿儿岛县" },
+    { code: "nagano", name: "长野县" },
+    { code: "ishikawa", name: "石川县" },
+    { code: "okayama", name: "冈山县" },
+    { code: "niigata", name: "新潟县" },
+    { code: "tochigi", name: "栃木县" },
+    { code: "gunma", name: "群马县" },
+    { code: "shiga", name: "滋贺县" },
+    { code: "gifu", name: "岐阜县" },
   ],
   us: [
     { code: "ca", name: "加利福尼亚" },
@@ -110,6 +132,28 @@ export const REGION_CITIES: Record<string, RegionCity[]> = {
   kyoto: [{ code: "kyoto", name: "京都" }],
   fukuoka: [{ code: "fukuoka", name: "福冈" }],
   aichi: [{ code: "nagoya", name: "名古屋" }],
+  kanagawa: [{ code: "yokohama", name: "横滨" }, { code: "kawasaki", name: "川崎" }],
+  saitama: [{ code: "saitama", name: "埼玉" }],
+  chiba: [{ code: "chiba", name: "千叶" }],
+  hyogo: [{ code: "kobe", name: "神户" }],
+  hokkaido: [{ code: "sapporo", name: "札幌" }],
+  miyagi: [{ code: "sendai", name: "仙台" }],
+  hiroshima: [{ code: "hiroshima", name: "广岛" }],
+  okinawa: [{ code: "naha", name: "那霸" }],
+  shizuoka: [{ code: "shizuoka", name: "静冈" }],
+  ibaraki: [{ code: "tsukuba", name: "筑波" }],
+  nara: [{ code: "nara", name: "奈良" }],
+  mie: [{ code: "yokkaichi", name: "四日市" }],
+  kumamoto: [{ code: "kumamoto", name: "熊本" }],
+  kagoshima: [{ code: "kagoshima", name: "鹿儿岛" }],
+  nagano: [{ code: "nagano", name: "长野" }],
+  ishikawa: [{ code: "kanazawa", name: "金泽" }],
+  okayama: [{ code: "okayama", name: "冈山" }],
+  niigata: [{ code: "niigata", name: "新潟" }],
+  tochigi: [{ code: "utsunomiya", name: "宇都宫" }],
+  gunma: [{ code: "takasaki", name: "高崎" }],
+  shiga: [{ code: "otsu", name: "大津" }],
+  gifu: [{ code: "gifu", name: "岐阜" }],
   ca: [
     { code: "sf", name: "旧金山" },
     { code: "la", name: "洛杉矶" },
@@ -149,6 +193,11 @@ export const POPULAR_REGION_CODES = [
   "cn.guangdong.dongguan", "cn.anhui.hefei",
   "jp.tokyo.tokyo", "jp.osaka.osaka",
   "jp.kyoto.kyoto", "jp.fukuoka.fukuoka", "jp.aichi.nagoya",
+  "jp.kanagawa.yokohama", "jp.kanagawa.kawasaki",
+  "jp.saitama.saitama", "jp.chiba.chiba",
+  "jp.hyogo.kobe", "jp.hokkaido.sapporo",
+  "jp.miyagi.sendai", "jp.hiroshima.hiroshima",
+  "jp.okinawa.naha", "jp.shizuoka.shizuoka",
   "us.ny.nyc", "us.ca.la", "us.ca.sf", "us.wa.seattle",
   "ca.toronto", "ca.vancouver", "ca.montreal",
   "au.sydney", "au.melbourne",
@@ -246,7 +295,7 @@ export function regionDisplayName(region?: RegionInfo): string {
 }
 
 export function regionHeaderLabel(region?: RegionInfo): string {
-  return region ? `${region.country_emoji} ${region.country_name} · ${region.city_name}` : "选择国家 / 城市";
+  return region ? `${region.country_emoji} ${region.city_name}` : "选择城市";
 }
 
 export function regionShortLabel(region?: RegionInfo): string {
@@ -268,7 +317,12 @@ export function hotCitiesForCountry(country?: string): RegionInfo[] {
         "cn.hubei.wuhan", "cn.jiangsu.nanjing", "cn.jiangsu.suzhou", "cn.fujian.xiamen",
       ]
     : current === "jp"
-      ? ["jp.tokyo.tokyo", "jp.osaka.osaka", "jp.kyoto.kyoto", "jp.fukuoka.fukuoka", "jp.aichi.nagoya"]
+      ? [
+          "jp.tokyo.tokyo", "jp.osaka.osaka", "jp.kanagawa.yokohama",
+          "jp.kyoto.kyoto", "jp.fukuoka.fukuoka", "jp.aichi.nagoya",
+          "jp.hokkaido.sapporo", "jp.hyogo.kobe", "jp.chiba.chiba",
+          "jp.saitama.saitama", "jp.miyagi.sendai", "jp.hiroshima.hiroshima",
+        ]
       : [
           "cn.beijing.beijing", "cn.shanghai.shanghai", "cn.guangdong.shenzhen",
           "cn.guangdong.guangzhou", "cn.zhejiang.hangzhou", "cn.sichuan.chengdu",

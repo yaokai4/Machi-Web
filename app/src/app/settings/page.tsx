@@ -133,8 +133,12 @@ export default function SettingsPage() {
   };
 
   const onSelectRegion = async (region: RegionInfo) => {
+    if (user?.country && region.country_code !== user.country) {
+      const confirmed = window.confirm("切换国家会同时影响首页、发现、资讯和发布页可选择的城市。确认切换吗？");
+      if (!confirmed) return;
+    }
     try {
-      const next = await api.updateMe({
+      const next = await api.updateRegionLanguage({
         country: region.country_code,
         province: region.province_code,
         city: region.city_code,
@@ -182,7 +186,7 @@ export default function SettingsPage() {
         </Section>
 
         <Section title="偏好">
-          <RowSwitch icon={MapPin} label="国家 / 城市" valueLabel={regionDisplayName(currentRegion)}>
+          <RowSwitch icon={MapPin} label="地区设置" valueLabel={regionDisplayName(currentRegion)}>
             <button type="button" onClick={() => setRegionOpen(true)} className="text-kx-accent text-sm font-bold hover:underline">
               切换
             </button>
@@ -348,7 +352,7 @@ export default function SettingsPage() {
         onClose={() => setRegionOpen(false)}
         onSelect={onSelectRegion}
         initialCountry={user?.country || currentRegion?.country_code}
-        allowsAnyCountry
+        allowsAnyCountry={!user?.country}
         recentCodes={user?.recent_region_codes}
       />
     </AppShell>

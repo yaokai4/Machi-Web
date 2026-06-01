@@ -47,7 +47,14 @@ export function Dialog({ open, onClose, title, children, footer, maxWidth = "32r
   if (!open || !mounted) return null;
 
   const node = (
-    <div className="fixed inset-0 z-[100] flex sm:items-center justify-center sm:px-4 animate-kx-fade-in">
+    <div
+      className="fixed inset-x-0 z-[100] flex sm:items-center justify-center sm:px-4 animate-kx-fade-in"
+      style={{
+        top: "var(--kx-visual-viewport-offset-top, 0px)",
+        bottom: "auto",
+        height: "var(--kx-visual-viewport-height, 100dvh)",
+      }}
+    >
       <div
         className="absolute inset-0 bg-black/40 backdrop-blur-sm"
         onClick={onClose}
@@ -55,10 +62,16 @@ export function Dialog({ open, onClose, title, children, footer, maxWidth = "32r
       />
       <div
         className={
-          "relative kx-glass-surface w-full sm:max-h-[90vh] flex flex-col animate-kx-scale-in shadow-kx-glow " +
+          "relative kx-glass-surface w-full flex flex-col animate-kx-scale-in shadow-kx-glow " +
           (mobileFull ? "max-sm:h-[100dvh] max-sm:rounded-none" : "max-sm:mt-auto max-sm:rounded-b-none")
         }
-        style={{ maxWidth }}
+        style={{
+          maxWidth,
+          height: mobileFull ? "var(--kx-visual-viewport-height, 100dvh)" : undefined,
+          maxHeight: mobileFull
+            ? "var(--kx-visual-viewport-height, 100dvh)"
+            : "min(90vh, calc(var(--kx-visual-viewport-height, 100dvh) - 1rem))",
+        }}
         role="dialog"
         aria-modal="true"
         aria-label={title}

@@ -51,7 +51,7 @@ export function MarketingPageFrame({
         <section className="relative px-6 pb-12 pt-9 sm:px-8 sm:pb-16 sm:pt-10 lg:pt-14">
           <div className="mx-auto max-w-[1080px]">
             {eyebrow ? (
-              <p className="text-sm font-black uppercase tracking-wide text-indigo-700 dark:text-sky-300">{eyebrow}</p>
+              <p className="text-sm font-black uppercase tracking-wide text-[#d2502f] dark:text-orange-300">{eyebrow}</p>
             ) : null}
             <h1 className="mt-3 text-4xl font-black leading-[1.05] text-slate-950 sm:text-5xl lg:text-6xl dark:text-white">
               <BrandPhrase text={title} />

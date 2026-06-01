@@ -974,6 +974,28 @@ REGION_PROVINCES: dict[str, list[dict[str, str]]] = {
         {"code": "kyoto",     "name": "京都府"},
         {"code": "fukuoka",   "name": "福冈县"},
         {"code": "aichi",     "name": "爱知县"},
+        {"code": "kanagawa",  "name": "神奈川县"},
+        {"code": "saitama",   "name": "埼玉县"},
+        {"code": "chiba",     "name": "千叶县"},
+        {"code": "hyogo",     "name": "兵库县"},
+        {"code": "hokkaido",  "name": "北海道"},
+        {"code": "miyagi",    "name": "宫城县"},
+        {"code": "hiroshima", "name": "广岛县"},
+        {"code": "okinawa",   "name": "冲绳县"},
+        {"code": "shizuoka",  "name": "静冈县"},
+        {"code": "ibaraki",   "name": "茨城县"},
+        {"code": "nara",      "name": "奈良县"},
+        {"code": "mie",       "name": "三重县"},
+        {"code": "kumamoto",  "name": "熊本县"},
+        {"code": "kagoshima", "name": "鹿儿岛县"},
+        {"code": "nagano",    "name": "长野县"},
+        {"code": "ishikawa",  "name": "石川县"},
+        {"code": "okayama",   "name": "冈山县"},
+        {"code": "niigata",   "name": "新潟县"},
+        {"code": "tochigi",   "name": "栃木县"},
+        {"code": "gunma",     "name": "群马县"},
+        {"code": "shiga",     "name": "滋贺县"},
+        {"code": "gifu",      "name": "岐阜县"},
     ],
     "us": [
         {"code": "ca", "name": "加利福尼亚"},
@@ -1018,6 +1040,28 @@ REGION_CITIES: dict[str, list[dict[str, str]]] = {
     "kyoto":    [{"code": "kyoto",    "name": "京都"}],
     "fukuoka":  [{"code": "fukuoka",  "name": "福冈"}],
     "aichi":    [{"code": "nagoya",   "name": "名古屋"}],
+    "kanagawa": [{"code": "yokohama", "name": "横滨"}, {"code": "kawasaki", "name": "川崎"}],
+    "saitama":  [{"code": "saitama",  "name": "埼玉"}],
+    "chiba":    [{"code": "chiba",    "name": "千叶"}],
+    "hyogo":    [{"code": "kobe",     "name": "神户"}],
+    "hokkaido": [{"code": "sapporo",  "name": "札幌"}],
+    "miyagi":   [{"code": "sendai",   "name": "仙台"}],
+    "hiroshima":[{"code": "hiroshima","name": "广岛"}],
+    "okinawa":  [{"code": "naha",     "name": "那霸"}],
+    "shizuoka": [{"code": "shizuoka", "name": "静冈"}],
+    "ibaraki":  [{"code": "tsukuba",  "name": "筑波"}],
+    "nara":     [{"code": "nara",     "name": "奈良"}],
+    "mie":      [{"code": "yokkaichi","name": "四日市"}],
+    "kumamoto": [{"code": "kumamoto", "name": "熊本"}],
+    "kagoshima":[{"code": "kagoshima","name": "鹿儿岛"}],
+    "nagano":   [{"code": "nagano",   "name": "长野"}],
+    "ishikawa": [{"code": "kanazawa", "name": "金泽"}],
+    "okayama":  [{"code": "okayama",  "name": "冈山"}],
+    "niigata":  [{"code": "niigata",  "name": "新潟"}],
+    "tochigi":  [{"code": "utsunomiya", "name": "宇都宫"}],
+    "gunma":    [{"code": "takasaki", "name": "高崎"}],
+    "shiga":    [{"code": "otsu",     "name": "大津"}],
+    "gifu":     [{"code": "gifu",     "name": "岐阜"}],
     # ---- US by state ----
     "ca": [
         {"code": "sf",   "name": "旧金山"},
@@ -1067,6 +1111,11 @@ POPULAR_CITIES: list[str] = [
     # ---- Japan ----
     "jp.tokyo.tokyo", "jp.osaka.osaka",
     "jp.kyoto.kyoto", "jp.fukuoka.fukuoka", "jp.aichi.nagoya",
+    "jp.kanagawa.yokohama", "jp.kanagawa.kawasaki",
+    "jp.saitama.saitama", "jp.chiba.chiba",
+    "jp.hyogo.kobe", "jp.hokkaido.sapporo",
+    "jp.miyagi.sendai", "jp.hiroshima.hiroshima",
+    "jp.okinawa.naha", "jp.shizuoka.shizuoka",
     # ---- US ----
     "us.ny.nyc", "us.ca.la", "us.ca.sf", "us.wa.seattle",
     # ---- Canada ----
@@ -1850,6 +1899,17 @@ CREATE TABLE IF NOT EXISTS auth_codes (
 CREATE INDEX IF NOT EXISTS idx_auth_codes_lookup ON auth_codes(purpose, email, created_at);
 CREATE INDEX IF NOT EXISTS idx_auth_codes_user ON auth_codes(user_id, purpose, created_at);
 
+CREATE TABLE IF NOT EXISTS security_logs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '',
+    ip TEXT NOT NULL DEFAULT '',
+    user_agent TEXT NOT NULL DEFAULT '',
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_security_logs_user ON security_logs(user_id, created_at);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL,
@@ -2530,6 +2590,22 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE editorial_posts ADD COLUMN quality_score INTEGER NOT NULL DEFAULT 0;
         ALTER TABLE editorial_posts ADD COLUMN editorial_disclaimer TEXT NOT NULL DEFAULT '';
         CREATE INDEX IF NOT EXISTS idx_editorial_posts_quality ON editorial_posts(status, quality_score, relevance_score, published_at);
+        """,
+    ),
+    (
+        19,
+        "account security: verification audit logs",
+        """
+        CREATE TABLE IF NOT EXISTS security_logs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL DEFAULT '',
+            ip TEXT NOT NULL DEFAULT '',
+            user_agent TEXT NOT NULL DEFAULT '',
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_security_logs_user ON security_logs(user_id, created_at);
         """,
     ),
 ]
@@ -3384,7 +3460,8 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         "source_type": "city_seed" if bool(row.get("is_seed_content", 0)) else "user",
         # City Seed Bot (城市内容助手). When true the client renders an official
         # identity + a light "城市助手/编辑部" chip and an official avatar — never
-        # a real-person identity. `seed_author_type` ∈ {official_bot, editorial}.
+        # a real-person identity. `seed_author_type` is one of the official
+        # assistant/editorial desk identities managed by ensure_seed_bot_account().
         "is_seed_content": bool(row.get("is_seed_content", 0)),
         "seed_author_type": row.get("generated_by", "") or "",
         "seed_source": row.get("seed_source", "") or "",
@@ -3801,6 +3878,26 @@ def record_entitlement_event(conn: sqlite3.Connection, user_id: str, membership_
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (str(uuid.uuid4()), user_id, membership_id or "", event_type, source or "",
          json.dumps(metadata or {}, ensure_ascii=False), now_iso()),
+    )
+
+
+def write_security_log(conn: sqlite3.Connection, user_id: str, action: str,
+                       metadata: dict[str, Any] | None = None,
+                       ip: str = "", user_agent: str = "") -> None:
+    safe_metadata = dict(metadata or {})
+    for key in ("password", "current_password", "old_password", "new_password", "code", "old_code", "new_code"):
+        safe_metadata.pop(key, None)
+    conn.execute(
+        "INSERT INTO security_logs (id, user_id, action, ip, user_agent, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            str(uuid.uuid4()),
+            user_id or "",
+            action or "",
+            (ip or "")[:64],
+            (user_agent or "")[:300],
+            json.dumps(safe_metadata, ensure_ascii=False, sort_keys=True),
+            now_iso(),
+        ),
     )
 
 
@@ -4582,6 +4679,21 @@ _CODE_EMAIL_TEMPLATES = {
         "en": ("Reset your Machi password", "Your Machi password reset code is: {code}\n\nIt expires in {ttl} minutes. If you didn't request this, ignore this email — your password won't change."),
         "ja": ("Machi パスワード再設定コード", "Machi のパスワード再設定コードは {code} です。\n\n{ttl} 分間有効です。心当たりがない場合は無視してください。パスワードは変更されません。"),
     },
+    "change_password": {
+        "zh": ("Machi 修改密码验证码", "你正在修改 Machi 密码，验证码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请立即检查账号安全。"),
+        "en": ("Your Machi password change code", "Your Machi password change code is: {code}\n\nIt expires in {ttl} minutes. If this wasn't you, review your account security."),
+        "ja": ("Machi パスワード変更コード", "Machi のパスワード変更コードは {code} です。\n\n{ttl} 分間有効です。心当たりがない場合はアカウントの安全を確認してください。"),
+    },
+    "change_email_old": {
+        "zh": ("Machi 邮箱更换确认码", "你正在更换 Machi 绑定邮箱，当前邮箱确认码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请立即修改密码。"),
+        "en": ("Confirm your current Machi email", "Your current-email confirmation code is: {code}\n\nIt expires in {ttl} minutes. If this wasn't you, change your password now."),
+        "ja": ("現在の Machi メール確認コード", "現在のメール確認コードは {code} です。\n\n{ttl} 分間有効です。心当たりがない場合はすぐにパスワードを変更してください。"),
+    },
+    "change_email_new": {
+        "zh": ("Machi 新邮箱验证码", "你正在把这个邮箱绑定到 Machi，验证码是：{code}\n\n验证码 {ttl} 分钟内有效。"),
+        "en": ("Verify your new Machi email", "Your new-email verification code is: {code}\n\nIt expires in {ttl} minutes."),
+        "ja": ("Machi 新しいメール確認コード", "新しいメール確認コードは {code} です。\n\n{ttl} 分間有効です。"),
+    },
 }
 
 
@@ -4914,7 +5026,17 @@ _SEED_BOT_IDENTITY: dict[tuple[str, str], tuple[str, str, str, str, str]] = {
     ("editorial", "zh"): ("machi_editorial_zh", "Machi 编辑部", "编辑部整理的本地内容。", "newspaper", "blue"),
     ("editorial", "en"): ("machi_editorial_en", "Machi Local Desk", "Edited local highlights.", "newspaper", "blue"),
     ("editorial", "ja"): ("machi_editorial_ja", "Machi 街の編集部", "編集部がまとめたローカル情報。", "newspaper", "blue"),
+    ("tokyo_editorial", "zh"): ("machi_tokyo_editorial", "Machi 东京编辑部", "东京本地资讯与活动整理。", "newspaper", "teal"),
+    ("tokyo_editorial", "en"): ("machi_tokyo_editorial_en", "Machi Tokyo Desk", "Tokyo local news and events.", "newspaper", "teal"),
+    ("tokyo_editorial", "ja"): ("machi_tokyo_editorial_ja", "Machi 東京編集部", "東京のローカルニュースとイベント。", "newspaper", "teal"),
+    ("japan_life_editorial", "zh"): ("machi_japan_life_editorial", "Machi 日本生活编辑部", "日本生活资讯与实用内容整理。", "newspaper", "blue"),
+    ("japan_life_editorial", "en"): ("machi_japan_life_editorial_en", "Machi Japan Life Desk", "Japan living guides and local updates.", "newspaper", "blue"),
+    ("japan_life_editorial", "ja"): ("machi_japan_life_editorial_ja", "Machi 日本生活編集部", "日本生活情報とローカル更新。", "newspaper", "blue"),
+    ("local_life_editorial", "zh"): ("machi_local_life_editorial", "Machi 本地生活编辑部", "本地生活服务与商家提醒。", "storefront", "teal"),
+    ("local_life_editorial", "en"): ("machi_local_life_editorial_en", "Machi Local Life Desk", "Local life services and merchant notes.", "storefront", "teal"),
+    ("local_life_editorial", "ja"): ("machi_local_life_editorial_ja", "Machi ローカルライフ編集部", "生活サービスと店舗のお知らせ。", "storefront", "teal"),
 }
+_SEED_BOT_AUTHOR_TYPES = {key[0] for key in _SEED_BOT_IDENTITY}
 
 _SEED_OP_TIMES: dict[str, list[float]] = {}
 _SEED_OP_LOCK = threading.Lock()
@@ -4937,7 +5059,7 @@ def ensure_seed_bot_account(conn: sqlite3.Connection, author_type: str, language
     creating it lazily on first use. Accounts are clearly official (verified,
     official default avatar, no avatar_url, role='member') and exist purely to
     author *labelled* seed content — never to impersonate a person."""
-    at = author_type if author_type in ("official_bot", "editorial") else "official_bot"
+    at = author_type if author_type in _SEED_BOT_AUTHOR_TYPES else "official_bot"
     lang = language if language in seedlib.SUPPORTED_LANGUAGES else "zh"
     handle, display_name, bio, symbol, color = _SEED_BOT_IDENTITY[(at, lang)]
     row = conn.execute("SELECT id FROM users WHERE handle = ?", (handle,)).fetchone()
@@ -5833,7 +5955,7 @@ def _news_author_display_name(country: str, city: str, language: str, author_typ
         return "Machi ローカルデスク"
     if language == "en":
         return "Machi Local Desk"
-    return "Machi 本地资讯台"
+    return "Machi 本地生活编辑部"
 
 
 def serialize_news_source(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -8065,8 +8187,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_login_start(conn)
         if path == "/api/auth/login/verify" and method == "POST":
             return self.api_login_verify(conn)
-        if path == "/api/auth/change-password" and method == "POST":
+        if path in ("/api/auth/change-password", "/api/account/change-password") and method == "POST":
             return self.api_change_password(conn)
+        if path == "/api/account/verify-password" and method == "POST":
+            return self.api_verify_password(conn)
+        if path == "/api/account/change-email" and method == "POST":
+            return self.api_change_email(conn)
+        if path == "/api/account/region-language" and method == "PATCH":
+            return self.api_update_me(conn)
         if path == "/api/auth/forgot-password" and method == "POST":
             return self.api_forgot_password(conn)
         if path == "/api/auth/reset-password" and method == "POST":
@@ -9078,19 +9206,37 @@ class Handler(BaseHTTPRequestHandler):
         reset still consume the code, so a preflight check cannot burn it."""
         data = self.read_json()
         purpose = (data.get("purpose") or "register").strip()
-        email = (data.get("email") or "").strip()
+        email = (data.get("email") or data.get("new_email") or "").strip()
         code = (data.get("code") or "").strip()
-        if purpose not in ("register", "reset"):
+        challenge_id = (data.get("challenge_id") or "").strip()
+        secure_purposes = {"change_password", "change_email_old", "change_email_new"}
+        user = self.require_user(conn) if purpose in secure_purposes else None
+        if purpose not in ("register", "reset", *secure_purposes):
             raise APIError("不支持的验证码类型", 400, "invalid_purpose")
+        if purpose in ("change_password", "change_email_old"):
+            email = (user["email"] or "").strip()
         if not is_valid_email(email):
             raise APIError("请填写有效邮箱", 400, "invalid_email")
         if not code:
             raise APIError("请输入验证码", 400, "invalid_code")
-        row = conn.execute(
-            "SELECT * FROM auth_codes WHERE purpose = ? AND email = ? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1",
-            (purpose, email.lower()),
-        ).fetchone()
+        if challenge_id:
+            row = conn.execute(
+                "SELECT * FROM auth_codes WHERE id = ? AND purpose = ? AND consumed_at IS NULL",
+                (challenge_id, purpose),
+            ).fetchone()
+        elif user:
+            row = conn.execute(
+                "SELECT * FROM auth_codes WHERE purpose = ? AND user_id = ? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                (purpose, user["id"]),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM auth_codes WHERE purpose = ? AND email = ? AND consumed_at IS NULL ORDER BY created_at DESC LIMIT 1",
+                (purpose, email.lower()),
+            ).fetchone()
         if not row:
+            raise APIError("验证码无效或已过期", 400, "invalid_code")
+        if user and row["user_id"] != user["id"]:
             raise APIError("验证码无效或已过期", 400, "invalid_code")
         expires = parse_iso(row["expires_at"])
         if expires and expires < datetime.now(timezone.utc):
@@ -9229,16 +9375,34 @@ class Handler(BaseHTTPRequestHandler):
         how long it lasts. Responds generically to avoid leaking which
         addresses already have accounts."""
         data = self.read_json()
-        email = (data.get("email") or "").strip()
+        email = (data.get("email") or data.get("new_email") or "").strip()
         purpose = (data.get("purpose") or "register").strip()
         locale = self._norm_locale(data.get("locale"))
-        if purpose not in ("register", "reset"):
+        secure_purposes = {"change_password", "change_email_old", "change_email_new"}
+        if purpose not in ("register", "reset", *secure_purposes):
             raise APIError("不支持的验证码类型", 400, "invalid_purpose")
+        user = self.require_user(conn) if purpose in secure_purposes else None
+        user_id = user["id"] if user else None
+        if purpose in ("change_password", "change_email_old"):
+            email = (user["email"] or "").strip()
+            if not is_valid_email(email):
+                raise APIError("当前账号未绑定邮箱，请先使用密码验证", 400, "no_email_on_file")
+        if purpose == "change_email_new":
+            email = email.strip()
         if not is_valid_email(email):
             raise APIError("请填写有效邮箱", 400, "invalid_email")
         taken = conn.execute(
             "SELECT 1 FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email.lower(),)
         ).fetchone()
+        if purpose == "change_email_new":
+            if email.lower() == (user["email"] or "").strip().lower():
+                raise APIError("新邮箱不能与当前邮箱相同", 400, "same_email")
+            exists = conn.execute(
+                "SELECT 1 FROM users WHERE lower(email) = ? AND id != ? AND deleted_at IS NULL",
+                (email.lower(), user["id"]),
+            ).fetchone()
+            if exists:
+                raise APIError("这个邮箱已经注册过", 409, "email_taken")
         if purpose == "register" and taken:
             # Pretend success — don't reveal that this address is registered.
             self.send_json({"ok": True, "expires_in": EMAIL_CODE_TTL_SEC})
@@ -9246,20 +9410,33 @@ class Handler(BaseHTTPRequestHandler):
         if purpose == "reset" and not taken:
             self.send_json({"ok": True, "expires_in": EMAIL_CODE_TTL_SEC})
             return
-        user_id = None
         if purpose == "reset" and taken:
             urow = conn.execute("SELECT id FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email.lower(),)).fetchone()
             user_id = urow["id"] if urow else None
         try:
             result = issue_auth_code(conn, purpose=purpose, email=email, ip=self._client_ip(),
                                      user_id=user_id, locale=locale)
+            if user and purpose in secure_purposes:
+                write_security_log(
+                    conn,
+                    user["id"],
+                    f"{purpose}_code_sent",
+                    {"email_hint": mask_email(email)},
+                    ip=self._client_ip(),
+                    user_agent=self.headers.get("User-Agent") or "",
+                )
         except APIError as exc:
             if exc.code == "code_cooldown":
                 raise
             # Any other failure: respond generically.
             self.send_json({"ok": True, "expires_in": EMAIL_CODE_TTL_SEC})
             return
-        self.send_json({"ok": True, "expires_in": result["expires_in"]})
+        self.send_json({
+            "ok": True,
+            "challenge_id": result.get("challenge_id"),
+            "email_hint": mask_email(email),
+            "expires_in": result["expires_in"],
+        })
 
     def api_login_start(self, conn: sqlite3.Connection) -> None:
         """Step 1 of code login: verify the password, then email a one-time
@@ -9311,10 +9488,30 @@ class Handler(BaseHTTPRequestHandler):
     def api_change_password(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         data = self.read_json()
-        old_password = data.get("old_password") or data.get("current_password") or ""
+        current_password = data.get("current_password") or data.get("old_password") or ""
+        code = (data.get("code") or "").strip()
+        challenge_id = (data.get("challenge_id") or "").strip()
         new_password = data.get("new_password") or data.get("password") or ""
-        if not verify_password(old_password, user["password_hash"]):
-            raise APIError("当前密码不正确", 400, "invalid_credentials")
+        verified_by = ""
+        if current_password:
+            if not verify_password(current_password, user["password_hash"]):
+                raise APIError("当前密码不正确", 400, "invalid_credentials")
+            verified_by = "password"
+        elif code:
+            email = (user["email"] or "").strip()
+            if not is_valid_email(email):
+                raise APIError("当前账号未绑定邮箱，请使用当前密码验证", 400, "no_email_on_file")
+            consume_auth_code(
+                conn,
+                purpose="change_password",
+                email=email,
+                code=code,
+                challenge_id=challenge_id,
+                user_id=user["id"],
+            )
+            verified_by = "email_code"
+        else:
+            raise APIError("请先完成安全验证", 400, "verification_required")
         validate_password_strength(new_password)
         if verify_password(new_password, user["password_hash"]):
             raise APIError("新密码不能与当前密码相同", 400, "password_reuse")
@@ -9324,8 +9521,104 @@ class Handler(BaseHTTPRequestHandler):
         current = self.current_session(conn)
         keep = current["token"] if current else ""
         conn.execute("DELETE FROM sessions WHERE user_id = ? AND token != ?", (user["id"], keep))
+        write_security_log(
+            conn,
+            user["id"],
+            "password_changed",
+            {"verified_by": verified_by, "revoked_other_sessions": True},
+            ip=self._client_ip(),
+            user_agent=self.headers.get("User-Agent") or "",
+        )
         ACCESS_LOG.info("user %s changed password", user["handle"])
-        self.send_json({"ok": True})
+        self.send_json({"ok": True, "message": "密码已更新，请使用新密码登录。"})
+
+    def api_verify_password(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        password = data.get("password") or data.get("current_password") or ""
+        if not verify_password(password, user["password_hash"]):
+            write_security_log(
+                conn,
+                user["id"],
+                "password_verify_failed",
+                {},
+                ip=self._client_ip(),
+                user_agent=self.headers.get("User-Agent") or "",
+            )
+            raise APIError("当前密码不正确", 400, "invalid_credentials")
+        write_security_log(
+            conn,
+            user["id"],
+            "password_verified",
+            {},
+            ip=self._client_ip(),
+            user_agent=self.headers.get("User-Agent") or "",
+        )
+        self.send_json({"ok": True, "message": "验证通过"})
+
+    def api_change_email(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        current_password = data.get("current_password") or data.get("password") or ""
+        old_code = (data.get("old_code") or data.get("current_code") or "").strip()
+        old_challenge_id = (data.get("old_challenge_id") or data.get("current_challenge_id") or "").strip()
+        new_email = (data.get("new_email") or data.get("email") or "").strip().lower()
+        new_code = (data.get("new_code") or data.get("code") or "").strip()
+        new_challenge_id = (data.get("new_challenge_id") or data.get("challenge_id") or "").strip()
+        if not is_valid_email(new_email):
+            raise APIError("请填写有效邮箱", 400, "invalid_email")
+        current_email = (user["email"] or "").strip().lower()
+        if new_email == current_email:
+            raise APIError("新邮箱不能与当前邮箱相同", 400, "same_email")
+        exists = conn.execute(
+            "SELECT 1 FROM users WHERE lower(email) = ? AND id != ? AND deleted_at IS NULL",
+            (new_email, user["id"]),
+        ).fetchone()
+        if exists:
+            raise APIError("这个邮箱已经注册过", 409, "email_taken")
+        verified_by = ""
+        if current_password:
+            if not verify_password(current_password, user["password_hash"]):
+                raise APIError("当前密码不正确", 400, "invalid_credentials")
+            verified_by = "password"
+        elif old_code and is_valid_email(current_email):
+            consume_auth_code(
+                conn,
+                purpose="change_email_old",
+                email=current_email,
+                code=old_code,
+                challenge_id=old_challenge_id,
+                user_id=user["id"],
+            )
+            verified_by = "current_email_code"
+        else:
+            raise APIError("请先完成当前账号安全验证", 400, "verification_required")
+        consume_auth_code(
+            conn,
+            purpose="change_email_new",
+            email=new_email,
+            code=new_code,
+            challenge_id=new_challenge_id,
+            user_id=user["id"],
+        )
+        conn.execute("UPDATE users SET email = ?, updated_at = ? WHERE id = ?", (new_email, now_iso(), user["id"]))
+        write_security_log(
+            conn,
+            user["id"],
+            "email_changed",
+            {"verified_by": verified_by, "old_email_hint": mask_email(current_email), "new_email_hint": mask_email(new_email)},
+            ip=self._client_ip(),
+            user_agent=self.headers.get("User-Agent") or "",
+        )
+        if is_valid_email(current_email):
+            with _DBLockReleased():
+                send_email(
+                    current_email,
+                    "Machi 绑定邮箱已更改",
+                    f"你的 Machi 绑定邮箱已更改为 {mask_email(new_email)}。如果不是你本人操作，请立即修改密码并联系支持。",
+                )
+        fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
+        self.send_json({"ok": True, "message": "邮箱已更新", "user": serialize_user(fresh)})
 
     def api_forgot_password(self, conn: sqlite3.Connection) -> None:
         """Send a reset code. Always responds success so an attacker can't
@@ -9371,21 +9664,20 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         data = self.read_json()
         updates: list[tuple[str, Any]] = []
-        fields = ["display_name", "bio", "location", "avatar_symbol", "avatar_color", "avatar_url", "cover_url", "email"]
+        fields = ["display_name", "bio", "location", "avatar_symbol", "avatar_color", "avatar_url", "cover_url"]
         for field in fields:
             if field in data and data[field] is not None:
                 updates.append((field, str(data[field])))
-        # Region (phase 1). Accept any subset of (country, province,
-        # city) so the profile edit screen can either replace the
-        # whole thing or just bump the current city. The canonical
-        # current_region_code is derived from whatever survives, so
-        # the index stays consistent.
-        region_changed = False
+        if "email" in data and data["email"] is not None:
+            raise APIError("修改绑定邮箱需要安全验证", 403, "verification_required")
+        # Region (phase 1). `country/province/city` is the user's declared
+        # profile region. `current_region_code` is the browsing city. Keep
+        # them separate so editing a profile region does not unexpectedly
+        # switch the home feed.
         for field in ("country", "province", "city"):
             if field in data and data[field] is not None:
                 updates.append((field, str(data[field]).strip().lower()))
-                region_changed = True
-        if region_changed or "current_region_code" in data:
+        if "current_region_code" in data:
             country_val  = str(data.get("country",  user.get("country",  ""))).strip().lower()
             province_val = str(data.get("province", user.get("province", ""))).strip().lower()
             city_val     = str(data.get("city",     user.get("city",     ""))).strip().lower()
@@ -9412,9 +9704,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise APIError("用户名已存在", 409, "handle_taken")
             updates.append(("handle", new_handle))
         if "password" in data and data["password"]:
-            if len(data["password"]) < 6:
-                raise APIError("密码至少 6 位", 400, "invalid_password")
-            updates.append(("password_hash", hash_password(data["password"])))
+            raise APIError("修改密码需要安全验证", 403, "verification_required")
         if updates:
             sets = ", ".join(f"{f} = ?" for f, _ in updates) + ", updated_at = ?"
             values = [v for _, v in updates] + [now_iso(), user["id"]]

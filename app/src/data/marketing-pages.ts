@@ -62,9 +62,7 @@ const cities: Record<MarketingLocale, MarketingPageItem[]> = {
     { title: "上海 Shanghai", meta: "China", body: "把本地动态、招聘、租房和服务放回城市语境。" },
     { title: "杭州 Hangzhou", meta: "China", body: "面向年轻生活方式、工作机会和本地服务。" },
     { title: "洛杉矶 Los Angeles", meta: "United States", body: "英文、中文和多语言内容按城市聚合。" },
-    { title: "多伦多 Toronto", meta: "Canada", body: "留学、工作、租房、服务与活动入口。" },
-    { title: "伦敦 London", meta: "United Kingdom", body: "让海外生活信息不再散落在不同群聊里。" },
-    { title: "悉尼 Sydney", meta: "Australia", body: "城市频道连接租房、工作、二手和周末生活。" },
+    { title: "蒙特利尔 Montreal", meta: "Canada", body: "留学、工作、租房、服务与活动入口。" },
   ],
   en: [
     { title: "Tokyo", meta: "Japan", body: "Housing, secondhand, part-time jobs, dining plans and local alerts." },
@@ -72,9 +70,7 @@ const cities: Record<MarketingLocale, MarketingPageItem[]> = {
     { title: "Shanghai", meta: "China", body: "Local posts, jobs, housing and services in one city context." },
     { title: "Hangzhou", meta: "China", body: "Young city life, career signals and trusted local services." },
     { title: "Los Angeles", meta: "United States", body: "English, Chinese and multilingual content organized by city." },
-    { title: "Toronto", meta: "Canada", body: "Study, work, housing, services and events for the city experience." },
-    { title: "London", meta: "United Kingdom", body: "Bringing scattered overseas-life information into one place." },
-    { title: "Sydney", meta: "Australia", body: "City channels for housing, jobs, secondhand and weekends." },
+    { title: "Montreal", meta: "Canada", body: "Study, work, housing, services and events for the city experience." },
   ],
   ja: [
     { title: "東京 Tokyo", meta: "Japan", body: "住まい、フリマ、バイト、食事会、地域のお知らせを都市別に。" },
@@ -82,9 +78,7 @@ const cities: Record<MarketingLocale, MarketingPageItem[]> = {
     { title: "上海 Shanghai", meta: "China", body: "投稿、求人、住まい、サービスを都市の文脈で整理。" },
     { title: "杭州 Hangzhou", meta: "China", body: "若い暮らし、仕事の機会、地域サービスに出会えます。" },
     { title: "ロサンゼルス Los Angeles", meta: "United States", body: "英語、中国語、多言語の投稿を都市ごとに集約。" },
-    { title: "トロント Toronto", meta: "Canada", body: "留学、仕事、住まい、サービス、イベントの入口。" },
-    { title: "ロンドン London", meta: "United Kingdom", body: "海外生活の情報を、散らばった場所からひとつに。" },
-    { title: "シドニー Sydney", meta: "Australia", body: "住まい、仕事、フリマ、週末の暮らしを都市チャンネルで。" },
+    { title: "モントリオール Montreal", meta: "Canada", body: "留学、仕事、住まい、サービス、イベントの入口。" },
   ],
 };
 
@@ -96,7 +90,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       intro: "Machi City 由姚凱 / YAOKAI 创立，是一个按国家、城市和语言组织内容的本地生活平台，源自跨国生活和日本留学经历中对城市信息分散问题的观察。",
       blocks: [
         { title: "为什么做 Machi", subtitle: "真正的城市，藏在普通人的日常里。", body: "一座城市的生活，不只存在于地图、景点和官方介绍中。它也存在于租房时踩过的坑、打工前想知道的提醒、搬家时需要的经验、周末可以去的活动、一次约饭、一次求助，和人与人之间真实的分享里。\n\n这些信息常常散落在群聊、社交平台、本地网站和不同语言的信息环境里。Machi 希望把这些原本分散的城市生活重新组织起来，让它们按国家、城市、语言和内容类型被找到。" },
-        { title: "创始人理念", subtitle: "让城市里的信息不再散落。\n让陌生的地方慢慢变得可生活。\n让每个人都能在一座城市里找到信息、经验、需求和连接。", body: "Machi 不希望制造更多噪音，而是希望把真正有用的城市生活重新整理出来。无论是刚来到一座城市的人，还是已经在这里生活很久的人，都应该更容易找到值得信任的信息和真实的连接。" },
+        { title: "创始人理念", subtitle: "从日本留学和跨国生活里的真实问题出发。", body: "Machi 不希望制造更多噪音，而是把真正有用的城市生活重新整理出来。无论是刚来到一座城市的人，还是已经在这里生活很久的人，都应该更容易找到可信的信息、真实经验和同城连接。" },
         { title: "核心价值观", variant: "grid", items: [
           { title: "本地优先", body: "每条内容都属于一座具体的城市，而不是漂浮在互联网上的碎片。" },
           { title: "真实可信", body: "鼓励真实身份、真实经验、真实链接，拒绝标题党和搬运。" },
@@ -105,13 +99,13 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
         ] },
         { title: "产品方向", variant: "grid", items: [
           { title: "城市优先", body: "国家 → 省份/州 → 城市，是内容的第一层组织方式。" },
-          { title: "语言友好", body: "界面语言和内容语言分开，适合东京、多伦多、洛杉矶这样的多语言城市。" },
+          { title: "语言友好", body: "界面语言和内容语言分开，适合东京、蒙特利尔、洛杉矶这样的多语言城市。" },
           { title: "真实生活", body: "租房、工作、二手、约饭、问答、服务都来自城市日常，而不是营销内容。" },
           { title: "商家共生", body: "本地商家、招聘方、房产中介、服务商也能在自己的城市频道里被找到。" },
         ] },
         { title: "上线路线图", variant: "list", items: [
           { meta: "2026 Q2", title: "官网首页 + 三语切换", body: "城市展示、内容频道、热榜、商家合作入口、等待名单。" },
-          { meta: "2026 Q3", title: "iOS / Android 首批城市开放", body: "东京、洛杉矶、多伦多优先开放，等待名单用户优先获得 App 测试邀请。" },
+          { meta: "2026 Q3", title: "iOS / Android 城市阶段开放", body: "第一阶段聚焦 Tokyo / Japan，第二阶段开放 Osaka，后续规划 Los Angeles / Montreal / Shanghai / Hangzhou。等待名单用户优先获得测试邀请。" },
           { meta: "2026 Q4", title: "商家认证 + 城市广告", body: "为本地商家、招聘方、房产中介开放认证和城市级曝光。" },
           { meta: "2027+", title: "更多城市与语言", body: "按城市需求逐步开放更多城市频道和内容语言。" },
         ] },
@@ -125,7 +119,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       intro: "Founded by Yao Kai / YAOKAI, Machi City is a city-based local life platform inspired by cross-border living and the need to organize city information by country, city, language, and content type.",
       blocks: [
         { title: "Why Machi exists", subtitle: "The real city lives in ordinary days.", body: "A city's life does not only exist in maps, landmarks, or official descriptions. It also lives in the housing warnings people learn the hard way, the reminders someone wants before taking a part-time job, the moving tips people need, the weekend events worth finding, a shared meal, a request for help, and the real exchanges between people.\n\nThese pieces of information are often scattered across group chats, social platforms, local websites, and different language environments. Machi is built to organize that scattered city life again so it can be found by country, city, language, and content type." },
-        { title: "Founder philosophy", subtitle: "Make city information less scattered.\nMake unfamiliar places easier to live in.\nHelp everyone find information, experience, needs, and connections in a city.", body: "Machi does not aim to create more noise. It aims to reorganize the city-life information that is actually useful. Whether someone has just arrived in a city or has lived there for years, they should be able to find trustworthy information and real connections more easily." },
+        { title: "Founder philosophy", subtitle: "Rooted in real problems from studying in Japan and living across borders.", body: "Machi does not aim to create more noise. It reorganizes the city-life information that is actually useful, so newcomers and long-time residents can find trustworthy information, lived experience and local connections more easily." },
         { title: "Core values", variant: "grid", items: [
           { title: "Local first", body: "Every post belongs to a specific city, not a piece floating on the open internet." },
           { title: "Trust by default", body: "We welcome real identities, lived experience and honest links. We turn down clickbait and reposted noise." },
@@ -134,13 +128,13 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
         ] },
         { title: "Product direction", variant: "grid", items: [
           { title: "City first", body: "Country → state or province → city forms the core content structure." },
-          { title: "Language aware", body: "Interface language and content language are separate so cities like Tokyo, Toronto and Los Angeles all work." },
+          { title: "Language aware", body: "Interface language and content language are separate so cities like Tokyo, Montreal and Los Angeles all work." },
           { title: "Real city experience", body: "Housing, jobs, secondhand, dining, Q&A and services all come from everyday city life — not marketing." },
           { title: "Merchant friendly", body: "Local merchants, hiring teams, housing agents and service providers can be found inside their own city channels." },
         ] },
         { title: "Roadmap", variant: "list", items: [
           { meta: "2026 Q2", title: "Website + tri-lingual switcher", body: "City showcase, content channels, ranking, business entry, waitlist." },
-          { meta: "2026 Q3", title: "iOS / Android first cities", body: "Tokyo, Los Angeles and Toronto open first. Waitlist users get early test invites." },
+          { meta: "2026 Q3", title: "iOS / Android city phases", body: "Phase 1 focuses on Tokyo / Japan, Phase 2 opens Osaka, and later phases plan Los Angeles / Montreal / Shanghai / Hangzhou. Waitlist users get early test invites." },
           { meta: "2026 Q4", title: "Merchant verification + city ads", body: "Verification and city-level exposure for local merchants, hiring teams and housing agents." },
           { meta: "2027+", title: "More cities, more languages", body: "Open city channels and content languages on demand." },
         ] },
@@ -154,7 +148,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       intro: "Machi City は姚凱 / YAOKAI によって創設された、国・都市・言語・内容ごとに街の生活情報を整理するローカルライフプラットフォームです。",
       blocks: [
         { title: "なぜ Machi をつくるのか", subtitle: "本当の街は、ふつうの日常の中にあります。", body: "一つの街の暮らしは、地図や観光地、公式の説明だけにあるわけではありません。住まいでつまずいた経験、アルバイトの前に知りたい注意点、引っ越しのときに必要な知識、週末に行けるイベント、一度の食事、一度の助け合い、そして人と人との本当の共有の中にもあります。\n\nそうした情報は、グループチャット、SNS、地域サイト、異なる言語環境の中に散らばりがちです。Machi は、散らばっていた街の暮らしをもう一度整理し、国・都市・言語・内容ごとに見つけられるようにしたいと考えています。" },
-        { title: "創設者の理念", subtitle: "街の情報をもっと見つけやすくすること。\n知らない場所でも生活を始めやすくすること。\nすべての人が、一つの街で情報、経験、必要なこと、つながりを見つけられるようにすること。", body: "Machi は、さらに多くのノイズを生み出すのではなく、本当に役立つ街の暮らしを整理し直したいと考えています。新しい街に来たばかりの人も、長く暮らしている人も、信頼できる情報と本当のつながりをもっと見つけやすくあるべきです。" },
+        { title: "創設者の理念", subtitle: "日本留学と国境を越えた生活で感じた課題から始まりました。", body: "Machi は、さらに多くのノイズを生み出すのではなく、本当に役立つ街の暮らしを整理し直したいと考えています。新しい街に来たばかりの人も、長く暮らしている人も、信頼できる情報、実体験、同じ街のつながりをもっと見つけやすくあるべきです。" },
         { title: "わたしたちの価値観", variant: "grid", items: [
           { title: "地域優先", body: "すべての投稿はひとつの街に属します。インターネット上に漂う断片ではありません。" },
           { title: "信頼が前提", body: "本名・本物の経験・実在のリンクを歓迎し、釣りタイトルや転載は受け入れません。" },
@@ -163,13 +157,13 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
         ] },
         { title: "プロダクトの方向性", variant: "grid", items: [
           { title: "都市から始まる", body: "国 → 都道府県・州 → 都市を、コンテンツ整理の中心に置きます。" },
-          { title: "多言語に強い", body: "画面言語と投稿言語を分け、東京・トロント・ロサンゼルスのような多言語都市に対応します。" },
+          { title: "多言語に強い", body: "画面言語と投稿言語を分け、東京・モントリオール・ロサンゼルスのような多言語都市に対応します。" },
           { title: "本物の地域生活", body: "住まい、仕事、フリマ、食事、相談、サービスをマーケティングではなく日常から集めます。" },
           { title: "店舗と共存", body: "店舗、採用担当、不動産、サービス事業者も、自分の街のチャンネルから見つかります。" },
         ] },
         { title: "ロードマップ", variant: "list", items: [
           { meta: "2026 Q2", title: "公式サイト + 三言語切替", body: "都市紹介、コンテンツチャンネル、トレンド、ビジネス窓口、ウェイトリスト。" },
-          { meta: "2026 Q3", title: "iOS / Android 初期都市の公開", body: "東京、ロサンゼルス、トロントが先行公開。ウェイトリスト登録者に優先テスト招待。" },
+          { meta: "2026 Q3", title: "iOS / Android 都市フェーズ公開", body: "第1段階は Tokyo / Japan、第2段階は Osaka、その後 Los Angeles / Montreal / Shanghai / Hangzhou を計画しています。ウェイトリスト登録者に優先テスト招待。" },
           { meta: "2026 Q4", title: "店舗認証と都市広告", body: "店舗、採用担当、不動産向けに認証と都市単位の露出を開始。" },
           { meta: "2027+", title: "より多くの街と言語へ", body: "需要に応じて新しい都市チャンネルとコンテンツ言語を順次公開。" },
         ] },
@@ -256,9 +250,9 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     },
   },
   cities: {
-    zh: { eyebrow: "城市", title: "一个 App，连接每座城市。", intro: "从东京到洛杉矶，从杭州到多伦多，Machi 让每座城市都有自己的生活入口。", blocks: [{ title: "首批城市", variant: "grid", items: cities.zh }] },
-    en: { eyebrow: "Cities", title: "One app for every city.", intro: "From Tokyo to Los Angeles, Hangzhou to Toronto, Machi gives every city its own entry into real experience.", blocks: [{ title: "Launch cities", variant: "grid", items: cities.en }] },
-    ja: { eyebrow: "都市", title: "ひとつのアプリで、すべての街へ。", intro: "東京からロサンゼルス、杭州からトロントまで、Machi は街ごとの暮らしの入口をつくります。", blocks: [{ title: "初期都市", variant: "grid", items: cities.ja }] },
+    zh: { eyebrow: "城市", title: "一个 App，连接每座城市。", intro: "第一阶段聚焦 Tokyo / Japan，第二阶段开放 Osaka，后续规划 Los Angeles / Montreal / Shanghai / Hangzhou。Machi 让每座城市都有自己的生活入口。", blocks: [{ title: "城市阶段", variant: "grid", items: cities.zh }] },
+    en: { eyebrow: "Cities", title: "One app for every city.", intro: "Phase 1 focuses on Tokyo / Japan, Phase 2 opens Osaka, and later phases plan Los Angeles / Montreal / Shanghai / Hangzhou. Machi gives every city its own entry into real experience.", blocks: [{ title: "City phases", variant: "grid", items: cities.en }] },
+    ja: { eyebrow: "都市", title: "ひとつのアプリで、すべての街へ。", intro: "第1段階は Tokyo / Japan、第2段階は Osaka、その後 Los Angeles / Montreal / Shanghai / Hangzhou を計画しています。Machi は街ごとの暮らしの入口をつくります。", blocks: [{ title: "都市フェーズ", variant: "grid", items: cities.ja }] },
   },
   business: {
     zh: { eyebrow: "商家合作", title: "商家不仅能投放广告，还能进入本地社交场景。", intro: "餐厅、语言学校、活动组织者、健身房、课程机构、本地服务商和招聘者，都可以围绕城市生活场景触达真实需求。", blocks: [{ title: "社交场景商业化", variant: "grid", items: [
@@ -325,13 +319,13 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     ] }] },
   },
   download: {
-    zh: { eyebrow: "下载", title: "下载 Machi", intro: "Machi 正在准备 closed beta。东京、洛杉矶、多伦多将首先开放。", blocks: [{ title: "Web Beta 可体验", variant: "grid", items: [
+    zh: { eyebrow: "下载", title: "下载 Machi", intro: "Machi 正在准备 closed beta。第一阶段聚焦 Tokyo / Japan，第二阶段开放 Osaka，后续规划 Los Angeles / Montreal / Shanghai / Hangzhou。", blocks: [{ title: "Web Beta 可体验", variant: "grid", items: [
       { title: "城市首页", body: "进入城市生活脉搏。" }, { title: "发现与搜索", body: "找租房、工作、问答、活动和本地服务。" }, { title: "通知与私信", body: "接收回复并联系同城的人。" }, { title: "发布与主页", body: "发布内容，展示真实个人主页。" }, { title: "同城连接", body: "认识同城朋友、饭搭子、活动搭子和语言交换伙伴。" },
     ] }, { title: "状态", variant: "list", items: [{ title: "iOS", body: "即将上线" }, { title: "Android", body: "即将上线" }, { title: "Web Beta", body: "邀请制开放" }] }] },
-    en: { eyebrow: "Download", title: "Download Machi", intro: "Machi is preparing for closed beta. Tokyo, Los Angeles and Toronto will open first.", blocks: [{ title: "In Web Beta, you can use", variant: "grid", items: [
+    en: { eyebrow: "Download", title: "Download Machi", intro: "Machi is preparing for closed beta. Phase 1 focuses on Tokyo / Japan, Phase 2 opens Osaka, and later phases plan Los Angeles / Montreal / Shanghai / Hangzhou.", blocks: [{ title: "In Web Beta, you can use", variant: "grid", items: [
       { title: "City home", body: "Open the pulse of a city." }, { title: "Discovery and search", body: "Find housing, jobs, Q&A, events and local services." }, { title: "Notifications and messages", body: "Follow replies and contact local people." }, { title: "Posting and profiles", body: "Post content and build a real profile." }, { title: "Local connections", body: "Meet local friends, dining buddies, event companions and language exchange partners." },
     ] }, { title: "Status", variant: "list", items: [{ title: "iOS", body: "Coming soon" }, { title: "Android", body: "Coming soon" }, { title: "Web Beta", body: "Invite-only" }] }] },
-    ja: { eyebrow: "ダウンロード", title: "Machi をダウンロード", intro: "Machi はクローズドベータを準備中です。東京、ロサンゼルス、トロントから順次公開予定です。", blocks: [{ title: "Web Beta で使える機能", variant: "grid", items: [
+    ja: { eyebrow: "ダウンロード", title: "Machi をダウンロード", intro: "Machi はクローズドベータを準備中です。第1段階は Tokyo / Japan、第2段階は Osaka、その後 Los Angeles / Montreal / Shanghai / Hangzhou を計画しています。", blocks: [{ title: "Web Beta で使える機能", variant: "grid", items: [
       { title: "都市ホーム", body: "街の脈動に入る。" }, { title: "発見と検索", body: "住まい、仕事、Q&A、イベント、地域サービスを探す。" }, { title: "通知とメッセージ", body: "返信を受け取り、同じ街の人と連絡する。" }, { title: "投稿とプロフィール", body: "投稿し、実在感のあるプロフィールを持つ。" }, { title: "同じ街のつながり", body: "友達、食事仲間、イベント仲間、言語交換パートナーを見つける。" },
     ] }, { title: "ステータス", variant: "list", items: [{ title: "iOS", body: "近日公開" }, { title: "Android", body: "近日公開" }, { title: "Web Beta", body: "招待制" }] }] },
   },

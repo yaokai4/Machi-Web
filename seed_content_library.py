@@ -56,6 +56,26 @@ TONES: tuple[str, ...] = (
 # city-assistant account. Everything else uses the assistant identity.
 EDITORIAL_TONES: frozenset[str] = frozenset({"editorial"})
 
+
+def _author_type_for_seed(*, content_type: str, tone: str, country: str, city: str) -> str:
+    """Map seed content to clearly-labelled official desks.
+
+    This keeps the feed from looking like one assistant account is posting
+    everything, while still avoiding fake personal identities.
+    """
+    is_tokyo = country == "jp" and city == "tokyo"
+    if content_type == "qa":
+        return "official_bot"
+    if content_type == "local_service":
+        return "local_life_editorial"
+    if content_type == "event":
+        return "tokyo_editorial" if is_tokyo else "japan_life_editorial"
+    if content_type in {"guide", "housing_tip", "jobs_tip", "alert"}:
+        return "japan_life_editorial"
+    if tone in EDITORIAL_TONES:
+        return "tokyo_editorial" if is_tokyo else "japan_life_editorial"
+    return "official_bot"
+
 # Default mix when the admin asks for a whole-city batch ("mixed"). Scaled to
 # the requested count. Matches the spec's suggested 100-item distribution.
 _DEFAULT_MIX: dict[str, int] = {
@@ -125,7 +145,7 @@ CITY: dict[str, dict[str, Any]] = {
             "ja": ["コリアタウン", "サンタモニカ", "ダウンタウン", "パサデナ"],
         },
     },
-    "ca.quebec.montreal": {
+    "ca.montreal": {
         "zh": "蒙特利尔", "en": "Montreal", "ja": "モントリオール",
         "places": {
             "zh": ["Plateau", "市中心", "Concordia", "McGill", "Côte-des-Neiges"],
@@ -138,8 +158,8 @@ CITY: dict[str, dict[str, Any]] = {
 # Alternate region_code spellings → canonical key, so the tool still resolves
 # when the client/admin passes a slightly different slug for the same city.
 CITY_ALIASES: dict[str, str] = {
-    "ca.montreal.montreal": "ca.quebec.montreal",
-    "ca.montreal": "ca.quebec.montreal",
+    "ca.quebec.montreal": "ca.montreal",
+    "ca.montreal.montreal": "ca.montreal",
     "us.ca.losangeles": "us.ca.la",
     "us.ca.la.la": "us.ca.la",
 }
@@ -191,7 +211,7 @@ CURATED: dict[tuple[str, str], dict[str, list[str]]] = {
             "东京租房看房的时候，除了房租本身，礼金、押金、管理费、更新料都要一起算。不然一开始觉得便宜，最后总额会超出预期。",
             "离车站近不一定就舒服，有些房子靠近大路或者铁路线，晚上声音会很明显。看房最好白天和晚上都留意一下周围环境。",
         ],
-        "ca.quebec.montreal": [
+        "ca.montreal": [
             "第一次在蒙特利尔租房，建议多问一句暖气包不包括。不然冬天账单会很明显。",
         ],
     },
@@ -202,7 +222,7 @@ CURATED: dict[tuple[str, str], dict[str, list[str]]] = {
         ],
     },
     ("daily_life", "zh"): {
-        "ca.quebec.montreal": [
+        "ca.montreal": [
             "蒙特利尔冬天真的不要只看温度，风和路面结冰才是重点。鞋子比外套更重要。",
         ],
     },
@@ -457,7 +477,6 @@ def generate(
     """
     lang = language if language in SUPPORTED_LANGUAGES else "zh"
     tone = tone if tone in TONES else "natural"
-    author_type = "editorial" if tone in EDITORIAL_TONES else "official_bot"
     count = max(0, min(int(count), MAX_BATCH_COUNT))
 
     if content_type in ("mixed", "all", ""):
@@ -490,7 +509,7 @@ def generate(
                 "title": "",
                 "seed_content_type": ctype,
                 "app_content_type": APP_CONTENT_TYPE.get(ctype, "dynamic"),
-                "author_type": author_type,
+                "author_type": _author_type_for_seed(content_type=ctype, tone=tone, country=country, city=city),
                 "tags": tags,
                 "tone": tone,
             })

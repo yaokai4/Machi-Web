@@ -10,14 +10,12 @@ export const UserSchema = z.object({
   handle: z.string(),
   username: z.string().optional(),
   display_name: z.string(),
-  displayName: z.string().optional(),
   email: z.string().optional(),
   bio: z.string().optional(),
   location: z.string().optional(),
   avatar_symbol: z.string().optional(),
   avatar_color: z.string().optional(),
   avatar_url: z.string().optional(),
-  avatarUrl: z.string().optional(),
   cover_url: z.string().optional(),
   membership_tier: z.string().optional(),
   is_verified: z.boolean().optional(),
@@ -30,10 +28,6 @@ export const UserSchema = z.object({
   membership_plan_key: z.string().optional(),
   verified_badge_type: z.string().optional(),
   role: z.string().optional(),
-  isOfficial: z.boolean().optional(),
-  is_official: z.boolean().optional(),
-  officialRole: z.string().optional(),
-  official_role: z.string().optional(),
   country: z.string().optional(),
   province: z.string().optional(),
   city: z.string().optional(),
@@ -46,20 +40,12 @@ export const UserSchema = z.object({
   profile_view_count: z.number().optional(),
   joined_at: z.string().nullable().optional(),
   created_at: z.string().nullable().optional(),
-  createdAt: z.string().nullable().optional(),
   updated_at: z.string().nullable().optional(),
-  updatedAt: z.string().nullable().optional(),
   follower_count: z.number().optional(),
   following_count: z.number().optional(),
   post_count: z.number().optional(),
-  followerCount: z.number().optional(),
-  followingCount: z.number().optional(),
-  postCount: z.number().optional(),
   is_following: z.boolean().optional(),
-  isFollowing: z.boolean().optional(),
   is_blocked: z.boolean().optional(),
-  can_message: z.boolean().optional(),
-  canMessage: z.boolean().optional(),
 });
 export type KXUser = z.infer<typeof UserSchema>;
 
@@ -75,37 +61,12 @@ export function showVerifiedBadge(
 
 // ---- membership + payments (mirrors server.py serialize_* shapes) ----
 export interface KXMembershipStatus {
-  user_id?: string;
-  userId?: string;
   is_active: boolean;
-  isActive?: boolean;
   status: string; // inactive | active | expired | canceled | grace_period | refunded | pending
   plan_key: string;
-  planKey?: string;
   current_period_end: string;
-  expires_at?: string;
-  expiresAt?: string;
-  started_at?: string;
-  startedAt?: string;
   source: string;
-  provider?: string;
-  price?: number;
-  currency?: string;
-  benefits?: string[];
-  verified_badge_type?: string;
-  verifiedBadgeType?: string;
-  can_post_high_trust_content?: boolean;
-  canPostHighTrustContent?: boolean;
-  can_access_exclusive_page?: boolean;
-  canAccessExclusivePage?: boolean;
-  daily_post_limit?: number;
-  dailyPostLimit?: number;
-  priority_review?: boolean;
-  priorityReview?: boolean;
-  light_boost?: boolean;
-  lightBoost?: boolean;
   cancel_at_period_end: boolean;
-  cancelAtPeriodEnd?: boolean;
   membership_id?: string;
 }
 
@@ -126,26 +87,14 @@ export interface KXMembershipMe {
   user: KXUser;
 }
 
-export type PaymentProvider = "wechat_pay" | "alipay" | "stripe" | "apple_iap";
+export type PaymentProvider = "wechat_pay" | "alipay" | "stripe";
 
 export interface KXCreateOrderResult {
   orderNo: string;
-  order_no?: string;
-  userId?: string;
-  user_id?: string;
   provider: PaymentProvider;
-  platform?: "web" | "ios" | string;
   amount: number;
-  price?: number;
   currency: string;
-  planKey?: string;
-  plan_key?: string;
   expiresAt: string;
-  expires_at?: string;
-  transactionId?: string;
-  transaction_id?: string;
-  errorMessage?: string;
-  error_message?: string;
   qr_code_url?: string; // wechat (Native QR target)
   pay_url?: string; // alipay (redirect) or dev mock-confirm link
   mock?: boolean;
@@ -277,41 +226,20 @@ export const PostSchema: z.ZodType<KXPost> = z.lazy(() =>
     author_id: z.string(),
     content: z.string(),
     created_at: z.string(),
-    createdAt: z.string().optional(),
     updated_at: z.string(),
-    updatedAt: z.string().optional(),
     deleted_at: z.string().nullable().optional(),
     repost_of_id: z.string().nullable().optional(),
     view_count: z.number(),
-    viewCount: z.number().optional(),
     like_count: z.number(),
-    likeCount: z.number().optional(),
     repost_count: z.number(),
-    repostCount: z.number().optional(),
     bookmark_count: z.number(),
-    bookmarkCount: z.number().optional(),
-    save_count: z.number().optional(),
-    saveCount: z.number().optional(),
     comment_count: z.number(),
-    commentCount: z.number().optional(),
-    share_count: z.number().optional(),
-    shareCount: z.number().optional(),
     heat_score: z.number(),
-    heatScore: z.number().optional(),
     liked: z.boolean(),
-    isLiked: z.boolean().optional(),
     bookmarked: z.boolean(),
-    saved: z.boolean().optional(),
-    isSaved: z.boolean().optional(),
     reposted: z.boolean(),
-    isReposted: z.boolean().optional(),
-    canEdit: z.boolean().optional(),
-    canDelete: z.boolean().optional(),
     tags: z.array(z.string()),
     media: z.array(MediaSchema),
-    images: z.array(z.string()).optional(),
-    videoUrl: z.string().optional(),
-    video_url: z.string().optional(),
     author: UserSchema.nullable().optional(),
     original_post: PostSchema.nullable().optional(),
     status: z.string().optional(),
@@ -319,14 +247,8 @@ export const PostSchema: z.ZodType<KXPost> = z.lazy(() =>
     province: z.string().optional(),
     city: z.string().optional(),
     region_code: z.string().optional(),
-    cityPath: z.string().optional(),
-    city_path: z.string().optional(),
     content_type: z.enum(CONTENT_TYPES).optional(),
-    contentType: z.string().optional(),
-    category: z.string().optional(),
     attributes: z.record(z.string(), z.unknown()).optional(),
-    requiresMembership: z.boolean().optional(),
-    sourceType: z.string().optional(),
     report_count: z.number().optional(),
     is_boosted: z.boolean().optional(),
     boost_weight: z.number().optional(),
@@ -349,41 +271,20 @@ export interface KXPost {
   author_id: string;
   content: string;
   created_at: string;
-  createdAt?: string;
   updated_at: string;
-  updatedAt?: string;
   deleted_at?: string | null;
   repost_of_id?: string | null;
   view_count: number;
-  viewCount?: number;
   like_count: number;
-  likeCount?: number;
   repost_count: number;
-  repostCount?: number;
   bookmark_count: number;
-  bookmarkCount?: number;
-  save_count?: number;
-  saveCount?: number;
   comment_count: number;
-  commentCount?: number;
-  share_count?: number;
-  shareCount?: number;
   heat_score: number;
-  heatScore?: number;
   liked: boolean;
-  isLiked?: boolean;
   bookmarked: boolean;
-  saved?: boolean;
-  isSaved?: boolean;
   reposted: boolean;
-  isReposted?: boolean;
-  canEdit?: boolean;
-  canDelete?: boolean;
   tags: string[];
   media: KXMedia[];
-  images?: string[];
-  videoUrl?: string;
-  video_url?: string;
   author?: KXUser | null;
   original_post?: KXPost | null;
   status?: string;
@@ -391,14 +292,8 @@ export interface KXPost {
   province?: string;
   city?: string;
   region_code?: string;
-  cityPath?: string;
-  city_path?: string;
   content_type?: ContentType;
-  contentType?: string;
-  category?: string;
   attributes?: Record<string, unknown>;
-  requiresMembership?: boolean;
-  sourceType?: string;
   report_count?: number;
   is_boosted?: boolean;
   boost_weight?: number;

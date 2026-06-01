@@ -39,7 +39,7 @@ export function EmptyState({ title, subtitle, icon: Icon = Inbox }: { title: str
 }
 
 export function ErrorState({
-  title = "加载失败",
+  title = "页面暂时无法加载",
   subtitle,
   onRetry,
 }: {

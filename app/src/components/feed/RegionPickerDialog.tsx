@@ -7,8 +7,6 @@ import clsx from "clsx";
 import {
   REGION_COUNTRIES,
   citiesFor,
-  countryByCode,
-  hotCitiesForCountry,
   provincesFor,
   regionDisplayName,
   regionHeaderLabel,
@@ -19,31 +17,7 @@ import {
   type RegionProvince,
 } from "@/lib/regions";
 
-const FIRST_TIER_REGION_CODES: Record<string, string[]> = {
-  cn: ["cn.beijing.beijing", "cn.shanghai.shanghai", "cn.guangdong.shenzhen", "cn.guangdong.guangzhou"],
-  jp: ["jp.tokyo.tokyo", "jp.osaka.osaka", "jp.kyoto.kyoto", "jp.aichi.nagoya", "jp.fukuoka.fukuoka"],
-  us: ["us.ny.nyc", "us.ca.la", "us.ca.sf", "us.wa.seattle", "us.tx.austin"],
-  uk: ["uk.london", "uk.manchester", "uk.edinburgh"],
-  ca: ["ca.toronto", "ca.vancouver", "ca.montreal"],
-  au: ["au.sydney", "au.melbourne", "au.brisbane"],
-  sg: ["sg.singapore"],
-  kr: ["kr.seoul", "kr.busan"],
-  th: ["th.bangkok"],
-  my: ["my.kl", "my.penang"],
-  de: ["de.berlin", "de.munich", "de.hamburg"],
-  fr: ["fr.paris", "fr.lyon"],
-  nl: ["nl.amsterdam"],
-};
-
-function firstTierRegionsForCountry(countryCode?: string): RegionInfo[] {
-  const code = countryCode?.toLowerCase() || "jp";
-  const configured = FIRST_TIER_REGION_CODES[code] || [];
-  const regions = configured
-    .map((regionCode) => resolveRegion(regionCode))
-    .filter((region): region is RegionInfo => Boolean(region));
-  if (regions.length) return regions;
-  return hotCitiesForCountry(code).slice(0, 5);
-}
+const SUPPORTED_COUNTRY_CODES = new Set(["jp", "cn", "us", "ca"]);
 
 interface RegionPickerDialogProps {
   open: boolean;
@@ -67,26 +41,30 @@ export function RegionPickerDialog({
   const [province, setProvince] = useState<RegionProvince | null>(null);
   const [mounted, setMounted] = useState(false);
   const allowedCountry = allowsAnyCountry ? undefined : initialCountry?.toLowerCase();
-  const homeCountryCode = (initialCountry || allowedCountry || "jp").toLowerCase();
 
   const availableCountries = useMemo(
-    () => (allowedCountry ? REGION_COUNTRIES.filter((item) => item.code === allowedCountry) : REGION_COUNTRIES),
+    () =>
+      allowedCountry
+        ? REGION_COUNTRIES.filter((item) => item.code === allowedCountry)
+        : REGION_COUNTRIES.filter((item) => SUPPORTED_COUNTRY_CODES.has(item.code)),
     [allowedCountry],
   );
   const currentPopular = useMemo(
-    () => firstTierRegionsForCountry(homeCountryCode),
-    [homeCountryCode],
+    () => (allowedCountry ? canonicalRegionsForCountry(allowedCountry) : ["jp", "cn", "us", "ca"].flatMap(canonicalRegionsForCountry)),
+    [allowedCountry],
   );
+  const lockedCountry = allowedCountry ? (availableCountries[0] ?? null) : null;
   const recentRegions = useMemo(
     () =>
       recentCodes
         .map((code) => resolveRegion(code))
         .filter((region): region is RegionInfo => Boolean(region))
-        .filter((region) => region.country_code === homeCountryCode)
         .slice(0, 8),
-    [recentCodes, homeCountryCode],
+    [recentCodes],
   );
-  const matches = useMemo(() => searchRegions(query, allowedCountry), [query, allowedCountry]);
+  const matches = useMemo(() => {
+    return searchRegions(query, allowedCountry);
+  }, [query, allowedCountry]);
 
   useEffect(() => {
     setMounted(true);
@@ -95,7 +73,7 @@ export function RegionPickerDialog({
   useEffect(() => {
     if (!open) return;
     setQuery("");
-    setCountry(allowedCountry ? countryByCode(allowedCountry) ?? null : null);
+    setCountry(null);
     setProvince(null);
   }, [open, allowedCountry]);
 
@@ -128,19 +106,19 @@ export function RegionPickerDialog({
     if (country && !allowedCountry) setCountry(null);
   };
 
-  const title = province?.name || country?.name || "选择国家 / 城市";
+  const title = province?.name || country?.name || (lockedCountry ? `${lockedCountry.name}地区` : "选择地区");
   const canGoBack = Boolean(province || (country && !allowedCountry));
 
-  const node = (
+  return createPortal(
     <div
-      className="fixed inset-0 z-[120] flex items-end justify-center bg-slate-950/45 px-3 py-0 backdrop-blur-sm sm:items-center sm:px-4 sm:py-4"
+      className="fixed inset-0 z-[1000] flex items-end justify-center bg-slate-950/45 p-0 backdrop-blur-sm sm:items-center sm:p-4"
       onMouseDown={onClose}
       role="dialog"
       aria-modal="true"
       aria-label="选择地区"
     >
       <div
-        className="flex max-h-[88dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-[28px] bg-kx-bg shadow-2xl ring-1 ring-kx-stroke sm:rounded-[28px]"
+        className="flex max-h-[88dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-[28px] bg-kx-bg shadow-2xl ring-1 ring-kx-stroke sm:rounded-[28px]"
         onMouseDown={(event) => event.stopPropagation()}
       >
         <div className="kx-glass-bar flex items-center gap-2 px-4 py-3">
@@ -188,67 +166,116 @@ export function RegionPickerDialog({
           ) : (
             <RegionPickerLanding
               availableCountries={availableCountries}
-              homeCountryCode={homeCountryCode}
+              lockedCountry={lockedCountry}
               currentPopular={currentPopular}
               recentRegions={recentRegions}
               onCountry={setCountry}
               onSelect={deliver}
+              showCountryList={!allowedCountry}
             />
           )}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
-
-  return createPortal(node, document.body);
 }
 
 function RegionPickerLanding({
   availableCountries,
-  homeCountryCode,
+  lockedCountry,
   currentPopular,
   recentRegions,
   onCountry,
   onSelect,
+  showCountryList,
 }: {
   availableCountries: RegionCountry[];
-  homeCountryCode: string;
+  lockedCountry: RegionCountry | null;
   currentPopular: RegionInfo[];
   recentRegions: RegionInfo[];
   onCountry: (country: RegionCountry) => void;
   onSelect: (region: RegionInfo) => void;
+  showCountryList: boolean;
 }) {
-  const homeCountry = countryByCode(homeCountryCode);
+  const domestic = lockedCountry ? [] : currentPopular.filter((region) => region.country_code === "cn");
+  const overseas = lockedCountry ? currentPopular : currentPopular.filter((region) => region.country_code !== "cn");
+  const popularTitle = lockedCountry ? `${lockedCountry.name}热门城市` : "海外热门城市";
 
   return (
     <div className="space-y-5">
-      {currentPopular.length ? (
-        <RegionChipSection
-          title={`${homeCountry?.emoji || ""} 本国热门城市`}
-          regions={currentPopular}
-          onSelect={onSelect}
-        />
+      {recentRegions.length ? <RegionChipSection title="最近地区" regions={recentRegions} onSelect={onSelect} /> : null}
+      {domestic.length ? <RegionChipSection title="热门国内城市" regions={domestic} onSelect={onSelect} /> : null}
+      {overseas.length ? (
+        <section className="space-y-3">
+          <h3 className="kx-section-title px-0">{popularTitle}</h3>
+          <div className="space-y-3">
+            {(lockedCountry ? [lockedCountry] : REGION_COUNTRIES.filter((country) => country.code !== "cn" && SUPPORTED_COUNTRY_CODES.has(country.code))).map((country) => {
+              const regions = overseas.filter((region) => region.country_code === country.code);
+              if (!regions.length) return null;
+              return (
+                <div key={country.code} className="space-y-2">
+                  <div className="text-xs font-black text-kx-muted">{country.emoji} {country.name}</div>
+                  <RegionChipGrid regions={regions} onSelect={onSelect} />
+                </div>
+              );
+            })}
+          </div>
+        </section>
       ) : null}
-      {recentRegions.length ? <RegionChipSection title="最近选择" regions={recentRegions} onSelect={onSelect} /> : null}
-      <section>
-        <h3 className="kx-section-title mb-2 px-0">按国家切换</h3>
+      {lockedCountry ? (
+        <section>
+          <h3 className="kx-section-title mb-2 px-0">全部{lockedCountry.name}地区</h3>
+          <button
+            type="button"
+            onClick={() => onCountry(lockedCountry)}
+            className="flex w-full items-center gap-3 rounded-kx-lg bg-kx-card px-4 py-3 text-left ring-1 ring-kx-stroke/70 transition hover:bg-kx-soft/70"
+          >
+            <span className="text-xl">{lockedCountry.emoji}</span>
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-bold">按都道府县选择城市</span>
+              <span className="block text-xs font-semibold text-kx-muted">横滨、札幌、神户、仙台、广岛等城市都在这里</span>
+            </span>
+            <ChevronRight className="h-4 w-4 text-kx-muted" />
+          </button>
+        </section>
+      ) : null}
+      {showCountryList ? <section>
+        <h3 className="kx-section-title mb-2 px-0">全部国家</h3>
         <div className="overflow-hidden rounded-kx-lg bg-kx-card ring-1 ring-kx-stroke/70">
           {availableCountries.map((country) => (
             <button
               key={country.code}
               type="button"
               onClick={() => onCountry(country)}
-            className="flex w-full min-w-0 items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
-          >
-            <span className="text-xl">{country.emoji}</span>
-              <span className="min-w-0 flex-1 truncate font-semibold">{country.name}</span>
+              className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+            >
+              <span className="text-xl">{country.emoji}</span>
+              <span className="font-semibold">{country.name}</span>
               <ChevronRight className="ml-auto h-4 w-4 text-kx-muted" />
             </button>
           ))}
         </div>
-      </section>
+      </section> : null}
     </div>
   );
+}
+
+function canonicalRegionsForCountry(countryCode: string): RegionInfo[] {
+  const codesByCountry: Record<string, string[]> = {
+    jp: [
+      "jp.tokyo.tokyo", "jp.osaka.osaka", "jp.kanagawa.yokohama",
+      "jp.kyoto.kyoto", "jp.fukuoka.fukuoka", "jp.aichi.nagoya",
+      "jp.hokkaido.sapporo", "jp.hyogo.kobe", "jp.chiba.chiba",
+      "jp.saitama.saitama", "jp.miyagi.sendai", "jp.hiroshima.hiroshima",
+    ],
+    cn: ["cn.shanghai.shanghai", "cn.zhejiang.hangzhou"],
+    us: ["us.ca.la"],
+    ca: ["ca.montreal"],
+  };
+  return (codesByCountry[countryCode.toLowerCase()] || [])
+    .map((code) => resolveRegion(code))
+    .filter((region): region is RegionInfo => Boolean(region));
 }
 
 function CountryDrilldown({
@@ -262,6 +289,10 @@ function CountryDrilldown({
   onProvince: (province: RegionProvince) => void;
   onSelect: (region: RegionInfo) => void;
 }) {
+  const canonical = canonicalRegionsForCountry(country.code);
+  if (!country.has_provinces && canonical.length) {
+    return <RegionChipGrid regions={canonical} onSelect={onSelect} />;
+  }
   if (!country.has_provinces) {
     return <CityList country={country} onSelect={onSelect} />;
   }
@@ -276,9 +307,9 @@ function CountryDrilldown({
           key={item.code}
           type="button"
           onClick={() => onProvince(item)}
-          className="flex w-full min-w-0 items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+          className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
         >
-          <span className="min-w-0 flex-1 truncate font-semibold">{item.name}</span>
+          <span className="font-semibold">{item.name}</span>
           <ChevronRight className="ml-auto h-4 w-4 text-kx-muted" />
         </button>
       ))}
@@ -307,11 +338,11 @@ function CityList({
             key={city.code}
             type="button"
             onClick={() => region && onSelect(region)}
-            className="flex w-full min-w-0 items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+            className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
             disabled={!region}
           >
-            <span className="min-w-0 flex-1 truncate font-semibold">{city.name}</span>
-            <span className="ml-auto max-w-[65%] truncate text-xs font-semibold text-kx-muted">{region ? regionDisplayName(region) : ""}</span>
+            <span className="font-semibold">{city.name}</span>
+            <span className="ml-auto text-xs font-semibold text-kx-muted">{region ? regionDisplayName(region) : ""}</span>
           </button>
         );
       })}
@@ -330,7 +361,7 @@ function SearchResultList({ matches, onSelect }: { matches: RegionInfo[]; onSele
           key={region.region_code}
           type="button"
           onClick={() => onSelect(region)}
-          className="flex w-full min-w-0 items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+          className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
         >
           <span className="text-xl">{region.country_emoji}</span>
           <span className="min-w-0 flex-1">

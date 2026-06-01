@@ -75,7 +75,7 @@ function mapRegisterError(err: unknown): { field?: keyof Errors; message: string
 
 export default function RegisterPage() {
   return (
-    <Suspense fallback={<div className="min-h-dvh grid place-items-center text-kx-muted text-sm">加载中…</div>}>
+    <Suspense fallback={null}>
       <RegisterForm />
     </Suspense>
   );
@@ -253,7 +253,7 @@ function RegisterForm() {
               按国家和城市组织本地新闻、生活经验、租房、二手、工作、招聘、搭子、约饭、活动和问答。
             </p>
             <p className="mt-3 text-sm font-bold leading-7 text-kx-accent">
-              注册时选择当前城市，首页、发现和热榜会自动围绕该地区展开。
+              注册时选择当前城市，首页、发现和热榜会优先围绕这座城市展开。
             </p>
 
             <ol className="mt-8 space-y-3">
@@ -300,7 +300,7 @@ function RegisterForm() {
             <p className="text-xs font-black uppercase tracking-[0.16em] text-kx-accent">Create Account</p>
             <h1 className="mt-2 text-3xl font-black tracking-tight text-kx-text sm:text-4xl">创建账号</h1>
             <p className="mt-2 text-sm font-semibold leading-6 text-kx-subtle">
-              填写基础资料并选择当前城市，Machi 会优先展示该地区的本地内容。
+              填写基础资料并选择当前城市，Machi 会优先展示这座城市的本地内容。
             </p>
           </header>
 
@@ -495,7 +495,7 @@ function RegisterForm() {
             <div className="mb-1.5 flex items-center justify-between gap-2">
               <span className="inline-flex items-center gap-1.5 text-sm font-bold text-kx-text">
                 <MapPin className="h-4 w-4 text-kx-accent" />
-                当前地区
+                当前城市
               </span>
               {fieldError("region") ? null : selectedRegion ? (
                 <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-300">已选择</span>
@@ -521,7 +521,7 @@ function RegisterForm() {
                   {selectedRegion ? regionDisplayName(selectedRegion) : "选择国家 / 城市"}
                 </span>
                 <span className="mt-0.5 block truncate text-xs font-semibold text-kx-muted">
-                  {selectedRegion ? "首页、发现和热榜将同步到该地区" : "不选也可以先注册，之后在设置里切换"}
+                  {selectedRegion ? "首页、发现和热榜将同步到这座城市" : "不选也可以先注册，之后在设置里切换"}
                 </span>
               </span>
               <ChevronRight className="h-4 w-4 shrink-0 text-kx-muted" />

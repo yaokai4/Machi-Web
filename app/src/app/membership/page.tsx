@@ -8,16 +8,16 @@
 // No existing styles are changed — it reuses the kx-* design tokens.
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, Check, Loader2, ShieldAlert } from "lucide-react";
+import { BadgeCheck, Check, CreditCard, Loader2, ShieldAlert } from "lucide-react";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
-import { ErrorState, InlineLoading } from "@/components/design/States";
 import { VerifiedBadge } from "@/components/design/Avatar";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
-import type { KXCreateOrderResult, PaymentProvider } from "@/lib/types";
+import type { KXCreateOrderResult, KXMembershipPlan, PaymentProvider } from "@/lib/types";
 
 const BENEFIT_KEYS = [
   "mem_benefit_badge",
@@ -29,6 +29,17 @@ const BENEFIT_KEYS = [
   "mem_benefit_sync",
   "mem_benefit_audience",
 ] as const;
+
+const FALLBACK_PLAN: KXMembershipPlan = {
+  plan_key: "machi_verified_monthly_cny_10",
+  name_zh: "Machi 认证会员",
+  name_en: "Machi Verified",
+  name_ja: "Machi 認証メンバー",
+  amount: 10,
+  amount_cents: 1000,
+  currency: "CNY",
+  billing_cycle: "month",
+};
 
 export default function MembershipPage() {
   const user = useSession((s) => s.user);
@@ -53,13 +64,14 @@ export default function MembershipPage() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollStartedAtRef = useRef(0);
 
-  const plan = planQuery.data?.plan;
+  const plan = planQuery.data?.plan ?? FALLBACK_PLAN;
+  const planUnavailable = !planQuery.isLoading && (planQuery.isError || !planQuery.data?.plan);
   // Only ever show payment methods the server reports as actually configured
   // (`available_providers`). Empty fallback during load so we never flash an
   // unconfigured method (WeChat/Alipay) that would "time out" on click — on
   // production only Stripe is configured, so only Stripe shows.
-  const availableProviders: PaymentProvider[] = planQuery.data?.available_providers ?? [];
-  const membership = meQuery.data?.membership;
+  const availableProviders: PaymentProvider[] = planQuery.isError ? [] : (planQuery.data?.available_providers ?? []);
+  const membership = meQuery.data?.membership ?? null;
   const isActive = !!membership?.is_active;
   const insightsQuery = useQuery({
     queryKey: ["membership-insights", user?.id],
@@ -143,7 +155,7 @@ export default function MembershipPage() {
   const reconciledRef = useRef(false);
   useEffect(() => {
     if (!user || reconciledRef.current || !meQuery.data) return;
-    if (!meQuery.data.membership.is_active) {
+    if (!meQuery.data.membership?.is_active) {
       reconciledRef.current = true;
       api
         .reconcileStripe()
@@ -166,7 +178,7 @@ export default function MembershipPage() {
     }
     setCreating(provider);
     try {
-      const result = await api.createPaymentOrder(provider, plan?.plan_key);
+      const result = await api.createPaymentOrder(provider, plan.plan_key);
       setOrder(result);
       // Redirect providers (Alipay gateway / Stripe hosted Checkout) send
       // the browser straight to the provider. WeChat shows a QR instead.
@@ -194,7 +206,7 @@ export default function MembershipPage() {
     }
   };
 
-  const priceLabel = plan ? `¥${plan.amount} ${t("mem_price_unit")}` : "¥10 / 月";
+  const priceLabel = `¥${plan.amount} ${t("mem_price_unit")}`;
 
   return (
     <AppShell requireAuth={false}>
@@ -204,12 +216,7 @@ export default function MembershipPage() {
       </header>
 
       <div className="px-3 sm:px-4 py-3 space-y-3">
-        {planQuery.isLoading ? (
-          <InlineLoading />
-        ) : planQuery.isError ? (
-          <ErrorState onRetry={() => planQuery.refetch()} />
-        ) : (
-          <>
+        <>
             {/* Hero */}
             <section className="kx-card">
               <div className="flex items-center gap-2">
@@ -218,6 +225,9 @@ export default function MembershipPage() {
               </div>
               <p className="mt-1 text-kx-subtle">{t("mem_subtitle")}</p>
               <div className="mt-3 text-2xl font-extrabold text-kx-text">{priceLabel}</div>
+              {planUnavailable ? (
+                <p className="mt-2 text-sm font-semibold text-kx-muted">会员服务暂时不可用，请稍后再试。</p>
+              ) : null}
             </section>
 
             {/* Current status (logged-in) */}
@@ -239,16 +249,16 @@ export default function MembershipPage() {
             ) : null}
 
             {/* Member-only content stats */}
-            {isActive && insightsQuery.data ? (
+            {isActive && insightsQuery.data?.totals ? (
               <section className="kx-card">
                 <h2 className="font-bold text-kx-text mb-3">{t("mem_insights_title")}</h2>
                 <div className="grid grid-cols-3 gap-2 text-center">
                   {([
-                    ["mem_insights_views", insightsQuery.data.totals.total_views],
-                    ["mem_insights_likes", insightsQuery.data.totals.total_likes],
-                    ["mem_insights_comments", insightsQuery.data.totals.total_comments],
-                    ["mem_insights_bookmarks", insightsQuery.data.totals.total_bookmarks],
-                    ["mem_insights_posts", insightsQuery.data.totals.post_count],
+                    ["mem_insights_views", insightsQuery.data.totals.total_views ?? 0],
+                    ["mem_insights_likes", insightsQuery.data.totals.total_likes ?? 0],
+                    ["mem_insights_comments", insightsQuery.data.totals.total_comments ?? 0],
+                    ["mem_insights_bookmarks", insightsQuery.data.totals.total_bookmarks ?? 0],
+                    ["mem_insights_posts", insightsQuery.data.totals.post_count ?? 0],
                   ] as const).map(([key, val]) => (
                     <div key={key} className="rounded-kx-md bg-kx-soft p-2">
                       <div className="text-lg font-extrabold text-kx-text">{val}</div>
@@ -305,10 +315,30 @@ export default function MembershipPage() {
                 }}
                 onMockConfirm={order.mock ? devMockConfirm : undefined}
               />
+            ) : availableProviders.length === 0 ? (
+              <section className="kx-card space-y-3">
+                <h2 className="font-bold text-kx-text">{t("mem_pay_method")}</h2>
+                <button
+                  type="button"
+                  className="kx-button-ghost h-12 w-full justify-center sm:max-w-md"
+                  disabled
+                >
+                  <BankCardPaymentOption label={t("mem_pay_stripe")} />
+                </button>
+                <SupportedPaymentLogos />
+                <p className="mt-2 text-sm text-kx-subtle">
+                  {planQuery.isLoading ? "支付方式正在加载中。" : "支付暂不可用，请稍后再试。"}
+                </p>
+                {planQuery.isError ? (
+                  <button type="button" onClick={() => planQuery.refetch()} className="kx-button-ghost mt-3 h-9 justify-center">
+                    重试
+                  </button>
+                ) : null}
+              </section>
             ) : (
-              <section className="kx-card">
+              <section className="kx-card space-y-3">
                 <h2 className="font-bold text-kx-text mb-2">{t("mem_pay_method")}</h2>
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                   {availableProviders.includes("wechat_pay") ? (
                     <button
                       className="kx-button-ghost h-11 justify-center"
@@ -329,14 +359,22 @@ export default function MembershipPage() {
                   ) : null}
                   {availableProviders.includes("stripe") ? (
                     <button
-                      className="kx-button-ghost h-11 justify-center"
+                      className="kx-button-ghost h-12 justify-center sm:col-span-2"
                       disabled={creating !== null}
                       onClick={() => startPurchase("stripe")}
                     >
-                      {creating === "stripe" ? <Loader2 className="w-4 h-4 animate-spin" /> : t("mem_pay_stripe")}
+                      {creating === "stripe" ? (
+                        <span className="inline-flex w-full items-center justify-center gap-2">
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          <span>{t("mem_pay_pending")}</span>
+                        </span>
+                      ) : (
+                        <BankCardPaymentOption label={t("mem_pay_stripe")} />
+                      )}
                     </button>
                   ) : null}
                 </div>
+                {availableProviders.includes("stripe") ? <SupportedPaymentLogos /> : null}
               </section>
             )}
 
@@ -345,10 +383,56 @@ export default function MembershipPage() {
               <ShieldAlert className="w-4 h-4 mt-0.5 text-kx-heat shrink-0" />
               <span>{t("mem_safety_notice")}</span>
             </section>
-          </>
-        )}
+        </>
       </div>
     </AppShell>
+  );
+}
+
+function BankCardPaymentOption({ label }: { label: string }) {
+  return (
+    <span className="inline-flex items-center gap-2 font-bold text-kx-text">
+      <CreditCard className="h-4 w-4 text-kx-accent" />
+      {label}
+    </span>
+  );
+}
+
+const PAYMENT_LOGOS = [
+  { name: "Apple Pay", src: "/payment-logos/apple-pay.svg", width: 86 },
+  { name: "Google Pay", src: "/payment-logos/google-pay.svg", width: 92 },
+  { name: "Visa", src: "/payment-logos/visa.svg", width: 62 },
+  { name: "Mastercard", src: "/payment-logos/mastercard.svg", width: 70 },
+  { name: "American Express", src: "/payment-logos/amex.svg", width: 72 },
+] as const;
+
+function SupportedPaymentLogos() {
+  const { t } = useI18n();
+
+  return (
+    <div className="border-t border-gray-100 pt-3">
+      <div className="mb-2 text-xs font-medium text-gray-400">{t("mem_supported_payments")}</div>
+      <div className="flex flex-wrap items-center gap-4 sm:gap-6">
+        {PAYMENT_LOGOS.map((logo) => (
+          <span
+            key={logo.name}
+            className="inline-flex h-6 items-center justify-center"
+            title={logo.name}
+            aria-label={logo.name}
+          >
+            <Image
+              src={logo.src}
+              alt={logo.name}
+              width={logo.width}
+              height={24}
+              unoptimized
+              loading="lazy"
+              className="h-5 w-auto object-contain transition-all duration-300 ease-out hover:scale-[1.02] sm:h-6"
+            />
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Building2, ChevronDown, MapPinned, MonitorSmartphone, Sparkles, UsersRound } from "lucide-react";
+import { ArrowRight, Building2, ChevronDown, MonitorSmartphone, Sparkles, UsersRound } from "lucide-react";
 import { AppMockup } from "./AppMockup";
 import { BrandPhrase, BrandText } from "./BrandText";
 import { Button } from "./Button";
@@ -62,11 +62,11 @@ export function HeroSection() {
               {copy.hero.secondary}
             </Button>
             <Button
-              href="#cities"
+              href="/about#founder"
               variant="secondary"
               size="lg"
               className="h-14 px-6 text-base font-black"
-              iconLeft={<MapPinned className="h-5 w-5" />}
+              iconLeft={<Sparkles className="h-5 w-5" />}
             >
               {copy.hero.tertiary}
             </Button>

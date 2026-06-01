@@ -26,7 +26,7 @@ import { normalizeHandle, validateLogin } from "@/lib/authValidation";
 /// the boundary.
 export default function LoginPage() {
   return (
-    <Suspense fallback={<div className="min-h-dvh grid place-items-center text-kx-muted text-sm">加载中…</div>}>
+    <Suspense fallback={null}>
       <LoginForm />
     </Suspense>
   );

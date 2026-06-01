@@ -41,7 +41,7 @@ export class ErrorBoundary extends React.Component<Props, State> {
           <div className="inline-flex w-10 h-10 items-center justify-center rounded-full bg-kx-danger/10 text-kx-danger mb-2">
             <AlertTriangle className="w-5 h-5" />
           </div>
-          <p className="font-semibold text-kx-text">这里出了点问题</p>
+          <p className="font-semibold text-kx-text">页面暂时无法加载</p>
           {this.state.message ? (
             <p className="text-xs text-kx-muted mt-1 line-clamp-3">{this.state.message}</p>
           ) : null}

@@ -12,7 +12,6 @@ import {
   MoreHorizontal,
   Repeat2,
   Share2,
-  Flame,
   Trash2,
   Edit3,
   Flag,
@@ -25,6 +24,7 @@ import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import type { KXPost } from "@/lib/types";
 import { showVerifiedBadge } from "@/lib/types";
+import { makeRegion, regionHeaderLabel, resolveRegion } from "@/lib/regions";
 import { useQueryClient } from "@tanstack/react-query";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { MediaGrid } from "@/components/design/MediaGrid";
@@ -73,6 +73,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
   const displayPost = isPureRepost && post.original_post ? post.original_post : post;
   const displayAuthor = isPureRepost && post.original_post ? post.original_post.author : post.author;
   const displayMedia = isPureRepost && post.original_post ? post.original_post.media : post.media;
+  const displayRegion = resolveRegion(displayPost.region_code) || makeRegion(displayPost.country, displayPost.province, displayPost.city);
   const repostHeader = post.repost_of_id ? (
     <div className="flex items-center gap-1.5 text-kx-meta font-semibold text-kx-subtle pl-1">
       <Repeat2 className="w-3.5 h-3.5" />
@@ -140,17 +141,24 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
   const handleRepost = (mode: "repost" | "undo") => {
     if (!currentUser) return openAuthPrompt("generic");
     const on = mode === "repost";
+    const wasReposted = Boolean(post.reposted);
     const optimistic = {
       ...post,
       reposted: on,
-      repost_count: Math.max(0, (post.repost_count || 0) + (on ? 1 : -1)),
+      repost_count: Math.max(0, (post.repost_count || 0) + (on === wasReposted ? 0 : on ? 1 : -1)),
     };
-    onUpdate?.(optimistic);
+    mutate(optimistic);
     api
       .toggleRepost(post.id, on)
-      .then(mutate)
+      .then((next) => {
+        mutate(next);
+        queryClient.invalidateQueries({ queryKey: ["feed"] });
+        queryClient.invalidateQueries({ queryKey: ["trending"] });
+        queryClient.invalidateQueries({ queryKey: ["post", post.id] });
+        pushToast({ kind: "success", message: on ? t("post_reposted") : t("action_undo_repost") });
+      })
       .catch((err) => {
-        onUpdate?.(post);
+        mutate(post);
         if (isAuthRequiredError(err)) {
           openAuthPrompt("generic");
           return;
@@ -265,22 +273,31 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
       <header className="flex gap-3 items-start mt-1">
         <Avatar user={displayAuthor || undefined} size={42} href={displayAuthor ? `/u/${displayAuthor.handle}` : undefined} />
         <div className="min-w-0 flex-1">
-          <div className="min-w-0">
+          <div className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-center sm:gap-1.5">
             <div className="flex min-w-0 items-center gap-1.5">
               <Link
                 href={displayAuthor ? `/u/${displayAuthor.handle}` : "#"}
-                className="min-w-0 truncate font-semibold text-kx-text hover:underline"
+                className="truncate font-semibold text-kx-text hover:underline"
               >
                 {displayAuthor?.display_name || t("unknown_user")}
               </Link>
               {showVerifiedBadge(displayAuthor) ? <VerifiedBadge /> : null}
-              <span className="hidden min-w-0 truncate text-kx-meta text-kx-muted sm:inline">
-                @{displayAuthor?.handle || "unknown"} · {relativeTime(displayPost.created_at)}
-              </span>
             </div>
-            <div className="mt-0.5 truncate text-xs text-kx-muted sm:hidden">
-              @{displayAuthor?.handle || "unknown"} · {relativeTime(displayPost.created_at)}
-            </div>
+            <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-kx-muted text-kx-meta">
+              <span className="truncate">@{displayAuthor?.handle || "unknown"} · {relativeTime(displayPost.created_at)}</span>
+              {displayRegion ? (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <Link
+                    href={`/c/${encodeURIComponent(displayRegion.region_code)}`}
+                    className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-semibold text-kx-accent hover:bg-kx-accent/10"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {regionHeaderLabel(displayRegion)}
+                  </Link>
+                </>
+              ) : null}
+            </span>
           </div>
 
           <ContentText content={displayPost.content ?? ""} />
@@ -479,19 +496,13 @@ function redundantContentTags(post: KXPost) {
 
 function PostMetadata({ post }: { post: KXPost }) {
   const type = post.content_type || "dynamic";
-  const location = [post.country, post.province, post.city].filter(Boolean).join(" / ");
-  if (type === "dynamic" && !location) return null;
+  if (type === "dynamic" && !post.is_boosted) return null;
   const style = contentTypeStyle(type);
   return (
     <div className="mt-2 flex flex-wrap gap-1.5">
       {type !== "dynamic" ? (
         <span className={clsx("px-2.5 py-1 rounded-full text-xs font-bold", style)}>
           {CONTENT_TYPE_LABELS[type as keyof typeof CONTENT_TYPE_LABELS] || type}
-        </span>
-      ) : null}
-      {location ? (
-        <span className="px-2.5 py-1 rounded-full bg-kx-accent/10 text-kx-accent text-xs font-semibold">
-          {location}
         </span>
       ) : null}
       {post.is_boosted ? (
@@ -916,13 +927,13 @@ function InteractionBar({
   }, [repostMenu]);
 
   return (
-    <div className="mt-3 grid max-w-full grid-cols-4 items-center gap-1 text-kx-subtle sm:flex sm:max-w-md sm:flex-nowrap sm:justify-between">
-      <button className="kx-metric w-full justify-center sm:w-auto" onClick={onComment} aria-label={t("action_comment")}>
+    <div className="mt-3 grid max-w-sm grid-cols-4 items-center gap-1 text-kx-subtle">
+      <button className="kx-metric" onClick={onComment} aria-label={t("action_comment")}>
         <MessageCircle className="w-4 h-4" /> {compactNumber(post.comment_count)}
       </button>
-      <div className="relative kx-stop min-w-0" ref={repostButtonRef}>
+      <div className="relative kx-stop" ref={repostButtonRef}>
         <button
-          className="kx-metric w-full justify-center sm:w-auto"
+          className="kx-metric"
           data-active={post.reposted ? "repost" : undefined}
           aria-label={t("action_repost")}
           onClick={(e) => {
@@ -937,28 +948,25 @@ function InteractionBar({
           <div className="absolute z-50 left-0 top-full mt-1 kx-glass-surface p-1 w-40 text-sm animate-kx-scale-in">
             <button
               className="w-full text-left px-3 py-2 rounded-kx-sm hover:bg-kx-soft text-kx-danger transition"
-              onClick={() => { setRepostMenu(false); onRepost("undo"); }}
+              onClick={(e) => { e.stopPropagation(); setRepostMenu(false); onRepost("undo"); }}
             >
               {t("action_undo_repost")}
             </button>
             <button
               className="w-full text-left px-3 py-2 rounded-kx-sm hover:bg-kx-soft inline-flex items-center gap-2 transition"
-              onClick={() => { setRepostMenu(false); onQuote(); }}
+              onClick={(e) => { e.stopPropagation(); setRepostMenu(false); onQuote(); }}
             >
               <Quote className="w-4 h-4" /> {t("action_quote")}
             </button>
           </div>
         ) : null}
       </div>
-      <button className="kx-metric w-full justify-center sm:w-auto" data-active={post.liked ? "like" : undefined} onClick={onLike} aria-label={t("action_like")}>
+      <button className="kx-metric" data-active={post.liked ? "like" : undefined} onClick={onLike} aria-label={t("action_like")}>
         <Heart className={clsx("w-4 h-4", post.liked && "fill-kx-like")} /> {compactNumber(post.like_count)}
       </button>
-      <button className="kx-metric w-full justify-center sm:w-auto" data-active={post.bookmarked ? "bookmark" : undefined} onClick={onBookmark} aria-label={t("action_bookmark")}>
+      <button className="kx-metric" data-active={post.bookmarked ? "bookmark" : undefined} onClick={onBookmark} aria-label={t("action_bookmark")}>
         <Bookmark className={clsx("w-4 h-4", post.bookmarked && "fill-kx-bookmark")} /> {compactNumber(post.bookmark_count)}
       </button>
-      <span className="kx-metric hidden text-kx-heat/85 sm:inline-flex">
-        <Flame className="w-4 h-4" /> {compactNumber(post.heat_score)}
-      </span>
     </div>
   );
 }

@@ -9,7 +9,7 @@ import type { ContentLanguage, ContentType, KXSettings, KXUser } from "./types";
 /// server (e.g. during streamed RSC -> client transitions). Plain
 /// `localStorage` throws there, so we route through this guard
 /// instead.
-export const safeLocalStorage: StateStorage = {
+const safeLocalStorage: StateStorage = {
   getItem: (name) => {
     if (typeof window === "undefined") return null;
     try { return window.localStorage.getItem(name); } catch { return null; }
@@ -72,31 +72,31 @@ export interface AuthPromptCopy {
 export const AUTH_PROMPT_COPY: Record<AuthPromptKind, AuthPromptCopy> = {
   generic: {
     title: "登录后继续",
-    body: "登录后继续这个操作，并回到刚才的位置。",
+    body: "登录后可以发布内容、评论、收藏、关注和使用更多 Machi 功能。",
   },
   like: {
-    title: "登录后标记有用",
-    body: "登录后可以标记这条内容有用。Machi 会帮你保存有价值的本地经验。",
+    title: "登录后点赞",
+    body: "登录后可以点赞、收藏和参与城市讨论。",
   },
   bookmark: {
     title: "登录后收藏",
-    body: "登录后收藏这条内容。之后找租房、工作、活动和攻略会更方便。",
+    body: "登录后可以保存租房、资讯、攻略和本地生活信息。",
   },
   comment: {
-    title: "登录后参与讨论",
-    body: "登录后参与这座城市的讨论。",
+    title: "登录后评论",
+    body: "登录后可以参与讨论，分享你的经验和问题。",
   },
   follow: {
     title: "登录后关注",
-    body: "登录后关注这个本地声音。",
+    body: "登录后可以关注你感兴趣的城市账号和本地用户。",
   },
   message: {
     title: "登录后发送私信",
-    body: "登录后可以联系这位本地用户。",
+    body: "登录后可以和对方联系。",
   },
   publish: {
     title: "登录后发布",
-    body: "登录后发布你的本地问题、经验或机会。让同城的人看到并回应你。",
+    body: "登录后可以发布本地动态、租房、二手、工作、搭子和生活经验。",
   },
 };
 

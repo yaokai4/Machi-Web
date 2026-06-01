@@ -11,7 +11,7 @@ export function BrandStorySection() {
 
   return (
     <section id="story" className="relative overflow-hidden px-5 py-14 sm:px-6 lg:py-20">
-      <div className="absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(248,250,252,0)_0%,rgba(239,246,255,0.9)_42%,rgba(248,250,252,0)_100%)] dark:bg-[linear-gradient(180deg,rgba(11,13,18,0)_0%,rgba(15,23,42,0.72)_48%,rgba(11,13,18,0)_100%)]" />
+      <div className="absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(255,243,224,0)_0%,rgba(255,221,168,0.85)_42%,rgba(255,243,224,0)_100%)] dark:bg-[linear-gradient(180deg,rgba(11,13,18,0)_0%,rgba(40,28,18,0.72)_48%,rgba(11,13,18,0)_100%)]" />
       <div className="absolute left-[8%] top-16 -z-10 h-40 w-40 rounded-full bg-indigo-300/25 blur-3xl dark:bg-indigo-500/15" />
       <div className="absolute right-[6%] bottom-12 -z-10 h-44 w-44 rounded-full bg-sky-300/25 blur-3xl dark:bg-sky-500/15" />
 

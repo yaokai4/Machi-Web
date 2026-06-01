@@ -181,7 +181,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   };
 
   return (
-    <div className="min-w-0">
+    <div>
       <div className="relative">
         <div
           className="h-24 sm:h-40 w-full"
@@ -195,18 +195,36 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
             <div className="rounded-kx-lg ring-4 ring-kx-bg bg-kx-bg">
               <Avatar user={user} size={72} className="sm:!w-[88px] sm:!h-[88px]" />
             </div>
-            <div className="mb-2 flex min-w-0 flex-wrap items-center justify-end gap-2">
+            <div className="flex items-center gap-2 mb-2">
               {isSelf ? (
-                <button className="kx-button-ghost h-9 w-9 p-0 sm:w-auto sm:px-3" onClick={() => setEditOpen(true)} aria-label="编辑资料">
-                  <Edit3 className="w-4 h-4" />
-                  <span className="hidden sm:inline">编辑资料</span>
+                <button
+                  type="button"
+                  className="inline-flex h-11 items-center gap-2 rounded-full border border-slate-200/80 bg-white px-4 text-sm font-bold text-slate-800 shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                  onClick={() => setEditOpen(true)}
+                >
+                  <Edit3 className="w-4 h-4" /> 编辑资料
                 </button>
               ) : (
                 <>
-                  <button className="kx-button-ghost h-9 w-9 p-0" onClick={openDM} aria-label="发私信">
-                    <MessageSquarePlus className="w-4 h-4" />
+                  <button
+                    type="button"
+                    className="grid h-11 w-11 place-items-center rounded-full border border-slate-200/90 bg-white text-slate-700 shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                    onClick={openDM}
+                    aria-label="发私信"
+                    title="发私信"
+                  >
+                    <MessageSquarePlus className="w-5 h-5" />
                   </button>
-                  <button className={following ? "kx-button-ghost" : "kx-button-primary"} onClick={toggleFollow}>
+                  <button
+                    type="button"
+                    className={clsx(
+                      "inline-flex h-11 items-center gap-2 rounded-full px-5 text-sm font-bold shadow-[0_12px_30px_rgba(37,99,235,0.18)] transition",
+                      following
+                        ? "border border-slate-200/90 bg-white text-slate-800 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                        : "bg-blue-600 text-white hover:bg-blue-700",
+                    )}
+                    onClick={toggleFollow}
+                  >
                     {following ? (<><UserCheck className="w-4 h-4" /> 已关注</>) : (<><UserPlus className="w-4 h-4" /> 关注</>)}
                   </button>
                 </>
@@ -266,11 +284,19 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
               </div>
             ) : null}
             {!isSelf ? (
-              <div className="mt-3 flex items-center gap-2 text-xs">
-                <button className="text-kx-muted hover:text-kx-danger inline-flex items-center gap-1" onClick={() => (me ? setReportOpen(true) : openAuthPrompt("generic"))}>
+              <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full bg-slate-100/80 px-3 font-semibold text-slate-500 transition hover:bg-red-50 hover:text-red-600"
+                  onClick={() => (me ? setReportOpen(true) : openAuthPrompt("generic"))}
+                >
                   <Flag className="w-3.5 h-3.5" /> 举报
                 </button>
-                <button className="text-kx-muted hover:text-kx-danger inline-flex items-center gap-1" onClick={() => (me ? setBlockOpen(true) : openAuthPrompt("generic"))}>
+                <button
+                  type="button"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-full bg-slate-100/80 px-3 font-semibold text-slate-500 transition hover:bg-red-50 hover:text-red-600"
+                  onClick={() => (me ? setBlockOpen(true) : openAuthPrompt("generic"))}
+                >
                   <Shield className="w-3.5 h-3.5" /> {blocked ? "解除拉黑" : "拉黑"}
                 </button>
               </div>
@@ -279,15 +305,13 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
         </div>
       </div>
 
-      <div className="mt-4">
-        <div className="sticky top-0 z-30 bg-kx-bg/90 px-3 backdrop-blur supports-[backdrop-filter]:bg-kx-bg/75">
-          <NavTabs
-            items={filteredSegments.map((s) => ({ value: s.value, label: s.label }))}
-            value={segment}
-            onChange={(v) => setSegment(v as ProfileSegment)}
-            equalWidth
-          />
-        </div>
+      <div className="kx-profile-tabs-sticky kx-glass-bar">
+        <NavTabs
+          items={filteredSegments.map((s) => ({ value: s.value, label: s.label }))}
+          value={segment}
+          onChange={(v) => setSegment(v as ProfileSegment)}
+          equalWidth
+        />
       </div>
 
       <div className="px-3 sm:px-4 py-3 space-y-3">
@@ -298,41 +322,22 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
         ) : segmentQuery.isError ? (
           <ErrorState onRetry={() => segmentQuery.refetch()} />
         ) : !segmentQuery.data?.items?.length ? (
-          <EmptyState title={segment === "replies" ? "还没有回复" : "还没有内容"} />
+          <EmptyState title="还没有内容" />
         ) : segment === "replies" ? (
           (segmentQuery.data.items as KXComment[]).map((c) => (
-            <article key={c.id} className="kx-card overflow-hidden !p-0">
-              <div className="p-4 sm:p-5">
-                <div className="flex items-start gap-2.5">
-                  <Avatar user={c.author || undefined} size={34} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-center gap-1.5 text-sm">
-                      <span className="truncate font-semibold text-kx-text">{c.author?.display_name || "未知用户"}</span>
-                      <span className="truncate text-xs text-kx-muted">
-                        @{c.author?.handle || "unknown"} · {relativeTime(c.created_at)}
-                      </span>
-                    </div>
-                    <div className="mt-0.5 text-xs font-semibold text-kx-muted">回复了一条帖子</div>
-                  </div>
-                </div>
-                <p className="mt-3 whitespace-pre-wrap break-words text-[15px] leading-7 text-kx-text">{c.content}</p>
+            <div key={c.id} className="kx-card">
+              <div className="flex items-center gap-1.5 text-sm">
+                <Avatar user={c.author || undefined} size={28} />
+                <span className="font-semibold">{c.author?.display_name}</span>
+                <span className="text-kx-muted text-xs">@{c.author?.handle} · {relativeTime(c.created_at)}</span>
               </div>
+              <p className="mt-1.5 text-kx-text text-sm whitespace-pre-wrap break-words">{c.content}</p>
               {c.post ? (
-                <Link href={`/p/${c.post.id}`} className="block border-t border-kx-stroke/35 bg-kx-soft/55 px-4 py-3 text-xs text-kx-subtle transition hover:bg-kx-soft sm:px-5">
-                  <div className="mb-1 flex min-w-0 items-center gap-1.5 font-bold text-kx-muted">
-                    <span className="shrink-0">原帖</span>
-                    <span className="truncate">@{c.post.author?.handle || "unknown"}</span>
-                  </div>
-                  <div className="line-clamp-2 text-sm leading-6 text-kx-text">
-                    {(c.post.content || "这条帖子没有文字内容").slice(0, 120)}
-                  </div>
+                <Link href={`/p/${c.post.id}`} className="block mt-2 p-2.5 rounded-kx-md bg-kx-soft text-xs text-kx-subtle hover:bg-kx-stroke/30">
+                  评论于 @{c.post.author?.handle}：{c.post.content.slice(0, 80)}
                 </Link>
-              ) : (
-                <div className="border-t border-kx-stroke/35 bg-kx-soft/45 px-4 py-3 text-xs font-semibold text-kx-muted sm:px-5">
-                  原帖暂时不可见
-                </div>
-              )}
-            </article>
+              ) : null}
+            </div>
           ))
         ) : (
           (segmentQuery.data.items as KXPost[]).map((p) => <PostCard key={p.id} post={p} />)

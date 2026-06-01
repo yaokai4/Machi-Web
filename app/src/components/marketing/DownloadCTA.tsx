@@ -67,17 +67,17 @@ export function DownloadCTA() {
       <div className="mx-auto max-w-[1180px]">
         <div className="relative overflow-hidden rounded-[32px] border border-white/70 bg-white/75 p-3 shadow-[0_30px_90px_-58px_rgba(15,23,42,0.6)] backdrop-blur-xl sm:rounded-[36px] sm:p-4 dark:border-white/10 dark:bg-white/[0.05]">
           <div className="mc-map-grid pointer-events-none absolute inset-0 opacity-30 dark:opacity-10" />
-          <div className="pointer-events-none absolute left-8 top-8 h-32 w-32 rounded-full bg-indigo-500/15 blur-3xl" />
-          <div className="pointer-events-none absolute bottom-6 right-8 h-36 w-36 rounded-full bg-sky-400/15 blur-3xl" />
+          <div className="pointer-events-none absolute left-8 top-8 h-32 w-32 rounded-full bg-orange-500/15 blur-3xl" />
+          <div className="pointer-events-none absolute bottom-6 right-8 h-36 w-36 rounded-full bg-rose-400/15 blur-3xl" />
 
           <div className="relative grid items-stretch gap-4 lg:grid-cols-2">
             {/* ─────────── LEFT — dark pitch ─────────── */}
-            <div className="relative overflow-hidden rounded-[28px] bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 px-6 py-8 text-white shadow-[0_24px_80px_-48px_rgba(15,23,42,0.9)] sm:px-9 sm:py-10 lg:px-10">
-              <div className="pointer-events-none absolute -left-24 -top-24 h-64 w-64 rounded-full bg-indigo-500/25 blur-3xl" />
-              <div className="pointer-events-none absolute -bottom-28 left-1/3 h-64 w-64 rounded-full bg-sky-400/20 blur-3xl" />
+            <div className="relative overflow-hidden rounded-[28px] bg-gradient-to-br from-stone-950 via-stone-900 to-[#3d1810] px-6 py-8 text-white shadow-[0_24px_80px_-48px_rgba(15,23,42,0.9)] sm:px-9 sm:py-10 lg:px-10">
+              <div className="pointer-events-none absolute -left-24 -top-24 h-64 w-64 rounded-full bg-orange-500/22 blur-3xl" />
+              <div className="pointer-events-none absolute -bottom-28 left-1/3 h-64 w-64 rounded-full bg-rose-400/20 blur-3xl" />
 
               <div className="relative flex h-full flex-col">
-                <p className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-sky-200">
+                <p className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-orange-200">
                   <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
                   {copy.download.label}
                 </p>
@@ -123,7 +123,7 @@ export function DownloadCTA() {
             {/* ─────────── RIGHT — form + benefits ─────────── */}
             <div className="rounded-[28px] border border-white/70 bg-white/95 p-5 text-slate-950 shadow-[0_18px_70px_-54px_rgba(15,23,42,0.8)] sm:p-7 dark:border-white/15 dark:bg-white/[0.06] dark:text-white">
               <div className="flex items-center gap-3">
-                <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 via-violet-600 to-sky-500 text-white shadow-[0_18px_34px_-18px_rgba(79,70,229,0.75)]">
+                <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-[#ff7a3d] via-[#ff6b4a] to-[#ff4d6d] text-white shadow-[0_18px_34px_-18px_rgba(255,107,74,0.75)]">
                   <Mail className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <div>

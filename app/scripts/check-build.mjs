@@ -36,7 +36,15 @@ if (!fs.existsSync(path.join(nextDir, "BUILD_ID"))) {
   process.exit(1);
 }
 
-// ----- Check #1: every source page has a server page artifact -----
+// ----- Check #1: every source page has a compiled artifact -----
+function pageArtifactExists(segments) {
+  const routeDir = path.join(nextDir, "server/app", ...segments);
+  return (
+    fs.existsSync(path.join(routeDir, "page.js")) ||
+    fs.existsSync(path.join(routeDir, "page_client-reference-manifest.js"))
+  );
+}
+
 function collectPageArtifacts(dir, segments, out) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
@@ -46,15 +54,15 @@ function collectPageArtifacts(dir, segments, out) {
       continue;
     }
     if (entry.name !== "page.tsx" && entry.name !== "page.ts") continue;
-    out.push(path.join(nextDir, "server/app", ...segments, "page.js"));
+    out.push({ segments, route: path.join("server/app", ...segments, "page") });
   }
 }
 const expectedPageArtifacts = [];
 collectPageArtifacts(srcAppDir, [], expectedPageArtifacts);
-const missingPageArtifacts = expectedPageArtifacts.filter((file) => !fs.existsSync(file));
+const missingPageArtifacts = expectedPageArtifacts.filter((page) => !pageArtifactExists(page.segments));
 if (missingPageArtifacts.length > 0) {
-  console.error(`[check-build] FAILED — ${missingPageArtifacts.length} server page artifacts are missing:`);
-  for (const file of missingPageArtifacts) console.error(`  • ${path.relative(nextDir, file)}`);
+  console.error(`[check-build] FAILED — ${missingPageArtifacts.length} page artifacts are missing:`);
+  for (const page of missingPageArtifacts) console.error(`  • ${page.route}.js`);
   console.error("\nThis usually means the .next directory contains stale incremental output.");
   console.error("Run: npm run build (this project clears .next before building).");
   process.exit(1);

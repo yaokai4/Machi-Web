@@ -6,42 +6,9 @@
 // /api/settings endpoint) so it matches the iOS LocalizationService.
 
 import { createContext, useContext, useEffect, useMemo } from "react";
-import { create } from "zustand";
-import { persist, createJSONStorage } from "zustand/middleware";
-import { useSettings, safeLocalStorage } from "./store";
+import { useSettings } from "./store";
 
 export type Locale = "zh-Hans" | "zh-Hant" | "en" | "ja";
-
-function isLocale(value: unknown): value is Locale {
-  return value === "zh-Hans" || value === "zh-Hant" || value === "en" || value === "ja";
-}
-
-// Manual UI-language override. Logged-in users get their language from
-// server settings; guests have no settings, so without this they were
-// stuck on zh-Hans. This local override lets *anyone* switch the
-// interface language instantly and have it persist, while still falling
-// back to the account's server language when no manual choice was made.
-// `skipHydration` keeps the first client render identical to the SSR
-// output (override = null) — the saved value is applied in an effect
-// after mount, so there is no hydration mismatch / flash-of-wrong-text.
-interface UiLocaleState {
-  override: Locale | null;
-  setOverride: (value: Locale | null) => void;
-}
-
-export const useUiLocale = create<UiLocaleState>()(
-  persist(
-    (set) => ({
-      override: null,
-      setOverride: (override) => set({ override }),
-    }),
-    {
-      name: "machi_lang",
-      storage: createJSONStorage(() => safeLocalStorage),
-      skipHydration: true,
-    },
-  ),
-);
 
 const ZH_HANS = {
   // global / nav
@@ -260,7 +227,8 @@ const ZH_HANS = {
   mem_pay_method: "选择支付方式",
   mem_pay_wechat: "微信支付",
   mem_pay_alipay: "支付宝",
-  mem_pay_stripe: "信用卡 (Stripe)",
+  mem_pay_stripe: "银行卡 (Stripe)",
+  mem_supported_payments: "支持的支付方式",
   mem_open_stripe: "前往 Stripe 完成支付",
   mem_pay_pending: "等待支付…",
   mem_pay_success: "支付成功，Machi 认证会员已开通！",
@@ -542,7 +510,8 @@ const EN: Partial<Dict> = {
   mem_pay_method: "Choose a payment method",
   mem_pay_wechat: "WeChat Pay",
   mem_pay_alipay: "Alipay",
-  mem_pay_stripe: "Card (Stripe)",
+  mem_pay_stripe: "Bank card (Stripe)",
+  mem_supported_payments: "Supported payment methods",
   mem_open_stripe: "Continue to Stripe to pay",
   mem_pay_pending: "Waiting for payment…",
   mem_pay_success: "Payment complete — Machi Verified is now active!",
@@ -644,7 +613,8 @@ const JA: Partial<Dict> = {
   mem_pay_method: "支払い方法を選択",
   mem_pay_wechat: "WeChat Pay",
   mem_pay_alipay: "Alipay",
-  mem_pay_stripe: "カード (Stripe)",
+  mem_pay_stripe: "銀行カード (Stripe)",
+  mem_supported_payments: "対応している決済ブランド",
   mem_open_stripe: "Stripe に移動して支払う",
   mem_pay_pending: "支払いを待っています…",
   mem_pay_success: "支払いが完了し、Machi 認証メンバーが有効になりました！",
@@ -679,18 +649,11 @@ const Ctx = createContext<I18nContext>({ locale: "zh-Hans", t: (k) => ZH_HANS[k]
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {
   const settings = useSettings((s) => s.settings);
-  const override = useUiLocale((s) => s.override);
-
-  // Apply the persisted manual choice after mount (see skipHydration note).
-  useEffect(() => {
-    void useUiLocale.persist.rehydrate();
-  }, []);
-
-  const locale: Locale = isLocale(override)
-    ? override
-    : isLocale(settings?.language)
-      ? (settings!.language as Locale)
-      : "zh-Hans";
+  const locale: Locale = (() => {
+    const raw = settings?.language;
+    if (raw === "zh-Hans" || raw === "zh-Hant" || raw === "en" || raw === "ja") return raw;
+    return "zh-Hans";
+  })();
 
   useEffect(() => {
     if (typeof document !== "undefined") {

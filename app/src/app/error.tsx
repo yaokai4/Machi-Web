@@ -17,6 +17,48 @@ import { AlertTriangle, RefreshCw, Home } from "lucide-react";
 import Link from "next/link";
 
 const AUTO_RECOVER_KEY = "machi.error.auto-recover";
+const STALE_BUNDLE_RECOVER_KEY = "machi.error.stale-bundle-recover";
+
+function isStaleBundleError(error: Error) {
+  const message = `${error?.name || ""} ${error?.message || ""}`;
+  return (
+    message.includes("ChunkLoadError") ||
+    message.includes("Loading chunk") ||
+    message.includes("Loading CSS chunk") ||
+    message.includes("Failed to fetch dynamically imported module") ||
+    message.includes("Importing a module script failed")
+  );
+}
+
+async function clearCachesAndReload() {
+  try {
+    if (sessionStorage.getItem(STALE_BUNDLE_RECOVER_KEY) === "1") return;
+    sessionStorage.setItem(STALE_BUNDLE_RECOVER_KEY, "1");
+  } catch {
+    return;
+  }
+  try {
+    if (typeof navigator !== "undefined" && "serviceWorker" in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map((reg) => reg.unregister().catch(() => false)));
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    if (typeof caches !== "undefined") {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((key) => caches.delete(key).catch(() => false)));
+    }
+  } catch {
+    /* ignore */
+  }
+  try {
+    window.location.reload();
+  } catch {
+    /* ignore */
+  }
+}
 
 export default function RouteError({
   error,
@@ -31,6 +73,10 @@ export default function RouteError({
   useEffect(() => {
     if (typeof console !== "undefined") {
       console.error("[machi] route error:", error);
+    }
+    if (isStaleBundleError(error)) {
+      void clearCachesAndReload();
+      return;
     }
     if (attempted.current) {
       setShowDialog(true);
@@ -69,9 +115,9 @@ export default function RouteError({
         <div className="inline-flex w-12 h-12 items-center justify-center rounded-full bg-kx-danger/10 text-kx-danger mb-1">
           <AlertTriangle className="w-6 h-6" />
         </div>
-        <h1 className="text-xl font-bold text-kx-text">出了点问题</h1>
+        <h1 className="text-xl font-bold text-kx-text">页面暂时无法加载</h1>
         <p className="text-sm text-kx-subtle leading-relaxed">
-          这个页面没能加载出来。可以重试，或者先回首页。
+          请稍后再试。可以重试，或者先回首页继续浏览。
         </p>
         {error.digest ? (
           <p className="text-xs text-kx-muted font-mono">追踪号 {error.digest}</p>

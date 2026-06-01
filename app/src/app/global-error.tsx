@@ -87,7 +87,7 @@ export default function GlobalError({
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <title>出了点问题 — Machi</title>
+        <title>页面暂时无法加载 — Machi</title>
         <style
           dangerouslySetInnerHTML={{
             __html: `
@@ -143,8 +143,8 @@ export default function GlobalError({
       </head>
       <body>
         <div className="card">
-          <h1>出了点问题</h1>
-          <p>这个页面没能加载出来。点「重试」或回到首页继续浏览。</p>
+          <h1>页面暂时无法加载</h1>
+          <p>请稍后再试。点「重试」或回到首页继续浏览。</p>
           {error?.digest ? <p className="muted">追踪号 {error.digest}</p> : null}
           <div className="row">
             <button onClick={retry}>重试</button>

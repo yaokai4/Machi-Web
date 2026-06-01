@@ -14,7 +14,8 @@ export function RecentCityChips() {
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
-  const recent = user?.recent_region_codes ?? [];
+  const currentCountry = user?.country || "jp";
+  const recent = (user?.recent_region_codes ?? []).filter((code) => resolveRegion(code)?.country_code === currentCountry);
   if (!recent.length) return null;
 
   const selectRegion = async (code: string) => {
@@ -22,10 +23,7 @@ export function RecentCityChips() {
     if (!region) return;
     setBusy(code);
     try {
-      const next = await api.updateMe({
-        country: region.country_code,
-        province: region.province_code,
-        city: region.city_code,
+      const next = await api.updateRegionLanguage({
         current_region_code: region.region_code,
       });
       setUser(next);

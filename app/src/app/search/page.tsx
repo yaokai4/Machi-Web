@@ -4,7 +4,7 @@ import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Flame, History, Hash, MapPin, Search as SearchIcon, X, Trash2, TrendingUp } from "lucide-react";
+import { Flame, History, Hash, Search as SearchIcon, X, Trash2, TrendingUp } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
@@ -12,7 +12,7 @@ import { PostCard } from "@/components/feed/PostCard";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { showVerifiedBadge } from "@/lib/types";
 import { NavTabs } from "@/components/design/NavTabs";
-import { useSession, useToasts } from "@/lib/store";
+import { useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import { compactNumber } from "@/lib/format";
 
@@ -30,7 +30,6 @@ export default function SearchPage() {
 function SearchPageInner() {
   const params = useSearchParams();
   const router = useRouter();
-  const user = useSession((s) => s.user);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
   const { t } = useI18n();
@@ -64,12 +63,6 @@ function SearchPageInner() {
     queryKey: ["search-history"],
     queryFn: () => api.searchHistory(),
     enabled: true,
-  });
-  const popularRegions = useQuery({
-    queryKey: ["popular-regions"],
-    queryFn: () => api.popularRegions(),
-    staleTime: 5 * 60_000,
-    enabled: !!user,
   });
   const showResults = !!submitted;
   const trending = useQuery({
@@ -245,26 +238,6 @@ function SearchPageInner() {
                   </li>
                 ))}
               </ol>
-            </section>
-          ) : null}
-
-          {popularRegions.data && popularRegions.data.length > 0 ? (
-            <section className="kx-card">
-              <h3 className="kx-section-title mb-3 px-0 inline-flex items-center gap-1.5">
-                <MapPin className="w-4 h-4 text-kx-accent" /> 热门城市
-              </h3>
-              <div className="flex flex-wrap gap-1.5">
-                {popularRegions.data.slice(0, 12).map((region) => (
-                  <Link
-                    key={region.region_code}
-                    href={`/c/${encodeURIComponent(region.region_code)}`}
-                    className="kx-glass-capsule inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold hover:border-kx-accent/35"
-                  >
-                    <span>{region.country_emoji || "🌐"}</span>
-                    <span>{region.city_name}</span>
-                  </Link>
-                ))}
-              </div>
             </section>
           ) : null}
         </div>

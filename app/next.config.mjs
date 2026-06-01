@@ -28,6 +28,12 @@ const securityHeaders = [
   { key: "Referrer-Policy",          value: "strict-origin-when-cross-origin" },
   { key: "Permissions-Policy",       value: "interest-cohort=(), geolocation=(), microphone=(), camera=()" },
   { key: "Content-Security-Policy",  value: cspParts.join("; ") },
+  ...(dev
+    ? [
+        { key: "Cache-Control", value: "no-store, no-cache, must-revalidate, max-age=0" },
+        { key: "Clear-Site-Data", value: "\"cache\"" },
+      ]
+    : []),
   ...(dev ? [] : [{ key: "Strict-Transport-Security", value: "max-age=31536000; includeSubDomains" }]),
 ];
 
@@ -38,7 +44,7 @@ const nextConfig = {
   productionBrowserSourceMaps: false,
   compress: true,
   experimental: {
-    optimizePackageImports: ["lucide-react"],
+    optimizePackageImports: dev ? [] : ["lucide-react"],
   },
   webpack(config, { isServer, nextRuntime }) {
     if (isServer && nextRuntime !== "edge" && config.output?.path) {
@@ -78,10 +84,17 @@ const nextConfig = {
         ],
       },
       {
-        // Next.js static assets are content-hashed — safe to cache forever.
+        // In dev these paths are not stable enough to cache forever:
+        // stale chunks surface as "Cannot read properties of undefined
+        // (reading 'call')" in the browser after HMR / restore cycles.
         source: "/_next/static/:path*",
         headers: [
-          { key: "Cache-Control", value: "public, max-age=31536000, immutable" },
+          {
+            key: "Cache-Control",
+            value: dev
+              ? "no-store, no-cache, must-revalidate, max-age=0"
+              : "public, max-age=31536000, immutable",
+          },
         ],
       },
     ];

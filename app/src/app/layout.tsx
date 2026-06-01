@@ -29,7 +29,7 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#f4f5f7",
+  themeColor: "#fdf6f0",
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
@@ -50,9 +50,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                   return null;
                 }
                 var stored=null;
-                try{stored=safeParse(localStorage.getItem('machi-theme')||localStorage.getItem('machi_theme'));}catch(_){}
+                try{stored=safeParse(localStorage.getItem('machi_theme'));}catch(_){}
                 var target=stored==='dark'?'dark':'light';
-                try{localStorage.setItem('machi-theme',target);localStorage.removeItem('machi_theme');}catch(_){}
+                if(stored!==target){try{localStorage.setItem('machi_theme',target);}catch(_){}}
                 try{localStorage.removeItem('machi-appearance');localStorage.removeItem('kaix-appearance');}catch(_){}
                 document.documentElement.classList.toggle('dark',target==='dark');
                 document.documentElement.dataset.theme=target;
@@ -184,6 +184,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
         </QueryProvider>
         <ServiceWorkerRegistrar />
         <SiteSplash />
+        <div className="kx-grain" aria-hidden="true" />
       </body>
     </html>
   );

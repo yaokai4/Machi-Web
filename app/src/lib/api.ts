@@ -153,37 +153,23 @@ export type NewsCategory =
   | "local_news" | "traffic_alert" | "weather_alert" | "earthquake_alert" | "typhoon_alert"
   | "policy_update" | "immigration_visa" | "city_event" | "life_notice" | "housing_notice"
   | "housing_market" | "work_study" | "public_safety" | "economy" | "technology" | "culture"
-  | "sports" | "education" | "health" | "travel" | "editor_pick" | "weekly_digest" | "other"
-  | "digital_life" | "national_notice" | "legal_notice" | "residence_card" | "visa_policy"
-  | "foreign_resident_notice" | "labor_policy" | "resident_service" | "garbage_rule"
-  | "child_support" | "local_event" | "train_delay" | "commute" | "disaster"
-  | "disaster_prevention" | "food" | "weekend" | "exhibition" | "meetup" | "language_exchange";
-
-export type NewsSourceTier =
-  | "tier_1_official"
-  | "tier_2_city_official"
-  | "tier_3_public_media"
-  | "tier_4_event_lifestyle"
-  | "tier_5_manual_reference";
+  | "sports" | "education" | "health" | "travel" | "editor_pick" | "weekly_digest" | "other";
 
 export type NewsSource = {
   id: string;
   name: string;
   source_key: string;
-  source_type: "rss" | "webpage" | "metadata" | "html_list" | "manual" | "manual_reference" | "api";
+  source_type: "rss" | "webpage" | "html_list" | "manual";
   source_url: string;
   homepage_url: string;
   allowed_domain: string;
   country: string;
   city: string;
-  sub_city?: string;
   language: string;
   default_category: NewsCategory;
-  source_tier: NewsSourceTier;
-  credibility_level: "official" | "media" | "community" | "commercial" | "event_platform";
-  copyright_policy: "metadata_only" | "official_attribution" | "cc_by" | "redistribution_restricted" | "manual_review_only" | "unknown";
+  credibility_level: "official" | "media" | "community" | "commercial";
   copyright_policy_note: string;
-  crawl_strategy: "rss" | "meta_only" | "metadata" | "html_list" | "manual";
+  crawl_strategy: "rss" | "meta_only" | "html_list" | "manual";
   list_selector?: string | null;
   item_selector?: string | null;
   title_selector?: string | null;
@@ -198,12 +184,8 @@ export type NewsSource = {
   request_timeout_ms: number;
   is_active: boolean;
   require_manual_review: boolean;
-  allow_auto_draft?: boolean;
-  allow_auto_publish?: boolean;
   auto_create_draft?: boolean;
   official_auto_publish?: boolean;
-  content_rewrite_required?: boolean;
-  risk_level?: "low" | "medium" | "high";
   last_fetched_at?: string | null;
   last_success_at?: string | null;
   last_error: string;
@@ -235,13 +217,7 @@ export type NewsItem = {
   fetched_at: string;
   country: string;
   city: string;
-  sub_city?: string;
   category: NewsCategory;
-  source_tier?: NewsSourceTier;
-  risk_level?: "low" | "medium" | "high";
-  relevance_score?: number;
-  relevance_reason?: string;
-  quality_score?: number;
   hash_key: string;
   raw_metadata?: Record<string, unknown>;
   error_message?: string;
@@ -254,50 +230,29 @@ export type EditorialPost = {
   id: string;
   news_item_id?: string | null;
   author_type: "local_desk" | "city_editor" | "tokyo_editorial" | "osaka_editorial" | "japan_editorial" | "admin";
-  authorType?: string;
   author_display_name: string;
-  authorDisplayName?: string;
   country: string;
   city: string;
-  sub_city?: string;
-  subCity?: string;
   language: string;
   category: NewsCategory;
-  source_tier?: NewsSourceTier;
-  sourceTier?: NewsSourceTier;
-  relevance_score?: number;
-  relevanceScore?: number;
-  quality_score?: number;
-  qualityScore?: number;
   title: string;
   summary: string;
   body: string;
   source_name?: string | null;
-  sourceName?: string | null;
   source_url?: string | null;
-  sourceUrl?: string | null;
   original_url?: string | null;
-  originalUrl?: string | null;
   source_published_at?: string | null;
-  sourcePublishedAt?: string | null;
   status: "draft" | "pending_review" | "published" | "hidden" | "deleted";
   review_status: "none" | "needs_review" | "approved" | "rejected";
   reviewed_by_admin_id?: string | null;
   reviewed_at?: string | null;
   published_at?: string | null;
-  publishedAt?: string | null;
   view_count: number;
-  viewCount?: number;
   share_count: number;
-  shareCount?: number;
   click_source_count: number;
-  clickSourceCount?: number;
   risk_level: "low" | "medium" | "high";
-  riskLevel?: "low" | "medium" | "high";
   official_source_required: boolean;
-  officialSourceRequired?: boolean;
   is_ai_assisted: boolean;
-  isAiAssisted?: boolean;
   ai_model?: string | null;
   ai_prompt_version?: string | null;
   created_by_admin_id: string;
@@ -305,18 +260,8 @@ export type EditorialPost = {
   updated_at: string;
   tags: string[];
   save_count: number;
-  saveCount?: number;
   comment_count: number;
-  commentCount?: number;
   saved: boolean;
-  is_saved?: boolean;
-  isSaved?: boolean;
-  can_interact?: boolean;
-  canInteract?: boolean;
-  source_note?: string;
-  sourceNote?: string;
-  editorial_disclaimer?: string;
-  editorialDisclaimer?: string;
   is_demo?: boolean;
 };
 
@@ -341,17 +286,7 @@ export type NewsDeskDashboard = {
     failed_sources: number;
     sources?: number;
     active_sources?: number;
-    successful_sources?: number;
-    crawler_items?: number;
-    front_visible?: number;
-    auto_draft_sources?: number;
-    auto_publish_sources?: number;
     diagnostic_hint?: string;
-  };
-  diagnostics?: {
-    failure_reasons?: Array<{ reason: string; count: number }>;
-    source_tiers?: Array<{ source_tier: NewsSourceTier | string; count: number }>;
-    top_issues?: string[];
   };
   recent_posts: EditorialPost[];
   recent_logs: Array<Record<string, unknown>>;
@@ -363,10 +298,6 @@ export type NewsItemsQuery = {
   city?: string;
   language?: string;
   category?: string;
-  source_tier?: string;
-  risk_level?: string;
-  minRelevance?: number;
-  minQuality?: number;
   status?: string;
   keyword?: string;
   page?: number;
@@ -507,12 +438,47 @@ export const api = {
   // the code itself — only whether it was accepted and how long it lasts.
   async sendEmailCode(
     email: string,
-    purpose: "register" | "reset" = "register",
+    purpose: "register" | "reset" | "change_password" | "change_email_old" | "change_email_new" = "register",
     locale?: string,
-  ): Promise<{ ok: boolean; expires_in: number }> {
+  ): Promise<{ ok: boolean; challenge_id?: string; email_hint?: string; expires_in: number }> {
     return request("POST", "/api/auth/email/send-code", { email, purpose, locale });
   },
-  async verifyEmailCode(email: string, code: string, purpose: "register" | "reset" = "register"): Promise<{ ok: boolean; success?: boolean; message?: string }> {
+  async verifyEmailCode(email: string, code: string, purpose: "register" | "reset" | "change_password" | "change_email_old" | "change_email_new" = "register", challengeId?: string): Promise<{ ok: boolean; success?: boolean; message?: string }> {
+    return request("POST", "/api/auth/verify-code", { email, code, purpose, challenge_id: challengeId });
+  },
+  async verifyPassword(password: string): Promise<{ ok: boolean; message?: string }> {
+    return request("POST", "/api/account/verify-password", { password });
+  },
+  async changeAccountPassword(payload: {
+    current_password?: string;
+    code?: string;
+    challenge_id?: string;
+    new_password: string;
+  }): Promise<{ ok: boolean; message?: string }> {
+    return request("POST", "/api/account/change-password", payload);
+  },
+  async changeEmail(payload: {
+    current_password?: string;
+    old_code?: string;
+    old_challenge_id?: string;
+    new_email: string;
+    new_code: string;
+    new_challenge_id?: string;
+  }): Promise<KXUser> {
+    const { user } = await request<{ ok: boolean; message?: string; user: KXUser }>("POST", "/api/account/change-email", payload);
+    return user;
+  },
+  async updateRegionLanguage(patch: {
+    country?: string;
+    province?: string;
+    city?: string;
+    current_region_code?: string;
+    recent_region_codes?: string[];
+  }): Promise<KXUser> {
+    const { user } = await request<{ user: KXUser }>("PATCH", "/api/account/region-language", patch);
+    return user;
+  },
+  async verifyEmailCodeLegacy(email: string, code: string, purpose: "register" | "reset" = "register"): Promise<{ ok: boolean; success?: boolean; message?: string }> {
     return request("POST", "/api/auth/verify-code", { email, code, purpose });
   },
   // Step 1 of two-step login: verify the password, then (if the account has
@@ -698,11 +664,9 @@ export const api = {
     city?: string;
     region_code?: string;
     content_type?: ContentType | ContentType[];
-    limit?: number;
   } = {}): Promise<Paginated<KXPost> & { mode: FeedMode }> {
     const params = new URLSearchParams({ mode });
     if (cursor) params.set("cursor", cursor);
-    if (opts.limit) params.set("limit", String(opts.limit));
     if (opts.country) params.set("country", opts.country);
     if (opts.province) params.set("province", opts.province);
     if (opts.city) params.set("city", opts.city);
@@ -995,7 +959,7 @@ export const api = {
     const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/news-sources`, payload);
     return source;
   },
-  async adminSeedNewsSourcePresets(): Promise<{ total: number; active: number; created?: number; updated?: number; skipped?: number; total_presets?: number }> {
+  async adminSeedNewsSourcePresets(): Promise<{ total: number; active: number }> {
     return request("POST", `/api/admin/news-sources/seed-presets`, {});
   },
   async adminUpdateNewsSource(id: string, patch: Partial<NewsSource>): Promise<NewsSource> {
@@ -1014,15 +978,6 @@ export const api = {
   },
   async adminFetchJapanAllNewsSources(): Promise<Record<string, unknown>> {
     return request("POST", `/api/admin/news-sources/fetch-japan-all`, {});
-  },
-  async adminFetchJapanOfficialNewsSources(): Promise<Record<string, unknown>> {
-    return request("POST", `/api/admin/news-sources/fetch-official`, {});
-  },
-  async adminFetchTokyoNewsSources(): Promise<Record<string, unknown>> {
-    return request("POST", `/api/admin/news-sources/fetch-tokyo`, {});
-  },
-  async adminFetchOsakaNewsSources(): Promise<Record<string, unknown>> {
-    return request("POST", `/api/admin/news-sources/fetch-osaka`, {});
   },
   async adminNewsSourceDetail(id: string): Promise<{ source: NewsSource; recent_logs: Array<Record<string, unknown>> }> {
     return request("GET", `/api/admin/news-sources/${encodeURIComponent(id)}`);
@@ -1100,7 +1055,7 @@ export const api = {
     const { source } = await request<{ source: NewsSource }>("POST", `/api/admin/japan-news-crawler/sources`, payload);
     return source;
   },
-  async japanNewsCrawlerSeedSourcePresets(): Promise<{ total: number; active: number; created?: number; updated?: number; skipped?: number; total_presets?: number }> {
+  async japanNewsCrawlerSeedSourcePresets(): Promise<{ total: number; active: number }> {
     return request("POST", `/api/admin/japan-news-crawler/sources/seed-presets`, {});
   },
   async japanNewsCrawlerUpdateSource(id: string, patch: Partial<NewsSource>): Promise<NewsSource> {
@@ -1122,15 +1077,6 @@ export const api = {
   },
   async japanNewsCrawlerFetchJapanAll(): Promise<Record<string, unknown>> {
     return request("POST", `/api/admin/japan-news-crawler/fetch-japan-all`, {});
-  },
-  async japanNewsCrawlerFetchOfficial(): Promise<Record<string, unknown>> {
-    return request("POST", `/api/admin/japan-news-crawler/fetch-official`, {});
-  },
-  async japanNewsCrawlerFetchTokyo(): Promise<Record<string, unknown>> {
-    return request("POST", `/api/admin/japan-news-crawler/fetch-tokyo`, {});
-  },
-  async japanNewsCrawlerFetchOsaka(): Promise<Record<string, unknown>> {
-    return request("POST", `/api/admin/japan-news-crawler/fetch-osaka`, {});
   },
   async japanNewsCrawlerItems(opts: NewsItemsQuery = {}): Promise<{ items: NewsItem[]; page: number; limit: number; total: number }> {
     const usp = new URLSearchParams();
