@@ -1,0 +1,37 @@
+# Machi backend (server.py) — single-file Python app, stdlib + optional
+# `cryptography` (real WeChat/Alipay/Apple-IAP signature verification).
+#
+# Build context is the repo's `web/` dir:
+#   docker build -f deploy/docker/Dockerfile.backend -t machi-backend .
+FROM python:3.12-slim AS base
+
+# Non-root runtime user.
+RUN useradd --create-home --uid 10001 kaix
+
+WORKDIR /app
+
+# Install deps first for layer caching.
+COPY requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+# App code (just the one file + nothing else it imports).
+COPY server.py ./
+
+# Persistent paths live on mounted volumes:
+#   /data        -> SQLite DB (KAIX_DB_PATH)
+#   /app/media   -> uploaded media (MEDIA_DIR = ROOT/media)
+RUN mkdir -p /data /app/media && chown -R kaix:kaix /data /app/media
+USER kaix
+
+ENV KAIX_HOST=0.0.0.0 \
+    KAIX_PORT=8787 \
+    KAIX_DB_PATH=/data/kaix.db \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8787
+
+# Container-level health check hits the cheap /api/health (no DB).
+HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
+  CMD python3 -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/api/health',timeout=2).status==200 else 1)"
+
+CMD ["python3", "-u", "server.py"]

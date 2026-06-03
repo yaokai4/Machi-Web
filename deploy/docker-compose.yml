@@ -1,0 +1,82 @@
+# Machi — containerized stack (Caddy + Next.js web + scalable Python backend).
+#
+#   cd web
+#   cp .env.example .env            # fill real secrets (NEVER committed)
+#   MACHI_DOMAIN=www.machicity.com docker compose -f deploy/docker-compose.yml up -d --build
+#   docker compose -f deploy/docker-compose.yml up -d --scale backend=4   # scale the HTTP pool
+#
+# Persistence: the SQLite DB and uploaded media live on named volumes shared
+# by the backend pool and the scheduler — SQLite WAL gives concurrent readers
+# + a serialized writer across all of them (same volume = same filesystem,
+# so file locking works). Secrets come from ../.env at runtime, never baked
+# into an image.
+
+name: machi
+
+x-backend-image: &backend-build
+  build:
+    context: ..
+    dockerfile: deploy/docker/Dockerfile.backend
+
+services:
+  # Scalable HTTP backend pool. No crawler scheduler here (that's the
+  # singleton `scheduler` service) so scaling never duplicates crawl work.
+  backend:
+    <<: *backend-build
+    env_file: ../.env
+    environment:
+      KAIX_ENABLE_SCHEDULERS: "0"
+      KAIX_DB_PATH: /data/kaix.db
+    volumes:
+      - kaix-db:/data
+      - kaix-media:/app/media
+    expose:
+      - "8787"
+    restart: unless-stopped
+
+  # Singleton: runs the crawler scheduler + background writers. Shares the
+  # same DB/media. Not part of the Caddy load-balancer pool.
+  scheduler:
+    <<: *backend-build
+    env_file: ../.env
+    environment:
+      KAIX_ENABLE_SCHEDULERS: "1"
+      KAIX_DB_PATH: /data/kaix.db
+    volumes:
+      - kaix-db:/data
+      - kaix-media:/app/media
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/docker/Dockerfile.web
+    environment:
+      # Next rewrites fall back here; Caddy normally serves /api before Next.
+      API_BASE: "http://backend:8787"
+    expose:
+      - "3000"
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      MACHI_DOMAIN: "${MACHI_DOMAIN:-localhost}"
+      ACME_EMAIL: "${ACME_EMAIL:-admin@machicity.com}"
+    volumes:
+      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - web
+      - backend
+    restart: unless-stopped
+
+volumes:
+  kaix-db:
+  kaix-media:
+  caddy-data:
+  caddy-config:

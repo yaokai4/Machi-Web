@@ -1,0 +1,30 @@
+# Keep the Docker build context small and SECRET-FREE.
+# .env is loaded at runtime via compose `env_file`, never baked into an image.
+.env
+.env.*
+!.env.example
+
+# data / generated — never ship into an image
+kaix.db
+kaix.db-wal
+kaix.db-shm
+media/
+dev_outbox/
+*.mmdb
+
+# node / next build artifacts (rebuilt inside the image)
+app/node_modules
+app/.next
+app/tsconfig.tsbuildinfo
+
+# vcs / os / editor
+.git
+.gitignore
+**/.DS_Store
+**/*.log
+
+# things the images don't need
+legacy/
+scripts/
+docs/
+deploy/*.service
