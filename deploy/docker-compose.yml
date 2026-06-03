@@ -10,52 +10,69 @@
 # + a serialized writer across all of them (same volume = same filesystem,
 # so file locking works). Secrets come from ../.env at runtime, never baked
 # into an image.
+#
+# Startup order is health-gated so the DB is initialized exactly once before
+# the pool fans out: scheduler (runs init + migrations) -> backend pool ->
+# web -> caddy. This avoids a first-run migration race between containers.
 
 name: machi
 
-x-backend-image: &backend-build
+x-backend-build: &backend-build
   build:
     context: ..
     dockerfile: deploy/docker/Dockerfile.backend
 
-services:
-  # Scalable HTTP backend pool. No crawler scheduler here (that's the
-  # singleton `scheduler` service) so scaling never duplicates crawl work.
-  backend:
-    <<: *backend-build
-    env_file: ../.env
-    environment:
-      KAIX_ENABLE_SCHEDULERS: "0"
-      KAIX_DB_PATH: /data/kaix.db
-    volumes:
-      - kaix-db:/data
-      - kaix-media:/app/media
-    expose:
-      - "8787"
-    restart: unless-stopped
+x-backend-common: &backend-common
+  env_file: ../.env
+  volumes:
+    - kaix-db:/data
+    - kaix-media:/app/media
+  # parity with the systemd MemoryMax=2048M profile
+  mem_limit: 2g
+  restart: unless-stopped
 
-  # Singleton: runs the crawler scheduler + background writers. Shares the
-  # same DB/media. Not part of the Caddy load-balancer pool.
+services:
+  # Singleton: runs init_db()/migrations on first boot + the crawler
+  # scheduler + background writers. Starts FIRST so it owns schema setup.
   scheduler:
-    <<: *backend-build
-    env_file: ../.env
+    <<: [*backend-build, *backend-common]
     environment:
       KAIX_ENABLE_SCHEDULERS: "1"
       KAIX_DB_PATH: /data/kaix.db
-    volumes:
-      - kaix-db:/data
-      - kaix-media:/app/media
-    restart: unless-stopped
+
+  # Scalable HTTP backend pool. No crawler scheduler here so scaling never
+  # duplicates crawl work. Waits until the scheduler has the DB ready.
+  backend:
+    <<: [*backend-build, *backend-common]
+    environment:
+      KAIX_ENABLE_SCHEDULERS: "0"
+      KAIX_DB_PATH: /data/kaix.db
+    expose:
+      - "8787"
+    depends_on:
+      scheduler:
+        condition: service_healthy
 
   web:
     build:
       context: ..
       dockerfile: deploy/docker/Dockerfile.web
-    environment:
-      # Next rewrites fall back here; Caddy normally serves /api before Next.
-      API_BASE: "http://backend:8787"
+    # No API base needed: Caddy proxies /api, /media and /healthz straight to
+    # the backend pool before they reach Next, and browser calls are
+    # same-origin (lib/api.ts uses a relative base). The CSP default already
+    # allows 'self'.
     expose:
       - "3000"
+    mem_limit: 1g
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/',r=>process.exit(r.statusCode<500?0:1)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 4s
+      start_period: 30s
+      retries: 3
+    depends_on:
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
   caddy:
@@ -71,8 +88,10 @@ services:
       - caddy-data:/data
       - caddy-config:/config
     depends_on:
-      - web
-      - backend
+      web:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:
