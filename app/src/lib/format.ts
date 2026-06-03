@@ -34,6 +34,62 @@ export function fullDateTime(iso: string): string {
   return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
 }
 
+export type PriceLike = {
+  price?: number | null;
+  currency?: string | null;
+  priceLabel?: string | null;
+  price_label?: string | null;
+  billingPeriod?: string | null;
+  billing_period?: string | null;
+  isPriceHidden?: boolean | null;
+  is_price_hidden?: boolean | null;
+  isAppointmentOnly?: boolean | null;
+  is_appointment_only?: boolean | null;
+  isComingSoon?: boolean | null;
+  status?: string | null;
+  isFree?: boolean | null;
+  servicePriceType?: string | null;
+  service_price_type?: string | null;
+  startingPrice?: number | null;
+  starting_price?: number | null;
+};
+
+export function formatCurrencyAmount(price: number | null | undefined, currency = "CNY"): string {
+  const amount = Number(price ?? 0);
+  const code = String(currency || "CNY").toUpperCase();
+  if (code === "CNY" || code === "JPY") return `¥${Math.round(amount)}`;
+  if (code === "USD") {
+    return amount % 1 === 0 ? `$${amount.toFixed(0)}` : `$${amount.toFixed(2)}`;
+  }
+  return `${code} ${amount % 1 === 0 ? amount.toFixed(0) : amount.toFixed(2)}`;
+}
+
+export function formatPrice(input: PriceLike | number | null | undefined, currency = "CNY"): string {
+  if (typeof input === "number") return formatCurrencyAmount(input, currency);
+  const p = input || {};
+  const explicit = p.priceLabel || p.price_label;
+  if (p.isComingSoon || p.status === "coming_soon") return "即将开放";
+  if (p.isPriceHidden || p.is_price_hidden || p.isAppointmentOnly || p.is_appointment_only) return "预约咨询";
+  if (explicit) return explicit;
+  if (p.isFree) return "免费";
+  const serviceType = p.servicePriceType || p.service_price_type;
+  if (serviceType === "appointment_only") return "预约咨询";
+  if (serviceType === "quote_required") return "按需求报价";
+  if (serviceType === "free") return "免费";
+  const code = p.currency || currency;
+  const amount = p.price ?? 0;
+  const starting = p.startingPrice ?? p.starting_price ?? amount;
+  if (serviceType === "starting_from" && Number(starting) > 0) {
+    return `${formatCurrencyAmount(Number(starting), code || "CNY")} 起`;
+  }
+  if (Number(amount) <= 0) return "";
+  const suffix = p.billingPeriod || p.billing_period;
+  const rendered = formatCurrencyAmount(Number(amount), code || "CNY");
+  if (suffix === "monthly") return `${rendered} / 月`;
+  if (suffix === "yearly") return `${rendered} / 年`;
+  return rendered;
+}
+
 // Render text with #tags and @mentions as clickable spans (data attributes are used by the parent click handler).
 export interface TextSegment {
   kind: "text" | "hashtag" | "mention" | "url";

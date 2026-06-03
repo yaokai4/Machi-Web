@@ -1,0 +1,62 @@
+# Caddy edge config for Machi/KaiX.
+#
+# Install example:
+#   sudo cp /opt/kaix/web/deploy/Caddyfile /etc/caddy/Caddyfile
+#   sudo caddy fmt --overwrite /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# Backend: 127.0.0.1:8787
+# Web:     127.0.0.1:3000
+
+kaix.app, www.kaix.app {
+	encode gzip zstd
+
+	header {
+		X-Frame-Options "DENY"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+	}
+
+	handle /api/events {
+		reverse_proxy 127.0.0.1:8787 {
+			flush_interval -1
+		}
+	}
+
+	handle /api/* {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	handle /media/* {
+		header Cache-Control "public, max-age=2592000, immutable"
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	handle /healthz {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	handle /readyz {
+		reverse_proxy 127.0.0.1:8787
+	}
+
+	handle /_next/static/* {
+		header Cache-Control "public, max-age=31536000, immutable"
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle /sw.js {
+		header Cache-Control "no-store, no-cache, must-revalidate, max-age=0"
+		header Service-Worker-Allowed "/"
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle /reset.html {
+		header Cache-Control "no-store"
+		reverse_proxy 127.0.0.1:3000
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

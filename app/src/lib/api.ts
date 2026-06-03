@@ -580,7 +580,9 @@ export const api = {
     return request("GET", `/api/regions/resolve?code=${encodeURIComponent(code)}`);
   },
 
-  // ---- Local News Desk (public) ----
+  // Compatibility for stale deployed clients/components that still call
+  // api.news(). The retired public news API is not used; data is sourced from
+  // Machi Guide articles so old rails degrade into Guide content.
   async news(opts: {
     country?: string;
     city?: string;
@@ -590,37 +592,83 @@ export const api = {
     page?: number;
     limit?: number;
   } = {}): Promise<{ items: EditorialPost[]; page: number; limit: number; total: number; diagnostics?: Record<string, unknown> }> {
-    const usp = new URLSearchParams();
-    for (const [key, value] of Object.entries(opts)) {
-      if (value !== undefined && value !== "") usp.set(key, String(value));
-    }
-    return request("GET", `/api/news?${usp.toString()}`);
-  },
-  async newsDetail(id: string): Promise<{ post: EditorialPost; related: EditorialPost[] }> {
-    return request("GET", `/api/news/${encodeURIComponent(id)}`);
-  },
-  async saveNews(id: string, on: boolean): Promise<EditorialPost> {
-    const { post } = await request<{ post: EditorialPost }>(
-      on ? "POST" : "DELETE",
-      `/api/news/${encodeURIComponent(id)}/save`,
-    );
-    return post;
-  },
-  async shareNews(id: string): Promise<EditorialPost> {
-    const { post } = await request<{ post: EditorialPost }>("POST", `/api/news/${encodeURIComponent(id)}/share`, {});
-    return post;
-  },
-  async trackNewsSourceClick(id: string): Promise<EditorialPost> {
-    const { post } = await request<{ post: EditorialPost }>("POST", `/api/news/${encodeURIComponent(id)}/source-click`, {});
-    return post;
-  },
-  async newsComments(id: string): Promise<EditorialComment[]> {
-    const { items } = await request<{ items: EditorialComment[] }>("GET", `/api/news/${encodeURIComponent(id)}/comments`);
-    return items;
-  },
-  async createNewsComment(id: string, content: string): Promise<EditorialComment> {
-    const { comment } = await request<{ comment: EditorialComment }>("POST", `/api/news/${encodeURIComponent(id)}/comments`, { content });
-    return comment;
+    const page = opts.page || 1;
+    const limit = opts.limit || 20;
+    const params = new URLSearchParams({
+      country: opts.country || "jp",
+      page: String(page),
+      pageSize: String(limit),
+    });
+    if (opts.language) params.set("language", opts.language);
+    const response = await request<{
+      items: Array<{
+        id: string;
+        slug: string;
+        title: string;
+        summary: string;
+        categoryKey: string;
+        country: string;
+        city?: string;
+        language?: string;
+        tags?: string[];
+        authorName?: string;
+        publishedAt?: string | null;
+        updatedAt?: string | null;
+        viewCount?: number;
+        saveCount?: number;
+        status?: string;
+      }>;
+      page?: number;
+      pageSize?: number;
+      total?: number;
+    }>("GET", `/api/guide/articles?${params.toString()}`);
+    const items = (response.items || []).map((article): EditorialPost => {
+      const publishedAt = article.publishedAt || article.updatedAt || null;
+      return {
+        id: article.slug || article.id,
+        news_item_id: null,
+        author_type: "japan_editorial",
+        author_display_name: article.authorName || "Machi Guide",
+        country: article.country || opts.country || "jp",
+        city: article.city || opts.city || "",
+        language: article.language || opts.language || "zh-CN",
+        category: "editor_pick",
+        title: article.title,
+        summary: article.summary || "",
+        body: article.summary || "",
+        source_name: "Machi Guide",
+        source_url: "/guide",
+        original_url: `/guide/articles/${article.slug || article.id}`,
+        source_published_at: publishedAt,
+        status: article.status === "hidden" ? "hidden" : "published",
+        review_status: "approved",
+        reviewed_by_admin_id: null,
+        reviewed_at: null,
+        published_at: publishedAt,
+        view_count: article.viewCount || 0,
+        share_count: 0,
+        click_source_count: 0,
+        risk_level: "low",
+        official_source_required: false,
+        is_ai_assisted: false,
+        ai_model: null,
+        ai_prompt_version: null,
+        created_by_admin_id: "",
+        created_at: publishedAt || "",
+        updated_at: article.updatedAt || publishedAt || "",
+        tags: article.tags || [],
+        save_count: article.saveCount || 0,
+        comment_count: 0,
+        saved: false,
+      };
+    });
+    return {
+      items,
+      page: response.page || page,
+      limit: response.pageSize || limit,
+      total: response.total ?? items.length,
+      diagnostics: { migratedToGuide: true },
+    };
   },
 
   // ---- users ----
@@ -1152,7 +1200,7 @@ export const api = {
   },
 
   // ---- Machi Verified membership + payments ----
-  async membershipPlan(): Promise<{ plan: KXMembershipPlan | null; requires_membership_content_types: string[]; apple_product_id: string; available_providers: PaymentProvider[] }> {
+  async membershipPlan(): Promise<{ plan: KXMembershipPlan | null; plans: KXMembershipPlan[]; items: KXMembershipPlan[]; requires_membership_content_types: string[]; apple_product_id: string; available_providers: PaymentProvider[] }> {
     return request("GET", `/api/membership/plan`);
   },
   async membershipMe(): Promise<KXMembershipMe> {
@@ -1172,6 +1220,9 @@ export const api = {
   },
   async createPaymentOrder(provider: PaymentProvider, planKey?: string): Promise<KXCreateOrderResult> {
     return request("POST", `/api/payments/create-order`, { provider, clientType: "web", planKey });
+  },
+  async createMembershipCheckout(planKey: string): Promise<{ checkout_url: string; checkoutUrl: string; orderNo: string; mock?: boolean }> {
+    return request("POST", `/api/membership/create-checkout`, { plan_key: planKey });
   },
   async orderStatus(orderNo: string): Promise<KXOrderStatus> {
     return request("GET", `/api/payments/order-status?orderNo=${encodeURIComponent(orderNo)}`);
@@ -1204,6 +1255,19 @@ export const api = {
   },
   async adminCancelMembership(payload: { userId?: string; handle?: string; immediate?: boolean }): Promise<{ membership: KXMembershipStatus; user: KXUser }> {
     return request("POST", `/api/admin/memberships/cancel`, payload);
+  },
+  async adminMembershipPlans(includeInactive = true): Promise<KXMembershipPlan[]> {
+    const { items } = await request<{ items: KXMembershipPlan[] }>("GET", `/api/admin/membership/plans?includeInactive=${includeInactive ? "1" : "0"}`);
+    return items;
+  },
+  async adminUpdateMembershipPlan(planKey: string, patch: Record<string, unknown>): Promise<{ status: string; plan: KXMembershipPlan }> {
+    return request("PATCH", `/api/admin/membership/plans/${encodeURIComponent(planKey)}`, patch);
+  },
+  async adminCreateMembershipPlan(payload: Record<string, unknown>): Promise<{ status: string; plan: KXMembershipPlan }> {
+    return request("POST", `/api/admin/membership/plans`, payload);
+  },
+  async adminPricing(): Promise<{ items: Array<Record<string, unknown>>; products: unknown[]; plans: KXMembershipPlan[]; currencies: string[] }> {
+    return request("GET", `/api/admin/pricing`);
   },
   async adminPaymentOrders(opts: { status?: string; provider?: string; limit?: number } = {}): Promise<AdminPaymentOrderRow[]> {
     const params = new URLSearchParams();

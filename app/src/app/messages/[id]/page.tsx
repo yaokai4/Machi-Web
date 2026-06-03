@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Image as ImageIcon, Loader2, Play, Send, Smile, Trash2, X } from "lucide-react";
+import { ArrowLeft, Image as ImageIcon, Loader2, MessageCircle, Play, Send, Smile, Trash2, X } from "lucide-react";
 import clsx from "clsx";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
@@ -12,17 +12,30 @@ import { ErrorState, InlineLoading } from "@/components/design/States";
 import { MediaGrid } from "@/components/design/MediaGrid";
 import { relativeTime } from "@/lib/format";
 import { useSession, useToasts } from "@/lib/store";
-import type { KXMedia, KXMessage } from "@/lib/types";
+import { useI18n } from "@/lib/i18n";
+import type { KXMedia, KXMessage, KXUser } from "@/lib/types";
 import { showVerifiedBadge } from "@/lib/types";
 
-const EMOJI_CHOICES = [
-  "😀", "😄", "😂", "🤣", "😊", "🥹", "😍", "😘",
-  "😎", "🤔", "😮", "😢", "😭", "😤", "😡", "😴",
-  "👍", "👎", "🙏", "👏", "🙌", "🤝", "💪", "👌",
-  "❤️", "🧡", "💜", "✨", "🔥", "🎉", "🌟", "💡",
-  "☕", "🍜", "🍣", "🍱", "🍻", "🏠", "🚇", "📍",
-  "📷", "🎧", "📚", "💼", "🛒", "🧳", "🌧️", "☀️",
+const EMOJI_GROUPS = [
+  {
+    label: "常用",
+    items: ["😀", "😄", "😂", "🤣", "😊", "🥹", "😍", "😘", "😎", "🤔", "😮", "😭", "😴", "🙈", "😋", "😌"],
+  },
+  {
+    label: "回应",
+    items: ["👍", "👎", "🙏", "👏", "🙌", "🤝", "💪", "👌", "🤏", "🫶", "✌️", "🤟", "✅", "👀", "💯", "🫡"],
+  },
+  {
+    label: "心情",
+    items: ["❤️", "🧡", "💛", "💚", "💙", "💜", "✨", "🔥", "🎉", "🌟", "💡", "💬", "🌙", "☀️", "🌧️", "🍀"],
+  },
+  {
+    label: "本地生活",
+    items: ["☕", "🍜", "🍣", "🍱", "🍻", "🍰", "🏠", "🚇", "🚕", "📍", "📷", "🎧", "📚", "💼", "🛒", "🧳"],
+  },
 ];
+
+const QUICK_REPLIES = ["你好，我想了解一下", "现在方便聊吗？", "谢谢，我晚点回复"];
 
 export default function ConversationPage() {
   const params = useParams<{ id: string }>();
@@ -30,6 +43,7 @@ export default function ConversationPage() {
   const me = useSession((s) => s.user);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
+  const { t } = useI18n();
   const id = params?.id as string;
 
   const [draft, setDraft] = useState("");
@@ -61,7 +75,7 @@ export default function ConversationPage() {
   }, [id, messagesQuery.data?.length]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messagesQuery.data?.length]);
 
   useEffect(() => {
@@ -101,8 +115,10 @@ export default function ConversationPage() {
       await api.sendMessage(id, draft.trim(), attachments.map((m) => m.id));
       setDraft("");
       setAttachments([]);
+      setEmojiOpen(false);
       queryClient.invalidateQueries({ queryKey: ["messages", id] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }));
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
@@ -120,7 +136,6 @@ export default function ConversationPage() {
     const end = el.selectionEnd ?? draft.length;
     const next = `${draft.slice(0, start)}${emoji}${draft.slice(end)}`;
     setDraft(next);
-    setEmojiOpen(false);
     requestAnimationFrame(() => {
       el.focus();
       const pos = start + emoji.length;
@@ -139,51 +154,64 @@ export default function ConversationPage() {
 
   return (
     <AppShell>
-      <section className="kx-chat-page flex flex-col bg-kx-bg">
-        <header className="z-30 kx-glass-bar px-3 py-2 flex shrink-0 items-center gap-2">
-          <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label="返回">
-            <ArrowLeft className="w-4 h-4" />
+      <section className="kx-chat-page flex flex-col">
+        <header className="z-30 kx-glass-bar flex shrink-0 items-center gap-2 px-3 py-2">
+          <button
+            type="button"
+            onClick={() => router.back()}
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-white/70 bg-white/70 text-slate-700 shadow-[0_8px_22px_rgba(15,23,42,0.08)] transition hover:bg-white"
+            aria-label="返回"
+          >
+            <ArrowLeft className="h-5 w-5" />
           </button>
           {peer ? (
-            <a href={`/u/${peer.handle}`} className="flex items-center gap-2 min-w-0">
-              <Avatar user={peer} size={36} />
+            <a href={`/u/${peer.handle}`} className="flex min-w-0 items-center gap-2.5">
+              <Avatar user={peer} size={42} />
               <div className="min-w-0">
-                <div className="font-semibold truncate flex items-center gap-1">
-                  {peer.display_name}
+                <div className="flex items-center gap-1 text-[15px] font-black leading-tight text-kx-text">
+                  <span className="truncate">{peer.display_name}</span>
                   {showVerifiedBadge(peer) ? <VerifiedBadge /> : null}
                 </div>
-                <div className="text-xs text-kx-muted truncate">@{peer.handle}</div>
+                <div className="mt-0.5 truncate text-xs font-medium text-kx-muted">@{peer.handle}</div>
               </div>
             </a>
           ) : (
-            <span className="font-semibold">对话</span>
+            <div className="min-w-0">
+              <div className="text-[15px] font-black text-kx-text">对话</div>
+              <div className="text-xs text-kx-muted">私信</div>
+            </div>
           )}
+          <span className="ml-auto hidden rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-100 sm:inline-flex">
+            私信对话
+          </span>
         </header>
 
-        <div className="kx-chat-scroll flex-1 px-3 sm:px-4 py-3 space-y-2">
+        <div className="kx-chat-scroll flex-1 space-y-3 px-3 py-4 sm:px-4 sm:py-5">
           {messagesQuery.isLoading ? (
             <InlineLoading />
           ) : messagesQuery.isError ? (
             <ErrorState onRetry={() => messagesQuery.refetch()} />
           ) : !(messagesQuery.data || []).length ? (
-            <div className="text-center text-kx-muted text-sm py-12">还没有消息，发送第一条吧。</div>
+            <EmptyConversation onPick={(text) => setDraft(text)} title={t("msg_start_chat")} />
           ) : (
-            (messagesQuery.data || []).map((msg: KXMessage) => <Bubble key={msg.id} msg={msg} mineId={me?.id} onDelete={removeMessage} />)
+            (messagesQuery.data || []).map((msg: KXMessage) => (
+              <Bubble key={msg.id} msg={msg} mineId={me?.id} peer={peer} onDelete={removeMessage} />
+            ))
           )}
           <div ref={bottomRef} />
         </div>
 
-        <div className="kx-chat-composer shrink-0 px-3 sm:px-4 py-2" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.5rem)" }}>
+        <div className="kx-chat-composer shrink-0 px-3 pt-2 sm:px-4" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.55rem)" }}>
           {attachments.length ? (
-            <div className="mb-2 grid grid-cols-4 gap-1.5">
+            <div className="mb-2 flex gap-2 overflow-x-auto rounded-[22px] border border-white/70 bg-white/60 p-2 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.5)] backdrop-blur">
               {attachments.map((m) => (
-                <div key={m.id} className="relative aspect-square rounded-kx-sm overflow-hidden bg-kx-soft">
+                <div key={m.id} className="relative h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-kx-soft ring-1 ring-white/70">
                   {m.type === "video" ? (
                     <>
                       <video
                         src={m.url}
                         poster={m.thumb_url && m.thumb_url !== m.url ? m.thumb_url : undefined}
-                        className="w-full h-full object-cover"
+                        className="h-full w-full object-cover"
                         muted
                         playsInline
                         preload="metadata"
@@ -196,10 +224,11 @@ export default function ConversationPage() {
                     </>
                   ) : (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={m.thumb_url || m.url} alt="" className="w-full h-full object-cover" />
+                    <img src={m.thumb_url || m.url} alt="" className="h-full w-full object-cover" />
                   )}
                   <button
-                    className="absolute top-1 right-1 bg-black/60 text-white rounded-full p-0.5"
+                    type="button"
+                    className="absolute right-1 top-1 rounded-full bg-black/60 p-0.5 text-white backdrop-blur"
                     onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== m.id))}
                     aria-label="移除"
                   >
@@ -209,9 +238,18 @@ export default function ConversationPage() {
               ))}
             </div>
           ) : null}
-          <div className="flex items-end gap-2">
-            <button className="kx-button-ghost h-10 w-10 p-0 shrink-0" onClick={() => fileInput.current?.click()} disabled={uploading} aria-label="附件">
-              {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+
+          {emojiOpen ? <EmojiPanel onPick={insertEmoji} /> : null}
+
+          <div className="kx-chat-compose-surface">
+            <button
+              type="button"
+              className="kx-chat-tool-button"
+              onClick={() => fileInput.current?.click()}
+              disabled={uploading}
+              aria-label="添加图片或视频"
+            >
+              {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-5 w-5" />}
             </button>
             <input
               ref={fileInput}
@@ -224,35 +262,18 @@ export default function ConversationPage() {
                 e.target.value = "";
               }}
             />
-            <div className="relative shrink-0">
-              <button
-                className="kx-button-ghost h-10 w-10 p-0"
-                onClick={() => setEmojiOpen((v) => !v)}
-                type="button"
-                aria-label="表情"
-              >
-                <Smile className="w-4 h-4" />
-              </button>
-              {emojiOpen ? (
-                <div className="absolute bottom-full left-0 z-40 mb-2 grid max-h-56 w-[min(21rem,calc(100vw-2rem))] grid-cols-8 gap-1 overflow-y-auto rounded-kx-lg border border-kx-stroke bg-kx-card p-2 shadow-kx">
-                  {EMOJI_CHOICES.map((emoji, idx) => (
-                    <button
-                      key={`${emoji}-${idx}`}
-                      type="button"
-                      className="grid h-9 w-9 place-items-center rounded-kx-sm text-lg hover:bg-kx-soft"
-                      onClick={() => insertEmoji(emoji)}
-                      aria-label={`插入 ${emoji}`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
+            <button
+              type="button"
+              className={clsx("kx-chat-tool-button", emojiOpen && "bg-kx-accentSoft text-kx-accent")}
+              onClick={() => setEmojiOpen((v) => !v)}
+              aria-label="表情"
+            >
+              <Smile className="h-5 w-5" />
+            </button>
             <textarea
               ref={textareaRef}
-              className="kx-textarea flex-1 max-h-32 min-h-10 py-2"
-              placeholder="输入消息，⌘/Ctrl + Enter 发送"
+              className="kx-chat-textarea"
+              placeholder={t("msg_input_placeholder")}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               rows={1}
@@ -264,8 +285,14 @@ export default function ConversationPage() {
                 }
               }}
             />
-            <button className="kx-button-primary h-10 w-10 p-0 shrink-0" onClick={send} disabled={sending || uploading || (!draft.trim() && attachments.length === 0)} aria-label="发送">
-              {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            <button
+              type="button"
+              className="kx-chat-send-button"
+              onClick={send}
+              disabled={sending || uploading || (!draft.trim() && attachments.length === 0)}
+              aria-label="发送"
+            >
+              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </button>
           </div>
         </div>
@@ -274,27 +301,91 @@ export default function ConversationPage() {
   );
 }
 
-function Bubble({ msg, mineId, onDelete }: { msg: KXMessage; mineId?: string; onDelete: (id: string) => void }) {
+function EmptyConversation({ title, onPick }: { title: string; onPick: (text: string) => void }) {
+  return (
+    <div className="grid min-h-[18rem] place-items-center px-5 py-10">
+      <div className="max-w-sm text-center">
+        <span className="mx-auto grid h-14 w-14 place-items-center rounded-3xl bg-white/78 text-kx-accent shadow-[0_18px_50px_-36px_rgba(15,23,42,0.7)] ring-1 ring-white/80 backdrop-blur">
+          <MessageCircle className="h-6 w-6" />
+        </span>
+        <p className="mt-4 text-sm font-semibold text-kx-subtle">{title}</p>
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          {QUICK_REPLIES.map((reply) => (
+            <button
+              key={reply}
+              type="button"
+              onClick={() => onPick(reply)}
+              className="rounded-full border border-white/80 bg-white/70 px-3 py-2 text-xs font-semibold text-kx-text shadow-[0_10px_26px_-22px_rgba(15,23,42,0.55)] transition hover:-translate-y-px hover:bg-white"
+            >
+              {reply}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function EmojiPanel({ onPick }: { onPick: (emoji: string) => void }) {
+  return (
+    <div className="kx-chat-emoji-panel mb-2 p-3">
+      <div className="space-y-3">
+        {EMOJI_GROUPS.map((group) => (
+          <section key={group.label}>
+            <div className="mb-1.5 px-1 text-[11px] font-bold text-kx-muted">{group.label}</div>
+            <div className="grid grid-cols-8 gap-1">
+              {group.items.map((emoji, idx) => (
+                <button
+                  key={`${group.label}-${emoji}-${idx}`}
+                  type="button"
+                  className="grid h-9 w-9 place-items-center rounded-2xl text-lg transition hover:bg-kx-accentSoft active:scale-95"
+                  onClick={() => onPick(emoji)}
+                  aria-label={`插入 ${emoji}`}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Bubble({ msg, mineId, peer, onDelete }: { msg: KXMessage; mineId?: string; peer?: KXUser | null; onDelete: (id: string) => void }) {
   const mine = msg.sender_id === mineId;
   return (
-    <div className={clsx("flex group", mine ? "justify-end" : "justify-start")}>
-      <div className={clsx("max-w-[78%] flex flex-col gap-1", mine && "items-end")}>
-        {msg.media?.length ? <MediaGrid items={msg.media} /> : null}
+    <div className={clsx("group flex items-end gap-2", mine ? "justify-end" : "justify-start")}>
+      {!mine ? <Avatar user={peer || undefined} size={30} /> : null}
+      <div className={clsx("flex max-w-[82%] flex-col gap-1.5 sm:max-w-[76%]", mine && "items-end")}>
+        {msg.media?.length ? (
+          <div className={clsx("overflow-hidden rounded-[20px] shadow-[0_12px_34px_-26px_rgba(15,23,42,0.58)]", mine ? "ring-1 ring-blue-200/70" : "ring-1 ring-white/80")}>
+            <MediaGrid items={msg.media} rounded={false} />
+          </div>
+        ) : null}
         {msg.content ? (
           <div
             className={clsx(
-              "rounded-kx-md px-3 py-2 text-sm whitespace-pre-wrap break-words",
-              mine ? "bg-kx-accent text-white" : "bg-kx-soft text-kx-text",
+              "whitespace-pre-wrap break-words px-3.5 py-2.5 text-[15px] leading-6 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.58)]",
+              mine
+                ? "rounded-[22px] rounded-br-md bg-gradient-to-br from-blue-600 to-indigo-600 text-white"
+                : "rounded-[22px] rounded-bl-md border border-white/80 bg-white/[0.86] text-kx-text backdrop-blur",
             )}
           >
             {msg.content}
           </div>
         ) : null}
-        <div className={clsx("text-[10px] text-kx-muted flex items-center gap-1", mine && "flex-row-reverse")}>
-          {relativeTime(msg.created_at)}
+        <div className={clsx("flex items-center gap-1 text-[10px] font-medium text-kx-muted", mine && "flex-row-reverse")}>
+          <span>{relativeTime(msg.created_at)}</span>
           {mine ? (
-            <button onClick={() => onDelete(msg.id)} className="text-kx-muted hover:text-kx-danger opacity-0 group-hover:opacity-100" aria-label="删除">
-              <Trash2 className="w-3 h-3" />
+            <button
+              type="button"
+              onClick={() => onDelete(msg.id)}
+              className="opacity-60 transition hover:text-kx-danger sm:opacity-0 sm:group-hover:opacity-100"
+              aria-label="删除"
+            >
+              <Trash2 className="h-3 w-3" />
             </button>
           ) : null}
         </div>

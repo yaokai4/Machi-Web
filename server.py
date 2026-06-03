@@ -91,6 +91,7 @@ API contract (all JSON, all snake_case unless noted):
 from __future__ import annotations
 
 import base64
+import csv
 import email.utils
 import hashlib
 import hmac
@@ -289,22 +290,25 @@ EXT_BY_MIME: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Machi Verified membership + payments
 #
-# A single paid plan ("Machi 认证会员", ¥10/月). Everything price/plan
-# related is driven from here so the amount can never be set by a client
-# — the server always recomputes the charge from `plan_key`. Payment
-# provider secrets are read from the environment and NEVER logged, never
-# returned by any API, and never shipped to the browser/app bundle.
+# Membership price/plan data is database-driven. Seed values only create
+# editable defaults; payment amounts are always recomputed from
+# `membership_plans` server-side. Payment provider secrets are read from the
+# environment and NEVER logged, never returned by any API, and never shipped to
+# the browser/app bundle.
 # ---------------------------------------------------------------------------
 
-MEMBERSHIP_PLAN_KEY = _env("MEMBERSHIP_PLAN_KEY", "machi_verified_monthly_cny_10")
-# Price is authoritative server-side. Stored/maths done in minor units
-# (fen) to avoid float money; ¥10 == 1000 fen.
+MEMBERSHIP_PLAN_MONTHLY_KEY = "machi_verified_monthly"
+MEMBERSHIP_PLAN_YEARLY_KEY = "machi_verified_yearly"
+MEMBERSHIP_LEGACY_PLAN_KEY = "machi_verified_monthly_cny_10"
+MEMBERSHIP_PLAN_KEY = _env("MEMBERSHIP_PLAN_KEY", MEMBERSHIP_PLAN_MONTHLY_KEY)
+# Seed values only. Operators edit membership_plans from admin after boot.
 MEMBERSHIP_PRICE_CNY = int(_env("MEMBERSHIP_PRICE_CNY", "10"))
 MEMBERSHIP_PRICE_FEN = MEMBERSHIP_PRICE_CNY * 100
 MEMBERSHIP_CURRENCY = "CNY"
 MEMBERSHIP_BILLING_CYCLE = "monthly"
-# Apple App Store product id for the same plan. iOS buys through IAP.
+# Apple App Store product ids for the same plans. iOS buys through IAP.
 APPLE_IAP_PRODUCT_ID = _env("APPLE_IAP_PRODUCT_ID", "machi_verified_monthly_cny_10")
+APPLE_IAP_PRODUCT_ID_YEARLY = _env("APPLE_IAP_PRODUCT_ID_YEARLY", "machi_verified_yearly_cny_98")
 
 # Content types that demand an active verified membership to publish.
 # Enforced server-side (see api_create_post); the client only mirrors it
@@ -882,6 +886,11 @@ def _consume_sse_token(token: str) -> str | None:
 # endpoints are expensive but tolerate small staleness.
 _CACHE_LOCK = threading.Lock()
 _CACHE: dict[str, tuple[float, Any]] = {}
+
+# Short TTL for the public Guide home payload (~8 read queries, no per-user
+# data). Keeps /guide fast and the DB calm under traffic spikes; admin edits
+# show up within this window. Override via env for tuning without a redeploy.
+GUIDE_HOME_CACHE_TTL = float(os.environ.get("KAIX_GUIDE_HOME_CACHE_TTL", "30"))
 
 
 def _cache_get(key: str) -> Any | None:
@@ -1910,6 +1919,497 @@ CREATE TABLE IF NOT EXISTS security_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_security_logs_user ON security_logs(user_id, created_at);
 
+-- =====================================================================
+-- Machi Guide / 日本指南.
+--
+-- Replaces the old crawler "资讯" surface with an editorial knowledge +
+-- service module (升学 / 就职 / 留学 / JLPT / 在日生活 / 资料与服务 +
+-- 公司选择与面试评论). Every content table carries `country` (default
+-- 'jp') so the structure is multi-region ready, but the front-end only
+-- opens Japan today. Old news_* / editorial_posts tables are kept for
+-- compatibility — the Guide front never reads them.
+-- =====================================================================
+
+CREATE TABLE IF NOT EXISTS guide_categories (
+    id TEXT PRIMARY KEY,
+    key TEXT NOT NULL,
+    parent_key TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL,
+    subtitle TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    icon TEXT NOT NULL DEFAULT '',
+    color TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT 'jp',
+    language TEXT NOT NULL DEFAULT 'zh-CN',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(key, country)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_categories_scope ON guide_categories(country, is_active, parent_key, sort_order);
+
+CREATE TABLE IF NOT EXISTS guide_articles (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    summary TEXT NOT NULL DEFAULT '',
+    body TEXT NOT NULL DEFAULT '',
+    category_key TEXT NOT NULL DEFAULT '',
+    sub_category_key TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT 'guide',
+    country TEXT NOT NULL DEFAULT 'jp',
+    city TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT 'zh-CN',
+    cover_image TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    author_type TEXT NOT NULL DEFAULT 'editorial',
+    author_name TEXT NOT NULL DEFAULT 'Machi 日本指南编辑部',
+    is_featured INTEGER NOT NULL DEFAULT 0,
+    is_free INTEGER NOT NULL DEFAULT 1,
+    is_paid INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'draft',
+    view_count INTEGER NOT NULL DEFAULT 0,
+    save_count INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT,
+    UNIQUE(slug, country)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_articles_scope ON guide_articles(country, status, category_key, sub_category_key, published_at);
+CREATE INDEX IF NOT EXISTS idx_guide_articles_featured ON guide_articles(country, status, is_featured, published_at);
+
+CREATE TABLE IF NOT EXISTS guide_products (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    subtitle TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    category_key TEXT NOT NULL DEFAULT 'guide_services',
+    sub_category_key TEXT NOT NULL DEFAULT '',
+    product_type TEXT NOT NULL DEFAULT 'pdf_material',
+    price INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'CNY',
+    price_label TEXT NOT NULL DEFAULT '',
+    original_price INTEGER NOT NULL DEFAULT 0,
+    member_price INTEGER NOT NULL DEFAULT 0,
+    discount_label TEXT NOT NULL DEFAULT '',
+    is_price_hidden INTEGER NOT NULL DEFAULT 0,
+    is_appointment_only INTEGER NOT NULL DEFAULT 0,
+    stripe_product_id TEXT NOT NULL DEFAULT '',
+    stripe_price_id TEXT NOT NULL DEFAULT '',
+    ios_iap_product_id TEXT NOT NULL DEFAULT '',
+    apple_product_id TEXT NOT NULL DEFAULT '',
+    price_region TEXT NOT NULL DEFAULT '',
+    tax_included INTEGER NOT NULL DEFAULT 1,
+    billing_type TEXT NOT NULL DEFAULT 'one_time',
+    billing_period TEXT NOT NULL DEFAULT 'none',
+    service_price_type TEXT NOT NULL DEFAULT '',
+    starting_price INTEGER NOT NULL DEFAULT 0,
+    member_discount_percent INTEGER NOT NULL DEFAULT 0,
+    service_duration_minutes INTEGER NOT NULL DEFAULT 0,
+    deposit_required INTEGER NOT NULL DEFAULT 0,
+    deposit_amount INTEGER NOT NULL DEFAULT 0,
+    cancellation_policy TEXT NOT NULL DEFAULT '',
+    cover_image TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    target_audience TEXT NOT NULL DEFAULT '',
+    delivery_method TEXT NOT NULL DEFAULT '',
+    preview_content TEXT NOT NULL DEFAULT '',
+    purchase_content TEXT NOT NULL DEFAULT '',
+    file_url TEXT NOT NULL DEFAULT '',
+    file_name TEXT NOT NULL DEFAULT '',
+    file_type TEXT NOT NULL DEFAULT '',
+    file_size INTEGER NOT NULL DEFAULT 0,
+    country TEXT NOT NULL DEFAULT 'jp',
+    language TEXT NOT NULL DEFAULT 'zh-CN',
+    is_digital INTEGER NOT NULL DEFAULT 1,
+    is_service INTEGER NOT NULL DEFAULT 0,
+    is_free INTEGER NOT NULL DEFAULT 0,
+    is_paid INTEGER NOT NULL DEFAULT 1,
+    is_member_included INTEGER NOT NULL DEFAULT 0,
+    is_member_discount INTEGER NOT NULL DEFAULT 0,
+    is_coming_soon INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'coming_soon',
+    purchase_count INTEGER NOT NULL DEFAULT 0,
+    rating REAL NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_featured INTEGER NOT NULL DEFAULT 0,
+    refund_policy TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT,
+    UNIQUE(slug, country)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_products_scope ON guide_products(country, status, category_key, product_type, sort_order);
+
+CREATE TABLE IF NOT EXISTS guide_product_files (
+    id TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL,
+    file_url TEXT NOT NULL DEFAULT '',
+    file_name TEXT NOT NULL DEFAULT '',
+    file_type TEXT NOT NULL DEFAULT '',
+    file_size INTEGER NOT NULL DEFAULT 0,
+    download_limit INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(product_id) REFERENCES guide_products(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_product_files_product ON guide_product_files(product_id);
+
+CREATE TABLE IF NOT EXISTS guide_orders (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    product_id TEXT NOT NULL,
+    order_no TEXT UNIQUE NOT NULL,
+    price INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'CNY',
+    status TEXT NOT NULL DEFAULT 'pending',
+    payment_provider TEXT NOT NULL DEFAULT '',
+    payment_order_id TEXT NOT NULL DEFAULT '',
+    payment_method TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    paid_at TEXT,
+    cancelled_at TEXT,
+    refunded_at TEXT,
+    fulfilled_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_guide_orders_user ON guide_orders(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_guide_orders_product ON guide_orders(product_id, status);
+
+CREATE TABLE IF NOT EXISTS guide_service_requests (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    product_id TEXT NOT NULL DEFAULT '',
+    service_type TEXT NOT NULL DEFAULT '',
+    contact_method TEXT NOT NULL DEFAULT '',
+    contact_value TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    preferred_time TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    admin_note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guide_service_requests_user ON guide_service_requests(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_guide_service_requests_status ON guide_service_requests(status, created_at);
+
+CREATE TABLE IF NOT EXISTS guide_companies (
+    id TEXT PRIMARY KEY,
+    corporate_number TEXT NOT NULL DEFAULT '',
+    company_name TEXT NOT NULL,
+    company_name_jp TEXT NOT NULL DEFAULT '',
+    company_name_en TEXT NOT NULL DEFAULT '',
+    slug TEXT NOT NULL,
+    industry TEXT NOT NULL DEFAULT '',
+    sub_industry TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT 'jp',
+    prefecture TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    ward TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    postal_code TEXT NOT NULL DEFAULT '',
+    latitude REAL,
+    longitude REAL,
+    website TEXT NOT NULL DEFAULT '',
+    career_url TEXT NOT NULL DEFAULT '',
+    new_graduate_url TEXT NOT NULL DEFAULT '',
+    mid_career_url TEXT NOT NULL DEFAULT '',
+    global_career_url TEXT NOT NULL DEFAULT '',
+    size TEXT NOT NULL DEFAULT '',
+    company_size TEXT NOT NULL DEFAULT '',
+    founded_year INTEGER NOT NULL DEFAULT 0,
+    description TEXT NOT NULL DEFAULT '',
+    short_description TEXT NOT NULL DEFAULT '',
+    is_foreigner_friendly INTEGER NOT NULL DEFAULT -1,
+    accepts_foreign_applicants INTEGER NOT NULL DEFAULT -1,
+    supports_work_visa INTEGER NOT NULL DEFAULT -1,
+    supports_new_graduate INTEGER NOT NULL DEFAULT -1,
+    supports_mid_career INTEGER NOT NULL DEFAULT -1,
+    has_english_positions INTEGER NOT NULL DEFAULT -1,
+    has_global_roles INTEGER NOT NULL DEFAULT -1,
+    has_foreign_employees INTEGER NOT NULL DEFAULT -1,
+    japanese_level_required TEXT NOT NULL DEFAULT 'unknown',
+    english_level_required TEXT NOT NULL DEFAULT 'unknown',
+    employment_types TEXT NOT NULL DEFAULT '',
+    average_salary_min INTEGER NOT NULL DEFAULT 0,
+    average_salary_max INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'JPY',
+    foreigner_friendly_score REAL NOT NULL DEFAULT 0,
+    visa_support_score REAL NOT NULL DEFAULT 0,
+    interview_difficulty_score REAL NOT NULL DEFAULT 0,
+    overtime_score REAL NOT NULL DEFAULT 0,
+    salary_benefit_score REAL NOT NULL DEFAULT 0,
+    work_life_balance_score REAL NOT NULL DEFAULT 0,
+    career_growth_score REAL NOT NULL DEFAULT 0,
+    review_count INTEGER NOT NULL DEFAULT 0,
+    interview_review_count INTEGER NOT NULL DEFAULT 0,
+    tags TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT 'manual',
+    source_name TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    source_last_checked_at TEXT,
+    verification_status TEXT NOT NULL DEFAULT 'needs_review',
+    data_quality_score INTEGER NOT NULL DEFAULT 0,
+    is_featured INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'published',
+    view_count INTEGER NOT NULL DEFAULT 0,
+    save_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(slug, country)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_companies_scope ON guide_companies(country, status, industry, city);
+
+CREATE TABLE IF NOT EXISTS guide_schools (
+    id TEXT PRIMARY KEY,
+    slug TEXT NOT NULL,
+    school_name TEXT NOT NULL,
+    school_name_jp TEXT NOT NULL DEFAULT '',
+    school_name_en TEXT NOT NULL DEFAULT '',
+    school_type TEXT NOT NULL DEFAULT 'other',
+    country TEXT NOT NULL DEFAULT 'jp',
+    prefecture TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    ward TEXT NOT NULL DEFAULT '',
+    address TEXT NOT NULL DEFAULT '',
+    postal_code TEXT NOT NULL DEFAULT '',
+    latitude REAL,
+    longitude REAL,
+    website TEXT NOT NULL DEFAULT '',
+    admission_url TEXT NOT NULL DEFAULT '',
+    international_admission_url TEXT NOT NULL DEFAULT '',
+    application_url TEXT NOT NULL DEFAULT '',
+    scholarship_url TEXT NOT NULL DEFAULT '',
+    career_support_url TEXT NOT NULL DEFAULT '',
+    language_support_url TEXT NOT NULL DEFAULT '',
+    dormitory_url TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    short_description TEXT NOT NULL DEFAULT '',
+    is_accepting_international_students INTEGER NOT NULL DEFAULT -1,
+    has_english_program INTEGER NOT NULL DEFAULT -1,
+    has_japanese_program INTEGER NOT NULL DEFAULT -1,
+    has_scholarship INTEGER NOT NULL DEFAULT -1,
+    has_dormitory INTEGER NOT NULL DEFAULT -1,
+    has_career_support INTEGER NOT NULL DEFAULT -1,
+    has_language_support INTEGER NOT NULL DEFAULT -1,
+    tuition_min INTEGER NOT NULL DEFAULT 0,
+    tuition_max INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'JPY',
+    application_periods TEXT NOT NULL DEFAULT '',
+    admission_months TEXT NOT NULL DEFAULT '',
+    required_japanese_level TEXT NOT NULL DEFAULT 'unknown',
+    required_english_level TEXT NOT NULL DEFAULT 'unknown',
+    eju_required TEXT NOT NULL DEFAULT 'unknown',
+    jlpt_required TEXT NOT NULL DEFAULT 'unknown',
+    toefl_required TEXT NOT NULL DEFAULT 'unknown',
+    ielts_required TEXT NOT NULL DEFAULT 'unknown',
+    fields_of_study TEXT NOT NULL DEFAULT '',
+    departments TEXT NOT NULL DEFAULT '',
+    faculties TEXT NOT NULL DEFAULT '',
+    graduate_schools TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    source_type TEXT NOT NULL DEFAULT 'manual',
+    source_name TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    source_last_checked_at TEXT,
+    verification_status TEXT NOT NULL DEFAULT 'needs_review',
+    data_quality_score INTEGER NOT NULL DEFAULT 0,
+    is_featured INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'published',
+    view_count INTEGER NOT NULL DEFAULT 0,
+    save_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(slug, country)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_schools_scope ON guide_schools(country, status, school_type, prefecture, city);
+CREATE INDEX IF NOT EXISTS idx_guide_schools_featured ON guide_schools(country, status, is_featured, updated_at);
+
+CREATE TABLE IF NOT EXISTS guide_school_programs (
+    id TEXT PRIMARY KEY,
+    school_id TEXT NOT NULL,
+    program_name TEXT NOT NULL,
+    program_name_jp TEXT NOT NULL DEFAULT '',
+    program_name_en TEXT NOT NULL DEFAULT '',
+    degree_level TEXT NOT NULL DEFAULT 'other',
+    program_type TEXT NOT NULL DEFAULT 'regular',
+    field TEXT NOT NULL DEFAULT '',
+    sub_field TEXT NOT NULL DEFAULT '',
+    faculty_name TEXT NOT NULL DEFAULT '',
+    department_name TEXT NOT NULL DEFAULT '',
+    graduate_school_name TEXT NOT NULL DEFAULT '',
+    language_of_instruction TEXT NOT NULL DEFAULT '',
+    duration_months INTEGER NOT NULL DEFAULT 0,
+    admission_months TEXT NOT NULL DEFAULT '',
+    application_period TEXT NOT NULL DEFAULT '',
+    tuition INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'JPY',
+    required_japanese_level TEXT NOT NULL DEFAULT 'unknown',
+    required_english_level TEXT NOT NULL DEFAULT 'unknown',
+    eju_required TEXT NOT NULL DEFAULT 'unknown',
+    jlpt_required TEXT NOT NULL DEFAULT 'unknown',
+    toefl_required TEXT NOT NULL DEFAULT 'unknown',
+    ielts_required TEXT NOT NULL DEFAULT 'unknown',
+    description TEXT NOT NULL DEFAULT '',
+    application_url TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    verification_status TEXT NOT NULL DEFAULT 'needs_review',
+    status TEXT NOT NULL DEFAULT 'published',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(school_id) REFERENCES guide_schools(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_school_programs_school ON guide_school_programs(school_id, status, degree_level);
+
+CREATE TABLE IF NOT EXISTS guide_school_admissions (
+    id TEXT PRIMARY KEY,
+    school_id TEXT NOT NULL,
+    program_id TEXT NOT NULL DEFAULT '',
+    admission_type TEXT NOT NULL DEFAULT 'international_student',
+    target_student_type TEXT NOT NULL DEFAULT '',
+    application_start TEXT,
+    application_deadline TEXT,
+    exam_date TEXT,
+    result_date TEXT,
+    enrollment_month TEXT NOT NULL DEFAULT '',
+    required_documents TEXT NOT NULL DEFAULT '',
+    selection_method TEXT NOT NULL DEFAULT '',
+    application_fee INTEGER NOT NULL DEFAULT 0,
+    tuition_first_year INTEGER NOT NULL DEFAULT 0,
+    scholarship_info TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    verification_status TEXT NOT NULL DEFAULT 'needs_review',
+    status TEXT NOT NULL DEFAULT 'published',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(school_id) REFERENCES guide_schools(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_school_admissions_school ON guide_school_admissions(school_id, status, enrollment_month);
+
+CREATE TABLE IF NOT EXISTS guide_company_positions (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL,
+    position_title TEXT NOT NULL,
+    position_title_jp TEXT NOT NULL DEFAULT '',
+    position_category TEXT NOT NULL DEFAULT 'other',
+    employment_type TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    remote_type TEXT NOT NULL DEFAULT '',
+    salary_min INTEGER NOT NULL DEFAULT 0,
+    salary_max INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'JPY',
+    japanese_level_required TEXT NOT NULL DEFAULT 'unknown',
+    english_level_required TEXT NOT NULL DEFAULT 'unknown',
+    visa_support TEXT NOT NULL DEFAULT 'unknown',
+    description TEXT NOT NULL DEFAULT '',
+    requirements TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    verification_status TEXT NOT NULL DEFAULT 'needs_review',
+    status TEXT NOT NULL DEFAULT 'published',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(company_id) REFERENCES guide_companies(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_company_positions_company ON guide_company_positions(company_id, status, position_category);
+
+CREATE TABLE IF NOT EXISTS guide_correction_reports (
+    id TEXT PRIMARY KEY,
+    target_type TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    user_id TEXT NOT NULL DEFAULT '',
+    field_name TEXT NOT NULL DEFAULT '',
+    current_value TEXT NOT NULL DEFAULT '',
+    suggested_value TEXT NOT NULL DEFAULT '',
+    message TEXT NOT NULL DEFAULT '',
+    source_url TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guide_corrections_target ON guide_correction_reports(target_type, target_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS guide_company_reviews (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL,
+    user_id TEXT NOT NULL DEFAULT '',
+    anonymous INTEGER NOT NULL DEFAULT 1,
+    position TEXT NOT NULL DEFAULT '',
+    employment_type TEXT NOT NULL DEFAULT '',
+    work_period TEXT NOT NULL DEFAULT '',
+    pros TEXT NOT NULL DEFAULT '',
+    cons TEXT NOT NULL DEFAULT '',
+    overtime_level TEXT NOT NULL DEFAULT '',
+    foreigner_support TEXT NOT NULL DEFAULT '',
+    visa_support TEXT NOT NULL DEFAULT '',
+    salary_benefits TEXT NOT NULL DEFAULT '',
+    career_growth TEXT NOT NULL DEFAULT '',
+    work_life_balance TEXT NOT NULL DEFAULT '',
+    recommendation_score REAL NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'pending',
+    report_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(company_id) REFERENCES guide_companies(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_company_reviews_company ON guide_company_reviews(company_id, status, created_at);
+
+CREATE TABLE IF NOT EXISTS guide_interview_reviews (
+    id TEXT PRIMARY KEY,
+    company_id TEXT NOT NULL,
+    user_id TEXT NOT NULL DEFAULT '',
+    anonymous INTEGER NOT NULL DEFAULT 1,
+    position TEXT NOT NULL DEFAULT '',
+    employment_type TEXT NOT NULL DEFAULT '',
+    interview_year INTEGER NOT NULL DEFAULT 0,
+    city TEXT NOT NULL DEFAULT '',
+    interview_language TEXT NOT NULL DEFAULT '',
+    interview_rounds INTEGER NOT NULL DEFAULT 0,
+    difficulty TEXT NOT NULL DEFAULT '',
+    questions TEXT NOT NULL DEFAULT '',
+    process_description TEXT NOT NULL DEFAULT '',
+    result TEXT NOT NULL DEFAULT '',
+    offer_received INTEGER NOT NULL DEFAULT -1,
+    duration_weeks INTEGER NOT NULL DEFAULT 0,
+    tips TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    report_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(company_id) REFERENCES guide_companies(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_interview_reviews_company ON guide_interview_reviews(company_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_guide_interview_reviews_filter ON guide_interview_reviews(status, city, interview_year);
+
+CREATE TABLE IF NOT EXISTS guide_tags (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    key TEXT NOT NULL,
+    category_key TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT 'jp',
+    language TEXT NOT NULL DEFAULT 'zh-CN',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    UNIQUE(key, country)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_tags_scope ON guide_tags(country, category_key, sort_order);
+
+CREATE TABLE IF NOT EXISTS guide_faq (
+    id TEXT PRIMARY KEY,
+    question TEXT NOT NULL,
+    answer TEXT NOT NULL DEFAULT '',
+    category_key TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT 'jp',
+    language TEXT NOT NULL DEFAULT 'zh-CN',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'published',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guide_faq_scope ON guide_faq(country, status, sort_order);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL,
@@ -2608,6 +3108,164 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_security_logs_user ON security_logs(user_id, created_at);
         """,
     ),
+    (
+        20,
+        "machi guide: japan schools and foreigner-friendly company database",
+        """
+        CREATE TABLE IF NOT EXISTS guide_schools (
+            id TEXT PRIMARY KEY,
+            slug TEXT NOT NULL,
+            school_name TEXT NOT NULL,
+            school_name_jp TEXT NOT NULL DEFAULT '',
+            school_name_en TEXT NOT NULL DEFAULT '',
+            school_type TEXT NOT NULL DEFAULT 'other',
+            country TEXT NOT NULL DEFAULT 'jp',
+            prefecture TEXT NOT NULL DEFAULT '',
+            city TEXT NOT NULL DEFAULT '',
+            address TEXT NOT NULL DEFAULT '',
+            website TEXT NOT NULL DEFAULT '',
+            admission_url TEXT NOT NULL DEFAULT '',
+            international_admission_url TEXT NOT NULL DEFAULT '',
+            application_url TEXT NOT NULL DEFAULT '',
+            scholarship_url TEXT NOT NULL DEFAULT '',
+            career_support_url TEXT NOT NULL DEFAULT '',
+            language_support_url TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            short_description TEXT NOT NULL DEFAULT '',
+            is_accepting_international_students INTEGER NOT NULL DEFAULT -1,
+            has_english_program INTEGER NOT NULL DEFAULT -1,
+            has_japanese_program INTEGER NOT NULL DEFAULT -1,
+            has_scholarship INTEGER NOT NULL DEFAULT -1,
+            has_dormitory INTEGER NOT NULL DEFAULT -1,
+            has_career_support INTEGER NOT NULL DEFAULT -1,
+            has_language_support INTEGER NOT NULL DEFAULT -1,
+            tuition_min INTEGER NOT NULL DEFAULT 0,
+            tuition_max INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            application_periods TEXT NOT NULL DEFAULT '',
+            admission_months TEXT NOT NULL DEFAULT '',
+            required_japanese_level TEXT NOT NULL DEFAULT 'unknown',
+            required_english_level TEXT NOT NULL DEFAULT 'unknown',
+            eju_required TEXT NOT NULL DEFAULT 'unknown',
+            jlpt_required TEXT NOT NULL DEFAULT 'unknown',
+            toefl_required TEXT NOT NULL DEFAULT 'unknown',
+            ielts_required TEXT NOT NULL DEFAULT 'unknown',
+            fields_of_study TEXT NOT NULL DEFAULT '',
+            departments TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '',
+            source_type TEXT NOT NULL DEFAULT 'manual',
+            source_name TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            source_last_checked_at TEXT,
+            verification_status TEXT NOT NULL DEFAULT 'needs_review',
+            is_featured INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'published',
+            view_count INTEGER NOT NULL DEFAULT 0,
+            save_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(slug, country)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_schools_scope ON guide_schools(country, status, school_type, prefecture, city);
+        CREATE INDEX IF NOT EXISTS idx_guide_schools_featured ON guide_schools(country, status, is_featured, updated_at);
+
+        CREATE TABLE IF NOT EXISTS guide_school_programs (
+            id TEXT PRIMARY KEY,
+            school_id TEXT NOT NULL,
+            program_name TEXT NOT NULL,
+            program_name_jp TEXT NOT NULL DEFAULT '',
+            program_name_en TEXT NOT NULL DEFAULT '',
+            degree_level TEXT NOT NULL DEFAULT 'other',
+            program_type TEXT NOT NULL DEFAULT 'regular',
+            field TEXT NOT NULL DEFAULT '',
+            language_of_instruction TEXT NOT NULL DEFAULT '',
+            duration_months INTEGER NOT NULL DEFAULT 0,
+            admission_months TEXT NOT NULL DEFAULT '',
+            application_period TEXT NOT NULL DEFAULT '',
+            tuition INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            required_japanese_level TEXT NOT NULL DEFAULT 'unknown',
+            required_english_level TEXT NOT NULL DEFAULT 'unknown',
+            eju_required TEXT NOT NULL DEFAULT 'unknown',
+            jlpt_required TEXT NOT NULL DEFAULT 'unknown',
+            toefl_required TEXT NOT NULL DEFAULT 'unknown',
+            ielts_required TEXT NOT NULL DEFAULT 'unknown',
+            description TEXT NOT NULL DEFAULT '',
+            application_url TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(school_id) REFERENCES guide_schools(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_school_programs_school ON guide_school_programs(school_id, status, degree_level);
+
+        CREATE TABLE IF NOT EXISTS guide_school_admissions (
+            id TEXT PRIMARY KEY,
+            school_id TEXT NOT NULL,
+            program_id TEXT NOT NULL DEFAULT '',
+            admission_type TEXT NOT NULL DEFAULT 'international_student',
+            target_student_type TEXT NOT NULL DEFAULT '',
+            application_start TEXT,
+            application_deadline TEXT,
+            exam_date TEXT,
+            result_date TEXT,
+            enrollment_month TEXT NOT NULL DEFAULT '',
+            required_documents TEXT NOT NULL DEFAULT '',
+            selection_method TEXT NOT NULL DEFAULT '',
+            application_fee INTEGER NOT NULL DEFAULT 0,
+            tuition_first_year INTEGER NOT NULL DEFAULT 0,
+            scholarship_info TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(school_id) REFERENCES guide_schools(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_school_admissions_school ON guide_school_admissions(school_id, status, enrollment_month);
+
+        CREATE TABLE IF NOT EXISTS guide_company_positions (
+            id TEXT PRIMARY KEY,
+            company_id TEXT NOT NULL,
+            position_title TEXT NOT NULL,
+            position_title_jp TEXT NOT NULL DEFAULT '',
+            position_category TEXT NOT NULL DEFAULT 'other',
+            employment_type TEXT NOT NULL DEFAULT '',
+            city TEXT NOT NULL DEFAULT '',
+            remote_type TEXT NOT NULL DEFAULT '',
+            salary_min INTEGER NOT NULL DEFAULT 0,
+            salary_max INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            japanese_level_required TEXT NOT NULL DEFAULT 'unknown',
+            english_level_required TEXT NOT NULL DEFAULT 'unknown',
+            visa_support TEXT NOT NULL DEFAULT 'unknown',
+            description TEXT NOT NULL DEFAULT '',
+            requirements TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(company_id) REFERENCES guide_companies(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_company_positions_company ON guide_company_positions(company_id, status, position_category);
+
+        CREATE TABLE IF NOT EXISTS guide_correction_reports (
+            id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT '',
+            field_name TEXT NOT NULL DEFAULT '',
+            current_value TEXT NOT NULL DEFAULT '',
+            suggested_value TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL DEFAULT '',
+            source_url TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_corrections_target ON guide_correction_reports(target_type, target_id, status, created_at);
+        """,
+    ),
 ]
 
 
@@ -2629,28 +3287,373 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             raise
 
 
+def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
+    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    for name, ddl in columns.items():
+        if name not in existing:
+            try:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+            except sqlite3.OperationalError as exc:
+                # When several backend processes boot at once (horizontal
+                # scaling), another worker may have added the column between
+                # our PRAGMA read and this ALTER. "duplicate column name" is
+                # benign and means the migration already happened.
+                if "duplicate column" not in str(exc).lower():
+                    raise
+
+
+def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
+    """Bridge old production Guide tables to the richer school/company schema.
+
+    Fresh databases get the full SCHEMA above. Existing databases need additive
+    columns, but SQLite has no `ADD COLUMN IF NOT EXISTS`, so this uses PRAGMA.
+    """
+    _ensure_columns(conn, "guide_companies", {
+        "corporate_number": "TEXT NOT NULL DEFAULT ''",
+        "company_name_en": "TEXT NOT NULL DEFAULT ''",
+        "sub_industry": "TEXT NOT NULL DEFAULT ''",
+        "prefecture": "TEXT NOT NULL DEFAULT ''",
+        "ward": "TEXT NOT NULL DEFAULT ''",
+        "address": "TEXT NOT NULL DEFAULT ''",
+        "postal_code": "TEXT NOT NULL DEFAULT ''",
+        "latitude": "REAL",
+        "longitude": "REAL",
+        "career_url": "TEXT NOT NULL DEFAULT ''",
+        "new_graduate_url": "TEXT NOT NULL DEFAULT ''",
+        "mid_career_url": "TEXT NOT NULL DEFAULT ''",
+        "global_career_url": "TEXT NOT NULL DEFAULT ''",
+        "company_size": "TEXT NOT NULL DEFAULT ''",
+        "short_description": "TEXT NOT NULL DEFAULT ''",
+        "is_foreigner_friendly": "INTEGER NOT NULL DEFAULT -1",
+        "accepts_foreign_applicants": "INTEGER NOT NULL DEFAULT -1",
+        "supports_work_visa": "INTEGER NOT NULL DEFAULT -1",
+        "supports_new_graduate": "INTEGER NOT NULL DEFAULT -1",
+        "supports_mid_career": "INTEGER NOT NULL DEFAULT -1",
+        "has_english_positions": "INTEGER NOT NULL DEFAULT -1",
+        "has_global_roles": "INTEGER NOT NULL DEFAULT -1",
+        "has_foreign_employees": "INTEGER NOT NULL DEFAULT -1",
+        "japanese_level_required": "TEXT NOT NULL DEFAULT 'unknown'",
+        "english_level_required": "TEXT NOT NULL DEFAULT 'unknown'",
+        "employment_types": "TEXT NOT NULL DEFAULT ''",
+        "average_salary_min": "INTEGER NOT NULL DEFAULT 0",
+        "average_salary_max": "INTEGER NOT NULL DEFAULT 0",
+        "currency": "TEXT NOT NULL DEFAULT 'JPY'",
+        "visa_support_score": "REAL NOT NULL DEFAULT 0",
+        "career_growth_score": "REAL NOT NULL DEFAULT 0",
+        "interview_review_count": "INTEGER NOT NULL DEFAULT 0",
+        "tags": "TEXT NOT NULL DEFAULT ''",
+        "source_type": "TEXT NOT NULL DEFAULT 'manual'",
+        "source_name": "TEXT NOT NULL DEFAULT ''",
+        "source_url": "TEXT NOT NULL DEFAULT ''",
+        "source_last_checked_at": "TEXT",
+        "verification_status": "TEXT NOT NULL DEFAULT 'needs_review'",
+        "data_quality_score": "INTEGER NOT NULL DEFAULT 0",
+        "is_featured": "INTEGER NOT NULL DEFAULT 0",
+        "view_count": "INTEGER NOT NULL DEFAULT 0",
+        "save_count": "INTEGER NOT NULL DEFAULT 0",
+    })
+    _ensure_columns(conn, "guide_schools", {
+        "ward": "TEXT NOT NULL DEFAULT ''",
+        "postal_code": "TEXT NOT NULL DEFAULT ''",
+        "latitude": "REAL",
+        "longitude": "REAL",
+        "admission_url": "TEXT NOT NULL DEFAULT ''",
+        "application_url": "TEXT NOT NULL DEFAULT ''",
+        "scholarship_url": "TEXT NOT NULL DEFAULT ''",
+        "career_support_url": "TEXT NOT NULL DEFAULT ''",
+        "language_support_url": "TEXT NOT NULL DEFAULT ''",
+        "dormitory_url": "TEXT NOT NULL DEFAULT ''",
+        "has_japanese_program": "INTEGER NOT NULL DEFAULT -1",
+        "has_dormitory": "INTEGER NOT NULL DEFAULT -1",
+        "has_career_support": "INTEGER NOT NULL DEFAULT -1",
+        "has_language_support": "INTEGER NOT NULL DEFAULT -1",
+        "departments": "TEXT NOT NULL DEFAULT ''",
+        "faculties": "TEXT NOT NULL DEFAULT ''",
+        "graduate_schools": "TEXT NOT NULL DEFAULT ''",
+        "application_periods": "TEXT NOT NULL DEFAULT ''",
+        "admission_months": "TEXT NOT NULL DEFAULT ''",
+        "required_english_level": "TEXT NOT NULL DEFAULT 'unknown'",
+        "eju_required": "TEXT NOT NULL DEFAULT 'unknown'",
+        "jlpt_required": "TEXT NOT NULL DEFAULT 'unknown'",
+        "toefl_required": "TEXT NOT NULL DEFAULT 'unknown'",
+        "ielts_required": "TEXT NOT NULL DEFAULT 'unknown'",
+        "data_quality_score": "INTEGER NOT NULL DEFAULT 0",
+    })
+    _ensure_columns(conn, "guide_school_programs", {
+        "sub_field": "TEXT NOT NULL DEFAULT ''",
+        "faculty_name": "TEXT NOT NULL DEFAULT ''",
+        "department_name": "TEXT NOT NULL DEFAULT ''",
+        "graduate_school_name": "TEXT NOT NULL DEFAULT ''",
+        "source_url": "TEXT NOT NULL DEFAULT ''",
+        "verification_status": "TEXT NOT NULL DEFAULT 'needs_review'",
+    })
+    _ensure_columns(conn, "guide_school_admissions", {
+        "verification_status": "TEXT NOT NULL DEFAULT 'needs_review'",
+    })
+    _ensure_columns(conn, "guide_company_positions", {
+        "verification_status": "TEXT NOT NULL DEFAULT 'needs_review'",
+    })
+    _ensure_columns(conn, "guide_company_reviews", {
+        "work_period": "TEXT NOT NULL DEFAULT ''",
+        "visa_support": "TEXT NOT NULL DEFAULT ''",
+        "work_life_balance": "TEXT NOT NULL DEFAULT ''",
+    })
+    _ensure_columns(conn, "guide_interview_reviews", {
+        "offer_received": "INTEGER NOT NULL DEFAULT -1",
+        "duration_weeks": "INTEGER NOT NULL DEFAULT 0",
+        "tips": "TEXT NOT NULL DEFAULT ''",
+    })
+    _ensure_columns(conn, "guide_products", {
+        "preview_content": "TEXT NOT NULL DEFAULT ''",
+        "purchase_content": "TEXT NOT NULL DEFAULT ''",
+        "file_url": "TEXT NOT NULL DEFAULT ''",
+        "file_name": "TEXT NOT NULL DEFAULT ''",
+        "file_type": "TEXT NOT NULL DEFAULT ''",
+        "file_size": "INTEGER NOT NULL DEFAULT 0",
+        "is_member_included": "INTEGER NOT NULL DEFAULT 0",
+        "is_member_discount": "INTEGER NOT NULL DEFAULT 0",
+        "member_price": "INTEGER NOT NULL DEFAULT 0",
+        "original_price": "INTEGER NOT NULL DEFAULT 0",
+        "discount_label": "TEXT NOT NULL DEFAULT ''",
+        "is_price_hidden": "INTEGER NOT NULL DEFAULT 0",
+        "is_appointment_only": "INTEGER NOT NULL DEFAULT 0",
+        "is_featured": "INTEGER NOT NULL DEFAULT 0",
+        "refund_policy": "TEXT NOT NULL DEFAULT ''",
+        "notes": "TEXT NOT NULL DEFAULT ''",
+        # Payment routing: Web Stripe + iOS IAP product references. Prices are
+        # ALWAYS read from `price`/`member_price` server-side; these ids only
+        # route the charge, never decide the amount.
+        "stripe_product_id": "TEXT NOT NULL DEFAULT ''",
+        "stripe_price_id": "TEXT NOT NULL DEFAULT ''",
+        "ios_iap_product_id": "TEXT NOT NULL DEFAULT ''",
+        "apple_product_id": "TEXT NOT NULL DEFAULT ''",
+        "price_region": "TEXT NOT NULL DEFAULT ''",
+        "tax_included": "INTEGER NOT NULL DEFAULT 1",
+        "billing_type": "TEXT NOT NULL DEFAULT 'one_time'",
+        "billing_period": "TEXT NOT NULL DEFAULT 'none'",
+        "service_price_type": "TEXT NOT NULL DEFAULT ''",
+        "starting_price": "INTEGER NOT NULL DEFAULT 0",
+        "member_discount_percent": "INTEGER NOT NULL DEFAULT 0",
+        "service_duration_minutes": "INTEGER NOT NULL DEFAULT 0",
+        "deposit_required": "INTEGER NOT NULL DEFAULT 0",
+        "deposit_amount": "INTEGER NOT NULL DEFAULT 0",
+        "cancellation_policy": "TEXT NOT NULL DEFAULT ''",
+    })
+    _ensure_columns(conn, "membership_plans", {
+        "name": "TEXT NOT NULL DEFAULT ''",
+        "subtitle": "TEXT NOT NULL DEFAULT ''",
+        "description": "TEXT NOT NULL DEFAULT ''",
+        "billing_period": "TEXT NOT NULL DEFAULT 'monthly'",
+        "interval_count": "INTEGER NOT NULL DEFAULT 1",
+        "price": "REAL NOT NULL DEFAULT 0",
+        "price_label": "TEXT NOT NULL DEFAULT ''",
+        "original_price": "REAL NOT NULL DEFAULT 0",
+        "discount_label": "TEXT NOT NULL DEFAULT ''",
+        "stripe_product_id": "TEXT NOT NULL DEFAULT ''",
+        "stripe_price_id": "TEXT NOT NULL DEFAULT ''",
+        "ios_iap_product_id": "TEXT NOT NULL DEFAULT ''",
+        "apple_product_id": "TEXT NOT NULL DEFAULT ''",
+        "is_recommended": "INTEGER NOT NULL DEFAULT 0",
+        "is_default": "INTEGER NOT NULL DEFAULT 0",
+        "is_featured": "INTEGER NOT NULL DEFAULT 0",
+        "sort_order": "INTEGER NOT NULL DEFAULT 0",
+        "benefits": "TEXT NOT NULL DEFAULT '[]'",
+    })
+    _ensure_columns(conn, "user_memberships", {
+        "billing_period": "TEXT NOT NULL DEFAULT ''",
+        "price": "REAL NOT NULL DEFAULT 0",
+        "currency": "TEXT NOT NULL DEFAULT ''",
+        "provider": "TEXT NOT NULL DEFAULT ''",
+        "provider_customer_id": "TEXT NOT NULL DEFAULT ''",
+        "provider_subscription_id": "TEXT NOT NULL DEFAULT ''",
+        "provider_price_id": "TEXT NOT NULL DEFAULT ''",
+        "expires_at": "TEXT",
+    })
+    _ensure_columns(conn, "payment_orders", {
+        "provider_subscription_id": "TEXT NOT NULL DEFAULT ''",
+        "provider_price_id": "TEXT NOT NULL DEFAULT ''",
+        "checkout_session_id": "TEXT NOT NULL DEFAULT ''",
+    })
+    _ensure_columns(conn, "guide_orders", {
+        "payment_method": "TEXT NOT NULL DEFAULT ''",
+        "cancelled_at": "TEXT",
+        "refunded_at": "TEXT",
+        "fulfilled_at": "TEXT",
+        "stripe_checkout_session_id": "TEXT NOT NULL DEFAULT ''",
+        "stripe_payment_intent_id": "TEXT NOT NULL DEFAULT ''",
+    })
+    _ensure_columns(conn, "guide_service_requests", {
+        "contact_value": "TEXT NOT NULL DEFAULT ''",
+        "preferred_time": "TEXT NOT NULL DEFAULT ''",
+        "admin_note": "TEXT NOT NULL DEFAULT ''",
+        "service_city": "TEXT NOT NULL DEFAULT ''",
+        "preferred_date": "TEXT NOT NULL DEFAULT ''",
+        "language": "TEXT NOT NULL DEFAULT ''",
+        "current_situation": "TEXT NOT NULL DEFAULT ''",
+        "request_detail": "TEXT NOT NULL DEFAULT ''",
+        "assigned_admin_id": "TEXT NOT NULL DEFAULT ''",
+        "order_id": "TEXT NOT NULL DEFAULT ''",
+    })
+    conn.execute("UPDATE guide_companies SET company_size = COALESCE(NULLIF(company_size, ''), size) WHERE company_size = ''")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_companies_featured ON guide_companies(country, status, is_featured, updated_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_products_member ON guide_products(country, status, is_member_included, category_key)")
+
+
+def default_membership_benefits() -> list[dict[str, Any]]:
+    titles = [
+        ("verified_badge", "蓝色认证标识", "个人主页和内容卡片展示 Machi 认证标识。", "checkmark.seal.fill"),
+        ("profile_verified", "个人主页认证展示", "认证状态在个人主页稳定展示。", "person.crop.circle.badge.checkmark"),
+        ("card_verified", "内容卡片认证展示", "你的公开内容卡片显示认证信息。", "rectangle.badge.checkmark"),
+        ("trusted_publish", "高信任内容发布", "可发布招聘、租房、本地服务等高信任内容。", "shield.checkered"),
+        ("higher_quota", "更高每日发布额度", "每日发布额度高于普通账号。", "speedometer"),
+        ("priority_review", "优先审核", "内容进入更高优先级审核队列。", "clock.badge.checkmark"),
+        ("light_boost", "内容轻微优先展示", "合规内容获得温和展示加成。", "sparkles"),
+        ("exclusive_resources", "查看会员专属资料", "访问会员专属资料、清单和模板。", "book.closed"),
+        ("jlpt_discount", "JLPT 资料会员折扣", "指定 JLPT 资料享会员价。", "text.book.closed"),
+        ("grad_discount", "大学院申请资料会员折扣", "大学院申请相关资料享会员价。", "graduationcap"),
+        ("career_discount", "日本就职资料会员折扣", "日本就职资料和模板享会员价。", "briefcase"),
+        ("life_checklist", "日本生活清单会员可看", "查看入境、租房、手续等生活清单。", "list.bullet.clipboard"),
+        ("service_priority", "服务预约优先处理", "人工服务预约优先进入处理队列。", "person.wave.2"),
+        ("service_discount", "指定服务会员优惠", "指定服务支持会员折扣价。", "tag"),
+        ("purchase_center", "已购资料统一管理", "集中管理已购资料与会员可看内容。", "tray.full"),
+    ]
+    return [
+        {
+            "key": key,
+            "benefit_title": title,
+            "title": title,
+            "benefit_description": desc,
+            "description": desc,
+            "benefit_icon": icon,
+            "icon": icon,
+            "is_enabled": True,
+            "sort_order": idx + 1,
+        }
+        for idx, (key, title, desc, icon) in enumerate(titles)
+    ]
+
+
+def _membership_plan_seed_rows() -> list[dict[str, Any]]:
+    benefits = json.dumps(default_membership_benefits(), ensure_ascii=False)
+    return [
+        {
+            "plan_key": MEMBERSHIP_PLAN_MONTHLY_KEY,
+            "name": "Machi 认证会员",
+            "name_zh": "Machi 认证会员",
+            "name_en": "Machi Verified",
+            "name_ja": "Machi 認証メンバー",
+            "subtitle": "按月订阅，随时管理",
+            "description": "蓝色认证标识、高信任内容发布、会员资料与服务优惠。",
+            "billing_period": "monthly",
+            "interval_count": 1,
+            "price": float(MEMBERSHIP_PRICE_CNY),
+            "amount_cents": int(MEMBERSHIP_PRICE_FEN),
+            "currency": MEMBERSHIP_CURRENCY,
+            "price_label": "¥10 / 月",
+            "original_price": 0,
+            "discount_label": "",
+            "stripe_product_id": "",
+            "stripe_price_id": "",
+            "ios_iap_product_id": APPLE_IAP_PRODUCT_ID,
+            "apple_product_id": APPLE_IAP_PRODUCT_ID,
+            "is_recommended": 0,
+            "is_default": 1,
+            "is_featured": 0,
+            "sort_order": 10,
+            "benefits": benefits,
+        },
+        {
+            "plan_key": MEMBERSHIP_PLAN_YEARLY_KEY,
+            "name": "Machi 认证会员 · 包年",
+            "name_zh": "Machi 认证会员 · 包年",
+            "name_en": "Machi Verified Yearly",
+            "name_ja": "Machi 認証メンバー 年額",
+            "subtitle": "包年更划算，适合长期使用",
+            "description": "包年订阅，同步获得 Machi 认证会员全部权益。",
+            "billing_period": "yearly",
+            "interval_count": 1,
+            "price": 98.0,
+            "amount_cents": 9800,
+            "currency": "CNY",
+            "price_label": "¥98 / 年",
+            "original_price": 120.0,
+            "discount_label": "约省 2 个月",
+            "stripe_product_id": "",
+            "stripe_price_id": "",
+            "ios_iap_product_id": APPLE_IAP_PRODUCT_ID_YEARLY,
+            "apple_product_id": APPLE_IAP_PRODUCT_ID_YEARLY,
+            "is_recommended": 1,
+            "is_default": 0,
+            "is_featured": 1,
+            "sort_order": 20,
+            "benefits": benefits,
+        },
+    ]
+
+
 def ensure_membership_plans(conn: sqlite3.Connection) -> None:
-    """Idempotently seed the single Machi Verified plan. Safe on both a
-    fresh DB and an existing one: the amount/name are refreshed from the
-    server config each boot so price changes ship by redeploy, but the
-    plan_key is stable and used everywhere as the canonical reference."""
-    existing = conn.execute(
-        "SELECT id FROM membership_plans WHERE plan_key = ?", (MEMBERSHIP_PLAN_KEY,)
-    ).fetchone()
-    if existing:
+    """Seed editable monthly/yearly plans without overwriting admin changes."""
+    now = now_iso()
+    for seed in _membership_plan_seed_rows():
+        existing = conn.execute(
+            "SELECT id FROM membership_plans WHERE plan_key = ?", (seed["plan_key"],)
+        ).fetchone()
+        if existing:
+            # Backfill new columns only when the old row is empty. Do not rewrite
+            # price/currency/Stripe/IAP fields after an admin has edited them.
+            conn.execute(
+                """
+                UPDATE membership_plans
+                   SET name = COALESCE(NULLIF(name, ''), ?),
+                       subtitle = COALESCE(NULLIF(subtitle, ''), ?),
+                       description = COALESCE(NULLIF(description, ''), ?),
+                       billing_period = COALESCE(NULLIF(billing_period, ''), COALESCE(NULLIF(billing_cycle, ''), ?)),
+                       billing_cycle = COALESCE(NULLIF(billing_cycle, ''), ?),
+                       interval_count = CASE WHEN interval_count <= 0 THEN ? ELSE interval_count END,
+                       price = CASE WHEN price <= 0 THEN ? ELSE price END,
+                       amount_cents = CASE WHEN amount_cents <= 0 THEN ? ELSE amount_cents END,
+                       price_label = COALESCE(NULLIF(price_label, ''), ?),
+                       ios_iap_product_id = COALESCE(NULLIF(ios_iap_product_id, ''), ?),
+                       apple_product_id = COALESCE(NULLIF(apple_product_id, ''), ?),
+                       benefits = CASE WHEN benefits = '' OR benefits = '[]' THEN ? ELSE benefits END,
+                       updated_at = updated_at
+                 WHERE plan_key = ?
+                """,
+                (
+                    seed["name"], seed["subtitle"], seed["description"], seed["billing_period"],
+                    seed["billing_period"], seed["interval_count"], seed["price"], seed["amount_cents"],
+                    seed["price_label"], seed["ios_iap_product_id"], seed["apple_product_id"],
+                    seed["benefits"], seed["plan_key"],
+                ),
+            )
+            continue
+        row = {
+            "id": str(uuid.uuid4()),
+            **seed,
+            "billing_cycle": seed["billing_period"],
+            "is_active": 1,
+            "created_at": now,
+            "updated_at": now,
+        }
         conn.execute(
-            "UPDATE membership_plans SET amount_cents = ?, currency = ?, billing_cycle = ?, "
-            "name_zh = ?, name_en = ?, name_ja = ?, is_active = 1, updated_at = ? WHERE plan_key = ?",
-            (MEMBERSHIP_PRICE_FEN, MEMBERSHIP_CURRENCY, MEMBERSHIP_BILLING_CYCLE,
-             "Machi 认证会员", "Machi Verified", "Machi 認証メンバー", now_iso(), MEMBERSHIP_PLAN_KEY),
+            f"INSERT INTO membership_plans ({', '.join(row.keys())}) VALUES ({', '.join(['?'] * len(row))})",
+            tuple(row.values()),
         )
-        return
-    conn.execute(
-        "INSERT INTO membership_plans (id, plan_key, name_zh, name_en, name_ja, amount_cents, "
-        "currency, billing_cycle, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
-        (str(uuid.uuid4()), MEMBERSHIP_PLAN_KEY, "Machi 认证会员", "Machi Verified", "Machi 認証メンバー",
-         MEMBERSHIP_PRICE_FEN, MEMBERSHIP_CURRENCY, MEMBERSHIP_BILLING_CYCLE, now_iso(), now_iso()),
-    )
+    # Keep the historical cny_10 key readable for existing rows, but do not
+    # expose it as the default card when a fresh DB uses the new keys.
+    if MEMBERSHIP_LEGACY_PLAN_KEY != MEMBERSHIP_PLAN_MONTHLY_KEY and not conn.execute(
+        "SELECT id FROM membership_plans WHERE plan_key = ?", (MEMBERSHIP_LEGACY_PLAN_KEY,)
+    ).fetchone():
+        seed = _membership_plan_seed_rows()[0].copy()
+        seed["plan_key"] = MEMBERSHIP_LEGACY_PLAN_KEY
+        seed["is_default"] = 0
+        seed["sort_order"] = 99
+        row = {"id": str(uuid.uuid4()), **seed, "billing_cycle": seed["billing_period"],
+               "is_active": 1, "created_at": now, "updated_at": now}
+        conn.execute(
+            f"INSERT INTO membership_plans ({', '.join(row.keys())}) VALUES ({', '.join(['?'] * len(row))})",
+            tuple(row.values()),
+        )
 
 
 def ensure_news_source_presets(conn: sqlite3.Connection) -> dict[str, int]:
@@ -3046,12 +4049,1818 @@ def ensure_news_source_presets(conn: sqlite3.Connection) -> dict[str, int]:
     return result
 
 
+# =====================================================================
+# Machi Guide / 日本指南 — canonical content contract + serializers + seed
+#
+# This module is the SINGLE SOURCE OF TRUTH for the Guide taxonomy. Both
+# Web and iOS render from the API response (categories / goalEntries /
+# faq are data-driven, never hardcoded on the client), so the category
+# keys are guaranteed identical across platforms.
+#
+# Region rule: the structure is multi-region ready (every row carries a
+# `country`), but the front-end only opens Japan today. Any country other
+# than 'jp' gets a coming_soon payload with empty arrays.
+# =====================================================================
+
+GUIDE_DEFAULT_COUNTRY = "jp"
+GUIDE_OPEN_COUNTRIES = {"jp"}
+GUIDE_CAPITAL_PREFECTURES = {"tokyo", "kanagawa", "chiba", "saitama"}
+GUIDE_KANSAI_PREFECTURES = {"osaka", "kyoto", "hyogo", "nara", "shiga", "wakayama"}
+
+GUIDE_HERO = {
+    "title": "日本指南",
+    "subtitle": "留学、升学、就职、日语考试和在日生活服务。",
+    "note": "由 Machi 编辑部整理，帮助你更系统地准备日本生活、学习和工作。",
+    "searchPlaceholder": "搜索学校、升学、就职、日语、签证、公司、面试和生活资料",
+    "quickTags": ["日本学校库", "外国人就职公司", "大学院", "语言学校", "就职", "面试", "JLPT", "签证"],
+}
+
+GUIDE_EMPTY_STATE = {
+    "title": "指南内容暂未开放",
+    "body": "Machi Guide 目前优先整理日本地区的升学、就职、留学和生活资料。其他国家和地区将陆续开放。",
+    "action": "切换到日本地区",
+    "actionCountry": "jp",
+}
+
+GUIDE_GOAL_TITLE = "你现在想做什么？"
+
+GUIDE_REVIEW_DISCLAIMER = "评论内容来自用户个人经验，仅供参考。请勿发布个人隐私、商业机密或未经证实的严重指控。"
+GUIDE_SCHOOL_DISCLAIMER = "学校信息由 Machi 编辑部根据公开资料和人工整理维护，可能存在更新延迟。申请前请以学校官网、招生简章和官方说明为准。"
+GUIDE_COMPANY_DISCLAIMER = "公司信息和评论由 Machi 编辑部整理及用户提交，仅供参考。求职前请以公司官网、招聘页面和正式说明为准。请勿发布隐私、机密或未经证实的严重指控。"
+
+GUIDE_RESOURCE_ENTRIES: list[dict[str, str]] = [
+    {
+        "key": "japan_schools",
+        "title": "日本学校库",
+        "description": "查找日本大学、大学院、专门学校、语言学校和留学生申请信息。",
+        "icon": "school",
+        "href": "/guide/schools",
+    },
+    {
+        "key": "foreigner_friendly_companies",
+        "title": "外国人就职公司库",
+        "description": "查找适合外国人就职的日本公司、行业、岗位、面试经验和工作评价。",
+        "icon": "building",
+        "href": "/guide/companies",
+    },
+]
+
+# 6 一级分类 + 子分类。顺序 / key / 图标语义两端一致。icon 是语义 token，
+# 客户端各自映射到自己的图标集（Web=lucide，iOS=SF Symbols）。
+GUIDE_CATEGORY_SEED: list[dict[str, Any]] = [
+    {
+        "key": "study_japan", "title": "日本升学", "subtitle": "大学院・专门学校・编入",
+        "description": "大学院、专门学校、学部编入、研究计划书、教授联系和出愿材料。",
+        "icon": "graduation", "color": "#2563EB",
+        "children": [
+            ("graduate_school", "大学院申请"), ("research_plan", "研究计划书"),
+            ("professor_contact", "教授联系"), ("application_documents", "出愿材料"),
+            ("undergraduate_transfer", "学部·编入"), ("vocational_school", "专门学校"),
+            ("scholarship", "奖学金"), ("admission_interview", "面试"),
+        ],
+    },
+    {
+        "key": "career_japan", "title": "日本就职", "subtitle": "就活・履历书・面试・内定",
+        "description": "日本求职流程、履历书、ES、面试、内定、签证变更和行业选择。",
+        "icon": "briefcase", "color": "#0E7490",
+        "children": [
+            ("job_hunting_flow", "就职流程"), ("rirekisho", "履历书"),
+            ("shokumukeirekisho", "职务经歴书"), ("entry_sheet", "ES·志望动机"),
+            ("job_interview", "面试"), ("company_selection", "公司选择"),
+            ("company_reviews", "公司评论"), ("work_visa", "签证变更"),
+            ("industry_guides", "行业指南"),
+        ],
+    },
+    {
+        "key": "study_abroad_japan", "title": "留学申请", "subtitle": "语言学校・签证・入境",
+        "description": "语言学校、留学材料、签证、入境准备、费用和申请流程。",
+        "icon": "plane", "color": "#7C3AED",
+        "children": [
+            ("language_school", "语言学校申请"), ("student_visa", "留学签证"),
+            ("arrival_preparation", "入境准备"), ("study_cost", "留学费用"),
+            ("school_selection", "学校选择"),
+        ],
+    },
+    {
+        "key": "jlpt", "title": "日语考级", "subtitle": "JLPT N5–N1・词汇语法",
+        "description": "JLPT N5-N1、词汇、语法、阅读、听力、学习计划和资料包。",
+        "icon": "language", "color": "#DB2777",
+        "children": [
+            ("jlpt_n5", "N5"), ("jlpt_n4", "N4"), ("jlpt_n3", "N3"),
+            ("jlpt_n2", "N2"), ("jlpt_n1", "N1"), ("vocabulary", "词汇"),
+            ("grammar", "语法"), ("reading", "阅读"), ("listening", "听力"),
+            ("study_plan", "学习计划"), ("mock_test", "模拟题"), ("jlpt_materials", "资料包"),
+        ],
+    },
+    {
+        "key": "life_japan", "title": "日本生活", "subtitle": "在留卡・役所・租房・打工",
+        "description": "在留卡、役所手续、租房、打工、银行卡、手机卡、保险和生活避坑。",
+        "icon": "home", "color": "#059669",
+        "children": [
+            ("residence_card", "在留卡"), ("city_hall", "役所手续"),
+            ("health_insurance", "国民健康保险"), ("pension", "年金"),
+            ("bank_account", "银行卡"), ("mobile_sim", "手机卡"),
+            ("renting", "租房"), ("moving", "搬家"), ("part_time_job", "打工"),
+            ("tax", "税金"), ("transportation", "交通"), ("medical", "医疗"),
+            ("life_tips", "生活避坑"),
+        ],
+    },
+    {
+        "key": "guide_services", "title": "资料与服务", "subtitle": "资料包・模板・咨询辅导",
+        "description": "资料包、模板、课程、咨询、简历修改、研究计划书修改和申请辅导。",
+        "icon": "package", "color": "#D97706",
+        "children": [
+            ("service_materials", "资料包"), ("service_templates", "模板"),
+            ("service_consultation", "咨询辅导"),
+        ],
+    },
+]
+
+# 用户目标入口（按需求进入，不只按内容分类）。
+GUIDE_GOAL_SEED: list[dict[str, str]] = [
+    {"targetKey": "goal_study_abroad", "title": "我想去日本留学", "categoryKey": "study_abroad_japan", "subCategoryKey": ""},
+    {"targetKey": "goal_language_school", "title": "我想申请语言学校", "categoryKey": "study_abroad_japan", "subCategoryKey": "language_school"},
+    {"targetKey": "goal_graduate_school", "title": "我想申请大学院", "categoryKey": "study_japan", "subCategoryKey": "graduate_school"},
+    {"targetKey": "goal_find_job", "title": "我想在日本找工作", "categoryKey": "career_japan", "subCategoryKey": ""},
+    {"targetKey": "goal_jlpt", "title": "我想准备日语考试", "categoryKey": "jlpt", "subCategoryKey": ""},
+    {"targetKey": "goal_life_setup", "title": "我想了解日本生活手续", "categoryKey": "life_japan", "subCategoryKey": ""},
+    {"targetKey": "goal_buy_materials", "title": "我想买资料或预约咨询", "categoryKey": "guide_services", "subCategoryKey": ""},
+]
+
+GUIDE_TAG_SEED: list[tuple[str, str, str]] = [
+    ("大学院", "graduate_school", "study_japan"), ("语言学校", "language_school", "study_abroad_japan"),
+    ("就职", "job_hunting", "career_japan"), ("面试", "interview", "career_japan"),
+    ("JLPT", "jlpt", "jlpt"), ("签证", "visa", ""),
+    ("租房", "renting", "life_japan"), ("资料包", "materials", "guide_services"),
+]
+
+GUIDE_FAQ_SEED: list[dict[str, str]] = [
+    {"q": "语言学校和大学院申请有什么区别？",
+     "a": "语言学校面向想先打好日语基础、再升学或就职的人，门槛低、以语言学习和升学指导为主；大学院（修士/博士）是研究生阶段，需要研究计划书、联系教授和出愿材料，对日语或英语成绩、专业背景都有要求。很多人会先读语言学校过渡，再考大学院。",
+     "category_key": "study_japan"},
+    {"q": "研究计划书一般要写多少字？",
+     "a": "没有统一硬性规定，文科常见 2000–4000 字，理工科可能更短但更看重研究方法的可行性。重点不是字数，而是研究主题、先行研究、研究目的、研究方法和预期成果是否清晰、是否和目标教授的研究方向匹配。",
+     "category_key": "study_japan"},
+    {"q": "留学签证（COE）一般什么时候开始申请？",
+     "a": "COE（在留资格认定证明书）由日本的学校代为向入管申请，通常在入学前 3–4 个月开始。以 4 月入学为例，多数语言学校在前一年的 11 月左右截止材料。建议倒推时间，预留材料公证、翻译和经费证明的准备时间。",
+     "category_key": "study_abroad_japan"},
+    {"q": "在日本找工作一定要 N1 吗？",
+     "a": "不是绝对，但大多数面向日本人的综合岗位（営業、企画、総合職）实际要求接近 N1；IT、研发、英语环境的外资岗位 N2 甚至更低也有机会。日语越好选择面越宽，面试中的实际沟通能力往往比证书更被看重。",
+     "category_key": "career_japan"},
+    {"q": "JLPT 一年考几次？什么时候报名？",
+     "a": "JLPT 一年两次，分别在 7 月和 12 月。报名通常提前约 3 个月开始、名额有限，热门考点会很快报满。建议关注 JLPT 官方网站的报名窗口，确定考级后尽早报名并制定备考计划。",
+     "category_key": "jlpt"},
+    {"q": "Machi 指南的内容来自哪里？可信吗？",
+     "a": "所有指南由 Machi 编辑部整理，身份明确为官方/编辑部/合作方，不使用爬虫新闻、不复制版权教材、不伪造用户内容。公司面试评论来自真实用户提交并经过审核。引用官方考试或入管信息时会标注来源，请同时以官方最新公告为准。",
+     "category_key": ""},
+]
+
+
+def _guide_paras(*paras: str) -> str:
+    return "\n\n".join(p for p in paras if p)
+
+
+def _guide_int(raw: Any, default: int = 0, lo: int | None = None, hi: int | None = None) -> int:
+    """Parse a query int defensively — bad input falls back to default so the
+    Guide API never 500s on a malformed ?page= / ?pageSize= value."""
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        value = default
+    if lo is not None:
+        value = max(lo, value)
+    if hi is not None:
+        value = min(hi, value)
+    return value
+
+
+def _guide_float(raw: Any) -> float | None:
+    try:
+        text = str(raw or "").strip()
+        return float(text) if text else None
+    except (TypeError, ValueError):
+        return None
+
+
+# 种子文章：每个核心分类 ≥3 篇，编辑部口吻、原创整理、非假用户。
+GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
+    # ---- 日本升学 ----
+    {"slug": "graduate-school-full-process", "title": "日本大学院申请从 0 到出愿完整流程",
+     "category": "study_japan", "sub": "graduate_school", "featured": True,
+     "author": "Machi 升学编辑部", "tags": ["大学院", "出愿", "研究计划书"],
+     "summary": "从确定方向、联系教授到出愿、面试，一步步拆解日本大学院申请的完整时间线。",
+     "body": _guide_paras(
+        "申请日本大学院（修士）和欧美直接网申不同，核心是「研究」二字。整体可以拆成六步：确定研究方向 → 选校选研究室 → 联系教授（套磁）→ 准备出愿材料 → 出愿与笔试/面试 → 合格与入学手续。建议至少提前 8–12 个月开始准备。",
+        "第一步先想清楚自己想研究什么，而不是先看排名。把兴趣收敛成一个具体的研究主题，再去找研究方向匹配的研究室和教授。第二步用 J-GLOBAL、各大学研究者数据库、研究室主页确认教授近几年的研究内容和是否招收外国人留学生。",
+        "第三步联系教授（事前相談）。一封得体的日文邮件，简短说明你的背景、研究兴趣、为什么选他的研究室，并附上研究计划书草稿。拿到教授「欢迎报考」的回复后，再进入第四步：志望理由书、研究计划书、成绩单、毕业（见込）证明、语言成绩、推荐信、报名表等出愿材料的准备。",
+        "第五步按学校公布的出愿期间提交材料并参加考试。修士考试通常包含专业笔试、英语（部分用 TOEIC/TOEFL 替代）和面试/口头试问。第六步合格后办理入学手续、缴纳入学金，并着手准备在留资格变更或签证。把每个学校的截止日期做成一张清单倒推，是不踩坑的关键。",
+     )},
+    {"slug": "research-plan-what-to-write", "title": "研究计划书到底要写什么：结构与示例",
+     "category": "study_japan", "sub": "research_plan", "featured": False,
+     "author": "Machi 升学编辑部", "tags": ["研究计划书", "大学院"],
+     "summary": "研究主题、先行研究、研究目的、研究方法——拆解教授真正在看的几个部分。",
+     "body": _guide_paras(
+        "研究计划书是大学院申请里最能拉开差距的材料。教授看的不是文采，而是「这个学生是否理解研究、能否在我的研究室独立推进一个课题」。一份结构完整的计划书通常包含：研究主题、研究背景、先行研究综述、研究目的与问题意识、研究方法、预期成果与意义、参考文献。",
+        "研究主题要具体、可操作，避免「我想研究中日文化交流」这种过大的题目。研究背景说明为什么这个问题值得研究；先行研究部分要体现你读过相关文献、知道别人做到哪一步、你的研究填补哪个空白——这是最容易暴露准备是否充分的部分。",
+        "研究目的与研究方法要互相对应：你要回答什么问题，用什么数据、什么方法去回答。文科常见问卷、访谈、文本分析、案例比较；理工科则要写清实验设计或模型。常见失败原因是题目过大、没有先行研究、目的和方法对不上、或与目标教授方向完全不匹配。",
+        "建议先写草稿和教授沟通，根据反馈反复修改。可以参考公开的优秀计划书结构，但内容必须是你自己的研究构想，切勿照抄。",
+     )},
+    {"slug": "contact-professor-email", "title": "联系教授邮件模板和注意事项",
+     "category": "study_japan", "sub": "professor_contact", "featured": False,
+     "author": "Machi 升学编辑部", "tags": ["教授联系", "邮件", "大学院"],
+     "summary": "要不要提前联系教授、日文邮件礼仪、被拒或没回复怎么办。",
+     "body": _guide_paras(
+        "是否需要提前联系教授，取决于学校和专业：很多国公立大学的研究室非常看重事前相談，提前沟通几乎是默认流程；也有部分项目（尤其英语项目）走统一出愿、不要求套磁。先到目标研究室主页和募集要项确认。",
+        "一封好的联系邮件要短而清楚：礼貌的称呼（○○先生/教授）、简短自我介绍（学校、专业、毕业时间）、为什么对他的研究感兴趣、你的研究方向、希望报考的学期，并附研究计划书草稿。避免群发感、避免一上来就问能不能给奖学金。",
+        "日文邮件礼仪上注意：主题写清楚（如「研究室訪問のお願い／○○大学 氏名」）、正文用敬体、落款写全名和联系方式、附件命名规范。",
+        "被拒绝或长时间没回复都很常见，不要灰心。没回复可在一到两周后礼貌地再发一次确认；明确被拒就调整目标研究室。教授拒绝往往只是名额或方向不符，不代表否定你本人。",
+     )},
+    # ---- 留学申请 ----
+    {"slug": "language-school-application", "title": "语言学校申请完整流程",
+     "category": "study_abroad_japan", "sub": "language_school", "featured": True,
+     "author": "Machi 升学编辑部", "tags": ["语言学校", "COE", "签证"],
+     "summary": "适合人群、入学季、选校标准、材料清单到 COE 与签证的全流程。",
+     "body": _guide_paras(
+        "语言学校适合日语零基础或基础薄弱、想先在日本系统学日语再升学或就职的人。入学季有 1 月、4 月、7 月、10 月四次，其中 4 月生和 10 月生名额最多。由于要走 COE 申请，通常要提前约半年准备。",
+        "选校时关注几点：是升学型还是就职型、出勤率和升学/就职实绩、班级人数与师资、地理位置和学费范围、是否有宿舍。不要只看广告，多看真实的升学去向。",
+        "材料方面通常需要：报名表、最终学历毕业证与成绩、日语学习证明、护照、照片，以及经费支付人的在职/收入证明、银行存款证明等经费相关材料。经费证明是审查重点，要保证逻辑清晰、金额合理。",
+        "学校收齐材料后会向入管申请 COE（在留资格认定证明书）。拿到 COE 后，本人在所在国的日本使领馆申请留学签证，再准备入境。把时间线倒推、尽早联系学校，是顺利入学的关键。",
+     )},
+    {"slug": "study-cost-one-year", "title": "日本留学一年大概需要多少钱",
+     "category": "study_abroad_japan", "sub": "study_cost", "featured": False,
+     "author": "Machi 升学编辑部", "tags": ["留学费用", "生活费"],
+     "summary": "学费、住宿、生活费、初期费用的区间参考，以及打工能补贴多少。",
+     "body": _guide_paras(
+        "留学第一年的花费可以分成三块：学费、初期费用和生活费。语言学校学费大致每年 70–90 万日元区间，不同学校差异不小。初期费用包括签证、机票、入学金、第一笔房租押金礼金等，往往集中在入境前后。",
+        "生活费里房租占大头。东京单间月租常见在 5–8 万日元，地方城市明显更低。加上水电网、手机、伙食、交通，一个月生活费大约 8–14 万日元，地区和生活方式影响很大。",
+        "留学生持「资格外活动许可」每周最多可打工 28 小时（长假期间放宽），时薪因地区和工种而异。打工能补贴一部分生活费，但不建议把它算进必须的预算里——出勤率和学业才是第一位。",
+        "总体来说，第一年准备充足一些的资金会更稳妥。具体金额请按目标城市和学校的最新标准核算，本文仅为区间参考。",
+     )},
+    {"slug": "first-week-in-japan-checklist", "title": "入境日本后第一周必须做的手续清单",
+     "category": "study_abroad_japan", "sub": "arrival_preparation", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["入境", "在留卡", "清单"],
+     "summary": "在留卡、住民登记、手机卡、银行卡、保险——刚落地最该先办的几件事。",
+     "body": _guide_paras(
+        "刚到日本头几天事情很多，按优先级一件件来就不会乱。落地时在机场领取在留卡（部分机场当场发放），这是你在日本最重要的身份证件，务必随身保管。",
+        "第一周内到居住地的区/市役所办理住民登记（転入届），同时办理国民健康保险加入手续；很多人会顺便办理 My Number 相关流程。住民票之后办很多事都会用到。",
+        "接着办手机卡和银行账户。手机号在注册各种服务、收验证码时几乎必需；银行账户用于收打工工资、交房租。部分银行对刚入境、在留时间短的外国人开户有限制，可以先选对留学生友好的银行。",
+        "其余还有：交通卡（Suica/ICOCA）、印章（部分手续需要）、若打工需确认「资格外活动许可」。把这些列成清单逐项打勾，第一周就能把生活基础搭好。具体手续以所在区役所的最新指引为准。",
+     )},
+    # ---- 日本就职 ----
+    {"slug": "job-hunting-full-process", "title": "日本就职活动完整流程（新卒 / 中途）",
+     "category": "career_japan", "sub": "job_hunting_flow", "featured": True,
+     "author": "Machi 就职编辑部", "tags": ["就活", "新卒", "中途"],
+     "summary": "从自我分析、说明会、ES、Web测试到面试、内定和签证变更的全流程。",
+     "body": _guide_paras(
+        "日本就职分「新卒」和「中途」两条路。新卒就活高度流程化、时间线统一：大致从前一年的自我分析与行业研究开始，经历说明会、实习（インターン）、ES 提交、Web 测试（SPI 等）、多轮面试，到拿到内定（内定），再到次年 4 月入社。",
+        "自我分析和行业研究是地基：搞清楚自己的强项、想做的工作和行业，再有针对性地投递。ES（エントリーシート）和履历书是第一道筛选，志望动机和自己 PR 要具体、有事实支撑，避免空话。",
+        "面试通常一次到三次：一次面试看基本沟通和动机，二次看专业匹配，最终面试多由管理层或役员把关。日语表达、逻辑和对公司的理解都会被考察，逆質問（反问环节）也要提前准备。",
+        "中途採用更看重职务经歴和即战力，流程更短、随时招聘。对留学生而言，拿到内定后还有关键一步：把留学签证变更为工作签证（技术・人文知识・国际业务等），需要公司配合提供材料，建议尽早和公司人事确认时间线。",
+     )},
+    {"slug": "rirekisho-vs-shokumukeirekisho", "title": "履历书和职务经歴书有什么区别",
+     "category": "career_japan", "sub": "rirekisho", "featured": False,
+     "author": "Machi 就职编辑部", "tags": ["履历书", "职务经歴书"],
+     "summary": "两份文件分工不同：一份讲你是谁，一份讲你做过什么、能做什么。",
+     "body": _guide_paras(
+        "日本求职常要同时提交「履历书（履歴書）」和「职务经歴书（職務経歴書）」，很多人分不清。简单说：履历书是标准化的个人基本信息，职务经歴书是自由格式的工作能力说明，两者分工不同、缺一不可。",
+        "履历书格式相对固定：姓名、联系方式、照片、学历职历、资格证书、志望动机、本人希望栏等。要点是规范、整洁、无错别字，照片正式，日期用和历或西历保持统一。它回答的是「你是谁」。",
+        "职务经歴书没有固定模板，由你自己组织：职业概述、按时间或项目列出的工作经历、负责内容、使用技能、可量化的成果。它回答的是「你做过什么、能为公司带来什么」，是中途採用里最被看重的材料。",
+        "对应届生而言，职务经歴书可以用实习、研究、项目、社团等经历替代纯工作经历，重点突出可迁移的能力。两份文件信息要一致、相互印证，不要自相矛盾。",
+     )},
+    {"slug": "japanese-interview-questions", "title": "日语面试常见问题与回答思路",
+     "category": "career_japan", "sub": "job_interview", "featured": False,
+     "author": "Machi 就职编辑部", "tags": ["面试", "日语面试"],
+     "summary": "自己PR、志望动机、逆質問——高频问题背后考官真正想确认的东西。",
+     "body": _guide_paras(
+        "日语面试的高频问题其实就那几类：自己 PR、学生时代最努力的事（学生時代に力を入れたこと／ガクチカ）、志望动机、职业规划、优缺点，以及最后的逆質問。与其背模板，不如理解每个问题背后考官想确认什么。",
+        "自己 PR 和 ガクチカ 想确认你的强项是否真实、能否用具体事例支撑，建议用「情况—课题—行动—结果」的结构讲一个真实故事。志望动机想确认你是否真的了解这家公司、为什么是「这家」而不是同行，要结合公司具体业务来说。",
+        "回答要点是「结论先行」：先给结论，再补理由和例子，符合日本职场偏好的表达习惯。语气保持礼貌、敬语稳定，听不清可以礼貌地请对方再说一次，不必慌。",
+        "逆質問不是走过场，而是展示你做过功课和入职意愿的机会。准备 2–3 个有质量的问题，避免问官网就能查到的信息或只关心待遇假期。面试失败常见原因：动机空泛、对公司了解不足、答非所问、只背模板缺乏真实例子。",
+     )},
+    # ---- 日语考级 ----
+    {"slug": "jlpt-n2-study-roadmap", "title": "JLPT N2 备考路线与时间规划",
+     "category": "jlpt", "sub": "jlpt_n2", "featured": True,
+     "author": "Machi 日语学习编辑部", "tags": ["JLPT", "N2", "学习计划"],
+     "summary": "词汇、语法、阅读、听力如何分阶段推进，以及一份可执行的时间表。",
+     "body": _guide_paras(
+        "N2 是很多升学和就职的门槛线。整体备考可以分三个阶段：打基础（词汇+语法）、强化（阅读+听力）、冲刺（真题题型+查漏补缺）。如果每天能稳定投入 1–2 小时，3–6 个月是比较现实的周期，基础不同会有差异。",
+        "第一阶段集中过一遍 N2 核心词汇和语法点，建议词汇和语法同步推进，边学边用例句记忆，而不是孤立背单词。每天固定一个词汇/语法的小目标，靠持续而非突击。",
+        "第二阶段把重心转到阅读和听力。阅读练「带着问题找信息」的读法，控制单篇用时；听力靠量的积累和精听，刚开始可以「听一遍做题 + 再听对答案 + 看原文」三步走。",
+        "第三阶段做整套限时练习，熟悉题型和时间分配，统计错题集中突破薄弱模块。考前两周回归高频词汇和语法、保持听力手感。注意：练习请使用正规、原创或正版资料，避免盗版真题。",
+     )},
+    {"slug": "n1-n2-grammar-method", "title": "N1/N2 语法到底怎么学才不会忘",
+     "category": "jlpt", "sub": "grammar", "featured": False,
+     "author": "Machi 日语学习编辑部", "tags": ["语法", "N1", "N2"],
+     "summary": "把语法点放进语境、按意义分组、靠输出巩固，而不是死记表格。",
+     "body": _guide_paras(
+        "N1/N2 语法点又多又像，单纯背「接续 + 中文意思」很容易学完就忘、考场上还容易混。更有效的做法是：放进语境记、按意义分组记、靠输出巩固。",
+        "放进语境，指每个语法点都配 1–2 个自然的例句，记住「在什么场景下、表达什么语气」，而不是只记中文翻译。很多近义语法（如表示原因、转折、强调的若干句型）差别就在语气和书面/口语色彩上。",
+        "按意义分组，指把功能相近的句型放在一起对比，列出它们的细微差别，这样更容易区分易混点。可以自己整理一张对比表，比抄教材更有记忆效果。",
+        "靠输出巩固，指学完后用它造句、写短文或在练习中刻意使用。语法是用出来的，输入和输出结合，记得才牢。复习上用间隔重复，重点放在易忘和易混的点。",
+     )},
+    {"slug": "jlpt-reading-speed", "title": "JLPT 阅读如何提高速度",
+     "category": "jlpt", "sub": "reading", "featured": False,
+     "author": "Machi 日语学习编辑部", "tags": ["阅读", "JLPT"],
+     "summary": "先看题再读文、抓接续词和指示词、控制单篇用时的实战技巧。",
+     "body": _guide_paras(
+        "很多人 JLPT 阅读不是不会，而是做不完。提速的核心不是读得更快，而是读得更「有目的」。第一个习惯：先看题目和选项，带着问题去读，知道自己在找什么信息，避免逐字通读。",
+        "第二个习惯：抓接续词和指示词。しかし、つまり、ところが 这类词决定了文章逻辑走向，こそあど（これ/それ）指代的内容常是出题点。顺着逻辑骨架读，比纠结每个生词更高效。",
+        "第三个习惯：控制单篇用时。平时练习就按题型给自己计时，短篇、中篇、长篇各自定一个时间上限，超时就先选一个答案标记后跳过，保证整卷做完。",
+        "最后是积累。阅读速度本质是词汇语法的熟练度 + 题感，靠平时持续精读和限时训练慢慢提上来，没有真正的捷径。考前用整套限时练习找节奏。",
+     )},
+    # ---- 日本生活 ----
+    {"slug": "residence-card-and-juminhyo", "title": "在留卡和住民登记（役所）办理流程",
+     "category": "life_japan", "sub": "city_hall", "featured": True,
+     "author": "Machi 日本生活编辑部", "tags": ["在留卡", "役所", "住民登记"],
+     "summary": "在留卡是什么、转入届怎么办、顺带要办的保险和 My Number。",
+     "body": _guide_paras(
+        "在留卡（在留カード）是中长期在留外国人的法定身份证件，记录你的姓名、在留资格、在留期间和居住地等信息。需要随身携带，地址变更、在留资格变更、续签都和它绑定。入境时在指定机场会当场发放。",
+        "确定住所后，要在 14 天内到居住地的区/市役所办理住民登记（転入届），登记你的住址。役所会把住址信息写到在留卡背面或更新到系统里。这一步是后续办很多手续的前提。",
+        "在役所通常会顺带办理几件事：加入国民健康保险（留学生等需要加入）、领取或确认 My Number（个人番号）通知、了解国民年金相关手续。把这些一次性问清楚，能少跑几趟。",
+        "之后如果搬家，旧址要办「転出届」、新址办「転入届」；离开日本要办「転出届」。手续细节各地略有差异，请以所在区役所的最新窗口指引为准。",
+     )},
+    {"slug": "renting-initial-cost", "title": "日本租房初期费用详解",
+     "category": "life_japan", "sub": "renting", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["租房", "初期费用"],
+     "summary": "敷金、礼金、中介费、保证公司——第一笔要准备多少钱，怎么省。",
+     "body": _guide_paras(
+        "在日本租房，第一笔「初期费用」往往是月租的 4–6 倍，远高于之后每月的房租，提前了解能避免预算被打乱。主要包括：敷金、礼金、中介手数料、首月房租、保证公司费用、火灾保险、换锁费等。",
+        "敷金类似押金，退租时扣除清洁/修缮后可能退还一部分；礼金是给房东的、不退还，近年很多房源已「礼金 0」。中介手数料一般约一个月房租。保证公司费用是因为很多房东要求通过保证公司代替担保人。",
+        "想省初期费用，可以优先找「敷金礼金 0」「フリーレント（免租期）」的房源，或选 UR、社宅、留学生宿舍等礼金较少的选择。但要综合看位置、通勤和房况，不要只盯着初期费用。",
+        "签约前看清条款：退租预告期、清扫费、违约金、能否养宠物等。具体金额因城市、房型和房源差异很大，本文为结构性说明，实际以房源条件为准。",
+     )},
+    {"slug": "student-part-time-job-rules", "title": "留学生打工注意事项与时间限制",
+     "category": "life_japan", "sub": "part_time_job", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["打工", "资格外活动"],
+     "summary": "28 小时上限、资格外活动许可、不能做的行业，以及出勤率优先。",
+     "body": _guide_paras(
+        "留学生在日本打工，前提是先取得「资格外活动许可」——通常可在入境时或之后到入管/通过在留卡背面申请。没有许可就打工属于违规，会影响在留资格，务必先办手续。",
+        "时间上有硬性上限：一般每周最多 28 小时，长假期间（学校放假）可放宽到每天 8 小时以内。这个上限是按周计算的，不要因为换了几份工就超时，超时是常见的违规点。",
+        "行业上有限制：风俗营业及相关场所的工作不被允许，即使只是端盘子也不行。选择正规的便利店、餐饮、零售、配送等岗位更稳妥。",
+        "最后也是最重要的：留学生的本职是学习。出勤率和成绩直接关系到续签和升学，不要为了打工牺牲学业。合理安排时间，让打工成为补充而不是负担。具体规则以入管最新规定为准。",
+     )},
+    # ---- 公司选择与面试评论（编辑部指南，非用户评论）----
+    {"slug": "is-company-foreigner-friendly", "title": "如何判断一家日本公司适不适合外国人",
+     "category": "career_japan", "sub": "company_selection", "featured": True,
+     "author": "Machi 就职编辑部", "tags": ["公司选择", "外国人", "就职"],
+     "summary": "从签证支持、语言环境、晋升透明度到加班文化的判断清单。",
+     "body": _guide_paras(
+        "「适不适合外国人」不是一个模糊的感觉，可以拆成几个可观察的维度去判断：签证与在留支持、语言环境、晋升与评价透明度、加班与休假文化、是否已有外国人员工及其发展情况。",
+        "签证支持是底线：公司是否愿意为你办理就业签证变更、过往是否雇佣过外国人、人事是否熟悉流程。语言环境决定日常体验：业务是否必须全日语、是否接受边工作边提升日语、有没有英语可用的岗位。",
+        "晋升和评价是否透明，关系到长期发展：评价标准是否清晰、外国人能否进入管理岗、是否存在「玻璃天花板」。加班和休假文化则影响生活质量：平均加班时长、是否好请假、有没有「サービス残業（隐形加班）」。",
+        "信息来源上，可以结合公司官网、说明会、面试中的逆質問、以及真实员工评价综合判断。在 Machi 指南里，公司面试与工作评论来自真实用户、经过审核，能帮你做交叉验证——但任何评价都只是参考，最终要结合自己的情况判断。",
+     )},
+    {"slug": "japan-company-interview-process", "title": "日本公司面试流程说明（一次/二次/最终）",
+     "category": "career_japan", "sub": "job_interview", "featured": False,
+     "author": "Machi 就职编辑部", "tags": ["面试", "流程"],
+     "summary": "每一轮面试由谁来面、考察重点是什么、如何分别准备。",
+     "body": _guide_paras(
+        "日本公司的面试通常分多轮，每一轮的面试官和考察重点不同，提前知道节奏就能有的放矢。常见是一次面试、二次面试、最终面试，部分公司中间还有小组讨论（グループディスカッション）或现场课题。",
+        "一次面试多由年轻员工或人事负责，考察基本沟通、礼仪、动机和第一印象，问题偏标准化（自己 PR、ガクチカ、志望动机）。这一轮稳住基础、把故事讲清楚即可。",
+        "二次面试常由现场部门的负责人（現場社員/课长级）担任，更看专业匹配度和实际能力，会针对你的经历深挖细节。准备时要能展开讲清自己做过的事和思考过程。",
+        "最终面试一般由役员或高管把关，看的是价值观契合、长期意愿和稳定性，问题更宏观（职业规划、为什么是本公司、能否长期发展）。每一轮都要准备逆質問，并根据对方身份调整问题的层次。",
+     )},
+    {"slug": "identify-black-company", "title": "ブラック企業识别基础：从招聘信息看风险",
+     "category": "career_japan", "sub": "company_selection", "featured": False,
+     "author": "Machi 就职编辑部", "tags": ["ブラック企業", "避坑"],
+     "summary": "高频招聘、模糊薪资、夸张话术——招聘端就能看出的预警信号。",
+     "body": _guide_paras(
+        "「ブラック企業」指那些长期高强度加班、待遇与宣传不符、人员流动极高的公司。很多预警信号在投递前、从招聘信息里就能看出来，学会识别能少踩坑。",
+        "信号一：常年、大量、急招同一岗位。如果一家公司总在高频招人、招聘门槛异常低，可能意味着离职率高。信号二：薪资写法模糊，比如把固定加班费（みなし残業）打包进基本工资、或只写一个很宽的区间、回避具体构成。",
+        "信号三：话术过度煽情。大量强调「家族のような職場」「夢」「やりがい」却不谈具体待遇和制度的，要多留个心眼。信号四：面试推进异常快、当场逼你做决定、回避你关于加班和休假的提问。",
+        "识别只是第一步，建议结合公开的员工评价、面试中的实际感受、以及离职率/平均年龄等信息交叉验证。Machi 指南的公司评论由真实用户提交并经审核，可作为参考之一；但请理性看待单条评价，避免以偏概全。",
+     )},
+]
+
+# 资料与服务种子：除一份免费清单外，均为 coming_soon（未接支付前不展示价格购买）。
+GUIDE_PRODUCT_SEED: list[dict[str, Any]] = [
+    {"slug": "n2-grammar-pack", "title": "N2 语法整理资料包", "subtitle": "适合 N2 备考和自学",
+     "category": "jlpt", "sub": "jlpt_materials", "product_type": "pdf_material",
+     "price": 29, "currency": "CNY", "price_label": "", "coming_soon": True, "is_service": 0,
+     "target": "备考 N2 的同学", "delivery": "数字下载",
+     "description": "Machi 编辑部原创整理的 N2 高频语法点，按意义分组、配自然例句与易混对比，便于系统复习。原创内容，非真题搬运。"},
+    {"slug": "research-plan-template-pack", "title": "大学院研究计划书模板包", "subtitle": "模板、示例、教授邮件范文",
+     "category": "study_japan", "sub": "research_plan", "product_type": "template",
+     "price": 49, "currency": "CNY", "price_label": "", "coming_soon": True, "is_service": 0,
+     "target": "准备申请大学院的同学", "delivery": "数字下载",
+     "description": "研究计划书结构模板、文/理科示例框架，以及联系教授的日文/英文邮件范文，帮助你从 0 起步搭建框架。内容原创，仅供学习参考。"},
+    {"slug": "rirekisho-review-service", "title": "日本就职履历书修改服务", "subtitle": "适合准备就职活动的用户",
+     "category": "career_japan", "sub": "rirekisho", "product_type": "resume_review",
+     "price": 0, "currency": "CNY", "price_label": "¥199 起", "coming_soon": True, "is_service": 1,
+     "target": "正在就活的用户", "delivery": "人工服务·线上",
+     "description": "由有日本就职经验的编辑/合作方，对你的履历书与职务经歴书逐项给出修改建议，覆盖志望动机、自己 PR 与排版规范。人工服务，按工作量计费。"},
+    {"slug": "language-school-doc-checklist", "title": "语言学校申请材料清单", "subtitle": "赴日留学前的材料准备",
+     "category": "study_abroad_japan", "sub": "language_school", "product_type": "checklist",
+     "price": 0, "currency": "CNY", "price_label": "免费", "coming_soon": False, "is_service": 0, "is_free": 1,
+     "target": "准备申请语言学校的同学", "delivery": "登录后查看",
+     "description": "语言学校出愿常用材料的整理清单：本人材料、学历材料、经费支付人材料与时间节点提醒。登录后即可查看，帮助你不漏项。"},
+    {"slug": "interview-100-questions", "title": "日本面试常见问题 100 题", "subtitle": "一次面试、二次面试、最终面试准备",
+     "category": "career_japan", "sub": "job_interview", "product_type": "pdf_material",
+     "price": 39, "currency": "CNY", "price_label": "", "coming_soon": True, "is_service": 0,
+     "target": "准备日本就职面试的用户", "delivery": "数字下载",
+     "description": "按面试轮次与问题类型整理的高频问题与回答思路，含自己 PR、志望动机、逆質問示例。Machi 编辑部原创整理。"},
+]
+
+GUIDE_PRODUCT_SEED.extend([
+    # JLPT — 合规原创整理，不包含未授权官方真题原文。
+    {"slug": "jlpt-n1-20-year-trend-analysis", "title": "N1 近 20 年题型趋势分析", "subtitle": "题型变化、备考重点与时间分配",
+     "category": "jlpt", "sub": "jlpt_n1", "product_type": "pdf_material", "price": 49, "currency": "CNY",
+     "price_label": "¥49", "coming_soon": True, "member_included": 1, "is_featured": 1,
+     "target": "准备 N1 的学习者", "delivery": "数字资料", "tags": ["JLPT", "N1", "趋势分析"],
+     "preview": "目录预览：言语知识、阅读、听力三大模块的题型变化与备考节奏。",
+     "purchase": "购买后可查看完整趋势拆解、30 天复习建议与错题整理模板。",
+     "notes": "基于公开考试结构和题型变化整理，不包含未授权官方真题原文。"},
+    {"slug": "jlpt-n2-20-year-trend-analysis", "title": "N2 近 20 年题型趋势分析", "subtitle": "N2 高频题型与备考路线",
+     "category": "jlpt", "sub": "jlpt_n2", "product_type": "pdf_material", "price": 49, "currency": "CNY",
+     "price_label": "¥49", "coming_soon": True, "member_included": 1,
+     "target": "准备 N2 的学习者", "delivery": "数字资料", "tags": ["JLPT", "N2", "趋势分析"],
+     "preview": "目录预览：N2 词汇语法、阅读速度和听力题型的复习顺序。",
+     "purchase": "购买后可查看完整题型趋势笔记、练习计划和官方样题解析笔记。",
+     "notes": "不包含未授权官方真题原文。"},
+    {"slug": "jlpt-n1-original-mock-20", "title": "N1 原创模拟题 20 套", "subtitle": "Machi 编辑部原创练习",
+     "category": "jlpt", "sub": "mock_test", "product_type": "pdf_material", "price": 69, "currency": "CNY",
+     "price_label": "¥69", "coming_soon": True, "member_included": 1, "target": "N1 冲刺阶段学习者",
+     "delivery": "数字资料", "tags": ["JLPT", "N1", "原创模拟题"], "notes": "原创模拟题，不复制官方真题。"},
+    {"slug": "jlpt-n2-original-mock-20", "title": "N2 原创模拟题 20 套", "subtitle": "阅读、语法、听力综合训练",
+     "category": "jlpt", "sub": "mock_test", "product_type": "pdf_material", "price": 69, "currency": "CNY",
+     "price_label": "¥69", "coming_soon": True, "member_included": 1, "target": "N2 冲刺阶段学习者",
+     "delivery": "数字资料", "tags": ["JLPT", "N2", "原创模拟题"], "notes": "原创模拟题，不复制官方真题。"},
+    {"slug": "jlpt-n1-high-frequency-vocab-plan", "title": "N1 高频词汇计划", "subtitle": "按主题和语境整理",
+     "category": "jlpt", "sub": "vocabulary", "product_type": "pdf_material", "price": 39, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "备考 N1 的学习者",
+     "delivery": "会员资料", "tags": ["N1", "词汇", "会员资料"]},
+    {"slug": "jlpt-n5-n1-roadmap", "title": "JLPT N5-N1 学习路线图", "subtitle": "从入门到高阶的学习路径",
+     "category": "jlpt", "sub": "study_plan", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "所有日语学习者", "delivery": "登录后查看",
+     "tags": ["JLPT", "学习计划"]},
+    {"slug": "jlpt-n3-30-day-plan", "title": "N3 30 天备考计划", "subtitle": "每天一个复习任务",
+     "category": "jlpt", "sub": "jlpt_n3", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备 N3 的学习者",
+     "delivery": "会员资料"},
+    {"slug": "jlpt-n4-basic-grammar-pack", "title": "N4 基础语法整理", "subtitle": "初级语法体系化复习",
+     "category": "jlpt", "sub": "jlpt_n4", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备 N4 的学习者",
+     "delivery": "会员资料"},
+    {"slug": "jlpt-n5-entry-study-plan", "title": "N5 入门学习计划", "subtitle": "假名、基础词汇与入门语法",
+     "category": "jlpt", "sub": "jlpt_n5", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "刚开始学日语的用户", "delivery": "登录后查看"},
+
+    # 大学院 / 留学
+    {"slug": "graduate-school-application-full-pack", "title": "大学院申请全流程资料包", "subtitle": "时间线、材料、教授联系与面试准备",
+     "category": "study_japan", "sub": "graduate_school", "product_type": "pdf_material", "price": 99, "currency": "CNY",
+     "price_label": "¥99", "coming_soon": True, "member_included": 1, "is_featured": 1, "target": "准备申请大学院的用户",
+     "delivery": "数字资料", "tags": ["大学院", "申请流程"]},
+    {"slug": "professor-email-template-pack", "title": "教授联系邮件模板", "subtitle": "事前相談与研究室联系",
+     "category": "study_japan", "sub": "research_plan", "product_type": "template", "price": 29, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "需要联系教授的申请者",
+     "delivery": "会员资料"},
+    {"slug": "graduate-school-interview-100", "title": "大学院面试问题 100 题", "subtitle": "研究计划、志望理由与逆質問",
+     "category": "study_japan", "sub": "interview", "product_type": "pdf_material", "price": 49, "currency": "CNY",
+     "price_label": "¥49", "coming_soon": True, "member_included": 1, "target": "准备大学院面试的申请者", "delivery": "数字资料"},
+    {"slug": "application-documents-checklist", "title": "出愿材料检查清单", "subtitle": "出愿前逐项确认",
+     "category": "study_japan", "sub": "application_documents", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备出愿的申请者", "delivery": "会员资料"},
+    {"slug": "humanities-research-plan-guide", "title": "文科研究计划书写作指南", "subtitle": "问题意识、先行研究、研究方法",
+     "category": "study_japan", "sub": "research_plan", "product_type": "pdf_material", "price": 59, "currency": "CNY",
+     "price_label": "¥59", "coming_soon": True, "member_included": 1, "target": "文科大学院申请者", "delivery": "数字资料"},
+    {"slug": "science-research-plan-guide", "title": "理科研究计划书写作指南", "subtitle": "课题设定、实验计划与可行性",
+     "category": "study_japan", "sub": "research_plan", "product_type": "pdf_material", "price": 59, "currency": "CNY",
+     "price_label": "¥59", "coming_soon": True, "member_included": 1, "target": "理工科大学院申请者", "delivery": "数字资料"},
+    {"slug": "language-school-selection-guide", "title": "语言学校选择指南", "subtitle": "地区、费用、升学支持和签证流程",
+     "category": "study_abroad_japan", "sub": "language_school", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备申请语言学校的用户", "delivery": "会员资料"},
+    {"slug": "coe-material-guide", "title": "COE 材料准备指南", "subtitle": "经费支付人、学历证明与材料节奏",
+     "category": "study_abroad_japan", "sub": "visa", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备申请留学签证的用户", "delivery": "会员资料"},
+
+    # 就职 / 生活
+    {"slug": "rirekisho-template-pack", "title": "履历书模板包", "subtitle": "日本就职标准格式和填写提示",
+     "category": "career_japan", "sub": "rirekisho", "product_type": "template", "price": 29, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "member_discount": 0, "target": "准备就职的用户", "delivery": "会员资料"},
+    {"slug": "shokumukeirekisho-template-pack", "title": "职务经歴书模板包", "subtitle": "中途转职与经验整理",
+     "category": "career_japan", "sub": "rirekisho", "product_type": "template", "price": 39, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备日本转职的用户", "delivery": "会员资料"},
+    {"slug": "self-pr-motivation-template", "title": "自己 PR 和志望动机模板", "subtitle": "故事结构和表达模板",
+     "category": "career_japan", "sub": "job_interview", "product_type": "template", "price": 39, "currency": "CNY",
+     "price_label": "¥39", "coming_soon": True, "member_included": 1, "target": "准备 ES/面试的用户", "delivery": "数字资料"},
+    {"slug": "foreigner-company-selection-checklist", "title": "外国人公司选择清单", "subtitle": "签证、语言环境、评价制度和加班文化",
+     "category": "career_japan", "sub": "company_selection", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备投递公司的用户", "delivery": "会员资料"},
+    {"slug": "work-visa-change-checklist", "title": "签证变更材料清单", "subtitle": "留学签转工作签的材料准备",
+     "category": "career_japan", "sub": "visa", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "拿到内定准备变更签证的用户", "delivery": "会员资料"},
+    {"slug": "bank-account-document-checklist", "title": "日本银行卡申请材料清单", "subtitle": "开户前准备材料",
+     "category": "life_japan", "sub": "bank_account_japan", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "刚到日本需要开户的用户", "delivery": "登录后查看"},
+    {"slug": "three-bank-comparison", "title": "三大银行开户对比表", "subtitle": "MUFG、SMBC、Mizuho 对比",
+     "category": "life_japan", "sub": "bank_account_japan", "product_type": "member_resource", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "需要选择银行的用户", "delivery": "会员资料"},
+    {"slug": "national-health-insurance-checklist", "title": "国民健康保险办理清单", "subtitle": "役所办理前后要确认的事项",
+     "category": "life_japan", "sub": "national_health_insurance", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "刚到日本或搬家的用户", "delivery": "登录后查看"},
+    {"slug": "pension-exemption-student-guide", "title": "年金免除/学生纳付特例说明", "subtitle": "留学生年金手续",
+     "category": "life_japan", "sub": "national_pension", "product_type": "member_resource", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "20 岁以上留学生", "delivery": "会员资料"},
+    {"slug": "mobile-plan-comparison", "title": "日本手机卡选择对比表", "subtitle": "大手、格安 SIM、eSIM",
+     "category": "life_japan", "sub": "mobile_plan_japan", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "准备办理手机卡的用户", "delivery": "登录后查看"},
+    {"slug": "four-carriers-comparison", "title": "四大运营商对比", "subtitle": "Docomo、au、SoftBank、Rakuten Mobile",
+     "category": "life_japan", "sub": "mobile_plan_japan", "product_type": "member_resource", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "想比较运营商的用户", "delivery": "会员资料"},
+    {"slug": "mnp-switching-notes", "title": "MNP 转社注意事项", "subtitle": "携号转网、费用和积分活动风险",
+     "category": "life_japan", "sub": "points_and_switching", "product_type": "member_resource", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "考虑手机转社的用户", "delivery": "会员资料",
+     "notes": "活动条件经常变化，请以运营商和活动页面为准。Machi 不承诺一定获得积分。"},
+
+    # 服务类：只做预约/支付预留，不进入会员免费权益。
+    {"slug": "shokumukeirekisho-review-service", "title": "职务经歴书修改服务", "subtitle": "中途转职材料优化",
+     "category": "career_japan", "sub": "rirekisho", "product_type": "resume_review", "price": 0, "currency": "CNY",
+     "price_label": "¥299 起", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备转职的用户",
+     "delivery": "人工服务·线上", "refund_policy": "人工服务预约后按实际确认的服务范围执行，未开始前可联系协商取消。"},
+    {"slug": "research-plan-review-service", "title": "研究计划书修改服务", "subtitle": "大学院申请材料辅导",
+     "category": "study_japan", "sub": "research_plan", "product_type": "research_plan_review", "price": 0, "currency": "CNY",
+     "price_label": "¥499 起", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备大学院申请的用户",
+     "delivery": "人工服务·线上"},
+    {"slug": "graduate-school-consultation", "title": "大学院申请咨询", "subtitle": "选校、研究室、时间线",
+     "category": "study_japan", "sub": "graduate_school", "product_type": "graduate_school_support", "price": 0, "currency": "CNY",
+     "price_label": "预约咨询", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "需要申请规划的用户",
+     "delivery": "预约咨询"},
+    {"slug": "language-school-consultation", "title": "语言学校申请咨询", "subtitle": "择校、材料和 COE",
+     "category": "study_abroad_japan", "sub": "language_school", "product_type": "language_school_support", "price": 0, "currency": "CNY",
+     "price_label": "预约咨询", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备赴日留学的用户",
+     "delivery": "预约咨询"},
+    {"slug": "japan-job-mock-interview", "title": "日本就职模拟面试", "subtitle": "一次/二次/最终面试演练",
+     "category": "career_japan", "sub": "job_interview", "product_type": "interview_coaching", "price": 0, "currency": "CNY",
+     "price_label": "¥299 起", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备日本就职面试的用户",
+     "delivery": "人工服务·线上"},
+])
+
+# ---------------------------------------------------------------------------
+# JLPT N1-N5「过去问题型趋势分析与原创练习」— 统一 ¥49。
+# 合规：原创整理 + 题型趋势 + 原创练习题，绝不包含未授权官方历年真题原文。
+# is_member_included 默认 false（可后台改），is_member_discount=true（可后台改）。
+# ---------------------------------------------------------------------------
+_JLPT_COMPLIANCE_NOTE = (
+    "本资料为 Machi 日语学习编辑部原创整理，包含 JLPT 题型趋势分析、备考重点、"
+    "公开样题解析思路、原创练习题和学习建议。不包含未授权官方历年真题原文。"
+)
+
+def _jlpt_trend_product(level: str, sub: str, contents: list[str], *, featured: bool = False) -> dict[str, Any]:
+    body = "、".join(contents)
+    return {
+        "slug": f"jlpt-{level.lower()}-past-trend-original-practice",
+        "title": f"JLPT {level} 过去问题型趋势分析与原创练习",
+        "subtitle": f"{level} 题型趋势 + 原创练习，统一 ¥49",
+        "category": "jlpt", "sub": sub, "product_type": "pdf_material",
+        "price": 49, "currency": "CNY", "price_label": "¥49",
+        "coming_soon": False, "is_service": 0,
+        "member_included": 0, "member_discount": 1, "member_price": 39,
+        "is_featured": 1 if featured else 0,
+        "target": f"准备 {level} 的学习者", "delivery": "数字资料（PDF，购买后可在“我的资料”查看）",
+        "tags": ["JLPT", level, "过去问趋势", "原创练习"],
+        "description": f"内容包含：{body}。\n\n{_JLPT_COMPLIANCE_NOTE}",
+        "preview": (
+            f"预览：{level} 三大模块（言语知识・阅读・听力）的题型趋势概览、备考重点目录，"
+            "以及 2 道原创样题与解题思路示例。"
+        ),
+        "purchase": (
+            f"购买后获得：{level} 完整题型趋势分析 PDF、各模块答题策略、原创练习题，"
+            "以及考前 30 天备考计划与错题整理建议。"
+        ),
+        "refund_policy": "数字资料一经解锁不支持退款；购买前请先查看预览内容。",
+        "notes": _JLPT_COMPLIANCE_NOTE,
+    }
+
+GUIDE_PRODUCT_SEED.extend([
+    _jlpt_trend_product("N1", "jlpt_n1", [
+        "N1 题型趋势分析", "高频语法方向", "高频词汇方向", "阅读题型整理",
+        "听力题型整理", "原创练习题", "考前 30 天计划", "答题策略",
+    ], featured=True),
+    _jlpt_trend_product("N2", "jlpt_n2", [
+        "N2 题型趋势分析", "高频语法方向", "高频词汇方向", "阅读题型整理",
+        "听力题型整理", "原创练习题", "考前 30 天计划", "答题策略",
+    ], featured=True),
+    _jlpt_trend_product("N3", "jlpt_n3", [
+        "N3 题型趋势分析", "语法重点", "词汇重点", "阅读基础训练",
+        "听力基础训练", "原创练习题", "备考计划",
+    ]),
+    _jlpt_trend_product("N4", "jlpt_n4", [
+        "N4 题型趋势分析", "基础语法", "基础词汇", "阅读入门",
+        "听力入门", "原创练习题", "学习计划",
+    ]),
+    _jlpt_trend_product("N5", "jlpt_n5", [
+        "N5 题型趋势分析", "五十音复习", "入门词汇", "入门语法",
+        "简单阅读", "听力入门", "原创练习题", "学习计划",
+    ]),
+])
+
+# ---------------------------------------------------------------------------
+# 日本本地服务商品。is_service=1 ⇒ 永不进入会员免费权益（后台/种子均强制），
+# 但可设 member_discount。多数为「预约咨询」(price_label 报价、走预约表单)；
+# 有固定价的(如语言学校申请咨询 ¥1000)也可走 Web Stripe。
+# ---------------------------------------------------------------------------
+def _guide_service(slug: str, title: str, subtitle: str, product_type: str, sub: str,
+                   price_label: str, target: str, scope: list[str], excludes: list[str],
+                   *, price: int = 0, delivery: str = "人工服务·线上/线下",
+                   extra: str = "", featured: bool = False) -> dict[str, Any]:
+    desc_parts = [subtitle + "。" if subtitle and not subtitle.endswith("。") else subtitle]
+    if extra:
+        desc_parts.append(extra)
+    desc_parts.append("服务范围：" + "；".join(scope) + "。")
+    desc_parts.append("不包含：" + "；".join(excludes) + "。")
+    return {
+        "slug": slug, "title": title, "subtitle": subtitle,
+        "category": "guide_services", "sub": sub, "product_type": product_type,
+        "price": price, "currency": "CNY", "price_label": price_label,
+        "coming_soon": False, "is_service": 1, "member_discount": 1,
+        "is_featured": 1 if featured else 0, "target": target, "delivery": delivery,
+        "description": "\n\n".join(p for p in desc_parts if p),
+        "refund_policy": "预约后如未开始服务可协商取消；已开始或已完成的人工服务按实际进度结算，不保证特定结果。",
+        "notes": "本服务为信息协助/陪同性质，不替代任何官方机构的审核与决定，不提供虚假材料。",
+    }
+
+GUIDE_PRODUCT_SEED.extend([
+    _guide_service("tokyo-disney-companion", "东京迪士尼带玩服务", "第一次去东京迪士尼、不会日语也能玩得顺",
+        "disney_companion", "japan_tour_companion", "预约咨询",
+        "第一次去东京迪士尼、不熟悉路线和预约系统的用户",
+        ["行程规划", "入园路线建议", "项目优先级建议", "当天陪同", "简单翻译协助", "拍照协助", "餐厅/表演安排建议"],
+        ["门票费用", "餐饮费用", "交通费用", "快速通行或付费项目费用", "不保证项目等待时间", "不保证园区运营情况"],
+        featured=True),
+    _guide_service("japan-airport-pickup", "日本机场接机服务", "成田・羽田・关西等机场接机协助",
+        "airport_pickup", "japan_tour_companion", "预约咨询",
+        "初到日本、行李较多、不熟悉交通的用户",
+        ["到达口接应", "协助购买交通票", "协助前往住处", "简单入住沟通协助", "行李路线建议"],
+        ["交通费", "高速费", "停车费", "额外等待费（可后台设置）", "酒店/房东费用"],
+        extra="可选机场：成田、羽田、关西、中部国际、福冈。", featured=True),
+    _guide_service("japanese-phone-call-proxy", "日语翻译与电话代打", "用日语联系学校、房东、银行、役所等",
+        "translation_call", "japan_language_support", "¥99 起",
+        "需要用日语联系学校/房东/中介/银行/手机公司/役所/医院/快递等的用户",
+        ["电话前信息整理", "日语电话代打", "简单口译", "通话结果整理", "文字说明反馈"],
+        ["法律/医疗专业判断", "替用户作虚假陈述", "高风险合同承诺", "代签文件"]),
+    _guide_service("japanese-document-translation", "日语文件翻译协助", "通知、邮件、学校材料的中日翻译协助",
+        "translation_call", "japan_language_support", "¥99 起",
+        "需要理解简单文件、通知、邮件、生活手续说明的用户",
+        ["日文通知理解", "邮件翻译", "简单文件说明", "回复文案建议"],
+        ["法律认证翻译", "公证翻译", "医疗诊断翻译", "高风险合同审查"]),
+    _guide_service("part-time-job-finding-help", "帮忙找打工服务", "打工方向、招聘筛选与联系协助",
+        "part_time_job_support", "japan_job_support", "预约咨询",
+        "在日本想找兼职但不熟悉日语招聘、面试、履历书的用户",
+        ["打工方向建议", "招聘信息筛选", "履历书准备建议", "电话/邮件联系协助", "面试注意事项", "资格外活动许可提醒"],
+        ["不保证录用", "不代替雇主决定", "不协助违规打工", "不提供虚假材料"]),
+    _guide_service("bank-account-companion", "银行卡办理陪同", "开户材料、银行选择与现场沟通协助",
+        "bank_account_support", "japan_life_procedure", "预约咨询",
+        "刚到日本、不熟悉银行开户流程和日语沟通的用户",
+        ["开户材料检查", "银行选择建议", "预约/路线建议", "现场陪同", "基础日语沟通协助"],
+        ["不保证开户成功", "不代替银行审核", "不提供虚假材料"],
+        extra="可选银行：三菱UFJ、三井住友、みずほ、ゆうちょ、りそな等。"),
+    _guide_service("housing-application-companion", "租房申请陪同", "看房、申请、和中介沟通的全程协助",
+        "housing_support", "japan_housing", "预约咨询",
+        "想在日本租房、看房、申请、和中介沟通的用户",
+        ["租房条件整理", "房源沟通协助", "看房陪同", "申请材料检查", "中介沟通翻译", "初期费用说明", "保证会社说明"],
+        ["不保证审查通过", "不承担租赁合同责任", "不代替用户签约", "不提供虚假材料", "不承担房源真实性保证"],
+        featured=True),
+    _guide_service("city-hall-companion", "役所手续陪同", "住民登记、保险、年金等手续陪同",
+        "procedure_companion", "japan_life_procedure", "预约咨询",
+        "刚到日本需要办理住民登记、保险、年金、地址变更等手续的用户",
+        ["手续清单整理", "材料检查", "役所路线/窗口说明", "现场陪同", "简单翻译协助"],
+        ["不代替官方审核", "不提供虚假材料", "不承担手续结果"],
+        extra="适用手续：住民登记、地址变更、国民健康保险、年金咨询、印章登记、住民票申请。"),
+    _guide_service("mobile-sim-companion", "手机卡办理陪同", "运营商选择、套餐说明与现场办理协助",
+        "procedure_companion", "japan_life_procedure", "预约咨询",
+        "不会日语、不知道选哪家运营商、需要现场协助的用户",
+        ["运营商选择建议", "套餐说明", "材料检查", "现场陪同", "开通协助"],
+        ["不代替运营商审核", "不承担套餐费用", "不提供虚假材料"],
+        extra="可选：Docomo、au、SoftBank、Rakuten、ahamo、povo、LINEMO、UQ、Y!mobile。"),
+    _guide_service("arrival-one-day-companion", "入境后生活手续一日陪同", "役所・手机卡・银行・交通卡一日搞定",
+        "procedure_companion", "japan_life_procedure", "预约咨询",
+        "刚到日本，需要集中办理役所、手机卡、银行卡、交通卡、住处确认等事项的用户",
+        ["当日路线规划", "役所手续协助", "手机卡办理协助", "银行开户材料确认", "交通卡/生活说明", "基础翻译"],
+        ["各项官方审核结果", "交通与办理产生的费用", "不提供虚假材料"], featured=True),
+    _guide_service("graduate-school-consult", "大学院申请咨询", "方向、研究室、出愿与面试整体咨询",
+        "graduate_school_support", "japan_graduate_school", "预约咨询",
+        "准备申请日本大学院的用户",
+        ["申请方向梳理", "研究室/教授匹配建议", "出愿时间线规划", "材料清单", "面试准备建议"],
+        ["不保证合格", "不代替教授决定", "不提供虚假材料"]),
+    _guide_service("research-plan-revision", "研究计划书修改服务", "结构、问题意识、研究方法逐项修改",
+        "research_plan_review", "japan_graduate_school", "¥499 起",
+        "准备大学院出愿、需要打磨研究计划书的用户",
+        ["结构梳理", "问题意识与先行研究建议", "研究方法可行性建议", "语言表达润色", "教授视角反馈"],
+        ["不代写", "不保证合格", "不提供学术不端协助"]),
+    _guide_service("language-school-application-consult", "语言学校申请咨询", "选校、材料、经费与签证全流程",
+        "language_school_support", "japan_study_abroad", "¥1000",
+        "准备申请语言学校赴日留学的用户",
+        ["选校建议", "申请材料清单与检查", "经费支付人材料说明", "COE/签证流程说明", "时间线规划"],
+        ["不保证 COE/签证通过", "不代替入管审核", "不提供虚假材料"],
+        price=1000, delivery="人工服务·线上（一次性套餐 ¥1000）"),
+    _guide_service("shokumukeirekisho-revision", "职务经歴书修改服务", "技能、项目与成果表达打磨",
+        "resume_review", "japan_job_support", "¥299 起",
+        "准备日本中途就职、需要打磨职务经歴书的用户",
+        ["结构梳理", "技能总结建议", "项目经历表达", "成果量化建议", "排版规范"],
+        ["不代写虚假经历", "不保证录用"]),
+    _guide_service("es-motivation-revision", "ES / 志望动机修改服务", "志望动机与自己 PR 文案打磨",
+        "career_support", "japan_job_support", "¥199 起",
+        "准备日本就职、需要打磨 ES / 志望动机的用户",
+        ["志望动机结构建议", "自己 PR 表达打磨", "公司针对性建议", "日语表达润色"],
+        ["不代写虚假内容", "不保证通过筛选"]),
+    _guide_service("japan-life-consultation", "日本生活问题咨询", "在留、手续、租房、打工等综合咨询",
+        "consultation", "japan_life_procedure", "预约咨询",
+        "在日本生活遇到手续、租房、打工、保险等问题、想要一对一咨询的用户",
+        ["问题梳理", "可行方案建议", "所需材料/流程说明", "避坑提醒", "后续行动建议"],
+        ["法律/医疗/税务专业判断", "不替代官方机构", "不提供虚假材料"]),
+    _guide_service("hospital-appointment-call", "医院预约电话协助", "日语电话预约医院、说明症状协助",
+        "translation_call", "japan_language_support", "¥99 起",
+        "需要用日语预约医院、说明就诊需求的用户",
+        ["预约前信息整理", "日语电话预约", "简单症状沟通协助", "预约结果整理"],
+        ["医疗诊断与建议", "替用户作虚假陈述", "紧急医疗（请直接拨打急救）"]),
+    _guide_service("delivery-utility-call", "快递/水电煤电话协助", "联系快递、水电气等日语电话协助",
+        "translation_call", "japan_life_procedure", "¥99 起",
+        "需要联系快递、水电煤气等服务的用户",
+        ["电话前信息整理", "日语电话代打", "结果整理与反馈"],
+        ["费用代缴", "高风险合同承诺", "代签文件"]),
+])
+
+# 学校/公司种子：只录入官方链接、名称、地区、类型等可维护基础字段。
+# 评分、评论、申请细节不造数据；verification_status=needs_review。
+GUIDE_SCHOOL_SEED: list[dict[str, Any]] = [
+    {"slug": "the-university-of-tokyo", "school_name": "东京大学", "school_name_jp": "東京大学",
+     "school_name_en": "The University of Tokyo", "school_type": "university", "prefecture": "tokyo", "city": "tokyo",
+     "website": "https://www.u-tokyo.ac.jp/", "international_admission_url": "https://www.u-tokyo.ac.jp/en/prospective-students/",
+     "fields_of_study": ["Engineering", "Humanities", "Science", "Medicine"], "is_featured": 1},
+    {"slug": "kyoto-university", "school_name": "京都大学", "school_name_jp": "京都大学",
+     "school_name_en": "Kyoto University", "school_type": "university", "prefecture": "kyoto", "city": "kyoto",
+     "website": "https://www.kyoto-u.ac.jp/", "international_admission_url": "https://www.kyoto-u.ac.jp/en/education-campus/education-and-admissions",
+     "fields_of_study": ["Engineering", "Science", "Humanities", "Medicine"], "is_featured": 1},
+    {"slug": "osaka-university", "school_name": "大阪大学", "school_name_jp": "大阪大学",
+     "school_name_en": "Osaka University", "school_type": "university", "prefecture": "osaka", "city": "osaka",
+     "website": "https://www.osaka-u.ac.jp/", "international_admission_url": "https://www.osaka-u.ac.jp/en/international",
+     "fields_of_study": ["Engineering", "Science", "Humanities"], "is_featured": 1},
+    {"slug": "waseda-university", "school_name": "早稻田大学", "school_name_jp": "早稲田大学",
+     "school_name_en": "Waseda University", "school_type": "university", "prefecture": "tokyo", "city": "tokyo",
+     "website": "https://www.waseda.jp/", "international_admission_url": "https://www.waseda.jp/inst/admission/en/",
+     "fields_of_study": ["Business", "Humanities", "Engineering", "Education"], "is_featured": 1},
+    {"slug": "keio-university", "school_name": "庆应义塾大学", "school_name_jp": "慶應義塾大学",
+     "school_name_en": "Keio University", "school_type": "university", "prefecture": "tokyo", "city": "tokyo",
+     "website": "https://www.keio.ac.jp/", "international_admission_url": "https://www.keio.ac.jp/en/admissions/",
+     "fields_of_study": ["Business", "Medicine", "Engineering", "Humanities"]},
+    {"slug": "tokyo-international-university", "school_name": "东京国际大学", "school_name_jp": "東京国際大学",
+     "school_name_en": "Tokyo International University", "school_type": "university", "prefecture": "saitama", "city": "kawagoe",
+     "website": "https://www.tiu.ac.jp/", "international_admission_url": "https://www.tiu.ac.jp/etrack/",
+     "fields_of_study": ["Business", "International Relations", "Education"]},
+    {"slug": "japan-electronics-college", "school_name": "日本电子专门学校", "school_name_jp": "日本電子専門学校",
+     "school_name_en": "Japan Electronics College", "school_type": "vocational_school", "prefecture": "tokyo", "city": "tokyo",
+     "website": "https://www.jec.ac.jp/", "international_admission_url": "https://www.jec.ac.jp/foreign/",
+     "fields_of_study": ["IT", "Engineering", "Anime/Game", "Design"]},
+    {"slug": "hal-tokyo", "school_name": "HAL 东京", "school_name_jp": "HAL東京",
+     "school_name_en": "HAL Tokyo", "school_type": "vocational_school", "prefecture": "tokyo", "city": "tokyo",
+     "website": "https://www.hal.ac.jp/tokyo", "international_admission_url": "https://www.hal.ac.jp/tokyo/apply/overseas",
+     "fields_of_study": ["IT", "Anime/Game", "Design"]},
+    {"slug": "isi-japanese-language-school", "school_name": "ISI 日本语学校", "school_name_jp": "ISI日本語学校",
+     "school_name_en": "ISI Japanese Language School", "school_type": "language_school", "prefecture": "tokyo", "city": "tokyo",
+     "website": "https://www.isi-education.com/", "international_admission_url": "https://www.isi-education.com/admission/",
+     "fields_of_study": ["Language"]},
+    {"slug": "kai-japanese-language-school", "school_name": "KAI 日本语学校", "school_name_jp": "カイ日本語スクール",
+     "school_name_en": "KAI Japanese Language School", "school_type": "language_school", "prefecture": "tokyo", "city": "tokyo",
+     "website": "https://www.kaij.jp/", "international_admission_url": "https://www.kaij.jp/application/",
+     "fields_of_study": ["Language"]},
+]
+
+GUIDE_COMPANY_SEED: list[dict[str, Any]] = [
+    {"slug": "rakuten-group", "name": "乐天集团", "name_jp": "楽天グループ株式会社", "name_en": "Rakuten Group, Inc.",
+     "industry": "it_internet", "city": "tokyo", "website": "https://corp.rakuten.co.jp/",
+     "career_url": "https://corp.rakuten.co.jp/careers/", "company_size": "enterprise", "founded": 1997, "is_featured": 1},
+    {"slug": "mercari", "name": "Mercari", "name_jp": "株式会社メルカリ", "name_en": "Mercari, Inc.",
+     "industry": "it_internet", "city": "tokyo", "website": "https://about.mercari.com/",
+     "career_url": "https://careers.mercari.com/", "company_size": "large", "founded": 2013, "is_featured": 1},
+    {"slug": "line-yahoo", "name": "LINE Yahoo", "name_jp": "LINEヤフー株式会社", "name_en": "LY Corporation",
+     "industry": "it_internet", "city": "tokyo", "website": "https://www.lycorp.co.jp/",
+     "career_url": "https://www.lycorp.co.jp/ja/recruit/", "company_size": "enterprise", "founded": 1996, "is_featured": 1},
+    {"slug": "sony-group", "name": "Sony Group", "name_jp": "ソニーグループ株式会社", "name_en": "Sony Group Corporation",
+     "industry": "electronics", "city": "tokyo", "website": "https://www.sony.com/",
+     "career_url": "https://www.sony.com/ja/SonyInfo/Jobs/", "company_size": "enterprise", "founded": 1946},
+    {"slug": "softbank-corp", "name": "软银", "name_jp": "ソフトバンク株式会社", "name_en": "SoftBank Corp.",
+     "industry": "telecom", "city": "tokyo", "website": "https://www.softbank.jp/corp/",
+     "career_url": "https://www.softbank.jp/recruit/", "company_size": "enterprise", "founded": 1986, "is_featured": 1},
+    {"slug": "recruit-holdings", "name": "Recruit", "name_jp": "株式会社リクルートホールディングス", "name_en": "Recruit Holdings Co., Ltd.",
+     "industry": "it_internet", "city": "tokyo", "website": "https://recruit-holdings.com/",
+     "career_url": "https://recruit-holdings.com/ja/recruit/", "company_size": "enterprise", "founded": 1960},
+    {"slug": "fast-retailing", "name": "迅销集团（优衣库）", "name_jp": "株式会社ファーストリテイリング", "name_en": "FAST RETAILING CO., LTD.",
+     "industry": "retail", "city": "tokyo", "website": "https://www.fastretailing.com/",
+     "career_url": "https://www.fastretailing.com/employment/", "company_size": "enterprise", "founded": 1963},
+    {"slug": "toyota-motor", "name": "Toyota", "name_jp": "トヨタ自動車株式会社", "name_en": "Toyota Motor Corporation",
+     "industry": "automotive", "prefecture": "aichi", "city": "toyota", "website": "https://global.toyota/",
+     "career_url": "https://www.toyota-recruit.com/", "company_size": "enterprise", "founded": 1937},
+    {"slug": "ntt-data", "name": "NTT DATA", "name_jp": "株式会社NTTデータ", "name_en": "NTT DATA Corporation",
+     "industry": "software", "city": "tokyo", "website": "https://www.nttdata.com/global/en/",
+     "career_url": "https://www.nttdata.com/global/en/careers", "company_size": "enterprise", "founded": 1988},
+    {"slug": "fujitsu", "name": "Fujitsu", "name_jp": "富士通株式会社", "name_en": "Fujitsu Limited",
+     "industry": "software", "city": "tokyo", "website": "https://www.fujitsu.com/",
+     "career_url": "https://www.fujitsu.com/global/about/careers/", "company_size": "enterprise", "founded": 1935},
+]
+
+
+def _append_guide_school_seed(slug: str, name: str, name_jp: str, name_en: str, school_type: str,
+                              prefecture: str, city: str, website: str = "", fields: list[str] | None = None,
+                              featured: int = 0) -> None:
+    if any(s["slug"] == slug for s in GUIDE_SCHOOL_SEED):
+        return
+    source_url = website or "https://www.studyinjapan.go.jp/en/search-school/"
+    GUIDE_SCHOOL_SEED.append({
+        "slug": slug,
+        "school_name": name,
+        "school_name_jp": name_jp,
+        "school_name_en": name_en,
+        "school_type": school_type,
+        "prefecture": prefecture,
+        "city": city,
+        "website": website,
+        "fields_of_study": fields or ["unknown"],
+        "source_type": "school_website" if website else "study_in_japan",
+        "source_name": name_en or name_jp or name,
+        "source_url": source_url,
+        "verification_status": "needs_review",
+        "is_featured": featured,
+    })
+
+
+for _school in [
+    ("tohoku-university", "东北大学", "東北大学", "Tohoku University", "university", "miyagi", "sendai", "https://www.tohoku.ac.jp/", ["Engineering", "Science", "Humanities"], 1),
+    ("hokkaido-university", "北海道大学", "北海道大学", "Hokkaido University", "university", "hokkaido", "sapporo", "https://www.hokudai.ac.jp/", ["Science", "Agriculture", "Engineering"], 1),
+    ("nagoya-university", "名古屋大学", "名古屋大学", "Nagoya University", "university", "aichi", "nagoya", "https://www.nagoya-u.ac.jp/", ["Science", "Engineering", "Humanities"], 1),
+    ("kyushu-university", "九州大学", "九州大学", "Kyushu University", "university", "fukuoka", "fukuoka", "https://www.kyushu-u.ac.jp/", ["Engineering", "Science", "Medicine"], 1),
+    ("university-of-tsukuba", "筑波大学", "筑波大学", "University of Tsukuba", "university", "ibaraki", "tsukuba", "https://www.tsukuba.ac.jp/", ["Science", "Sports", "Humanities"], 1),
+    ("institute-of-science-tokyo", "东京科学大学", "東京科学大学", "Institute of Science Tokyo", "university", "tokyo", "tokyo", "https://www.isct.ac.jp/", ["Science", "Engineering", "Medicine"], 1),
+    ("hitotsubashi-university", "一桥大学", "一橋大学", "Hitotsubashi University", "university", "tokyo", "kunitachi", "https://www.hit-u.ac.jp/", ["Commerce", "Economics", "Law"]),
+    ("kobe-university", "神户大学", "神戸大学", "Kobe University", "university", "hyogo", "kobe", "https://www.kobe-u.ac.jp/", ["Economics", "Engineering", "Medicine"]),
+    ("hiroshima-university", "广岛大学", "広島大学", "Hiroshima University", "university", "hiroshima", "higashihiroshima", "https://www.hiroshima-u.ac.jp/", ["Education", "Science", "Engineering"]),
+    ("okayama-university", "冈山大学", "岡山大学", "Okayama University", "university", "okayama", "okayama", "https://www.okayama-u.ac.jp/", ["Medicine", "Science", "Engineering"]),
+    ("kanazawa-university", "金泽大学", "金沢大学", "Kanazawa University", "university", "ishikawa", "kanazawa", "https://www.kanazawa-u.ac.jp/", ["Humanities", "Science", "Medicine"]),
+    ("chiba-university", "千叶大学", "千葉大学", "Chiba University", "university", "chiba", "chiba", "https://www.chiba-u.ac.jp/", ["Medicine", "Engineering", "Design"]),
+    ("yokohama-national-university", "横滨国立大学", "横浜国立大学", "Yokohama National University", "university", "kanagawa", "yokohama", "https://www.ynu.ac.jp/", ["Engineering", "Economics", "Education"]),
+    ("tokyo-metropolitan-university", "东京都立大学", "東京都立大学", "Tokyo Metropolitan University", "university", "tokyo", "hachioji", "https://www.tmu.ac.jp/", ["Urban Studies", "Science", "Engineering"]),
+    ("osaka-metropolitan-university", "大阪公立大学", "大阪公立大学", "Osaka Metropolitan University", "university", "osaka", "osaka", "https://www.omu.ac.jp/", ["Engineering", "Medicine", "Business"]),
+    ("tokyo-university-of-foreign-studies", "东京外国语大学", "東京外国語大学", "Tokyo University of Foreign Studies", "university", "tokyo", "fuchu", "https://www.tufs.ac.jp/", ["Languages", "International Studies"]),
+    ("tokyo-university-of-agriculture-and-technology", "东京农工大学", "東京農工大学", "Tokyo University of Agriculture and Technology", "university", "tokyo", "fuchu", "https://www.tuat.ac.jp/", ["Agriculture", "Engineering"]),
+    ("ochanomizu-university", "御茶水女子大学", "お茶の水女子大学", "Ochanomizu University", "university", "tokyo", "tokyo", "https://www.ocha.ac.jp/", ["Humanities", "Science"]),
+    ("tokyo-gakugei-university", "东京学艺大学", "東京学芸大学", "Tokyo Gakugei University", "university", "tokyo", "koganei", "https://www.u-gakugei.ac.jp/", ["Education"]),
+    ("niigata-university", "新潟大学", "新潟大学", "Niigata University", "university", "niigata", "niigata", "https://www.niigata-u.ac.jp/", ["Medicine", "Agriculture", "Engineering"]),
+    ("kumamoto-university", "熊本大学", "熊本大学", "Kumamoto University", "university", "kumamoto", "kumamoto", "https://www.kumamoto-u.ac.jp/", ["Engineering", "Medicine", "Humanities"]),
+    ("nagasaki-university", "长崎大学", "長崎大学", "Nagasaki University", "university", "nagasaki", "nagasaki", "https://www.nagasaki-u.ac.jp/", ["Medicine", "Global Health", "Engineering"]),
+    ("shizuoka-university", "静冈大学", "静岡大学", "Shizuoka University", "university", "shizuoka", "shizuoka", "https://www.shizuoka.ac.jp/", ["Engineering", "Informatics", "Education"]),
+    ("shinshu-university", "信州大学", "信州大学", "Shinshu University", "university", "nagano", "matsumoto", "https://www.shinshu-u.ac.jp/", ["Textile Science", "Medicine", "Engineering"]),
+    ("gunma-university", "群马大学", "群馬大学", "Gunma University", "university", "gunma", "maebashi", "https://www.gunma-u.ac.jp/", ["Medicine", "Science", "Engineering"]),
+    ("saitama-university", "埼玉大学", "埼玉大学", "Saitama University", "university", "saitama", "saitama", "https://www.saitama-u.ac.jp/", ["Education", "Economics", "Engineering"]),
+    ("ibaraki-university", "茨城大学", "茨城大学", "Ibaraki University", "university", "ibaraki", "mito", "https://www.ibaraki.ac.jp/", ["Humanities", "Agriculture", "Engineering"]),
+    ("utsunomiya-university", "宇都宫大学", "宇都宮大学", "Utsunomiya University", "university", "tochigi", "utsunomiya", "https://www.utsunomiya-u.ac.jp/", ["Agriculture", "Engineering", "Education"]),
+    ("university-of-yamanashi", "山梨大学", "山梨大学", "University of Yamanashi", "university", "yamanashi", "kofu", "https://www.yamanashi.ac.jp/", ["Medicine", "Engineering", "Education"]),
+    ("mie-university", "三重大学", "三重大学", "Mie University", "university", "mie", "tsu", "https://www.mie-u.ac.jp/", ["Medicine", "Engineering", "Humanities"]),
+    ("gifu-university", "岐阜大学", "岐阜大学", "Gifu University", "university", "gifu", "gifu", "https://www.gifu-u.ac.jp/", ["Medicine", "Engineering", "Agriculture"]),
+    ("shiga-university", "滋贺大学", "滋賀大学", "Shiga University", "university", "shiga", "hikone", "https://www.shiga-u.ac.jp/", ["Economics", "Education", "Data Science"]),
+    ("nara-womens-university", "奈良女子大学", "奈良女子大学", "Nara Women's University", "university", "nara", "nara", "https://www.nara-wu.ac.jp/", ["Humanities", "Science"]),
+    ("wakayama-university", "和歌山大学", "和歌山大学", "Wakayama University", "university", "wakayama", "wakayama", "https://www.wakayama-u.ac.jp/", ["Tourism", "Systems Engineering", "Education"]),
+    ("ehime-university", "爱媛大学", "愛媛大学", "Ehime University", "university", "ehime", "matsuyama", "https://www.ehime-u.ac.jp/", ["Medicine", "Agriculture", "Engineering"]),
+    ("kagawa-university", "香川大学", "香川大学", "Kagawa University", "university", "kagawa", "takamatsu", "https://www.kagawa-u.ac.jp/", ["Medicine", "Engineering", "Economics"]),
+    ("tokushima-university", "德岛大学", "徳島大学", "Tokushima University", "university", "tokushima", "tokushima", "https://www.tokushima-u.ac.jp/", ["Medicine", "Science", "Engineering"]),
+    ("kochi-university", "高知大学", "高知大学", "Kochi University", "university", "kochi", "kochi", "https://www.kochi-u.ac.jp/", ["Humanities", "Agriculture", "Medicine"]),
+    ("yamaguchi-university", "山口大学", "山口大学", "Yamaguchi University", "university", "yamaguchi", "yamaguchi", "https://www.yamaguchi-u.ac.jp/", ["Engineering", "Medicine", "Humanities"]),
+    ("saga-university", "佐贺大学", "佐賀大学", "Saga University", "university", "saga", "saga", "https://www.saga-u.ac.jp/", ["Medicine", "Science", "Engineering"]),
+    ("oita-university", "大分大学", "大分大学", "Oita University", "university", "oita", "oita", "https://www.oita-u.ac.jp/", ["Medicine", "Economics", "Education"]),
+    ("miyazaki-university", "宫崎大学", "宮崎大学", "University of Miyazaki", "university", "miyazaki", "miyazaki", "https://www.miyazaki-u.ac.jp/", ["Medicine", "Agriculture", "Engineering"]),
+    ("kagoshima-university", "鹿儿岛大学", "鹿児島大学", "Kagoshima University", "university", "kagoshima", "kagoshima", "https://www.kagoshima-u.ac.jp/", ["Medicine", "Agriculture", "Engineering"]),
+    ("university-of-the-ryukyus", "琉球大学", "琉球大学", "University of the Ryukyus", "university", "okinawa", "nishihara", "https://www.u-ryukyu.ac.jp/", ["Medicine", "Engineering", "Tourism"]),
+    ("ritsumeikan-university", "立命馆大学", "立命館大学", "Ritsumeikan University", "university", "kyoto", "kyoto", "https://www.ritsumei.ac.jp/", ["International Relations", "Policy Science", "Science"]),
+    ("doshisha-university", "同志社大学", "同志社大学", "Doshisha University", "university", "kyoto", "kyoto", "https://www.doshisha.ac.jp/", ["Business", "Law", "Humanities"]),
+    ("kansai-university", "关西大学", "関西大学", "Kansai University", "university", "osaka", "suita", "https://www.kansai-u.ac.jp/", ["Law", "Business", "Engineering"]),
+    ("kwansei-gakuin-university", "关西学院大学", "関西学院大学", "Kwansei Gakuin University", "university", "hyogo", "nishinomiya", "https://www.kwansei.ac.jp/", ["International Studies", "Economics", "Business"]),
+    ("meiji-university", "明治大学", "明治大学", "Meiji University", "university", "tokyo", "tokyo", "https://www.meiji.ac.jp/", ["Law", "Commerce", "Science"]),
+    ("aoyama-gakuin-university", "青山学院大学", "青山学院大学", "Aoyama Gakuin University", "university", "tokyo", "tokyo", "https://www.aoyama.ac.jp/", ["Business", "International Politics", "Humanities"]),
+    ("rikkyo-university", "立教大学", "立教大学", "Rikkyo University", "university", "tokyo", "tokyo", "https://www.rikkyo.ac.jp/", ["Business", "Tourism", "Humanities"]),
+    ("chuo-university", "中央大学", "中央大学", "Chuo University", "university", "tokyo", "hachioji", "https://www.chuo-u.ac.jp/", ["Law", "Commerce", "Science"]),
+    ("hosei-university", "法政大学", "法政大学", "Hosei University", "university", "tokyo", "tokyo", "https://www.hosei.ac.jp/", ["Global Studies", "Economics", "Design Engineering"]),
+    ("sophia-university", "上智大学", "上智大学", "Sophia University", "university", "tokyo", "tokyo", "https://www.sophia.ac.jp/", ["Liberal Arts", "Global Studies", "Science"]),
+    ("tokyo-university-of-science", "东京理科大学", "東京理科大学", "Tokyo University of Science", "university", "tokyo", "tokyo", "https://www.tus.ac.jp/", ["Science", "Engineering", "Pharmacy"]),
+    ("nihon-university", "日本大学", "日本大学", "Nihon University", "university", "tokyo", "tokyo", "https://www.nihon-u.ac.jp/", ["Law", "Engineering", "Medicine"]),
+    ("toyo-university", "东洋大学", "東洋大学", "Toyo University", "university", "tokyo", "tokyo", "https://www.toyo.ac.jp/", ["Global and Regional Studies", "Economics", "Sociology"]),
+    ("komazawa-university", "驹泽大学", "駒澤大学", "Komazawa University", "university", "tokyo", "tokyo", "https://www.komazawa-u.ac.jp/", ["Buddhist Studies", "Law", "Economics"]),
+    ("senshu-university", "专修大学", "専修大学", "Senshu University", "university", "tokyo", "tokyo", "https://www.senshu-u.ac.jp/", ["Economics", "Law", "Business"]),
+    ("gakushuin-university", "学习院大学", "学習院大学", "Gakushuin University", "university", "tokyo", "tokyo", "https://www.univ.gakushuin.ac.jp/", ["Law", "Economics", "Letters"]),
+    ("seikei-university", "成蹊大学", "成蹊大学", "Seikei University", "university", "tokyo", "musashino", "https://www.seikei.ac.jp/university/", ["Economics", "Law", "Science"]),
+    ("seijo-university", "成城大学", "成城大学", "Seijo University", "university", "tokyo", "tokyo", "https://www.seijo.ac.jp/", ["Economics", "Law", "Arts"]),
+    ("musashi-university", "武藏大学", "武蔵大学", "Musashi University", "university", "tokyo", "tokyo", "https://www.musashi.ac.jp/", ["Economics", "Humanities", "Sociology"]),
+    ("tokyo-denki-university", "东京电机大学", "東京電機大学", "Tokyo Denki University", "university", "tokyo", "tokyo", "https://www.dendai.ac.jp/", ["Engineering", "Science"]),
+    ("tokyo-city-university", "东京都市大学", "東京都市大学", "Tokyo City University", "university", "tokyo", "tokyo", "https://www.tcu.ac.jp/", ["Engineering", "Urban Life", "Environment"]),
+    ("shibaura-institute-of-technology", "芝浦工业大学", "芝浦工業大学", "Shibaura Institute of Technology", "university", "tokyo", "tokyo", "https://www.shibaura-it.ac.jp/", ["Engineering", "Design"]),
+    ("kogakuin-university", "工学院大学", "工学院大学", "Kogakuin University", "university", "tokyo", "tokyo", "https://www.kogakuin.ac.jp/", ["Engineering", "Architecture"]),
+    ("kindai-university", "近畿大学", "近畿大学", "Kindai University", "university", "osaka", "higashiosaka", "https://www.kindai.ac.jp/", ["Science", "Medicine", "Agriculture"]),
+    ("ryukoku-university", "龙谷大学", "龍谷大学", "Ryukoku University", "university", "kyoto", "kyoto", "https://www.ryukoku.ac.jp/", ["Humanities", "Economics", "Agriculture"]),
+    ("kyoto-sangyo-university", "京都产业大学", "京都産業大学", "Kyoto Sangyo University", "university", "kyoto", "kyoto", "https://www.kyoto-su.ac.jp/", ["Economics", "Business", "Science"]),
+    ("konan-university", "甲南大学", "甲南大学", "Konan University", "university", "hyogo", "kobe", "https://www.konan-u.ac.jp/", ["Science", "Economics", "Letters"]),
+    ("fukuoka-university", "福冈大学", "福岡大学", "Fukuoka University", "university", "fukuoka", "fukuoka", "https://www.fukuoka-u.ac.jp/", ["Medicine", "Engineering", "Commerce"]),
+    ("asia-university", "亚细亚大学", "亜細亜大学", "Asia University", "university", "tokyo", "musashino", "https://www.asia-u.ac.jp/", ["Business", "International Relations"]),
+    ("takushoku-university", "拓殖大学", "拓殖大学", "Takushoku University", "university", "tokyo", "tokyo", "https://www.takushoku-u.ac.jp/", ["International Studies", "Commerce"]),
+    ("kokushikan-university", "国士馆大学", "国士舘大学", "Kokushikan University", "university", "tokyo", "tokyo", "https://www.kokushikan.ac.jp/", ["Law", "Sports", "Asia Studies"]),
+    ("teikyo-university", "帝京大学", "帝京大学", "Teikyo University", "university", "tokyo", "hachioji", "https://www.teikyo-u.ac.jp/", ["Medicine", "Economics", "Education"]),
+]:
+    _append_guide_school_seed(*_school)
+
+
+for _school in [
+    ("tokyo-mode-gakuen", "东京 Mode 学园", "東京モード学園", "Tokyo Mode Gakuen", "vocational_school", "tokyo", "tokyo", "https://www.mode.ac.jp/tokyo", ["Fashion", "Design"]),
+    ("osaka-mode-gakuen", "大阪 Mode 学园", "大阪モード学園", "Osaka Mode Gakuen", "vocational_school", "osaka", "osaka", "https://www.mode.ac.jp/osaka", ["Fashion", "Design"]),
+    ("nagoya-mode-gakuen", "名古屋 Mode 学园", "名古屋モード学園", "Nagoya Mode Gakuen", "vocational_school", "aichi", "nagoya", "https://www.mode.ac.jp/nagoya", ["Fashion", "Design"]),
+    ("tokyo-communication-arts", "东京交流艺术专门学校", "東京コミュニケーションアート専門学校", "Tokyo Communication Arts College", "vocational_school", "tokyo", "tokyo", "https://www.tca.ac.jp/", ["Design", "Game", "Animal"]),
+    ("tokyo-visual-arts", "东京视觉艺术专门学校", "専門学校東京ビジュアルアーツ", "Tokyo Visual Arts", "vocational_school", "tokyo", "tokyo", "https://www.tva.ac.jp/", ["Photography", "Film", "Music"]),
+    ("tokyo-designer-gakuin", "东京设计师学院", "専門学校東京デザイナー学院", "Tokyo Designer Gakuin College", "vocational_school", "tokyo", "tokyo", "https://www.tdg.ac.jp/", ["Design", "Illustration", "Interior"]),
+    ("tokyo-school-of-business", "东京商务专门学校", "東京スクールオブビジネス", "Tokyo School of Business", "vocational_school", "tokyo", "tokyo", "https://www.tsb-yyg.ac.jp/", ["Business", "IT", "Pet"]),
+    ("tokyo-tourism-college", "东京观光专门学校", "東京観光専門学校", "Tokyo Institute of Tourism", "vocational_school", "tokyo", "tokyo", "https://www.tit.ac.jp/", ["Tourism", "Hotel", "Airline"]),
+    ("osaka-eco-college", "大阪 ECO 动物海洋专门学校", "大阪ECO動物海洋専門学校", "Osaka ECO College", "vocational_school", "osaka", "osaka", "https://www.osaka-eco.ac.jp/", ["Animal", "Marine"]),
+    ("kyoto-computer-gakuin", "京都计算机学院", "京都コンピュータ学院", "Kyoto Computer Gakuin", "vocational_school", "kyoto", "kyoto", "https://www.kcg.ac.jp/", ["IT", "Game", "Design"]),
+    ("tokyo-kosen", "东京工业高等专门学校", "東京工業高等専門学校", "National Institute of Technology, Tokyo College", "college_of_technology", "tokyo", "hachioji", "https://www.tokyo-ct.ac.jp/", ["Engineering"]),
+    ("osaka-kosen", "大阪公立大学工业高等专门学校", "大阪公立大学工業高等専門学校", "Osaka Metropolitan University College of Technology", "college_of_technology", "osaka", "neyagawa", "https://www.ct.omu.ac.jp/", ["Engineering"]),
+    ("kobe-kosen", "神户市立工业高等专门学校", "神戸市立工業高等専門学校", "Kobe City College of Technology", "college_of_technology", "hyogo", "kobe", "https://www.kobe-kosen.ac.jp/", ["Engineering"]),
+    ("nara-kosen", "奈良工业高等专门学校", "奈良工業高等専門学校", "National Institute of Technology, Nara College", "college_of_technology", "nara", "yamatokoriyama", "https://www.nara-k.ac.jp/", ["Engineering"]),
+]:
+    _append_guide_school_seed(*_school)
+
+
+for _school in [
+    ("arc-academy", "ARC 日本语学校", "ARC日本語学校", "ARC Academy Japanese Language School", "language_school", "tokyo", "tokyo", "https://www.arc.ac.jp/", ["Language"]),
+    ("akamonkai-japanese-language-school", "赤门会日本语学校", "赤門会日本語学校", "Akamonkai Japanese Language School", "language_school", "tokyo", "tokyo", "https://www.akamonkai.ac.jp/", ["Language"]),
+    ("yoshida-institute", "吉田日本语学院", "吉田日本語学院", "Yoshida Institute of Japanese Language", "language_school", "tokyo", "tokyo", "https://www.yoshida-institute.co.jp/", ["Language"]),
+    ("shinjuku-japanese-language-institute", "新宿日本语学校", "新宿日本語学校", "Shinjuku Japanese Language Institute", "language_school", "tokyo", "tokyo", "https://www.sng.ac.jp/", ["Language"]),
+    ("tokyo-central-japanese-language-school", "东京中央日本语学院", "東京中央日本語学院", "Tokyo Central Japanese Language School", "language_school", "tokyo", "tokyo", "https://tcj-education.com/", ["Language"]),
+    ("kudan-institute", "九段日本文化研究所日本语学院", "九段日本文化研究所日本語学院", "Kudan Institute of Japanese Language and Culture", "language_school", "tokyo", "tokyo", "https://www.kudan-japanese-school.com/", ["Language"]),
+    ("japanese-language-school-meiji-academy", "明治学院日本语学校", "明治アカデミー日本語学校", "Meiji Academy Japanese Language School", "language_school", "fukuoka", "fukuoka", "https://www.meijiacademy.com/", ["Language"]),
+    ("kyoto-minsai-japanese-language-school", "京都民际日本语学校", "京都民際日本語学校", "Kyoto Minsai Japanese Language School", "language_school", "kyoto", "kyoto", "https://www.kyotominsai.co.jp/", ["Language"]),
+    ("osaka-japanese-language-education-center", "大阪日本语教育中心", "大阪日本語教育センター", "Osaka Japanese Language Education Center", "language_school", "osaka", "osaka", "https://www.jasso.go.jp/ryugaku/jlec/ojlec/", ["Language"]),
+    ("tokyo-japanese-language-education-center", "东京日本语教育中心", "東京日本語教育センター", "Tokyo Japanese Language Education Center", "language_school", "tokyo", "tokyo", "https://www.jasso.go.jp/ryugaku/jlec/tjlec/", ["Language"]),
+]:
+    _append_guide_school_seed(*_school)
+
+
+def _append_guide_company_seed(slug: str, name: str, name_jp: str, name_en: str, industry: str,
+                               prefecture: str, city: str, website: str, career_url: str = "",
+                               size: str = "enterprise", featured: int = 0, tags: list[str] | None = None) -> None:
+    if any(c["slug"] == slug for c in GUIDE_COMPANY_SEED):
+        return
+    GUIDE_COMPANY_SEED.append({
+        "slug": slug,
+        "name": name,
+        "name_jp": name_jp,
+        "name_en": name_en,
+        "industry": industry,
+        "prefecture": prefecture,
+        "city": city,
+        "website": website,
+        "career_url": career_url or website,
+        "company_size": size,
+        "source_type": "company_website",
+        "source_name": name_en or name_jp or name,
+        "source_url": career_url or website,
+        "verification_status": "needs_review",
+        "is_featured": featured,
+        "tags": tags or [],
+    })
+
+
+for _company in [
+    ("cyberagent", "CyberAgent", "株式会社サイバーエージェント", "CyberAgent, Inc.", "it_internet", "tokyo", "tokyo", "https://www.cyberagent.co.jp/", "https://www.cyberagent.co.jp/careers/", "large", 1, ["IT", "internet"]),
+    ("dena", "DeNA", "株式会社ディー・エヌ・エー", "DeNA Co., Ltd.", "it_internet", "tokyo", "tokyo", "https://dena.com/", "https://dena.com/jp/recruit/", "large", 1, ["IT", "game"]),
+    ("gmo-internet-group", "GMO Internet Group", "GMOインターネットグループ株式会社", "GMO Internet Group, Inc.", "it_internet", "tokyo", "tokyo", "https://www.gmo.co.jp/", "https://www.gmo.co.jp/recruit/", "enterprise", 0, ["IT"]),
+    ("nec", "NEC", "日本電気株式会社", "NEC Corporation", "it_internet", "tokyo", "tokyo", "https://jpn.nec.com/", "https://jpn.nec.com/recruit/", "enterprise", 1, ["IT", "electronics"]),
+    ("smartnews", "SmartNews", "スマートニュース株式会社", "SmartNews, Inc.", "it_internet", "tokyo", "tokyo", "https://www.smartnews.com/", "https://careers.smartnews.com/", "large", 0, ["IT"]),
+    ("preferred-networks", "Preferred Networks", "株式会社Preferred Networks", "Preferred Networks, Inc.", "ai_data", "tokyo", "tokyo", "https://www.preferred.jp/", "https://www.preferred.jp/ja/careers/", "large", 1, ["AI"]),
+    ("sansan", "Sansan", "Sansan株式会社", "Sansan, Inc.", "software", "tokyo", "tokyo", "https://jp.corp-sansan.com/", "https://jp.corp-sansan.com/recruit/", "large", 0, ["SaaS"]),
+    ("freee", "freee", "フリー株式会社", "freee K.K.", "software", "tokyo", "tokyo", "https://corp.freee.co.jp/", "https://jobs.freee.co.jp/", "large", 0, ["SaaS"]),
+    ("money-forward", "Money Forward", "株式会社マネーフォワード", "Money Forward, Inc.", "software", "tokyo", "tokyo", "https://corp.moneyforward.com/", "https://corp.moneyforward.com/recruit/", "large", 0, ["FinTech"]),
+    ("cybozu", "Cybozu", "サイボウズ株式会社", "Cybozu, Inc.", "software", "tokyo", "tokyo", "https://cybozu.co.jp/", "https://cybozu.co.jp/recruit/", "large", 0, ["SaaS"]),
+    ("mixi", "MIXI", "株式会社MIXI", "MIXI, Inc.", "it_internet", "tokyo", "tokyo", "https://mixi.co.jp/", "https://mixi.co.jp/recruit/", "large", 0, ["IT", "game"]),
+    ("gree", "GREE", "グリー株式会社", "GREE, Inc.", "game_entertainment", "tokyo", "tokyo", "https://corp.gree.net/", "https://corp.gree.net/jp/ja/recruit/", "large", 0, ["game"]),
+    ("paypay", "PayPay", "PayPay株式会社", "PayPay Corporation", "finance", "tokyo", "tokyo", "https://www.paypay-corp.co.jp/", "https://www.paypay-corp.co.jp/careers/", "large", 1, ["FinTech"]),
+    ("ubie", "Ubie", "Ubie株式会社", "Ubie, Inc.", "healthcare", "tokyo", "tokyo", "https://ubie.life/", "https://recruit.ubie.life/", "medium", 0, ["healthcare", "AI"]),
+    ("layerx", "LayerX", "株式会社LayerX", "LayerX Inc.", "software", "tokyo", "tokyo", "https://layerx.co.jp/", "https://jobs.layerx.co.jp/", "medium", 0, ["SaaS"]),
+    ("pksha-technology", "PKSHA Technology", "株式会社PKSHA Technology", "PKSHA Technology Inc.", "ai_data", "tokyo", "tokyo", "https://www.pkshatech.com/", "https://www.pkshatech.com/recruit/", "large", 0, ["AI"]),
+    ("abeja", "ABEJA", "株式会社ABEJA", "ABEJA, Inc.", "ai_data", "tokyo", "tokyo", "https://www.abejainc.com/", "https://www.abejainc.com/recruit/", "medium", 0, ["AI"]),
+    ("hennge", "HENNGE", "HENNGE株式会社", "HENNGE K.K.", "software", "tokyo", "tokyo", "https://hennge.com/", "https://hennge.com/jp/careers/", "large", 0, ["SaaS"]),
+    ("treasure-data", "Treasure Data", "トレジャーデータ株式会社", "Treasure Data K.K.", "ai_data", "tokyo", "tokyo", "https://www.treasuredata.com/jp/", "https://www.treasuredata.com/careers/", "large", 0, ["data"]),
+    ("plaid", "Plaid", "株式会社プレイド", "PLAID, Inc.", "software", "tokyo", "tokyo", "https://plaid.co.jp/", "https://plaid.co.jp/recruit/", "large", 0, ["SaaS"]),
+    ("visional", "Visional", "ビジョナル株式会社", "Visional, Inc.", "it_internet", "tokyo", "tokyo", "https://www.visional.inc/", "https://www.visional.inc/ja/careers/", "large", 0, ["HRTech"]),
+    ("lancers", "Lancers", "ランサーズ株式会社", "Lancers, Inc.", "it_internet", "tokyo", "tokyo", "https://www.lancers.co.jp/", "https://www.lancers.co.jp/recruit/", "medium", 0, ["platform"]),
+    ("crowdworks", "CrowdWorks", "株式会社クラウドワークス", "CrowdWorks Inc.", "it_internet", "tokyo", "tokyo", "https://crowdworks.co.jp/", "https://crowdworks.co.jp/careers/", "medium", 0, ["platform"]),
+    ("kakaku-com", "Kakaku.com", "株式会社カカクコム", "Kakaku.com, Inc.", "it_internet", "tokyo", "tokyo", "https://corporate.kakaku.com/", "https://corporate.kakaku.com/recruit/", "large", 0, ["IT"]),
+    ("dmm-com", "DMM.com", "合同会社DMM.com", "DMM.com LLC", "it_internet", "tokyo", "tokyo", "https://dmm-corp.com/", "https://dmm-corp.com/recruit/", "large", 0, ["IT"]),
+    ("dwango", "Dwango", "株式会社ドワンゴ", "Dwango Co., Ltd.", "media_advertising", "tokyo", "tokyo", "https://dwango.co.jp/", "https://dwango.co.jp/recruit/", "large", 0, ["media"]),
+    ("cygames", "Cygames", "株式会社Cygames", "Cygames, Inc.", "game_entertainment", "tokyo", "tokyo", "https://www.cygames.co.jp/", "https://www.cygames.co.jp/recruit/", "large", 0, ["game"]),
+    ("square-enix", "Square Enix", "株式会社スクウェア・エニックス", "Square Enix Co., Ltd.", "game_entertainment", "tokyo", "tokyo", "https://www.jp.square-enix.com/", "https://www.jp.square-enix.com/recruit/", "enterprise", 0, ["game"]),
+    ("bandai-namco", "Bandai Namco", "株式会社バンダイナムコホールディングス", "Bandai Namco Holdings Inc.", "game_entertainment", "tokyo", "tokyo", "https://www.bandainamco.co.jp/", "https://www.bandainamco.co.jp/recruit/", "enterprise", 0, ["game"]),
+    ("konami", "Konami", "コナミグループ株式会社", "Konami Group Corporation", "game_entertainment", "tokyo", "tokyo", "https://www.konami.com/", "https://www.konami.com/jobs/ja/jk/", "enterprise", 0, ["game"]),
+    ("capcom", "Capcom", "株式会社カプコン", "Capcom Co., Ltd.", "game_entertainment", "osaka", "osaka", "https://www.capcom.co.jp/", "https://www.capcom-games.com/recruit/", "enterprise", 0, ["game", "kansai"]),
+    ("sega", "SEGA", "株式会社セガ", "SEGA Corporation", "game_entertainment", "tokyo", "tokyo", "https://www.sega.co.jp/", "https://www.sega.co.jp/recruit/", "enterprise", 0, ["game"]),
+    ("nintendo", "Nintendo", "任天堂株式会社", "Nintendo Co., Ltd.", "game_entertainment", "kyoto", "kyoto", "https://www.nintendo.co.jp/", "https://www.nintendo.co.jp/jobs/", "enterprise", 1, ["game", "kansai"]),
+    ("honda", "Honda", "本田技研工業株式会社", "Honda Motor Co., Ltd.", "automotive", "tokyo", "tokyo", "https://global.honda/", "https://global.honda/jp/careers/", "enterprise", 1, ["automotive"]),
+    ("nissan", "Nissan", "日産自動車株式会社", "Nissan Motor Co., Ltd.", "automotive", "kanagawa", "yokohama", "https://www.nissan-global.com/", "https://www.nissanmotor.jobs/", "enterprise", 0, ["automotive"]),
+    ("mazda", "Mazda", "マツダ株式会社", "Mazda Motor Corporation", "automotive", "hiroshima", "fuchu", "https://www.mazda.com/", "https://www.mazda.com/ja/careers/", "enterprise", 0, ["automotive"]),
+    ("subaru", "Subaru", "株式会社SUBARU", "Subaru Corporation", "automotive", "tokyo", "tokyo", "https://www.subaru.co.jp/", "https://www.subaru.co.jp/jinji/", "enterprise", 0, ["automotive"]),
+    ("suzuki", "Suzuki", "スズキ株式会社", "Suzuki Motor Corporation", "automotive", "shizuoka", "hamamatsu", "https://www.suzuki.co.jp/", "https://www.suzuki.co.jp/recruit/", "enterprise", 0, ["automotive"]),
+    ("panasonic", "Panasonic", "パナソニックホールディングス株式会社", "Panasonic Holdings Corporation", "electronics", "osaka", "kadoma", "https://holdings.panasonic/", "https://recruit.jpn.panasonic.com/", "enterprise", 1, ["electronics", "kansai"]),
+    ("hitachi", "Hitachi", "株式会社日立製作所", "Hitachi, Ltd.", "electronics", "tokyo", "tokyo", "https://www.hitachi.co.jp/", "https://www.hitachi.co.jp/recruit/", "enterprise", 1, ["electronics"]),
+    ("mitsubishi-electric", "Mitsubishi Electric", "三菱電機株式会社", "Mitsubishi Electric Corporation", "electronics", "tokyo", "tokyo", "https://www.mitsubishielectric.co.jp/", "https://www.mitsubishielectric.co.jp/saiyo/", "enterprise", 0, ["electronics"]),
+    ("canon", "Canon", "キヤノン株式会社", "Canon Inc.", "electronics", "tokyo", "tokyo", "https://global.canon/", "https://global.canon/ja/careers/", "enterprise", 0, ["electronics"]),
+    ("keyence", "Keyence", "株式会社キーエンス", "Keyence Corporation", "electronics", "osaka", "osaka", "https://www.keyence.co.jp/", "https://www.keyence.co.jp/jobs/", "enterprise", 1, ["kansai", "electronics"]),
+    ("murata", "Murata Manufacturing", "株式会社村田製作所", "Murata Manufacturing Co., Ltd.", "electronics", "kyoto", "nagaokakyo", "https://www.murata.com/", "https://recruit.murata.com/", "enterprise", 1, ["kansai", "electronics"]),
+    ("kyocera", "Kyocera", "京セラ株式会社", "Kyocera Corporation", "electronics", "kyoto", "kyoto", "https://www.kyocera.co.jp/", "https://www.kyocera.co.jp/recruit/", "enterprise", 1, ["kansai", "electronics"]),
+    ("omron", "Omron", "オムロン株式会社", "Omron Corporation", "electronics", "kyoto", "kyoto", "https://www.omron.com/jp/ja/", "https://www.omron.com/jp/ja/careers/", "enterprise", 1, ["kansai", "electronics"]),
+    ("renesas", "Renesas", "ルネサスエレクトロニクス株式会社", "Renesas Electronics Corporation", "electronics", "tokyo", "tokyo", "https://www.renesas.com/", "https://www.renesas.com/jp/ja/about/careers", "enterprise", 0, ["semiconductor"]),
+    ("daikin", "Daikin", "ダイキン工業株式会社", "Daikin Industries, Ltd.", "manufacturing", "osaka", "osaka", "https://www.daikin.co.jp/", "https://www.daikin.co.jp/recruit/", "enterprise", 1, ["kansai", "manufacturing"]),
+    ("denso", "Denso", "株式会社デンソー", "DENSO Corporation", "automotive", "aichi", "kariya", "https://www.denso.com/jp/ja/", "https://www.denso.com/jp/ja/careers/", "enterprise", 0, ["automotive"]),
+    ("bridgestone", "Bridgestone", "株式会社ブリヂストン", "Bridgestone Corporation", "manufacturing", "tokyo", "tokyo", "https://www.bridgestone.co.jp/", "https://www.bridgestone.co.jp/saiyo/", "enterprise", 0, ["manufacturing"]),
+    ("tokyo-electron", "Tokyo Electron", "東京エレクトロン株式会社", "Tokyo Electron Limited", "electronics", "tokyo", "tokyo", "https://www.tel.co.jp/", "https://www.tel.co.jp/careers/", "enterprise", 1, ["semiconductor"]),
+    ("disco", "DISCO", "株式会社ディスコ", "DISCO Corporation", "electronics", "tokyo", "tokyo", "https://www.disco.co.jp/", "https://www.disco.co.jp/recruit/", "enterprise", 0, ["semiconductor"]),
+    ("softbank", "SoftBank", "ソフトバンク株式会社", "SoftBank Corp.", "telecom", "tokyo", "tokyo", "https://www.softbank.jp/corp/", "https://www.softbank.jp/recruit/", "enterprise", 1, ["telecom"]),
+    ("ntt-docomo", "NTT DOCOMO", "株式会社NTTドコモ", "NTT DOCOMO, INC.", "telecom", "tokyo", "tokyo", "https://www.docomo.ne.jp/corporate/", "https://information.nttdocomo-fresh.jp/", "enterprise", 1, ["telecom"]),
+    ("kddi", "KDDI", "KDDI株式会社", "KDDI Corporation", "telecom", "tokyo", "tokyo", "https://www.kddi.com/", "https://career.kddi.com/", "enterprise", 1, ["telecom"]),
+    ("mufg", "MUFG", "株式会社三菱UFJフィナンシャル・グループ", "Mitsubishi UFJ Financial Group, Inc.", "banking", "tokyo", "tokyo", "https://www.mufg.jp/", "https://www.mufg.jp/careers/", "enterprise", 1, ["finance"]),
+    ("smbc", "SMBC", "株式会社三井住友フィナンシャルグループ", "Sumitomo Mitsui Financial Group, Inc.", "banking", "tokyo", "tokyo", "https://www.smfg.co.jp/", "https://www.smbc.co.jp/saiyo/", "enterprise", 1, ["finance"]),
+    ("mizuho", "Mizuho", "株式会社みずほフィナンシャルグループ", "Mizuho Financial Group, Inc.", "banking", "tokyo", "tokyo", "https://www.mizuho-fg.co.jp/", "https://www.mizuho-fg.co.jp/saiyou/", "enterprise", 1, ["finance"]),
+    ("nomura", "Nomura", "野村ホールディングス株式会社", "Nomura Holdings, Inc.", "securities", "tokyo", "tokyo", "https://www.nomuraholdings.com/", "https://www.nomura-recruit.jp/", "enterprise", 0, ["finance"]),
+    ("daiwa-securities", "Daiwa Securities", "大和証券グループ本社", "Daiwa Securities Group Inc.", "securities", "tokyo", "tokyo", "https://www.daiwa-grp.jp/", "https://www.daiwa-grp-recruit.jp/", "enterprise", 0, ["finance"]),
+    ("seven-and-i", "Seven & i Holdings", "株式会社セブン＆アイ・ホールディングス", "Seven & i Holdings Co., Ltd.", "retail", "tokyo", "tokyo", "https://www.7andi.com/", "https://www.7andi.com/recruit/", "enterprise", 0, ["retail"]),
+    ("aeon", "Aeon", "イオン株式会社", "AEON Co., Ltd.", "retail", "chiba", "chiba", "https://www.aeon.info/", "https://www.aeon.info/recruit/", "enterprise", 0, ["retail"]),
+    ("japan-airlines", "Japan Airlines", "日本航空株式会社", "Japan Airlines Co., Ltd.", "aviation", "tokyo", "tokyo", "https://www.jal.com/", "https://www.job-jal.com/", "enterprise", 0, ["aviation"]),
+    ("ana", "ANA", "ANAホールディングス株式会社", "ANA Holdings Inc.", "aviation", "tokyo", "tokyo", "https://www.ana.co.jp/group/", "https://www.ana.co.jp/group/recruit/", "enterprise", 0, ["aviation"]),
+    ("jr-east", "JR East", "東日本旅客鉄道株式会社", "East Japan Railway Company", "transportation", "tokyo", "tokyo", "https://www.jreast.co.jp/", "https://www.jreast.co.jp/recruit/", "enterprise", 0, ["railway"]),
+    ("jr-west", "JR West", "西日本旅客鉄道株式会社", "West Japan Railway Company", "transportation", "osaka", "osaka", "https://www.westjr.co.jp/", "https://www.westjr.co.jp/company/recruit/", "enterprise", 0, ["railway", "kansai"]),
+    ("tokyo-metro-company", "Tokyo Metro", "東京地下鉄株式会社", "Tokyo Metro Co., Ltd.", "transportation", "tokyo", "tokyo", "https://www.tokyometro.jp/", "https://www.tokyometro.jp/corporate/recruit/", "enterprise", 0, ["railway"]),
+    ("yamato-transport", "Yamato Transport", "ヤマト運輸株式会社", "Yamato Transport Co., Ltd.", "logistics", "tokyo", "tokyo", "https://www.kuronekoyamato.co.jp/", "https://www.kuronekoyamato.co.jp/ytc/recruit/", "enterprise", 0, ["logistics"]),
+    ("dentsu", "Dentsu", "株式会社電通グループ", "Dentsu Group Inc.", "media_advertising", "tokyo", "tokyo", "https://www.group.dentsu.com/", "https://www.dentsu.co.jp/recruit/", "enterprise", 0, ["advertising"]),
+    ("hakuhodo", "Hakuhodo", "株式会社博報堂", "Hakuhodo Inc.", "media_advertising", "tokyo", "tokyo", "https://www.hakuhodo.co.jp/", "https://www.hakuhodo.co.jp/recruit/", "enterprise", 0, ["advertising"]),
+    ("mitsubishi-corporation", "Mitsubishi Corporation", "三菱商事株式会社", "Mitsubishi Corporation", "trading", "tokyo", "tokyo", "https://www.mitsubishicorp.com/", "https://www.mitsubishicorp.com/jp/ja/recruit/", "enterprise", 1, ["trading"]),
+    ("mitsui-and-co", "Mitsui & Co.", "三井物産株式会社", "Mitsui & Co., Ltd.", "trading", "tokyo", "tokyo", "https://www.mitsui.com/", "https://www.mitsui.com/jp/ja/recruit/", "enterprise", 0, ["trading"]),
+    ("itochu", "ITOCHU", "伊藤忠商事株式会社", "ITOCHU Corporation", "trading", "tokyo", "tokyo", "https://www.itochu.co.jp/", "https://career.itochu.co.jp/", "enterprise", 0, ["trading"]),
+    ("sumitomo-corporation", "Sumitomo Corporation", "住友商事株式会社", "Sumitomo Corporation", "trading", "tokyo", "tokyo", "https://www.sumitomocorp.com/", "https://www.sumitomocorp.com/ja/jp/careers", "enterprise", 0, ["trading"]),
+    ("marubeni", "Marubeni", "丸紅株式会社", "Marubeni Corporation", "trading", "tokyo", "tokyo", "https://www.marubeni.com/", "https://www.marubeni-recruit.com/", "enterprise", 0, ["trading"]),
+    ("amazon-japan", "Amazon Japan", "アマゾンジャパン合同会社", "Amazon Japan", "it_internet", "tokyo", "tokyo", "https://www.amazon.co.jp/", "https://www.amazon.jobs/", "enterprise", 1, ["foreign", "global"]),
+    ("google-japan", "Google Japan", "グーグル合同会社", "Google Japan", "it_internet", "tokyo", "tokyo", "https://about.google/intl/ja/", "https://careers.google.com/", "enterprise", 1, ["foreign", "global"]),
+    ("microsoft-japan", "Microsoft Japan", "日本マイクロソフト株式会社", "Microsoft Japan", "software", "tokyo", "tokyo", "https://www.microsoft.com/ja-jp/", "https://careers.microsoft.com/", "enterprise", 1, ["foreign", "global"]),
+    ("apple-japan", "Apple Japan", "Apple Japan合同会社", "Apple Japan", "electronics", "tokyo", "tokyo", "https://www.apple.com/jp/", "https://www.apple.com/careers/jp/", "enterprise", 1, ["foreign", "global"]),
+    ("oracle-japan", "Oracle Japan", "日本オラクル株式会社", "Oracle Japan Corporation", "software", "tokyo", "tokyo", "https://www.oracle.com/jp/", "https://www.oracle.com/careers/", "enterprise", 0, ["foreign"]),
+    ("salesforce-japan", "Salesforce Japan", "株式会社セールスフォース・ジャパン", "Salesforce Japan", "software", "tokyo", "tokyo", "https://www.salesforce.com/jp/", "https://careers.salesforce.com/", "enterprise", 1, ["foreign", "SaaS"]),
+    ("sap-japan", "SAP Japan", "SAPジャパン株式会社", "SAP Japan Co., Ltd.", "software", "tokyo", "tokyo", "https://www.sap.com/japan/", "https://jobs.sap.com/", "enterprise", 0, ["foreign"]),
+    ("ibm-japan", "IBM Japan", "日本アイ・ビー・エム株式会社", "IBM Japan", "consulting", "tokyo", "tokyo", "https://www.ibm.com/jp-ja", "https://www.ibm.com/jp-ja/careers", "enterprise", 1, ["foreign", "consulting"]),
+    ("accenture-japan", "Accenture Japan", "アクセンチュア株式会社", "Accenture Japan", "consulting", "tokyo", "tokyo", "https://www.accenture.com/jp-ja", "https://www.accenture.com/jp-ja/careers", "enterprise", 1, ["foreign", "consulting"]),
+    ("deloitte-japan", "Deloitte Japan", "デロイト トーマツ グループ", "Deloitte Japan", "consulting", "tokyo", "tokyo", "https://www2.deloitte.com/jp/ja.html", "https://www2.deloitte.com/jp/ja/careers.html", "enterprise", 1, ["foreign", "consulting"]),
+    ("pwc-japan", "PwC Japan", "PwC Japanグループ", "PwC Japan", "consulting", "tokyo", "tokyo", "https://www.pwc.com/jp/ja.html", "https://www.pwc.com/jp/ja/careers.html", "enterprise", 0, ["foreign", "consulting"]),
+    ("ey-japan", "EY Japan", "EY Japan", "EY Japan", "consulting", "tokyo", "tokyo", "https://www.ey.com/ja_jp", "https://www.ey.com/ja_jp/careers", "enterprise", 0, ["foreign", "consulting"]),
+    ("kpmg-japan", "KPMG Japan", "KPMGジャパン", "KPMG Japan", "consulting", "tokyo", "tokyo", "https://kpmg.com/jp/ja/home.html", "https://kpmg.com/jp/ja/home/careers.html", "enterprise", 0, ["foreign", "consulting"]),
+    ("mckinsey-japan", "McKinsey Japan", "マッキンゼー・アンド・カンパニー日本支社", "McKinsey Japan", "consulting", "tokyo", "tokyo", "https://www.mckinsey.com/jp", "https://www.mckinsey.com/careers", "enterprise", 0, ["foreign", "consulting"]),
+    ("bcg-japan", "BCG Japan", "ボストン コンサルティング グループ", "Boston Consulting Group Japan", "consulting", "tokyo", "tokyo", "https://www.bcg.com/ja-jp/", "https://careers.bcg.com/", "enterprise", 0, ["foreign", "consulting"]),
+    ("bain-japan", "Bain Japan", "ベイン・アンド・カンパニー・ジャパン", "Bain & Company Japan", "consulting", "tokyo", "tokyo", "https://www.bain.com/ja/", "https://www.bain.com/careers/", "enterprise", 0, ["foreign", "consulting"]),
+    ("goldman-sachs-japan", "Goldman Sachs Japan", "ゴールドマン・サックス証券株式会社", "Goldman Sachs Japan", "finance", "tokyo", "tokyo", "https://www.goldmansachs.com/japan/", "https://www.goldmansachs.com/careers/", "enterprise", 0, ["foreign", "finance"]),
+    ("jpmorgan-japan", "J.P. Morgan Japan", "JPモルガン証券株式会社", "J.P. Morgan Japan", "finance", "tokyo", "tokyo", "https://www.jpmorgan.com/JP/ja/about-us", "https://careers.jpmorgan.com/", "enterprise", 0, ["foreign", "finance"]),
+    ("bloomberg-japan", "Bloomberg Japan", "ブルームバーグ・エル・ピー", "Bloomberg Japan", "media_advertising", "tokyo", "tokyo", "https://www.bloomberg.co.jp/", "https://www.bloomberg.com/company/careers/", "enterprise", 0, ["foreign", "finance"]),
+    ("indeed-japan", "Indeed Japan", "Indeed Japan株式会社", "Indeed Japan", "it_internet", "tokyo", "tokyo", "https://jp.indeed.com/", "https://www.indeed.jobs/", "enterprise", 0, ["foreign", "HRTech"]),
+    ("bytedance-japan", "ByteDance Japan", "ByteDance株式会社", "ByteDance Japan", "it_internet", "tokyo", "tokyo", "https://www.bytedance.com/", "https://jobs.bytedance.com/", "enterprise", 0, ["foreign", "global"]),
+    ("meta-japan", "Meta Japan", "Meta日本法人", "Meta Japan", "it_internet", "tokyo", "tokyo", "https://www.meta.com/jp/", "https://www.metacareers.com/", "enterprise", 0, ["foreign"]),
+    ("adobe-japan", "Adobe Japan", "アドビ株式会社", "Adobe Japan", "software", "tokyo", "tokyo", "https://www.adobe.com/jp/", "https://www.adobe.com/careers.html", "enterprise", 0, ["foreign"]),
+    ("nvidia-japan", "NVIDIA Japan", "エヌビディア合同会社", "NVIDIA Japan", "electronics", "tokyo", "tokyo", "https://www.nvidia.com/ja-jp/", "https://www.nvidia.com/en-us/about-nvidia/careers/", "enterprise", 0, ["foreign", "AI"]),
+    ("stripe-japan", "Stripe Japan", "ストライプジャパン株式会社", "Stripe Japan", "finance", "tokyo", "tokyo", "https://stripe.com/jp", "https://stripe.com/jobs", "large", 0, ["foreign", "FinTech"]),
+    ("hoshino-resorts", "Hoshino Resorts", "株式会社星野リゾート", "Hoshino Resorts Inc.", "hospitality", "nagano", "karuizawa", "https://www.hoshinoresorts.com/", "https://www.hoshinoresorts.com/recruit/", "large", 0, ["hospitality"]),
+    ("oriental-land", "Oriental Land", "株式会社オリエンタルランド", "Oriental Land Co., Ltd.", "hospitality", "chiba", "urayasu", "https://www.olc.co.jp/", "https://www.olc.co.jp/ja/recruit.html", "enterprise", 0, ["tourism"]),
+    ("usj", "Universal Studios Japan", "合同会社ユー・エス・ジェイ", "USJ LLC", "hospitality", "osaka", "osaka", "https://www.usj.co.jp/company/", "https://recruit.usj.co.jp/", "large", 0, ["kansai", "tourism"]),
+    ("nitori", "Nitori", "株式会社ニトリホールディングス", "Nitori Holdings Co., Ltd.", "retail", "hokkaido", "sapporo", "https://www.nitorihd.co.jp/", "https://www.nitori.co.jp/recruit/", "enterprise", 0, ["retail"]),
+    ("ryohin-keikaku", "Muji / Ryohin Keikaku", "株式会社良品計画", "Ryohin Keikaku Co., Ltd.", "retail", "tokyo", "tokyo", "https://www.ryohin-keikaku.jp/", "https://www.ryohin-keikaku.jp/recruit/", "enterprise", 0, ["retail"]),
+    ("benesse", "Benesse", "株式会社ベネッセホールディングス", "Benesse Holdings, Inc.", "education", "okayama", "okayama", "https://www.benesse-hd.co.jp/", "https://www.benesse.co.jp/fr_s/", "enterprise", 0, ["education"]),
+    ("pasona", "Pasona", "株式会社パソナグループ", "Pasona Group Inc.", "education", "tokyo", "tokyo", "https://www.pasonagroup.co.jp/", "https://www.pasonagroup.co.jp/recruit/", "enterprise", 0, ["HR"]),
+    ("persol", "Persol Holdings", "パーソルホールディングス株式会社", "Persol Holdings Co., Ltd.", "education", "tokyo", "tokyo", "https://www.persol.com/", "https://www.persol.com/recruit/", "enterprise", 0, ["HR"]),
+    ("mynavi", "Mynavi", "株式会社マイナビ", "Mynavi Corporation", "education", "tokyo", "tokyo", "https://www.mynavi.jp/", "https://www.mynavi.jp/saiyou/", "enterprise", 0, ["HR"]),
+]:
+    _append_guide_company_seed(*_company)
+
+
+for _company in [
+    ("shimadzu", "Shimadzu", "株式会社島津製作所", "Shimadzu Corporation", "electronics", "kyoto", "kyoto", "https://www.shimadzu.co.jp/", "https://www.shimadzu.co.jp/recruit/", "enterprise", 1, ["kansai", "electronics"]),
+    ("nidec", "Nidec", "ニデック株式会社", "Nidec Corporation", "electronics", "kyoto", "kyoto", "https://www.nidec.com/jp/", "https://www.nidec.com/jp/recruit/", "enterprise", 1, ["kansai", "electronics"]),
+    ("gs-yuasa", "GS Yuasa", "株式会社GSユアサ", "GS Yuasa Corporation", "electronics", "kyoto", "kyoto", "https://www.gs-yuasa.com/jp/", "https://www.gs-yuasa.com/jp/recruit/", "enterprise", 0, ["kansai", "battery"]),
+    ("horiba", "HORIBA", "株式会社堀場製作所", "HORIBA, Ltd.", "electronics", "kyoto", "kyoto", "https://www.horiba.com/jpn/", "https://www.horiba.com/jpn/recruit/", "enterprise", 0, ["kansai", "electronics"]),
+    ("screen-holdings", "SCREEN Holdings", "株式会社SCREENホールディングス", "SCREEN Holdings Co., Ltd.", "electronics", "kyoto", "kyoto", "https://www.screen.co.jp/", "https://www.screen.co.jp/recruit/", "enterprise", 0, ["kansai", "semiconductor"]),
+    ("wacoal", "Wacoal", "株式会社ワコールホールディングス", "Wacoal Holdings Corp.", "fashion", "kyoto", "kyoto", "https://www.wacoalholdings.jp/", "https://www.wacoal.jp/recruit/", "enterprise", 0, ["kansai", "fashion"]),
+    ("nissin-foods", "Nissin Foods", "日清食品ホールディングス株式会社", "Nissin Foods Holdings Co., Ltd.", "food_beverage", "osaka", "osaka", "https://www.nissin.com/jp/", "https://www.nissin.com/jp/recruit/", "enterprise", 0, ["kansai", "food"]),
+    ("hankyu-hanshin", "Hankyu Hanshin Holdings", "阪急阪神ホールディングス株式会社", "Hankyu Hanshin Holdings, Inc.", "transportation", "osaka", "osaka", "https://www.hankyu-hanshin.co.jp/", "https://www.hankyu-hanshin.co.jp/recruit/", "enterprise", 0, ["kansai", "railway"]),
+    ("kintetsu", "Kintetsu Group Holdings", "近鉄グループホールディングス株式会社", "Kintetsu Group Holdings Co., Ltd.", "transportation", "osaka", "osaka", "https://www.kintetsu-g-hd.co.jp/", "https://www.kintetsu-g-hd.co.jp/recruit/", "enterprise", 0, ["kansai", "railway"]),
+    ("nankai", "Nankai Electric Railway", "南海電気鉄道株式会社", "Nankai Electric Railway Co., Ltd.", "transportation", "osaka", "osaka", "https://www.nankai.co.jp/", "https://www.nankai.co.jp/company/recruit.html", "enterprise", 0, ["kansai", "railway"]),
+    ("keihan", "Keihan Holdings", "京阪ホールディングス株式会社", "Keihan Holdings Co., Ltd.", "transportation", "osaka", "osaka", "https://www.keihan-holdings.co.jp/", "https://www.keihan-holdings.co.jp/recruit/", "enterprise", 0, ["kansai", "railway"]),
+    ("takara-holdings", "Takara Holdings", "宝ホールディングス株式会社", "Takara Holdings Inc.", "food_beverage", "kyoto", "kyoto", "https://www.takara.co.jp/", "https://www.takara.co.jp/recruit/", "enterprise", 0, ["kansai", "food"]),
+    ("daifuku", "Daifuku", "株式会社ダイフク", "Daifuku Co., Ltd.", "logistics", "osaka", "osaka", "https://www.daifuku.com/jp/", "https://www.daifuku.com/jp/recruit/", "enterprise", 0, ["kansai", "logistics"]),
+    ("kansai-electric-power", "Kansai Electric Power", "関西電力株式会社", "The Kansai Electric Power Co., Inc.", "energy", "osaka", "osaka", "https://www.kepco.co.jp/", "https://www.kepco.co.jp/recruit/", "enterprise", 0, ["kansai", "energy"]),
+    ("osaka-gas", "Osaka Gas", "大阪ガス株式会社", "Osaka Gas Co., Ltd.", "energy", "osaka", "osaka", "https://www.osakagas.co.jp/", "https://www.osakagas.co.jp/company/recruit/", "enterprise", 0, ["kansai", "energy"]),
+    ("sekisui-house", "Sekisui House", "積水ハウス株式会社", "Sekisui House, Ltd.", "construction", "osaka", "osaka", "https://www.sekisuihouse.co.jp/", "https://www.sekisuihouse.co.jp/company/recruit/", "enterprise", 0, ["kansai", "construction"]),
+    ("daiwa-house", "Daiwa House", "大和ハウス工業株式会社", "Daiwa House Industry Co., Ltd.", "construction", "osaka", "osaka", "https://www.daiwahouse.co.jp/", "https://www.daiwahouse.co.jp/recruit/", "enterprise", 0, ["kansai", "construction"]),
+    ("santen", "Santen Pharmaceutical", "参天製薬株式会社", "Santen Pharmaceutical Co., Ltd.", "pharma", "osaka", "osaka", "https://www.santen.com/ja/", "https://www.santen.com/ja/careers/", "enterprise", 0, ["kansai", "pharma"]),
+    ("shionogi", "Shionogi", "塩野義製薬株式会社", "Shionogi & Co., Ltd.", "pharma", "osaka", "osaka", "https://www.shionogi.com/jp/ja/", "https://www.shionogi.com/jp/ja/recruit/", "enterprise", 0, ["kansai", "pharma"]),
+    ("takeda", "Takeda Pharmaceutical", "武田薬品工業株式会社", "Takeda Pharmaceutical Company Limited", "pharma", "osaka", "osaka", "https://www.takeda.com/ja-jp/", "https://www.takeda.com/careers/", "enterprise", 1, ["kansai", "pharma", "global"]),
+]:
+    _append_guide_company_seed(*_company)
+
+
+def serialize_guide_category(row: sqlite3.Row | dict[str, Any], children: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    d = dict(row)
+    out = {
+        "id": d.get("id"), "key": d.get("key"), "parentKey": d.get("parent_key") or "",
+        "title": d.get("title"), "subtitle": d.get("subtitle") or "",
+        "description": d.get("description") or "", "icon": d.get("icon") or "",
+        "color": d.get("color") or "", "country": d.get("country") or "jp",
+        "sortOrder": int(d.get("sort_order") or 0),
+    }
+    if children is not None:
+        out["subCategories"] = children
+    return out
+
+
+def _guide_split_tags(raw: Any) -> list[str]:
+    if isinstance(raw, list):
+        return [str(t).strip() for t in raw if str(t).strip()]
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            data = json.loads(text)
+            if isinstance(data, list):
+                return [str(t).strip() for t in data if str(t).strip()]
+        except Exception:
+            pass
+    return [t.strip() for t in text.split(",") if t.strip()]
+
+
+def _guide_csv(raw: Any) -> str:
+    if isinstance(raw, list):
+        return ",".join(str(v).strip() for v in raw if str(v).strip())
+    return _news_clean_text(raw, 1000)
+
+
+def _guide_quality_score(data: dict[str, Any], fields: list[str], optional_weight: int = 100) -> int:
+    if not fields:
+        return 0
+    hits = 0
+    for field in fields:
+        value = data.get(field)
+        if value is None:
+            continue
+        if isinstance(value, (list, tuple, set)):
+            if len(value) > 0:
+                hits += 1
+            continue
+        text = str(value).strip()
+        if text and text.lower() not in {"unknown", "null", "none"}:
+            hits += 1
+    return max(0, min(100, round(hits * optional_weight / len(fields))))
+
+
+def _guide_school_quality(data: dict[str, Any]) -> int:
+    return _guide_quality_score(data, [
+        "school_name", "school_name_jp", "school_name_en", "school_type", "prefecture", "city",
+        "website", "international_admission_url", "admission_url", "application_url",
+        "scholarship_url", "career_support_url", "language_support_url", "dormitory_url",
+        "fields_of_study", "departments", "faculties", "graduate_schools", "source_url", "source_name",
+    ])
+
+
+def _guide_company_quality(data: dict[str, Any]) -> int:
+    return _guide_quality_score(data, [
+        "name", "name_jp", "name_en", "company_name", "company_name_jp", "company_name_en",
+        "industry", "sub_industry", "prefecture", "city", "website", "career_url",
+        "new_graduate_url", "mid_career_url", "global_career_url", "company_size",
+        "founded", "founded_year", "source_url", "source_name",
+    ])
+
+
+def _guide_tri_bool(raw: Any) -> bool | None:
+    try:
+        v = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if v < 0:
+        return None
+    return bool(v)
+
+
+def _guide_payload_bool(data: dict[str, Any], *keys: str, default: int = -1) -> int:
+    for key in keys:
+        if key not in data:
+            continue
+        value = data.get(key)
+        if value is None or value == "":
+            return default
+        if isinstance(value, bool):
+            return 1 if value else 0
+        if str(value).strip().lower() in {"1", "true", "yes", "y", "是"}:
+            return 1
+        if str(value).strip().lower() in {"0", "false", "no", "n", "否"}:
+            return 0
+    return default
+
+
+def _guide_query_bool(query: dict[str, str], *keys: str) -> int | None:
+    for key in keys:
+        raw = (query.get(key) or "").strip().lower()
+        if not raw:
+            continue
+        if raw in {"1", "true", "yes", "y", "是"}:
+            return 1
+        if raw in {"0", "false", "no", "n", "否"}:
+            return 0
+    return None
+
+
+def _guide_region_values(query: dict[str, str]) -> set[str]:
+    group = (query.get("regionGroup") or query.get("region_group") or "").strip().lower()
+    if group == "capital_area":
+        return GUIDE_CAPITAL_PREFECTURES
+    if group == "kansai_area":
+        return GUIDE_KANSAI_PREFECTURES
+    return set()
+
+
+def _guide_status_public_clause(column: str = "status") -> str:
+    return f"{column} IN ('published','approved')"
+
+
+def serialize_guide_article(row: sqlite3.Row | dict[str, Any], include_body: bool = False) -> dict[str, Any]:
+    d = dict(row)
+    out = {
+        "id": d.get("id"), "title": d.get("title"), "slug": d.get("slug"),
+        "summary": d.get("summary") or "", "categoryKey": d.get("category_key") or "",
+        "subCategoryKey": d.get("sub_category_key") or "", "contentType": d.get("content_type") or "guide",
+        "country": d.get("country") or "jp", "city": d.get("city") or "",
+        "language": d.get("language") or "zh-CN", "coverImage": d.get("cover_image") or "",
+        "tags": _guide_split_tags(d.get("tags")), "authorType": d.get("author_type") or "editorial",
+        "authorName": d.get("author_name") or "Machi 日本指南编辑部",
+        "isFeatured": bool(d.get("is_featured")), "isFree": bool(d.get("is_free")),
+        "isPaid": bool(d.get("is_paid")), "status": d.get("status") or "published",
+        "viewCount": int(d.get("view_count") or 0), "saveCount": int(d.get("save_count") or 0),
+        "publishedAt": d.get("published_at"), "updatedAt": d.get("updated_at"),
+    }
+    if include_body:
+        out["body"] = d.get("body") or ""
+    return out
+
+
+SUPPORTED_PRICE_CURRENCIES = {"CNY", "JPY", "USD", "CAD", "EUR", "GBP", "HKD", "TWD", "KRW", "SGD", "AUD"}
+
+
+def normalize_currency(value: Any, default: str = "CNY") -> str:
+    currency = str(value or default).strip().upper()
+    return currency if currency in SUPPORTED_PRICE_CURRENCIES else default
+
+
+def format_price_value(price: Any, currency: str = "CNY") -> str:
+    currency = normalize_currency(currency)
+    try:
+        value = float(price or 0)
+    except (TypeError, ValueError):
+        value = 0
+    if currency in {"CNY", "JPY"}:
+        return f"¥{int(round(value))}"
+    if currency == "USD":
+        return f"${value:.2f}".rstrip("0").rstrip(".") if value % 1 else f"${int(value)}"
+    return f"{currency} {int(value) if value % 1 == 0 else round(value, 2)}"
+
+
+def guide_price_label_from_row(d: dict[str, Any]) -> str:
+    if bool(d.get("is_coming_soon")) or str(d.get("status") or "") == "coming_soon":
+        return "即将开放"
+    if bool(d.get("is_price_hidden")) or bool(d.get("is_appointment_only")):
+        return "预约咨询"
+    if bool(d.get("is_free")) or str(d.get("billing_type") or "") == "free":
+        return "免费"
+    explicit = str(d.get("price_label") or "").strip()
+    if explicit:
+        return explicit
+    service_type = str(d.get("service_price_type") or "").strip()
+    currency = normalize_currency(d.get("currency") or "CNY")
+    starting = int(d.get("starting_price") or 0)
+    price = int(d.get("price") or 0)
+    if service_type == "appointment_only":
+        return "预约咨询"
+    if service_type == "quote_required":
+        return "按需求报价"
+    if service_type == "free":
+        return "免费"
+    if service_type == "starting_from" and (starting or price):
+        return f"{format_price_value(starting or price, currency)} 起"
+    if price > 0:
+        return format_price_value(price, currency)
+    return ""
+
+
+def serialize_guide_product(row: sqlite3.Row | dict[str, Any], *, include_private: bool = False) -> dict[str, Any]:
+    """Public-safe by default. `purchase_content` + `file_url` (the actual
+    paid/download payload) and Stripe/IAP routing ids are ONLY included when
+    include_private=True (admin) or when the caller re-attaches them after an
+    entitlement check (product detail for a buyer/member). Lists never leak the
+    paid content; non-buyers see `previewContent` + `hasPurchaseContent` only."""
+    d = dict(row)
+    price_label = guide_price_label_from_row(d)
+    member_price = int(d.get("member_price") or 0)
+    member_price_label = f"会员 {format_price_value(member_price, d.get('currency') or 'CNY')}" if member_price > 0 else ""
+    can_purchase = not bool(d.get("is_coming_soon")) and not bool(d.get("is_appointment_only")) and not bool(d.get("is_price_hidden")) and (bool(d.get("is_free")) or int(d.get("price") or 0) > 0)
+    cta_label = "预约咨询" if bool(d.get("is_appointment_only")) or bool(d.get("is_price_hidden")) or bool(d.get("is_service")) else ("即将开放" if bool(d.get("is_coming_soon")) else ("免费查看" if bool(d.get("is_free")) else f"购买 {price_label}"))
+    out = {
+        "id": d.get("id"), "title": d.get("title"), "slug": d.get("slug"),
+        "subtitle": d.get("subtitle") or "", "description": d.get("description") or "",
+        "categoryKey": d.get("category_key") or "", "subCategoryKey": d.get("sub_category_key") or "",
+        "productType": d.get("product_type") or "", "price": int(d.get("price") or 0),
+        "currency": normalize_currency(d.get("currency") or "CNY"), "priceLabel": price_label,
+        "price_label": price_label,
+        "originalPrice": int(d.get("original_price") or 0), "original_price": int(d.get("original_price") or 0),
+        "discountLabel": d.get("discount_label") or "", "discount_label": d.get("discount_label") or "",
+        "isPriceHidden": bool(d.get("is_price_hidden")), "is_price_hidden": bool(d.get("is_price_hidden")),
+        "isAppointmentOnly": bool(d.get("is_appointment_only")), "is_appointment_only": bool(d.get("is_appointment_only")),
+        "memberPrice": member_price, "member_price": member_price,
+        "memberPriceLabel": member_price_label, "member_price_label": member_price_label,
+        "priceRegion": d.get("price_region") or "", "price_region": d.get("price_region") or "",
+        "taxIncluded": bool(d.get("tax_included", 1)), "tax_included": bool(d.get("tax_included", 1)),
+        "billingType": d.get("billing_type") or "one_time", "billing_type": d.get("billing_type") or "one_time",
+        "billingPeriod": d.get("billing_period") or "none", "billing_period": d.get("billing_period") or "none",
+        "servicePriceType": d.get("service_price_type") or "", "service_price_type": d.get("service_price_type") or "",
+        "startingPrice": int(d.get("starting_price") or 0), "starting_price": int(d.get("starting_price") or 0),
+        "memberDiscountPercent": int(d.get("member_discount_percent") or 0), "member_discount_percent": int(d.get("member_discount_percent") or 0),
+        "serviceDurationMinutes": int(d.get("service_duration_minutes") or 0), "service_duration_minutes": int(d.get("service_duration_minutes") or 0),
+        "depositRequired": bool(d.get("deposit_required")), "deposit_required": bool(d.get("deposit_required")),
+        "depositAmount": int(d.get("deposit_amount") or 0), "deposit_amount": int(d.get("deposit_amount") or 0),
+        "cancellationPolicy": d.get("cancellation_policy") or "", "cancellation_policy": d.get("cancellation_policy") or "",
+        "coverImage": d.get("cover_image") or "", "tags": _guide_split_tags(d.get("tags")),
+        "targetAudience": d.get("target_audience") or "", "deliveryMethod": d.get("delivery_method") or "",
+        "previewContent": d.get("preview_content") or "",
+        "hasPurchaseContent": bool(d.get("purchase_content")), "hasFile": bool(d.get("file_url")),
+        "fileName": d.get("file_name") or "", "fileType": d.get("file_type") or "",
+        "fileSize": int(d.get("file_size") or 0),
+        "country": d.get("country") or "jp", "language": d.get("language") or "zh-CN",
+        "isDigital": bool(d.get("is_digital")), "isService": bool(d.get("is_service")),
+        "isFree": bool(d.get("is_free")), "isPaid": bool(d.get("is_paid")),
+        "isMemberIncluded": bool(d.get("is_member_included")),
+        "isMemberDiscount": bool(d.get("is_member_discount")),
+        "isComingSoon": bool(d.get("is_coming_soon")), "status": d.get("status") or "coming_soon",
+        "isMemberDiscountAvailable": bool(d.get("is_member_discount")),
+        "canView": False,
+        "canPurchase": can_purchase,
+        "ctaLabel": cta_label,
+        "purchaseCount": int(d.get("purchase_count") or 0), "rating": float(d.get("rating") or 0),
+        "sortOrder": int(d.get("sort_order") or 0), "isFeatured": bool(d.get("is_featured")),
+        "refundPolicy": d.get("refund_policy") or "", "notes": d.get("notes") or "",
+        "publishedAt": d.get("published_at"),
+    }
+    if include_private:
+        out["purchaseContent"] = d.get("purchase_content") or ""
+        out["fileUrl"] = d.get("file_url") or ""
+        out["stripeProductId"] = d.get("stripe_product_id") or ""
+        out["stripePriceId"] = d.get("stripe_price_id") or ""
+        out["iosIapProductId"] = d.get("ios_iap_product_id") or ""
+        out["appleProductId"] = d.get("apple_product_id") or ""
+    return out
+
+
+def serialize_guide_school(row: sqlite3.Row | dict[str, Any], *, saved: bool = False) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"), "slug": d.get("slug"), "schoolName": d.get("school_name"),
+        "schoolNameJp": d.get("school_name_jp") or "", "schoolNameEn": d.get("school_name_en") or "",
+        "schoolType": d.get("school_type") or "other", "country": d.get("country") or "jp",
+        "prefecture": d.get("prefecture") or "", "city": d.get("city") or "", "ward": d.get("ward") or "",
+        "address": d.get("address") or "", "postalCode": d.get("postal_code") or "",
+        "latitude": d.get("latitude"), "longitude": d.get("longitude"),
+        "website": d.get("website") or "", "admissionUrl": d.get("admission_url") or "",
+        "internationalAdmissionUrl": d.get("international_admission_url") or "",
+        "applicationUrl": d.get("application_url") or "", "scholarshipUrl": d.get("scholarship_url") or "",
+        "careerSupportUrl": d.get("career_support_url") or "", "languageSupportUrl": d.get("language_support_url") or "",
+        "dormitoryUrl": d.get("dormitory_url") or "",
+        "description": d.get("description") or "", "shortDescription": d.get("short_description") or "",
+        "isAcceptingInternationalStudents": _guide_tri_bool(d.get("is_accepting_international_students")),
+        "hasEnglishProgram": _guide_tri_bool(d.get("has_english_program")),
+        "hasJapaneseProgram": _guide_tri_bool(d.get("has_japanese_program")),
+        "hasScholarship": _guide_tri_bool(d.get("has_scholarship")),
+        "hasDormitory": _guide_tri_bool(d.get("has_dormitory")),
+        "hasCareerSupport": _guide_tri_bool(d.get("has_career_support")),
+        "hasLanguageSupport": _guide_tri_bool(d.get("has_language_support")),
+        "tuitionMin": int(d.get("tuition_min") or 0), "tuitionMax": int(d.get("tuition_max") or 0),
+        "currency": d.get("currency") or "JPY",
+        "applicationPeriods": _guide_split_tags(d.get("application_periods")),
+        "admissionMonths": _guide_split_tags(d.get("admission_months")),
+        "requiredJapaneseLevel": d.get("required_japanese_level") or "unknown",
+        "requiredEnglishLevel": d.get("required_english_level") or "unknown",
+        "ejuRequired": d.get("eju_required") or "unknown", "jlptRequired": d.get("jlpt_required") or "unknown",
+        "toeflRequired": d.get("toefl_required") or "unknown", "ieltsRequired": d.get("ielts_required") or "unknown",
+        "fieldsOfStudy": _guide_split_tags(d.get("fields_of_study")),
+        "departments": _guide_split_tags(d.get("departments")),
+        "faculties": _guide_split_tags(d.get("faculties")),
+        "graduateSchools": _guide_split_tags(d.get("graduate_schools")),
+        "tags": _guide_split_tags(d.get("tags")),
+        "sourceType": d.get("source_type") or "manual", "sourceName": d.get("source_name") or "",
+        "sourceUrl": d.get("source_url") or "", "sourceLastCheckedAt": d.get("source_last_checked_at"),
+        "verificationStatus": d.get("verification_status") or "needs_review",
+        "dataQualityScore": int(d.get("data_quality_score") or 0),
+        "isFeatured": bool(d.get("is_featured")), "status": d.get("status") or "published",
+        "viewCount": int(d.get("view_count") or 0), "saveCount": int(d.get("save_count") or 0),
+        "savedByMe": saved, "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+    }
+
+
+def serialize_guide_school_program(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"), "schoolId": d.get("school_id"), "programName": d.get("program_name"),
+        "programNameJp": d.get("program_name_jp") or "", "programNameEn": d.get("program_name_en") or "",
+        "degreeLevel": d.get("degree_level") or "other", "programType": d.get("program_type") or "regular",
+        "field": d.get("field") or "", "subField": d.get("sub_field") or "",
+        "facultyName": d.get("faculty_name") or "", "departmentName": d.get("department_name") or "",
+        "graduateSchoolName": d.get("graduate_school_name") or "",
+        "languageOfInstruction": d.get("language_of_instruction") or "",
+        "durationMonths": int(d.get("duration_months") or 0), "admissionMonths": _guide_split_tags(d.get("admission_months")),
+        "applicationPeriod": d.get("application_period") or "", "tuition": int(d.get("tuition") or 0),
+        "currency": d.get("currency") or "JPY", "requiredJapaneseLevel": d.get("required_japanese_level") or "unknown",
+        "requiredEnglishLevel": d.get("required_english_level") or "unknown", "ejuRequired": d.get("eju_required") or "unknown",
+        "jlptRequired": d.get("jlpt_required") or "unknown", "toeflRequired": d.get("toefl_required") or "unknown",
+        "ieltsRequired": d.get("ielts_required") or "unknown", "description": d.get("description") or "",
+        "applicationUrl": d.get("application_url") or "", "sourceUrl": d.get("source_url") or "",
+        "verificationStatus": d.get("verification_status") or "needs_review",
+        "status": d.get("status") or "published",
+        "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+    }
+
+
+def serialize_guide_school_admission(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"), "schoolId": d.get("school_id"), "programId": d.get("program_id") or "",
+        "admissionType": d.get("admission_type") or "international_student",
+        "targetStudentType": d.get("target_student_type") or "", "applicationStart": d.get("application_start"),
+        "applicationDeadline": d.get("application_deadline"), "examDate": d.get("exam_date"),
+        "resultDate": d.get("result_date"), "enrollmentMonth": d.get("enrollment_month") or "",
+        "requiredDocuments": _guide_split_tags(d.get("required_documents")),
+        "selectionMethod": d.get("selection_method") or "", "applicationFee": int(d.get("application_fee") or 0),
+        "tuitionFirstYear": int(d.get("tuition_first_year") or 0), "scholarshipInfo": d.get("scholarship_info") or "",
+        "notes": d.get("notes") or "", "sourceUrl": d.get("source_url") or "",
+        "verificationStatus": d.get("verification_status") or "needs_review", "status": d.get("status") or "published",
+        "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+    }
+
+
+def serialize_guide_company_position(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"), "companyId": d.get("company_id"), "positionTitle": d.get("position_title"),
+        "positionTitleJp": d.get("position_title_jp") or "", "positionCategory": d.get("position_category") or "other",
+        "employmentType": d.get("employment_type") or "", "city": d.get("city") or "",
+        "remoteType": d.get("remote_type") or "", "salaryMin": int(d.get("salary_min") or 0),
+        "salaryMax": int(d.get("salary_max") or 0), "currency": d.get("currency") or "JPY",
+        "requiredJapaneseLevel": d.get("japanese_level_required") or "unknown",
+        "requiredEnglishLevel": d.get("english_level_required") or "unknown",
+        "visaSupport": d.get("visa_support") or "unknown", "description": d.get("description") or "",
+        "requirements": d.get("requirements") or "", "sourceUrl": d.get("source_url") or "",
+        "verificationStatus": d.get("verification_status") or "needs_review",
+        "status": d.get("status") or "published", "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+    }
+
+
+def serialize_guide_company(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    review_count = int(d.get("review_count") or 0)
+    interview_review_count = int(d.get("interview_review_count") or 0)
+    # 只有在有真实评价时才呈现分数，否则返回 None（前台显示「暂无足够评价」），
+    # 绝不把预设的 0 当成真实评分。
+    scores = None
+    if review_count > 0:
+        scores = {
+            "foreignerFriendly": float(d.get("foreigner_friendly_score") or 0),
+            "visaSupport": float(d.get("visa_support_score") or 0),
+            "interviewDifficulty": float(d.get("interview_difficulty_score") or 0),
+            "overtime": float(d.get("overtime_score") or 0),
+            "salaryBenefit": float(d.get("salary_benefit_score") or 0),
+            "workLifeBalance": float(d.get("work_life_balance_score") or 0),
+            "careerGrowth": float(d.get("career_growth_score") or 0),
+        }
+    return {
+        "id": d.get("id"), "corporateNumber": d.get("corporate_number") or "", "companyName": d.get("company_name"),
+        "companyNameJp": d.get("company_name_jp") or "", "companyNameEn": d.get("company_name_en") or "",
+        "slug": d.get("slug"),
+        "industry": d.get("industry") or "", "country": d.get("country") or "jp",
+        "subIndustry": d.get("sub_industry") or "", "prefecture": d.get("prefecture") or "",
+        "city": d.get("city") or "", "ward": d.get("ward") or "", "address": d.get("address") or "",
+        "postalCode": d.get("postal_code") or "", "latitude": d.get("latitude"), "longitude": d.get("longitude"),
+        "website": d.get("website") or "", "careerUrl": d.get("career_url") or "",
+        "newGraduateUrl": d.get("new_graduate_url") or "", "midCareerUrl": d.get("mid_career_url") or "",
+        "globalCareerUrl": d.get("global_career_url") or "",
+        "size": d.get("company_size") or d.get("size") or "", "companySize": d.get("company_size") or d.get("size") or "",
+        "foundedYear": int(d.get("founded_year") or 0),
+        "description": d.get("description") or "", "shortDescription": d.get("short_description") or "",
+        "isForeignerFriendly": _guide_tri_bool(d.get("is_foreigner_friendly")),
+        "acceptsForeignApplicants": _guide_tri_bool(d.get("accepts_foreign_applicants")),
+        "supportsWorkVisa": _guide_tri_bool(d.get("supports_work_visa")),
+        "supportsNewGraduate": _guide_tri_bool(d.get("supports_new_graduate")),
+        "supportsMidCareer": _guide_tri_bool(d.get("supports_mid_career")),
+        "hasEnglishPositions": _guide_tri_bool(d.get("has_english_positions")),
+        "hasGlobalRoles": _guide_tri_bool(d.get("has_global_roles")),
+        "hasForeignEmployees": _guide_tri_bool(d.get("has_foreign_employees")),
+        "requiredJapaneseLevel": d.get("japanese_level_required") or "unknown",
+        "requiredEnglishLevel": d.get("english_level_required") or "unknown",
+        "employmentTypes": _guide_split_tags(d.get("employment_types")),
+        "averageSalaryMin": int(d.get("average_salary_min") or 0), "averageSalaryMax": int(d.get("average_salary_max") or 0),
+        "currency": d.get("currency") or "JPY", "scores": scores,
+        "reviewCount": review_count, "interviewReviewCount": interview_review_count,
+        "tags": _guide_split_tags(d.get("tags")), "sourceType": d.get("source_type") or "manual",
+        "sourceName": d.get("source_name") or "", "sourceUrl": d.get("source_url") or "",
+        "sourceLastCheckedAt": d.get("source_last_checked_at"),
+        "verificationStatus": d.get("verification_status") or "needs_review",
+        "dataQualityScore": int(d.get("data_quality_score") or 0),
+        "isFeatured": bool(d.get("is_featured")), "status": d.get("status") or "published",
+        "viewCount": int(d.get("view_count") or 0), "saveCount": int(d.get("save_count") or 0),
+        "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+    }
+
+
+def serialize_guide_company_review(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    anonymous = bool(d.get("anonymous"))
+    return {
+        "id": d.get("id"), "companyId": d.get("company_id"),
+        "anonymous": anonymous, "position": d.get("position") or "",
+        "employmentType": d.get("employment_type") or "", "workPeriod": d.get("work_period") or "",
+        "pros": d.get("pros") or "",
+        "cons": d.get("cons") or "", "overtimeLevel": d.get("overtime_level") or "",
+        "foreignerSupport": d.get("foreigner_support") or "", "visaSupport": d.get("visa_support") or "",
+        "salaryBenefits": d.get("salary_benefits") or "", "careerGrowth": d.get("career_growth") or "",
+        "workLifeBalance": d.get("work_life_balance") or "",
+        "recommendationScore": float(d.get("recommendation_score") or 0),
+        "status": d.get("status") or "", "createdAt": d.get("created_at"),
+    }
+
+
+def serialize_guide_interview_review(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"), "companyId": d.get("company_id"),
+        "anonymous": bool(d.get("anonymous")), "position": d.get("position") or "",
+        "employmentType": d.get("employment_type") or "", "interviewRounds": int(d.get("interview_rounds") or 0),
+        "interviewLanguage": d.get("interview_language") or "", "difficulty": d.get("difficulty") or "",
+        "questions": d.get("questions") or "", "processDescription": d.get("process_description") or "",
+        "result": d.get("result") or "", "interviewYear": int(d.get("interview_year") or 0),
+        "city": d.get("city") or "", "offerReceived": _guide_tri_bool(d.get("offer_received")),
+        "durationWeeks": int(d.get("duration_weeks") or 0), "tips": d.get("tips") or "",
+        "status": d.get("status") or "", "createdAt": d.get("created_at"),
+    }
+
+
+def serialize_guide_faq(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"), "question": d.get("question"), "answer": d.get("answer") or "",
+        "categoryKey": d.get("category_key") or "",
+    }
+
+
+def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
+    """Idempotently seed the Guide taxonomy + starter editorial content.
+
+    Categories/tags/faq are config-driven and refreshed each boot. Articles /
+    products / companies are inserted only when their slug is missing, so admin
+    or user edits are never overwritten. No crawler data, no fake user content:
+    company review tables are left empty until real users submit and pass review.
+    """
+    now = now_iso()
+    result = {"categories": 0, "articles": 0, "products": 0, "schools": 0, "companies": 0, "faq": 0, "tags": 0}
+    country = GUIDE_DEFAULT_COUNTRY
+
+    # --- categories (top-level + children) ---
+    order = 0
+    for cat in GUIDE_CATEGORY_SEED:
+        order += 1
+        _guide_upsert_category(conn, cat["key"], "", cat["title"], cat.get("subtitle", ""),
+                               cat.get("description", ""), cat.get("icon", ""), cat.get("color", ""),
+                               country, order, now, result)
+        child_order = 0
+        for child_key, child_title in cat.get("children", []):
+            child_order += 1
+            _guide_upsert_category(conn, child_key, cat["key"], child_title, "", "", cat.get("icon", ""),
+                                   cat.get("color", ""), country, child_order, now, result)
+
+    # --- tags ---
+    tag_order = 0
+    for name, key, cat_key in GUIDE_TAG_SEED:
+        tag_order += 1
+        exists = conn.execute("SELECT id FROM guide_tags WHERE key = ? AND country = ?", (key, country)).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO guide_tags (id, name, key, category_key, country, language, sort_order, created_at) "
+                "VALUES (?, ?, ?, ?, ?, 'zh-CN', ?, ?)",
+                (str(uuid.uuid4()), name, key, cat_key, country, tag_order, now),
+            )
+            result["tags"] += 1
+
+    # --- faq ---
+    faq_order = 0
+    for faq in GUIDE_FAQ_SEED:
+        faq_order += 1
+        exists = conn.execute(
+            "SELECT id FROM guide_faq WHERE question = ? AND country = ?", (faq["q"], country)
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO guide_faq (id, question, answer, category_key, country, language, sort_order, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 'zh-CN', ?, 'published', ?, ?)",
+                (str(uuid.uuid4()), faq["q"], faq["a"], faq.get("category_key", ""), country, faq_order, now, now),
+            )
+            result["faq"] += 1
+
+    # --- articles ---
+    art_order = 0
+    for art in GUIDE_ARTICLE_SEED:
+        art_order += 1
+        exists = conn.execute(
+            "SELECT id FROM guide_articles WHERE slug = ? AND country = ?", (art["slug"], country)
+        ).fetchone()
+        if exists:
+            continue
+        conn.execute(
+            "INSERT INTO guide_articles (id, title, slug, summary, body, category_key, sub_category_key, "
+            "content_type, country, city, language, cover_image, tags, author_type, author_name, is_featured, "
+            "is_free, is_paid, status, view_count, save_count, sort_order, created_at, updated_at, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'guide', ?, '', 'zh-CN', '', ?, 'editorial', ?, ?, 1, 0, 'published', 0, 0, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), art["title"], art["slug"], art.get("summary", ""), art.get("body", ""),
+             art["category"], art.get("sub", ""), country, ",".join(art.get("tags", [])),
+             art.get("author", "Machi 日本指南编辑部"), 1 if art.get("featured") else 0,
+             art_order, now, now, now),
+        )
+        result["articles"] += 1
+
+    # --- products ---
+    prod_order = 0
+    for prod in GUIDE_PRODUCT_SEED:
+        prod_order += 1
+        exists = conn.execute(
+            "SELECT id FROM guide_products WHERE slug = ? AND country = ?", (prod["slug"], country)
+        ).fetchone()
+        if exists:
+            continue
+        is_free = int(prod.get("is_free", 0))
+        coming = 0 if is_free else (1 if prod.get("coming_soon", True) else 0)
+        status = "coming_soon" if coming else "published"
+        is_paid = 0 if is_free else 1
+        row = {
+            "id": str(uuid.uuid4()),
+            "title": prod["title"], "slug": prod["slug"], "subtitle": prod.get("subtitle", ""),
+            "description": prod.get("description", ""), "category_key": prod["category"],
+            "sub_category_key": prod.get("sub", ""), "product_type": prod["product_type"],
+            "price": int(prod.get("price", 0)), "currency": prod.get("currency", "CNY"),
+            "price_label": prod.get("price_label", ""), "cover_image": prod.get("cover_image", ""),
+            "tags": _guide_csv(prod.get("tags", [])), "target_audience": prod.get("target", ""),
+            "delivery_method": prod.get("delivery", ""), "preview_content": prod.get("preview", ""),
+            "purchase_content": prod.get("purchase", ""), "file_url": prod.get("file_url", ""),
+            "file_name": prod.get("file_name", ""), "file_type": prod.get("file_type", ""),
+            "file_size": int(prod.get("file_size", 0)), "country": country, "language": "zh-CN",
+            "is_digital": 0 if prod.get("is_service") else 1, "is_service": int(prod.get("is_service", 0)),
+            "is_free": is_free, "is_paid": is_paid,
+            "is_member_included": 1 if prod.get("member_included") and not prod.get("is_service") else 0,
+            "is_member_discount": 1 if prod.get("member_discount") else 0,
+            "member_price": int(prod.get("member_price", 0) or 0),
+            "is_coming_soon": coming, "status": status, "purchase_count": 0, "rating": 0,
+            "sort_order": prod_order, "is_featured": int(prod.get("is_featured", 0)),
+            "refund_policy": prod.get("refund_policy", ""), "notes": prod.get("notes", ""),
+            "created_at": now, "updated_at": now, "published_at": now if status == "published" else None,
+        }
+        conn.execute(
+            f"INSERT INTO guide_products ({', '.join(row.keys())}) VALUES ({', '.join(['?'] * len(row))})",
+            tuple(row.values()),
+        )
+        result["products"] += 1
+
+    # --- schools (example starter database, source-backed fields only) ---
+    for idx, school in enumerate(GUIDE_SCHOOL_SEED, start=1):
+        exists = conn.execute(
+            "SELECT id FROM guide_schools WHERE slug = ? AND country = ?", (school["slug"], country)
+        ).fetchone()
+        source_url = school.get("source_url") or school.get("international_admission_url") or school.get("website", "")
+        source_type = school.get("source_type") or ("official" if school.get("website") else "public_reference")
+        source_name = school.get("source_name") or school.get("school_name_en") or school["school_name"]
+        verification_status = school.get("verification_status") or "needs_review"
+        short = school.get("short_description") or "示例学校档案，后续由管理员根据官方资料继续补充申请信息。"
+        desc = school.get("description") or (
+            f"{school['school_name']} 的基础资料档案。当前仅录入学校名称、类型、地区和官方链接；"
+            "详细申请要求请以学校官网与招生简章为准。"
+        )
+        if exists:
+            conn.execute(
+                "UPDATE guide_schools SET school_name = ?, school_name_jp = ?, school_name_en = ?, school_type = ?, "
+                "prefecture = ?, city = ?, website = ?, international_admission_url = ?, short_description = ?, "
+                "description = ?, is_accepting_international_students = ?, fields_of_study = ?, source_type = ?, source_name = ?, source_url = ?, "
+                "verification_status = ?, data_quality_score = ?, is_featured = ?, updated_at = ? WHERE id = ?",
+                (school["school_name"], school.get("school_name_jp", ""), school.get("school_name_en", ""),
+                 school.get("school_type", "other"), school.get("prefecture", ""), school.get("city", ""),
+                 school.get("website", ""), school.get("international_admission_url", ""), short, desc,
+                 1 if school.get("international_admission_url") else -1,
+                 _guide_csv(school.get("fields_of_study", [])), source_type, source_name,
+                 source_url, verification_status, _guide_school_quality(school), int(school.get("is_featured", 0)), now, exists["id"]),
+            )
+            continue
+        conn.execute(
+            "INSERT INTO guide_schools (id, slug, school_name, school_name_jp, school_name_en, school_type, country, "
+            "prefecture, city, website, international_admission_url, description, short_description, "
+            "is_accepting_international_students, has_english_program, has_japanese_program, has_scholarship, "
+            "has_dormitory, has_career_support, tuition_min, tuition_max, currency, fields_of_study, tags, "
+            "source_type, source_name, source_url, verification_status, data_quality_score, is_featured, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, -1, -1, -1, 0, 0, 'JPY', ?, ?, "
+            "?, ?, ?, ?, ?, ?, 'published', ?, ?)",
+            (str(uuid.uuid4()), school["slug"], school["school_name"], school.get("school_name_jp", ""),
+             school.get("school_name_en", ""), school.get("school_type", "other"), country,
+             school.get("prefecture", ""), school.get("city", ""), school.get("website", ""),
+             school.get("international_admission_url", ""), desc, short,
+             1 if school.get("international_admission_url") else -1,
+             _guide_csv(school.get("fields_of_study", [])), _guide_csv([school.get("school_type", ""), *school.get("fields_of_study", [])]),
+             source_type, source_name, source_url, verification_status, _guide_school_quality(school),
+             int(school.get("is_featured", 0)), now, now),
+        )
+        result["schools"] += 1
+
+    # --- companies (public factual metadata only; scores stay 0 / no fake reviews) ---
+    for comp in GUIDE_COMPANY_SEED:
+        exists = conn.execute(
+            "SELECT id FROM guide_companies WHERE slug = ? AND country = ?", (comp["slug"], country)
+        ).fetchone()
+        if exists:
+            source_url = comp.get("source_url") or comp.get("career_url") or comp.get("website", "")
+            source_type = comp.get("source_type") or ("official" if comp.get("website") else "public_reference")
+            source_name = comp.get("source_name") or comp.get("name_en") or comp["name"]
+            verification_status = comp.get("verification_status") or "needs_review"
+            conn.execute(
+                "UPDATE guide_companies SET company_name = ?, company_name_jp = ?, company_name_en = ?, industry = ?, "
+                "country = ?, prefecture = ?, city = ?, website = ?, career_url = ?, size = ?, company_size = ?, "
+                "founded_year = ?, short_description = ?, description = ?, source_type = ?, source_name = ?, "
+                "source_url = ?, verification_status = ?, data_quality_score = ?, is_featured = ?, updated_at = ? WHERE id = ?",
+                (comp["name"], comp.get("name_jp", ""), comp.get("name_en", ""), comp.get("industry", ""),
+                 country, comp.get("prefecture", ""), comp.get("city", ""), comp.get("website", ""),
+                 comp.get("career_url", ""), comp.get("company_size", comp.get("size", "")),
+                 comp.get("company_size", comp.get("size", "")), int(comp.get("founded", 0)),
+                 comp.get("short_description", "示例公司档案，评分与评论需等待真实用户提交并审核。"),
+                 comp.get("description", "公开基础信息档案。公司详情、招聘岗位和制度请以公司官网与招聘页面为准。"),
+                 source_type, source_name, source_url, verification_status, _guide_company_quality(comp),
+                 int(comp.get("is_featured", 0)), now, exists["id"]),
+            )
+            continue
+        source_url = comp.get("source_url") or comp.get("career_url") or comp.get("website", "")
+        source_type = comp.get("source_type") or ("official" if comp.get("website") else "public_reference")
+        source_name = comp.get("source_name") or comp.get("name_en") or comp["name"]
+        verification_status = comp.get("verification_status") or "needs_review"
+        conn.execute(
+            "INSERT INTO guide_companies (id, company_name, company_name_jp, company_name_en, slug, industry, country, "
+            "prefecture, city, website, career_url, size, company_size, founded_year, short_description, description, "
+            "is_foreigner_friendly, accepts_foreign_applicants, supports_work_visa, has_english_positions, "
+            "foreigner_friendly_score, visa_support_score, interview_difficulty_score, overtime_score, "
+            "salary_benefit_score, work_life_balance_score, career_growth_score, review_count, interview_review_count, "
+            "source_type, source_name, source_url, verification_status, data_quality_score, is_featured, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, "
+            "?, ?, ?, ?, ?, ?, 'published', ?, ?)",
+            (str(uuid.uuid4()), comp["name"], comp.get("name_jp", ""), comp.get("name_en", ""), comp["slug"],
+             comp.get("industry", ""), country, comp.get("prefecture", ""), comp.get("city", ""),
+             comp.get("website", ""), comp.get("career_url", ""), comp.get("company_size", comp.get("size", "")),
+             comp.get("company_size", comp.get("size", "")), int(comp.get("founded", 0)),
+             comp.get("short_description", "示例公司档案，评分与评论需等待真实用户提交并审核。"),
+             comp.get("description", "公开基础信息档案。公司详情、招聘岗位和制度请以公司官网与招聘页面为准。"),
+             source_type, source_name, source_url, verification_status, _guide_company_quality(comp),
+             int(comp.get("is_featured", 0)), now, now),
+        )
+        result["companies"] += 1
+
+    return result
+
+
+def _guide_upsert_category(conn: sqlite3.Connection, key: str, parent_key: str, title: str, subtitle: str,
+                           description: str, icon: str, color: str, country: str, sort_order: int,
+                           now: str, result: dict[str, int]) -> None:
+    existing = conn.execute(
+        "SELECT id FROM guide_categories WHERE key = ? AND country = ?", (key, country)
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE guide_categories SET parent_key = ?, title = ?, subtitle = ?, description = ?, icon = ?, "
+            "color = ?, sort_order = ?, is_active = 1, updated_at = ? WHERE id = ?",
+            (parent_key, title, subtitle, description, icon, color, sort_order, now, existing["id"]),
+        )
+        return
+    conn.execute(
+        "INSERT INTO guide_categories (id, key, parent_key, title, subtitle, description, icon, color, country, "
+        "language, sort_order, is_active, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'zh-CN', ?, 1, ?, ?)",
+        (str(uuid.uuid4()), key, parent_key, title, subtitle, description, icon, color, country, sort_order, now, now),
+    )
+    result["categories"] += 1
+
+
 def init_db() -> None:
     with DB_LOCK, db() as conn:
         conn.executescript(SCHEMA)
         run_migrations(conn)
+        ensure_guide_schema_extensions(conn)
         ensure_membership_plans(conn)
         ensure_news_source_presets(conn)
+        ensure_guide_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
             # first registered user is the founder.
@@ -3804,7 +6613,7 @@ def hash_ip(ip: str) -> str:
 #     is ever logged or returned by any API.
 # ===========================================================================
 
-MEMBERSHIP_ACTIVE_STATUSES = {"active", "grace_period"}
+MEMBERSHIP_ACTIVE_STATUSES = {"active", "grace_period", "trialing"}
 _PROVIDER_SOURCE = {
     "wechat_pay": "wechat_pay",
     "alipay": "alipay",
@@ -3830,6 +6639,16 @@ def _add_one_month(dt: datetime) -> datetime:
     return dt.replace(year=year, month=month, day=min(dt.day, last))
 
 
+def _add_plan_period(dt: datetime, plan: dict[str, Any] | None, periods: int = 1) -> datetime:
+    billing = (plan or {}).get("billing_period") or (plan or {}).get("billing_cycle") or "monthly"
+    count = max(1, int((plan or {}).get("interval_count") or 1))
+    months = 12 if billing == "yearly" else 1
+    out = dt
+    for _ in range(max(1, int(periods or 1)) * count * months):
+        out = _add_one_month(out)
+    return out
+
+
 def requires_verified_membership(content_type: str | None) -> bool:
     return (content_type or "").strip().lower() in REQUIRES_VERIFIED_MEMBERSHIP
 
@@ -3841,17 +6660,126 @@ def get_plan(conn: sqlite3.Connection, plan_key: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
+def get_plan_by_apple_product(conn: sqlite3.Connection, product_id: str) -> dict[str, Any] | None:
+    if not product_id:
+        return None
+    row = conn.execute(
+        "SELECT * FROM membership_plans WHERE is_active = 1 AND (ios_iap_product_id = ? OR apple_product_id = ?) LIMIT 1",
+        (product_id, product_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def active_membership_plans(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = [
+        dict(r) for r in conn.execute(
+            "SELECT * FROM membership_plans WHERE is_active = 1 AND plan_key <> ? ORDER BY sort_order ASC, billing_period ASC, created_at ASC",
+            (MEMBERSHIP_LEGACY_PLAN_KEY,),
+        ).fetchall()
+    ]
+    if rows:
+        return rows
+    return [
+        dict(r) for r in conn.execute(
+            "SELECT * FROM membership_plans WHERE is_active = 1 ORDER BY sort_order ASC, billing_period ASC, created_at ASC"
+        ).fetchall()
+    ]
+
+
+def _plan_benefits(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
+    raw = (plan or {}).get("benefits") or ""
+    try:
+        parsed = json.loads(raw) if raw else []
+    except Exception:
+        parsed = []
+    if not isinstance(parsed, list) or not parsed:
+        parsed = default_membership_benefits()
+    out: list[dict[str, Any]] = []
+    for idx, item in enumerate(parsed):
+        if not isinstance(item, dict):
+            continue
+        enabled = item.get("is_enabled", item.get("isEnabled", True))
+        if enabled is False or str(enabled).lower() in {"0", "false", "no"}:
+            continue
+        title = str(item.get("benefit_title") or item.get("title") or "").strip()
+        if not title:
+            continue
+        out.append({
+            "key": str(item.get("key") or f"benefit_{idx + 1}"),
+            "benefit_title": title,
+            "title": title,
+            "benefit_description": str(item.get("benefit_description") or item.get("description") or ""),
+            "description": str(item.get("benefit_description") or item.get("description") or ""),
+            "benefit_icon": str(item.get("benefit_icon") or item.get("icon") or "checkmark.circle"),
+            "icon": str(item.get("benefit_icon") or item.get("icon") or "checkmark.circle"),
+            "is_enabled": True,
+            "sort_order": int(item.get("sort_order") or item.get("sortOrder") or idx + 1),
+        })
+    return sorted(out, key=lambda x: int(x.get("sort_order") or 0))
+
+
+def plan_price_value(plan: dict[str, Any]) -> float:
+    price = float(plan.get("price") or 0)
+    if price > 0:
+        return price
+    return round(int(plan.get("amount_cents") or 0) / 100, 2)
+
+
 def serialize_plan(plan: dict[str, Any]) -> dict[str, Any]:
-    cents = int(plan.get("amount_cents") or 0)
+    amount = plan_price_value(plan)
+    cents = int(plan.get("amount_cents") or round(amount * 100))
+    currency = normalize_currency(plan.get("currency", MEMBERSHIP_CURRENCY))
+    billing_period = plan.get("billing_period") or plan.get("billing_cycle") or MEMBERSHIP_BILLING_CYCLE
+    price_label = str(plan.get("price_label") or "").strip()
+    if not price_label:
+        suffix = "/ 年" if billing_period == "yearly" else "/ 月" if billing_period == "monthly" else ""
+        price_label = f"{format_price_value(amount, currency)} {suffix}".strip()
     return {
         "plan_key": plan["plan_key"],
-        "name_zh": plan.get("name_zh", ""),
+        "planKey": plan["plan_key"],
+        "name": plan.get("name") or plan.get("name_zh", ""),
+        "subtitle": plan.get("subtitle", ""),
+        "description": plan.get("description", ""),
+        "name_zh": plan.get("name_zh", "") or plan.get("name", ""),
         "name_en": plan.get("name_en", ""),
         "name_ja": plan.get("name_ja", ""),
-        "amount": round(cents / 100, 2),
+        "amount": amount,
         "amount_cents": cents,
-        "currency": plan.get("currency", MEMBERSHIP_CURRENCY),
-        "billing_cycle": plan.get("billing_cycle", MEMBERSHIP_BILLING_CYCLE),
+        "price": amount,
+        "currency": currency,
+        "price_label": price_label,
+        "priceLabel": price_label,
+        "original_price": float(plan.get("original_price") or 0),
+        "originalPrice": float(plan.get("original_price") or 0),
+        "discount_label": plan.get("discount_label") or "",
+        "discountLabel": plan.get("discount_label") or "",
+        "billing_cycle": billing_period,
+        "billingCycle": billing_period,
+        "billing_period": billing_period,
+        "billingPeriod": billing_period,
+        "interval_count": int(plan.get("interval_count") or 1),
+        "intervalCount": int(plan.get("interval_count") or 1),
+        "stripe_product_id": plan.get("stripe_product_id") or "",
+        "stripeProductId": plan.get("stripe_product_id") or "",
+        "stripe_price_id": plan.get("stripe_price_id") or "",
+        "stripePriceId": plan.get("stripe_price_id") or "",
+        "ios_iap_product_id": plan.get("ios_iap_product_id") or "",
+        "iosIapProductId": plan.get("ios_iap_product_id") or "",
+        "apple_product_id": plan.get("apple_product_id") or "",
+        "appleProductId": plan.get("apple_product_id") or "",
+        "is_active": bool(plan.get("is_active", 1)),
+        "isActive": bool(plan.get("is_active", 1)),
+        "is_recommended": bool(plan.get("is_recommended")),
+        "isRecommended": bool(plan.get("is_recommended")),
+        "is_default": bool(plan.get("is_default")),
+        "isDefault": bool(plan.get("is_default")),
+        "is_featured": bool(plan.get("is_featured")),
+        "isFeatured": bool(plan.get("is_featured")),
+        "sort_order": int(plan.get("sort_order") or 0),
+        "sortOrder": int(plan.get("sort_order") or 0),
+        "benefits": _plan_benefits(plan),
+        "created_at": plan.get("created_at"),
+        "updated_at": plan.get("updated_at"),
     }
 
 
@@ -3961,7 +6889,7 @@ def get_user_membership_status(conn: sqlite3.Connection, user_id: str) -> dict[s
         "provider": source,
         "price": float((plan_payload or {}).get("amount") or 0),
         "currency": (plan_payload or {}).get("currency") or MEMBERSHIP_CURRENCY,
-        "benefits": ["verified_badge", "exclusive_page", "priority_review", "light_boost"] if is_active else [],
+        "benefits": _plan_benefits(plan) if is_active and plan else [],
         "verified_badge_type": "member" if is_active else "",
         "verifiedBadgeType": "member" if is_active else "",
         "can_post_high_trust_content": is_active,
@@ -3999,28 +6927,29 @@ def activate_or_extend_membership(conn: sqlite3.Connection, user_id: str, plan_k
     Callers own idempotency — this always adds `periods` when invoked."""
     now = datetime.now(timezone.utc)
     periods = max(1, int(periods or 1))
+    plan = get_plan(conn, plan_key)
     row = _current_membership_row(conn, user_id)
     if _membership_is_live(row):
         end = _aware(parse_iso(row.get("current_period_end"))) or now
-        for _ in range(periods):
-            end = _add_one_month(end)
+        end = _add_plan_period(end, plan, periods)
         conn.execute(
             "UPDATE user_memberships SET status = 'active', plan_key = ?, current_period_end = ?, "
-            "source = ?, expired_at = NULL, updated_at = ? WHERE id = ?",
-            (plan_key, end.isoformat(), source, now_iso(), row["id"]),
+            "expires_at = ?, billing_period = ?, price = ?, currency = ?, provider = ?, source = ?, expired_at = NULL, updated_at = ? WHERE id = ?",
+            (plan_key, end.isoformat(), end.isoformat(), (plan or {}).get("billing_period") or (plan or {}).get("billing_cycle") or "",
+             plan_price_value(plan) if plan else 0, (plan or {}).get("currency") or "", source, source, now_iso(), row["id"]),
         )
         membership_id = row["id"]
         record_entitlement_event(conn, user_id, membership_id, "membership_renewed", source, {"plan_key": plan_key})
     else:
-        end = now
-        for _ in range(periods):
-            end = _add_one_month(end)
+        end = _add_plan_period(now, plan, periods)
         membership_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO user_memberships (id, user_id, plan_key, status, started_at, current_period_start, "
-            "current_period_end, source, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)",
+            "current_period_end, expires_at, billing_period, price, currency, provider, source, created_at, updated_at) VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (membership_id, user_id, plan_key, now.isoformat(), now.isoformat(), end.isoformat(),
-             source, now_iso(), now_iso()),
+             end.isoformat(), (plan or {}).get("billing_period") or (plan or {}).get("billing_cycle") or "",
+             plan_price_value(plan) if plan else 0, (plan or {}).get("currency") or "",
+             source, source, now_iso(), now_iso()),
         )
         record_entitlement_event(conn, user_id, membership_id, "membership_started", source, {"plan_key": plan_key})
     sync_user_membership_cache(conn, user_id)
@@ -4107,12 +7036,9 @@ def serialize_order(row: dict[str, Any]) -> dict[str, Any]:
 
 def _order_charge_for_provider(plan: dict[str, Any], provider: str) -> tuple[int, str]:
     """The amount + currency to charge, chosen server-side per provider.
-    Domestic rails (WeChat/Alipay) charge the CNY plan; Stripe charges the
-    overseas price (e.g. $1.99). Same entitlement, region-appropriate price.
     A client-supplied amount is never used."""
-    if provider == "stripe":
-        return STRIPE_PRICE_CENTS, STRIPE_CURRENCY.upper()
-    return int(plan["amount_cents"]), plan["currency"]
+    amount = int(plan.get("amount_cents") or round(plan_price_value(plan) * 100))
+    return amount, normalize_currency(plan.get("currency") or MEMBERSHIP_CURRENCY)
 
 
 def create_payment_order(conn: sqlite3.Connection, user_id: str, plan_key: str,
@@ -4121,14 +7047,19 @@ def create_payment_order(conn: sqlite3.Connection, user_id: str, plan_key: str,
     if not plan:
         raise APIError("会员计划不存在", 404, "plan_not_found")
     amount_cents, currency = _order_charge_for_provider(plan, provider)
+    provider_price_id = ""
+    if provider == "stripe":
+        provider_price_id = str(plan.get("stripe_price_id") or "")
+    elif provider == "apple_iap":
+        provider_price_id = str(plan.get("apple_product_id") or plan.get("ios_iap_product_id") or "")
     order_no = generate_order_no()
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=PAYMENT_ORDER_TTL_SEC)).isoformat()
     conn.execute(
         "INSERT INTO payment_orders (id, order_no, user_id, plan_key, amount_cents, currency, status, "
-        "payment_provider, client_type, expires_at, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+        "payment_provider, provider_price_id, client_type, expires_at, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
         (str(uuid.uuid4()), order_no, user_id, plan_key, amount_cents, currency,
-         provider, client_type, expires_at, now_iso(), now_iso()),
+         provider, provider_price_id, client_type, expires_at, now_iso(), now_iso()),
     )
     return dict(conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone())
 
@@ -4140,7 +7071,9 @@ def _order_is_expired(order: dict[str, Any]) -> bool:
 
 def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: str = "",
                     provider_user_id: str = "", expected_provider: str | None = None,
-                    paid_amount_cents: int | None = None) -> dict[str, Any]:
+                    paid_amount_cents: int | None = None,
+                    provider_subscription_id: str = "",
+                    provider_price_id: str = "") -> dict[str, Any]:
     """Idempotent settlement. A pending order transitions to paid exactly
     once and opens/extends membership. Re-invoked for an already-paid
     order → returns existing state without double-extending."""
@@ -4159,14 +7092,23 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
         raise APIError("订单状态不允许支付", 409, "order_not_payable")
     conn.execute(
         "UPDATE payment_orders SET status = 'paid', provider_trade_no = ?, provider_user_id = ?, "
-        "paid_at = ?, updated_at = ? WHERE order_no = ? AND status = 'pending'",
-        (provider_trade_no or "", provider_user_id or "", now_iso(), now_iso(), order_no),
+        "provider_subscription_id = COALESCE(NULLIF(?, ''), provider_subscription_id), "
+        "provider_price_id = COALESCE(NULLIF(?, ''), provider_price_id), paid_at = ?, updated_at = ? "
+        "WHERE order_no = ? AND status = 'pending'",
+        (provider_trade_no or "", provider_user_id or "", provider_subscription_id or "",
+         provider_price_id or "", now_iso(), now_iso(), order_no),
     )
     fresh = dict(conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone())
     if fresh["status"] != "paid":
         return fresh  # lost a race; the winner already settled
     source = _PROVIDER_SOURCE.get(order["payment_provider"], order["payment_provider"] or "manual")
-    activate_or_extend_membership(conn, order["user_id"], order["plan_key"], source, periods=1)
+    status = activate_or_extend_membership(conn, order["user_id"], order["plan_key"], source, periods=1)
+    if provider_subscription_id or provider_price_id:
+        conn.execute(
+            "UPDATE user_memberships SET provider_subscription_id = COALESCE(NULLIF(?, ''), provider_subscription_id), "
+            "provider_price_id = COALESCE(NULLIF(?, ''), provider_price_id), provider = ?, updated_at = ? WHERE id = ?",
+            (provider_subscription_id or "", provider_price_id or "", source, now_iso(), status.get("membership_id") or ""),
+        )
     return fresh
 
 
@@ -4260,18 +7202,19 @@ def available_payment_providers() -> list[str]:
 
 
 def build_stripe_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dict[str, Any]:
-    """Create a Stripe hosted Checkout Session (one-time payment) and
+    """Create a Stripe hosted Checkout Session (subscription) and
     return its redirect URL. Stripe-hosted page handles all card UI / PCI.
     Membership opens later from the verified `checkout.session.completed`
     webhook — never from the success redirect."""
+    plan = get_plan(conn, order.get("plan_key") or "")
     if STRIPE_SECRET_KEY:
-        return {"pay_url": _stripe_checkout_url(order)}
+        return {"pay_url": _stripe_checkout_url(order, plan)}
     if PAYMENT_MOCK_ENABLED:
         return {"pay_url": _mock_pay_url(order["order_no"]), "mock": True}
     raise APIError("Stripe 尚未完成配置", 503, "provider_unconfigured")
 
 
-def _stripe_checkout_url(order: dict[str, Any]) -> str:
+def _stripe_checkout_url(order: dict[str, Any], plan: dict[str, Any] | None = None) -> str:
     """POST to Stripe /v1/checkout/sessions (form-encoded, Bearer secret).
     No SDK needed. Returns the hosted Checkout URL. The success_url carries
     the Checkout session id so the client can confirm the payment on return
@@ -4280,17 +7223,30 @@ def _stripe_checkout_url(order: dict[str, Any]) -> str:
     from urllib.request import Request, urlopen
     sep = "&" if "?" in STRIPE_SUCCESS_URL else "?"
     success_url = f"{STRIPE_SUCCESS_URL}{sep}stripe_session={{CHECKOUT_SESSION_ID}}"
+    billing = (plan or {}).get("billing_period") or (plan or {}).get("billing_cycle") or "monthly"
+    stripe_interval = "year" if billing == "yearly" else "month"
+    plan_name = (plan or {}).get("name") or (plan or {}).get("name_zh") or "Machi Verified"
+    stripe_price_id = str((plan or {}).get("stripe_price_id") or order.get("provider_price_id") or "").strip()
     fields = {
-        "mode": "payment",
+        "mode": "subscription",
         "success_url": success_url,
         "cancel_url": STRIPE_CANCEL_URL,
         "client_reference_id": order["order_no"],
         "metadata[order_no]": order["order_no"],
+        "metadata[plan_key]": order.get("plan_key") or "",
+        "subscription_data[metadata][order_no]": order["order_no"],
+        "subscription_data[metadata][plan_key]": order.get("plan_key") or "",
         "line_items[0][quantity]": "1",
-        "line_items[0][price_data][currency]": order["currency"].lower(),
-        "line_items[0][price_data][unit_amount]": str(int(order["amount_cents"])),
-        "line_items[0][price_data][product_data][name]": "Machi Verified",
     }
+    if stripe_price_id:
+        fields["line_items[0][price]"] = stripe_price_id
+    else:
+        fields.update({
+            "line_items[0][price_data][currency]": order["currency"].lower(),
+            "line_items[0][price_data][unit_amount]": str(int(order["amount_cents"])),
+            "line_items[0][price_data][recurring][interval]": stripe_interval,
+            "line_items[0][price_data][product_data][name]": str(plan_name),
+        })
     data = urlencode(fields).encode("utf-8")
     req = Request("https://api.stripe.com/v1/checkout/sessions", data=data, method="POST")
     req.add_header("Authorization", "Bearer " + STRIPE_SECRET_KEY)
@@ -4302,6 +7258,79 @@ def _stripe_checkout_url(order: dict[str, Any]) -> str:
     except Exception as exc:
         ERR_LOG.warning("stripe checkout create failed: %s", type(exc).__name__)
         raise APIError("Stripe 下单失败", 502, "provider_error")
+
+
+# --- Machi Guide product purchases (separate from membership payment_orders) ---
+GUIDE_STRIPE_SUCCESS_URL = _env("GUIDE_STRIPE_SUCCESS_URL", "https://machicity.com/guide/services?paid=1")
+GUIDE_STRIPE_CANCEL_URL = _env("GUIDE_STRIPE_CANCEL_URL", "https://machicity.com/guide/services")
+
+
+def _guide_order_no() -> str:
+    """Guide product order number. The 'GP' prefix lets the shared Stripe
+    webhook route the settlement to guide_orders (vs membership payment_orders)."""
+    return "GP" + now_iso()[:10].replace("-", "") + uuid.uuid4().hex[:8].upper()
+
+
+def _guide_safe_return_url(raw: Any) -> str | None:
+    value = str(raw or "").strip()
+    if value.startswith("http://") or value.startswith("https://"):
+        return value[:500]
+    return None
+
+
+def guide_stripe_checkout_url(order_no: str, amount_cents: int, currency: str, product_name: str,
+                              success_url: str, cancel_url: str) -> tuple[str, str]:
+    """Create a one-time Stripe Checkout Session for a Guide product order and
+    return (checkout_url, session_id). The amount is decided server-side (minor
+    units) — the client never sends a price."""
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+    sep = "&" if "?" in success_url else "?"
+    fields = {
+        "mode": "payment",
+        "success_url": f"{success_url}{sep}guide_session={{CHECKOUT_SESSION_ID}}",
+        "cancel_url": cancel_url,
+        "client_reference_id": order_no,
+        "metadata[order_no]": order_no,
+        "metadata[kind]": "guide_product",
+        "line_items[0][quantity]": "1",
+        "line_items[0][price_data][currency]": (currency or "cny").lower(),
+        "line_items[0][price_data][unit_amount]": str(int(amount_cents)),
+        "line_items[0][price_data][product_data][name]": (product_name or "Machi Guide")[:120],
+    }
+    data = urlencode(fields).encode("utf-8")
+    req = Request("https://api.stripe.com/v1/checkout/sessions", data=data, method="POST")
+    req.add_header("Authorization", "Bearer " + STRIPE_SECRET_KEY)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urlopen(req, timeout=10) as resp:
+            session = json.loads(resp.read().decode("utf-8"))
+        return session["url"], str(session.get("id") or "")
+    except Exception as exc:
+        ERR_LOG.warning("guide stripe checkout create failed: %s", type(exc).__name__)
+        raise APIError("Stripe 下单失败", 502, "provider_error")
+
+
+def settle_guide_order(conn: sqlite3.Connection, order_no: str, payment_intent: str = "", amount_cents: int = 0) -> bool:
+    """Idempotently mark a Guide product order paid+fulfilled. For a service
+    product, also create a linked paid service_request so the back office has a
+    record to action. Trusted only from a verified webhook / server-side confirm."""
+    order = conn.execute("SELECT * FROM guide_orders WHERE order_no = ?", (order_no,)).fetchone()
+    if not order or order["status"] in ("paid", "fulfilled", "refunded"):
+        return False
+    now = now_iso()
+    conn.execute(
+        "UPDATE guide_orders SET status = 'fulfilled', paid_at = ?, fulfilled_at = ?, "
+        "stripe_payment_intent_id = ?, payment_order_id = COALESCE(NULLIF(payment_order_id, ''), ?) WHERE id = ?",
+        (now, now, payment_intent, payment_intent, order["id"]))
+    conn.execute("UPDATE guide_products SET purchase_count = purchase_count + 1 WHERE id = ?", (order["product_id"],))
+    prod = conn.execute("SELECT id, product_type, is_service FROM guide_products WHERE id = ?", (order["product_id"],)).fetchone()
+    if prod and bool(prod["is_service"]):
+        conn.execute(
+            "INSERT INTO guide_service_requests (id, user_id, product_id, service_type, status, order_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'paid', ?, ?, ?)",
+            (str(uuid.uuid4()), order["user_id"], prod["id"], prod["product_type"] or "", order["id"], now, now))
+    return True
 
 
 def stripe_retrieve_session(session_id: str) -> dict[str, Any] | None:
@@ -6612,6 +9641,8 @@ class Handler(BaseHTTPRequestHandler):
         if not row:
             return None
         expires_at = parse_iso(row["expires_at"])
+        if expires_at and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
         if expires_at and expires_at < datetime.now(timezone.utc):
             # Expired session — best-effort cleanup. Skip on GET paths
             # because this method is called from non-write request flows
@@ -7942,6 +10973,2205 @@ class Handler(BaseHTTPRequestHandler):
         comment = conn.execute("SELECT * FROM editorial_post_comments WHERE id = ?", (comment_id,)).fetchone()
         self.send_json({"comment": serialize_editorial_comment(comment, serialize_user(user))}, 201)
 
+    # ================================================================
+    # Machi Guide / 日本指南 — public + auth + admin API.
+    #
+    # Region gate: only `country == "jp"` is open today. Any other
+    # country gets a `coming_soon` payload (empty arrays, never 500).
+    # All GET endpoints allow anonymous browsing; purchase / download /
+    # submitting reviews / service requests require login.
+    # ================================================================
+
+    def _guide_country(self, query: dict[str, str]) -> str:
+        raw = (query.get("country") or "").strip()
+        return _normalize_news_country(raw) if raw else GUIDE_DEFAULT_COUNTRY
+
+    def _guide_is_open(self, country: str) -> bool:
+        return country in GUIDE_OPEN_COUNTRIES
+
+    def _guide_coming_soon_payload(self, country: str, **extra: Any) -> dict[str, Any]:
+        base = {"status": "coming_soon", "country": country, "emptyState": GUIDE_EMPTY_STATE}
+        base.update(extra)
+        return base
+
+    def _guide_categories_payload(self, conn: sqlite3.Connection, country: str) -> list[dict[str, Any]]:
+        tops = conn.execute(
+            "SELECT * FROM guide_categories WHERE country = ? AND parent_key = '' AND is_active = 1 ORDER BY sort_order",
+            (country,),
+        ).fetchall()
+        out: list[dict[str, Any]] = []
+        for top in tops:
+            kids = conn.execute(
+                "SELECT * FROM guide_categories WHERE country = ? AND parent_key = ? AND is_active = 1 ORDER BY sort_order",
+                (country, top["key"]),
+            ).fetchall()
+            out.append(serialize_guide_category(top, [serialize_guide_category(k) for k in kids]))
+        return out
+
+    def api_guide_home(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(
+                country, hero=GUIDE_HERO, categories=[], goals={"title": GUIDE_GOAL_TITLE, "entries": []},
+                goalEntries=[], featuredArticles=[], featuredProducts=[], featuredServices=[],
+                resourceEntries=[], featuredSchools=[], companyHighlights=[], latestArticles=[], faq=[],
+            ))
+        # This payload is fully public (no per-user data) and runs ~8 read
+        # queries. Under a traffic spike that's the single biggest source of
+        # DB load and the "/guide stuck loading" symptom, so serve it from a
+        # short-TTL in-memory cache: only one request per window per country
+        # actually touches the DB. Admin guide edits become visible within
+        # GUIDE_HOME_CACHE_TTL seconds.
+        cache_key = f"guide_home:{country}:{language}"
+        cached_payload = _cache_get(cache_key)
+        if cached_payload is not None:
+            return self.send_json(cached_payload)
+        featured_articles = [serialize_guide_article(r) for r in conn.execute(
+            "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND is_featured = 1 "
+            "ORDER BY sort_order, published_at DESC LIMIT 6", (country,)).fetchall()]
+        latest_articles = [serialize_guide_article(r) for r in conn.execute(
+            "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' "
+            "ORDER BY published_at DESC, created_at DESC LIMIT 8", (country,)).fetchall()]
+        featured_products = [serialize_guide_product(r) for r in conn.execute(
+            "SELECT * FROM guide_products WHERE country = ? AND is_service = 0 AND status IN ('published','coming_soon') "
+            "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()]
+        featured_services = [serialize_guide_product(r) for r in conn.execute(
+            "SELECT * FROM guide_products WHERE country = ? AND is_service = 1 AND status IN ('published','coming_soon') "
+            "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()]
+        featured_schools = [serialize_guide_school(r) for r in conn.execute(
+            "SELECT * FROM guide_schools WHERE country = ? AND status = 'published' "
+            "ORDER BY is_featured DESC, data_quality_score DESC, updated_at DESC LIMIT 6", (country,)).fetchall()]
+        companies = [serialize_guide_company(r) for r in conn.execute(
+            "SELECT * FROM guide_companies WHERE country = ? AND status = 'published' AND (website <> '' OR career_url <> '' OR global_career_url <> '') AND data_quality_score >= 15 "
+            "ORDER BY is_featured DESC, data_quality_score DESC, review_count DESC, created_at DESC LIMIT 6", (country,)).fetchall()]
+        faqs = [serialize_guide_faq(r) for r in conn.execute(
+            "SELECT * FROM guide_faq WHERE country = ? AND status = 'published' ORDER BY sort_order LIMIT 8",
+            (country,)).fetchall()]
+        payload = {
+            "status": "ok", "country": country, "language": language,
+            "hero": GUIDE_HERO,
+            "categories": self._guide_categories_payload(conn, country),
+            "resourceEntries": GUIDE_RESOURCE_ENTRIES,
+            "goals": {"title": GUIDE_GOAL_TITLE, "entries": GUIDE_GOAL_SEED},
+            "goalEntries": GUIDE_GOAL_SEED,
+            "featuredArticles": featured_articles,
+            "featuredProducts": featured_products,
+            "featuredServices": featured_services,
+            "featuredSchools": featured_schools,
+            "companyHighlights": companies,
+            "latestArticles": latest_articles,
+            "faq": faqs,
+            "reviewDisclaimer": GUIDE_REVIEW_DISCLAIMER,
+            "schoolDisclaimer": GUIDE_SCHOOL_DISCLAIMER,
+            "companyDisclaimer": GUIDE_COMPANY_DISCLAIMER,
+        }
+        _cache_put(cache_key, payload, GUIDE_HOME_CACHE_TTL)
+        self.send_json(payload)
+
+    def api_guide_categories(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, categories=[]))
+        self.send_json({"status": "ok", "country": country, "categories": self._guide_categories_payload(conn, country)})
+
+    def api_guide_schools(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(
+                country, items=[], page=page, pageSize=page_size, total=0, featured=[], disclaimer=GUIDE_SCHOOL_DISCLAIMER))
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else ""
+        where = ["country = ?", "status = 'published'"]
+        params: list[Any] = [country]
+        for q_key, col in (("schoolType", "school_type"), ("prefecture", "prefecture"), ("city", "city")):
+            val = (query.get(q_key) or "").strip().lower()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        region_values = _guide_region_values(query)
+        if region_values:
+            where.append(f"prefecture IN ({','.join('?' for _ in region_values)})")
+            params.extend(sorted(region_values))
+        field = (query.get("field") or "").strip()
+        if field:
+            where.append("(fields_of_study LIKE ? OR departments LIKE ? OR faculties LIKE ? OR graduate_schools LIKE ?)")
+            like_field = f"%{field}%"
+            params.extend([like_field, like_field, like_field, like_field])
+        for q_key, col in (
+            ("acceptsInternationalStudents", "is_accepting_international_students"),
+            ("hasEnglishProgram", "has_english_program"),
+            ("hasJapaneseProgram", "has_japanese_program"),
+            ("hasScholarship", "has_scholarship"),
+            ("hasDormitory", "has_dormitory"),
+            ("hasCareerSupport", "has_career_support"),
+            ("hasLanguageSupport", "has_language_support"),
+        ):
+            v = _guide_query_bool(query, q_key)
+            if v is not None:
+                where.append(f"{col} = ?")
+                params.append(v)
+        jlpt = (query.get("jlptLevel") or "").strip().lower()
+        if jlpt:
+            where.append("(required_japanese_level = ? OR jlpt_required = ?)")
+            params += [jlpt, jlpt]
+        for q_key, col in (("toeflRequired", "toefl_required"), ("ieltsRequired", "ielts_required")):
+            val = (query.get(q_key) or "").strip().lower()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        eju = _guide_query_bool(query, "ejuRequired")
+        if eju is not None:
+            where.append("eju_required = ?")
+            params.append("required" if eju else "not_required")
+        month = (query.get("admissionMonth") or query.get("enrollmentMonth") or "").strip()
+        if month:
+            where.append("admission_months LIKE ?")
+            params.append(f"%{month}%")
+        tuition_min = _guide_int(query.get("tuitionMin"), 0, lo=0)
+        tuition_max = _guide_int(query.get("tuitionMax"), 0, lo=0)
+        if tuition_min:
+            where.append("(tuition_max = 0 OR tuition_max >= ?)")
+            params.append(tuition_min)
+        if tuition_max:
+            where.append("(tuition_min = 0 OR tuition_min <= ?)")
+            params.append(tuition_max)
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            where.append("(school_name LIKE ? OR school_name_jp LIKE ? OR school_name_en LIKE ? OR prefecture LIKE ? OR city LIKE ? OR fields_of_study LIKE ? OR departments LIKE ? OR faculties LIKE ? OR graduate_schools LIKE ? OR tags LIKE ?)")
+            kw = f"%{keyword}%"
+            params += [kw, kw, kw, kw, kw, kw, kw, kw, kw, kw]
+        sort = (query.get("sort") or "recommended").strip()
+        order = {
+            "popular": "view_count DESC, save_count DESC, updated_at DESC",
+            "recently_updated": "updated_at DESC",
+            "data_quality": "data_quality_score DESC, updated_at DESC",
+            "tuition_low_to_high": "tuition_min ASC, updated_at DESC",
+            "tuition_high_to_low": "tuition_max DESC, updated_at DESC",
+            "name_asc": "school_name_en ASC, school_name ASC",
+            "name_jp_asc": "school_name_jp ASC, school_name ASC",
+        }.get(sort, "is_featured DESC, data_quality_score DESC, save_count DESC, updated_at DESC")
+        clause = " AND ".join(where)
+        rows = conn.execute(
+            f"SELECT * FROM guide_schools WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size]).fetchall()
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_schools WHERE {clause}", params).fetchone()["c"]
+        saved_ids: set[str] = set()
+        if viewer_id and rows:
+            placeholders = ",".join("?" for _ in rows)
+            saved_ids = {
+                r["target_id"] for r in conn.execute(
+                    f"SELECT target_id FROM interactions WHERE user_id = ? AND kind = 'guide_school_save' AND target_id IN ({placeholders})",
+                    [viewer_id, *[r["id"] for r in rows]]).fetchall()
+            }
+        featured = [serialize_guide_school(r) for r in conn.execute(
+            "SELECT * FROM guide_schools WHERE country = ? AND status = 'published' ORDER BY is_featured DESC, updated_at DESC LIMIT 6",
+            (country,)).fetchall()]
+        self.send_json({
+            "status": "ok", "country": country, "disclaimer": GUIDE_SCHOOL_DISCLAIMER, "featured": featured,
+            "items": [serialize_guide_school(r, saved=r["id"] in saved_ids) for r in rows],
+            "page": page, "pageSize": page_size, "total": int(total),
+        })
+
+    def _guide_lookup_school(self, conn: sqlite3.Connection, raw_id: str, *, public_only: bool = True) -> sqlite3.Row:
+        status_sql = "AND status = 'published'" if public_only else ""
+        row = conn.execute(
+            f"SELECT * FROM guide_schools WHERE (id = ? OR slug = ?) {status_sql} LIMIT 1",
+            (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("学校不存在", 404, "guide_school_not_found")
+        return row
+
+    def api_guide_school_detail(self, conn: sqlite3.Connection, id_or_slug: str, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, school=None, programs=[], admissions=[]))
+        row = self._guide_lookup_school(conn, id_or_slug)
+        if row["country"] != country:
+            raise APIError("学校不存在", 404, "guide_school_not_found")
+        viewer = self.current_session(conn)
+        saved = False
+        if viewer:
+            saved = bool(conn.execute(
+                "SELECT id FROM interactions WHERE user_id = ? AND target_id = ? AND kind = 'guide_school_save'",
+                (viewer["user_id"], row["id"])).fetchone())
+        conn.execute("UPDATE guide_schools SET view_count = view_count + 1 WHERE id = ?", (row["id"],))
+        fresh = conn.execute("SELECT * FROM guide_schools WHERE id = ?", (row["id"],)).fetchone()
+        programs = [serialize_guide_school_program(r) for r in conn.execute(
+            f"SELECT * FROM guide_school_programs WHERE school_id = ? AND {_guide_status_public_clause()} ORDER BY degree_level, created_at DESC",
+            (row["id"],)).fetchall()]
+        admissions = [serialize_guide_school_admission(r) for r in conn.execute(
+            f"SELECT * FROM guide_school_admissions WHERE school_id = ? AND {_guide_status_public_clause()} ORDER BY enrollment_month, created_at DESC",
+            (row["id"],)).fetchall()]
+        related = [serialize_guide_article(r) for r in conn.execute(
+            "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND category_key IN ('study_japan','study_abroad_japan') "
+            "ORDER BY is_featured DESC, published_at DESC LIMIT 6", (country,)).fetchall()]
+        products = [serialize_guide_product(r) for r in conn.execute(
+            "SELECT * FROM guide_products WHERE country = ? AND status IN ('published','coming_soon') AND category_key IN ('study_japan','study_abroad_japan','guide_services') "
+            "ORDER BY is_coming_soon ASC, sort_order LIMIT 4", (country,)).fetchall()]
+        self.send_json({
+            "status": "ok", "school": serialize_guide_school(fresh, saved=saved),
+            "programs": programs, "admissions": admissions, "relatedArticles": related,
+            "relatedProducts": products, "disclaimer": GUIDE_SCHOOL_DISCLAIMER,
+        })
+
+    def api_guide_school_programs(self, conn: sqlite3.Connection, school_id: str, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, items=[]))
+        school = self._guide_lookup_school(conn, school_id)
+        if school["country"] != country:
+            raise APIError("学校不存在", 404, "guide_school_not_found")
+        rows = conn.execute(
+            f"SELECT * FROM guide_school_programs WHERE school_id = ? AND {_guide_status_public_clause()} ORDER BY degree_level, created_at DESC",
+            (school["id"],)).fetchall()
+        self.send_json({"status": "ok", "country": country, "items": [serialize_guide_school_program(r) for r in rows]})
+
+    def api_guide_school_admissions(self, conn: sqlite3.Connection, school_id: str, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, items=[]))
+        school = self._guide_lookup_school(conn, school_id)
+        if school["country"] != country:
+            raise APIError("学校不存在", 404, "guide_school_not_found")
+        rows = conn.execute(
+            f"SELECT * FROM guide_school_admissions WHERE school_id = ? AND {_guide_status_public_clause()} ORDER BY enrollment_month, created_at DESC",
+            (school["id"],)).fetchall()
+        self.send_json({"status": "ok", "country": country, "items": [serialize_guide_school_admission(r) for r in rows]})
+
+    def api_guide_articles(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(
+                country, items=[], page=page, pageSize=page_size, total=0))
+        where = ["country = ?", "status = 'published'"]
+        params: list[Any] = [country]
+        for q_key, col in (("categoryKey", "category_key"), ("subCategoryKey", "sub_category_key"),
+                           ("contentType", "content_type")):
+            val = (query.get(q_key) or "").strip()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            where.append("(title LIKE ? OR summary LIKE ? OR tags LIKE ?)")
+            kw = f"%{keyword}%"
+            params += [kw, kw, kw]
+        clause = " AND ".join(where)
+        rows = conn.execute(
+            f"SELECT * FROM guide_articles WHERE {clause} "
+            f"ORDER BY is_featured DESC, published_at DESC, created_at DESC LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size]).fetchall()
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_articles WHERE {clause}", params).fetchone()["c"]
+        self.send_json({
+            "status": "ok", "country": country,
+            "items": [serialize_guide_article(r) for r in rows],
+            "page": page, "pageSize": page_size, "total": int(total),
+        })
+
+    def api_guide_article_detail(self, conn: sqlite3.Connection, id_or_slug: str, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, article=None, related=[]))
+        row = conn.execute(
+            "SELECT * FROM guide_articles WHERE (id = ? OR slug = ?) AND country = ? AND status = 'published' LIMIT 1",
+            (id_or_slug, id_or_slug, country)).fetchone()
+        if not row:
+            raise APIError("指南内容不存在", 404, "guide_article_not_found")
+        conn.execute("UPDATE guide_articles SET view_count = view_count + 1 WHERE id = ?", (row["id"],))
+        fresh = conn.execute("SELECT * FROM guide_articles WHERE id = ?", (row["id"],)).fetchone()
+        related = [serialize_guide_article(r) for r in conn.execute(
+            "SELECT * FROM guide_articles WHERE status = 'published' AND id <> ? AND country = ? AND category_key = ? "
+            "ORDER BY published_at DESC LIMIT 4",
+            (row["id"], row["country"], row["category_key"])).fetchall()]
+        self.send_json({"status": "ok", "article": serialize_guide_article(fresh, include_body=True), "related": related})
+
+    def api_guide_products(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(
+                country, items=[], page=page, pageSize=page_size, total=0))
+        where = ["country = ?", "status IN ('published','coming_soon')"]
+        params: list[Any] = [country]
+        for q_key, col in (("categoryKey", "category_key"), ("subCategoryKey", "sub_category_key"),
+                           ("productType", "product_type")):
+            val = (query.get(q_key) or "").strip()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        price_type = (query.get("priceType") or "").strip()
+        if price_type == "free":
+            where.append("is_free = 1")
+        elif price_type == "paid":
+            where.append("is_free = 0")
+        clause = " AND ".join(where)
+        rows = conn.execute(
+            f"SELECT * FROM guide_products WHERE {clause} ORDER BY is_coming_soon ASC, sort_order, created_at DESC "
+            f"LIMIT ? OFFSET ?", [*params, page_size, (page - 1) * page_size]).fetchall()
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_products WHERE {clause}", params).fetchone()["c"]
+        self.send_json({
+            "status": "ok", "country": country,
+            "items": [serialize_guide_product(r) for r in rows],
+            "page": page, "pageSize": page_size, "total": int(total),
+        })
+
+    def api_guide_product_detail(self, conn: sqlite3.Connection, id_or_slug: str, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, product=None))
+        row = conn.execute(
+            "SELECT * FROM guide_products WHERE (id = ? OR slug = ?) AND country = ? AND status IN ('published','coming_soon') LIMIT 1",
+            (id_or_slug, id_or_slug, country)).fetchone()
+        if not row:
+            raise APIError("资料/服务不存在", 404, "guide_product_not_found")
+        product = serialize_guide_product(row)
+        file_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_product_files WHERE product_id = ?", (row["id"],)).fetchone()["c"]
+        product["fileCount"] = int(file_count)
+        # Entitlement gate: a fulfilled/paid order (owned) OR a member-included
+        # digital resource for an active member. Only then do we attach the paid
+        # `purchaseContent` + `fileUrl`. Never opened by a success redirect alone.
+        session = self.current_session(conn)
+        owned = False
+        member_unlocked = False
+        if session:
+            uid = session["user_id"]
+            owned = conn.execute(
+                "SELECT 1 FROM guide_orders WHERE user_id = ? AND product_id = ? AND status IN ('paid','fulfilled') LIMIT 1",
+                (uid, row["id"])).fetchone() is not None
+            if bool(row["is_member_included"]) and not bool(row["is_service"]):
+                member_unlocked = has_active_membership(conn, uid)
+        if owned or member_unlocked:
+            product["purchaseContent"] = row["purchase_content"] or ""
+            product["fileUrl"] = row["file_url"] or ""
+        product["access"] = {
+            "owned": owned, "memberUnlocked": member_unlocked,
+            "canAccess": bool(owned or member_unlocked), "signedIn": session is not None,
+        }
+        product["canView"] = bool(owned or member_unlocked or row["is_free"])
+        product["canPurchase"] = bool(
+            not product["canView"]
+            and not row["is_service"]
+            and not row["is_coming_soon"]
+            and not row["is_price_hidden"]
+            and not row["is_appointment_only"]
+            and int(row["price"] or 0) > 0
+        )
+        if bool(row["is_member_discount"]) and int(row["member_price"] or 0) > 0:
+            product["memberEffectivePrice"] = int(row["member_price"])
+            product["memberPriceLabel"] = f"会员 {format_price_value(row['member_price'], row['currency'])}"
+        if product["canView"]:
+            product["ctaLabel"] = "查看内容"
+        elif row["is_service"] or row["is_price_hidden"] or row["is_appointment_only"]:
+            product["ctaLabel"] = "预约咨询"
+        elif row["is_coming_soon"]:
+            product["ctaLabel"] = "即将开放"
+        else:
+            product["ctaLabel"] = f"购买 {product['priceLabel']}"
+        # iOS reads ios_iap_product_id to route an IAP (not secret). Web buy uses
+        # /api/payments/stripe/guide-checkout — price is read server-side only.
+        product["iosIapProductId"] = row["ios_iap_product_id"] or ""
+        product["appleProductId"] = row["apple_product_id"] or ""
+        product["stripeAvailable"] = bool(stripe_configured() or PAYMENT_MOCK_ENABLED)
+        self.send_json({"status": "ok", "product": product})
+
+    def api_guide_member_resources(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(
+                country, items=[], page=page, pageSize=page_size, total=0))
+        session = self.current_session(conn)
+        membership_active = False
+        if session:
+            membership_active = has_active_membership(conn, session["user_id"])
+        where = [
+            "country = ?",
+            "status IN ('published','coming_soon')",
+            "is_member_included = 1",
+            "is_service = 0",
+        ]
+        params: list[Any] = [country]
+        category = (query.get("categoryKey") or "").strip()
+        if category:
+            where.append("category_key = ?")
+            params.append(category)
+        keyword = (query.get("keyword") or "").strip()
+        if keyword:
+            like = f"%{keyword}%"
+            where.append("(title LIKE ? OR subtitle LIKE ? OR tags LIKE ?)")
+            params.extend([like, like, like])
+        clause = " AND ".join(where)
+        rows = conn.execute(
+            f"SELECT * FROM guide_products WHERE {clause} ORDER BY is_coming_soon ASC, is_featured DESC, sort_order, updated_at DESC LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_products WHERE {clause}", params).fetchone()["c"]
+        self.send_json({
+            "status": "ok",
+            "country": country,
+            "membershipActive": membership_active,
+            "items": [serialize_guide_product(r) for r in rows],
+            "page": page,
+            "pageSize": page_size,
+            "total": int(total),
+            "disclaimer": "会员专属资料由 Machi 编辑部原创整理或人工归纳，不包含未授权官方真题原文；政策类内容请以官方最新说明为准。",
+        })
+
+    def api_guide_companies(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(
+                country, items=[], page=page, pageSize=page_size, total=0))
+        where = ["country = ?", "status = 'published'", "(website <> '' OR career_url <> '' OR global_career_url <> '')", "data_quality_score >= 15"]
+        params: list[Any] = [country]
+        for q_key, col in (("industry", "industry"), ("subIndustry", "sub_industry"), ("prefecture", "prefecture"), ("city", "city"),
+                           ("companySize", "company_size"), ("japaneseLevel", "japanese_level_required"),
+                           ("englishLevel", "english_level_required")):
+            val = (query.get(q_key) or "").strip().lower()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        region_values = _guide_region_values(query)
+        if region_values:
+            where.append(f"prefecture IN ({','.join('?' for _ in region_values)})")
+            params.extend(sorted(region_values))
+        employment_type = (query.get("employmentType") or "").strip()
+        if employment_type:
+            where.append("employment_types LIKE ?")
+            params.append(f"%{employment_type}%")
+        for q_key, col in (("supportsWorkVisa", "supports_work_visa"), ("acceptsForeignApplicants", "accepts_foreign_applicants"),
+                           ("hasEnglishPositions", "has_english_positions"), ("hasGlobalRoles", "has_global_roles"),
+                           ("hasForeignEmployees", "has_foreign_employees")):
+            v = _guide_query_bool(query, q_key)
+            if v is not None:
+                where.append(f"{col} = ?")
+                params.append(v)
+        interview_language = (query.get("interviewLanguage") or "").strip()
+        if interview_language:
+            where.append("id IN (SELECT company_id FROM guide_interview_reviews WHERE interview_language = ? AND status IN ('approved','published'))")
+            params.append(interview_language)
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            where.append("(company_name LIKE ? OR company_name_jp LIKE ? OR company_name_en LIKE ? OR industry LIKE ? OR sub_industry LIKE ? OR city LIKE ? OR description LIKE ? OR tags LIKE ?)")
+            kw = f"%{keyword}%"
+            params += [kw, kw, kw, kw, kw, kw, kw, kw]
+        sort = (query.get("sort") or "recommended").strip()
+        order = {
+            "foreigner_friendly_score": "foreigner_friendly_score DESC, review_count DESC, updated_at DESC",
+            "visa_support_score": "visa_support_score DESC, review_count DESC, updated_at DESC",
+            "review_count": "review_count DESC, updated_at DESC",
+            "interview_review_count": "interview_review_count DESC, updated_at DESC",
+            "recently_updated": "updated_at DESC",
+            "data_quality": "data_quality_score DESC, updated_at DESC",
+            "name_asc": "company_name_en ASC, company_name ASC",
+            "name_jp_asc": "company_name_jp ASC, company_name ASC",
+        }.get(sort, "is_featured DESC, data_quality_score DESC, review_count DESC, updated_at DESC")
+        clause = " AND ".join(where)
+        rows = conn.execute(
+            f"SELECT * FROM guide_companies WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size]).fetchall()
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_companies WHERE {clause}", params).fetchone()["c"]
+        featured = [serialize_guide_company(r) for r in conn.execute(
+            "SELECT * FROM guide_companies WHERE country = ? AND status = 'published' AND (website <> '' OR career_url <> '' OR global_career_url <> '') AND data_quality_score >= 15 ORDER BY is_featured DESC, data_quality_score DESC, review_count DESC, updated_at DESC LIMIT 6",
+            (country,)).fetchall()]
+        self.send_json({
+            "status": "ok", "country": country, "disclaimer": GUIDE_COMPANY_DISCLAIMER, "featured": featured,
+            "items": [serialize_guide_company(r) for r in rows],
+            "page": page, "pageSize": page_size, "total": int(total),
+        })
+
+    def api_guide_company_detail(self, conn: sqlite3.Connection, company_id: str, query: dict[str, str] | None = None) -> None:
+        country = self._guide_country(query or {})
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, company=None, positions=[]))
+        session = self.current_session(conn)
+        row = conn.execute(
+            "SELECT * FROM guide_companies WHERE (id = ? OR slug = ?) AND country = ? AND status = 'published' LIMIT 1",
+            (company_id, company_id, country)).fetchone()
+        if not row:
+            raise APIError("公司不存在", 404, "guide_company_not_found")
+        conn.execute("UPDATE guide_companies SET view_count = view_count + 1 WHERE id = ?", (row["id"],))
+        fresh = conn.execute("SELECT * FROM guide_companies WHERE id = ?", (row["id"],)).fetchone()
+        interview_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_interview_reviews WHERE company_id = ? AND status IN ('approved','published')",
+            (row["id"],)).fetchone()["c"]
+        work_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_company_reviews WHERE company_id = ? AND status IN ('approved','published')",
+            (row["id"],)).fetchone()["c"]
+        positions = [serialize_guide_company_position(r) for r in conn.execute(
+            f"SELECT * FROM guide_company_positions WHERE company_id = ? AND {_guide_status_public_clause()} ORDER BY created_at DESC LIMIT 20",
+            (row["id"],)).fetchall()]
+        latest_interviews = [serialize_guide_interview_review(r) for r in conn.execute(
+            "SELECT * FROM guide_interview_reviews WHERE company_id = ? AND status IN ('approved','published') ORDER BY created_at DESC LIMIT 3",
+            (row["id"],)).fetchall()]
+        latest_work = [serialize_guide_company_review(r) for r in conn.execute(
+            "SELECT * FROM guide_company_reviews WHERE company_id = ? AND status IN ('approved','published') ORDER BY created_at DESC LIMIT 3",
+            (row["id"],)).fetchall()]
+        related = [serialize_guide_article(r) for r in conn.execute(
+            "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND category_key = 'career_japan' "
+            "ORDER BY is_featured DESC, published_at DESC LIMIT 6", (country,)).fetchall()]
+        company = serialize_guide_company(fresh)
+        if session:
+            saved = conn.execute(
+                "SELECT 1 FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'guide_company_save' LIMIT 1",
+                (row["id"], session["user_id"])).fetchone()
+            company["savedByMe"] = bool(saved)
+        self.send_json({
+            "status": "ok", "company": company,
+            "interviewReviewCount": int(interview_count), "workReviewCount": int(work_count),
+            "positions": positions, "latestInterviewReviews": latest_interviews, "latestWorkReviews": latest_work,
+            "relatedArticles": related, "disclaimer": GUIDE_COMPANY_DISCLAIMER,
+        })
+
+    def api_guide_company_reviews(self, conn: sqlite3.Connection, company_id: str, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, workReviews=[], interviewReviews=[]))
+        row = conn.execute(
+            "SELECT id FROM guide_companies WHERE (id = ? OR slug = ?) AND country = ? AND status = 'published' LIMIT 1",
+            (company_id, company_id, country)).fetchone()
+        if not row:
+            raise APIError("公司不存在", 404, "guide_company_not_found")
+        work = [serialize_guide_company_review(r) for r in conn.execute(
+            "SELECT * FROM guide_company_reviews WHERE company_id = ? AND status IN ('approved','published') ORDER BY created_at DESC LIMIT 50",
+            (row["id"],)).fetchall()]
+        interview = [serialize_guide_interview_review(r) for r in conn.execute(
+            "SELECT * FROM guide_interview_reviews WHERE company_id = ? AND status IN ('approved','published') ORDER BY created_at DESC LIMIT 50",
+            (row["id"],)).fetchall()]
+        self.send_json({
+            "status": "ok", "companyId": row["id"], "workReviews": work, "interviewReviews": interview,
+            "disclaimer": GUIDE_COMPANY_DISCLAIMER,
+        })
+
+    def api_guide_company_review_bucket(self, conn: sqlite3.Connection, company_id: str, kind: str, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, items=[]))
+        row = conn.execute(
+            "SELECT id FROM guide_companies WHERE (id = ? OR slug = ?) AND country = ? AND status = 'published' LIMIT 1",
+            (company_id, company_id, country)).fetchone()
+        if not row:
+            raise APIError("公司不存在", 404, "guide_company_not_found")
+        if kind == "interview":
+            rows = conn.execute(
+                "SELECT * FROM guide_interview_reviews WHERE company_id = ? AND status IN ('approved','published') ORDER BY created_at DESC LIMIT 50",
+                (row["id"],)).fetchall()
+            items = [serialize_guide_interview_review(r) for r in rows]
+        else:
+            rows = conn.execute(
+                "SELECT * FROM guide_company_reviews WHERE company_id = ? AND status IN ('approved','published') ORDER BY created_at DESC LIMIT 50",
+                (row["id"],)).fetchall()
+            items = [serialize_guide_company_review(r) for r in rows]
+        self.send_json({"status": "ok", "country": country, "companyId": row["id"], "items": items, "disclaimer": GUIDE_COMPANY_DISCLAIMER})
+
+    def api_guide_company_positions(self, conn: sqlite3.Connection, company_id: str, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, items=[]))
+        company = self._guide_lookup_company(conn, company_id)
+        if company["country"] != country:
+            raise APIError("公司不存在", 404, "guide_company_not_found")
+        rows = conn.execute(
+            f"SELECT * FROM guide_company_positions WHERE company_id = ? AND {_guide_status_public_clause()} ORDER BY created_at DESC",
+            (company["id"],)).fetchall()
+        self.send_json({"status": "ok", "country": country, "items": [serialize_guide_company_position(r) for r in rows]})
+
+    def api_guide_interview_reviews(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(
+                country, items=[], page=page, pageSize=page_size, total=0))
+        where = ["r.status IN ('approved','published')"]
+        params: list[Any] = []
+        company_id = (query.get("companyId") or "").strip()
+        if company_id:
+            where.append("r.company_id = ?")
+            params.append(company_id)
+        city = (query.get("city") or "").strip()
+        if city:
+            where.append("r.city = ?")
+            params.append(_normalize_news_city(city))
+        position = (query.get("position") or "").strip()
+        if position:
+            where.append("r.position LIKE ?")
+            params.append(f"%{position}%")
+        industry = (query.get("industry") or "").strip()
+        join = "JOIN guide_companies c ON c.id = r.company_id"
+        cond = [*where, "c.country = ?"]
+        cparams = [*params, country]
+        if industry:
+            cond.append("c.industry = ?")
+            cparams.append(industry)
+        clause = " AND ".join(cond)
+        rows = conn.execute(
+            f"SELECT r.*, c.company_name AS _company_name, c.slug AS _company_slug FROM guide_interview_reviews r "
+            f"{join} WHERE {clause} ORDER BY r.created_at DESC LIMIT ? OFFSET ?",
+            [*cparams, page_size, (page - 1) * page_size]).fetchall()
+        items = []
+        for r in rows:
+            item = serialize_guide_interview_review(r)
+            item["companyName"] = r["_company_name"]
+            item["companySlug"] = r["_company_slug"]
+            items.append(item)
+        total = conn.execute(
+            f"SELECT COUNT(*) AS c FROM guide_interview_reviews r {join} WHERE {clause}", cparams).fetchone()["c"]
+        self.send_json({
+            "status": "ok", "country": country, "items": items,
+            "page": page, "pageSize": page_size, "total": int(total),
+            "disclaimer": GUIDE_REVIEW_DISCLAIMER,
+        })
+
+    # ---- Guide: authenticated submissions (moderated) ----
+
+    def _guide_lookup_company(self, conn: sqlite3.Connection, raw_id: str) -> sqlite3.Row:
+        row = conn.execute(
+            "SELECT * FROM guide_companies WHERE id = ? OR slug = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("公司不存在", 404, "guide_company_not_found")
+        return row
+
+    def api_guide_save_school(self, conn: sqlite3.Connection, school_id: str, on: bool) -> None:
+        user = self.require_user(conn)
+        school = self._guide_lookup_school(conn, school_id)
+        kind = "guide_school_save"
+        if on:
+            conn.execute(
+                "INSERT OR IGNORE INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), school["id"], user["id"], kind, now_iso()),
+            )
+        else:
+            conn.execute("DELETE FROM interactions WHERE target_id = ? AND user_id = ? AND kind = ?", (school["id"], user["id"], kind))
+        count = conn.execute("SELECT COUNT(*) AS c FROM interactions WHERE target_id = ? AND kind = ?", (school["id"], kind)).fetchone()["c"]
+        conn.execute("UPDATE guide_schools SET save_count = ?, updated_at = ? WHERE id = ?", (int(count), now_iso(), school["id"]))
+        fresh = conn.execute("SELECT * FROM guide_schools WHERE id = ?", (school["id"],)).fetchone()
+        self.send_json({"status": "ok", "saved": on, "school": serialize_guide_school(fresh, saved=on)})
+
+    def api_guide_save_company(self, conn: sqlite3.Connection, company_id: str, on: bool) -> None:
+        user = self.require_user(conn)
+        company = self._guide_lookup_company(conn, company_id)
+        kind = "guide_company_save"
+        if on:
+            conn.execute(
+                "INSERT OR IGNORE INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), company["id"], user["id"], kind, now_iso()),
+            )
+        else:
+            conn.execute("DELETE FROM interactions WHERE target_id = ? AND user_id = ? AND kind = ?", (company["id"], user["id"], kind))
+        count = conn.execute("SELECT COUNT(*) AS c FROM interactions WHERE target_id = ? AND kind = ?", (company["id"], kind)).fetchone()["c"]
+        conn.execute("UPDATE guide_companies SET save_count = ?, updated_at = ? WHERE id = ?", (int(count), now_iso(), company["id"]))
+        fresh = conn.execute("SELECT * FROM guide_companies WHERE id = ?", (company["id"],)).fetchone()
+        payload = serialize_guide_company(fresh)
+        payload["savedByMe"] = on
+        self.send_json({"status": "ok", "saved": on, "company": payload})
+
+    def api_guide_create_correction(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        target_type = _news_clean_text(data.get("targetType") or data.get("target_type"), 40)
+        target_id = _news_clean_text(data.get("targetId") or data.get("target_id"), 120)
+        if target_type not in {"school", "company", "program", "admission", "position"} or not target_id:
+            raise APIError("纠错目标不正确", 400, "invalid_correction_target")
+        message = _news_clean_text(data.get("message"), 2000)
+        suggested = _news_clean_text(data.get("suggestedValue") or data.get("suggested_value"), 2000)
+        if not message and not suggested:
+            raise APIError("请填写纠错或补充说明", 400, "empty_correction")
+        correction_id = str(uuid.uuid4())
+        now = now_iso()
+        conn.execute(
+            "INSERT INTO guide_correction_reports (id, target_type, target_id, user_id, field_name, current_value, "
+            "suggested_value, message, source_url, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (correction_id, target_type, target_id, user["id"],
+             _news_clean_text(data.get("fieldName") or data.get("field_name"), 120),
+             _news_clean_text(data.get("currentValue") or data.get("current_value"), 2000),
+             suggested, message, _news_clean_text(data.get("sourceUrl") or data.get("source_url"), 500), now, now),
+        )
+        self.send_json({"status": "pending", "id": correction_id, "message": "已收到补充信息，将由管理员审核。"}, 201)
+
+    def api_guide_create_company_review(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        company = self._guide_lookup_company(conn, str(data.get("companyId") or data.get("company_id") or "").strip())
+        now = now_iso()
+        review_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_company_reviews (id, company_id, user_id, anonymous, position, employment_type, pros, cons, "
+            "work_period, overtime_level, foreigner_support, visa_support, salary_benefits, career_growth, work_life_balance, "
+            "recommendation_score, status, report_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "'pending_review', 0, ?, ?)",
+            (review_id, company["id"], user["id"], 1 if data.get("anonymous", True) else 0,
+             _news_clean_text(data.get("position"), 80), _news_clean_text(data.get("employmentType"), 40),
+             _news_clean_text(data.get("pros"), 2000), _news_clean_text(data.get("cons"), 2000),
+             _news_clean_text(data.get("workPeriod"), 80), _news_clean_text(data.get("overtimeLevel"), 40),
+             _news_clean_text(data.get("foreignerSupport"), 400), _news_clean_text(data.get("visaSupport"), 400),
+             _news_clean_text(data.get("salaryBenefits"), 400), _news_clean_text(data.get("careerGrowth"), 400),
+             _news_clean_text(data.get("workLifeBalance"), 400),
+             max(0.0, min(5.0, float(data.get("recommendationScore") or 0))), now, now),
+        )
+        self.send_json({"status": "pending_review", "id": review_id,
+                        "message": "已提交，将在审核通过后展示。请勿发布个人隐私或未经证实的指控。"}, 201)
+
+    def api_guide_create_interview_review(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        company = self._guide_lookup_company(conn, str(data.get("companyId") or data.get("company_id") or "").strip())
+        now = now_iso()
+        review_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_interview_reviews (id, company_id, user_id, anonymous, position, employment_type, "
+            "interview_rounds, interview_language, difficulty, questions, process_description, result, interview_year, "
+            "city, offer_received, duration_weeks, tips, status, report_count, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', 0, ?, ?)",
+            (review_id, company["id"], user["id"], 1 if data.get("anonymous", True) else 0,
+             _news_clean_text(data.get("position"), 80), _news_clean_text(data.get("employmentType"), 40),
+             _guide_int(data.get("interviewRounds"), 0, lo=0, hi=20), _news_clean_text(data.get("interviewLanguage"), 40),
+             _news_clean_text(data.get("difficulty"), 40), _news_clean_text(data.get("questions"), 3000),
+             _news_clean_text(data.get("processDescription"), 3000), _news_clean_text(data.get("result"), 40),
+             _guide_int(data.get("interviewYear"), 0, lo=0, hi=2100), _normalize_news_city(data.get("city")),
+             _guide_payload_bool(data, "offerReceived", "offer_received"), _guide_int(data.get("durationWeeks"), 0, lo=0, hi=52),
+             _news_clean_text(data.get("tips"), 2000), now, now),
+        )
+        self.send_json({"status": "pending_review", "id": review_id,
+                        "message": "面试经验已提交，将在审核通过后展示。"}, 201)
+
+    def api_guide_create_service_request(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        product_id = ""
+        raw_product = str(data.get("productId") or data.get("product_id") or "").strip()
+        if raw_product:
+            prow = conn.execute(
+                "SELECT id FROM guide_products WHERE id = ? OR slug = ? LIMIT 1", (raw_product, raw_product)).fetchone()
+            product_id = prow["id"] if prow else ""
+        now = now_iso()
+        req_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_service_requests (id, user_id, product_id, service_type, contact_method, contact_value, "
+            "message, preferred_time, preferred_date, service_city, language, current_situation, request_detail, "
+            "status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (req_id, user["id"], product_id, _news_clean_text(data.get("serviceType"), 80),
+             _news_clean_text(data.get("contactMethod"), 200),
+             _news_clean_text(data.get("contactValue") or data.get("contact_value"), 300),
+             _news_clean_text(data.get("message"), 2000),
+             _news_clean_text(data.get("preferredTime") or data.get("preferred_time"), 300),
+             _news_clean_text(data.get("preferredDate") or data.get("preferred_date"), 80),
+             _news_clean_text(data.get("serviceCity") or data.get("service_city"), 60),
+             _news_clean_text(data.get("language"), 40),
+             _news_clean_text(data.get("currentSituation") or data.get("current_situation"), 2000),
+             _news_clean_text(data.get("requestDetail") or data.get("request_detail"), 4000),
+             now, now),
+        )
+        self.send_json({"status": "pending", "id": req_id, "message": "预约咨询已提交，我们会尽快与你联系。"}, 201)
+
+    def api_guide_purchase_product(self, conn: sqlite3.Connection, product_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute(
+            "SELECT * FROM guide_products WHERE id = ? OR slug = ? LIMIT 1", (product_id, product_id)).fetchone()
+        if not row:
+            raise APIError("资料/服务不存在", 404, "guide_product_not_found")
+        # Payment is not wired yet. Free items create a fulfilled order so the
+        # user can access them; paid items return coming_soon (Web → Stripe/微信/支付宝,
+        # iOS → Apple IAP, to be added later — never an external pay button on iOS).
+        if bool(row["is_free"]):
+            now = now_iso()
+            order_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO guide_orders (id, user_id, product_id, order_no, price, currency, status, "
+                "payment_provider, payment_order_id, payment_method, created_at, paid_at, fulfilled_at) "
+                "VALUES (?, ?, ?, ?, 0, ?, 'fulfilled', 'free', '', 'free_unlock', ?, ?, ?)",
+                (order_id, user["id"], row["id"], f"G{now_iso()[:10].replace('-', '')}{uuid.uuid4().hex[:6].upper()}",
+                 row["currency"], now, now, now))
+            return self.send_json({"status": "fulfilled", "orderId": order_id, "message": "已解锁，可在资料中查看。"}, 201)
+        # Member-included digital resource: an active member already has access.
+        if bool(row["is_member_included"]) and not bool(row["is_service"]) and has_active_membership(conn, user["id"]):
+            return self.send_json({"status": "member_unlocked", "message": "会员已可直接查看该资料。"})
+        if bool(row["is_coming_soon"]) or row["status"] == "coming_soon":
+            return self.send_json({"status": "coming_soon", "message": "购买功能即将开放，敬请期待。"})
+        # Paid item ready to buy. Web → /api/payments/stripe/guide-checkout (price read
+        # server-side). Services with a quote-only price_label use the booking form.
+        self.send_json({"status": "checkout", "message": "请通过结账完成购买。",
+                        "productId": row["id"], "slug": row["slug"]})
+
+    def api_guide_stripe_checkout(self, conn: sqlite3.Connection) -> None:
+        """Create a Stripe Checkout Session for a paid Guide product. The price is
+        read from the DB server-side (member discount only for an active member);
+        the client never sends an amount. Returns {checkoutUrl}. iOS must NOT call
+        this for digital resources — it uses IAP / shows 即将开放."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        pid = str(data.get("productId") or data.get("product_id") or "").strip()
+        row = conn.execute("SELECT * FROM guide_products WHERE (id = ? OR slug = ?) LIMIT 1", (pid, pid)).fetchone()
+        if not row:
+            raise APIError("资料/服务不存在", 404, "guide_product_not_found")
+        if bool(row["is_free"]):
+            raise APIError("该资料免费，请直接解锁。", 400, "free_product")
+        if bool(row["is_member_included"]) and not bool(row["is_service"]) and has_active_membership(conn, user["id"]):
+            return self.send_json({"status": "member_unlocked", "message": "会员已可直接查看该资料。"})
+        if bool(row["is_coming_soon"]) or row["status"] != "published":
+            return self.send_json({"status": "coming_soon", "message": "购买功能即将开放，敬请期待。"})
+        if bool(row["is_price_hidden"]) or bool(row["is_appointment_only"]) or str(row["service_price_type"] or "") in {"appointment_only", "quote_required"}:
+            raise APIError("该服务请使用预约咨询提交。", 400, "use_booking")
+        amount = int(row["price"] or 0)
+        if bool(row["is_member_discount"]) and int(row["member_price"] or 0) > 0 and has_active_membership(conn, user["id"]):
+            amount = int(row["member_price"])
+        if amount <= 0:
+            raise APIError("该服务请使用预约咨询提交。", 400, "use_booking")
+        if not stripe_configured():
+            return self.send_json({"status": "coming_soon", "message": "在线支付即将开放，敬请期待。"})
+        order_no = _guide_order_no()
+        now = now_iso()
+        order_id = str(uuid.uuid4())
+        currency = row["currency"] or "CNY"
+        conn.execute(
+            "INSERT INTO guide_orders (id, user_id, product_id, order_no, price, currency, status, "
+            "payment_provider, payment_method, created_at) VALUES (?, ?, ?, ?, ?, ?, 'pending', 'stripe', 'stripe', ?)",
+            (order_id, user["id"], row["id"], order_no, amount, currency, now))
+        success = _guide_safe_return_url(data.get("returnUrl") or data.get("successUrl")) or GUIDE_STRIPE_SUCCESS_URL
+        cancel = _guide_safe_return_url(data.get("cancelUrl")) or GUIDE_STRIPE_CANCEL_URL
+        url, session_id = guide_stripe_checkout_url(order_no, amount * 100, currency, row["title"], success, cancel)
+        conn.execute("UPDATE guide_orders SET stripe_checkout_session_id = ? WHERE id = ?", (session_id, order_id))
+        self.send_json({"status": "ok", "checkoutUrl": url, "orderNo": order_no, "amount": amount, "currency": currency})
+
+    def api_guide_stripe_confirm(self, conn: sqlite3.Connection) -> None:
+        """Confirm a Guide checkout on the success redirect (server-to-server
+        session fetch). Idempotent; the webhook is the primary settle path."""
+        self.require_user(conn)
+        data = self.read_json()
+        session_id = str(data.get("sessionId") or data.get("session_id") or data.get("guide_session") or "").strip()
+        if not session_id:
+            raise APIError("缺少会话信息", 400, "missing_session")
+        session = stripe_retrieve_session(session_id)
+        if not session:
+            return self.send_json({"status": "pending"})
+        order_no = str(session.get("client_reference_id") or (session.get("metadata") or {}).get("order_no") or "")
+        if order_no.startswith("GP") and str(session.get("payment_status") or "") == "paid":
+            settle_guide_order(conn, order_no, str(session.get("payment_intent") or ""), int(session.get("amount_total") or 0))
+            return self.send_json({"status": "fulfilled", "orderNo": order_no})
+        self.send_json({"status": "pending", "orderNo": order_no})
+
+    # ---- Guide: admin write + moderation (API only this round; UI later) ----
+
+    def _guide_slugify(self, text: str, fallback: str = "") -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", str(text or "").strip().lower()).strip("-")
+        return slug or fallback or uuid.uuid4().hex[:10]
+
+    def _guide_apply_update(self, conn: sqlite3.Connection, table: str, row_id: str, updates: dict[str, Any]) -> None:
+        if not updates:
+            return
+        updates = {**updates, "updated_at": now_iso()}
+        cols = ", ".join(f"{col} = ?" for col in updates)
+        conn.execute(f"UPDATE {table} SET {cols} WHERE id = ?", [*updates.values(), row_id])
+
+    def _guide_send_csv(self, filename: str, fieldnames: list[str], items: list[dict[str, Any]]) -> None:
+        buf = io.StringIO()
+        writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for item in items:
+            flat = {}
+            for key, value in item.items():
+                if isinstance(value, (list, tuple)):
+                    flat[key] = ",".join(str(v) for v in value)
+                elif value is None:
+                    flat[key] = ""
+                else:
+                    flat[key] = value
+            writer.writerow(flat)
+        body = buf.getvalue().encode("utf-8-sig")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Machi-Version", "1.0")
+        self.send_header("X-KaiX-Version", "1.0")
+        self.send_header("X-Request-Id", getattr(self, "_request_id", "") or "")
+        self._set_cors()
+        self._set_security_headers()
+        self.end_headers()
+        self.wfile.write(body)
+
+    def api_admin_guide_schools(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=200)
+        where = ["country = ?"]
+        params: list[Any] = [_normalize_news_country(query.get("country") or "jp")]
+        for q_key, col in (("status", "status"), ("schoolType", "school_type"), ("prefecture", "prefecture"),
+                           ("city", "city"), ("verificationStatus", "verification_status")):
+            val = (query.get(q_key) or "").strip().lower()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        region_values = _guide_region_values(query)
+        if region_values:
+            where.append(f"prefecture IN ({','.join('?' for _ in region_values)})")
+            params.extend(sorted(region_values))
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append("(school_name LIKE ? OR school_name_jp LIKE ? OR school_name_en LIKE ? OR website LIKE ? OR source_url LIKE ?)")
+            params.extend([kw, kw, kw, kw, kw])
+        clause = " AND ".join(where)
+        sort = (query.get("sort") or "updated").strip()
+        order = {
+            "data_quality": "data_quality_score DESC, updated_at DESC",
+            "name_asc": "school_name_en ASC, school_name ASC",
+            "name_jp_asc": "school_name_jp ASC, school_name ASC",
+            "oldest": "updated_at ASC",
+        }.get(sort, "updated_at DESC")
+        limit = 10000 if (query.get("export") or query.get("format")) == "csv" else page_size
+        offset = 0 if limit == 10000 else (page - 1) * page_size
+        rows = conn.execute(
+            f"SELECT * FROM guide_schools WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+        items = [serialize_guide_school(r) for r in rows]
+        if (query.get("export") or query.get("format")) == "csv":
+            return self._guide_send_csv(
+                "guide-schools.csv",
+                ["id", "slug", "schoolName", "schoolNameJp", "schoolNameEn", "schoolType", "country",
+                 "prefecture", "city", "ward", "website", "internationalAdmissionUrl", "sourceName",
+                 "sourceUrl", "sourceLastCheckedAt", "verificationStatus", "dataQualityScore", "status"],
+                items,
+            )
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_schools WHERE {clause}", params).fetchone()["c"]
+        stats = {
+            "total": int(total),
+            "published": int(conn.execute("SELECT COUNT(*) AS c FROM guide_schools WHERE country = ? AND status = 'published'", (params[0],)).fetchone()["c"]),
+            "needsReview": int(conn.execute("SELECT COUNT(*) AS c FROM guide_schools WHERE country = ? AND verification_status = 'needs_review'", (params[0],)).fetchone()["c"]),
+            "averageQuality": round(float(conn.execute("SELECT AVG(data_quality_score) AS avg_score FROM guide_schools WHERE country = ?", (params[0],)).fetchone()["avg_score"] or 0), 1),
+            "byType": {r["school_type"] or "other": int(r["c"]) for r in conn.execute(
+                "SELECT school_type, COUNT(*) AS c FROM guide_schools WHERE country = ? GROUP BY school_type ORDER BY c DESC", (params[0],)).fetchall()},
+        }
+        self.send_json({"status": "ok", "items": items, "page": page, "pageSize": page_size, "total": int(total), "stats": stats})
+
+    def api_admin_guide_school_detail(self, conn: sqlite3.Connection, school_id: str) -> None:
+        self.require_admin(conn)
+        row = self._guide_lookup_school(conn, school_id, public_only=False)
+        programs = [serialize_guide_school_program(r) for r in conn.execute(
+            "SELECT * FROM guide_school_programs WHERE school_id = ? ORDER BY updated_at DESC", (row["id"],)).fetchall()]
+        admissions = [serialize_guide_school_admission(r) for r in conn.execute(
+            "SELECT * FROM guide_school_admissions WHERE school_id = ? ORDER BY updated_at DESC", (row["id"],)).fetchall()]
+        self.send_json({"status": "ok", "school": serialize_guide_school(row), "programs": programs, "admissions": admissions})
+
+    def api_admin_guide_companies(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=200)
+        where = ["country = ?"]
+        params: list[Any] = [_normalize_news_country(query.get("country") or "jp")]
+        for q_key, col in (("status", "status"), ("industry", "industry"), ("subIndustry", "sub_industry"),
+                           ("prefecture", "prefecture"), ("city", "city"), ("companySize", "company_size"),
+                           ("verificationStatus", "verification_status")):
+            val = (query.get(q_key) or "").strip().lower()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        region_values = _guide_region_values(query)
+        if region_values:
+            where.append(f"prefecture IN ({','.join('?' for _ in region_values)})")
+            params.extend(sorted(region_values))
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append("(company_name LIKE ? OR company_name_jp LIKE ? OR company_name_en LIKE ? OR corporate_number LIKE ? OR website LIKE ? OR career_url LIKE ? OR source_url LIKE ?)")
+            params.extend([kw, kw, kw, kw, kw, kw, kw])
+        clause = " AND ".join(where)
+        sort = (query.get("sort") or "updated").strip()
+        order = {
+            "data_quality": "data_quality_score DESC, updated_at DESC",
+            "review_count": "review_count DESC, updated_at DESC",
+            "name_asc": "company_name_en ASC, company_name ASC",
+            "name_jp_asc": "company_name_jp ASC, company_name ASC",
+            "oldest": "updated_at ASC",
+        }.get(sort, "updated_at DESC")
+        limit = 10000 if (query.get("export") or query.get("format")) == "csv" else page_size
+        offset = 0 if limit == 10000 else (page - 1) * page_size
+        rows = conn.execute(
+            f"SELECT * FROM guide_companies WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ).fetchall()
+        items = [serialize_guide_company(r) for r in rows]
+        if (query.get("export") or query.get("format")) == "csv":
+            return self._guide_send_csv(
+                "guide-companies.csv",
+                ["id", "corporateNumber", "slug", "companyName", "companyNameJp", "companyNameEn", "industry",
+                 "subIndustry", "country", "prefecture", "city", "website", "careerUrl", "newGraduateUrl",
+                 "midCareerUrl", "globalCareerUrl", "sourceName", "sourceUrl", "sourceLastCheckedAt",
+                 "verificationStatus", "dataQualityScore", "status"],
+                items,
+            )
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_companies WHERE {clause}", params).fetchone()["c"]
+        country = params[0]
+        capital_placeholders = ",".join("?" for _ in GUIDE_CAPITAL_PREFECTURES)
+        kansai_placeholders = ",".join("?" for _ in GUIDE_KANSAI_PREFECTURES)
+        stats = {
+            "total": int(total),
+            "published": int(conn.execute("SELECT COUNT(*) AS c FROM guide_companies WHERE country = ? AND status = 'published'", (country,)).fetchone()["c"]),
+            "needsReview": int(conn.execute("SELECT COUNT(*) AS c FROM guide_companies WHERE country = ? AND verification_status = 'needs_review'", (country,)).fetchone()["c"]),
+            "averageQuality": round(float(conn.execute("SELECT AVG(data_quality_score) AS avg_score FROM guide_companies WHERE country = ?", (country,)).fetchone()["avg_score"] or 0), 1),
+            "capitalArea": int(conn.execute(
+                f"SELECT COUNT(*) AS c FROM guide_companies WHERE country = ? AND prefecture IN ({capital_placeholders})",
+                [country, *sorted(GUIDE_CAPITAL_PREFECTURES)]).fetchone()["c"]),
+            "kansaiArea": int(conn.execute(
+                f"SELECT COUNT(*) AS c FROM guide_companies WHERE country = ? AND prefecture IN ({kansai_placeholders})",
+                [country, *sorted(GUIDE_KANSAI_PREFECTURES)]).fetchone()["c"]),
+            "byIndustry": {r["industry"] or "other": int(r["c"]) for r in conn.execute(
+                "SELECT industry, COUNT(*) AS c FROM guide_companies WHERE country = ? GROUP BY industry ORDER BY c DESC", (country,)).fetchall()},
+        }
+        self.send_json({"status": "ok", "items": items, "page": page, "pageSize": page_size, "total": int(total), "stats": stats})
+
+    def api_admin_guide_company_detail(self, conn: sqlite3.Connection, company_id: str) -> None:
+        self.require_admin(conn)
+        row = self._guide_lookup_company(conn, company_id)
+        positions = [serialize_guide_company_position(r) for r in conn.execute(
+            "SELECT * FROM guide_company_positions WHERE company_id = ? ORDER BY updated_at DESC", (row["id"],)).fetchall()]
+        reviews = [serialize_guide_company_review(r) for r in conn.execute(
+            "SELECT * FROM guide_company_reviews WHERE company_id = ? ORDER BY created_at DESC LIMIT 50", (row["id"],)).fetchall()]
+        interviews = [serialize_guide_interview_review(r) for r in conn.execute(
+            "SELECT * FROM guide_interview_reviews WHERE company_id = ? ORDER BY created_at DESC LIMIT 50", (row["id"],)).fetchall()]
+        self.send_json({"status": "ok", "company": serialize_guide_company(row), "positions": positions, "workReviews": reviews, "interviewReviews": interviews})
+
+    def api_admin_guide_school_programs(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        where: list[str] = []
+        params: list[Any] = []
+        school_id = (query.get("schoolId") or query.get("school_id") or "").strip()
+        if school_id:
+            where.append("school_id = ?")
+            params.append(school_id)
+        status = (query.get("status") or "").strip()
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(f"SELECT * FROM guide_school_programs {clause} ORDER BY updated_at DESC LIMIT 200", params).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_school_program(r) for r in rows], "total": len(rows)})
+
+    def api_admin_guide_school_admissions(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        where: list[str] = []
+        params: list[Any] = []
+        school_id = (query.get("schoolId") or query.get("school_id") or "").strip()
+        if school_id:
+            where.append("school_id = ?")
+            params.append(school_id)
+        status = (query.get("status") or "").strip()
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(f"SELECT * FROM guide_school_admissions {clause} ORDER BY updated_at DESC LIMIT 200", params).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_school_admission(r) for r in rows], "total": len(rows)})
+
+    def api_admin_guide_company_positions(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        where: list[str] = []
+        params: list[Any] = []
+        company_id = (query.get("companyId") or query.get("company_id") or "").strip()
+        if company_id:
+            where.append("company_id = ?")
+            params.append(company_id)
+        status = (query.get("status") or "").strip()
+        if status:
+            where.append("status = ?")
+            params.append(status)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(f"SELECT * FROM guide_company_positions {clause} ORDER BY updated_at DESC LIMIT 200", params).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_company_position(r) for r in rows], "total": len(rows)})
+
+    def api_admin_guide_reviews(self, conn: sqlite3.Connection, kind: str, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        table = "guide_interview_reviews" if kind == "interview" else "guide_company_reviews"
+        serializer = serialize_guide_interview_review if kind == "interview" else serialize_guide_company_review
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=200)
+        where: list[str] = []
+        params: list[Any] = []
+        status = (query.get("status") or "").strip()
+        if status:
+            where.append("r.status = ?")
+            params.append(status)
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append("(r.position LIKE ? OR c.company_name LIKE ? OR c.company_name_jp LIKE ?)")
+            params.extend([kw, kw, kw])
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(
+            f"SELECT r.*, c.company_name AS _company_name, c.slug AS _company_slug FROM {table} r "
+            f"LEFT JOIN guide_companies c ON c.id = r.company_id {clause} ORDER BY r.created_at DESC LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+        total = conn.execute(
+            f"SELECT COUNT(*) AS c FROM {table} r LEFT JOIN guide_companies c ON c.id = r.company_id {clause}",
+            params,
+        ).fetchone()["c"]
+        items = []
+        for r in rows:
+            item = serializer(r)
+            item["companyName"] = r["_company_name"] or ""
+            item["companySlug"] = r["_company_slug"] or ""
+            items.append(item)
+        self.send_json({"status": "ok", "items": items, "page": page, "pageSize": page_size, "total": int(total)})
+
+    def api_admin_guide_corrections(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=200)
+        where: list[str] = []
+        params: list[Any] = []
+        for q_key, col in (("status", "status"), ("targetType", "target_type")):
+            val = (query.get(q_key) or "").strip()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(
+            f"SELECT * FROM guide_correction_reports {clause} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_correction_reports {clause}", params).fetchone()["c"]
+        items = []
+        for r in rows:
+            d = dict(r)
+            items.append({
+                "id": d.get("id"), "targetType": d.get("target_type") or "", "targetId": d.get("target_id") or "",
+                "userId": d.get("user_id") or "", "fieldName": d.get("field_name") or "",
+                "currentValue": d.get("current_value") or "", "suggestedValue": d.get("suggested_value") or "",
+                "message": d.get("message") or "", "sourceUrl": d.get("source_url") or "",
+                "status": d.get("status") or "pending", "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+            })
+        self.send_json({"status": "ok", "items": items, "page": page, "pageSize": page_size, "total": int(total)})
+
+    def api_admin_guide_products(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=100)
+        where = ["country = ?"]
+        params: list[Any] = [_normalize_news_country(query.get("country") or "jp")]
+        for q_key, col in (("status", "status"), ("categoryKey", "category_key"), ("productType", "product_type")):
+            val = (query.get(q_key) or "").strip()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        for q_key, col in (("isService", "is_service"), ("isMemberIncluded", "is_member_included"),
+                           ("isFree", "is_free"), ("isComingSoon", "is_coming_soon")):
+            v = _guide_query_bool(query, q_key)
+            if v is not None:
+                where.append(f"{col} = ?")
+                params.append(v)
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append("(title LIKE ? OR subtitle LIKE ? OR tags LIKE ?)")
+            params.extend([kw, kw, kw])
+        clause = " AND ".join(where)
+        rows = conn.execute(
+            f"SELECT * FROM guide_products WHERE {clause} ORDER BY is_featured DESC, is_coming_soon ASC, sort_order, updated_at DESC LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_products WHERE {clause}", params).fetchone()["c"]
+        self.send_json({
+            "status": "ok",
+            "items": [serialize_guide_product(r, include_private=True) for r in rows],
+            "page": page,
+            "pageSize": page_size,
+            "total": int(total),
+        })
+
+    def api_admin_guide_orders(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=100)
+        where: list[str] = []
+        params: list[Any] = []
+        status = (query.get("status") or "").strip()
+        if status:
+            where.append("o.status = ?")
+            params.append(status)
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append("(o.order_no LIKE ? OR p.title LIKE ? OR u.handle LIKE ? OR u.display_name LIKE ?)")
+            params.extend([kw, kw, kw, kw])
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(
+            f"""
+            SELECT o.*, p.title AS product_title, p.slug AS product_slug, p.product_type, p.is_service,
+                   u.handle AS user_handle, u.display_name AS user_display_name, u.email AS user_email
+              FROM guide_orders o
+              LEFT JOIN guide_products p ON p.id = o.product_id
+              LEFT JOIN users u ON u.id = o.user_id
+              {clause}
+             ORDER BY o.created_at DESC
+             LIMIT ? OFFSET ?
+            """,
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+        total = conn.execute(
+            f"SELECT COUNT(*) AS c FROM guide_orders o LEFT JOIN guide_products p ON p.id = o.product_id LEFT JOIN users u ON u.id = o.user_id {clause}",
+            params,
+        ).fetchone()["c"]
+        self.send_json({
+            "status": "ok",
+            "items": [{
+                "id": r["id"], "orderNo": r["order_no"], "userId": r["user_id"],
+                "userHandle": r["user_handle"] or "", "userDisplayName": r["user_display_name"] or "",
+                "userEmail": r["user_email"] or "", "productId": r["product_id"],
+                "productTitle": r["product_title"] or "", "productSlug": r["product_slug"] or "",
+                "productType": r["product_type"] or "", "isService": bool(r["is_service"]),
+                "price": int(r["price"] or 0), "currency": r["currency"] or "CNY",
+                "orderStatus": r["status"], "paymentProvider": r["payment_provider"] or "",
+                "paymentOrderId": r["payment_order_id"] or "", "paymentMethod": r["payment_method"] or "",
+                "createdAt": r["created_at"], "paidAt": r["paid_at"], "cancelledAt": r["cancelled_at"],
+                "refundedAt": r["refunded_at"], "fulfilledAt": r["fulfilled_at"],
+            } for r in rows],
+            "page": page,
+            "pageSize": page_size,
+            "total": int(total),
+        })
+
+    def api_admin_guide_update_order(self, conn: sqlite3.Connection, order_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_orders WHERE id = ? OR order_no = ?", (order_id, order_id)).fetchone()
+        if not row:
+            raise APIError("订单不存在", 404, "guide_order_not_found")
+        data = self.read_json()
+        status = _news_clean_text(data.get("status") or data.get("orderStatus"), 40)
+        allowed = {"pending", "paid", "fulfilled", "cancelled", "refunded"}
+        if status not in allowed:
+            raise APIError("订单状态不正确", 400, "invalid_order_status")
+        now = now_iso()
+        updates: dict[str, Any] = {"status": status}
+        if status == "paid":
+            updates["paid_at"] = now
+        elif status == "fulfilled":
+            updates["fulfilled_at"] = now
+            updates.setdefault("paid_at", now)
+        elif status == "cancelled":
+            updates["cancelled_at"] = now
+        elif status == "refunded":
+            updates["refunded_at"] = now
+        if "paymentProvider" in data:
+            updates["payment_provider"] = _news_clean_text(data.get("paymentProvider"), 80)
+        if "paymentMethod" in data:
+            updates["payment_method"] = _news_clean_text(data.get("paymentMethod"), 80)
+        cols = ", ".join(f"{col} = ?" for col in updates)
+        conn.execute(f"UPDATE guide_orders SET {cols} WHERE id = ?", [*updates.values(), row["id"]])
+        self.send_json({"status": "ok", "id": row["id"], "orderStatus": status})
+
+    def api_admin_guide_service_requests(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=100)
+        where: list[str] = []
+        params: list[Any] = []
+        status = (query.get("status") or "").strip()
+        if status:
+            where.append("s.status = ?")
+            params.append(status)
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append("(s.service_type LIKE ? OR s.message LIKE ? OR p.title LIKE ? OR u.handle LIKE ? OR u.display_name LIKE ?)")
+            params.extend([kw, kw, kw, kw, kw])
+        clause = ("WHERE " + " AND ".join(where)) if where else ""
+        rows = conn.execute(
+            f"""
+            SELECT s.*, p.title AS product_title, p.slug AS product_slug, p.product_type,
+                   u.handle AS user_handle, u.display_name AS user_display_name, u.email AS user_email,
+                   COALESCE(u.is_verified_member, 0) AS user_vm
+              FROM guide_service_requests s
+              LEFT JOIN guide_products p ON p.id = s.product_id
+              LEFT JOIN users u ON u.id = s.user_id
+              {clause}
+             ORDER BY s.created_at DESC
+             LIMIT ? OFFSET ?
+            """,
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+        total = conn.execute(
+            f"SELECT COUNT(*) AS c FROM guide_service_requests s LEFT JOIN guide_products p ON p.id = s.product_id LEFT JOIN users u ON u.id = s.user_id {clause}",
+            params,
+        ).fetchone()["c"]
+        self.send_json({
+            "status": "ok",
+            "items": [{
+                "id": r["id"], "userId": r["user_id"], "userHandle": r["user_handle"] or "",
+                "userDisplayName": r["user_display_name"] or "", "userEmail": r["user_email"] or "",
+                "productId": r["product_id"] or "", "productTitle": r["product_title"] or "",
+                "productSlug": r["product_slug"] or "", "productType": r["product_type"] or "",
+                "serviceType": r["service_type"] or "", "contactMethod": r["contact_method"] or "",
+                "contactValue": r["contact_value"] or "", "message": r["message"] or "",
+                "preferredTime": r["preferred_time"] or "", "requestStatus": r["status"] or "pending",
+                "adminNote": r["admin_note"] or "", "createdAt": r["created_at"], "updatedAt": r["updated_at"],
+                "serviceCity": r["service_city"] or "", "preferredDate": r["preferred_date"] or "",
+                "language": r["language"] or "", "currentSituation": r["current_situation"] or "",
+                "requestDetail": r["request_detail"] or "", "orderId": r["order_id"] or "",
+                "assignedAdminId": r["assigned_admin_id"] or "", "isMember": bool(r["user_vm"]),
+            } for r in rows],
+            "page": page,
+            "pageSize": page_size,
+            "total": int(total),
+        })
+
+    def api_admin_guide_update_service_request(self, conn: sqlite3.Connection, request_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_service_requests WHERE id = ?", (request_id,)).fetchone()
+        if not row:
+            raise APIError("服务预约不存在", 404, "guide_service_request_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        status = _news_clean_text(data.get("status") or data.get("requestStatus"), 40)
+        if status:
+            if status not in {"pending", "contacted", "confirmed", "paid", "in_progress",
+                              "completed", "fulfilled", "cancelled", "refunded"}:
+                raise APIError("预约状态不正确", 400, "invalid_request_status")
+            updates["status"] = status
+        if "adminNote" in data:
+            updates["admin_note"] = _news_clean_text(data.get("adminNote"), 2000)
+        if "assignedAdminId" in data:
+            updates["assigned_admin_id"] = _news_clean_text(data.get("assignedAdminId"), 80)
+        self._guide_apply_update(conn, "guide_service_requests", row["id"], updates)
+        self.send_json({"status": "ok", "id": row["id"], "requestStatus": updates.get("status")})
+
+    def api_admin_guide_create_article(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        title = _news_clean_text(data.get("title"), 200)
+        if not title:
+            raise APIError("标题不能为空", 400, "empty_title")
+        now = now_iso()
+        article_id = str(uuid.uuid4())
+        slug = self._guide_slugify(data.get("slug") or "", fallback=article_id[:10])
+        status = (data.get("status") or "draft").strip()
+        tags = data.get("tags")
+        tags_str = ",".join(tags) if isinstance(tags, list) else _news_clean_text(tags, 300)
+        conn.execute(
+            "INSERT INTO guide_articles (id, title, slug, summary, body, category_key, sub_category_key, content_type, "
+            "country, city, language, cover_image, tags, author_type, author_name, is_featured, is_free, is_paid, status, "
+            "view_count, save_count, sort_order, created_at, updated_at, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editorial', ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)",
+            (article_id, title, slug, _news_clean_text(data.get("summary"), 600), str(data.get("body") or ""),
+             str(data.get("categoryKey") or "").strip(), str(data.get("subCategoryKey") or "").strip(),
+             str(data.get("contentType") or "guide").strip(), _normalize_news_country(data.get("country") or "jp"),
+             _normalize_news_city(data.get("city")), _normalize_news_language(data.get("language") or "zh-CN"),
+             str(data.get("coverImage") or ""), tags_str, _news_clean_text(data.get("authorName"), 80) or "Machi 日本指南编辑部",
+             1 if data.get("isFeatured") else 0, 1 if data.get("isFree", True) else 0, 1 if data.get("isPaid") else 0,
+             status, _guide_int(data.get("sortOrder"), 0), now, now, now if status == "published" else None),
+        )
+        self.send_json({"status": "ok", "id": article_id, "slug": slug}, 201)
+
+    def api_admin_guide_update_article(self, conn: sqlite3.Connection, article_id: str) -> None:
+        admin = self.require_admin(conn)
+        if not conn.execute("SELECT id FROM guide_articles WHERE id = ?", (article_id,)).fetchone():
+            raise APIError("指南内容不存在", 404, "guide_article_not_found")
+        data = self.read_json()
+        field_map = {
+            "title": "title", "summary": "summary", "body": "body", "categoryKey": "category_key",
+            "subCategoryKey": "sub_category_key", "contentType": "content_type", "coverImage": "cover_image",
+            "authorName": "author_name", "status": "status",
+        }
+        updates: dict[str, Any] = {}
+        for k, col in field_map.items():
+            if k in data:
+                updates[col] = str(data[k] or "")
+        for k, col in (("isFeatured", "is_featured"), ("isFree", "is_free"), ("isPaid", "is_paid")):
+            if k in data:
+                updates[col] = 1 if data[k] else 0
+        if "sortOrder" in data:
+            updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
+        if "tags" in data:
+            tags = data["tags"]
+            updates["tags"] = ",".join(tags) if isinstance(tags, list) else _news_clean_text(tags, 300)
+        if updates.get("status") == "published" and not conn.execute(
+                "SELECT published_at FROM guide_articles WHERE id = ?", (article_id,)).fetchone()["published_at"]:
+            updates["published_at"] = now_iso()
+        self._guide_apply_update(conn, "guide_articles", article_id, updates)
+        self.send_json({"status": "ok", "id": article_id})
+
+    def api_admin_guide_delete_article(self, conn: sqlite3.Connection, article_id: str) -> None:
+        self.require_admin(conn)
+        conn.execute("DELETE FROM guide_articles WHERE id = ?", (article_id,))
+        self.send_json({"status": "ok"})
+
+    def api_admin_guide_product_detail(self, conn: sqlite3.Connection, product_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute(
+            "SELECT * FROM guide_products WHERE id = ? OR slug = ? LIMIT 1", (product_id, product_id)).fetchone()
+        if not row:
+            raise APIError("资料/服务不存在", 404, "guide_product_not_found")
+        self.send_json({"status": "ok", "product": serialize_guide_product(row, include_private=True)})
+
+    def _guide_validate_product(self, row: dict[str, Any]) -> None:
+        """Server-side guardrails shared by create + update. Enforces the
+        member/service rules and the publish-readiness checks from the spec."""
+        if row.get("is_service") and row.get("is_member_included"):
+            raise APIError("服务类商品不能设置为会员免费内容，可设置会员折扣。", 400, "service_member_included")
+        if int(row.get("price") or 0) < 0:
+            raise APIError("价格不能为负。", 400, "invalid_price")
+        if not row.get("is_free") and int(row.get("price") or 0) <= 0 and not str(row.get("price_label") or "").strip():
+            # A paid item with no price AND no price_label (e.g. "预约咨询") is ambiguous.
+            if row.get("status") == "published" and not row.get("is_service"):
+                raise APIError("付费商品需要设置价格或价格标签。", 400, "missing_price")
+        if row.get("status") == "published":
+            if not str(row.get("description") or "").strip():
+                raise APIError("上架前请填写商品说明。", 400, "missing_description")
+            if row.get("is_service"):
+                if not (str(row.get("delivery_method") or "").strip() or str(row.get("refund_policy") or "").strip()
+                        or str(row.get("notes") or "").strip()):
+                    raise APIError("服务类上架前请填写服务范围/交付方式或退款规则。", 400, "missing_service_terms")
+            elif not row.get("is_free"):
+                if not (str(row.get("preview_content") or "").strip() or str(row.get("file_url") or "").strip()):
+                    raise APIError("付费数字资料上架前需要预览内容或文件。", 400, "missing_preview_or_file")
+
+    def api_admin_guide_create_product(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        title = _news_clean_text(data.get("title"), 200)
+        if not title:
+            raise APIError("标题不能为空", 400, "empty_title")
+        now = now_iso()
+        product_id = str(uuid.uuid4())
+        slug = self._guide_slugify(data.get("slug") or "", fallback=product_id[:10])
+        is_service = 1 if data.get("isService") else 0
+        is_free = 1 if data.get("isFree") else 0
+        coming = 0 if is_free else (1 if data.get("isComingSoon", True) else 0)
+        status = _news_clean_text(data.get("status"), 40) or ("coming_soon" if coming else "published")
+        is_paid = 0 if is_free else 1
+        appointment_only = 1 if data.get("isAppointmentOnly") else 0
+        price_hidden = 1 if data.get("isPriceHidden") else 0
+        billing_type = _news_clean_text(data.get("billingType"), 40) or ("free" if is_free else ("service_booking" if is_service else "one_time"))
+        billing_period = _news_clean_text(data.get("billingPeriod"), 40) or "none"
+        service_price_type = _news_clean_text(data.get("servicePriceType"), 40) or ("appointment_only" if is_service and (appointment_only or price_hidden) else ("fixed_price" if is_service else ""))
+        row = {
+            "id": product_id,
+            "title": title,
+            "slug": slug,
+            "subtitle": _news_clean_text(data.get("subtitle"), 200),
+            "description": str(data.get("description") or ""),
+            "category_key": str(data.get("categoryKey") or "guide_services").strip(),
+            "sub_category_key": str(data.get("subCategoryKey") or "").strip(),
+            "product_type": str(data.get("productType") or "pdf_material").strip(),
+            "price": _guide_int(data.get("price"), 0, lo=0),
+            "currency": normalize_currency(data.get("currency") or "CNY"),
+            "price_label": _news_clean_text(data.get("priceLabel"), 80),
+            "original_price": _guide_int(data.get("originalPrice"), 0, lo=0),
+            "discount_label": _news_clean_text(data.get("discountLabel"), 80),
+            "is_price_hidden": price_hidden,
+            "is_appointment_only": appointment_only,
+            "price_region": _news_clean_text(data.get("priceRegion"), 80),
+            "tax_included": 0 if data.get("taxIncluded") is False else 1,
+            "billing_type": billing_type,
+            "billing_period": billing_period,
+            "service_price_type": service_price_type,
+            "starting_price": _guide_int(data.get("startingPrice"), 0, lo=0),
+            "member_discount_percent": _guide_int(data.get("memberDiscountPercent"), 0, lo=0, hi=100),
+            "service_duration_minutes": _guide_int(data.get("serviceDurationMinutes"), 0, lo=0),
+            "deposit_required": 1 if data.get("depositRequired") else 0,
+            "deposit_amount": _guide_int(data.get("depositAmount"), 0, lo=0),
+            "cancellation_policy": str(data.get("cancellationPolicy") or ""),
+            "cover_image": str(data.get("coverImage") or ""),
+            "tags": _guide_csv(data.get("tags")),
+            "target_audience": _news_clean_text(data.get("targetAudience"), 300),
+            "delivery_method": _news_clean_text(data.get("deliveryMethod"), 300),
+            "preview_content": str(data.get("previewContent") or ""),
+            "purchase_content": str(data.get("purchaseContent") or ""),
+            "file_url": str(data.get("fileUrl") or ""),
+            "file_name": _news_clean_text(data.get("fileName"), 240),
+            "file_type": _news_clean_text(data.get("fileType"), 80),
+            "file_size": _guide_int(data.get("fileSize"), 0, lo=0),
+            "country": _normalize_news_country(data.get("country") or "jp"),
+            "language": _normalize_news_language(data.get("language") or "zh-CN"),
+            "is_digital": 0 if is_service else 1,
+            "is_service": is_service,
+            "is_free": is_free,
+            "is_paid": is_paid,
+            # Keep the raw intent so _guide_validate_product can reject the
+            # service+member-free combo with the spec's form prompt (not silent coerce).
+            "is_member_included": 1 if data.get("isMemberIncluded") else 0,
+            "is_member_discount": 1 if data.get("isMemberDiscount") else 0,
+            "member_price": _guide_int(data.get("memberPrice"), 0, lo=0),
+            "is_coming_soon": coming,
+            "status": status,
+            "purchase_count": 0,
+            "rating": 0,
+            "sort_order": _guide_int(data.get("sortOrder"), 0),
+            "is_featured": 1 if data.get("isFeatured") else 0,
+            "refund_policy": str(data.get("refundPolicy") or ""),
+            "notes": str(data.get("notes") or ""),
+            "stripe_product_id": _news_clean_text(data.get("stripeProductId"), 120),
+            "stripe_price_id": _news_clean_text(data.get("stripePriceId"), 120),
+            "ios_iap_product_id": _news_clean_text(data.get("iosIapProductId"), 120),
+            "apple_product_id": _news_clean_text(data.get("appleProductId"), 120),
+            "created_at": now,
+            "updated_at": now,
+            "published_at": now if status == "published" else None,
+        }
+        self._guide_validate_product(row)
+        conn.execute(
+            f"INSERT INTO guide_products ({', '.join(row.keys())}) VALUES ({', '.join(['?'] * len(row))})",
+            tuple(row.values()),
+        )
+        self.send_json({"status": "ok", "id": product_id, "slug": slug}, 201)
+
+    def api_admin_guide_update_product(self, conn: sqlite3.Connection, product_id: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT id FROM guide_products WHERE id = ?", (product_id,)).fetchone():
+            raise APIError("资料/服务不存在", 404, "guide_product_not_found")
+        data = self.read_json()
+        field_map = {
+            "title": "title", "subtitle": "subtitle", "description": "description", "categoryKey": "category_key",
+            "subCategoryKey": "sub_category_key", "productType": "product_type", "currency": "currency",
+            "priceLabel": "price_label", "discountLabel": "discount_label", "priceRegion": "price_region",
+            "billingType": "billing_type", "billingPeriod": "billing_period", "servicePriceType": "service_price_type",
+            "coverImage": "cover_image", "targetAudience": "target_audience",
+            "deliveryMethod": "delivery_method", "previewContent": "preview_content",
+            "purchaseContent": "purchase_content", "fileUrl": "file_url", "fileName": "file_name",
+            "fileType": "file_type", "refundPolicy": "refund_policy", "notes": "notes", "status": "status",
+            "stripeProductId": "stripe_product_id", "stripePriceId": "stripe_price_id",
+            "iosIapProductId": "ios_iap_product_id", "appleProductId": "apple_product_id",
+            "cancellationPolicy": "cancellation_policy",
+        }
+        updates: dict[str, Any] = {}
+        for k, col in field_map.items():
+            if k in data:
+                updates[col] = str(data[k] or "")
+        if "currency" in updates:
+            updates["currency"] = normalize_currency(updates["currency"])
+        for k, col in (("isComingSoon", "is_coming_soon"), ("isFree", "is_free"), ("isPaid", "is_paid"),
+                       ("isService", "is_service"), ("isDigital", "is_digital"),
+                       ("isMemberIncluded", "is_member_included"), ("isMemberDiscount", "is_member_discount"),
+                       ("isFeatured", "is_featured"), ("isPriceHidden", "is_price_hidden"),
+                       ("isAppointmentOnly", "is_appointment_only"), ("taxIncluded", "tax_included"),
+                       ("depositRequired", "deposit_required")):
+            if k in data:
+                updates[col] = 1 if data[k] else 0
+        if "price" in data:
+            updates["price"] = _guide_int(data.get("price"), 0, lo=0)
+        if "originalPrice" in data:
+            updates["original_price"] = _guide_int(data.get("originalPrice"), 0, lo=0)
+        if "memberPrice" in data:
+            updates["member_price"] = _guide_int(data.get("memberPrice"), 0, lo=0)
+        if "startingPrice" in data:
+            updates["starting_price"] = _guide_int(data.get("startingPrice"), 0, lo=0)
+        if "memberDiscountPercent" in data:
+            updates["member_discount_percent"] = _guide_int(data.get("memberDiscountPercent"), 0, lo=0, hi=100)
+        if "serviceDurationMinutes" in data:
+            updates["service_duration_minutes"] = _guide_int(data.get("serviceDurationMinutes"), 0, lo=0)
+        if "depositAmount" in data:
+            updates["deposit_amount"] = _guide_int(data.get("depositAmount"), 0, lo=0)
+        if "fileSize" in data:
+            updates["file_size"] = _guide_int(data.get("fileSize"), 0, lo=0)
+        if "sortOrder" in data:
+            updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
+        if "tags" in data:
+            updates["tags"] = _guide_csv(data["tags"])
+        if updates.get("is_service") == 1 and updates.get("is_member_included") == 1:
+            raise APIError("服务类商品不能设置为会员免费内容，可设置会员折扣。", 400, "service_member_included")
+        if updates.get("is_service") == 1:
+            updates["is_digital"] = 0
+            updates["is_member_included"] = 0
+        elif updates.get("is_service") == 0:
+            updates.setdefault("is_digital", 1)
+        if updates.get("is_free") == 1:
+            updates["is_paid"] = 0
+            updates.setdefault("is_coming_soon", 0)
+        elif updates.get("is_free") == 0:
+            updates.setdefault("is_paid", 1)
+        if updates.get("status") == "published" and not conn.execute(
+                "SELECT published_at FROM guide_products WHERE id = ?", (product_id,)).fetchone()["published_at"]:
+            updates["published_at"] = now_iso()
+        # Validate the would-be merged row (service/member rules + publish readiness).
+        current = dict(conn.execute("SELECT * FROM guide_products WHERE id = ?", (product_id,)).fetchone())
+        self._guide_validate_product({**current, **updates})
+        self._guide_apply_update(conn, "guide_products", product_id, updates)
+        self.send_json({"status": "ok", "id": product_id})
+
+    def api_admin_guide_delete_product(self, conn: sqlite3.Connection, product_id: str) -> None:
+        self.require_admin(conn)
+        conn.execute("DELETE FROM guide_products WHERE id = ?", (product_id,))
+        self.send_json({"status": "ok"})
+
+    def _guide_create_school_row(self, conn: sqlite3.Connection, data: dict[str, Any], *, default_status: str = "needs_review") -> tuple[str, str]:
+        name = _news_clean_text(data.get("schoolName") or data.get("school_name") or data.get("school_name_en"), 200)
+        if not name:
+            raise APIError("学校名不能为空", 400, "empty_school_name")
+        school_id = str(uuid.uuid4())
+        slug = self._guide_slugify(data.get("slug") or data.get("schoolNameEn") or data.get("school_name_en") or name, fallback=school_id[:10])
+        now = now_iso()
+        row = {
+            "id": school_id,
+            "slug": slug,
+            "school_name": name,
+            "school_name_jp": _news_clean_text(data.get("schoolNameJp") or data.get("school_name_jp"), 200),
+            "school_name_en": _news_clean_text(data.get("schoolNameEn") or data.get("school_name_en"), 200),
+            "school_type": _news_clean_text(data.get("schoolType") or data.get("school_type"), 60) or "other",
+            "country": _normalize_news_country(data.get("country") or "jp"),
+            "prefecture": _news_clean_text(data.get("prefecture"), 80).lower(),
+            "city": _news_clean_text(data.get("city"), 80).lower(),
+            "ward": _news_clean_text(data.get("ward"), 120),
+            "address": _news_clean_text(data.get("address"), 300),
+            "postal_code": _news_clean_text(data.get("postalCode") or data.get("postal_code"), 40),
+            "latitude": _guide_float(data.get("latitude")),
+            "longitude": _guide_float(data.get("longitude")),
+            "website": str(data.get("website") or ""),
+            "admission_url": str(data.get("admissionUrl") or data.get("admission_url") or ""),
+            "international_admission_url": str(data.get("internationalAdmissionUrl") or data.get("international_admission_url") or ""),
+            "application_url": str(data.get("applicationUrl") or data.get("application_url") or ""),
+            "scholarship_url": str(data.get("scholarshipUrl") or data.get("scholarship_url") or ""),
+            "career_support_url": str(data.get("careerSupportUrl") or data.get("career_support_url") or ""),
+            "language_support_url": str(data.get("languageSupportUrl") or data.get("language_support_url") or ""),
+            "dormitory_url": str(data.get("dormitoryUrl") or data.get("dormitory_url") or ""),
+            "description": str(data.get("description") or ""),
+            "short_description": _news_clean_text(data.get("shortDescription") or data.get("short_description"), 500),
+            "is_accepting_international_students": _guide_payload_bool(data, "isAcceptingInternationalStudents", "is_accepting_international_students"),
+            "has_english_program": _guide_payload_bool(data, "hasEnglishProgram", "has_english_program"),
+            "has_japanese_program": _guide_payload_bool(data, "hasJapaneseProgram", "has_japanese_program"),
+            "has_scholarship": _guide_payload_bool(data, "hasScholarship", "has_scholarship"),
+            "has_dormitory": _guide_payload_bool(data, "hasDormitory", "has_dormitory"),
+            "has_career_support": _guide_payload_bool(data, "hasCareerSupport", "has_career_support"),
+            "has_language_support": _guide_payload_bool(data, "hasLanguageSupport", "has_language_support"),
+            "tuition_min": _guide_int(data.get("tuitionMin") or data.get("tuition_min"), 0, lo=0),
+            "tuition_max": _guide_int(data.get("tuitionMax") or data.get("tuition_max"), 0, lo=0),
+            "currency": _news_clean_text(data.get("currency"), 12) or "JPY",
+            "application_periods": _guide_csv(data.get("applicationPeriods") or data.get("application_periods")),
+            "admission_months": _guide_csv(data.get("admissionMonths") or data.get("admission_months")),
+            "required_japanese_level": _news_clean_text(data.get("requiredJapaneseLevel") or data.get("required_japanese_level"), 40) or "unknown",
+            "required_english_level": _news_clean_text(data.get("requiredEnglishLevel") or data.get("required_english_level"), 40) or "unknown",
+            "eju_required": _news_clean_text(data.get("ejuRequired") or data.get("eju_required"), 40) or "unknown",
+            "jlpt_required": _news_clean_text(data.get("jlptRequired") or data.get("jlpt_required"), 40) or "unknown",
+            "toefl_required": _news_clean_text(data.get("toeflRequired") or data.get("toefl_required"), 40) or "unknown",
+            "ielts_required": _news_clean_text(data.get("ieltsRequired") or data.get("ielts_required"), 40) or "unknown",
+            "fields_of_study": _guide_csv(data.get("fieldsOfStudy") or data.get("fields_of_study")),
+            "departments": _guide_csv(data.get("departments")),
+            "faculties": _guide_csv(data.get("faculties")),
+            "graduate_schools": _guide_csv(data.get("graduateSchools") or data.get("graduate_schools")),
+            "tags": _guide_csv(data.get("tags")),
+            "source_type": _news_clean_text(data.get("sourceType") or data.get("source_type"), 40) or "admin_import",
+            "source_name": _news_clean_text(data.get("sourceName") or data.get("source_name"), 160),
+            "source_url": str(data.get("sourceUrl") or data.get("source_url") or ""),
+            "source_last_checked_at": str(data.get("sourceLastCheckedAt") or data.get("source_last_checked_at") or "") or None,
+            "verification_status": _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+            "data_quality_score": _guide_int(data.get("dataQualityScore") or data.get("data_quality_score"), _guide_school_quality(dict(data)), lo=0, hi=100),
+            "is_featured": 1 if data.get("isFeatured") or data.get("is_featured") else 0,
+            "status": _news_clean_text(data.get("status"), 40) or default_status,
+            "created_at": now,
+            "updated_at": now,
+        }
+        existing = conn.execute(
+            """
+            SELECT id, slug, data_quality_score FROM guide_schools
+             WHERE country = ?
+               AND (
+                    slug = ?
+                    OR (source_url <> '' AND source_url = ?)
+                    OR (website <> '' AND website = ?)
+                    OR (school_name_jp <> '' AND school_name_jp = ? AND prefecture = ?)
+                    OR (school_name_en <> '' AND school_name_en = ? AND prefecture = ?)
+               )
+             LIMIT 1
+            """,
+            (
+                row["country"], row["slug"], row["source_url"], row["website"],
+                row["school_name_jp"], row["prefecture"], row["school_name_en"], row["prefecture"],
+            ),
+        ).fetchone()
+        if existing:
+            updates = {k: v for k, v in row.items() if k not in {"id", "slug", "created_at"} and v not in ("", None)}
+            updates["data_quality_score"] = max(_guide_int(updates.get("data_quality_score"), 0), _guide_int(existing["data_quality_score"], 0))
+            cols = ", ".join(f"{col} = ?" for col in updates)
+            conn.execute(f"UPDATE guide_schools SET {cols} WHERE id = ?", [*updates.values(), existing["id"]])
+            return existing["id"], existing["slug"]
+        conn.execute(
+            f"INSERT INTO guide_schools ({', '.join(row.keys())}) VALUES ({', '.join(['?'] * len(row))})",
+            tuple(row.values()),
+        )
+        return school_id, slug
+
+    def api_admin_guide_create_school(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        school_id, slug = self._guide_create_school_row(conn, self.read_json())
+        self.send_json({"status": "ok", "id": school_id, "slug": slug}, 201)
+
+    def api_admin_guide_update_school(self, conn: sqlite3.Connection, school_id: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT id FROM guide_schools WHERE id = ?", (school_id,)).fetchone():
+            raise APIError("学校不存在", 404, "guide_school_not_found")
+        data = self.read_json()
+        field_map = {
+            "schoolName": "school_name", "schoolNameJp": "school_name_jp", "schoolNameEn": "school_name_en",
+            "schoolType": "school_type", "prefecture": "prefecture", "city": "city", "ward": "ward",
+            "address": "address", "postalCode": "postal_code",
+            "website": "website", "admissionUrl": "admission_url", "internationalAdmissionUrl": "international_admission_url",
+            "applicationUrl": "application_url", "scholarshipUrl": "scholarship_url", "careerSupportUrl": "career_support_url",
+            "languageSupportUrl": "language_support_url", "dormitoryUrl": "dormitory_url",
+            "description": "description", "shortDescription": "short_description",
+            "currency": "currency", "requiredJapaneseLevel": "required_japanese_level", "requiredEnglishLevel": "required_english_level",
+            "ejuRequired": "eju_required", "jlptRequired": "jlpt_required", "toeflRequired": "toefl_required",
+            "ieltsRequired": "ielts_required", "sourceType": "source_type", "sourceName": "source_name",
+            "sourceUrl": "source_url", "sourceLastCheckedAt": "source_last_checked_at",
+            "verificationStatus": "verification_status", "status": "status",
+        }
+        updates: dict[str, Any] = {}
+        for k, col in field_map.items():
+            if k in data:
+                updates[col] = str(data[k] or "")
+        for k, col in (("isAcceptingInternationalStudents", "is_accepting_international_students"),
+                       ("hasEnglishProgram", "has_english_program"), ("hasJapaneseProgram", "has_japanese_program"),
+                       ("hasScholarship", "has_scholarship"), ("hasDormitory", "has_dormitory"),
+                       ("hasCareerSupport", "has_career_support"), ("hasLanguageSupport", "has_language_support")):
+            if k in data:
+                updates[col] = _guide_payload_bool(data, k)
+        for k, col in (("tuitionMin", "tuition_min"), ("tuitionMax", "tuition_max")):
+            if k in data:
+                updates[col] = _guide_int(data.get(k), 0, lo=0)
+        for k, col in (("applicationPeriods", "application_periods"), ("admissionMonths", "admission_months"),
+                       ("fieldsOfStudy", "fields_of_study"), ("departments", "departments"),
+                       ("faculties", "faculties"), ("graduateSchools", "graduate_schools"), ("tags", "tags")):
+            if k in data:
+                updates[col] = _guide_csv(data[k])
+        for k, col in (("latitude", "latitude"), ("longitude", "longitude")):
+            if k in data:
+                updates[col] = _guide_float(data.get(k))
+        if "dataQualityScore" in data:
+            updates["data_quality_score"] = _guide_int(data.get("dataQualityScore"), 0, lo=0, hi=100)
+        elif updates:
+            merged = dict(conn.execute("SELECT * FROM guide_schools WHERE id = ?", (school_id,)).fetchone())
+            merged.update(updates)
+            updates["data_quality_score"] = _guide_school_quality(merged)
+        if "isFeatured" in data:
+            updates["is_featured"] = 1 if data["isFeatured"] else 0
+        self._guide_apply_update(conn, "guide_schools", school_id, updates)
+        self.send_json({"status": "ok", "id": school_id})
+
+    def api_admin_guide_delete_school(self, conn: sqlite3.Connection, school_id: str) -> None:
+        self.require_admin(conn)
+        conn.execute("UPDATE guide_schools SET status = 'hidden', updated_at = ? WHERE id = ?", (now_iso(), school_id))
+        self.send_json({"status": "ok"})
+
+    def api_admin_guide_import_schools(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        rows = data.get("items")
+        if not isinstance(rows, list):
+            csv_text = str(data.get("csv") or data.get("content") or "")
+            rows = list(csv.DictReader(io.StringIO(csv_text))) if csv_text.strip() else []
+        created: list[dict[str, str]] = []
+        errors: list[str] = []
+        for raw in rows:
+            try:
+                sid, slug = self._guide_create_school_row(conn, dict(raw), default_status="needs_review")
+                created.append({"id": sid, "slug": slug})
+            except Exception as exc:
+                errors.append(str(exc))
+        self.send_json({"status": "ok", "created": created, "errors": errors}, 201)
+
+    def api_admin_guide_create_school_program(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        school = self._guide_lookup_school(conn, str(data.get("schoolId") or data.get("school_id") or "").strip(), public_only=False)
+        name = _news_clean_text(data.get("programName") or data.get("program_name"), 200)
+        if not name:
+            raise APIError("项目名不能为空", 400, "empty_program_name")
+        now = now_iso()
+        pid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_school_programs (id, school_id, program_name, program_name_jp, program_name_en, degree_level, "
+            "program_type, field, sub_field, faculty_name, department_name, graduate_school_name, language_of_instruction, duration_months, admission_months, application_period, tuition, currency, "
+            "required_japanese_level, required_english_level, eju_required, jlpt_required, toefl_required, ielts_required, "
+            "description, application_url, source_url, verification_status, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (pid, school["id"], name, _news_clean_text(data.get("programNameJp") or data.get("program_name_jp"), 200),
+             _news_clean_text(data.get("programNameEn") or data.get("program_name_en"), 200),
+             _news_clean_text(data.get("degreeLevel") or data.get("degree_level"), 60) or "other",
+             _news_clean_text(data.get("programType") or data.get("program_type"), 60) or "regular",
+             _news_clean_text(data.get("field"), 120),
+             _news_clean_text(data.get("subField") or data.get("sub_field"), 120),
+             _news_clean_text(data.get("facultyName") or data.get("faculty_name"), 160),
+             _news_clean_text(data.get("departmentName") or data.get("department_name"), 160),
+             _news_clean_text(data.get("graduateSchoolName") or data.get("graduate_school_name"), 160),
+             _news_clean_text(data.get("languageOfInstruction") or data.get("language_of_instruction"), 80),
+             _guide_int(data.get("durationMonths") or data.get("duration_months"), 0, lo=0),
+             _guide_csv(data.get("admissionMonths") or data.get("admission_months")),
+             _news_clean_text(data.get("applicationPeriod") or data.get("application_period"), 300),
+             _guide_int(data.get("tuition"), 0, lo=0), _news_clean_text(data.get("currency"), 12) or "JPY",
+             _news_clean_text(data.get("requiredJapaneseLevel") or data.get("required_japanese_level"), 40) or "unknown",
+             _news_clean_text(data.get("requiredEnglishLevel") or data.get("required_english_level"), 40) or "unknown",
+             _news_clean_text(data.get("ejuRequired") or data.get("eju_required"), 40) or "unknown",
+             _news_clean_text(data.get("jlptRequired") or data.get("jlpt_required"), 40) or "unknown",
+             _news_clean_text(data.get("toeflRequired") or data.get("toefl_required"), 40) or "unknown",
+             _news_clean_text(data.get("ieltsRequired") or data.get("ielts_required"), 40) or "unknown",
+             str(data.get("description") or ""), str(data.get("applicationUrl") or data.get("application_url") or ""),
+             str(data.get("sourceUrl") or data.get("source_url") or ""),
+             _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+             _news_clean_text(data.get("status"), 40) or "needs_review", now, now),
+        )
+        self.send_json({"status": "ok", "id": pid}, 201)
+
+    def api_admin_guide_update_school_program(self, conn: sqlite3.Connection, program_id: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT id FROM guide_school_programs WHERE id = ?", (program_id,)).fetchone():
+            raise APIError("项目不存在", 404, "guide_school_program_not_found")
+        data = self.read_json()
+        field_map = {
+            "programName": "program_name", "programNameJp": "program_name_jp", "programNameEn": "program_name_en",
+            "degreeLevel": "degree_level", "programType": "program_type", "field": "field",
+            "subField": "sub_field", "facultyName": "faculty_name", "departmentName": "department_name",
+            "graduateSchoolName": "graduate_school_name",
+            "languageOfInstruction": "language_of_instruction", "applicationPeriod": "application_period",
+            "currency": "currency", "requiredJapaneseLevel": "required_japanese_level",
+            "requiredEnglishLevel": "required_english_level", "ejuRequired": "eju_required", "jlptRequired": "jlpt_required",
+            "toeflRequired": "toefl_required", "ieltsRequired": "ielts_required", "description": "description",
+            "applicationUrl": "application_url", "sourceUrl": "source_url", "verificationStatus": "verification_status", "status": "status",
+        }
+        updates = {col: str(data[k] or "") for k, col in field_map.items() if k in data}
+        if "durationMonths" in data:
+            updates["duration_months"] = _guide_int(data.get("durationMonths"), 0, lo=0)
+        if "tuition" in data:
+            updates["tuition"] = _guide_int(data.get("tuition"), 0, lo=0)
+        if "admissionMonths" in data:
+            updates["admission_months"] = _guide_csv(data["admissionMonths"])
+        self._guide_apply_update(conn, "guide_school_programs", program_id, updates)
+        self.send_json({"status": "ok", "id": program_id})
+
+    def api_admin_guide_create_school_admission(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        school = self._guide_lookup_school(conn, str(data.get("schoolId") or data.get("school_id") or "").strip(), public_only=False)
+        now = now_iso()
+        aid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_school_admissions (id, school_id, program_id, admission_type, target_student_type, application_start, "
+            "application_deadline, exam_date, result_date, enrollment_month, required_documents, selection_method, application_fee, "
+            "tuition_first_year, scholarship_info, notes, source_url, verification_status, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (aid, school["id"], str(data.get("programId") or data.get("program_id") or ""),
+             _news_clean_text(data.get("admissionType") or data.get("admission_type"), 80) or "international_student",
+             _news_clean_text(data.get("targetStudentType") or data.get("target_student_type"), 120),
+             str(data.get("applicationStart") or data.get("application_start") or "") or None,
+             str(data.get("applicationDeadline") or data.get("application_deadline") or "") or None,
+             str(data.get("examDate") or data.get("exam_date") or "") or None,
+             str(data.get("resultDate") or data.get("result_date") or "") or None,
+             _news_clean_text(data.get("enrollmentMonth") or data.get("enrollment_month"), 60),
+             _guide_csv(data.get("requiredDocuments") or data.get("required_documents")),
+             _news_clean_text(data.get("selectionMethod") or data.get("selection_method"), 500),
+             _guide_int(data.get("applicationFee") or data.get("application_fee"), 0, lo=0),
+             _guide_int(data.get("tuitionFirstYear") or data.get("tuition_first_year"), 0, lo=0),
+             _news_clean_text(data.get("scholarshipInfo") or data.get("scholarship_info"), 1000),
+             _news_clean_text(data.get("notes"), 2000), str(data.get("sourceUrl") or data.get("source_url") or ""),
+             _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+             _news_clean_text(data.get("status"), 40) or "needs_review", now, now),
+        )
+        self.send_json({"status": "ok", "id": aid}, 201)
+
+    def api_admin_guide_update_school_admission(self, conn: sqlite3.Connection, admission_id: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT id FROM guide_school_admissions WHERE id = ?", (admission_id,)).fetchone():
+            raise APIError("申请信息不存在", 404, "guide_school_admission_not_found")
+        data = self.read_json()
+        field_map = {
+            "programId": "program_id", "admissionType": "admission_type", "targetStudentType": "target_student_type",
+            "applicationStart": "application_start", "applicationDeadline": "application_deadline", "examDate": "exam_date",
+            "resultDate": "result_date", "enrollmentMonth": "enrollment_month", "selectionMethod": "selection_method",
+            "scholarshipInfo": "scholarship_info", "notes": "notes", "sourceUrl": "source_url",
+            "verificationStatus": "verification_status", "status": "status",
+        }
+        updates = {col: str(data[k] or "") for k, col in field_map.items() if k in data}
+        if "requiredDocuments" in data:
+            updates["required_documents"] = _guide_csv(data["requiredDocuments"])
+        for k, col in (("applicationFee", "application_fee"), ("tuitionFirstYear", "tuition_first_year")):
+            if k in data:
+                updates[col] = _guide_int(data.get(k), 0, lo=0)
+        self._guide_apply_update(conn, "guide_school_admissions", admission_id, updates)
+        self.send_json({"status": "ok", "id": admission_id})
+
+    def _guide_create_company_row(self, conn: sqlite3.Connection, data: dict[str, Any], *, default_status: str = "needs_review") -> tuple[str, str]:
+        name = _news_clean_text(data.get("companyName") or data.get("company_name") or data.get("name"), 200)
+        if not name:
+            raise APIError("公司名不能为空", 400, "empty_company_name")
+        now = now_iso()
+        company_id = str(uuid.uuid4())
+        slug = self._guide_slugify(data.get("slug") or data.get("companyNameEn") or data.get("company_name_en") or name, fallback=company_id[:10])
+        size = _news_clean_text(data.get("companySize") or data.get("company_size") or data.get("size"), 40) or "unknown"
+        row = {
+            "id": company_id,
+            "corporate_number": _news_clean_text(data.get("corporateNumber") or data.get("corporate_number"), 40),
+            "company_name": name,
+            "company_name_jp": _news_clean_text(data.get("companyNameJp") or data.get("company_name_jp"), 200),
+            "company_name_en": _news_clean_text(data.get("companyNameEn") or data.get("company_name_en"), 200),
+            "slug": slug,
+            "industry": _news_clean_text(data.get("industry"), 100),
+            "sub_industry": _news_clean_text(data.get("subIndustry") or data.get("sub_industry"), 100),
+            "country": _normalize_news_country(data.get("country") or "jp"),
+            "prefecture": _news_clean_text(data.get("prefecture"), 80).lower(),
+            "city": _news_clean_text(data.get("city"), 80).lower(),
+            "ward": _news_clean_text(data.get("ward"), 120),
+            "address": _news_clean_text(data.get("address"), 300),
+            "postal_code": _news_clean_text(data.get("postalCode") or data.get("postal_code"), 40),
+            "latitude": _guide_float(data.get("latitude")),
+            "longitude": _guide_float(data.get("longitude")),
+            "website": str(data.get("website") or ""),
+            "career_url": str(data.get("careerUrl") or data.get("career_url") or ""),
+            "new_graduate_url": str(data.get("newGraduateUrl") or data.get("new_graduate_url") or ""),
+            "mid_career_url": str(data.get("midCareerUrl") or data.get("mid_career_url") or ""),
+            "global_career_url": str(data.get("globalCareerUrl") or data.get("global_career_url") or ""),
+            "size": size,
+            "company_size": size,
+            "founded_year": _guide_int(data.get("foundedYear") or data.get("founded_year"), 0, lo=0, hi=2100),
+            "description": str(data.get("description") or ""),
+            "short_description": _news_clean_text(data.get("shortDescription") or data.get("short_description"), 500),
+            "is_foreigner_friendly": _guide_payload_bool(data, "isForeignerFriendly", "is_foreigner_friendly"),
+            "accepts_foreign_applicants": _guide_payload_bool(data, "acceptsForeignApplicants", "accepts_foreign_applicants"),
+            "supports_work_visa": _guide_payload_bool(data, "supportsWorkVisa", "supports_work_visa"),
+            "supports_new_graduate": _guide_payload_bool(data, "supportsNewGraduate", "supports_new_graduate"),
+            "supports_mid_career": _guide_payload_bool(data, "supportsMidCareer", "supports_mid_career"),
+            "has_english_positions": _guide_payload_bool(data, "hasEnglishPositions", "has_english_positions"),
+            "has_global_roles": _guide_payload_bool(data, "hasGlobalRoles", "has_global_roles"),
+            "has_foreign_employees": _guide_payload_bool(data, "hasForeignEmployees", "has_foreign_employees"),
+            "japanese_level_required": _news_clean_text(data.get("japaneseLevelRequired") or data.get("japanese_level_required"), 40) or "unknown",
+            "english_level_required": _news_clean_text(data.get("englishLevelRequired") or data.get("english_level_required"), 40) or "unknown",
+            "employment_types": _guide_csv(data.get("employmentTypes") or data.get("employment_types")),
+            "average_salary_min": _guide_int(data.get("averageSalaryMin") or data.get("average_salary_min"), 0, lo=0),
+            "average_salary_max": _guide_int(data.get("averageSalaryMax") or data.get("average_salary_max"), 0, lo=0),
+            "currency": _news_clean_text(data.get("currency"), 12) or "JPY",
+            "foreigner_friendly_score": 0,
+            "visa_support_score": 0,
+            "interview_difficulty_score": 0,
+            "overtime_score": 0,
+            "salary_benefit_score": 0,
+            "work_life_balance_score": 0,
+            "career_growth_score": 0,
+            "review_count": 0,
+            "interview_review_count": 0,
+            "tags": _guide_csv(data.get("tags")),
+            "source_type": _news_clean_text(data.get("sourceType") or data.get("source_type"), 40) or "admin_import",
+            "source_name": _news_clean_text(data.get("sourceName") or data.get("source_name"), 160),
+            "source_url": str(data.get("sourceUrl") or data.get("source_url") or ""),
+            "source_last_checked_at": str(data.get("sourceLastCheckedAt") or data.get("source_last_checked_at") or "") or None,
+            "verification_status": _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+            "data_quality_score": _guide_int(data.get("dataQualityScore") or data.get("data_quality_score"), _guide_company_quality(dict(data)), lo=0, hi=100),
+            "is_featured": 1 if data.get("isFeatured") or data.get("is_featured") else 0,
+            "status": _news_clean_text(data.get("status"), 40) or default_status,
+            "created_at": now,
+            "updated_at": now,
+        }
+        existing = conn.execute(
+            """
+            SELECT id, slug, data_quality_score FROM guide_companies
+             WHERE country = ?
+               AND (
+                    slug = ?
+                    OR (corporate_number <> '' AND corporate_number = ?)
+                    OR (source_url <> '' AND source_url = ?)
+                    OR (website <> '' AND website = ?)
+                    OR (career_url <> '' AND career_url = ?)
+                    OR (company_name_jp <> '' AND company_name_jp = ? AND prefecture = ?)
+                    OR (company_name_en <> '' AND company_name_en = ? AND prefecture = ?)
+               )
+             LIMIT 1
+            """,
+            (
+                row["country"], row["slug"], row["corporate_number"], row["source_url"], row["website"],
+                row["career_url"], row["company_name_jp"], row["prefecture"], row["company_name_en"], row["prefecture"],
+            ),
+        ).fetchone()
+        if existing:
+            updates = {k: v for k, v in row.items() if k not in {"id", "slug", "created_at"} and v not in ("", None)}
+            updates["data_quality_score"] = max(_guide_int(updates.get("data_quality_score"), 0), _guide_int(existing["data_quality_score"], 0))
+            cols = ", ".join(f"{col} = ?" for col in updates)
+            conn.execute(f"UPDATE guide_companies SET {cols} WHERE id = ?", [*updates.values(), existing["id"]])
+            return existing["id"], existing["slug"]
+        conn.execute(
+            f"INSERT INTO guide_companies ({', '.join(row.keys())}) VALUES ({', '.join(['?'] * len(row))})",
+            tuple(row.values()),
+        )
+        return company_id, slug
+
+    def api_admin_guide_create_company(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        company_id, slug = self._guide_create_company_row(conn, self.read_json())
+        self.send_json({"status": "ok", "id": company_id, "slug": slug}, 201)
+
+    def api_admin_guide_update_company(self, conn: sqlite3.Connection, company_id: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT id FROM guide_companies WHERE id = ?", (company_id,)).fetchone():
+            raise APIError("公司不存在", 404, "guide_company_not_found")
+        data = self.read_json()
+        field_map = {
+            "corporateNumber": "corporate_number",
+            "companyName": "company_name", "companyNameJp": "company_name_jp", "industry": "industry",
+            "companyNameEn": "company_name_en", "subIndustry": "sub_industry", "prefecture": "prefecture",
+            "ward": "ward", "address": "address", "postalCode": "postal_code",
+            "website": "website", "careerUrl": "career_url", "newGraduateUrl": "new_graduate_url",
+            "midCareerUrl": "mid_career_url", "globalCareerUrl": "global_career_url",
+            "companySize": "company_size", "size": "size",
+            "description": "description", "shortDescription": "short_description", "japaneseLevelRequired": "japanese_level_required",
+            "englishLevelRequired": "english_level_required", "currency": "currency", "sourceType": "source_type",
+            "sourceName": "source_name", "sourceUrl": "source_url", "sourceLastCheckedAt": "source_last_checked_at",
+            "verificationStatus": "verification_status", "status": "status",
+        }
+        updates: dict[str, Any] = {}
+        for k, col in field_map.items():
+            if k in data:
+                updates[col] = str(data[k] or "")
+        for k, col in (("isForeignerFriendly", "is_foreigner_friendly"),
+                       ("acceptsForeignApplicants", "accepts_foreign_applicants"),
+                       ("supportsWorkVisa", "supports_work_visa"), ("supportsNewGraduate", "supports_new_graduate"),
+                       ("supportsMidCareer", "supports_mid_career"), ("hasEnglishPositions", "has_english_positions"),
+                       ("hasGlobalRoles", "has_global_roles"), ("hasForeignEmployees", "has_foreign_employees")):
+            if k in data:
+                updates[col] = _guide_payload_bool(data, k)
+        if "city" in data:
+            updates["city"] = _news_clean_text(data.get("city"), 80).lower()
+        for k, col in (("latitude", "latitude"), ("longitude", "longitude")):
+            if k in data:
+                updates[col] = _guide_float(data.get(k))
+        if "foundedYear" in data:
+            updates["founded_year"] = _guide_int(data.get("foundedYear"), 0, lo=0, hi=2100)
+        if "employmentTypes" in data:
+            updates["employment_types"] = _guide_csv(data["employmentTypes"])
+        if "tags" in data:
+            updates["tags"] = _guide_csv(data["tags"])
+        for k, col in (("averageSalaryMin", "average_salary_min"), ("averageSalaryMax", "average_salary_max")):
+            if k in data:
+                updates[col] = _guide_int(data.get(k), 0, lo=0)
+        if "isFeatured" in data:
+            updates["is_featured"] = 1 if data["isFeatured"] else 0
+        if updates.get("company_size") and "size" not in updates:
+            updates["size"] = updates["company_size"]
+        if "dataQualityScore" in data:
+            updates["data_quality_score"] = _guide_int(data.get("dataQualityScore"), 0, lo=0, hi=100)
+        elif updates:
+            merged = dict(conn.execute("SELECT * FROM guide_companies WHERE id = ?", (company_id,)).fetchone())
+            merged.update(updates)
+            updates["data_quality_score"] = _guide_company_quality(merged)
+        self._guide_apply_update(conn, "guide_companies", company_id, updates)
+        self.send_json({"status": "ok", "id": company_id})
+
+    def api_admin_guide_delete_company(self, conn: sqlite3.Connection, company_id: str) -> None:
+        self.require_admin(conn)
+        conn.execute("UPDATE guide_companies SET status = 'hidden', updated_at = ? WHERE id = ?", (now_iso(), company_id))
+        self.send_json({"status": "ok"})
+
+    def api_admin_guide_import_companies(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        rows = data.get("items")
+        if not isinstance(rows, list):
+            csv_text = str(data.get("csv") or data.get("content") or "")
+            rows = list(csv.DictReader(io.StringIO(csv_text))) if csv_text.strip() else []
+        created: list[dict[str, str]] = []
+        errors: list[str] = []
+        for raw in rows:
+            try:
+                cid, slug = self._guide_create_company_row(conn, dict(raw), default_status="needs_review")
+                created.append({"id": cid, "slug": slug})
+            except Exception as exc:
+                errors.append(str(exc))
+        self.send_json({"status": "ok", "created": created, "errors": errors}, 201)
+
+    def api_admin_guide_create_company_position(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        company = self._guide_lookup_company(conn, str(data.get("companyId") or data.get("company_id") or "").strip())
+        title = _news_clean_text(data.get("positionTitle") or data.get("position_title"), 200)
+        if not title:
+            raise APIError("岗位标题不能为空", 400, "empty_position_title")
+        now = now_iso()
+        pid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_company_positions (id, company_id, position_title, position_title_jp, position_category, "
+            "employment_type, city, remote_type, salary_min, salary_max, currency, japanese_level_required, english_level_required, "
+            "visa_support, description, requirements, source_url, verification_status, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (pid, company["id"], title, _news_clean_text(data.get("positionTitleJp") or data.get("position_title_jp"), 200),
+             _news_clean_text(data.get("positionCategory") or data.get("position_category"), 80) or "other",
+             _news_clean_text(data.get("employmentType") or data.get("employment_type"), 80),
+             _news_clean_text(data.get("city"), 80).lower(), _news_clean_text(data.get("remoteType") or data.get("remote_type"), 80),
+             _guide_int(data.get("salaryMin") or data.get("salary_min"), 0, lo=0),
+             _guide_int(data.get("salaryMax") or data.get("salary_max"), 0, lo=0),
+             _news_clean_text(data.get("currency"), 12) or "JPY",
+             _news_clean_text(data.get("japaneseLevelRequired") or data.get("japanese_level_required"), 40) or "unknown",
+             _news_clean_text(data.get("englishLevelRequired") or data.get("english_level_required"), 40) or "unknown",
+             _news_clean_text(data.get("visaSupport") or data.get("visa_support"), 40) or "unknown",
+             str(data.get("description") or ""), str(data.get("requirements") or ""),
+             str(data.get("sourceUrl") or data.get("source_url") or ""),
+             _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+             _news_clean_text(data.get("status"), 40) or "needs_review", now, now),
+        )
+        self.send_json({"status": "ok", "id": pid}, 201)
+
+    def api_admin_guide_update_company_position(self, conn: sqlite3.Connection, position_id: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT id FROM guide_company_positions WHERE id = ?", (position_id,)).fetchone():
+            raise APIError("岗位不存在", 404, "guide_company_position_not_found")
+        data = self.read_json()
+        field_map = {
+            "positionTitle": "position_title", "positionTitleJp": "position_title_jp", "positionCategory": "position_category",
+            "employmentType": "employment_type", "city": "city", "remoteType": "remote_type", "currency": "currency",
+            "japaneseLevelRequired": "japanese_level_required", "englishLevelRequired": "english_level_required",
+            "visaSupport": "visa_support", "description": "description", "requirements": "requirements",
+            "sourceUrl": "source_url", "verificationStatus": "verification_status", "status": "status",
+        }
+        updates = {col: str(data[k] or "") for k, col in field_map.items() if k in data}
+        for k, col in (("salaryMin", "salary_min"), ("salaryMax", "salary_max")):
+            if k in data:
+                updates[col] = _guide_int(data.get(k), 0, lo=0)
+        self._guide_apply_update(conn, "guide_company_positions", position_id, updates)
+        self.send_json({"status": "ok", "id": position_id})
+
+    def api_admin_guide_review_action(self, conn: sqlite3.Connection, kind: str, review_id: str, action: str) -> None:
+        self.require_admin(conn)
+        table = "guide_interview_reviews" if kind == "interview" else "guide_company_reviews"
+        row = conn.execute(f"SELECT id, company_id FROM {table} WHERE id = ?", (review_id,)).fetchone()
+        if not row:
+            raise APIError("评论不存在", 404, "guide_review_not_found")
+        new_status = {"approve": "published", "reject": "rejected", "hide": "hidden"}.get(action)
+        if not new_status:
+            raise APIError("未知操作", 400, "invalid_action")
+        conn.execute(f"UPDATE {table} SET status = ?, updated_at = ? WHERE id = ?", (new_status, now_iso(), review_id))
+        # Keep the denormalised review_count on the company in sync.
+        approved = conn.execute(
+            "SELECT (SELECT COUNT(*) FROM guide_company_reviews WHERE company_id = ? AND status IN ('approved','published')) + "
+            "(SELECT COUNT(*) FROM guide_interview_reviews WHERE company_id = ? AND status IN ('approved','published')) AS c",
+            (row["company_id"], row["company_id"])).fetchone()["c"]
+        interview_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_interview_reviews WHERE company_id = ? AND status IN ('approved','published')",
+            (row["company_id"],)).fetchone()["c"]
+        conn.execute("UPDATE guide_companies SET review_count = ?, updated_at = ? WHERE id = ?",
+                     (int(approved), now_iso(), row["company_id"]))
+        conn.execute("UPDATE guide_companies SET interview_review_count = ?, updated_at = ? WHERE id = ?",
+                     (int(interview_count), now_iso(), row["company_id"]))
+        self.send_json({"status": "ok", "id": review_id, "reviewStatus": new_status})
+
+    def api_admin_guide_update_correction(self, conn: sqlite3.Connection, correction_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_correction_reports WHERE id = ?", (correction_id,)).fetchone()
+        if not row:
+            raise APIError("纠错记录不存在", 404, "guide_correction_not_found")
+        data = self.read_json()
+        status = _news_clean_text(data.get("status"), 40)
+        if status not in {"pending", "reviewed", "applied", "rejected"}:
+            raise APIError("状态不正确", 400, "invalid_correction_status")
+        conn.execute("UPDATE guide_correction_reports SET status = ?, updated_at = ? WHERE id = ?", (status, now_iso(), correction_id))
+        self.send_json({"status": "ok", "id": correction_id, "correctionStatus": status})
+
+    def api_admin_guide_upload(self, conn: sqlite3.Connection) -> None:
+        # Admin-only alias for the existing media upload pipeline. Keeping the
+        # route under /api/admin/guide makes the Guide management API complete
+        # without duplicating multipart/base64 parsing or media persistence.
+        self.require_admin(conn)
+        return self.api_upload_media(conn)
+
     # ---- HTTP verbs ----
 
     def do_OPTIONS(self) -> None:
@@ -8046,19 +13276,21 @@ class Handler(BaseHTTPRequestHandler):
         status_code = 200
 
         # Cheap health endpoints don't go through the DB lock or rate limits.
-        if path == "/healthz" and method == "GET":
+        # `/api/health` is an alias of `/healthz` for load balancers / uptime
+        # checks that expect the API prefix.
+        if path in ("/healthz", "/api/health") and method == "GET":
             self.send_json({"ok": True, "service": "machi-backend", "ts": now_iso()})
-            ACCESS_LOG.info('%s "GET /healthz" 200 ip=%s', self._request_id, ip)
+            ACCESS_LOG.info('%s "GET %s" 200 ip=%s', self._request_id, path, ip)
             return
-        if path == "/readyz" and method == "GET":
+        if path in ("/readyz", "/api/health/ready") and method == "GET":
             try:
                 with db() as conn:
                     conn.execute("SELECT 1").fetchone()
                 self.send_json({"ready": True})
-                ACCESS_LOG.info('%s "GET /readyz" 200 ip=%s', self._request_id, ip)
+                ACCESS_LOG.info('%s "GET %s" 200 ip=%s', self._request_id, path, ip)
             except Exception as exc:
                 self.send_error_json(f"db: {exc}", 503, "not_ready")
-                ACCESS_LOG.warning('%s "GET /readyz" 503 ip=%s err=%s', self._request_id, ip, exc)
+                ACCESS_LOG.warning('%s "GET %s" 503 ip=%s err=%s', self._request_id, path, ip, exc)
             return
 
         # Rate limit before doing any real work.
@@ -8389,6 +13621,188 @@ class Handler(BaseHTTPRequestHandler):
             if rest == "comments" and method == "POST":
                 return self.api_news_create_comment(conn, news_id)
 
+        # Machi Guide / 日本指南 — public + auth (replaces the old crawler 资讯 surface)
+        if path == "/api/guide/home" and method == "GET":
+            return self.api_guide_home(conn, query)
+        if path == "/api/guide/categories" and method == "GET":
+            return self.api_guide_categories(conn, query)
+        if path == "/api/guide/member-resources" and method == "GET":
+            return self.api_guide_member_resources(conn, query)
+        if path == "/api/guide/schools" and method == "GET":
+            return self.api_guide_schools(conn, query)
+        if path.startswith("/api/guide/schools/"):
+            parts = path[len("/api/guide/schools/"):].split("/")
+            school_id = unquote(parts[0])
+            tail = "/".join(parts[1:])
+            if tail == "programs" and method == "GET":
+                return self.api_guide_school_programs(conn, school_id, query)
+            if tail == "admissions" and method == "GET":
+                return self.api_guide_school_admissions(conn, school_id, query)
+            if tail == "save" and method == "POST":
+                return self.api_guide_save_school(conn, school_id, True)
+            if tail == "save" and method == "DELETE":
+                return self.api_guide_save_school(conn, school_id, False)
+            if not tail and method == "GET":
+                return self.api_guide_school_detail(conn, school_id, query)
+        if path == "/api/guide/articles" and method == "GET":
+            return self.api_guide_articles(conn, query)
+        if path.startswith("/api/guide/articles/") and method == "GET":
+            return self.api_guide_article_detail(conn, unquote(path[len("/api/guide/articles/"):]), query)
+        if path == "/api/guide/products" and method == "GET":
+            return self.api_guide_products(conn, query)
+        if path.startswith("/api/guide/products/"):
+            parts = path[len("/api/guide/products/"):].split("/")
+            product_id = unquote(parts[0])
+            tail = "/".join(parts[1:])
+            if not tail and method == "GET":
+                return self.api_guide_product_detail(conn, product_id, query)
+            if tail == "purchase" and method == "POST":
+                return self.api_guide_purchase_product(conn, product_id)
+        if path == "/api/guide/companies" and method == "GET":
+            return self.api_guide_companies(conn, query)
+        if path.startswith("/api/guide/companies/") and method == "GET":
+            parts = path[len("/api/guide/companies/"):].split("/")
+            company_id = unquote(parts[0])
+            tail = "/".join(parts[1:])
+            if tail == "positions":
+                return self.api_guide_company_positions(conn, company_id, query)
+            if tail == "reviews":
+                return self.api_guide_company_reviews(conn, company_id, query)
+            if tail == "interview-reviews":
+                return self.api_guide_company_review_bucket(conn, company_id, "interview", query)
+            if tail == "company-reviews":
+                return self.api_guide_company_review_bucket(conn, company_id, "company", query)
+            if not tail:
+                return self.api_guide_company_detail(conn, company_id, query)
+        if path.startswith("/api/guide/companies/"):
+            parts = path[len("/api/guide/companies/"):].split("/")
+            company_id = unquote(parts[0])
+            tail = "/".join(parts[1:])
+            if tail == "save" and method == "POST":
+                return self.api_guide_save_company(conn, company_id, True)
+            if tail == "save" and method == "DELETE":
+                return self.api_guide_save_company(conn, company_id, False)
+        if path == "/api/guide/interview-reviews" and method == "GET":
+            return self.api_guide_interview_reviews(conn, query)
+        if path == "/api/guide/interview-reviews" and method == "POST":
+            return self.api_guide_create_interview_review(conn)
+        if path == "/api/guide/company-reviews" and method == "POST":
+            return self.api_guide_create_company_review(conn)
+        if path == "/api/guide/service-requests" and method == "POST":
+            return self.api_guide_create_service_request(conn)
+        if path == "/api/guide/corrections" and method == "POST":
+            return self.api_guide_create_correction(conn)
+
+        # Machi Guide — admin write + moderation (API only this round; UI later)
+        if path == "/api/admin/guide/uploads" and method == "POST":
+            return self.api_admin_guide_upload(conn)
+        if path == "/api/admin/guide/products" and method == "GET":
+            return self.api_admin_guide_products(conn, query)
+        if path == "/api/admin/guide/orders" and method == "GET":
+            return self.api_admin_guide_orders(conn, query)
+        if path.startswith("/api/admin/guide/orders/"):
+            order_id = unquote(path[len("/api/admin/guide/orders/"):])
+            if method == "PATCH":
+                return self.api_admin_guide_update_order(conn, order_id)
+        if path == "/api/admin/guide/service-requests" and method == "GET":
+            return self.api_admin_guide_service_requests(conn, query)
+        if path.startswith("/api/admin/guide/service-requests/"):
+            request_id = unquote(path[len("/api/admin/guide/service-requests/"):])
+            if method == "PATCH":
+                return self.api_admin_guide_update_service_request(conn, request_id)
+        if path == "/api/admin/guide/member-resources" and method == "GET":
+            next_query = dict(query)
+            next_query["isMemberIncluded"] = "1"
+            next_query["isService"] = "0"
+            return self.api_admin_guide_products(conn, next_query)
+        if path == "/api/admin/guide/schools" and method == "GET":
+            return self.api_admin_guide_schools(conn, query)
+        if path == "/api/admin/guide/companies" and method == "GET":
+            return self.api_admin_guide_companies(conn, query)
+        if path == "/api/admin/guide/school-programs" and method == "GET":
+            return self.api_admin_guide_school_programs(conn, query)
+        if path == "/api/admin/guide/school-admissions" and method == "GET":
+            return self.api_admin_guide_school_admissions(conn, query)
+        if path == "/api/admin/guide/company-positions" and method == "GET":
+            return self.api_admin_guide_company_positions(conn, query)
+        if path == "/api/admin/guide/interview-reviews" and method == "GET":
+            return self.api_admin_guide_reviews(conn, "interview", query)
+        if path == "/api/admin/guide/company-reviews" and method == "GET":
+            return self.api_admin_guide_reviews(conn, "company", query)
+        if path == "/api/admin/guide/corrections" and method == "GET":
+            return self.api_admin_guide_corrections(conn, query)
+        if path == "/api/admin/guide/articles" and method == "POST":
+            return self.api_admin_guide_create_article(conn)
+        if path.startswith("/api/admin/guide/articles/"):
+            article_id = unquote(path[len("/api/admin/guide/articles/"):])
+            if method == "PATCH":
+                return self.api_admin_guide_update_article(conn, article_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_article(conn, article_id)
+        if path == "/api/admin/guide/products" and method == "POST":
+            return self.api_admin_guide_create_product(conn)
+        if path.startswith("/api/admin/guide/products/"):
+            product_id = unquote(path[len("/api/admin/guide/products/"):])
+            if method == "GET":
+                return self.api_admin_guide_product_detail(conn, product_id)
+            if method == "PATCH":
+                return self.api_admin_guide_update_product(conn, product_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_product(conn, product_id)
+        if path == "/api/admin/guide/schools" and method == "POST":
+            return self.api_admin_guide_create_school(conn)
+        if path == "/api/admin/guide/schools/import" and method == "POST":
+            return self.api_admin_guide_import_schools(conn)
+        if path.startswith("/api/admin/guide/schools/"):
+            school_id = unquote(path[len("/api/admin/guide/schools/"):])
+            if method == "GET" and school_id != "import":
+                return self.api_admin_guide_school_detail(conn, school_id)
+            if method == "PATCH":
+                return self.api_admin_guide_update_school(conn, school_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_school(conn, school_id)
+        if path == "/api/admin/guide/school-programs" and method == "POST":
+            return self.api_admin_guide_create_school_program(conn)
+        if path.startswith("/api/admin/guide/school-programs/"):
+            program_id = unquote(path[len("/api/admin/guide/school-programs/"):])
+            if method == "PATCH":
+                return self.api_admin_guide_update_school_program(conn, program_id)
+        if path == "/api/admin/guide/school-admissions" and method == "POST":
+            return self.api_admin_guide_create_school_admission(conn)
+        if path.startswith("/api/admin/guide/school-admissions/"):
+            admission_id = unquote(path[len("/api/admin/guide/school-admissions/"):])
+            if method == "PATCH":
+                return self.api_admin_guide_update_school_admission(conn, admission_id)
+        if path == "/api/admin/guide/companies" and method == "POST":
+            return self.api_admin_guide_create_company(conn)
+        if path == "/api/admin/guide/companies/import" and method == "POST":
+            return self.api_admin_guide_import_companies(conn)
+        if path.startswith("/api/admin/guide/companies/"):
+            company_id = unquote(path[len("/api/admin/guide/companies/"):])
+            if method == "GET" and company_id != "import":
+                return self.api_admin_guide_company_detail(conn, company_id)
+            if method == "PATCH":
+                return self.api_admin_guide_update_company(conn, company_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_company(conn, company_id)
+        if path == "/api/admin/guide/company-positions" and method == "POST":
+            return self.api_admin_guide_create_company_position(conn)
+        if path.startswith("/api/admin/guide/company-positions/"):
+            position_id = unquote(path[len("/api/admin/guide/company-positions/"):])
+            if method == "PATCH":
+                return self.api_admin_guide_update_company_position(conn, position_id)
+        if path.startswith("/api/admin/guide/company-reviews/") and method in ("PATCH", "POST"):
+            parts = path[len("/api/admin/guide/company-reviews/"):].split("/")
+            if len(parts) == 2:
+                return self.api_admin_guide_review_action(conn, "company", unquote(parts[0]), parts[1])
+        if path.startswith("/api/admin/guide/interview-reviews/") and method in ("PATCH", "POST"):
+            parts = path[len("/api/admin/guide/interview-reviews/"):].split("/")
+            if len(parts) == 2:
+                return self.api_admin_guide_review_action(conn, "interview", unquote(parts[0]), parts[1])
+        if path.startswith("/api/admin/guide/corrections/") and method == "PATCH":
+            correction_id = unquote(path[len("/api/admin/guide/corrections/"):])
+            return self.api_admin_guide_update_correction(conn, correction_id)
+
         # blocks & devices
         if path == "/api/blocks" and method == "GET":
             return self.api_blocks(conn)
@@ -8615,12 +14029,18 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_membership_orders(conn, query)
         if path == "/api/membership/insights" and method == "GET":
             return self.api_membership_insights(conn)
+        if path == "/api/membership/create-checkout" and method == "POST":
+            return self.api_membership_create_checkout(conn)
         if path == "/api/payments/create-order" and method == "POST":
             return self.api_create_payment_order(conn)
         if path == "/api/payments/order-status" and method == "GET":
             return self.api_order_status(conn, query)
         if path == "/api/payments/stripe/confirm" and method == "POST":
             return self.api_stripe_confirm(conn)
+        if path == "/api/payments/stripe/guide-checkout" and method == "POST":
+            return self.api_guide_stripe_checkout(conn)
+        if path == "/api/payments/stripe/guide-confirm" and method == "POST":
+            return self.api_guide_stripe_confirm(conn)
         if path == "/api/payments/stripe/reconcile" and method == "POST":
             return self.api_stripe_reconcile(conn)
         if path == "/api/payments/webhook/wechat" and method == "POST":
@@ -8639,6 +14059,14 @@ class Handler(BaseHTTPRequestHandler):
         # admin: membership management
         if path == "/api/admin/memberships" and method == "GET":
             return self.api_admin_memberships(conn, query)
+        if path == "/api/admin/membership/plans" and method == "GET":
+            return self.api_admin_membership_plans(conn, query)
+        if path == "/api/admin/membership/plans" and method == "POST":
+            return self.api_admin_create_membership_plan(conn)
+        if path.startswith("/api/admin/membership/plans/") and method in ("PATCH", "PUT"):
+            return self.api_admin_update_membership_plan(conn, unquote(path[len("/api/admin/membership/plans/"):]))
+        if path == "/api/admin/pricing" and method == "GET":
+            return self.api_admin_pricing(conn, query)
         if path == "/api/admin/memberships/grant" and method == "POST":
             return self.api_admin_grant_membership(conn)
         if path == "/api/admin/memberships/cancel" and method == "POST":
@@ -8650,36 +14078,39 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- membership + payments ----
 
-    def _membership_benefits_payload(self) -> list[dict[str, str]]:
-        return [
-            {"key": "verified_badge", "title": "Machi 认证标识", "description": "个人主页和内容卡片展示 Machi 自有认证会员标识。"},
-            {"key": "trusted_publish", "title": "高信任内容发布", "description": "可发布招聘、租房、本地服务、活动推广等高信任内容类型。"},
-            {"key": "priority_review", "title": "优先审核", "description": "会员内容进入更高优先级的审核与处理队列。"},
-            {"key": "light_boost", "title": "轻量曝光提升", "description": "合规内容在本地推荐中获得温和曝光加成。"},
-            {"key": "insights", "title": "基础数据洞察", "description": "查看自己内容的浏览、互动、收藏、评论等基础统计。"},
-            {"key": "higher_quota", "title": "更高发帖额度", "description": "每日发布额度和收藏容量高于普通账号。"},
-            {"key": "exclusive", "title": "会员专属内容", "description": "访问编辑部整理的城市指南、租房避坑和本地生活精选。"},
-            {"key": "sync", "title": "Web / iOS 状态同步", "description": "会员状态写入同一套 user_memberships，Web 与 iOS 刷新后保持一致。"},
-        ]
+    def _membership_benefits_payload(self, conn: sqlite3.Connection, plan_key: str | None = None) -> list[dict[str, Any]]:
+        plan = get_plan(conn, plan_key or MEMBERSHIP_PLAN_KEY)
+        if not plan:
+            plans = active_membership_plans(conn)
+            plan = plans[0] if plans else None
+        return _plan_benefits(plan)
 
     def api_membership_plan(self, conn: sqlite3.Connection) -> None:
         """Public plan info (price + names) for the membership page. No
         auth required so the upsell can render for logged-out visitors."""
-        plan = get_plan(conn, MEMBERSHIP_PLAN_KEY)
-        plan_payload = serialize_plan(plan) if plan else None
-        self.send_json({
-            "plan": plan_payload,
-            "plans": [plan_payload] if plan_payload else [],
-            "items": [plan_payload] if plan_payload else [],
+        # Global, identical for every visitor and changes only when an admin
+        # edits a plan — cache briefly so the membership page (web + iOS both
+        # hit this on load) doesn't re-query per request under load.
+        cached = _cache_get("membership_plan")
+        if cached is not None:
+            return self.send_json(cached)
+        plans = [serialize_plan(p) for p in active_membership_plans(conn)]
+        default = next((p for p in plans if p.get("isDefault")), plans[0] if plans else None)
+        payload = {
+            "plan": default,
+            "plans": plans,
+            "items": plans,
             "requires_membership_content_types": sorted(REQUIRES_VERIFIED_MEMBERSHIP),
-            "apple_product_id": APPLE_IAP_PRODUCT_ID,
+            "apple_product_id": (default or {}).get("appleProductId") or (default or {}).get("iosIapProductId") or APPLE_IAP_PRODUCT_ID,
             "available_providers": available_payment_providers(),
-        })
+        }
+        _cache_put("membership_plan", payload, 60)
+        self.send_json(payload)
 
     def api_membership_benefits(self, conn: sqlite3.Connection) -> None:
         plan = get_plan(conn, MEMBERSHIP_PLAN_KEY)
         self.send_json({
-            "benefits": self._membership_benefits_payload(),
+            "benefits": self._membership_benefits_payload(conn),
             "plan": serialize_plan(plan) if plan else None,
             "disclaimer": "认证会员表示该账号已开通 Machi 认证权益，不代表 Machi 对其发布内容作出担保。",
             "requires_membership_content_types": sorted(REQUIRES_VERIFIED_MEMBERSHIP),
@@ -8817,6 +14248,29 @@ class Handler(BaseHTTPRequestHandler):
             out.update(build_alipay_payment(conn, order))
         self.send_json(out)
 
+    def api_membership_create_checkout(self, conn: sqlite3.Connection) -> None:
+        """Stripe-only Web membership subscription checkout.
+        Request: {plan_key}. Response: {checkout_url}. iOS must not use this
+        endpoint for membership; it verifies Apple IAP via /apple/verify."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        plan_key = (data.get("planKey") or data.get("plan_key") or MEMBERSHIP_PLAN_KEY).strip()
+        if not get_plan(conn, plan_key):
+            raise APIError("会员计划不存在", 404, "plan_not_found")
+        order = create_payment_order(conn, user["id"], plan_key, "stripe", "web")
+        payment = build_stripe_payment(conn, order)
+        self.send_json({
+            "checkout_url": payment.get("pay_url", ""),
+            "checkoutUrl": payment.get("pay_url", ""),
+            "order_no": order["order_no"],
+            "orderNo": order["order_no"],
+            "plan_key": plan_key,
+            "planKey": plan_key,
+            "amount": round(int(order["amount_cents"]) / 100, 2),
+            "currency": order["currency"],
+            **({"mock": True} if payment.get("mock") else {}),
+        })
+
     def api_order_status(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         user = self.require_user(conn)
         order_no = (query.get("orderNo") or query.get("order_no") or "").strip()
@@ -8867,7 +14321,8 @@ class Handler(BaseHTTPRequestHandler):
         if str(session.get("payment_status") or "") == "paid":
             try:
                 mark_order_paid(conn, order_no, provider_trade_no=str(session.get("payment_intent") or ""),
-                                expected_provider="stripe", paid_amount_cents=int(session.get("amount_total") or 0))
+                                expected_provider="stripe", paid_amount_cents=int(session.get("amount_total") or 0),
+                                provider_subscription_id=str(session.get("subscription") or ""))
             except APIError as exc:
                 ACCESS_LOG.warning("stripe confirm settle rejected order=%s code=%s", order_no, exc.code)
         status = get_user_membership_status(conn, user["id"])
@@ -8899,7 +14354,8 @@ class Handler(BaseHTTPRequestHandler):
                 if ref in pending and str(sess.get("payment_status") or "") == "paid":
                     try:
                         mark_order_paid(conn, ref, provider_trade_no=str(sess.get("payment_intent") or ""),
-                                        expected_provider="stripe", paid_amount_cents=int(sess.get("amount_total") or 0))
+                                        expected_provider="stripe", paid_amount_cents=int(sess.get("amount_total") or 0),
+                                        provider_subscription_id=str(sess.get("subscription") or ""))
                     except APIError as exc:
                         ACCESS_LOG.warning("stripe reconcile settle rejected order=%s code=%s", ref, exc.code)
         status = get_user_membership_status(conn, user["id"])
@@ -8980,14 +14436,68 @@ class Handler(BaseHTTPRequestHandler):
             order_no = str(obj.get("client_reference_id") or (obj.get("metadata") or {}).get("order_no") or "")
             amount_total = int(obj.get("amount_total") or 0)
             payment_intent = str(obj.get("payment_intent") or "")
+            subscription_id = str(obj.get("subscription") or "")
             first = record_payment_webhook(conn, "stripe", event_type, event_id, order_no,
                                            json.dumps(event, ensure_ascii=False), True)
             if first and order_no and str(obj.get("payment_status") or "") == "paid":
-                try:
-                    mark_order_paid(conn, order_no, provider_trade_no=payment_intent,
-                                    expected_provider="stripe", paid_amount_cents=amount_total)
-                except APIError as exc:
-                    ACCESS_LOG.warning("stripe webhook settle rejected order=%s code=%s", order_no, exc.code)
+                if order_no.startswith("GP"):
+                    # Machi Guide product order (digital resource / paid service).
+                    settle_guide_order(conn, order_no, payment_intent, amount_total)
+                else:
+                    try:
+                        mark_order_paid(conn, order_no, provider_trade_no=payment_intent,
+                                        expected_provider="stripe", paid_amount_cents=amount_total,
+                                        provider_subscription_id=subscription_id)
+                    except APIError as exc:
+                        ACCESS_LOG.warning("stripe webhook settle rejected order=%s code=%s", order_no, exc.code)
+        elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
+            sub_id = str(obj.get("id") or "")
+            status = str(obj.get("status") or "")
+            cancel_at_period_end = 1 if obj.get("cancel_at_period_end") else 0
+            period_end = obj.get("current_period_end")
+            period_end_iso = datetime.fromtimestamp(int(period_end), timezone.utc).isoformat() if period_end else ""
+            first = record_payment_webhook(conn, "stripe", event_type, event_id, sub_id,
+                                           json.dumps(event, ensure_ascii=False), True)
+            if first and sub_id:
+                membership = conn.execute(
+                    "SELECT * FROM user_memberships WHERE provider_subscription_id = ? ORDER BY updated_at DESC LIMIT 1",
+                    (sub_id,),
+                ).fetchone()
+                if membership:
+                    mapped = {
+                        "active": "active",
+                        "trialing": "trialing",
+                        "past_due": "past_due",
+                        "incomplete": "incomplete",
+                        "canceled": "cancelled",
+                        "unpaid": "past_due",
+                    }.get(status, status or "active")
+                    if event_type == "customer.subscription.deleted":
+                        mapped = "cancelled"
+                    updates = {
+                        "status": mapped,
+                        "cancel_at_period_end": cancel_at_period_end,
+                        "updated_at": now_iso(),
+                    }
+                    if period_end_iso:
+                        updates["current_period_end"] = period_end_iso
+                        updates["expires_at"] = period_end_iso
+                    cols = ", ".join(f"{k} = ?" for k in updates)
+                    conn.execute(f"UPDATE user_memberships SET {cols} WHERE id = ?", [*updates.values(), membership["id"]])
+                    sync_user_membership_cache(conn, membership["user_id"])
+        elif event_type in {"invoice.paid", "invoice.payment_failed"}:
+            sub_id = str(obj.get("subscription") or "")
+            first = record_payment_webhook(conn, "stripe", event_type, event_id, sub_id,
+                                           json.dumps(event, ensure_ascii=False), True)
+            if first and sub_id and event_type == "invoice.payment_failed":
+                membership = conn.execute(
+                    "SELECT * FROM user_memberships WHERE provider_subscription_id = ? ORDER BY updated_at DESC LIMIT 1",
+                    (sub_id,),
+                ).fetchone()
+                if membership:
+                    conn.execute("UPDATE user_memberships SET status = 'past_due', updated_at = ? WHERE id = ?",
+                                 (now_iso(), membership["id"]))
+                    sync_user_membership_cache(conn, membership["user_id"])
         else:
             # Record-but-ignore other event types (still 2xx so Stripe stops retrying).
             record_payment_webhook(conn, "stripe", event_type, event_id, "", "", True)
@@ -9002,6 +14512,8 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         signed = (data.get("signedTransaction") or data.get("signed_transaction") or "").strip()
         product_id = (data.get("productId") or data.get("product_id") or APPLE_IAP_PRODUCT_ID).strip()
+        plan = get_plan_by_apple_product(conn, product_id) or get_plan(conn, MEMBERSHIP_PLAN_KEY)
+        plan_key = plan["plan_key"] if plan else MEMBERSHIP_PLAN_KEY
         txn_id = str(data.get("transactionId") or data.get("transaction_id") or "")
         orig_id = str(data.get("originalTransactionId") or data.get("original_transaction_id") or "")
         if not signed:
@@ -9017,14 +14529,20 @@ class Handler(BaseHTTPRequestHandler):
             (dedup_key,),
         ).fetchone()
         if not (existing and existing["status"] == "paid"):
-            order = create_payment_order(conn, user["id"], MEMBERSHIP_PLAN_KEY, "apple_iap", "ios")
+            order = create_payment_order(conn, user["id"], plan_key, "apple_iap", "ios")
             mark_order_paid(conn, order["order_no"], provider_trade_no=dedup_key,
-                            provider_user_id=orig_id, expected_provider="apple_iap")
+                            provider_user_id=orig_id, expected_provider="apple_iap",
+                            provider_price_id=product_id)
         status = get_user_membership_status(conn, user["id"])
         self.send_json({
             "membershipActive": status["is_active"],
             "currentPeriodEnd": status["current_period_end"],
             "status": status["status"],
+            "membership_status": status["status"],
+            "plan_key": status["plan_key"] or plan_key,
+            "planKey": status["plan_key"] or plan_key,
+            "expires_at": status["current_period_end"],
+            "expiresAt": status["current_period_end"],
         })
 
     def api_mock_confirm(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -9130,6 +14648,165 @@ class Handler(BaseHTTPRequestHandler):
         ACCESS_LOG.info("admin %s canceled membership for %s immediate=%s", admin["handle"], target["handle"], immediate)
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (target["id"],)).fetchone())
         self.send_json({"membership": status, "user": serialize_user(fresh)})
+
+    def _membership_plan_payload(self, data: dict[str, Any], *, create: bool = False) -> dict[str, Any]:
+        updates: dict[str, Any] = {}
+        text_map = {
+            "planKey": "plan_key", "plan_key": "plan_key", "name": "name", "subtitle": "subtitle",
+            "description": "description", "billingPeriod": "billing_period", "billing_period": "billing_period",
+            "billingCycle": "billing_period", "billing_cycle": "billing_period", "currency": "currency",
+            "priceLabel": "price_label", "price_label": "price_label", "discountLabel": "discount_label",
+            "discount_label": "discount_label", "stripeProductId": "stripe_product_id",
+            "stripe_product_id": "stripe_product_id", "stripePriceId": "stripe_price_id",
+            "stripe_price_id": "stripe_price_id", "iosIapProductId": "ios_iap_product_id",
+            "ios_iap_product_id": "ios_iap_product_id", "appleProductId": "apple_product_id",
+            "apple_product_id": "apple_product_id",
+        }
+        for key, col in text_map.items():
+            if key in data:
+                updates[col] = _news_clean_text(data.get(key), 4000 if col == "description" else 200)
+        if "name" in updates:
+            updates.setdefault("name_zh", updates["name"])
+        for key, col in (("nameZh", "name_zh"), ("name_zh", "name_zh"), ("nameEn", "name_en"),
+                         ("name_en", "name_en"), ("nameJa", "name_ja"), ("name_ja", "name_ja")):
+            if key in data:
+                updates[col] = _news_clean_text(data.get(key), 200)
+        if "currency" in updates:
+            updates["currency"] = normalize_currency(updates["currency"])
+        if "billing_period" in updates:
+            updates["billing_cycle"] = updates["billing_period"]
+        if "price" in data:
+            price = max(0.0, float(data.get("price") or 0))
+            updates["price"] = price
+            updates["amount_cents"] = int(round(price * 100))
+        if "amount" in data:
+            price = max(0.0, float(data.get("amount") or 0))
+            updates["price"] = price
+            updates["amount_cents"] = int(round(price * 100))
+        if "amountCents" in data or "amount_cents" in data:
+            cents = max(0, int(data.get("amountCents") or data.get("amount_cents") or 0))
+            updates["amount_cents"] = cents
+            updates.setdefault("price", round(cents / 100, 2))
+        if "originalPrice" in data or "original_price" in data:
+            updates["original_price"] = max(0.0, float(data.get("originalPrice") or data.get("original_price") or 0))
+        for key, col in (("intervalCount", "interval_count"), ("interval_count", "interval_count"),
+                         ("sortOrder", "sort_order"), ("sort_order", "sort_order")):
+            if key in data:
+                updates[col] = int(data.get(key) or 0)
+        for key, col in (("isActive", "is_active"), ("is_active", "is_active"),
+                         ("isRecommended", "is_recommended"), ("is_recommended", "is_recommended"),
+                         ("isDefault", "is_default"), ("is_default", "is_default"),
+                         ("isFeatured", "is_featured"), ("is_featured", "is_featured")):
+            if key in data:
+                updates[col] = 1 if data.get(key) else 0
+        if "benefits" in data:
+            raw = data.get("benefits")
+            if not isinstance(raw, list):
+                raise APIError("权益必须是数组", 400, "invalid_benefits")
+            clean = []
+            for idx, item in enumerate(raw):
+                if not isinstance(item, dict):
+                    continue
+                title = _news_clean_text(item.get("benefit_title") or item.get("title"), 160)
+                if not title:
+                    continue
+                clean.append({
+                    "key": _news_clean_text(item.get("key"), 80) or f"benefit_{idx + 1}",
+                    "benefit_title": title,
+                    "title": title,
+                    "benefit_description": _news_clean_text(item.get("benefit_description") or item.get("description"), 500),
+                    "description": _news_clean_text(item.get("benefit_description") or item.get("description"), 500),
+                    "benefit_icon": _news_clean_text(item.get("benefit_icon") or item.get("icon"), 80),
+                    "icon": _news_clean_text(item.get("benefit_icon") or item.get("icon"), 80),
+                    "is_enabled": bool(item.get("is_enabled", item.get("isEnabled", True))),
+                    "sort_order": int(item.get("sort_order") or item.get("sortOrder") or idx + 1),
+                })
+            updates["benefits"] = json.dumps(clean, ensure_ascii=False)
+        if create:
+            updates.setdefault("plan_key", self._guide_slugify(data.get("planKey") or data.get("plan_key") or "", fallback=f"plan-{uuid.uuid4().hex[:8]}").replace("-", "_"))
+            updates.setdefault("name", updates.get("name_zh") or "Machi 认证会员")
+            updates.setdefault("name_zh", updates["name"])
+            updates.setdefault("billing_period", "monthly")
+            updates.setdefault("billing_cycle", updates["billing_period"])
+            updates.setdefault("interval_count", 1)
+            updates.setdefault("price", 0)
+            updates.setdefault("amount_cents", int(round(float(updates["price"]) * 100)))
+            updates.setdefault("currency", "CNY")
+            updates.setdefault("price_label", "")
+            updates.setdefault("benefits", json.dumps(default_membership_benefits(), ensure_ascii=False))
+            updates.setdefault("is_active", 1)
+            updates.setdefault("sort_order", 50)
+        return updates
+
+    def api_admin_membership_plans(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        include_inactive = (query.get("includeInactive") or query.get("include_inactive") or "") in {"1", "true", "yes"}
+        where = "" if include_inactive else "WHERE is_active = 1"
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT * FROM membership_plans {where} ORDER BY sort_order ASC, created_at ASC"
+        ).fetchall()]
+        self.send_json({"items": [serialize_plan(r) for r in rows], "plans": [serialize_plan(r) for r in rows]})
+
+    def api_admin_create_membership_plan(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        row = self._membership_plan_payload(data, create=True)
+        if conn.execute("SELECT id FROM membership_plans WHERE plan_key = ?", (row["plan_key"],)).fetchone():
+            raise APIError("套餐 key 已存在", 409, "plan_key_exists")
+        now = now_iso()
+        row = {"id": str(uuid.uuid4()), **row, "created_at": now, "updated_at": now}
+        conn.execute(
+            f"INSERT INTO membership_plans ({', '.join(row.keys())}) VALUES ({', '.join(['?'] * len(row))})",
+            tuple(row.values()),
+        )
+        _cache_invalidate("membership_plan")
+        self.send_json({"status": "ok", "plan": serialize_plan(row)}, 201)
+
+    def api_admin_update_membership_plan(self, conn: sqlite3.Connection, raw_key: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM membership_plans WHERE id = ? OR plan_key = ?", (raw_key, raw_key)).fetchone()
+        if not row:
+            raise APIError("会员套餐不存在", 404, "plan_not_found")
+        data = self.read_json()
+        updates = self._membership_plan_payload(data)
+        if not updates:
+            return self.send_json({"status": "ok", "plan": serialize_plan(dict(row))})
+        updates["updated_at"] = now_iso()
+        cols = ", ".join(f"{k} = ?" for k in updates)
+        conn.execute(f"UPDATE membership_plans SET {cols} WHERE id = ?", [*updates.values(), row["id"]])
+        fresh = dict(conn.execute("SELECT * FROM membership_plans WHERE id = ?", (row["id"],)).fetchone())
+        _cache_invalidate("membership_plan")  # price/plan edits show immediately
+        self.send_json({"status": "ok", "plan": serialize_plan(fresh)})
+
+    def api_admin_pricing(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        country = _normalize_news_country(query.get("country") or "jp")
+        products = [serialize_guide_product(r, include_private=True) for r in conn.execute(
+            "SELECT * FROM guide_products WHERE country = ? ORDER BY is_service ASC, category_key, sort_order, updated_at DESC",
+            (country,),
+        ).fetchall()]
+        plans = [serialize_plan(dict(r)) for r in conn.execute(
+            "SELECT * FROM membership_plans ORDER BY sort_order ASC, created_at ASC"
+        ).fetchall()]
+        items: list[dict[str, Any]] = []
+        for p in products:
+            items.append({
+                "id": p["id"], "name": p["title"], "type": "service" if p["isService"] else "product",
+                "category": p["categoryKey"], "price": p["price"], "currency": p["currency"],
+                "priceLabel": p["priceLabel"], "memberPrice": p.get("memberPrice", 0),
+                "status": p["status"], "stripePriceId": p.get("stripePriceId", ""),
+                "iosIapProductId": p.get("iosIapProductId", ""), "updatedAt": p.get("updatedAt") or p.get("publishedAt"),
+                "raw": p,
+            })
+        for plan in plans:
+            items.append({
+                "id": plan["plan_key"], "name": plan["name"], "type": "membership_plan",
+                "category": plan["billingPeriod"], "price": plan["price"], "currency": plan["currency"],
+                "priceLabel": plan["priceLabel"], "memberPrice": 0, "status": "active" if plan["isActive"] else "inactive",
+                "stripePriceId": plan["stripePriceId"], "iosIapProductId": plan["iosIapProductId"],
+                "updatedAt": plan.get("updated_at"), "raw": plan,
+            })
+        self.send_json({"items": items, "products": products, "plans": plans, "currencies": sorted(SUPPORTED_PRICE_CURRENCIES)})
 
     def api_admin_payment_orders(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
@@ -11753,7 +17430,16 @@ class Handler(BaseHTTPRequestHandler):
 def run() -> None:
     init_db()
     start_visitor_writer()
-    start_news_crawler_scheduler()
+    # The crawler scheduler is a singleton background job (time-based, not
+    # per-request). When running multiple backend processes behind nginx for
+    # horizontal scaling, only ONE instance should run it — set
+    # KAIX_ENABLE_SCHEDULERS=0 on the extra worker processes so they don't all
+    # crawl at once (duplicate work + DB write contention). Default on, so
+    # single-instance deploys are unaffected.
+    if _env("KAIX_ENABLE_SCHEDULERS", "1") == "1":
+        start_news_crawler_scheduler()
+    else:
+        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — crawler scheduler disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")
     port = int(_env("KAIX_PORT", "8787"))
     server = ThreadingHTTPServer((host, port), Handler)

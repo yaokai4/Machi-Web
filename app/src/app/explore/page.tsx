@@ -211,7 +211,7 @@ function ExplorePageClient() {
         </Link>
       </header>
 
-      <main className="bg-slate-50/60 px-3 py-4 sm:px-4">
+      <main className="px-3 py-4 sm:px-4">
         <div className="space-y-4">
           <DiscoverShortcutGrid
             region={currentRegion}
@@ -263,11 +263,11 @@ function ExplorePageClient() {
 function ExplorePageSkeleton() {
   return (
     <AppShell requireAuth={false}>
-      <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-white/82 px-4 py-3 backdrop-blur-xl">
+      <header className="sticky top-0 z-30 kx-glass-bar px-4 py-3">
         <Skeleton className="h-7 w-24 rounded-full" />
         <Skeleton className="mt-3 h-11 w-full rounded-2xl" />
       </header>
-      <main className="bg-slate-50/60 px-3 py-4 sm:px-4">
+      <main className="px-3 py-4 sm:px-4">
         <div className="space-y-4">
           <Skeleton className="h-32 w-full rounded-3xl" />
           <Skeleton className="h-64 w-full rounded-3xl" />
@@ -505,13 +505,13 @@ function regionFromExploreParams(params: { get(name: string): string | null }): 
 
 function searchPlaceholder(cityName: string, selectedChannel?: ExploreChannelSlug) {
   switch (selectedChannel) {
-    case "rent":
+    case "housing":
       return `搜索${cityName}租房、合租、房源、区域...`;
-    case "job":
-    case "recruit":
+    case "jobs":
+    case "recruiting":
     case "referral":
       return `搜索${cityName}兼职、正社员、招聘、内推...`;
-    case "dining":
+    case "food":
       return `搜索${cityName}约饭、咖啡、探店、饭搭子...`;
     case "guide":
       return `搜索${cityName}攻略、手续、银行卡、生活经验...`;

@@ -21,7 +21,7 @@ const copyByLocale: Record<
     title: "不是信息很多，而是城市里的生活正在回应你。",
     body: "Machi 把城市生活信息、本地经验、同城社交和真实关系连接放在同一条城市脉搏里，让你在生活的回声里找到真实的人。",
     pulse: "在生活的回声里，找到真实的人。",
-    cities: [["Tokyo / Japan", "Dining · Language Exchange"], ["Osaka", "Dining · Events"], ["Los Angeles · Montreal", "Later roadmap"]],
+    cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
     echoes: [["有人发问", "新宿租房有哪些坑要避开？"], ["有人回应", "我去年住过这个区，可以分享合同注意点。"], ["有人连接", "周五涩谷拉面局，还有两个位置。"]],
   },
   en: {
@@ -29,7 +29,7 @@ const copyByLocale: Record<
     title: "Not just more information — the city starts answering back.",
     body: "Machi brings local life information, lived experience, city-based social scenes and real human connection into one city pulse.",
     pulse: "Find real people inside the echoes of city life.",
-    cities: [["Tokyo / Japan", "Dining · Language Exchange"], ["Osaka", "Dining · Events"], ["Los Angeles · Montreal", "Later roadmap"]],
+    cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
     echoes: [["Someone asks", "What should I avoid when renting in Shinjuku?"], ["Someone answers", "I lived there last year. Here is what to check in the contract."], ["Someone connects", "Friday ramen in Shibuya. Two seats left."]],
   },
   ja: {
@@ -37,7 +37,7 @@ const copyByLocale: Record<
     title: "情報が多いだけでなく、街の暮らしが返ってくる。",
     body: "Machi は地域情報、生活経験、同じ街のソーシャルシーン、リアルな人とのつながりをひとつの街の脈動として整理します。",
     pulse: "暮らしの響きの中で、本当の人に出会う。",
-    cities: [["Tokyo / Japan", "Dining · Language Exchange"], ["Osaka", "Dining · Events"], ["Los Angeles · Montreal", "Later roadmap"]],
+    cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
     echoes: [["誰かが聞く", "新宿で部屋を借りる時の注意点は？"], ["誰かが答える", "去年そのエリアに住んでいました。契約で見る点を共有できます。"], ["誰かとつながる", "金曜の渋谷ラーメン会、あと二席あります。"]],
   },
 };

@@ -4,108 +4,33 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
-  Book,
-  Briefcase,
-  CalendarDays,
   ChevronRight,
-  EyeOff,
-  FileText,
-  HelpCircle,
-  Home,
-  Megaphone,
-  MessageSquareText,
-  Newspaper,
-  ShieldAlert,
-  ShoppingBag,
   Sparkles,
-  Store,
-  Tag,
-  Users,
-  Utensils,
-  Vote,
-  Wrench,
   X,
 } from "lucide-react";
-import type { ComponentType } from "react";
-import type { ContentType } from "@/lib/types";
 import type { RegionInfo } from "@/lib/regions";
+import {
+  ALL_CHANNELS,
+  CHANNEL_GROUPS,
+  MORE_CHANNEL_SUMMARY,
+  PRIMARY_CHANNELS,
+  getChannelByKey,
+  getChannelContentTypes,
+  normalizeChannelKey,
+  type ChannelConfig,
+  type ChannelKey,
+} from "@/config/channels";
 
-export type ExploreChannelSlug =
-  | "news"
-  | "guide"
-  | "rent"
-  | "job"
-  | "secondhand"
-  | "dining"
-  | "meetup"
-  | "event"
-  | "question"
-  | "service"
-  | "recruit"
-  | "referral"
-  | "roommate"
-  | "merchant"
-  | "coupon"
-  | "warning"
-  | "poll"
-  | "long_post"
-  | "anonymous";
-
-export interface ExploreChannelSpec {
-  slug: ExploreChannelSlug;
-  title: string;
-  subtitle: string;
-  Icon: ComponentType<{ className?: string }>;
-  tone: "blue" | "emerald" | "indigo" | "violet" | "teal" | "rose" | "orange" | "fuchsia" | "slate";
-  contentTypes: ContentType[];
-}
-
-export const EXPLORE_CHANNELS: ExploreChannelSpec[] = [
-  { slug: "news", title: "新闻", subtitle: "本地快讯", Icon: Newspaper, tone: "blue", contentTypes: ["news", "local_info"] },
-  { slug: "guide", title: "攻略", subtitle: "生活经验", Icon: Book, tone: "emerald", contentTypes: ["guide"] },
-  { slug: "rent", title: "租房", subtitle: "合租转租", Icon: Home, tone: "indigo", contentTypes: ["housing"] },
-  { slug: "job", title: "找工作", subtitle: "兼职全职", Icon: Briefcase, tone: "violet", contentTypes: ["job_seek"] },
-  { slug: "secondhand", title: "二手", subtitle: "闲置求购", Icon: ShoppingBag, tone: "teal", contentTypes: ["secondhand"] },
-  { slug: "dining", title: "约饭", subtitle: "吃饭咖啡", Icon: Utensils, tone: "rose", contentTypes: ["dining"] },
-  { slug: "meetup", title: "搭子", subtitle: "学习运动", Icon: Users, tone: "orange", contentTypes: ["meetup"] },
-  { slug: "event", title: "活动", subtitle: "线下聚会", Icon: CalendarDays, tone: "fuchsia", contentTypes: ["event"] },
-  { slug: "question", title: "问答", subtitle: "本地求助", Icon: HelpCircle, tone: "blue", contentTypes: ["question"] },
-  { slug: "service", title: "服务", subtitle: "搬家签证", Icon: Wrench, tone: "emerald", contentTypes: ["service"] },
-  { slug: "recruit", title: "招聘", subtitle: "本地岗位", Icon: Megaphone, tone: "violet", contentTypes: ["job_post"] },
-  { slug: "referral", title: "内推", subtitle: "公司机会", Icon: MessageSquareText, tone: "indigo", contentTypes: ["referral"] },
-  { slug: "roommate", title: "找室友", subtitle: "合租找人", Icon: Users, tone: "orange", contentTypes: ["roommate"] },
-  { slug: "merchant", title: "商家", subtitle: "本地店铺", Icon: Store, tone: "teal", contentTypes: ["merchant"] },
-  { slug: "coupon", title: "优惠", subtitle: "折扣福利", Icon: Tag, tone: "rose", contentTypes: ["coupon"] },
-  { slug: "warning", title: "避坑", subtitle: "安全提醒", Icon: ShieldAlert, tone: "orange", contentTypes: ["warning"] },
-  { slug: "poll", title: "投票", subtitle: "本地选择", Icon: Vote, tone: "blue", contentTypes: ["poll"] },
-  { slug: "long_post", title: "长文", subtitle: "深度分享", Icon: FileText, tone: "slate", contentTypes: ["long_post"] },
-  { slug: "anonymous", title: "树洞", subtitle: "匿名倾诉", Icon: EyeOff, tone: "slate", contentTypes: ["anonymous"] },
-];
-
-export const CORE_EXPLORE_CHANNELS = EXPLORE_CHANNELS.slice(0, 8);
-
-const CHANNEL_GROUPS: Array<{ title: string; items: ExploreChannelSlug[] }> = [
-  { title: "生活发现", items: ["news", "guide", "question", "event", "service"] },
-  { title: "居住与工作", items: ["rent", "job", "recruit", "referral", "roommate"] },
-  { title: "交易与优惠", items: ["secondhand", "merchant", "coupon"] },
-  { title: "社交连接", items: ["dining", "meetup", "anonymous"] },
-  { title: "本地安全与深度", items: ["warning", "poll", "long_post"] },
-];
+export type ExploreChannelSlug = ChannelKey;
+export type ExploreChannelSpec = ChannelConfig;
+export const EXPLORE_CHANNELS = ALL_CHANNELS;
+export const CORE_EXPLORE_CHANNELS = PRIMARY_CHANNELS;
 
 const CHANNEL_BY_SLUG = new Map(EXPLORE_CHANNELS.map((spec) => [spec.slug, spec]));
 
-export function getExploreChannelSpec(slug?: string | null): ExploreChannelSpec | undefined {
-  if (!slug) return undefined;
-  return CHANNEL_BY_SLUG.get(slug as ExploreChannelSlug);
-}
-
-export function getExploreChannelContentTypes(slug?: string | null): ContentType[] | undefined {
-  return getExploreChannelSpec(slug)?.contentTypes;
-}
-
-export function normalizeExploreChannel(slug?: string | null): ExploreChannelSlug | undefined {
-  return getExploreChannelSpec(slug)?.slug;
-}
+export const getExploreChannelSpec = getChannelByKey;
+export const getExploreChannelContentTypes = getChannelContentTypes;
+export const normalizeExploreChannel = normalizeChannelKey;
 
 export function DiscoverShortcutGrid({
   region,
@@ -143,7 +68,7 @@ export function DiscoverShortcutGrid({
           </span>
         </div>
       </div>
-      <div className="hidden grid-cols-2 gap-2 p-4 sm:grid sm:p-5 lg:grid-cols-3">
+      <div className="grid grid-cols-2 gap-2 p-4 sm:p-5 lg:grid-cols-3">
         {CORE_EXPLORE_CHANNELS.map((spec) => (
           getChannelHref ? (
             <ChannelCardLink
@@ -164,58 +89,21 @@ export function DiscoverShortcutGrid({
         <button
           data-explore-all-channels
           type="button"
-          aria-label="打开全部频道"
+          aria-label="打开更多频道"
           onClick={(event) => {
             event.preventDefault();
             event.stopPropagation();
             setIsChannelDialogOpen(true);
           }}
-          className="group flex min-h-[72px] items-center gap-3 rounded-2xl border border-dashed border-blue-200/80 bg-blue-50/25 px-3 py-3 text-left shadow-[0_8px_30px_rgba(15,23,42,0.035)] transition-all duration-200 ease-out hover:-translate-y-px hover:border-blue-300 hover:bg-blue-50/60 hover:shadow-[0_12px_40px_rgba(37,99,235,0.08)]"
+          className="group col-span-2 flex min-h-[64px] items-center gap-3 rounded-2xl border border-blue-200/70 bg-gradient-to-br from-blue-50 via-white to-slate-50 px-3.5 py-3 text-left shadow-[0_10px_30px_rgba(37,99,235,0.08)] transition-all duration-200 ease-out hover:-translate-y-px hover:border-blue-300 hover:shadow-[0_12px_40px_rgba(37,99,235,0.09)] active:scale-[0.99] lg:col-span-1"
         >
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-blue-600/10 text-blue-600">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-blue-600 text-white shadow-[0_10px_24px_rgba(37,99,235,0.22)] sm:bg-blue-600/10 sm:text-blue-600 sm:shadow-none">
             <Sparkles className="h-4 w-4" />
           </span>
-          <span className="min-w-0">
-            <span className="block text-sm font-semibold text-slate-900">全部频道</span>
-          </span>
-        </button>
-      </div>
-      <div className="grid grid-cols-2 gap-2 p-4 sm:hidden">
-        {CORE_EXPLORE_CHANNELS.map((spec) => (
-          getChannelHref ? (
-            <MobileChannelCardLink
-              key={spec.slug}
-              spec={spec}
-              active={selectedChannel === spec.slug}
-              href={getChannelHref(spec.slug)}
-            />
-          ) : (
-            <MobileChannelCard
-              key={spec.slug}
-              spec={spec}
-              active={selectedChannel === spec.slug}
-              onClick={() => onSelectChannel(spec.slug)}
-            />
-          )
-        ))}
-        <button
-          data-explore-all-channels
-          type="button"
-          aria-label="打开全部频道"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setIsChannelDialogOpen(true);
-          }}
-          className="group col-span-2 flex min-h-[58px] items-center gap-3 rounded-2xl border border-blue-200/70 bg-gradient-to-br from-blue-50 via-white to-slate-50 px-3.5 py-3 text-left shadow-[0_10px_30px_rgba(37,99,235,0.08)] transition-all duration-200 ease-out active:scale-[0.99]"
-        >
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-blue-600 text-white shadow-[0_10px_24px_rgba(37,99,235,0.22)]">
-            <Sparkles className="h-4.5 w-4.5" />
-          </span>
           <span className="min-w-0 flex-1">
-            <span className="block text-sm font-bold text-slate-900">全部频道</span>
+            <span className="block text-sm font-bold text-slate-900">更多频道</span>
             <span className="mt-0.5 block truncate text-xs font-medium text-slate-500">
-              问答、服务、招聘、内推、商家、优惠、树洞
+              {MORE_CHANNEL_SUMMARY}
             </span>
           </span>
           <ChevronRight className="h-4 w-4 shrink-0 text-blue-500" />
@@ -264,34 +152,6 @@ function ChannelCardLink({ spec, active, href }: { spec: ExploreChannelSpec; act
   );
 }
 
-function MobileChannelCard({ spec, active, onClick }: { spec: ExploreChannelSpec; active?: boolean; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={mobileChannelCardClass(active)}
-    >
-      <ChannelIcon spec={spec} size="sm" />
-      <span className="min-w-0">
-        <span className="block text-sm font-bold leading-tight text-slate-900">{spec.title}</span>
-        <span className="mt-0.5 block max-w-[7rem] truncate text-[11px] font-medium text-slate-500">{spec.subtitle}</span>
-      </span>
-    </button>
-  );
-}
-
-function MobileChannelCardLink({ spec, active, href }: { spec: ExploreChannelSpec; active?: boolean; href: string }) {
-  return (
-    <Link href={href} className={mobileChannelCardClass(active)}>
-      <ChannelIcon spec={spec} size="sm" />
-      <span className="min-w-0">
-        <span className="block text-sm font-bold leading-tight text-slate-900">{spec.title}</span>
-        <span className="mt-0.5 block max-w-[7rem] truncate text-[11px] font-medium text-slate-500">{spec.subtitle}</span>
-      </span>
-    </Link>
-  );
-}
-
 function AllChannelDialog({
   selectedChannel,
   getChannelHref,
@@ -330,7 +190,7 @@ function AllChannelDialog({
     <div className="fixed inset-0 z-[90]">
       <button
         type="button"
-        aria-label="关闭全部频道"
+        aria-label="关闭更多频道"
         onClick={onClose}
         className="absolute inset-0 bg-slate-950/35 backdrop-blur-[2px]"
       />
@@ -351,8 +211,8 @@ function AllChannelDialog({
         <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-slate-200 md:hidden" />
         <div className="flex items-start justify-between gap-4 border-b border-slate-200/70 px-5 py-4">
           <div>
-            <h3 id="all-channel-title" className="text-lg font-semibold text-slate-900">全部频道</h3>
-            <p className="mt-1 text-sm text-slate-500">按场景浏览本地内容</p>
+            <h3 id="all-channel-title" className="text-lg font-semibold text-slate-900">更多频道</h3>
+            <p className="mt-1 text-sm text-slate-500">问答、服务、招聘、商家和本地提醒</p>
           </div>
           <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-full border border-slate-200 text-slate-500 transition hover:bg-slate-50 hover:text-slate-900">
             <X className="h-4 w-4" />
@@ -419,14 +279,6 @@ function channelCardClass(active?: boolean) {
     "bg-white shadow-[0_8px_26px_rgba(15,23,42,0.035)] transition-all duration-200 ease-out",
     "hover:-translate-y-px hover:shadow-[0_12px_36px_rgba(15,23,42,0.075)]",
     active ? "border-blue-300 bg-blue-50/75 ring-2 ring-blue-100/80" : "border-slate-200/70 hover:border-blue-200/80 hover:bg-slate-50/45",
-  ].join(" ");
-}
-
-function mobileChannelCardClass(active?: boolean) {
-  return [
-    "group flex min-h-[60px] items-center gap-2.5 rounded-2xl border px-2.5 py-2.5 text-left",
-    "bg-white shadow-[0_8px_26px_rgba(15,23,42,0.045)] transition-all duration-200 ease-out active:scale-[0.99]",
-    active ? "border-blue-300 bg-blue-50/85 text-blue-700 ring-2 ring-blue-100/80" : "border-slate-200/75 text-slate-800",
   ].join(" ");
 }
 

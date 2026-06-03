@@ -72,13 +72,37 @@ export interface KXMembershipStatus {
 
 export interface KXMembershipPlan {
   plan_key: string;
+  planKey?: string;
+  name?: string;
+  subtitle?: string;
+  description?: string;
   name_zh: string;
   name_en: string;
   name_ja: string;
   amount: number;
   amount_cents: number;
+  price?: number;
   currency: string;
+  price_label?: string;
+  priceLabel?: string;
+  original_price?: number;
+  originalPrice?: number;
+  discount_label?: string;
+  discountLabel?: string;
   billing_cycle: string;
+  billingPeriod?: string;
+  billing_period?: string;
+  intervalCount?: number;
+  interval_count?: number;
+  stripeProductId?: string;
+  stripePriceId?: string;
+  iosIapProductId?: string;
+  appleProductId?: string;
+  isRecommended?: boolean;
+  isDefault?: boolean;
+  isFeatured?: boolean;
+  sortOrder?: number;
+  benefits?: Array<{ key: string; title: string; description: string; icon?: string; sort_order?: number }>;
 }
 
 export interface KXMembershipMe {

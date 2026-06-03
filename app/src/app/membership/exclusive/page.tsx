@@ -60,7 +60,7 @@ export default function MembershipExclusivePage() {
               {q.data.items.length ? (
                 <div className="space-y-2">
                   {q.data.items.map((item) => (
-                    <Link key={item.id} href={`/news/${item.id}`} className="block rounded-kx-md bg-kx-soft p-3 hover:bg-kx-accentSoft">
+                    <Link key={item.id} href="/guide" className="block rounded-kx-md bg-kx-soft p-3 hover:bg-kx-accentSoft">
                       <div className="font-bold text-kx-text">{item.title}</div>
                       <p className="mt-1 line-clamp-2 text-sm text-kx-subtle">{item.summary}</p>
                     </Link>

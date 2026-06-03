@@ -14,6 +14,11 @@ User=kaix
 Group=kaix
 WorkingDirectory=/opt/kaix/web
 EnvironmentFile=/etc/kaix.env
+# Primary instance: listens on 8787 and owns the singleton crawler scheduler.
+# Extra capacity is added via kaix-backend-worker@<port>.service (8788+),
+# which set KAIX_ENABLE_SCHEDULERS=0. All instances share the SQLite WAL DB.
+Environment=KAIX_PORT=8787
+Environment=KAIX_ENABLE_SCHEDULERS=1
 ExecStart=/usr/bin/python3 -u /opt/kaix/web/server.py
 Restart=always
 RestartSec=3

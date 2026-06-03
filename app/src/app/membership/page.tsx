@@ -1,6 +1,6 @@
 "use client";
 
-// Machi Verified membership page (Web). Shows the ¥10/月 plan + benefits,
+// Machi Verified membership page (Web). Shows backend-configured plans + benefits,
 // then runs the WeChat / Alipay purchase flow:
 //   create-order -> show QR (WeChat) or redirect (Alipay) -> poll
 //   order-status -> on "paid" refresh the membership.
@@ -18,6 +18,7 @@ import { VerifiedBadge } from "@/components/design/Avatar";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import type { KXCreateOrderResult, KXMembershipPlan, PaymentProvider } from "@/lib/types";
+import { formatPrice } from "@/lib/format";
 
 const BENEFIT_KEYS = [
   "mem_benefit_badge",
@@ -30,16 +31,31 @@ const BENEFIT_KEYS = [
   "mem_benefit_audience",
 ] as const;
 
-const FALLBACK_PLAN: KXMembershipPlan = {
-  plan_key: "machi_verified_monthly_cny_10",
+const FALLBACK_PLANS: KXMembershipPlan[] = [{
+  plan_key: "machi_verified_monthly",
   name_zh: "Machi 认证会员",
   name_en: "Machi Verified",
   name_ja: "Machi 認証メンバー",
-  amount: 10,
-  amount_cents: 1000,
+  amount: 0,
+  amount_cents: 0,
   currency: "CNY",
-  billing_cycle: "month",
-};
+  priceLabel: "价格加载中",
+  billing_cycle: "monthly",
+  billingPeriod: "monthly",
+}, {
+  plan_key: "machi_verified_yearly",
+  name: "Machi 认证会员 · 包年",
+  name_zh: "Machi 认证会员 · 包年",
+  name_en: "Machi Verified Yearly",
+  name_ja: "Machi 認証メンバー 年額",
+  amount: 0,
+  amount_cents: 0,
+  currency: "CNY",
+  priceLabel: "价格加载中",
+  billing_cycle: "yearly",
+  billingPeriod: "yearly",
+  isRecommended: true,
+}];
 
 export default function MembershipPage() {
   const user = useSession((s) => s.user);
@@ -61,11 +77,13 @@ export default function MembershipPage() {
 
   const [order, setOrder] = useState<KXCreateOrderResult | null>(null);
   const [creating, setCreating] = useState<PaymentProvider | null>(null);
+  const [selectedPlanKey, setSelectedPlanKey] = useState<string>("");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollStartedAtRef = useRef(0);
 
-  const plan = planQuery.data?.plan ?? FALLBACK_PLAN;
-  const planUnavailable = !planQuery.isLoading && (planQuery.isError || !planQuery.data?.plan);
+  const plans = planQuery.data?.plans?.length ? planQuery.data.plans : FALLBACK_PLANS;
+  const selectedPlan = plans.find((p) => planKey(p) === selectedPlanKey) ?? plans.find((p) => p.isRecommended) ?? plans[0];
+  const planUnavailable = !planQuery.isLoading && (planQuery.isError || plans.length === 0);
   // Only ever show payment methods the server reports as actually configured
   // (`available_providers`). Empty fallback during load so we never flash an
   // unconfigured method (WeChat/Alipay) that would "time out" on click — on
@@ -73,6 +91,10 @@ export default function MembershipPage() {
   const availableProviders: PaymentProvider[] = planQuery.isError ? [] : (planQuery.data?.available_providers ?? []);
   const membership = meQuery.data?.membership ?? null;
   const isActive = !!membership?.is_active;
+  const benefitsQuery = useQuery({
+    queryKey: ["membership-benefits"],
+    queryFn: () => api.membershipBenefits(),
+  });
   const insightsQuery = useQuery({
     queryKey: ["membership-insights", user?.id],
     queryFn: () => api.membershipInsights(),
@@ -171,6 +193,12 @@ export default function MembershipPage() {
     }
   }, [user, meQuery.data, queryClient, setUser]);
 
+  useEffect(() => {
+    if (!selectedPlanKey && plans.length > 0) {
+      setSelectedPlanKey(planKey(plans.find((p) => p.isRecommended) ?? plans[0]));
+    }
+  }, [plans, selectedPlanKey]);
+
   const startPurchase = async (provider: PaymentProvider) => {
     if (!user) {
       openAuthPrompt("generic");
@@ -178,7 +206,14 @@ export default function MembershipPage() {
     }
     setCreating(provider);
     try {
-      const result = await api.createPaymentOrder(provider, plan.plan_key);
+      if (provider === "stripe") {
+        const result = await api.createMembershipCheckout(planKey(selectedPlan));
+        if (result.checkoutUrl || result.checkout_url) {
+          window.location.href = result.checkoutUrl || result.checkout_url;
+          return;
+        }
+      }
+      const result = await api.createPaymentOrder(provider, planKey(selectedPlan));
       setOrder(result);
       // Redirect providers (Alipay gateway / Stripe hosted Checkout) send
       // the browser straight to the provider. WeChat shows a QR instead.
@@ -206,7 +241,8 @@ export default function MembershipPage() {
     }
   };
 
-  const priceLabel = `¥${plan.amount} ${t("mem_price_unit")}`;
+  const priceLabel = planPriceLabel(selectedPlan);
+  const benefitItems = benefitsQuery.data?.benefits ?? [];
 
   return (
     <AppShell requireAuth={false}>
@@ -269,11 +305,46 @@ export default function MembershipPage() {
               </section>
             ) : null}
 
+            <section className="kx-card">
+              <h2 className="font-bold text-kx-text mb-3">选择套餐</h2>
+              <div className="grid gap-3 sm:grid-cols-2">
+                {plans.map((p) => {
+                  const active = planKey(p) === planKey(selectedPlan);
+                  return (
+                    <button
+                      key={planKey(p)}
+                      type="button"
+                      onClick={() => setSelectedPlanKey(planKey(p))}
+                      className={[
+                        "rounded-kx-lg border p-4 text-left transition",
+                        active ? "border-kx-accent bg-kx-accentSoft/60" : "border-kx-stroke/60 bg-kx-card hover:border-kx-accent/50",
+                      ].join(" ")}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-black text-kx-text">{p.name || p.name_zh}</div>
+                          <div className="mt-1 text-xs text-kx-muted">{p.subtitle || periodLabel(p)}</div>
+                        </div>
+                        {p.isRecommended ? <span className="rounded-full bg-kx-accent px-2 py-0.5 text-[11px] font-bold text-white">推荐</span> : null}
+                      </div>
+                      <div className="mt-3 text-2xl font-black text-kx-text">{planPriceLabel(p)}</div>
+                      {p.discountLabel || p.discount_label ? <div className="mt-1 text-xs font-bold text-emerald-600">{p.discountLabel || p.discount_label}</div> : null}
+                    </button>
+                  );
+                })}
+              </div>
+            </section>
+
             {/* Benefits */}
             <section className="kx-card">
               <h2 className="font-bold text-kx-text mb-2">{t("mem_benefits_title")}</h2>
               <ul className="space-y-2">
-                {BENEFIT_KEYS.map((key) => (
+                {benefitItems.length > 0 ? benefitItems.map((benefit) => (
+                  <li key={benefit.key} className="flex items-start gap-2 text-sm text-kx-text">
+                    <Check className="w-4 h-4 mt-0.5 text-kx-verified shrink-0" />
+                    <span>{benefit.title}</span>
+                  </li>
+                )) : BENEFIT_KEYS.map((key) => (
                   <li key={key} className="flex items-start gap-2 text-sm text-kx-text">
                     <Check className="w-4 h-4 mt-0.5 text-kx-verified shrink-0" />
                     <span>{t(key)}</span>
@@ -316,21 +387,13 @@ export default function MembershipPage() {
                 onMockConfirm={order.mock ? devMockConfirm : undefined}
               />
             ) : availableProviders.length === 0 ? (
-              <section className="kx-card space-y-3">
+              <section className="kx-card text-center">
                 <h2 className="font-bold text-kx-text">{t("mem_pay_method")}</h2>
-                <button
-                  type="button"
-                  className="kx-button-ghost h-12 w-full justify-center sm:max-w-md"
-                  disabled
-                >
-                  <BankCardPaymentOption label={t("mem_pay_stripe")} />
-                </button>
-                <SupportedPaymentLogos />
                 <p className="mt-2 text-sm text-kx-subtle">
                   {planQuery.isLoading ? "支付方式正在加载中。" : "支付暂不可用，请稍后再试。"}
                 </p>
                 {planQuery.isError ? (
-                  <button type="button" onClick={() => planQuery.refetch()} className="kx-button-ghost mt-3 h-9 justify-center">
+                  <button type="button" onClick={() => planQuery.refetch()} className="kx-button-ghost mx-auto mt-3 h-9 justify-center">
                     重试
                   </button>
                 ) : null}
@@ -387,6 +450,25 @@ export default function MembershipPage() {
       </div>
     </AppShell>
   );
+}
+
+function planKey(plan: KXMembershipPlan): string {
+  return plan.plan_key || plan.planKey || "";
+}
+
+function periodLabel(plan: KXMembershipPlan): string {
+  const period = plan.billingPeriod || plan.billing_period || plan.billing_cycle;
+  if (period === "yearly") return "包年订阅";
+  if (period === "monthly" || period === "month") return "按月订阅";
+  return "会员套餐";
+}
+
+function planPriceLabel(plan: KXMembershipPlan): string {
+  return plan.priceLabel || plan.price_label || formatPrice({
+    price: plan.price ?? plan.amount,
+    currency: plan.currency,
+    billingPeriod: plan.billingPeriod || plan.billing_period || plan.billing_cycle,
+  });
 }
 
 function BankCardPaymentOption({ label }: { label: string }) {

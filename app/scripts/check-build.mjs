@@ -36,6 +36,18 @@ if (!fs.existsSync(path.join(nextDir, "BUILD_ID"))) {
   process.exit(1);
 }
 
+// ----- Check #0: required server files all exist -----
+const requiredServerFilesPath = path.join(nextDir, "required-server-files.json");
+if (fs.existsSync(requiredServerFilesPath)) {
+  const requiredServerFiles = JSON.parse(fs.readFileSync(requiredServerFilesPath, "utf8"));
+  const missingRequired = (requiredServerFiles.files || []).filter((file) => !fs.existsSync(path.join(root, file)));
+  if (missingRequired.length > 0) {
+    console.error(`[check-build] FAILED — ${missingRequired.length} required server files are missing:`);
+    for (const file of missingRequired) console.error(`  • ${file}`);
+    process.exit(1);
+  }
+}
+
 // ----- Check #1: every source page has a compiled artifact -----
 function pageArtifactExists(segments) {
   const routeDir = path.join(nextDir, "server/app", ...segments);

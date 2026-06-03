@@ -21,7 +21,7 @@ import {
   ShieldCheck,
   Sun,
   Moon,
-  Newspaper,
+  GraduationCap,
   UserPlus,
   User as UserIcon,
   Hash,
@@ -52,7 +52,7 @@ interface AppShellProps {
 const NAV_ITEMS = [
   { href: "/home", labelKey: "nav_home" as I18nKey, icon: Home, key: "home", badgeKey: undefined as undefined | "notifications" | "messages" },
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
-  { href: "/news", labelKey: "nav_news" as I18nKey, icon: Newspaper, key: "news", badgeKey: undefined },
+  { href: "/guide", labelKey: "nav_guide" as I18nKey, icon: GraduationCap, key: "guide", badgeKey: undefined },
   { href: "/membership", labelKey: "mem_title" as I18nKey, icon: BadgeCheck, key: "membership", badgeKey: undefined },
   { href: "/search", labelKey: "nav_search" as I18nKey, icon: Search, key: "search", badgeKey: undefined },
   { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
@@ -435,7 +435,7 @@ function MobileTabBar({ pathname }: { pathname: string }) {
       openAuthPrompt("publish");
       return;
     }
-    compose({ initialContentType: pathname?.startsWith("/news") ? "local_info" : null });
+    compose({ initialContentType: null });
   };
   const closeMore = () => setMoreOpen(false);
 
@@ -445,10 +445,11 @@ function MobileTabBar({ pathname }: { pathname: string }) {
   const items = [
     { kind: "link" as const, href: "/home", label: t("nav_home"), icon: Home, badge: 0 },
     { kind: "link" as const, href: "/explore", label: t("nav_explore"), icon: Compass, badge: 0 },
-    { kind: "link" as const, href: "/news", label: t("nav_news"), icon: Newspaper, badge: 0 },
+    { kind: "link" as const, href: "/guide", label: t("nav_guide"), icon: GraduationCap, badge: 0 },
     { kind: "messages" as const, href: "/messages", label: t("nav_messages"), icon: Mail, badge: unreadMsg },
     { kind: "mine" as const, label: t("nav_profile"), icon: user ? UserIcon : MoreHorizontal, badge: unreadNotif },
   ];
+  const activeTab = getMobileActiveTab(pathname);
   const showFloatingCompose = !pathname?.startsWith("/messages");
 
   return (
@@ -472,8 +473,10 @@ function MobileTabBar({ pathname }: { pathname: string }) {
           {items.map((item) => {
             const active =
               item.kind === "mine"
-                ? moreOpen || pathname?.startsWith("/me") || pathname?.startsWith("/settings") || pathname?.startsWith("/membership")
-                : pathname?.startsWith(item.href);
+                ? activeTab === "mine"
+                : item.kind === "messages"
+                  ? activeTab === "messages"
+                  : activeTab === item.href.slice(1);
             const Icon = item.icon;
             const badge = item.badge;
             const navClass = "kx-mobile-tabbar-item";
@@ -529,6 +532,24 @@ function MobileTabBar({ pathname }: { pathname: string }) {
       />
     </>
   );
+}
+
+function getMobileActiveTab(pathname?: string | null) {
+  const path = pathname || "/home";
+  if (path.startsWith("/messages")) return "messages";
+  if (path.startsWith("/explore")) return "explore";
+  if (path.startsWith("/guide")) return "guide";
+  if (
+    path.startsWith("/me") ||
+    path.startsWith("/settings") ||
+    path.startsWith("/membership") ||
+    path.startsWith("/bookmarks") ||
+    path.startsWith("/notifications") ||
+    path.startsWith("/admin")
+  ) {
+    return "mine";
+  }
+  return "home";
 }
 
 function MobileMoreSheet({
@@ -666,7 +687,7 @@ function MobileMoreSheet({
             <span className="mt-0.5 block truncate text-xs font-semibold text-kx-muted">认证标识 · 高信任发布权限</span>
           </span>
           <span className="shrink-0 rounded-full bg-kx-accent/10 px-2.5 py-1 text-xs font-black text-kx-accent">
-            {user?.is_verified_member ? t("mem_status_active") : "¥10/月"}
+            {user?.is_verified_member ? t("mem_status_active") : "查看套餐"}
           </span>
         </Link>
         <nav className="px-3 pb-2">

@@ -16,6 +16,7 @@ const ZH_HANS = {
   nav_home: "首页",
   nav_explore: "发现",
   nav_news: "资讯",
+  nav_guide: "指南",
   nav_search: "搜索",
   nav_notifications: "通知",
   nav_messages: "私信",
@@ -244,7 +245,7 @@ const ZH_HANS = {
   mem_trust_notice: "该发布者为 Machi 认证会员，但请仍注意交易安全。",
   mem_login_required: "请先登录后再开通认证会员。",
   compose_membership_required: "发布招聘、租房和本地服务等高信任内容，需要开通 Machi 认证会员。",
-  compose_membership_cta: "开通认证会员 ¥10/月",
+  compose_membership_cta: "查看认证会员套餐",
 } as const;
 
 type DictKey = keyof typeof ZH_HANS;
@@ -254,6 +255,7 @@ const ZH_HANT: Partial<Dict> = {
   nav_home: "首頁",
   nav_explore: "發現",
   nav_news: "資訊",
+  nav_guide: "指南",
   nav_search: "搜尋",
   nav_notifications: "通知",
   nav_messages: "私訊",
@@ -320,6 +322,7 @@ const EN: Partial<Dict> = {
   nav_home: "Home",
   nav_explore: "Explore",
   nav_news: "News",
+  nav_guide: "Guide",
   nav_search: "Search",
   nav_notifications: "Notifications",
   nav_messages: "Messages",
@@ -527,13 +530,14 @@ const EN: Partial<Dict> = {
   mem_trust_notice: "This poster is Machi Verified, but please still transact safely.",
   mem_login_required: "Please sign in before getting Verified.",
   compose_membership_required: "Posting jobs, housing, local services and other high-trust content requires Machi Verified.",
-  compose_membership_cta: "Get Verified ¥10/mo",
+  compose_membership_cta: "View Verified plans",
 };
 
 const JA: Partial<Dict> = {
   nav_home: "ホーム",
   nav_explore: "発見",
   nav_news: "ニュース",
+  nav_guide: "ガイド",
   nav_search: "検索",
   nav_notifications: "通知",
   nav_messages: "メッセージ",
@@ -630,7 +634,7 @@ const JA: Partial<Dict> = {
   mem_trust_notice: "この投稿者は Machi 認証メンバーですが、取引には引き続きご注意ください。",
   mem_login_required: "認証メンバーになる前にログインしてください。",
   compose_membership_required: "求人・住まい・地域サービスなど信頼性の高い投稿には Machi 認証メンバーが必要です。",
-  compose_membership_cta: "認証メンバーになる ¥10/月",
+  compose_membership_cta: "認証メンバープランを見る",
 };
 
 const TABLE: Record<Locale, Partial<Dict>> = {

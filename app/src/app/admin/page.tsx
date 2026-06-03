@@ -30,6 +30,14 @@ import {
   RefreshCw,
   Plus,
   Wand2,
+  Boxes,
+  BookOpen,
+  CreditCard,
+  BadgeCheck,
+  Settings,
+  ClipboardList,
+  CalendarClock,
+  ChevronRight,
 } from "lucide-react";
 import { api, APIError, type EditorialPost, type MarketingCopyBlock, type NewsCategory, type NewsItem, type NewsSource } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
@@ -52,7 +60,6 @@ const TABS: { value: Tab; label: string; icon: React.ComponentType<{ className?:
   { value: "reports",  label: "举报",  icon: Flag },
   { value: "feedback", label: "反馈",  icon: MessageSquareWarning },
   { value: "visitors", label: "访客",  icon: MapPin },
-  { value: "newsdesk", label: "本地资讯台", icon: Newspaper },
   { value: "seed",     label: "城市内容助手", icon: Sparkles },
   { value: "site",     label: "官网文案", icon: Globe },
 ];
@@ -123,16 +130,61 @@ export default function AdminPage() {
   );
 }
 
+// Quick links to the full-page admin modules that live on their own
+// routes (商品/服务/会员定价、Guide 内容、订单、预约、支付…). The dashboard
+// only had in-page tabs before, so these were unreachable without typing
+// the URL by hand. Surfacing them here is the admin's main entry point.
+const ADMIN_MODULES: {
+  href: string;
+  label: string;
+  desc: string;
+  icon: React.ComponentType<{ className?: string }>;
+}[] = [
+  { href: "/admin/pricing", label: "商品 / 服务 / 会员定价", desc: "价格、货币、会员价、Stripe / IAP ID", icon: Boxes },
+  { href: "/admin/guide", label: "Guide 内容管理", desc: "文章 · 商品 · 服务 · 学校 · 公司", icon: BookOpen },
+  { href: "/admin/guide/orders", label: "Guide 订单", desc: "数字资料购买订单", icon: ClipboardList },
+  { href: "/admin/guide/service-requests", label: "服务预约", desc: "人工服务预约与处理", icon: CalendarClock },
+  { href: "/admin/memberships", label: "会员管理", desc: "认证会员开通与到期", icon: BadgeCheck },
+  { href: "/admin/payments", label: "支付与订单", desc: "Stripe 支付与对账", icon: CreditCard },
+  { href: "/admin/settings", label: "站点设置", desc: "系统与运营配置", icon: Settings },
+];
+
+function ModuleNav() {
+  return (
+    <div className="kx-card">
+      <h3 className="kx-section-title mb-3 px-0 inline-flex items-center gap-1.5">
+        <ShieldCheck className="w-4 h-4" /> 管理模块
+      </h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+        {ADMIN_MODULES.map((m) => (
+          <Link
+            key={m.href}
+            href={m.href}
+            className="group flex items-center gap-3 rounded-kx-md border border-kx-stroke/40 bg-kx-soft/40 px-3 py-2.5 transition hover:border-kx-accent/50 hover:bg-kx-accentSoft/40"
+          >
+            <span className="inline-flex w-9 h-9 shrink-0 items-center justify-center rounded-kx-md bg-kx-accentSoft text-kx-accent">
+              <m.icon className="w-4.5 h-4.5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-semibold text-sm truncate">{m.label}</span>
+              <span className="block text-xs text-kx-muted truncate">{m.desc}</span>
+            </span>
+            <ChevronRight className="w-4 h-4 text-kx-muted group-hover:text-kx-accent" />
+          </Link>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function OverviewPanel() {
   const q = useQuery({
     queryKey: ["admin-stats"],
     queryFn: () => api.adminStats(),
     refetchInterval: 30000,
   });
-  if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
-  if (!q.data) return <InlineLoading />;
-  const s = q.data.stats as Record<string, number | string | string[]>;
-  const cards = [
+  const s = (q.data?.stats ?? {}) as Record<string, number | string | string[]>;
+  const cards = !q.data ? [] : [
     { label: "用户总数",   value: s.users_total,     sub: `+${s.users_24h} / 24h · +${s.users_7d} / 7d` },
     { label: "帖子总数",   value: s.posts_total,     sub: `+${s.posts_24h} / 24h` },
     { label: "公开帖子",   value: s.posts_active,    sub: `${s.posts_under_review} 待审 · ${s.posts_hidden} 隐藏` },
@@ -146,34 +198,43 @@ function OverviewPanel() {
   ];
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        {cards.map((c) => (
-          <div key={c.label} className="kx-card animate-kx-fade-in">
-            <div className="text-xs text-kx-subtle">{c.label}</div>
-            <div className="text-2xl font-bold mt-1">{compactNumber(Number(c.value))}</div>
-            <div className="text-xs text-kx-muted mt-1">{c.sub}</div>
+      <ModuleNav />
+      {q.isError ? (
+        <ErrorState onRetry={() => q.refetch()} />
+      ) : !q.data ? (
+        <InlineLoading />
+      ) : (
+        <>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {cards.map((c) => (
+              <div key={c.label} className="kx-card animate-kx-fade-in">
+                <div className="text-xs text-kx-subtle">{c.label}</div>
+                <div className="text-2xl font-bold mt-1">{compactNumber(Number(c.value))}</div>
+                <div className="text-xs text-kx-muted mt-1">{c.sub}</div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
-      <div className="kx-card">
-        <h3 className="kx-section-title mb-3 px-0 inline-flex items-center gap-1.5">
-          <HardDrive className="w-4 h-4" /> 系统
-        </h3>
-        <dl className="grid grid-cols-2 sm:grid-cols-4 gap-y-2 text-sm">
-          <dt className="text-kx-muted">数据库大小</dt><dd className="font-semibold">{bytes(Number(s.db_size_bytes))}</dd>
-          <dt className="text-kx-muted">媒体大小</dt><dd className="font-semibold">{bytes(Number(s.media_size_bytes))}</dd>
-          <dt className="text-kx-muted">环境</dt><dd className="font-semibold">{String(s.server_env)}</dd>
-          <dt className="text-kx-muted">服务时间</dt><dd className="font-semibold">{fullDateTime(String(s.server_time))}</dd>
-        </dl>
-        <h3 className="kx-section-title mt-4 mb-2 px-0 inline-flex items-center gap-1.5">
-          <Globe className="w-4 h-4" /> CORS 允许来源
-        </h3>
-        <div className="flex flex-wrap gap-1.5">
-          {(s.allowed_origins as string[]).map((o) => (
-            <span key={o} className="px-2 py-1 rounded-full bg-kx-soft text-xs font-mono">{o}</span>
-          ))}
-        </div>
-      </div>
+          <div className="kx-card">
+            <h3 className="kx-section-title mb-3 px-0 inline-flex items-center gap-1.5">
+              <HardDrive className="w-4 h-4" /> 系统
+            </h3>
+            <dl className="grid grid-cols-2 sm:grid-cols-4 gap-y-2 text-sm">
+              <dt className="text-kx-muted">数据库大小</dt><dd className="font-semibold">{bytes(Number(s.db_size_bytes))}</dd>
+              <dt className="text-kx-muted">媒体大小</dt><dd className="font-semibold">{bytes(Number(s.media_size_bytes))}</dd>
+              <dt className="text-kx-muted">环境</dt><dd className="font-semibold">{String(s.server_env)}</dd>
+              <dt className="text-kx-muted">服务时间</dt><dd className="font-semibold">{fullDateTime(String(s.server_time))}</dd>
+            </dl>
+            <h3 className="kx-section-title mt-4 mb-2 px-0 inline-flex items-center gap-1.5">
+              <Globe className="w-4 h-4" /> CORS 允许来源
+            </h3>
+            <div className="flex flex-wrap gap-1.5">
+              {((s.allowed_origins as string[]) ?? []).map((o) => (
+                <span key={o} className="px-2 py-1 rounded-full bg-kx-soft text-xs font-mono">{o}</span>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -747,6 +808,9 @@ function NewsDeskPanel() {
   const [subtab, setSubtab] = useState<NewsDeskTab>("home");
   return (
     <div className="space-y-3">
+      <div className="rounded-kx-lg border border-amber-400/30 bg-amber-400/10 px-4 py-3 text-sm leading-6 text-amber-700 dark:text-amber-300">
+        Deprecated：旧本地资讯台仅保留迁移与审计用途。正式前台内容已迁移到 Machi Guide。
+      </div>
       <div className="kx-card p-2">
         <NavTabs items={NEWS_DESK_TABS.map((t) => ({ value: t.value, label: t.label }))} value={subtab} onChange={(v) => setSubtab(v as NewsDeskTab)} />
       </div>
@@ -1216,7 +1280,7 @@ function EditorialPostsPanel({ status }: { status: "draft" | "published" }) {
               {status !== "published" ? <button className="kx-button-ghost h-9" onClick={() => transition("reject")}>驳回</button> : null}
               {status !== "published" ? <button className="kx-button-ghost h-9" onClick={ai}><Wand2 className="h-4 w-4" /> AI 辅助</button> : null}
               <button className="kx-button-ghost h-9 text-kx-danger" onClick={remove}>删除</button>
-              {selected.status === "published" ? <Link className="kx-button-ghost h-9" href={`/news/${selected.id}`} target="_blank">预览</Link> : null}
+              {selected.status === "published" ? <Link className="kx-button-ghost h-9" href="/guide" target="_blank">预览 Guide</Link> : null}
             </div>
           </div>
         )}
@@ -1227,7 +1291,7 @@ function EditorialPostsPanel({ status }: { status: "draft" | "published" }) {
 
 function EditorialPostRow({ post }: { post: EditorialPost }) {
   return (
-    <Link href={`/news/${post.id}`} className="block rounded-kx-md bg-kx-soft px-3 py-2 hover:bg-kx-stroke/30">
+    <Link href="/guide" className="block rounded-kx-md bg-kx-soft px-3 py-2 hover:bg-kx-stroke/30">
       <div className="line-clamp-1 text-sm font-bold">{post.title}</div>
       <div className="mt-0.5 text-xs text-kx-muted">{post.author_display_name} · {post.published_at ? relativeTime(post.published_at) : post.status}</div>
     </Link>

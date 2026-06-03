@@ -1,5 +1,7 @@
-import { NewsListClient } from "@/components/news/NewsListClient";
+import { redirect } from "next/navigation";
 
-export default function NewsPage() {
-  return <NewsListClient />;
+// The old crawler "资讯" surface has been retired and replaced by Machi Guide.
+// Keep the route working by redirecting to /guide.
+export default function NewsRedirectPage() {
+  redirect("/guide");
 }

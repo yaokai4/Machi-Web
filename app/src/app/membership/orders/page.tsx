@@ -6,6 +6,7 @@ import { ChevronLeft, ReceiptText } from "lucide-react";
 import { api } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
+import { formatPrice } from "@/lib/format";
 
 export default function MembershipOrdersPage() {
   const q = useQuery({ queryKey: ["membership-orders"], queryFn: () => api.membershipOrders() });
@@ -32,7 +33,7 @@ export default function MembershipOrdersPage() {
                     <div className="mt-1 text-xs text-kx-muted">{String(row.provider || "")} · {String(row.created_at || "")}</div>
                   </div>
                   <div className="text-right">
-                    <div className="font-black text-kx-text">¥{String(row.amount || "0")}</div>
+                    <div className="font-black text-kx-text">{formatPrice({ price: Number(row.amount || 0), currency: String(row.currency || "CNY") })}</div>
                     <div className="mt-1 text-xs font-bold text-kx-muted">{String(row.status || "")}</div>
                   </div>
                 </div>

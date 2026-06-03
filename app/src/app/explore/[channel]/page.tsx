@@ -6,7 +6,6 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Bell,
   ChevronLeft,
-  Globe2,
   MapPin,
   RefreshCw,
   Search,
@@ -120,7 +119,7 @@ function ExploreChannelClient() {
   if (!spec) {
     return (
       <AppShell requireAuth={false}>
-        <main className="min-h-[70dvh] bg-slate-50/60 px-4 py-8">
+        <main className="min-h-[70dvh] px-4 py-8">
           <section className="mx-auto max-w-xl rounded-3xl border border-slate-200/70 bg-white p-6 text-center shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
             <ErrorState title="频道不存在" subtitle="这个发现频道暂时不可用，可以回到发现页重新选择。" />
             <Link href="/explore" className="kx-button-primary mx-auto mt-4 w-fit justify-center">
@@ -152,12 +151,6 @@ function ExploreChannelClient() {
               M
             </span>
           )}
-          <div className="min-w-0">
-            <div className="text-[11px] font-bold text-blue-600">{regionHeaderLabel(currentRegion)}</div>
-            <h1 className="truncate text-[23px] font-black leading-none tracking-tight text-slate-950 md:text-2xl">
-              {activePlace}{spec.title}
-            </h1>
-          </div>
           <button
             type="button"
             onClick={() => setRegionPickerOpen(true)}
@@ -191,11 +184,11 @@ function ExploreChannelClient() {
           className="mt-3 flex h-11 items-center gap-2 rounded-2xl border border-slate-200/70 bg-white px-3 text-sm font-medium text-slate-500 shadow-[0_8px_30px_rgba(15,23,42,0.04)] transition hover:border-slate-300 hover:bg-slate-50/70"
         >
           <Search className="h-4 w-4 text-blue-600" />
-          搜索{activePlace}{spec.title}...
+          {channelSearchPlaceholder(spec, activePlace)}
         </Link>
       </header>
 
-      <main className="bg-slate-50/60 px-3 py-4 sm:px-4">
+      <main className="px-3 py-4 sm:px-4">
         <div className="space-y-4">
           <ChannelHero
             spec={spec}
@@ -211,6 +204,7 @@ function ExploreChannelClient() {
             onRetry={() => feed.refetch()}
             placeLabel={activePlace}
             channelLabel={spec.title}
+            scope={scope}
           />
           <section className="rounded-3xl border border-slate-200/70 bg-white p-4 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
@@ -258,23 +252,23 @@ function ChannelHero({
   onScopeChange: (scope: ChannelScope) => void;
 }) {
   const placeLabel = scope === "country" ? countryName : cityName;
+  const helper = channelHeroCopy(spec);
   return (
-    <section className="overflow-hidden rounded-[28px] border border-slate-200/70 bg-white shadow-[0_10px_34px_rgba(15,23,42,0.055)]">
-      <div className="bg-gradient-to-br from-white via-blue-50/35 to-slate-50/70 p-5">
-        <div className="flex items-start gap-3">
-          <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl ${toneClass(spec.tone)}`}>
+    <section className="overflow-hidden rounded-[28px] border border-white/80 bg-white/[0.88] shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur">
+      <div className="relative p-5">
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(37,99,235,0.10),transparent_34%),radial-gradient(circle_at_84%_8%,rgba(20,184,166,0.08),transparent_30%),linear-gradient(135deg,rgba(255,255,255,0.9),rgba(248,250,252,0.72))]" />
+        <div className="relative flex items-start gap-3">
+          <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl shadow-[0_12px_28px_rgba(15,23,42,0.08)] ${toneClass(spec.tone)}`}>
             <spec.Icon className="h-5 w-5" />
           </span>
           <div className="min-w-0 flex-1">
-            <div className="inline-flex items-center gap-1.5 rounded-full bg-blue-600/8 px-2.5 py-1 text-xs font-semibold text-blue-700">
-              <Globe2 className="h-3.5 w-3.5" />
-              {placeLabel}
-            </div>
-            <h2 className="mt-2 text-2xl font-black tracking-tight text-slate-950">{placeLabel}{spec.title}</h2>
-            <p className="mt-1 text-sm text-slate-500">默认看本城，也可以切到全国范围。</p>
+            <h2 className="text-2xl font-black tracking-tight text-slate-950">
+              {placeLabel}{spec.title}
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-slate-500">{helper}</p>
           </div>
         </div>
-        <div className="mt-4 inline-flex rounded-full border border-slate-200/80 bg-white p-1 shadow-[0_8px_24px_rgba(15,23,42,0.05)]">
+        <div className="relative mt-4 inline-flex rounded-full border border-slate-200/70 bg-white/90 p-1 shadow-[0_10px_26px_rgba(15,23,42,0.06)] backdrop-blur">
           {([
             ["local", cityName],
             ["country", countryName],
@@ -304,6 +298,7 @@ function ChannelPostList({
   onRetry,
   placeLabel,
   channelLabel,
+  scope,
 }: {
   posts: Awaited<ReturnType<typeof api.feed>>["items"];
   loading?: boolean;
@@ -311,13 +306,16 @@ function ChannelPostList({
   onRetry: () => void;
   placeLabel: string;
   channelLabel: string;
+  scope: ChannelScope;
 }) {
   return (
-    <section className="rounded-3xl border border-slate-200/70 bg-white p-4 shadow-[0_8px_30px_rgba(15,23,42,0.04)] sm:p-5">
+    <section className="rounded-3xl border border-white/80 bg-white/90 p-4 shadow-[0_14px_42px_rgba(15,23,42,0.055)] backdrop-blur sm:p-5">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
           <h2 className="text-lg font-semibold text-slate-900">最新内容</h2>
-          <p className="mt-1 text-sm text-slate-500">{placeLabel}{channelLabel}相关帖子和本地信息</p>
+          <p className="mt-1 text-sm text-slate-500">
+            {scope === "country" ? `${placeLabel}范围内的${channelLabel}内容` : `${placeLabel}${channelLabel}相关内容`}
+          </p>
         </div>
         {error ? (
           <button type="button" onClick={onRetry} className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
@@ -356,11 +354,11 @@ function ChannelPostList({
 function ExploreChannelSkeleton() {
   return (
     <AppShell requireAuth={false}>
-      <header className="sticky top-0 z-30 border-b border-slate-200/70 bg-white/82 px-4 py-3 backdrop-blur-xl">
+      <header className="sticky top-0 z-30 kx-glass-bar px-4 py-3">
         <Skeleton className="h-9 w-48 rounded-full" />
         <Skeleton className="mt-3 h-11 w-full rounded-2xl" />
       </header>
-      <main className="bg-slate-50/60 px-3 py-4 sm:px-4">
+      <main className="px-3 py-4 sm:px-4">
         <div className="space-y-4">
           <Skeleton className="h-44 w-full rounded-3xl" />
           <Skeleton className="h-96 w-full rounded-3xl" />
@@ -398,6 +396,66 @@ function exploreHref(region?: RegionInfo) {
   if (!region) return "/explore";
   const params = new URLSearchParams({ city: region.city_code, region: region.region_code });
   return `/explore?${params.toString()}`;
+}
+
+function channelHeroCopy(spec: ExploreChannelSpec) {
+  switch (spec.slug) {
+    case "news":
+      return "本地快讯、交通提醒和城市生活信息会汇集在这里。";
+    case "guide":
+      return "生活经验、路线选择和实用攻略，帮你更快熟悉这座城市。";
+    case "housing":
+      return "房源、合租、转租和区域经验，集中查看更省心。";
+    case "jobs":
+      return "兼职、正社员、求职经验和岗位线索，按城市聚合。";
+    case "market":
+      return "闲置、求购和搬家处理信息，适合快速筛选本地交易。";
+    case "food":
+      return "饭局、咖啡和好店讨论，找到适合一起吃饭的人。";
+    case "buddy":
+      return "学习、运动、周末同行和临时搭子都在这里。";
+    case "events":
+      return "线下活动、聚会和城市现场信息，方便提前安排。";
+    case "qa":
+      return "生活疑问、本地手续和实用求助，集中问也集中看。";
+    case "services":
+      return "搬家、签证、维修、翻译等本地服务信息。";
+    case "recruiting":
+      return "招聘岗位、兼职机会和本地用工信息。";
+    case "referral":
+      return "内推、公司机会和求职连接，适合更直接地找机会。";
+    case "merchant":
+      return "本地商家、店铺动态和服务提醒。";
+    case "deals":
+      return "优惠、折扣和活动福利，适合顺手收藏。";
+    case "warnings":
+      return "避坑提醒、安全经验和真实反馈，帮助大家少走弯路。";
+    case "treehole":
+      return "匿名倾诉、情绪出口和不方便署名的话题。";
+    default:
+      return "相关内容会按城市和范围整理在这里。";
+  }
+}
+
+function channelSearchPlaceholder(spec: ExploreChannelSpec, placeLabel: string) {
+  switch (spec.slug) {
+    case "news":
+      return `搜索${placeLabel}快讯、交通、提醒...`;
+    case "housing":
+      return `搜索${placeLabel}租房、合租、房源、区域...`;
+    case "jobs":
+    case "recruiting":
+    case "referral":
+      return `搜索${placeLabel}兼职、招聘、内推...`;
+    case "food":
+      return `搜索${placeLabel}约饭、咖啡、好店...`;
+    case "market":
+      return `搜索${placeLabel}二手、闲置、求购...`;
+    case "buddy":
+      return `搜索${placeLabel}搭子、学习、运动...`;
+    default:
+      return `搜索${placeLabel}${spec.title}...`;
+  }
 }
 
 function toneClass(tone: ExploreChannelSpec["tone"]) {

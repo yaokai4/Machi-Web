@@ -1,0 +1,63 @@
+# /etc/systemd/system/kaix-backend-worker@.service
+#
+# Extra backend worker instances for horizontal scaling. The Python backend
+# is one process per port and can't use multiple CPU cores on its own (GIL),
+# so under high concurrency we run several instances behind the nginx
+# `upstream kaix_backend` block and let nginx load-balance.
+#
+# `%i` is the port. All workers share the SAME SQLite WAL database as the
+# primary (concurrent readers + a serialized writer) and must NOT run the
+# crawler scheduler (KAIX_ENABLE_SCHEDULERS=0) — only the primary does.
+#
+# Enable as many workers as you have spare cores, e.g. on a 4-core box:
+#   sudo cp deploy/kaix-backend-worker@.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now kaix-backend-worker@8788 \
+#        kaix-backend-worker@8789 kaix-backend-worker@8790
+# Then make sure nginx `upstream kaix_backend` lists 8788/8789/8790 and reload.
+
+[Unit]
+Description=KaiX backend worker (port %i)
+After=network.target kaix-backend.service
+Wants=network-online.target
+# The primary runs DB init/migrations first; start workers after it.
+Requires=kaix-backend.service
+StartLimitBurst=5
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=kaix
+Group=kaix
+WorkingDirectory=/opt/kaix/web
+EnvironmentFile=/etc/kaix.env
+# Per-instance overrides (win over the EnvironmentFile): unique port, and
+# scheduler disabled so only the primary crawls.
+Environment=KAIX_PORT=%i
+Environment=KAIX_ENABLE_SCHEDULERS=0
+ExecStart=/usr/bin/python3 -u /opt/kaix/web/server.py
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=15
+
+# hardening (same profile as the primary)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/opt/kaix/web
+LimitNOFILE=65536
+MemoryHigh=1500M
+MemoryMax=2048M
+LimitFSIZE=1073741824
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kaix-backend-worker-%i
+
+[Install]
+WantedBy=multi-user.target

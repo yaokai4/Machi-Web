@@ -236,7 +236,7 @@ function RegisterForm() {
   };
 
   return (
-    <div className="min-h-dvh bg-kx-bg px-4 py-6 sm:py-10">
+    <div className="kx-auth-page px-4 py-6 sm:py-10">
       <div className="mx-auto grid min-h-[calc(100dvh-3rem)] w-full max-w-5xl overflow-hidden rounded-[28px] border border-kx-stroke/70 bg-kx-card shadow-kx-glow lg:grid-cols-[0.9fr_1.1fr]">
         {/* ─────────── LEFT brand pane ─────────── */}
         <aside className="hidden flex-col justify-between bg-gradient-to-br from-kx-accent/14 via-kx-card to-sky-100/70 p-8 lg:flex dark:from-kx-accent/20 dark:via-kx-card dark:to-sky-500/10">

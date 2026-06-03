@@ -1,0 +1,375 @@
+"use client";
+
+// Shared building blocks for the Machi Guide / 日本指南 surface. Reuses the
+// existing kx-* design tokens (so light/dark theming keeps working) and adds a
+// scoped warm-gray background only inside /guide — no global/frozen CSS touched.
+
+import Link from "next/link";
+import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useSession, useToasts, useAuthPrompt } from "@/lib/store";
+import { api, APIError, isAuthRequiredError } from "@/lib/api";
+import { AppShell } from "@/components/shell/AppShell";
+import {
+  ArrowLeft,
+  Building2,
+  Briefcase,
+  GraduationCap,
+  Home,
+  Languages,
+  Package,
+  Plane,
+  BookOpen,
+  School,
+  type LucideIcon,
+} from "lucide-react";
+import type { GuideCategory, GuideEmptyState, GuideProduct, GuideCompany, GuideGoalEntry, GuideResourceEntry, GuideSchool } from "@/lib/guide";
+import { GUIDE_PRODUCT_TYPE_LABELS, guideCityLabel } from "@/lib/guide";
+import { formatPrice } from "@/lib/format";
+
+const ICON_MAP: Record<string, LucideIcon> = {
+  graduation: GraduationCap,
+  briefcase: Briefcase,
+  plane: Plane,
+  language: Languages,
+  home: Home,
+  package: Package,
+  school: School,
+  building: Building2,
+};
+
+export function categoryIconFor(token?: string): LucideIcon {
+  return ICON_MAP[String(token || "")] || BookOpen;
+}
+
+/** Slug used in /guide/<slug> category routes, derived from a category key. */
+export const CATEGORY_ROUTE: Record<string, string> = {
+  study_japan: "study-japan",
+  career_japan: "career-japan",
+  study_abroad_japan: "study-abroad-japan",
+  jlpt: "jlpt",
+  life_japan: "life-japan",
+  guide_services: "services",
+};
+
+export function categoryHref(key: string): string {
+  const slug = CATEGORY_ROUTE[key];
+  return slug ? `/guide/${slug}` : `/guide`;
+}
+
+/** Current viewer country for the Japan-only gate. Defaults to jp. */
+export function useGuideCountry(): string {
+  const user = useSession((s) => s.user);
+  // Follow the *browsing* region (current_region_code, synced from the region
+  // picker and the iOS app) so Guide matches the home feed and what the user
+  // is actually looking at — not their declared profile country. Region codes
+  // are dot-separated "country.province.city"; the country is the prefix.
+  const browseCountry = (user?.current_region_code || "").split(".")[0];
+  return (browseCountry || user?.country || "jp").toLowerCase();
+}
+
+export function GuideShell({
+  children,
+  right,
+  back,
+}: {
+  children: React.ReactNode;
+  right?: React.ReactNode;
+  back?: { href: string; label: string };
+}) {
+  return (
+    <AppShell requireAuth={false} right={right}>
+      <div className="min-h-full bg-[#FBF9F6] dark:bg-transparent">
+        {back ? (
+          <div className="px-4 pt-3">
+            <Link
+              href={back.href}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-kx-muted hover:text-kx-accent"
+            >
+              <ArrowLeft className="h-4 w-4" /> {back.label}
+            </Link>
+          </div>
+        ) : null}
+        {children}
+      </div>
+    </AppShell>
+  );
+}
+
+export function GuideComingSoon({ empty }: { empty?: GuideEmptyState }) {
+  const e = empty || {
+    title: "Machi 指南目前只开放日本地区",
+    body: "如果你正在准备日本留学、升学、就职，或在备考日语（JLPT）、了解在日生活，切换到日本地区即可查看完整的指南、学校库、公司库与资料服务。其他国家和地区将陆续开放。",
+    action: "切换到日本地区",
+    actionCountry: "jp",
+  };
+  const user = useSession((s) => s.user);
+  const setUser = useSession((s) => s.setUser);
+  const pushToast = useToasts((s) => s.push);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+
+  // Switch the *browsing* region to Japan (current_region_code) — the same
+  // field the home feed and the iOS app sync — so Guide opens immediately and
+  // the choice persists across devices. Guests are prompted to log in.
+  const switchToJapan = async () => {
+    if (!user) {
+      openAuthPrompt("generic");
+      return;
+    }
+    setBusy(true);
+    try {
+      const next = await api.updateRegionLanguage({ current_region_code: "jp.tokyo.tokyo" });
+      setUser(next);
+      queryClient.invalidateQueries({ queryKey: ["guide"] });
+      pushToast({ kind: "success", message: "已切换到日本地区" });
+    } catch (err) {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("generic");
+        return;
+      }
+      pushToast({ kind: "error", message: (err as APIError).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-[60vh] flex-col items-center justify-center px-6 text-center">
+      <span className="grid h-16 w-16 place-items-center rounded-3xl bg-kx-accentSoft text-kx-accent">
+        <Plane className="h-8 w-8" />
+      </span>
+      <h1 className="mt-5 text-2xl font-black text-kx-text">{e.title}</h1>
+      <p className="mt-3 max-w-md text-sm leading-7 text-kx-subtle">{e.body}</p>
+      <button type="button" onClick={switchToJapan} disabled={busy} className="kx-button-primary mt-6 h-11 px-5 disabled:opacity-60">
+        {busy ? "切换中…" : e.action}
+      </button>
+    </div>
+  );
+}
+
+export function GuideSectionTitle({
+  title,
+  subtitle,
+  href,
+  hrefLabel = "查看全部",
+}: {
+  title: string;
+  subtitle?: string;
+  href?: string;
+  hrefLabel?: string;
+}) {
+  return (
+    <div className="mb-3 flex items-end justify-between gap-3">
+      <div className="min-w-0">
+        <h2 className="text-lg font-black leading-tight text-kx-text">{title}</h2>
+        {subtitle ? <p className="mt-0.5 text-xs leading-5 text-kx-muted">{subtitle}</p> : null}
+      </div>
+      {href ? (
+        <Link href={href} className="shrink-0 text-xs font-semibold text-kx-accent hover:underline">
+          {hrefLabel}
+        </Link>
+      ) : null}
+    </div>
+  );
+}
+
+export function CategoryCard({ category }: { category: GuideCategory }) {
+  const Icon = categoryIconFor(category.icon);
+  return (
+    <Link
+      href={categoryHref(category.key)}
+      className="group flex flex-col gap-2 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+    >
+      <span
+        className="grid h-11 w-11 place-items-center rounded-2xl text-white shadow-sm"
+        style={{ backgroundColor: category.color || "#2563EB" }}
+      >
+        <Icon className="h-5 w-5" />
+      </span>
+      <div>
+        <h3 className="text-[15px] font-black text-kx-text group-hover:text-kx-accent">{category.title}</h3>
+        {category.subtitle ? <p className="mt-0.5 text-xs text-kx-muted">{category.subtitle}</p> : null}
+      </div>
+      <p className="line-clamp-2 text-xs leading-5 text-kx-subtle">{category.description}</p>
+    </Link>
+  );
+}
+
+export function ResourceEntryCard({ entry }: { entry: GuideResourceEntry }) {
+  const Icon = categoryIconFor(entry.icon);
+  return (
+    <Link
+      href={entry.href}
+      className="group flex min-h-[138px] flex-col justify-between rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+    >
+      <div className="flex items-start gap-3">
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
+          <Icon className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-[15px] font-black text-kx-text group-hover:text-kx-accent">{entry.title}</h3>
+          <p className="mt-1 line-clamp-3 text-xs leading-5 text-kx-subtle">{entry.description}</p>
+        </div>
+      </div>
+      <span className="mt-3 text-xs font-bold text-kx-accent">进入资料库</span>
+    </Link>
+  );
+}
+
+export function ArticleCard({ article, compact = false }: { article: { slug: string; title: string; summary: string; tags: string[]; authorName: string; isFeatured?: boolean }; compact?: boolean }) {
+  return (
+    <Link
+      href={`/guide/articles/${article.slug}`}
+      className={[
+        "group block rounded-kx-lg border border-kx-stroke/50 bg-kx-card transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx",
+        compact ? "p-3.5" : "p-4 sm:p-5",
+      ].join(" ")}
+    >
+      <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-kx-muted">
+        <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-kx-accent">指南</span>
+        <span className="truncate">{article.authorName}</span>
+      </div>
+      <h3 className={(compact ? "text-base " : "text-lg ") + "line-clamp-2 font-black leading-snug text-kx-text group-hover:text-kx-accent"}>
+        {article.title}
+      </h3>
+      <p className="mt-1.5 line-clamp-2 text-sm leading-6 text-kx-subtle">{article.summary}</p>
+      {article.tags?.length ? (
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          {article.tags.slice(0, 3).map((t) => (
+            <span key={t} className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">
+              {t}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </Link>
+  );
+}
+
+function priceToneClass(tone: string): string {
+  const base = "rounded-full px-2 py-0.5 text-[11px] font-bold ";
+  if (tone === "soon") return base + "bg-amber-400/15 text-amber-600 dark:text-amber-400";
+  if (tone === "free") return base + "bg-emerald-400/15 text-emerald-600 dark:text-emerald-400";
+  return base + "bg-kx-accentSoft text-kx-accent";
+}
+
+export function guideProductPrice(p: GuideProduct): { label: string; tone: "soon" | "free" | "service" | "paid" } {
+  if (p.isComingSoon || p.status === "coming_soon") return { label: formatPrice(p), tone: "soon" };
+  if (p.isFree) return { label: "免费", tone: "free" };
+  if (p.isService || p.isAppointmentOnly || p.isPriceHidden) return { label: formatPrice(p) || "预约咨询", tone: "service" };
+  return { label: formatPrice(p), tone: "paid" };
+}
+
+export function ProductCard({ product }: { product: GuideProduct }) {
+  const price = guideProductPrice(product);
+  const typeLabel = GUIDE_PRODUCT_TYPE_LABELS[product.productType] || (product.isService ? "服务" : "资料");
+  return (
+    <Link
+      href={`/guide/products/${product.slug}`}
+      className="group flex flex-col rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+    >
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">{typeLabel}</span>
+        <span className={priceToneClass(price.tone)}>{price.label}</span>
+      </div>
+      <h3 className="line-clamp-2 text-[15px] font-black leading-snug text-kx-text group-hover:text-kx-accent">{product.title}</h3>
+      {product.subtitle ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-kx-subtle">{product.subtitle}</p> : null}
+      {product.targetAudience ? <p className="mt-2 text-[11px] text-kx-muted">适合：{product.targetAudience}</p> : null}
+    </Link>
+  );
+}
+
+export const GUIDE_SCHOOL_TYPE_LABELS: Record<string, string> = {
+  university: "大学",
+  graduate_school: "大学院",
+  junior_college: "短期大学",
+  vocational_school: "专门学校",
+  language_school: "语言学校",
+  college_of_technology: "高专",
+  other: "其他",
+};
+
+export function SchoolCard({ school }: { school: GuideSchool }) {
+  const typeLabel = GUIDE_SCHOOL_TYPE_LABELS[school.schoolType] || "学校";
+  return (
+    <Link
+      href={`/guide/schools/${school.slug || school.id}`}
+      className="group block rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="line-clamp-1 text-[15px] font-black text-kx-text group-hover:text-kx-accent">{school.schoolName}</h3>
+          <p className="line-clamp-1 text-xs text-kx-muted">{school.schoolNameJp || school.schoolNameEn}</p>
+        </div>
+        <span className="shrink-0 rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">{typeLabel}</span>
+      </div>
+      <p className="mt-2 line-clamp-2 text-xs leading-5 text-kx-subtle">{school.shortDescription || school.description}</p>
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {school.isAcceptingInternationalStudents ? (
+          <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">留学生可申请</span>
+        ) : null}
+        {school.hasEnglishProgram ? (
+          <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">英文项目</span>
+        ) : null}
+        {school.fieldsOfStudy.slice(0, 2).map((field) => (
+          <span key={field} className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">{field}</span>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center justify-between text-[11px] text-kx-muted">
+        <span>{school.prefecture || guideCityLabel(school.city)} · {guideCityLabel(school.city)}</span>
+        <span>{school.verificationStatus === "needs_review" ? "编辑部维护" : "已核验"}</span>
+      </div>
+    </Link>
+  );
+}
+
+export function CompanyCard({ company }: { company: GuideCompany }) {
+  return (
+    <Link
+      href={`/guide/companies/${company.slug || company.id}`}
+      className="group block rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+    >
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <h3 className="truncate text-[15px] font-black text-kx-text group-hover:text-kx-accent">{company.companyName}</h3>
+          {company.companyNameJp ? <p className="truncate text-xs text-kx-muted">{company.companyNameJp}</p> : null}
+        </div>
+        <span className="shrink-0 rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">{company.industry || "公司"}</span>
+      </div>
+      <p className="mt-2 line-clamp-2 text-xs leading-5 text-kx-subtle">{company.shortDescription || company.description}</p>
+      <div className="mt-3 flex flex-wrap gap-1.5">
+        {company.supportsWorkVisa ? (
+          <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">签证支持</span>
+        ) : null}
+        {company.hasEnglishPositions ? (
+          <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">英文岗位</span>
+        ) : null}
+        <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">
+          日语 {company.requiredJapaneseLevel && company.requiredJapaneseLevel !== "unknown" ? company.requiredJapaneseLevel.toUpperCase() : "未确认"}
+        </span>
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-kx-muted">
+        <span>{guideCityLabel(company.city)}</span>
+        {company.foundedYear ? <span>成立 {company.foundedYear}</span> : null}
+        <span className={company.reviewCount > 0 ? "text-kx-accent" : ""}>
+          {company.reviewCount > 0 ? `${company.reviewCount} 条评价` : "暂无评价"}
+        </span>
+      </div>
+    </Link>
+  );
+}
+
+export function GoalChip({ goal }: { goal: GuideGoalEntry }) {
+  const href = `${categoryHref(goal.categoryKey)}${goal.subCategoryKey ? `?sub=${goal.subCategoryKey}` : ""}`;
+  return (
+    <Link
+      href={href}
+      className="flex items-center gap-2 rounded-full border border-kx-stroke/60 bg-kx-card px-3.5 py-2 text-sm font-semibold text-kx-text transition hover:border-kx-accent/50 hover:text-kx-accent"
+    >
+      <span className="text-kx-accent">→</span>
+      {goal.title}
+    </Link>
+  );
+}

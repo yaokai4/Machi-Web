@@ -9,7 +9,6 @@ import { AppShell } from "@/components/shell/AppShell";
 import { PostCard } from "@/components/feed/PostCard";
 import { ChannelEmptyState } from "@/components/feed/ChannelEmptyState";
 import { ErrorState, PostSkeleton } from "@/components/design/States";
-import { LocalNewsStrip } from "@/components/news/LocalNewsStrip";
 import { api } from "@/lib/api";
 import {
   CITY_PRIMARY_CATEGORIES,
@@ -168,7 +167,6 @@ export default function CityChannelPage({
       </header>
 
       <div className="px-3 sm:px-4 py-3 space-y-3">
-        <LocalNewsStrip country={country} city={city} title="本地快讯" variant="city" />
         {feed.isLoading ? (
           <>
             <PostSkeleton />

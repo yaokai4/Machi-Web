@@ -1,5 +1,5 @@
-import { NewsListClient } from "@/components/news/NewsListClient";
+import { redirect } from "next/navigation";
 
-export default function TokyoNewsPage() {
-  return <NewsListClient presetCity="tokyo" title="东京资讯" subtitle="东京交通、活动、区役所通知和城市生活提醒。" />;
+export default function TokyoNewsRedirectPage() {
+  redirect("/guide");
 }

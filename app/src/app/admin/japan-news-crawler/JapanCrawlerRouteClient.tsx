@@ -34,8 +34,11 @@ export function JapanCrawlerRouteClient({ tab }: { tab: Tab }) {
     <AppShell>
       <main className="mx-auto w-full max-w-5xl px-4 py-4">
         <header className="mb-3">
-          <div className="text-xs font-bold text-kx-accent">Japan Local News Desk</div>
+          <div className="text-xs font-bold text-kx-accent">Japan Local News Desk · Deprecated</div>
           <h1 className="text-2xl font-black">日本资讯爬虫</h1>
+          <p className="mt-1 text-xs leading-5 text-kx-muted">
+            已从前台下线，仅作为历史兼容与人工维护入口保留。Machi Guide / 日本指南不再读取爬虫内容。
+          </p>
         </header>
         <div className="kx-card mb-3 p-2">
           <NavTabs
@@ -372,7 +375,7 @@ function Logs() {
 
 function PostLink({ post }: { post: EditorialPost }) {
   return (
-    <Link href={`/news/${post.id}`} className="block rounded-kx-md bg-kx-soft px-3 py-2 hover:bg-kx-stroke/30">
+    <Link href="/guide" className="block rounded-kx-md bg-kx-soft px-3 py-2 hover:bg-kx-stroke/30">
       <div className="line-clamp-1 text-sm font-bold">{post.title}</div>
       <div className="mt-0.5 text-xs text-kx-muted">{post.author_display_name} · {post.city || "Japan-wide"} · {post.published_at ? relativeTime(post.published_at) : post.status}</div>
     </Link>
