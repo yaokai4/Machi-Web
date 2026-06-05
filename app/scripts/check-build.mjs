@@ -145,6 +145,29 @@ if (fs.existsSync(manifestPath)) {
   }
 }
 
+// ----- Check #2b: server runtime chunks exist where webpack-runtime expects -----
+// Some Next 15.5 builds emit numeric server chunks at `.next/server/1234.js`
+// while the generated webpack runtime loads them from
+// `.next/server/chunks/1234.js`. That mismatch returns 500 for every page
+// at `next start`, even though the static app manifest can look healthy.
+const serverDir = path.join(nextDir, "server");
+const serverChunksDir = path.join(serverDir, "chunks");
+const runtimePath = path.join(serverDir, "webpack-runtime.js");
+if (fs.existsSync(runtimePath) && fs.readFileSync(runtimePath, "utf8").includes('require("./chunks/"')) {
+  const numericServerChunks = fs
+    .readdirSync(serverDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && /^\d+\.js$/.test(entry.name))
+    .map((entry) => entry.name);
+  const missingServerChunks = numericServerChunks.filter((file) => !fs.existsSync(path.join(serverChunksDir, file)));
+  if (missingServerChunks.length > 0) {
+    console.error(`[check-build] FAILED — ${missingServerChunks.length} server runtime chunks are missing from .next/server/chunks:`);
+    for (const file of missingServerChunks.slice(0, 20)) console.error(`  • ${file}`);
+    if (missingServerChunks.length > 20) console.error(`  • ...and ${missingServerChunks.length - 20} more`);
+    console.error("\nRun: npm run build (post-build repair copies these chunks into place).");
+    process.exit(1);
+  }
+}
+
 // ----- Check #3: every static page route HTTP-GETs to <500 -----
 function collectRoutes(dir, relative, out) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

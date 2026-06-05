@@ -31,6 +31,16 @@ import type {
   KXMembershipStatus,
   KXMembershipInsights,
   PaymentProvider,
+  KXCityListing,
+  KXCreateListingPayload,
+  KXListingInquiry,
+  KXListingType,
+  KXReputationBadge,
+  KXReputationEvent,
+  KXReputationLevel,
+  KXReputationPrivilege,
+  KXReputationProfile,
+  KXReputationReward,
 } from "./types";
 
 const TOKEN_KEY = "machi.token";
@@ -120,6 +130,13 @@ export type LoginStartResult =
   | { requires_code: true; challenge_id: string; email_hint: string; expires_in: number }
   | { requires_code: false; token: string; user: KXUser };
 
+export type GoogleAuthStartResult = {
+  authorization_url: string;
+  url?: string;
+  state: string;
+  expires_in: number;
+};
+
 // Admin-only visitor access-log row. The full IP + resolved region are
 // included here intentionally — this endpoint is gated behind require_admin
 // on the server and is never reachable by ordinary users.
@@ -147,6 +164,37 @@ export type VisitorSummary = {
   top_countries: Array<{ country: string; count: number }>;
   top_cities: Array<{ city: string; country: string; count: number }>;
   geoip: string;
+};
+
+export type SiteSettings = Record<
+  | "site_title"
+  | "site_title_zh"
+  | "site_title_en"
+  | "site_title_ja"
+  | "site_description_zh"
+  | "site_description_en"
+  | "site_description_ja"
+  | "logo_url"
+  | "og_image_url"
+  | "support_email"
+  | "discover_entrances",
+  string
+>;
+
+export type AdminMediaItem = KXMedia & {
+  owner_handle?: string;
+  owner_name?: string;
+  display_name?: string;
+};
+
+export type ServerMetrics = {
+  server_time: string;
+  load_average: { one: number; five: number; fifteen: number };
+  cpu: { count: number; load_percent: number };
+  memory: { total_bytes: number; available_bytes: number; used_bytes: number; used_percent: number | null };
+  disk: { path: string; total_bytes: number; used_bytes: number; free_bytes: number; used_percent: number | null };
+  network: { rx_bytes: number; tx_bytes: number };
+  process: { pid: number; threads: number };
 };
 
 export type NewsCategory =
@@ -304,7 +352,7 @@ export type NewsItemsQuery = {
   limit?: number;
 };
 
-const DEFAULT_TIMEOUT_MS = 20_000;
+const DEFAULT_TIMEOUT_MS = 12_000;
 const RETRYABLE_METHODS = new Set(["GET", "HEAD"]);
 
 async function request<T>(method: string, path: string, body?: unknown, init?: RequestInit): Promise<T> {
@@ -410,6 +458,20 @@ export const api = {
     writeToken(data.token);
     return data;
   },
+  async googleAuthStart(client: "web" | "ios" = "web", redirect = "/home"): Promise<GoogleAuthStartResult> {
+    const params = new URLSearchParams({ client, redirect });
+    return request("GET", `/api/auth/google/start?${params.toString()}`);
+  },
+  // Bind Google to the CURRENT (logged-in) account. The backend captures the
+  // active user from the bearer token here, so the later browser callback can
+  // only ever attach Google to *this* account — never sign in as someone else.
+  async googleLinkStart(redirect = "/settings"): Promise<GoogleAuthStartResult> {
+    const params = new URLSearchParams({ client: "web", intent: "link", redirect });
+    return request("GET", `/api/auth/google/start?${params.toString()}`);
+  },
+  async googleUnlink(): Promise<{ ok: boolean; user?: KXUser; message?: string }> {
+    return request("POST", "/api/auth/google/unlink");
+  },
   async register(payload: {
     handle: string;
     display_name: string;
@@ -419,6 +481,7 @@ export const api = {
     // enforces verification (KAIX_REQUIRE_EMAIL_VERIFICATION) or whenever a
     // code is supplied; older callers that omit it keep the legacy flow.
     code?: string;
+    language?: string;
     country?: string;
     province?: string;
     city?: string;
@@ -780,6 +843,117 @@ export const api = {
     await request<void>("POST", `/api/posts/${encodeURIComponent(id)}/report`, { reason, note });
   },
 
+  // ---- structured city listings ----
+  async listings(opts: {
+    type: KXListingType;
+    city_slug?: string;
+    city?: string;
+    country?: string;
+    region_code?: string;
+    category?: string;
+    q?: string;
+    sort?: string;
+    min_price?: number | string;
+    max_price?: number | string;
+    status?: string;
+    owner?: "me";
+    limit?: number;
+  }): Promise<{ items: KXCityListing[]; next_cursor: string | null; type: KXListingType }> {
+    const params = new URLSearchParams({ type: opts.type });
+    for (const [key, value] of Object.entries(opts)) {
+      if (key === "type" || value == null || value === "") continue;
+      params.set(key, String(value));
+    }
+    return request("GET", `/api/listings?${params.toString()}`);
+  },
+  async listing(id: string): Promise<KXCityListing> {
+    const { listing } = await request<{ listing: KXCityListing }>("GET", `/api/listings/${encodeURIComponent(id)}`);
+    return listing;
+  },
+  async createListing(payload: KXCreateListingPayload): Promise<KXCityListing> {
+    const { listing } = await request<{ listing: KXCityListing }>("POST", `/api/listings`, payload);
+    return listing;
+  },
+  async updateListing(id: string, patch: Partial<KXCreateListingPayload> & { status?: string }): Promise<KXCityListing> {
+    const { listing } = await request<{ listing: KXCityListing }>("PATCH", `/api/listings/${encodeURIComponent(id)}`, patch);
+    return listing;
+  },
+  async deleteListing(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/listings/${encodeURIComponent(id)}`);
+  },
+  async favoriteListing(id: string, on: boolean): Promise<void> {
+    await request<void>(on ? "POST" : "DELETE", `/api/listings/${encodeURIComponent(id)}/favorite`);
+  },
+  async reportListing(id: string, reason: string, note?: string): Promise<void> {
+    await request<void>("POST", `/api/listings/${encodeURIComponent(id)}/report`, { reason, note });
+  },
+  async contactListing(id: string, message: string, contactValue?: string, details?: { label: string; value: string }[]): Promise<{ ok: boolean; message: string; conversation_id?: string; conversationId?: string }> {
+    return request("POST", `/api/listings/${encodeURIComponent(id)}/inquiry`, { message, contact_value: contactValue || "", details: details || [] });
+  },
+  async myListings(type: KXListingType = "secondhand"): Promise<KXCityListing[]> {
+    const { items } = await request<{ items: KXCityListing[] }>("GET", `/api/my/listings?type=${encodeURIComponent(type)}`);
+    return items;
+  },
+  async savedListings(type: KXListingType = "secondhand"): Promise<KXCityListing[]> {
+    const { items } = await request<{ items: KXCityListing[] }>("GET", `/api/my/saved-listings?type=${encodeURIComponent(type)}`);
+    return items;
+  },
+  async myListingInquiries(opts: { role?: "all" | "sent" | "received"; type?: KXListingType | string; status?: string } = {}): Promise<KXListingInquiry[]> {
+    const params = new URLSearchParams();
+    if (opts.role) params.set("role", opts.role);
+    if (opts.type) params.set("type", opts.type);
+    if (opts.status) params.set("status", opts.status);
+    const { items } = await request<{ items: KXListingInquiry[] }>("GET", `/api/my/listing-inquiries?${params.toString()}`);
+    return items;
+  },
+  async myApplications(): Promise<KXListingInquiry[]> {
+    const { items } = await request<{ items: KXListingInquiry[] }>("GET", `/api/my/applications`);
+    return items;
+  },
+  async myBookings(): Promise<{ items: KXListingInquiry[]; guide_service_requests: Array<Record<string, unknown>> }> {
+    return request("GET", `/api/my/bookings`);
+  },
+  async updateListingInquiry(id: string, patch: { status: "new" | "replied" | "closed" | "spam" | "reported" | string }): Promise<KXListingInquiry> {
+    const { inquiry } = await request<{ inquiry: KXListingInquiry }>("PATCH", `/api/listing-inquiries/${encodeURIComponent(id)}`, patch);
+    return inquiry;
+  },
+  async myServiceAppointments(): Promise<{ items: KXListingInquiry[]; guide_service_requests: Array<Record<string, unknown>> }> {
+    return request("GET", `/api/my/service-appointments`);
+  },
+  async myOrders(): Promise<{ items: Array<Record<string, unknown>>; membership_orders: Array<Record<string, unknown>>; guide_orders: Array<Record<string, unknown>> }> {
+    return request("GET", `/api/my/orders`);
+  },
+
+  // ---- Machi City Reputation ----
+  async reputationMe(): Promise<KXReputationProfile> {
+    const { data } = await request<{ data: KXReputationProfile }>("GET", `/api/reputation/me`);
+    return data;
+  },
+  async reputationUser(userId: string): Promise<KXReputationProfile> {
+    const { data } = await request<{ data: KXReputationProfile }>("GET", `/api/reputation/users/${encodeURIComponent(userId)}`);
+    return data;
+  },
+  async reputationLogsMe(limit = 60): Promise<KXReputationEvent[]> {
+    const { items } = await request<{ items: KXReputationEvent[] }>("GET", `/api/reputation/logs/me?limit=${encodeURIComponent(String(limit))}`);
+    return items;
+  },
+  async reputationBadges(): Promise<KXReputationBadge[]> {
+    const { items } = await request<{ items: KXReputationBadge[] }>("GET", `/api/reputation/badges`);
+    return items;
+  },
+  async reputationRewardsMe(): Promise<KXReputationReward[]> {
+    const { items } = await request<{ items: KXReputationReward[] }>("GET", `/api/reputation/rewards/me`);
+    return items;
+  },
+  async reputationLevels(): Promise<KXReputationLevel[]> {
+    const { items } = await request<{ items: KXReputationLevel[] }>("GET", `/api/reputation/levels`);
+    return items;
+  },
+  async reputationPrivileges(): Promise<KXReputationPrivilege[]> {
+    const { items } = await request<{ items: KXReputationPrivilege[] }>("GET", `/api/reputation/privileges`);
+    return items;
+  },
+
   // ---- comments ----
   async comments(postId: string, sort: "top" | "new" = "top"): Promise<KXComment[]> {
     const { items } = await request<{ items: KXComment[] }>("GET", `/api/posts/${encodeURIComponent(postId)}/comments?sort=${sort}`);
@@ -800,7 +974,7 @@ export const api = {
   },
 
   // ---- search / topics ----
-  async search(q: string, kind: "all" | "post" | "user" | "topic" = "all"): Promise<{ posts: KXPost[]; users: KXUser[]; topics: KXTrendingTopic[] }> {
+  async search(q: string, kind: "all" | "post" | "listing" | "user" | "topic" = "all"): Promise<{ posts: KXPost[]; listings: KXCityListing[]; users: KXUser[]; topics: KXTrendingTopic[] }> {
     const params = new URLSearchParams({ q, kind });
     return request("GET", `/api/search?${params.toString()}`);
   },
@@ -813,6 +987,17 @@ export const api = {
   },
   async trending(): Promise<{ posts: KXPost[]; topics: KXTrendingTopic[]; users: KXUser[] }> {
     return request("GET", `/api/trending`);
+  },
+  async trendingWeeklyLikes(opts: { limit?: number; days?: number; region_code?: string; country?: string; province?: string; city?: string } = {}): Promise<{ items: KXPost[]; posts: KXPost[]; days: number; metric: "weekly_likes" }> {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.days) params.set("days", String(opts.days));
+    if (opts.region_code) params.set("region_code", opts.region_code);
+    if (opts.country) params.set("country", opts.country);
+    if (opts.province) params.set("province", opts.province);
+    if (opts.city) params.set("city", opts.city);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request("GET", `/api/trending/weekly-likes${suffix}`);
   },
   async topics(): Promise<{ topics: KXTrendingTopic[]; items: KXTrendingTopic[] }> {
     return request("GET", `/api/topics`);
@@ -902,10 +1087,41 @@ export const api = {
   async revokeDevice(id: string): Promise<void> {
     await request<void>("DELETE", `/api/devices/${encodeURIComponent(id)}`);
   },
+  async siteSettings(): Promise<SiteSettings> {
+    const { settings } = await request<{ settings: SiteSettings }>("GET", `/api/site-settings`);
+    return settings;
+  },
 
   // ---- admin ----
   async adminStats(): Promise<{ stats: Record<string, unknown> }> {
     return request("GET", `/api/admin/stats`);
+  },
+  async adminServerMetrics(): Promise<ServerMetrics> {
+    const { metrics } = await request<{ metrics: ServerMetrics }>("GET", `/api/admin/server-metrics`);
+    return metrics;
+  },
+  async adminMedia(opts: { limit?: number; type?: "image" | "video" | "file"; q?: string; scope?: "admin" | "all" } = {}): Promise<AdminMediaItem[]> {
+    const usp = new URLSearchParams();
+    if (opts.limit) usp.set("limit", String(opts.limit));
+    if (opts.type) usp.set("type", opts.type);
+    if (opts.q) usp.set("q", opts.q);
+    if (opts.scope) usp.set("scope", opts.scope);
+    const { items } = await request<{ items: AdminMediaItem[] }>("GET", `/api/admin/media?${usp.toString()}`);
+    return items;
+  },
+  async adminUploadMedia(file: File): Promise<KXMedia> {
+    const form = new FormData();
+    form.append("file", file, file.name || "upload");
+    const { media } = await request<{ media: KXMedia }>("POST", `/api/admin/media/upload`, form);
+    return media;
+  },
+  async adminSiteSettings(): Promise<SiteSettings> {
+    const { settings } = await request<{ settings: SiteSettings }>("GET", `/api/admin/site-settings`);
+    return settings;
+  },
+  async adminUpdateSiteSettings(patch: Partial<SiteSettings>): Promise<SiteSettings> {
+    const { settings } = await request<{ settings: SiteSettings }>("PATCH", `/api/admin/site-settings`, patch);
+    return settings;
   },
   // Admin-only access log (visitor IP + resolved region + rollups). Requires
   // an admin session; ordinary users get 401/403 from the server.
@@ -918,6 +1134,44 @@ export const api = {
     if (opts.days) usp.set("days", String(opts.days));
     if (opts.q) usp.set("q", opts.q);
     return request("GET", `/api/admin/visitors?${usp.toString()}`);
+  },
+  async adminReputationUsers(opts: { q?: string; status?: string } = {}): Promise<Array<{ user: KXUser; reputation: KXReputationProfile }>> {
+    const usp = new URLSearchParams();
+    if (opts.q) usp.set("q", opts.q);
+    if (opts.status) usp.set("status", opts.status);
+    const { items } = await request<{ items: Array<{ user: KXUser; reputation: KXReputationProfile }> }>("GET", `/api/reputation/admin/users?${usp.toString()}`);
+    return items;
+  },
+  async adminReputationEvents(opts: { user_id?: string; rule_key?: string } = {}): Promise<KXReputationEvent[]> {
+    const usp = new URLSearchParams();
+    if (opts.user_id) usp.set("user_id", opts.user_id);
+    if (opts.rule_key) usp.set("rule_key", opts.rule_key);
+    const { items } = await request<{ items: KXReputationEvent[] }>("GET", `/api/reputation/admin/events?${usp.toString()}`);
+    return items;
+  },
+  async adminReputationRisk(minRisk = 31): Promise<Array<Record<string, unknown>>> {
+    const { items } = await request<{ items: Array<Record<string, unknown>> }>("GET", `/api/reputation/admin/risk?min_risk=${encodeURIComponent(String(minRisk))}`);
+    return items;
+  },
+  async adminReputationAdjust(payload: { user_id: string; xp_delta?: number; reputation_delta?: number; risk_delta?: number; reason: string }): Promise<KXReputationProfile> {
+    const { reputation } = await request<{ reputation: KXReputationProfile }>("POST", `/api/reputation/admin/adjust`, payload);
+    return reputation;
+  },
+  async adminReputationGrantBadge(payload: { user_id: string; badge_key: string; reason: string }): Promise<KXReputationProfile> {
+    const { reputation } = await request<{ reputation: KXReputationProfile }>("POST", `/api/reputation/admin/grant-badge`, payload);
+    return reputation;
+  },
+  async adminReputationRevokeBadge(payload: { user_id: string; badge_key: string; reason: string }): Promise<KXReputationProfile> {
+    const { reputation } = await request<{ reputation: KXReputationProfile }>("POST", `/api/reputation/admin/revoke-badge`, payload);
+    return reputation;
+  },
+  async adminReputationFreeze(payload: { user_id: string; days?: number; reason: string }): Promise<KXReputationProfile> {
+    const { reputation } = await request<{ reputation: KXReputationProfile }>("POST", `/api/reputation/admin/freeze`, payload);
+    return reputation;
+  },
+  async adminReputationUnfreeze(payload: { user_id: string; reason?: string }): Promise<KXReputationProfile> {
+    const { reputation } = await request<{ reputation: KXReputationProfile }>("POST", `/api/reputation/admin/unfreeze`, payload);
+    return reputation;
   },
   async adminUsers(q?: string): Promise<KXUser[]> {
     const usp = new URLSearchParams();
@@ -949,6 +1203,50 @@ export const api = {
   },
   async adminDeletePost(id: string): Promise<void> {
     await request<void>("DELETE", `/api/admin/posts/${encodeURIComponent(id)}`);
+  },
+  async adminListings(opts: { q?: string; type?: KXListingType | string; status?: string; verification_status?: string; city?: string } = {}): Promise<KXCityListing[]> {
+    const usp = new URLSearchParams();
+    if (opts.q) usp.set("q", opts.q);
+    if (opts.type) usp.set("type", opts.type);
+    if (opts.status) usp.set("status", opts.status);
+    if (opts.verification_status) usp.set("verification_status", opts.verification_status);
+    if (opts.city) usp.set("city", opts.city);
+    const { items } = await request<{ items: KXCityListing[] }>("GET", `/api/admin/listings?${usp.toString()}`);
+    return items;
+  },
+  async adminUpdateListing(id: string, patch: { status?: string; verification_status?: string; title?: string; description?: string; price?: number | null; location_text?: string; is_promoted?: boolean; promotion_weight?: number; promotion_type?: string; placement?: string; note?: string }): Promise<KXCityListing> {
+    const { listing } = await request<{ listing: KXCityListing }>("PATCH", `/api/admin/listings/${encodeURIComponent(id)}`, patch);
+    return listing;
+  },
+  async adminListingReports(status = "open"): Promise<Array<Record<string, unknown>>> {
+    const { items } = await request<{ items: Array<Record<string, unknown>> }>("GET", `/api/admin/listing-reports?status=${encodeURIComponent(status)}`);
+    return items;
+  },
+  async adminListingPromotions(opts: { status?: string; promotion_type?: string; city?: string } = {}): Promise<Array<Record<string, unknown>>> {
+    const usp = new URLSearchParams();
+    if (opts.status) usp.set("status", opts.status);
+    if (opts.promotion_type) usp.set("promotion_type", opts.promotion_type);
+    if (opts.city) usp.set("city", opts.city);
+    const { items } = await request<{ items: Array<Record<string, unknown>> }>("GET", `/api/admin/listings/promotions?${usp.toString()}`);
+    return items;
+  },
+  async adminCreateListingPromotion(payload: { listing_id: string; promotion_type: string; placement?: string; weight?: number; starts_at?: string; ends_at?: string }): Promise<Record<string, unknown>> {
+    const { promotion } = await request<{ promotion: Record<string, unknown> }>("POST", `/api/admin/listings/promotions`, payload);
+    return promotion;
+  },
+  async adminListingVerifications(opts: { status?: string; subject_type?: string } = {}): Promise<Array<Record<string, unknown>>> {
+    const usp = new URLSearchParams();
+    if (opts.status) usp.set("status", opts.status);
+    if (opts.subject_type) usp.set("subject_type", opts.subject_type);
+    const { items } = await request<{ items: Array<Record<string, unknown>> }>("GET", `/api/admin/seller-verifications?${usp.toString()}`);
+    return items;
+  },
+  async adminBusinesses(opts: { status?: string; verification_status?: string } = {}): Promise<Array<Record<string, unknown>>> {
+    const usp = new URLSearchParams();
+    if (opts.status) usp.set("status", opts.status);
+    if (opts.verification_status) usp.set("verification_status", opts.verification_status);
+    const { items } = await request<{ items: Array<Record<string, unknown>> }>("GET", `/api/admin/businesses?${usp.toString()}`);
+    return items;
   },
   async adminComments(): Promise<KXComment[]> {
     const { items } = await request<{ items: KXComment[] }>("GET", `/api/admin/comments`);

@@ -33,15 +33,15 @@ export const REGION_COUNTRIES: RegionCountry[] = [
   { code: "cn", name: "中国", emoji: "🇨🇳", tier: 1, has_provinces: true },
   { code: "jp", name: "日本", emoji: "🇯🇵", tier: 1, has_provinces: true },
   { code: "us", name: "美国", emoji: "🇺🇸", tier: 1, has_provinces: true },
-  { code: "uk", name: "英国", emoji: "🇬🇧", tier: 2, has_provinces: false },
-  { code: "ca", name: "加拿大", emoji: "🇨🇦", tier: 2, has_provinces: false },
-  { code: "au", name: "澳大利亚", emoji: "🇦🇺", tier: 2, has_provinces: false },
   { code: "sg", name: "新加坡", emoji: "🇸🇬", tier: 2, has_provinces: false },
   { code: "kr", name: "韩国", emoji: "🇰🇷", tier: 2, has_provinces: false },
+  { code: "uk", name: "英国", emoji: "🇬🇧", tier: 2, has_provinces: false },
+  { code: "fr", name: "法国", emoji: "🇫🇷", tier: 2, has_provinces: false },
+  { code: "au", name: "澳大利亚", emoji: "🇦🇺", tier: 2, has_provinces: false },
+  { code: "ca", name: "加拿大", emoji: "🇨🇦", tier: 2, has_provinces: false },
   { code: "th", name: "泰国", emoji: "🇹🇭", tier: 3, has_provinces: false },
   { code: "my", name: "马来西亚", emoji: "🇲🇾", tier: 3, has_provinces: false },
   { code: "de", name: "德国", emoji: "🇩🇪", tier: 3, has_provinces: false },
-  { code: "fr", name: "法国", emoji: "🇫🇷", tier: 3, has_provinces: false },
   { code: "nl", name: "荷兰", emoji: "🇳🇱", tier: 3, has_provinces: false },
 ];
 
@@ -168,15 +168,48 @@ export const REGION_CITIES: Record<string, RegionCity[]> = {
   il: [{ code: "chicago", name: "芝加哥" }],
   ma: [{ code: "boston", name: "波士顿" }],
   nj: [{ code: "newark", name: "纽瓦克" }],
-  uk: [{ code: "london", name: "伦敦" }, { code: "manchester", name: "曼彻斯特" }, { code: "edinburgh", name: "爱丁堡" }],
+  uk: [
+    { code: "london", name: "伦敦" },
+    { code: "manchester", name: "曼彻斯特" },
+    { code: "edinburgh", name: "爱丁堡" },
+    { code: "birmingham", name: "伯明翰" },
+    { code: "glasgow", name: "格拉斯哥" },
+    { code: "liverpool", name: "利物浦" },
+    { code: "leeds", name: "利兹" },
+    { code: "bristol", name: "布里斯托" },
+    { code: "cambridge", name: "剑桥" },
+    { code: "oxford", name: "牛津" },
+  ],
   ca_flat: [{ code: "toronto", name: "多伦多" }, { code: "vancouver", name: "温哥华" }, { code: "montreal", name: "蒙特利尔" }],
-  au: [{ code: "sydney", name: "悉尼" }, { code: "melbourne", name: "墨尔本" }, { code: "brisbane", name: "布里斯班" }, { code: "perth", name: "珀斯" }],
+  au: [
+    { code: "sydney", name: "悉尼" },
+    { code: "melbourne", name: "墨尔本" },
+    { code: "brisbane", name: "布里斯班" },
+    { code: "perth", name: "珀斯" },
+    { code: "adelaide", name: "阿德莱德" },
+    { code: "canberra", name: "堪培拉" },
+    { code: "goldcoast", name: "黄金海岸" },
+  ],
   sg: [{ code: "singapore", name: "新加坡" }],
-  kr: [{ code: "seoul", name: "首尔" }, { code: "busan", name: "釜山" }],
+  kr: [
+    { code: "seoul", name: "首尔" },
+    { code: "busan", name: "釜山" },
+    { code: "incheon", name: "仁川" },
+    { code: "daegu", name: "大邱" },
+    { code: "daejeon", name: "大田" },
+    { code: "gwangju", name: "光州" },
+  ],
   th: [{ code: "bangkok", name: "曼谷" }, { code: "chiangmai", name: "清迈" }, { code: "phuket", name: "普吉" }],
   my: [{ code: "kl", name: "吉隆坡" }, { code: "penang", name: "槟城" }],
   de: [{ code: "berlin", name: "柏林" }, { code: "munich", name: "慕尼黑" }, { code: "hamburg", name: "汉堡" }],
-  fr: [{ code: "paris", name: "巴黎" }, { code: "lyon", name: "里昂" }],
+  fr: [
+    { code: "paris", name: "巴黎" },
+    { code: "lyon", name: "里昂" },
+    { code: "marseille", name: "马赛" },
+    { code: "toulouse", name: "图卢兹" },
+    { code: "nice", name: "尼斯" },
+    { code: "bordeaux", name: "波尔多" },
+  ],
   nl: [{ code: "amsterdam", name: "阿姆斯特丹" }],
 };
 
@@ -202,6 +235,7 @@ export const POPULAR_REGION_CODES = [
   "ca.toronto", "ca.vancouver", "ca.montreal",
   "au.sydney", "au.melbourne",
   "uk.london",
+  "fr.paris",
   "sg.singapore", "kr.seoul",
   "th.bangkok",
 ];
@@ -302,6 +336,20 @@ export function regionShortLabel(region?: RegionInfo): string {
   if (!region) return "选择城市";
   if (region.province_name && region.province_code !== region.city_code) return `${region.city_name} · ${region.province_name}`;
   return region.city_name;
+}
+
+export function regionAccountPatch(region: RegionInfo): {
+  country: string;
+  province: string;
+  city: string;
+  current_region_code: string;
+} {
+  return {
+    country: region.country_code,
+    province: region.province_code,
+    city: region.city_code,
+    current_region_code: region.region_code,
+  };
 }
 
 export function popularRegions(): RegionInfo[] {

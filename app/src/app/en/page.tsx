@@ -4,9 +4,9 @@ import { MarketingPageContent } from "@/components/marketing/MarketingPageConten
 import { marketingCopy } from "@/data/machi-home";
 import { localeAlternates } from "@/lib/marketing-locale";
 
-const title = "Machi | Find the Echoes of Life in Every City | Local Life & Social Community";
+const title = "Machi City | Find the echoes of life in every city";
 const description =
-  "Machi is a local life and social community organized by city and language, helping people discover housing, jobs, secondhand deals, events, dining, Q&A, local tips and trusted services — and meet local friends, dining buddies, event companions and language exchange partners.";
+  "Machi is a city-based local life and social community platform organized by country, city and language. Discover housing, secondhand deals, jobs, events, Q&A, local services, business offers and real city-life experience.";
 
 export const metadata: Metadata = {
   title: { absolute: title },

@@ -12,6 +12,7 @@ const socialCopy: Record<
     label: string;
     title: string;
     body: string;
+    note: string;
     city: string;
     peopleTitle: string;
     peopleMeta: string;
@@ -21,52 +22,55 @@ const socialCopy: Record<
   }
 > = {
   zh: {
-    label: "Social Connection",
-    title: "不只是找信息，也是在城市里认识人。",
-    body: "饭搭子、咖啡搭子、活动搭子、运动搭子、语言交换伙伴、周末同行、新朋友、本地互助、同城兴趣小组，以及初到城市的生活支持。",
-    city: "Tokyo · 同城连接",
-    peopleTitle: "附近的人",
-    peopleMeta: "同城朋友 · 饭搭子 · 语言交换",
-    chips: ["饭搭子", "咖啡搭子", "活动搭子", "运动搭子", "语言交换伙伴", "周末同行", "新朋友", "本地互助", "同城兴趣小组", "初到城市的生活支持"],
+    label: "City Community",
+    title: "不只是本地信息，也是一座城市的社区入口。",
+    body: "Machi 帮助用户发现本地信息、分享真实生活经验、提出问题、参与公开城市讨论、找到语言交换小组、了解本地活动，并加入围绕城市生活展开的社区互动。",
+    note: "Machi 的社交功能围绕公开城市话题、本地小组、社区讨论、活动、语言交换、问答、租房、工作、本地服务和日常城市生活展开。",
+    city: "Tokyo · 同城社区",
+    peopleTitle: "同城社区",
+    peopleMeta: "城市话题 · 本地小组 · 语言交换",
+    chips: ["美食聚会", "本地咖啡讨论", "活动小组", "运动小组", "语言交换小组", "周末本地活动", "社区连接", "本地互助", "同城兴趣小组", "初到城市的生活支持"],
     cards: [
-      { title: "饭搭子卡片", body: "周五涩谷拉面，有人一起吗？", meta: "3 people nearby", icon: "dining" },
-      { title: "语言交换卡片", body: "EN / 日本語 exchange near Shibuya.", meta: "12 replies", icon: "language" },
-      { title: "活动搭子卡片", body: "周末展览 + 咖啡，有同行吗？", meta: "5 interested", icon: "event" },
-      { title: "本地互助卡片", body: "刚到东京，想问办卡和找房顺序。", meta: "Answered by locals", icon: "help" },
+      { title: "美食聚会讨论", body: "周五涩谷拉面聚会，有人想一起讨论吗？", meta: "3 条社区回复", icon: "dining" },
+      { title: "语言交换小组", body: "涩谷附近 EN / 日本語 语言交换小组。", meta: "12 条回复", icon: "language" },
+      { title: "本地活动讨论", body: "周末展览 + 咖啡的本地活动讨论。", meta: "5 人感兴趣", icon: "event" },
+      { title: "本地互助", body: "刚到东京，想问办卡和找房的顺序。", meta: "本地用户已解答", icon: "help" },
     ],
-    bubbles: ["我也在附近，可以一起去。", "先约公共场所比较安心。"],
+    bubbles: ["我也对这个本地活动感兴趣。", "线下社区活动请选择公共场所，并遵守安全提示。"],
   },
   en: {
-    label: "Social Connection",
-    title: "More than local information — meet people in your city.",
-    body: "Dining buddies, coffee companions, event companions, sports partners, language exchange partners, weekend plans, new friends, local help, city-based interest groups and support when you are new to a city.",
-    city: "Tokyo · Local connections",
-    peopleTitle: "People nearby",
-    peopleMeta: "local friends · dining buddies · language exchange",
-    chips: ["dining buddies", "coffee companions", "event companions", "sports partners", "language exchange partners", "weekend plans", "new friends", "local help", "city-based interest groups", "support when you are new to a city"],
+    label: "City Community",
+    title: "More than local information — join your city community.",
+    body: "Machi helps people discover local information, share lived experience, ask questions, join public city discussions, find language exchange groups, explore local events, and participate in community activities.",
+    note: "Machi social features are built around public city topics, local groups, community discussions, events, language exchange, Q&A, housing, jobs, services, and everyday local life.",
+    city: "Tokyo · City community",
+    peopleTitle: "Local community",
+    peopleMeta: "city topics · local groups · language exchange",
+    chips: ["food meetups", "local café discussions", "event groups", "sports groups", "language exchange groups", "weekend community posts", "community connections", "local help", "city interest groups", "newcomer support"],
     cards: [
-      { title: "Dining buddy", body: "Ramen in Shibuya this Friday?", meta: "3 people nearby", icon: "dining" },
-      { title: "Language exchange", body: "EN / 日本語 exchange near Shibuya.", meta: "12 replies", icon: "language" },
-      { title: "Event companion", body: "Weekend gallery + coffee?", meta: "5 interested", icon: "event" },
+      { title: "Food meetup", body: "Shibuya ramen meetup discussion for this Friday.", meta: "3 community replies", icon: "dining" },
+      { title: "Language exchange group", body: "EN / 日本語 exchange group near Shibuya.", meta: "12 replies", icon: "language" },
+      { title: "Event participation", body: "Weekend local event discussion (gallery + coffee).", meta: "5 interested", icon: "event" },
       { title: "Local help", body: "New in Tokyo. What should I set up first?", meta: "Answered by locals", icon: "help" },
     ],
-    bubbles: ["I am nearby too. Want to join?", "Public places first feels safer."],
+    bubbles: ["I'm also interested in this local event.", "For offline community activities, meet in public places and follow safety guidelines."],
   },
   ja: {
-    label: "Social Connection",
-    title: "情報を探すだけでなく、同じ街の人とつながる。",
-    body: "食事仲間、カフェ仲間、イベント仲間、スポーツ仲間、言語交換パートナー、週末の予定、新しい友達、ローカルな助け合い、都市別の趣味グループ、新しい街での生活サポート。",
-    city: "Tokyo · 同じ街のつながり",
-    peopleTitle: "近くの人",
-    peopleMeta: "友達 · 食事仲間 · 言語交換",
-    chips: ["食事仲間", "カフェ仲間", "イベント仲間", "スポーツ仲間", "言語交換パートナー", "週末の予定", "新しい友達", "ローカルな助け合い", "都市別の趣味グループ", "新しい街での生活サポート"],
+    label: "City Community",
+    title: "地域情報だけではなく、街のコミュニティに参加する場所。",
+    body: "Machi は、地域情報の発見、生活経験の共有、質問、公開された都市トピックへの参加、言語交換グループ、地域イベント、コミュニティ活動への参加をサポートします。",
+    note: "Machi はデーティングサービスまたはマッチメイキングサービスではありません。ソーシャル機能は、公開された都市トピック、地域グループ、コミュニティ投稿、イベント、言語交換、Q&A、住まい、仕事、サービス、日常の地域生活を中心に設計されています。",
+    city: "Tokyo · 街のコミュニティ",
+    peopleTitle: "街のコミュニティ",
+    peopleMeta: "都市トピック · 地域グループ · 言語交換",
+    chips: ["食事の集まり", "地域カフェ討論", "イベントグループ", "スポーツグループ", "言語交換グループ", "週末の地域イベント", "コミュニティのつながり", "ローカルな助け合い", "都市別の趣味グループ", "新しい街での生活サポート"],
     cards: [
-      { title: "食事仲間", body: "金曜に渋谷でラーメンに行ける人？", meta: "3 people nearby", icon: "dining" },
-      { title: "言語交換", body: "EN / 日本語 exchange near Shibuya.", meta: "12 replies", icon: "language" },
-      { title: "イベント仲間", body: "週末の展示とカフェ、一緒に行ける人？", meta: "5 interested", icon: "event" },
-      { title: "ローカルな助け合い", body: "東京に来たばかり。手続きの順番を知りたい。", meta: "Answered by locals", icon: "help" },
+      { title: "食事の集まり", body: "金曜に渋谷でラーメンの集まりを相談。", meta: "コミュニティ返信 3 件", icon: "dining" },
+      { title: "言語交換グループ", body: "渋谷周辺の EN / 日本語 言語交換グループ。", meta: "返信 12 件", icon: "language" },
+      { title: "地域イベント", body: "週末の展示とカフェの地域イベント討論。", meta: "興味あり 5 人", icon: "event" },
+      { title: "ローカルな助け合い", body: "東京に来たばかり。手続きの順番を知りたい。", meta: "地域ユーザーが回答", icon: "help" },
     ],
-    bubbles: ["近くにいます。一緒に行けます。", "初回は公共の場所が安心です。"],
+    bubbles: ["この地域イベントに興味があります。", "オフラインのコミュニティ活動は公共の場所で、安全ガイドラインに従ってください。"],
   },
 };
 
@@ -101,6 +105,9 @@ export function SocialConnectionSection() {
           <p className="mt-5 max-w-2xl text-base leading-8 text-slate-700 sm:text-lg dark:text-slate-300">
             <BrandPhrase text={copy.body} />
           </p>
+          <p className="mt-4 max-w-2xl rounded-2xl border border-stone-200/70 bg-white/70 px-4 py-3 text-sm leading-7 text-stone-500 dark:border-white/10 dark:bg-white/[0.04] dark:text-stone-400">
+            {copy.note}
+          </p>
           <div className="mt-7 flex flex-wrap gap-2">
             {copy.chips.map((chip) => (
               <span key={chip} className="rounded-full bg-white/84 px-3 py-2 text-xs font-black text-stone-700 ring-1 ring-stone-200/80 dark:bg-white/10 dark:text-stone-200 dark:ring-white/10">
@@ -117,7 +124,7 @@ export function SocialConnectionSection() {
                 <p className="text-xs font-black text-orange-200">{copy.city}</p>
                 <h3 className="mt-2 text-2xl font-black">{copy.peopleTitle}</h3>
               </div>
-              <div className="flex -space-x-2" aria-label="local people">
+              <div className="flex -space-x-2" aria-label="city community">
                 {avatarClassNames.map((color) => (
                   <span key={color} className={clsx("h-10 w-10 rounded-full bg-gradient-to-br ring-2 ring-[#151515]", color)} />
                 ))}

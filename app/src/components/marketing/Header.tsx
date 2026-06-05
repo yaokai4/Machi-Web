@@ -4,12 +4,14 @@ import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { Globe2, Menu, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { localeOptions } from "@/data/machi-home";
 import { Button } from "./Button";
 import { BrandMark, BrandText } from "./BrandText";
 import { useMarketingI18n } from "./MarketingI18n";
 import { ThemeToggle } from "./ThemeToggle";
+import { api } from "@/lib/api";
 
 // Marketing site header with compact brand, locale switcher and auth entry.
 // Adds a subtle "scrolled" state that lifts the capsule with a deeper
@@ -19,6 +21,13 @@ export function Header() {
   const [open, setOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const { copy, locale, setLocale } = useMarketingI18n();
+  const siteSettings = useQuery({
+    queryKey: ["site-settings"],
+    queryFn: () => api.siteSettings(),
+    staleTime: 300_000,
+  });
+  const brandTitle = siteSettings.data?.site_title || "Machi";
+  const logoUrl = siteSettings.data?.logo_url || "";
   const pathname = usePathname();
   const router = useRouter();
   const explicitLocale = pathname === "/zh" || pathname.startsWith("/zh/")
@@ -116,7 +125,7 @@ export function Header() {
       ) : null}
       <div
         className={clsx(
-          "relative z-30 mx-auto max-w-[1120px] rounded-full border px-3 py-2 backdrop-blur-2xl transition-all duration-300",
+          "relative z-30 mx-auto w-full max-w-[1080px] rounded-full border px-3 py-2 backdrop-blur-2xl transition-all duration-300 lg:w-fit",
           // Resting state — light, airy. Scrolled state — a bit more
           // opaque, deeper shadow, so the bar visibly separates from
           // content underneath.
@@ -126,30 +135,39 @@ export function Header() {
           open && "shadow-[0_28px_90px_-54px_rgba(79,70,229,0.92)]",
         )}
       >
-        <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3 lg:gap-5">
           <Link
             href={hrefFor("/")}
             className="flex shrink-0 items-center gap-2.5 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-500"
           >
-            <BrandMark className="h-9 w-9 text-sm sm:h-10 sm:w-10 sm:text-base" />
+            {logoUrl ? (
+              <span
+                className="h-9 w-9 shrink-0 rounded-full bg-cover bg-center bg-no-repeat shadow-[0_16px_42px_-22px_rgba(79,70,229,0.95)] ring-1 ring-slate-900/10 sm:h-10 sm:w-10"
+                style={{ backgroundImage: `url("${logoUrl.replace(/"/g, "%22")}")` }}
+                role="img"
+                aria-label={brandTitle}
+              />
+            ) : (
+              <BrandMark className="h-9 w-9 text-sm sm:h-10 sm:w-10 sm:text-base" />
+            )}
             <span className="hidden leading-none min-[360px]:flex">
-              <BrandText className="whitespace-nowrap text-base font-black sm:text-lg">Machi</BrandText>
+              <BrandText className="whitespace-nowrap text-base font-black sm:text-lg">{brandTitle}</BrandText>
             </span>
           </Link>
 
-          <nav className="hidden items-center gap-1 lg:flex">
+          <nav className="hidden min-w-0 items-center justify-center gap-0.5 lg:flex">
             {copy.nav.items.map(([label, href]) => (
               <Link
                 key={href}
                 href={hrefFor(href)}
-                className="rounded-full px-3.5 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-950/[0.05] hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white"
+                className="whitespace-nowrap rounded-full px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-950/[0.05] hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white xl:px-3.5"
               >
                 {label}
               </Link>
             ))}
           </nav>
 
-          <div className="hidden items-center gap-2 md:flex">
+          <div className="ml-auto hidden shrink-0 items-center gap-2 md:flex lg:ml-0">
             <div
               className="flex items-center gap-0.5 rounded-full bg-slate-950/[0.05] p-1 ring-1 ring-slate-900/[0.08] dark:bg-white/10 dark:ring-white/15"
               aria-label={copy.nav.language}
@@ -172,23 +190,23 @@ export function Header() {
               ))}
             </div>
             <ThemeToggle compact />
-            <Button href="/login" variant="text" size="sm">
-              {copy.nav.signIn}
-            </Button>
-            <Button href="/register" variant="dark" size="sm">
+            <Button href="/register" variant="text" size="sm" className="shrink-0 whitespace-nowrap">
               {copy.nav.register}
+            </Button>
+            <Button href="/login" variant="dark" size="sm" className="shrink-0 whitespace-nowrap">
+              {copy.nav.signIn}
             </Button>
           </div>
 
-          <div className="flex shrink-0 items-center gap-1.5 md:hidden">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 md:hidden">
             <span className="inline-flex">
               <ThemeToggle compact />
             </span>
             <Link
-              href="/register"
-              className="inline-flex h-9 items-center justify-center whitespace-nowrap rounded-full bg-slate-950 px-3 text-xs font-black text-white shadow-sm dark:bg-white dark:text-slate-950"
+              href="/login"
+              className="hidden h-9 items-center justify-center whitespace-nowrap rounded-full bg-slate-950 px-3 text-xs font-black text-white shadow-sm min-[420px]:inline-flex dark:bg-white dark:text-slate-950"
             >
-              {copy.nav.register}
+              {copy.nav.signIn}
             </Link>
             <button
               type="button"
@@ -208,7 +226,7 @@ export function Header() {
 
       <div
         className={clsx(
-          "absolute left-4 right-4 top-[calc(100%+0.55rem)] z-40 mx-auto max-w-[1120px] md:hidden",
+          "absolute left-4 right-4 top-[calc(100%+0.55rem)] z-40 mx-auto max-w-[1080px] md:hidden",
           "origin-top transform-gpu transition duration-[240ms] ease-out",
           open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : "pointer-events-none -translate-y-2 scale-[0.985] opacity-0",
         )}
@@ -244,10 +262,10 @@ export function Header() {
             ))}
           </div>
           <div className="grid gap-2 px-1 pt-2">
-            <Button href="/login" variant="secondary" fullWidth onClick={() => setOpen(false)}>
+            <Button href="/login" variant="dark" fullWidth onClick={() => setOpen(false)}>
               {copy.nav.signIn}
             </Button>
-            <Button href="/register" variant="dark" fullWidth onClick={() => setOpen(false)}>
+            <Button href="/register" variant="secondary" fullWidth onClick={() => setOpen(false)}>
               {copy.nav.register}
             </Button>
           </div>

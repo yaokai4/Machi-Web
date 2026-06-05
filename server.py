@@ -91,6 +91,7 @@ API contract (all JSON, all snake_case unless noted):
 from __future__ import annotations
 
 import base64
+import copy
 import csv
 import email.utils
 import hashlib
@@ -104,6 +105,7 @@ import os
 import queue
 import re
 import secrets
+import shutil
 import smtplib
 import sqlite3
 import ssl
@@ -120,7 +122,7 @@ from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import parse_qs, unquote, urljoin, urlparse
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
 import xml.etree.ElementTree as ET
 
 # City Seed Bot content library — local module, no third-party deps. Holds the
@@ -222,6 +224,19 @@ EMAIL_CODE_LENGTH = 6
 REQUIRE_EMAIL_VERIFICATION = _env("KAIX_REQUIRE_EMAIL_VERIFICATION", "0") == "1"
 LOGIN_REQUIRE_CODE = _env("KAIX_LOGIN_REQUIRE_CODE", "0") == "1"
 
+# Google OAuth. The backend owns the state check and exchanges the code for
+# profile info, then issues the same Machi bearer session used by password
+# login. For local development, the redirect URI can be inferred from the
+# request host; production should set GOOGLE_OAUTH_REDIRECT_URI explicitly.
+GOOGLE_CLIENT_ID = _env("GOOGLE_CLIENT_ID", "")
+GOOGLE_CLIENT_SECRET = _env("GOOGLE_CLIENT_SECRET", "")
+GOOGLE_OAUTH_REDIRECT_URI = _env("GOOGLE_OAUTH_REDIRECT_URI", "")
+GOOGLE_OAUTH_AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
+GOOGLE_OAUTH_TOKEN_URL = "https://oauth2.googleapis.com/token"
+GOOGLE_OAUTH_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
+GOOGLE_OAUTH_STATE_TTL_SEC = int(_env("GOOGLE_OAUTH_STATE_TTL_SEC", "600"))
+GOOGLE_IOS_CALLBACK_URL = _env("GOOGLE_IOS_CALLBACK_URL", "machi://auth/google")
+
 # Email transport. "console_file" (default) writes each message to a local,
 # git-ignored dev outbox so codes can be read during development WITHOUT ever
 # being written to the logger. Production should use "smtp" or "resend".
@@ -245,7 +260,7 @@ VISITOR_LOG_DEDUP_SEC = int(_env("KAIX_VISITOR_LOG_DEDUP_SEC", "300"))
 VISITOR_LOG_RETENTION_DAYS = int(_env("KAIX_VISITOR_LOG_RETENTION_DAYS", "90"))
 # GeoIP resolver: "none" (default, no lookups), "ipapi" (ip-api.com, free,
 # no key, rate-limited), or "maxmind" (offline GeoLite2 db, needs geoip2).
-GEOIP_TRANSPORT = _env("KAIX_GEOIP_TRANSPORT", "none").lower()
+GEOIP_TRANSPORT = _env("KAIX_GEOIP_TRANSPORT", "ipapi").lower()
 GEOIP_MAXMIND_DB = _env("KAIX_GEOIP_MAXMIND_DB", "")
 
 # Comma-separated origin allowlist. In production this should be the host(s)
@@ -270,6 +285,10 @@ RATE_LIMITS = {
 ALLOWED_MIME = {
     "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic",
     "video/mp4", "video/quicktime", "video/webm",
+    "application/pdf", "application/zip",
+    "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "text/plain", "text/csv",
 }
 
 # Canonical file extension per mime. We do NOT trust mimetypes.guess_extension
@@ -284,6 +303,14 @@ EXT_BY_MIME: dict[str, str] = {
     "video/mp4":        ".mp4",
     "video/quicktime":  ".mov",
     "video/webm":       ".webm",
+    "application/pdf":  ".pdf",
+    "application/zip":  ".zip",
+    "application/msword": ".doc",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.ms-excel": ".xls",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+    "text/plain": ".txt",
+    "text/csv": ".csv",
 }
 
 
@@ -416,6 +443,177 @@ CONTENT_TYPES: set[str] = {
 
 VISIBLE_POST_STATUSES: tuple[str, ...] = ("published", "active")
 POST_STATUSES: set[str] = {"published", "active", "hidden", "deleted", "under_review"}
+
+# Structured city listings. These are deliberately separate from ordinary
+# posts: marketplace/rental/job cards need price, status, media, filters,
+# moderation and owner workflows that do not belong in the short-form feed.
+LISTING_TYPES: set[str] = {
+    "secondhand", "rental", "job", "hiring", "local_service", "discount", "event",
+}
+LISTING_STATUSES: set[str] = {
+    "draft", "pending_review", "published", "reserved", "sold", "rented",
+    "closed", "expired", "rejected", "hidden",
+}
+PUBLIC_LISTING_STATUSES: tuple[str, ...] = ("published", "reserved")
+LISTING_VERIFICATION_STATUSES: set[str] = {
+    "unverified", "pending", "verified", "needs_review", "rejected",
+}
+LISTING_INQUIRY_STATUSES: set[str] = {"new", "replied", "closed", "spam", "reported"}
+LISTING_PROMOTION_TYPES: set[str] = {
+    "top", "featured", "city_home", "category_featured", "urgent_hiring",
+    "recommended_rental", "recommended_service",
+}
+LISTING_VERIFICATION_TYPES: set[str] = {
+    "seller", "rental_provider", "recruiter", "service_provider", "business",
+}
+LISTING_TYPES_DEFAULT_REVIEW: set[str] = {"rental", "job", "hiring", "local_service"}
+HIGH_INTENT_POST_TYPES: set[str] = {
+    "secondhand", "housing", "roommate", "job_seek", "job_post",
+    "referral", "service", "merchant", "coupon",
+}
+LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
+    "secondhand": {
+        "condition", "delivery_method", "pickup_available", "shipping_available",
+        "brand", "model", "trade_method", "listing_mode",
+    },
+    "rental": {
+        "rent", "deposit", "key_money", "management_fee", "layout", "area_sqm",
+        "nearest_station", "move_in_date", "short_term_allowed",
+        "share_allowed", "furnished", "pet_allowed", "floor", "building_type",
+        "publisher_type", "initial_cost_note", "lease_term",
+    },
+    "job": {
+        "salary_min", "salary_max", "salary_type", "employment_type",
+        "japanese_level", "visa_support", "working_hours", "company_name",
+        "foreigner_friendly", "transportation_fee", "no_experience_ok",
+        "student_ok", "night_shift", "weekend",
+    },
+    "hiring": {
+        "salary_min", "salary_max", "salary_type", "employment_type",
+        "japanese_level", "visa_support", "working_hours", "company_name",
+        "foreigner_friendly", "transportation_fee", "no_experience_ok",
+        "student_ok", "night_shift", "weekend",
+    },
+    "local_service": {
+        "service_area", "service_type", "price_unit", "business_name",
+        "certified_provider", "availability", "not_included", "service_process",
+        "user_prepare", "cancellation_rule", "no_result_guarantee", "related_guides",
+    },
+    "discount": {
+        "merchant_name", "discount_info", "valid_until", "usage_rules",
+        "business_name",
+    },
+    "event": {
+        "event_time", "venue", "fee", "capacity", "registration_method",
+        "organizer_name",
+    },
+}
+
+# Machi City Reputation. The server is the source of truth; clients only
+# render the current snapshot and configurable rule/level rows.
+REPUTATION_DEFAULT_SCORE = 70
+REPUTATION_MIN_SCORE = 0
+REPUTATION_MAX_SCORE = 100
+REPUTATION_MIN_XP = 0
+REPUTATION_MAX_RISK = 100
+REPUTATION_PUBLIC_TRUST_LABELS = {
+    "excellent": "可信贡献者",
+    "good": "良好记录",
+    "normal": "记录良好",
+    "watch": "待建立记录",
+    "limited": "待建立记录",
+    "high_risk": "待建立记录",
+}
+REPUTATION_PRIVATE_STATUS_LABELS = {
+    "excellent": {"zh": "优秀", "en": "Excellent", "ja": "優秀"},
+    "good": {"zh": "良好", "en": "Good", "ja": "良好"},
+    "normal": {"zh": "正常", "en": "Normal", "ja": "通常"},
+    "watch": {"zh": "需观察", "en": "Watch", "ja": "要確認"},
+    "limited": {"zh": "受限", "en": "Limited", "ja": "制限中"},
+    "high_risk": {"zh": "高风险", "en": "High risk", "ja": "高リスク"},
+}
+REPUTATION_LEVEL_DEFAULTS: list[dict[str, Any]] = [
+    {"level": 1, "xp": 0, "zh": "新居民", "en": "New Resident", "ja": "新しい住人", "desc": "开始建立城市生活记录。", "privileges": ["普通发帖", "评论", "收藏", "发布少量低风险二手"]},
+    {"level": 2, "xp": 100, "zh": "城市探索者", "en": "City Explorer", "ja": "街の探索者", "desc": "持续浏览、收藏并参与本地讨论。", "privileges": ["普通发帖额度提升", "活动小组参与", "二手发布额度提升"]},
+    {"level": 3, "xp": 300, "zh": "本地记录者", "en": "Local Recorder", "ja": "ローカル記録者", "desc": "能够提交更多结构化城市信息。", "privileges": ["长文经验", "避坑经验", "提交房源/招聘/服务审核"]},
+    {"level": 4, "xp": 700, "zh": "生活贡献者", "en": "Life Contributor", "ja": "暮らしの貢献者", "desc": "真实生活内容获得轻量优先展示。", "privileges": ["普通内容轻微优先展示", "二手发布额度提升", "优质回答徽章申请"]},
+    {"level": 5, "xp": 1500, "zh": "城市向导", "en": "City Guide", "ja": "街のガイド", "desc": "可以参与更高质量的城市指南内容。", "privileges": ["城市指南内容提交", "高信任内容优先审核", "Guide 资料优惠"]},
+    {"level": 6, "xp": 3000, "zh": "可信发布者", "en": "Trusted Publisher", "ja": "信頼できる投稿者", "desc": "具备申请可信卖家、服务者和招聘方的基础。", "privileges": ["申请可信卖家", "申请认证服务者", "更多发布额度", "可信贡献标识"]},
+    {"level": 7, "xp": 6000, "zh": "城市专家", "en": "City Expert", "ja": "街のエキスパート", "desc": "高质量内容和专题共创机会提升。", "privileges": ["精选内容机会", "城市专题共创", "会员折扣券"]},
+    {"level": 8, "xp": 12000, "zh": "城市守望者", "en": "City Steward", "ja": "街の見守り人", "desc": "可参与轻量城市内容治理。", "privileges": ["城市内容治理", "有效举报奖励提升", "新功能优先体验"]},
+    {"level": 9, "xp": 25000, "zh": "Machi 城市合伙人", "en": "Machi City Partner", "ja": "Machi 街のパートナー", "desc": "参与城市运营合作和本地活动。", "privileges": ["城市运营合作", "本地活动合作", "官方推荐展示"]},
+    {"level": 10, "xp": 50000, "zh": "Machi 城市大使", "en": "Machi City Ambassador", "ja": "Machi 街のアンバサダー", "desc": "代表高可信城市贡献者参与新城市测试。", "privileges": ["城市大使标识", "官方认证展示", "专属运营联系"]},
+]
+REPUTATION_RULE_DEFAULTS: list[dict[str, Any]] = [
+    {"key": "profile_completed", "name": "完善资料", "kind": "onboarding", "xp": 20, "rep": 0, "risk": -1, "daily": 20, "weekly": 20, "monthly": 20, "target_daily": 0, "one_time": 1, "reviewed": 0, "notify": 0},
+    {"key": "email_verified", "name": "绑定邮箱", "kind": "onboarding", "xp": 20, "rep": 2, "risk": -2, "daily": 20, "weekly": 20, "monthly": 20, "target_daily": 0, "one_time": 1, "reviewed": 0, "notify": 0},
+    {"key": "city_language_set", "name": "设置城市和语言", "kind": "onboarding", "xp": 10, "rep": 0, "risk": -1, "daily": 10, "weekly": 10, "monthly": 10, "target_daily": 0, "one_time": 1, "reviewed": 0, "notify": 0},
+    {"key": "first_bookmark", "name": "首次收藏", "kind": "onboarding", "xp": 5, "rep": 0, "risk": 0, "daily": 5, "weekly": 5, "monthly": 5, "target_daily": 0, "one_time": 1, "reviewed": 0, "notify": 0},
+    {"key": "first_post", "name": "首次发帖", "kind": "onboarding", "xp": 20, "rep": 0, "risk": 0, "daily": 20, "weekly": 20, "monthly": 20, "target_daily": 0, "one_time": 1, "reviewed": 0, "notify": 1},
+    {"key": "post_dynamic", "name": "发布城市动态", "kind": "content", "xp": 5, "rep": 0, "risk": 0, "daily": 15, "weekly": 80, "monthly": 240, "target_daily": 0, "one_time": 0, "reviewed": 0, "notify": 0},
+    {"key": "post_question", "name": "发布问答", "kind": "content", "xp": 8, "rep": 0, "risk": 0, "daily": 24, "weekly": 120, "monthly": 360, "target_daily": 0, "one_time": 0, "reviewed": 0, "notify": 0},
+    {"key": "post_long", "name": "发布长文经验", "kind": "content", "xp": 20, "rep": 0, "risk": 0, "daily": 40, "weekly": 180, "monthly": 540, "target_daily": 0, "one_time": 0, "reviewed": 0, "notify": 0},
+    {"key": "post_guide", "name": "发布城市攻略", "kind": "content", "xp": 30, "rep": 0, "risk": 0, "daily": 60, "weekly": 240, "monthly": 720, "target_daily": 0, "one_time": 0, "reviewed": 0, "notify": 1},
+    {"key": "post_warning", "name": "发布避坑经验", "kind": "content", "xp": 25, "rep": 0, "risk": 0, "daily": 50, "weekly": 200, "monthly": 600, "target_daily": 0, "one_time": 0, "reviewed": 0, "notify": 1},
+    {"key": "post_news", "name": "发布本地快讯", "kind": "content", "xp": 10, "rep": 0, "risk": 0, "daily": 20, "weekly": 100, "monthly": 300, "target_daily": 0, "one_time": 0, "reviewed": 0, "notify": 0},
+    {"key": "post_event", "name": "发布活动小组内容", "kind": "content", "xp": 10, "rep": 0, "risk": 0, "daily": 20, "weekly": 100, "monthly": 300, "target_daily": 0, "one_time": 0, "reviewed": 0, "notify": 0},
+    {"key": "content_liked", "name": "内容被点赞", "kind": "interaction", "xp": 1, "rep": 0, "risk": 0, "daily": 30, "weekly": 120, "monthly": 360, "target_daily": 10, "one_time": 0, "reviewed": 0, "notify": 0},
+    {"key": "content_bookmarked", "name": "内容被收藏", "kind": "interaction", "xp": 5, "rep": 0, "risk": 0, "daily": 80, "weekly": 240, "monthly": 720, "target_daily": 20, "one_time": 0, "reviewed": 0, "notify": 0},
+    {"key": "content_commented", "name": "内容被评论", "kind": "interaction", "xp": 1, "rep": 0, "risk": 0, "daily": 30, "weekly": 120, "monthly": 360, "target_daily": 10, "one_time": 0, "reviewed": 0, "notify": 0},
+    {"key": "comment_on_question", "name": "回答问题", "kind": "interaction", "xp": 10, "rep": 0, "risk": 0, "daily": 30, "weekly": 150, "monthly": 450, "target_daily": 10, "one_time": 0, "reviewed": 0, "notify": 0},
+    {"key": "listing_secondhand_published", "name": "发布二手", "kind": "listing", "xp": 15, "rep": 0, "risk": 0, "daily": 45, "weekly": 150, "monthly": 450, "target_daily": 15, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "listing_rental_approved", "name": "房源通过审核", "kind": "listing", "xp": 30, "rep": 0, "risk": -2, "daily": 60, "weekly": 180, "monthly": 540, "target_daily": 30, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "listing_job_approved", "name": "职位通过审核", "kind": "listing", "xp": 30, "rep": 0, "risk": -2, "daily": 60, "weekly": 180, "monthly": 540, "target_daily": 30, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "listing_service_approved", "name": "服务通过审核", "kind": "listing", "xp": 30, "rep": 0, "risk": -2, "daily": 60, "weekly": 180, "monthly": 540, "target_daily": 30, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "listing_discount_approved", "name": "商家优惠通过审核", "kind": "listing", "xp": 20, "rep": 0, "risk": -1, "daily": 40, "weekly": 160, "monthly": 480, "target_daily": 20, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "valid_report", "name": "有效举报成立", "kind": "governance", "xp": 20, "rep": 2, "risk": -2, "daily": 60, "weekly": 180, "monthly": 540, "target_daily": 20, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "violation_free_30d", "name": "连续 30 天无违规", "kind": "trust", "xp": 50, "rep": 5, "risk": -5, "daily": 50, "weekly": 50, "monthly": 50, "target_daily": 0, "one_time": 0, "reviewed": 0, "notify": 1},
+    {"key": "admin_trusted", "name": "管理员标记可信用户", "kind": "trust", "xp": 0, "rep": 10, "risk": -10, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "identity_verified", "name": "完成身份认证", "kind": "trust", "xp": 0, "rep": 10, "risk": -10, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 1, "reviewed": 1, "notify": 1},
+    {"key": "merchant_verified", "name": "完成商家/服务方/招聘方认证", "kind": "trust", "xp": 0, "rep": 15, "risk": -15, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "content_removed", "name": "内容被下架", "kind": "moderation", "xp": -50, "rep": -5, "risk": 10, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "spam_ad", "name": "垃圾广告", "kind": "moderation", "xp": -20, "rep": -10, "risk": 20, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "fake_secondhand", "name": "虚假二手", "kind": "moderation", "xp": -50, "rep": -20, "risk": 45, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "fake_rental", "name": "虚假房源", "kind": "moderation", "xp": -80, "rep": -30, "risk": 60, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "fake_job", "name": "虚假招聘", "kind": "moderation", "xp": -100, "rep": -40, "risk": 70, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "prohibited_service", "name": "违规服务", "kind": "moderation", "xp": -100, "rep": -40, "risk": 80, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 0, "reviewed": 1, "notify": 1},
+    {"key": "adult_illegal", "name": "成人/陪伴/违法内容", "kind": "moderation", "xp": -120, "rep": -60, "risk": 100, "daily": 0, "weekly": 0, "monthly": 0, "target_daily": 0, "one_time": 0, "reviewed": 1, "notify": 1},
+]
+REPUTATION_LIMIT_DEFAULTS: dict[str, int] = {
+    "daily_xp_cap": 200,
+    "weekly_xp_cap": 700,
+    "monthly_xp_cap": 2000,
+    "new_user_days": 7,
+    "new_user_daily_xp_cap": 80,
+    "rental_min_level": 3,
+    "rental_min_reputation": 60,
+    "job_min_level": 3,
+    "job_min_reputation": 70,
+    "service_min_level": 3,
+    "service_min_reputation": 70,
+    "discount_min_level": 3,
+    "discount_min_reputation": 60,
+    "dm_daily_new_user": 5,
+    "dm_low_reputation_cap": 10,
+    "dm_reputation_floor": 50,
+    "review_risk_threshold": 61,
+    "restrict_risk_threshold": 81,
+}
+REPUTATION_BADGE_DEFAULTS: list[dict[str, Any]] = [
+    {"key": "tokyo_contributor", "name": "东京贡献者", "category": "city", "rarity": "common"},
+    {"key": "quality_answerer", "name": "优质回答者", "category": "content", "rarity": "uncommon"},
+    {"key": "trusted_seller", "name": "可信卖家", "category": "marketplace", "rarity": "rare"},
+    {"key": "trusted_recruiter", "name": "可信招聘方", "category": "jobs", "rarity": "rare"},
+    {"key": "verified_service_provider", "name": "认证服务者", "category": "service", "rarity": "rare"},
+    {"key": "community_steward", "name": "社区守护者", "category": "governance", "rarity": "epic"},
+]
+REPUTATION_REWARD_DEFAULTS: list[dict[str, Any]] = [
+    {"key": "level3_marketplace_boost", "name": "二手置顶券", "type": "listing_boost", "level": 3, "quantity": 1},
+    {"key": "level5_guide_coupon", "name": "Guide 资料优惠券", "type": "guide_coupon", "level": 5, "quantity": 1},
+    {"key": "level6_priority_review", "name": "优先审核权益", "type": "priority_review", "level": 6, "quantity": 1},
+    {"key": "level7_membership_coupon", "name": "会员折扣券", "type": "membership_coupon", "level": 7, "quantity": 1},
+    {"key": "level8_steward_badge_apply", "name": "城市守望者徽章申请资格", "type": "badge_application", "level": 8, "quantity": 1},
+]
 
 # Machi Local News Desk / 本地资讯台. This is deliberately separate from
 # user posts: editorial content is authored by official desk identities,
@@ -778,7 +976,30 @@ def _sniff_mime(data: bytes) -> str | None:
             return "video/quicktime"
     if head.startswith(b"\x1aE\xdf\xa3"):  # EBML, used by WebM/Matroska
         return "video/webm"
+    if data.startswith(b"%PDF-"):
+        return "application/pdf"
+    if data.startswith(b"PK\x03\x04") or data.startswith(b"PK\x05\x06") or data.startswith(b"PK\x07\x08"):
+        if b"word/" in data[:8192]:
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if b"xl/" in data[:8192]:
+            return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return "application/zip"
+    if data.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
+        return declared_office_mime(data)
+    sample = data[:4096]
+    if b"\x00" not in sample:
+        try:
+            sample.decode("utf-8")
+            if b"," in sample and b"\n" in sample:
+                return "text/csv"
+            return "text/plain"
+        except UnicodeDecodeError:
+            return None
     return None
+
+
+def declared_office_mime(_data: bytes) -> str:
+    return "application/msword"
 
 DB_LOCK = threading.RLock()
 
@@ -946,15 +1167,15 @@ REGION_COUNTRIES: list[dict[str, Any]] = [
     {"code": "cn", "name": "中国",     "emoji": "🇨🇳", "tier": 1, "has_provinces": True},
     {"code": "jp", "name": "日本",     "emoji": "🇯🇵", "tier": 1, "has_provinces": True},
     {"code": "us", "name": "美国",     "emoji": "🇺🇸", "tier": 1, "has_provinces": True},
-    {"code": "uk", "name": "英国",     "emoji": "🇬🇧", "tier": 2, "has_provinces": False},
-    {"code": "ca", "name": "加拿大",   "emoji": "🇨🇦", "tier": 2, "has_provinces": False},
-    {"code": "au", "name": "澳大利亚", "emoji": "🇦🇺", "tier": 2, "has_provinces": False},
     {"code": "sg", "name": "新加坡",   "emoji": "🇸🇬", "tier": 2, "has_provinces": False},
     {"code": "kr", "name": "韩国",     "emoji": "🇰🇷", "tier": 2, "has_provinces": False},
+    {"code": "uk", "name": "英国",     "emoji": "🇬🇧", "tier": 2, "has_provinces": False},
+    {"code": "fr", "name": "法国",     "emoji": "🇫🇷", "tier": 2, "has_provinces": False},
+    {"code": "au", "name": "澳大利亚", "emoji": "🇦🇺", "tier": 2, "has_provinces": False},
+    {"code": "ca", "name": "加拿大",   "emoji": "🇨🇦", "tier": 2, "has_provinces": False},
     {"code": "th", "name": "泰国",     "emoji": "🇹🇭", "tier": 3, "has_provinces": False},
     {"code": "my", "name": "马来西亚", "emoji": "🇲🇾", "tier": 3, "has_provinces": False},
     {"code": "de", "name": "德国",     "emoji": "🇩🇪", "tier": 3, "has_provinces": False},
-    {"code": "fr", "name": "法国",     "emoji": "🇫🇷", "tier": 3, "has_provinces": False},
     {"code": "nl", "name": "荷兰",     "emoji": "🇳🇱", "tier": 3, "has_provinces": False},
 ]
 
@@ -1087,16 +1308,49 @@ REGION_CITIES: dict[str, list[dict[str, str]]] = {
     "ma": [{"code": "boston",  "name": "波士顿"}],
     "nj": [{"code": "newark",  "name": "纽瓦克"}],
     # ---- Flat countries ----
-    "uk": [{"code": "london", "name": "伦敦"}, {"code": "manchester", "name": "曼彻斯特"}, {"code": "edinburgh", "name": "爱丁堡"}],
+    "uk": [
+        {"code": "london", "name": "伦敦"},
+        {"code": "manchester", "name": "曼彻斯特"},
+        {"code": "edinburgh", "name": "爱丁堡"},
+        {"code": "birmingham", "name": "伯明翰"},
+        {"code": "glasgow", "name": "格拉斯哥"},
+        {"code": "liverpool", "name": "利物浦"},
+        {"code": "leeds", "name": "利兹"},
+        {"code": "bristol", "name": "布里斯托"},
+        {"code": "cambridge", "name": "剑桥"},
+        {"code": "oxford", "name": "牛津"},
+    ],
     "ca_country": [],  # placeholder to avoid name clash; CA-country cities listed below by country code
     "ca_flat":  [{"code": "toronto", "name": "多伦多"}, {"code": "vancouver", "name": "温哥华"}, {"code": "montreal", "name": "蒙特利尔"}],
-    "au":  [{"code": "sydney", "name": "悉尼"}, {"code": "melbourne", "name": "墨尔本"}, {"code": "brisbane", "name": "布里斯班"}, {"code": "perth", "name": "珀斯"}],
+    "au":  [
+        {"code": "sydney", "name": "悉尼"},
+        {"code": "melbourne", "name": "墨尔本"},
+        {"code": "brisbane", "name": "布里斯班"},
+        {"code": "perth", "name": "珀斯"},
+        {"code": "adelaide", "name": "阿德莱德"},
+        {"code": "canberra", "name": "堪培拉"},
+        {"code": "goldcoast", "name": "黄金海岸"},
+    ],
     "sg":  [{"code": "singapore", "name": "新加坡"}],
-    "kr":  [{"code": "seoul", "name": "首尔"}, {"code": "busan", "name": "釜山"}],
+    "kr":  [
+        {"code": "seoul", "name": "首尔"},
+        {"code": "busan", "name": "釜山"},
+        {"code": "incheon", "name": "仁川"},
+        {"code": "daegu", "name": "大邱"},
+        {"code": "daejeon", "name": "大田"},
+        {"code": "gwangju", "name": "光州"},
+    ],
     "th":  [{"code": "bangkok", "name": "曼谷"}, {"code": "chiangmai", "name": "清迈"}, {"code": "phuket", "name": "普吉"}],
     "my":  [{"code": "kl", "name": "吉隆坡"}, {"code": "penang", "name": "槟城"}],
     "de":  [{"code": "berlin", "name": "柏林"}, {"code": "munich", "name": "慕尼黑"}, {"code": "hamburg", "name": "汉堡"}],
-    "fr":  [{"code": "paris", "name": "巴黎"}, {"code": "lyon", "name": "里昂"}],
+    "fr":  [
+        {"code": "paris", "name": "巴黎"},
+        {"code": "lyon", "name": "里昂"},
+        {"code": "marseille", "name": "马赛"},
+        {"code": "toulouse", "name": "图卢兹"},
+        {"code": "nice", "name": "尼斯"},
+        {"code": "bordeaux", "name": "波尔多"},
+    ],
     "nl":  [{"code": "amsterdam", "name": "阿姆斯特丹"}],
 }
 
@@ -1133,6 +1387,8 @@ POPULAR_CITIES: list[str] = [
     "au.sydney", "au.melbourne",
     # ---- UK ----
     "uk.london",
+    # ---- France ----
+    "fr.paris",
     # ---- Other Asia / SEA ----
     "sg.singapore", "kr.seoul",
     "th.bangkok",
@@ -1666,7 +1922,7 @@ CREATE TABLE IF NOT EXISTS media (
 
 CREATE TABLE IF NOT EXISTS settings (
     user_id TEXT PRIMARY KEY,
-    language TEXT NOT NULL DEFAULT 'zh-Hans',
+    language TEXT NOT NULL DEFAULT '',
     appearance TEXT NOT NULL DEFAULT 'light',
     push_likes INTEGER NOT NULL DEFAULT 1,
     push_comments INTEGER NOT NULL DEFAULT 1,
@@ -1676,6 +1932,12 @@ CREATE TABLE IF NOT EXISTS settings (
     privacy_allow_dm TEXT NOT NULL DEFAULT 'everyone',
     recommend_following INTEGER NOT NULL DEFAULT 1,
     recommend_topics INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS site_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
 
@@ -3266,6 +3528,545 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_guide_corrections_target ON guide_correction_reports(target_type, target_id, status, created_at);
         """,
     ),
+    (
+        21,
+        "auth: add google oauth identities and state table",
+        """
+        ALTER TABLE users ADD COLUMN google_sub TEXT NOT NULL DEFAULT '';
+        ALTER TABLE users ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'password';
+        ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub <> '';
+        CREATE INDEX IF NOT EXISTS idx_users_auth_provider ON users(auth_provider, created_at);
+
+        CREATE TABLE IF NOT EXISTS oauth_states (
+            state TEXT PRIMARY KEY,
+            provider TEXT NOT NULL DEFAULT 'google',
+            client TEXT NOT NULL DEFAULT 'web',
+            redirect TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL,
+            consumed_at TEXT,
+            ip TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_oauth_states_expiry ON oauth_states(expires_at, consumed_at);
+        """,
+    ),
+    (
+        22,
+        "settings: let unset language follow system defaults",
+        """
+        UPDATE settings
+           SET language = ''
+         WHERE language = 'zh-Hans';
+        """,
+    ),
+    (
+        23,
+        "auth: oauth_states intent + link_user_id (bind google to an existing account)",
+        """
+        ALTER TABLE oauth_states ADD COLUMN intent TEXT NOT NULL DEFAULT 'login';
+        ALTER TABLE oauth_states ADD COLUMN link_user_id TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        24,
+        "city listings: structured marketplace, rentals, jobs and services",
+        """
+        CREATE TABLE IF NOT EXISTS seller_profiles (
+            id TEXT PRIMARY KEY,
+            user_id TEXT UNIQUE NOT NULL,
+            display_name TEXT NOT NULL DEFAULT '',
+            bio TEXT NOT NULL DEFAULT '',
+            verification_status TEXT NOT NULL DEFAULT 'unverified',
+            rating REAL NOT NULL DEFAULT 0,
+            listing_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS business_profiles (
+            id TEXT PRIMARY KEY,
+            owner_user_id TEXT NOT NULL DEFAULT '',
+            business_name TEXT NOT NULL,
+            business_type TEXT NOT NULL DEFAULT '',
+            country_code TEXT NOT NULL DEFAULT '',
+            city_slug TEXT NOT NULL DEFAULT '',
+            verification_status TEXT NOT NULL DEFAULT 'pending',
+            contact_method TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(owner_user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_business_profiles_city ON business_profiles(country_code, city_slug, verification_status);
+
+        CREATE TABLE IF NOT EXISTS city_listings (
+            id TEXT PRIMARY KEY,
+            country_code TEXT NOT NULL DEFAULT '',
+            city_id TEXT NOT NULL DEFAULT '',
+            city_slug TEXT NOT NULL DEFAULT '',
+            region_code TEXT NOT NULL DEFAULT '',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            type TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            price REAL,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            price_type TEXT NOT NULL DEFAULT '',
+            location_text TEXT NOT NULL DEFAULT '',
+            latitude REAL,
+            longitude REAL,
+            status TEXT NOT NULL DEFAULT 'published',
+            verification_status TEXT NOT NULL DEFAULT 'unverified',
+            seller_user_id TEXT NOT NULL DEFAULT '',
+            business_id TEXT DEFAULT NULL,
+            contact_method TEXT NOT NULL DEFAULT '',
+            view_count INTEGER NOT NULL DEFAULT 0,
+            inquiry_count INTEGER NOT NULL DEFAULT 0,
+            favorite_count INTEGER NOT NULL DEFAULT 0,
+            report_count INTEGER NOT NULL DEFAULT 0,
+            is_promoted INTEGER NOT NULL DEFAULT 0,
+            promotion_weight INTEGER NOT NULL DEFAULT 0,
+            published_at TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            FOREIGN KEY(seller_user_id) REFERENCES users(id),
+            FOREIGN KEY(business_id) REFERENCES business_profiles(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_city_listings_public ON city_listings(city_slug, type, status, published_at);
+        CREATE INDEX IF NOT EXISTS idx_city_listings_region ON city_listings(region_code, type, status, published_at);
+        CREATE INDEX IF NOT EXISTS idx_city_listings_seller ON city_listings(seller_user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_city_listings_review ON city_listings(status, verification_status, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_city_listings_search ON city_listings(type, category, city_slug, updated_at);
+
+        CREATE TABLE IF NOT EXISTS listing_media (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            media_type TEXT NOT NULL DEFAULT 'image',
+            url TEXT NOT NULL,
+            thumbnail_url TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_cover INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(listing_id) REFERENCES city_listings(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_media_listing ON listing_media(listing_id, sort_order);
+
+        CREATE TABLE IF NOT EXISTS listing_attributes (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            key TEXT NOT NULL,
+            value TEXT NOT NULL DEFAULT '',
+            value_type TEXT NOT NULL DEFAULT 'string',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(listing_id, key),
+            FOREIGN KEY(listing_id) REFERENCES city_listings(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_attributes_key ON listing_attributes(key, value);
+
+        CREATE TABLE IF NOT EXISTS listing_inquiries (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            sender_user_id TEXT NOT NULL DEFAULT '',
+            seller_user_id TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL DEFAULT '',
+            contact_value TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
+            FOREIGN KEY(sender_user_id) REFERENCES users(id),
+            FOREIGN KEY(seller_user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_listing ON listing_inquiries(listing_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_user ON listing_inquiries(sender_user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS listing_favorites (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(listing_id, user_id),
+            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_favorites_user ON listing_favorites(user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS listing_reports (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            reporter_id TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT 'other',
+            note TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
+            FOREIGN KEY(reporter_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_reports_listing ON listing_reports(listing_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_reports_status ON listing_reports(status, created_at);
+
+        CREATE TABLE IF NOT EXISTS listing_admin_logs (
+            id TEXT PRIMARY KEY,
+            admin_id TEXT NOT NULL DEFAULT '',
+            listing_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL DEFAULT '',
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_admin_logs_listing ON listing_admin_logs(listing_id, created_at);
+        """,
+    ),
+    (
+        25,
+        "city listings: inquiry contract, promotion and verification foundations",
+        """
+        ALTER TABLE listing_inquiries ADD COLUMN from_user_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE listing_inquiries ADD COLUMN to_user_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE listing_inquiries ADD COLUMN type TEXT NOT NULL DEFAULT 'general';
+        UPDATE listing_inquiries
+           SET from_user_id = sender_user_id
+         WHERE from_user_id = '' AND sender_user_id != '';
+        UPDATE listing_inquiries
+           SET to_user_id = seller_user_id
+         WHERE to_user_id = '' AND seller_user_id != '';
+        UPDATE listing_inquiries
+           SET status = 'new'
+         WHERE status = 'open';
+        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_from ON listing_inquiries(from_user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_to ON listing_inquiries(to_user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_status ON listing_inquiries(status, created_at);
+
+        CREATE TABLE IF NOT EXISTS listing_promotions (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            promotion_type TEXT NOT NULL DEFAULT 'top',
+            placement TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            weight INTEGER NOT NULL DEFAULT 10,
+            starts_at TEXT,
+            ends_at TEXT,
+            purchased_by_user_id TEXT NOT NULL DEFAULT '',
+            business_id TEXT DEFAULT NULL,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
+            FOREIGN KEY(purchased_by_user_id) REFERENCES users(id),
+            FOREIGN KEY(business_id) REFERENCES business_profiles(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_promotions_listing ON listing_promotions(listing_id, status, ends_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_promotions_type ON listing_promotions(promotion_type, placement, status, ends_at);
+
+        CREATE TABLE IF NOT EXISTS listing_verifications (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL DEFAULT '',
+            subject_type TEXT NOT NULL DEFAULT 'seller',
+            subject_id TEXT NOT NULL DEFAULT '',
+            verification_type TEXT NOT NULL DEFAULT 'seller',
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewer_admin_id TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            submitted_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
+            FOREIGN KEY(reviewer_admin_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_verifications_status ON listing_verifications(status, subject_type, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_verifications_listing ON listing_verifications(listing_id, status);
+        """,
+    ),
+    (
+        26,
+        "city listings: platform promotion payment metadata",
+        """
+        ALTER TABLE listing_promotions ADD COLUMN price REAL;
+        ALTER TABLE listing_promotions ADD COLUMN currency TEXT NOT NULL DEFAULT 'JPY';
+        ALTER TABLE listing_promotions ADD COLUMN payment_provider TEXT NOT NULL DEFAULT '';
+        ALTER TABLE listing_promotions ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'pending';
+        CREATE INDEX IF NOT EXISTS idx_listing_promotions_payment ON listing_promotions(payment_provider, payment_status, created_at);
+        """,
+    ),
+    (
+        27,
+        "city listings: remove launch placeholder names",
+        """
+        UPDATE listing_attributes
+           SET value = 'Machi Dining'
+         WHERE key = 'company_name' AND value LIKE 'Machi Dining D%';
+        UPDATE listing_attributes
+           SET value = 'Machi Partner'
+         WHERE key = 'company_name' AND value LIKE 'Machi Partner D%';
+        UPDATE listing_attributes
+           SET value = 'Machi Coffee'
+         WHERE key = 'merchant_name' AND value LIKE 'Machi Coffee D%';
+        """,
+    ),
+    (
+        28,
+        "city reputation: xp, trust, badges, rewards and admin audit",
+        """
+        CREATE TABLE IF NOT EXISTS user_reputation (
+            user_id TEXT PRIMARY KEY,
+            xp INTEGER NOT NULL DEFAULT 0,
+            reputation_score INTEGER NOT NULL DEFAULT 70,
+            level INTEGER NOT NULL DEFAULT 1,
+            risk_score INTEGER NOT NULL DEFAULT 0,
+            reputation_status TEXT NOT NULL DEFAULT 'normal',
+            growth_frozen INTEGER NOT NULL DEFAULT 0,
+            frozen_until TEXT,
+            freeze_reason TEXT NOT NULL DEFAULT '',
+            frozen_by_admin_id TEXT NOT NULL DEFAULT '',
+            last_event_at TEXT,
+            violation_count INTEGER NOT NULL DEFAULT 0,
+            helped_users INTEGER NOT NULL DEFAULT 0,
+            quality_posts INTEGER NOT NULL DEFAULT 0,
+            favorites_received INTEGER NOT NULL DEFAULT 0,
+            reports_validated INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_reputation_level ON user_reputation(level, xp);
+        CREATE INDEX IF NOT EXISTS idx_user_reputation_risk ON user_reputation(risk_score, reputation_score);
+
+        CREATE TABLE IF NOT EXISTS reputation_events (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            actor_user_id TEXT NOT NULL DEFAULT '',
+            admin_id TEXT NOT NULL DEFAULT '',
+            rule_key TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT '',
+            target_kind TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            xp_delta INTEGER NOT NULL DEFAULT 0,
+            reputation_delta INTEGER NOT NULL DEFAULT 0,
+            risk_delta INTEGER NOT NULL DEFAULT 0,
+            xp_before INTEGER NOT NULL DEFAULT 0,
+            xp_after INTEGER NOT NULL DEFAULT 0,
+            reputation_before INTEGER NOT NULL DEFAULT 70,
+            reputation_after INTEGER NOT NULL DEFAULT 70,
+            risk_before INTEGER NOT NULL DEFAULT 0,
+            risk_after INTEGER NOT NULL DEFAULT 0,
+            level_before INTEGER NOT NULL DEFAULT 1,
+            level_after INTEGER NOT NULL DEFAULT 1,
+            reason TEXT NOT NULL DEFAULT '',
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_reputation_events_user ON reputation_events(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_reputation_events_rule ON reputation_events(rule_key, user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_reputation_events_target ON reputation_events(target_kind, target_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS reputation_rules (
+            key TEXT PRIMARY KEY,
+            name_zh TEXT NOT NULL,
+            name_en TEXT NOT NULL DEFAULT '',
+            name_ja TEXT NOT NULL DEFAULT '',
+            event_type TEXT NOT NULL DEFAULT '',
+            xp_delta INTEGER NOT NULL DEFAULT 0,
+            reputation_delta INTEGER NOT NULL DEFAULT 0,
+            risk_delta INTEGER NOT NULL DEFAULT 0,
+            daily_xp_cap INTEGER NOT NULL DEFAULT 0,
+            weekly_xp_cap INTEGER NOT NULL DEFAULT 0,
+            monthly_xp_cap INTEGER NOT NULL DEFAULT 0,
+            per_target_daily_xp_cap INTEGER NOT NULL DEFAULT 0,
+            is_one_time INTEGER NOT NULL DEFAULT 0,
+            requires_reviewed INTEGER NOT NULL DEFAULT 0,
+            notify_user INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS reputation_levels (
+            level INTEGER PRIMARY KEY,
+            xp_required INTEGER NOT NULL DEFAULT 0,
+            name_zh TEXT NOT NULL,
+            name_en TEXT NOT NULL DEFAULT '',
+            name_ja TEXT NOT NULL DEFAULT '',
+            description_zh TEXT NOT NULL DEFAULT '',
+            description_en TEXT NOT NULL DEFAULT '',
+            description_ja TEXT NOT NULL DEFAULT '',
+            privileges_json TEXT NOT NULL DEFAULT '[]',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS reputation_privileges (
+            id TEXT PRIMARY KEY,
+            level INTEGER NOT NULL DEFAULT 1,
+            key TEXT NOT NULL,
+            title_zh TEXT NOT NULL,
+            title_en TEXT NOT NULL DEFAULT '',
+            title_ja TEXT NOT NULL DEFAULT '',
+            description_zh TEXT NOT NULL DEFAULT '',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL,
+            UNIQUE(level, key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_reputation_privileges_level ON reputation_privileges(level, sort_order);
+
+        CREATE TABLE IF NOT EXISTS badges (
+            id TEXT PRIMARY KEY,
+            key TEXT UNIQUE NOT NULL,
+            name_zh TEXT NOT NULL,
+            name_en TEXT NOT NULL DEFAULT '',
+            name_ja TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            rarity TEXT NOT NULL DEFAULT 'common',
+            description_zh TEXT NOT NULL DEFAULT '',
+            is_official INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS user_badges (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            badge_id TEXT NOT NULL,
+            granted_by_admin_id TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            is_displayed INTEGER NOT NULL DEFAULT 1,
+            revoked_at TEXT,
+            revoked_by_admin_id TEXT NOT NULL DEFAULT '',
+            revoke_reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, badge_id, revoked_at),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(badge_id) REFERENCES badges(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_badges_user ON user_badges(user_id, revoked_at, created_at);
+
+        CREATE TABLE IF NOT EXISTS reputation_rewards (
+            id TEXT PRIMARY KEY,
+            key TEXT UNIQUE NOT NULL,
+            name_zh TEXT NOT NULL,
+            name_en TEXT NOT NULL DEFAULT '',
+            name_ja TEXT NOT NULL DEFAULT '',
+            reward_type TEXT NOT NULL DEFAULT '',
+            required_level INTEGER NOT NULL DEFAULT 1,
+            quantity INTEGER NOT NULL DEFAULT 1,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS user_rewards (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            reward_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'available',
+            quantity INTEGER NOT NULL DEFAULT 1,
+            source_event_id TEXT NOT NULL DEFAULT '',
+            claimed_at TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, reward_id, source_event_id),
+            FOREIGN KEY(user_id) REFERENCES users(id),
+            FOREIGN KEY(reward_id) REFERENCES reputation_rewards(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_user_rewards_user ON user_rewards(user_id, status, created_at);
+
+        CREATE TABLE IF NOT EXISTS reputation_limits (
+            key TEXT PRIMARY KEY,
+            value INTEGER NOT NULL DEFAULT 0,
+            description TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS trust_reviews (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            target_kind TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            review_type TEXT NOT NULL DEFAULT 'risk',
+            status TEXT NOT NULL DEFAULT 'open',
+            risk_score INTEGER NOT NULL DEFAULT 0,
+            reasons TEXT NOT NULL DEFAULT '',
+            assigned_admin_id TEXT NOT NULL DEFAULT '',
+            resolved_by_admin_id TEXT NOT NULL DEFAULT '',
+            resolution TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            resolved_at TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_trust_reviews_status ON trust_reviews(status, risk_score, created_at);
+        CREATE INDEX IF NOT EXISTS idx_trust_reviews_user ON trust_reviews(user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS admin_action_logs (
+            id TEXT PRIMARY KEY,
+            admin_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            target_kind TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_admin_action_logs_target ON admin_action_logs(target_kind, target_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_admin_action_logs_admin ON admin_action_logs(admin_id, created_at);
+        """,
+    ),
+    # Contacting a city listing now opens a real DM thread instead of a
+    # write-only inquiry form. Notifications grow listing/conversation
+    # targets so the seller's bell deep-links straight into the chat, and
+    # each inquiry remembers the conversation it spawned so 我的咨询 can jump
+    # back into the thread. Nullable columns — existing rows survive.
+    (
+        29,
+        "listing inquiries: bind conversation + notification deep-links",
+        """
+        ALTER TABLE notifications ADD COLUMN target_listing_id TEXT;
+        ALTER TABLE notifications ADD COLUMN target_conversation_id TEXT;
+        ALTER TABLE listing_inquiries ADD COLUMN conversation_id TEXT NOT NULL DEFAULT '';
+        CREATE INDEX IF NOT EXISTS idx_notifications_listing ON notifications(target_listing_id, created_at);
+        """,
+    ),
+    # Structured intake: rental 预约看房 / job 申请 / service 预约 forms post a
+    # details=[{label,value}] payload that we keep as JSON on the inquiry so
+    # 我的预约/我的申请 and the poster's 管理 can render the full brief.
+    (
+        30,
+        "listing inquiries: structured intake payload",
+        """
+        ALTER TABLE listing_inquiries ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
+        """,
+    ),
+    (
+        31,
+        "site settings: editable public brand metadata",
+        """
+        CREATE TABLE IF NOT EXISTS site_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
+    # Fast lookup for the inquiry idempotency / anti-double-submit dedupe window
+    # (listing_id + from_user_id + created_at), and a hot index for "我的咨询".
+    (
+        32,
+        "listing inquiries: dedupe + my-inquiries indexes",
+        """
+        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_dedupe ON listing_inquiries(listing_id, from_user_id, created_at);
+        """,
+    ),
 ]
 
 
@@ -3494,6 +4295,66 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "assigned_admin_id": "TEXT NOT NULL DEFAULT ''",
         "order_id": "TEXT NOT NULL DEFAULT ''",
     })
+    _ensure_columns(conn, "listing_inquiries", {
+        "from_user_id": "TEXT NOT NULL DEFAULT ''",
+        "to_user_id": "TEXT NOT NULL DEFAULT ''",
+        "type": "TEXT NOT NULL DEFAULT 'general'",
+    })
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS listing_promotions (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            promotion_type TEXT NOT NULL DEFAULT 'top',
+            placement TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            weight INTEGER NOT NULL DEFAULT 10,
+            starts_at TEXT,
+            ends_at TEXT,
+            purchased_by_user_id TEXT NOT NULL DEFAULT '',
+            business_id TEXT DEFAULT NULL,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_listing_promotions_listing ON listing_promotions(listing_id, status, ends_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_listing_promotions_type ON listing_promotions(promotion_type, placement, status, ends_at)")
+    _ensure_columns(conn, "listing_promotions", {
+        "price": "REAL",
+        "currency": "TEXT NOT NULL DEFAULT 'JPY'",
+        "payment_provider": "TEXT NOT NULL DEFAULT ''",
+        "payment_status": "TEXT NOT NULL DEFAULT 'pending'",
+    })
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_listing_promotions_payment ON listing_promotions(payment_provider, payment_status, created_at)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS listing_verifications (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL DEFAULT '',
+            subject_type TEXT NOT NULL DEFAULT 'seller',
+            subject_id TEXT NOT NULL DEFAULT '',
+            verification_type TEXT NOT NULL DEFAULT 'seller',
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewer_admin_id TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            submitted_at TEXT NOT NULL,
+            reviewed_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_listing_verifications_status ON listing_verifications(status, subject_type, created_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_listing_verifications_listing ON listing_verifications(listing_id, status)")
+    conn.execute("""
+        UPDATE listing_inquiries
+           SET from_user_id = sender_user_id
+         WHERE from_user_id = '' AND sender_user_id != ''
+    """)
+    conn.execute("""
+        UPDATE listing_inquiries
+           SET to_user_id = seller_user_id
+         WHERE to_user_id = '' AND seller_user_id != ''
+    """)
+    conn.execute("UPDATE listing_inquiries SET status = 'new' WHERE status = 'open'")
     conn.execute("UPDATE guide_companies SET company_size = COALESCE(NULLIF(company_size, ''), size) WHERE company_size = ''")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_companies_featured ON guide_companies(country, status, is_featured, updated_at)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_products_member ON guide_products(country, status, is_member_included, category_key)")
@@ -4105,6 +4966,241 @@ GUIDE_RESOURCE_ENTRIES: list[dict[str, str]] = [
     },
 ]
 
+GUIDE_UI_I18N: dict[str, dict[str, Any]] = {
+    "en": {
+        "hero": {
+            "title": "Japan Guide",
+            "subtitle": "Study, admissions, careers, JLPT preparation, and daily-life support in Japan.",
+            "note": "Curated by the Machi editorial team to help you prepare for life, study, and work in Japan with a clearer plan.",
+            "searchPlaceholder": "Search schools, admissions, careers, Japanese tests, visas, companies, interviews, and life resources",
+            "quickTags": ["Japan school database", "Foreigner-friendly companies", "Graduate school", "Language schools", "Careers", "Interviews", "JLPT", "Visa"],
+        },
+        "empty": {
+            "title": "Guide content is not available for this region yet",
+            "body": "Machi Guide is currently focused on Japan: study abroad, school admissions, careers, Japanese tests, and daily life. More regions will be added over time.",
+            "action": "Switch to Japan",
+            "actionCountry": "jp",
+        },
+        "goalTitle": "What are you trying to do now?",
+        "reviewDisclaimer": "Reviews are personal experiences submitted by users and are for reference only. Do not post private information, trade secrets, or serious claims that cannot be verified.",
+        "schoolDisclaimer": "School information is curated from public sources and manual editorial review. It may lag behind official updates. Always confirm details with the school's official website and latest admission guidelines before applying.",
+        "companyDisclaimer": "Company information and reviews are curated by the Machi editorial team and submitted by users for reference only. Always confirm career information with the company's official website or recruiting pages. Do not post private, confidential, or unverified serious claims.",
+    },
+    "ja": {
+        "hero": {
+            "title": "日本ガイド",
+            "subtitle": "留学、進学、就職、JLPT 対策、日本での生活手続きを整理しています。",
+            "note": "Machi 編集部が、日本での生活・学習・仕事を計画的に準備できるよう整理しています。",
+            "searchPlaceholder": "学校、進学、就職、日本語試験、ビザ、会社、面接、生活資料を検索",
+            "quickTags": ["日本の学校データベース", "外国人向け就職会社", "大学院", "日本語学校", "就職", "面接", "JLPT", "ビザ"],
+        },
+        "empty": {
+            "title": "この地域のガイドはまだ公開されていません",
+            "body": "Machi Guide は現在、日本の留学、進学、就職、日本語試験、生活情報を中心に整理しています。ほかの国・地域も順次追加予定です。",
+            "action": "日本地域に切り替える",
+            "actionCountry": "jp",
+        },
+        "goalTitle": "今、何を準備したいですか？",
+        "reviewDisclaimer": "レビューはユーザー個人の体験に基づく参考情報です。個人情報、営業秘密、確認できない重大な主張は投稿しないでください。",
+        "schoolDisclaimer": "学校情報は公開資料と編集部の確認に基づいて整理していますが、更新が遅れる場合があります。出願前に必ず学校公式サイト・募集要項・公式案内をご確認ください。",
+        "companyDisclaimer": "会社情報とレビューは Machi 編集部の整理およびユーザー投稿に基づく参考情報です。応募前に会社公式サイトや採用ページで最新情報を確認してください。個人情報、機密情報、未確認の重大な主張は投稿しないでください。",
+    },
+}
+
+GUIDE_CATEGORY_I18N: dict[str, dict[str, dict[str, str]]] = {
+    "study_japan": {
+        "en": {"title": "Study in Japan", "subtitle": "Graduate school, vocational schools, transfer admissions", "description": "Graduate school, vocational schools, transfer admissions, research plans, contacting professors, and application documents."},
+        "ja": {"title": "日本進学", "subtitle": "大学院・専門学校・編入", "description": "大学院、専門学校、学部編入、研究計画書、教授連絡、出願書類を整理しています。"},
+    },
+    "career_japan": {
+        "en": {"title": "Careers in Japan", "subtitle": "Job hunting, resumes, interviews, offers", "description": "Japanese job-hunting flow, resumes, entry sheets, interviews, offers, visa changes, and industry research."},
+        "ja": {"title": "日本就職", "subtitle": "就活・履歴書・面接・内定", "description": "日本の就職活動、履歴書、ES、面接、内定、在留資格変更、業界選びを整理しています。"},
+    },
+    "study_abroad_japan": {
+        "en": {"title": "Study Abroad in Japan", "subtitle": "Language schools, visas, arrival", "description": "Language schools, study-abroad documents, visas, arrival preparation, costs, and application flow."},
+        "ja": {"title": "留学申請", "subtitle": "日本語学校・ビザ・入国準備", "description": "日本語学校、留学書類、ビザ、入国準備、費用、申請の流れを整理しています。"},
+    },
+    "jlpt": {
+        "en": {"title": "Japanese Tests", "subtitle": "JLPT N5-N1, vocabulary and grammar", "description": "JLPT N5-N1, vocabulary, grammar, reading, listening, study plans, and resource packs."},
+        "ja": {"title": "日本語試験", "subtitle": "JLPT N5-N1・語彙文法", "description": "JLPT N5-N1、語彙、文法、読解、聴解、学習計画、資料パックを整理しています。"},
+    },
+    "life_japan": {
+        "en": {"title": "Life in Japan", "subtitle": "Residence card, city hall, housing, part-time work", "description": "Residence cards, city-hall procedures, housing, part-time work, bank accounts, SIM cards, insurance, and daily-life checklists."},
+        "ja": {"title": "日本生活", "subtitle": "在留カード・役所・住まい・アルバイト", "description": "在留カード、役所手続き、住まい、アルバイト、銀行口座、スマホ、保険、生活の注意点を整理しています。"},
+    },
+    "guide_services": {
+        "en": {"title": "Resources and Services", "subtitle": "Resource packs, templates, consultation", "description": "Resource packs, templates, courses, consultation, resume review, research-plan review, and application coaching."},
+        "ja": {"title": "資料とサービス", "subtitle": "資料パック・テンプレート・相談", "description": "資料パック、テンプレート、講座、相談、履歴書添削、研究計画書レビュー、申請サポートを整理しています。"},
+    },
+}
+
+GUIDE_SUBCATEGORY_I18N: dict[str, dict[str, str]] = {
+    "graduate_school": {"en": "Graduate school applications", "ja": "大学院申請"},
+    "research_plan": {"en": "Research plan", "ja": "研究計画書"},
+    "professor_contact": {"en": "Contacting professors", "ja": "教授連絡"},
+    "application_documents": {"en": "Application documents", "ja": "出願書類"},
+    "undergraduate_transfer": {"en": "Undergraduate transfer", "ja": "学部・編入"},
+    "vocational_school": {"en": "Vocational schools", "ja": "専門学校"},
+    "scholarship": {"en": "Scholarships", "ja": "奨学金"},
+    "admission_interview": {"en": "Admissions interview", "ja": "面接"},
+    "job_hunting_flow": {"en": "Job-hunting flow", "ja": "就職活動の流れ"},
+    "rirekisho": {"en": "Japanese resume", "ja": "履歴書"},
+    "shokumukeirekisho": {"en": "Work-history document", "ja": "職務経歴書"},
+    "entry_sheet": {"en": "Entry sheet and motivation", "ja": "ES・志望動機"},
+    "job_interview": {"en": "Interviews", "ja": "面接"},
+    "company_selection": {"en": "Choosing companies", "ja": "会社選び"},
+    "company_reviews": {"en": "Company reviews", "ja": "会社レビュー"},
+    "work_visa": {"en": "Work visa change", "ja": "就労ビザ変更"},
+    "industry_guides": {"en": "Industry guides", "ja": "業界ガイド"},
+    "language_school": {"en": "Language school applications", "ja": "日本語学校申請"},
+    "student_visa": {"en": "Student visa", "ja": "留学ビザ"},
+    "arrival_preparation": {"en": "Arrival preparation", "ja": "入国準備"},
+    "study_cost": {"en": "Study costs", "ja": "留学費用"},
+    "school_selection": {"en": "Choosing schools", "ja": "学校選び"},
+    "vocabulary": {"en": "Vocabulary", "ja": "語彙"},
+    "grammar": {"en": "Grammar", "ja": "文法"},
+    "reading": {"en": "Reading", "ja": "読解"},
+    "listening": {"en": "Listening", "ja": "聴解"},
+    "study_plan": {"en": "Study plan", "ja": "学習計画"},
+    "mock_test": {"en": "Mock tests", "ja": "模擬問題"},
+    "jlpt_materials": {"en": "Resource packs", "ja": "資料パック"},
+    "residence_card": {"en": "Residence card", "ja": "在留カード"},
+    "city_hall": {"en": "City-hall procedures", "ja": "役所手続き"},
+    "health_insurance": {"en": "Health insurance", "ja": "国民健康保険"},
+    "pension": {"en": "Pension", "ja": "年金"},
+    "bank_account": {"en": "Bank account", "ja": "銀行口座"},
+    "mobile_sim": {"en": "Mobile SIM", "ja": "スマホ・SIM"},
+    "renting": {"en": "Housing", "ja": "住まい"},
+    "moving": {"en": "Moving", "ja": "引っ越し"},
+    "part_time_job": {"en": "Part-time work", "ja": "アルバイト"},
+    "tax": {"en": "Tax", "ja": "税金"},
+    "transportation": {"en": "Transport", "ja": "交通"},
+    "medical": {"en": "Medical care", "ja": "医療"},
+    "life_tips": {"en": "Life tips", "ja": "生活の注意点"},
+    "service_materials": {"en": "Resource packs", "ja": "資料パック"},
+    "service_templates": {"en": "Templates", "ja": "テンプレート"},
+    "service_consultation": {"en": "Consultation", "ja": "相談サポート"},
+}
+
+GUIDE_GOAL_I18N: dict[str, dict[str, str]] = {
+    "goal_study_abroad": {"en": "I want to study in Japan", "ja": "日本に留学したい"},
+    "goal_language_school": {"en": "I want to apply to a language school", "ja": "日本語学校に申請したい"},
+    "goal_graduate_school": {"en": "I want to apply to graduate school", "ja": "大学院に申請したい"},
+    "goal_find_job": {"en": "I want to find a job in Japan", "ja": "日本で仕事を探したい"},
+    "goal_jlpt": {"en": "I want to prepare for the JLPT", "ja": "日本語試験を準備したい"},
+    "goal_life_setup": {"en": "I want to understand daily-life procedures", "ja": "日本生活の手続きを知りたい"},
+    "goal_buy_materials": {"en": "I want resources or consultation", "ja": "資料購入・相談をしたい"},
+}
+
+GUIDE_RESOURCE_I18N: dict[str, dict[str, dict[str, str]]] = {
+    "japan_schools": {
+        "en": {"title": "Japan School Database", "description": "Find universities, graduate schools, vocational schools, language schools, and application information for international students."},
+        "ja": {"title": "日本の学校データベース", "description": "大学、大学院、専門学校、日本語学校、留学生向けの出願情報を探せます。"},
+    },
+    "foreigner_friendly_companies": {
+        "en": {"title": "Foreigner-Friendly Company Database", "description": "Find Japanese companies, industries, roles, interview notes, and workplace reviews for international job seekers."},
+        "ja": {"title": "外国人向け就職会社データベース", "description": "外国人が応募しやすい日本企業、業界、職種、面接情報、勤務レビューを探せます。"},
+    },
+}
+
+GUIDE_ARTICLE_I18N: dict[str, dict[str, dict[str, str]]] = {
+    "graduate-school-full-process": {
+        "en": {"title": "A Complete Roadmap for Japanese Graduate School Applications", "summary": "A step-by-step timeline from choosing a research direction and contacting professors to application, exams, interviews, and enrollment procedures."},
+        "ja": {"title": "日本の大学院申請：準備から出願までの完全ロードマップ", "summary": "研究テーマ決定、教授連絡、出願、試験・面接、入学手続きまでを順番に整理します。"},
+    },
+    "research-plan-what-to-write": {
+        "en": {"title": "What to Write in a Research Plan: Structure and Examples", "summary": "Research topic, prior studies, research purpose, and methodology: the parts professors actually evaluate."},
+        "ja": {"title": "研究計画書には何を書くべきか：構成と例", "summary": "研究テーマ、先行研究、研究目的、研究方法など、教授が重視する部分を整理します。"},
+    },
+    "contact-professor-email": {
+        "en": {"title": "Email Templates and Etiquette for Contacting Professors", "summary": "When to contact professors, how to write a polite Japanese email, and what to do if you are rejected or receive no reply."},
+        "ja": {"title": "教授連絡メールのテンプレートと注意点", "summary": "事前相談の要否、日本語メールのマナー、断られた場合や返信がない場合の対応を整理します。"},
+    },
+    "language-school-application": {
+        "en": {"title": "Complete Guide to Applying for Japanese Language Schools", "summary": "Who language school is for, intake timing, school selection, documents, COE, and visa flow."},
+        "ja": {"title": "日本語学校申請の完全ガイド", "summary": "対象者、入学時期、学校選び、必要書類、COE、ビザ申請までを整理します。"},
+    },
+    "study-cost-one-year": {
+        "en": {"title": "How Much Does One Year of Study in Japan Cost?", "summary": "Tuition, housing, living costs, initial expenses, and how much part-time work can realistically cover."},
+        "ja": {"title": "日本留学 1 年にかかる費用の目安", "summary": "学費、住まい、生活費、初期費用、アルバイトで補える範囲を整理します。"},
+    },
+    "first-week-in-japan-checklist": {
+        "en": {"title": "Your First-Week Checklist After Arriving in Japan", "summary": "Residence card, resident registration, phone plan, bank account, insurance, and other first-week essentials."},
+        "ja": {"title": "日本入国後 1 週間でやるべき手続きチェックリスト", "summary": "在留カード、住民登録、スマホ、銀行口座、保険など、到着直後の重要手続きを整理します。"},
+    },
+    "job-hunting-full-process": {
+        "en": {"title": "Japan Job-Hunting Flow for New Graduates and Mid-Career Applicants", "summary": "Self-analysis, company briefings, entry sheets, web tests, interviews, offers, and work-visa changes."},
+        "ja": {"title": "日本の就職活動の全体像（新卒・中途）", "summary": "自己分析、説明会、ES、Web テスト、面接、内定、在留資格変更までを整理します。"},
+    },
+    "rirekisho-vs-shokumukeirekisho": {
+        "en": {"title": "Rirekisho vs. Shokumukeirekisho: What Is the Difference?", "summary": "One document explains who you are; the other explains what you have done and what you can contribute."},
+        "ja": {"title": "履歴書と職務経歴書の違い", "summary": "一方は基本情報、もう一方は経験と貢献できることを伝える資料です。"},
+    },
+    "japanese-interview-questions": {
+        "en": {"title": "Common Japanese Interview Questions and How to Answer Them", "summary": "Self-PR, motivation, student experiences, and reverse questions: what interviewers are really checking."},
+        "ja": {"title": "日本語面接のよくある質問と答え方", "summary": "自己 PR、志望動機、学生時代の経験、逆質問など、面接官が確認したいポイントを整理します。"},
+    },
+    "jlpt-n2-study-roadmap": {
+        "en": {"title": "JLPT N2 Study Roadmap and Timeline", "summary": "How to phase vocabulary, grammar, reading, and listening practice into a realistic study plan."},
+        "ja": {"title": "JLPT N2 の学習ロードマップと時間計画", "summary": "語彙、文法、読解、聴解を段階的に進める実行しやすい計画を整理します。"},
+    },
+    "n1-n2-grammar-method": {
+        "en": {"title": "How to Study N1/N2 Grammar Without Forgetting It", "summary": "Learn grammar in context, group similar patterns, and reinforce them through output instead of memorizing tables."},
+        "ja": {"title": "N1/N2 文法を忘れにくく学ぶ方法", "summary": "文脈で覚え、意味ごとに整理し、アウトプットで定着させる方法を紹介します。"},
+    },
+    "jlpt-reading-speed": {
+        "en": {"title": "How to Improve JLPT Reading Speed", "summary": "Read the questions first, track connectors and references, and manage time by passage type."},
+        "ja": {"title": "JLPT 読解スピードを上げる方法", "summary": "先に設問を読み、接続詞と指示語を追い、文章ごとに時間を管理するコツを整理します。"},
+    },
+    "residence-card-and-juminhyo": {
+        "en": {"title": "Residence Card and Resident Registration Procedures", "summary": "What the residence card is, how to file a move-in notification, and which insurance or My Number steps to handle together."},
+        "ja": {"title": "在留カードと住民登録（役所）の手続き", "summary": "在留カード、転入届、国民健康保険、マイナンバー関連手続きを整理します。"},
+    },
+    "renting-initial-cost": {
+        "en": {"title": "Initial Costs When Renting in Japan", "summary": "Deposit, key money, agent fees, guarantor companies, and how to reduce your first payment."},
+        "ja": {"title": "日本の賃貸初期費用の内訳", "summary": "敷金、礼金、仲介手数料、保証会社、初期費用を抑えるポイントを整理します。"},
+    },
+    "student-part-time-job-rules": {
+        "en": {"title": "Part-Time Work Rules for International Students", "summary": "Permission for activities outside your status, the 28-hour rule, restricted industries, and why attendance comes first."},
+        "ja": {"title": "留学生のアルバイト注意点と時間制限", "summary": "資格外活動許可、週 28 時間の上限、できない業種、出席率の重要性を整理します。"},
+    },
+    "is-company-foreigner-friendly": {
+        "en": {"title": "How to Judge Whether a Japanese Company Is Foreigner-Friendly", "summary": "A checklist covering visa support, language environment, transparent evaluation, overtime culture, and foreign-employee growth paths."},
+        "ja": {"title": "日本企業が外国人に向いているか判断する方法", "summary": "ビザ支援、言語環境、評価制度、残業文化、外国人社員の成長機会を確認するチェックリストです。"},
+    },
+    "japan-company-interview-process": {
+        "en": {"title": "Japanese Company Interview Flow: First, Second, and Final Rounds", "summary": "Who interviews you at each stage, what they evaluate, and how to prepare for each round."},
+        "ja": {"title": "日本企業の面接フロー（一次・二次・最終）", "summary": "各面接の担当者、評価ポイント、準備方法を整理します。"},
+    },
+    "identify-black-company": {
+        "en": {"title": "How to Spot Risky Companies from Job Listings", "summary": "Frequent recruiting, vague pay, inflated language, and other warning signs you can catch before applying."},
+        "ja": {"title": "求人情報からリスクの高い会社を見分ける基礎", "summary": "頻繁な大量募集、曖昧な給与、誇張表現など、応募前に確認したい注意点を整理します。"},
+    },
+}
+
+GUIDE_PRODUCT_BASE_I18N: dict[str, dict[str, dict[str, str]]] = {
+    "n2-grammar-pack": {
+        "en": {"title": "N2 Grammar Pack", "subtitle": "For N2 preparation and self-study", "description": "Original Machi notes that group high-frequency N2 grammar by meaning, with natural examples and comparisons of similar patterns."},
+        "ja": {"title": "N2 文法整理パック", "subtitle": "N2 対策と自学習向け", "description": "Machi 編集部が N2 の頻出文法を意味別に整理し、自然な例文と似た表現の比較を付けたオリジナル資料です。"},
+    },
+    "research-plan-template-pack": {
+        "en": {"title": "Graduate School Research Plan Template Pack", "subtitle": "Templates, examples, and professor-email samples", "description": "Research-plan structure templates, humanities/science outline examples, and Japanese/English email samples for contacting professors."},
+        "ja": {"title": "大学院研究計画書テンプレートパック", "subtitle": "テンプレート、例、教授連絡メール", "description": "研究計画書の構成テンプレート、文系・理系の例、教授連絡用の日本語・英語メール例をまとめています。"},
+    },
+    "rirekisho-review-service": {
+        "en": {"title": "Japanese Resume Review Service", "subtitle": "For people preparing for job hunting in Japan", "description": "Editors or partners with Japan job-hunting experience review your rirekisho and work-history document, covering motivation, self-PR, and formatting."},
+        "ja": {"title": "日本就職・履歴書添削サービス", "subtitle": "就職活動を準備する方向け", "description": "日本就職経験のある編集者・提携者が、履歴書と職務経歴書を確認し、志望動機、自己 PR、形式を中心に改善提案を行います。"},
+    },
+    "language-school-doc-checklist": {
+        "en": {"title": "Language School Application Document Checklist", "subtitle": "Documents to prepare before studying in Japan", "description": "A checklist for common language-school application documents: applicant materials, academic documents, sponsor documents, and timeline reminders."},
+        "ja": {"title": "日本語学校申請書類チェックリスト", "subtitle": "日本留学前の書類準備", "description": "本人書類、学歴書類、経費支弁者書類、提出時期を整理した日本語学校出願用チェックリストです。"},
+    },
+    "interview-100-questions": {
+        "en": {"title": "100 Common Japanese Interview Questions", "subtitle": "Prepare for first, second, and final interviews", "description": "High-frequency questions and answer frameworks organized by interview stage and question type, including self-PR, motivation, and reverse questions."},
+        "ja": {"title": "日本面接よくある質問 100", "subtitle": "一次・二次・最終面接の準備", "description": "面接段階と質問タイプ別に、自己 PR、志望動機、逆質問などの頻出質問と回答の考え方を整理しています。"},
+    },
+}
+
 # 6 一级分类 + 子分类。顺序 / key / 图标语义两端一致。icon 是语义 token，
 # 客户端各自映射到自己的图标集（Web=lucide，iOS=SF Symbols）。
 GUIDE_CATEGORY_SEED: list[dict[str, Any]] = [
@@ -4676,18 +5772,18 @@ def _guide_service(slug: str, title: str, subtitle: str, product_type: str, sub:
         "is_featured": 1 if featured else 0, "target": target, "delivery": delivery,
         "description": "\n\n".join(p for p in desc_parts if p),
         "refund_policy": "预约后如未开始服务可协商取消；已开始或已完成的人工服务按实际进度结算，不保证特定结果。",
-        "notes": "本服务为信息协助/陪同性质，不替代任何官方机构的审核与决定，不提供虚假材料。",
+        "notes": "本服务为信息协助性质，不替代任何官方机构的审核与决定，不提供虚假材料。",
     }
 
 GUIDE_PRODUCT_SEED.extend([
-    _guide_service("tokyo-disney-companion", "东京迪士尼带玩服务", "第一次去东京迪士尼、不会日语也能玩得顺",
-        "disney_companion", "japan_tour_companion", "预约咨询",
+    _guide_service("tokyo-disney-park-support", "东京迪士尼游园协助", "第一次去东京迪士尼、不会日语也能更顺利规划",
+        "disney_park_support", "japan_tour_support", "预约咨询",
         "第一次去东京迪士尼、不熟悉路线和预约系统的用户",
-        ["行程规划", "入园路线建议", "项目优先级建议", "当天陪同", "简单翻译协助", "拍照协助", "餐厅/表演安排建议"],
+        ["行程规划", "入园路线建议", "项目优先级建议", "当天流程协助", "简单翻译协助", "拍照点建议", "餐厅/表演安排建议"],
         ["门票费用", "餐饮费用", "交通费用", "快速通行或付费项目费用", "不保证项目等待时间", "不保证园区运营情况"],
         featured=True),
     _guide_service("japan-airport-pickup", "日本机场接机服务", "成田・羽田・关西等机场接机协助",
-        "airport_pickup", "japan_tour_companion", "预约咨询",
+        "airport_pickup", "japan_tour_support", "预约咨询",
         "初到日本、行李较多、不熟悉交通的用户",
         ["到达口接应", "协助购买交通票", "协助前往住处", "简单入住沟通协助", "行李路线建议"],
         ["交通费", "高速费", "停车费", "额外等待费（可后台设置）", "酒店/房东费用"],
@@ -4707,32 +5803,32 @@ GUIDE_PRODUCT_SEED.extend([
         "在日本想找兼职但不熟悉日语招聘、面试、履历书的用户",
         ["打工方向建议", "招聘信息筛选", "履历书准备建议", "电话/邮件联系协助", "面试注意事项", "资格外活动许可提醒"],
         ["不保证录用", "不代替雇主决定", "不协助违规打工", "不提供虚假材料"]),
-    _guide_service("bank-account-companion", "银行卡办理陪同", "开户材料、银行选择与现场沟通协助",
+    _guide_service("bank-account-support", "银行卡办理协助", "开户材料、银行选择与现场沟通协助",
         "bank_account_support", "japan_life_procedure", "预约咨询",
         "刚到日本、不熟悉银行开户流程和日语沟通的用户",
-        ["开户材料检查", "银行选择建议", "预约/路线建议", "现场陪同", "基础日语沟通协助"],
+        ["开户材料检查", "银行选择建议", "预约/路线建议", "现场沟通协助", "基础日语沟通协助"],
         ["不保证开户成功", "不代替银行审核", "不提供虚假材料"],
         extra="可选银行：三菱UFJ、三井住友、みずほ、ゆうちょ、りそな等。"),
-    _guide_service("housing-application-companion", "租房申请陪同", "看房、申请、和中介沟通的全程协助",
+    _guide_service("housing-application-support", "租房申请协助", "看房、申请、和中介沟通的流程协助",
         "housing_support", "japan_housing", "预约咨询",
         "想在日本租房、看房、申请、和中介沟通的用户",
-        ["租房条件整理", "房源沟通协助", "看房陪同", "申请材料检查", "中介沟通翻译", "初期费用说明", "保证会社说明"],
+        ["租房条件整理", "房源沟通协助", "看房流程协助", "申请材料检查", "中介沟通翻译", "初期费用说明", "保证会社说明"],
         ["不保证审查通过", "不承担租赁合同责任", "不代替用户签约", "不提供虚假材料", "不承担房源真实性保证"],
         featured=True),
-    _guide_service("city-hall-companion", "役所手续陪同", "住民登记、保险、年金等手续陪同",
-        "procedure_companion", "japan_life_procedure", "预约咨询",
+    _guide_service("city-hall-procedure-support", "役所手续协助", "住民登记、保险、年金等手续协助",
+        "procedure_support", "japan_life_procedure", "预约咨询",
         "刚到日本需要办理住民登记、保险、年金、地址变更等手续的用户",
-        ["手续清单整理", "材料检查", "役所路线/窗口说明", "现场陪同", "简单翻译协助"],
+        ["手续清单整理", "材料检查", "役所路线/窗口说明", "现场沟通协助", "简单翻译协助"],
         ["不代替官方审核", "不提供虚假材料", "不承担手续结果"],
         extra="适用手续：住民登记、地址变更、国民健康保险、年金咨询、印章登记、住民票申请。"),
-    _guide_service("mobile-sim-companion", "手机卡办理陪同", "运营商选择、套餐说明与现场办理协助",
-        "procedure_companion", "japan_life_procedure", "预约咨询",
+    _guide_service("mobile-sim-support", "手机卡办理协助", "运营商选择、套餐说明与现场办理协助",
+        "procedure_support", "japan_life_procedure", "预约咨询",
         "不会日语、不知道选哪家运营商、需要现场协助的用户",
-        ["运营商选择建议", "套餐说明", "材料检查", "现场陪同", "开通协助"],
+        ["运营商选择建议", "套餐说明", "材料检查", "现场办理协助", "开通协助"],
         ["不代替运营商审核", "不承担套餐费用", "不提供虚假材料"],
         extra="可选：Docomo、au、SoftBank、Rakuten、ahamo、povo、LINEMO、UQ、Y!mobile。"),
-    _guide_service("arrival-one-day-companion", "入境后生活手续一日陪同", "役所・手机卡・银行・交通卡一日搞定",
-        "procedure_companion", "japan_life_procedure", "预约咨询",
+    _guide_service("arrival-one-day-support", "入境后生活手续一日协助", "役所・手机卡・银行・交通卡集中梳理",
+        "procedure_support", "japan_life_procedure", "预约咨询",
         "刚到日本，需要集中办理役所、手机卡、银行卡、交通卡、住处确认等事项的用户",
         ["当日路线规划", "役所手续协助", "手机卡办理协助", "银行开户材料确认", "交通卡/生活说明", "基础翻译"],
         ["各项官方审核结果", "交通与办理产生的费用", "不提供虚假材料"], featured=True),
@@ -5172,6 +6268,275 @@ def serialize_guide_category(row: sqlite3.Row | dict[str, Any], children: list[d
     }
     if children is not None:
         out["subCategories"] = children
+    return out
+
+
+def _guide_lang_key(language: Any) -> str:
+    raw = str(language or "").strip().lower()
+    if raw.startswith("en"):
+        return "en"
+    if raw.startswith("ja") or raw.startswith("jp"):
+        return "ja"
+    return "zh"
+
+
+def _guide_slug_title(slug: str) -> str:
+    return " ".join(part.capitalize() for part in str(slug or "guide").replace("_", "-").split("-") if part) or "Guide"
+
+
+def _contains_cjk(text: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff]", text or ""))
+
+
+def _contains_chinese_only(text: str) -> bool:
+    return bool(re.search(r"[\u4e00-\u9fff]", text or ""))
+
+
+def _guide_localized_ui(key: str, language: Any, fallback: Any) -> Any:
+    lang = _guide_lang_key(language)
+    if lang == "zh":
+        return fallback
+    return copy.deepcopy(GUIDE_UI_I18N.get(lang, {}).get(key, fallback))
+
+
+def localize_guide_category_payload(item: dict[str, Any], language: Any) -> dict[str, Any]:
+    lang = _guide_lang_key(language)
+    if lang == "zh":
+        return item
+    out = dict(item)
+    key = str(out.get("key") or "")
+    loc = GUIDE_CATEGORY_I18N.get(key, {}).get(lang)
+    if loc:
+        out.update(loc)
+    if out.get("parentKey"):
+        label = GUIDE_SUBCATEGORY_I18N.get(key, {}).get(lang)
+        if label:
+            out["title"] = label
+            out["subtitle"] = ""
+            out["description"] = label
+    if isinstance(out.get("subCategories"), list):
+        out["subCategories"] = [localize_guide_category_payload(dict(child), language) for child in out["subCategories"]]
+    return out
+
+
+def localize_guide_goal(entry: dict[str, Any], language: Any) -> dict[str, Any]:
+    lang = _guide_lang_key(language)
+    if lang == "zh":
+        return entry
+    out = dict(entry)
+    title = GUIDE_GOAL_I18N.get(str(out.get("targetKey") or ""), {}).get(lang)
+    if title:
+        out["title"] = title
+    return out
+
+
+def localize_guide_resource(entry: dict[str, Any], language: Any) -> dict[str, Any]:
+    lang = _guide_lang_key(language)
+    if lang == "zh":
+        return entry
+    out = dict(entry)
+    loc = GUIDE_RESOURCE_I18N.get(str(out.get("key") or ""), {}).get(lang)
+    if loc:
+        out.update(loc)
+    return out
+
+
+def localize_guide_tags(tags: list[str], language: Any) -> list[str]:
+    lang = _guide_lang_key(language)
+    if lang == "zh":
+        return tags
+    table = {
+        "大学院": {"en": "Graduate school", "ja": "大学院"},
+        "出愿": {"en": "Application", "ja": "出願"},
+        "研究计划书": {"en": "Research plan", "ja": "研究計画書"},
+        "语言学校": {"en": "Language school", "ja": "日本語学校"},
+        "COE": {"en": "COE", "ja": "COE"},
+        "签证": {"en": "Visa", "ja": "ビザ"},
+        "留学费用": {"en": "Study costs", "ja": "留学費用"},
+        "生活费": {"en": "Living costs", "ja": "生活費"},
+        "入境": {"en": "Arrival", "ja": "入国"},
+        "在留卡": {"en": "Residence card", "ja": "在留カード"},
+        "清单": {"en": "Checklist", "ja": "チェックリスト"},
+        "就活": {"en": "Job hunting", "ja": "就活"},
+        "新卒": {"en": "New graduate", "ja": "新卒"},
+        "中途": {"en": "Mid-career", "ja": "中途"},
+        "履历书": {"en": "Resume", "ja": "履歴書"},
+        "职务经歴书": {"en": "Work history", "ja": "職務経歴書"},
+        "面试": {"en": "Interview", "ja": "面接"},
+        "日语面试": {"en": "Japanese interview", "ja": "日本語面接"},
+        "JLPT": {"en": "JLPT", "ja": "JLPT"},
+        "N2": {"en": "N2", "ja": "N2"},
+        "N1": {"en": "N1", "ja": "N1"},
+        "语法": {"en": "Grammar", "ja": "文法"},
+        "阅读": {"en": "Reading", "ja": "読解"},
+        "役所": {"en": "City hall", "ja": "役所"},
+        "住民登记": {"en": "Resident registration", "ja": "住民登録"},
+        "租房": {"en": "Housing", "ja": "住まい"},
+        "初期费用": {"en": "Initial costs", "ja": "初期費用"},
+        "打工": {"en": "Part-time work", "ja": "アルバイト"},
+        "资格外活动": {"en": "Work permission", "ja": "資格外活動"},
+        "公司选择": {"en": "Company selection", "ja": "会社選び"},
+        "外国人": {"en": "Foreign residents", "ja": "外国人"},
+        "流程": {"en": "Flow", "ja": "流れ"},
+        "ブラック企業": {"en": "Risky companies", "ja": "ブラック企業"},
+        "避坑": {"en": "Risk checks", "ja": "注意点"},
+    }
+    out: list[str] = []
+    for tag in tags:
+        raw = str(tag)
+        mapped = table.get(raw, {}).get(lang)
+        if mapped:
+            out.append(mapped)
+        elif lang == "en" and _contains_cjk(raw):
+            continue
+        elif lang == "ja" and _contains_chinese_only(raw):
+            continue
+        else:
+            out.append(raw)
+    return out
+
+
+def localize_guide_article_payload(item: dict[str, Any], language: Any, *, include_body: bool = False) -> dict[str, Any]:
+    lang = _guide_lang_key(language)
+    if lang == "zh":
+        return item
+    out = dict(item)
+    loc = GUIDE_ARTICLE_I18N.get(str(out.get("slug") or ""), {}).get(lang)
+    if loc:
+        out.update(loc)
+    else:
+        title = _guide_slug_title(str(out.get("slug") or "guide"))
+        out["title"] = f"Japan Guide: {title}" if lang == "en" else f"日本ガイド：{title}"
+        out["summary"] = (
+            "A Machi editorial guide for studying, working, Japanese tests, and daily life in Japan. Confirm final requirements with official sources before acting."
+            if lang == "en"
+            else "日本での学習、仕事、日本語試験、生活準備に役立つ Machi 編集部のガイドです。最終的な条件は必ず公式情報で確認してください。"
+        )
+    out["language"] = "en" if lang == "en" else "ja"
+    out["authorName"] = "Machi Editorial Team" if lang == "en" else "Machi 編集部"
+    out["tags"] = localize_guide_tags(list(out.get("tags") or []), language)
+    if include_body and "body" in out:
+        summary = str(out.get("summary") or "")
+        if lang == "en":
+            out["body"] = (
+                f"{summary}\n\nThis guide summarizes the practical steps, documents, timing, and risk checks you should review before making decisions in Japan. "
+                "Because school admissions, immigration, employment, housing, and local procedures can change, always confirm deadlines, fees, and requirements on official websites before applying or paying."
+            )
+        else:
+            out["body"] = (
+                f"{summary}\n\nこのガイドでは、日本で手続きを進める前に確認したい流れ、書類、時期、注意点を整理しています。"
+                "進学、在留、就職、住まい、生活手続きの条件は変更される場合があるため、申請や支払いの前に必ず公式サイトで最新情報を確認してください。"
+            )
+    return out
+
+
+def _guide_generic_product_copy(item: dict[str, Any], language: Any) -> dict[str, str]:
+    lang = _guide_lang_key(language)
+    title = _guide_slug_title(str(item.get("slug") or item.get("productType") or "resource"))
+    is_service = bool(item.get("isService"))
+    if lang == "en":
+        return {
+            "title": title,
+            "subtitle": "Member resource" if not is_service else "Bookable support service",
+            "description": "A Machi resource for preparing study, career, JLPT, or daily-life steps in Japan. Details are maintained by the editorial team.",
+            "targetAudience": "People preparing for life, study, or work in Japan",
+            "deliveryMethod": "Digital resource" if not is_service else "Online support service",
+        }
+    return {
+        "title": title,
+        "subtitle": "メンバー向け資料" if not is_service else "予約制サポートサービス",
+        "description": "日本での学習、就職、JLPT、生活手続きの準備に役立つ Machi 編集部の資料です。",
+        "targetAudience": "日本での生活・学習・仕事を準備する方",
+        "deliveryMethod": "デジタル資料" if not is_service else "オンラインサポート",
+    }
+
+
+def localize_guide_product_payload(item: dict[str, Any], language: Any) -> dict[str, Any]:
+    lang = _guide_lang_key(language)
+    if lang == "zh":
+        return item
+    out = dict(item)
+    loc = GUIDE_PRODUCT_BASE_I18N.get(str(out.get("slug") or ""), {}).get(lang)
+    out.update(loc or _guide_generic_product_copy(out, language))
+    generic = _guide_generic_product_copy(out, language)
+    out["language"] = "en" if lang == "en" else "ja"
+    out["tags"] = localize_guide_tags(list(out.get("tags") or []), language)
+    if _contains_cjk(str(out.get("targetAudience") or "")) or not out.get("targetAudience"):
+        out["targetAudience"] = generic["targetAudience"]
+    if _contains_cjk(str(out.get("deliveryMethod") or "")) or not out.get("deliveryMethod"):
+        out["deliveryMethod"] = generic["deliveryMethod"]
+    if _contains_cjk(str(out.get("notes") or "")):
+        out["notes"] = ""
+    if _contains_cjk(str(out.get("refundPolicy") or "")):
+        out["refundPolicy"] = ""
+    if _contains_cjk(str(out.get("priceLabel") or "")):
+        label = str(out.get("priceLabel") or "")
+        if "会员" in label:
+            out["priceLabel"] = "Member-only" if lang == "en" else "メンバー限定"
+        elif "免费" in label:
+            out["priceLabel"] = "Free" if lang == "en" else "無料"
+        elif "预约" in label:
+            out["priceLabel"] = "Book a consultation" if lang == "en" else "相談予約"
+        else:
+            out["priceLabel"] = "Coming soon" if lang == "en" else "準備中"
+        out["price_label"] = out["priceLabel"]
+    if out.get("isComingSoon"):
+        out["priceLabel"] = "Coming soon" if lang == "en" else "準備中"
+        out["price_label"] = out["priceLabel"]
+        out["ctaLabel"] = "Coming soon" if lang == "en" else "準備中"
+    elif out.get("isPriceHidden") or out.get("isAppointmentOnly") or out.get("isService"):
+        out["priceLabel"] = "Book a consultation" if lang == "en" else "相談予約"
+        out["price_label"] = out["priceLabel"]
+        out["ctaLabel"] = "Book a consultation" if lang == "en" else "相談予約"
+    elif out.get("isFree"):
+        out["priceLabel"] = "Free" if lang == "en" else "無料"
+        out["price_label"] = out["priceLabel"]
+        out["ctaLabel"] = "View for free" if lang == "en" else "無料で見る"
+    else:
+        prefix = "Buy" if lang == "en" else "購入"
+        out["ctaLabel"] = f"{prefix} {out.get('priceLabel') or ''}".strip()
+    if out.get("memberPriceLabel"):
+        out["memberPriceLabel"] = f"Member {out.get('memberPriceLabel')}" if lang == "en" else f"メンバー {out.get('memberPriceLabel')}"
+    if "previewContent" in out and lang != "zh":
+        out["previewContent"] = out.get("description") or out.get("subtitle") or ""
+    return out
+
+
+def localize_guide_school_payload(item: dict[str, Any], language: Any) -> dict[str, Any]:
+    lang = _guide_lang_key(language)
+    if lang == "zh":
+        return item
+    out = dict(item)
+    if lang == "en":
+        out["schoolName"] = out.get("schoolNameEn") or out.get("schoolNameJp") or out.get("schoolName") or ""
+        if not out.get("shortDescription") or _contains_cjk(str(out.get("shortDescription") or "")):
+            out["shortDescription"] = "School information for international students in Japan."
+        out["description"] = out.get("description") if not _contains_cjk(str(out.get("description") or "")) else "School information curated for international students preparing applications in Japan. Confirm admission details with the official school website."
+    else:
+        out["schoolName"] = out.get("schoolNameJp") or out.get("schoolNameEn") or out.get("schoolName") or ""
+        if not out.get("shortDescription") or _contains_chinese_only(str(out.get("shortDescription") or "")):
+            out["shortDescription"] = "日本で進学を準備する留学生向けの学校情報です。"
+        out["description"] = out.get("description") if not _contains_chinese_only(str(out.get("description") or "")) else "日本で進学を準備する留学生向けに整理した学校情報です。出願条件や締切は必ず学校公式サイトで確認してください。"
+    out["tags"] = localize_guide_tags(list(out.get("tags") or []), language)
+    return out
+
+
+def localize_guide_company_payload(item: dict[str, Any], language: Any) -> dict[str, Any]:
+    lang = _guide_lang_key(language)
+    if lang == "zh":
+        return item
+    out = dict(item)
+    if lang == "en":
+        out["companyName"] = out.get("companyNameEn") or out.get("companyNameJp") or out.get("companyName") or ""
+        if not out.get("shortDescription") or _contains_cjk(str(out.get("shortDescription") or "")):
+            out["shortDescription"] = "Company information for international job seekers in Japan."
+        out["description"] = out.get("description") if not _contains_cjk(str(out.get("description") or "")) else "Company information curated for international job seekers in Japan. Confirm openings and eligibility on the official recruiting page."
+    else:
+        out["companyName"] = out.get("companyNameJp") or out.get("companyNameEn") or out.get("companyName") or ""
+        if not out.get("shortDescription") or _contains_chinese_only(str(out.get("shortDescription") or "")):
+            out["shortDescription"] = "日本で就職を準備する外国人向けの会社情報です。"
+        out["description"] = out.get("description") if not _contains_chinese_only(str(out.get("description") or "")) else "日本で就職を準備する外国人向けに整理した会社情報です。募集条件や最新情報は必ず公式採用ページで確認してください。"
+    out["tags"] = localize_guide_tags(list(out.get("tags") or []), language)
     return out
 
 
@@ -5853,10 +7218,871 @@ def _guide_upsert_category(conn: sqlite3.Connection, key: str, parent_key: str, 
     result["categories"] += 1
 
 
+def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
+    """Seed a compact public listing set for local verification.
+
+    The seed is idempotent and only adds rows when the structured table is
+    empty. It never migrates old posts into listings automatically because
+    moderation/state for classifieds must be explicit.
+    """
+    try:
+        existing = conn.execute("SELECT COUNT(*) AS c FROM city_listings").fetchone()["c"]
+    except sqlite3.OperationalError:
+        return
+    if int(existing or 0) > 0:
+        return
+    seller = conn.execute("SELECT * FROM users WHERE handle = 'kaizi' LIMIT 1").fetchone()
+    if not seller:
+        seller = conn.execute("SELECT * FROM users ORDER BY created_at ASC LIMIT 1").fetchone()
+    if not seller:
+        return
+    seller_id = seller["id"]
+    now = now_iso()
+
+    samples: list[dict[str, Any]] = [
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "secondhand", "category": "电子产品", "title": "Apple Magic Keyboard 日文配列",
+            "description": "使用半年，功能正常，适合同城自取。面交请选择公共场所。",
+            "price": 8000, "currency": "JPY", "price_type": "fixed", "location_text": "新宿站附近",
+            "status": "published", "verification_status": "unverified",
+            "attributes": {"condition": "9成新", "delivery_method": "自取 / 面交", "pickup_available": True, "shipping_available": False, "brand": "Apple"},
+        },
+        {
+            "city_slug": "sendai", "region_code": "jp.miyagi.sendai", "country_code": "jp",
+            "type": "secondhand", "category": "家具", "title": "搬家出清：折叠桌 + 椅子",
+            "description": "仙台青叶区自取，桌面有轻微使用痕迹，适合学生宿舍。",
+            "price": 2500, "currency": "JPY", "price_type": "fixed", "location_text": "仙台站西口",
+            "status": "published", "verification_status": "unverified",
+            "attributes": {"condition": "8成新", "delivery_method": "自取", "pickup_available": True, "shipping_available": False},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "rental", "category": "单人", "title": "池袋 1K 公寓，可预约看房",
+            "description": "地址仅展示到区域，具体看房请先核实发布者身份。Machi 不代收押金或房租。",
+            "price": 78000, "currency": "JPY", "price_type": "monthly", "location_text": "丰岛区 · 池袋",
+            "status": "published", "verification_status": "verified",
+            "attributes": {"rent": 78000, "deposit": "1个月", "key_money": "0", "management_fee": 6000, "layout": "1K", "area_sqm": 23.4, "nearest_station": "池袋站 步行8分钟", "move_in_date": "2026-07", "short_term_allowed": False, "furnished": False, "pet_allowed": False},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "job", "category": "兼职", "title": "居酒屋晚班兼职",
+            "description": "每周 2-4 天，留学生可咨询。禁止押金、保证金和培训费。",
+            "price": 1200, "currency": "JPY", "price_type": "hourly", "location_text": "涩谷区",
+            "status": "published", "verification_status": "verified",
+            "attributes": {"salary_min": 1200, "salary_max": 1450, "salary_type": "hourly", "employment_type": "part_time", "japanese_level": "N3 可", "visa_support": "none", "working_hours": "18:00-23:30", "company_name": "Machi Dining", "foreigner_friendly": True, "transportation_fee": True, "student_ok": True},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "hiring", "category": "招聘", "title": "日中双语运营助理",
+            "description": "招聘方已提交认证资料，岗位需进入审核流程。请勿向任何招聘方支付保证金。",
+            "price": 260000, "currency": "JPY", "price_type": "monthly", "location_text": "品川区",
+            "status": "published", "verification_status": "verified",
+            "attributes": {"salary_min": 260000, "salary_max": 330000, "salary_type": "monthly", "employment_type": "full_time", "japanese_level": "N2+", "visa_support": "consult", "working_hours": "10:00-19:00", "company_name": "Machi Partner", "foreigner_friendly": True},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "discount", "category": "优惠", "title": "本地咖啡店学生优惠",
+            "description": "出示学生证，指定饮品 10% off。以店内规则为准。",
+            "price": 0, "currency": "JPY", "price_type": "discount", "location_text": "高田马场",
+            "status": "published", "verification_status": "needs_review",
+            "attributes": {"merchant_name": "Machi Coffee", "discount_info": "学生 10% off", "valid_until": "2026-08-31", "usage_rules": "不可与其他优惠叠加"},
+        },
+    ]
+    for index, sample in enumerate(samples):
+        listing_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO city_listings (
+                id, country_code, city_id, city_slug, region_code, language, type,
+                category, title, description, price, currency, price_type, location_text,
+                status, verification_status, seller_user_id, business_id, contact_method,
+                view_count, inquiry_count, favorite_count, report_count, is_promoted,
+                promotion_weight, published_at, expires_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'app_message',
+                    0, 0, 0, 0, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                listing_id,
+                sample["country_code"],
+                sample["city_slug"],
+                sample["city_slug"],
+                sample["region_code"],
+                sample["type"],
+                sample["category"],
+                sample["title"],
+                sample["description"],
+                sample["price"],
+                sample["currency"],
+                sample["price_type"],
+                sample["location_text"],
+                sample["status"],
+                sample["verification_status"],
+                seller_id,
+                1 if index in {0, 2, 3} else 0,
+                20 if index in {0, 2, 3} else 0,
+                now,
+                (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
+                now,
+                now,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
+            VALUES (?, ?, 'image', ?, ?, 0, 1, ?)
+            """,
+            (str(uuid.uuid4()), listing_id, listing_image_fallback(sample["type"], index), listing_image_fallback(sample["type"], index), now),
+        )
+        for key, (value, value_type) in normalize_listing_attributes(sample["type"], sample.get("attributes")).items():
+            conn.execute(
+                """
+                INSERT INTO listing_attributes (id, listing_id, key, value, value_type, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), listing_id, key, value, value_type, now, now),
+            )
+
+
+def reputation_status_for_score(score: int) -> str:
+    score = max(REPUTATION_MIN_SCORE, min(int(score or 0), REPUTATION_MAX_SCORE))
+    if score >= 90:
+        return "excellent"
+    if score >= 75:
+        return "good"
+    if score >= 60:
+        return "normal"
+    if score >= 40:
+        return "watch"
+    if score >= 20:
+        return "limited"
+    return "high_risk"
+
+
+def reputation_status_payload(score: int, *, public: bool = False) -> dict[str, Any]:
+    status = reputation_status_for_score(score)
+    private = REPUTATION_PRIVATE_STATUS_LABELS.get(status, REPUTATION_PRIVATE_STATUS_LABELS["normal"])
+    return {
+        "status": status,
+        "label": REPUTATION_PUBLIC_TRUST_LABELS.get(status, "待建立记录") if public else private["zh"],
+        "label_zh": REPUTATION_PUBLIC_TRUST_LABELS.get(status, "待建立记录") if public else private["zh"],
+        "label_en": private["en"],
+        "label_ja": private["ja"],
+    }
+
+
+def _clamp_reputation_score(value: Any) -> int:
+    try:
+        return max(REPUTATION_MIN_SCORE, min(int(value), REPUTATION_MAX_SCORE))
+    except Exception:
+        return REPUTATION_DEFAULT_SCORE
+
+
+def _clamp_risk_score(value: Any) -> int:
+    try:
+        return max(0, min(int(value), REPUTATION_MAX_RISK))
+    except Exception:
+        return 0
+
+
+def _reputation_now_window(days: int = 1) -> str:
+    return (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+
+def ensure_reputation_seed(conn: sqlite3.Connection) -> None:
+    """Seed configurable reputation rules/levels and backfill user rows.
+
+    The values are defaults, not front-end constants. Admin APIs can adjust
+    rows later without shipping new clients.
+    """
+    now = now_iso()
+    for level in REPUTATION_LEVEL_DEFAULTS:
+        conn.execute(
+            """
+            INSERT INTO reputation_levels (
+                level, xp_required, name_zh, name_en, name_ja,
+                description_zh, description_en, description_ja,
+                privileges_json, is_active, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            ON CONFLICT(level) DO NOTHING
+            """,
+            (
+                level["level"],
+                level["xp"],
+                level["zh"],
+                level["en"],
+                level["ja"],
+                level["desc"],
+                level["desc"],
+                level["desc"],
+                json.dumps(level["privileges"], ensure_ascii=False),
+                now,
+            ),
+        )
+        for idx, title in enumerate(level["privileges"]):
+            key = _slug_key(f"level-{level['level']}-{title}")
+            conn.execute(
+                """
+                INSERT INTO reputation_privileges (
+                    id, level, key, title_zh, title_en, title_ja,
+                    description_zh, is_active, sort_order, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                ON CONFLICT(level, key) DO NOTHING
+                """,
+                (
+                    str(uuid.uuid4()), level["level"], key, title, title, title,
+                    f"Lv.{level['level']} 权益", idx + 1, now,
+                ),
+            )
+    for rule in REPUTATION_RULE_DEFAULTS:
+        conn.execute(
+            """
+            INSERT INTO reputation_rules (
+                key, name_zh, name_en, name_ja, event_type, xp_delta,
+                reputation_delta, risk_delta, daily_xp_cap, weekly_xp_cap,
+                monthly_xp_cap, per_target_daily_xp_cap, is_one_time,
+                requires_reviewed, notify_user, is_active, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (
+                rule["key"], rule["name"], rule["name"], rule["name"], rule["kind"],
+                int(rule["xp"]), int(rule["rep"]), int(rule["risk"]),
+                int(rule["daily"]), int(rule["weekly"]), int(rule["monthly"]),
+                int(rule["target_daily"]), int(rule["one_time"]), int(rule["reviewed"]),
+                int(rule["notify"]), now, now,
+            ),
+        )
+    for key, value in REPUTATION_LIMIT_DEFAULTS.items():
+        conn.execute(
+            """
+            INSERT INTO reputation_limits (key, value, description, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (key, int(value), key.replace("_", " "), now),
+        )
+    for badge in REPUTATION_BADGE_DEFAULTS:
+        conn.execute(
+            """
+            INSERT INTO badges (
+                id, key, name_zh, name_en, name_ja, category, rarity,
+                description_zh, is_official, is_active, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (
+                str(uuid.uuid4()), badge["key"], badge["name"], badge["name"], badge["name"],
+                badge["category"], badge["rarity"], f"Machi 城市声望徽章：{badge['name']}",
+                1 if badge["rarity"] in {"official", "epic"} else 0, now, now,
+            ),
+        )
+    for reward in REPUTATION_REWARD_DEFAULTS:
+        conn.execute(
+            """
+            INSERT INTO reputation_rewards (
+                id, key, name_zh, name_en, name_ja, reward_type, required_level,
+                quantity, metadata, is_active, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}', 1, ?, ?)
+            ON CONFLICT(key) DO NOTHING
+            """,
+            (
+                str(uuid.uuid4()), reward["key"], reward["name"], reward["name"],
+                reward["name"], reward["type"], int(reward["level"]),
+                int(reward["quantity"]), now, now,
+            ),
+        )
+    for row in conn.execute("SELECT id FROM users WHERE deleted_at IS NULL"):
+        reputation_ensure_user(conn, row["id"])
+
+
+def reputation_level_for_xp(conn: sqlite3.Connection, xp: int) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT * FROM reputation_levels
+         WHERE is_active = 1 AND xp_required <= ?
+         ORDER BY level DESC
+         LIMIT 1
+        """,
+        (max(REPUTATION_MIN_XP, int(xp or 0)),),
+    ).fetchone()
+    if row:
+        return dict(row)
+    fallback = REPUTATION_LEVEL_DEFAULTS[0]
+    return {
+        "level": fallback["level"],
+        "xp_required": fallback["xp"],
+        "name_zh": fallback["zh"],
+        "name_en": fallback["en"],
+        "name_ja": fallback["ja"],
+        "description_zh": fallback["desc"],
+        "description_en": fallback["desc"],
+        "description_ja": fallback["desc"],
+        "privileges_json": json.dumps(fallback["privileges"], ensure_ascii=False),
+        "is_active": 1,
+        "updated_at": now_iso(),
+    }
+
+
+def reputation_next_level(conn: sqlite3.Connection, level: int) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM reputation_levels WHERE is_active = 1 AND level > ? ORDER BY level ASC LIMIT 1",
+        (int(level or 1),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def reputation_ensure_user(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+    row = conn.execute("SELECT * FROM user_reputation WHERE user_id = ?", (user_id,)).fetchone()
+    if row:
+        d = dict(row)
+        status = reputation_status_for_score(int(d.get("reputation_score") or REPUTATION_DEFAULT_SCORE))
+        if d.get("reputation_status") != status:
+            conn.execute(
+                "UPDATE user_reputation SET reputation_status = ?, updated_at = ? WHERE user_id = ?",
+                (status, now_iso(), user_id),
+            )
+            d["reputation_status"] = status
+        return d
+    now = now_iso()
+    conn.execute(
+        """
+        INSERT INTO user_reputation (
+            user_id, xp, reputation_score, level, risk_score, reputation_status,
+            created_at, updated_at
+        )
+        VALUES (?, 0, ?, 1, 0, 'normal', ?, ?)
+        """,
+        (user_id, REPUTATION_DEFAULT_SCORE, now, now),
+    )
+    return dict(conn.execute("SELECT * FROM user_reputation WHERE user_id = ?", (user_id,)).fetchone())
+
+
+def reputation_limit_map(conn: sqlite3.Connection) -> dict[str, int]:
+    rows = list(conn.execute("SELECT key, value FROM reputation_limits"))
+    data = dict(REPUTATION_LIMIT_DEFAULTS)
+    for row in rows:
+        try:
+            data[row["key"]] = int(row["value"] or 0)
+        except Exception:
+            continue
+    return data
+
+
+def _reputation_sum_xp(conn: sqlite3.Connection, user_id: str, since: str, *,
+                       rule_key: str = "", target_kind: str = "", target_id: str = "") -> int:
+    clauses = ["user_id = ?", "created_at >= ?", "xp_delta > 0"]
+    params: list[Any] = [user_id, since]
+    if rule_key:
+        clauses.append("rule_key = ?")
+        params.append(rule_key)
+    if target_kind:
+        clauses.append("target_kind = ?")
+        params.append(target_kind)
+    if target_id:
+        clauses.append("target_id = ?")
+        params.append(target_id)
+    row = conn.execute(
+        f"SELECT COALESCE(SUM(xp_delta), 0) AS total FROM reputation_events WHERE {' AND '.join(clauses)}",
+        params,
+    ).fetchone()
+    return int((row["total"] if row else 0) or 0)
+
+
+def reputation_growth_is_frozen(rep: dict[str, Any]) -> bool:
+    until = parse_iso(rep.get("frozen_until"))
+    if until and until.tzinfo is None:
+        until = until.replace(tzinfo=timezone.utc)
+    if until and until > datetime.now(timezone.utc):
+        return True
+    return bool(rep.get("growth_frozen") and not rep.get("frozen_until"))
+
+
+def reputation_apply_event(
+    conn: sqlite3.Connection,
+    user_id: str,
+    rule_key: str,
+    *,
+    actor_user_id: str = "",
+    admin_id: str = "",
+    target_kind: str = "",
+    target_id: str = "",
+    reason: str = "",
+    metadata: dict[str, Any] | None = None,
+    reviewed: bool = False,
+) -> dict[str, Any]:
+    if not user_id:
+        return {"applied": False, "reason": "missing_user"}
+    rule = conn.execute("SELECT * FROM reputation_rules WHERE key = ? AND is_active = 1", (rule_key,)).fetchone()
+    if not rule:
+        return {"applied": False, "reason": "missing_rule", "rule_key": rule_key}
+    rule_d = dict(rule)
+    if int(rule_d.get("requires_reviewed") or 0) and not reviewed:
+        return {"applied": False, "reason": "requires_review", "rule_key": rule_key}
+    if int(rule_d.get("is_one_time") or 0):
+        existing = conn.execute(
+            "SELECT 1 FROM reputation_events WHERE user_id = ? AND rule_key = ? LIMIT 1",
+            (user_id, rule_key),
+        ).fetchone()
+        if existing:
+            return {"applied": False, "reason": "one_time_already_applied", "rule_key": rule_key}
+
+    rep = reputation_ensure_user(conn, user_id)
+    xp_before = int(rep.get("xp") or 0)
+    score_before = _clamp_reputation_score(rep.get("reputation_score"))
+    risk_before = _clamp_risk_score(rep.get("risk_score"))
+    level_before = int(rep.get("level") or 1)
+    xp_delta = int(rule_d.get("xp_delta") or 0)
+    reputation_delta = int(rule_d.get("reputation_delta") or 0)
+    risk_delta = int(rule_d.get("risk_delta") or 0)
+
+    if xp_delta > 0 and reputation_growth_is_frozen(rep):
+        xp_delta = 0
+        reason = reason or "声望增长已冻结"
+
+    if xp_delta > 0:
+        limits = reputation_limit_map(conn)
+        user_row = conn.execute("SELECT created_at FROM users WHERE id = ?", (user_id,)).fetchone()
+        created = parse_iso(user_row["created_at"] if user_row else "")
+        account_age_days = 999
+        if created:
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            account_age_days = max(0, (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).days)
+        caps: list[tuple[str, int, str]] = [
+            ("global_daily", int(limits.get("daily_xp_cap") or 0), _reputation_now_window(1)),
+            ("global_weekly", int(limits.get("weekly_xp_cap") or 0), _reputation_now_window(7)),
+            ("global_monthly", int(limits.get("monthly_xp_cap") or 0), _reputation_now_window(30)),
+            ("rule_daily", int(rule_d.get("daily_xp_cap") or 0), _reputation_now_window(1)),
+            ("rule_weekly", int(rule_d.get("weekly_xp_cap") or 0), _reputation_now_window(7)),
+            ("rule_monthly", int(rule_d.get("monthly_xp_cap") or 0), _reputation_now_window(30)),
+        ]
+        if account_age_days < int(limits.get("new_user_days") or 7):
+            caps.append(("new_user_daily", int(limits.get("new_user_daily_xp_cap") or 0), _reputation_now_window(1)))
+        for cap_kind, cap, since in caps:
+            if cap <= 0:
+                continue
+            kwargs = {"rule_key": rule_key} if cap_kind.startswith("rule_") else {}
+            earned = _reputation_sum_xp(conn, user_id, since, **kwargs)
+            xp_delta = min(xp_delta, max(0, cap - earned))
+        target_cap = int(rule_d.get("per_target_daily_xp_cap") or 0)
+        if target_cap > 0 and target_id:
+            earned = _reputation_sum_xp(
+                conn, user_id, _reputation_now_window(1),
+                rule_key=rule_key, target_kind=target_kind, target_id=target_id,
+            )
+            xp_delta = min(xp_delta, max(0, target_cap - earned))
+
+    xp_after = max(REPUTATION_MIN_XP, xp_before + xp_delta)
+    score_after = _clamp_reputation_score(score_before + reputation_delta)
+    risk_after = _clamp_risk_score(risk_before + risk_delta)
+    status_after = reputation_status_for_score(score_after)
+    level_after = int(reputation_level_for_xp(conn, xp_after)["level"])
+    metadata_payload = dict(metadata or {})
+    if xp_delta == 0 and int(rule_d.get("xp_delta") or 0) > 0:
+        metadata_payload["xp_capped"] = True
+
+    event_id = str(uuid.uuid4())
+    now = now_iso()
+    conn.execute(
+        """
+        INSERT INTO reputation_events (
+            id, user_id, actor_user_id, admin_id, rule_key, event_type,
+            target_kind, target_id, xp_delta, reputation_delta, risk_delta,
+            xp_before, xp_after, reputation_before, reputation_after,
+            risk_before, risk_after, level_before, level_after, reason,
+            metadata, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event_id, user_id, actor_user_id or "", admin_id or "", rule_key,
+            rule_d.get("event_type") or "", target_kind or "", target_id or "",
+            xp_delta, reputation_delta, risk_delta, xp_before, xp_after,
+            score_before, score_after, risk_before, risk_after, level_before,
+            level_after, (reason or rule_d.get("name_zh") or "")[:500],
+            json.dumps(metadata_payload, ensure_ascii=False, sort_keys=True), now,
+        ),
+    )
+    violation_inc = 1 if reputation_delta < 0 or risk_delta >= 20 else 0
+    conn.execute(
+        """
+        UPDATE user_reputation
+           SET xp = ?, reputation_score = ?, level = ?, risk_score = ?,
+               reputation_status = ?, last_event_at = ?, violation_count = violation_count + ?,
+               favorites_received = favorites_received + ?,
+               helped_users = helped_users + ?,
+               quality_posts = quality_posts + ?,
+               reports_validated = reports_validated + ?,
+               updated_at = ?
+         WHERE user_id = ?
+        """,
+        (
+            xp_after, score_after, level_after, risk_after, status_after, now,
+            violation_inc,
+            1 if rule_key == "content_bookmarked" and xp_delta > 0 else 0,
+            1 if rule_key == "comment_on_question" and xp_delta > 0 else 0,
+            1 if rule_key in {"post_guide", "post_warning"} and xp_delta > 0 else 0,
+            1 if rule_key == "valid_report" and xp_delta > 0 else 0,
+            now, user_id,
+        ),
+    )
+    if level_after > level_before:
+        reputation_grant_level_rewards(conn, user_id, level_after, event_id)
+        conn.execute(
+            """
+            INSERT INTO notifications (id, user_id, actor_id, type, content, created_at)
+            VALUES (?, ?, ?, 'system', ?, ?)
+            """,
+            (str(uuid.uuid4()), user_id, user_id, f"你已升级为 Lv.{level_after} {reputation_level_for_xp(conn, xp_after)['name_zh']}。", now_iso()),
+        )
+        HUB.publish(user_id, {"type": "notification", "kind": "reputation_level_up"})
+    elif int(rule_d.get("notify_user") or 0) and (xp_delta or reputation_delta):
+        content = f"{rule_d.get('name_zh') or '城市声望'}"
+        if xp_delta:
+            content += f"，获得 {xp_delta} XP" if xp_delta > 0 else f"，扣除 {abs(xp_delta)} XP"
+        if reputation_delta:
+            content += f"，声望{'+' if reputation_delta > 0 else ''}{reputation_delta}"
+        conn.execute(
+            """
+            INSERT INTO notifications (id, user_id, actor_id, type, content, created_at)
+            VALUES (?, ?, ?, 'system', ?, ?)
+            """,
+            (str(uuid.uuid4()), user_id, user_id, content, now_iso()),
+        )
+    if risk_after >= int(reputation_limit_map(conn).get("review_risk_threshold") or 61):
+        reputation_open_trust_review(conn, user_id, risk_after, target_kind=target_kind, target_id=target_id, reason=reason or rule_d.get("name_zh") or rule_key)
+    return {
+        "applied": True,
+        "event_id": event_id,
+        "xp_delta": xp_delta,
+        "reputation_delta": reputation_delta,
+        "risk_delta": risk_delta,
+        "level_before": level_before,
+        "level_after": level_after,
+    }
+
+
+def reputation_open_trust_review(conn: sqlite3.Connection, user_id: str, risk_score: int, *,
+                                 target_kind: str = "", target_id: str = "", reason: str = "") -> None:
+    existing = conn.execute(
+        """
+        SELECT id FROM trust_reviews
+         WHERE user_id = ? AND status = 'open' AND target_kind = ? AND target_id = ?
+         LIMIT 1
+        """,
+        (user_id, target_kind or "", target_id or ""),
+    ).fetchone()
+    if existing:
+        conn.execute(
+            "UPDATE trust_reviews SET risk_score = MAX(risk_score, ?), reasons = ?, updated_at = ? WHERE id = ?",
+            (int(risk_score or 0), reason[:500], now_iso(), existing["id"]),
+        )
+        return
+    now = now_iso()
+    conn.execute(
+        """
+        INSERT INTO trust_reviews (
+            id, user_id, target_kind, target_id, review_type, status,
+            risk_score, reasons, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, 'risk', 'open', ?, ?, ?, ?)
+        """,
+        (str(uuid.uuid4()), user_id, target_kind or "", target_id or "", int(risk_score or 0), reason[:500], now, now),
+    )
+
+
+def reputation_grant_level_rewards(conn: sqlite3.Connection, user_id: str, level: int, source_event_id: str) -> None:
+    rows = list(conn.execute(
+        "SELECT * FROM reputation_rewards WHERE is_active = 1 AND required_level <= ? ORDER BY required_level",
+        (int(level or 1),),
+    ))
+    for row in rows:
+        exists = conn.execute(
+            "SELECT 1 FROM user_rewards WHERE user_id = ? AND reward_id = ? LIMIT 1",
+            (user_id, row["id"]),
+        ).fetchone()
+        if exists:
+            continue
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO user_rewards (
+                id, user_id, reward_id, status, quantity, source_event_id, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'available', ?, ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), user_id, row["id"], int(row["quantity"] or 1), source_event_id, now, now),
+        )
+        conn.execute(
+            """
+            INSERT INTO notifications (id, user_id, actor_id, type, content, created_at)
+            VALUES (?, ?, ?, 'system', ?, ?)
+            """,
+            (str(uuid.uuid4()), user_id, user_id, f"你获得一项城市声望奖励：{row['name_zh']}。", now_iso()),
+        )
+
+
+def reputation_effective_limits(conn: sqlite3.Connection, rep: dict[str, Any], user: dict[str, Any] | None = None) -> dict[str, Any]:
+    limits = reputation_limit_map(conn)
+    score = _clamp_reputation_score(rep.get("reputation_score"))
+    level = int(rep.get("level") or 1)
+    risk = _clamp_risk_score(rep.get("risk_score"))
+    account_age_days = 999
+    if user:
+        created = parse_iso(user.get("created_at"))
+        if created:
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            account_age_days = max(0, (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).days)
+    return {
+        "daily_xp_cap": limits.get("new_user_daily_xp_cap") if account_age_days < limits.get("new_user_days", 7) else limits.get("daily_xp_cap"),
+        "weekly_xp_cap": limits.get("weekly_xp_cap"),
+        "monthly_xp_cap": limits.get("monthly_xp_cap"),
+        "can_publish_secondhand": score >= 20 and risk < limits.get("restrict_risk_threshold", 81),
+        "secondhand_requires_review": score < 75 or level <= 1 or risk >= limits.get("review_risk_threshold", 61),
+        "can_publish_rental": level >= limits.get("rental_min_level", 3) and score >= limits.get("rental_min_reputation", 60) and risk < limits.get("restrict_risk_threshold", 81),
+        "can_publish_job": level >= limits.get("job_min_level", 3) and score >= limits.get("job_min_reputation", 70) and risk < limits.get("restrict_risk_threshold", 81),
+        "can_publish_service": level >= limits.get("service_min_level", 3) and score >= limits.get("service_min_reputation", 70) and risk < limits.get("restrict_risk_threshold", 81),
+        "can_publish_discount": level >= limits.get("discount_min_level", 3) and score >= limits.get("discount_min_reputation", 60) and risk < limits.get("restrict_risk_threshold", 81),
+        "high_risk_requires_review": score < 75 or risk >= limits.get("review_risk_threshold", 61),
+        "dm_daily_limit": limits.get("dm_daily_new_user") if account_age_days < limits.get("new_user_days", 7) else (limits.get("dm_low_reputation_cap") if score < limits.get("dm_reputation_floor", 50) else 50),
+        "growth_frozen": reputation_growth_is_frozen(rep),
+    }
+
+
+def reputation_validate_listing_publish(conn: sqlite3.Connection, user: dict[str, Any], listing_type: str) -> tuple[bool, str]:
+    rep = reputation_ensure_user(conn, user["id"])
+    controls = reputation_effective_limits(conn, rep, user)
+    if listing_type == "secondhand":
+        if not controls["can_publish_secondhand"]:
+            raise APIError("当前账号信任状态暂不能发布二手信息。", 403, "REPUTATION_LIMITED")
+        return bool(controls["secondhand_requires_review"]), "声望抽检"
+    if listing_type == "rental" and not controls["can_publish_rental"]:
+        raise APIError("发布房源需要 Lv.3 且声望至少为正常。", 403, "REPUTATION_LIMITED")
+    if listing_type in {"job", "hiring"} and not controls["can_publish_job"]:
+        raise APIError("发布招聘/职位需要 Lv.3 且声望至少良好。", 403, "REPUTATION_LIMITED")
+    if listing_type == "local_service" and not controls["can_publish_service"]:
+        raise APIError("发布本地服务需要 Lv.3 且声望至少良好。", 403, "REPUTATION_LIMITED")
+    if listing_type == "discount" and not controls["can_publish_discount"]:
+        raise APIError("发布商家优惠需要 Lv.3 且声望至少正常。", 403, "REPUTATION_LIMITED")
+    return bool(controls["high_risk_requires_review"] or listing_type in LISTING_TYPES_DEFAULT_REVIEW), "高信任频道审核"
+
+
+def reputation_rule_for_post_type(content_type: str) -> str:
+    if content_type == "question":
+        return "post_question"
+    if content_type == "long_post":
+        return "post_long"
+    if content_type == "guide":
+        return "post_guide"
+    if content_type == "warning":
+        return "post_warning"
+    if content_type in {"news", "local_info"}:
+        return "post_news"
+    if content_type in {"meetup", "dining", "event"}:
+        return "post_event"
+    return "post_dynamic"
+
+
+def reputation_rule_for_listing_approval(listing_type: str) -> str:
+    if listing_type == "rental":
+        return "listing_rental_approved"
+    if listing_type in {"job", "hiring"}:
+        return "listing_job_approved"
+    if listing_type == "local_service":
+        return "listing_service_approved"
+    if listing_type == "discount":
+        return "listing_discount_approved"
+    return "listing_secondhand_published"
+
+
+def serialize_reputation_event(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    metadata = d.get("metadata") or "{}"
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata or "{}")
+        except Exception:
+            metadata = {}
+    d["metadata"] = metadata
+    return d
+
+
+def serialize_badge(row: sqlite3.Row | dict[str, Any], user_badge: dict[str, Any] | None = None) -> dict[str, Any]:
+    d = dict(row)
+    payload = {
+        "id": d.get("id", ""),
+        "key": d.get("key", ""),
+        "name_zh": d.get("name_zh", ""),
+        "name_en": d.get("name_en", ""),
+        "name_ja": d.get("name_ja", ""),
+        "name": d.get("name_zh", ""),
+        "category": d.get("category", ""),
+        "rarity": d.get("rarity", "common"),
+        "description_zh": d.get("description_zh", ""),
+        "is_official": bool(d.get("is_official", 0)),
+        "is_active": bool(d.get("is_active", 1)),
+    }
+    if user_badge:
+        payload.update({
+            "user_badge_id": user_badge.get("id", ""),
+            "is_displayed": bool(user_badge.get("is_displayed", 1)),
+            "granted_at": user_badge.get("created_at"),
+            "reason": user_badge.get("reason", ""),
+        })
+    return payload
+
+
+def serialize_reputation_profile(
+    conn: sqlite3.Connection,
+    user_id: str,
+    *,
+    viewer_id: str | None = None,
+    admin: bool = False,
+) -> dict[str, Any]:
+    rep = reputation_ensure_user(conn, user_id)
+    user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    user_d = dict(user) if user else None
+    level = reputation_level_for_xp(conn, int(rep.get("xp") or 0))
+    next_level = reputation_next_level(conn, int(level["level"]))
+    is_self = bool(viewer_id and viewer_id == user_id)
+    include_private = is_self or admin
+    score = _clamp_reputation_score(rep.get("reputation_score"))
+    status = reputation_status_payload(score, public=not include_private)
+    badge_rows = list(conn.execute(
+        """
+        SELECT b.*, ub.id AS user_badge_id, ub.is_displayed, ub.reason, ub.created_at AS granted_at
+          FROM user_badges ub
+          JOIN badges b ON b.id = ub.badge_id
+         WHERE ub.user_id = ? AND ub.revoked_at IS NULL AND b.is_active = 1
+         ORDER BY ub.is_displayed DESC, ub.created_at DESC
+         LIMIT ?
+        """,
+        (user_id, 12 if include_private else 3),
+    ))
+    badges = []
+    for row in badge_rows:
+        d = dict(row)
+        badges.append(serialize_badge(d, {"id": d.get("user_badge_id"), "is_displayed": d.get("is_displayed"), "reason": d.get("reason"), "created_at": d.get("granted_at")}))
+    privileges = [
+        dict(row) for row in conn.execute(
+            """
+            SELECT key, title_zh, title_en, title_ja, description_zh, level
+              FROM reputation_privileges
+             WHERE is_active = 1 AND level <= ?
+             ORDER BY level ASC, sort_order ASC
+            """,
+            (int(level["level"]),),
+        )
+    ]
+    rewards = []
+    if include_private:
+        rewards = [
+            {
+                **dict(row),
+                "metadata": json.loads(row["metadata"] or "{}") if str(row["metadata"] or "").startswith("{") else {},
+            }
+            for row in conn.execute(
+                """
+                SELECT ur.id AS user_reward_id, ur.status, ur.quantity, ur.created_at AS granted_at,
+                       rr.key, rr.name_zh, rr.name_en, rr.name_ja, rr.reward_type, rr.required_level, rr.metadata
+                  FROM user_rewards ur
+                  JOIN reputation_rewards rr ON rr.id = ur.reward_id
+                 WHERE ur.user_id = ?
+                 ORDER BY ur.created_at DESC
+                 LIMIT 30
+                """,
+                (user_id,),
+            )
+        ]
+    payload = {
+        "user_id": user_id,
+        "level": int(level["level"]),
+        "level_name": level["name_zh"],
+        "levelName": level["name_zh"],
+        "level_name_en": level["name_en"],
+        "level_name_ja": level["name_ja"],
+        "level_description": level["description_zh"],
+        "xp": int(rep.get("xp") or 0) if include_private else None,
+        "current_level_xp": int(level["xp_required"] or 0),
+        "next_level_xp": int(next_level["xp_required"]) if next_level else None,
+        "nextLevelXp": int(next_level["xp_required"]) if next_level else None,
+        "xp_to_next": max(0, int(next_level["xp_required"]) - int(rep.get("xp") or 0)) if next_level and include_private else None,
+        "reputation_status": status["status"],
+        "reputationStatus": status["status"],
+        "reputation_label": status["label"],
+        "reputationLabel": status["label"],
+        "reputation_score": score if include_private else None,
+        "risk_score": _clamp_risk_score(rep.get("risk_score")) if include_private else None,
+        "public_trust_label": REPUTATION_PUBLIC_TRUST_LABELS.get(status["status"], "待建立记录"),
+        "badges": badges,
+        "privileges": privileges,
+        "rewards": rewards,
+        "limits": reputation_effective_limits(conn, rep, user_d) if include_private else {},
+        "stats": {
+            "helpedUsers": int(rep.get("helped_users") or 0),
+            "qualityPosts": int(rep.get("quality_posts") or 0),
+            "favoritesReceived": int(rep.get("favorites_received") or 0),
+            "violationFreeDays": reputation_violation_free_days(conn, user_id),
+            "reportsValidated": int(rep.get("reports_validated") or 0),
+        },
+        "growth_frozen": reputation_growth_is_frozen(rep) if include_private else False,
+        "frozen_until": rep.get("frozen_until") if include_private else None,
+        "freeze_reason": rep.get("freeze_reason") if include_private else "",
+        "updated_at": rep.get("updated_at"),
+    }
+    return payload
+
+
+def reputation_violation_free_days(conn: sqlite3.Connection, user_id: str) -> int:
+    row = conn.execute(
+        """
+        SELECT created_at FROM reputation_events
+         WHERE user_id = ? AND (reputation_delta < 0 OR risk_delta > 0)
+         ORDER BY created_at DESC
+         LIMIT 1
+        """,
+        (user_id,),
+    ).fetchone()
+    if not row:
+        user = conn.execute("SELECT created_at FROM users WHERE id = ?", (user_id,)).fetchone()
+        base = parse_iso(user["created_at"] if user else "")
+    else:
+        base = parse_iso(row["created_at"])
+    if not base:
+        return 0
+    if base.tzinfo is None:
+        base = base.replace(tzinfo=timezone.utc)
+    return max(0, (datetime.now(timezone.utc) - base.astimezone(timezone.utc)).days)
+
+
+def record_admin_action(conn: sqlite3.Connection, admin_id: str, action: str, *,
+                        target_kind: str = "", target_id: str = "", metadata: dict[str, Any] | None = None) -> None:
+    conn.execute(
+        """
+        INSERT INTO admin_action_logs (id, admin_id, action, target_kind, target_id, metadata, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid.uuid4()), admin_id or "", action,
+            target_kind or "", target_id or "",
+            json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True), now_iso(),
+        ),
+    )
+
+
 def init_db() -> None:
     with DB_LOCK, db() as conn:
         conn.executescript(SCHEMA)
         run_migrations(conn)
+        ensure_reputation_seed(conn)
         ensure_guide_schema_extensions(conn)
         ensure_membership_plans(conn)
         ensure_news_source_presets(conn)
@@ -5865,10 +8091,12 @@ def init_db() -> None:
             # Only seed in dev. In production the DB starts empty and the
             # first registered user is the founder.
             seed(conn)
+        ensure_city_listing_seed(conn)
         # Always ensure the default admin exists (prod + dev). This never
         # touches or downgrades any other account, so existing admins are
         # preserved exactly as-is.
         ensure_seed_admin(conn)
+        ensure_reputation_seed(conn)
 
 
 _NEWS_CRAWLER_THREAD: threading.Thread | None = None
@@ -6105,6 +8333,13 @@ def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
     role = row.get("role", "member") or "member"
     is_verified_member = bool(row.get("is_verified_member", 0))
     is_official = role in {"admin", "moderator", "creator"} or bool(row.get("is_verified", 0))
+    _auth_provider = row.get("auth_provider", "password") or "password"
+    # Safe to unbind Google only when another way in survives: a password
+    # account (knows its password) or any account with a verified email (can
+    # reset). A Google-created account with no email must keep Google.
+    _can_unlink_google = bool(row.get("google_sub", "")) and (
+        _auth_provider == "password" or bool(row.get("email_verified", 0))
+    )
     payload = {
         "id": row["id"],
         "remote_id": row["id"],
@@ -6113,6 +8348,14 @@ def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
         "display_name": row["display_name"],
         "displayName": row["display_name"],
         "email": row.get("email", ""),
+        "email_verified": bool(row.get("email_verified", 0)),
+        "emailVerified": bool(row.get("email_verified", 0)),
+        "auth_provider": row.get("auth_provider", "password") or "password",
+        "authProvider": row.get("auth_provider", "password") or "password",
+        "has_google": bool(row.get("google_sub", "")),
+        "hasGoogle": bool(row.get("google_sub", "")),
+        "can_unlink_google": _can_unlink_google,
+        "canUnlinkGoogle": _can_unlink_google,
         "bio": row.get("bio", ""),
         "location": row.get("location", ""),
         "avatar_symbol": row.get("avatar_symbol", "person.fill"),
@@ -6145,6 +8388,9 @@ def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
         "is_merchant":         bool(row.get("is_merchant", 0)),
         "merchant_verified":   bool(row.get("merchant_verified", 0)),
         "profile_view_count":  int(row.get("profile_view_count") or 0),
+        "app_language":        row.get("app_language", "") or "",
+        "content_language_preference": row.get("content_language_preference", "") or "",
+        "preferred_content_languages": row.get("preferred_content_languages", "") or "",
         # Machi Verified membership cache (authoritative truth lives in
         # user_memberships; these are kept in sync by
         # sync_user_membership_cache on every entitlement change and the
@@ -6324,6 +8570,10 @@ def serialize_notification(row: dict[str, Any], extras: dict[str, Any] | None = 
         "user_id": row["user_id"],
         "target_post_id": row.get("target_post_id"),
         "target_comment_id": row.get("target_comment_id"),
+        "target_listing_id": row.get("target_listing_id"),
+        "targetListingId": row.get("target_listing_id"),
+        "target_conversation_id": row.get("target_conversation_id"),
+        "targetConversationId": row.get("target_conversation_id"),
         "content": row.get("content", ""),
         "is_read": bool(row.get("is_read", 0)),
         "created_at": row["created_at"],
@@ -6524,6 +8774,434 @@ def fetch_posts_with_extras(conn: sqlite3.Connection, post_rows: list[dict[str, 
             extras["original_post"] = originals.get(entry["repost_of_id"])
         posts.append(serialize_post(entry, extras))
     return posts
+
+
+def normalize_listing_type(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "market": "secondhand",
+        "marketplace": "secondhand",
+        "second_hand": "secondhand",
+        "housing": "rental",
+        "rent": "rental",
+        "rentals": "rental",
+        "job_seek": "job",
+        "jobs": "job",
+        "job_post": "hiring",
+        "recruiting": "hiring",
+        "service": "local_service",
+        "services": "local_service",
+        "coupon": "discount",
+        "deals": "discount",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in LISTING_TYPES else "secondhand"
+
+
+def normalize_listing_status(value: Any, fallback: str = "published") -> str:
+    raw = str(value or "").strip().lower()
+    return raw if raw in LISTING_STATUSES else fallback
+
+
+def normalize_listing_verification(value: Any, fallback: str = "unverified") -> str:
+    raw = str(value or "").strip().lower()
+    return raw if raw in LISTING_VERIFICATION_STATUSES else fallback
+
+
+def normalize_listing_inquiry_status(value: Any, fallback: str = "new") -> str:
+    raw = str(value or "").strip().lower()
+    if raw == "open":
+        raw = "new"
+    return raw if raw in LISTING_INQUIRY_STATUSES else fallback
+
+
+def normalize_listing_promotion_type(value: Any, fallback: str = "top") -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "pinned": "top",
+        "pin": "top",
+        "boost": "featured",
+        "homepage": "city_home",
+        "city_home_recommend": "city_home",
+        "category": "category_featured",
+        "urgent": "urgent_hiring",
+        "rental": "recommended_rental",
+        "service": "recommended_service",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in LISTING_PROMOTION_TYPES else fallback
+
+
+def normalize_listing_verification_type(value: Any, fallback: str = "seller") -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {
+        "recruiter_verified": "recruiter",
+        "rental": "rental_provider",
+        "service": "service_provider",
+        "merchant": "business",
+    }
+    raw = aliases.get(raw, raw)
+    return raw if raw in LISTING_VERIFICATION_TYPES else fallback
+
+
+def listing_value_type(value: Any) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, int) and not isinstance(value, bool):
+        return "int"
+    if isinstance(value, float):
+        return "float"
+    return "string"
+
+
+def listing_value_to_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return str(value).strip()[:1000]
+
+
+def listing_text_to_value(value: str, value_type: str) -> Any:
+    if value_type == "bool":
+        return str(value).lower() in {"1", "true", "yes", "y", "on"}
+    if value_type == "int":
+        try:
+            return int(float(value))
+        except Exception:
+            return 0
+    if value_type == "float":
+        try:
+            return float(value)
+        except Exception:
+            return 0.0
+    return value
+
+
+def normalize_listing_attributes(listing_type: str, raw: Any) -> dict[str, tuple[str, str]]:
+    if not isinstance(raw, dict):
+        return {}
+    allowed = LISTING_ATTRIBUTE_KEYS.get(listing_type, set())
+    out: dict[str, tuple[str, str]] = {}
+    for key, value in raw.items():
+        k = str(key or "").strip()
+        if not k or (allowed and k not in allowed):
+            continue
+        text = listing_value_to_text(value)
+        if text == "":
+            continue
+        out[k] = (text, listing_value_type(value))
+    return out
+
+
+def public_listing_title(title: Any) -> str:
+    text = str(title or "")
+    return (
+        text
+        .replace("，外国人可咨询", "，可预约看房")
+        .replace("外国人可咨询", "可预约看房")
+        .replace("，外国人可", "")
+        .replace("外国人可", "")
+        .strip()
+    )
+
+
+def public_listing_attributes(listing_type: str, attrs: Any) -> dict[str, Any]:
+    if not isinstance(attrs, dict):
+        return {}
+    cleaned = dict(attrs)
+    if listing_type == "rental":
+        cleaned.pop("foreigners_allowed", None)
+    return cleaned
+
+
+def listing_image_fallback(listing_type: str, index: int = 0) -> str:
+    if listing_type == "rental":
+        seed = ["apartment", "interior", "japan-home"][index % 3]
+    elif listing_type in {"job", "hiring"}:
+        seed = ["workplace", "restaurant-job", "office"][index % 3]
+    elif listing_type == "local_service":
+        seed = ["service", "moving", "repair"][index % 3]
+    elif listing_type == "discount":
+        seed = ["local-shop", "coupon", "cafe"][index % 3]
+    else:
+        seed = ["keyboard", "chair", "camera"][index % 3]
+    return f"https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=900&q=80&auto=format&fit=crop&ixid=machi-{seed}"
+
+
+def listing_policy_violation(title: str, description: str, category: str = "") -> str:
+    text = f"{title} {description} {category}".lower()
+    blocked_terms = [
+        "成人", "adult", "药品", "毒品", "drug", "武器", "weapon", "烟草", "tobacco",
+        "酒精", "alcohol", "假冒", "fake", "金融产品", "贷款", "个人信息", "身份证",
+        "黄牛", "票务黄牛", "伴游", "灰产", "保证金", "押金兼职", "培训费",
+    ]
+    if any(term in text for term in blocked_terms):
+        return "该内容可能涉及禁用品类或高风险交易，不能发布为城市信息。"
+    return ""
+
+
+def listing_safety_tips(listing_type: str) -> list[str]:
+    base = [
+        "不要提前转账，面交建议选择公共场所。",
+        "核实对方身份，谨慎提供个人信息。",
+        "遇到可疑内容请立即举报，平台可下架违规信息。",
+    ]
+    if listing_type == "rental":
+        return [
+            "Machi 只是信息平台，不代收押金、订金或房租。",
+            "看房前核实房源、发布者身份和地址范围。",
+            "高风险房源会显示待核验，举报后后台可下架。",
+            *base,
+        ]
+    if listing_type in {"job", "hiring"}:
+        return [
+            "招聘不得收押金、保证金、培训费。",
+            "核实招聘方资质、工作地点、薪资和签证说明。",
+            "发现虚假高薪、成人或灰产招聘请立即举报。",
+            *base,
+        ]
+    if listing_type == "local_service":
+        return [
+            "本地服务默认需要审核，服务方认证状态会展示在页面。",
+            "不要为违法服务、成人服务或高风险线下服务付款。",
+            *base,
+        ]
+    return base
+
+
+def listing_inquiry_type(listing_type: str) -> str:
+    if listing_type == "secondhand":
+        return "secondhand_consult"
+    if listing_type == "rental":
+        return "rental_consult"
+    if listing_type in {"job", "hiring"}:
+        return "job_apply"
+    if listing_type == "local_service":
+        return "service_booking"
+    if listing_type == "discount":
+        return "discount_consult"
+    if listing_type == "event":
+        return "event_consult"
+    return "general"
+
+
+def serialize_listing_inquiry(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
+    extras = extras or {}
+    from_id = row.get("from_user_id") or row.get("sender_user_id") or ""
+    to_id = row.get("to_user_id") or row.get("seller_user_id") or ""
+    status = normalize_listing_inquiry_status(row.get("status"), "new")
+    metadata: dict[str, Any] = {}
+    raw_meta = row.get("metadata")
+    if raw_meta:
+        try:
+            parsed = json.loads(raw_meta)
+            if isinstance(parsed, dict):
+                metadata = parsed
+        except (ValueError, TypeError):
+            metadata = {}
+    details = metadata.get("details") if isinstance(metadata.get("details"), list) else []
+    payload = {
+        "id": row.get("id", ""),
+        "listing_id": row.get("listing_id", ""),
+        "listingId": row.get("listing_id", ""),
+        "from_user_id": from_id,
+        "fromUserId": from_id,
+        "to_user_id": to_id,
+        "toUserId": to_id,
+        "type": row.get("type") or "general",
+        "message": row.get("message", "") or "",
+        "contact_value": row.get("contact_value", "") or "",
+        "contactValue": row.get("contact_value", "") or "",
+        "conversation_id": row.get("conversation_id", "") or "",
+        "conversationId": row.get("conversation_id", "") or "",
+        "metadata": metadata,
+        "details": details,
+        "status": status,
+        "created_at": row.get("created_at"),
+        "createdAt": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "updatedAt": row.get("updated_at"),
+        "listing": extras.get("listing"),
+        "from_user": extras.get("from_user"),
+        "fromUser": extras.get("from_user"),
+        "to_user": extras.get("to_user"),
+        "toUser": extras.get("to_user"),
+    }
+    return payload
+
+
+def fetch_listing_inquiries_with_extras(conn: sqlite3.Connection, rows: list[dict[str, Any]], current_user_id: str | None) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    listing_ids = list({r.get("listing_id") for r in rows if r.get("listing_id")})
+    listings: dict[str, dict[str, Any]] = {}
+    if listing_ids:
+        placeholders = ",".join("?" * len(listing_ids))
+        listing_rows = [dict(r) for r in conn.execute(
+            f"SELECT * FROM city_listings WHERE id IN ({placeholders})",
+            listing_ids,
+        )]
+        listings = {item["id"]: item for item in fetch_listings_with_extras(conn, listing_rows, current_user_id)}
+    user_ids = list({
+        uid
+        for r in rows
+        for uid in (
+            r.get("from_user_id") or r.get("sender_user_id"),
+            r.get("to_user_id") or r.get("seller_user_id"),
+        )
+        if uid
+    })
+    users = fetch_users_by_ids(conn, user_ids)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        from_id = row.get("from_user_id") or row.get("sender_user_id") or ""
+        to_id = row.get("to_user_id") or row.get("seller_user_id") or ""
+        out.append(serialize_listing_inquiry(row, {
+            "listing": listings.get(row.get("listing_id", "")),
+            "from_user": users.get(from_id),
+            "to_user": users.get(to_id),
+        }))
+    return out
+
+
+def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
+    extras = extras or {}
+    listing_type = row.get("type", "") or ""
+    attrs = public_listing_attributes(listing_type, extras.get("attributes") or {})
+    media = extras.get("media") or []
+    cover_url = next((m.get("url", "") for m in media if m.get("is_cover")), "")
+    if not cover_url and media:
+        cover_url = media[0].get("url", "")
+    seller = extras.get("seller")
+    liked = bool(extras.get("favorited"))
+    payload = {
+        "id": row["id"],
+        "country_code": row.get("country_code", "") or "",
+        "countryCode": row.get("country_code", "") or "",
+        "city_id": row.get("city_id", "") or "",
+        "cityId": row.get("city_id", "") or "",
+        "city_slug": row.get("city_slug", "") or "",
+        "citySlug": row.get("city_slug", "") or "",
+        "region_code": row.get("region_code", "") or "",
+        "regionCode": row.get("region_code", "") or "",
+        "language": row.get("language", "") or "",
+        "type": listing_type,
+        "category": row.get("category", "") or "",
+        "title": public_listing_title(row.get("title", "")),
+        "description": row.get("description", "") or "",
+        "price": row.get("price"),
+        "currency": row.get("currency", "") or "",
+        "price_type": row.get("price_type", "") or "",
+        "priceType": row.get("price_type", "") or "",
+        "location_text": row.get("location_text", "") or "",
+        "locationText": row.get("location_text", "") or "",
+        "latitude": row.get("latitude"),
+        "longitude": row.get("longitude"),
+        "status": row.get("status", "published"),
+        "verification_status": row.get("verification_status", "unverified"),
+        "verificationStatus": row.get("verification_status", "unverified"),
+        "seller_user_id": row.get("seller_user_id", "") or "",
+        "sellerUserId": row.get("seller_user_id", "") or "",
+        "business_id": row.get("business_id", "") or "",
+        "businessId": row.get("business_id", "") or "",
+        "contact_method": row.get("contact_method", "") or "",
+        "contactMethod": row.get("contact_method", "") or "",
+        "view_count": int(row.get("view_count") or 0),
+        "viewCount": int(row.get("view_count") or 0),
+        "inquiry_count": int(row.get("inquiry_count") or 0),
+        "inquiryCount": int(row.get("inquiry_count") or 0),
+        "favorite_count": int(row.get("favorite_count") or 0),
+        "favoriteCount": int(row.get("favorite_count") or 0),
+        "report_count": int(row.get("report_count") or 0),
+        "reportCount": int(row.get("report_count") or 0),
+        "is_promoted": bool(row.get("is_promoted", 0)),
+        "isPromoted": bool(row.get("is_promoted", 0)),
+        "promotion_weight": int(row.get("promotion_weight") or 0),
+        "promotionWeight": int(row.get("promotion_weight") or 0),
+        "published_at": row.get("published_at"),
+        "publishedAt": row.get("published_at"),
+        "expires_at": row.get("expires_at"),
+        "expiresAt": row.get("expires_at"),
+        "created_at": row.get("created_at"),
+        "createdAt": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "updatedAt": row.get("updated_at"),
+        "media": media,
+        "cover_url": cover_url,
+        "coverUrl": cover_url,
+        "attributes": attrs,
+        "seller": seller,
+        "favorited": liked,
+        "isFavorited": liked,
+        "can_manage": bool(extras.get("can_manage")),
+        "canManage": bool(extras.get("can_manage")),
+        "report_count_open": int(extras.get("open_report_count") or 0),
+    }
+    return payload
+
+
+def hydrate_listing_extras(conn: sqlite3.Connection, listing_ids: list[str], current_user_id: str | None) -> dict[str, dict[str, Any]]:
+    if not listing_ids:
+        return {}
+    placeholders = ",".join("?" * len(listing_ids))
+    extras: dict[str, dict[str, Any]] = {lid: {"media": [], "attributes": {}} for lid in listing_ids}
+    for row in conn.execute(
+        f"SELECT * FROM listing_media WHERE listing_id IN ({placeholders}) ORDER BY sort_order ASC, created_at ASC",
+        listing_ids,
+    ):
+        item = dict(row)
+        extras.setdefault(item["listing_id"], {}).setdefault("media", []).append({
+            "id": item["id"],
+            "listing_id": item["listing_id"],
+            "media_type": item.get("media_type", "image"),
+            "mediaType": item.get("media_type", "image"),
+            "url": item.get("url", ""),
+            "thumbnail_url": item.get("thumbnail_url", "") or item.get("url", ""),
+            "thumbnailUrl": item.get("thumbnail_url", "") or item.get("url", ""),
+            "sort_order": int(item.get("sort_order") or 0),
+            "sortOrder": int(item.get("sort_order") or 0),
+            "is_cover": bool(item.get("is_cover", 0)),
+            "isCover": bool(item.get("is_cover", 0)),
+        })
+    for row in conn.execute(
+        f"SELECT listing_id, key, value, value_type FROM listing_attributes WHERE listing_id IN ({placeholders})",
+        listing_ids,
+    ):
+        item = dict(row)
+        attrs = extras.setdefault(item["listing_id"], {}).setdefault("attributes", {})
+        attrs[item["key"]] = listing_text_to_value(item["value"], item.get("value_type", "string"))
+    if current_user_id:
+        for row in conn.execute(
+            f"SELECT listing_id FROM listing_favorites WHERE user_id = ? AND listing_id IN ({placeholders})",
+            [current_user_id] + listing_ids,
+        ):
+            extras.setdefault(row["listing_id"], {})["favorited"] = True
+    for row in conn.execute(
+        f"SELECT listing_id, COUNT(*) AS c FROM listing_reports WHERE status = 'open' AND listing_id IN ({placeholders}) GROUP BY listing_id",
+        listing_ids,
+    ):
+        extras.setdefault(row["listing_id"], {})["open_report_count"] = int(row["c"] or 0)
+    return extras
+
+
+def fetch_listings_with_extras(conn: sqlite3.Connection, rows: list[dict[str, Any]], current_user_id: str | None) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+    ids = [r["id"] for r in rows]
+    extras = hydrate_listing_extras(conn, ids, current_user_id)
+    seller_ids = list({r.get("seller_user_id") for r in rows if r.get("seller_user_id")})
+    sellers = fetch_users_by_ids(conn, seller_ids)
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        item_extra = dict(extras.get(item["id"], {}))
+        item_extra["seller"] = sellers.get(item.get("seller_user_id", ""))
+        item_extra["can_manage"] = bool(current_user_id and (current_user_id == item.get("seller_user_id")))
+        out.append(serialize_listing(item, item_extra))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -7090,7 +9768,7 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
         return order  # idempotent
     if order["status"] != "pending":
         raise APIError("订单状态不允许支付", 409, "order_not_payable")
-    conn.execute(
+    cur = conn.execute(
         "UPDATE payment_orders SET status = 'paid', provider_trade_no = ?, provider_user_id = ?, "
         "provider_subscription_id = COALESCE(NULLIF(?, ''), provider_subscription_id), "
         "provider_price_id = COALESCE(NULLIF(?, ''), provider_price_id), paid_at = ?, updated_at = ? "
@@ -7099,8 +9777,13 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
          provider_price_id or "", now_iso(), now_iso(), order_no),
     )
     fresh = dict(conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone())
-    if fresh["status"] != "paid":
-        return fresh  # lost a race; the winner already settled
+    # Gate the grant on actually WINNING the pending→paid transition. A re-read of
+    # `fresh` can't distinguish "I settled it" from "a concurrent caller settled
+    # it" (both see 'paid'); the conditional UPDATE's rowcount can. SQLite
+    # serializes writers, so exactly one caller gets rowcount==1 and grants — two
+    # different webhook events for the same order never double-extend membership.
+    if cur.rowcount != 1:
+        return fresh  # already settled by a concurrent caller — never double-grant
     source = _PROVIDER_SOURCE.get(order["payment_provider"], order["payment_provider"] or "manual")
     status = activate_or_extend_membership(conn, order["user_id"], order["plan_key"], source, periods=1)
     if provider_subscription_id or provider_price_id:
@@ -7995,6 +10678,137 @@ def cleanup_visitor_logs(conn: sqlite3.Connection, days: int) -> int:
 
 
 # ---------------------------------------------------------------------------
+# site settings + server metrics
+# ---------------------------------------------------------------------------
+
+SITE_SETTING_DEFAULTS: dict[str, str] = {
+    "site_title": "Machi",
+    "site_title_zh": "Machi City｜在每一座城市，找到生活的回声",
+    "site_title_en": "Machi City | Find the echoes of life in every city",
+    "site_title_ja": "Machi City｜すべての街で、暮らしのこだまを見つける",
+    "site_description_zh": "Machi 是按国家、城市和语言组织内容的本地生活与同城连接平台。",
+    "site_description_en": "Machi is a city-based local life platform organized by country, city and language.",
+    "site_description_ja": "Machi は国・都市・言語ごとに暮らしの情報を整理するローカルライフプラットフォームです。",
+    "logo_url": "/icon.svg",
+    "og_image_url": "/og-image.png",
+    "support_email": "hi@machicity.com",
+    # JSON array describing the 发现页「城市入口」layout (admin-editable).
+    # Empty string = use the app's built-in default entrances.
+    "discover_entrances": "",
+}
+SITE_SETTING_KEYS = set(SITE_SETTING_DEFAULTS)
+
+
+def _site_settings(conn: sqlite3.Connection) -> dict[str, str]:
+    data = dict(SITE_SETTING_DEFAULTS)
+    try:
+        rows = conn.execute("SELECT key, value FROM site_settings").fetchall()
+    except sqlite3.OperationalError:
+        return data
+    for row in rows:
+        key = row["key"]
+        if key in SITE_SETTING_KEYS:
+            data[key] = row["value"] or ""
+    return data
+
+
+def _upsert_site_settings(conn: sqlite3.Connection, updates: dict[str, str]) -> dict[str, str]:
+    ts = now_iso()
+    for key, value in updates.items():
+        if key not in SITE_SETTING_KEYS:
+            continue
+        conn.execute(
+            """
+            INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+            """,
+            (key, str(value or "")[:1000], ts),
+        )
+    return _site_settings(conn)
+
+
+def _read_proc_net_bytes() -> tuple[int, int]:
+    path = Path("/proc/net/dev")
+    if not path.exists():
+        return 0, 0
+    rx = tx = 0
+    try:
+        for line in path.read_text().splitlines()[2:]:
+            if ":" not in line:
+                continue
+            iface, rest = line.split(":", 1)
+            if iface.strip() == "lo":
+                continue
+            parts = rest.split()
+            if len(parts) >= 16:
+                rx += int(parts[0])
+                tx += int(parts[8])
+    except Exception:
+        return 0, 0
+    return rx, tx
+
+
+def _server_metrics() -> dict[str, Any]:
+    usage = shutil.disk_usage(str(ROOT))
+    load = os.getloadavg() if hasattr(os, "getloadavg") else (0.0, 0.0, 0.0)
+    cpu_count = os.cpu_count() or 1
+    cpu_percent = min(100.0, max(0.0, (load[0] / cpu_count) * 100.0))
+    mem_total = mem_available = 0
+    meminfo = Path("/proc/meminfo")
+    if meminfo.exists():
+        try:
+            pairs: dict[str, int] = {}
+            for line in meminfo.read_text().splitlines():
+                if ":" not in line:
+                    continue
+                key, raw = line.split(":", 1)
+                value = int((raw.strip().split() or ["0"])[0]) * 1024
+                pairs[key] = value
+            mem_total = pairs.get("MemTotal", 0)
+            mem_available = pairs.get("MemAvailable", 0)
+        except Exception:
+            mem_total = mem_available = 0
+    rx, tx = _read_proc_net_bytes()
+    return {
+        "server_time": now_iso(),
+        "load_average": {"one": load[0], "five": load[1], "fifteen": load[2]},
+        "cpu": {"count": cpu_count, "load_percent": round(cpu_percent, 1)},
+        "memory": {
+            "total_bytes": mem_total,
+            "available_bytes": mem_available,
+            "used_bytes": max(0, mem_total - mem_available) if mem_total else 0,
+            "used_percent": round(((mem_total - mem_available) / mem_total) * 100, 1) if mem_total else None,
+        },
+        "disk": {
+            "path": str(ROOT),
+            "total_bytes": usage.total,
+            "used_bytes": usage.used,
+            "free_bytes": usage.free,
+            "used_percent": round((usage.used / usage.total) * 100, 1) if usage.total else None,
+        },
+        "network": {"rx_bytes": rx, "tx_bytes": tx},
+        "process": {"pid": os.getpid(), "threads": threading.active_count()},
+    }
+
+
+def _normalize_device_family(device: str, ua: str) -> tuple[str, str]:
+    raw = f"{device} {ua}".strip().lower()
+    if "iphone" in raw:
+        return "iPhone", "ios"
+    if "ipad" in raw:
+        return "iPad", "ios"
+    if "android" in raw:
+        return "Android", "android"
+    if "mac os x" in raw or "macintosh" in raw:
+        return "Mac", "desktop"
+    if "windows" in raw:
+        return "Windows PC", "desktop"
+    if "linux" in raw:
+        return "Linux", "desktop"
+    return (device or ua[:40] or "Unknown device"), "unknown"
+
+
+# ---------------------------------------------------------------------------
 # default admin bootstrap (idempotent; never downgrades existing accounts)
 # ---------------------------------------------------------------------------
 
@@ -8682,7 +11496,7 @@ def _editorial_longform_from_source(
                 "s2": "二、可能影响的日常安排",
                 "s3": "三、出门前可以做的准备",
                 "s4": "四、交通信息怎么读更稳",
-                "impact": "通勤路线、换乘时间、末班车、机场或新干线衔接、接送孩子和约会碰面都可能被影响。即使信息只涉及一条线路，也可能因为换乘连带改变整段行程。",
+                "impact": "通勤路线、换乘时间、末班车、机场或新干线衔接、接送孩子和外出赴约都可能被影响。即使信息只涉及一条线路，也可能因为换乘连带改变整段行程。",
                 "todo": "先打开运营方或官方来源确认时间，再准备一条替代路线。遇到天气、活动或高峰期叠加时，给自己多留一点缓冲时间会更稳。",
             },
             "weather_alert": {
@@ -9595,6 +12409,17 @@ class Handler(BaseHTTPRequestHandler):
         self._set_security_headers()
         self.end_headers()
         self.wfile.write(body)
+
+    def send_redirect(self, location: str, status: int = 303) -> None:
+        self.send_response(status)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.send_header("X-Machi-Version", "1.0")
+        self.send_header("X-KaiX-Version", "1.0")
+        self.send_header("X-Request-Id", getattr(self, "_request_id", "") or "")
+        self._set_cors()
+        self._set_security_headers()
+        self.end_headers()
 
     def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
         self.send_json({
@@ -10989,12 +13814,12 @@ class Handler(BaseHTTPRequestHandler):
     def _guide_is_open(self, country: str) -> bool:
         return country in GUIDE_OPEN_COUNTRIES
 
-    def _guide_coming_soon_payload(self, country: str, **extra: Any) -> dict[str, Any]:
-        base = {"status": "coming_soon", "country": country, "emptyState": GUIDE_EMPTY_STATE}
+    def _guide_coming_soon_payload(self, country: str, language: str = "zh-CN", **extra: Any) -> dict[str, Any]:
+        base = {"status": "coming_soon", "country": country, "emptyState": _guide_localized_ui("empty", language, GUIDE_EMPTY_STATE)}
         base.update(extra)
         return base
 
-    def _guide_categories_payload(self, conn: sqlite3.Connection, country: str) -> list[dict[str, Any]]:
+    def _guide_categories_payload(self, conn: sqlite3.Connection, country: str, language: str = "zh-CN") -> list[dict[str, Any]]:
         tops = conn.execute(
             "SELECT * FROM guide_categories WHERE country = ? AND parent_key = '' AND is_active = 1 ORDER BY sort_order",
             (country,),
@@ -11005,7 +13830,7 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT * FROM guide_categories WHERE country = ? AND parent_key = ? AND is_active = 1 ORDER BY sort_order",
                 (country, top["key"]),
             ).fetchall()
-            out.append(serialize_guide_category(top, [serialize_guide_category(k) for k in kids]))
+            out.append(localize_guide_category_payload(serialize_guide_category(top, [serialize_guide_category(k) for k in kids]), language))
         return out
 
     def api_guide_home(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -11013,7 +13838,7 @@ class Handler(BaseHTTPRequestHandler):
         language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
             return self.send_json(self._guide_coming_soon_payload(
-                country, hero=GUIDE_HERO, categories=[], goals={"title": GUIDE_GOAL_TITLE, "entries": []},
+                country, language, hero=_guide_localized_ui("hero", language, GUIDE_HERO), categories=[], goals={"title": _guide_localized_ui("goalTitle", language, GUIDE_GOAL_TITLE), "entries": []},
                 goalEntries=[], featuredArticles=[], featuredProducts=[], featuredServices=[],
                 resourceEntries=[], featuredSchools=[], companyHighlights=[], latestArticles=[], faq=[],
             ))
@@ -11027,22 +13852,22 @@ class Handler(BaseHTTPRequestHandler):
         cached_payload = _cache_get(cache_key)
         if cached_payload is not None:
             return self.send_json(cached_payload)
-        featured_articles = [serialize_guide_article(r) for r in conn.execute(
+        featured_articles = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND is_featured = 1 "
             "ORDER BY sort_order, published_at DESC LIMIT 6", (country,)).fetchall()]
-        latest_articles = [serialize_guide_article(r) for r in conn.execute(
+        latest_articles = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' "
             "ORDER BY published_at DESC, created_at DESC LIMIT 8", (country,)).fetchall()]
-        featured_products = [serialize_guide_product(r) for r in conn.execute(
+        featured_products = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? AND is_service = 0 AND status IN ('published','coming_soon') "
             "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()]
-        featured_services = [serialize_guide_product(r) for r in conn.execute(
+        featured_services = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? AND is_service = 1 AND status IN ('published','coming_soon') "
             "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()]
-        featured_schools = [serialize_guide_school(r) for r in conn.execute(
+        featured_schools = [localize_guide_school_payload(serialize_guide_school(r), language) for r in conn.execute(
             "SELECT * FROM guide_schools WHERE country = ? AND status = 'published' "
             "ORDER BY is_featured DESC, data_quality_score DESC, updated_at DESC LIMIT 6", (country,)).fetchall()]
-        companies = [serialize_guide_company(r) for r in conn.execute(
+        companies = [localize_guide_company_payload(serialize_guide_company(r), language) for r in conn.execute(
             "SELECT * FROM guide_companies WHERE country = ? AND status = 'published' AND (website <> '' OR career_url <> '' OR global_career_url <> '') AND data_quality_score >= 15 "
             "ORDER BY is_featured DESC, data_quality_score DESC, review_count DESC, created_at DESC LIMIT 6", (country,)).fetchall()]
         faqs = [serialize_guide_faq(r) for r in conn.execute(
@@ -11050,11 +13875,11 @@ class Handler(BaseHTTPRequestHandler):
             (country,)).fetchall()]
         payload = {
             "status": "ok", "country": country, "language": language,
-            "hero": GUIDE_HERO,
-            "categories": self._guide_categories_payload(conn, country),
-            "resourceEntries": GUIDE_RESOURCE_ENTRIES,
-            "goals": {"title": GUIDE_GOAL_TITLE, "entries": GUIDE_GOAL_SEED},
-            "goalEntries": GUIDE_GOAL_SEED,
+            "hero": _guide_localized_ui("hero", language, GUIDE_HERO),
+            "categories": self._guide_categories_payload(conn, country, language),
+            "resourceEntries": [localize_guide_resource(r, language) for r in GUIDE_RESOURCE_ENTRIES],
+            "goals": {"title": _guide_localized_ui("goalTitle", language, GUIDE_GOAL_TITLE), "entries": [localize_guide_goal(g, language) for g in GUIDE_GOAL_SEED]},
+            "goalEntries": [localize_guide_goal(g, language) for g in GUIDE_GOAL_SEED],
             "featuredArticles": featured_articles,
             "featuredProducts": featured_products,
             "featuredServices": featured_services,
@@ -11062,26 +13887,28 @@ class Handler(BaseHTTPRequestHandler):
             "companyHighlights": companies,
             "latestArticles": latest_articles,
             "faq": faqs,
-            "reviewDisclaimer": GUIDE_REVIEW_DISCLAIMER,
-            "schoolDisclaimer": GUIDE_SCHOOL_DISCLAIMER,
-            "companyDisclaimer": GUIDE_COMPANY_DISCLAIMER,
+            "reviewDisclaimer": _guide_localized_ui("reviewDisclaimer", language, GUIDE_REVIEW_DISCLAIMER),
+            "schoolDisclaimer": _guide_localized_ui("schoolDisclaimer", language, GUIDE_SCHOOL_DISCLAIMER),
+            "companyDisclaimer": _guide_localized_ui("companyDisclaimer", language, GUIDE_COMPANY_DISCLAIMER),
         }
         _cache_put(cache_key, payload, GUIDE_HOME_CACHE_TTL)
         self.send_json(payload)
 
     def api_guide_categories(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, categories=[]))
-        self.send_json({"status": "ok", "country": country, "categories": self._guide_categories_payload(conn, country)})
+            return self.send_json(self._guide_coming_soon_payload(country, language, categories=[]))
+        self.send_json({"status": "ok", "country": country, "categories": self._guide_categories_payload(conn, country, language)})
 
     def api_guide_schools(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         page = _guide_int(query.get("page"), 1, lo=1)
         page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
         if not self._guide_is_open(country):
             return self.send_json(self._guide_coming_soon_payload(
-                country, items=[], page=page, pageSize=page_size, total=0, featured=[], disclaimer=GUIDE_SCHOOL_DISCLAIMER))
+                country, language, items=[], page=page, pageSize=page_size, total=0, featured=[], disclaimer=_guide_localized_ui("schoolDisclaimer", language, GUIDE_SCHOOL_DISCLAIMER)))
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else ""
         where = ["country = ?", "status = 'published'"]
@@ -11166,12 +13993,12 @@ class Handler(BaseHTTPRequestHandler):
                     f"SELECT target_id FROM interactions WHERE user_id = ? AND kind = 'guide_school_save' AND target_id IN ({placeholders})",
                     [viewer_id, *[r["id"] for r in rows]]).fetchall()
             }
-        featured = [serialize_guide_school(r) for r in conn.execute(
+        featured = [localize_guide_school_payload(serialize_guide_school(r), language) for r in conn.execute(
             "SELECT * FROM guide_schools WHERE country = ? AND status = 'published' ORDER BY is_featured DESC, updated_at DESC LIMIT 6",
             (country,)).fetchall()]
         self.send_json({
-            "status": "ok", "country": country, "disclaimer": GUIDE_SCHOOL_DISCLAIMER, "featured": featured,
-            "items": [serialize_guide_school(r, saved=r["id"] in saved_ids) for r in rows],
+            "status": "ok", "country": country, "disclaimer": _guide_localized_ui("schoolDisclaimer", language, GUIDE_SCHOOL_DISCLAIMER), "featured": featured,
+            "items": [localize_guide_school_payload(serialize_guide_school(r, saved=r["id"] in saved_ids), language) for r in rows],
             "page": page, "pageSize": page_size, "total": int(total),
         })
 
@@ -11186,8 +14013,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_guide_school_detail(self, conn: sqlite3.Connection, id_or_slug: str, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, school=None, programs=[], admissions=[]))
+            return self.send_json(self._guide_coming_soon_payload(country, language, school=None, programs=[], admissions=[]))
         row = self._guide_lookup_school(conn, id_or_slug)
         if row["country"] != country:
             raise APIError("学校不存在", 404, "guide_school_not_found")
@@ -11205,22 +14033,23 @@ class Handler(BaseHTTPRequestHandler):
         admissions = [serialize_guide_school_admission(r) for r in conn.execute(
             f"SELECT * FROM guide_school_admissions WHERE school_id = ? AND {_guide_status_public_clause()} ORDER BY enrollment_month, created_at DESC",
             (row["id"],)).fetchall()]
-        related = [serialize_guide_article(r) for r in conn.execute(
+        related = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND category_key IN ('study_japan','study_abroad_japan') "
             "ORDER BY is_featured DESC, published_at DESC LIMIT 6", (country,)).fetchall()]
-        products = [serialize_guide_product(r) for r in conn.execute(
+        products = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? AND status IN ('published','coming_soon') AND category_key IN ('study_japan','study_abroad_japan','guide_services') "
             "ORDER BY is_coming_soon ASC, sort_order LIMIT 4", (country,)).fetchall()]
         self.send_json({
-            "status": "ok", "school": serialize_guide_school(fresh, saved=saved),
+            "status": "ok", "school": localize_guide_school_payload(serialize_guide_school(fresh, saved=saved), language),
             "programs": programs, "admissions": admissions, "relatedArticles": related,
-            "relatedProducts": products, "disclaimer": GUIDE_SCHOOL_DISCLAIMER,
+            "relatedProducts": products, "disclaimer": _guide_localized_ui("schoolDisclaimer", language, GUIDE_SCHOOL_DISCLAIMER),
         })
 
     def api_guide_school_programs(self, conn: sqlite3.Connection, school_id: str, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, items=[]))
+            return self.send_json(self._guide_coming_soon_payload(country, language, items=[]))
         school = self._guide_lookup_school(conn, school_id)
         if school["country"] != country:
             raise APIError("学校不存在", 404, "guide_school_not_found")
@@ -11231,8 +14060,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_guide_school_admissions(self, conn: sqlite3.Connection, school_id: str, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, items=[]))
+            return self.send_json(self._guide_coming_soon_payload(country, language, items=[]))
         school = self._guide_lookup_school(conn, school_id)
         if school["country"] != country:
             raise APIError("学校不存在", 404, "guide_school_not_found")
@@ -11243,11 +14073,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_guide_articles(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         page = _guide_int(query.get("page"), 1, lo=1)
         page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
         if not self._guide_is_open(country):
             return self.send_json(self._guide_coming_soon_payload(
-                country, items=[], page=page, pageSize=page_size, total=0))
+                country, language, items=[], page=page, pageSize=page_size, total=0))
         where = ["country = ?", "status = 'published'"]
         params: list[Any] = [country]
         for q_key, col in (("categoryKey", "category_key"), ("subCategoryKey", "sub_category_key"),
@@ -11269,14 +14100,15 @@ class Handler(BaseHTTPRequestHandler):
         total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_articles WHERE {clause}", params).fetchone()["c"]
         self.send_json({
             "status": "ok", "country": country,
-            "items": [serialize_guide_article(r) for r in rows],
+            "items": [localize_guide_article_payload(serialize_guide_article(r), language) for r in rows],
             "page": page, "pageSize": page_size, "total": int(total),
         })
 
     def api_guide_article_detail(self, conn: sqlite3.Connection, id_or_slug: str, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, article=None, related=[]))
+            return self.send_json(self._guide_coming_soon_payload(country, language, article=None, related=[]))
         row = conn.execute(
             "SELECT * FROM guide_articles WHERE (id = ? OR slug = ?) AND country = ? AND status = 'published' LIMIT 1",
             (id_or_slug, id_or_slug, country)).fetchone()
@@ -11284,19 +14116,20 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("指南内容不存在", 404, "guide_article_not_found")
         conn.execute("UPDATE guide_articles SET view_count = view_count + 1 WHERE id = ?", (row["id"],))
         fresh = conn.execute("SELECT * FROM guide_articles WHERE id = ?", (row["id"],)).fetchone()
-        related = [serialize_guide_article(r) for r in conn.execute(
+        related = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE status = 'published' AND id <> ? AND country = ? AND category_key = ? "
             "ORDER BY published_at DESC LIMIT 4",
             (row["id"], row["country"], row["category_key"])).fetchall()]
-        self.send_json({"status": "ok", "article": serialize_guide_article(fresh, include_body=True), "related": related})
+        self.send_json({"status": "ok", "article": localize_guide_article_payload(serialize_guide_article(fresh, include_body=True), language, include_body=True), "related": related})
 
     def api_guide_products(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         page = _guide_int(query.get("page"), 1, lo=1)
         page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
         if not self._guide_is_open(country):
             return self.send_json(self._guide_coming_soon_payload(
-                country, items=[], page=page, pageSize=page_size, total=0))
+                country, language, items=[], page=page, pageSize=page_size, total=0))
         where = ["country = ?", "status IN ('published','coming_soon')"]
         params: list[Any] = [country]
         for q_key, col in (("categoryKey", "category_key"), ("subCategoryKey", "sub_category_key"),
@@ -11317,20 +14150,21 @@ class Handler(BaseHTTPRequestHandler):
         total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_products WHERE {clause}", params).fetchone()["c"]
         self.send_json({
             "status": "ok", "country": country,
-            "items": [serialize_guide_product(r) for r in rows],
+            "items": [localize_guide_product_payload(serialize_guide_product(r), language) for r in rows],
             "page": page, "pageSize": page_size, "total": int(total),
         })
 
     def api_guide_product_detail(self, conn: sqlite3.Connection, id_or_slug: str, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, product=None))
+            return self.send_json(self._guide_coming_soon_payload(country, language, product=None))
         row = conn.execute(
             "SELECT * FROM guide_products WHERE (id = ? OR slug = ?) AND country = ? AND status IN ('published','coming_soon') LIMIT 1",
             (id_or_slug, id_or_slug, country)).fetchone()
         if not row:
             raise APIError("资料/服务不存在", 404, "guide_product_not_found")
-        product = serialize_guide_product(row)
+        product = localize_guide_product_payload(serialize_guide_product(row), language)
         file_count = conn.execute(
             "SELECT COUNT(*) AS c FROM guide_product_files WHERE product_id = ?", (row["id"],)).fetchone()["c"]
         product["fileCount"] = int(file_count)
@@ -11365,15 +14199,15 @@ class Handler(BaseHTTPRequestHandler):
         )
         if bool(row["is_member_discount"]) and int(row["member_price"] or 0) > 0:
             product["memberEffectivePrice"] = int(row["member_price"])
-            product["memberPriceLabel"] = f"会员 {format_price_value(row['member_price'], row['currency'])}"
+            product["memberPriceLabel"] = f"Member {format_price_value(row['member_price'], row['currency'])}" if _guide_lang_key(language) == "en" else (f"メンバー {format_price_value(row['member_price'], row['currency'])}" if _guide_lang_key(language) == "ja" else f"会员 {format_price_value(row['member_price'], row['currency'])}")
         if product["canView"]:
-            product["ctaLabel"] = "查看内容"
+            product["ctaLabel"] = "View content" if _guide_lang_key(language) == "en" else ("内容を見る" if _guide_lang_key(language) == "ja" else "查看内容")
         elif row["is_service"] or row["is_price_hidden"] or row["is_appointment_only"]:
-            product["ctaLabel"] = "预约咨询"
+            product["ctaLabel"] = "Book a consultation" if _guide_lang_key(language) == "en" else ("相談予約" if _guide_lang_key(language) == "ja" else "预约咨询")
         elif row["is_coming_soon"]:
-            product["ctaLabel"] = "即将开放"
+            product["ctaLabel"] = "Coming soon" if _guide_lang_key(language) == "en" else ("準備中" if _guide_lang_key(language) == "ja" else "即将开放")
         else:
-            product["ctaLabel"] = f"购买 {product['priceLabel']}"
+            product["ctaLabel"] = f"Buy {product['priceLabel']}" if _guide_lang_key(language) == "en" else (f"購入 {product['priceLabel']}" if _guide_lang_key(language) == "ja" else f"购买 {product['priceLabel']}")
         # iOS reads ios_iap_product_id to route an IAP (not secret). Web buy uses
         # /api/payments/stripe/guide-checkout — price is read server-side only.
         product["iosIapProductId"] = row["ios_iap_product_id"] or ""
@@ -11383,11 +14217,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_guide_member_resources(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         page = _guide_int(query.get("page"), 1, lo=1)
         page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
         if not self._guide_is_open(country):
             return self.send_json(self._guide_coming_soon_payload(
-                country, items=[], page=page, pageSize=page_size, total=0))
+                country, language, items=[], page=page, pageSize=page_size, total=0))
         session = self.current_session(conn)
         membership_active = False
         if session:
@@ -11418,20 +14253,27 @@ class Handler(BaseHTTPRequestHandler):
             "status": "ok",
             "country": country,
             "membershipActive": membership_active,
-            "items": [serialize_guide_product(r) for r in rows],
+            "items": [localize_guide_product_payload(serialize_guide_product(r), language) for r in rows],
             "page": page,
             "pageSize": page_size,
             "total": int(total),
-            "disclaimer": "会员专属资料由 Machi 编辑部原创整理或人工归纳，不包含未授权官方真题原文；政策类内容请以官方最新说明为准。",
+            "disclaimer": (
+                "Member resources are original Machi editorial materials or manual summaries. They do not include unauthorized official exam text; always confirm policy-related details with official sources."
+                if _guide_lang_key(language) == "en"
+                else ("メンバー資料は Machi 編集部のオリジナル整理または手作業の要約です。未許可の公式試験本文は含みません。制度・手続きに関する内容は必ず公式情報で確認してください。"
+                      if _guide_lang_key(language) == "ja"
+                      else "会员专属资料由 Machi 编辑部原创整理或人工归纳，不包含未授权官方真题原文；政策类内容请以官方最新说明为准。")
+            ),
         })
 
     def api_guide_companies(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         page = _guide_int(query.get("page"), 1, lo=1)
         page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
         if not self._guide_is_open(country):
             return self.send_json(self._guide_coming_soon_payload(
-                country, items=[], page=page, pageSize=page_size, total=0))
+                country, language, items=[], page=page, pageSize=page_size, total=0, disclaimer=_guide_localized_ui("companyDisclaimer", language, GUIDE_COMPANY_DISCLAIMER)))
         where = ["country = ?", "status = 'published'", "(website <> '' OR career_url <> '' OR global_career_url <> '')", "data_quality_score >= 15"]
         params: list[Any] = [country]
         for q_key, col in (("industry", "industry"), ("subIndustry", "sub_industry"), ("prefecture", "prefecture"), ("city", "city"),
@@ -11481,19 +14323,20 @@ class Handler(BaseHTTPRequestHandler):
             f"SELECT * FROM guide_companies WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
             [*params, page_size, (page - 1) * page_size]).fetchall()
         total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_companies WHERE {clause}", params).fetchone()["c"]
-        featured = [serialize_guide_company(r) for r in conn.execute(
+        featured = [localize_guide_company_payload(serialize_guide_company(r), language) for r in conn.execute(
             "SELECT * FROM guide_companies WHERE country = ? AND status = 'published' AND (website <> '' OR career_url <> '' OR global_career_url <> '') AND data_quality_score >= 15 ORDER BY is_featured DESC, data_quality_score DESC, review_count DESC, updated_at DESC LIMIT 6",
             (country,)).fetchall()]
         self.send_json({
-            "status": "ok", "country": country, "disclaimer": GUIDE_COMPANY_DISCLAIMER, "featured": featured,
-            "items": [serialize_guide_company(r) for r in rows],
+            "status": "ok", "country": country, "disclaimer": _guide_localized_ui("companyDisclaimer", language, GUIDE_COMPANY_DISCLAIMER), "featured": featured,
+            "items": [localize_guide_company_payload(serialize_guide_company(r), language) for r in rows],
             "page": page, "pageSize": page_size, "total": int(total),
         })
 
     def api_guide_company_detail(self, conn: sqlite3.Connection, company_id: str, query: dict[str, str] | None = None) -> None:
         country = self._guide_country(query or {})
+        language = ((query or {}).get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, company=None, positions=[]))
+            return self.send_json(self._guide_coming_soon_payload(country, language, company=None, positions=[]))
         session = self.current_session(conn)
         row = conn.execute(
             "SELECT * FROM guide_companies WHERE (id = ? OR slug = ?) AND country = ? AND status = 'published' LIMIT 1",
@@ -11517,10 +14360,10 @@ class Handler(BaseHTTPRequestHandler):
         latest_work = [serialize_guide_company_review(r) for r in conn.execute(
             "SELECT * FROM guide_company_reviews WHERE company_id = ? AND status IN ('approved','published') ORDER BY created_at DESC LIMIT 3",
             (row["id"],)).fetchall()]
-        related = [serialize_guide_article(r) for r in conn.execute(
+        related = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND category_key = 'career_japan' "
             "ORDER BY is_featured DESC, published_at DESC LIMIT 6", (country,)).fetchall()]
-        company = serialize_guide_company(fresh)
+        company = localize_guide_company_payload(serialize_guide_company(fresh), language)
         if session:
             saved = conn.execute(
                 "SELECT 1 FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'guide_company_save' LIMIT 1",
@@ -11530,13 +14373,14 @@ class Handler(BaseHTTPRequestHandler):
             "status": "ok", "company": company,
             "interviewReviewCount": int(interview_count), "workReviewCount": int(work_count),
             "positions": positions, "latestInterviewReviews": latest_interviews, "latestWorkReviews": latest_work,
-            "relatedArticles": related, "disclaimer": GUIDE_COMPANY_DISCLAIMER,
+            "relatedArticles": related, "disclaimer": _guide_localized_ui("companyDisclaimer", language, GUIDE_COMPANY_DISCLAIMER),
         })
 
     def api_guide_company_reviews(self, conn: sqlite3.Connection, company_id: str, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, workReviews=[], interviewReviews=[]))
+            return self.send_json(self._guide_coming_soon_payload(country, language, workReviews=[], interviewReviews=[]))
         row = conn.execute(
             "SELECT id FROM guide_companies WHERE (id = ? OR slug = ?) AND country = ? AND status = 'published' LIMIT 1",
             (company_id, company_id, country)).fetchone()
@@ -11550,13 +14394,14 @@ class Handler(BaseHTTPRequestHandler):
             (row["id"],)).fetchall()]
         self.send_json({
             "status": "ok", "companyId": row["id"], "workReviews": work, "interviewReviews": interview,
-            "disclaimer": GUIDE_COMPANY_DISCLAIMER,
+            "disclaimer": _guide_localized_ui("companyDisclaimer", language, GUIDE_COMPANY_DISCLAIMER),
         })
 
     def api_guide_company_review_bucket(self, conn: sqlite3.Connection, company_id: str, kind: str, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, items=[]))
+            return self.send_json(self._guide_coming_soon_payload(country, language, items=[]))
         row = conn.execute(
             "SELECT id FROM guide_companies WHERE (id = ? OR slug = ?) AND country = ? AND status = 'published' LIMIT 1",
             (company_id, company_id, country)).fetchone()
@@ -11572,12 +14417,13 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT * FROM guide_company_reviews WHERE company_id = ? AND status IN ('approved','published') ORDER BY created_at DESC LIMIT 50",
                 (row["id"],)).fetchall()
             items = [serialize_guide_company_review(r) for r in rows]
-        self.send_json({"status": "ok", "country": country, "companyId": row["id"], "items": items, "disclaimer": GUIDE_COMPANY_DISCLAIMER})
+        self.send_json({"status": "ok", "country": country, "companyId": row["id"], "items": items, "disclaimer": _guide_localized_ui("companyDisclaimer", language, GUIDE_COMPANY_DISCLAIMER)})
 
     def api_guide_company_positions(self, conn: sqlite3.Connection, company_id: str, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         if not self._guide_is_open(country):
-            return self.send_json(self._guide_coming_soon_payload(country, items=[]))
+            return self.send_json(self._guide_coming_soon_payload(country, language, items=[]))
         company = self._guide_lookup_company(conn, company_id)
         if company["country"] != country:
             raise APIError("公司不存在", 404, "guide_company_not_found")
@@ -11588,11 +14434,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_guide_interview_reviews(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
         page = _guide_int(query.get("page"), 1, lo=1)
         page_size = _guide_int(query.get("pageSize") or query.get("limit"), 20, lo=1, hi=50)
         if not self._guide_is_open(country):
             return self.send_json(self._guide_coming_soon_payload(
-                country, items=[], page=page, pageSize=page_size, total=0))
+                country, language, items=[], page=page, pageSize=page_size, total=0))
         where = ["r.status IN ('approved','published')"]
         params: list[Any] = []
         company_id = (query.get("companyId") or "").strip()
@@ -11630,7 +14477,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({
             "status": "ok", "country": country, "items": items,
             "page": page, "pageSize": page_size, "total": int(total),
-            "disclaimer": GUIDE_REVIEW_DISCLAIMER,
+            "disclaimer": _guide_localized_ui("reviewDisclaimer", language, GUIDE_REVIEW_DISCLAIMER),
         })
 
     # ---- Guide: authenticated submissions (moderated) ----
@@ -13312,7 +16159,7 @@ class Handler(BaseHTTPRequestHandler):
         # main throughput ceiling. The session-last-seen-at update path
         # was the only "write inside a GET" — it's now throttled and
         # batched in memory (see _should_flush_last_seen).
-        need_write_lock = method in ("POST", "PATCH", "PUT", "DELETE")
+        need_write_lock = method in ("POST", "PATCH", "PUT", "DELETE") or path == "/api/auth/google/callback"
         lock_held = False
         try:
             if need_write_lock:
@@ -13398,6 +16245,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_register(conn)
         if path == "/api/auth/login" and method == "POST":
             return self.api_login(conn)
+        if path == "/api/auth/google/start" and method == "GET":
+            return self.api_google_start(conn, query)
+        if path == "/api/auth/google/callback" and method == "GET":
+            return self.api_google_callback(conn, query)
+        if path == "/api/auth/google/unlink" and method == "POST":
+            return self.api_google_unlink(conn)
         if path == "/api/auth/logout" and method == "POST":
             return self.api_logout(conn)
         if path == "/api/auth/me" and method == "GET":
@@ -13532,6 +16385,89 @@ class Handler(BaseHTTPRequestHandler):
             if rest == "report" and method == "POST":
                 return self.api_report(conn, "comment", comment_id)
 
+        # Machi City Reputation
+        if path == "/api/reputation/me" and method == "GET":
+            return self.api_reputation_me(conn)
+        if path == "/api/reputation/logs/me" and method == "GET":
+            return self.api_reputation_logs_me(conn, query)
+        if path == "/api/reputation/badges" and method == "GET":
+            return self.api_reputation_badges(conn)
+        if path == "/api/reputation/rewards/me" and method == "GET":
+            return self.api_reputation_rewards_me(conn)
+        if path == "/api/reputation/levels" and method == "GET":
+            return self.api_reputation_levels(conn)
+        if path == "/api/reputation/privileges" and method == "GET":
+            return self.api_reputation_privileges(conn)
+        if path == "/api/reputation/events" and method == "POST":
+            return self.api_reputation_event(conn)
+        if path.startswith("/api/reputation/users/") and method == "GET":
+            return self.api_reputation_user(conn, unquote(path[len("/api/reputation/users/"):]))
+        if path == "/api/reputation/admin/adjust" and method == "POST":
+            return self.api_reputation_admin_adjust(conn)
+        if path == "/api/reputation/admin/grant-badge" and method == "POST":
+            return self.api_reputation_admin_grant_badge(conn)
+        if path == "/api/reputation/admin/revoke-badge" and method == "POST":
+            return self.api_reputation_admin_revoke_badge(conn)
+        if path == "/api/reputation/admin/freeze" and method == "POST":
+            return self.api_reputation_admin_freeze(conn)
+        if path == "/api/reputation/admin/unfreeze" and method == "POST":
+            return self.api_reputation_admin_unfreeze(conn)
+        if path == "/api/reputation/admin/users" and method == "GET":
+            return self.api_reputation_admin_users(conn, query)
+        if path == "/api/reputation/admin/risk" and method == "GET":
+            return self.api_reputation_admin_risk(conn, query)
+        if path == "/api/reputation/admin/events" and method == "GET":
+            return self.api_reputation_admin_events(conn, query)
+        if path == "/api/reputation/admin/reviews" and method == "GET":
+            return self.api_reputation_admin_reviews(conn, query)
+
+        # structured city listings (marketplace / rentals / jobs / services)
+        if path == "/api/listings" and method == "GET":
+            return self.api_listings(conn, query)
+        if path == "/api/listings" and method == "POST":
+            return self.api_create_listing(conn)
+        if path in {"/api/my/listings", "/api/me/listings"} and method == "GET":
+            next_query = dict(query)
+            next_query["owner"] = "me"
+            return self.api_listings(conn, next_query)
+        if path in {"/api/my/saved-listings", "/api/me/saved-listings", "/api/my/favorites", "/api/me/favorites"} and method == "GET":
+            return self.api_my_saved_listings(conn, query)
+        if path in {"/api/my/listing-inquiries", "/api/my/inquiries", "/api/me/listing-inquiries", "/api/me/inquiries"} and method == "GET":
+            return self.api_my_listing_inquiries(conn, query)
+        if path in {"/api/my/applications", "/api/me/applications"} and method == "GET":
+            next_query = dict(query)
+            next_query.setdefault("role", "sent")
+            next_query["type"] = next_query.get("type") or "job,hiring"
+            return self.api_my_listing_inquiries(conn, next_query)
+        if path in {"/api/my/service-appointments", "/api/me/service-appointments", "/api/my/appointments", "/api/me/appointments"} and method == "GET":
+            return self.api_my_service_appointments(conn, query)
+        if path in {"/api/me/bookings", "/api/my/bookings"} and method == "GET":
+            return self.api_my_bookings(conn, query)
+        if path in {"/api/me/orders", "/api/my/orders"} and method == "GET":
+            return self.api_my_orders(conn, query)
+        if path == "/api/me/reputation" and method == "GET":
+            return self.api_reputation_me(conn)
+        if path.startswith("/api/listing-inquiries/") and method == "PATCH":
+            return self.api_update_listing_inquiry(conn, unquote(path.split("/")[3]))
+        if path.startswith("/api/listings/"):
+            parts = path[len("/api/listings/"):].split("/")
+            listing_id = unquote(parts[0])
+            rest = "/".join(parts[1:])
+            if not rest and method == "GET":
+                return self.api_listing_detail(conn, listing_id)
+            if not rest and method == "PATCH":
+                return self.api_update_listing(conn, listing_id)
+            if not rest and method == "DELETE":
+                return self.api_delete_listing(conn, listing_id)
+            if rest in {"favorite", "save"} and method == "POST":
+                return self.api_listing_favorite(conn, listing_id, True)
+            if rest in {"favorite", "save"} and method == "DELETE":
+                return self.api_listing_favorite(conn, listing_id, False)
+            if rest == "report" and method == "POST":
+                return self.api_listing_report(conn, listing_id)
+            if rest in {"inquiry", "contact", "apply", "application", "book-viewing", "viewing", "book-service", "booking"} and method == "POST":
+                return self.api_listing_inquiry(conn, listing_id)
+
         # search
         if path == "/api/search" and method == "GET":
             return self.api_search(conn, query)
@@ -13541,6 +16477,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_clear_search_history(conn)
         if path == "/api/trending" and method == "GET":
             return self.api_trending(conn)
+        if path == "/api/trending/weekly-likes" and method == "GET":
+            return self.api_trending_weekly_likes(conn, query)
         if path == "/api/topics" and method == "GET":
             return self.api_topics(conn)
         if path.startswith("/api/topics/") and method == "GET":
@@ -13831,6 +16769,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/regions/resolve" and method == "GET":
             return self.api_regions_resolve(conn, query)
 
+        if path == "/api/site-settings" and method == "GET":
+            return self.api_site_settings(conn)
+
         # realtime
         if path == "/api/events/token" and method == "POST":
             return self.api_events_token(conn)
@@ -13840,6 +16781,16 @@ class Handler(BaseHTTPRequestHandler):
         # admin (all behind require_admin)
         if path == "/api/admin/stats" and method == "GET":
             return self.api_admin_stats(conn)
+        if path == "/api/admin/server-metrics" and method == "GET":
+            return self.api_admin_server_metrics(conn)
+        if path == "/api/admin/media" and method == "GET":
+            return self.api_admin_media(conn, query)
+        if path == "/api/admin/media/upload" and method == "POST":
+            return self.api_admin_upload_media(conn)
+        if path == "/api/admin/site-settings" and method == "GET":
+            return self.api_admin_site_settings(conn)
+        if path == "/api/admin/site-settings" and method in ("PATCH", "POST"):
+            return self.api_admin_update_site_settings(conn)
         if path == "/api/admin/visitors" and method == "GET":
             return self.api_admin_visitors(conn, query)
         if path == "/api/admin/users" and method == "GET":
@@ -13854,6 +16805,38 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_update_post(conn, path.split("/")[4])
         if path.startswith("/api/admin/posts/") and method == "DELETE":
             return self.api_admin_delete_post(conn, path.split("/")[4])
+        if path == "/api/admin/listings/review" and method == "GET":
+            next_query = dict(query)
+            next_query["status"] = next_query.get("status") or "pending_review"
+            return self.api_admin_listings(conn, next_query)
+        if path == "/api/admin/listings/reports" and method == "GET":
+            return self.api_admin_listing_reports(conn, query)
+        if path == "/api/admin/listings/promotions" and method == "GET":
+            return self.api_admin_listing_promotions(conn, query)
+        if path == "/api/admin/listings/promotions" and method == "POST":
+            return self.api_admin_create_listing_promotion(conn)
+        if path == "/api/admin/jobs" and method == "GET":
+            next_query = dict(query)
+            next_query["type"] = next_query.get("type") or "job,hiring"
+            return self.api_admin_listings(conn, next_query)
+        if path == "/api/admin/rentals" and method == "GET":
+            next_query = dict(query)
+            next_query["type"] = "rental"
+            return self.api_admin_listings(conn, next_query)
+        if path == "/api/admin/marketplace" and method == "GET":
+            next_query = dict(query)
+            next_query["type"] = "secondhand"
+            return self.api_admin_listings(conn, next_query)
+        if path == "/api/admin/listings" and method == "GET":
+            return self.api_admin_listings(conn, query)
+        if path.startswith("/api/admin/listings/") and method == "PATCH":
+            return self.api_admin_update_listing(conn, unquote(path.split("/")[4]))
+        if path == "/api/admin/listing-reports" and method == "GET":
+            return self.api_admin_listing_reports(conn, query)
+        if path == "/api/admin/businesses" and method == "GET":
+            return self.api_admin_businesses(conn, query)
+        if path == "/api/admin/seller-verifications" and method == "GET":
+            return self.api_admin_listing_verifications(conn, query)
         if path == "/api/admin/comments" and method == "GET":
             return self.api_admin_comments(conn, query)
         if path.startswith("/api/admin/comments/") and method == "DELETE":
@@ -14970,6 +17953,9 @@ class Handler(BaseHTTPRequestHandler):
         if email and conn.execute("SELECT 1 FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email.lower(),)).fetchone():
             raise APIError("这个邮箱已经注册过", 409, "email_taken")
         country, province, city, region_code, city_label = _normalize_region_payload(data)
+        settings_language = (data.get("language") or "").strip()
+        if settings_language not in ("zh-Hans", "en", "ja"):
+            settings_language = ""
         # Admin bootstrapping:
         # - If KAIX_ADMIN_BOOTSTRAP_TOKEN is set, the registration request
         #   must carry a matching `bootstrap_token` to be promoted to
@@ -14998,7 +17984,12 @@ class Handler(BaseHTTPRequestHandler):
              city_label, role, country, province, city, region_code, region_code,
              now_iso(), now_iso(), now_iso()),
         )
-        conn.execute("INSERT INTO settings (user_id, updated_at) VALUES (?, ?)", (user_id, now_iso()))
+        conn.execute("INSERT INTO settings (user_id, language, updated_at) VALUES (?, ?, ?)", (user_id, settings_language, now_iso()))
+        reputation_ensure_user(conn, user_id)
+        if email:
+            reputation_apply_event(conn, user_id, "email_verified", target_kind="user", target_id=user_id, reviewed=True)
+        if region_code or settings_language:
+            reputation_apply_event(conn, user_id, "city_language_set", target_kind="user", target_id=user_id)
         token = self._create_session(conn, user_id)
         user_row = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
         self.send_json({"token": token, "user": serialize_user(user_row)})
@@ -15018,6 +18009,330 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("用户名或密码不正确", 401, "invalid_credentials")
         token = self._create_session(conn, row["id"])
         self.send_json({"token": token, "user": serialize_user(dict(row))})
+
+    def _request_base_url(self) -> str:
+        proto = (self.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip()
+        if not proto:
+            proto = "https" if PRODUCTION else "http"
+        host = (
+            self.headers.get("X-Forwarded-Host")
+            or self.headers.get("Host")
+            or "localhost"
+        ).split(",", 1)[0].strip()
+        return f"{proto}://{host}"
+
+    def _google_redirect_uri(self) -> str:
+        if GOOGLE_OAUTH_REDIRECT_URI:
+            return GOOGLE_OAUTH_REDIRECT_URI
+        return f"{self._request_base_url()}/api/auth/google/callback"
+
+    @staticmethod
+    def _safe_web_redirect(raw: str | None, default: str = "/home") -> str:
+        value = (raw or "").strip()
+        if not value or not value.startswith("/") or value.startswith("//") or "://" in value:
+            return default
+        return value[:500]
+
+    @staticmethod
+    def _safe_ios_callback(raw: str | None) -> str:
+        value = (raw or "").strip()
+        if value.startswith("machi://auth/google"):
+            return value[:300]
+        return GOOGLE_IOS_CALLBACK_URL
+
+    def _oauth_callback_location(self, client: str, token: str | None = None, redirect: str = "", error: str = "") -> str:
+        if client == "ios":
+            params = {"token": token or ""} if token else {"error": error or "oauth_failed"}
+            return f"{self._safe_ios_callback(redirect)}?{urlencode(params)}"
+        params: dict[str, str] = {"redirect": self._safe_web_redirect(redirect)}
+        if token:
+            params["token"] = token
+        if error:
+            params["error"] = error
+        return f"/auth/google/callback?{urlencode(params)}"
+
+    def _google_token(self, code: str, redirect_uri: str) -> dict[str, Any]:
+        payload = urlencode({
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": redirect_uri,
+            "grant_type": "authorization_code",
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            GOOGLE_OAUTH_TOKEN_URL,
+            data=payload,
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded", "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8")[:300]
+            except Exception:
+                detail = ""
+            raise APIError(f"Google 授权交换失败：{detail or exc.reason}", 502, "google_token_failed")
+        except Exception as exc:
+            raise APIError(f"无法连接 Google 授权服务：{exc}", 502, "google_token_failed")
+
+    def _google_userinfo(self, access_token: str) -> dict[str, Any]:
+        req = urllib.request.Request(
+            GOOGLE_OAUTH_USERINFO_URL,
+            method="GET",
+            headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8")[:300]
+            except Exception:
+                detail = ""
+            raise APIError(f"Google 账号信息读取失败：{detail or exc.reason}", 502, "google_profile_failed")
+        except Exception as exc:
+            raise APIError(f"无法读取 Google 账号信息：{exc}", 502, "google_profile_failed")
+
+    @staticmethod
+    def _google_handle_base(email: str, name: str) -> str:
+        seed = (email.split("@", 1)[0] if "@" in email else "") or name or "google_user"
+        base = re.sub(r"[^a-z0-9_.]+", "", seed.lower().replace(" ", ".")).strip("._")
+        if len(base) < 3:
+            base = f"{base or 'user'}_google"
+        return base[:20].strip("._") or "google_user"
+
+    def _unique_google_handle(self, conn: sqlite3.Connection, email: str, name: str) -> str:
+        base = self._google_handle_base(email, name)
+        candidate = base
+        suffix = 0
+        while True:
+            exists = conn.execute("SELECT 1 FROM users WHERE handle = ?", (candidate,)).fetchone()
+            if not exists and candidate not in RESERVED_HANDLES and HANDLE_RE.match(candidate):
+                return candidate
+            suffix += 1
+            tail = f".{suffix}"
+            candidate = f"{base[:20 - len(tail)]}{tail}".strip("._")
+            if len(candidate) < 3:
+                candidate = f"user{suffix}"
+
+    def _upsert_google_user(self, conn: sqlite3.Connection, profile: dict[str, Any]) -> dict[str, Any]:
+        google_sub = str(profile.get("sub") or "").strip()
+        if not google_sub:
+            raise APIError("Google 账号缺少唯一标识", 400, "google_profile_invalid")
+        email_verified = bool(profile.get("email_verified"))
+        email = (str(profile.get("email") or "").strip().lower() if email_verified else "")
+        name = (str(profile.get("name") or "").strip() or (email.split("@", 1)[0] if email else "Google 用户"))[:60]
+        picture = str(profile.get("picture") or "").strip()
+
+        row = conn.execute("SELECT * FROM users WHERE google_sub = ? AND deleted_at IS NULL", (google_sub,)).fetchone()
+        if row:
+            updates = {
+                "email_verified": 1 if email_verified else int(row["email_verified"] or 0),
+                "auth_provider": "google",
+                "updated_at": now_iso(),
+            }
+            if email and not row["email"]:
+                updates["email"] = email
+            if picture and not row["avatar_url"]:
+                updates["avatar_url"] = picture
+            sets = ", ".join(f"{k} = ?" for k in updates)
+            conn.execute(f"UPDATE users SET {sets} WHERE id = ?", [*updates.values(), row["id"]])
+            return dict(conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone())
+
+        if email:
+            existing = conn.execute("SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email,)).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE users
+                       SET google_sub = ?, email_verified = 1, auth_provider = 'google',
+                           avatar_url = CASE WHEN avatar_url = '' THEN ? ELSE avatar_url END,
+                           updated_at = ?
+                     WHERE id = ?
+                    """,
+                    (google_sub, picture, now_iso(), existing["id"]),
+                )
+                return dict(conn.execute("SELECT * FROM users WHERE id = ?", (existing["id"],)).fetchone())
+
+        user_id = str(uuid.uuid4())
+        handle = self._unique_google_handle(conn, email, name)
+        country, province, city, region_code, city_label = ("jp", "tokyo", "tokyo", "jp.tokyo.tokyo", "东京")
+        conn.execute(
+            """
+            INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
+                               avatar_symbol, avatar_color, avatar_url, cover_url, membership_tier,
+                               is_verified, role, country, province, city, current_region_code,
+                               recent_region_codes, google_sub, auth_provider, email_verified,
+                               joined_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, '', ?, 'person.fill', 'indigo', ?, '', 'free', 0, 'member',
+                    ?, ?, ?, ?, ?, ?, 'google', ?, ?, ?, ?)
+            """,
+            (
+                user_id, handle, name, email, hash_password(secrets.token_urlsafe(32)),
+                city_label, picture, country, province, city, region_code, region_code,
+                google_sub, 1 if email_verified else 0, now_iso(), now_iso(), now_iso(),
+            ),
+        )
+        conn.execute("INSERT INTO settings (user_id, language, updated_at) VALUES (?, '', ?)", (user_id, now_iso()))
+        return dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    def _link_google_to_user(self, conn: sqlite3.Connection, user_id: str, profile: dict[str, Any]) -> dict[str, Any]:
+        """Attach a verified Google identity to an ALREADY-authenticated account
+        (the link target is bound at start time by an authed request and stored
+        in oauth_states, so the unauthenticated browser callback can't retarget
+        it). Never logs the user in as someone else."""
+        google_sub = str(profile.get("sub") or "").strip()
+        if not google_sub:
+            raise APIError("Google 账号缺少唯一标识", 400, "google_profile_invalid")
+        user = conn.execute("SELECT * FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,)).fetchone()
+        if not user:
+            raise APIError("请登录后再绑定 Google", 401, "AUTH_REQUIRED")
+        other = conn.execute(
+            "SELECT id FROM users WHERE google_sub = ? AND id != ? AND deleted_at IS NULL",
+            (google_sub, user_id),
+        ).fetchone()
+        if other:
+            raise APIError("该 Google 账号已绑定到其他 Machi 账号", 409, "google_already_linked")
+        existing_sub = (user["google_sub"] or "").strip()
+        if existing_sub and existing_sub != google_sub:
+            raise APIError("当前账号已绑定了另一个 Google 账号，请先解绑", 409, "already_linked_other")
+        picture = str(profile.get("picture") or "").strip()
+        updates: dict[str, Any] = {"google_sub": google_sub, "updated_at": now_iso()}
+        if picture and not (user["avatar_url"] or "").strip():
+            updates["avatar_url"] = picture
+        sets = ", ".join(f"{k} = ?" for k in updates)
+        conn.execute(f"UPDATE users SET {sets} WHERE id = ?", [*updates.values(), user_id])
+        write_security_log(
+            conn, user_id, "google_linked", {"google_sub_hint": google_sub[:6]},
+            ip=self._client_ip(), user_agent=self.headers.get("User-Agent") or "",
+        )
+        return dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    def _oauth_link_location(self, client: str, redirect: str = "", ok: bool = False, error: str = "") -> str:
+        """Where to send the browser after a LINK (bind) attempt — distinct from
+        the login callback because there's no new session token to deliver."""
+        if client == "ios":
+            params = {"linked": "1"} if ok else {"error": error or "google_link_failed"}
+            return f"{self._safe_ios_callback(redirect)}?{urlencode(params)}"
+        target = self._safe_web_redirect(redirect, "/settings")
+        sep = "&" if "?" in target else "?"
+        params = {"google": "linked"} if ok else {"google_error": error or "google_link_failed"}
+        return f"{target}{sep}{urlencode(params)}"
+
+    def api_google_start(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+            raise APIError("Google 登录尚未配置", 503, "google_oauth_not_configured")
+        client = (query.get("client") or "web").strip().lower()
+        if client not in ("web", "ios"):
+            client = "web"
+        # intent=login → sign in / auto-register; intent=link → bind Google to
+        # the CURRENT account (requires an active session, captured here).
+        intent = (query.get("intent") or "login").strip().lower()
+        if intent not in ("login", "link"):
+            intent = "login"
+        link_user_id = ""
+        if intent == "link":
+            link_user_id = self.require_user(conn)["id"]
+        if client == "ios":
+            redirect = self._safe_ios_callback(query.get("redirect"))
+        else:
+            redirect = self._safe_web_redirect(query.get("redirect"), "/settings" if intent == "link" else "/home")
+        state = secrets.token_urlsafe(32)
+        created_at = now_iso()
+        expires_at = (datetime.now(timezone.utc) + timedelta(seconds=GOOGLE_OAUTH_STATE_TTL_SEC)).isoformat()
+        conn.execute(
+            "INSERT INTO oauth_states (state, provider, client, redirect, intent, link_user_id, created_at, expires_at, ip) "
+            "VALUES (?, 'google', ?, ?, ?, ?, ?, ?, ?)",
+            (state, client, redirect, intent, link_user_id, created_at, expires_at, self._client_ip()[:64]),
+        )
+        redirect_uri = self._google_redirect_uri()
+        params = {
+            "client_id": GOOGLE_CLIENT_ID,
+            "redirect_uri": redirect_uri,
+            "response_type": "code",
+            "scope": "openid email profile",
+            "state": state,
+            "prompt": "select_account",
+        }
+        self.send_json({
+            "authorization_url": f"{GOOGLE_OAUTH_AUTH_URL}?{urlencode(params)}",
+            "url": f"{GOOGLE_OAUTH_AUTH_URL}?{urlencode(params)}",
+            "state": state,
+            "expires_in": GOOGLE_OAUTH_STATE_TTL_SEC,
+        })
+
+    def api_google_callback(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        state = (query.get("state") or "").strip()
+        row = conn.execute("SELECT * FROM oauth_states WHERE state = ? AND provider = 'google'", (state,)).fetchone() if state else None
+        if not row:
+            return self.send_redirect(self._oauth_callback_location("web", error="invalid_state"))
+        client = row["client"] or "web"
+        redirect = row["redirect"] or ""
+        keys = row.keys()
+        intent = ((row["intent"] if "intent" in keys else "login") or "login")
+        link_user_id = ((row["link_user_id"] if "link_user_id" in keys else "") or "")
+
+        def _fail(code: str) -> None:
+            if intent == "link":
+                return self.send_redirect(self._oauth_link_location(client, redirect=redirect, error=code))
+            return self.send_redirect(self._oauth_callback_location(client, redirect=redirect, error=code))
+
+        expires = parse_iso(row["expires_at"])
+        if row["consumed_at"] or (expires and expires < datetime.now(timezone.utc)):
+            return _fail("state_expired")
+        conn.execute("UPDATE oauth_states SET consumed_at = ? WHERE state = ?", (now_iso(), state))
+        if query.get("error"):
+            return _fail("google_denied")
+        code = (query.get("code") or "").strip()
+        if not code:
+            return _fail("missing_code")
+        redirect_uri = self._google_redirect_uri()
+        try:
+            with _DBLockReleased():
+                token_data = self._google_token(code, redirect_uri)
+                access_token = str(token_data.get("access_token") or "")
+                if not access_token:
+                    raise APIError("Google 未返回访问令牌", 502, "google_token_failed")
+                profile = self._google_userinfo(access_token)
+        except APIError as exc:
+            return _fail(exc.code or ("google_link_failed" if intent == "link" else "oauth_failed"))
+        if intent == "link":
+            try:
+                self._link_google_to_user(conn, link_user_id, profile)
+            except APIError as exc:
+                return self.send_redirect(self._oauth_link_location(client, redirect=redirect, error=exc.code or "google_link_failed"))
+            return self.send_redirect(self._oauth_link_location(client, redirect=redirect, ok=True))
+        user = self._upsert_google_user(conn, profile)
+        token = self._create_session(conn, user["id"])
+        self.send_redirect(self._oauth_callback_location(client, token=token, redirect=redirect))
+
+    def api_google_unlink(self, conn: sqlite3.Connection) -> None:
+        """Remove the Google identity from the current account. Blocked when it
+        is the account's only viable way back in (a Google-created account with
+        no verified email), so a user can never lock themselves out."""
+        user = self.require_user(conn)
+        if not (user["google_sub"] or "").strip():
+            self.send_json({"ok": True, "user": serialize_user(user), "message": "当前账号未绑定 Google"})
+            return
+        auth_provider = (user["auth_provider"] or "password")
+        email_ok = is_valid_email((user["email"] or "").strip()) and bool(user["email_verified"])
+        if auth_provider != "password" and not email_ok:
+            raise APIError(
+                "该账号是通过 Google 创建的，请先绑定邮箱并设置登录密码，再解绑 Google，以免无法再次登录。",
+                400, "google_unlink_no_fallback",
+            )
+        conn.execute(
+            "UPDATE users SET google_sub = '', auth_provider = 'password', updated_at = ? WHERE id = ?",
+            (now_iso(), user["id"]),
+        )
+        write_security_log(
+            conn, user["id"], "google_unlinked", {},
+            ip=self._client_ip(), user_agent=self.headers.get("User-Agent") or "",
+        )
+        fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
+        self.send_json({"ok": True, "user": serialize_user(fresh), "message": "已解绑 Google 账号"})
 
     def _create_session(self, conn: sqlite3.Connection, user_id: str) -> str:
         token = secrets.token_urlsafe(32)
@@ -15279,6 +18594,7 @@ class Handler(BaseHTTPRequestHandler):
             user_id=user["id"],
         )
         conn.execute("UPDATE users SET email = ?, updated_at = ? WHERE id = ?", (new_email, now_iso(), user["id"]))
+        reputation_apply_event(conn, user["id"], "email_verified", target_kind="user", target_id=user["id"], reviewed=True)
         write_security_log(
             conn,
             user["id"],
@@ -15386,6 +18702,11 @@ class Handler(BaseHTTPRequestHandler):
             sets = ", ".join(f"{f} = ?" for f, _ in updates) + ", updated_at = ?"
             values = [v for _, v in updates] + [now_iso(), user["id"]]
             conn.execute(f"UPDATE users SET {sets} WHERE id = ?", values)
+            updated_fields = {f for f, _ in updates}
+            if updated_fields.intersection({"display_name", "bio", "avatar_symbol", "avatar_color", "avatar_url", "cover_url"}):
+                reputation_apply_event(conn, user["id"], "profile_completed", target_kind="user", target_id=user["id"])
+            if updated_fields.intersection({"country", "province", "city", "current_region_code", "recent_region_codes"}):
+                reputation_apply_event(conn, user["id"], "city_language_set", target_kind="user", target_id=user["id"])
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
         self.send_json({"user": serialize_user(fresh)})
 
@@ -15622,6 +18943,1420 @@ class Handler(BaseHTTPRequestHandler):
             _cache_invalidate("trending:")
         self.send_json({"ok": True})
 
+    def api_reputation_me(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        profile = serialize_reputation_profile(conn, user["id"], viewer_id=user["id"])
+        self.send_json({"ok": True, "data": profile, "reputation": profile})
+
+    def api_reputation_user(self, conn: sqlite3.Connection, user_id: str) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        admin = False
+        if viewer_id:
+            row = conn.execute("SELECT role FROM users WHERE id = ?", (viewer_id,)).fetchone()
+            admin = bool(row and row["role"] == "admin")
+        target = conn.execute("SELECT id FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,)).fetchone()
+        if not target:
+            raise APIError("用户不存在", 404, "user_not_found")
+        profile = serialize_reputation_profile(conn, user_id, viewer_id=viewer_id, admin=admin)
+        self.send_json({"ok": True, "data": profile, "reputation": profile})
+
+    def api_reputation_logs_me(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        limit = max(1, min(int(query.get("limit") or 60), 200))
+        rows = list(conn.execute(
+            """
+            SELECT * FROM reputation_events
+             WHERE user_id = ?
+             ORDER BY created_at DESC
+             LIMIT ?
+            """,
+            (user["id"], limit),
+        ))
+        self.send_json({"ok": True, "items": [serialize_reputation_event(r) for r in rows]})
+
+    def api_reputation_badges(self, conn: sqlite3.Connection) -> None:
+        rows = list(conn.execute(
+            "SELECT * FROM badges WHERE is_active = 1 ORDER BY category ASC, rarity ASC, name_zh ASC"
+        ))
+        self.send_json({"ok": True, "items": [serialize_badge(r) for r in rows]})
+
+    def api_reputation_rewards_me(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        profile = serialize_reputation_profile(conn, user["id"], viewer_id=user["id"])
+        self.send_json({"ok": True, "items": profile["rewards"]})
+
+    def api_reputation_levels(self, conn: sqlite3.Connection) -> None:
+        rows = list(conn.execute(
+            "SELECT * FROM reputation_levels WHERE is_active = 1 ORDER BY level ASC"
+        ))
+        items = []
+        for row in rows:
+            d = dict(row)
+            try:
+                privileges = json.loads(d.get("privileges_json") or "[]")
+            except Exception:
+                privileges = []
+            items.append({**d, "privileges": privileges})
+        self.send_json({"ok": True, "items": items})
+
+    def api_reputation_privileges(self, conn: sqlite3.Connection) -> None:
+        rows = list(conn.execute(
+            """
+            SELECT * FROM reputation_privileges
+             WHERE is_active = 1
+             ORDER BY level ASC, sort_order ASC
+            """
+        ))
+        self.send_json({"ok": True, "items": [dict(r) for r in rows]})
+
+    def api_reputation_event(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        user_id = str(data.get("user_id") or data.get("userId") or "").strip()
+        rule_key = str(data.get("rule_key") or data.get("ruleKey") or "").strip()
+        if not user_id or not rule_key:
+            raise APIError("缺少用户或规则", 400, "invalid_reputation_event")
+        if not conn.execute("SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,)).fetchone():
+            raise APIError("用户不存在", 404, "user_not_found")
+        result = reputation_apply_event(
+            conn,
+            user_id,
+            rule_key,
+            admin_id=admin["id"],
+            target_kind=str(data.get("target_kind") or data.get("targetKind") or ""),
+            target_id=str(data.get("target_id") or data.get("targetId") or ""),
+            reason=str(data.get("reason") or ""),
+            metadata=data.get("metadata") if isinstance(data.get("metadata"), dict) else {},
+            reviewed=True,
+        )
+        record_admin_action(conn, admin["id"], "reputation_event", target_kind="user", target_id=user_id, metadata={"rule_key": rule_key, "result": result})
+        self.send_json({"ok": True, "result": result, "reputation": serialize_reputation_profile(conn, user_id, viewer_id=admin["id"], admin=True)})
+
+    def api_reputation_admin_adjust(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        user_id = str(data.get("user_id") or data.get("userId") or "").strip()
+        reason = str(data.get("reason") or "").strip()
+        if not user_id or not reason:
+            raise APIError("调整声望必须选择用户并填写原因", 400, "reason_required")
+        target = conn.execute("SELECT id FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,)).fetchone()
+        if not target:
+            raise APIError("用户不存在", 404, "user_not_found")
+        rep = reputation_ensure_user(conn, user_id)
+        xp_delta = int(data.get("xp_delta") or data.get("xpDelta") or 0)
+        reputation_delta = int(data.get("reputation_delta") or data.get("reputationDelta") or 0)
+        risk_delta = int(data.get("risk_delta") or data.get("riskDelta") or 0)
+        if xp_delta == 0 and reputation_delta == 0 and risk_delta == 0:
+            raise APIError("调整值不能为空", 400, "empty_adjustment")
+        xp_before = int(rep.get("xp") or 0)
+        score_before = _clamp_reputation_score(rep.get("reputation_score"))
+        risk_before = _clamp_risk_score(rep.get("risk_score"))
+        level_before = int(rep.get("level") or 1)
+        xp_after = max(REPUTATION_MIN_XP, xp_before + xp_delta)
+        score_after = _clamp_reputation_score(score_before + reputation_delta)
+        risk_after = _clamp_risk_score(risk_before + risk_delta)
+        level_after = int(reputation_level_for_xp(conn, xp_after)["level"])
+        now = now_iso()
+        event_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO reputation_events (
+                id, user_id, admin_id, rule_key, event_type, xp_delta, reputation_delta, risk_delta,
+                xp_before, xp_after, reputation_before, reputation_after,
+                risk_before, risk_after, level_before, level_after, reason, metadata, created_at
+            )
+            VALUES (?, ?, ?, 'admin_adjust', 'admin', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event_id, user_id, admin["id"], xp_delta, reputation_delta, risk_delta,
+                xp_before, xp_after, score_before, score_after, risk_before, risk_after,
+                level_before, level_after, reason[:500],
+                json.dumps({"source": "admin_adjust"}, ensure_ascii=False), now,
+            ),
+        )
+        conn.execute(
+            """
+            UPDATE user_reputation
+               SET xp = ?, reputation_score = ?, risk_score = ?, level = ?,
+                   reputation_status = ?, last_event_at = ?, updated_at = ?
+             WHERE user_id = ?
+            """,
+            (xp_after, score_after, risk_after, level_after, reputation_status_for_score(score_after), now, now, user_id),
+        )
+        if level_after > level_before:
+            reputation_grant_level_rewards(conn, user_id, level_after, event_id)
+        if risk_after >= int(reputation_limit_map(conn).get("review_risk_threshold") or 61):
+            reputation_open_trust_review(conn, user_id, risk_after, reason=reason)
+        record_admin_action(conn, admin["id"], "reputation_admin_adjust", target_kind="user", target_id=user_id, metadata={"xp_delta": xp_delta, "reputation_delta": reputation_delta, "risk_delta": risk_delta, "reason": reason})
+        self.send_json({"ok": True, "reputation": serialize_reputation_profile(conn, user_id, viewer_id=admin["id"], admin=True)})
+
+    def _badge_by_key(self, conn: sqlite3.Connection, badge_key: str) -> dict[str, Any]:
+        row = conn.execute("SELECT * FROM badges WHERE key = ? AND is_active = 1", (badge_key,)).fetchone()
+        if not row:
+            raise APIError("徽章不存在", 404, "badge_not_found")
+        return dict(row)
+
+    def api_reputation_admin_grant_badge(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        user_id = str(data.get("user_id") or data.get("userId") or "").strip()
+        badge_key = str(data.get("badge_key") or data.get("badgeKey") or "").strip()
+        reason = str(data.get("reason") or "").strip()
+        if not user_id or not badge_key or not reason:
+            raise APIError("授予徽章必须选择用户、徽章并填写原因", 400, "reason_required")
+        if not conn.execute("SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,)).fetchone():
+            raise APIError("用户不存在", 404, "user_not_found")
+        badge = self._badge_by_key(conn, badge_key)
+        existing = conn.execute(
+            "SELECT * FROM user_badges WHERE user_id = ? AND badge_id = ? AND revoked_at IS NULL LIMIT 1",
+            (user_id, badge["id"]),
+        ).fetchone()
+        if not existing:
+            now = now_iso()
+            conn.execute(
+                """
+                INSERT INTO user_badges (
+                    id, user_id, badge_id, granted_by_admin_id, reason, is_displayed, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+                """,
+                (str(uuid.uuid4()), user_id, badge["id"], admin["id"], reason[:500], now, now),
+            )
+            conn.execute(
+                """
+                INSERT INTO notifications (id, user_id, actor_id, type, content, created_at)
+                VALUES (?, ?, ?, 'system', ?, ?)
+                """,
+                (str(uuid.uuid4()), user_id, user_id, f"你获得了“{badge['name_zh']}”徽章。", now_iso()),
+            )
+        record_admin_action(conn, admin["id"], "reputation_grant_badge", target_kind="user", target_id=user_id, metadata={"badge_key": badge_key, "reason": reason})
+        self.send_json({"ok": True, "reputation": serialize_reputation_profile(conn, user_id, viewer_id=admin["id"], admin=True)})
+
+    def api_reputation_admin_revoke_badge(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        user_id = str(data.get("user_id") or data.get("userId") or "").strip()
+        badge_key = str(data.get("badge_key") or data.get("badgeKey") or "").strip()
+        reason = str(data.get("reason") or "").strip()
+        if not user_id or not badge_key or not reason:
+            raise APIError("撤销徽章必须选择用户、徽章并填写原因", 400, "reason_required")
+        badge = self._badge_by_key(conn, badge_key)
+        row = conn.execute(
+            "SELECT * FROM user_badges WHERE user_id = ? AND badge_id = ? AND revoked_at IS NULL LIMIT 1",
+            (user_id, badge["id"]),
+        ).fetchone()
+        if row:
+            conn.execute(
+                """
+                UPDATE user_badges
+                   SET revoked_at = ?, revoked_by_admin_id = ?, revoke_reason = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (now_iso(), admin["id"], reason[:500], now_iso(), row["id"]),
+            )
+        record_admin_action(conn, admin["id"], "reputation_revoke_badge", target_kind="user", target_id=user_id, metadata={"badge_key": badge_key, "reason": reason})
+        self.send_json({"ok": True, "reputation": serialize_reputation_profile(conn, user_id, viewer_id=admin["id"], admin=True)})
+
+    def api_reputation_admin_freeze(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        user_id = str(data.get("user_id") or data.get("userId") or "").strip()
+        reason = str(data.get("reason") or "").strip()
+        days = max(1, min(int(data.get("days") or 7), 365))
+        if not user_id or not reason:
+            raise APIError("冻结增长必须选择用户并填写原因", 400, "reason_required")
+        reputation_ensure_user(conn, user_id)
+        until = (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+        conn.execute(
+            """
+            UPDATE user_reputation
+               SET growth_frozen = 1, frozen_until = ?, freeze_reason = ?,
+                   frozen_by_admin_id = ?, updated_at = ?
+             WHERE user_id = ?
+            """,
+            (until, reason[:500], admin["id"], now_iso(), user_id),
+        )
+        record_admin_action(conn, admin["id"], "reputation_freeze", target_kind="user", target_id=user_id, metadata={"days": days, "reason": reason})
+        self.send_json({"ok": True, "reputation": serialize_reputation_profile(conn, user_id, viewer_id=admin["id"], admin=True)})
+
+    def api_reputation_admin_unfreeze(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        user_id = str(data.get("user_id") or data.get("userId") or "").strip()
+        reason = str(data.get("reason") or "").strip() or "管理员解除冻结"
+        if not user_id:
+            raise APIError("缺少用户", 400, "missing_user")
+        reputation_ensure_user(conn, user_id)
+        conn.execute(
+            """
+            UPDATE user_reputation
+               SET growth_frozen = 0, frozen_until = NULL, freeze_reason = '',
+                   frozen_by_admin_id = '', updated_at = ?
+             WHERE user_id = ?
+            """,
+            (now_iso(), user_id),
+        )
+        record_admin_action(conn, admin["id"], "reputation_unfreeze", target_kind="user", target_id=user_id, metadata={"reason": reason})
+        self.send_json({"ok": True, "reputation": serialize_reputation_profile(conn, user_id, viewer_id=admin["id"], admin=True)})
+
+    def api_reputation_admin_users(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        admin = self.require_admin(conn)
+        q = (query.get("q") or "").strip()
+        status = (query.get("status") or "").strip()
+        clauses = ["u.deleted_at IS NULL"]
+        params: list[Any] = []
+        if q:
+            like = f"%{q}%"
+            clauses.append("(u.handle LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)")
+            params.extend([like, like, like])
+        if status:
+            clauses.append("r.reputation_status = ?")
+            params.append(status)
+        rows = list(conn.execute(
+            f"""
+            SELECT u.*, r.xp, r.reputation_score, r.level, r.risk_score, r.reputation_status,
+                   r.growth_frozen, r.frozen_until, r.updated_at AS reputation_updated_at
+              FROM users u
+              LEFT JOIN user_reputation r ON r.user_id = u.id
+             WHERE {' AND '.join(clauses)}
+             ORDER BY COALESCE(r.risk_score, 0) DESC, COALESCE(r.xp, 0) DESC, u.created_at DESC
+             LIMIT 200
+            """,
+            params,
+        ))
+        items = []
+        for row in rows:
+            d = dict(row)
+            reputation_ensure_user(conn, d["id"])
+            items.append({
+                "user": serialize_user(d),
+                "reputation": serialize_reputation_profile(conn, d["id"], viewer_id=admin["id"], admin=True),
+            })
+        self.send_json({"ok": True, "items": items})
+
+    def api_reputation_admin_risk(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        min_risk = max(0, min(int(query.get("min_risk") or query.get("minRisk") or 31), 100))
+        rows = list(conn.execute(
+            """
+            SELECT tr.*, u.handle, u.display_name, r.reputation_score, r.level
+              FROM trust_reviews tr
+              JOIN users u ON u.id = tr.user_id
+              LEFT JOIN user_reputation r ON r.user_id = tr.user_id
+             WHERE tr.status = 'open' AND tr.risk_score >= ?
+             ORDER BY tr.risk_score DESC, tr.created_at DESC
+             LIMIT 200
+            """,
+            (min_risk,),
+        ))
+        self.send_json({"ok": True, "items": [dict(r) for r in rows]})
+
+    def api_reputation_admin_events(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        user_id = (query.get("user_id") or query.get("userId") or "").strip()
+        rule_key = (query.get("rule_key") or query.get("ruleKey") or "").strip()
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if user_id:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        if rule_key:
+            clauses.append("rule_key = ?")
+            params.append(rule_key)
+        rows = list(conn.execute(
+            f"SELECT * FROM reputation_events WHERE {' AND '.join(clauses)} ORDER BY created_at DESC LIMIT 300",
+            params,
+        ))
+        self.send_json({"ok": True, "items": [serialize_reputation_event(r) for r in rows]})
+
+    def api_reputation_admin_reviews(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        status = (query.get("status") or "open").strip()
+        params: list[Any] = []
+        clause = ""
+        if status:
+            clause = "WHERE tr.status = ?"
+            params.append(status)
+        rows = list(conn.execute(
+            f"""
+            SELECT tr.*, u.handle, u.display_name
+              FROM trust_reviews tr
+              JOIN users u ON u.id = tr.user_id
+              {clause}
+             ORDER BY tr.updated_at DESC
+             LIMIT 200
+            """,
+            params,
+        ))
+        self.send_json({"ok": True, "items": [dict(r) for r in rows]})
+
+    def api_listings(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        listing_type = normalize_listing_type(query.get("type"))
+        limit = max(1, min(int(query.get("limit") or 24), 60))
+        cursor = cursor_decode(query.get("cursor"))
+        status = (query.get("status") or "").strip().lower()
+        include_private = (query.get("owner") == "me" or query.get("mine") == "1") and bool(viewer_id)
+
+        clauses = ["deleted_at IS NULL", "type = ?"]
+        params: list[Any] = [listing_type]
+        if include_private:
+            clauses.append("seller_user_id = ?")
+            params.append(viewer_id)
+        elif status and status in LISTING_STATUSES:
+            clauses.append("status = ?")
+            params.append(status)
+        else:
+            clauses.append("status IN (%s)" % ",".join("?" * len(PUBLIC_LISTING_STATUSES)))
+            params.extend(PUBLIC_LISTING_STATUSES)
+
+        city_slug = (query.get("city_slug") or query.get("city") or "").strip().lower()
+        region_code = (query.get("region_code") or "").strip().lower()
+        country_code = (query.get("country") or query.get("country_code") or "").strip().lower()
+        if city_slug:
+            clauses.append("city_slug = ?")
+            params.append(city_slug)
+        elif region_code:
+            clauses.append("region_code = ?")
+            params.append(region_code)
+        elif country_code:
+            clauses.append("country_code = ?")
+            params.append(country_code)
+
+        category = (query.get("category") or "").strip()
+        if category and category not in {"全部", "all"}:
+            clauses.append("category = ?")
+            params.append(category)
+        q = (query.get("q") or query.get("keyword") or "").strip()
+        if q:
+            like = f"%{q}%"
+            clauses.append("(title LIKE ? OR description LIKE ? OR location_text LIKE ? OR category LIKE ?)")
+            params.extend([like, like, like, like])
+
+        min_price = query.get("min_price")
+        max_price = query.get("max_price")
+        if min_price:
+            try:
+                clauses.append("(price IS NULL OR price >= ?)")
+                params.append(float(min_price))
+            except ValueError:
+                pass
+        if max_price:
+            try:
+                clauses.append("(price IS NULL OR price <= ?)")
+                params.append(float(max_price))
+            except ValueError:
+                pass
+
+        if cursor:
+            clauses.append("(updated_at, id) < (?, ?)")
+            params.extend([cursor[0], cursor[1]])
+
+        sort = (query.get("sort") or "latest").strip().lower()
+        if sort in {"price_low", "price_asc"}:
+            order = "CASE WHEN price IS NULL THEN 1 ELSE 0 END ASC, price ASC, updated_at DESC"
+        elif sort in {"price_high", "price_desc"}:
+            order = "price DESC, updated_at DESC"
+        elif sort in {"popular", "favorite", "favorites"}:
+            order = "(favorite_count + inquiry_count + promotion_weight) DESC, updated_at DESC"
+        else:
+            order = "is_promoted DESC, promotion_weight DESC, updated_at DESC, id DESC"
+
+        sql = f"SELECT * FROM city_listings WHERE {' AND '.join(clauses)} ORDER BY {order} LIMIT ?"
+        rows = list(conn.execute(sql, [*params, limit + 1]))
+        next_cursor = None
+        if len(rows) > limit:
+            extra = rows.pop()
+            next_cursor = cursor_encode(extra["updated_at"], extra["id"])
+        items = fetch_listings_with_extras(conn, [dict(r) for r in rows], viewer_id)
+        viewer_payload = {"id": viewer_id} if viewer_id else None
+        self.send_json({
+            "ok": True,
+            "items": items,
+            "next_cursor": next_cursor,
+            "type": listing_type,
+            "viewer": viewer_payload,
+            "data": {
+                "items": items,
+                "pagination": {"next_cursor": next_cursor},
+                "filters": {
+                    "type": listing_type,
+                    "city_slug": city_slug,
+                    "region_code": region_code,
+                    "country_code": country_code,
+                    "category": category,
+                    "sort": sort,
+                },
+            },
+        })
+
+    def api_listing_detail(self, conn: sqlite3.Connection, listing_id: str) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        item = dict(row)
+        is_owner = bool(viewer_id and viewer_id == item.get("seller_user_id"))
+        is_admin = False
+        if viewer_id:
+            admin_row = conn.execute("SELECT role FROM users WHERE id = ?", (viewer_id,)).fetchone()
+            is_admin = bool(admin_row and admin_row["role"] == "admin")
+        if item.get("status") not in PUBLIC_LISTING_STATUSES and not (is_owner or is_admin):
+            raise APIError("信息不存在", 404, "listing_not_found")
+        conn.execute("UPDATE city_listings SET view_count = view_count + 1 WHERE id = ?", (listing_id,))
+        item["view_count"] = int(item.get("view_count") or 0) + 1
+        listings = fetch_listings_with_extras(conn, [item], viewer_id)
+        safety_tips = listing_safety_tips(item.get("type", ""))
+        viewer_payload = {"id": viewer_id} if viewer_id else None
+        self.send_json({"ok": True, "listing": listings[0], "viewer": viewer_payload, "safety_tips": safety_tips, "data": {"listing": listings[0], "viewer": viewer_payload, "safety_tips": safety_tips}})
+
+    def api_create_listing(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        listing_type = normalize_listing_type(data.get("type"))
+        title = str(data.get("title") or "").strip()
+        description = str(data.get("description") or "").strip()
+        if not title:
+            raise APIError("标题不能为空", 400, "title_required")
+        if len(title) > 120:
+            raise APIError("标题过长", 400, "title_too_long")
+        if len(description) > 3000:
+            raise APIError("描述过长", 400, "description_too_long")
+
+        category = str(data.get("category") or "").strip()[:80]
+        currency = str(data.get("currency") or "JPY").strip().upper()[:8] or "JPY"
+        price_type = str(data.get("price_type") or "").strip()[:40]
+        location_text = str(data.get("location_text") or data.get("location") or "").strip()[:160]
+        contact_method = str(data.get("contact_method") or "app_message").strip()[:120]
+        language = str(data.get("language") or "zh-CN").strip()[:20] or "zh-CN"
+        price = data.get("price")
+        price_value: float | None = None
+        if price not in (None, ""):
+            try:
+                price_value = float(price)
+                if price_value < 0:
+                    raise ValueError()
+            except Exception:
+                raise APIError("价格格式不正确", 400, "invalid_price")
+
+        city_slug = str(data.get("city_slug") or data.get("city") or user.get("city") or "tokyo").strip().lower()
+        country_code = str(data.get("country_code") or data.get("country") or user.get("country") or "jp").strip().lower()
+        region_code = str(data.get("region_code") or "").strip().lower()
+        province = str(data.get("province") or user.get("province") or "").strip().lower()
+        if not region_code:
+            region_code = _resolve_region_code(country_code, province, city_slug)
+        if not country_code and region_code:
+            country_code, province, city_slug = _parse_region_code(region_code)
+        city_id = str(data.get("city_id") or city_slug).strip().lower()
+
+        forbidden = listing_policy_violation(title, description, category)
+        if forbidden:
+            reputation_apply_event(conn, user["id"], "prohibited_service" if listing_type == "local_service" else "spam_ad", target_kind="listing", reason=forbidden, reviewed=True)
+            raise APIError(forbidden, 400, "prohibited_listing")
+
+        requires_reputation_review, reputation_review_reason = reputation_validate_listing_publish(conn, user, listing_type)
+        requested_status = normalize_listing_status(data.get("status"), "published")
+        if requested_status == "draft":
+            status = "draft"
+            verification = "unverified"
+            published_at = None
+        elif requires_reputation_review or listing_type in LISTING_TYPES_DEFAULT_REVIEW:
+            status = "pending_review"
+            verification = "pending"
+            published_at = None
+        else:
+            status = "published"
+            verification = "unverified"
+            published_at = now_iso()
+        if listing_type == "secondhand" and category in {"免费送", "free"} and price_value is None:
+            price_value = 0.0
+            price_type = price_type or "free"
+
+        listing_id = str(uuid.uuid4())
+        created = now_iso()
+        expires_at = data.get("expires_at") or (datetime.now(timezone.utc) + timedelta(days=90)).isoformat()
+        conn.execute(
+            """
+            INSERT INTO city_listings (
+                id, country_code, city_id, city_slug, region_code, language, type,
+                category, title, description, price, currency, price_type, location_text,
+                latitude, longitude, status, verification_status, seller_user_id, business_id,
+                contact_method, published_at, expires_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                listing_id, country_code, city_id, city_slug, region_code, language, listing_type,
+                category, title, description, price_value, currency, price_type, location_text,
+                data.get("latitude"), data.get("longitude"), status, verification, user["id"],
+                str(data.get("business_id") or "") or None, contact_method, published_at, expires_at, created, created,
+            ),
+        )
+        attrs = normalize_listing_attributes(listing_type, data.get("attributes"))
+        for key, (value, value_type) in attrs.items():
+            conn.execute(
+                """
+                INSERT INTO listing_attributes (id, listing_id, key, value, value_type, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), listing_id, key, value, value_type, created, created),
+            )
+        media_ids = data.get("media_ids") or []
+        if isinstance(media_ids, list):
+            for idx, media_id in enumerate(media_ids[:10]):
+                media_id = str(media_id or "").strip()
+                if not media_id:
+                    continue
+                media_row = conn.execute(
+                    "SELECT * FROM media WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+                    (media_id, user["id"]),
+                ).fetchone()
+                if not media_row:
+                    continue
+                media = serialize_media(dict(media_row))
+                conn.execute(
+                    """
+                    INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()), listing_id, media.get("type") or "image",
+                        media.get("url") or "", media.get("thumb_url") or media.get("url") or "",
+                        idx, 1 if idx == 0 else 0, created,
+                    ),
+                )
+        media_items = data.get("media") or data.get("media_urls") or []
+        if isinstance(media_items, list):
+            existing_media_count = conn.execute(
+                "SELECT COUNT(*) AS count FROM listing_media WHERE listing_id = ?",
+                (listing_id,),
+            ).fetchone()["count"]
+            for idx, item in enumerate(media_items[: max(0, 10 - int(existing_media_count or 0))]):
+                if isinstance(item, dict):
+                    url = str(item.get("url") or item.get("src") or "").strip()
+                    thumb = str(item.get("thumbnail_url") or item.get("thumbnailUrl") or url).strip()
+                    media_type = str(item.get("media_type") or item.get("type") or "image").strip()[:20] or "image"
+                else:
+                    url = str(item or "").strip()
+                    thumb = url
+                    media_type = "image"
+                if not url:
+                    continue
+                conn.execute(
+                    """
+                    INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()), listing_id, media_type, url[:800], thumb[:800],
+                        int(existing_media_count or 0) + idx,
+                        1 if int(existing_media_count or 0) + idx == 0 else 0,
+                        created,
+                    ),
+                )
+        if not conn.execute("SELECT id FROM listing_media WHERE listing_id = ? LIMIT 1", (listing_id,)).fetchone():
+            fallback = listing_image_fallback(listing_type)
+            conn.execute(
+                """
+                INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
+                VALUES (?, ?, 'image', ?, ?, 0, 1, ?)
+                """,
+                (str(uuid.uuid4()), listing_id, fallback, fallback, created),
+            )
+        conn.execute(
+            """
+            INSERT INTO seller_profiles (id, user_id, display_name, verification_status, created_at, updated_at)
+            VALUES (?, ?, ?, 'unverified', ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET listing_count = listing_count + 1, updated_at = excluded.updated_at
+            """,
+            (str(uuid.uuid4()), user["id"], user["display_name"], created, created),
+        )
+        listing = fetch_listings_with_extras(conn, [dict(conn.execute("SELECT * FROM city_listings WHERE id = ?", (listing_id,)).fetchone())], user["id"])[0]
+        if status == "published":
+            reputation_apply_event(
+                conn,
+                user["id"],
+                reputation_rule_for_listing_approval(listing_type),
+                target_kind="listing",
+                target_id=listing_id,
+                metadata={"listing_type": listing_type},
+                reviewed=True,
+            )
+        elif status == "pending_review":
+            reputation_open_trust_review(conn, user["id"], int(reputation_ensure_user(conn, user["id"]).get("risk_score") or 0), target_kind="listing", target_id=listing_id, reason=reputation_review_reason)
+        HUB.broadcast([user["id"]], {"type": "listing_created", "listing_id": listing_id, "listing_type": listing_type})
+        requires_review = status == "pending_review"
+        self.send_json({"ok": True, "listing": listing, "requires_review": requires_review, "data": {"listing": listing, "requires_review": requires_review}}, status=201)
+
+    def api_update_listing(self, conn: sqlite3.Connection, listing_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        if row["seller_user_id"] != user["id"]:
+            raise APIError("只能编辑自己的信息", 403, "forbidden")
+        data = self.read_json()
+        allowed: dict[str, Any] = {}
+        for key in ("title", "description", "category", "price_type", "location_text", "contact_method"):
+            if key in data:
+                allowed[key] = str(data.get(key) or "").strip()
+        if "price" in data:
+            allowed["price"] = None if data.get("price") in (None, "") else float(data.get("price"))
+        if "status" in data:
+            status = normalize_listing_status(data.get("status"), row["status"])
+            if status not in {"draft", "published", "reserved", "sold", "rented", "closed", "hidden"}:
+                raise APIError("状态不允许", 400, "invalid_status")
+            allowed["status"] = status
+        if allowed:
+            allowed["updated_at"] = now_iso()
+            cols = ", ".join(f"{key} = ?" for key in allowed)
+            conn.execute(f"UPDATE city_listings SET {cols} WHERE id = ?", [*allowed.values(), listing_id])
+        if "attributes" in data:
+            listing_type = row["type"]
+            attrs = normalize_listing_attributes(listing_type, data.get("attributes"))
+            for key, (value, value_type) in attrs.items():
+                conn.execute(
+                    """
+                    INSERT INTO listing_attributes (id, listing_id, key, value, value_type, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(listing_id, key) DO UPDATE SET value = excluded.value, value_type = excluded.value_type, updated_at = excluded.updated_at
+                    """,
+                    (str(uuid.uuid4()), listing_id, key, value, value_type, now_iso(), now_iso()),
+                )
+        fresh = dict(conn.execute("SELECT * FROM city_listings WHERE id = ?", (listing_id,)).fetchone())
+        listing = fetch_listings_with_extras(conn, [fresh], user["id"])[0]
+        self.send_json({"ok": True, "listing": listing, "data": {"listing": listing}})
+
+    def api_delete_listing(self, conn: sqlite3.Connection, listing_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        if row["seller_user_id"] != user["id"]:
+            raise APIError("只能删除自己的信息", 403, "forbidden")
+        conn.execute(
+            "UPDATE city_listings SET status = 'closed', deleted_at = ?, updated_at = ? WHERE id = ?",
+            (now_iso(), now_iso(), listing_id),
+        )
+        self.send_json({"ok": True})
+
+    def api_listing_favorite(self, conn: sqlite3.Connection, listing_id: str, on: bool) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT id, seller_user_id, type FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        existing = conn.execute("SELECT id FROM listing_favorites WHERE listing_id = ? AND user_id = ?", (listing_id, user["id"])).fetchone()
+        if on and not existing:
+            conn.execute(
+                "INSERT INTO listing_favorites (id, listing_id, user_id, created_at) VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), listing_id, user["id"], now_iso()),
+            )
+            conn.execute("UPDATE city_listings SET favorite_count = favorite_count + 1, updated_at = ? WHERE id = ?", (now_iso(), listing_id))
+            reputation_apply_event(conn, user["id"], "first_bookmark", actor_user_id=user["id"], target_kind="listing", target_id=listing_id)
+            if row["seller_user_id"] != user["id"]:
+                reputation_apply_event(
+                    conn,
+                    row["seller_user_id"],
+                    "content_bookmarked",
+                    actor_user_id=user["id"],
+                    target_kind="listing",
+                    target_id=listing_id,
+                    metadata={"listing_type": row["type"]},
+                )
+        elif not on and existing:
+            conn.execute("DELETE FROM listing_favorites WHERE id = ?", (existing["id"],))
+            conn.execute("UPDATE city_listings SET favorite_count = MAX(0, favorite_count - 1), updated_at = ? WHERE id = ?", (now_iso(), listing_id))
+        self.send_json({"ok": True, "favorited": on})
+
+    def api_my_saved_listings(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        listing_type = normalize_listing_type(query.get("type"))
+        rows = list(conn.execute(
+            """
+            SELECT l.* FROM listing_favorites f
+            JOIN city_listings l ON l.id = f.listing_id
+            WHERE f.user_id = ? AND l.deleted_at IS NULL AND l.type = ?
+            ORDER BY f.created_at DESC
+            LIMIT 80
+            """,
+            (user["id"], listing_type),
+        ))
+        items = fetch_listings_with_extras(conn, [dict(r) for r in rows], user["id"])
+        self.send_json({"ok": True, "items": items, "data": {"items": items, "filters": {"type": listing_type}}})
+
+    def api_listing_report(self, conn: sqlite3.Connection, listing_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT id FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        data = self.read_json()
+        reason = str(data.get("reason") or "other").strip()[:80]
+        note = str(data.get("note") or "").strip()[:1000]
+        conn.execute(
+            "INSERT INTO listing_reports (id, listing_id, reporter_id, reason, note, status, created_at) VALUES (?, ?, ?, ?, ?, 'open', ?)",
+            (str(uuid.uuid4()), listing_id, user["id"], reason, note, now_iso()),
+        )
+        conn.execute("UPDATE city_listings SET report_count = report_count + 1, verification_status = 'needs_review', updated_at = ? WHERE id = ?", (now_iso(), listing_id))
+        self.send_json({"ok": True})
+
+    def api_listing_inquiry(self, conn: sqlite3.Connection, listing_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        if row["seller_user_id"] == user["id"]:
+            raise APIError("不能咨询自己发布的信息", 400, "self_inquiry")
+        if conn.execute(
+            "SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ? LIMIT 1",
+            (row["seller_user_id"], user["id"]),
+        ).fetchone():
+            raise APIError("对方暂时无法接收你的咨询", 403, "blocked")
+        data = self.read_json()
+        message = str(data.get("message") or "").strip()[:1000]
+        contact_value = str(data.get("contact_value") or "").strip()[:200]
+        inquiry_kind = listing_inquiry_type(row["type"])
+        # Structured intake: the type-specific forms (预约看房 / 申请职位 / 预约服务)
+        # post details=[{label,value},…]. We keep it as JSON and echo it into the
+        # seeded thread message so the poster sees a real brief, not "在吗".
+        details: list[dict[str, str]] = []
+        raw_details = data.get("details")
+        if isinstance(raw_details, list):
+            for entry in raw_details[:24]:
+                if not isinstance(entry, dict):
+                    continue
+                label = str(entry.get("label") or "").strip()[:48]
+                value = str(entry.get("value") or "").strip()[:600]
+                if label and value:
+                    details.append({"label": label, "value": value})
+        action_word = {
+            "job_apply": "申请",
+            "rental_consult": "预约看房",
+            "service_booking": "预约服务",
+        }.get(inquiry_kind, "咨询")
+        title = (row["title"] or "城市信息").strip()
+        if not message:
+            message = f"我想{action_word}：{title}"
+        seller_id = row["seller_user_id"]
+        now = now_iso()
+        dedupe_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
+        success_message = "已发送联系请求。已为你和发布者开启对话，请勿提前转账、核实身份后再交易。"
+        # Idempotency + atomicity (§7/§19): all of a contact's writes — inquiry,
+        # thread seed message, seller notification and counters — run inside one
+        # BEGIN IMMEDIATE transaction. SQLite serializes writers, so a double
+        # click / client retry / burst of concurrent requests collapses to a
+        # single record set instead of duplicates, and a mid-write failure rolls
+        # back wholesale (no orphan inquiry without a thread, no lost records). A
+        # genuine re-contact after the 60s window still creates a new record.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            dup = conn.execute(
+                """
+                SELECT id, conversation_id FROM listing_inquiries
+                 WHERE listing_id = ? AND from_user_id = ? AND created_at >= ?
+                 ORDER BY created_at DESC LIMIT 1
+                """,
+                (listing_id, user["id"], dedupe_cutoff),
+            ).fetchone()
+            if dup:
+                conv_id = dup["conversation_id"] or self._conversation_for(conn, user["id"], seller_id)["id"]
+                conn.execute("COMMIT")
+                self.send_json({
+                    "ok": True, "message": success_message,
+                    "conversation_id": conv_id, "conversationId": conv_id,
+                    "inquiry_id": dup["id"], "deduplicated": True,
+                    "data": {"conversation_id": conv_id, "conversationId": conv_id, "inquiry_id": dup["id"], "deduplicated": True},
+                })
+                return
+            # A contact opens (or reuses) a real buyer↔seller DM thread instead of
+            # a write-only form, then records the high-intent inquiry against that
+            # thread. The seed message carries the listing + form context so the
+            # poster never lands in an empty inbox. See §5–§8 联系/预约/申请闭环.
+            conv = self._conversation_for(conn, user["id"], seller_id)
+            conv_id = conv["id"]
+            inquiry_id = str(uuid.uuid4())
+            conn.execute(
+                """
+                INSERT INTO listing_inquiries (
+                    id, listing_id, sender_user_id, seller_user_id, from_user_id, to_user_id,
+                    type, message, contact_value, conversation_id, metadata, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+                """,
+                (
+                    inquiry_id, listing_id, user["id"], seller_id, user["id"], seller_id,
+                    inquiry_kind, message, contact_value, conv_id,
+                    json.dumps({"details": details}, ensure_ascii=False), now, now,
+                ),
+            )
+            conn.execute("UPDATE city_listings SET inquiry_count = inquiry_count + 1, updated_at = ? WHERE id = ?", (now, listing_id))
+            # Seed the thread: "<action>：<title>" + price + form fields + contact + note.
+            seed_parts = [f"{action_word}：{title}"]
+            if row["price"] is not None:
+                seed_parts.append(format_price_value(row["price"], row["currency"]))
+            seed_parts.extend(f"{d['label']}：{d['value']}" for d in details)
+            if contact_value:
+                seed_parts.append(f"联系方式：{contact_value}")
+            seed_parts.append(message)
+            seed_content = "\n".join(p for p in seed_parts if p)[:1500]
+            message_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, sender_id, content, created_at, is_read) VALUES (?, ?, ?, ?, ?, 0)",
+                (message_id, conv_id, user["id"], seed_content, now),
+            )
+            conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
+            # Seller bell notification deep-linking to the thread.
+            conn.execute(
+                """
+                INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, target_conversation_id, content, created_at)
+                VALUES (?, ?, ?, 'listing_inquiry', ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), seller_id, user["id"], listing_id, conv_id, title[:140], now),
+            )
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        # Realtime fanout + response happen after COMMIT so the write lock is not
+        # held during network I/O.
+        HUB.publish(seller_id, {"type": "message", "conversation_id": conv_id, "message_id": message_id})
+        HUB.publish(seller_id, {"type": "notification", "kind": "listing_inquiry", "listing_id": listing_id, "conversation_id": conv_id})
+        self.send_json({
+            "ok": True,
+            "message": success_message,
+            "conversation_id": conv_id,
+            "conversationId": conv_id,
+            "inquiry_id": inquiry_id,
+            "data": {"conversation_id": conv_id, "conversationId": conv_id, "inquiry_id": inquiry_id},
+        })
+
+    def api_my_listing_inquiries(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        role = (query.get("role") or "all").strip().lower()
+        listing_type = (query.get("type") or query.get("listing_type") or "").strip()
+        status = normalize_listing_inquiry_status(query.get("status"), "") if query.get("status") else ""
+        clauses = ["l.deleted_at IS NULL"]
+        params: list[Any] = []
+        from_expr = "COALESCE(NULLIF(i.from_user_id, ''), i.sender_user_id)"
+        to_expr = "COALESCE(NULLIF(i.to_user_id, ''), i.seller_user_id)"
+        if role in {"sent", "from", "outbox"}:
+            clauses.append(f"{from_expr} = ?")
+            params.append(user["id"])
+        elif role in {"received", "to", "inbox"}:
+            clauses.append(f"{to_expr} = ?")
+            params.append(user["id"])
+        else:
+            clauses.append(f"({from_expr} = ? OR {to_expr} = ?)")
+            params.extend([user["id"], user["id"]])
+        if listing_type:
+            types = [normalize_listing_type(v) for v in listing_type.split(",") if v.strip()]
+            types = [v for v in dict.fromkeys(types) if v in LISTING_TYPES]
+            if types:
+                clauses.append("l.type IN (%s)" % ",".join("?" * len(types)))
+                params.extend(types)
+        if status:
+            clauses.append("i.status = ?")
+            params.append(status)
+        rows = list(conn.execute(
+            f"""
+            SELECT i.*
+              FROM listing_inquiries i
+              JOIN city_listings l ON l.id = i.listing_id
+             WHERE {' AND '.join(clauses)}
+             ORDER BY i.created_at DESC
+             LIMIT 100
+            """,
+            params,
+        ))
+        items = fetch_listing_inquiries_with_extras(conn, [dict(r) for r in rows], user["id"])
+        self.send_json({"ok": True, "items": items, "role": role, "data": {"items": items, "role": role}})
+
+    def api_my_service_appointments(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        listing_rows = list(conn.execute(
+            """
+            SELECT i.*
+              FROM listing_inquiries i
+              JOIN city_listings l ON l.id = i.listing_id
+             WHERE l.deleted_at IS NULL
+               AND l.type = 'local_service'
+               AND COALESCE(NULLIF(i.from_user_id, ''), i.sender_user_id) = ?
+             ORDER BY i.created_at DESC
+             LIMIT 80
+            """,
+            (user["id"],),
+        ))
+        guide_rows = list(conn.execute(
+            """
+            SELECT s.*, p.title AS product_title, p.slug AS product_slug
+              FROM guide_service_requests s
+              LEFT JOIN guide_products p ON p.id = s.product_id
+             WHERE s.user_id = ?
+             ORDER BY s.created_at DESC
+             LIMIT 80
+            """,
+            (user["id"],),
+        ))
+        self.send_json({
+            "items": fetch_listing_inquiries_with_extras(conn, [dict(r) for r in listing_rows], user["id"]),
+            "guide_service_requests": [dict(r) for r in guide_rows],
+        })
+
+    def api_my_bookings(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        status = normalize_listing_inquiry_status(query.get("status"), "") if query.get("status") else ""
+        clauses = [
+            "l.deleted_at IS NULL",
+            "l.type IN ('rental', 'local_service')",
+            "COALESCE(NULLIF(i.from_user_id, ''), i.sender_user_id) = ?",
+        ]
+        params: list[Any] = [user["id"]]
+        if status:
+            clauses.append("i.status = ?")
+            params.append(status)
+        listing_rows = list(conn.execute(
+            f"""
+            SELECT i.*
+              FROM listing_inquiries i
+              JOIN city_listings l ON l.id = i.listing_id
+             WHERE {' AND '.join(clauses)}
+             ORDER BY i.created_at DESC
+             LIMIT 100
+            """,
+            params,
+        ))
+        guide_rows = list(conn.execute(
+            """
+            SELECT s.*, p.title AS product_title, p.slug AS product_slug
+              FROM guide_service_requests s
+              LEFT JOIN guide_products p ON p.id = s.product_id
+             WHERE s.user_id = ?
+             ORDER BY s.created_at DESC
+             LIMIT 80
+            """,
+            (user["id"],),
+        ))
+        items = fetch_listing_inquiries_with_extras(conn, [dict(r) for r in listing_rows], user["id"])
+        self.send_json({
+            "ok": True,
+            "items": items,
+            "guide_service_requests": [dict(r) for r in guide_rows],
+            "data": {
+                "items": items,
+                "guide_service_requests": [dict(r) for r in guide_rows],
+            },
+        })
+
+    def api_my_orders(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        limit = max(1, min(int(query.get("limit") or 80), 200))
+        membership_rows = [dict(r) for r in conn.execute(
+            """
+            SELECT id, order_no, plan_key, amount_cents, currency, status, payment_provider,
+                   provider_trade_no, client_type, paid_at, closed_at, refunded_at, expires_at,
+                   created_at, updated_at
+              FROM payment_orders
+             WHERE user_id = ?
+             ORDER BY created_at DESC
+             LIMIT ?
+            """,
+            (user["id"], limit),
+        )]
+        guide_rows = [dict(r) for r in conn.execute(
+            """
+            SELECT o.*, p.title AS product_title, p.slug AS product_slug, p.product_type
+              FROM guide_orders o
+              LEFT JOIN guide_products p ON p.id = o.product_id
+             WHERE o.user_id = ?
+             ORDER BY o.created_at DESC
+             LIMIT ?
+            """,
+            (user["id"], limit),
+        )]
+        items: list[dict[str, Any]] = []
+        for row in membership_rows:
+            items.append({
+                "id": row.get("id", ""),
+                "source": "membership",
+                "kind": "membership",
+                "title": "Machi 认证会员",
+                "order_no": row.get("order_no", ""),
+                "orderNo": row.get("order_no", ""),
+                "status": row.get("status", "pending"),
+                "amount_cents": row.get("amount_cents", 0),
+                "amountCents": row.get("amount_cents", 0),
+                "amount": (int(row.get("amount_cents") or 0) / 100),
+                "currency": row.get("currency", "CNY"),
+                "plan_key": row.get("plan_key", ""),
+                "planKey": row.get("plan_key", ""),
+                "payment_provider": row.get("payment_provider", ""),
+                "paymentProvider": row.get("payment_provider", ""),
+                "created_at": row.get("created_at"),
+                "createdAt": row.get("created_at"),
+                "updated_at": row.get("updated_at"),
+                "updatedAt": row.get("updated_at"),
+                "paid_at": row.get("paid_at"),
+                "paidAt": row.get("paid_at"),
+            })
+        for row in guide_rows:
+            items.append({
+                "id": row.get("id", ""),
+                "source": "guide",
+                "kind": row.get("product_type") or "guide_product",
+                "title": row.get("product_title") or "Machi Guide",
+                "order_no": row.get("order_no", ""),
+                "orderNo": row.get("order_no", ""),
+                "status": row.get("status", "pending"),
+                "amount": row.get("price", 0),
+                "price": row.get("price", 0),
+                "currency": row.get("currency", "CNY"),
+                "product_id": row.get("product_id", ""),
+                "productId": row.get("product_id", ""),
+                "product_slug": row.get("product_slug", ""),
+                "productSlug": row.get("product_slug", ""),
+                "payment_provider": row.get("payment_provider", ""),
+                "paymentProvider": row.get("payment_provider", ""),
+                "created_at": row.get("created_at"),
+                "createdAt": row.get("created_at"),
+                "paid_at": row.get("paid_at"),
+                "paidAt": row.get("paid_at"),
+                "fulfilled_at": row.get("fulfilled_at"),
+                "fulfilledAt": row.get("fulfilled_at"),
+            })
+        items.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
+        items = items[:limit]
+        self.send_json({
+            "ok": True,
+            "items": items,
+            "membership_orders": membership_rows,
+            "guide_orders": guide_rows,
+            "data": {
+                "items": items,
+                "membership_orders": membership_rows,
+                "guide_orders": guide_rows,
+            },
+        })
+
+    def api_update_listing_inquiry(self, conn: sqlite3.Connection, inquiry_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM listing_inquiries WHERE id = ?", (inquiry_id,)).fetchone()
+        if not row:
+            raise APIError("咨询不存在", 404, "inquiry_not_found")
+        item = dict(row)
+        from_id = item.get("from_user_id") or item.get("sender_user_id")
+        to_id = item.get("to_user_id") or item.get("seller_user_id")
+        if user["id"] not in {from_id, to_id}:
+            raise APIError("无权操作该咨询", 403, "forbidden")
+        data = self.read_json()
+        status = normalize_listing_inquiry_status(data.get("status"), item.get("status") or "new")
+        if status == "spam" and user["id"] == from_id:
+            raise APIError("只有接收方可以标记骚扰", 403, "forbidden")
+        conn.execute(
+            "UPDATE listing_inquiries SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now_iso(), inquiry_id),
+        )
+        if status == "spam" and from_id:
+            reputation_apply_event(
+                conn,
+                from_id,
+                "spam_ad",
+                actor_user_id=user["id"],
+                target_kind="listing_inquiry",
+                target_id=inquiry_id,
+                reason="咨询被接收方标记为骚扰",
+                reviewed=True,
+            )
+        fresh = dict(conn.execute("SELECT * FROM listing_inquiries WHERE id = ?", (inquiry_id,)).fetchone())
+        self.send_json({"inquiry": fetch_listing_inquiries_with_extras(conn, [fresh], user["id"])[0]})
+
+    def api_admin_listings(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        admin = self.require_admin(conn)
+        clauses = ["deleted_at IS NULL"]
+        params: list[Any] = []
+        for key in ("type", "status", "verification_status", "city_slug"):
+            value = (query.get(key) or "").strip()
+            if value:
+                if key == "type":
+                    types = [normalize_listing_type(v) for v in value.split(",") if v.strip()]
+                    types = [v for v in dict.fromkeys(types) if v in LISTING_TYPES]
+                    if types:
+                        clauses.append("type IN (%s)" % ",".join("?" * len(types)))
+                        params.extend(types)
+                else:
+                    clauses.append(f"{key} = ?")
+                    params.append(value)
+        city = (query.get("city") or "").strip()
+        if city:
+            clauses.append("city_slug = ?")
+            params.append(city)
+        q = (query.get("q") or "").strip()
+        if q:
+            like = f"%{q}%"
+            clauses.append("(title LIKE ? OR description LIKE ? OR location_text LIKE ?)")
+            params.extend([like, like, like])
+        rows = list(conn.execute(
+            f"SELECT * FROM city_listings WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC LIMIT 200",
+            params,
+        ))
+        self.send_json({"items": fetch_listings_with_extras(conn, [dict(r) for r in rows], admin["id"])})
+
+    def api_admin_update_listing(self, conn: sqlite3.Connection, listing_id: str) -> None:
+        admin = self.require_admin(conn)
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        if "status" in data:
+            updates["status"] = normalize_listing_status(data.get("status"), row["status"])
+            if updates["status"] == "published" and not row["published_at"]:
+                updates["published_at"] = now_iso()
+        if "verification_status" in data:
+            updates["verification_status"] = normalize_listing_verification(data.get("verification_status"), row["verification_status"])
+        for key in ("title", "description", "category", "location_text", "contact_method"):
+            if key in data:
+                updates[key] = str(data.get(key) or "").strip()
+        if "price" in data:
+            updates["price"] = None if data.get("price") in (None, "") else float(data.get("price"))
+        if "is_promoted" in data:
+            updates["is_promoted"] = 1 if bool(data.get("is_promoted")) else 0
+        if "promotion_weight" in data:
+            try:
+                updates["promotion_weight"] = max(0, min(int(data.get("promotion_weight") or 0), 1000))
+            except Exception:
+                raise APIError("推广权重格式不正确", 400, "invalid_promotion_weight")
+        if not updates:
+            raise APIError("没有可更新字段", 400, "empty_patch")
+        updates["updated_at"] = now_iso()
+        cols = ", ".join(f"{key} = ?" for key in updates)
+        conn.execute(f"UPDATE city_listings SET {cols} WHERE id = ?", [*updates.values(), listing_id])
+        if "verification_status" in updates:
+            now = now_iso()
+            conn.execute(
+                """
+                INSERT INTO listing_verifications (
+                    id, listing_id, subject_type, subject_id, verification_type, status,
+                    reviewer_admin_id, note, submitted_at, reviewed_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()), listing_id, "listing", listing_id,
+                    normalize_listing_verification_type(data.get("verification_type"), "seller"),
+                    updates["verification_status"], admin["id"], str(data.get("note") or "").strip()[:1000],
+                    now, now, now, now,
+                ),
+            )
+        if (
+            updates.get("status") == "published"
+            and row["status"] != "published"
+        ) or (
+            updates.get("verification_status") == "verified"
+            and row["verification_status"] != "verified"
+        ):
+            reputation_apply_event(
+                conn,
+                row["seller_user_id"],
+                reputation_rule_for_listing_approval(row["type"]),
+                admin_id=admin["id"],
+                target_kind="listing",
+                target_id=listing_id,
+                reason=str(data.get("note") or "城市信息审核通过"),
+                metadata={"listing_type": row["type"], "status": updates.get("status"), "verification_status": updates.get("verification_status")},
+                reviewed=True,
+            )
+        if updates.get("status") in {"hidden", "rejected"} and row["status"] not in {"hidden", "rejected"}:
+            rule_key = "content_removed"
+            reason_text = str(data.get("note") or "城市信息未通过审核或已下架")
+            if row["type"] == "rental":
+                rule_key = "fake_rental" if "虚假" in reason_text else "content_removed"
+            elif row["type"] in {"job", "hiring"}:
+                rule_key = "fake_job" if "虚假" in reason_text else "content_removed"
+            elif row["type"] == "local_service":
+                rule_key = "prohibited_service" if "违规" in reason_text or "成人" in reason_text else "content_removed"
+            elif row["type"] == "secondhand":
+                rule_key = "fake_secondhand" if "虚假" in reason_text else "content_removed"
+            reputation_apply_event(
+                conn,
+                row["seller_user_id"],
+                rule_key,
+                admin_id=admin["id"],
+                target_kind="listing",
+                target_id=listing_id,
+                reason=reason_text,
+                metadata={"listing_type": row["type"]},
+                reviewed=True,
+            )
+        if bool(data.get("promotion_type")):
+            now = now_iso()
+            promotion_type = normalize_listing_promotion_type(data.get("promotion_type"))
+            weight = int(updates.get("promotion_weight") or data.get("promotion_weight") or 10)
+            conn.execute(
+                """
+                INSERT INTO listing_promotions (
+                    id, listing_id, promotion_type, placement, status, weight, starts_at, ends_at,
+                    purchased_by_user_id, business_id, metadata, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()), listing_id, promotion_type,
+                    str(data.get("placement") or "").strip()[:80],
+                    max(1, min(weight, 1000)), data.get("starts_at") or now, data.get("ends_at"),
+                    row["seller_user_id"], row["business_id"],
+                    json.dumps({"source": "admin", "admin_id": admin["id"]}, ensure_ascii=False),
+                    now, now,
+                ),
+            )
+            conn.execute(
+                "UPDATE city_listings SET is_promoted = 1, promotion_weight = MAX(promotion_weight, ?), updated_at = ? WHERE id = ?",
+                (max(1, min(weight, 1000)), now, listing_id),
+            )
+        # Close the moderation loop: taking a listing down (or an explicit
+        # resolve_reports flag) marks its open reports resolved, so 后台处理举报
+        # (#6) actually clears the queue instead of leaving reports 'open' forever.
+        if updates.get("status") in {"hidden", "rejected", "closed"} or bool(data.get("resolve_reports")):
+            conn.execute(
+                "UPDATE listing_reports SET status = 'resolved', resolved_at = ? WHERE listing_id = ? AND status = 'open'",
+                (now_iso(), listing_id),
+            )
+        conn.execute(
+            "INSERT INTO listing_admin_logs (id, admin_id, listing_id, action, metadata, created_at) VALUES (?, ?, ?, 'update', ?, ?)",
+            (str(uuid.uuid4()), admin["id"], listing_id, json.dumps(updates, ensure_ascii=False), now_iso()),
+        )
+        fresh = dict(conn.execute("SELECT * FROM city_listings WHERE id = ?", (listing_id,)).fetchone())
+        self.send_json({"listing": fetch_listings_with_extras(conn, [fresh], admin["id"])[0]})
+
+    def api_admin_listing_reports(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        status = (query.get("status") or "open").strip()
+        params: list[Any] = []
+        clause = ""
+        if status:
+            clause = "WHERE r.status = ?"
+            params.append(status)
+        rows = list(conn.execute(
+            f"""
+            SELECT r.*, l.title AS listing_title, l.type AS listing_type, l.city_slug AS listing_city
+            FROM listing_reports r
+            JOIN city_listings l ON l.id = r.listing_id
+            {clause}
+            ORDER BY r.created_at DESC LIMIT 200
+            """,
+            params,
+        ))
+        self.send_json({"items": [dict(r) for r in rows]})
+
+    def api_admin_listing_promotions(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        clauses: list[str] = []
+        params: list[Any] = []
+        status = (query.get("status") or "").strip()
+        if status:
+            clauses.append("p.status = ?")
+            params.append(status)
+        promotion_type = (query.get("promotion_type") or query.get("type") or "").strip()
+        if promotion_type:
+            clauses.append("p.promotion_type = ?")
+            params.append(normalize_listing_promotion_type(promotion_type))
+        city = (query.get("city") or query.get("city_slug") or "").strip()
+        if city:
+            clauses.append("l.city_slug = ?")
+            params.append(city)
+        clause = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = list(conn.execute(
+            f"""
+            SELECT p.*, l.title AS listing_title, l.type AS listing_type, l.city_slug AS listing_city,
+                   l.status AS listing_status
+              FROM listing_promotions p
+              JOIN city_listings l ON l.id = p.listing_id
+              {clause}
+             ORDER BY p.updated_at DESC
+             LIMIT 200
+            """,
+            params,
+        ))
+        self.send_json({"items": [dict(r) for r in rows]})
+
+    def api_admin_create_listing_promotion(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        listing_id = str(data.get("listing_id") or data.get("listingId") or "").strip()
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        now = now_iso()
+        promotion_id = str(uuid.uuid4())
+        promotion_type = normalize_listing_promotion_type(data.get("promotion_type") or data.get("type"))
+        weight = max(1, min(int(data.get("weight") or data.get("promotion_weight") or 10), 1000))
+        conn.execute(
+            """
+            INSERT INTO listing_promotions (
+                id, listing_id, promotion_type, placement, status, weight, starts_at, ends_at,
+                purchased_by_user_id, business_id, metadata, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                promotion_id, listing_id, promotion_type, str(data.get("placement") or "").strip()[:80],
+                str(data.get("status") or "active").strip()[:40], weight, data.get("starts_at") or now, data.get("ends_at"),
+                row["seller_user_id"], row["business_id"],
+                json.dumps({"source": "admin", "admin_id": admin["id"]}, ensure_ascii=False), now, now,
+            ),
+        )
+        conn.execute(
+            "UPDATE city_listings SET is_promoted = 1, promotion_weight = MAX(promotion_weight, ?), updated_at = ? WHERE id = ?",
+            (weight, now, listing_id),
+        )
+        item = dict(conn.execute("SELECT * FROM listing_promotions WHERE id = ?", (promotion_id,)).fetchone())
+        self.send_json({"promotion": item}, 201)
+
+    def api_admin_listing_verifications(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        clauses: list[str] = []
+        params: list[Any] = []
+        status = (query.get("status") or query.get("verification_status") or "").strip()
+        if status:
+            clauses.append("v.status = ?")
+            params.append(normalize_listing_verification(status))
+        subject_type = (query.get("subject_type") or "").strip()
+        if subject_type:
+            clauses.append("v.subject_type = ?")
+            params.append(subject_type)
+        clause = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = list(conn.execute(
+            f"""
+            SELECT v.*, l.title AS listing_title, l.type AS listing_type, l.city_slug AS listing_city,
+                   l.seller_user_id
+              FROM listing_verifications v
+              LEFT JOIN city_listings l ON l.id = v.listing_id
+              {clause}
+             ORDER BY v.created_at DESC
+             LIMIT 200
+            """,
+            params,
+        ))
+        self.send_json({"items": [dict(r) for r in rows]})
+
+    def api_admin_businesses(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        status = (query.get("verification_status") or query.get("status") or "").strip()
+        params: list[Any] = []
+        clause = ""
+        if status:
+            clause = "WHERE verification_status = ?"
+            params.append(status)
+        rows = list(conn.execute(
+            f"SELECT * FROM business_profiles {clause} ORDER BY updated_at DESC LIMIT 200",
+            params,
+        ))
+        self.send_json({"items": [dict(r) for r in rows]})
+
     def api_feed(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
@@ -15652,6 +20387,13 @@ class Handler(BaseHTTPRequestHandler):
         if content_types:
             type_clause = " AND p.content_type IN (%s)" % ",".join("?" * len(content_types))
             type_params.extend(content_types)
+        else:
+            # Keep the home/recommend/local feed a community timeline.
+            # High-intent marketplace/rental/job rows now live in
+            # city_listings; legacy typed posts are hidden from generic feeds
+            # unless a channel explicitly asks for them.
+            type_clause = " AND p.content_type NOT IN (%s)" % ",".join("?" * len(HIGH_INTENT_POST_TYPES))
+            type_params.extend(sorted(HIGH_INTENT_POST_TYPES))
 
         region_clause = ""
         region_params: list[Any] = []
@@ -15770,7 +20512,7 @@ class Handler(BaseHTTPRequestHandler):
         # 商家/优惠/内推) require an active membership. Enforced here for
         # EVERY client — the apps only mirror it for UX; a raw API call
         # cannot bypass it. Ordinary content (dynamic/question/guide/二手/
-        # 搭子/约饭/活动…) is untouched and stays free.
+        # 小组/美食/活动…) is untouched and stays free.
         require_verified_membership(conn, user["id"], content_type)
         # Daily publish cap. 0 == off (default) so ordinary posting is
         # never impeded; members get the higher ceiling when an operator
@@ -15822,6 +20564,16 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute(
                 "INSERT INTO post_media (id, post_id, media_id, sort_index) VALUES (?, ?, ?, ?)",
                 (str(uuid.uuid4()), post_id, media_id, index),
+            )
+        if content_type not in HIGH_INTENT_POST_TYPES:
+            reputation_apply_event(conn, user["id"], "first_post", target_kind="post", target_id=post_id)
+            reputation_apply_event(
+                conn,
+                user["id"],
+                reputation_rule_for_post_type(content_type),
+                target_kind="post",
+                target_id=post_id,
+                metadata={"content_type": content_type},
             )
         if repost_of_id:
             original = conn.execute("SELECT author_id FROM posts WHERE id = ?", (repost_of_id,)).fetchone()
@@ -15895,7 +20647,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_post_interaction(self, conn: sqlite3.Connection, post_id: str, kind: str, on: bool) -> None:
         user = self.require_user(conn)
-        post = conn.execute("SELECT author_id FROM posts WHERE id = ? AND deleted_at IS NULL", (post_id,)).fetchone()
+        post = conn.execute("SELECT author_id, content_type FROM posts WHERE id = ? AND deleted_at IS NULL", (post_id,)).fetchone()
         if not post:
             raise APIError("帖子不存在", 404, "post_not_found")
         existing = conn.execute(
@@ -15907,12 +20659,40 @@ class Handler(BaseHTTPRequestHandler):
                 "INSERT INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
                 (str(uuid.uuid4()), post_id, user["id"], kind, now_iso()),
             )
+            if kind == "bookmark":
+                reputation_apply_event(
+                    conn,
+                    user["id"],
+                    "first_bookmark",
+                    actor_user_id=user["id"],
+                    target_kind="post",
+                    target_id=post_id,
+                )
             if kind == "like" and post["author_id"] != user["id"]:
+                reputation_apply_event(
+                    conn,
+                    post["author_id"],
+                    "content_liked",
+                    actor_user_id=user["id"],
+                    target_kind="post",
+                    target_id=post_id,
+                    metadata={"content_type": post["content_type"] or "dynamic"},
+                )
                 conn.execute(
                     "INSERT INTO notifications (id, user_id, actor_id, type, target_post_id, content, created_at) VALUES (?, ?, ?, 'like', ?, '', ?)",
                     (str(uuid.uuid4()), post["author_id"], user["id"], post_id, now_iso()),
                 )
                 HUB.publish(post["author_id"], {"type": "notification", "kind": "like", "post_id": post_id})
+            if kind == "bookmark" and post["author_id"] != user["id"]:
+                reputation_apply_event(
+                    conn,
+                    post["author_id"],
+                    "content_bookmarked",
+                    actor_user_id=user["id"],
+                    target_kind="post",
+                    target_id=post_id,
+                    metadata={"content_type": post["content_type"] or "dynamic"},
+                )
         elif not on and existing:
             conn.execute("DELETE FROM interactions WHERE id = ?", (existing["id"],))
         fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
@@ -16041,7 +20821,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("评论不能为空", 400, "empty_comment")
         if len(content) > 2000:
             raise APIError("评论过长", 400, "comment_too_long")
-        post = conn.execute("SELECT author_id FROM posts WHERE id = ? AND deleted_at IS NULL", (post_id,)).fetchone()
+        post = conn.execute("SELECT author_id, content_type FROM posts WHERE id = ? AND deleted_at IS NULL", (post_id,)).fetchone()
         if not post:
             raise APIError("帖子不存在", 404, "post_not_found")
         comment_id = str(uuid.uuid4())
@@ -16050,6 +20830,24 @@ class Handler(BaseHTTPRequestHandler):
             (comment_id, post_id, user["id"], content, data.get("parent_comment_id"), data.get("reply_to_user_id"), now_iso(), now_iso()),
         )
         if post["author_id"] != user["id"]:
+            reputation_apply_event(
+                conn,
+                post["author_id"],
+                "content_commented",
+                actor_user_id=user["id"],
+                target_kind="post",
+                target_id=post_id,
+                metadata={"content_type": post["content_type"] or "dynamic"},
+            )
+            if (post["content_type"] or "") == "question" and len(content) >= 10:
+                reputation_apply_event(
+                    conn,
+                    user["id"],
+                    "comment_on_question",
+                    actor_user_id=user["id"],
+                    target_kind="post",
+                    target_id=post_id,
+                )
             ntype = "reply" if data.get("parent_comment_id") else "comment"
             conn.execute(
                 "INSERT INTO notifications (id, user_id, actor_id, type, target_post_id, target_comment_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -16096,7 +20894,7 @@ class Handler(BaseHTTPRequestHandler):
         q = (query.get("q") or "").strip()
         kind = query.get("kind") or "all"
         if not q:
-            self.send_json({"posts": [], "users": [], "topics": [], "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
+            self.send_json({"posts": [], "listings": [], "users": [], "topics": [], "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
             return
         if viewer_id:
             conn.execute(
@@ -16105,6 +20903,7 @@ class Handler(BaseHTTPRequestHandler):
             )
         like = f"%{q}%"
         posts: list[dict[str, Any]] = []
+        listings: list[dict[str, Any]] = []
         users: list[dict[str, Any]] = []
         topics: list[dict[str, Any]] = []
         if kind in ("all", "post"):
@@ -16122,6 +20921,29 @@ class Handler(BaseHTTPRequestHandler):
                 params,
             ))
             posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
+        if kind in ("all", "listing", "listings", "secondhand", "rental", "job"):
+            country_clause = "AND country_code = ?" if viewer_country else ""
+            type_clause = ""
+            type_params: list[Any] = []
+            if kind in {"secondhand", "rental", "job"}:
+                type_clause = "AND type = ?"
+                type_params.append(kind)
+            params = [like, like, like, like, *type_params]
+            if viewer_country:
+                params.append(viewer_country)
+            rows = list(conn.execute(
+                f"""
+                SELECT * FROM city_listings
+                WHERE deleted_at IS NULL
+                  AND status IN ('published', 'reserved')
+                  AND (title LIKE ? OR description LIKE ? OR location_text LIKE ? OR category LIKE ?)
+                  {type_clause}
+                  {country_clause}
+                ORDER BY is_promoted DESC, updated_at DESC LIMIT 30
+                """,
+                params,
+            ))
+            listings = fetch_listings_with_extras(conn, [dict(r) for r in rows], viewer_id)
         if kind in ("all", "user"):
             country_clause = "AND country = ?" if viewer_country else ""
             params = (like, like, viewer_country) if viewer_country else (like, like)
@@ -16145,7 +20967,7 @@ class Handler(BaseHTTPRequestHandler):
                 params,
             ))
             topics = [{"tag": r["tag"], "post_count": int(r["post_count"])} for r in rows]
-        self.send_json({"posts": posts, "users": users, "topics": topics, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
+        self.send_json({"posts": posts, "listings": listings, "users": users, "topics": topics, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
     def api_search_history(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -16243,6 +21065,71 @@ class Handler(BaseHTTPRequestHandler):
             "posts": posts,
             "topics": cached_topics,
             "users": users,
+            "viewer": {"id": viewer_id} if viewer_id else None,
+            "canInteract": bool(viewer_id),
+            "can_interact": bool(viewer_id),
+        })
+
+    def api_trending_weekly_likes(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        viewer_country = ""
+        if viewer_id:
+            viewer_row = conn.execute("SELECT country FROM users WHERE id = ?", (viewer_id,)).fetchone()
+            viewer_country = (viewer_row["country"] if viewer_row else "") or ""
+        limit = max(1, min(int(query.get("limit") or 10), 30))
+        days = max(1, min(int(query.get("days") or 7), 30))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        # Optional region scoping: region_code wins; else country/province/city;
+        # else fall back to the viewer's own country so the list stays local.
+        region_code = (query.get("region_code") or query.get("regionCode") or "").strip().lower()
+        q_country = (query.get("country") or "").strip().lower()
+        q_province = (query.get("province") or "").strip().lower()
+        q_city = (query.get("city") or "").strip().lower()
+        region_filters: list[str] = []
+        region_params: list[Any] = []
+        if region_code:
+            region_filters.append("p.region_code = ?")
+            region_params.append(region_code)
+        elif q_country or q_province or q_city:
+            if q_country:
+                region_filters.append("p.country = ?")
+                region_params.append(q_country)
+            if q_province:
+                region_filters.append("p.province = ?")
+                region_params.append(q_province)
+            if q_city:
+                region_filters.append("p.city = ?")
+                region_params.append(q_city)
+        elif viewer_country:
+            region_filters.append("p.country = ?")
+            region_params.append(viewer_country)
+        region_clause = ("AND " + " AND ".join(region_filters)) if region_filters else ""
+        params: list[Any] = [cutoff, *region_params, limit]
+        rows = list(conn.execute(
+            f"""
+            SELECT p.*, COUNT(*) AS weekly_like_count
+            FROM posts p
+            JOIN interactions i ON i.target_id = p.id AND i.kind = 'like' AND i.created_at >= ?
+            WHERE p.deleted_at IS NULL
+              AND p.status IN ('published', 'active')
+              {region_clause}
+            GROUP BY p.id
+            ORDER BY weekly_like_count DESC, p.created_at DESC
+            LIMIT ?
+            """,
+            params,
+        ))
+        posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
+        like_counts = {r["id"]: int(r["weekly_like_count"] or 0) for r in rows}
+        for post in posts:
+            post["weekly_like_count"] = like_counts.get(post["id"], 0)
+            post["weeklyLikes"] = post["weekly_like_count"]
+        self.send_json({
+            "items": posts,
+            "posts": posts,
+            "days": days,
+            "metric": "weekly_likes",
             "viewer": {"id": viewer_id} if viewer_id else None,
             "canInteract": bool(viewer_id),
             "can_interact": bool(viewer_id),
@@ -16438,6 +21325,28 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchone()
         if blocked:
             raise APIError("无法与该用户对话", 403, "blocked")
+        rep = reputation_ensure_user(conn, user["id"])
+        controls = reputation_effective_limits(conn, rep, user)
+        if _clamp_reputation_score(rep.get("reputation_score")) < 20 or _clamp_risk_score(rep.get("risk_score")) >= int(reputation_limit_map(conn).get("restrict_risk_threshold") or 81):
+            raise APIError("当前账号信任状态暂不能主动私信陌生人。", 403, "REPUTATION_LIMITED")
+        a, b = sorted([user["id"], peer_row["id"]])
+        existing_conv = conn.execute(
+            "SELECT 1 FROM conversations WHERE participant_a = ? AND participant_b = ? AND deleted_at IS NULL",
+            (a, b),
+        ).fetchone()
+        if not existing_conv:
+            since = _reputation_now_window(1)
+            today_opened = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                  FROM conversations
+                 WHERE (participant_a = ? OR participant_b = ?)
+                   AND updated_at >= ?
+                """,
+                (user["id"], user["id"], since),
+            ).fetchone()["c"]
+            if int(today_opened or 0) >= int(controls["dm_daily_limit"] or 0):
+                raise APIError("今日主动私信次数已达当前信任额度。", 429, "DM_LIMIT_REACHED")
         conv = self._conversation_for(conn, user["id"], peer_row["id"])
         self.send_json({"conversation": serialize_conversation(conv, {"peer": serialize_user(dict(peer_row))})})
 
@@ -16619,7 +21528,7 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             raise APIError("invalid path", 400, "invalid_payload")
         target.write_bytes(raw)
-        kind = "image" if mime.startswith("image/") else "video"
+        kind = "image" if mime.startswith("image/") else "video" if mime.startswith("video/") else "file"
         url = f"/{rel_path}"
         # Width/height/duration intentionally default to 0 — the client
         # used to send these but they were unverified. A future pass
@@ -16630,6 +21539,54 @@ class Handler(BaseHTTPRequestHandler):
         )
         fresh = dict(conn.execute("SELECT * FROM media WHERE id = ?", (media_id,)).fetchone())
         self.send_json({"media": serialize_media(fresh)})
+
+    def api_admin_media(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        limit = max(1, min(int(query.get("limit") or 80), 300))
+        kind = (query.get("type") or "").strip().lower()
+        q = (query.get("q") or "").strip()
+        clauses = ["m.deleted_at IS NULL"]
+        params: list[Any] = []
+        if kind:
+            clauses.append("m.type = ?")
+            params.append(kind)
+        if q:
+            like = f"%{q}%"
+            clauses.append("(m.id LIKE ? OR m.mime LIKE ? OR m.url LIKE ? OR u.handle LIKE ? OR u.display_name LIKE ?)")
+            params.extend([like, like, like, like, like])
+        # scope=admin (default for the backend gallery): hide ordinary user
+        # uploads, keep only admin-uploaded and system media.
+        scope = (query.get("scope") or "").strip().lower()
+        if scope == "admin":
+            clauses.append("(u.role = 'admin' OR m.owner_id IS NULL OR m.owner_id = '')")
+        where = "WHERE " + " AND ".join(clauses)
+        rows = list(conn.execute(
+            f"""
+            SELECT m.*, u.handle AS owner_handle, u.display_name AS owner_name
+              FROM media m
+              LEFT JOIN users u ON u.id = m.owner_id
+              {where}
+             ORDER BY m.created_at DESC
+             LIMIT ?
+            """,
+            [*params, limit],
+        ))
+        items = []
+        for row in rows:
+            item = serialize_media(dict(row))
+            item["owner_handle"] = row["owner_handle"] or ""
+            item["owner_name"] = row["owner_name"] or ""
+            item["display_name"] = f"{item['type'].upper()} · {str(item['id'])[:8]}"
+            items.append(item)
+        self.send_json({"items": items})
+
+    def api_admin_upload_media(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        ctype = self.headers.get("Content-Type", "")
+        if "multipart/form-data" in ctype:
+            self._upload_multipart(conn, admin)
+            return
+        self.api_upload_media(conn)
 
     def api_get_media(self, conn: sqlite3.Connection, media_id: str) -> None:
         row = conn.execute("SELECT * FROM media WHERE id = ? AND deleted_at IS NULL", (media_id,)).fetchone()
@@ -16711,22 +21668,58 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_devices(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
-        rows = conn.execute(
+        rows = list(conn.execute(
             "SELECT * FROM sessions WHERE user_id = ? ORDER BY last_seen_at DESC",
             (user["id"],),
-        )
-        items = []
+        ))
+        grouped: dict[str, dict[str, Any]] = {}
         for r in rows:
-            items.append({
+            family, platform = _normalize_device_family(r["device_name"], r["user_agent"])
+            group_key = f"{family}|{platform}"
+            existing = grouped.get(group_key)
+            geo = resolve_geo(r["ip"]) if r["ip"] else dict(_GEO_EMPTY)
+            entry = {
                 "id": r["token"][-12:],
                 "token": r["token"],
-                "device_name": r["device_name"],
+                "tokens": [r["token"][-12:]],
+                "device_name": r["device_name"] or family,
+                "device_label": family,
+                "platform": platform,
                 "user_agent": r["user_agent"],
                 "ip": r["ip"],
+                "country": geo.get("country", ""),
+                "region": geo.get("region", ""),
+                "city": geo.get("city", ""),
+                "org": geo.get("org", ""),
+                "geo_state": geo.get("state", ""),
                 "created_at": r["created_at"],
                 "last_seen_at": r["last_seen_at"],
                 "expires_at": r["expires_at"],
-            })
+                "session_count": 1,
+            }
+            if not existing:
+                grouped[group_key] = entry
+                continue
+            existing["session_count"] += 1
+            existing["tokens"].append(r["token"][-12:])
+            if (r["last_seen_at"] or "") > (existing["last_seen_at"] or ""):
+                existing.update({
+                    "id": r["token"][-12:],
+                    "token": r["token"],
+                    "device_name": r["device_name"] or family,
+                    "user_agent": r["user_agent"],
+                    "ip": r["ip"],
+                    "country": geo.get("country", ""),
+                    "region": geo.get("region", ""),
+                    "city": geo.get("city", ""),
+                    "org": geo.get("org", ""),
+                    "geo_state": geo.get("state", ""),
+                    "last_seen_at": r["last_seen_at"],
+                    "expires_at": r["expires_at"],
+                })
+            if (r["created_at"] or "") < (existing["created_at"] or ""):
+                existing["created_at"] = r["created_at"]
+        items = sorted(grouped.values(), key=lambda x: x.get("last_seen_at") or "", reverse=True)
         self.send_json({"items": items})
 
     def api_revoke_device(self, conn: sqlite3.Connection, device_token: str) -> None:
@@ -16921,9 +21914,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def _clean_marketing_payload(self, data: dict[str, Any], *, partial: bool = False) -> dict[str, Any]:
         allowed_pages = {
-            "home", "about", "features", "cities", "business", "safety", "download",
+            "home", "about", "features", "cities", "guide", "business", "safety", "download",
             "ads", "contact", "partners", "jobs-promotion", "housing-promotion",
-            "safety-center", "privacy", "terms",
+            "updates", "faq", "safety-center", "privacy", "terms", "membership-terms",
+            "service-terms", "refund-policy", "community-guidelines", "commercial-disclosure",
+            "cookie-policy",
         }
         cleaned: dict[str, Any] = {}
         if "page_key" in data or not partial:
@@ -16972,6 +21967,9 @@ class Handler(BaseHTTPRequestHandler):
         ))
         self.send_json({"items": [self._serialize_marketing_copy(r) for r in rows]})
 
+    def api_site_settings(self, conn: sqlite3.Connection) -> None:
+        self.send_json({"settings": _site_settings(conn)})
+
     # ---- admin ------------------------------------------------------------
     #
     # Everything below requires the calling user to have `role = 'admin'`.
@@ -17005,6 +22003,16 @@ class Handler(BaseHTTPRequestHandler):
             "active_sessions":     one("SELECT COUNT(*) FROM sessions WHERE expires_at > ?", now_iso()),
             "reports_open":        one("SELECT COUNT(*) FROM reports"),
             "feedback_total":      one("SELECT COUNT(*) FROM feedback"),
+            # Revenue + moderation aggregates for the 后台运营看板 (#6 看订单/看收入).
+            "listings_total":          one("SELECT COUNT(*) FROM city_listings WHERE deleted_at IS NULL"),
+            "listings_pending_review": one("SELECT COUNT(*) FROM city_listings WHERE deleted_at IS NULL AND status = 'pending_review'"),
+            "listing_reports_open":    one("SELECT COUNT(*) FROM listing_reports WHERE status = 'open'"),
+            "orders_paid_total":       one("SELECT COUNT(*) FROM payment_orders WHERE status = 'paid'"),
+            "orders_pending":          one("SELECT COUNT(*) FROM payment_orders WHERE status = 'pending'"),
+            "revenue_cents_total":     one("SELECT COALESCE(SUM(amount_cents), 0) FROM payment_orders WHERE status = 'paid'"),
+            "revenue_cents_24h":       one("SELECT COALESCE(SUM(amount_cents), 0) FROM payment_orders WHERE status = 'paid' AND paid_at > ?", cutoff_24h),
+            "revenue_cents_7d":        one("SELECT COALESCE(SUM(amount_cents), 0) FROM payment_orders WHERE status = 'paid' AND paid_at > ?", cutoff_7d),
+            "active_memberships":      one("SELECT COUNT(*) FROM user_memberships WHERE status = 'active'"),
             "db_size_bytes":       (DB_PATH.stat().st_size if DB_PATH.exists() else 0),
             # Walking media/ on every admin stats request can be tens
             # of seconds with many files — cache it for 5 minutes.
@@ -17014,6 +22022,24 @@ class Handler(BaseHTTPRequestHandler):
             "allowed_origins":     sorted(ALLOWED_ORIGINS),
         }
         self.send_json({"stats": stats})
+
+    def api_admin_server_metrics(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        self.send_json({"metrics": _server_metrics()})
+
+    def api_admin_site_settings(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        self.send_json({"settings": _site_settings(conn)})
+
+    def api_admin_update_site_settings(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        updates: dict[str, str] = {}
+        for key in SITE_SETTING_KEYS:
+            if key in data:
+                updates[key] = str(data.get(key) or "").strip()
+        settings = _upsert_site_settings(conn, updates)
+        self.send_json({"settings": settings})
 
     def api_admin_visitors(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         """Admin-only access log: recent visits with IP + resolved region,
@@ -17228,6 +22254,18 @@ class Handler(BaseHTTPRequestHandler):
             sets = ", ".join(f"{f} = ?" for f, _ in updates) + ", updated_at = ?"
             values = [v for _, v in updates] + [now_iso(), post_id]
             conn.execute(f"UPDATE posts SET {sets} WHERE id = ?", values)
+            if any(f == "status" and v in {"hidden", "deleted"} for f, v in updates) and row["status"] not in {"hidden", "deleted"}:
+                reputation_apply_event(
+                    conn,
+                    row["author_id"],
+                    "content_removed",
+                    admin_id=admin["id"],
+                    target_kind="post",
+                    target_id=post_id,
+                    reason=str(data.get("reason") or "内容因违反规则被下架"),
+                    metadata={"content_type": row["content_type"] or "dynamic"},
+                    reviewed=True,
+                )
             _cache_invalidate("feed:hot")
             _cache_invalidate("trending:")
             ACCESS_LOG.info("admin %s updated post %s fields=%s", admin["handle"], post_id, [f for f, _ in updates])
@@ -17243,6 +22281,16 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("帖子不存在", 404, "post_not_found")
         conn.execute("UPDATE posts SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?",
                      (now_iso(), now_iso(), post_id))
+        reputation_apply_event(
+            conn,
+            row["author_id"],
+            "content_removed",
+            admin_id=admin["id"],
+            target_kind="post",
+            target_id=post_id,
+            reason="管理员删除内容",
+            reviewed=True,
+        )
         _cache_invalidate("feed:hot")
         _cache_invalidate("trending:")
         ACCESS_LOG.warning("admin %s removed post %s", admin["handle"], post_id)

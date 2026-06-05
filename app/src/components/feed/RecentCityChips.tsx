@@ -4,7 +4,7 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, APIError } from "@/lib/api";
 import { useSession, useToasts } from "@/lib/store";
-import { regionHeaderLabel, resolveRegion } from "@/lib/regions";
+import { regionAccountPatch, regionHeaderLabel, resolveRegion } from "@/lib/regions";
 
 /// Horizontal chip row showing the user's recently-visited city codes.
 /// Mirrors iOS `recentRegionsSection`. Empty list → renders nothing.
@@ -23,9 +23,7 @@ export function RecentCityChips() {
     if (!region) return;
     setBusy(code);
     try {
-      const next = await api.updateRegionLanguage({
-        current_region_code: region.region_code,
-      });
+      const next = await api.updateRegionLanguage(regionAccountPatch(region));
       setUser(next);
       queryClient.invalidateQueries({ queryKey: ["feed"] });
       queryClient.invalidateQueries({ queryKey: ["explore-hot-city"] });

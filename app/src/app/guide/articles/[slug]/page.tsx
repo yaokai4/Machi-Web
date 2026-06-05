@@ -8,21 +8,26 @@ import { guide } from "@/lib/guide";
 import { GuideShell, GuideComingSoon, ArticleCard, categoryHref, useGuideCountry } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { relativeTime } from "@/lib/format";
+import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
+import { guideUi } from "@/lib/guide-ui";
 
 export default function GuideArticlePage() {
   const params = useParams();
   const slug = String(params?.slug || "");
   const country = useGuideCountry();
+  const { locale } = useI18n();
+  const language = appLocaleToGuideLanguage(locale);
+  const copy = guideUi(locale);
   const q = useQuery({
-    queryKey: ["guide", "article", country, slug],
-    queryFn: () => guide.article(slug, country),
+    queryKey: ["guide", "article", country, language, slug],
+    queryFn: () => guide.article(slug, country, language),
     enabled: country === "jp" && slug.length > 0,
     staleTime: 60_000,
   });
 
   if (country !== "jp") {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+      <GuideShell back={{ href: "/guide", label: copy.back }}>
         <GuideComingSoon />
       </GuideShell>
     );
@@ -30,15 +35,19 @@ export default function GuideArticlePage() {
 
   if (q.isLoading) {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+      <GuideShell back={{ href: "/guide", label: copy.back }}>
         <InlineLoading />
       </GuideShell>
     );
   }
   if (q.isError || !q.data?.article) {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
-        <ErrorState title="指南内容不存在" subtitle="它可能已被移动或下线。" onRetry={() => q.refetch()} />
+      <GuideShell back={{ href: "/guide", label: copy.back }}>
+        <ErrorState
+          title={locale === "en" ? "Guide article not found" : locale === "ja" ? "ガイド記事が見つかりません" : "指南内容不存在"}
+          subtitle={locale === "en" ? "It may have been moved or unpublished." : locale === "ja" ? "移動または非公開になった可能性があります。" : "它可能已被移动或下线。"}
+          onRetry={() => q.refetch()}
+        />
       </GuideShell>
     );
   }
@@ -48,12 +57,12 @@ export default function GuideArticlePage() {
 
   return (
     <GuideShell
-      back={{ href: categoryHref(a.categoryKey), label: "返回分类" }}
+      back={{ href: categoryHref(a.categoryKey), label: locale === "en" ? "Back to category" : locale === "ja" ? "カテゴリに戻る" : "返回分类" }}
       right={<ArticleRightRail related={related} />}
     >
       <article className="px-4 py-4 sm:px-6">
         <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-kx-muted">
-          <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-kx-accent">指南</span>
+          <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-kx-accent">{locale === "en" ? "Guide" : locale === "ja" ? "ガイド" : "指南"}</span>
           <span>{a.authorName}</span>
           {a.publishedAt ? (
             <span className="inline-flex items-center gap-1">
@@ -85,12 +94,12 @@ export default function GuideArticlePage() {
         </div>
 
         <div className="mt-8 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 text-xs leading-6 text-kx-muted">
-          本内容由 {a.authorName} 整理，仅供参考。涉及签证、入管、考试等官方流程时，请同时以官方最新公告为准。
+          {locale === "en" ? `This content is curated by ${a.authorName} for reference only. For visas, immigration, exams and other official procedures, always check the latest official notices as well.` : locale === "ja" ? `本コンテンツは ${a.authorName} が参考用に整理したものです。ビザ、入管、試験などの公式手続きについては、必ず公式の最新案内も確認してください。` : `本内容由 ${a.authorName} 整理，仅供参考。涉及签证、入管、考试等官方流程时，请同时以官方最新公告为准。`}
         </div>
 
         {related.length ? (
           <section className="mt-8 xl:hidden">
-            <h2 className="mb-3 text-lg font-black text-kx-text">相关指南</h2>
+            <h2 className="mb-3 text-lg font-black text-kx-text">{locale === "en" ? "Related guides" : locale === "ja" ? "関連ガイド" : "相关指南"}</h2>
             <div className="grid gap-3 sm:grid-cols-2">
               {related.map((r) => (
                 <ArticleCard key={r.id} article={r} compact />
@@ -104,10 +113,12 @@ export default function GuideArticlePage() {
 }
 
 function ArticleRightRail({ related }: { related: Array<{ id: string; slug: string; title: string; summary: string; tags: string[]; authorName: string }> }) {
+  const { locale } = useI18n();
+  const copy = guideUi(locale);
   return (
     <div className="space-y-3">
       <section className="kx-card">
-        <h3 className="kx-section-title mb-2 px-0">相关指南</h3>
+        <h3 className="kx-section-title mb-2 px-0">{locale === "en" ? "Related guides" : locale === "ja" ? "関連ガイド" : "相关指南"}</h3>
         {related.length ? (
           <ul className="space-y-2">
             {related.map((r) => (
@@ -119,13 +130,13 @@ function ArticleRightRail({ related }: { related: Array<{ id: string; slug: stri
             ))}
           </ul>
         ) : (
-          <p className="text-sm text-kx-muted">暂无相关内容。</p>
+          <p className="text-sm text-kx-muted">{locale === "en" ? "No related content yet." : locale === "ja" ? "関連コンテンツはまだありません。" : "暂无相关内容。"}</p>
         )}
       </section>
       <section className="kx-card">
-        <h3 className="text-base font-black text-kx-text">需要资料或辅导？</h3>
-        <p className="mt-1 text-sm leading-6 text-kx-subtle">查看资料包、模板与人工辅导服务。</p>
-        <Link href="/guide/services" className="kx-button-primary mt-3 inline-flex h-9">前往资料与服务</Link>
+        <h3 className="text-base font-black text-kx-text">{locale === "en" ? "Need resources or support?" : locale === "ja" ? "資料やサポートが必要ですか？" : "需要资料或辅导？"}</h3>
+        <p className="mt-1 text-sm leading-6 text-kx-subtle">{copy.services.subtitle}</p>
+        <Link href="/guide/services" className="kx-button-primary mt-3 inline-flex h-9">{copy.services.title}</Link>
       </section>
     </div>
   );

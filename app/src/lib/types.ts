@@ -46,6 +46,11 @@ export const UserSchema = z.object({
   post_count: z.number().optional(),
   is_following: z.boolean().optional(),
   is_blocked: z.boolean().optional(),
+  // Google account binding state (mirrors serialize_user in server.py).
+  email_verified: z.boolean().optional(),
+  auth_provider: z.string().optional(),
+  has_google: z.boolean().optional(),
+  can_unlink_google: z.boolean().optional(),
 });
 export type KXUser = z.infer<typeof UserSchema>;
 
@@ -183,7 +188,7 @@ export interface KXRegion {
 export const MediaSchema = z.object({
   id: z.string(),
   owner_id: z.string(),
-  type: z.enum(["image", "video"]),
+  type: z.enum(["image", "video", "file"]),
   url: z.string(),
   thumb_url: z.string(),
   mime: z.string(),
@@ -232,8 +237,8 @@ export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
   job_seek: "找工作",
   job_post: "招聘",
   referral: "内推",
-  meetup: "搭子",
-  dining: "约饭",
+  meetup: "小组",
+  dining: "美食",
   event: "活动",
   service: "服务",
   merchant: "商家",
@@ -352,11 +357,13 @@ export type KXComment = z.infer<typeof CommentSchema>;
 
 export const NotificationSchema = z.object({
   id: z.string(),
-  type: z.enum(["like", "comment", "reply", "repost", "follow", "mention", "bookmark", "system"]),
+  type: z.enum(["like", "comment", "reply", "repost", "follow", "mention", "bookmark", "system", "listing_inquiry"]),
   actor_id: z.string(),
   user_id: z.string(),
   target_post_id: z.string().nullable().optional(),
   target_comment_id: z.string().nullable().optional(),
+  target_listing_id: z.string().nullable().optional(),
+  target_conversation_id: z.string().nullable().optional(),
   content: z.string().optional(),
   is_read: z.boolean(),
   created_at: z.string(),
@@ -412,12 +419,21 @@ export type KXTrendingTopic = z.infer<typeof TrendingTopicSchema>;
 export const DeviceSchema = z.object({
   id: z.string(),
   token: z.string(),
+  tokens: z.array(z.string()).optional(),
   device_name: z.string(),
+  device_label: z.string().optional(),
+  platform: z.string().optional(),
   user_agent: z.string(),
   ip: z.string(),
+  country: z.string().optional(),
+  region: z.string().optional(),
+  city: z.string().optional(),
+  org: z.string().optional(),
+  geo_state: z.string().optional(),
   created_at: z.string(),
   last_seen_at: z.string(),
   expires_at: z.string(),
+  session_count: z.number().optional(),
 });
 export type KXDevice = z.infer<typeof DeviceSchema>;
 
@@ -430,8 +446,309 @@ export const DraftSchema = z.object({
 });
 export type KXDraft = z.infer<typeof DraftSchema>;
 
+export type KXListingType =
+  | "secondhand"
+  | "rental"
+  | "job"
+  | "hiring"
+  | "local_service"
+  | "discount"
+  | "event";
+
+export type KXListingStatus =
+  | "draft"
+  | "pending_review"
+  | "published"
+  | "reserved"
+  | "sold"
+  | "rented"
+  | "closed"
+  | "expired"
+  | "rejected"
+  | "hidden";
+
+export type KXListingVerificationStatus = "unverified" | "pending" | "verified" | "needs_review" | "rejected";
+
+export interface KXListingMedia {
+  id: string;
+  listing_id?: string;
+  listingId?: string;
+  media_type: "image" | "video" | string;
+  mediaType?: "image" | "video" | string;
+  url: string;
+  thumbnail_url?: string;
+  thumbnailUrl?: string;
+  sort_order?: number;
+  sortOrder?: number;
+  is_cover?: boolean;
+  isCover?: boolean;
+}
+
+export interface KXCityListing {
+  id: string;
+  country_code: string;
+  countryCode?: string;
+  city_id?: string;
+  cityId?: string;
+  city_slug: string;
+  citySlug?: string;
+  region_code?: string;
+  regionCode?: string;
+  language?: string;
+  type: KXListingType;
+  category: string;
+  title: string;
+  description: string;
+  price?: number | null;
+  currency: string;
+  price_type?: string;
+  priceType?: string;
+  location_text: string;
+  locationText?: string;
+  latitude?: number | null;
+  longitude?: number | null;
+  status: KXListingStatus;
+  verification_status: KXListingVerificationStatus;
+  verificationStatus?: KXListingVerificationStatus;
+  seller_user_id?: string;
+  sellerUserId?: string;
+  business_id?: string | null;
+  businessId?: string | null;
+  contact_method?: string;
+  contactMethod?: string;
+  view_count?: number;
+  viewCount?: number;
+  inquiry_count?: number;
+  inquiryCount?: number;
+  favorite_count?: number;
+  favoriteCount?: number;
+  report_count?: number;
+  reportCount?: number;
+  is_promoted?: boolean;
+  isPromoted?: boolean;
+  promotion_weight?: number;
+  promotionWeight?: number;
+  published_at?: string | null;
+  publishedAt?: string | null;
+  expires_at?: string | null;
+  expiresAt?: string | null;
+  created_at?: string;
+  createdAt?: string | null;
+  updated_at?: string;
+  updatedAt?: string | null;
+  media: KXListingMedia[];
+  cover_url?: string;
+  coverUrl?: string;
+  attributes: Record<string, unknown>;
+  seller?: KXUser | null;
+  favorited?: boolean;
+  isFavorited?: boolean;
+  can_manage?: boolean;
+  canManage?: boolean;
+  report_count_open?: number;
+}
+
+export interface KXListingInquiry {
+  id: string;
+  listing_id: string;
+  listingId?: string;
+  from_user_id: string;
+  fromUserId?: string;
+  to_user_id: string;
+  toUserId?: string;
+  type: string;
+  message: string;
+  contact_value?: string;
+  contactValue?: string;
+  conversation_id?: string;
+  conversationId?: string;
+  details?: { label: string; value: string }[];
+  metadata?: Record<string, unknown>;
+  status: "new" | "replied" | "closed" | "spam" | "reported" | string;
+  created_at?: string;
+  createdAt?: string;
+  updated_at?: string;
+  updatedAt?: string;
+  listing?: KXCityListing | null;
+  from_user?: KXUser | null;
+  fromUser?: KXUser | null;
+  to_user?: KXUser | null;
+  toUser?: KXUser | null;
+}
+
+export interface KXCreateListingPayload {
+  type: KXListingType;
+  title: string;
+  description?: string;
+  category?: string;
+  price?: number | null;
+  currency?: string;
+  price_type?: string;
+  location_text?: string;
+  country_code?: string;
+  city_slug?: string;
+  region_code?: string;
+  language?: string;
+  contact_method?: string;
+  attributes?: Record<string, unknown>;
+  media_ids?: string[];
+  mediaIds?: string[];
+  media?: Array<{ url: string; thumbnail_url?: string; media_type?: string }>;
+}
+
+export interface KXReputationBadge {
+  id: string;
+  key: string;
+  name?: string;
+  name_zh: string;
+  name_en?: string;
+  name_ja?: string;
+  category: string;
+  rarity: "common" | "uncommon" | "rare" | "epic" | "city_special" | "official" | string;
+  description_zh?: string;
+  is_official?: boolean;
+  is_active?: boolean;
+  user_badge_id?: string;
+  is_displayed?: boolean;
+  granted_at?: string;
+  reason?: string;
+}
+
+export interface KXReputationPrivilege {
+  key: string;
+  title_zh: string;
+  title_en?: string;
+  title_ja?: string;
+  description_zh?: string;
+  level: number;
+}
+
+export interface KXReputationReward {
+  user_reward_id?: string;
+  key: string;
+  name_zh: string;
+  name_en?: string;
+  name_ja?: string;
+  reward_type?: string;
+  required_level?: number;
+  quantity?: number;
+  status?: string;
+  granted_at?: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface KXReputationLimits {
+  daily_xp_cap?: number;
+  weekly_xp_cap?: number;
+  monthly_xp_cap?: number;
+  can_publish_secondhand?: boolean;
+  secondhand_requires_review?: boolean;
+  can_publish_rental?: boolean;
+  can_publish_job?: boolean;
+  can_publish_service?: boolean;
+  can_publish_discount?: boolean;
+  high_risk_requires_review?: boolean;
+  dm_daily_limit?: number;
+  growth_frozen?: boolean;
+}
+
+export interface KXReputationProfile {
+  user_id: string;
+  level: number;
+  level_name: string;
+  levelName?: string;
+  level_name_en?: string;
+  level_name_ja?: string;
+  level_description?: string;
+  xp?: number | null;
+  current_level_xp?: number;
+  next_level_xp?: number | null;
+  nextLevelXp?: number | null;
+  xp_to_next?: number | null;
+  reputation_status: string;
+  reputationStatus?: string;
+  reputation_label: string;
+  reputationLabel?: string;
+  reputation_score?: number | null;
+  risk_score?: number | null;
+  public_trust_label?: string;
+  badges: KXReputationBadge[];
+  privileges: KXReputationPrivilege[];
+  rewards: KXReputationReward[];
+  limits: KXReputationLimits;
+  stats: {
+    helpedUsers: number;
+    qualityPosts: number;
+    favoritesReceived: number;
+    violationFreeDays: number;
+    reportsValidated?: number;
+  };
+  growth_frozen?: boolean;
+  frozen_until?: string | null;
+  freeze_reason?: string;
+  updated_at?: string;
+}
+
+export interface KXReputationEvent {
+  id: string;
+  user_id: string;
+  actor_user_id?: string;
+  admin_id?: string;
+  rule_key: string;
+  event_type: string;
+  target_kind?: string;
+  target_id?: string;
+  xp_delta: number;
+  reputation_delta: number;
+  risk_delta: number;
+  xp_before: number;
+  xp_after: number;
+  reputation_before: number;
+  reputation_after: number;
+  risk_before: number;
+  risk_after: number;
+  level_before: number;
+  level_after: number;
+  reason: string;
+  metadata?: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface KXReputationLevel {
+  level: number;
+  xp_required: number;
+  name_zh: string;
+  name_en?: string;
+  name_ja?: string;
+  description_zh?: string;
+  privileges?: string[];
+}
+
 export type FeedMode = "recommend" | "plaza" | "local" | "following" | "hot";
 export type ProfileSegment = "posts" | "replies" | "media" | "likes" | "bookmarks";
+
+export type CityListingType = KXListingType;
+export type CityListingStatus = KXListingStatus;
+export type CityListingVerificationStatus = KXListingVerificationStatus;
+
+export interface CityListingsQuery {
+  type: KXListingType;
+  city?: string;
+  city_slug?: string;
+  region_code?: string;
+  country?: string;
+  category?: string;
+  q?: string;
+  keyword?: string;
+  min_price?: number | string;
+  max_price?: number | string;
+  sort?: "latest" | "price_low" | "price_high" | "popular";
+  status?: KXListingStatus;
+  cursor?: string;
+  limit?: number;
+  owner?: "me";
+  mine?: "1";
+}
 
 // Content language enum — mirrors iOS `ContentLanguage`. `followApp`
 // resolves to whatever the UI language is; `multi` disables filtering;
@@ -527,8 +844,8 @@ export const CITY_CHANNEL_LABELS: Record<CityChannelKey, string> = {
   housing: "租房",
   jobSeek: "找工作",
   jobPost: "招聘",
-  meetup: "搭子",
-  dining: "约饭",
+  meetup: "小组",
+  dining: "美食",
   event: "活动",
   question: "问答",
   service: "服务",
@@ -547,8 +864,8 @@ export const CITY_CHANNEL_DESCRIPTIONS: Record<CityChannelKey, string> = {
   housing: "找房、转租、合租、找室友、租房避坑。",
   jobSeek: "兼职、全职、实习、远程、求职经验。",
   jobPost: "本地商家、企业、机构发布招聘和内推。",
-  meetup: "学习、运动、摄影、语言交换、游戏搭子。",
-  dining: "约饭、咖啡、探店、周末饭局。",
+  meetup: "学习、运动、摄影、语言交换和本地活动小组。",
+  dining: "美食聚会、咖啡、探店和周末本地餐厅讨论。",
   event: "展览、Citywalk、桌游、运动、线下聚会。",
   question: "签证、租房、工作、学校、医疗等本地求助。",
   service: "搬家、翻译、签证、留学、保险、维修、报税。",

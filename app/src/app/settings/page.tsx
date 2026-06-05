@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Bell,
   Bookmark,
@@ -24,6 +24,7 @@ import {
   Trash2,
   User as UserIcon,
   KeyRound,
+  Link2,
 } from "lucide-react";
 import { CONTENT_LANGUAGE_LABELS, type ContentLanguage } from "@/lib/types";
 import { useLanguagePreference } from "@/lib/store";
@@ -36,7 +37,7 @@ import { ConfirmDialog, Dialog } from "@/components/design/Dialog";
 import { useSession, useSettings, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import { BrandPhrase } from "@/components/marketing/BrandText";
-import { regionDisplayName, regionFromUser, type RegionInfo } from "@/lib/regions";
+import { regionAccountPatch, regionDisplayName, regionFromUser, type RegionInfo } from "@/lib/regions";
 
 export default function SettingsPage() {
   const router = useRouter();
@@ -46,12 +47,24 @@ export default function SettingsPage() {
   const setSettings = useSettings((s) => s.setSettings);
   const setAppearance = useSettings((s) => s.setAppearance);
   const pushToast = useToasts((s) => s.push);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [pwOpen, setPwOpen] = useState(false);
   const [pwForm, setPwForm] = useState({ password: "", confirm: "" });
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
+  const [unlinkGoogleOpen, setUnlinkGoogleOpen] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
   const [regionOpen, setRegionOpen] = useState(false);
+  const [merchantOpen, setMerchantOpen] = useState(false);
+  const [merchantBusy, setMerchantBusy] = useState(false);
+  const [merchantForm, setMerchantForm] = useState({
+    companyName: "",
+    serviceSummary: "",
+    contact: "",
+    website: "",
+    address: "",
+    license: "",
+  });
   const contentLanguage = useLanguagePreference((s) => s.preferred);
   const setContentLanguage = useLanguagePreference((s) => s.setPreferred);
   const currentRegion = regionFromUser(user);
@@ -60,6 +73,25 @@ export default function SettingsPage() {
     queryKey: ["settings"],
     queryFn: () => api.settings(),
   });
+
+  // Returning from the Google bind round-trip lands here with ?google=linked
+  // or ?google_error=<code>; surface it, refresh the user, then clean the URL.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const linked = params.get("google");
+    const failed = params.get("google_error");
+    if (!linked && !failed) return;
+    if (linked === "linked") {
+      pushToast({ kind: "success", message: "已绑定 Google 账号" });
+      api.me().then(setUser).catch(() => {});
+    } else if (failed) {
+      pushToast({ kind: "error", message: googleLinkErrorMessage(failed) });
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("google");
+    url.searchParams.delete("google_error");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}`);
+  }, [pushToast, setUser]);
 
   if (settings.isLoading) {
     return (
@@ -77,6 +109,8 @@ export default function SettingsPage() {
   }
 
   const s = settings.data;
+  const uiLanguage = s.language || locale;
+  const uiLanguageLabel = uiLanguage === "zh-Hans" ? "简体中文" : uiLanguage === "en" ? "English" : uiLanguage === "ja" ? "日本語" : "简体中文";
 
   const patch = async (input: Partial<typeof s>) => {
     try {
@@ -132,18 +166,85 @@ export default function SettingsPage() {
     }
   };
 
+  const startGoogleLink = async () => {
+    setGoogleBusy(true);
+    try {
+      const result = await api.googleLinkStart("/settings");
+      window.location.href = result.authorization_url || result.url || "";
+    } catch (err) {
+      setGoogleBusy(false);
+      pushToast({ kind: "error", message: (err as APIError).message || "无法开始 Google 绑定" });
+    }
+  };
+
+  const onUnlinkGoogle = async () => {
+    setGoogleBusy(true);
+    try {
+      const res = await api.googleUnlink();
+      if (res.user) setUser(res.user);
+      setUnlinkGoogleOpen(false);
+      pushToast({ kind: "success", message: res.message || "已解绑 Google 账号" });
+    } catch (err) {
+      pushToast({ kind: "error", message: (err as APIError).message });
+    } finally {
+      setGoogleBusy(false);
+    }
+  };
+
+  const onGoogleRow = () => {
+    if (googleBusy) return;
+    if (user?.has_google) {
+      if (user?.can_unlink_google) setUnlinkGoogleOpen(true);
+      else pushToast({ kind: "info", message: "请先绑定邮箱并设置登录密码，再解绑 Google。" });
+    } else {
+      void startGoogleLink();
+    }
+  };
+
+  const submitMerchantApplication = async () => {
+    const required = [
+      ["companyName", "公司 / 店铺名称"],
+      ["serviceSummary", "服务内容"],
+      ["contact", "联系方式"],
+    ] as const;
+    const missing = required
+      .filter(([key]) => !merchantForm[key].trim())
+      .map(([, label]) => label);
+    if (missing.length) {
+      pushToast({ kind: "error", message: `请补充: ${missing.join(" · ")}` });
+      return;
+    }
+    setMerchantBusy(true);
+    try {
+      await api.submitFeedback({
+        category: "merchant_application",
+        content: [
+          `公司/店铺: ${merchantForm.companyName}`,
+          `服务内容: ${merchantForm.serviceSummary}`,
+          `联系方式: ${merchantForm.contact}`,
+          `官网/社媒: ${merchantForm.website || "未填写"}`,
+          `地址/服务区域: ${merchantForm.address || "未填写"}`,
+          `资质/执照: ${merchantForm.license || "未填写"}`,
+        ].join("\n"),
+      });
+      const next = await api.updateMe({ is_merchant: true });
+      setUser(next);
+      setMerchantOpen(false);
+      pushToast({ kind: "success", message: "商家认证申请已提交，管理员会审核公司和服务信息。" });
+    } catch (err) {
+      pushToast({ kind: "error", message: (err as APIError).message });
+    } finally {
+      setMerchantBusy(false);
+    }
+  };
+
   const onSelectRegion = async (region: RegionInfo) => {
     if (user?.country && region.country_code !== user.country) {
       const confirmed = window.confirm("切换国家会同时影响首页、发现、资讯和发布页可选择的城市。确认切换吗？");
       if (!confirmed) return;
     }
     try {
-      const next = await api.updateRegionLanguage({
-        country: region.country_code,
-        province: region.province_code,
-        city: region.city_code,
-        current_region_code: region.region_code,
-      });
+      const next = await api.updateRegionLanguage(regionAccountPatch(region));
       setUser(next);
       queryClient.invalidateQueries({ queryKey: ["feed"] });
       pushToast({ kind: "success", message: `已切换到 ${region.city_name}` });
@@ -182,6 +283,12 @@ export default function SettingsPage() {
             href="/membership"
           />
           <Row icon={KeyRound} label="修改密码" onClick={() => setPwOpen(true)} />
+          <Row
+            icon={Link2}
+            label="Google 账号"
+            sub={user?.has_google ? "已绑定 · 可用 Google 一键登录" : "绑定后可用 Google 一键登录"}
+            onClick={onGoogleRow}
+          />
           <Row icon={Smartphone} label="登录设备" href="/settings/devices" />
         </Section>
 
@@ -191,14 +298,13 @@ export default function SettingsPage() {
               切换
             </button>
           </RowSwitch>
-          <RowSwitch icon={Languages} label="界面语言" valueLabel={s.language === "zh-Hans" ? "简体中文" : s.language === "zh-Hant" ? "繁體中文" : s.language === "en" ? "English" : s.language === "ja" ? "日本語" : s.language}>
+          <RowSwitch icon={Languages} label="界面语言" valueLabel={uiLanguageLabel}>
             <select
               className="kx-input h-8 px-2 w-32"
-              value={s.language}
+              value={uiLanguage}
               onChange={(e) => patch({ language: e.target.value })}
             >
               <option value="zh-Hans">简体中文</option>
-              <option value="zh-Hant">繁體中文</option>
               <option value="en">English</option>
               <option value="ja">日本語</option>
             </select>
@@ -280,22 +386,15 @@ export default function SettingsPage() {
             icon={Store}
             label={user?.merchant_verified ? "商家认证(已通过)" : user?.is_merchant ? "商家认证(待审核)" : "申请商家认证"}
             sub={user?.merchant_verified ? "可发布商家、优惠、服务等商家内容" : "认证后可发布商家、优惠、服务等内容"}
-            onClick={async () => {
+            onClick={() => {
               if (user?.merchant_verified) {
                 pushToast({ kind: "info", message: "已是认证商家" });
                 return;
               }
               if (user?.is_merchant) {
-                pushToast({ kind: "info", message: "审核中,通常 1-3 个工作日" });
-                return;
+                pushToast({ kind: "info", message: "审核中，可重新提交补充资料。" });
               }
-              try {
-                const next = await api.updateMe({ is_merchant: true });
-                setUser(next);
-                pushToast({ kind: "success", message: "申请已提交,等待审核" });
-              } catch (err) {
-                pushToast({ kind: "error", message: (err as APIError).message });
-              }
+              setMerchantOpen(true);
             }}
           />
         </Section>
@@ -330,6 +429,35 @@ export default function SettingsPage() {
         </div>
       </Dialog>
 
+      <Dialog open={merchantOpen} onClose={() => setMerchantOpen(false)} title="申请商家认证" footer={
+        <>
+          <button className="kx-button-ghost" onClick={() => setMerchantOpen(false)}>取消</button>
+          <button className="kx-button-primary" onClick={submitMerchantApplication} disabled={merchantBusy}>
+            {merchantBusy ? "提交中…" : "提交申请"}
+          </button>
+        </>
+      }>
+        <div className="space-y-3">
+          <p className="text-sm leading-6 text-kx-muted">
+            请填写真实公司信息和服务内容。认证通过后可发布商家、服务、优惠和合作类内容。
+          </p>
+          <Field label="公司 / 店铺名称" value={merchantForm.companyName} onChange={(value) => setMerchantForm({ ...merchantForm, companyName: value })} />
+          <label className="block text-sm font-semibold">
+            服务内容
+            <textarea
+              className="kx-textarea mt-1 min-h-24"
+              placeholder="提供什么服务、服务范围、适合人群、收费方式等"
+              value={merchantForm.serviceSummary}
+              onChange={(e) => setMerchantForm({ ...merchantForm, serviceSummary: e.target.value })}
+            />
+          </label>
+          <Field label="联系方式" value={merchantForm.contact} onChange={(value) => setMerchantForm({ ...merchantForm, contact: value })} />
+          <Field label="官网 / 社媒链接" value={merchantForm.website} onChange={(value) => setMerchantForm({ ...merchantForm, website: value })} />
+          <Field label="地址 / 服务区域" value={merchantForm.address} onChange={(value) => setMerchantForm({ ...merchantForm, address: value })} />
+          <Field label="营业执照 / 资质说明" value={merchantForm.license} onChange={(value) => setMerchantForm({ ...merchantForm, license: value })} />
+        </div>
+      </Dialog>
+
       <ConfirmDialog
         open={logoutOpen}
         title="确认退出登录？"
@@ -347,16 +475,33 @@ export default function SettingsPage() {
         onConfirm={onDelete}
         onCancel={() => setDeleteOpen(false)}
       />
+      <ConfirmDialog
+        open={unlinkGoogleOpen}
+        title="解绑 Google 账号？"
+        description="解绑后将无法使用 Google 一键登录，仍可用用户名 / 邮箱和密码登录。"
+        confirmLabel={googleBusy ? "处理中…" : "解绑"}
+        onConfirm={onUnlinkGoogle}
+        onCancel={() => setUnlinkGoogleOpen(false)}
+      />
       <RegionPickerDialog
         open={regionOpen}
         onClose={() => setRegionOpen(false)}
         onSelect={onSelectRegion}
         initialCountry={user?.country || currentRegion?.country_code}
-        allowsAnyCountry={!user?.country}
-        recentCodes={user?.recent_region_codes}
+        allowsAnyCountry
       />
     </AppShell>
   );
+}
+
+const GOOGLE_LINK_ERROR: Record<string, string> = {
+  google_already_linked: "该 Google 账号已绑定到其他 Machi 账号。",
+  already_linked_other: "当前账号已绑定了另一个 Google 账号，请先解绑。",
+  state_expired: "绑定会话已过期，请重试。",
+  google_denied: "已取消 Google 授权。",
+};
+function googleLinkErrorMessage(code: string): string {
+  return GOOGLE_LINK_ERROR[code] || "Google 绑定失败，请重试。";
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -365,6 +510,15 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <h3 className="kx-section-title px-2 pb-1">{title}</h3>
       <div className="kx-card p-0 overflow-hidden">{children}</div>
     </section>
+  );
+}
+
+function Field({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="block text-sm font-semibold">
+      {label}
+      <input className="kx-input mt-1" value={value} onChange={(event) => onChange(event.target.value)} />
+    </label>
   );
 }
 

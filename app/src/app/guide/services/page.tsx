@@ -12,32 +12,33 @@ import {
   useGuideCountry,
 } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState, EmptyState } from "@/components/design/States";
+import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
+import { guideUi } from "@/lib/guide-ui";
 
 // Primary split: digital materials vs. human services. The shop reads cleaner
 // when these are grouped instead of mixed in one flat grid.
-const KIND_FILTERS = [
-  { value: "all", label: "全部" },
-  { value: "material", label: "数字资料" },
-  { value: "service", label: "人工服务" },
-] as const;
-type Kind = (typeof KIND_FILTERS)[number]["value"];
+const KIND_FILTERS = ["all", "material", "service"] as const;
+type Kind = (typeof KIND_FILTERS)[number];
 
 const MATERIAL_TYPES = [
-  { value: "", label: "全部资料" },
-  { value: "pdf_material", label: "PDF 资料" },
-  { value: "template", label: "模板" },
-  { value: "checklist", label: "清单" },
-  { value: "course", label: "课程" },
+  { value: "", zh: "全部资料", en: "All resources", ja: "すべての資料" },
+  { value: "pdf_material", zh: "PDF 资料", en: "PDF resources", ja: "PDF 資料" },
+  { value: "template", zh: "模板", en: "Templates", ja: "テンプレート" },
+  { value: "checklist", zh: "清单", en: "Checklists", ja: "チェックリスト" },
+  { value: "course", zh: "课程", en: "Courses", ja: "講座" },
 ];
 
 export default function GuideServicesPage() {
   const country = useGuideCountry();
+  const { locale } = useI18n();
+  const language = appLocaleToGuideLanguage(locale);
+  const copy = guideUi(locale);
   const [kind, setKind] = useState<Kind>("all");
   const [materialType, setMaterialType] = useState("");
 
   const products = useQuery({
-    queryKey: ["guide", "services", country],
-    queryFn: () => guide.products({ country, pageSize: 60 }),
+    queryKey: ["guide", "services", country, language],
+    queryFn: () => guide.products({ country, language, pageSize: 60 }),
     staleTime: 30_000,
   });
 
@@ -50,7 +51,7 @@ export default function GuideServicesPage() {
 
   if (products.data?.status === "coming_soon") {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+      <GuideShell back={{ href: "/guide", label: copy.back }}>
         <GuideComingSoon />
       </GuideShell>
     );
@@ -64,30 +65,30 @@ export default function GuideServicesPage() {
     (showMaterials ? materials.length : 0) + (showServices ? services.length : 0) === 0;
 
   return (
-    <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+    <GuideShell back={{ href: "/guide", label: copy.back }}>
       <header className="px-4 pb-4 pt-3 sm:px-6">
         <div className="flex items-center gap-3">
           <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[#D97706] text-white shadow-sm">
             <Package className="h-6 w-6" />
           </span>
           <div>
-            <h1 className="text-xl font-black leading-tight text-kx-text sm:text-2xl">资料与服务</h1>
-            <p className="text-xs text-kx-muted">资料包、模板、清单、课程与人工辅导服务</p>
+            <h1 className="text-xl font-black leading-tight text-kx-text sm:text-2xl">{copy.services.title}</h1>
+            <p className="text-xs text-kx-muted">{copy.services.subtitle}</p>
           </div>
         </div>
         <p className="mt-2.5 max-w-2xl text-sm leading-7 text-kx-subtle">
-          Machi 编辑部整理的学习与申请资料，以及简历修改、研究计划书修改、申请辅导、接机翻译等人工服务。付费数字资料以页面标价为准；人工服务可「预约咨询」，按服务范围确认后再付款。
+          {copy.services.body}
         </p>
         <div className="mt-3 -mx-1 flex gap-1.5 overflow-x-auto px-1 kx-scroll">
           {KIND_FILTERS.map((f) => (
             <button
-              key={f.value}
+              key={f}
               type="button"
-              data-active={kind === f.value}
-              onClick={() => setKind(f.value)}
+              data-active={kind === f}
+              onClick={() => setKind(f)}
               className="kx-tab h-8 shrink-0 px-3 text-xs"
             >
-              {f.label}
+              {f === "all" ? copy.all : f === "material" ? copy.services.digitalTitle : copy.services.humanTitle}
             </button>
           ))}
         </div>
@@ -97,14 +98,14 @@ export default function GuideServicesPage() {
         {products.isLoading ? (
           <InlineLoading />
         ) : products.isError ? (
-          <ErrorState title="资料暂时无法加载" subtitle="请稍后再试。" onRetry={() => products.refetch()} />
+          <ErrorState title={copy.services.loadError} subtitle={copy.retryLater} onRetry={() => products.refetch()} />
         ) : isEmpty ? (
-          <EmptyState title="暂无相关资料或服务" subtitle="更多资料正在准备中。" />
+          <EmptyState title={copy.services.emptyTitle} subtitle={copy.services.emptySubtitle} />
         ) : (
           <>
             {showMaterials && materials.length > 0 ? (
               <section>
-                <GuideSectionTitle title="数字资料" subtitle="PDF、模板、清单与课程，原创整理" />
+                <GuideSectionTitle title={copy.services.digitalTitle} subtitle={copy.services.digitalSubtitle} />
                 {/* secondary type filter only inside the materials group */}
                 <div className="-mx-1 mb-3 flex gap-1.5 overflow-x-auto px-1 kx-scroll">
                   {MATERIAL_TYPES.map((t) => (
@@ -115,7 +116,7 @@ export default function GuideServicesPage() {
                       onClick={() => setMaterialType(t.value)}
                       className="kx-tab h-7 shrink-0 px-3 text-[11px]"
                     >
-                      {t.label}
+                      {locale === "en" ? t.en : locale === "ja" ? t.ja : t.zh}
                     </button>
                   ))}
                 </div>
@@ -125,7 +126,7 @@ export default function GuideServicesPage() {
 
             {showServices && services.length > 0 ? (
               <section>
-                <GuideSectionTitle title="人工服务" subtitle="咨询、文书修改、接机翻译与陪同办理（预约咨询）" />
+                <GuideSectionTitle title={copy.services.humanTitle} subtitle={copy.services.humanSubtitle} />
                 <ProductGrid items={services} icon={<Wrench className="h-4 w-4" />} />
               </section>
             ) : null}
@@ -137,11 +138,13 @@ export default function GuideServicesPage() {
 }
 
 function ProductGrid({ items, icon }: { items: GuideProduct[]; icon: React.ReactNode }) {
+  const { locale } = useI18n();
+  const copy = guideUi(locale);
   if (items.length === 0) {
     return (
       <div className="flex items-center gap-2 rounded-kx-lg border border-kx-stroke/50 bg-kx-card px-4 py-6 text-sm text-kx-muted">
         {icon}
-        <span>这个分类正在整理中。</span>
+        <span>{copy.services.groupEmpty}</span>
       </div>
     );
   }

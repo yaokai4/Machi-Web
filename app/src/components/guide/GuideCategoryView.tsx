@@ -13,9 +13,14 @@ import {
   useGuideCountry,
 } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState, EmptyState } from "@/components/design/States";
+import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
+import { guideUi } from "@/lib/guide-ui";
 
 export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
   const country = useGuideCountry();
+  const { locale } = useI18n();
+  const language = appLocaleToGuideLanguage(locale);
+  const copy = guideUi(locale);
   const [activeSub, setActiveSub] = useState("");
 
   // Honour ?sub=<key> deep links (from goal entries) without forcing the whole
@@ -27,36 +32,36 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
   }, []);
 
   const cats = useQuery({
-    queryKey: ["guide", "categories", country],
-    queryFn: () => guide.categories(country),
+    queryKey: ["guide", "categories", country, language],
+    queryFn: () => guide.categories(country, language),
     staleTime: 5 * 60_000,
   });
   const articles = useQuery({
-    queryKey: ["guide", "cat-articles", country, categoryKey, activeSub],
+    queryKey: ["guide", "cat-articles", country, language, categoryKey, activeSub],
     queryFn: () =>
-      guide.articles({ country, categoryKey, subCategoryKey: activeSub || undefined, pageSize: 50 }),
+      guide.articles({ country, language, categoryKey, subCategoryKey: activeSub || undefined, pageSize: 50 }),
     staleTime: 30_000,
   });
   // Related materials & services for this channel — surfaced above the
   // articles so the entry page matches the iOS layout (resources/services
   // first, then guides). A failure here never blocks the articles.
   const products = useQuery({
-    queryKey: ["guide", "cat-products", country, categoryKey, activeSub],
+    queryKey: ["guide", "cat-products", country, language, categoryKey, activeSub],
     queryFn: () =>
-      guide.products({ country, categoryKey, subCategoryKey: activeSub || undefined, pageSize: 9 }),
+      guide.products({ country, language, categoryKey, subCategoryKey: activeSub || undefined, pageSize: 9 }),
     staleTime: 60_000,
   });
 
   if (cats.isLoading) {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+      <GuideShell back={{ href: "/guide", label: copy.back }}>
         <InlineLoading />
       </GuideShell>
     );
   }
   if (cats.data?.status === "coming_soon" || articles.data?.status === "coming_soon") {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+      <GuideShell back={{ href: "/guide", label: copy.back }}>
         <GuideComingSoon />
       </GuideShell>
     );
@@ -66,7 +71,7 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
   const subs = category?.subCategories ?? [];
 
   return (
-    <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+    <GuideShell back={{ href: "/guide", label: copy.back }}>
       <header className="px-4 pb-4 pt-3 sm:px-6">
         <div className="flex items-center gap-3">
           <span
@@ -76,7 +81,7 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
             <Icon className="h-6 w-6" />
           </span>
           <div className="min-w-0">
-            <h1 className="text-xl font-black leading-tight text-kx-text sm:text-2xl">{category?.title || "日本指南"}</h1>
+            <h1 className="text-xl font-black leading-tight text-kx-text sm:text-2xl">{category?.title || copy.back}</h1>
             {category?.subtitle ? <p className="text-xs text-kx-muted">{category.subtitle}</p> : null}
           </div>
         </div>
@@ -92,7 +97,7 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
               onClick={() => setActiveSub("")}
               className="kx-tab h-8 shrink-0 px-3 text-xs"
             >
-              全部
+              {copy.all}
             </button>
             {subs.map((s) => (
               <button
@@ -114,8 +119,8 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
         {(products.data?.items.length ?? 0) > 0 ? (
           <section>
             <GuideSectionTitle
-              title={categoryKey === "jlpt" ? "JLPT 资料包" : "相关资料与服务"}
-              subtitle="与本频道相关的资料、模板、清单与人工辅导服务"
+              title={categoryKey === "jlpt" ? copy.category.jlptTitle : copy.category.relatedTitle}
+              subtitle={copy.category.relatedSubtitle}
               href="/guide/services"
             />
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -129,14 +134,14 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
         {/* Channel guides */}
         <section>
           {(products.data?.items.length ?? 0) > 0 ? (
-            <GuideSectionTitle title="指南文章" subtitle="由 Machi 编辑部整理" />
+            <GuideSectionTitle title={copy.category.articlesTitle} subtitle={copy.category.articlesSubtitle} />
           ) : null}
           {articles.isLoading ? (
             <InlineLoading />
           ) : articles.isError ? (
-            <ErrorState title="内容暂时无法加载" subtitle="请稍后再试。" onRetry={() => articles.refetch()} />
+            <ErrorState title={copy.category.loadError} subtitle={copy.retryLater} onRetry={() => articles.refetch()} />
           ) : (articles.data?.items.length ?? 0) === 0 ? (
-            <EmptyState title="这个分类的指南正在整理中" subtitle="Machi 编辑部会持续补充内容。" />
+            <EmptyState title={copy.category.emptyTitle} subtitle={copy.category.emptySubtitle} />
           ) : (
             <div className="grid gap-3 sm:grid-cols-2">
               {articles.data!.items.map((a) => (

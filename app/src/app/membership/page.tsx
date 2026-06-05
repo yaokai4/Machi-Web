@@ -62,7 +62,7 @@ export default function MembershipPage() {
   const setUser = useSession((s) => s.setUser);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   const queryClient = useQueryClient();
 
   const planQuery = useQuery({
@@ -131,7 +131,7 @@ export default function MembershipPage() {
       try {
         if (Date.now() - pollStartedAtRef.current > 180_000) {
           stopPolling();
-          pushToast({ kind: "error", message: "订单确认超时，请刷新会员状态或重新创建订单。" });
+          pushToast({ kind: "error", message: t("mem_order_timeout") });
           return;
         }
         const status = await api.orderStatus(order.orderNo);
@@ -241,7 +241,7 @@ export default function MembershipPage() {
     }
   };
 
-  const priceLabel = planPriceLabel(selectedPlan);
+  const priceLabel = planPriceLabel(selectedPlan, t);
   const benefitItems = benefitsQuery.data?.benefits ?? [];
 
   return (
@@ -262,7 +262,7 @@ export default function MembershipPage() {
               <p className="mt-1 text-kx-subtle">{t("mem_subtitle")}</p>
               <div className="mt-3 text-2xl font-extrabold text-kx-text">{priceLabel}</div>
               {planUnavailable ? (
-                <p className="mt-2 text-sm font-semibold text-kx-muted">会员服务暂时不可用，请稍后再试。</p>
+                <p className="mt-2 text-sm font-semibold text-kx-muted">{t("mem_service_unavailable")}</p>
               ) : null}
             </section>
 
@@ -306,7 +306,7 @@ export default function MembershipPage() {
             ) : null}
 
             <section className="kx-card">
-              <h2 className="font-bold text-kx-text mb-3">选择套餐</h2>
+              <h2 className="font-bold text-kx-text mb-3">{t("mem_select_plan")}</h2>
               <div className="grid gap-3 sm:grid-cols-2">
                 {plans.map((p) => {
                   const active = planKey(p) === planKey(selectedPlan);
@@ -322,12 +322,12 @@ export default function MembershipPage() {
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div>
-                          <div className="font-black text-kx-text">{p.name || p.name_zh}</div>
-                          <div className="mt-1 text-xs text-kx-muted">{p.subtitle || periodLabel(p)}</div>
+                          <div className="font-black text-kx-text">{localizedPlanName(p, locale)}</div>
+                          <div className="mt-1 text-xs text-kx-muted">{p.subtitle || periodLabel(p, t)}</div>
                         </div>
-                        {p.isRecommended ? <span className="rounded-full bg-kx-accent px-2 py-0.5 text-[11px] font-bold text-white">推荐</span> : null}
+                        {p.isRecommended ? <span className="rounded-full bg-kx-accent px-2 py-0.5 text-[11px] font-bold text-white">{t("mem_recommended")}</span> : null}
                       </div>
-                      <div className="mt-3 text-2xl font-black text-kx-text">{planPriceLabel(p)}</div>
+                      <div className="mt-3 text-2xl font-black text-kx-text">{planPriceLabel(p, t)}</div>
                       {p.discountLabel || p.discount_label ? <div className="mt-1 text-xs font-bold text-emerald-600">{p.discountLabel || p.discount_label}</div> : null}
                     </button>
                   );
@@ -342,7 +342,7 @@ export default function MembershipPage() {
                 {benefitItems.length > 0 ? benefitItems.map((benefit) => (
                   <li key={benefit.key} className="flex items-start gap-2 text-sm text-kx-text">
                     <Check className="w-4 h-4 mt-0.5 text-kx-verified shrink-0" />
-                    <span>{benefit.title}</span>
+                    <span>{benefit.key && BENEFIT_KEYS.includes(benefit.key as (typeof BENEFIT_KEYS)[number]) ? t(benefit.key as (typeof BENEFIT_KEYS)[number]) : benefit.title}</span>
                   </li>
                 )) : BENEFIT_KEYS.map((key) => (
                   <li key={key} className="flex items-start gap-2 text-sm text-kx-text">
@@ -352,16 +352,16 @@ export default function MembershipPage() {
                 ))}
               </ul>
               <div className="mt-4 grid gap-2 sm:grid-cols-3">
-                <Link href="/membership/benefits" className="kx-button-ghost justify-center">权益详情</Link>
+                <Link href="/membership/benefits" className="kx-button-ghost justify-center">{t("mem_benefits_detail")}</Link>
                 {user ? (
-                  <Link href="/membership/exclusive" className="kx-button-ghost justify-center">会员专属</Link>
+                  <Link href="/membership/exclusive" className="kx-button-ghost justify-center">{t("mem_exclusive")}</Link>
                 ) : (
-                  <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-ghost justify-center">会员专属</button>
+                  <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-ghost justify-center">{t("mem_exclusive")}</button>
                 )}
                 {user ? (
-                  <Link href="/membership/orders" className="kx-button-ghost justify-center">会员订单</Link>
+                  <Link href="/membership/orders" className="kx-button-ghost justify-center">{t("mem_orders")}</Link>
                 ) : (
-                  <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-ghost justify-center">会员订单</button>
+                  <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-ghost justify-center">{t("mem_orders")}</button>
                 )}
               </div>
             </section>
@@ -390,11 +390,11 @@ export default function MembershipPage() {
               <section className="kx-card text-center">
                 <h2 className="font-bold text-kx-text">{t("mem_pay_method")}</h2>
                 <p className="mt-2 text-sm text-kx-subtle">
-                  {planQuery.isLoading ? "支付方式正在加载中。" : "支付暂不可用，请稍后再试。"}
+                  {planQuery.isLoading ? t("mem_payment_loading") : t("mem_payment_unavailable")}
                 </p>
                 {planQuery.isError ? (
                   <button type="button" onClick={() => planQuery.refetch()} className="kx-button-ghost mx-auto mt-3 h-9 justify-center">
-                    重试
+                    {t("action_retry")}
                   </button>
                 ) : null}
               </section>
@@ -456,15 +456,24 @@ function planKey(plan: KXMembershipPlan): string {
   return plan.plan_key || plan.planKey || "";
 }
 
-function periodLabel(plan: KXMembershipPlan): string {
-  const period = plan.billingPeriod || plan.billing_period || plan.billing_cycle;
-  if (period === "yearly") return "包年订阅";
-  if (period === "monthly" || period === "month") return "按月订阅";
-  return "会员套餐";
+function localizedPlanName(plan: KXMembershipPlan, locale: string): string {
+  if (locale === "ja") return plan.name_ja || plan.name_en || plan.name_zh || plan.name || "Machi";
+  if (locale === "en") return plan.name_en || plan.name_zh || plan.name_ja || plan.name || "Machi";
+  return plan.name_zh || plan.name || plan.name_en || plan.name_ja || "Machi";
 }
 
-function planPriceLabel(plan: KXMembershipPlan): string {
-  return plan.priceLabel || plan.price_label || formatPrice({
+function periodLabel(plan: KXMembershipPlan, t: ReturnType<typeof useI18n>["t"]): string {
+  const period = plan.billingPeriod || plan.billing_period || plan.billing_cycle;
+  if (period === "yearly") return t("mem_period_yearly");
+  if (period === "monthly" || period === "month") return t("mem_period_monthly");
+  return t("mem_period_plan");
+}
+
+function planPriceLabel(plan: KXMembershipPlan, t: ReturnType<typeof useI18n>["t"]): string {
+  const label = plan.priceLabel || plan.price_label;
+  if (label && label !== "价格加载中") return label;
+  if (!plan.amount && !plan.amount_cents && !plan.price) return t("mem_price_loading");
+  return formatPrice({
     price: plan.price ?? plan.amount,
     currency: plan.currency,
     billingPeriod: plan.billingPeriod || plan.billing_period || plan.billing_cycle,
@@ -569,7 +578,7 @@ function PaymentPanel({
       <div className="text-xs text-kx-muted">{order.orderNo}</div>
       {onMockConfirm ? (
         <button className="kx-button-primary w-full justify-center" onClick={onMockConfirm}>
-          [DEV] 模拟支付成功
+          {t("mem_mock_confirm")}
         </button>
       ) : null}
       <button className="kx-button-ghost w-full justify-center" onClick={onCancel}>

@@ -47,6 +47,10 @@ interface AppShellProps {
   children: React.ReactNode;
   right?: React.ReactNode;
   requireAuth?: boolean;
+  wide?: boolean;
+  /** Hide the floating mobile tab bar + compose button (for detail pages
+   *  that own the bottom with their own action bar, e.g. listing contact). */
+  hideBottomNav?: boolean;
 }
 
 const NAV_ITEMS = [
@@ -63,25 +67,34 @@ const NAV_ITEMS = [
 const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings"]);
 
 function currentPathForRedirect(pathname: string | null) {
+  return pathname || "/home";
+}
+
+function currentBrowserPathForRedirect(pathname: string | null) {
   if (typeof window === "undefined") return pathname || "/home";
   const candidate = `${window.location.pathname}${window.location.search}`;
   return candidate.startsWith("/") && !candidate.startsWith("//") ? candidate : pathname || "/home";
 }
 
-export function AppShell({ children, right, requireAuth = true }: AppShellProps) {
+export function AppShell({ children, right, requireAuth = true, wide = false, hideBottomNav = false }: AppShellProps) {
   const user = useSession((s) => s.user);
   const status = useSession((s) => s.status);
   const router = useRouter();
   const pathname = usePathname();
   const ownsViewportBottom = pathname?.startsWith("/messages/");
+  const [redirectPath, setRedirectPath] = useState(() => currentPathForRedirect(pathname));
 
   useEffect(() => {
     if (requireAuth && status === "unauthed") {
-      const redirect = currentPathForRedirect(pathname);
+      const redirect = currentBrowserPathForRedirect(pathname);
       const next = redirect !== "/" && redirect !== "/login" ? `?redirect=${encodeURIComponent(redirect)}` : "";
       router.replace(`/login${next}`);
     }
   }, [status, router, pathname, requireAuth]);
+
+  useEffect(() => {
+    setRedirectPath(currentBrowserPathForRedirect(pathname));
+  }, [pathname]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -128,21 +141,21 @@ export function AppShell({ children, right, requireAuth = true }: AppShellProps)
       <Toaster />
       <Composer />
       <AuthRequiredDialog />
-      <div className="relative z-[1] mx-auto max-w-kx-shell flex">
-        <Sidebar pathname={pathname} user={user} />
-        <main className="kx-shell-main flex-1 min-w-0 border-x border-kx-stroke/35 lg:max-w-kx-feed">
+      <div className="relative z-[1] mx-auto flex w-full max-w-kx-shell">
+        <Sidebar pathname={pathname} redirectPath={redirectPath} user={user} />
+        <main className={clsx("kx-shell-main flex-1 min-w-0 border-x border-kx-stroke/35", wide ? "lg:max-w-none" : "lg:max-w-kx-feed")}>
           <div className={clsx("kx-page-enter", ownsViewportBottom ? "pb-0" : "pb-36 md:pb-8")}>
             <ErrorBoundary>{children}</ErrorBoundary>
           </div>
         </main>
-        <RightSidebar>{right}</RightSidebar>
+        {right === null ? null : <RightSidebar>{right}</RightSidebar>}
       </div>
-      <MobileTabBar pathname={pathname} />
+      {!hideBottomNav ? <MobileTabBar pathname={pathname} redirectPath={redirectPath} /> : null}
     </div>
   );
 }
 
-function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) {
+function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectPath: string; user: KXUser | null }) {
   const compose = useCompose((s) => s.open);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const appearance = useSettings((s) => s.appearance);
@@ -153,7 +166,7 @@ function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) 
   const router = useRouter();
 
   const { t } = useI18n();
-  const redirect = currentPathForRedirect(pathname);
+  const redirect = redirectPath;
   const notif = useQuery({
     queryKey: ["notifications", "all"],
     queryFn: () => api.notifications("all"),
@@ -170,12 +183,13 @@ function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) 
     notifications: notif.data?.unread_count ?? 0,
     messages: (conv.data || []).reduce((sum, c) => sum + (c.unread_count || 0), 0),
   };
+  const listingPublishHref = cityListingPublishHref(pathname) || (isListingWorkspacePath(pathname) ? "/listings/create" : "");
 
   const onLogout = async () => {
     try { await api.logout(); } catch { /* ignore */ }
     setSessionUser(null);
     queryClient.clear();
-    pushToast({ kind: "success", message: "已退出登录" });
+    pushToast({ kind: "success", message: t("logged_out") });
     router.replace("/login");
   };
 
@@ -246,23 +260,30 @@ function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) 
             )}
           >
             <ShieldCheck className="w-5 h-5" fill="none" strokeWidth={pathname?.startsWith("/admin") ? 2.05 : 1.5} />
-            <span className="hidden lg:inline">后台</span>
+            <span className="hidden lg:inline">{t("nav_admin")}</span>
           </Link>
         ) : null}
       </nav>
-      <button onClick={() => (user ? compose() : openAuthPrompt("publish"))} className="kx-button-primary mt-3 h-11 px-4 text-base">
-        <PenSquare className="w-3.5 h-3.5" />
-        <span className="hidden lg:inline">{t("action_compose")}</span>
-      </button>
+      {listingPublishHref ? (
+        <Link href={listingPublishHref} className="kx-button-primary mt-3 h-11 px-4 text-base">
+          <Plus className="w-3.5 h-3.5" />
+          <span className="hidden lg:inline">{t("listing_publish_info")}</span>
+        </Link>
+      ) : (
+        <button onClick={() => (user ? compose() : openAuthPrompt("publish"))} className="kx-button-primary mt-3 h-11 px-4 text-base">
+          <PenSquare className="w-3.5 h-3.5" />
+          <span className="hidden lg:inline">{t("action_compose")}</span>
+        </button>
+      )}
 
       <div className="mt-auto flex flex-col gap-1">
         <button
           onClick={() => setAppearance(appearance === "dark" ? "light" : "dark")}
           className="flex items-center gap-2 px-3 py-2 rounded-full hover:bg-kx-soft text-sm text-kx-subtle"
-          aria-label="切换主题"
+          aria-label={t("settings_appearance")}
         >
           {appearance === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          <span className="hidden lg:inline">{appearance === "dark" ? "浅色模式" : "深色模式"}</span>
+          <span className="hidden lg:inline">{appearance === "dark" ? t("settings_appearance_light") : t("settings_appearance_dark")}</span>
         </button>
         {user ? (
           <div
@@ -274,7 +295,7 @@ function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) 
             <Link
               href="/me"
               className="flex min-w-0 flex-1 items-center gap-3 rounded-full px-0.5 py-0.5 text-left"
-              aria-label="进入我的页面"
+              aria-label={t("nav_profile")}
             >
               <Avatar user={user} size={36} />
               <div className="hidden min-w-0 flex-1 flex-col lg:flex">
@@ -285,8 +306,8 @@ function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) 
             <button
               onClick={onLogout}
               className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-kx-muted transition hover:bg-kx-soft hover:text-kx-text lg:inline-flex"
-              aria-label="退出登录"
-              title="退出登录"
+              aria-label={t("logout")}
+              title={t("logout")}
             >
               <LogOut className="w-4 h-4" />
             </button>
@@ -298,14 +319,14 @@ function Sidebar({ pathname, user }: { pathname: string; user: KXUser | null }) 
               className="flex items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold text-kx-text hover:bg-kx-surface"
             >
               <LogIn className="h-4 w-4" />
-              <span className="hidden lg:inline">登录</span>
+              <span className="hidden lg:inline">{t("login")}</span>
             </Link>
             <Link
               href={authRedirectHref("/register", redirect)}
               className="flex items-center gap-2 rounded-full px-3 py-2 text-sm font-semibold text-kx-accent hover:bg-kx-accentSoft"
             >
               <UserPlus className="h-4 w-4" />
-              <span className="hidden lg:inline">注册</span>
+              <span className="hidden lg:inline">{t("register")}</span>
             </Link>
           </div>
         )}
@@ -323,12 +344,13 @@ function RightSidebar({ children }: { children?: React.ReactNode }) {
 }
 
 function DefaultRight() {
+  const { t } = useI18n();
   const trending = useQuery({
     queryKey: ["trending"],
     queryFn: () => api.trending(),
     staleTime: 60_000,
   });
-  if (!trending.data) {
+  if (trending.isLoading && !trending.data) {
     return (
       <div className="space-y-3">
         <div className="kx-card h-32 kx-skeleton" />
@@ -336,6 +358,18 @@ function DefaultRight() {
       </div>
     );
   }
+  if (trending.isError && !trending.data) {
+    return (
+      <section className="kx-card">
+        <h3 className="kx-section-title mb-2 px-0 text-kx-text">{t("whats_happening")}</h3>
+        <p className="text-sm leading-6 text-kx-muted">{t("error_default")}</p>
+        <button type="button" onClick={() => trending.refetch()} className="kx-button-ghost mt-3 h-9 text-xs">
+          {t("action_retry")}
+        </button>
+      </section>
+    );
+  }
+  if (!trending.data) return null;
   return (
     <>
       {/* Topics — ranked, numbered, denser. Replaces the old plain
@@ -344,15 +378,15 @@ function DefaultRight() {
         <section className="kx-card">
           <div className="flex items-center justify-between mb-3">
             <h3 className="kx-section-title px-0 inline-flex items-center gap-1.5 text-kx-text">
-              <Hash className="w-4 h-4 text-kx-accent" /> 话题
+              <Hash className="w-4 h-4 text-kx-accent" /> {t("search_topics")}
             </h3>
-            <Link href="/search?kind=topic" className="text-xs text-kx-muted hover:text-kx-accent">查看全部</Link>
+            <Link href="/search?kind=topic" className="text-xs text-kx-muted hover:text-kx-accent">{t("view_more")}</Link>
           </div>
           <ul className="flex flex-col">
-            {trending.data.topics.slice(0, 8).map((t, idx) => (
-              <li key={t.tag} className="border-b border-kx-stroke/40 last:border-0">
+            {trending.data.topics.slice(0, 8).map((topic, idx) => (
+              <li key={topic.tag} className="border-b border-kx-stroke/40 last:border-0">
                 <Link
-                  href={`/t/${encodeURIComponent(t.tag)}`}
+                  href={`/t/${encodeURIComponent(topic.tag)}`}
                   className="group flex items-center gap-2.5 py-2 hover:bg-kx-soft/60 -mx-1 px-1 rounded-md"
                 >
                   <span
@@ -364,9 +398,9 @@ function DefaultRight() {
                     {idx + 1}
                   </span>
                   <span className="min-w-0 flex-1 font-semibold text-sm text-kx-text group-hover:text-kx-accent truncate">
-                    #{t.tag}
+                    #{topic.tag}
                   </span>
-                  <span className="text-kx-muted text-xs shrink-0">{t.post_count} 帖</span>
+                  <span className="text-kx-muted text-xs shrink-0">{topic.post_count} {t("search_topic_post_suffix")}</span>
                 </Link>
               </li>
             ))}
@@ -375,7 +409,7 @@ function DefaultRight() {
       ) : null}
       {trending.data.users.length > 0 ? (
         <section className="kx-card">
-          <h3 className="kx-section-title mb-3 px-0 text-kx-text">推荐关注</h3>
+          <h3 className="kx-section-title mb-3 px-0 text-kx-text">{t("recommend_users")}</h3>
           <ul className="flex flex-col gap-3">
             {trending.data.users.slice(0, 5).map((u) => (
               <li key={u.id} className="flex items-center gap-2">
@@ -395,7 +429,7 @@ function DefaultRight() {
   );
 }
 
-function MobileTabBar({ pathname }: { pathname: string }) {
+function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPath: string }) {
   // Routes that own the full bottom of the viewport — conversation,
   // post detail with comment box, compose flows. Hiding the TabBar
   // there avoids covering the page's own input bar.
@@ -429,6 +463,8 @@ function MobileTabBar({ pathname }: { pathname: string }) {
 
   const unreadNotif = notif.data?.unread_count ?? 0;
   const unreadMsg = (conv.data || []).reduce((sum, c) => sum + (c.unread_count || 0), 0);
+  const listingPublishHref = cityListingPublishHref(pathname);
+  const hideFloatingCompose = pathname?.startsWith("/messages") || isListingWorkspacePath(pathname);
   const openPublish = () => {
     setMoreOpen(false);
     if (!user) {
@@ -450,11 +486,20 @@ function MobileTabBar({ pathname }: { pathname: string }) {
     { kind: "mine" as const, label: t("nav_profile"), icon: user ? UserIcon : MoreHorizontal, badge: unreadNotif },
   ];
   const activeTab = getMobileActiveTab(pathname);
-  const showFloatingCompose = !pathname?.startsWith("/messages");
+  const showFloatingCompose = !!listingPublishHref || !hideFloatingCompose;
 
   return (
     <>
-      {showFloatingCompose ? (
+      {listingPublishHref ? (
+        <Link
+          href={listingPublishHref}
+          className="kx-mobile-floating-compose md:hidden"
+          aria-label={t("listing_publish_info")}
+          title={t("listing_publish_info")}
+        >
+          <Plus className="h-6 w-6" strokeWidth={2.2} />
+        </Link>
+      ) : showFloatingCompose ? (
         <button
           type="button"
           className="kx-mobile-floating-compose md:hidden"
@@ -528,6 +573,7 @@ function MobileTabBar({ pathname }: { pathname: string }) {
         user={user}
         unreadNotif={unreadNotif}
         pathname={pathname}
+        redirectPath={redirectPath}
         t={t}
       />
     </>
@@ -552,12 +598,45 @@ function getMobileActiveTab(pathname?: string | null) {
   return "home";
 }
 
+function cityListingPublishHref(pathname?: string | null) {
+  if (!pathname) return "";
+  const match = pathname.match(/^\/cities\/([^/]+)\/(marketplace|rentals|jobs|services|deals|discounts)\/?$/);
+  if (!match) return "";
+  const city = encodeURIComponent(match[1]);
+  const section = match[2];
+  const type = section === "marketplace"
+    ? "secondhand"
+    : section === "rentals"
+      ? "rental"
+      : section === "jobs"
+        ? "job"
+        : section === "services"
+          ? "local_service"
+          : "discount";
+  return `/listings/create?type=${type}&city=${city}`;
+}
+
+function isListingWorkspacePath(pathname?: string | null) {
+  if (!pathname) return false;
+  return (
+    pathname.startsWith("/listings") ||
+    pathname.startsWith("/marketplace/create") ||
+    pathname.startsWith("/rentals/create") ||
+    pathname.startsWith("/jobs/create") ||
+    pathname.startsWith("/my/listings") ||
+    pathname.startsWith("/my/saved-listings") ||
+    pathname.startsWith("/my/favorites") ||
+    /^\/cities\/[^/]+\/(marketplace|rentals|jobs|services|deals|discounts)\/[^/]+/.test(pathname)
+  );
+}
+
 function MobileMoreSheet({
   open,
   onClose,
   user,
   unreadNotif,
   pathname,
+  redirectPath,
   t,
 }: {
   open: boolean;
@@ -565,6 +644,7 @@ function MobileMoreSheet({
   user: KXUser | null;
   unreadNotif: number;
   pathname: string;
+  redirectPath: string;
   t: (key: I18nKey) => string;
 }) {
   const [mounted, setMounted] = useState(false);
@@ -603,18 +683,18 @@ function MobileMoreSheet({
     try { await api.logout(); } catch { /* ignore */ }
     setSessionUser(null);
     queryClient.clear();
-    pushToast({ kind: "success", message: "已退出登录" });
+    pushToast({ kind: "success", message: t("logged_out") });
     onClose();
     router.replace("/login");
   };
 
-  const redirect = currentPathForRedirect(pathname);
-  const loginItem = { href: authRedirectHref("/login", redirect), label: "登录", icon: LogIn };
-  const registerItem = { href: authRedirectHref("/register", redirect), label: "注册", icon: UserPlus };
+  const redirect = redirectPath;
+  const loginItem = { href: authRedirectHref("/login", redirect), label: t("login"), icon: LogIn };
+  const registerItem = { href: authRedirectHref("/register", redirect), label: t("register"), icon: UserPlus };
   const links: Array<{ href?: string; label: string; icon: LucideIcon; badge?: number; authKind?: AuthPromptKind }> = user
     ? [
         { href: "/me", label: t("nav_profile"), icon: UserIcon },
-        { href: "/membership/exclusive", label: "会员专属", icon: BadgeCheck },
+        { href: "/membership/exclusive", label: t("mem_exclusive"), icon: BadgeCheck },
         { href: "/bookmarks", label: t("action_bookmark"), icon: Bookmark },
         { href: "/notifications", label: t("nav_notifications"), icon: Bell, badge: unreadNotif },
         { href: "/settings", label: t("nav_settings"), icon: Settings },
@@ -629,7 +709,7 @@ function MobileMoreSheet({
         { label: t("nav_settings"), icon: Settings, authKind: "generic" },
       ];
   if (user?.role === "admin") {
-    links.push({ href: "/admin", label: "管理后台", icon: ShieldCheck });
+    links.push({ href: "/admin", label: t("nav_admin"), icon: ShieldCheck });
   }
 
   const promptLogin = (kind: AuthPromptKind) => {
@@ -644,7 +724,7 @@ function MobileMoreSheet({
       <button
         type="button"
         onClick={onClose}
-        aria-label="关闭"
+        aria-label={t("action_cancel")}
         className="fixed inset-0 z-[80] bg-slate-950/45 opacity-100 transition-opacity duration-200 md:hidden"
       />
       <section
@@ -659,11 +739,11 @@ function MobileMoreSheet({
           <div className="h-1 w-10 rounded-full bg-kx-stroke/70 mx-auto" />
         </div>
         <div className="flex items-center justify-between px-5 pt-1 pb-3">
-          <h2 id="mobile-more-title" className="text-base font-black text-kx-text">更多</h2>
+          <h2 id="mobile-more-title" className="text-base font-black text-kx-text">{t("more_menu")}</h2>
           <button
             type="button"
             onClick={onClose}
-            aria-label="关闭"
+            aria-label={t("action_cancel")}
             className="w-9 h-9 inline-flex items-center justify-center rounded-full hover:bg-kx-soft text-kx-muted"
           >
             <X className="w-5 h-5" />
@@ -684,10 +764,10 @@ function MobileMoreSheet({
           </span>
           <span className="min-w-0 flex-1">
             <span className="block text-[15px] font-black text-kx-text">{t("mem_title")}</span>
-            <span className="mt-0.5 block truncate text-xs font-semibold text-kx-muted">认证标识 · 高信任发布权限</span>
+            <span className="mt-0.5 block truncate text-xs font-semibold text-kx-muted">{t("mem_mobile_summary")}</span>
           </span>
           <span className="shrink-0 rounded-full bg-kx-accent/10 px-2.5 py-1 text-xs font-black text-kx-accent">
-            {user?.is_verified_member ? t("mem_status_active") : "查看套餐"}
+            {user?.is_verified_member ? t("mem_status_active") : t("mem_view_plans")}
           </span>
         </Link>
         <nav className="px-3 pb-2">
@@ -740,7 +820,7 @@ function MobileMoreSheet({
             <span className="inline-flex w-9 h-9 items-center justify-center rounded-full bg-kx-soft text-kx-subtle">
               {appearance === "dark" ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </span>
-            <span className="flex-1 text-left">{appearance === "dark" ? "浅色模式" : "深色模式"}</span>
+            <span className="flex-1 text-left">{appearance === "dark" ? t("settings_appearance_light") : t("settings_appearance_dark")}</span>
           </button>
           {user ? (
             <button

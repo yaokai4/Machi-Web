@@ -6,12 +6,12 @@ import { useQuery } from "@tanstack/react-query";
 import {
   Bell,
   ChevronLeft,
-  MapPin,
+  ChevronDown,
   RefreshCw,
   Search,
   Sparkles,
 } from "lucide-react";
-import { Suspense, useState } from "react";
+import { Suspense, useState, type FormEvent } from "react";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar } from "@/components/design/Avatar";
@@ -28,6 +28,7 @@ import {
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import {
   popularRegions as allPopularRegions,
+  regionAccountPatch,
   regionFromUser,
   regionHeaderLabel,
   resolveRegion,
@@ -53,15 +54,16 @@ function ExploreChannelClient() {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const [regionPickerOpen, setRegionPickerOpen] = useState(false);
+  const [searchDraft, setSearchDraft] = useState("");
 
   const rawChannel = Array.isArray(params.channel) ? params.channel[0] : params.channel;
   const channel = normalizeExploreChannel(rawChannel);
   const spec = getExploreChannelSpec(channel);
   const scope: ChannelScope = searchParams.get("scope") === "country" ? "country" : "local";
   const userRegion = regionFromUser(user);
-  const currentRegion = regionFromParams(searchParams) || userRegion || resolveRegion("jp.osaka.osaka");
+  const currentRegion = regionFromParams(searchParams) || userRegion || resolveRegion("jp.tokyo.tokyo");
   const cityName = currentRegion?.city_name || "本地";
-  const countryName = currentRegion?.country_name || "全国";
+  const countryName = currentRegion?.country_name || "当前国家";
   const activePlace = scope === "country" ? countryName : cityName;
 
   const feed = useQuery({
@@ -103,7 +105,7 @@ function ExploreChannelClient() {
     updateUrl({ region });
     if (!user) return;
     try {
-      const next = await api.updateRegionLanguage({ current_region_code: region.region_code });
+      const next = await api.updateRegionLanguage(regionAccountPatch(region));
       setUser(next);
       feed.refetch();
       pushToast({ kind: "success", message: `已切换到 ${region.city_name}` });
@@ -115,10 +117,20 @@ function ExploreChannelClient() {
       pushToast({ kind: "error", message: (e as APIError).message });
     }
   };
+  const submitSearch = (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    const q = searchDraft.trim();
+    if (!q || !spec) return;
+    const params = new URLSearchParams();
+    params.set("q", q);
+    if (currentRegion?.city_code) params.set("city", currentRegion.city_code);
+    params.set("channel", spec.slug);
+    router.push(`/search?${params.toString()}`);
+  };
 
   if (!spec) {
     return (
-      <AppShell requireAuth={false}>
+      <AppShell requireAuth={false} right={null}>
         <main className="min-h-[70dvh] px-4 py-8">
           <section className="mx-auto max-w-xl rounded-3xl border border-slate-200/70 bg-white p-6 text-center shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
             <ErrorState title="频道不存在" subtitle="这个发现频道暂时不可用，可以回到发现页重新选择。" />
@@ -132,7 +144,7 @@ function ExploreChannelClient() {
   }
 
   return (
-    <AppShell requireAuth={false}>
+    <AppShell requireAuth={false} right={null}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 pt-2 pb-2">
         <div className="flex items-center gap-2">
           <Link
@@ -154,38 +166,47 @@ function ExploreChannelClient() {
           <button
             type="button"
             onClick={() => setRegionPickerOpen(true)}
-            className="ml-auto inline-flex h-10 items-center gap-1 rounded-full bg-kx-soft px-3 text-xs font-bold text-kx-text transition hover:bg-kx-stroke/40"
+            className="ml-auto inline-flex h-10 min-w-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-white/95 px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgba(37,99,235,0.75)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35 dark:bg-kx-card/[0.9]"
             title="切换地区"
           >
-            <MapPin className="h-3.5 w-3.5 text-kx-accent" />
-            <span className="hidden max-w-[7rem] truncate sm:inline">{regionHeaderLabel(currentRegion)}</span>
+            <span className="max-w-[7.5rem] truncate">{regionHeaderLabel(currentRegion)}</span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-kx-muted" />
           </button>
           {user ? (
             <Link
               href="/notifications"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-kx-soft transition hover:bg-kx-stroke/40"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
               aria-label="通知"
             >
-              <Bell className="h-4 w-4 text-kx-text" />
+              <Bell className="h-[18px] w-[18px] text-kx-text" />
             </Link>
           ) : (
             <button
               type="button"
               onClick={() => openAuthPrompt("generic")}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-kx-soft transition hover:bg-kx-stroke/40"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
               aria-label="通知"
             >
-              <Bell className="h-4 w-4 text-kx-text" />
+              <Bell className="h-[18px] w-[18px] text-kx-text" />
             </button>
           )}
         </div>
-        <Link
-          href={`/search?city=${encodeURIComponent(currentRegion?.city_code || "")}&channel=${encodeURIComponent(spec.slug)}`}
-          className="mt-3 flex h-11 items-center gap-2 rounded-2xl border border-slate-200/70 bg-white px-3 text-sm font-medium text-slate-500 shadow-[0_8px_30px_rgba(15,23,42,0.04)] transition hover:border-slate-300 hover:bg-slate-50/70"
-        >
-          <Search className="h-4 w-4 text-blue-600" />
-          {channelSearchPlaceholder(spec, activePlace)}
-        </Link>
+        <form onSubmit={submitSearch} className="mt-3 flex items-center gap-2">
+          <label className="group flex min-h-12 flex-1 items-center gap-3 rounded-full border border-kx-accent/[0.18] bg-white/[0.94] px-3.5 text-sm font-semibold text-kx-subtle shadow-[0_14px_34px_-28px_rgba(17,22,34,0.62)] ring-1 ring-white/70 transition focus-within:border-kx-accent/[0.38] focus-within:ring-2 focus-within:ring-kx-accent/20 dark:bg-kx-card/[0.88] dark:ring-white/10">
+            <Search className="h-5 w-5 shrink-0 text-kx-accent" />
+            <input
+              value={searchDraft}
+              onChange={(event) => setSearchDraft(event.target.value)}
+              placeholder={channelSearchPlaceholder(spec, activePlace)}
+              className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold text-kx-text placeholder:text-kx-muted focus:outline-none"
+            />
+          </label>
+          {searchDraft.trim() ? (
+            <button type="submit" className="h-10 rounded-full bg-kx-accent px-4 text-sm font-black text-white shadow-[0_14px_30px_-22px_rgba(37,99,235,0.85)] transition hover:bg-blue-700">
+              搜索
+            </button>
+          ) : null}
+        </form>
       </header>
 
       <main className="px-3 py-4 sm:px-4">
@@ -232,7 +253,6 @@ function ExploreChannelClient() {
         onSelect={selectRegion}
         initialCountry={currentRegion?.country_code || user?.country || "jp"}
         allowsAnyCountry={false}
-        recentCodes={user?.recent_region_codes}
       />
     </AppShell>
   );
@@ -382,6 +402,12 @@ function regionFromParams(params: { get(name: string): string | null }): RegionI
 }
 
 function channelHref(slug: ExploreChannelSlug, region: RegionInfo | undefined, sourceParams: URLSearchParams | { toString(): string }) {
+  const city = region?.city_code || "tokyo";
+  if (slug === "market") return `/cities/${encodeURIComponent(city)}/marketplace`;
+  if (slug === "housing") return `/cities/${encodeURIComponent(city)}/rentals`;
+  if (slug === "jobs") return `/cities/${encodeURIComponent(city)}/jobs`;
+  if (slug === "services") return `/cities/${encodeURIComponent(city)}/services`;
+  if (slug === "deals") return `/cities/${encodeURIComponent(city)}/deals`;
   const params = new URLSearchParams(sourceParams.toString());
   params.delete("v");
   if (region) {
@@ -410,28 +436,14 @@ function channelHeroCopy(spec: ExploreChannelSpec) {
       return "兼职、正社员、求职经验和岗位线索，按城市聚合。";
     case "market":
       return "闲置、求购和搬家处理信息，适合快速筛选本地交易。";
-    case "food":
-      return "饭局、咖啡和好店讨论，找到适合一起吃饭的人。";
-    case "buddy":
-      return "学习、运动、周末同行和临时搭子都在这里。";
-    case "events":
-      return "线下活动、聚会和城市现场信息，方便提前安排。";
+    case "groups":
+      return "Food meetup、语言交换、本地小组和公开城市活动都在这里。";
     case "qa":
       return "生活疑问、本地手续和实用求助，集中问也集中看。";
     case "services":
       return "搬家、签证、维修、翻译等本地服务信息。";
-    case "recruiting":
-      return "招聘岗位、兼职机会和本地用工信息。";
-    case "referral":
-      return "内推、公司机会和求职连接，适合更直接地找机会。";
-    case "merchant":
-      return "本地商家、店铺动态和服务提醒。";
     case "deals":
       return "优惠、折扣和活动福利，适合顺手收藏。";
-    case "warnings":
-      return "避坑提醒、安全经验和真实反馈，帮助大家少走弯路。";
-    case "treehole":
-      return "匿名倾诉、情绪出口和不方便署名的话题。";
     default:
       return "相关内容会按城市和范围整理在这里。";
   }
@@ -444,15 +456,13 @@ function channelSearchPlaceholder(spec: ExploreChannelSpec, placeLabel: string) 
     case "housing":
       return `搜索${placeLabel}租房、合租、房源、区域...`;
     case "jobs":
-    case "recruiting":
-    case "referral":
-      return `搜索${placeLabel}兼职、招聘、内推...`;
-    case "food":
-      return `搜索${placeLabel}约饭、咖啡、好店...`;
+      return `搜索${placeLabel}兼职、全职、招聘、内推...`;
     case "market":
       return `搜索${placeLabel}二手、闲置、求购...`;
-    case "buddy":
-      return `搜索${placeLabel}搭子、学习、运动...`;
+    case "services":
+      return `搜索${placeLabel}翻译、手续、接机、本地服务...`;
+    case "groups":
+      return `搜索${placeLabel}Food meetup、语言交换、本地小组...`;
     default:
       return `搜索${placeLabel}${spec.title}...`;
   }

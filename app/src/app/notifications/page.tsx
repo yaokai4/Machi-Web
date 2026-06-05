@@ -139,7 +139,8 @@ export default function NotificationsPage() {
                   // Allow nested links / buttons to take over.
                   if ((e.target as HTMLElement).closest("a, button")) return;
                   markIds(group.items.filter((i) => !i.is_read).map((i) => i.id));
-                  if (main.target_post_id) router.push(`/p/${main.target_post_id}`);
+                  if (main.target_conversation_id) router.push(`/messages/${main.target_conversation_id}`);
+                  else if (main.target_post_id) router.push(`/p/${main.target_post_id}`);
                   else if (main.actor) router.push(`/u/${main.actor.handle}`);
                 }}
               >
@@ -185,7 +186,15 @@ export default function NotificationsPage() {
                     )}
                     {moreCount > 0 ? <span className="text-kx-muted"> 等 {moreCount + 1} 位 </span> : <span className="text-kx-muted"> </span>}
                     <NotifVerb kind={group.kind} />
-                    {main.target_post_id ? (
+                    {main.target_conversation_id ? (
+                      <Link
+                        href={`/messages/${main.target_conversation_id}`}
+                        onClick={(e) => e.stopPropagation()}
+                        className="kx-link ml-1"
+                      >
+                        查看对话
+                      </Link>
+                    ) : main.target_post_id ? (
                       <Link
                         href={`/p/${main.target_post_id}`}
                         onClick={(e) => e.stopPropagation()}
@@ -227,6 +236,7 @@ function NotifVerb({ kind }: { kind: string }) {
     case "bookmark": return <>收藏了你的帖子</>;
     case "mention": return <>提到了你</>;
     case "system": return <>系统通知</>;
-    default: return <>{kind}</>;
+    case "listing_inquiry": return <>联系了你发布的城市信息</>;
+    default: return <>给你发来新通知</>;
   }
 }

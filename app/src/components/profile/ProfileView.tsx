@@ -261,6 +261,23 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
               </Link>
               <span><strong>{compactNumber(user.post_count || 0)}</strong> <span className="text-kx-muted">帖子</span></span>
             </div>
+            {isSelf ? (
+              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {[
+                  ["/my/listings", "我的发布"],
+                  ["/my/saved-listings", "我的收藏"],
+                  ["/my/inquiries", "我的咨询"],
+                  ["/my/applications", "我的申请"],
+                  ["/my/bookings", "我的预约"],
+                  ["/my/orders", "我的订单"],
+                  ["/my/membership", "我的会员"],
+                ].map(([href, label]) => (
+                  <Link key={href} href={href} className="rounded-2xl border border-slate-200/70 bg-white px-3 py-2 text-sm font-bold text-slate-800 shadow-[0_8px_24px_rgba(15,23,42,0.04)] hover:border-blue-200 hover:text-blue-700">
+                    {label}
+                  </Link>
+                ))}
+              </div>
+            ) : null}
             {/* Identity / status badges row. Mirrors iOS ProfileView
                 ProfileRoleBadge strip. */}
             {(user.role && user.role !== "member") || user.is_merchant || user.merchant_verified || user.creator_badge || profileRegion ? (

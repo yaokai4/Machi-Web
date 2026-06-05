@@ -119,6 +119,10 @@ export default function RouteError({
         <p className="text-sm text-kx-subtle leading-relaxed">
           请稍后再试。可以重试，或者先回首页继续浏览。
         </p>
+        <div className="space-y-2 rounded-kx-lg bg-kx-soft/60 p-4 text-left text-xs leading-5 text-kx-subtle">
+          <p><strong className="text-kx-text">English:</strong> This page cannot load right now. Try again or return home.</p>
+          <p><strong className="text-kx-text">日本語:</strong> このページは現在読み込めません。再試行するか、ホームへ戻ってください。</p>
+        </div>
         {error.digest ? (
           <p className="text-xs text-kx-muted font-mono">追踪号 {error.digest}</p>
         ) : null}

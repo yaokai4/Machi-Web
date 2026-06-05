@@ -6,7 +6,6 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { Bookmark, ExternalLink, GraduationCap, PencilLine } from "lucide-react";
 import { guide, guideCityLabel, type GuideSchool } from "@/lib/guide";
 import {
-  GUIDE_SCHOOL_TYPE_LABELS,
   ArticleCard,
   GuideComingSoon,
   GuideSectionTitle,
@@ -16,6 +15,8 @@ import {
 } from "@/components/guide/GuideKit";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
+import { guideUi, schoolTypeLabel } from "@/lib/guide-ui";
 
 const SUPPORT_LABELS: Array<{ key: keyof GuideSchool; label: string }> = [
   { key: "isAcceptingInternationalStudents", label: "留学生可申请" },
@@ -30,14 +31,17 @@ export default function GuideSchoolDetailPage() {
   const params = useParams();
   const id = String(params?.id || "");
   const country = useGuideCountry();
+  const { locale } = useI18n();
+  const language = appLocaleToGuideLanguage(locale);
+  const copy = guideUi(locale);
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const [showCorrection, setShowCorrection] = useState(false);
 
   const q = useQuery({
-    queryKey: ["guide", "school", country, id],
-    queryFn: () => guide.school(id, country),
+    queryKey: ["guide", "school", country, language, id],
+    queryFn: () => guide.school(id, country, language),
     enabled: country === "jp" && id.length > 0,
     staleTime: 60_000,
   });
@@ -46,14 +50,14 @@ export default function GuideSchoolDetailPage() {
     mutationFn: (on: boolean) => guide.saveSchool(id, on),
     onSuccess: () => {
       q.refetch();
-      pushToast({ kind: "success", message: "收藏状态已更新" });
+      pushToast({ kind: "success", message: locale === "en" ? "Saved status updated" : locale === "ja" ? "保存状態を更新しました" : "收藏状态已更新" });
     },
-    onError: () => pushToast({ kind: "error", message: "请登录后收藏学校" }),
+    onError: () => pushToast({ kind: "error", message: locale === "en" ? "Please log in to save schools" : locale === "ja" ? "学校を保存するにはログインしてください" : "请登录后收藏学校" }),
   });
 
   if (country !== "jp") {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+      <GuideShell back={{ href: "/guide", label: copy.back }}>
         <GuideComingSoon />
       </GuideShell>
     );
@@ -61,7 +65,7 @@ export default function GuideSchoolDetailPage() {
 
   if (q.isLoading) {
     return (
-      <GuideShell back={{ href: "/guide/schools", label: "学校列表" }}>
+      <GuideShell back={{ href: "/guide/schools", label: copy.schools.listTitle }}>
         <InlineLoading />
       </GuideShell>
     );
@@ -69,17 +73,21 @@ export default function GuideSchoolDetailPage() {
 
   if (q.isError || !q.data?.school) {
     return (
-      <GuideShell back={{ href: "/guide/schools", label: "学校列表" }}>
-        <ErrorState title="学校不存在" subtitle="它可能已被移动或下线。" onRetry={() => q.refetch()} />
+      <GuideShell back={{ href: "/guide/schools", label: copy.schools.listTitle }}>
+        <ErrorState
+          title={locale === "en" ? "School not found" : locale === "ja" ? "学校が見つかりません" : "学校不存在"}
+          subtitle={locale === "en" ? "It may have been moved or unpublished." : locale === "ja" ? "移動または非公開になった可能性があります。" : "它可能已被移动或下线。"}
+          onRetry={() => q.refetch()}
+        />
       </GuideShell>
     );
   }
 
   const school = q.data.school;
-  const typeLabel = GUIDE_SCHOOL_TYPE_LABELS[school.schoolType] || "学校";
+  const typeLabel = schoolTypeLabel(school.schoolType, locale);
 
   return (
-    <GuideShell back={{ href: "/guide/schools", label: "学校列表" }}>
+    <GuideShell back={{ href: "/guide/schools", label: copy.schools.listTitle }}>
       <div className="px-4 py-4 sm:px-6">
         <section className="rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-5">
           <div className="flex items-start gap-3">
@@ -122,7 +130,7 @@ export default function GuideSchoolDetailPage() {
               className="inline-flex h-10 items-center gap-1.5 rounded-full bg-kx-accent px-4 text-sm font-bold text-white shadow-sm disabled:opacity-60"
               disabled={save.isPending}
             >
-              <Bookmark className="h-4 w-4" /> {school.savedByMe ? "已收藏" : "收藏学校"}
+              <Bookmark className="h-4 w-4" /> {school.savedByMe ? (locale === "en" ? "Saved" : locale === "ja" ? "保存済み" : "已收藏") : (locale === "en" ? "Save school" : locale === "ja" ? "学校を保存" : "收藏学校")}
             </button>
             <button
               type="button"
@@ -132,7 +140,7 @@ export default function GuideSchoolDetailPage() {
               }}
               className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke/60 px-4 text-sm font-semibold text-kx-text hover:border-kx-accent/50 hover:text-kx-accent"
             >
-              <PencilLine className="h-4 w-4" /> 纠错 / 补充信息
+              <PencilLine className="h-4 w-4" /> {locale === "en" ? "Suggest a correction" : locale === "ja" ? "修正・補足を送る" : "纠错 / 补充信息"}
             </button>
           </div>
         </section>
@@ -143,7 +151,7 @@ export default function GuideSchoolDetailPage() {
             targetId={school.id}
             onDone={() => {
               setShowCorrection(false);
-              pushToast({ kind: "success", message: "已提交给管理员审核" });
+              pushToast({ kind: "success", message: locale === "en" ? "Submitted for admin review" : locale === "ja" ? "管理者レビューに送信しました" : "已提交给管理员审核" });
             }}
           />
         ) : null}

@@ -3,21 +3,18 @@
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowLeft, ChevronRight, Search, X } from "lucide-react";
-import clsx from "clsx";
 import {
   REGION_COUNTRIES,
   citiesFor,
   provincesFor,
   regionDisplayName,
-  regionHeaderLabel,
   resolveRegion,
   searchRegions,
   type RegionCountry,
   type RegionInfo,
   type RegionProvince,
 } from "@/lib/regions";
-
-const SUPPORTED_COUNTRY_CODES = new Set(["jp", "cn", "us", "ca"]);
+import { useI18n } from "@/lib/i18n";
 
 interface RegionPickerDialogProps {
   open: boolean;
@@ -25,7 +22,6 @@ interface RegionPickerDialogProps {
   onSelect: (region: RegionInfo) => void;
   initialCountry?: string;
   allowsAnyCountry?: boolean;
-  recentCodes?: string[];
 }
 
 export function RegionPickerDialog({
@@ -34,33 +30,28 @@ export function RegionPickerDialog({
   onSelect,
   initialCountry,
   allowsAnyCountry = true,
-  recentCodes = [],
 }: RegionPickerDialogProps) {
   const [query, setQuery] = useState("");
   const [country, setCountry] = useState<RegionCountry | null>(null);
   const [province, setProvince] = useState<RegionProvince | null>(null);
   const [mounted, setMounted] = useState(false);
+  const { t } = useI18n();
   const allowedCountry = allowsAnyCountry ? undefined : initialCountry?.toLowerCase();
 
   const availableCountries = useMemo(
     () =>
       allowedCountry
         ? REGION_COUNTRIES.filter((item) => item.code === allowedCountry)
-        : REGION_COUNTRIES.filter((item) => SUPPORTED_COUNTRY_CODES.has(item.code)),
-    [allowedCountry],
-  );
-  const currentPopular = useMemo(
-    () => (allowedCountry ? canonicalRegionsForCountry(allowedCountry) : ["jp", "cn", "us", "ca"].flatMap(canonicalRegionsForCountry)),
+        : REGION_COUNTRIES,
     [allowedCountry],
   );
   const lockedCountry = allowedCountry ? (availableCountries[0] ?? null) : null;
-  const recentRegions = useMemo(
-    () =>
-      recentCodes
-        .map((code) => resolveRegion(code))
-        .filter((region): region is RegionInfo => Boolean(region))
-        .slice(0, 8),
-    [recentCodes],
+  const defaultCountry = useMemo(
+    () => {
+      const code = (allowedCountry || initialCountry || "jp").toLowerCase();
+      return availableCountries.find((item) => item.code === code) ?? availableCountries[0] ?? null;
+    },
+    [allowedCountry, availableCountries, initialCountry],
   );
   const matches = useMemo(() => {
     return searchRegions(query, allowedCountry);
@@ -106,7 +97,7 @@ export function RegionPickerDialog({
     if (country && !allowedCountry) setCountry(null);
   };
 
-  const title = province?.name || country?.name || (lockedCountry ? `${lockedCountry.name}地区` : "选择地区");
+  const title = province?.name || country?.name || (lockedCountry ? `${lockedCountry.name}地区` : t("region_picker_title"));
   const canGoBack = Boolean(province || (country && !allowedCountry));
 
   return createPortal(
@@ -115,7 +106,7 @@ export function RegionPickerDialog({
       onMouseDown={onClose}
       role="dialog"
       aria-modal="true"
-      aria-label="选择地区"
+      aria-label={t("region_picker_title")}
     >
       <div
         className="flex max-h-[88dvh] w-full max-w-2xl flex-col overflow-hidden rounded-t-[28px] bg-kx-bg shadow-2xl ring-1 ring-kx-stroke sm:rounded-[28px]"
@@ -127,7 +118,7 @@ export function RegionPickerDialog({
               type="button"
               onClick={goBack}
               className="grid h-9 w-9 place-items-center rounded-full bg-kx-soft text-kx-text"
-              aria-label="返回上一级"
+              aria-label={t("region_back")}
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
@@ -137,7 +128,7 @@ export function RegionPickerDialog({
             type="button"
             onClick={onClose}
             className="grid h-9 w-9 place-items-center rounded-full bg-kx-soft text-kx-muted hover:text-kx-text"
-            aria-label="关闭"
+            aria-label={t("region_close")}
           >
             <X className="h-4 w-4" />
           </button>
@@ -149,29 +140,33 @@ export function RegionPickerDialog({
             <input
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="搜索国家、省份或城市"
+              placeholder={t("region_search_placeholder")}
               className="min-w-0 flex-1 bg-transparent text-sm font-semibold outline-none placeholder:text-kx-muted"
             />
             {query ? (
-              <button type="button" onClick={() => setQuery("")} className="text-kx-muted" aria-label="清空搜索">
+              <button type="button" onClick={() => setQuery("")} className="text-kx-muted" aria-label={t("action_cancel")}>
                 <X className="h-4 w-4" />
               </button>
             ) : null}
           </label>
 
           {query.trim() ? (
-            <SearchResultList matches={matches} onSelect={deliver} />
+            <SearchResultList matches={matches} onSelect={deliver} noMatchesLabel={t("region_no_matches")} />
           ) : country ? (
             <CountryDrilldown country={country} province={province} onProvince={setProvince} onSelect={deliver} />
           ) : (
             <RegionPickerLanding
               availableCountries={availableCountries}
               lockedCountry={lockedCountry}
-              currentPopular={currentPopular}
-              recentRegions={recentRegions}
+              activeCountry={lockedCountry ?? defaultCountry}
               onCountry={setCountry}
+              onProvince={(nextCountry, nextProvince) => {
+                setCountry(nextCountry);
+                setProvince(nextProvince);
+              }}
               onSelect={deliver}
               showCountryList={!allowedCountry}
+              labels={{ switchCountry: t("region_switch_country"), switchLocal: t("region_switch_local") }}
             />
           )}
         </div>
@@ -184,64 +179,28 @@ export function RegionPickerDialog({
 function RegionPickerLanding({
   availableCountries,
   lockedCountry,
-  currentPopular,
-  recentRegions,
+  activeCountry,
   onCountry,
+  onProvince,
   onSelect,
   showCountryList,
+  labels,
 }: {
   availableCountries: RegionCountry[];
   lockedCountry: RegionCountry | null;
-  currentPopular: RegionInfo[];
-  recentRegions: RegionInfo[];
+  activeCountry: RegionCountry | null;
   onCountry: (country: RegionCountry) => void;
+  onProvince: (country: RegionCountry, province: RegionProvince) => void;
   onSelect: (region: RegionInfo) => void;
   showCountryList: boolean;
+  labels: { switchCountry: string; switchLocal: string };
 }) {
-  const domestic = lockedCountry ? [] : currentPopular.filter((region) => region.country_code === "cn");
-  const overseas = lockedCountry ? currentPopular : currentPopular.filter((region) => region.country_code !== "cn");
-  const popularTitle = lockedCountry ? `${lockedCountry.name}热门城市` : "海外热门城市";
+  const countryForCities = activeCountry ?? lockedCountry;
 
   return (
     <div className="space-y-5">
-      {recentRegions.length ? <RegionChipSection title="最近地区" regions={recentRegions} onSelect={onSelect} /> : null}
-      {domestic.length ? <RegionChipSection title="热门国内城市" regions={domestic} onSelect={onSelect} /> : null}
-      {overseas.length ? (
-        <section className="space-y-3">
-          <h3 className="kx-section-title px-0">{popularTitle}</h3>
-          <div className="space-y-3">
-            {(lockedCountry ? [lockedCountry] : REGION_COUNTRIES.filter((country) => country.code !== "cn" && SUPPORTED_COUNTRY_CODES.has(country.code))).map((country) => {
-              const regions = overseas.filter((region) => region.country_code === country.code);
-              if (!regions.length) return null;
-              return (
-                <div key={country.code} className="space-y-2">
-                  <div className="text-xs font-black text-kx-muted">{country.emoji} {country.name}</div>
-                  <RegionChipGrid regions={regions} onSelect={onSelect} />
-                </div>
-              );
-            })}
-          </div>
-        </section>
-      ) : null}
-      {lockedCountry ? (
-        <section>
-          <h3 className="kx-section-title mb-2 px-0">全部{lockedCountry.name}地区</h3>
-          <button
-            type="button"
-            onClick={() => onCountry(lockedCountry)}
-            className="flex w-full items-center gap-3 rounded-kx-lg bg-kx-card px-4 py-3 text-left ring-1 ring-kx-stroke/70 transition hover:bg-kx-soft/70"
-          >
-            <span className="text-xl">{lockedCountry.emoji}</span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-bold">按都道府县选择城市</span>
-              <span className="block text-xs font-semibold text-kx-muted">横滨、札幌、神户、仙台、广岛等城市都在这里</span>
-            </span>
-            <ChevronRight className="h-4 w-4 text-kx-muted" />
-          </button>
-        </section>
-      ) : null}
       {showCountryList ? <section>
-        <h3 className="kx-section-title mb-2 px-0">全部国家</h3>
+        <h3 className="kx-section-title mb-2 px-0">{labels.switchCountry}</h3>
         <div className="overflow-hidden rounded-kx-lg bg-kx-card ring-1 ring-kx-stroke/70">
           {availableCountries.map((country) => (
             <button
@@ -257,25 +216,19 @@ function RegionPickerLanding({
           ))}
         </div>
       </section> : null}
+      {countryForCities ? (
+        <section className="space-y-3">
+          <h3 className="kx-section-title px-0">{labels.switchLocal}</h3>
+          <CountryDrilldown
+            country={countryForCities}
+            province={null}
+            onProvince={(province) => onProvince(countryForCities, province)}
+            onSelect={onSelect}
+          />
+        </section>
+      ) : null}
     </div>
   );
-}
-
-function canonicalRegionsForCountry(countryCode: string): RegionInfo[] {
-  const codesByCountry: Record<string, string[]> = {
-    jp: [
-      "jp.tokyo.tokyo", "jp.osaka.osaka", "jp.kanagawa.yokohama",
-      "jp.kyoto.kyoto", "jp.fukuoka.fukuoka", "jp.aichi.nagoya",
-      "jp.hokkaido.sapporo", "jp.hyogo.kobe", "jp.chiba.chiba",
-      "jp.saitama.saitama", "jp.miyagi.sendai", "jp.hiroshima.hiroshima",
-    ],
-    cn: ["cn.shanghai.shanghai", "cn.zhejiang.hangzhou"],
-    us: ["us.ca.la"],
-    ca: ["ca.montreal"],
-  };
-  return (codesByCountry[countryCode.toLowerCase()] || [])
-    .map((code) => resolveRegion(code))
-    .filter((region): region is RegionInfo => Boolean(region));
 }
 
 function CountryDrilldown({
@@ -289,10 +242,6 @@ function CountryDrilldown({
   onProvince: (province: RegionProvince) => void;
   onSelect: (region: RegionInfo) => void;
 }) {
-  const canonical = canonicalRegionsForCountry(country.code);
-  if (!country.has_provinces && canonical.length) {
-    return <RegionChipGrid regions={canonical} onSelect={onSelect} />;
-  }
   if (!country.has_provinces) {
     return <CityList country={country} onSelect={onSelect} />;
   }
@@ -350,9 +299,17 @@ function CityList({
   );
 }
 
-function SearchResultList({ matches, onSelect }: { matches: RegionInfo[]; onSelect: (region: RegionInfo) => void }) {
+function SearchResultList({
+  matches,
+  onSelect,
+  noMatchesLabel,
+}: {
+  matches: RegionInfo[];
+  onSelect: (region: RegionInfo) => void;
+  noMatchesLabel: string;
+}) {
   if (!matches.length) {
-    return <div className="py-12 text-center text-sm font-semibold text-kx-muted">没有匹配的地区</div>;
+    return <div className="py-12 text-center text-sm font-semibold text-kx-muted">{noMatchesLabel}</div>;
   }
   return (
     <div className="overflow-hidden rounded-kx-lg bg-kx-card ring-1 ring-kx-stroke/70">
@@ -368,37 +325,6 @@ function SearchResultList({ matches, onSelect }: { matches: RegionInfo[]; onSele
             <span className="block truncate text-sm font-bold">{region.city_name}</span>
             <span className="block truncate text-xs font-semibold text-kx-muted">{regionDisplayName(region)}</span>
           </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-function RegionChipSection({ title, regions, onSelect }: { title: string; regions: RegionInfo[]; onSelect: (region: RegionInfo) => void }) {
-  return (
-    <section>
-      <h3 className="kx-section-title mb-2 px-0">{title}</h3>
-      <RegionChipGrid regions={regions} onSelect={onSelect} />
-    </section>
-  );
-}
-
-function RegionChipGrid({ regions, onSelect }: { regions: RegionInfo[]; onSelect: (region: RegionInfo) => void }) {
-  return (
-    <div className="flex flex-wrap gap-2">
-      {regions.map((region) => (
-        <button
-          key={region.region_code}
-          type="button"
-          onClick={() => onSelect(region)}
-          className={clsx(
-            "inline-flex h-9 items-center gap-1.5 rounded-full border border-kx-stroke/70 bg-kx-card px-3 text-sm font-semibold",
-            "transition hover:border-kx-accent/50 hover:bg-kx-accentSoft hover:text-kx-accent",
-          )}
-          title={regionDisplayName(region)}
-        >
-          <span>{region.country_emoji}</span>
-          <span>{regionHeaderLabel(region).replace(`${region.country_emoji} `, "")}</span>
         </button>
       ))}
     </div>

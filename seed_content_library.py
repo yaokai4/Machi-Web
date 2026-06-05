@@ -79,14 +79,17 @@ def _author_type_for_seed(*, content_type: str, tone: str, country: str, city: s
 # Default mix when the admin asks for a whole-city batch ("mixed"). Scaled to
 # the requested count. Matches the spec's suggested 100-item distribution.
 _DEFAULT_MIX: dict[str, int] = {
-    "city_square": 30,
-    "qa": 20,
-    "guide": 15,
-    "housing_tip": 10,
-    "secondhand": 8,
-    "jobs_tip": 7,
-    "meetup": 5,
-    "food": 5,
+    "city_square": 22,
+    "qa": 16,
+    "guide": 14,
+    "housing_tip": 12,
+    "jobs_tip": 10,
+    "local_service": 8,
+    "event": 7,
+    "secondhand": 4,
+    "meetup": 3,
+    "food": 2,
+    "alert": 2,
 }
 
 MAX_BATCH_COUNT = 100
@@ -226,6 +229,67 @@ CURATED: dict[tuple[str, str], dict[str, list[str]]] = {
             "蒙特利尔冬天真的不要只看温度，风和路面结冰才是重点。鞋子比外套更重要。",
         ],
     },
+    ("qa", "zh"): {
+        "jp.tokyo.tokyo": [
+            "刚到东京，想问一下区役所办地址登记一般要预约吗？有没有需要提前准备的材料？",
+            "东京看牙医如果日语一般，大家会怎么找能沟通清楚的诊所？",
+            "新宿和池袋之间通勤，哪边晚上回家相对方便一点？",
+        ],
+        "jp.osaka.osaka": [
+            "大阪第一次租房，礼金和保证公司费用一般怎么判断是不是合理？",
+        ],
+        "us.ca.la": [
+            "洛杉矶没有车的话，住 Koreatown 附近日常会不会方便很多？",
+        ],
+        "ca.montreal": [
+            "蒙特利尔冬天第一次租房，除了暖气还需要问房东哪些细节？",
+        ],
+    },
+    ("guide", "zh"): {
+        "jp.tokyo.tokyo": [
+            "刚到东京的前两周，可以先把住址登记、手机卡、交通卡、银行卡、常用药店位置这几件事排好，后面会轻松很多。",
+            "东京找房不要只看车站名，也要看具体出口、夜路、超市距离和末班车。通勤时间差十分钟，长期下来感受很明显。",
+        ],
+        "cn.zhejiang.hangzhou": [
+            "杭州跨区通勤前，最好先看早高峰地铁换乘和雨天打车情况。地图上的距离有时不等于真实时间。",
+        ],
+        "us.ca.la": [
+            "在洛杉矶安排生活半径时，先看上班/上课路线，再看超市、停车和晚间安全。区域之间的体感距离会比地图上更大。",
+        ],
+    },
+    ("local_service", "zh"): {
+        "jp.tokyo.tokyo": [
+            "东京搬家找师傅时，建议提前说清楚楼层、电梯、是否需要拆装家具和停车位置，报价会更准确。",
+            "如果需要翻译、搬家、维修这类本地服务，发布需求时写清楚区域、时间、预算和语言要求，比较容易收到靠谱回复。",
+        ],
+        "cn.shanghai.shanghai": [
+            "上海找上门维修或搬家服务，最好先确认报价包含哪些项目，避免现场临时加价。",
+        ],
+    },
+    ("event", "zh"): {
+        "jp.tokyo.tokyo": [
+            "周末想找轻量活动的话，可以先看代代木、上野、吉祥寺附近的小市集和展览，临时去也不太有压力。",
+            "东京线下活动发布时最好写清楚集合点、费用、人数上限和是否接受迟到，这样报名的人也更安心。",
+        ],
+        "cn.shanghai.shanghai": [
+            "上海周末活动如果在商圈附近，建议提前看地铁出口和散场时间，人多的时候打车会比较慢。",
+        ],
+    },
+    ("jobs_tip", "zh"): {
+        "jp.tokyo.tokyo": [
+            "东京找兼职时，除了时薪，也要问交通费、培训期工资、排班规则和是否需要深夜班。条件写清楚比只看标题靠谱。",
+            "招聘帖如果没有公司名、地址、联系人和工作内容，只写高薪快速入职，建议先核实再继续沟通。",
+        ],
+    },
+    ("alert", "zh"): {
+        "jp.tokyo.tokyo": [
+            "提醒一下，租房或兼职沟通里如果一开始就要求转账、交押金、发证件照片，先暂停核实，不要急着给资料。",
+            "线下见面、约饭或二手交易第一次建议选公共地点，保留聊天记录，也给朋友留一下大致时间和位置。",
+        ],
+        "us.ca.la": [
+            "洛杉矶看房如果对方只给模糊地址、拒绝视频看房、催你先付定金，建议先停一下核实房源。",
+        ],
+    },
 }
 
 
@@ -255,6 +319,9 @@ GENERIC: dict[tuple[str, str], list[str]] = {
         "请问{place}附近有靠谱的牙医吗？想找个能预约的。",
         "在{city}办手机卡，哪家对刚来的人比较友好？",
         "{place}附近有没有可以自习或者办公一两个小时的地方？",
+        "刚搬到{city}，想问下大家一般在哪里买生活用品比较省事？",
+        "{place}附近晚上回家安全吗？有没有需要避开的路段？",
+        "第一次在{city}找房，除了房租还应该重点问哪些费用？",
     ],
     ("qa", "en"): [
         "Any reliable dentist around {place}? Looking for somewhere I can book ahead.",
@@ -268,6 +335,8 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("guide", "zh"): [
         "刚到{city}的话，先把常去的几个区域的交通卡和常用 App 弄好，会顺很多。",
         "在{city}过第一个月，建议先摸清楚{place}和车站之间怎么走最省时间。",
+        "{city}生活刚开始不用一次把所有事办完，先处理住址、通讯、通勤和常用超市这几件最影响日常的事。",
+        "如果要长期住在{city}，建议把工作日通勤和周末活动分开看。有些区域平日方便，周末反而很绕。",
     ],
     ("guide", "en"): [
         "If you just landed in {city}, sort out a transit card and the apps you'll use daily first — it makes everything smoother.",
@@ -279,6 +348,8 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("housing_tip", "zh"): [
         "在{city}租房，签约前记得把押金和管理费问清楚，别只看月租。",
         "{place}这边离车站近，但有些房子临街，晚上会有点吵，看房最好白天晚上都去一次。",
+        "看房时可以顺手拍一下插座、窗户、洗衣机位置和收纳空间，回去对比的时候很有用。",
+        "如果房源价格明显低于同区平均，先确认合同、付款方式和房东身份，不要急着付定金。",
     ],
     ("housing_tip", "en"): [
         "Renting in {city}: confirm the deposit and building fees before signing, not just the monthly rent.",
@@ -290,6 +361,8 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("secondhand", "zh"): [
         "搬家清一批闲置，{place}附近可以自取，有需要的可以问。",
         "换季整理出一些用不上的东西，{city}市区基本都能约时间。",
+        "二手交易建议写清楚尺寸、使用年限、取货方式和是否能送到楼下，沟通会省很多来回。",
+        "如果是大件家具，最好提前确认电梯尺寸和搬运路线，不然现场会很麻烦。",
     ],
     ("secondhand", "en"): [
         "Clearing out a few things before moving — pickup around {place} if anyone needs them.",
@@ -301,6 +374,8 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("jobs_tip", "zh"): [
         "在{city}找兼职，面试前确认好时薪和交通费报不报，省得后面尴尬。",
         "{place}附近的店招人时，排班能不能自己选也很重要，最好先问清楚。",
+        "投递本地岗位前，先把可上班时间、语言水平、签证/工时限制和通勤范围写清楚，会更容易匹配。",
+        "看到只写高薪但没有公司信息、地址和具体工作内容的招聘，建议先核实再联系。",
     ],
     ("jobs_tip", "en"): [
         "Looking for part-time work in {city}: confirm the hourly rate and whether transit is covered before the interview.",
@@ -312,6 +387,8 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("food", "zh"): [
         "{place}新开的那家咖啡，下午人不多，适合坐着待一会儿。",
         "在{city}想找个安静点吃饭的地方，{place}那边小店挺多。",
+        "约饭帖最好写清楚人数、预算、口味和是否AA，临时组局会顺很多。",
+        "{city}有些店午市和晚市价格差不少，想省预算可以先看午餐时段。",
     ],
     ("food", "en"): [
         "That new coffee spot near {place} is quiet in the afternoon — good for sitting a while.",
@@ -323,6 +400,8 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("meetup", "zh"): [
         "周末{place}有没有想一起爬山或者吃饭的，人多热闹点。",
         "最近想在{city}找个一起运动的搭子，{place}附近的优先。",
+        "轻量活动第一次见面建议选公共地点，时间不要排太晚，大家都更放松。",
+        "想找周末搭子的话，把地点、时间、预算和大概节奏写清楚，回应会更有效。",
     ],
     ("meetup", "en"): [
         "Anyone up for a hike or a meal around {place} this weekend? More the merrier.",
@@ -334,6 +413,8 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("event", "zh"): [
         "听说{place}这周末有市集，有去过的吗？值不值得专门跑一趟。",
         "{city}最近线下活动好像多起来了，{place}那边有看到海报。",
+        "活动帖里如果能写清楚集合点、费用、人数和取消规则，报名的人会安心很多。",
+        "{place}附近如果有展览、市集或小型演出，欢迎发出来，周末找活动的人挺多。",
     ],
     ("event", "en"): [
         "Heard there's a market around {place} this weekend — anyone been? Worth the trip?",
@@ -345,6 +426,8 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("local_service", "zh"): [
         "{city}有没有推荐的搬家师傅？要能爬楼的那种。",
         "想在{place}附近找个修自行车的地方，最好不用等太久。",
+        "发布本地服务需求时，写清楚区域、时间、预算和是否需要中文/英文/日文沟通，比较容易找到合适的人。",
+        "找维修、搬家、翻译、报税这类服务，建议先问清楚报价包含什么，避免现场临时加价。",
     ],
     ("local_service", "en"): [
         "Any recommendations for movers in {city}? Need someone okay with stairs.",
@@ -356,6 +439,8 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("alert", "zh"): [
         "提醒一下，{place}最近在修路，开车和骑车的绕一下会快很多。",
         "{place}那段晚上灯比较暗，一个人走的话注意一下。",
+        "二手、租房、兼职沟通里如果对方一直催你先转账，先停一下核实身份和地址。",
+        "第一次线下见面建议选公共地点，保留沟通记录，也给朋友留一个大概时间。",
     ],
     ("alert", "en"): [
         "Heads up: roadwork around {place} lately — driving or cycling around it saves time.",

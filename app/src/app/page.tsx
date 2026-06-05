@@ -15,9 +15,9 @@ import {
 
 const META: Record<"zh" | "en" | "ja", { title: string; description: string; keywords: string[] }> = {
   zh: {
-    title: "Machi｜在每一座城市，找到生活的回声｜本地生活与同城社交社区",
+    title: "Machi City｜在每一座城市，找到生活的回声",
     description:
-      "Machi 是按城市和语言组织的本地生活与同城社交社区，帮助用户发现租房、二手、工作、招聘、活动、约饭、问答、避坑经验和本地服务，也能认识同城朋友、饭搭子、活动搭子和语言交换伙伴。",
+      "Machi 是一个按国家、城市和语言组织内容的本地生活与同城连接平台。发现租房、二手、工作、活动、问答、本地服务、商家优惠和真实城市经验。",
     keywords: [
       "Machi",
       "Machi",
@@ -31,16 +31,16 @@ const META: Record<"zh" | "en" | "ja", { title: string; description: string; key
       "二手",
       "找工作",
       "招聘",
-      "搭子",
-      "约饭",
+      "本地小组",
+      "美食讨论",
       "避坑",
       "city community",
     ],
   },
   en: {
-    title: "Machi | Find the Echoes of Life in Every City | Local Life & Social Community",
+    title: "Machi City | Find the echoes of life in every city",
     description:
-      "Machi is a local life and social community organized by city and language, helping people discover housing, jobs, secondhand deals, events, dining, Q&A, local tips and trusted services — and meet local friends, dining buddies, event companions and language exchange partners.",
+      "Machi is a city-based local life and social community platform organized by country, city and language. Discover housing, secondhand deals, jobs, events, Q&A, local services, business offers and real city-life experience.",
     keywords: [
       "Machi",
       "Machi",
@@ -59,9 +59,9 @@ const META: Record<"zh" | "en" | "ja", { title: string; description: string; key
     ],
   },
   ja: {
-    title: "Machi｜すべての街で、暮らしの響きを見つける｜ローカル生活・ソーシャルコミュニティ",
+    title: "Machi City｜すべての街で、暮らしのこだまを見つける",
     description:
-      "Machi は都市と言語で整理されたローカル生活・ソーシャルコミュニティです。住まい、中古、仕事、求人、イベント、食事、Q&A、生活情報、地域サービスを見つけ、同じ街の友達、食事仲間、イベント仲間、言語交換パートナーともつながれます。",
+      "Machi は、国・都市・言語ごとに暮らしの情報と人のつながりを整理するローカルライフ・コミュニティプラットフォームです。住まい、中古品、仕事、イベント、Q&A、地域サービス、街の実体験を見つけることができます。",
     keywords: [
       "Machi",
       "Machi",

@@ -9,9 +9,12 @@ const localizedMarketingPages: Array<{ pageId: MarketingPageId; slug: string[] }
   { pageId: "about", slug: ["about"] },
   { pageId: "features", slug: ["features"] },
   { pageId: "cities", slug: ["cities"] },
+  { pageId: "guide", slug: ["guide"] },
   { pageId: "business", slug: ["business"] },
   { pageId: "safety", slug: ["safety"] },
   { pageId: "download", slug: ["download"] },
+  { pageId: "updates", slug: ["updates"] },
+  { pageId: "faq", slug: ["faq"] },
   { pageId: "ads", slug: ["ads"] },
   { pageId: "contact", slug: ["contact"] },
   { pageId: "partners", slug: ["partners"] },
@@ -20,6 +23,12 @@ const localizedMarketingPages: Array<{ pageId: MarketingPageId; slug: string[] }
   { pageId: "safety-center", slug: ["safety-center"] },
   { pageId: "privacy", slug: ["legal", "privacy"] },
   { pageId: "terms", slug: ["legal", "terms"] },
+  { pageId: "membership-terms", slug: ["legal", "membership-terms"] },
+  { pageId: "service-terms", slug: ["legal", "service-terms"] },
+  { pageId: "refund-policy", slug: ["legal", "refund-policy"] },
+  { pageId: "community-guidelines", slug: ["legal", "community-guidelines"] },
+  { pageId: "commercial-disclosure", slug: ["legal", "commercial-disclosure"] },
+  { pageId: "cookie-policy", slug: ["legal", "cookie-policy"] },
 ];
 
 const pathToPageId = new Map(localizedMarketingPages.map(({ pageId, slug }) => [slug.join("/"), pageId]));

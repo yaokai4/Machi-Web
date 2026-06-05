@@ -26,6 +26,8 @@ import {
 import type { GuideCategory, GuideEmptyState, GuideProduct, GuideCompany, GuideGoalEntry, GuideResourceEntry, GuideSchool } from "@/lib/guide";
 import { GUIDE_PRODUCT_TYPE_LABELS, guideCityLabel } from "@/lib/guide";
 import { formatPrice } from "@/lib/format";
+import { regionAccountPatch, resolveRegion } from "@/lib/regions";
+import { useI18n, type Locale } from "@/lib/i18n";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   graduation: GraduationCap,
@@ -97,10 +99,11 @@ export function GuideShell({
 }
 
 export function GuideComingSoon({ empty }: { empty?: GuideEmptyState }) {
+  const { t } = useI18n();
   const e = empty || {
-    title: "Machi 指南目前只开放日本地区",
-    body: "如果你正在准备日本留学、升学、就职，或在备考日语（JLPT）、了解在日生活，切换到日本地区即可查看完整的指南、学校库、公司库与资料服务。其他国家和地区将陆续开放。",
-    action: "切换到日本地区",
+    title: t("guide_coming_soon_title"),
+    body: t("guide_coming_soon_body"),
+    action: t("guide_switch_japan"),
     actionCountry: "jp",
   };
   const user = useSession((s) => s.user);
@@ -120,10 +123,11 @@ export function GuideComingSoon({ empty }: { empty?: GuideEmptyState }) {
     }
     setBusy(true);
     try {
-      const next = await api.updateRegionLanguage({ current_region_code: "jp.tokyo.tokyo" });
+      const tokyo = resolveRegion("jp.tokyo.tokyo");
+      const next = await api.updateRegionLanguage(tokyo ? regionAccountPatch(tokyo) : { current_region_code: "jp.tokyo.tokyo" });
       setUser(next);
       queryClient.invalidateQueries({ queryKey: ["guide"] });
-      pushToast({ kind: "success", message: "已切换到日本地区" });
+      pushToast({ kind: "success", message: t("guide_switched_japan") });
     } catch (err) {
       if (isAuthRequiredError(err)) {
         openAuthPrompt("generic");
@@ -143,7 +147,7 @@ export function GuideComingSoon({ empty }: { empty?: GuideEmptyState }) {
       <h1 className="mt-5 text-2xl font-black text-kx-text">{e.title}</h1>
       <p className="mt-3 max-w-md text-sm leading-7 text-kx-subtle">{e.body}</p>
       <button type="button" onClick={switchToJapan} disabled={busy} className="kx-button-primary mt-6 h-11 px-5 disabled:opacity-60">
-        {busy ? "切换中…" : e.action}
+        {busy ? t("guide_switching") : e.action}
       </button>
     </div>
   );
@@ -153,13 +157,14 @@ export function GuideSectionTitle({
   title,
   subtitle,
   href,
-  hrefLabel = "查看全部",
+  hrefLabel,
 }: {
   title: string;
   subtitle?: string;
   href?: string;
   hrefLabel?: string;
 }) {
+  const { t } = useI18n();
   return (
     <div className="mb-3 flex items-end justify-between gap-3">
       <div className="min-w-0">
@@ -168,7 +173,7 @@ export function GuideSectionTitle({
       </div>
       {href ? (
         <Link href={href} className="shrink-0 text-xs font-semibold text-kx-accent hover:underline">
-          {hrefLabel}
+          {hrefLabel || t("guide_view_all")}
         </Link>
       ) : null}
     </div>
@@ -199,6 +204,7 @@ export function CategoryCard({ category }: { category: GuideCategory }) {
 
 export function ResourceEntryCard({ entry }: { entry: GuideResourceEntry }) {
   const Icon = categoryIconFor(entry.icon);
+  const { t } = useI18n();
   return (
     <Link
       href={entry.href}
@@ -213,7 +219,7 @@ export function ResourceEntryCard({ entry }: { entry: GuideResourceEntry }) {
           <p className="mt-1 line-clamp-3 text-xs leading-5 text-kx-subtle">{entry.description}</p>
         </div>
       </div>
-      <span className="mt-3 text-xs font-bold text-kx-accent">进入资料库</span>
+      <span className="mt-3 text-xs font-bold text-kx-accent">{t("guide_enter_library")}</span>
     </Link>
   );
 }
@@ -263,8 +269,10 @@ export function guideProductPrice(p: GuideProduct): { label: string; tone: "soon
 }
 
 export function ProductCard({ product }: { product: GuideProduct }) {
+  const { t } = useI18n();
   const price = guideProductPrice(product);
-  const typeLabel = GUIDE_PRODUCT_TYPE_LABELS[product.productType] || (product.isService ? "服务" : "资料");
+  const priceLabel = price.tone === "free" ? t("guide_free") : price.tone === "service" && price.label === "预约咨询" ? t("guide_appointment") : price.label;
+  const typeLabel = GUIDE_PRODUCT_TYPE_LABELS[product.productType] || (product.isService ? t("guide_service") : t("guide_material"));
   return (
     <Link
       href={`/guide/products/${product.slug}`}
@@ -272,11 +280,11 @@ export function ProductCard({ product }: { product: GuideProduct }) {
     >
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">{typeLabel}</span>
-        <span className={priceToneClass(price.tone)}>{price.label}</span>
+        <span className={priceToneClass(price.tone)}>{priceLabel}</span>
       </div>
       <h3 className="line-clamp-2 text-[15px] font-black leading-snug text-kx-text group-hover:text-kx-accent">{product.title}</h3>
       {product.subtitle ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-kx-subtle">{product.subtitle}</p> : null}
-      {product.targetAudience ? <p className="mt-2 text-[11px] text-kx-muted">适合：{product.targetAudience}</p> : null}
+      {product.targetAudience ? <p className="mt-2 text-[11px] text-kx-muted">{t("guide_audience_prefix")}{product.targetAudience}</p> : null}
     </Link>
   );
 }
@@ -291,8 +299,19 @@ export const GUIDE_SCHOOL_TYPE_LABELS: Record<string, string> = {
   other: "其他",
 };
 
+const GUIDE_SCHOOL_TYPE_LABELS_I18N: Record<string, Record<Locale, string>> = {
+  university: { "zh-Hans": "大学", "zh-Hant": "大學", en: "University", ja: "大学" },
+  graduate_school: { "zh-Hans": "大学院", "zh-Hant": "大學院", en: "Graduate school", ja: "大学院" },
+  junior_college: { "zh-Hans": "短期大学", "zh-Hant": "短期大學", en: "Junior college", ja: "短期大学" },
+  vocational_school: { "zh-Hans": "专门学校", "zh-Hant": "專門學校", en: "Vocational school", ja: "専門学校" },
+  language_school: { "zh-Hans": "语言学校", "zh-Hant": "語言學校", en: "Language school", ja: "日本語学校" },
+  college_of_technology: { "zh-Hans": "高专", "zh-Hant": "高專", en: "Technical college", ja: "高専" },
+  other: { "zh-Hans": "其他", "zh-Hant": "其他", en: "Other", ja: "その他" },
+};
+
 export function SchoolCard({ school }: { school: GuideSchool }) {
-  const typeLabel = GUIDE_SCHOOL_TYPE_LABELS[school.schoolType] || "学校";
+  const { locale, t } = useI18n();
+  const typeLabel = GUIDE_SCHOOL_TYPE_LABELS_I18N[school.schoolType]?.[locale] || GUIDE_SCHOOL_TYPE_LABELS_I18N.other[locale];
   return (
     <Link
       href={`/guide/schools/${school.slug || school.id}`}
@@ -308,10 +327,10 @@ export function SchoolCard({ school }: { school: GuideSchool }) {
       <p className="mt-2 line-clamp-2 text-xs leading-5 text-kx-subtle">{school.shortDescription || school.description}</p>
       <div className="mt-3 flex flex-wrap gap-1.5">
         {school.isAcceptingInternationalStudents ? (
-          <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">留学生可申请</span>
+          <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">{t("guide_student_ok")}</span>
         ) : null}
         {school.hasEnglishProgram ? (
-          <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">英文项目</span>
+          <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">{t("guide_english_program")}</span>
         ) : null}
         {school.fieldsOfStudy.slice(0, 2).map((field) => (
           <span key={field} className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">{field}</span>
@@ -319,13 +338,14 @@ export function SchoolCard({ school }: { school: GuideSchool }) {
       </div>
       <div className="mt-3 flex items-center justify-between text-[11px] text-kx-muted">
         <span>{school.prefecture || guideCityLabel(school.city)} · {guideCityLabel(school.city)}</span>
-        <span>{school.verificationStatus === "needs_review" ? "编辑部维护" : "已核验"}</span>
+        <span>{school.verificationStatus === "needs_review" ? t("guide_school_editor") : t("guide_school_verified")}</span>
       </div>
     </Link>
   );
 }
 
 export function CompanyCard({ company }: { company: GuideCompany }) {
+  const { t } = useI18n();
   return (
     <Link
       href={`/guide/companies/${company.slug || company.id}`}
@@ -336,25 +356,25 @@ export function CompanyCard({ company }: { company: GuideCompany }) {
           <h3 className="truncate text-[15px] font-black text-kx-text group-hover:text-kx-accent">{company.companyName}</h3>
           {company.companyNameJp ? <p className="truncate text-xs text-kx-muted">{company.companyNameJp}</p> : null}
         </div>
-        <span className="shrink-0 rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">{company.industry || "公司"}</span>
+        <span className="shrink-0 rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">{company.industry || t("guide_company")}</span>
       </div>
       <p className="mt-2 line-clamp-2 text-xs leading-5 text-kx-subtle">{company.shortDescription || company.description}</p>
       <div className="mt-3 flex flex-wrap gap-1.5">
         {company.supportsWorkVisa ? (
-          <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">签证支持</span>
+          <span className="rounded-full bg-emerald-400/15 px-2 py-0.5 text-[11px] font-bold text-emerald-700 dark:text-emerald-300">{t("guide_visa_support")}</span>
         ) : null}
         {company.hasEnglishPositions ? (
-          <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">英文岗位</span>
+          <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">{t("guide_english_positions")}</span>
         ) : null}
         <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">
-          日语 {company.requiredJapaneseLevel && company.requiredJapaneseLevel !== "unknown" ? company.requiredJapaneseLevel.toUpperCase() : "未确认"}
+          {t("guide_japanese_label")} {company.requiredJapaneseLevel && company.requiredJapaneseLevel !== "unknown" ? company.requiredJapaneseLevel.toUpperCase() : t("guide_unconfirmed")}
         </span>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-kx-muted">
         <span>{guideCityLabel(company.city)}</span>
-        {company.foundedYear ? <span>成立 {company.foundedYear}</span> : null}
+        {company.foundedYear ? <span>{t("guide_founded")} {company.foundedYear}</span> : null}
         <span className={company.reviewCount > 0 ? "text-kx-accent" : ""}>
-          {company.reviewCount > 0 ? `${company.reviewCount} 条评价` : "暂无评价"}
+          {company.reviewCount > 0 ? `${company.reviewCount} ${t("guide_reviews_suffix")}` : t("guide_no_reviews")}
         </span>
       </div>
     </Link>

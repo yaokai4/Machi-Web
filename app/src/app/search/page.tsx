@@ -2,6 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Flame, History, Hash, Search as SearchIcon, X, Trash2, TrendingUp } from "lucide-react";
@@ -13,10 +14,18 @@ import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { showVerifiedBadge } from "@/lib/types";
 import { NavTabs } from "@/components/design/NavTabs";
 import { useToasts } from "@/lib/store";
-import { useI18n } from "@/lib/i18n";
+import { appLocaleToMarketingLocale, useI18n } from "@/lib/i18n";
 import { compactNumber } from "@/lib/format";
+import { getCityBySlug } from "@/config/cities";
+import {
+  cleanListingText,
+  formatListingType,
+  formatPrice as formatListingPrice,
+  listingSectionForType,
+} from "@/lib/listingFormat";
+import type { KXCityListing, KXPost } from "@/lib/types";
 
-type Kind = "all" | "post" | "user" | "topic";
+type Kind = "all" | "post" | "listing" | "user" | "topic";
 
 /// Same Suspense gating as /login — Next.js 15 wants the boundary.
 export default function SearchPage() {
@@ -27,15 +36,27 @@ export default function SearchPage() {
   );
 }
 
+function listingSearchHref(listing: Pick<KXCityListing, "id" | "type" | "city_slug">) {
+  const section = listingSectionForType(listing.type);
+  return `/cities/${listing.city_slug || "tokyo"}/${section}/${listing.id}`;
+}
+
+function listingCityLabel(citySlug?: string | null, fallback = "本地") {
+  const slug = cleanListingText(citySlug);
+  return getCityBySlug(slug)?.name || slug || fallback;
+}
+
 function SearchPageInner() {
   const params = useSearchParams();
   const router = useRouter();
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
+  const listingLocale = appLocaleToMarketingLocale(locale);
   const KIND_LABEL: Record<Kind, string> = {
     all: t("nav_search"),
-    post: t("profile_section_posts"),
+    post: t("search_kind_posts"),
+    listing: t("search_kind_listings"),
     user: t("search_users"),
     topic: t("search_topics"),
   };
@@ -65,9 +86,9 @@ function SearchPageInner() {
     enabled: true,
   });
   const showResults = !!submitted;
-  const trending = useQuery({
-    queryKey: ["trending"],
-    queryFn: () => api.trending(),
+  const weeklyLikes = useQuery({
+    queryKey: ["trending-weekly-likes", 7],
+    queryFn: () => api.trendingWeeklyLikes({ days: 7, limit: 8 }),
     staleTime: 60_000,
     enabled: !showResults,
   });
@@ -100,7 +121,7 @@ function SearchPageInner() {
               <button
                 className="kx-liquid-button grid h-8 w-8 place-items-center text-kx-muted hover:text-kx-text"
                 onClick={() => { setQuery(""); submit(""); }}
-                aria-label="清空"
+                aria-label={t("search_clear")}
               >
                 <X className="h-4 w-4" />
               </button>
@@ -128,7 +149,7 @@ function SearchPageInner() {
             <div className="px-3 sm:px-4 py-3 space-y-3">
               {(kind === "all" || kind === "user") && search.data!.users.length > 0 ? (
                 <section className="kx-card p-0 overflow-hidden">
-                  <h3 className="kx-section-title px-4 pt-3">用户</h3>
+                  <h3 className="kx-section-title px-4 pt-3">{t("search_users")}</h3>
                   <ul className="mt-2">
                     {search.data!.users.map((u) => (
                       <li key={u.id} className="px-4 py-2.5 hover:bg-kx-soft flex items-center gap-2.5">
@@ -149,18 +170,25 @@ function SearchPageInner() {
 
               {(kind === "all" || kind === "topic") && search.data!.topics.length > 0 ? (
                 <section className="kx-card">
-                  <h3 className="kx-section-title mb-3 px-0">话题</h3>
+                  <h3 className="kx-section-title mb-3 px-0">{t("search_topics")}</h3>
                   <ul className="grid grid-cols-2 gap-x-3 gap-y-2">
-                    {search.data!.topics.map((t) => (
-                      <li key={t.tag}>
-                        <Link href={`/t/${encodeURIComponent(t.tag)}`} className="flex items-center gap-2 hover:underline">
+                    {search.data!.topics.map((topic) => (
+                      <li key={topic.tag}>
+                        <Link href={`/t/${encodeURIComponent(topic.tag)}`} className="flex items-center gap-2 hover:underline">
                           <Hash className="w-3.5 h-3.5 text-kx-accent" />
-                          <span className="font-semibold text-sm truncate">{t.tag}</span>
-                          <span className="text-xs text-kx-muted ml-auto">{t.post_count} 帖</span>
+                          <span className="font-semibold text-sm truncate">{topic.tag}</span>
+                          <span className="text-xs text-kx-muted ml-auto">{topic.post_count} {t("search_topic_post_suffix")}</span>
                         </Link>
                       </li>
                     ))}
                   </ul>
+                </section>
+              ) : null}
+
+              {(kind === "all" || kind === "listing") && (search.data!.listings || []).length > 0 ? (
+                <section className="space-y-3">
+                  <h3 className="kx-section-title px-1">{t("search_listing_label")}</h3>
+                  {search.data!.listings.map((listing) => <SearchListingCard key={listing.id} listing={listing} locale={listingLocale} localFallback={t("search_local_city")} />)}
                 </section>
               ) : null}
 
@@ -170,7 +198,7 @@ function SearchPageInner() {
                 </section>
               ) : null}
 
-              {search.data!.posts.length === 0 && search.data!.users.length === 0 && search.data!.topics.length === 0 ? (
+              {search.data!.posts.length === 0 && (search.data!.listings || []).length === 0 && search.data!.users.length === 0 && search.data!.topics.length === 0 ? (
                 <EmptyState title={t("search_empty_title")} subtitle={t("search_empty_subtitle")} />
               ) : null}
             </div>
@@ -182,10 +210,10 @@ function SearchPageInner() {
             <section className="kx-card">
               <div className="flex items-center mb-3">
                 <h3 className="kx-section-title px-0 inline-flex items-center gap-1.5">
-                  <History className="w-4 h-4" /> 搜索历史
+                  <History className="w-4 h-4" /> {t("search_history")}
                 </h3>
                 <button onClick={clearHistory} className="ml-auto text-xs text-kx-muted hover:text-kx-danger inline-flex items-center gap-1">
-                  <Trash2 className="w-3.5 h-3.5" /> 清空
+                  <Trash2 className="w-3.5 h-3.5" /> {t("search_clear")}
                 </button>
               </div>
               <div className="flex flex-wrap gap-1.5">
@@ -203,19 +231,19 @@ function SearchPageInner() {
           ) : null}
 
           {!history.data || history.data.length === 0 ? (
-            <EmptyState title="开始搜索" subtitle="输入关键词查找帖子、用户、话题。" />
+            <EmptyState title={t("search_start_title")} subtitle={t("search_start_subtitle")} />
           ) : null}
 
-          {trending.data && trending.data.posts.length > 0 ? (
+          {weeklyLikes.data && weeklyLikes.data.posts.length > 0 ? (
             <section className="kx-card overflow-hidden">
               <div className="mb-3 flex items-center justify-between">
                 <h3 className="kx-section-title px-0 inline-flex items-center gap-1.5 text-kx-text">
-                  <TrendingUp className="w-4 h-4 text-kx-accent" /> 正在发生
+                  <TrendingUp className="w-4 h-4 text-kx-accent" /> {t("search_recent_likes_title")}
                 </h3>
-                <span className="rounded-full border border-kx-stroke/70 bg-kx-soft/70 px-2.5 py-1 text-[11px] font-bold text-kx-muted">本地热度</span>
+                <span className="rounded-full border border-kx-stroke/70 bg-kx-soft/70 px-2.5 py-1 text-[11px] font-bold text-kx-muted">{t("search_recent_likes_badge")}</span>
               </div>
               <ol className="flex flex-col">
-                {trending.data.posts.slice(0, 6).map((post, idx) => (
+                {weeklyLikes.data.posts.slice(0, 6).map((post, idx) => (
                   <li key={post.id} className="border-b border-kx-stroke/55 last:border-0">
                     <Link href={`/p/${post.id}`} className="group flex items-start gap-3 py-2.5">
                       <span className={idx < 3
@@ -225,13 +253,13 @@ function SearchPageInner() {
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className="block text-[15px] font-semibold leading-5 text-kx-text line-clamp-2 group-hover:text-kx-accent">
-                          {post.content || String(post.attributes?.title || "本地动态")}
+                          {post.content || String(post.attributes?.title || t("search_post_fallback"))}
                         </span>
                         <span className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-kx-muted">
-                          @{post.author?.handle || "unknown"}
+                          @{post.author?.handle || "machi"}
                           <span>·</span>
                           <Flame className="h-3.5 w-3.5 text-kx-heat/80" />
-                          {compactNumber(post.heat_score)}
+                          {compactNumber(weeklyLikeCount(post))}
                         </span>
                       </span>
                     </Link>
@@ -243,5 +271,39 @@ function SearchPageInner() {
         </div>
       )}
     </AppShell>
+  );
+}
+
+function weeklyLikeCount(post: KXPost & Partial<KXCityPostLikeCount>): number {
+  return Number(post.weekly_like_count || post.weeklyLikes || 0);
+}
+
+type KXCityPostLikeCount = {
+  weekly_like_count?: number;
+  weeklyLikes?: number;
+};
+
+function SearchListingCard({ listing, locale, localFallback }: { listing: KXCityListing; locale: "zh" | "en" | "ja"; localFallback: string }) {
+  const city = listingCityLabel(listing.city_slug, localFallback);
+  const title = cleanListingText(listing.title) || formatListingType(listing.type, locale);
+  const location = cleanListingText(listing.location_text) || cleanListingText(listing.category) || city;
+  return (
+    <Link
+      href={listingSearchHref(listing)}
+      className="grid gap-3 rounded-2xl border border-slate-200/70 bg-white p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)] sm:grid-cols-[96px_1fr]"
+    >
+      <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-100 sm:aspect-square">
+        {listing.cover_url ? <Image src={listing.cover_url} alt={title} fill sizes="96px" className="object-cover" unoptimized /> : null}
+      </div>
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black text-slate-600">{formatListingType(listing.type, locale)}</span>
+          <span className="text-xs font-bold text-slate-400">{city}</span>
+        </div>
+        <h4 className="mt-2 line-clamp-1 text-base font-black text-slate-950">{title}</h4>
+        <p className="mt-1 text-sm font-bold text-slate-900">{formatListingPrice(listing, undefined, locale)}</p>
+        <p className="mt-1 line-clamp-1 text-sm text-slate-500">{location}</p>
+      </div>
+    </Link>
   );
 }

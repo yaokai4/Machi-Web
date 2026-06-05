@@ -8,6 +8,7 @@ import {
   ChevronRight,
   Eye,
   EyeOff,
+  Languages,
   Loader2,
   Mail,
   MapPin,
@@ -19,6 +20,7 @@ import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
 import { regionDisplayName, type RegionInfo } from "@/lib/regions";
 import { FieldShell, PasswordStrength } from "@/components/design/FieldShell";
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 import {
   EMAIL_RE,
   HANDLE_RE,
@@ -28,6 +30,7 @@ import {
   sanitizeRegisterHandle,
   validateRegister,
 } from "@/lib/authValidation";
+import { AUTH_COPY, AUTH_LOCALE_KEY, AUTH_LOCALE_OPTIONS, detectAuthLocale, type AuthLocale } from "@/lib/authLocale";
 
 type Errors = Partial<Record<"handle" | "displayName" | "email" | "password" | "code" | "terms" | "region", string>>;
 type Availability = { status: "idle" | "checking" | "available" | "unavailable"; message: string };
@@ -36,41 +39,41 @@ type Availability = { status: "idle" | "checking" | "available" | "unavailable";
 // codes for the common cases — `handle_taken`, `weak_password`,
 // `invalid_email` — and we surface them at the matching field instead
 // of a vague toast.
-function mapRegisterError(err: unknown): { field?: keyof Errors; message: string } {
+function mapRegisterError(err: unknown, c: (typeof AUTH_COPY)[AuthLocale]): { field?: keyof Errors; message: string } {
   if (err instanceof APIError) {
     if (err.code === "handle_taken" || /already.*(taken|exists)/i.test(err.message)) {
-      return { field: "handle", message: "这个用户名已被使用，换一个试试。" };
+      return { field: "handle", message: c.handleTaken };
     }
     if (err.code === "invalid_handle" || /handle/i.test(err.message)) {
-      return { field: "handle", message: "用户名只能用小写字母、数字、下划线和点，3–20 位。" };
+      return { field: "handle", message: c.invalidHandle };
     }
     if (err.code === "reserved_handle") {
-      return { field: "handle", message: "这个用户名不可使用。" };
+      return { field: "handle", message: c.reservedHandle };
     }
     if (err.code === "weak_password") {
-      return { field: "password", message: "密码强度不足，请尝试更长或加入数字 / 符号。" };
+      return { field: "password", message: c.weakPassword };
     }
     if (err.code === "invalid_email") {
-      return { field: "email", message: "邮箱格式不正确。" };
+      return { field: "email", message: c.invalidEmail };
     }
     if (err.code === "email_taken") {
-      return { field: "email", message: "这个邮箱已被注册过。" };
+      return { field: "email", message: c.emailTaken };
     }
     if (err.code === "invalid_code" || err.code === "code_expired") {
-      return { field: "code", message: err.message || "验证码无效或已过期。" };
+      return { field: "code", message: err.message || c.invalidCode };
     }
     if (err.status === 429 || err.code === "rate_limited") {
-      return { message: "尝试过多，请稍等 30 秒后再试。" };
+      return { message: c.rateLimited };
     }
     if (err.status === 0 || err.code === "network_error") {
-      return { message: "无法连接服务器，请检查网络后重试。" };
+      return { message: c.network };
     }
     if (err.code === "timeout") {
-      return { message: "请求超时，请稍后再试。" };
+      return { message: c.timeout };
     }
     if (err.message) return { message: err.message };
   }
-  return { message: "注册失败，请稍后再试。" };
+  return { message: c.registerFailed };
 }
 
 export default function RegisterPage() {
@@ -104,6 +107,8 @@ function RegisterForm() {
   const [selectedRegion, setSelectedRegion] = useState<RegionInfo | null>(null);
   const [regionOpen, setRegionOpen] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [locale, setLocale] = useState<AuthLocale>(() => detectAuthLocale());
   const [sendingCode, setSendingCode] = useState(false);
   const [codeCooldown, setCodeCooldown] = useState(0);
   const [handleAvailability, setHandleAvailability] = useState<Availability>({ status: "idle", message: "" });
@@ -111,6 +116,16 @@ function RegisterForm() {
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [serverError, setServerError] = useState<{ field?: keyof Errors; message: string } | null>(null);
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
+  const c = AUTH_COPY[locale];
+
+  const changeLocale = (next: AuthLocale) => {
+    setLocale(next);
+    try {
+      window.localStorage.setItem(AUTH_LOCALE_KEY, next);
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     if (status === "authed") router.replace(redirect);
@@ -128,14 +143,14 @@ function RegisterForm() {
       setHandleAvailability({ status: "idle", message: "" });
       return;
     }
-    setHandleAvailability({ status: "checking", message: "正在检查用户名…" });
+    setHandleAvailability({ status: "checking", message: locale === "ja" ? "ユーザー名を確認しています…" : locale === "en" ? "Checking username…" : "正在检查用户名…" });
     const timer = window.setTimeout(() => {
       api.checkUsername(value)
         .then((res) => setHandleAvailability({ status: res.available ? "available" : "unavailable", message: res.message }))
         .catch(() => setHandleAvailability({ status: "idle", message: "" }));
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [handle]);
+  }, [handle, locale]);
 
   useEffect(() => {
     const value = email.trim();
@@ -143,21 +158,22 @@ function RegisterForm() {
       setEmailAvailability({ status: "idle", message: "" });
       return;
     }
-    setEmailAvailability({ status: "checking", message: "正在检查邮箱…" });
+    setEmailAvailability({ status: "checking", message: locale === "ja" ? "メールを確認しています…" : locale === "en" ? "Checking email…" : "正在检查邮箱…" });
     const timer = window.setTimeout(() => {
       api.checkEmail(value)
         .then((res) => setEmailAvailability({ status: res.available ? "available" : "unavailable", message: res.message }))
         .catch(() => setEmailAvailability({ status: "idle", message: "" }));
     }, 450);
     return () => window.clearTimeout(timer);
-  }, [email]);
+  }, [email, locale]);
 
   const errors: Errors = useMemo(() => {
     return validateRegister(
       { handle, displayName, email, password, confirmPassword, code, acceptedTerms, hasRegion: !!selectedRegion },
       touched,
+      locale,
     );
-  }, [touched, handle, displayName, email, password, confirmPassword, code, acceptedTerms, selectedRegion]);
+  }, [touched, handle, displayName, email, password, confirmPassword, code, acceptedTerms, selectedRegion, locale]);
 
   const isValid = isRegisterValid({ handle, displayName, email, password, confirmPassword, code, acceptedTerms, hasRegion: !!selectedRegion });
   const canSubmit =
@@ -192,13 +208,25 @@ function RegisterForm() {
         setEmailAvailability({ status: "unavailable", message: check.message });
         return;
       }
-      await api.sendEmailCode(email.trim(), "register");
+      await api.sendEmailCode(email.trim(), "register", locale);
       setCodeCooldown(60);
-      pushToast({ kind: "success", message: "验证码已发送，请检查邮箱" });
+      pushToast({ kind: "success", message: c.codeSent });
     } catch (err) {
-      setServerError(mapRegisterError(err));
+      setServerError(mapRegisterError(err, c));
     } finally {
       setSendingCode(false);
+    }
+  };
+
+  const startGoogleLogin = async () => {
+    setGoogleLoading(true);
+    setServerError(null);
+    try {
+      const result = await api.googleAuthStart("web", redirect);
+      window.location.href = result.authorization_url || result.url || "";
+    } catch {
+      setServerError({ message: c.googleError });
+      setGoogleLoading(false);
     }
   };
 
@@ -215,6 +243,7 @@ function RegisterForm() {
         password,
         email: email.trim(),
         code: code.trim(),
+        language: locale === "zh" ? "zh-Hans" : locale,
         ...(selectedRegion
           ? {
               country: selectedRegion.country_code,
@@ -226,10 +255,10 @@ function RegisterForm() {
       };
       const { user } = await api.register(payload);
       setUser(user);
-      pushToast({ kind: "success", message: `欢迎加入 Machi，${user.display_name}` });
+      pushToast({ kind: "success", message: c.welcomeJoin(user.display_name) });
       router.replace(redirect);
     } catch (err) {
-      setServerError(mapRegisterError(err));
+      setServerError(mapRegisterError(err, c));
     } finally {
       setLoading(false);
     }
@@ -245,23 +274,19 @@ function RegisterForm() {
               <BrandMark className="h-14 w-14 rounded-[18px] text-2xl" />
               <div>
                 <div className="text-3xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
-                <p className="mt-1 text-sm font-semibold text-kx-subtle">在每一座城市，找到生活的回声。</p>
+                <p className="mt-1 text-sm font-semibold text-kx-subtle">{c.brandTagline}</p>
               </div>
             </div>
 
             <p className="mt-10 text-sm font-semibold leading-7 text-kx-subtle">
-              按国家和城市组织本地新闻、生活经验、租房、二手、工作、招聘、搭子、约饭、活动和问答。
+              {c.leftRegisterIntro}
             </p>
             <p className="mt-3 text-sm font-bold leading-7 text-kx-accent">
-              注册时选择当前城市，首页、发现和热榜会优先围绕这座城市展开。
+              {c.leftRegisterAccent}
             </p>
 
             <ol className="mt-8 space-y-3">
-              {[
-                "填写用户名、显示名和密码",
-                "选择当前国家和城市",
-                "登录后即可浏览本地内容、参与互动、发表帖子",
-              ].map((step, idx) => (
+              {c.leftRegisterSteps.map((step, idx) => (
                 <li key={step} className="flex items-start gap-3">
                   <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-kx-accent text-white text-xs font-black shadow-sm">
                     {idx + 1}
@@ -274,15 +299,15 @@ function RegisterForm() {
           <div className="grid grid-cols-3 gap-3 text-center">
             <div className="rounded-kx-lg bg-white/70 px-3 py-4 ring-1 ring-white/80 dark:bg-white/[0.05] dark:ring-white/10">
               <div className="text-xl font-black text-kx-text">12</div>
-              <div className="mt-1 text-[11px] font-bold text-kx-muted">本地频道</div>
+              <div className="mt-1 text-[11px] font-bold text-kx-muted">{c.statChannels}</div>
             </div>
             <div className="rounded-kx-lg bg-white/70 px-3 py-4 ring-1 ring-white/80 dark:bg-white/[0.05] dark:ring-white/10">
               <div className="text-xl font-black text-kx-text">8+</div>
-              <div className="mt-1 text-[11px] font-bold text-kx-muted">核心分类</div>
+              <div className="mt-1 text-[11px] font-bold text-kx-muted">{c.statCategories}</div>
             </div>
             <div className="rounded-kx-lg bg-white/70 px-3 py-4 ring-1 ring-white/80 dark:bg-white/[0.05] dark:ring-white/10">
-              <div className="text-xl font-black text-kx-text">多国</div>
-              <div className="mt-1 text-[11px] font-bold text-kx-muted">城市切换</div>
+              <div className="text-xl font-black text-kx-text">{c.statCountries}</div>
+              <div className="mt-1 text-[11px] font-bold text-kx-muted">{c.currentCity}</div>
             </div>
           </div>
         </aside>
@@ -290,17 +315,33 @@ function RegisterForm() {
         {/* ─────────── RIGHT form pane ─────────── */}
         <form onSubmit={submit} className="flex flex-col justify-center px-5 py-7 sm:px-8 lg:px-10" noValidate aria-busy={loading}>
           <header className="mb-6">
-            <div className="mb-5 flex items-center gap-3 lg:hidden">
-              <BrandMark className="h-12 w-12 rounded-[16px] text-xl" />
-              <div>
-                <div className="text-2xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
-                <p className="text-sm font-semibold text-kx-subtle">在每一座城市，找到生活的回声。</p>
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 lg:hidden">
+                <BrandMark className="h-12 w-12 rounded-[16px] text-xl" />
+                <div>
+                  <div className="text-2xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
+                  <p className="text-sm font-semibold text-kx-subtle">{c.brandTagline}</p>
+                </div>
               </div>
+              <label className="ml-auto inline-flex items-center gap-2 rounded-full bg-kx-soft px-3 py-2 text-xs font-bold text-kx-subtle ring-1 ring-kx-stroke/70">
+                <Languages className="h-3.5 w-3.5" />
+                <span className="sr-only">{c.localeLabel}</span>
+                <select
+                  value={locale}
+                  onChange={(event) => changeLocale(event.target.value as AuthLocale)}
+                  className="bg-transparent font-bold outline-none"
+                  aria-label={c.localeLabel}
+                >
+                  {AUTH_LOCALE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
             </div>
-            <p className="text-xs font-black uppercase tracking-[0.16em] text-kx-accent">Create Account</p>
-            <h1 className="mt-2 text-3xl font-black tracking-tight text-kx-text sm:text-4xl">创建账号</h1>
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-kx-accent">{c.registerEyebrow}</p>
+            <h1 className="mt-2 text-3xl font-black tracking-tight text-kx-text sm:text-4xl">{c.registerTitle}</h1>
             <p className="mt-2 text-sm font-semibold leading-6 text-kx-subtle">
-              填写基础资料并选择当前城市，Machi 会优先展示这座城市的本地内容。
+              {c.registerSubtitle}
             </p>
           </header>
 
@@ -313,14 +354,27 @@ function RegisterForm() {
               <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
               <span>{serverError.message}</span>
             </div>
-          ) : null}
+            ) : null}
+
+          <GoogleSignInButton
+            label={c.google}
+            loadingLabel={c.googleLoading}
+            loading={googleLoading}
+            onClick={startGoogleLogin}
+          />
+
+          <div className="mb-4 mt-5 flex items-center gap-3">
+            <span className="h-px flex-1 bg-kx-stroke/70" />
+            <span className="text-[11px] font-black uppercase tracking-[0.16em] text-kx-muted">{c.orContinue}</span>
+            <span className="h-px flex-1 bg-kx-stroke/70" />
+          </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
             <FieldShell
-              label="用户名"
+              label={c.username}
               htmlFor="reg-handle"
               error={fieldError("handle")}
-              hint={fieldSuccess("handle") || "a–z, 0–9, _ 和 .，3–20 位"}
+              hint={fieldSuccess("handle") || c.usernameHint}
               success={!fieldError("handle") && handleAvailability.status === "available"}
             >
               <input
@@ -329,7 +383,7 @@ function RegisterForm() {
                 autoComplete="username"
                 inputMode="text"
                 spellCheck={false}
-                placeholder="例如 machi_2026"
+                placeholder={c.usernamePlaceholder}
                 value={handle}
                 onChange={(e) => {
                   // Auto-lowercase + strip illegal chars so users see
@@ -345,10 +399,10 @@ function RegisterForm() {
             </FieldShell>
 
             <FieldShell
-              label="显示名称"
+              label={c.displayName}
               htmlFor="reg-displayName"
               error={fieldError("displayName")}
-              hint="可选 · 支持中文"
+              hint={c.displayNameHint}
               success={!fieldError("displayName") && displayName.trim().length > 0}
             >
               <input
@@ -360,7 +414,7 @@ function RegisterForm() {
                   if (serverError?.field === "displayName") setServerError(null);
                 }}
                 onBlur={() => setTouched((t) => ({ ...t, displayName: true }))}
-                placeholder="他人会看到的名字"
+                placeholder={c.displayNamePlaceholder}
                 maxLength={32}
                 aria-invalid={!!fieldError("displayName") || undefined}
                 aria-describedby={fieldError("displayName") ? "reg-displayName-error" : undefined}
@@ -368,10 +422,10 @@ function RegisterForm() {
             </FieldShell>
 
             <FieldShell
-              label="邮箱"
+              label={c.email}
               htmlFor="reg-email"
               error={fieldError("email")}
-              hint={fieldSuccess("email") || "必填 · 用于验证码和找回密码"}
+              hint={fieldSuccess("email") || c.emailHint}
               success={!fieldError("email") && emailAvailability.status === "available"}
               className="sm:col-span-2"
             >
@@ -400,16 +454,16 @@ function RegisterForm() {
                   className="kx-button-ghost h-11 shrink-0 px-3 text-sm disabled:opacity-60"
                 >
                   {sendingCode ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mail className="h-4 w-4" />}
-                  <span className="hidden sm:inline">{codeCooldown > 0 ? `${codeCooldown}s` : "发送验证码"}</span>
+                  <span className="hidden sm:inline">{codeCooldown > 0 ? `${codeCooldown}s` : c.sendCode}</span>
                 </button>
               </div>
             </FieldShell>
 
             <FieldShell
-              label="邮箱验证码"
+              label={c.code}
               htmlFor="reg-code"
               error={fieldError("code")}
-              hint="检查邮箱中的 6 位数字"
+              hint={c.codeHint}
               success={!fieldError("code") && code.trim().length >= 4}
               className="sm:col-span-2"
             >
@@ -424,17 +478,17 @@ function RegisterForm() {
                   if (serverError?.field === "code") setServerError(null);
                 }}
                 onBlur={() => setTouched((t) => ({ ...t, code: true }))}
-                placeholder="输入验证码"
+                placeholder={c.codePlaceholder}
                 aria-invalid={!!fieldError("code") || undefined}
                 aria-describedby={fieldError("code") ? "reg-code-error" : undefined}
               />
             </FieldShell>
 
             <FieldShell
-              label="密码"
+              label={c.password}
               htmlFor="reg-password"
               error={fieldError("password")}
-              hint={`至少 ${PASSWORD_MIN} 位，包含字母和数字`}
+              hint={c.passwordHint}
               success={!fieldError("password") && password.length >= PASSWORD_MIN && /[A-Za-z]/.test(password) && /\d/.test(password)}
               className="sm:col-span-2"
             >
@@ -450,7 +504,7 @@ function RegisterForm() {
                     if (serverError?.field === "password") setServerError(null);
                   }}
                   onBlur={() => setTouched((t) => ({ ...t, password: true }))}
-                  placeholder="8 位以上，包含字母和数字"
+                  placeholder={c.passwordPlaceholder}
                   maxLength={128}
                   aria-invalid={!!fieldError("password") || undefined}
                   aria-describedby={fieldError("password") ? "reg-password-error" : undefined}
@@ -459,7 +513,7 @@ function RegisterForm() {
                   type="button"
                   onClick={() => setShowPw((v) => !v)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-kx-muted hover:bg-kx-soft hover:text-kx-text"
-                  aria-label={showPw ? "隐藏密码" : "显示密码"}
+                  aria-label={showPw ? "Hide password" : "Show password"}
                   tabIndex={-1}
                 >
                   {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -469,10 +523,10 @@ function RegisterForm() {
             </FieldShell>
 
             <FieldShell
-              label="确认密码"
+              label={c.confirmPassword}
               htmlFor="reg-confirm-password"
-              error={confirmPassword && confirmPassword !== password ? "两次输入的密码不一致" : undefined}
-              hint="再次输入密码"
+              error={confirmPassword && confirmPassword !== password ? (locale === "ja" ? "パスワードが一致しません" : locale === "en" ? "Passwords do not match" : "两次输入的密码不一致") : undefined}
+              hint={c.confirmPasswordHint}
               success={!!confirmPassword && confirmPassword === password}
               className="sm:col-span-2"
             >
@@ -484,7 +538,7 @@ function RegisterForm() {
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 onBlur={() => setTouched((t) => ({ ...t, password: true }))}
-                placeholder="再次输入密码"
+                placeholder={c.confirmPasswordPlaceholder}
                 maxLength={128}
                 aria-invalid={(!!confirmPassword && confirmPassword !== password) || undefined}
               />
@@ -495,12 +549,12 @@ function RegisterForm() {
             <div className="mb-1.5 flex items-center justify-between gap-2">
               <span className="inline-flex items-center gap-1.5 text-sm font-bold text-kx-text">
                 <MapPin className="h-4 w-4 text-kx-accent" />
-                当前城市
+                {c.currentCity}
               </span>
               {fieldError("region") ? null : selectedRegion ? (
-                <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-300">已选择</span>
+                <span className="text-[11px] font-bold text-emerald-600 dark:text-emerald-300">{c.selected}</span>
               ) : (
-                <span className="text-[11px] font-semibold text-kx-muted">可选</span>
+                <span className="text-[11px] font-semibold text-kx-muted">{c.optional}</span>
               )}
             </div>
             <button
@@ -518,10 +572,10 @@ function RegisterForm() {
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-black">
-                  {selectedRegion ? regionDisplayName(selectedRegion) : "选择国家 / 城市"}
+                  {selectedRegion ? regionDisplayName(selectedRegion) : c.pickCity}
                 </span>
                 <span className="mt-0.5 block truncate text-xs font-semibold text-kx-muted">
-                  {selectedRegion ? "首页、发现和热榜将同步到这座城市" : "不选也可以先注册，之后在设置里切换"}
+                  {selectedRegion ? c.pickedCityHint : c.pickCityHint}
                 </span>
               </span>
               <ChevronRight className="h-4 w-4 shrink-0 text-kx-muted" />
@@ -545,10 +599,10 @@ function RegisterForm() {
               }}
             />
             <span>
-              我已阅读并同意
-              <Link href="/legal/terms" className="kx-link mx-1">《服务条款》</Link>
-              和
-              <Link href="/legal/privacy" className="kx-link ml-1">《隐私政策》</Link>
+              {c.termsPrefix}
+              <Link href="/legal/terms" className="kx-link mx-1">{c.terms}</Link>
+              {c.and}
+              <Link href="/legal/privacy" className="kx-link ml-1">{c.privacy}</Link>
             </span>
           </label>
           {fieldError("terms") ? (
@@ -564,12 +618,12 @@ function RegisterForm() {
             disabled={!canSubmit}
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <UserPlus className="w-4 h-4" />}
-            <span>{loading ? "正在创建账号…" : "注册"}</span>
+            <span>{loading ? c.registerLoading : c.registerButton}</span>
           </button>
-          <p className="mt-4 text-center text-xs text-kx-muted">注册成功后 Web 与 iOS 会共享同一套账号、城市、会员和内容数据。</p>
+          <p className="mt-4 text-center text-xs text-kx-muted">{c.registerFootnote}</p>
           <div className="mt-4 text-center text-sm text-kx-subtle">
-            已有账号？
-            <Link className="kx-link ml-1 font-bold" href={`/login?redirect=${encodeURIComponent(redirect)}`}>直接登录</Link>
+            {c.hasAccount}
+            <Link className="kx-link ml-1 font-bold" href={`/login?redirect=${encodeURIComponent(redirect)}`}>{c.loginNow}</Link>
           </div>
         </form>
       </div>

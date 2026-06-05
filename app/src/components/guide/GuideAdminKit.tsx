@@ -295,10 +295,10 @@ export function GuideAdminListPage({ kind }: { kind: LibraryKind }) {
                         <div className="text-xs text-kx-muted">{jpName || valueToText(row.slug)}</div>
                       </td>
                       <td className="px-3 py-2 text-kx-subtle">{valueToText(row.prefecture)} / {guideCityLabel(valueToText(row.city))}</td>
-                      <td className="px-3 py-2 text-kx-subtle">{type || "unknown"}</td>
-                      <td className="max-w-[220px] truncate px-3 py-2 text-kx-muted">{valueToText(row.sourceUrl) || "missing"}</td>
+                      <td className="px-3 py-2 text-kx-subtle">{type || "待补充"}</td>
+                      <td className="max-w-[220px] truncate px-3 py-2 text-kx-muted">{valueToText(row.sourceUrl) || "来源待补充"}</td>
                       <td className="px-3 py-2">
-                        <span className="rounded-full bg-kx-soft px-2 py-1 text-xs font-semibold text-kx-subtle">{valueToText(row.verificationStatus) || "needs_review"}</span>
+                        <span className="rounded-full bg-kx-soft px-2 py-1 text-xs font-semibold text-kx-subtle">{valueToText(row.verificationStatus) || "需复核"}</span>
                       </td>
                       <td className="px-3 py-2 text-right font-bold">{valueToText(row.dataQualityScore) || "0"}</td>
                       <td className="px-3 py-2">
@@ -426,13 +426,13 @@ export function GuideAdminEditPage({ kind }: { kind: LibraryKind }) {
   });
 
   return (
-    <GuideAdminShell title={kind === "schools" ? "编辑学校" : "编辑公司"} subtitle="字段缺失可保留 unknown / 空值；保存时后端会重新计算 data_quality_score。">
+    <GuideAdminShell title={kind === "schools" ? "编辑学校" : "编辑公司"} subtitle="字段缺失可保留待补充或空值；保存时后端会重新计算 data_quality_score。">
       {q.isLoading ? <InlineLoading /> : q.isError || !source ? <ErrorState onRetry={() => q.refetch()} /> : (
         <section className="rounded-kx-lg border border-kx-stroke/60 bg-kx-card p-4">
           <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
             <div>
               <h2 className="text-lg font-black text-kx-text">{kind === "schools" ? (source as GuideSchool).schoolName : (source as GuideCompany).companyName}</h2>
-              <p className="text-xs text-kx-muted">{valueToText((source as unknown as AdminRow).sourceUrl) || "source_url missing"}</p>
+              <p className="text-xs text-kx-muted">{valueToText((source as unknown as AdminRow).sourceUrl) || "来源链接待补充"}</p>
             </div>
             <button className="kx-button-primary" onClick={() => save.mutate()} disabled={save.isPending}>
               {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} 保存

@@ -4,9 +4,9 @@ import { MarketingPageContent } from "@/components/marketing/MarketingPageConten
 import { marketingCopy } from "@/data/machi-home";
 import { localeAlternates } from "@/lib/marketing-locale";
 
-const title = "Machi｜すべての街で、暮らしの響きを見つける｜ローカル生活・ソーシャルコミュニティ";
+const title = "Machi City｜すべての街で、暮らしのこだまを見つける";
 const description =
-  "Machi は都市と言語で整理されたローカル生活・ソーシャルコミュニティです。住まい、中古、仕事、求人、イベント、食事、Q&A、生活情報、地域サービスを見つけ、同じ街の友達、食事仲間、イベント仲間、言語交換パートナーともつながれます。";
+  "Machi は、国・都市・言語ごとに暮らしの情報と人のつながりを整理するローカルライフ・コミュニティプラットフォームです。住まい、中古品、仕事、イベント、Q&A、地域サービス、街の実体験を見つけることができます。";
 
 export const metadata: Metadata = {
   title: { absolute: title },

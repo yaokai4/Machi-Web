@@ -73,7 +73,7 @@ export function localeAlternates(
   const trimmed = pathSuffix.replace(/^\/+/, "");
   const slash = trimmed ? `/${trimmed}` : "";
   return {
-    zh: `${baseUrl}/zh${slash}`,
+    "zh-CN": `${baseUrl}/zh${slash}`,
     en: `${baseUrl}/en${slash}`,
     ja: `${baseUrl}/ja${slash}`,
     "x-default": `${baseUrl}/en${slash}`,

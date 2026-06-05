@@ -1,6 +1,6 @@
 "use client";
 
-import { Compass, Globe2, MessagesSquare } from "lucide-react";
+import { Compass, Globe2, MessagesSquare, ShieldCheck } from "lucide-react";
 import { BrandPhrase } from "./BrandText";
 import { useMarketingI18n } from "./MarketingI18n";
 
@@ -8,6 +8,7 @@ const pillarMeta = [
   { icon: Globe2, tone: "from-indigo-500 to-sky-500" },
   { icon: Compass, tone: "from-emerald-500 to-sky-500" },
   { icon: MessagesSquare, tone: "from-orange-500 to-rose-500" },
+  { icon: ShieldCheck, tone: "from-teal-500 to-emerald-500" },
 ];
 
 export function BrandIntroSection() {
@@ -26,7 +27,7 @@ export function BrandIntroSection() {
           </p>
         </div>
 
-        <div className="mt-10 grid gap-4 md:grid-cols-3">
+        <div className="mt-10 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {copy.brandIntro.pillars.map(([title, description], index) => {
             const meta = pillarMeta[index];
             const Icon = meta.icon;

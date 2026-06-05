@@ -8,6 +8,7 @@ import {
   Compass,
   Eye,
   EyeOff,
+  Languages,
   Loader2,
   LogIn,
   MapPin,
@@ -18,7 +19,9 @@ import { api, APIError } from "@/lib/api";
 import { useSession, useToasts } from "@/lib/store";
 import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { FieldShell } from "@/components/design/FieldShell";
+import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
 import { normalizeHandle, validateLogin } from "@/lib/authValidation";
+import { AUTH_COPY, AUTH_LOCALE_KEY, AUTH_LOCALE_OPTIONS, detectAuthLocale, type AuthLocale } from "@/lib/authLocale";
 
 /// Next.js 15 requires every `useSearchParams()` user to live under a
 /// Suspense boundary, otherwise the dev/prod server bails out with a
@@ -34,26 +37,26 @@ export default function LoginPage() {
 
 // Translates backend error codes / status into something the user can
 // act on instead of the raw "请求失败 (401)".
-function mapLoginError(err: unknown): { field?: "handle" | "password"; message: string } {
+function mapLoginError(err: unknown, c: (typeof AUTH_COPY)[AuthLocale]): { field?: "handle" | "password"; message: string } {
   if (err instanceof APIError) {
     if (err.status === 401 || err.code === "invalid_credentials") {
-      return { field: "password", message: "用户名或密码错误，请检查后重试。" };
+      return { field: "password", message: c.loginInvalid };
     }
     if (err.status === 404 || err.code === "user_not_found") {
-      return { field: "handle", message: "用户名不存在，要不要先注册一个？" };
+      return { field: "handle", message: c.userNotFound };
     }
     if (err.status === 429 || err.code === "rate_limited") {
-      return { message: "尝试过多，请稍等 30 秒后再试。" };
+      return { message: c.rateLimited };
     }
     if (err.status === 0 || err.code === "network_error") {
-      return { message: "无法连接服务器，请检查网络后重试。" };
+      return { message: c.network };
     }
     if (err.code === "timeout") {
-      return { message: "请求超时，请稍后再试。" };
+      return { message: c.timeout };
     }
     if (err.message) return { message: err.message };
   }
-  return { message: "登录失败，请稍后再试。" };
+  return { message: c.loginFailed };
 }
 
 function safeRedirectPath(raw: string | null) {
@@ -72,9 +75,21 @@ function LoginForm() {
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [locale, setLocale] = useState<AuthLocale>(() => detectAuthLocale());
   const [serverError, setServerError] = useState<{ field?: "handle" | "password"; message: string } | null>(null);
   const [touched, setTouched] = useState<{ handle: boolean; password: boolean }>({ handle: false, password: false });
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
+  const c = AUTH_COPY[locale];
+
+  const changeLocale = (next: AuthLocale) => {
+    setLocale(next);
+    try {
+      window.localStorage.setItem(AUTH_LOCALE_KEY, next);
+    } catch {
+      // ignore
+    }
+  };
 
   useEffect(() => {
     if (status === "authed") {
@@ -83,8 +98,8 @@ function LoginForm() {
   }, [status, router, redirect]);
 
   const errors = useMemo(() => {
-    return validateLogin({ handle, password }, touched);
-  }, [handle, password, touched]);
+    return validateLogin({ handle, password }, touched, locale);
+  }, [handle, password, touched, locale]);
 
   const isValid = normalizeHandle(handle).length > 0 && password.length > 0;
   const canSubmit = !loading;
@@ -99,13 +114,25 @@ function LoginForm() {
     try {
       const { user } = await api.login(_h, _p);
       setUser(user);
-      pushToast({ kind: "success", message: `欢迎回来，${user.display_name}` });
+      pushToast({ kind: "success", message: c.welcomeBack(user.display_name) });
       router.replace(redirect);
     } catch (err) {
-      const mapped = mapLoginError(err);
+      const mapped = mapLoginError(err, c);
       setServerError(mapped);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const startGoogleLogin = async () => {
+    setGoogleLoading(true);
+    setServerError(null);
+    try {
+      const result = await api.googleAuthStart("web", redirect);
+      window.location.href = result.authorization_url || result.url || "";
+    } catch {
+      setServerError({ message: c.googleError });
+      setGoogleLoading(false);
     }
   };
 
@@ -125,16 +152,16 @@ function LoginForm() {
               <BrandMark className="h-14 w-14 rounded-[18px] text-2xl" />
               <div>
                 <div className="text-3xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
-                <p className="mt-1 text-sm font-semibold text-kx-subtle">在每一座城市，找到生活的回声。</p>
+                <p className="mt-1 text-sm font-semibold text-kx-subtle">{c.brandTagline}</p>
               </div>
             </div>
 
             <ul className="mt-10 space-y-4">
               {[
-                { Icon: MapPin,       title: "城市优先",      body: "按当前城市展示新闻、活动、租房、二手和招聘。" },
-                { Icon: Compass,      title: "找到附近的人",  body: "搭子、约饭、问答与城市脉搏，真实经验一目了然。" },
-                { Icon: Sparkles,     title: "iOS + Web 同步", body: "Web 和 App 共用账号、城市、消息和草稿。" },
-                { Icon: ShieldCheck,  title: "本地安全机制",  body: "举报、审核、商家认证和交易提醒已内置。" },
+                { Icon: MapPin, title: c.leftLoginItems[0][0], body: c.leftLoginItems[0][1] },
+                { Icon: Compass, title: c.leftLoginItems[1][0], body: c.leftLoginItems[1][1] },
+                { Icon: Sparkles, title: c.leftLoginItems[2][0], body: c.leftLoginItems[2][1] },
+                { Icon: ShieldCheck, title: c.leftLoginItems[3][0], body: c.leftLoginItems[3][1] },
               ].map(({ Icon, title, body }) => (
                 <li key={title} className="flex items-start gap-3">
                   <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-kx-accent/10 text-kx-accent ring-1 ring-kx-accent/20">
@@ -150,9 +177,9 @@ function LoginForm() {
           </div>
 
           <div className="rounded-kx-lg bg-white/70 p-4 ring-1 ring-white/80 dark:bg-white/[0.05] dark:ring-white/10">
-            <div className="text-[11px] font-black uppercase tracking-[0.16em] text-kx-accent">City-first feed</div>
+            <div className="text-[11px] font-black uppercase tracking-[0.16em] text-kx-accent">{c.cityFirstFeed}</div>
             <p className="mt-2 text-sm font-semibold leading-6 text-kx-subtle">
-              按当前城市组织信息，让散落的问题、经验和机会被看见、被找到、被回应。
+              {c.cityFirstBody}
             </p>
           </div>
         </aside>
@@ -160,19 +187,48 @@ function LoginForm() {
         {/* ─────────── RIGHT form pane ─────────── */}
         <div className="flex flex-col justify-center px-5 py-7 sm:px-8 lg:px-10">
           <header className="mb-6">
-            <div className="mb-5 flex items-center gap-3 lg:hidden">
+            <div className="mb-5 flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3 lg:hidden">
               <BrandMark className="h-12 w-12 rounded-[16px] text-xl" />
               <div>
                 <div className="text-2xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
-                <p className="text-sm font-semibold text-kx-subtle">在每一座城市，找到生活的回声。</p>
+                <p className="text-sm font-semibold text-kx-subtle">{c.brandTagline}</p>
               </div>
-            </div>
-            <p className="text-xs font-black uppercase tracking-[0.16em] text-kx-accent">Sign In</p>
-            <h1 className="mt-2 text-3xl font-black tracking-tight text-kx-text sm:text-4xl">欢迎回来</h1>
+              </div>
+              <label className="ml-auto inline-flex items-center gap-2 rounded-full bg-kx-soft px-3 py-2 text-xs font-bold text-kx-subtle ring-1 ring-kx-stroke/70">
+                <Languages className="h-3.5 w-3.5" />
+                <span className="sr-only">{c.localeLabel}</span>
+                <select
+                  value={locale}
+                  onChange={(event) => changeLocale(event.target.value as AuthLocale)}
+                  className="bg-transparent font-bold outline-none"
+                  aria-label={c.localeLabel}
+                >
+                  {AUTH_LOCALE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </select>
+              </label>
+              </div>
+            <p className="text-xs font-black uppercase tracking-[0.16em] text-kx-accent">{c.signInEyebrow}</p>
+            <h1 className="mt-2 text-3xl font-black tracking-tight text-kx-text sm:text-4xl">{c.loginTitle}</h1>
             <p className="mt-2 text-sm font-semibold leading-6 text-kx-subtle">
-              登录后继续同步你的城市内容、消息、收藏和本地频道。
+              {c.loginSubtitle}
             </p>
           </header>
+
+          <GoogleSignInButton
+            label={c.google}
+            loadingLabel={c.googleLoading}
+            loading={googleLoading}
+            onClick={startGoogleLogin}
+          />
+
+          <div className="my-5 flex items-center gap-3">
+            <span className="h-px flex-1 bg-kx-stroke/70" />
+            <span className="text-[11px] font-black uppercase tracking-[0.16em] text-kx-muted">{c.orContinue}</span>
+            <span className="h-px flex-1 bg-kx-stroke/70" />
+          </div>
 
           <form
             onSubmit={(e) => {
@@ -194,7 +250,7 @@ function LoginForm() {
               </div>
             ) : null}
 
-            <FieldShell label="用户名" htmlFor="login-handle" error={fieldError("handle")}>
+            <FieldShell label={c.username} htmlFor="login-handle" error={fieldError("handle")}>
               <input
                 id="login-handle"
                 className="kx-input"
@@ -202,7 +258,7 @@ function LoginForm() {
                 autoComplete="username"
                 inputMode="text"
                 spellCheck={false}
-                placeholder="例如 machi"
+                placeholder={c.loginUsernamePlaceholder}
                 value={handle}
                 onChange={(e) => {
                   setHandle(e.target.value);
@@ -214,7 +270,7 @@ function LoginForm() {
               />
             </FieldShell>
 
-            <FieldShell label="密码" htmlFor="login-password" error={fieldError("password")}>
+            <FieldShell label={c.password} htmlFor="login-password" error={fieldError("password")}>
               <div className="relative">
                 <input
                   id="login-password"
@@ -234,7 +290,7 @@ function LoginForm() {
                   type="button"
                   onClick={() => setShowPw((v) => !v)}
                   className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-kx-muted hover:bg-kx-soft hover:text-kx-text"
-                  aria-label={showPw ? "隐藏密码" : "显示密码"}
+                  aria-label={showPw ? "Hide password" : "Show password"}
                   tabIndex={-1}
                 >
                   {showPw ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
@@ -248,20 +304,20 @@ function LoginForm() {
               disabled={!canSubmit}
             >
               {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <LogIn className="w-4 h-4" />}
-              <span>{loading ? "登录中…" : "登录"}</span>
+              <span>{loading ? c.loginLoading : c.loginButton}</span>
             </button>
           </form>
 
           <div className="mt-5 text-center text-sm text-kx-subtle">
-            还没有账号？
-            <Link className="kx-link ml-1 font-bold" href={`/register?redirect=${encodeURIComponent(redirect)}`}>立即注册</Link>
+            {c.noAccount}
+            <Link className="kx-link ml-1 font-bold" href={`/register?redirect=${encodeURIComponent(redirect)}`}>{c.createNow}</Link>
           </div>
           <div className="mt-5 flex items-center justify-center gap-3 text-xs text-kx-muted">
-            <Link href="/legal/terms" className="hover:underline">用户协议</Link>
+            <Link href="/legal/terms" className="hover:underline">{c.termsLink}</Link>
             <span>·</span>
-            <Link href="/legal/privacy" className="hover:underline">隐私政策</Link>
+            <Link href="/legal/privacy" className="hover:underline">{c.privacyLink}</Link>
             <span>·</span>
-            <Link href="/forgot" className="hover:underline">忘记密码</Link>
+            <Link href="/forgot" className="hover:underline">{c.forgot}</Link>
           </div>
         </div>
       </div>

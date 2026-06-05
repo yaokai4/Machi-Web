@@ -7,7 +7,9 @@ lsof -ti:8787 | xargs kill -9 2>/dev/null || true
 lsof -ti:3000 | xargs kill -9 2>/dev/null || true
 
 # Backend — always the real DB (never KAIX_DB_PATH=/tmp/...), default pepper.
-( cd "$ROOT" && nohup env -u KAIX_DB_PATH python3 -u web/server.py > /tmp/machi_backend.log 2>&1 & disown )
+# Load only the Google OAuth vars from web/.env so local Google sign-in works
+# (the rest of .env — payments etc. — is intentionally left to production).
+( cd "$ROOT" && set -a && . <(grep -E '^GOOGLE_' web/.env 2>/dev/null) && set +a && nohup env -u KAIX_DB_PATH python3 -u web/server.py > /tmp/machi_backend.log 2>&1 & disown )
 # Frontend — dev mode (hot reload, picks up all pages).
 ( cd "$ROOT/web/app" && nohup npm run dev > /tmp/machi_frontend.log 2>&1 & disown )
 

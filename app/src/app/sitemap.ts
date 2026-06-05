@@ -13,6 +13,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ["about", "monthly", 0.7],
     ["features", "monthly", 0.8],
     ["cities", "weekly", 0.8],
+    ["guide", "weekly", 0.8],
     ["business", "monthly", 0.8],
     ["ads", "monthly", 0.6],
     ["jobs-promotion", "monthly", 0.6],
@@ -21,8 +22,18 @@ export default function sitemap(): MetadataRoute.Sitemap {
     ["safety", "monthly", 0.7],
     ["safety-center", "monthly", 0.5],
     ["download", "weekly", 0.8],
+    ["updates", "weekly", 0.6],
+    ["faq", "monthly", 0.6],
     ["contact", "monthly", 0.5],
     ["help", "monthly", 0.5],
+    ["legal/privacy", "yearly", 0.4],
+    ["legal/terms", "yearly", 0.4],
+    ["legal/membership-terms", "yearly", 0.35],
+    ["legal/service-terms", "yearly", 0.35],
+    ["legal/refund-policy", "yearly", 0.35],
+    ["legal/community-guidelines", "yearly", 0.35],
+    ["legal/commercial-disclosure", "yearly", 0.35],
+    ["legal/cookie-policy", "yearly", 0.3],
   ] as const;
 
   const make = (path: string) => (path ? `${SITE}/${path}` : `${SITE}/`);
@@ -31,7 +42,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   const localizedAlternates = (path: string) => ({
     languages: {
-      zh: altMake("zh", path),
+      "zh-CN": altMake("zh", path),
       en: altMake("en", path),
       ja: altMake("ja", path),
       "x-default": altMake("en", path),
@@ -76,8 +87,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
   const utilEntries: MetadataRoute.Sitemap = [
     { url: `${SITE}/login`, lastModified: now, changeFrequency: "monthly", priority: 0.4 },
     { url: `${SITE}/register`, lastModified: now, changeFrequency: "monthly", priority: 0.4 },
-    { url: `${SITE}/legal/terms`, lastModified: now, changeFrequency: "yearly", priority: 0.2 },
-    { url: `${SITE}/legal/privacy`, lastModified: now, changeFrequency: "yearly", priority: 0.2 },
   ];
 
   return [...baseEntries, ...localeRoots, ...utilEntries];

@@ -12,89 +12,114 @@ EC2_HOST="ec2-user@43.207.143.245"
 EC2_KEY="/Users/yaokai/Desktop/IT/ios/Machi2.pem"
 LOCAL_PROJECT_DIR="/Users/yaokai/Desktop/IT/IOS/kaizi"
 PROJECT_NAME="kaizi"
-TARBALL="kaizi.tar.gz"
+TARBALL="kaizi-web.tar.gz"
 # =====================================================
+
+cleanup_local_tarball() {
+  rm -f "$LOCAL_PROJECT_DIR/$TARBALL"
+}
+trap cleanup_local_tarball EXIT
 
 echo "==> [本地] 项目目录: $LOCAL_PROJECT_DIR"
 # 清理本地 Mac 隐藏垃圾
-dot_clean "$LOCAL_PROJECT_DIR" 2>/dev/null || true
-cd "$(dirname "$LOCAL_PROJECT_DIR")"
+dot_clean "$LOCAL_PROJECT_DIR/web" 2>/dev/null || true
+cd "$LOCAL_PROJECT_DIR"
 
-echo "==> [本地] 打包 $PROJECT_NAME/ (排除 .next / node_modules / kaix.db / .git 等)"
+echo "==> [本地] 打包 web/ (排除 .next / node_modules / kaix.db / .git 等)"
 COPYFILE_DISABLE=1 tar \
-  --exclude="$PROJECT_NAME/web/app/.next" \
-  --exclude="$PROJECT_NAME/web/app/node_modules" \
-  --exclude="$PROJECT_NAME/web/app/tsconfig.tsbuildinfo" \
-  --exclude="$PROJECT_NAME/web/kaix.db" \
-  --exclude="$PROJECT_NAME/web/kaix.db-shm" \
-  --exclude="$PROJECT_NAME/web/kaix.db-wal" \
-  --exclude="$PROJECT_NAME/web/.env" \
-  --exclude="$PROJECT_NAME/web/.env.local" \
+  --no-xattrs \
+  --no-mac-metadata \
+  --exclude="web/app/.next" \
+  --exclude="web/app/node_modules" \
+  --exclude="web/app/tsconfig.tsbuildinfo" \
+  --exclude="web/kaix.db" \
+  --exclude="web/kaix.db-shm" \
+  --exclude="web/kaix.db-wal" \
+  --exclude="web/.env" \
+  --exclude="web/.env.local" \
   --exclude="*/__pycache__" \
   --exclude="*/.DS_Store" \
   --exclude="*/.git" \
   --exclude="**/._*" \
   --exclude="*/.next" \
-  -czf "$TARBALL" "$PROJECT_NAME/"
+  -czf "$TARBALL" web/
 
 SIZE_MB=$(du -m "$TARBALL" | cut -f1)
 echo "    包大小: ${SIZE_MB}MB"
+LOCAL_SHA=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
+echo "    SHA256: $LOCAL_SHA"
 
 echo "==> [本地] 上传到 $EC2_HOST"
-scp -i "$EC2_KEY" -C -q "$TARBALL" "$EC2_HOST:/home/ec2-user/$TARBALL"
+rsync -az --partial --inplace -e "ssh -i $EC2_KEY" "$TARBALL" "$EC2_HOST:/home/ec2-user/$TARBALL"
 
-echo "==> [远端] 解压 + 备份 + 干净 build + smoke test + restart"
-ssh -i "$EC2_KEY" "$EC2_HOST" bash <<'REMOTE'
-set -euo pipefail
+REMOTE_SHA=$(ssh -i "$EC2_KEY" "$EC2_HOST" "sha256sum /home/ec2-user/$TARBALL | awk '{print \$1}'")
+if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
+  echo "❌ 远端包校验失败: local=$LOCAL_SHA remote=$REMOTE_SHA" >&2
+  exit 1
+fi
+echo "    远端 SHA256 校验通过"
+
+echo "==> [远端] 解压到新目录 + 干净 build + 原子替换 + smoke test"
+ssh -i "$EC2_KEY" "$EC2_HOST" "TARBALL=/home/ec2-user/$TARBALL bash" <<'REMOTE'
+set -eEuo pipefail
 
 TS=$(date +%Y%m%d-%H%M%S)
+CURRENT=/opt/kaix
+RELEASE=/opt/kaix.release-$TS
+BACKUP=/opt/kaix.backup-$TS
+FAILED=/opt/kaix.failed-$TS
+SWAPPED=0
 
-echo "    [远端] 备份当前 /opt/kaix → /opt/kaix.backup-$TS"
-if [ -d /opt/kaix ]; then
-  sudo cp -a /opt/kaix /opt/kaix.backup-$TS
-fi
+rollback() {
+  local line="$1"
+  echo "    ❌ 部署在第 ${line} 行失败" >&2
+  if [ "$SWAPPED" = "1" ] && [ -d "$BACKUP" ]; then
+    echo "    [远端] 回滚到 $BACKUP" >&2
+    sudo systemctl stop kaix-web.service || true
+    sudo systemctl stop kaix-backend.service || true
+    sudo rm -rf "$FAILED"
+    if [ -d "$CURRENT" ]; then
+      sudo mv "$CURRENT" "$FAILED"
+    fi
+    sudo mv "$BACKUP" "$CURRENT"
+    sudo systemctl start kaix-backend.service || true
+    sleep 2
+    sudo systemctl start kaix-web.service || true
+  fi
+}
+trap 'rollback $LINENO' ERR
 
-# 只保留最近 3 个备份
-ls -dt /opt/kaix.backup-* 2>/dev/null | tail -n +4 | xargs -r sudo rm -rf
+restore_env_for_build() {
+  if [ -f "$CURRENT/web/.env" ]; then
+    sudo cp -a "$CURRENT/web/.env" "$RELEASE/web/.env"
+  fi
+}
 
-echo "    [远端] 保留生产数据（解压前先复制走）"
-PRESERVE_DIR=$(mktemp -d)
-if [ -f /opt/kaix/web/kaix.db ]; then
-  sudo cp /opt/kaix/web/kaix.db* "$PRESERVE_DIR/" || true
-fi
-if [ -d /opt/kaix/web/media ]; then
-  sudo cp -a /opt/kaix/web/media "$PRESERVE_DIR/media" || true
-fi
-if [ -f /opt/kaix/web/.env ]; then
-  sudo cp -a /opt/kaix/web/.env "$PRESERVE_DIR/.env" || true
-fi
+restore_runtime_data() {
+  if [ -f "$CURRENT/web/kaix.db" ]; then
+    sudo cp -a "$CURRENT"/web/kaix.db* "$RELEASE/web/" || true
+  fi
+  if [ -d "$CURRENT/web/media" ]; then
+    sudo rm -rf "$RELEASE/web/media"
+    sudo cp -a "$CURRENT/web/media" "$RELEASE/web/media"
+  fi
+  if [ -f "$CURRENT/web/.env" ]; then
+    sudo cp -a "$CURRENT/web/.env" "$RELEASE/web/.env"
+  fi
+}
 
-echo "    [远端] 清空旧代码目录（防止已删除文件残留导致线上 build 失败）"
-sudo rm -rf /opt/kaix
-sudo mkdir -p /opt/kaix
-
-echo "    [远端] 解压新代码（干净目录）"
-sudo tar -xzf /home/ec2-user/kaizi.tar.gz -C /opt/kaix --strip-components=1
-
-echo "    [远端] 还原生产数据"
-if ls "$PRESERVE_DIR"/kaix.db* >/dev/null 2>&1; then
-  sudo cp -a "$PRESERVE_DIR"/kaix.db* /opt/kaix/web/
-fi
-if [ -d "$PRESERVE_DIR/media" ]; then
-  sudo rm -rf /opt/kaix/web/media
-  sudo cp -a "$PRESERVE_DIR/media" /opt/kaix/web/media
-fi
-if [ -f "$PRESERVE_DIR/.env" ]; then
-  sudo cp -a "$PRESERVE_DIR/.env" /opt/kaix/web/.env
-fi
-sudo rm -rf "$PRESERVE_DIR"
-
-sudo chown -R kaix:kaix /opt/kaix
+echo "    [远端] 准备 release 目录: $RELEASE"
+sudo rm -rf "$RELEASE"
+sudo mkdir -p "$RELEASE"
+sudo tar -xzf "$TARBALL" -C "$RELEASE"
+test -d "$RELEASE/web/app"
 
 echo "    [远端] 强力清除解压出来的所有 Mac 隐藏乱码文件"
-sudo find /opt/kaix/ -name "._*" -delete
+sudo find "$RELEASE" -name "._*" -delete
+restore_env_for_build
+sudo chown -R kaix:kaix "$RELEASE"
 
-cd /opt/kaix/web/app
+cd "$RELEASE/web/app"
 
 echo "    [远端] npm ci"
 sudo -u kaix npm ci
@@ -108,7 +133,26 @@ sudo -u kaix npm run build
 echo "    [远端] 检查所有路由都能编译（防 page.js 静默丢失）"
 sudo -u kaix npm run check-build
 
-echo "    [远端] 重启服务"
+echo "    [远端] 停服务并做最终数据同步"
+sudo systemctl stop kaix-web.service || true
+sudo systemctl stop kaix-backend.service || true
+restore_runtime_data
+sudo chown -R kaix:kaix "$RELEASE"
+
+echo "    [远端] 切换 release"
+if [ -d "$CURRENT" ]; then
+  sudo mv "$CURRENT" "$BACKUP"
+fi
+sudo mv "$RELEASE" "$CURRENT"
+SWAPPED=1
+
+echo "    [远端] 启动服务"
+sudo systemctl start kaix-backend.service
+sleep 2
+sudo systemctl start kaix-web.service
+sleep 3
+
+echo "    [远端] 重启服务确认"
 sudo systemctl restart kaix-backend.service
 sleep 2
 sudo systemctl restart kaix-web.service
@@ -172,6 +216,8 @@ else
   echo "    ❌ public /guide 失败：当前公网 Web 没有代理到 Next.js" >&2
   exit 1
 fi
+
+ls -dt /opt/kaix.backup-* 2>/dev/null | tail -n +5 | xargs -r sudo rm -rf
 
 echo "    ✅ 部署完成（backend + web 已重启并通过健康检查）"
 REMOTE

@@ -284,7 +284,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
               {showVerifiedBadge(displayAuthor) ? <VerifiedBadge /> : null}
             </div>
             <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-kx-muted text-kx-meta">
-              <span className="truncate">@{displayAuthor?.handle || "unknown"} · {relativeTime(displayPost.created_at)}</span>
+              <span className="truncate">@{displayAuthor?.handle || "machi"} · {relativeTime(displayPost.created_at)}</span>
               {displayRegion ? (
                 <>
                   <span aria-hidden="true">·</span>
@@ -316,7 +316,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
           {(() => {
             // X-style: hashtags read as plain accent text, no chip.
             // Hide any tag that's already inline in the body so the
-            // card doesn't repeat #约饭 twice.
+            // card doesn't repeat the same topic twice.
             const tagsRaw = displayPost.tags ?? [];
             const displayContent = displayPost.content ?? "";
             const inlineTags = new Set(
@@ -458,6 +458,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
             ["harassment", "辱骂或骚扰"],
             ["spam", "广告 / 垃圾信息"],
             ["misinfo", "虚假信息"],
+            ["prohibited_offline_service", "禁止线下高风险服务 / 成人或性内容"],
             ["other", "其他"],
           ] as const).map(([value, label]) => (
             <label key={value} className="flex items-center gap-2 cursor-pointer">
@@ -886,7 +887,7 @@ function QuotedPreview({ post }: { post: KXPost }) {
         <Avatar user={author || undefined} size={20} />
         <span className="font-semibold text-sm text-kx-text truncate">{author?.display_name || "未知用户"}</span>
         {showVerifiedBadge(author) ? <VerifiedBadge /> : null}
-        <span className="text-kx-muted text-xs truncate">@{author?.handle || "unknown"}</span>
+        <span className="text-kx-muted text-xs truncate">@{author?.handle || "machi"}</span>
       </div>
       <p className="text-sm text-kx-text mt-1 line-clamp-4 whitespace-pre-wrap break-words">{post.content}</p>
       {post.media?.length ? (

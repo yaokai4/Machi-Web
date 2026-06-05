@@ -1,5 +1,642 @@
-import { redirect } from "next/navigation";
+"use client";
 
-export default function AdminSettingsAliasPage() {
-  redirect("/admin");
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import Image from "next/image";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Activity, ArrowDown, ArrowLeft, ArrowUp, Cpu, FileImage, Globe, HardDrive, ImageIcon, LayoutGrid, Network, Plus, Save, Settings, Server, Trash2, Upload, Wand2, type LucideIcon } from "lucide-react";
+import { api, APIError, type AdminMediaItem, type MarketingCopyBlock, type SiteSettings } from "@/lib/api";
+import {
+  ALL_CHANNELS,
+  DEFAULT_DISCOVER_ENTRANCES,
+  parseDiscoverEntrances,
+  serializeDiscoverEntrances,
+  getChannelByKey,
+  type DiscoverEntrance,
+  type ChannelKey,
+} from "@/config/channels";
+import { AppShell } from "@/components/shell/AppShell";
+import { ErrorState, InlineLoading } from "@/components/design/States";
+import { useSession, useToasts } from "@/lib/store";
+import { fullDateTime } from "@/lib/format";
+import { marketingPageLabels, type MarketingPageId } from "@/data/marketing-pages";
+
+type SitePageKey = MarketingPageId | "home";
+
+const PAGE_OPTIONS: Array<{ value: SitePageKey; label: string }> = [
+  { value: "home", label: "首页" },
+  ...(Object.entries(marketingPageLabels) as Array<[MarketingPageId, string]>).map(([value, label]) => ({ value, label })),
+];
+
+const LOCALES = [
+  { value: "zh", label: "中文" },
+  { value: "en", label: "English" },
+  { value: "ja", label: "日本語" },
+] as const;
+
+export default function AdminSettingsPage() {
+  const router = useRouter();
+  const user = useSession((s) => s.user);
+  const status = useSession((s) => s.status);
+
+  useEffect(() => {
+    if (status === "unauthed") router.replace("/login?redirect=/admin/settings");
+  }, [router, status]);
+
+  if (status === "loading" || status === "idle") return <AppShell><InlineLoading /></AppShell>;
+  if (!user) return null;
+  if (user.role !== "admin") return <AppShell><main className="px-6 py-16 text-center font-bold">无权访问</main></AppShell>;
+
+  return (
+    <AppShell>
+      <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2">
+        <Link href="/admin" className="inline-flex items-center gap-1 text-xs font-bold text-kx-muted hover:text-kx-accent">
+          <ArrowLeft className="h-4 w-4" /> 管理后台
+        </Link>
+        <h1 className="mt-1 inline-flex items-center gap-2 text-lg font-black">
+          <Settings className="h-5 w-5 text-kx-accent" /> 站点设置
+        </h1>
+      </header>
+      <main className="space-y-3 px-3 py-3 sm:px-4">
+        <SiteInfoCard />
+        <ServerMetricsCard />
+        <SiteBrandSettingsCard />
+        <MediaLibraryCard />
+        <MarketingCoverageCard />
+        <DiscoverEntrancesCard />
+        <QuickCopyCard />
+      </main>
+    </AppShell>
+  );
+}
+
+function ServerMetricsCard() {
+  const q = useQuery({
+    queryKey: ["admin-server-metrics"],
+    queryFn: () => api.adminServerMetrics(),
+    refetchInterval: 15_000,
+  });
+  if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
+  if (!q.data) return <InlineLoading />;
+  const m = q.data;
+  return (
+    <section className="kx-card">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="inline-flex items-center gap-2 text-base font-bold"><Activity className="h-4 w-4 text-kx-accent" />服务器监控</h2>
+          <p className="mt-1 text-xs text-kx-muted">每 15 秒刷新一次，便于上线后观察 CPU、内存、磁盘和网络累计流量。</p>
+        </div>
+        <button className="kx-button-ghost h-8 px-3 text-xs" onClick={() => q.refetch()}>刷新</button>
+      </div>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Metric icon={Cpu} label="CPU 负载" value={pct(m.cpu.load_percent)} helper={`1m ${m.load_average.one.toFixed(2)} · ${m.cpu.count} cores`} />
+        <Metric icon={Activity} label="内存" value={pct(m.memory.used_percent)} helper={`${formatBytes(m.memory.used_bytes)} / ${formatBytes(m.memory.total_bytes)}`} />
+        <Metric icon={HardDrive} label="存储空间" value={pct(m.disk.used_percent)} helper={`${formatBytes(m.disk.free_bytes)} 可用`} />
+        <Metric icon={Network} label="网络累计" value={formatBytes(m.network.rx_bytes + m.network.tx_bytes)} helper={`入 ${formatBytes(m.network.rx_bytes)} · 出 ${formatBytes(m.network.tx_bytes)}`} />
+      </div>
+      <p className="mt-2 text-[11px] text-kx-muted">服务时间：{fullDateTime(m.server_time)} · 进程 {m.process.pid} · 线程 {m.process.threads}</p>
+    </section>
+  );
+}
+
+function SiteBrandSettingsCard() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const logoInputRef = useRef<HTMLInputElement | null>(null);
+  const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
+  const media = useQuery({ queryKey: ["admin-media", "image"], queryFn: () => api.adminMedia({ type: "image", limit: 60 }) });
+  const [form, setForm] = useState<Partial<SiteSettings>>({});
+  const [busy, setBusy] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
+  const [logoDesign, setLogoDesign] = useState({ letter: "M", bg: "#2563eb", accent: "#f97316" });
+
+  useEffect(() => {
+    if (q.data) setForm(q.data);
+  }, [q.data]);
+
+  const update = (key: keyof SiteSettings, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
+  const uploadLogo = async (file?: File | null) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      pushToast({ kind: "error", message: "Logo 只能上传图片文件" });
+      return;
+    }
+    setUploadingLogo(true);
+    try {
+      const uploaded = await api.adminUploadMedia(file);
+      update("logo_url", uploaded.url);
+      await queryClient.invalidateQueries({ queryKey: ["admin-media"] });
+      pushToast({ kind: "success", message: "Logo 图片已上传并选中" });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setUploadingLogo(false);
+    }
+  };
+  const applyDesignedLogo = () => {
+    update("logo_url", buildLogoDataUrl(logoDesign.letter || form.site_title || "M", logoDesign.bg, logoDesign.accent));
+    pushToast({ kind: "success", message: "已应用设计 Logo，记得保存站点设置" });
+  };
+  const save = async () => {
+    setBusy(true);
+    try {
+      await api.adminUpdateSiteSettings(form);
+      await queryClient.invalidateQueries({ queryKey: ["admin-site-settings"] });
+      pushToast({ kind: "success", message: "站点设置已保存" });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
+  if (!q.data) return <InlineLoading />;
+
+  return (
+    <section className="kx-card">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="inline-flex items-center gap-2 text-base font-bold"><Globe className="h-4 w-4 text-kx-accent" />站点品牌与官网标题</h2>
+          <p className="mt-1 text-xs text-kx-muted">用于官网标题、SEO 描述、Logo、分享图和客服邮箱。保存后公开接口会立即返回新设置。</p>
+        </div>
+        <button className="kx-button-primary h-9 px-3 text-xs" onClick={save} disabled={busy}>
+          <Save className="h-3.5 w-3.5" /> {busy ? "保存中…" : "保存"}
+        </button>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+        <Field label="站点短标题"><input className="kx-input" value={form.site_title || ""} onChange={(e) => update("site_title", e.target.value)} /></Field>
+        <Field label="客服邮箱"><input className="kx-input" value={form.support_email || ""} onChange={(e) => update("support_email", e.target.value)} /></Field>
+        <Field label="OG 分享图 URL"><input className="kx-input" value={form.og_image_url || ""} onChange={(e) => update("og_image_url", e.target.value)} /></Field>
+      </div>
+      <section className="mt-3 rounded-[24px] border border-kx-stroke/60 bg-kx-soft/30 p-3">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
+          <div className="flex items-center gap-3 lg:w-64">
+            <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-2xl border border-kx-stroke/60 bg-white shadow-sm">
+              {form.logo_url ? <Image src={form.logo_url} alt="当前 Logo" fill sizes="64px" className="object-cover" unoptimized /> : <ImageIcon className="h-6 w-6 text-kx-muted" />}
+            </div>
+            <div>
+              <div className="text-sm font-black text-kx-text">当前 Logo</div>
+              <div className="mt-1 text-xs text-kx-muted">后台仅展示预览，不显示文件路径。</div>
+            </div>
+          </div>
+          <div className="min-w-0 flex-1 space-y-3">
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className="kx-button-ghost h-9 px-3 text-xs" onClick={() => logoInputRef.current?.click()} disabled={uploadingLogo}>
+                <Upload className="h-3.5 w-3.5" /> {uploadingLogo ? "上传中…" : "上传 Logo"}
+              </button>
+              <button type="button" className="kx-button-ghost h-9 px-3 text-xs" onClick={applyDesignedLogo}>
+                <Wand2 className="h-3.5 w-3.5" /> 应用设计 Logo
+              </button>
+              <input
+                ref={logoInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  uploadLogo(event.target.files?.[0]);
+                  event.currentTarget.value = "";
+                }}
+              />
+            </div>
+            <div className="grid gap-2 sm:grid-cols-[7rem_1fr_1fr_auto]">
+              <input className="kx-input h-10" maxLength={2} value={logoDesign.letter} onChange={(e) => setLogoDesign({ ...logoDesign, letter: e.target.value || "M" })} aria-label="Logo 字母" />
+              <ColorField label="主色" value={logoDesign.bg} onChange={(bg) => setLogoDesign({ ...logoDesign, bg })} />
+              <ColorField label="强调色" value={logoDesign.accent} onChange={(accent) => setLogoDesign({ ...logoDesign, accent })} />
+              <div className="relative grid h-10 w-10 place-items-center overflow-hidden rounded-xl border border-kx-stroke bg-white">
+                <Image src={buildLogoDataUrl(logoDesign.letter, logoDesign.bg, logoDesign.accent)} alt="Logo 设计预览" fill sizes="40px" className="object-cover" unoptimized />
+              </div>
+            </div>
+            <div>
+              <div className="mb-2 text-xs font-black text-kx-muted">从已上传图片选择</div>
+              {media.isLoading ? <div className="text-xs text-kx-muted">正在加载媒体库…</div> : null}
+              <div className="grid grid-cols-4 gap-2 sm:grid-cols-8 lg:grid-cols-10">
+                {(media.data || []).filter((item) => item.type === "image").slice(0, 40).map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => update("logo_url", item.url)}
+                    data-active={form.logo_url === item.url}
+                    className="group relative aspect-square overflow-hidden rounded-xl border border-kx-stroke bg-white transition hover:border-kx-accent data-[active=true]:border-kx-accent data-[active=true]:ring-2 data-[active=true]:ring-kx-accent/20"
+                    aria-label="选择这张图片作为 Logo"
+                  >
+                    <Image src={item.thumb_url || item.url} alt="媒体图片" fill sizes="64px" className="object-cover" unoptimized />
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <div className="mt-3 grid gap-2 lg:grid-cols-3">
+        <LocaleTextArea label="中文标题" value={form.site_title_zh || ""} onChange={(v) => update("site_title_zh", v)} />
+        <LocaleTextArea label="English title" value={form.site_title_en || ""} onChange={(v) => update("site_title_en", v)} />
+        <LocaleTextArea label="日本語タイトル" value={form.site_title_ja || ""} onChange={(v) => update("site_title_ja", v)} />
+        <LocaleTextArea label="中文描述" value={form.site_description_zh || ""} onChange={(v) => update("site_description_zh", v)} rows={4} />
+        <LocaleTextArea label="English description" value={form.site_description_en || ""} onChange={(v) => update("site_description_en", v)} rows={4} />
+        <LocaleTextArea label="日本語説明" value={form.site_description_ja || ""} onChange={(v) => update("site_description_ja", v)} rows={4} />
+      </div>
+    </section>
+  );
+}
+
+function SiteInfoCard() {
+  const stats = useQuery({ queryKey: ["admin-stats"], queryFn: () => api.adminStats() });
+  if (stats.isError) return <ErrorState onRetry={() => stats.refetch()} />;
+  if (!stats.data) return <InlineLoading />;
+  const s = stats.data.stats as Record<string, unknown>;
+  return (
+    <section className="kx-card">
+      <h2 className="inline-flex items-center gap-2 text-base font-bold"><Server className="h-4 w-4 text-kx-accent" />站点信息</h2>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+        <Info label="服务环境" value={String(s.server_env || "-")} />
+        <Info label="服务时间" value={s.server_time ? fullDateTime(String(s.server_time)) : "-"} />
+        <Info label="用户总数" value={String(s.users_total ?? 0)} />
+        <Info label="公开帖子" value={String(s.posts_active ?? 0)} />
+      </div>
+      <div className="mt-3 rounded-kx-md bg-kx-soft/50 p-3">
+        <div className="text-xs font-bold text-kx-muted">允许来源</div>
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {Array.isArray(s.allowed_origins) ? s.allowed_origins.map((origin) => (
+            <span key={String(origin)} className="rounded-full bg-kx-card px-2 py-1 text-xs font-mono text-kx-muted">{String(origin)}</span>
+          )) : <span className="text-xs text-kx-muted">未配置</span>}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MediaLibraryCard() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [kind, setKind] = useState<"" | "image" | "video" | "file">("");
+  const [scope, setScope] = useState<"admin" | "all">("admin");
+  const [uploading, setUploading] = useState(false);
+  const media = useQuery({
+    queryKey: ["admin-media", kind || "all", scope],
+    queryFn: () => api.adminMedia({ type: kind || undefined, limit: 120, scope }),
+  });
+
+  const upload = async (file?: File | null) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      await api.adminUploadMedia(file);
+      await queryClient.invalidateQueries({ queryKey: ["admin-media"] });
+      pushToast({ kind: "success", message: "文件已上传到媒体库" });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  return (
+    <section className="kx-card">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="inline-flex items-center gap-2 text-base font-bold"><FileImage className="h-4 w-4 text-kx-accent" />文件与图片库</h2>
+          <p className="mt-1 text-xs text-kx-muted">独立上传图片、视频和常见文档；默认只显示管理员上传的素材，用户上传的不在后台展示。Logo 选择会直接读取这里的图片。</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <div className="inline-flex items-center rounded-full border border-kx-stroke/60 bg-kx-soft/60 p-0.5">
+            <button type="button" onClick={() => setScope("admin")} className={`h-9 rounded-full px-3 text-xs font-black transition ${scope === "admin" ? "bg-white text-kx-text shadow-sm" : "text-kx-muted hover:text-kx-text"}`}>管理员上传</button>
+            <button type="button" onClick={() => setScope("all")} className={`h-9 rounded-full px-3 text-xs font-black transition ${scope === "all" ? "bg-white text-kx-text shadow-sm" : "text-kx-muted hover:text-kx-text"}`}>全部</button>
+          </div>
+          <select className="kx-input h-9 w-28 text-xs" value={kind} onChange={(e) => setKind(e.target.value as typeof kind)}>
+            <option value="">全部</option>
+            <option value="image">图片</option>
+            <option value="video">视频</option>
+            <option value="file">文件</option>
+          </select>
+          <button type="button" className="kx-button-primary h-9 px-3 text-xs" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+            <Upload className="h-3.5 w-3.5" /> {uploading ? "上传中…" : "上传"}
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            className="hidden"
+            onChange={(event) => {
+              upload(event.target.files?.[0]);
+              event.currentTarget.value = "";
+            }}
+          />
+        </div>
+      </div>
+      {media.isError ? <ErrorState title="媒体库加载失败" onRetry={() => media.refetch()} /> : null}
+      {!media.data && media.isLoading ? <InlineLoading /> : null}
+      {media.data ? (
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+          {media.data.map((item) => <MediaLibraryItem key={item.id} item={item} />)}
+          {!media.data.length ? <div className="rounded-kx-md bg-kx-soft p-6 text-center text-sm font-semibold text-kx-muted sm:col-span-2 lg:col-span-3">暂无文件</div> : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function MediaLibraryItem({ item }: { item: AdminMediaItem }) {
+  return (
+    <div className="flex min-w-0 items-center gap-3 rounded-kx-md border border-kx-stroke/60 bg-kx-soft/30 p-2.5">
+      <div className="relative grid h-14 w-14 shrink-0 place-items-center overflow-hidden rounded-xl bg-white">
+        {item.type === "image" ? (
+          <Image src={item.thumb_url || item.url} alt={item.display_name || "媒体图片"} fill sizes="56px" className="object-cover" unoptimized />
+        ) : (
+          <FileImage className="h-5 w-5 text-kx-muted" />
+        )}
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-black">{mediaKindLabel(item.type)} · {item.mime}</div>
+        <div className="mt-0.5 text-xs text-kx-muted">{formatBytes(item.byte_size)} · {item.owner_handle ? `@${item.owner_handle}` : "系统媒体"}</div>
+      </div>
+    </div>
+  );
+}
+
+function MarketingCoverageCard() {
+  const q = useQuery({ queryKey: ["admin-marketing-copy"], queryFn: () => api.adminMarketingCopy() });
+  const coverage = useMemo(() => summarizeCopy(q.data || []), [q.data]);
+  if (q.isError) return <ErrorState onRetry={() => q.refetch()} />;
+  if (!q.data) return <InlineLoading />;
+  return (
+    <section className="kx-card">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="inline-flex items-center gap-2 text-base font-bold"><Globe className="h-4 w-4 text-kx-accent" />官网文案覆盖</h2>
+          <p className="mt-1 text-xs text-kx-muted">检查各页面是否有三语公开文案，优先补齐首页、商家合作、下载、安全和联系页面。</p>
+        </div>
+        <Link href="/admin?tab=site" className="kx-button-ghost h-8 px-3 text-xs">进入总编辑器</Link>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {PAGE_OPTIONS.map((page) => {
+          const hit = coverage[page.value] || {};
+          return (
+            <div key={page.value} className="rounded-kx-md border border-kx-stroke/60 bg-kx-soft/30 p-3">
+              <div className="font-bold">{page.label}</div>
+              <div className="mt-2 flex gap-1">
+                {LOCALES.map((locale) => (
+                  <span
+                    key={locale.value}
+                    className={`rounded-full px-2 py-0.5 text-xs font-bold ${hit[locale.value] ? "bg-emerald-500/10 text-emerald-700" : "bg-kx-card text-kx-muted"}`}
+                  >
+                    {locale.label}
+                  </span>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+function DiscoverEntrancesCard() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
+  const [entries, setEntries] = useState<DiscoverEntrance[] | null>(null);
+  const [addKey, setAddKey] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (q.data && entries === null) setEntries(parseDiscoverEntrances(q.data.discover_entrances));
+  }, [q.data, entries]);
+
+  if (q.isError) return <ErrorState title="城市入口配置加载失败" onRetry={() => q.refetch()} />;
+  if (!entries) return <section className="kx-card"><InlineLoading /></section>;
+
+  const move = (i: number, dir: -1 | 1) => {
+    const j = i + dir;
+    if (j < 0 || j >= entries.length) return;
+    const next = [...entries];
+    [next[i], next[j]] = [next[j], next[i]];
+    setEntries(next);
+  };
+  const update = (i: number, patch: Partial<DiscoverEntrance>) =>
+    setEntries(entries.map((e, idx) => (idx === i ? { ...e, ...patch } : e)));
+  const remove = (i: number) => setEntries(entries.filter((_, idx) => idx !== i));
+  const add = () => {
+    const key = addKey as ChannelKey;
+    if (!key || entries.some((e) => e.channel === key)) return;
+    setEntries([...entries, { channel: key, tier: "primary", enabled: true }]);
+    setAddKey("");
+  };
+  const available = ALL_CHANNELS.filter((c) => !entries.some((e) => e.channel === c.key));
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.adminUpdateSiteSettings({ discover_entrances: serializeDiscoverEntrances(entries) });
+      await queryClient.invalidateQueries({ queryKey: ["admin-site-settings"] });
+      await queryClient.invalidateQueries({ queryKey: ["site-settings"] });
+      pushToast({ kind: "success", message: "城市入口已保存，发现页已同步" });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="kx-card">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="inline-flex items-center gap-2 text-base font-bold"><LayoutGrid className="h-4 w-4 text-kx-accent" />发现页 · 城市入口</h2>
+          <p className="mt-1 text-xs text-kx-muted">编辑发现页「城市入口」的排序、主/次入口、标题与副标题，并启用 / 停用。主入口是大卡片，次入口是下方小标签；留空标题则用频道默认文案。</p>
+        </div>
+        <div className="flex gap-2">
+          <button type="button" className="kx-button-ghost h-9 px-3 text-xs" onClick={() => setEntries(DEFAULT_DISCOVER_ENTRANCES.map((e) => ({ ...e })))}>恢复默认</button>
+          <button type="button" className="kx-button-primary h-9 px-3 text-xs" onClick={save} disabled={saving}><Save className="h-3.5 w-3.5" /> {saving ? "保存中…" : "保存"}</button>
+        </div>
+      </div>
+
+      <div className="mt-3 space-y-2">
+        {entries.map((entry, i) => {
+          const spec = getChannelByKey(entry.channel);
+          if (!spec) return null;
+          return (
+            <div key={entry.channel} className="rounded-kx-md border border-kx-stroke/60 bg-kx-soft/30 p-3">
+              <div className="flex items-center gap-2">
+                <div className="flex flex-col">
+                  <button type="button" aria-label="上移" className="grid h-5 w-6 place-items-center rounded text-kx-muted transition hover:bg-kx-card hover:text-kx-text disabled:opacity-30" onClick={() => move(i, -1)} disabled={i === 0}><ArrowUp className="h-3.5 w-3.5" /></button>
+                  <button type="button" aria-label="下移" className="grid h-5 w-6 place-items-center rounded text-kx-muted transition hover:bg-kx-card hover:text-kx-text disabled:opacity-30" onClick={() => move(i, 1)} disabled={i === entries.length - 1}><ArrowDown className="h-3.5 w-3.5" /></button>
+                </div>
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-kx-md bg-kx-accentSoft text-kx-accent"><spec.Icon className="h-4 w-4" /></span>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-black">{spec.title}</div>
+                  <div className="truncate text-xs text-kx-muted">{spec.subtitle}</div>
+                </div>
+                <select className="kx-input h-9 w-24 text-xs" value={entry.tier} onChange={(e) => update(i, { tier: e.target.value as DiscoverEntrance["tier"] })}>
+                  <option value="primary">主入口</option>
+                  <option value="secondary">次入口</option>
+                </select>
+                <button type="button" onClick={() => update(i, { enabled: !entry.enabled })} className={`h-9 shrink-0 rounded-full px-3 text-xs font-black transition ${entry.enabled ? "bg-emerald-500/10 text-emerald-700" : "bg-kx-soft text-kx-muted"}`}>{entry.enabled ? "已启用" : "已停用"}</button>
+                <button type="button" aria-label="删除" onClick={() => remove(i)} className="grid h-9 w-9 shrink-0 place-items-center rounded-kx-md text-kx-muted transition hover:bg-kx-danger/10 hover:text-kx-danger"><Trash2 className="h-4 w-4" /></button>
+              </div>
+              <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                <input className="kx-input h-9 text-xs" value={entry.title || ""} placeholder={`标题（默认：${spec.title}）`} onChange={(e) => update(i, { title: e.target.value })} />
+                <input className="kx-input h-9 text-xs" value={entry.subtitle || ""} placeholder={`副标题（默认：${spec.subtitle}）`} onChange={(e) => update(i, { subtitle: e.target.value })} />
+              </div>
+            </div>
+          );
+        })}
+        {!entries.length ? <div className="rounded-kx-md bg-kx-soft p-6 text-center text-sm font-semibold text-kx-muted">还没有入口，添加一个或点「恢复默认」。</div> : null}
+      </div>
+
+      {available.length ? (
+        <div className="mt-3 flex items-center gap-2 border-t border-kx-stroke/50 pt-3">
+          <select className="kx-input h-9 flex-1 text-xs" value={addKey} onChange={(e) => setAddKey(e.target.value)}>
+            <option value="">选择要添加的入口…</option>
+            {available.map((c) => <option key={c.key} value={c.key}>{c.title}</option>)}
+          </select>
+          <button type="button" className="kx-button-ghost h-9 shrink-0 px-3 text-xs" onClick={add} disabled={!addKey}><Plus className="h-3.5 w-3.5" /> 添加入口</button>
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function QuickCopyCard() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const [form, setForm] = useState({
+    page_key: "home" as SitePageKey,
+    locale: "zh",
+    title: "",
+    body: "",
+    status: "published" as "draft" | "published",
+    sort_order: 10,
+  });
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    if (!form.title.trim()) {
+      pushToast({ kind: "error", message: "标题不能为空" });
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.adminCreateMarketingCopy(form);
+      await queryClient.invalidateQueries({ queryKey: ["admin-marketing-copy"] });
+      pushToast({ kind: "success", message: "官网文案已发布" });
+      setForm({ ...form, title: "", body: "" });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="kx-card">
+      <h2 className="inline-flex items-center gap-2 text-base font-bold"><Plus className="h-4 w-4 text-kx-accent" />快速发布官网补充文案</h2>
+      <p className="mt-1 text-xs text-kx-muted">适合临时公告、城市开放计划、商家认证说明和合作入口提示；长文建议回到总览编辑器细修。</p>
+      <div className="mt-3 grid gap-2 sm:grid-cols-4">
+        <select className="kx-input" value={form.page_key} onChange={(e) => setForm({ ...form, page_key: e.target.value as SitePageKey })}>
+          {PAGE_OPTIONS.map((page) => <option key={page.value} value={page.value}>{page.label}</option>)}
+        </select>
+        <select className="kx-input" value={form.locale} onChange={(e) => setForm({ ...form, locale: e.target.value })}>
+          {LOCALES.map((locale) => <option key={locale.value} value={locale.value}>{locale.label}</option>)}
+        </select>
+        <select className="kx-input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as "draft" | "published" })}>
+          <option value="published">发布</option>
+          <option value="draft">草稿</option>
+        </select>
+        <input className="kx-input" type="number" value={form.sort_order} onChange={(e) => setForm({ ...form, sort_order: Number(e.target.value || 0) })} />
+      </div>
+      <input className="kx-input mt-2" placeholder="标题，例如：商家认证申请需要提交的资料" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
+      <textarea className="kx-textarea mt-2 min-h-32" placeholder="正文：写清楚适用对象、提交材料、审核状态、展示位置和下一步操作。" value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
+      <button className="kx-button-primary mt-3" onClick={save} disabled={busy}>{busy ? "保存中…" : "保存文案"}</button>
+    </section>
+  );
+}
+
+function Info({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-kx-md border border-kx-stroke/60 bg-kx-soft/30 p-3">
+      <div className="text-xs font-bold text-kx-muted">{label}</div>
+      <div className="mt-1 break-words text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function Metric({ icon: Icon, label, value, helper }: { icon: LucideIcon; label: string; value: string; helper: string }) {
+  return (
+    <div className="rounded-kx-md border border-kx-stroke/60 bg-kx-soft/30 p-3">
+      <div className="flex items-center gap-1.5 text-xs font-bold text-kx-muted"><Icon className="h-3.5 w-3.5" />{label}</div>
+      <div className="mt-1 text-xl font-black text-kx-text">{value}</div>
+      <div className="mt-1 text-xs text-kx-muted">{helper}</div>
+    </div>
+  );
+}
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-xs font-bold text-kx-muted">{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function ColorField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  return (
+    <label className="flex h-10 items-center gap-2 rounded-kx-md border border-kx-stroke bg-kx-card px-2">
+      <span className="text-xs font-bold text-kx-muted">{label}</span>
+      <input type="color" value={value} onChange={(event) => onChange(event.target.value)} className="h-7 w-9 rounded border-0 bg-transparent p-0" />
+      <span className="font-mono text-xs text-kx-muted">{value}</span>
+    </label>
+  );
+}
+
+function LocaleTextArea({ label, value, onChange, rows = 2 }: { label: string; value: string; onChange: (value: string) => void; rows?: number }) {
+  return (
+    <Field label={label}>
+      <textarea className="kx-textarea min-h-0" rows={rows} value={value} onChange={(e) => onChange(e.target.value)} />
+    </Field>
+  );
+}
+
+function formatBytes(value: number | null | undefined): string {
+  const n = Number(value || 0);
+  if (!Number.isFinite(n) || n <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let size = n;
+  let i = 0;
+  while (size >= 1024 && i < units.length - 1) {
+    size /= 1024;
+    i += 1;
+  }
+  return `${size >= 10 || i === 0 ? size.toFixed(0) : size.toFixed(1)} ${units[i]}`;
+}
+
+function pct(value: number | null | undefined): string {
+  return value == null ? "-" : `${Number(value).toFixed(1)}%`;
+}
+
+function mediaKindLabel(kind: string): string {
+  if (kind === "image") return "图片";
+  if (kind === "video") return "视频";
+  return "文件";
+}
+
+function buildLogoDataUrl(letter: string, bg: string, accent: string): string {
+  const safeLetter = (letter || "M").trim().slice(0, 2).replace(/[<>&"']/g, "");
+  const safeBg = /^#[0-9a-f]{6}$/i.test(bg) ? bg : "#2563eb";
+  const safeAccent = /^#[0-9a-f]{6}$/i.test(accent) ? accent : "#f97316";
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="72" y1="64" x2="440" y2="448" gradientUnits="userSpaceOnUse"><stop stop-color="${safeBg}"/><stop offset="1" stop-color="#4f46e5"/></linearGradient></defs><rect width="512" height="512" rx="138" fill="url(#g)"/><circle cx="394" cy="104" r="42" fill="${safeAccent}"/><text x="256" y="312" text-anchor="middle" font-family="Inter, Arial, sans-serif" font-size="184" font-weight="900" fill="white">${safeLetter}</text></svg>`;
+  return `data:image/svg+xml,${encodeURIComponent(svg)}`;
+}
+
+function summarizeCopy(items: MarketingCopyBlock[]) {
+  const result: Record<string, Record<string, boolean>> = {};
+  for (const item of items) {
+    if (item.status !== "published") continue;
+    result[item.page_key] ||= {};
+    result[item.page_key][item.locale] = true;
+  }
+  return result;
 }

@@ -8,12 +8,12 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import type { RegionInfo } from "@/lib/regions";
+import { useQuery } from "@tanstack/react-query";
+import { api } from "@/lib/api";
 import {
   ALL_CHANNELS,
   CHANNEL_GROUPS,
-  MORE_CHANNEL_SUMMARY,
-  PRIMARY_CHANNELS,
+  parseDiscoverEntrances,
   getChannelByKey,
   getChannelContentTypes,
   normalizeChannelKey,
@@ -24,7 +24,7 @@ import {
 export type ExploreChannelSlug = ChannelKey;
 export type ExploreChannelSpec = ChannelConfig;
 export const EXPLORE_CHANNELS = ALL_CHANNELS;
-export const CORE_EXPLORE_CHANNELS = PRIMARY_CHANNELS;
+export const CORE_EXPLORE_CHANNELS = ALL_CHANNELS;
 
 const CHANNEL_BY_SLUG = new Map(EXPLORE_CHANNELS.map((spec) => [spec.slug, spec]));
 
@@ -33,18 +33,29 @@ export const getExploreChannelContentTypes = getChannelContentTypes;
 export const normalizeExploreChannel = normalizeChannelKey;
 
 export function DiscoverShortcutGrid({
-  region,
   selectedChannel,
   onSelectChannel,
   getChannelHref,
 }: {
-  region?: RegionInfo;
   selectedChannel?: ExploreChannelSlug;
   onSelectChannel: (slug: ExploreChannelSlug) => void;
   getChannelHref?: (slug: ExploreChannelSlug) => string;
 }) {
   const [isChannelDialogOpen, setIsChannelDialogOpen] = useState(false);
-  const cityName = region?.city_name || "本地";
+  const siteSettings = useQuery({ queryKey: ["site-settings"], queryFn: () => api.siteSettings(), staleTime: 300_000 });
+  const entrances = parseDiscoverEntrances(siteSettings.data?.discover_entrances);
+  const primaryEntries = entrances
+    .filter((e) => e.enabled && e.tier === "primary")
+    .flatMap((e) => {
+      const spec = CHANNEL_BY_SLUG.get(e.channel);
+      return spec ? [{ spec, title: e.title, subtitle: e.subtitle }] : [];
+    });
+  const secondaryEntries = entrances
+    .filter((e) => e.enabled && e.tier === "secondary")
+    .flatMap((e) => {
+      const spec = CHANNEL_BY_SLUG.get(e.channel);
+      return spec ? [{ spec, title: e.title }] : [];
+    });
 
   const closeDialog = () => {
     setIsChannelDialogOpen(false);
@@ -56,59 +67,72 @@ export function DiscoverShortcutGrid({
   };
 
   return (
-    <section className="overflow-hidden rounded-[28px] border border-slate-200/70 bg-white shadow-[0_10px_34px_rgba(15,23,42,0.055)]">
-      <div className="border-b border-slate-200/60 bg-gradient-to-br from-white via-blue-50/30 to-slate-50/70 px-4 py-4 sm:px-5">
-        <div className="flex items-start justify-between gap-3">
-          <div className="min-w-0">
-            <h2 className="text-lg font-semibold text-slate-950">探索{cityName}</h2>
-            <p className="mt-1 text-sm text-slate-500">默认显示本城内容，进入频道后可切到全国范围。</p>
+    <section className="space-y-4">
+      <section className="overflow-hidden rounded-[24px] border border-slate-200/70 dark:border-white/10 bg-white/95 dark:bg-kx-card shadow-[0_18px_54px_-42px_rgba(15,23,42,0.5)] ring-1 ring-white/75">
+        <div className="border-b border-slate-200/60 dark:border-white/10 bg-white dark:bg-kx-card px-4 py-4 sm:px-5">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="min-w-0">
+              <h2 className="text-lg font-black text-slate-950 dark:text-white">城市入口</h2>
+              <p className="mt-1 text-sm leading-5 text-slate-500 dark:text-slate-400">二手、租房、找工作、本地服务……每件事都有自己的入口。选好城市，直接进到你现在需要的板块，浏览和发布都更快一步。</p>
+            </div>
+            <button
+              data-explore-all-channels
+              type="button"
+              aria-label="打开更多频道"
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                setIsChannelDialogOpen(true);
+              }}
+              className="group inline-flex h-9 w-fit shrink-0 items-center gap-1.5 rounded-full border border-blue-200/70 bg-blue-50 px-3 text-xs font-black text-blue-700 shadow-[0_10px_28px_-20px_rgba(37,99,235,0.55)] transition hover:border-blue-300 hover:bg-blue-100"
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              更多频道
+              <ChevronRight className="h-3.5 w-3.5 transition group-hover:translate-x-0.5" />
+            </button>
           </div>
-          <span className="hidden shrink-0 rounded-full border border-blue-200/70 bg-white px-3 py-1 text-xs font-semibold text-blue-700 shadow-[0_8px_24px_rgba(37,99,235,0.07)] sm:inline-flex">
-            {region?.country_emoji || "🌐"} {cityName}
-          </span>
         </div>
-      </div>
-      <div className="grid grid-cols-2 gap-2 p-4 sm:p-5 lg:grid-cols-3">
-        {CORE_EXPLORE_CHANNELS.map((spec) => (
-          getChannelHref ? (
-            <ChannelCardLink
-              key={spec.slug}
-              spec={spec}
-              active={selectedChannel === spec.slug}
-              href={getChannelHref(spec.slug)}
-            />
-          ) : (
-            <ChannelCard
-              key={spec.slug}
-              spec={spec}
-              active={selectedChannel === spec.slug}
-              onClick={() => onSelectChannel(spec.slug)}
-            />
-          )
-        ))}
-        <button
-          data-explore-all-channels
-          type="button"
-          aria-label="打开更多频道"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            setIsChannelDialogOpen(true);
-          }}
-          className="group col-span-2 flex min-h-[64px] items-center gap-3 rounded-2xl border border-blue-200/70 bg-gradient-to-br from-blue-50 via-white to-slate-50 px-3.5 py-3 text-left shadow-[0_10px_30px_rgba(37,99,235,0.08)] transition-all duration-200 ease-out hover:-translate-y-px hover:border-blue-300 hover:shadow-[0_12px_40px_rgba(37,99,235,0.09)] active:scale-[0.99] lg:col-span-1"
-        >
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-blue-600 text-white shadow-[0_10px_24px_rgba(37,99,235,0.22)] sm:bg-blue-600/10 sm:text-blue-600 sm:shadow-none">
-            <Sparkles className="h-4 w-4" />
-          </span>
-          <span className="min-w-0 flex-1">
-            <span className="block text-sm font-bold text-slate-900">更多频道</span>
-            <span className="mt-0.5 block truncate text-xs font-medium text-slate-500">
-              {MORE_CHANNEL_SUMMARY}
-            </span>
-          </span>
-          <ChevronRight className="h-4 w-4 shrink-0 text-blue-500" />
-        </button>
-      </div>
+        <div className="grid grid-cols-1 gap-2.5 p-3 sm:grid-cols-2 sm:p-4">
+          {primaryEntries.map(({ spec, title, subtitle }) => (
+            getChannelHref ? (
+              <ChannelHeroLink
+                key={spec.slug}
+                spec={spec}
+                title={title}
+                subtitle={subtitle}
+                active={selectedChannel === spec.slug}
+                href={getChannelHref(spec.slug)}
+              />
+            ) : (
+              <ChannelHeroButton
+                key={spec.slug}
+                spec={spec}
+                title={title}
+                subtitle={subtitle}
+                active={selectedChannel === spec.slug}
+                onClick={() => onSelectChannel(spec.slug)}
+              />
+            )
+          ))}
+        </div>
+        {secondaryEntries.length ? (
+          <div className="flex flex-wrap gap-2 border-t border-slate-200/60 dark:border-white/10 px-3 py-3 sm:px-4">
+            {secondaryEntries.map(({ spec, title }) => (
+              getChannelHref ? (
+                <Link key={spec.slug} href={getChannelHref(spec.slug)} className={secondaryChipClass(selectedChannel === spec.slug)}>
+                  <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg ${toneClass(spec.tone)}`}><spec.Icon className="h-3.5 w-3.5" /></span>
+                  {title || spec.title}
+                </Link>
+              ) : (
+                <button key={spec.slug} type="button" onClick={() => onSelectChannel(spec.slug)} className={secondaryChipClass(selectedChannel === spec.slug)}>
+                  <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-lg ${toneClass(spec.tone)}`}><spec.Icon className="h-3.5 w-3.5" /></span>
+                  {title || spec.title}
+                </button>
+              )
+            ))}
+          </div>
+        ) : null}
+      </section>
       {isChannelDialogOpen ? (
         <AllChannelDialog
           selectedChannel={selectedChannel}
@@ -124,30 +148,18 @@ export function DiscoverShortcutGrid({
   );
 }
 
-function ChannelCard({ spec, active, onClick }: { spec: ExploreChannelSpec; active?: boolean; onClick: () => void }) {
+function ChannelHeroButton({ spec, title, subtitle, active, onClick }: { spec: ExploreChannelSpec; title?: string; subtitle?: string; active?: boolean; onClick: () => void }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={channelCardClass(active)}
-    >
-      <ChannelIcon spec={spec} />
-      <span className="min-w-0">
-        <span className="block text-sm font-semibold text-slate-900">{spec.title}</span>
-        <span className="mt-0.5 block truncate text-xs text-slate-500">{spec.subtitle}</span>
-      </span>
+    <button type="button" onClick={onClick} className={channelHeroClass(active)}>
+      <ChannelHeroInner spec={spec} title={title} subtitle={subtitle} />
     </button>
   );
 }
 
-function ChannelCardLink({ spec, active, href }: { spec: ExploreChannelSpec; active?: boolean; href: string }) {
+function ChannelHeroLink({ spec, title, subtitle, active, href }: { spec: ExploreChannelSpec; title?: string; subtitle?: string; active?: boolean; href: string }) {
   return (
-    <Link href={href} className={channelCardClass(active)}>
-      <ChannelIcon spec={spec} />
-      <span className="min-w-0">
-        <span className="block text-sm font-semibold text-slate-900">{spec.title}</span>
-        <span className="mt-0.5 block truncate text-xs text-slate-500">{spec.subtitle}</span>
-      </span>
+    <Link href={href} className={channelHeroClass(active)}>
+      <ChannelHeroInner spec={spec} title={title} subtitle={subtitle} />
     </Link>
   );
 }
@@ -196,7 +208,7 @@ function AllChannelDialog({
       />
       <section
         ref={sheetRef}
-        className="absolute inset-x-0 bottom-0 max-h-[75dvh] overflow-hidden rounded-t-[24px] bg-white text-slate-900 shadow-[0_32px_80px_rgba(15,23,42,0.22)] md:left-1/2 md:top-1/2 md:bottom-auto md:w-[min(820px,calc(100vw-48px))] md:max-h-[calc(100vh-120px)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-[24px]"
+        className="absolute inset-x-0 bottom-0 max-h-[75dvh] overflow-hidden rounded-t-[24px] bg-white dark:bg-kx-card text-slate-900 dark:text-slate-100 shadow-[0_32px_80px_rgba(15,23,42,0.22)] md:left-1/2 md:top-1/2 md:bottom-auto md:w-[min(820px,calc(100vw-48px))] md:max-h-[calc(100vh-120px)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-[24px]"
         role="dialog"
         aria-modal="true"
         aria-labelledby="all-channel-title"
@@ -209,12 +221,12 @@ function AllChannelDialog({
         }}
       >
         <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-slate-200 md:hidden" />
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200/70 px-5 py-4">
+        <div className="flex items-start justify-between gap-4 border-b border-slate-200/70 dark:border-white/10 px-5 py-4">
           <div>
-            <h3 id="all-channel-title" className="text-lg font-semibold text-slate-900">更多频道</h3>
-            <p className="mt-1 text-sm text-slate-500">问答、服务、招聘、商家和本地提醒</p>
+            <h3 id="all-channel-title" className="text-lg font-semibold text-slate-900 dark:text-slate-100">全部频道</h3>
+            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">按使用场景分组，投票、长文、匿名提问只作为发布工具。</p>
           </div>
-          <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-full border border-slate-200 text-slate-500 transition hover:bg-slate-50 hover:text-slate-900">
+          <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-full border border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 transition hover:bg-slate-50 dark:hover:bg-white/[0.05] hover:text-slate-900 dark:hover:text-white">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -224,27 +236,32 @@ function AllChannelDialog({
               <div key={group.title}>
                 <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-slate-400">{group.title}</h4>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
-                  {group.items.map((slug) => {
-                    const spec = CHANNEL_BY_SLUG.get(slug)!;
+                  {group.items.map((item) => {
+                    const spec = CHANNEL_BY_SLUG.get(item.channel)!;
+                    const Icon = item.Icon || spec.Icon;
+                    const slug = item.channel;
                     const itemClass = [
                       "group flex min-h-14 items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition-all duration-200 ease-out",
-                      "hover:-translate-y-px hover:bg-slate-50/80 hover:shadow-[0_12px_40px_rgba(15,23,42,0.07)]",
-                      selectedChannel === slug ? "border-blue-200 bg-blue-50/70" : "border-slate-200/70 bg-white",
+                      "hover:-translate-y-px hover:bg-slate-50/80 dark:hover:bg-white/[0.05] hover:shadow-[0_12px_40px_rgba(15,23,42,0.07)]",
+                      selectedChannel === slug ? "border-blue-200 bg-blue-50/70" : "border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card",
                     ].join(" ");
                     const itemContent = (
                       <>
-                        <ChannelIcon spec={spec} />
+                        <span className={`grid h-9 w-9 shrink-0 place-items-center rounded-2xl ${toneClass(spec.tone)}`}>
+                          <Icon className="h-4 w-4" />
+                        </span>
                         <span className="min-w-0">
-                          <span className="block text-sm font-semibold text-slate-900">{spec.title}</span>
-                          <span className="block truncate text-xs text-slate-500">{spec.subtitle}</span>
+                          <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">{item.label}</span>
+                          <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{item.subtitle}</span>
+                          {item.tool ? <span className="mt-1 inline-flex rounded-full bg-slate-100 dark:bg-white/10 px-2 py-0.5 text-[10px] font-bold text-slate-500 dark:text-slate-400">发布工具</span> : null}
                         </span>
                       </>
                     );
                     return getChannelHref ? (
                       <Link
-                        key={slug}
+                        key={`${group.title}-${item.label}`}
                         href={getChannelHref(slug)}
-                        aria-label={`查看${spec.title}频道`}
+                        aria-label={`查看${item.label}`}
                         onClick={onClose}
                         className={itemClass}
                       >
@@ -252,9 +269,9 @@ function AllChannelDialog({
                       </Link>
                     ) : (
                       <button
-                        key={slug}
+                        key={`${group.title}-${item.label}`}
                         type="button"
-                        aria-label={`查看${spec.title}频道`}
+                        aria-label={`查看${item.label}`}
                         onClick={() => onSelect(slug)}
                         className={itemClass}
                       >
@@ -273,20 +290,45 @@ function AllChannelDialog({
   );
 }
 
-function channelCardClass(active?: boolean) {
+function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec; title?: string; subtitle?: string }) {
+  return (
+    <>
+      <span className={`pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full blur-2xl ${toneGlow(spec.tone)}`} aria-hidden />
+      <ChannelIcon spec={spec} size="lg" />
+      <span className="relative min-w-0 flex-1">
+        <span className="block text-[15px] font-black text-slate-950 dark:text-white">{title || spec.title}</span>
+        <span className="mt-1 block text-[13px] leading-5 text-slate-500 dark:text-slate-400">{subtitle || spec.subtitle}</span>
+      </span>
+      <span className="relative mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-slate-100 dark:bg-white/10 text-slate-400 transition-all duration-200 group-hover:bg-slate-950 group-hover:text-white">
+        <ChevronRight className="h-4 w-4" />
+      </span>
+    </>
+  );
+}
+
+function channelHeroClass(active?: boolean) {
   return [
-    "group flex min-h-[72px] items-center gap-3 rounded-2xl border px-3 py-3 text-left",
-    "bg-white shadow-[0_8px_26px_rgba(15,23,42,0.035)] transition-all duration-200 ease-out",
-    "hover:-translate-y-px hover:shadow-[0_12px_36px_rgba(15,23,42,0.075)]",
-    active ? "border-blue-300 bg-blue-50/75 ring-2 ring-blue-100/80" : "border-slate-200/70 hover:border-blue-200/80 hover:bg-slate-50/45",
+    "group relative flex min-h-[112px] items-start gap-3.5 overflow-hidden rounded-[22px] border p-4 text-left",
+    "bg-white dark:bg-kx-card shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
+    "hover:-translate-y-0.5 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
+    active ? "border-blue-300 bg-blue-50/55 ring-2 ring-blue-100/80" : "border-slate-200/70 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20",
   ].join(" ");
 }
 
-function ChannelIcon({ spec, size = "md" }: { spec: ExploreChannelSpec; size?: "sm" | "md" }) {
+function secondaryChipClass(active?: boolean) {
+  return [
+    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[13px] font-bold transition-all duration-200",
+    active ? "border-blue-300 bg-blue-50/70 text-blue-700" : "border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card text-slate-600 dark:text-slate-300 hover:border-slate-300 dark:hover:border-white/20 hover:bg-slate-50/80 dark:hover:bg-white/[0.05] hover:text-slate-900 dark:hover:text-white",
+  ].join(" ");
+}
+
+function ChannelIcon({ spec, size = "md" }: { spec: ExploreChannelSpec; size?: "sm" | "md" | "lg" }) {
   const classes = toneClass(spec.tone);
+  const box = size === "lg" ? "h-12 w-12 rounded-[18px]" : size === "sm" ? "h-8 w-8" : "h-9 w-9";
+  const icon = size === "lg" ? "h-5 w-5" : size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
   return (
-    <span className={`grid shrink-0 place-items-center rounded-2xl ${size === "sm" ? "h-8 w-8" : "h-9 w-9"} ${classes}`}>
-      <spec.Icon className={size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4"} />
+    <span className={`grid shrink-0 place-items-center ${box} ${classes}`}>
+      <spec.Icon className={icon} />
     </span>
   );
 }
@@ -310,6 +352,29 @@ function toneClass(tone: ExploreChannelSpec["tone"]) {
     case "fuchsia":
       return "bg-fuchsia-600/10 text-fuchsia-600";
     default:
-      return "bg-slate-600/10 text-slate-600";
+      return "bg-slate-600/10 text-slate-600 dark:text-slate-300";
+  }
+}
+
+function toneGlow(tone: ExploreChannelSpec["tone"]) {
+  switch (tone) {
+    case "blue":
+      return "bg-blue-500/10";
+    case "emerald":
+      return "bg-emerald-500/10";
+    case "indigo":
+      return "bg-indigo-500/10";
+    case "violet":
+      return "bg-violet-500/10";
+    case "teal":
+      return "bg-teal-500/10";
+    case "rose":
+      return "bg-rose-500/10";
+    case "orange":
+      return "bg-orange-500/10";
+    case "fuchsia":
+      return "bg-fuchsia-500/10";
+    default:
+      return "bg-slate-500/10";
   }
 }

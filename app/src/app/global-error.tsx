@@ -145,6 +145,8 @@ export default function GlobalError({
         <div className="card">
           <h1>页面暂时无法加载</h1>
           <p>请稍后再试。点「重试」或回到首页继续浏览。</p>
+          <p>English: This page cannot load right now. Try again or return home.</p>
+          <p>日本語: このページは現在読み込めません。再試行するか、ホームへ戻ってください。</p>
           {error?.digest ? <p className="muted">追踪号 {error.digest}</p> : null}
           <div className="row">
             <button onClick={retry}>重试</button>

@@ -7,18 +7,22 @@ import { api } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { formatPrice } from "@/lib/format";
+import { useI18n } from "@/lib/i18n";
+import { membershipOrderStatusLabel, membershipUi } from "@/lib/membership-ui";
 
 export default function MembershipOrdersPage() {
   const q = useQuery({ queryKey: ["membership-orders"], queryFn: () => api.membershipOrders() });
+  const { locale } = useI18n();
+  const copy = membershipUi(locale);
 
   return (
     <AppShell>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
-        <Link href="/membership" className="grid h-9 w-9 place-items-center rounded-full hover:bg-kx-soft" aria-label="返回会员页">
+        <Link href="/membership" className="grid h-9 w-9 place-items-center rounded-full hover:bg-kx-soft" aria-label={copy.backToMembership}>
           <ChevronLeft className="h-5 w-5" />
         </Link>
         <ReceiptText className="h-5 w-5 text-kx-accent" />
-        <h1 className="text-lg font-bold">会员订单</h1>
+        <h1 className="text-lg font-bold">{copy.ordersTitle}</h1>
       </header>
       <div className="px-3 py-3 sm:px-4">
         {q.isLoading ? <InlineLoading /> : q.isError || !q.data ? (
@@ -34,14 +38,14 @@ export default function MembershipOrdersPage() {
                   </div>
                   <div className="text-right">
                     <div className="font-black text-kx-text">{formatPrice({ price: Number(row.amount || 0), currency: String(row.currency || "CNY") })}</div>
-                    <div className="mt-1 text-xs font-bold text-kx-muted">{String(row.status || "")}</div>
+                    <div className="mt-1 text-xs font-bold text-kx-muted">{membershipOrderStatusLabel(String(row.status || ""), locale)}</div>
                   </div>
                 </div>
               </div>
             ))}
           </section>
         ) : (
-          <section className="kx-card text-center text-sm text-kx-muted">暂无会员订单。</section>
+          <section className="kx-card text-center text-sm text-kx-muted">{copy.ordersEmpty}</section>
         )}
       </div>
     </AppShell>

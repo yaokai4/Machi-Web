@@ -22,30 +22,30 @@ export function HeroSection() {
 
       <div className="mx-auto grid max-w-[1180px] items-center gap-12 lg:grid-cols-[1.04fr_0.96fr] xl:gap-16">
         {/* ─────────── LEFT — pitch + CTA ─────────── */}
-        <div className="mc-reveal order-1 mx-auto max-w-[620px] text-center lg:mx-0 lg:text-left">
+        <div className="mc-reveal order-1 mx-auto w-full min-w-0 max-w-[620px] text-center lg:mx-0 lg:text-left">
           <span className="mc-pill inline-flex items-center gap-1.5 bg-white/80 text-indigo-700 ring-1 ring-indigo-100 backdrop-blur dark:bg-white/[0.06] dark:text-sky-200 dark:ring-white/10">
             <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
             <BrandPhrase text={copy.hero.eyebrow} />
           </span>
 
-          <h1 className="mt-5 text-[clamp(2.65rem,7vw,5.5rem)] font-black leading-[0.95] text-slate-950 dark:text-white">
+          <h1 className="mx-auto mt-5 max-w-[20rem] text-[clamp(2.45rem,12vw,5.5rem)] font-black leading-[0.95] text-slate-950 sm:max-w-none sm:text-[clamp(2.65rem,7vw,5.5rem)] lg:mx-0 dark:text-white">
             <BrandText>{[copy.hero.titleTop, copy.hero.titleBottom].filter(Boolean).join(" ")}</BrandText>
           </h1>
 
-          <p className="mt-5 text-[clamp(2rem,4.2vw,4.2rem)] font-black leading-[1.04] text-slate-950 dark:text-white">
+          <p className="mx-auto mt-5 max-w-[20rem] text-[1.9rem] font-black leading-[1.12] text-slate-950 [overflow-wrap:anywhere] [word-break:break-word] sm:max-w-none sm:text-[clamp(2rem,4.2vw,4.2rem)] sm:leading-[1.04] sm:[word-break:normal] lg:mx-0 dark:text-white">
             {copy.hero.headline}
           </p>
 
-          <p className="mx-auto mt-6 max-w-2xl text-lg leading-8 text-slate-700 sm:text-[1.35rem] sm:leading-9 lg:mx-0 dark:text-slate-200">
+          <p className="mx-auto mt-6 max-w-[21rem] text-lg leading-8 text-slate-700 [overflow-wrap:anywhere] sm:max-w-2xl sm:text-[1.35rem] sm:leading-9 lg:mx-0 dark:text-slate-200">
             {copy.hero.subtitle}
           </p>
-          <p className="mx-auto mt-4 max-w-2xl text-[15px] font-bold leading-7 text-stone-600 sm:text-base lg:mx-0 dark:text-stone-300">
+          <p className="mx-auto mt-4 max-w-[21rem] text-[15px] font-bold leading-7 text-stone-600 [overflow-wrap:anywhere] sm:max-w-2xl sm:text-base lg:mx-0 dark:text-stone-300">
             {copy.hero.supporting}
           </p>
 
-          <div className="mx-auto mt-8 grid max-w-[460px] grid-cols-1 gap-3 sm:grid-cols-2 lg:mx-0 lg:max-w-2xl">
+          <div className="mx-auto mt-8 grid w-full max-w-[460px] grid-cols-1 gap-3 sm:grid-cols-2 lg:mx-0 lg:max-w-2xl">
             <Button
-              href="#waitlist-form"
+              href="/home"
               size="lg"
               className="h-14 px-6 text-base font-black"
               iconRight={<ArrowRight className="h-5 w-5" />}
@@ -53,7 +53,7 @@ export function HeroSection() {
               {copy.hero.primary}
             </Button>
             <Button
-              href="#social"
+              href="#waitlist-form"
               variant="secondary"
               size="lg"
               className="h-14 px-6 text-base font-black"
@@ -62,7 +62,7 @@ export function HeroSection() {
               {copy.hero.secondary}
             </Button>
             <Button
-              href="/about#founder"
+              href="#guide"
               variant="secondary"
               size="lg"
               className="h-14 px-6 text-base font-black"
@@ -82,7 +82,7 @@ export function HeroSection() {
             </Button>
           </div>
 
-          <div className="mx-auto mt-6 flex max-w-[460px] flex-col items-center gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4 lg:mx-0">
+          <div className="mx-auto mt-6 flex w-full max-w-[460px] flex-col items-center gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4 lg:mx-0">
             <StoreButton
               kind="app-store"
               label={copy.hero.appStore}
@@ -106,7 +106,7 @@ export function HeroSection() {
             </a>
           </div>
 
-          <div className="mx-auto mt-8 grid max-w-[420px] grid-cols-3 gap-3 sm:max-w-lg lg:mx-0">
+          <div className="mx-auto mt-8 grid w-full max-w-[420px] grid-cols-3 gap-3 sm:max-w-lg lg:mx-0">
             {copy.hero.stats.map(([value, label]) => (
               <div
                 key={label}

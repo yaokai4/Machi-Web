@@ -42,14 +42,15 @@ const REQUIRED_KEYS: Partial<Record<ContentType, string[]>> = {
   meetup: ["title", "meetup_time"],
   dining: ["restaurant_or_area", "meetup_time"],
   event: ["title", "event_time"],
-  service: ["service_type"],
-  merchant: ["merchant_name"],
-  coupon: ["title", "discount_info"],
+  service: ["company_name", "service_type", "service_description", "price_range", "contact_method"],
+  merchant: ["merchant_name", "company_name", "merchant_type", "service_description", "address", "contact_method"],
+  coupon: ["title", "merchant_name", "discount_info", "valid_until", "usage_rules", "contact_method"],
   warning: ["title"],
   poll: ["question", "options"],
 };
 
 const LANGUAGE_PICKER_OPTIONS: ContentLanguage[] = ["zh", "en", "ja", "ko", "fr", "es"];
+const STRICT_STRUCTURED_TYPES = new Set<ContentType>(["poll", "merchant", "service", "coupon", "job_post"]);
 
 const TAG_RE = /#([\p{L}\p{N}_]+)/gu;
 const POLL_MIN_OPTIONS = 2;
@@ -152,7 +153,7 @@ export function Composer() {
     });
   }, [contentType, attributes]);
   const hasGenericPayload = content.trim().length > 0 || media.length > 0 || tags.length > 0;
-  const strictStructuredPost = contentType === "poll";
+  const strictStructuredPost = STRICT_STRUCTURED_TYPES.has(contentType);
   const canPublish = (missingRequired.length === 0 && (hasAttributes || hasGenericPayload)) || (!strictStructuredPost && hasGenericPayload);
   // Machi Verified gate: high-trust types need an active membership. The
   // server enforces it too (403 MEMBERSHIP_REQUIRED) — this just gates UX.
@@ -195,7 +196,7 @@ export function Composer() {
         kind: "error",
         message:
           missingRequired.length > 0
-            ? `还差几个必填项: ${missingRequired.join(" · ")}`
+            ? `还差几个必填项: ${missingRequired.map((key) => fieldLabelFor(contentType, key)).join(" · ")}`
             : t("composer_empty_error"),
       });
       return;
@@ -312,7 +313,7 @@ export function Composer() {
             )}
             onClick={publish}
             disabled={submitting || !canPublish || needsMembership}
-            title={!canPublish && missingRequired.length > 0 ? `还差: ${missingRequired.join(" · ")}` : undefined}
+            title={!canPublish && missingRequired.length > 0 ? `还差: ${missingRequired.map((key) => fieldLabelFor(contentType, key)).join(" · ")}` : undefined}
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             {t("action_publish")}
@@ -389,7 +390,7 @@ export function Composer() {
             {missingRequired.length > 0 ? (
               <div className="mb-3 rounded-kx-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900 dark:bg-amber-500/10 dark:border-amber-400/20 dark:text-amber-200">
                 <span className="font-bold">还差几个必填项: </span>
-                {missingRequired.join(" · ")}
+                {missingRequired.map((key) => fieldLabelFor(contentType, key)).join(" · ")}
               </div>
             ) : null}
             {contentType !== "dynamic" ? (
@@ -535,7 +536,9 @@ export function Composer() {
   );
 }
 
-const TYPED_FIELDS: Partial<Record<ContentType, Array<{ key: string; label: string; placeholder?: string; type?: string }>>> = {
+type TypedField = { key: string; label: string; placeholder?: string; type?: string; kind?: "input" | "textarea" };
+
+const TYPED_FIELDS: Partial<Record<ContentType, TypedField[]>> = {
   image_post: [
     { key: "title", label: "标题", placeholder: "一组城市照片 / 探店记录" },
   ],
@@ -627,7 +630,7 @@ const TYPED_FIELDS: Partial<Record<ContentType, Array<{ key: string; label: stri
   ],
   meetup: [
     { key: "title", label: "标题" },
-    { key: "meetup_type", label: "搭子类型", placeholder: "饭搭子 / 学习 / 运动 / 语言交换" },
+    { key: "meetup_type", label: "小组类型", placeholder: "学习 / 运动 / 语言交换 / 本地活动" },
     { key: "meetup_time", label: "时间" },
     { key: "location", label: "地点" },
     { key: "people_limit", label: "人数", type: "number" },
@@ -649,26 +652,35 @@ const TYPED_FIELDS: Partial<Record<ContentType, Array<{ key: string; label: stri
     { key: "budget", label: "预算" },
   ],
   service: [
-    { key: "service_type", label: "服务类型" },
+    { key: "company_name", label: "公司 / 店铺名称" },
+    { key: "service_type", label: "服务类型", placeholder: "搬家 / 语言学校 / 签证咨询 / 家政 / 维修" },
+    { key: "service_description", label: "服务内容", placeholder: "服务范围、适合人群、交付方式", kind: "textarea" },
     { key: "price_range", label: "价格范围" },
     { key: "contact_method", label: "联系方式" },
-    { key: "merchant_id", label: "商家 ID" },
-    { key: "verified_status", label: "认证状态" },
+    { key: "website", label: "官网 / 预约链接" },
+    { key: "address", label: "服务地址 / 覆盖区域" },
+    { key: "business_hours", label: "营业时间" },
+    { key: "license_info", label: "资质 / 备案信息" },
   ],
   merchant: [
     { key: "merchant_name", label: "商家名称" },
-    { key: "merchant_type", label: "商家类型" },
-    { key: "address", label: "地址" },
+    { key: "company_name", label: "公司主体 / 法人名称" },
+    { key: "merchant_type", label: "商家类型", placeholder: "餐饮 / 教育 / 房产 / 招聘 / 本地服务" },
+    { key: "service_description", label: "主营服务 / 商品内容", placeholder: "请写清楚提供什么、价格或服务方式", kind: "textarea" },
+    { key: "address", label: "地址 / 服务区域" },
     { key: "opening_hours", label: "营业时间" },
     { key: "contact_method", label: "联系方式" },
-    { key: "rating", label: "评分", type: "number" },
+    { key: "website", label: "官网 / 社媒链接" },
+    { key: "license_info", label: "营业执照 / 资质说明" },
   ],
   coupon: [
     { key: "title", label: "优惠标题" },
-    { key: "merchant_id", label: "商家 ID" },
+    { key: "merchant_name", label: "商家名称" },
     { key: "discount_info", label: "优惠信息" },
     { key: "valid_until", label: "有效期" },
     { key: "usage_rules", label: "使用规则" },
+    { key: "contact_method", label: "联系方式" },
+    { key: "service_description", label: "适用商品 / 服务", kind: "textarea" },
   ],
   warning: [
     { key: "title", label: "避坑标题" },
@@ -687,6 +699,10 @@ const TYPED_FIELDS: Partial<Record<ContentType, Array<{ key: string; label: stri
     { key: "description", label: "内容" },
   ],
 };
+
+function fieldLabelFor(contentType: ContentType, key: string): string {
+  return TYPED_FIELDS[contentType]?.find((field) => field.key === key)?.label || key;
+}
 
 function TypedAttributeFields({
   contentType,
@@ -709,15 +725,24 @@ function TypedAttributeFields({
   return (
     <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-kx-md border border-kx-stroke/60 bg-kx-soft/40 p-2.5">
       {fields.map((field) => (
-        <label key={field.key} className="text-xs font-semibold text-kx-muted">
+        <label key={field.key} className={clsx("text-xs font-semibold text-kx-muted", field.kind === "textarea" && "sm:col-span-2")}>
           {field.label}
-          <input
-            className="kx-input h-9 mt-1 bg-kx-card"
-            type={field.type || "text"}
-            placeholder={field.placeholder}
-            value={String(attributes[field.key] ?? "")}
-            onChange={(e) => onChange(field.key, e.target.value)}
-          />
+          {field.kind === "textarea" ? (
+            <textarea
+              className="kx-textarea mt-1 min-h-20 bg-kx-card text-sm"
+              placeholder={field.placeholder}
+              value={String(attributes[field.key] ?? "")}
+              onChange={(e) => onChange(field.key, e.target.value)}
+            />
+          ) : (
+            <input
+              className="kx-input h-9 mt-1 bg-kx-card"
+              type={field.type || "text"}
+              placeholder={field.placeholder}
+              value={String(attributes[field.key] ?? "")}
+              onChange={(e) => onChange(field.key, e.target.value)}
+            />
+          )}
         </label>
       ))}
     </div>

@@ -26,7 +26,7 @@ export default function HelpPage() {
           <div>
             <h2 className="font-semibold text-base"><BrandPhrase text="关于 Machi" /></h2>
             <p className="text-sm text-kx-subtle mt-1 leading-relaxed">
-              <BrandPhrase text="Machi 是一个按城市组织真实生活经验的社区。Web 与 iOS App 共用同一套账号、数据与 API；新闻、租房、工作、二手、约饭、活动、问答和避坑经验都围绕你选择的城市展开。" />
+              <BrandPhrase text="Machi 是一个按城市组织真实生活经验的社区。Web 与 iOS App 共用同一套账号、数据与 API；新闻、租房、工作、二手、美食、活动、问答和避坑经验都围绕你选择的城市展开。" />
             </p>
           </div>
         </section>

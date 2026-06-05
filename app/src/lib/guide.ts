@@ -446,22 +446,64 @@ export interface GuidePaged<T> {
   featured?: T[];
 }
 
+const GUIDE_TIMEOUT_MS = 12_000;
+
 async function greq<T>(method: string, path: string, body?: unknown): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const token = readToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(`${apiBase}${path}`, {
-    method,
-    headers,
-    body: body === undefined ? undefined : JSON.stringify(body),
-    credentials: "omit",
-    cache: "no-store",
-  });
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => {
+        try {
+          controller.abort();
+        } catch {
+          // ignore
+        }
+      }, GUIDE_TIMEOUT_MS)
+    : null;
+  let res: Response;
+  try {
+    res = await fetch(`${apiBase}${path}`, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: "omit",
+      cache: "no-store",
+      signal: controller?.signal,
+    });
+  } catch (err) {
+    const aborted = err instanceof DOMException && err.name === "AbortError";
+    throw new APIError(
+      {
+        code: aborted ? "timeout" : "network_error",
+        message: aborted ? "请求超时，请稍后重试。" : "无法连接服务器，请检查网络后重试。",
+      },
+      0,
+    );
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   const text = await res.text();
-  const data = text ? JSON.parse(text) : {};
+  let data: unknown = {};
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch {
+    throw new APIError({ code: "parse_error", message: "服务器响应格式异常。" }, res.status);
+  }
   if (!res.ok) {
-    throw new APIError(data?.error || data || { code: "error", message: "请求失败" }, res.status);
+    const payload = data && typeof data === "object" && "error" in data
+      ? (data as { error?: unknown }).error
+      : data;
+    const normalized =
+      payload && typeof payload === "object"
+        ? {
+            code: String((payload as { code?: unknown }).code || "error"),
+            message: String((payload as { message?: unknown }).message || "请求失败"),
+          }
+        : { code: "error", message: "请求失败" };
+    throw new APIError(normalized, res.status);
   }
   return data as T;
 }
@@ -535,25 +577,25 @@ export interface GuideAdminPaged<T> {
 export const guide = {
   home: (country = "jp", language = "zh-CN") =>
     greq<GuideHomeResponse>("GET", `/api/guide/home${qs({ country, language })}`),
-  categories: (country = "jp") =>
+  categories: (country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; country: string; categories: GuideCategory[] }>(
-      "GET", `/api/guide/categories${qs({ country })}`),
+      "GET", `/api/guide/categories${qs({ country, language })}`),
   articles: (p: GuideListParams = {}) =>
     greq<GuidePaged<GuideArticle>>("GET", `/api/guide/articles${qs({ ...p })}`),
-  article: (idOrSlug: string, country = "jp") =>
+  article: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; article: GuideArticle; related: GuideArticle[] }>(
-      "GET", `/api/guide/articles/${encodeURIComponent(idOrSlug)}${qs({ country })}`),
+      "GET", `/api/guide/articles/${encodeURIComponent(idOrSlug)}${qs({ country, language })}`),
   products: (p: GuideListParams = {}) =>
     greq<GuidePaged<GuideProduct>>("GET", `/api/guide/products${qs({ ...p })}`),
   memberResources: (p: GuideListParams = {}) =>
     greq<GuidePaged<GuideProduct> & { membershipActive?: boolean; disclaimer?: string }>(
       "GET", `/api/guide/member-resources${qs({ ...p })}`),
-  product: (idOrSlug: string, country = "jp") =>
+  product: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; product: GuideProduct }>(
-      "GET", `/api/guide/products/${encodeURIComponent(idOrSlug)}${qs({ country })}`),
+      "GET", `/api/guide/products/${encodeURIComponent(idOrSlug)}${qs({ country, language })}`),
   schools: (p: GuideListParams = {}) =>
     greq<GuidePaged<GuideSchool>>("GET", `/api/guide/schools${qs({ ...p })}`),
-  school: (idOrSlug: string, country = "jp") =>
+  school: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{
       status: GuideStatus;
       school: GuideSchool;
@@ -562,16 +604,16 @@ export const guide = {
       relatedArticles: GuideArticle[];
       relatedProducts: GuideProduct[];
       disclaimer: string;
-    }>("GET", `/api/guide/schools/${encodeURIComponent(idOrSlug)}${qs({ country })}`),
-  schoolPrograms: (idOrSlug: string, country = "jp") =>
+    }>("GET", `/api/guide/schools/${encodeURIComponent(idOrSlug)}${qs({ country, language })}`),
+  schoolPrograms: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; country: string; items: GuideSchoolProgram[] }>(
-      "GET", `/api/guide/schools/${encodeURIComponent(idOrSlug)}/programs${qs({ country })}`),
-  schoolAdmissions: (idOrSlug: string, country = "jp") =>
+      "GET", `/api/guide/schools/${encodeURIComponent(idOrSlug)}/programs${qs({ country, language })}`),
+  schoolAdmissions: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; country: string; items: GuideSchoolAdmission[] }>(
-      "GET", `/api/guide/schools/${encodeURIComponent(idOrSlug)}/admissions${qs({ country })}`),
+      "GET", `/api/guide/schools/${encodeURIComponent(idOrSlug)}/admissions${qs({ country, language })}`),
   companies: (p: GuideListParams = {}) =>
     greq<GuidePaged<GuideCompany>>("GET", `/api/guide/companies${qs({ ...p })}`),
-  company: (idOrSlug: string, country = "jp") =>
+  company: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{
       status: GuideStatus;
       company: GuideCompany;
@@ -583,13 +625,13 @@ export const guide = {
       relatedArticles?: GuideArticle[];
       disclaimer: string;
     }>(
-      "GET", `/api/guide/companies/${encodeURIComponent(idOrSlug)}${qs({ country })}`),
-  companyPositions: (idOrSlug: string, country = "jp") =>
+      "GET", `/api/guide/companies/${encodeURIComponent(idOrSlug)}${qs({ country, language })}`),
+  companyPositions: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; country: string; items: GuideCompanyPosition[] }>(
-      "GET", `/api/guide/companies/${encodeURIComponent(idOrSlug)}/positions${qs({ country })}`),
-  companyReviews: (idOrSlug: string, country = "jp") =>
+      "GET", `/api/guide/companies/${encodeURIComponent(idOrSlug)}/positions${qs({ country, language })}`),
+  companyReviews: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; companyId: string; workReviews: GuideCompanyReview[]; interviewReviews: GuideInterviewReview[]; disclaimer: string }>(
-      "GET", `/api/guide/companies/${encodeURIComponent(idOrSlug)}/reviews${qs({ country })}`),
+      "GET", `/api/guide/companies/${encodeURIComponent(idOrSlug)}/reviews${qs({ country, language })}`),
   interviewReviews: (p: GuideListParams = {}) =>
     greq<GuidePaged<GuideInterviewReview>>("GET", `/api/guide/interview-reviews${qs({ ...p })}`),
   submitInterviewReview: (body: Record<string, unknown>) =>
@@ -719,14 +761,14 @@ export const GUIDE_PRODUCT_TYPE_LABELS: Record<string, string> = {
   career_support: "就职辅导",
   life_guide: "生活指南",
   member_resource: "会员资料",
-  tour_companion: "旅游陪同",
-  disney_companion: "迪士尼带玩",
+  japan_tour_support: "旅游协助",
+  disney_park_support: "迪士尼游园协助",
   airport_pickup: "机场接机",
   translation_call: "翻译/电话代打",
   part_time_job_support: "找打工协助",
-  procedure_companion: "手续陪同",
+  procedure_support: "手续协助",
   housing_support: "租房协助",
-  bank_account_support: "银行卡陪同",
+  bank_account_support: "银行卡办理协助",
   other_service: "其他服务",
 };
 

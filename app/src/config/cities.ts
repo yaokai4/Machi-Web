@@ -5,7 +5,7 @@ import {
   type RegionInfo,
 } from "@/lib/regions";
 
-export type CitySlug = "tokyo" | "osaka" | "nagoya" | "kyoto" | "fukuoka";
+export type CitySlug = "tokyo" | "sendai" | "osaka" | "nagoya" | "kyoto" | "fukuoka";
 export type NewsCitySlug = CitySlug | "japan";
 
 export interface CityConfig {
@@ -19,6 +19,7 @@ export interface CityConfig {
 
 export const CITY_CONFIGS: CityConfig[] = [
   { slug: "tokyo", name: "东京", englishName: "Tokyo", regionCode: "jp.tokyo.tokyo", provinceCode: "tokyo", flag: "🇯🇵" },
+  { slug: "sendai", name: "仙台", englishName: "Sendai", regionCode: "jp.miyagi.sendai", provinceCode: "miyagi", flag: "🇯🇵" },
   { slug: "osaka", name: "大阪", englishName: "Osaka", regionCode: "jp.osaka.osaka", provinceCode: "osaka", flag: "🇯🇵" },
   { slug: "kyoto", name: "京都", englishName: "Kyoto", regionCode: "jp.kyoto.kyoto", provinceCode: "kyoto", flag: "🇯🇵" },
   { slug: "nagoya", name: "名古屋", englishName: "Nagoya", regionCode: "jp.aichi.nagoya", provinceCode: "aichi", flag: "🇯🇵" },
@@ -33,6 +34,9 @@ const CITY_ALIAS: Record<string, CitySlug> = {
   tokyo: "tokyo",
   "jp.tokyo.tokyo": "tokyo",
   东京: "tokyo",
+  sendai: "sendai",
+  "jp.miyagi.sendai": "sendai",
+  仙台: "sendai",
   osaka: "osaka",
   "jp.osaka.osaka": "osaka",
   大阪: "osaka",

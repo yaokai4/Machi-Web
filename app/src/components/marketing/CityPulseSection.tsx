@@ -36,7 +36,7 @@ const copyByLocale: Record<
     label: "City Echo / City Pulse",
     title: "情報が多いだけでなく、街の暮らしが返ってくる。",
     body: "Machi は地域情報、生活経験、同じ街のソーシャルシーン、リアルな人とのつながりをひとつの街の脈動として整理します。",
-    pulse: "暮らしの響きの中で、本当の人に出会う。",
+    pulse: "暮らしのこだまの中で、本当の人に出会う。",
     cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
     echoes: [["誰かが聞く", "新宿で部屋を借りる時の注意点は？"], ["誰かが答える", "去年そのエリアに住んでいました。契約で見る点を共有できます。"], ["誰かとつながる", "金曜の渋谷ラーメン会、あと二席あります。"]],
   },

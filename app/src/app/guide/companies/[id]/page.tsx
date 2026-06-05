@@ -9,6 +9,8 @@ import { guide, guideCityLabel, type GuideCompany, type GuideCompanyScores } fro
 import { ArticleCard, GuideComingSoon, GuideSectionTitle, GuideShell, useGuideCountry } from "@/components/guide/GuideKit";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
+import { guideUi, industryLabel } from "@/lib/guide-ui";
 
 const SCORE_LABELS: Array<{ key: keyof GuideCompanyScores; label: string }> = [
   { key: "foreignerFriendly", label: "外国人友好度" },
@@ -32,14 +34,17 @@ export default function GuideCompanyDetailPage() {
   const params = useParams();
   const id = String(params?.id || "");
   const country = useGuideCountry();
+  const { locale } = useI18n();
+  const language = appLocaleToGuideLanguage(locale);
+  const copy = guideUi(locale);
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const [showCorrection, setShowCorrection] = useState(false);
 
   const q = useQuery({
-    queryKey: ["guide", "company", country, id],
-    queryFn: () => guide.company(id),
+    queryKey: ["guide", "company", country, language, id],
+    queryFn: () => guide.company(id, country, language),
     enabled: country === "jp" && id.length > 0,
     staleTime: 60_000,
   });
@@ -48,14 +53,14 @@ export default function GuideCompanyDetailPage() {
     mutationFn: (on: boolean) => guide.saveCompany(id, on),
     onSuccess: () => {
       q.refetch();
-      pushToast({ kind: "success", message: "收藏状态已更新" });
+      pushToast({ kind: "success", message: locale === "en" ? "Saved status updated" : locale === "ja" ? "保存状態を更新しました" : "收藏状态已更新" });
     },
-    onError: () => pushToast({ kind: "error", message: "请登录后收藏公司" }),
+    onError: () => pushToast({ kind: "error", message: locale === "en" ? "Please log in to save companies" : locale === "ja" ? "企業を保存するにはログインしてください" : "请登录后收藏公司" }),
   });
 
   if (country !== "jp") {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+      <GuideShell back={{ href: "/guide", label: copy.back }}>
         <GuideComingSoon />
       </GuideShell>
     );
@@ -63,15 +68,19 @@ export default function GuideCompanyDetailPage() {
 
   if (q.isLoading) {
     return (
-      <GuideShell back={{ href: "/guide/companies", label: "公司列表" }}>
+      <GuideShell back={{ href: "/guide/companies", label: copy.companies.listTitle }}>
         <InlineLoading />
       </GuideShell>
     );
   }
   if (q.isError || !q.data?.company) {
     return (
-      <GuideShell back={{ href: "/guide/companies", label: "公司列表" }}>
-        <ErrorState title="公司不存在" subtitle="它可能已被移动或下线。" onRetry={() => q.refetch()} />
+      <GuideShell back={{ href: "/guide/companies", label: copy.companies.listTitle }}>
+        <ErrorState
+          title={locale === "en" ? "Company not found" : locale === "ja" ? "企業が見つかりません" : "公司不存在"}
+          subtitle={locale === "en" ? "It may have been moved or unpublished." : locale === "ja" ? "移動または非公開になった可能性があります。" : "它可能已被移动或下线。"}
+          onRetry={() => q.refetch()}
+        />
       </GuideShell>
     );
   }
@@ -80,7 +89,7 @@ export default function GuideCompanyDetailPage() {
   const reviewsHref = `/guide/companies/${c.slug || c.id}/reviews`;
 
   return (
-    <GuideShell back={{ href: "/guide/companies", label: "公司列表" }}>
+    <GuideShell back={{ href: "/guide/companies", label: copy.companies.listTitle }}>
       <div className="px-4 py-4 sm:px-6">
         <section className="rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-5">
           <div className="flex items-start gap-3">
@@ -89,8 +98,8 @@ export default function GuideCompanyDetailPage() {
             </span>
             <div className="min-w-0 flex-1">
               <div className="mb-1 flex flex-wrap gap-1.5">
-                <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">{c.industry || "公司"}</span>
-                <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">外国人就职公司库</span>
+                <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">{c.industry ? industryLabel(c.industry, locale) : (locale === "en" ? "Company" : locale === "ja" ? "企業" : "公司")}</span>
+                <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">{copy.companies.title}</span>
               </div>
               <h1 className="text-xl font-black leading-tight text-kx-text sm:text-2xl">{c.companyName}</h1>
               <p className="mt-0.5 text-sm text-kx-muted">{c.companyNameJp || c.companyNameEn}</p>
@@ -122,10 +131,10 @@ export default function GuideCompanyDetailPage() {
               className="inline-flex h-10 items-center gap-1.5 rounded-full bg-kx-accent px-4 text-sm font-bold text-white shadow-sm disabled:opacity-60"
               disabled={save.isPending}
             >
-              <Bookmark className="h-4 w-4" /> {c.savedByMe ? "已收藏" : "收藏公司"}
+              <Bookmark className="h-4 w-4" /> {c.savedByMe ? (locale === "en" ? "Saved" : locale === "ja" ? "保存済み" : "已收藏") : (locale === "en" ? "Save company" : locale === "ja" ? "企業を保存" : "收藏公司")}
             </button>
             <Link href={`${reviewsHref}?compose=1`} className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke/60 px-4 text-sm font-semibold text-kx-text hover:border-kx-accent/50 hover:text-kx-accent">
-              <MessageSquarePlus className="h-4 w-4" /> 提交评论
+              <MessageSquarePlus className="h-4 w-4" /> {locale === "en" ? "Submit review" : locale === "ja" ? "レビューを投稿" : "提交评论"}
             </Link>
             <button
               type="button"
@@ -135,7 +144,7 @@ export default function GuideCompanyDetailPage() {
               }}
               className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke/60 px-4 text-sm font-semibold text-kx-text hover:border-kx-accent/50 hover:text-kx-accent"
             >
-              <PencilLine className="h-4 w-4" /> 纠错 / 补充信息
+              <PencilLine className="h-4 w-4" /> {locale === "en" ? "Suggest a correction" : locale === "ja" ? "修正・補足を送る" : "纠错 / 补充信息"}
             </button>
           </div>
         </section>
@@ -146,7 +155,7 @@ export default function GuideCompanyDetailPage() {
             targetId={c.id}
             onDone={() => {
               setShowCorrection(false);
-              pushToast({ kind: "success", message: "已提交给管理员审核" });
+              pushToast({ kind: "success", message: locale === "en" ? "Submitted for admin review" : locale === "ja" ? "管理者レビューに送信しました" : "已提交给管理员审核" });
             }}
           />
         ) : null}

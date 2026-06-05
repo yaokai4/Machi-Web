@@ -38,6 +38,7 @@ import {
   ClipboardList,
   CalendarClock,
   ChevronRight,
+  Store,
 } from "lucide-react";
 import { api, APIError, type EditorialPost, type MarketingCopyBlock, type NewsCategory, type NewsItem, type NewsSource } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
@@ -61,7 +62,6 @@ const TABS: { value: Tab; label: string; icon: React.ComponentType<{ className?:
   { value: "feedback", label: "反馈",  icon: MessageSquareWarning },
   { value: "visitors", label: "访客",  icon: MapPin },
   { value: "seed",     label: "城市内容助手", icon: Sparkles },
-  { value: "site",     label: "官网文案", icon: Globe },
 ];
 
 export default function AdminPage() {
@@ -75,6 +75,15 @@ export default function AdminPage() {
   useEffect(() => {
     if (status === "unauthed") router.replace("/login?redirect=/admin");
   }, [status, router]);
+
+  // Allow deep-linking to a specific panel, e.g. /admin?tab=site opens the
+  // full 官网文案 (master copy) editor directly from settings.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const requested = new URLSearchParams(window.location.search).get("tab") as Tab | null;
+    const valid: Tab[] = ["overview", "users", "posts", "reports", "feedback", "visitors", "newsdesk", "seed", "site"];
+    if (requested && valid.includes(requested)) setTab(requested);
+  }, []);
 
   if (status === "loading" || status === "idle") {
     return (
@@ -116,7 +125,7 @@ export default function AdminPage() {
       </div>
 
       <div className="px-3 sm:px-4 py-3">
-        {tab === "overview" ? <OverviewPanel /> : null}
+        {tab === "overview" ? <OverviewPanel onOpenTab={setTab} /> : null}
         {tab === "users"    ? <UsersPanel /> : null}
         {tab === "posts"    ? <PostsPanel /> : null}
         {tab === "reports"  ? <ReportsPanel /> : null}
@@ -141,6 +150,12 @@ const ADMIN_MODULES: {
   icon: React.ComponentType<{ className?: string }>;
 }[] = [
   { href: "/admin/pricing", label: "商品 / 服务 / 会员定价", desc: "价格、货币、会员价、Stripe / IAP ID", icon: Boxes },
+  { href: "/admin/reputation", label: "城市声望", desc: "等级、信任、风险与徽章", icon: ShieldCheck },
+  { href: "/admin/listings/review", label: "Listing 审核", desc: "二手 · 租房 · 工作 · 服务 · 优惠", icon: ShieldCheck },
+  { href: "/admin/listings/reports", label: "Listing 举报", desc: "举报处理、下架与复核", icon: Flag },
+  { href: "/admin/listings/promotions", label: "Listing 推广", desc: "置顶、精选、城市首页推荐", icon: Sparkles },
+  { href: "/admin/businesses", label: "商家资料", desc: "商家认证和服务商资料", icon: Store },
+  { href: "/admin/seller-verifications", label: "认证审核", desc: "卖家、房源方、招聘方和服务商", icon: BadgeCheck },
   { href: "/admin/guide", label: "Guide 内容管理", desc: "文章 · 商品 · 服务 · 学校 · 公司", icon: BookOpen },
   { href: "/admin/guide/orders", label: "Guide 订单", desc: "数字资料购买订单", icon: ClipboardList },
   { href: "/admin/guide/service-requests", label: "服务预约", desc: "人工服务预约与处理", icon: CalendarClock },
@@ -149,13 +164,29 @@ const ADMIN_MODULES: {
   { href: "/admin/settings", label: "站点设置", desc: "系统与运营配置", icon: Settings },
 ];
 
-function ModuleNav() {
+function ModuleNav({ onOpenSiteCopy }: { onOpenSiteCopy?: () => void }) {
   return (
     <div className="kx-card">
       <h3 className="kx-section-title mb-3 px-0 inline-flex items-center gap-1.5">
         <ShieldCheck className="w-4 h-4" /> 管理模块
       </h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+        {onOpenSiteCopy ? (
+          <button
+            type="button"
+            onClick={onOpenSiteCopy}
+            className="group flex items-center gap-3 rounded-kx-md border border-kx-accent/40 bg-kx-accentSoft/40 px-3 py-2.5 text-left transition hover:border-kx-accent/60 hover:bg-kx-accentSoft/60"
+          >
+            <span className="inline-flex w-9 h-9 shrink-0 items-center justify-center rounded-kx-md bg-kx-accent text-white">
+              <Globe className="w-4.5 h-4.5" />
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="block font-semibold text-sm truncate">官网文案</span>
+              <span className="block text-xs text-kx-muted truncate">编辑首页 / 落地页文案与覆盖</span>
+            </span>
+            <ChevronRight className="w-4 h-4 text-kx-muted group-hover:text-kx-accent" />
+          </button>
+        ) : null}
         {ADMIN_MODULES.map((m) => (
           <Link
             key={m.href}
@@ -177,7 +208,7 @@ function ModuleNav() {
   );
 }
 
-function OverviewPanel() {
+function OverviewPanel({ onOpenTab }: { onOpenTab: (tab: Tab) => void }) {
   const q = useQuery({
     queryKey: ["admin-stats"],
     queryFn: () => api.adminStats(),
@@ -198,7 +229,7 @@ function OverviewPanel() {
   ];
   return (
     <div className="space-y-3">
-      <ModuleNav />
+      <ModuleNav onOpenSiteCopy={() => onOpenTab("site")} />
       {q.isError ? (
         <ErrorState onRetry={() => q.refetch()} />
       ) : !q.data ? (
@@ -648,7 +679,7 @@ function VisitorsPanel() {
     refetchInterval: 30000,
   });
   const region = (v: { country: string; region: string; city: string }) =>
-    [v.country, v.region, v.city].filter(Boolean).join(" / ");
+    zhGeoParts(v).join(" / ");
 
   return (
     <div className="space-y-3">
@@ -695,7 +726,7 @@ function VisitorsPanel() {
               <div className="flex flex-wrap gap-1.5">
                 {list.data.summary.top_countries.map((c) => (
                   <span key={c.country} className="px-2 py-1 rounded-full bg-kx-soft text-xs">
-                    {c.country} · {compactNumber(c.count)}
+                    {zhGeoName(c.country)} · {compactNumber(c.count)}
                   </span>
                 ))}
               </div>
@@ -766,6 +797,59 @@ function VisitorsPanel() {
       )}
     </div>
   );
+}
+
+const GEO_ZH: Record<string, string> = {
+  japan: "日本",
+  "united states": "美国",
+  netherlands: "荷兰",
+  "united kingdom": "英国",
+  taiwan: "中国台湾",
+  "south korea": "韩国",
+  "hong kong": "中国香港",
+  china: "中国",
+  canada: "加拿大",
+  australia: "澳大利亚",
+  germany: "德国",
+  france: "法国",
+  singapore: "新加坡",
+  thailand: "泰国",
+  vietnam: "越南",
+  philippines: "菲律宾",
+  malaysia: "马来西亚",
+  indonesia: "印度尼西亚",
+  india: "印度",
+  brazil: "巴西",
+  russia: "俄罗斯",
+  tokyo: "东京",
+  osaka: "大阪",
+  kyoto: "京都",
+  kanagawa: "神奈川",
+  saitama: "埼玉",
+  chiba: "千叶",
+  katushika: "葛饰区",
+  katsushika: "葛饰区",
+  shinjuku: "新宿区",
+  shibuya: "涩谷区",
+  toshima: "丰岛区",
+  minato: "港区",
+  setagaya: "世田谷区",
+  flevoland: "弗莱福兰省",
+  dronten: "德龙滕",
+};
+
+function zhGeoName(value: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  return GEO_ZH[raw.toLowerCase()] || raw;
+}
+
+function zhGeoParts(v: { country: string; region: string; city: string }) {
+  return [
+    zhGeoName(v.country),
+    zhGeoName(v.region),
+    zhGeoName(v.city),
+  ].filter(Boolean);
 }
 
 const NEWS_DESK_TABS = [
@@ -1413,8 +1497,8 @@ function SiteCopyPanel() {
       <section className="kx-card">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-bold">官网文案管理</h2>
-            <p className="mt-1 text-xs text-kx-muted">为首页和官网子页面添加、修改、删除公开内容。</p>
+            <h2 className="text-base font-bold">官网文案编辑</h2>
+            <p className="mt-1 text-xs text-kx-muted">维护首页和子页面的公开补充文案，适合公告、合作说明、城市开放计划和运营口径更新。</p>
           </div>
           <button className="kx-button-ghost h-8 px-3 text-xs" onClick={reset}>新建</button>
         </div>
@@ -1457,7 +1541,7 @@ function SiteCopyPanel() {
 
           <label className="grid gap-1 text-xs font-semibold text-kx-muted">
             标题
-            <input className="kx-input h-10" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="例如：东京频道开放计划" />
+            <input className="kx-input h-10" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="例如：东京商家认证开放申请" />
           </label>
 
           <label className="grid gap-1 text-xs font-semibold text-kx-muted">
@@ -1466,7 +1550,7 @@ function SiteCopyPanel() {
               className="kx-input min-h-[180px] resize-y py-3"
               value={form.body}
               onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
-              placeholder="填写要展示在官网对应页面的内容。"
+              placeholder="写清楚面向谁、开放什么、需要提交哪些信息、用户或合作方下一步该做什么。"
             />
           </label>
 
@@ -1508,7 +1592,7 @@ function SiteCopyPanel() {
             </div>
           </article>
         ))}
-        {list.data && items.length === 0 ? <div className="kx-card py-10 text-center text-kx-subtle">暂无官网文案，先创建一条。</div> : null}
+        {list.data && items.length === 0 ? <div className="kx-card py-10 text-center text-kx-subtle">暂无官网补充文案，可以先为首页或商家合作页创建一条。</div> : null}
       </section>
 
       <ConfirmDialog
@@ -1540,15 +1624,15 @@ const SEED_TYPE_OPTIONS = [
   { value: "city_square", label: "城市广场" }, { value: "qa", label: "本地问答" },
   { value: "guide", label: "城市指南" }, { value: "housing_tip", label: "租房提醒" },
   { value: "secondhand", label: "二手" }, { value: "jobs_tip", label: "工作/兼职" },
-  { value: "food", label: "美食发现" }, { value: "meetup", label: "搭子/约饭" },
+  { value: "food", label: "美食发现" }, { value: "meetup", label: "本地小组" },
   { value: "event", label: "活动推荐" }, { value: "local_service", label: "本地服务" },
   { value: "alert", label: "本地提醒" }, { value: "daily_life", label: "生活日常" },
 ];
 const SEED_TONE_OPTIONS = [
-  { value: "natural", label: "普通真实" }, { value: "helpful", label: "实用经验" },
-  { value: "local", label: "本地人" }, { value: "newcomer", label: "新人求助" },
-  { value: "editorial", label: "编辑部" }, { value: "casual", label: "轻松" },
-  { value: "question", label: "提问" }, { value: "warning", label: "避坑" },
+  { value: "natural", label: "城市日常" }, { value: "helpful", label: "经验提醒" },
+  { value: "local", label: "本地口吻" }, { value: "newcomer", label: "新来者问题" },
+  { value: "editorial", label: "编辑部整理" }, { value: "casual", label: "轻松互动" },
+  { value: "question", label: "真实提问" }, { value: "warning", label: "风险提醒" },
 ];
 
 function seedStatusPill(status: string) {
@@ -1641,16 +1725,16 @@ function SeedBotPanel() {
         <div className="flex items-start gap-2">
           <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-kx-accent" />
           <p className="text-xs leading-5 text-kx-subtle">
-            城市内容助手用于早期冷启动。所有内容均由官方账号（Machi 城市助手 / 编辑部）发布，
-            并在数据库标记为 <code className="rounded bg-kx-soft px-1">seed_content</code>，可按批次预览、发布、清除。
-            清除只影响系统生成内容，<b>永远不会删除真实用户内容</b>。
+            城市内容助手用于给新城市铺第一层城市生活底稿：问答、租房提醒、办事经验、活动线索、本地服务和日常动态。
+            内容会由官方账号（Machi 城市助手 / 编辑部）发布，并标记为 <code className="rounded bg-kx-soft px-1">seed_content</code>；
+            建议先小批量生成、逐条预览，再发布或按批次回滚。清除只影响系统生成内容，<b>永远不会删除真实用户内容</b>。
           </p>
         </div>
       </div>
 
       <div className="grid gap-3 lg:grid-cols-[minmax(0,380px)_1fr]">
         <section className="kx-card">
-          <h2 className="text-base font-bold">生成内容</h2>
+          <h2 className="text-base font-bold">生成城市底稿</h2>
           <div className="mt-4 grid gap-3">
             <label className="grid gap-1 text-xs font-semibold text-kx-muted">
               城市
@@ -1704,7 +1788,7 @@ function SeedBotPanel() {
             {detail.data ? <span className="flex items-center gap-1.5 text-xs text-kx-muted">{detail.data.region_code} · {detail.data.language} {seedStatusPill(detail.data.status)}</span> : null}
           </div>
           {!selectedBatchId ? (
-            <p className="mt-6 text-center text-sm text-kx-subtle">生成或选择一个批次后在此预览内容。</p>
+            <p className="mt-6 text-center text-sm text-kx-subtle">先生成一个批次，在这里读完再决定是否发布。</p>
           ) : detail.isLoading ? <InlineLoading /> : (
             <ul className="mt-3 max-h-[440px] space-y-2 overflow-y-auto pr-1">
               {detailItems.map((it) => (

@@ -2,7 +2,7 @@
 /// present on the very first frame, before any client JS hydrates.
 /// An inline `<script>` decides whether to actually *display* it —
 /// the splash only appears when the page hasn't finished loading
-/// within 250 ms, so a fast (already-cached) navigation never sees
+/// within 900 ms, so normal navigations never see
 /// the animation. On a slow load it appears, then fades out as soon
 /// as `window.load` fires. Either way the splash is dismissed once
 /// per session via sessionStorage.
@@ -66,7 +66,7 @@ export function SiteSplash() {
                   shown = true;
                   el.style.display = 'grid';
                 }
-              }, 260);
+              }, 900);
               function settle() {
                 if (settled) return;
                 settled = true;
@@ -83,7 +83,7 @@ export function SiteSplash() {
                 settle();
               } else {
                 window.addEventListener('load', settle, { once: true });
-                setTimeout(settle, 4000);
+                setTimeout(settle, 1800);
               }
             } catch (e) {}
           })();`,

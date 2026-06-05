@@ -20,8 +20,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WEB_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 BACKUP_DIR="${KAIX_BACKUP_DIR:-$WEB_DIR/backups}"
 KEEP="${KAIX_BACKUP_KEEP:-7}"
-DB_PATH="$WEB_DIR/kaix.db"
-MEDIA_DIR="$WEB_DIR/media"
+DB_PATH="${KAIX_DB_PATH:-$WEB_DIR/kaix.db}"
+MEDIA_DIR="${KAIX_MEDIA_DIR:-$WEB_DIR/media}"
 
 mkdir -p "$BACKUP_DIR"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -30,6 +30,14 @@ mkdir -p "$DEST"
 
 # Online consistent snapshot of SQLite — survives concurrent writes.
 sqlite3 "$DB_PATH" ".backup '$DEST/kaix.db'"
+
+# Never trust an unverified snapshot: integrity_check before we keep it.
+integrity="$(sqlite3 "$DEST/kaix.db" 'PRAGMA integrity_check;')"
+if [ "$integrity" != "ok" ]; then
+  echo "$(date -u +%FT%TZ) FATAL: snapshot integrity_check failed: $integrity" >&2
+  rm -rf "$DEST"
+  exit 1
+fi
 
 # Media is append-only by id; copy with hardlinks to save space, then tar.
 if [ -d "$MEDIA_DIR" ]; then

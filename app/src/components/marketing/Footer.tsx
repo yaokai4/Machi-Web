@@ -13,11 +13,21 @@ const socials = ["X", "Instagram", "TikTok", "YouTube", "LinkedIn"];
 /// anchor — or the user lands on a 404.
 const groupHrefs: string[][] = [
   // 导航 / Navigation / ナビ
-  ["/about", "/features", "/cities", "/business", "/safety", "/download"],
+  ["/about", "/features", "/guide", "/business", "/safety", "/faq"],
   // 合作 / Partners
   ["/business", "/ads", "/jobs-promotion", "/housing-promotion", "/partners"],
   // 法律 / Legal
-  ["/legal/privacy", "/legal/terms", "/safety-center", "/contact"],
+  [
+    "/legal/privacy",
+    "/legal/terms",
+    "/legal/membership-terms",
+    "/legal/service-terms",
+    "/legal/refund-policy",
+    "/legal/community-guidelines",
+    "/legal/commercial-disclosure",
+    "/legal/cookie-policy",
+    "/contact",
+  ],
 ];
 
 export function Footer() {

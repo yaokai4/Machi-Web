@@ -96,7 +96,7 @@ export const AUTH_PROMPT_COPY: Record<AuthPromptKind, AuthPromptCopy> = {
   },
   publish: {
     title: "登录后发布",
-    body: "登录后可以发布本地动态、租房、二手、工作、搭子和生活经验。",
+    body: "登录后可以发布本地动态、租房、二手、工作、本地小组和生活经验。",
   },
 };
 

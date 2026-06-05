@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition, type FormEvent } from "react";
 import { useInfiniteQuery, keepPreviousData, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Bell,
+  ChevronDown,
   MapPin,
   Search,
 } from "lucide-react";
@@ -18,15 +20,17 @@ import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import { Avatar } from "@/components/design/Avatar";
-import { regionFromUser, regionHeaderLabel, type RegionInfo } from "@/lib/regions";
+import { regionAccountPatch, regionFromUser, regionHeaderLabel, type RegionInfo } from "@/lib/regions";
 import clsx from "clsx";
 
 type HotScope = "city" | "country" | "all";
 
 export default function HomeClient() {
+  const router = useRouter();
   const [mode, setMode] = useState<FeedMode>("recommend");
   const [hotScope, setHotScope] = useState<HotScope>("city");
   const [regionPickerOpen, setRegionPickerOpen] = useState(false);
+  const [searchDraft, setSearchDraft] = useState("");
   const [scrolled, setScrolled] = useState(false);
   const [, startTransition] = useTransition();
   // Scroll-aware header: deepen the glass bar's shadow once the user scrolls
@@ -129,9 +133,7 @@ export default function HomeClient() {
 
   const persistRegion = async (region: RegionInfo) => {
     try {
-      const next = await api.updateRegionLanguage({
-        current_region_code: region.region_code,
-      });
+      const next = await api.updateRegionLanguage(regionAccountPatch(region));
       setUser(next);
       queryClient.invalidateQueries({ queryKey: ["feed"] });
       queryClient.invalidateQueries({ queryKey: ["explore-hot-city"] });
@@ -143,6 +145,17 @@ export default function HomeClient() {
       }
       pushToast({ kind: "error", message: (err as APIError).message });
     }
+  };
+  const goToSearch = (value: string) => {
+    const query = value.trim();
+    if (!query) return;
+    router.push(`/search?q=${encodeURIComponent(query)}`);
+  };
+
+  const submitSearch = (event?: FormEvent<HTMLFormElement>) => {
+    event?.preventDefault();
+    const formValue = event ? String(new FormData(event.currentTarget).get("q") || "") : "";
+    goToSearch(formValue || searchDraft);
   };
 
   return (
@@ -158,40 +171,58 @@ export default function HomeClient() {
           <button
             type="button"
             onClick={() => (user ? setRegionPickerOpen(true) : openAuthPrompt("generic"))}
-            className="ml-auto inline-flex items-center gap-1 h-10 px-3 rounded-full bg-kx-soft text-xs font-bold text-kx-text hover:bg-kx-stroke/40 transition"
+            className="ml-auto inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-white/95 px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgba(37,99,235,0.75)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35 dark:bg-kx-card/[0.9] dark:hover:bg-kx-accentSoft/55"
             title="切换地区"
           >
-            <MapPin className="w-3.5 h-3.5 text-kx-accent" />
-            <span className="max-w-[7rem] truncate">
+            <span className="max-w-[7.5rem] truncate">
               {regionHeaderLabel(currentRegion)}
             </span>
+            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-kx-muted" />
           </button>
           {user ? (
             <Link
               href="/notifications"
-              className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-kx-soft hover:bg-kx-stroke/40 transition"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
               aria-label={t("nav_notifications")}
             >
-              <Bell className="w-4 h-4 text-kx-text" />
+              <Bell className="h-[18px] w-[18px] text-kx-text" />
             </Link>
           ) : (
             <button
               type="button"
               onClick={() => openAuthPrompt("generic")}
-              className="inline-flex items-center justify-center w-10 h-10 rounded-full bg-kx-soft hover:bg-kx-stroke/40 transition"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
               aria-label={t("nav_notifications")}
             >
-              <Bell className="w-4 h-4 text-kx-text" />
+              <Bell className="h-[18px] w-[18px] text-kx-text" />
             </button>
           )}
         </div>
-        <div className="flex items-center gap-2">
-          <Link href="/search" className="flex min-h-10 flex-1 items-center gap-2 rounded-full bg-kx-soft px-3 text-sm text-kx-muted hover:bg-kx-stroke/40">
-            <Search className="h-4 w-4 text-kx-accent" />
-            <span className="truncate">搜索租房、饭搭子、语言交换、工作、活动、本地问题...</span>
-          </Link>
-        </div>
-        <div className="flex items-center gap-1 p-1 rounded-full bg-kx-soft kx-tap self-start">
+        <form onSubmit={submitSearch} className="flex items-center gap-2">
+          <label className="group flex min-h-12 flex-1 items-center gap-3 rounded-full border border-kx-accent/[0.18] bg-white/[0.94] px-3.5 text-sm font-semibold text-kx-subtle shadow-[0_14px_34px_-28px_rgba(17,22,34,0.62)] ring-1 ring-white/70 transition focus-within:border-kx-accent/[0.38] focus-within:ring-2 focus-within:ring-kx-accent/20 dark:bg-kx-card/[0.88] dark:ring-white/10">
+            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-accentSoft text-kx-accent ring-1 ring-kx-accent/15">
+              <Search className="h-4 w-4" />
+            </span>
+            <input
+              name="q"
+              value={searchDraft}
+              onChange={(event) => setSearchDraft(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key !== "Enter") return;
+                event.preventDefault();
+                goToSearch(event.currentTarget.value);
+              }}
+              placeholder="搜索同城动态、经验分享、问答、话题和用户..."
+              className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold text-kx-text placeholder:text-kx-muted focus:outline-none"
+            />
+          </label>
+          {searchDraft.trim() ? (
+            <button type="submit" className="h-10 rounded-full bg-kx-accent px-4 text-sm font-black text-white shadow-[0_14px_30px_-22px_rgba(37,99,235,0.85)] transition hover:bg-blue-700">
+              搜索
+            </button>
+          ) : null}
+        </form>
+        <div className="flex items-center gap-1 self-start rounded-full border border-kx-stroke/40 bg-white/[0.82] p-1 shadow-[0_12px_28px_-24px_rgba(17,22,34,0.55)] ring-1 ring-white/[0.65] dark:bg-kx-card/[0.82] dark:ring-white/10">
           {MODES.map((m) => (
             <button
               key={m.value}
@@ -240,7 +271,7 @@ export default function HomeClient() {
                 <MapPin className="h-6 w-6 text-kx-accent" />
               </div>
               <div className="mt-3 text-base font-semibold text-kx-text">选择当前城市</div>
-              <div className="mt-2 max-w-sm text-sm text-kx-subtle">同城流会根据你的当前地区展示本地动态、新闻、攻略、租房、工作、二手和活动。</div>
+              <div className="mt-2 max-w-sm text-sm text-kx-subtle">同城流会根据你的当前地区展示本地动态、经验分享、问答、攻略片段和活动讨论。</div>
               <button type="button" className="kx-button-primary mt-4" onClick={() => (user ? setRegionPickerOpen(true) : openAuthPrompt("generic"))}>
                 选择城市
               </button>
@@ -273,7 +304,6 @@ export default function HomeClient() {
         onSelect={persistRegion}
         initialCountry={user?.country || currentRegion?.country_code || "jp"}
         allowsAnyCountry={false}
-        recentCodes={user?.recent_region_codes}
       />
     </AppShell>
   );
