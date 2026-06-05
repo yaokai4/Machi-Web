@@ -132,7 +132,7 @@ function ExploreChannelClient() {
     return (
       <AppShell requireAuth={false} right={null}>
         <main className="min-h-[70dvh] px-4 py-8">
-          <section className="mx-auto max-w-xl rounded-3xl border border-slate-200/70 bg-white p-6 text-center shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
+          <section className="kx-discover-section mx-auto max-w-xl text-center">
             <ErrorState title="频道不存在" subtitle="这个发现频道暂时不可用，可以回到发现页重新选择。" />
             <Link href="/explore" className="kx-button-primary mx-auto mt-4 w-fit justify-center">
               回到发现
@@ -150,7 +150,7 @@ function ExploreChannelClient() {
           <Link
             href={exploreHref(currentRegion)}
             aria-label="返回发现"
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white text-slate-700 shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition hover:bg-slate-50"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-kx-stroke/45 bg-kx-card/[0.92] text-kx-text shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition hover:bg-kx-soft"
           >
             <ChevronLeft className="h-5 w-5" />
           </Link>
@@ -166,7 +166,7 @@ function ExploreChannelClient() {
           <button
             type="button"
             onClick={() => setRegionPickerOpen(true)}
-            className="ml-auto inline-flex h-10 min-w-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-white/95 px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgba(37,99,235,0.75)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35 dark:bg-kx-card/[0.9]"
+            className="ml-auto inline-flex h-10 min-w-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-card/[0.92] px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgba(37,99,235,0.75)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35"
             title="切换地区"
           >
             <span className="max-w-[7.5rem] truncate">{regionHeaderLabel(currentRegion)}</span>
@@ -175,7 +175,7 @@ function ExploreChannelClient() {
           {user ? (
             <Link
               href="/notifications"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-kx-card/[0.92] text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60"
               aria-label="通知"
             >
               <Bell className="h-[18px] w-[18px] text-kx-text" />
@@ -184,7 +184,7 @@ function ExploreChannelClient() {
             <button
               type="button"
               onClick={() => openAuthPrompt("generic")}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-kx-card/[0.92] text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60"
               aria-label="通知"
             >
               <Bell className="h-[18px] w-[18px] text-kx-text" />
@@ -192,7 +192,7 @@ function ExploreChannelClient() {
           )}
         </div>
         <form onSubmit={submitSearch} className="mt-3 flex items-center gap-2">
-          <label className="group flex min-h-12 flex-1 items-center gap-3 rounded-full border border-kx-accent/[0.18] bg-white/[0.94] px-3.5 text-sm font-semibold text-kx-subtle shadow-[0_14px_34px_-28px_rgba(17,22,34,0.62)] ring-1 ring-white/70 transition focus-within:border-kx-accent/[0.38] focus-within:ring-2 focus-within:ring-kx-accent/20 dark:bg-kx-card/[0.88] dark:ring-white/10">
+          <label className="group flex min-h-12 flex-1 items-center gap-3 rounded-full border border-kx-accent/[0.18] bg-kx-card/[0.92] px-3.5 text-sm font-semibold text-kx-subtle shadow-[0_14px_34px_-28px_rgba(17,22,34,0.62)] ring-1 ring-white/40 transition focus-within:border-kx-accent/[0.38] focus-within:ring-2 focus-within:ring-kx-accent/20 dark:ring-white/10">
             <Search className="h-5 w-5 shrink-0 text-kx-accent" />
             <input
               value={searchDraft}
@@ -227,9 +227,9 @@ function ExploreChannelClient() {
             channelLabel={spec.title}
             scope={scope}
           />
-          <section className="rounded-3xl border border-slate-200/70 bg-white p-4 shadow-[0_8px_30px_rgba(15,23,42,0.04)]">
-            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
-              <Sparkles className="h-4 w-4 text-blue-600" />
+          <section className="kx-discover-section">
+            <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-kx-text">
+              <Sparkles className="h-4 w-4 text-kx-accent" />
               其他频道
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
@@ -237,7 +237,7 @@ function ExploreChannelClient() {
                 <Link
                   key={item.slug}
                   href={channelHref(item.slug, currentRegion, searchParams)}
-                  className="rounded-2xl border border-slate-200/70 bg-white px-3 py-3 text-sm font-semibold text-slate-700 transition hover:-translate-y-px hover:border-blue-200 hover:bg-blue-50/40 hover:text-blue-700 hover:shadow-[0_10px_28px_rgba(15,23,42,0.06)]"
+                  className="rounded-kx-md border border-kx-stroke/45 bg-kx-card/80 px-3 py-3 text-sm font-semibold text-kx-subtle transition hover:-translate-y-px hover:border-kx-accent/35 hover:bg-kx-accentSoft/35 hover:text-kx-accent hover:shadow-[0_10px_28px_rgba(15,23,42,0.06)]"
                 >
                   {item.title}
                 </Link>
@@ -274,21 +274,20 @@ function ChannelHero({
   const placeLabel = scope === "country" ? countryName : cityName;
   const helper = channelHeroCopy(spec);
   return (
-    <section className="overflow-hidden rounded-[28px] border border-white/80 bg-white/[0.88] shadow-[0_18px_50px_rgba(15,23,42,0.07)] backdrop-blur">
+    <section className="kx-discover-panel">
       <div className="relative p-5">
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_18%_12%,rgba(37,99,235,0.10),transparent_34%),radial-gradient(circle_at_84%_8%,rgba(20,184,166,0.08),transparent_30%),linear-gradient(135deg,rgba(255,255,255,0.9),rgba(248,250,252,0.72))]" />
         <div className="relative flex items-start gap-3">
           <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl shadow-[0_12px_28px_rgba(15,23,42,0.08)] ${toneClass(spec.tone)}`}>
             <spec.Icon className="h-5 w-5" />
           </span>
           <div className="min-w-0 flex-1">
-            <h2 className="text-2xl font-black tracking-tight text-slate-950">
+            <h2 className="text-2xl font-black tracking-tight text-kx-text">
               {placeLabel}{spec.title}
             </h2>
-            <p className="mt-1 text-sm leading-6 text-slate-500">{helper}</p>
+            <p className="mt-1 text-sm leading-6 text-kx-subtle">{helper}</p>
           </div>
         </div>
-        <div className="relative mt-4 inline-flex rounded-full border border-slate-200/70 bg-white/90 p-1 shadow-[0_10px_26px_rgba(15,23,42,0.06)] backdrop-blur">
+        <div className="relative mt-4 inline-flex rounded-full border border-kx-stroke/45 bg-kx-soft/70 p-1 shadow-[0_10px_26px_rgba(15,23,42,0.06)]">
           {([
             ["local", cityName],
             ["country", countryName],
@@ -299,7 +298,7 @@ function ChannelHero({
               onClick={() => onScopeChange(value)}
               className={[
                 "h-9 rounded-full px-4 text-sm font-semibold transition",
-                scope === value ? "bg-blue-600 text-white shadow-[0_8px_18px_rgba(37,99,235,0.22)]" : "text-slate-500 hover:bg-slate-50 hover:text-slate-900",
+                scope === value ? "bg-kx-accent text-white shadow-[0_8px_18px_rgba(37,99,235,0.22)]" : "text-kx-subtle hover:bg-kx-card hover:text-kx-text",
               ].join(" ")}
             >
               {label}
@@ -329,16 +328,16 @@ function ChannelPostList({
   scope: ChannelScope;
 }) {
   return (
-    <section className="rounded-3xl border border-white/80 bg-white/90 p-4 shadow-[0_14px_42px_rgba(15,23,42,0.055)] backdrop-blur sm:p-5">
+    <section className="kx-discover-section">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-slate-900">最新内容</h2>
-          <p className="mt-1 text-sm text-slate-500">
+          <h2 className="text-lg font-black text-kx-text">最新内容</h2>
+          <p className="mt-1 text-sm text-kx-subtle">
             {scope === "country" ? `${placeLabel}范围内的${channelLabel}内容` : `${placeLabel}${channelLabel}相关内容`}
           </p>
         </div>
         {error ? (
-          <button type="button" onClick={onRetry} className="inline-flex items-center gap-1 rounded-full border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-50">
+          <button type="button" onClick={onRetry} className="kx-button-ghost h-9 text-xs">
             <RefreshCw className="h-3.5 w-3.5" />
             重新加载
           </button>
@@ -351,9 +350,9 @@ function ChannelPostList({
           ))}
         </div>
       ) : error ? (
-        <div className="rounded-2xl bg-slate-50/80 px-4 py-8 text-center">
-          <p className="text-sm font-semibold text-slate-900">内容暂时无法加载</p>
-          <p className="mt-1 text-sm text-slate-500">请稍后再试，或切换城市和范围。</p>
+        <div className="kx-discover-state">
+          <p className="text-sm font-semibold text-kx-text">内容暂时无法加载</p>
+          <p className="mt-1 text-sm text-kx-subtle">请稍后再试，或切换城市和范围。</p>
         </div>
       ) : posts.length ? (
         <div className="space-y-3">
@@ -362,9 +361,9 @@ function ChannelPostList({
           ))}
         </div>
       ) : (
-        <div className="rounded-2xl bg-slate-50/80 px-4 py-8 text-center">
-          <p className="text-sm font-semibold text-slate-900">这个频道暂时没有内容</p>
-          <p className="mt-1 text-sm text-slate-500">可以切换范围，或发布第一条相关内容。</p>
+        <div className="kx-discover-state">
+          <p className="text-sm font-semibold text-kx-text">这个频道暂时没有内容</p>
+          <p className="mt-1 text-sm text-kx-subtle">可以切换范围，或发布第一条相关内容。</p>
         </div>
       )}
     </section>
@@ -487,6 +486,6 @@ function toneClass(tone: ExploreChannelSpec["tone"]) {
     case "fuchsia":
       return "bg-fuchsia-600/10 text-fuchsia-600";
     default:
-      return "bg-slate-600/10 text-slate-600";
+      return "bg-kx-soft text-kx-subtle";
   }
 }

@@ -184,11 +184,11 @@ function ExplorePageClient() {
               M
             </span>
           )}
-          <h1 className="text-[28px] font-black leading-none tracking-tight text-slate-950 dark:text-white md:text-2xl">发现</h1>
+          <h1 className="text-[28px] font-black leading-none tracking-tight text-kx-text md:text-2xl">发现</h1>
           <button
             type="button"
             onClick={() => setRegionPickerOpen(true)}
-            className="ml-auto inline-flex h-10 min-w-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-white/95 px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgba(37,99,235,0.75)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35 dark:bg-kx-card/[0.9]"
+            className="ml-auto inline-flex h-10 min-w-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-card/[0.92] px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgba(37,99,235,0.75)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35"
             title="切换地区"
           >
             <span className="max-w-[7.5rem] truncate">{regionHeaderLabel(currentRegion)}</span>
@@ -197,7 +197,7 @@ function ExplorePageClient() {
           {user ? (
             <Link
               href="/notifications"
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-kx-card/[0.92] text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60"
               aria-label="通知"
             >
               <Bell className="h-[18px] w-[18px] text-kx-text" />
@@ -206,7 +206,7 @@ function ExplorePageClient() {
             <button
               type="button"
               onClick={() => openAuthPrompt("generic")}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-white/95 text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60 dark:bg-kx-card/[0.88]"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-kx-card/[0.92] text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60"
               aria-label="通知"
             >
               <Bell className="h-[18px] w-[18px] text-kx-text" />
@@ -214,7 +214,7 @@ function ExplorePageClient() {
           )}
         </div>
         <form onSubmit={submitSearch} className="mt-3 flex items-center gap-2">
-          <label className="group flex min-h-12 flex-1 items-center gap-3 rounded-full border border-kx-accent/[0.18] bg-white/[0.94] px-3.5 text-sm font-semibold text-kx-subtle shadow-[0_14px_34px_-28px_rgba(17,22,34,0.62)] ring-1 ring-white/70 transition focus-within:border-kx-accent/[0.38] focus-within:ring-2 focus-within:ring-kx-accent/20 dark:bg-kx-card/[0.88] dark:ring-white/10">
+          <label className="group flex min-h-12 flex-1 items-center gap-3 rounded-full border border-kx-accent/[0.18] bg-kx-card/[0.92] px-3.5 text-sm font-semibold text-kx-subtle shadow-[0_14px_34px_-28px_rgba(17,22,34,0.62)] ring-1 ring-white/40 transition focus-within:border-kx-accent/[0.38] focus-within:ring-2 focus-within:ring-kx-accent/20 dark:ring-white/10">
             <Search className="h-5 w-5 shrink-0 text-kx-accent" />
             <input
               name="q"
@@ -312,16 +312,16 @@ function ExploreFeedHub({
   onTrendRetry: () => void;
 }) {
   return (
-    <section className="overflow-hidden rounded-[28px] border border-slate-200/70 dark:border-white/10 bg-white/95 dark:bg-kx-card shadow-[0_18px_60px_-44px_rgba(15,23,42,0.55)] ring-1 ring-white/75">
-      <div className="border-b border-slate-200/60 dark:border-white/10 bg-gradient-to-br from-white dark:from-kx-card via-white dark:via-kx-card to-blue-50/35 dark:to-kx-card px-4 py-4 sm:px-5">
+    <section className="kx-discover-panel">
+      <div className="kx-discover-panel-header">
         <div className="flex flex-col gap-4">
           <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-full bg-slate-950 px-3 py-1 text-[11px] font-black text-white shadow-[0_12px_30px_-18px_rgba(15,23,42,0.85)]">
+            <div className="inline-flex items-center gap-2 rounded-full bg-kx-text px-3 py-1 text-[11px] font-black text-kx-card shadow-kx">
               <Compass className="h-3.5 w-3.5" />
               城市动态
             </div>
-            <h2 className="mt-3 text-[22px] font-black leading-tight text-slate-950 dark:text-white">正在发生、热榜、话题和用户推荐</h2>
-            <p className="mt-1.5 max-w-2xl text-sm leading-6 text-slate-500 dark:text-slate-400">
+            <h2 className="mt-3 text-[22px] font-black leading-tight text-kx-text">正在发生、热榜、话题和用户推荐</h2>
+            <p className="mt-1.5 max-w-2xl text-sm leading-6 text-kx-subtle">
               首页同城推文与趋势内容都在这里，范围可在当前城市与当前国家之间切换。
             </p>
           </div>
@@ -371,18 +371,14 @@ function ExplorePanelTabs({ active, onChange }: { active: ExplorePanel; onChange
     { key: "users", label: "用户推荐", icon: Users },
   ];
   return (
-    <div className="grid grid-cols-2 gap-1 rounded-[18px] border border-slate-200/70 dark:border-white/10 bg-white/85 dark:bg-kx-card/90 p-1 shadow-[inset_0_1px_0_rgba(255,255,255,0.7)] sm:grid-cols-4 sm:rounded-full">
+    <div className="kx-discover-tabset">
       {tabs.map(({ key, label, icon: Icon }) => (
         <button
           key={key}
           type="button"
           onClick={() => onChange(key)}
-          className={[
-            "inline-flex h-9 items-center justify-center gap-1.5 rounded-full px-3 text-sm font-black transition",
-            active === key
-              ? "bg-slate-950 text-white shadow-[0_12px_28px_-20px_rgba(15,23,42,0.9)]"
-              : "text-slate-500 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-white/10 hover:text-slate-950 dark:hover:text-white",
-          ].join(" ")}
+          data-active={active === key}
+          className="kx-discover-tab"
         >
           <Icon className="h-3.5 w-3.5" />
           <span>{label}</span>
@@ -406,17 +402,17 @@ function HappeningSection({
   onRetry: () => void;
 }) {
   return (
-    <section className="rounded-[24px] border border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card p-4 shadow-[0_8px_30px_rgba(15,23,42,0.04)] sm:p-5">
+    <section className="kx-discover-section">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <h2 className="inline-flex items-center gap-2 text-lg font-black text-slate-950 dark:text-white">
-            <Compass className="h-4 w-4 text-blue-600" />
+          <h2 className="inline-flex items-center gap-2 text-lg font-black text-kx-text">
+            <Compass className="h-4 w-4 text-kx-accent" />
             {title}
           </h2>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">来自首页信息流的同城推文，优先展示近期有互动的真实内容。</p>
+          <p className="mt-1 text-sm text-kx-subtle">来自首页信息流的同城推文，优先展示近期有互动的真实内容。</p>
         </div>
         {error ? (
-          <button type="button" onClick={onRetry} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-slate-200 dark:border-white/10 px-3 text-xs font-semibold text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-white/[0.05]">
+          <button type="button" onClick={onRetry} className="kx-button-ghost h-9 shrink-0 text-xs">
             <RefreshCw className="h-3.5 w-3.5" />
             重新加载
           </button>
@@ -427,7 +423,7 @@ function HappeningSection({
       ) : error ? (
         <RetryState title="正在发生暂时无法加载" onRetry={onRetry} />
       ) : posts.length ? (
-        <ol className="divide-y divide-slate-200/70">
+        <ol className="divide-y divide-kx-stroke/35">
           {posts.slice(0, 8).map((post, idx) => (
             <HotPostItem key={post.id} post={post} rank={idx + 1} />
           ))}
@@ -479,19 +475,19 @@ function LocalHotSection({
   region?: RegionInfo;
 }) {
   return (
-    <section className="rounded-[24px] border border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card p-4 shadow-[0_8px_30px_rgba(15,23,42,0.04)] sm:p-5">
+    <section className="kx-discover-section">
       <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h2 className="inline-flex items-center gap-2 text-lg font-semibold text-slate-900 dark:text-slate-100">
-            <TrendingUp className="h-4 w-4 text-blue-600" />
+          <h2 className="inline-flex items-center gap-2 text-lg font-black text-kx-text">
+            <TrendingUp className="h-4 w-4 text-kx-accent" />
             {title}
           </h2>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>
+          <p className="mt-1 text-sm text-kx-subtle">{subtitle}</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <HotScopeTabs scope={scope} onChange={onScopeChange} region={region} />
           {error ? (
-            <button type="button" onClick={onRetry} className="inline-flex h-9 items-center gap-1 rounded-full border border-slate-200 dark:border-white/10 px-3 text-xs font-semibold text-slate-600 dark:text-slate-300 transition hover:bg-slate-50 dark:hover:bg-white/[0.05]">
+            <button type="button" onClick={onRetry} className="kx-button-ghost h-9 text-xs">
               <RefreshCw className="h-3.5 w-3.5" />
               重新加载
             </button>
@@ -501,20 +497,20 @@ function LocalHotSection({
       {loading ? (
         <HotListSkeleton />
       ) : error ? (
-        <div className="rounded-2xl bg-slate-50/80 dark:bg-white/[0.04] px-4 py-8 text-center">
-          <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">热榜暂时无法加载</p>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">网络或服务暂时不可用，请稍后再试。</p>
+        <div className="kx-discover-state">
+          <p className="text-sm font-semibold text-kx-text">热榜暂时无法加载</p>
+          <p className="mt-1 text-sm text-kx-subtle">网络或服务暂时不可用，请稍后再试。</p>
         </div>
       ) : posts.length ? (
-        <ol className="divide-y divide-slate-200/70">
+        <ol className="divide-y divide-kx-stroke/35">
           {posts.slice(0, 8).map((post, idx) => (
             <HotPostItem key={post.id} post={post} rank={idx + 1} />
           ))}
         </ol>
       ) : (
-        <div className="rounded-2xl bg-slate-50/80 dark:bg-white/[0.04] px-4 py-8 text-center">
-          <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">这座城市暂时没有热榜内容</p>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">可以切换城市，或稍后回来看看新的本地讨论。</p>
+        <div className="kx-discover-state">
+          <p className="text-sm font-semibold text-kx-text">这座城市暂时没有热榜内容</p>
+          <p className="mt-1 text-sm text-kx-subtle">可以切换城市，或稍后回来看看新的本地讨论。</p>
         </div>
       )}
     </section>
@@ -527,7 +523,7 @@ function HotScopeTabs({ scope, onChange, region }: { scope: HotScope; onChange: 
     { key: "country", label: region?.country_name || "当前国家" },
   ];
   return (
-    <div className="inline-flex rounded-full border border-slate-200/70 dark:border-white/10 bg-slate-50 dark:bg-white/[0.05] p-1">
+    <div className="inline-flex rounded-full border border-kx-stroke/45 bg-kx-soft/70 p-1">
       {options.map((item) => (
         <button
           key={item.key}
@@ -535,7 +531,7 @@ function HotScopeTabs({ scope, onChange, region }: { scope: HotScope; onChange: 
           onClick={() => onChange(item.key)}
           className={[
             "inline-flex h-8 items-center gap-1 rounded-full px-3 text-xs font-black transition",
-            scope === item.key ? "bg-white dark:bg-kx-card text-blue-700 shadow-sm ring-1 ring-blue-100" : "text-slate-500 dark:text-slate-400 hover:text-slate-950 dark:hover:text-white",
+            scope === item.key ? "bg-kx-card text-kx-accent shadow-sm ring-1 ring-kx-accent/20" : "text-kx-subtle hover:text-kx-text",
           ].join(" ")}
         >
           {item.key === "city" ? <MapPin className="h-3.5 w-3.5" /> : null}
@@ -550,18 +546,18 @@ function HotPostItem({ post, rank }: { post: KXPost; rank: number }) {
   const title = post.content || String(post.attributes?.title || CONTENT_TYPE_LABELS[post.content_type || "dynamic"]);
   return (
     <li>
-      <Link href={`/p/${post.id}`} className="group -mx-2 flex items-start gap-3 rounded-2xl px-2 py-3 transition hover:bg-slate-50/80 dark:hover:bg-white/[0.05]">
+      <Link href={`/p/${post.id}`} className="group kx-discover-row -mx-2 flex items-start gap-3 px-2 py-3">
         <span className={[
           "mt-0.5 grid h-7 w-7 shrink-0 place-items-center rounded-full text-sm font-semibold",
-          rank <= 3 ? "bg-blue-50 text-blue-700" : "bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400",
+          rank <= 3 ? "bg-kx-accentSoft text-kx-accent" : "bg-kx-soft text-kx-muted",
         ].join(" ")}>
           {rank}
         </span>
         <div className="min-w-0 flex-1">
-          <div className="line-clamp-2 text-sm font-semibold leading-6 text-slate-900 dark:text-slate-100 group-hover:text-blue-700">{title}</div>
-          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-400">
+          <div className="line-clamp-2 text-sm font-semibold leading-6 text-kx-text group-hover:text-kx-accent">{title}</div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-kx-muted">
             <span className="truncate">@{post.author?.handle || "machi"}</span>
-            <span className="rounded-full bg-slate-100 dark:bg-white/10 px-2 py-0.5 font-medium text-slate-500 dark:text-slate-400">{CONTENT_TYPE_LABELS[post.content_type || "dynamic"]}</span>
+            <span className="rounded-full bg-kx-soft px-2 py-0.5 font-medium text-kx-subtle">{CONTENT_TYPE_LABELS[post.content_type || "dynamic"]}</span>
             <span className="inline-flex items-center gap-1"><MessageCircle className="h-3 w-3" /> {compactNumber(post.comment_count)}</span>
             <span className="inline-flex items-center gap-1"><Eye className="h-3 w-3" /> {compactNumber(post.view_count)}</span>
             <span>{relativeTime(post.created_at)}</span>
@@ -590,14 +586,14 @@ function HotListSkeleton() {
 
 function TopicBoard({ topics, loading, error, onRetry }: { topics: KXTrendingTopic[]; loading?: boolean; error?: boolean; onRetry: () => void }) {
   return (
-    <section className="rounded-[24px] border border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card p-4 sm:p-5">
+    <section className="kx-discover-section">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <h2 className="inline-flex items-center gap-2 text-lg font-black text-slate-950 dark:text-white">
-            <Hash className="h-4 w-4 text-blue-600" />
+          <h2 className="inline-flex items-center gap-2 text-lg font-black text-kx-text">
+            <Hash className="h-4 w-4 text-kx-accent" />
             话题趋势
           </h2>
-          <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">最近被反复提到的话题，适合快速进入同城讨论。</p>
+          <p className="mt-1 text-sm text-kx-subtle">最近被反复提到的话题，适合快速进入同城讨论。</p>
         </div>
       </div>
       {loading ? (
@@ -610,14 +606,14 @@ function TopicBoard({ topics, loading, error, onRetry }: { topics: KXTrendingTop
             <Link
               key={topic.tag}
               href={`/t/${encodeURIComponent(topic.tag)}`}
-              className="group flex min-h-14 items-center gap-3 rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card px-3 py-2.5 transition hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50/40"
+              className="group flex min-h-14 items-center gap-3 rounded-kx-md border border-kx-stroke/45 bg-kx-card/[0.72] px-3 py-2.5 transition hover:-translate-y-0.5 hover:border-kx-accent/35 hover:bg-kx-accentSoft/35"
             >
-              <span className={["grid h-8 w-8 shrink-0 place-items-center rounded-full text-sm font-black", idx < 3 ? "bg-blue-600 text-white" : "bg-slate-100 dark:bg-white/10 text-slate-500 dark:text-slate-400"].join(" ")}>
+              <span className={["grid h-8 w-8 shrink-0 place-items-center rounded-full text-sm font-black", idx < 3 ? "bg-kx-accent text-white" : "bg-kx-soft text-kx-muted"].join(" ")}>
                 {idx + 1}
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-black text-slate-950 dark:text-white group-hover:text-blue-700">#{topic.tag}</span>
-                <span className="text-xs font-semibold text-slate-400">{compactNumber(topic.post_count)} 帖</span>
+                <span className="block truncate text-sm font-black text-kx-text group-hover:text-kx-accent">#{topic.tag}</span>
+                <span className="text-xs font-semibold text-kx-muted">{compactNumber(topic.post_count)} 帖</span>
               </span>
             </Link>
           ))}
@@ -631,13 +627,13 @@ function TopicBoard({ topics, loading, error, onRetry }: { topics: KXTrendingTop
 
 function UserBoard({ users, loading, error, onRetry }: { users: KXUser[]; loading?: boolean; error?: boolean; onRetry: () => void }) {
   return (
-    <section className="rounded-[24px] border border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card p-4 sm:p-5">
+    <section className="kx-discover-section">
       <div className="mb-4">
-        <h2 className="inline-flex items-center gap-2 text-lg font-black text-slate-950 dark:text-white">
-          <Users className="h-4 w-4 text-blue-600" />
+        <h2 className="inline-flex items-center gap-2 text-lg font-black text-kx-text">
+          <Users className="h-4 w-4 text-kx-accent" />
           值得关注的用户
         </h2>
-        <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">优先展示真实活跃、对城市内容有贡献的用户和账号。</p>
+        <p className="mt-1 text-sm text-kx-subtle">优先展示真实活跃、对城市内容有贡献的用户和账号。</p>
       </div>
       {loading ? (
         <HotListSkeleton />
@@ -649,14 +645,14 @@ function UserBoard({ users, loading, error, onRetry }: { users: KXUser[]; loadin
             <Link
               key={target.id}
               href={`/u/${target.handle}`}
-              className="group flex min-h-16 items-center gap-3 rounded-2xl border border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card p-3 transition hover:-translate-y-0.5 hover:border-blue-200 hover:bg-blue-50/35"
+              className="group flex min-h-16 items-center gap-3 rounded-kx-md border border-kx-stroke/45 bg-kx-card/[0.72] p-3 transition hover:-translate-y-0.5 hover:border-kx-accent/35 hover:bg-kx-accentSoft/35"
             >
               <Avatar user={target} size={42} />
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-black text-slate-950 dark:text-white group-hover:text-blue-700">{target.display_name}</span>
-                <span className="block truncate text-xs font-semibold text-slate-400">@{target.handle}</span>
+                <span className="block truncate text-sm font-black text-kx-text group-hover:text-kx-accent">{target.display_name}</span>
+                <span className="block truncate text-xs font-semibold text-kx-muted">@{target.handle}</span>
               </span>
-              <span className="rounded-full bg-slate-100 dark:bg-white/10 px-2.5 py-1 text-[11px] font-black text-slate-500 dark:text-slate-400">
+              <span className="rounded-full bg-kx-soft px-2.5 py-1 text-[11px] font-black text-kx-subtle">
                 {compactNumber(target.total_heat || target.post_count || 0)}
               </span>
             </Link>
@@ -671,9 +667,9 @@ function UserBoard({ users, loading, error, onRetry }: { users: KXUser[]; loadin
 
 function RetryState({ title, onRetry }: { title: string; onRetry: () => void }) {
   return (
-    <div className="rounded-2xl bg-slate-50/80 dark:bg-white/[0.04] px-4 py-8 text-center">
-      <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</p>
-      <button type="button" onClick={onRetry} className="mt-3 inline-flex h-9 items-center gap-1 rounded-full bg-slate-950 px-3 text-xs font-black text-white">
+    <div className="kx-discover-state">
+      <p className="text-sm font-semibold text-kx-text">{title}</p>
+      <button type="button" onClick={onRetry} className="kx-button-primary mt-3 h-9 text-xs">
         <RefreshCw className="h-3.5 w-3.5" />
         重新加载
       </button>
@@ -683,9 +679,9 @@ function RetryState({ title, onRetry }: { title: string; onRetry: () => void }) 
 
 function EmptyBoard({ title, subtitle }: { title: string; subtitle: string }) {
   return (
-    <div className="rounded-2xl bg-slate-50/80 dark:bg-white/[0.04] px-4 py-8 text-center">
-      <p className="text-sm font-semibold text-slate-900 dark:text-slate-100">{title}</p>
-      <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">{subtitle}</p>
+    <div className="kx-discover-state">
+      <p className="text-sm font-semibold text-kx-text">{title}</p>
+      <p className="mt-1 text-sm text-kx-subtle">{subtitle}</p>
     </div>
   );
 }
@@ -742,11 +738,11 @@ function ExploreTrendsRail({
               <li key={topic.tag}>
                 <Link
                   href={`/t/${encodeURIComponent(topic.tag)}`}
-                  className="group flex items-center gap-2.5 rounded-xl px-1.5 py-1.5 transition hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                  className="group kx-discover-row flex items-center gap-2.5 px-1.5 py-1.5"
                 >
                   <span className={railRankChip(idx)}>{idx + 1}</span>
-                  <span className="min-w-0 flex-1 truncate text-[13px] font-bold text-slate-800 dark:text-slate-200 group-hover:text-blue-700">#{topic.tag}</span>
-                  <span className="shrink-0 text-[11px] font-semibold text-slate-400">{compactNumber(topic.post_count)}</span>
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-bold text-kx-text group-hover:text-kx-accent">#{topic.tag}</span>
+                  <span className="shrink-0 text-[11px] font-semibold text-kx-muted">{compactNumber(topic.post_count)}</span>
                 </Link>
               </li>
             ))}
@@ -768,14 +764,14 @@ function ExploreTrendsRail({
               <li key={target.id}>
                 <Link
                   href={`/u/${target.handle}`}
-                  className="group flex items-center gap-2.5 rounded-xl px-1.5 py-1.5 transition hover:bg-slate-50 dark:hover:bg-white/[0.05]"
+                  className="group kx-discover-row flex items-center gap-2.5 px-1.5 py-1.5"
                 >
                   <Avatar user={target} size={34} />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[13px] font-bold text-slate-800 dark:text-slate-200 group-hover:text-blue-700">{target.display_name}</span>
-                    <span className="block truncate text-[11px] text-slate-400">@{target.handle}</span>
+                    <span className="block truncate text-[13px] font-bold text-kx-text group-hover:text-kx-accent">{target.display_name}</span>
+                    <span className="block truncate text-[11px] text-kx-muted">@{target.handle}</span>
                   </span>
-                  <span className="shrink-0 rounded-full bg-slate-100 dark:bg-white/10 px-2 py-0.5 text-[10px] font-black text-slate-500 dark:text-slate-400">
+                  <span className="shrink-0 rounded-full bg-kx-soft px-2 py-0.5 text-[10px] font-black text-kx-subtle">
                     {compactNumber(target.total_heat || target.post_count || 0)}
                   </span>
                 </Link>
@@ -804,16 +800,16 @@ function RailCard({
   children: ReactNode;
 }) {
   return (
-    <section className="rounded-[22px] border border-slate-200/70 dark:border-white/10 bg-white/95 dark:bg-kx-card p-3.5 shadow-[0_20px_56px_-44px_rgba(15,23,42,0.5)] ring-1 ring-white/70">
+    <section className="kx-discover-section p-3.5 sm:p-3.5">
       <div className="mb-2.5 flex items-center justify-between gap-2">
-        <h3 className="inline-flex items-center gap-1.5 text-sm font-black text-slate-950 dark:text-white">
+        <h3 className="inline-flex items-center gap-1.5 text-sm font-black text-kx-text">
           {icon}
           {title}
         </h3>
         {badge ? (
-          <span className="rounded-full bg-slate-100 dark:bg-white/10 px-2 py-0.5 text-[10px] font-black text-slate-500 dark:text-slate-400">{badge}</span>
+          <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[10px] font-black text-kx-subtle">{badge}</span>
         ) : action ? (
-          <Link href={action.href} className="text-[11px] font-bold text-slate-400 transition hover:text-blue-700">{action.label}</Link>
+          <Link href={action.href} className="text-[11px] font-bold text-kx-muted transition hover:text-kx-accent">{action.label}</Link>
         ) : null}
       </div>
       {children}
@@ -825,11 +821,11 @@ function RailHotItem({ post, rank }: { post: KXPost; rank: number }) {
   const title = post.content || String(post.attributes?.title || CONTENT_TYPE_LABELS[post.content_type || "dynamic"]);
   return (
     <li>
-      <Link href={`/p/${post.id}`} className="group flex items-start gap-2.5 rounded-xl px-1.5 py-1.5 transition hover:bg-slate-50 dark:hover:bg-white/[0.05]">
+      <Link href={`/p/${post.id}`} className="group kx-discover-row flex items-start gap-2.5 px-1.5 py-1.5">
         <span className={railRankChip(rank - 1)}>{rank}</span>
         <span className="min-w-0 flex-1">
-          <span className="line-clamp-1 text-[13px] font-bold leading-5 text-slate-800 dark:text-slate-200 group-hover:text-blue-700">{title}</span>
-          <span className="mt-0.5 flex items-center gap-2 text-[11px] text-slate-400">
+          <span className="line-clamp-1 text-[13px] font-bold leading-5 text-kx-text group-hover:text-kx-accent">{title}</span>
+          <span className="mt-0.5 flex items-center gap-2 text-[11px] text-kx-muted">
             <span className="inline-flex items-center gap-0.5"><MessageCircle className="h-3 w-3" />{compactNumber(post.comment_count)}</span>
             <span className="inline-flex items-center gap-0.5"><Eye className="h-3 w-3" />{compactNumber(post.view_count)}</span>
           </span>
@@ -842,7 +838,7 @@ function RailHotItem({ post, rank }: { post: KXPost; rank: number }) {
 function railRankChip(idx: number) {
   return [
     "mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-md text-[11px] font-black",
-    idx < 3 ? "bg-orange-50 text-orange-600" : "bg-slate-100 dark:bg-white/10 text-slate-400",
+    idx < 3 ? "bg-kx-heat/10 text-kx-heat" : "bg-kx-soft text-kx-muted",
   ].join(" ");
 }
 
@@ -860,7 +856,7 @@ function RailSkeleton({ rows }: { rows: number }) {
 }
 
 function RailEmpty({ text }: { text: string }) {
-  return <p className="px-1.5 py-2 text-xs leading-5 text-slate-400">{text}</p>;
+  return <p className="px-1.5 py-2 text-xs leading-5 text-kx-muted">{text}</p>;
 }
 
 function regionFromExploreParams(params: { get(name: string): string | null }): RegionInfo | undefined {

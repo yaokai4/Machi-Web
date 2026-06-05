@@ -68,12 +68,12 @@ export function DiscoverShortcutGrid({
 
   return (
     <section className="space-y-4">
-      <section className="overflow-hidden rounded-[24px] border border-slate-200/70 dark:border-white/10 bg-white/95 dark:bg-kx-card shadow-[0_18px_54px_-42px_rgba(15,23,42,0.5)] ring-1 ring-white/75">
-        <div className="border-b border-slate-200/60 dark:border-white/10 bg-white dark:bg-kx-card px-4 py-4 sm:px-5">
+      <section className="kx-discover-panel">
+        <div className="kx-discover-panel-header">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <h2 className="text-lg font-black text-slate-950 dark:text-white">城市入口</h2>
-              <p className="mt-1 text-sm leading-5 text-slate-500 dark:text-slate-400">二手、租房、找工作、本地服务……每件事都有自己的入口。选好城市，直接进到你现在需要的板块，浏览和发布都更快一步。</p>
+              <h2 className="text-lg font-black text-kx-text">城市入口</h2>
+              <p className="mt-1 text-sm leading-5 text-kx-subtle">二手、租房、找工作、本地服务……每件事都有自己的入口。选好城市，直接进到你现在需要的板块，浏览和发布都更快一步。</p>
             </div>
             <button
               data-explore-all-channels
@@ -84,7 +84,7 @@ export function DiscoverShortcutGrid({
                 event.stopPropagation();
                 setIsChannelDialogOpen(true);
               }}
-              className="group inline-flex h-9 w-fit shrink-0 items-center gap-1.5 rounded-full border border-blue-200/70 bg-blue-50 px-3 text-xs font-black text-blue-700 shadow-[0_10px_28px_-20px_rgba(37,99,235,0.55)] transition hover:border-blue-300 hover:bg-blue-100"
+              className="group inline-flex h-9 w-fit shrink-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-accentSoft/70 px-3 text-xs font-black text-kx-accent shadow-[0_10px_28px_-20px_rgba(37,99,235,0.55)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft"
             >
               <Sparkles className="h-3.5 w-3.5" />
               更多频道
@@ -116,7 +116,7 @@ export function DiscoverShortcutGrid({
           ))}
         </div>
         {secondaryEntries.length ? (
-          <div className="flex flex-wrap gap-2 border-t border-slate-200/60 dark:border-white/10 px-3 py-3 sm:px-4">
+          <div className="flex flex-wrap gap-2 border-t border-kx-stroke/30 px-3 py-3 sm:px-4">
             {secondaryEntries.map(({ spec, title }) => (
               getChannelHref ? (
                 <Link key={spec.slug} href={getChannelHref(spec.slug)} className={secondaryChipClass(selectedChannel === spec.slug)}>
@@ -204,11 +204,11 @@ function AllChannelDialog({
         type="button"
         aria-label="关闭更多频道"
         onClick={onClose}
-        className="absolute inset-0 bg-slate-950/35 backdrop-blur-[2px]"
+        className="absolute inset-0 bg-kx-text/35 backdrop-blur-[2px]"
       />
       <section
         ref={sheetRef}
-        className="absolute inset-x-0 bottom-0 max-h-[75dvh] overflow-hidden rounded-t-[24px] bg-white dark:bg-kx-card text-slate-900 dark:text-slate-100 shadow-[0_32px_80px_rgba(15,23,42,0.22)] md:left-1/2 md:top-1/2 md:bottom-auto md:w-[min(820px,calc(100vw-48px))] md:max-h-[calc(100vh-120px)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-[24px]"
+        className="absolute inset-x-0 bottom-0 max-h-[75dvh] overflow-hidden rounded-t-kx-sheet bg-kx-card text-kx-text shadow-[0_32px_80px_rgba(15,23,42,0.22)] md:left-1/2 md:top-1/2 md:bottom-auto md:w-[min(820px,calc(100vw-48px))] md:max-h-[calc(100vh-120px)] md:-translate-x-1/2 md:-translate-y-1/2 md:rounded-kx-sheet"
         role="dialog"
         aria-modal="true"
         aria-labelledby="all-channel-title"
@@ -220,13 +220,13 @@ function AllChannelDialog({
           if ((event.touches[0]?.clientY ?? 0) - touchStartY.current > 90) onClose();
         }}
       >
-        <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-slate-200 md:hidden" />
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200/70 dark:border-white/10 px-5 py-4">
+        <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-kx-stroke/55 md:hidden" />
+        <div className="flex items-start justify-between gap-4 border-b border-kx-stroke/40 px-5 py-4">
           <div>
-            <h3 id="all-channel-title" className="text-lg font-semibold text-slate-900 dark:text-slate-100">全部频道</h3>
-            <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">按使用场景分组，投票、长文、匿名提问只作为发布工具。</p>
+            <h3 id="all-channel-title" className="text-lg font-semibold text-kx-text">全部频道</h3>
+            <p className="mt-1 text-sm text-kx-subtle">按使用场景分组，投票、长文、匿名提问只作为发布工具。</p>
           </div>
-          <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-full border border-slate-200 dark:border-white/10 text-slate-500 dark:text-slate-400 transition hover:bg-slate-50 dark:hover:bg-white/[0.05] hover:text-slate-900 dark:hover:text-white">
+          <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-full border border-kx-stroke/55 text-kx-muted transition hover:bg-kx-soft hover:text-kx-text">
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -234,16 +234,16 @@ function AllChannelDialog({
           <div className="space-y-5">
             {CHANNEL_GROUPS.map((group) => (
               <div key={group.title}>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-slate-400">{group.title}</h4>
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-kx-muted">{group.title}</h4>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
                   {group.items.map((item) => {
                     const spec = CHANNEL_BY_SLUG.get(item.channel)!;
                     const Icon = item.Icon || spec.Icon;
                     const slug = item.channel;
                     const itemClass = [
-                      "group flex min-h-14 items-center gap-3 rounded-2xl border px-3 py-2.5 text-left transition-all duration-200 ease-out",
-                      "hover:-translate-y-px hover:bg-slate-50/80 dark:hover:bg-white/[0.05] hover:shadow-[0_12px_40px_rgba(15,23,42,0.07)]",
-                      selectedChannel === slug ? "border-blue-200 bg-blue-50/70" : "border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card",
+                      "group flex min-h-14 items-center gap-3 rounded-kx-md border px-3 py-2.5 text-left transition-all duration-200 ease-out",
+                      "hover:-translate-y-px hover:bg-kx-soft/70 hover:shadow-[0_12px_40px_rgba(15,23,42,0.07)]",
+                      selectedChannel === slug ? "border-kx-accent/35 bg-kx-accentSoft/70" : "border-kx-stroke/45 bg-kx-card/80",
                     ].join(" ");
                     const itemContent = (
                       <>
@@ -251,9 +251,9 @@ function AllChannelDialog({
                           <Icon className="h-4 w-4" />
                         </span>
                         <span className="min-w-0">
-                          <span className="block text-sm font-semibold text-slate-900 dark:text-slate-100">{item.label}</span>
-                          <span className="block truncate text-xs text-slate-500 dark:text-slate-400">{item.subtitle}</span>
-                          {item.tool ? <span className="mt-1 inline-flex rounded-full bg-slate-100 dark:bg-white/10 px-2 py-0.5 text-[10px] font-bold text-slate-500 dark:text-slate-400">发布工具</span> : null}
+                          <span className="block text-sm font-semibold text-kx-text">{item.label}</span>
+                          <span className="block truncate text-xs text-kx-subtle">{item.subtitle}</span>
+                          {item.tool ? <span className="mt-1 inline-flex rounded-full bg-kx-soft px-2 py-0.5 text-[10px] font-bold text-kx-subtle">发布工具</span> : null}
                         </span>
                       </>
                     );
@@ -293,13 +293,12 @@ function AllChannelDialog({
 function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec; title?: string; subtitle?: string }) {
   return (
     <>
-      <span className={`pointer-events-none absolute -right-8 -top-10 h-28 w-28 rounded-full blur-2xl ${toneGlow(spec.tone)}`} aria-hidden />
       <ChannelIcon spec={spec} size="lg" />
       <span className="relative min-w-0 flex-1">
-        <span className="block text-[15px] font-black text-slate-950 dark:text-white">{title || spec.title}</span>
-        <span className="mt-1 block text-[13px] leading-5 text-slate-500 dark:text-slate-400">{subtitle || spec.subtitle}</span>
+        <span className="block text-[15px] font-black text-kx-text">{title || spec.title}</span>
+        <span className="mt-1 block text-[13px] leading-5 text-kx-subtle">{subtitle || spec.subtitle}</span>
       </span>
-      <span className="relative mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-slate-100 dark:bg-white/10 text-slate-400 transition-all duration-200 group-hover:bg-slate-950 group-hover:text-white">
+      <span className="relative mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-soft text-kx-muted transition-all duration-200 group-hover:bg-kx-text group-hover:text-kx-card">
         <ChevronRight className="h-4 w-4" />
       </span>
     </>
@@ -308,17 +307,17 @@ function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec;
 
 function channelHeroClass(active?: boolean) {
   return [
-    "group relative flex min-h-[112px] items-start gap-3.5 overflow-hidden rounded-[22px] border p-4 text-left",
-    "bg-white dark:bg-kx-card shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
-    "hover:-translate-y-0.5 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
-    active ? "border-blue-300 bg-blue-50/55 ring-2 ring-blue-100/80" : "border-slate-200/70 dark:border-white/10 hover:border-slate-300 dark:hover:border-white/20",
+    "group relative flex min-h-[112px] items-start gap-3.5 overflow-hidden rounded-kx-lg border p-4 text-left",
+    "bg-kx-card/[0.78] shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
+    "hover:-translate-y-0.5 hover:border-kx-accent/35 hover:bg-kx-accentSoft/30 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
+    active ? "border-kx-accent/45 bg-kx-accentSoft/60 ring-2 ring-kx-accent/20" : "border-kx-stroke/45",
   ].join(" ");
 }
 
 function secondaryChipClass(active?: boolean) {
   return [
     "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1.5 text-[13px] font-bold transition-all duration-200",
-    active ? "border-blue-300 bg-blue-50/70 text-blue-700" : "border-slate-200/70 dark:border-white/10 bg-white dark:bg-kx-card text-slate-600 dark:text-slate-300 hover:border-slate-300 dark:hover:border-white/20 hover:bg-slate-50/80 dark:hover:bg-white/[0.05] hover:text-slate-900 dark:hover:text-white",
+    active ? "border-kx-accent/45 bg-kx-accentSoft/70 text-kx-accent" : "border-kx-stroke/45 bg-kx-card/80 text-kx-subtle hover:border-kx-accent/35 hover:bg-kx-soft hover:text-kx-text",
   ].join(" ");
 }
 
@@ -352,29 +351,6 @@ function toneClass(tone: ExploreChannelSpec["tone"]) {
     case "fuchsia":
       return "bg-fuchsia-600/10 text-fuchsia-600";
     default:
-      return "bg-slate-600/10 text-slate-600 dark:text-slate-300";
-  }
-}
-
-function toneGlow(tone: ExploreChannelSpec["tone"]) {
-  switch (tone) {
-    case "blue":
-      return "bg-blue-500/10";
-    case "emerald":
-      return "bg-emerald-500/10";
-    case "indigo":
-      return "bg-indigo-500/10";
-    case "violet":
-      return "bg-violet-500/10";
-    case "teal":
-      return "bg-teal-500/10";
-    case "rose":
-      return "bg-rose-500/10";
-    case "orange":
-      return "bg-orange-500/10";
-    case "fuchsia":
-      return "bg-fuchsia-500/10";
-    default:
-      return "bg-slate-500/10";
+      return "bg-kx-soft text-kx-subtle";
   }
 }
