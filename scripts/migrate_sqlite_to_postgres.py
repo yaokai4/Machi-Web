@@ -56,6 +56,16 @@ def build_ddl(scon: sqlite3.Connection, table: str):
         d = f"{q(c[1])} {pg_type(c[2])}"
         if c[3]:
             d += " NOT NULL"
+        dflt = c[4]
+        if dflt is not None:
+            ds = str(dflt).strip()
+            up = ds.upper()
+            if up in ("CURRENT_TIMESTAMP", "CURRENT_DATE", "CURRENT_TIME"):
+                d += f" DEFAULT {up}"
+            elif "(" in ds:
+                pass  # skip SQLite expression defaults (none expected in this schema)
+            else:
+                d += f" DEFAULT {ds}"  # literal: number / 'string' / NULL
         defs.append(d)
     pk = sorted((c for c in cols if c[5]), key=lambda c: c[5])
     if pk:
