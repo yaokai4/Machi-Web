@@ -1,0 +1,12 @@
+# Litestream — 连续把 SQLite 增量复制到 S3，得到近似 PITR 的廉价备份。
+# 用 EC2 的 IAM Role(S3instanceRole)走默认凭证链，配置里【绝不放 AWS 密钥】。
+# RPO ≈ 秒级(WAL 帧持续上传);snapshot 周期性做全量基底。
+dbs:
+  - path: /opt/kaix/web/kaix.db
+    replicas:
+      - type: s3
+        bucket: machi-s3
+        path: backups/kaix.db
+        region: ap-northeast-1
+        retention: 168h          # 保留 7 天恢复点
+        snapshot-interval: 24h    # 每天一个全量基底(WAL 持续增量,无需更频繁)
