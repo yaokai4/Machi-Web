@@ -2076,6 +2076,17 @@ def _time_decay(created_at: str | None) -> float:
 
 
 def _heat_score_sql(alias: str = "p") -> str:
+    # Recency/boost use time functions that differ by backend. Keep the SQLite
+    # path byte-identical (datetime/julianday) and emit Postgres equivalents
+    # (EXTRACT EPOCH + ISO text compare) only when the PG backend is active.
+    if KAIX_DB_BACKEND == "postgres":
+        boost_cmp = f"{alias}.boosted_until > '{now_iso()}'"
+        hours_since = f"EXTRACT(EPOCH FROM (now() - {alias}.created_at::timestamptz)) / 3600.0"
+        max2 = "GREATEST"
+    else:
+        boost_cmp = f"{alias}.boosted_until > datetime('now')"
+        hours_since = f"(julianday('now') - julianday({alias}.created_at)) * 24.0"
+        max2 = "MAX"
     return f"""
       ((SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'like') * 1
        + (SELECT COUNT(*) FROM comments c WHERE c.post_id = {alias}.id AND c.deleted_at IS NULL) * 3
@@ -2084,11 +2095,11 @@ def _heat_score_sql(alias: str = "p") -> str:
        - COALESCE({alias}.report_count, 0) * 10
        + CASE
            WHEN COALESCE({alias}.is_boosted, 0) = 1
-             AND (COALESCE({alias}.boosted_until, '') = '' OR {alias}.boosted_until > datetime('now'))
+             AND (COALESCE({alias}.boosted_until, '') = '' OR {boost_cmp})
            THEN COALESCE({alias}.boost_weight, 0)
            ELSE 0
          END
-       + MAX(0, 24 - ((julianday('now') - julianday({alias}.created_at)) * 24.0)))
+       + {max2}(0, 24 - ({hours_since})))
     """
 
 
@@ -2158,7 +2169,93 @@ def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 # database
 
 
+# --- Optional PostgreSQL backend (Tier 2, step 2) ---------------------------
+# The SQLite path below is unchanged and stays the default. When
+# KAIX_DB_BACKEND=postgres, db() returns a thin adapter that mimics the
+# sqlite3.Connection API the handlers use (885 conn.execute() calls, context
+# manager, rows indexable by position AND name) and translates the dialect on
+# the fly: ?->%s, literal % escaping, PRAGMA->no-op, LIKE->ILIKE (SQLite LIKE
+# is case-insensitive for ASCII), INSERT OR IGNORE -> ON CONFLICT DO NOTHING.
+# psycopg2 is imported lazily so the SQLite/production path never needs it.
+# Remaining SQLite-only SQL (1 INSERT OR REPLACE, 3 strftime) is fixed per-site
+# in following steps.
+KAIX_DB_BACKEND = _env("KAIX_DB_BACKEND", "sqlite").strip().lower()
+KAIX_PG_DSN = _env("KAIX_PG_DSN", "")
+
+
+def _pg_xlate(sql: str, has_params: bool) -> str:
+    import re
+    if sql.lstrip()[:6].upper() == "PRAGMA":
+        return "SELECT 1"
+    s = re.sub(r"(?i)\bLIKE\b", "ILIKE", sql)
+    # SQLite scalar MAX/MIN(a, b) -> Postgres GREATEST/LEAST. Only flat 2-arg
+    # forms (no nested parens) match, so aggregate MAX(col) is left untouched.
+    s = re.sub(r"(?i)\bMAX\s*\(([^()]+,[^()]+)\)", r"GREATEST(\1)", s)
+    s = re.sub(r"(?i)\bMIN\s*\(([^()]+,[^()]+)\)", r"LEAST(\1)", s)
+    m = re.match(r"(?is)\s*INSERT\s+OR\s+IGNORE\s+INTO\b(.*)$", s)
+    if m:
+        s = "INSERT INTO" + m.group(1)
+        if "ON CONFLICT" not in s.upper() and "RETURNING" not in s.upper():
+            s = s.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+    if has_params:
+        s = s.replace("%", "%%").replace("?", "%s")
+    return s
+
+
+class _PgConn:
+    """Minimal sqlite3.Connection-compatible adapter over psycopg2.
+    DictCursor rows support both row[0] and row['col']."""
+
+    def __init__(self, dsn: str):
+        import psycopg2
+        import psycopg2.extras
+        self._extras = psycopg2.extras
+        self._c = psycopg2.connect(dsn or "dbname=machi_dev")
+        self._c.autocommit = True  # mirror sqlite isolation_level=None
+        self.row_factory = None     # accepted & ignored (DictCursor used)
+
+    def execute(self, sql, params=None):
+        cur = self._c.cursor(cursor_factory=self._extras.DictCursor)
+        if params is None:
+            cur.execute(_pg_xlate(sql, False))
+        else:
+            cur.execute(_pg_xlate(sql, True), tuple(params))
+        return cur
+
+    def executemany(self, sql, seq):
+        cur = self._c.cursor()
+        cur.executemany(_pg_xlate(sql, True), [tuple(p) for p in seq])
+        return cur
+
+    def executescript(self, sql):
+        return None  # SQLite DDL; schema is migrated out-of-band on PG
+
+    def commit(self):
+        self._c.commit()
+
+    def rollback(self):
+        self._c.rollback()
+
+    def close(self):
+        try:
+            self._c.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self._c.commit()
+        else:
+            self._c.rollback()
+        return False
+
+
 def db() -> sqlite3.Connection:
+    if KAIX_DB_BACKEND == "postgres":
+        return _PgConn(KAIX_PG_DSN)  # type: ignore[return-value]
     conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -8678,6 +8775,12 @@ def record_admin_action(conn: sqlite3.Connection, admin_id: str, action: str, *,
 
 
 def init_db() -> None:
+    if KAIX_DB_BACKEND == "postgres":
+        # On Postgres the schema + data are migrated out-of-band by
+        # scripts/migrate_sqlite_to_postgres.py — don't run SQLite DDL/seed here.
+        with db() as conn:
+            conn.execute("SELECT 1").fetchone()
+        return
     with DB_LOCK, db() as conn:
         conn.executescript(SCHEMA)
         run_migrations(conn)
@@ -13287,9 +13390,13 @@ class Handler(BaseHTTPRequestHandler):
         if not (200 <= int(status) < 300):
             return  # only cache successful, deterministic results
         conn.execute(
-            "INSERT OR REPLACE INTO idempotency_keys "
+            "INSERT INTO idempotency_keys "
             "(scope, idem_key, user_id, ip, status, response_body, created_epoch, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT (scope, idem_key) DO UPDATE SET "
+            "user_id=excluded.user_id, ip=excluded.ip, status=excluded.status, "
+            "response_body=excluded.response_body, created_epoch=excluded.created_epoch, "
+            "created_at=excluded.created_at",
             (
                 f"{method} {path}", key,
                 getattr(self, "_session_user_id", None) or "", self._client_ip(),
@@ -21477,16 +21584,18 @@ class Handler(BaseHTTPRequestHandler):
             # ~1.05). Applied only to the hot-feed ORDER BY — the displayed
             # heat_score is unchanged, so it never overpowers real engagement.
             sql = f"""
-                SELECT p.*, {_heat_score_sql('p')} AS computed_heat,
-                       COALESCE((SELECT u.is_verified_member FROM users u WHERE u.id = p.author_id), 0) AS author_vm
-                FROM posts p
-                WHERE p.deleted_at IS NULL
-                  AND p.status IN ('published', 'active')
-                  AND p.created_at >= ?
-                  {region_clause}
-                  {type_clause}
-                  {blocked_clause}
-                ORDER BY (computed_heat * (CASE WHEN author_vm = 1 THEN ? ELSE 1.0 END)) DESC, p.created_at DESC
+                SELECT * FROM (
+                    SELECT p.*, {_heat_score_sql('p')} AS computed_heat,
+                           COALESCE((SELECT u.is_verified_member FROM users u WHERE u.id = p.author_id), 0) AS author_vm
+                    FROM posts p
+                    WHERE p.deleted_at IS NULL
+                      AND p.status IN ('published', 'active')
+                      AND p.created_at >= ?
+                      {region_clause}
+                      {type_clause}
+                      {blocked_clause}
+                ) ranked
+                ORDER BY (computed_heat * (CASE WHEN author_vm = 1 THEN ? ELSE 1.0 END)) DESC, created_at DESC
                 LIMIT ?
             """
             rows = list(conn.execute(sql, [cutoff_24h, *region_params, *type_params, *blocked_params, VERIFIED_BOOST_SCORE, limit]))
