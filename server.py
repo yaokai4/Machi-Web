@@ -122,13 +122,20 @@ from html.parser import HTMLParser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
-from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urljoin, urlparse
 import xml.etree.ElementTree as ET
 
 # City Seed Bot content library — local module, no third-party deps. Holds the
 # curated city-life content pools + generator used by 城市内容助手.
 import seed_content_library as seedlib
 from services.crawler import CrawlerError, CrawlerSkipped, crawl_source, normalize_allowed_domain
+
+try:
+    import boto3  # type: ignore
+    from botocore.exceptions import BotoCoreError, ClientError, NoCredentialsError  # type: ignore
+except Exception:  # pragma: no cover - local dev can use the built-in fallback.
+    boto3 = None  # type: ignore
+    BotoCoreError = ClientError = NoCredentialsError = Exception  # type: ignore
 
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
@@ -291,6 +298,15 @@ ALLOWED_MIME = {
     "text/plain", "text/csv",
 }
 
+IMAGE_UPLOAD_MIME = {
+    "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic", "image/heif",
+}
+PDF_UPLOAD_MIME = {"application/pdf"}
+VIDEO_UPLOAD_MIME = {"video/mp4", "video/quicktime", "video/webm"}
+AUDIO_UPLOAD_MIME = {"audio/mpeg", "audio/mp4", "audio/wav", "audio/webm"}
+MESSAGE_FILE_UPLOAD_MIME = {"application/pdf", "image/jpeg", "image/png", "image/webp"}
+MESSAGE_FILE_UPLOAD_ENABLED = _env("MESSAGE_FILE_UPLOAD_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+
 # Canonical file extension per mime. We do NOT trust mimetypes.guess_extension
 # because it varies across Python versions and platforms — a fixed table is
 # both safer (no surprise extensions on disk) and consistent across deploys.
@@ -300,9 +316,14 @@ EXT_BY_MIME: dict[str, str] = {
     "image/gif":  ".gif",
     "image/webp": ".webp",
     "image/heic": ".heic",
+    "image/heif": ".heif",
     "video/mp4":        ".mp4",
     "video/quicktime":  ".mov",
     "video/webm":       ".webm",
+    "audio/mpeg": ".mp3",
+    "audio/mp4":  ".m4a",
+    "audio/wav":  ".wav",
+    "audio/webm": ".webm",
     "application/pdf":  ".pdf",
     "application/zip":  ".zip",
     "application/msword": ".doc",
@@ -311,6 +332,68 @@ EXT_BY_MIME: dict[str, str] = {
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
     "text/plain": ".txt",
     "text/csv": ".csv",
+}
+
+
+# ---------------------------------------------------------------------------
+# Amazon S3 / upload storage configuration
+#
+# Browser/iOS/Android clients never receive AWS credentials. On EC2, boto3 uses
+# the AWS SDK default credential chain and reads temporary credentials from the
+# attached Instance Profile / IAM Role. Local development falls back to a
+# backend-local PUT URL when boto3/credentials are not available.
+# ---------------------------------------------------------------------------
+
+PUBLIC_BASE_URL = _env("KAIX_PUBLIC_BASE_URL", "").rstrip("/")
+AWS_REGION = _env("AWS_REGION", "ap-northeast-1")
+AWS_S3_BUCKET = _env("AWS_S3_BUCKET", "")
+AWS_CLOUDFRONT_DOMAIN = _env("AWS_CLOUDFRONT_DOMAIN", "").strip().rstrip("/")
+S3_UPLOAD_MAX_SIZE = int(_env("S3_UPLOAD_MAX_SIZE", str(50 * 1024 * 1024)))
+S3_PRESIGN_EXPIRES_SECONDS = max(60, min(int(_env("S3_PRESIGN_EXPIRES_SECONDS", "300")), 900))
+S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS = max(60, min(int(_env("S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS", "600")), 900))
+
+
+UPLOAD_PURPOSES: dict[str, dict[str, Any]] = {
+    "avatar": {"kind": "image", "max": 5 * 1024 * 1024, "count": 1},
+    "profile_cover": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1},
+    "post_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9},
+    "post_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1},
+    "post_audio": {"kind": "audio", "max": 50 * 1024 * 1024, "count": 1, "private": True},
+    "article_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 20},
+    "article_video": {"kind": "video", "max": 300 * 1024 * 1024, "count": 1},
+    "experience_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9},
+    "experience_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1},
+    "question_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 6},
+    "group_post_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9},
+    "group_post_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1},
+    "secondhand_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 10},
+    "rental_image": {"kind": "image", "max": 15 * 1024 * 1024, "count": 20},
+    "job_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 5},
+    "service_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 10},
+    "discount_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 5},
+    "guide_article_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 20, "admin": True},
+    "guide_product_preview": {"kind": "image", "max": 10 * 1024 * 1024, "count": 10, "admin": True},
+    "guide_product_file": {"kind": "pdf", "max": 50 * 1024 * 1024, "count": 20, "admin": True, "private": True},
+    "member_resource_file": {"kind": "pdf", "max": 50 * 1024 * 1024, "count": 20, "admin": True, "private": True},
+    "business_logo": {"kind": "image", "max": 5 * 1024 * 1024, "count": 1},
+    "business_cover": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1},
+    "business_verification_file": {"kind": "pdf", "max": 20 * 1024 * 1024, "count": 10, "admin": True, "private": True},
+    "message_attachment": {"kind": "disabled", "max": 0, "count": 0},
+    "message_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9, "private": True},
+    "message_video": {"kind": "video", "max": 100 * 1024 * 1024, "count": 1, "private": True},
+    "message_file": {"kind": "message_file", "max": 20 * 1024 * 1024, "count": 1, "private": True, "disabled": not MESSAGE_FILE_UPLOAD_ENABLED},
+    "video_thumbnail": {"kind": "image", "max": 5 * 1024 * 1024, "count": 20},
+    "video_processed_file": {"kind": "video", "max": 300 * 1024 * 1024, "count": 10},
+}
+
+LISTING_PURPOSE_BY_TYPE = {
+    "secondhand": "secondhand_image",
+    "rental": "rental_image",
+    "job": "job_image",
+    "hiring": "job_image",
+    "local_service": "service_image",
+    "discount": "discount_image",
+    "event": "discount_image",
 }
 
 
@@ -964,6 +1047,10 @@ def _sniff_mime(data: bytes) -> str | None:
         return "image/gif"
     if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
         return "image/webp"
+    if head[:4] == b"RIFF" and head[8:12] == b"WAVE":
+        return "audio/wav"
+    if head.startswith(b"ID3") or (head[0] == 0xFF and (head[1] & 0xE0) == 0xE0):
+        return "audio/mpeg"
     # HEIC/HEIF — ISO BMFF with ftyp box at offset 4.
     if head[4:8] == b"ftyp" and head[8:12] in (b"heic", b"heix", b"mif1", b"msf1", b"heim", b"heis", b"hevc", b"hevx"):
         return "image/heic"
@@ -1000,6 +1087,376 @@ def _sniff_mime(data: bytes) -> str | None:
 
 def declared_office_mime(_data: bytes) -> str:
     return "application/msword"
+
+
+def upload_mime_matches(sniffed: str | None, expected: str) -> bool:
+    if sniffed == expected:
+        return True
+    compatible = {
+        ("image/heic", "image/heif"),
+        ("video/mp4", "audio/mp4"),
+        ("video/webm", "audio/webm"),
+    }
+    return (sniffed or "", expected) in compatible
+
+
+_S3_CLIENT: Any | None = None
+_S3_CREDENTIALS_CHECKED = False
+_S3_CREDENTIALS_AVAILABLE = False
+
+
+def _s3_client() -> Any:
+    global _S3_CLIENT
+    if boto3 is None:
+        raise APIError("boto3 未安装，无法使用 S3", 500, "s3_sdk_missing")
+    if _S3_CLIENT is None:
+        # Intentionally pass only region. boto3 will use the AWS SDK default
+        # credential chain: env/profile in dev, and EC2 Instance Profile/IAM
+        # Role temporary credentials in production. Never pass access keys here.
+        _S3_CLIENT = boto3.client("s3", region_name=AWS_REGION)
+    return _S3_CLIENT
+
+
+def s3_configured() -> bool:
+    return bool(AWS_REGION and AWS_S3_BUCKET and boto3 is not None)
+
+
+def s3_credentials_available() -> bool:
+    global _S3_CREDENTIALS_CHECKED, _S3_CREDENTIALS_AVAILABLE
+    if not s3_configured():
+        return False
+    if _S3_CREDENTIALS_CHECKED:
+        return _S3_CREDENTIALS_AVAILABLE
+    _S3_CREDENTIALS_CHECKED = True
+    try:
+        session = boto3.Session(region_name=AWS_REGION)  # type: ignore[union-attr]
+        _S3_CREDENTIALS_AVAILABLE = session.get_credentials() is not None
+    except Exception:
+        _S3_CREDENTIALS_AVAILABLE = False
+    return _S3_CREDENTIALS_AVAILABLE
+
+
+def s3_ready_for_upload() -> bool:
+    return s3_configured() and (PRODUCTION or s3_credentials_available())
+
+
+def _s3_presigned_url(method: str, object_key: str, *, content_type: str = "", expires: int | None = None) -> str:
+    if not s3_ready_for_upload():
+        raise APIError("S3 is not configured", 500, "s3_not_configured")
+    expires = int(expires or S3_PRESIGN_EXPIRES_SECONDS)
+    method = method.upper()
+    try:
+        if method == "PUT":
+            params: dict[str, Any] = {"Bucket": AWS_S3_BUCKET, "Key": object_key}
+            if content_type:
+                params["ContentType"] = content_type
+            return _s3_client().generate_presigned_url("put_object", Params=params, ExpiresIn=expires)
+        if method == "GET":
+            return _s3_client().generate_presigned_url(
+                "get_object",
+                Params={"Bucket": AWS_S3_BUCKET, "Key": object_key},
+                ExpiresIn=expires,
+            )
+    except NoCredentialsError:
+        raise APIError("EC2 IAM Role/S3 凭证不可用", 500, "s3_credentials_missing")
+    except (BotoCoreError, ClientError):
+        raise APIError("S3 Presigned URL 生成失败", 502, "s3_presign_failed")
+    raise APIError("不支持的 S3 签名方法", 500, "unsupported_s3_presign_method")
+
+
+def _s3_head_object(object_key: str) -> dict[str, Any]:
+    if not s3_ready_for_upload():
+        raise APIError("S3 is not configured", 500, "s3_not_configured")
+    try:
+        return dict(_s3_client().head_object(Bucket=AWS_S3_BUCKET, Key=object_key))
+    except ClientError as exc:
+        code = str((getattr(exc, "response", {}) or {}).get("Error", {}).get("Code") or "")
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            raise APIError("S3 文件尚未上传完成", 400, "s3_object_not_found")
+        raise APIError("S3 HeadObject 失败", 502, "s3_head_failed")
+    except (BotoCoreError, NoCredentialsError):
+        raise APIError("S3 HeadObject 失败", 502, "s3_head_failed")
+
+
+def _s3_delete_object(object_key: str) -> bool:
+    if not s3_ready_for_upload():
+        return False
+    try:
+        _s3_client().delete_object(Bucket=AWS_S3_BUCKET, Key=object_key)
+        return True
+    except Exception:
+        return False
+
+
+def _local_upload_token(upload_id: str, user_id: str, object_key: str) -> str:
+    message = f"{upload_id}:{user_id}:{object_key}"
+    return hmac.new(PASSWORD_PEPPER, message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _signed_local_download_token(file_id: str, expires_at: int) -> str:
+    message = f"{file_id}:{expires_at}"
+    sig = hmac.new(PASSWORD_PEPPER, message.encode("utf-8"), hashlib.sha256).hexdigest()
+    return f"{expires_at}.{sig}"
+
+
+def _verify_local_download_token(file_id: str, token: str) -> bool:
+    try:
+        raw_exp, raw_sig = token.split(".", 1)
+        expires_at = int(raw_exp)
+    except Exception:
+        return False
+    if expires_at < int(time.time()):
+        return False
+    expected = _signed_local_download_token(file_id, expires_at).split(".", 1)[1]
+    return hmac.compare_digest(raw_sig, expected)
+
+
+def _cdn_domain() -> str:
+    raw = AWS_CLOUDFRONT_DOMAIN.strip()
+    if not raw:
+        return ""
+    if raw.startswith("http://") or raw.startswith("https://"):
+        return raw.rstrip("/")
+    return f"https://{raw.strip('/')}"
+
+
+def upload_file_type(content_type: str) -> str:
+    if content_type.startswith("image/"):
+        return "image"
+    if content_type == "application/pdf":
+        return "pdf"
+    if content_type.startswith("video/"):
+        return "video"
+    if content_type.startswith("audio/"):
+        return "audio"
+    if content_type in {
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.ms-excel",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "text/plain",
+        "text/csv",
+    }:
+        return "document"
+    return "other"
+
+
+def upload_is_private(purpose: str) -> bool:
+    return bool(UPLOAD_PURPOSES.get(purpose, {}).get("private"))
+
+
+def upload_public_url(object_key: str, purpose: str = "") -> str:
+    if purpose and upload_is_private(purpose):
+        return ""
+    cdn = _cdn_domain()
+    if cdn:
+        return f"{cdn}/{object_key}"
+    return f"/media/{object_key}"
+
+
+def upload_thumbnail_url(object_key: str, content_type: str, purpose: str = "") -> str:
+    # The async image-processing pipeline can later swap this to
+    # thumbnails/{...}. Until then we expose the original as the thumbnail
+    # fallback so lists never break while processing catches up.
+    return upload_public_url(object_key, purpose) if content_type.startswith("image/") and not upload_is_private(purpose) else ""
+
+
+def upload_allowed_mimes(purpose: str) -> set[str]:
+    kind = UPLOAD_PURPOSES.get(purpose, {}).get("kind")
+    if kind == "image":
+        return IMAGE_UPLOAD_MIME
+    if kind == "pdf":
+        return PDF_UPLOAD_MIME
+    if kind == "video":
+        return VIDEO_UPLOAD_MIME
+    if kind == "audio":
+        return AUDIO_UPLOAD_MIME
+    if kind == "message_file":
+        return MESSAGE_FILE_UPLOAD_MIME
+    return set()
+
+
+def canonical_upload_mime(purpose: str, content_type: str) -> str:
+    content_type = (content_type or "").split(";", 1)[0].strip().lower()
+    if content_type == "image/jpg":
+        content_type = "image/jpeg"
+    allowed = upload_allowed_mimes(purpose)
+    if content_type not in allowed:
+        raise APIError("不支持的文件类型", 415, "unsupported_upload_type")
+    return content_type
+
+
+def normalize_upload_purpose(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    if raw not in UPLOAD_PURPOSES:
+        raise APIError("上传用途不合法", 400, "invalid_upload_purpose")
+    if UPLOAD_PURPOSES[raw].get("kind") == "disabled" or UPLOAD_PURPOSES[raw].get("disabled"):
+        raise APIError("该上传通道暂未开放", 403, "upload_disabled")
+    return raw
+
+
+def normalize_upload_entity_type(value: Any) -> str:
+    raw = str(value or "").strip().lower()
+    aliases = {"city_listing": "listing", "city_listings": "listing", "product": "guide_product", "article": "guide_article"}
+    raw = aliases.get(raw, raw)
+    return raw if raw in {"", "user", "post", "listing", "article", "experience", "question", "group", "message", "guide_article", "guide_product", "member_resource", "business", "video"} else ""
+
+
+def upload_object_key(user_id: str, purpose: str, entity_type: str, entity_id: str, content_type: str, *, thread_id: str = "", group_id: str = "") -> str:
+    ext = EXT_BY_MIME.get(content_type)
+    if not ext:
+        raise APIError("不支持的文件类型", 415, "unsupported_upload_type")
+    name = f"{uuid.uuid4().hex}{ext}"
+    clean_entity_id = re.sub(r"[^A-Za-z0-9_.-]", "", entity_id or "")[:120]
+    if purpose == "avatar":
+        return f"users/{user_id}/avatars/{name}"
+    if purpose == "profile_cover":
+        return f"users/{user_id}/covers/{name}"
+    if purpose == "post_image" and entity_type == "post" and clean_entity_id:
+        return f"posts/{clean_entity_id}/images/{name}"
+    if purpose == "post_video" and entity_type == "post" and clean_entity_id:
+        return f"posts/{clean_entity_id}/videos/{name}"
+    if purpose == "article_image" and entity_type == "article" and clean_entity_id:
+        return f"articles/{clean_entity_id}/images/{name}"
+    if purpose == "article_video" and entity_type == "article" and clean_entity_id:
+        return f"articles/{clean_entity_id}/videos/{name}"
+    if purpose == "experience_image" and entity_type == "experience" and clean_entity_id:
+        return f"experiences/{clean_entity_id}/images/{name}"
+    if purpose == "experience_video" and entity_type == "experience" and clean_entity_id:
+        return f"experiences/{clean_entity_id}/videos/{name}"
+    if purpose == "question_image" and entity_type == "question" and clean_entity_id:
+        return f"questions/{clean_entity_id}/images/{name}"
+    if purpose == "group_post_image" and entity_type == "group":
+        clean_group = re.sub(r"[^A-Za-z0-9_.-]", "", group_id or "")[:120] or "general"
+        post_ref = clean_entity_id or "pending"
+        return f"groups/{clean_group}/posts/{post_ref}/images/{name}"
+    if purpose == "group_post_video" and entity_type == "group":
+        clean_group = re.sub(r"[^A-Za-z0-9_.-]", "", group_id or "")[:120] or "general"
+        post_ref = clean_entity_id or "pending"
+        return f"groups/{clean_group}/posts/{post_ref}/videos/{name}"
+    if purpose in {"message_image", "message_video", "message_file"}:
+        clean_thread = re.sub(r"[^A-Za-z0-9_.-]", "", thread_id or "")[:120] or "thread"
+        message_ref = clean_entity_id or "pending"
+        folder = "images" if purpose == "message_image" else ("videos" if purpose == "message_video" else "files")
+        return f"messages/{clean_thread}/{folder}/{message_ref}/{name}"
+    if purpose == "video_thumbnail":
+        return f"videos/thumbnails/{uuid.uuid4().hex}.jpg"
+    if purpose == "video_processed_file":
+        return f"videos/processed/{uuid.uuid4().hex}/original{ext}"
+    if purpose in LISTING_PURPOSE_BY_TYPE.values() and entity_type == "listing" and clean_entity_id:
+        listing_segment = {
+            "secondhand_image": "secondhand",
+            "rental_image": "rentals",
+            "job_image": "jobs",
+            "service_image": "services",
+            "discount_image": "discounts",
+        }.get(purpose, "images")
+        return f"listings/{listing_segment}/{clean_entity_id}/images/{name}"
+    if purpose == "guide_article_image" and entity_type == "guide_article" and clean_entity_id:
+        return f"guide/articles/{clean_entity_id}/images/{name}"
+    if purpose == "guide_product_preview" and entity_type == "guide_product" and clean_entity_id:
+        return f"guide/products/{clean_entity_id}/previews/{name}"
+    if purpose == "guide_product_file" and entity_type == "guide_product" and clean_entity_id:
+        return f"guide/products/{clean_entity_id}/files/{uuid.uuid4().hex}.pdf"
+    if purpose == "member_resource_file":
+        resource_id = clean_entity_id or "general"
+        return f"member/resources/{resource_id}/files/{uuid.uuid4().hex}.pdf"
+    if purpose == "business_logo" and entity_type == "business" and clean_entity_id:
+        return f"businesses/{clean_entity_id}/logos/{name}"
+    if purpose == "business_cover" and entity_type == "business" and clean_entity_id:
+        return f"businesses/{clean_entity_id}/covers/{name}"
+    if purpose == "business_verification_file" and entity_type == "business" and clean_entity_id:
+        return f"businesses/{clean_entity_id}/verification/{name}"
+    return f"temp/{user_id}/{name}"
+
+
+def local_upload_path(object_key: str) -> Path:
+    target = (MEDIA_DIR / object_key).resolve()
+    try:
+        target.relative_to(MEDIA_DIR.resolve())
+    except ValueError:
+        raise APIError("invalid path", 400, "invalid_upload_key")
+    return target
+
+
+def upload_count_limit_for_listing(listing_type: str) -> int:
+    purpose = LISTING_PURPOSE_BY_TYPE.get(normalize_listing_type(listing_type), "secondhand_image")
+    return int(UPLOAD_PURPOSES[purpose]["count"])
+
+
+def serialize_uploaded_file(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    purpose = d.get("purpose") or ""
+    is_private = upload_is_private(purpose)
+    public_url = "" if is_private else (d.get("cdn_url") or d.get("public_url") or upload_public_url(d.get("object_key") or "", purpose))
+    thumb = "" if is_private else upload_thumbnail_url(d.get("object_key") or "", d.get("content_type") or "", purpose)
+    try:
+        metadata = json.loads(d.get("metadata") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        metadata = {}
+    metadata.pop("upload_token", None)
+    return {
+        "id": d.get("id"),
+        "uploadId": d.get("upload_id") or "",
+        "userId": d.get("user_id") or "",
+        "bucket": d.get("bucket") or "",
+        "objectKey": d.get("object_key") or "",
+        "url": public_url,
+        "publicUrl": "" if is_private else (d.get("public_url") or public_url),
+        "cdnUrl": "" if is_private else (d.get("cdn_url") or public_url),
+        "thumbnailUrl": "" if is_private else (metadata.get("thumbnail_url") or thumb or public_url),
+        "contentType": d.get("content_type") or "",
+        "fileSize": int(d.get("file_size") or 0),
+        "fileType": d.get("file_type") or "other",
+        "purpose": d.get("purpose") or "",
+        "entityType": d.get("entity_type") or "",
+        "entityId": d.get("entity_id") or "",
+        "status": d.get("status") or "pending",
+        "isPrivate": is_private,
+        "width": int(d.get("width") or 0),
+        "height": int(d.get("height") or 0),
+        "duration": float(d.get("duration") or 0),
+        "etag": d.get("etag") or "",
+        "metadata": metadata,
+        "createdAt": d.get("created_at"),
+        "updatedAt": d.get("updated_at"),
+        "deletedAt": d.get("deleted_at"),
+    }
+
+
+def uploaded_file_as_media(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    f = serialize_uploaded_file(row)
+    media_type = "image" if f["fileType"] == "image" else "file" if f["fileType"] in {"pdf", "document", "other"} else f["fileType"]
+    return {
+        "id": f["id"],
+        "remote_id": f["id"],
+        "owner_id": f["userId"],
+        "type": media_type,
+        "url": f["cdnUrl"],
+        "thumb_url": f["thumbnailUrl"] or f["cdnUrl"],
+        "mime": f["contentType"],
+        "width": f["width"],
+        "height": f["height"],
+        "duration": f["duration"],
+        "byte_size": f["fileSize"],
+        "created_at": f["createdAt"],
+    }
+
+
+def record_upload_audit(conn: sqlite3.Connection, user_id: str, action: str, *,
+                        file_id: str = "", upload_id: str = "", status: str = "",
+                        reason: str = "", metadata: dict[str, Any] | None = None) -> None:
+    conn.execute(
+        """
+        INSERT INTO upload_audit_logs (id, user_id, uploaded_file_id, upload_id, action, status, reason, metadata, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(uuid.uuid4()), user_id or "", file_id or "", upload_id or "",
+            action, status or "", reason or "",
+            json.dumps(metadata or {}, ensure_ascii=False, sort_keys=True), now_iso(),
+        ),
+    )
 
 DB_LOCK = threading.RLock()
 
@@ -1555,7 +2012,7 @@ def _rate_group_for(path: str, method: str) -> str:
         return "payment"
     if path.startswith("/api/search"):
         return "search"
-    if path.startswith("/api/media/"):
+    if path.startswith("/api/media/") or path.startswith("/api/uploads/"):
         return "media"
     if method in ("POST", "PATCH", "PUT", "DELETE"):
         return "write"
@@ -4065,6 +4522,101 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         "listing inquiries: dedupe + my-inquiries indexes",
         """
         CREATE INDEX IF NOT EXISTS idx_listing_inquiries_dedupe ON listing_inquiries(listing_id, from_user_id, created_at);
+        """,
+    ),
+    (
+        33,
+        "uploads: S3 uploaded files, audit logs and listing associations",
+        """
+        CREATE TABLE IF NOT EXISTS uploaded_files (
+            id TEXT PRIMARY KEY,
+            upload_id TEXT UNIQUE NOT NULL,
+            user_id TEXT NOT NULL,
+            bucket TEXT NOT NULL,
+            object_key TEXT NOT NULL,
+            public_url TEXT NOT NULL DEFAULT '',
+            cdn_url TEXT NOT NULL DEFAULT '',
+            content_type TEXT NOT NULL,
+            file_size INTEGER NOT NULL DEFAULT 0,
+            file_type TEXT NOT NULL DEFAULT 'other',
+            purpose TEXT NOT NULL,
+            entity_type TEXT NOT NULL DEFAULT '',
+            entity_id TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            width INTEGER NOT NULL DEFAULT 0,
+            height INTEGER NOT NULL DEFAULT 0,
+            duration REAL NOT NULL DEFAULT 0,
+            checksum TEXT NOT NULL DEFAULT '',
+            etag TEXT NOT NULL DEFAULT '',
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_uploaded_files_user ON uploaded_files(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_uploaded_files_entity ON uploaded_files(entity_type, entity_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_uploaded_files_status ON uploaded_files(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_uploaded_files_object ON uploaded_files(object_key);
+
+        CREATE TABLE IF NOT EXISTS upload_audit_logs (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL DEFAULT '',
+            uploaded_file_id TEXT NOT NULL DEFAULT '',
+            upload_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_upload_audit_file ON upload_audit_logs(uploaded_file_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_upload_audit_user ON upload_audit_logs(user_id, created_at);
+
+        ALTER TABLE listing_media ADD COLUMN uploaded_file_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_product_files ADD COLUMN uploaded_file_id TEXT NOT NULL DEFAULT '';
+        CREATE INDEX IF NOT EXISTS idx_listing_media_uploaded_file ON listing_media(uploaded_file_id);
+        CREATE INDEX IF NOT EXISTS idx_guide_product_files_uploaded_file ON guide_product_files(uploaded_file_id);
+        """,
+    ),
+    (
+        34,
+        "uploads: post video media and private message attachments",
+        """
+        ALTER TABLE post_media ADD COLUMN uploaded_file_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE post_media ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image';
+        ALTER TABLE post_media ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE post_media ADD COLUMN is_cover INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE post_media ADD COLUMN thumbnail_file_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE post_media ADD COLUMN duration_seconds REAL NOT NULL DEFAULT 0;
+        ALTER TABLE post_media ADD COLUMN width INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE post_media ADD COLUMN height INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE post_media ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'none';
+        ALTER TABLE post_media ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
+        ALTER TABLE post_media ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
+        CREATE INDEX IF NOT EXISTS idx_post_media_uploaded_file ON post_media(uploaded_file_id);
+        CREATE INDEX IF NOT EXISTS idx_post_media_type ON post_media(media_type, processing_status);
+
+        CREATE TABLE IF NOT EXISTS message_attachments (
+            id TEXT PRIMARY KEY,
+            message_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            uploaded_file_id TEXT NOT NULL,
+            attachment_type TEXT NOT NULL DEFAULT 'image',
+            thumbnail_file_id TEXT NOT NULL DEFAULT '',
+            duration_seconds REAL NOT NULL DEFAULT 0,
+            file_name TEXT NOT NULL DEFAULT '',
+            file_size INTEGER NOT NULL DEFAULT 0,
+            content_type TEXT NOT NULL DEFAULT '',
+            visibility TEXT NOT NULL DEFAULT 'thread_members_only',
+            status TEXT NOT NULL DEFAULT 'ready',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_message_attachments_message ON message_attachments(message_id, status);
+        CREATE INDEX IF NOT EXISTS idx_message_attachments_thread ON message_attachments(thread_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_message_attachments_file ON message_attachments(uploaded_file_id);
         """,
     ),
 ]
@@ -7221,15 +7773,16 @@ def _guide_upsert_category(conn: sqlite3.Connection, key: str, parent_key: str, 
 def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
     """Seed a compact public listing set for local verification.
 
-    The seed is idempotent and only adds rows when the structured table is
-    empty. It never migrates old posts into listings automatically because
-    moderation/state for classifieds must be explicit.
+    The seed is idempotent and fills missing starter channels in development.
+    It never migrates old posts into listings automatically because
+    moderation/state for classifieds must be explicit. In production, preserve
+    the historical behavior: seed only when the structured table is empty.
     """
     try:
         existing = conn.execute("SELECT COUNT(*) AS c FROM city_listings").fetchone()["c"]
     except sqlite3.OperationalError:
         return
-    if int(existing or 0) > 0:
+    if PRODUCTION and int(existing or 0) > 0:
         return
     seller = conn.execute("SELECT * FROM users WHERE handle = 'kaizi' LIMIT 1").fetchone()
     if not seller:
@@ -7245,7 +7798,7 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "type": "secondhand", "category": "电子产品", "title": "Apple Magic Keyboard 日文配列",
             "description": "使用半年，功能正常，适合同城自取。面交请选择公共场所。",
             "price": 8000, "currency": "JPY", "price_type": "fixed", "location_text": "新宿站附近",
-            "status": "published", "verification_status": "unverified",
+            "status": "published", "verification_status": "unverified", "promoted": True,
             "attributes": {"condition": "9成新", "delivery_method": "自取 / 面交", "pickup_available": True, "shipping_available": False, "brand": "Apple"},
         },
         {
@@ -7261,7 +7814,7 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "type": "rental", "category": "单人", "title": "池袋 1K 公寓，可预约看房",
             "description": "地址仅展示到区域，具体看房请先核实发布者身份。Machi 不代收押金或房租。",
             "price": 78000, "currency": "JPY", "price_type": "monthly", "location_text": "丰岛区 · 池袋",
-            "status": "published", "verification_status": "verified",
+            "status": "published", "verification_status": "verified", "promoted": True,
             "attributes": {"rent": 78000, "deposit": "1个月", "key_money": "0", "management_fee": 6000, "layout": "1K", "area_sqm": 23.4, "nearest_station": "池袋站 步行8分钟", "move_in_date": "2026-07", "short_term_allowed": False, "furnished": False, "pet_allowed": False},
         },
         {
@@ -7269,7 +7822,7 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "type": "job", "category": "兼职", "title": "居酒屋晚班兼职",
             "description": "每周 2-4 天，留学生可咨询。禁止押金、保证金和培训费。",
             "price": 1200, "currency": "JPY", "price_type": "hourly", "location_text": "涩谷区",
-            "status": "published", "verification_status": "verified",
+            "status": "published", "verification_status": "verified", "promoted": True,
             "attributes": {"salary_min": 1200, "salary_max": 1450, "salary_type": "hourly", "employment_type": "part_time", "japanese_level": "N3 可", "visa_support": "none", "working_hours": "18:00-23:30", "company_name": "Machi Dining", "foreigner_friendly": True, "transportation_fee": True, "student_ok": True},
         },
         {
@@ -7282,6 +7835,23 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
         },
         {
             "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "翻译", "title": "日语电话代打与手续翻译",
+            "description": "可协助联系房东、学校、银行和役所。服务前先确认范围与费用，不处理违法或高风险委托。",
+            "price": 3000, "currency": "JPY", "price_type": "starting_from", "location_text": "东京 23 区 / 线上",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "attributes": {
+                "service_type": "翻译",
+                "service_area": "东京 23 区 / 线上",
+                "price_unit": "30分钟起",
+                "business_name": "Machi Support Desk",
+                "certified_provider": True,
+                "availability": "工作日 10:00-18:00",
+                "not_included": "法律代理、医疗判断、成人或违法服务",
+                "service_process": "提交需求后确认范围、报价、预约时间，再通过站内私信沟通。",
+            },
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
             "type": "discount", "category": "优惠", "title": "本地咖啡店学生优惠",
             "description": "出示学生证，指定饮品 10% off。以店内规则为准。",
             "price": 0, "currency": "JPY", "price_type": "discount", "location_text": "高田马场",
@@ -7290,7 +7860,18 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
         },
     ]
     for index, sample in enumerate(samples):
+        exists = conn.execute(
+            """
+            SELECT id FROM city_listings
+             WHERE city_slug = ? AND type = ? AND title = ? AND deleted_at IS NULL
+             LIMIT 1
+            """,
+            (sample["city_slug"], sample["type"], sample["title"]),
+        ).fetchone()
+        if exists:
+            continue
         listing_id = str(uuid.uuid4())
+        promoted = bool(sample.get("promoted"))
         conn.execute(
             """
             INSERT INTO city_listings (
@@ -7320,8 +7901,8 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
                 sample["status"],
                 sample["verification_status"],
                 seller_id,
-                1 if index in {0, 2, 3} else 0,
-                20 if index in {0, 2, 3} else 0,
+                1 if promoted else 0,
+                20 if promoted else 0,
                 now,
                 (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
                 now,
@@ -8437,13 +9018,49 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
     ))
     media = extras.get("media") or []
     content_type = row.get("content_type", "") or "dynamic"
+    attributes = decode_post_attributes(row.get("attributes"))
     viewer = extras.get("viewer") if isinstance(extras.get("viewer"), dict) else None
     viewer_id = (viewer or {}).get("id")
     can_manage = bool(viewer_id and viewer_id == row.get("author_id") and not row.get("deleted_at"))
+    is_anonymous = content_type == "anonymous" or attributes.get("anonymous") is True
+    public_author_id = row["author_id"] if not is_anonymous or can_manage else ""
+    public_author = extras.get("author")
+    if is_anonymous and not can_manage:
+        public_author = {
+            "id": "anonymous",
+            "remote_id": "anonymous",
+            "handle": "anonymous",
+            "username": "anonymous",
+            "display_name": "匿名用户",
+            "displayName": "匿名用户",
+            "bio": "",
+            "location": "",
+            "avatar_symbol": "person.fill",
+            "avatar_color": "slate",
+            "avatar_url": "",
+            "avatarUrl": "",
+            "cover_url": "",
+            "membership_tier": "free",
+            "is_verified": False,
+            "is_verified_member": False,
+            "isOfficial": False,
+            "is_official": False,
+            "role": "anonymous",
+            "country": "",
+            "province": "",
+            "city": "",
+            "current_region_code": "",
+            "recent_region_codes": [],
+            "follower_count": 0,
+            "following_count": 0,
+            "post_count": 0,
+            "can_message": False,
+            "canMessage": False,
+        }
     payload = {
         "id": row["id"],
         "remote_id": row["id"],
-        "author_id": row["author_id"],
+        "author_id": public_author_id,
         "content": row["content"],
         "created_at": row["created_at"],
         "createdAt": row["created_at"],
@@ -8490,7 +9107,7 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         "images": [m.get("url", "") for m in media if m.get("type") == "image" and m.get("url")],
         "videoUrl": next((m.get("url", "") for m in media if m.get("type") == "video" and m.get("url")), ""),
         "video_url": next((m.get("url", "") for m in media if m.get("type") == "video" and m.get("url")), ""),
-        "author": extras.get("author"),
+        "author": public_author,
         "original_post": extras.get("original_post"),
         "status": row.get("status", "published"),
         # Region (phase 1). Empty strings when the post predates the
@@ -8508,7 +9125,9 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         "content_type": content_type,
         "contentType": content_type,
         "category": content_type,
-        "attributes":   decode_post_attributes(row.get("attributes")),
+        "attributes": attributes,
+        "isAnonymous": is_anonymous,
+        "is_anonymous": is_anonymous,
         "requiresMembership": requires_verified_membership(content_type),
         "requires_membership": requires_verified_membership(content_type),
         "sourceType": "city_seed" if bool(row.get("is_seed_content", 0)) else "user",
@@ -8561,6 +9180,37 @@ def serialize_media(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def serialize_message_attachment(row: dict[str, Any]) -> dict[str, Any]:
+    attachment_type = row.get("attachment_type") or row.get("file_type") or "file"
+    message_id = row.get("message_id") or ""
+    attachment_id = row.get("id") or ""
+    return {
+        "id": attachment_id,
+        "message_id": message_id,
+        "thread_id": row.get("thread_id") or "",
+        "uploaded_file_id": row.get("uploaded_file_id") or row.get("file_id") or "",
+        "type": attachment_type,
+        "attachment_type": attachment_type,
+        "url": "",
+        "thumb_url": "",
+        "needsSignedUrl": True,
+        "viewUrlEndpoint": f"/api/messages/{message_id}/attachments/{attachment_id}/view-url",
+        "thumbnail_file_id": row.get("thumbnail_file_id") or "",
+        "duration": float(row.get("duration_seconds") or row.get("duration") or 0),
+        "duration_seconds": float(row.get("duration_seconds") or row.get("duration") or 0),
+        "width": int(row.get("width") or 0),
+        "height": int(row.get("height") or 0),
+        "file_name": row.get("file_name") or "",
+        "file_size": int(row.get("file_size") or 0),
+        "byte_size": int(row.get("file_size") or 0),
+        "content_type": row.get("content_type") or "",
+        "mime": row.get("content_type") or "",
+        "visibility": row.get("visibility") or "thread_members_only",
+        "status": row.get("status") or "ready",
+        "created_at": row.get("created_at") or "",
+    }
+
+
 def serialize_notification(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
     extras = extras or {}
     return {
@@ -8591,6 +9241,7 @@ def serialize_message(row: dict[str, Any], extras: dict[str, Any] | None = None)
         "created_at": row["created_at"],
         "is_read": bool(row.get("is_read", 0)),
         "media": extras.get("media") or [],
+        "attachments": extras.get("attachments") or [],
     }
 
 
@@ -8658,13 +9309,26 @@ def hydrate_post_extras(conn: sqlite3.Connection, post_ids: list[str], current_u
 
     media_by_post: dict[str, list[dict[str, Any]]] = {pid: [] for pid in post_ids}
     for row in conn.execute(
-        f"""SELECT pm.post_id, pm.sort_index, m.*
+        f"""SELECT pm.post_id, pm.sort_index, pm.sort_order, pm.media_type AS pm_media_type,
+                   pm.is_cover, pm.thumbnail_file_id, pm.duration_seconds,
+                   pm.width AS pm_width, pm.height AS pm_height,
+                   pm.processing_status, m.*
             FROM post_media pm JOIN media m ON m.id = pm.media_id
             WHERE pm.post_id IN ({placeholders}) AND m.deleted_at IS NULL
-            ORDER BY pm.sort_index""",
+            ORDER BY COALESCE(NULLIF(pm.sort_order, 0), pm.sort_index), pm.sort_index""",
         post_ids,
     ):
-        media_by_post.setdefault(row["post_id"], []).append(serialize_media(dict(row)))
+        item = serialize_media(dict(row))
+        item["type"] = row["pm_media_type"] or item["type"]
+        item["media_type"] = item["type"]
+        item["is_cover"] = bool(row["is_cover"])
+        item["thumbnail_file_id"] = row["thumbnail_file_id"] or ""
+        item["duration"] = float(row["duration_seconds"] or item.get("duration") or 0)
+        item["duration_seconds"] = item["duration"]
+        item["width"] = int(row["pm_width"] or item.get("width") or 0)
+        item["height"] = int(row["pm_height"] or item.get("height") or 0)
+        item["processing_status"] = row["processing_status"] or "ready"
+        media_by_post.setdefault(row["post_id"], []).append(item)
 
     poll_by_post: dict[str, dict[str, Any]] = {}
     poll_rows = list(conn.execute(
@@ -8941,6 +9605,98 @@ def listing_policy_violation(title: str, description: str, category: str = "") -
     if any(term in text for term in blocked_terms):
         return "该内容可能涉及禁用品类或高风险交易，不能发布为城市信息。"
     return ""
+
+
+def resolve_listing_owner_update_publication(
+    conn: sqlite3.Connection,
+    user: dict[str, Any],
+    row: sqlite3.Row | dict[str, Any],
+    *,
+    requested_status: str | None,
+    content_changed: bool,
+) -> dict[str, Any]:
+    """Resolve owner-visible listing status without allowing review bypasses."""
+    current = dict(row)
+    current_status = normalize_listing_status(current.get("status"), "draft")
+    target_status = requested_status or current_status
+    if target_status not in PUBLIC_LISTING_STATUSES:
+        return {"status": target_status}
+
+    needs_review_check = content_changed or current_status not in PUBLIC_LISTING_STATUSES
+    if not needs_review_check:
+        return {"status": target_status}
+
+    requires_review, review_reason = reputation_validate_listing_publish(
+        conn,
+        user,
+        normalize_listing_type(current.get("type")),
+    )
+    review_enabled = _site_settings(conn).get("listing_review_enabled", "1") != "0"
+    if review_enabled and requires_review:
+        return {
+            "status": "pending_review",
+            "verification_status": "pending",
+            "published_at": None,
+            "requires_review": True,
+            "review_reason": review_reason,
+        }
+    return {
+        "status": target_status,
+        "verification_status": "unverified",
+        "published_at": current.get("published_at") or now_iso(),
+        "requires_review": False,
+        "review_reason": "",
+    }
+
+
+def validate_listing_media_for_create(
+    conn: sqlite3.Connection,
+    user_id: str,
+    listing_type: str,
+    data: dict[str, Any],
+) -> list[dict[str, Any]]:
+    legacy_media = data.get("media") or data.get("media_urls") or []
+    if isinstance(legacy_media, list) and any(item for item in legacy_media):
+        raise APIError("请先通过统一上传接口上传图片", 400, "unified_upload_required")
+
+    raw_media_ids = data.get("media_ids")
+    if raw_media_ids is None:
+        raw_media_ids = data.get("mediaIds") or []
+    if not isinstance(raw_media_ids, list):
+        raise APIError("媒体文件格式不正确", 400, "invalid_media_ids")
+
+    media_limit = upload_count_limit_for_listing(listing_type)
+    submitted = [str(value or "").strip() for value in raw_media_ids if str(value or "").strip()]
+    if len(submitted) > media_limit:
+        raise APIError("图片数量超过限制", 400, "listing_media_limit")
+
+    expected_purpose = LISTING_PURPOSE_BY_TYPE.get(listing_type, "secondhand_image")
+    valid_media: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for media_id in submitted:
+        if media_id in seen:
+            continue
+        seen.add(media_id)
+        media_row = conn.execute(
+            """
+            SELECT m.*
+              FROM media m
+              JOIN uploaded_files f ON f.id = m.id
+             WHERE m.id = ?
+               AND m.owner_id = ?
+               AND m.deleted_at IS NULL
+               AND f.user_id = ?
+               AND f.deleted_at IS NULL
+               AND f.status = 'ready'
+               AND f.purpose = ?
+             LIMIT 1
+            """,
+            (media_id, user_id, user_id, expected_purpose),
+        ).fetchone()
+        if not media_row:
+            raise APIError("包含无权使用或尚未完成的媒体文件", 403, "listing_media_forbidden")
+        valid_media.append(dict(media_row))
+    return valid_media
 
 
 def listing_safety_tips(listing_type: str) -> list[str]:
@@ -10695,6 +11451,9 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     # JSON array describing the 发现页「城市入口」layout (admin-editable).
     # Empty string = use the app's built-in default entrances.
     "discover_entrances": "",
+    # "1" = new city listings (二手/租房/工作/服务/优惠) go through admin
+    # review before appearing publicly; "0" = publish immediately (review off).
+    "listing_review_enabled": "1",
 }
 SITE_SETTING_KEYS = set(SITE_SETTING_DEFAULTS)
 
@@ -12417,6 +13176,27 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Machi-Version", "1.0")
         self.send_header("X-KaiX-Version", "1.0")
         self.send_header("X-Request-Id", getattr(self, "_request_id", "") or "")
+        self._set_cors()
+        self._set_security_headers()
+        self.end_headers()
+
+    def _request_base_url(self) -> str:
+        if PUBLIC_BASE_URL:
+            return PUBLIC_BASE_URL
+        proto = (self.headers.get("X-Forwarded-Proto") or "http").split(",", 1)[0].strip() or "http"
+        host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",", 1)[0].strip()
+        if not host:
+            return ""
+        return f"{proto}://{host}"
+
+    def send_empty(self, status: int = 204, extra_headers: dict[str, str] | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Length", "0")
+        self.send_header("X-Machi-Version", "1.0")
+        self.send_header("X-KaiX-Version", "1.0")
+        self.send_header("X-Request-Id", getattr(self, "_request_id", "") or "")
+        for key, value in (extra_headers or {}).items():
+            self.send_header(key, value)
         self._set_cors()
         self._set_security_headers()
         self.end_headers()
@@ -14183,7 +14963,7 @@ class Handler(BaseHTTPRequestHandler):
                 member_unlocked = has_active_membership(conn, uid)
         if owned or member_unlocked:
             product["purchaseContent"] = row["purchase_content"] or ""
-            product["fileUrl"] = row["file_url"] or ""
+            product["fileDownloadAvailable"] = bool(row["file_url"])
         product["access"] = {
             "owned": owned, "memberUnlocked": member_unlocked,
             "canAccess": bool(owned or member_unlocked), "signedIn": session is not None,
@@ -15371,6 +16151,32 @@ class Handler(BaseHTTPRequestHandler):
             f"INSERT INTO guide_products ({', '.join(row.keys())}) VALUES ({', '.join(['?'] * len(row))})",
             tuple(row.values()),
         )
+        file_upload = self._find_uploaded_file_by_url_or_id(conn, row.get("file_url") or "")
+        if file_upload:
+            file_purpose = "member_resource_file" if row.get("is_member_included") else "guide_product_file"
+            file_entity_type = "member_resource" if row.get("is_member_included") else "guide_product"
+            conn.execute(
+                "UPDATE uploaded_files SET entity_type = ?, entity_id = ?, purpose = ?, updated_at = ? WHERE id = ?",
+                (file_entity_type, product_id, file_purpose, now_iso(), file_upload["id"]),
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO guide_product_files (id, product_id, file_url, file_name, file_type, file_size, download_limit, created_at, uploaded_file_id)
+                VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()), product_id, file_upload["id"],
+                    row.get("file_name") or Path(file_upload["object_key"]).name,
+                    row.get("file_type") or file_upload["content_type"],
+                    int(file_upload.get("file_size") or 0), now_iso(), file_upload["id"],
+                ),
+            )
+        cover_upload = self._find_uploaded_file_by_url_or_id(conn, row.get("cover_image") or "")
+        if cover_upload:
+            conn.execute(
+                "UPDATE uploaded_files SET entity_type = 'guide_product', entity_id = ?, purpose = 'guide_product_preview', updated_at = ? WHERE id = ?",
+                (product_id, now_iso(), cover_upload["id"]),
+            )
         self.send_json({"status": "ok", "id": product_id, "slug": slug}, 201)
 
     def api_admin_guide_update_product(self, conn: sqlite3.Connection, product_id: str) -> None:
@@ -15444,6 +16250,35 @@ class Handler(BaseHTTPRequestHandler):
         current = dict(conn.execute("SELECT * FROM guide_products WHERE id = ?", (product_id,)).fetchone())
         self._guide_validate_product({**current, **updates})
         self._guide_apply_update(conn, "guide_products", product_id, updates)
+        if "file_url" in updates:
+            file_upload = self._find_uploaded_file_by_url_or_id(conn, updates.get("file_url") or "")
+            if file_upload:
+                merged = {**current, **updates}
+                file_purpose = "member_resource_file" if merged.get("is_member_included") else "guide_product_file"
+                file_entity_type = "member_resource" if merged.get("is_member_included") else "guide_product"
+                conn.execute(
+                    "UPDATE uploaded_files SET entity_type = ?, entity_id = ?, purpose = ?, updated_at = ? WHERE id = ?",
+                    (file_entity_type, product_id, file_purpose, now_iso(), file_upload["id"]),
+                )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO guide_product_files (id, product_id, file_url, file_name, file_type, file_size, download_limit, created_at, uploaded_file_id)
+                    VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()), product_id, file_upload["id"],
+                        updates.get("file_name") or current.get("file_name") or Path(file_upload["object_key"]).name,
+                        updates.get("file_type") or current.get("file_type") or file_upload["content_type"],
+                        int(file_upload.get("file_size") or 0), now_iso(), file_upload["id"],
+                    ),
+                )
+        if "cover_image" in updates:
+            cover_upload = self._find_uploaded_file_by_url_or_id(conn, updates.get("cover_image") or "")
+            if cover_upload:
+                conn.execute(
+                    "UPDATE uploaded_files SET entity_type = 'guide_product', entity_id = ?, purpose = 'guide_product_preview', updated_at = ? WHERE id = ?",
+                    (product_id, now_iso(), cover_upload["id"]),
+                )
         self.send_json({"status": "ok", "id": product_id})
 
     def api_admin_guide_delete_product(self, conn: sqlite3.Connection, product_id: str) -> None:
@@ -16064,6 +16899,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_PATCH(self) -> None:
         self._dispatch("PATCH")
 
+    def do_PUT(self) -> None:
+        self._dispatch("PUT")
+
     def do_DELETE(self) -> None:
         self._dispatch("DELETE")
 
@@ -16447,6 +17285,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_my_orders(conn, query)
         if path == "/api/me/reputation" and method == "GET":
             return self.api_reputation_me(conn)
+        if path.startswith("/api/member/resources/"):
+            parts = path[len("/api/member/resources/"):].split("/")
+            resource_id = unquote(parts[0])
+            tail = "/".join(parts[1:])
+            if tail == "download-url" and method == "POST":
+                return self.api_member_resource_download_url(conn, resource_id)
         if path.startswith("/api/listing-inquiries/") and method == "PATCH":
             return self.api_update_listing_inquiry(conn, unquote(path.split("/")[3]))
         if path.startswith("/api/listings/"):
@@ -16513,10 +17357,27 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_create_message(conn, conv_id)
             if rest == "read" and method == "POST":
                 return self.api_mark_conversation_read(conn, conv_id)
-        if path.startswith("/api/messages/") and method == "DELETE":
-            return self.api_delete_message(conn, path.split("/")[3])
+        if path.startswith("/api/messages/"):
+            parts = path[len("/api/messages/"):].split("/")
+            msg_id = unquote(parts[0])
+            if len(parts) >= 4 and parts[1] == "attachments" and parts[3] == "view-url" and method == "POST":
+                return self.api_message_attachment_view_url(conn, msg_id, unquote(parts[2]))
+            if len(parts) == 1 and method == "DELETE":
+                return self.api_delete_message(conn, msg_id)
 
-        # media
+        # uploads / media
+        if path == "/api/uploads/presign" and method == "POST":
+            return self.api_upload_presign(conn)
+        if path == "/api/uploads/complete" and method == "POST":
+            return self.api_upload_complete(conn)
+        if path.startswith("/api/uploads/local/") and method == "PUT":
+            return self.api_upload_local_put(conn, unquote(path[len("/api/uploads/local/"):]), query)
+        if path.startswith("/api/uploads/download/") and method == "GET":
+            return self.api_upload_signed_download(conn, unquote(path[len("/api/uploads/download/"):]), query)
+        if path.startswith("/api/uploads/") and method == "GET":
+            return self.api_upload_get(conn, unquote(path[len("/api/uploads/"):]))
+        if path.startswith("/api/uploads/") and method == "DELETE":
+            return self.api_upload_delete(conn, unquote(path[len("/api/uploads/"):]))
         if path == "/api/media/upload" and method == "POST":
             return self.api_upload_media(conn)
         if path.startswith("/api/media/") and method == "GET":
@@ -16596,6 +17457,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_guide_product_detail(conn, product_id, query)
             if tail == "purchase" and method == "POST":
                 return self.api_guide_purchase_product(conn, product_id)
+            if tail == "download-url" and method == "POST":
+                return self.api_guide_product_download_url(conn, product_id)
         if path == "/api/guide/companies" and method == "GET":
             return self.api_guide_companies(conn, query)
         if path.startswith("/api/guide/companies/") and method == "GET":
@@ -16787,6 +17650,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_media(conn, query)
         if path == "/api/admin/media/upload" and method == "POST":
             return self.api_admin_upload_media(conn)
+        if path == "/api/admin/uploads" and method == "GET":
+            return self.api_admin_uploads(conn, query)
+        if path == "/api/admin/uploads/cleanup-temp" and method == "POST":
+            return self.api_admin_cleanup_temp_uploads(conn)
+        if path.startswith("/api/admin/uploads/") and method == "PATCH":
+            return self.api_admin_update_upload(conn, unquote(path[len("/api/admin/uploads/"):]))
+        if path.startswith("/api/admin/uploads/") and method == "DELETE":
+            return self.api_admin_delete_upload(conn, unquote(path[len("/api/admin/uploads/"):]))
         if path == "/api/admin/site-settings" and method == "GET":
             return self.api_admin_site_settings(conn)
         if path == "/api/admin/site-settings" and method in ("PATCH", "POST"):
@@ -19459,11 +20330,14 @@ class Handler(BaseHTTPRequestHandler):
 
         requires_reputation_review, reputation_review_reason = reputation_validate_listing_publish(conn, user, listing_type)
         requested_status = normalize_listing_status(data.get("status"), "published")
+        # Admins can switch listing review off in 后台设置; when disabled,
+        # listings publish immediately instead of entering the review queue.
+        review_enabled = _site_settings(conn).get("listing_review_enabled", "1") != "0"
         if requested_status == "draft":
             status = "draft"
             verification = "unverified"
             published_at = None
-        elif requires_reputation_review or listing_type in LISTING_TYPES_DEFAULT_REVIEW:
+        elif review_enabled and (requires_reputation_review or listing_type in LISTING_TYPES_DEFAULT_REVIEW):
             status = "pending_review"
             verification = "pending"
             published_at = None
@@ -19476,6 +20350,7 @@ class Handler(BaseHTTPRequestHandler):
             price_type = price_type or "free"
 
         listing_id = str(uuid.uuid4())
+        valid_media = validate_listing_media_for_create(conn, user["id"], listing_type, data)
         created = now_iso()
         expires_at = data.get("expires_at") or (datetime.now(timezone.utc) + timedelta(days=90)).isoformat()
         conn.execute(
@@ -19504,59 +20379,24 @@ class Handler(BaseHTTPRequestHandler):
                 """,
                 (str(uuid.uuid4()), listing_id, key, value, value_type, created, created),
             )
-        media_ids = data.get("media_ids") or []
-        if isinstance(media_ids, list):
-            for idx, media_id in enumerate(media_ids[:10]):
-                media_id = str(media_id or "").strip()
-                if not media_id:
-                    continue
-                media_row = conn.execute(
-                    "SELECT * FROM media WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
-                    (media_id, user["id"]),
-                ).fetchone()
-                if not media_row:
-                    continue
-                media = serialize_media(dict(media_row))
-                conn.execute(
-                    """
-                    INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(uuid.uuid4()), listing_id, media.get("type") or "image",
-                        media.get("url") or "", media.get("thumb_url") or media.get("url") or "",
-                        idx, 1 if idx == 0 else 0, created,
-                    ),
-                )
-        media_items = data.get("media") or data.get("media_urls") or []
-        if isinstance(media_items, list):
-            existing_media_count = conn.execute(
-                "SELECT COUNT(*) AS count FROM listing_media WHERE listing_id = ?",
-                (listing_id,),
-            ).fetchone()["count"]
-            for idx, item in enumerate(media_items[: max(0, 10 - int(existing_media_count or 0))]):
-                if isinstance(item, dict):
-                    url = str(item.get("url") or item.get("src") or "").strip()
-                    thumb = str(item.get("thumbnail_url") or item.get("thumbnailUrl") or url).strip()
-                    media_type = str(item.get("media_type") or item.get("type") or "image").strip()[:20] or "image"
-                else:
-                    url = str(item or "").strip()
-                    thumb = url
-                    media_type = "image"
-                if not url:
-                    continue
-                conn.execute(
-                    """
-                    INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        str(uuid.uuid4()), listing_id, media_type, url[:800], thumb[:800],
-                        int(existing_media_count or 0) + idx,
-                        1 if int(existing_media_count or 0) + idx == 0 else 0,
-                        created,
-                    ),
-                )
+        for idx, media_row in enumerate(valid_media):
+            media_id = media_row["id"]
+            media = serialize_media(media_row)
+            conn.execute(
+                """
+                INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at, uploaded_file_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()), listing_id, media.get("type") or "image",
+                    media.get("url") or "", media.get("thumb_url") or media.get("url") or "",
+                    idx, 1 if idx == 0 else 0, created, media_id,
+                ),
+            )
+            conn.execute(
+                "UPDATE uploaded_files SET entity_type = 'listing', entity_id = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (listing_id, now_iso(), media_id, user["id"]),
+            )
         if not conn.execute("SELECT id FROM listing_media WHERE listing_id = ? LIMIT 1", (listing_id,)).fetchone():
             fallback = listing_image_fallback(listing_type)
             conn.execute(
@@ -19599,17 +20439,63 @@ class Handler(BaseHTTPRequestHandler):
         if row["seller_user_id"] != user["id"]:
             raise APIError("只能编辑自己的信息", 403, "forbidden")
         data = self.read_json()
+        next_title = str(data.get("title") if "title" in data else row["title"] or "").strip()
+        next_description = str(data.get("description") if "description" in data else row["description"] or "").strip()
+        next_category = str(data.get("category") if "category" in data else row["category"] or "").strip()[:80]
+        if not next_title:
+            raise APIError("标题不能为空", 400, "title_required")
+        if len(next_title) > 120:
+            raise APIError("标题过长", 400, "title_too_long")
+        if len(next_description) > 3000:
+            raise APIError("描述过长", 400, "description_too_long")
+        forbidden = listing_policy_violation(next_title, next_description, next_category)
+        if forbidden:
+            reputation_apply_event(
+                conn,
+                user["id"],
+                "prohibited_service" if row["type"] == "local_service" else "spam_ad",
+                target_kind="listing",
+                target_id=listing_id,
+                reason=forbidden,
+                reviewed=True,
+            )
+            raise APIError(forbidden, 400, "prohibited_listing")
+
+        content_changed = any(key in data for key in ("title", "description", "category", "attributes"))
+        requested_status: str | None = None
+        if "status" in data:
+            requested_status = normalize_listing_status(data.get("status"), "")
+            if not requested_status:
+                raise APIError("状态不允许", 400, "invalid_status")
+            if requested_status not in {"draft", "published", "reserved", "sold", "rented", "closed", "hidden"}:
+                raise APIError("状态不允许", 400, "invalid_status")
+        publication = resolve_listing_owner_update_publication(
+            conn,
+            user,
+            row,
+            requested_status=requested_status,
+            content_changed=content_changed,
+        )
+
         allowed: dict[str, Any] = {}
         for key in ("title", "description", "category", "price_type", "location_text", "contact_method"):
             if key in data:
-                allowed[key] = str(data.get(key) or "").strip()
+                value = str(data.get(key) or "").strip()
+                allowed[key] = value[:80] if key == "category" else value
         if "price" in data:
-            allowed["price"] = None if data.get("price") in (None, "") else float(data.get("price"))
-        if "status" in data:
-            status = normalize_listing_status(data.get("status"), row["status"])
-            if status not in {"draft", "published", "reserved", "sold", "rented", "closed", "hidden"}:
-                raise APIError("状态不允许", 400, "invalid_status")
-            allowed["status"] = status
+            try:
+                price = None if data.get("price") in (None, "") else float(data.get("price"))
+            except (TypeError, ValueError):
+                raise APIError("价格格式不正确", 400, "invalid_price")
+            if price is not None and price < 0:
+                raise APIError("价格格式不正确", 400, "invalid_price")
+            allowed["price"] = price
+        if requested_status is not None or publication["status"] != row["status"]:
+            allowed["status"] = publication["status"]
+        if "verification_status" in publication:
+            allowed["verification_status"] = publication["verification_status"]
+        if "published_at" in publication:
+            allowed["published_at"] = publication["published_at"]
         if allowed:
             allowed["updated_at"] = now_iso()
             cols = ", ".join(f"{key} = ?" for key in allowed)
@@ -19626,9 +20512,24 @@ class Handler(BaseHTTPRequestHandler):
                     """,
                     (str(uuid.uuid4()), listing_id, key, value, value_type, now_iso(), now_iso()),
                 )
+        if publication.get("requires_review"):
+            reputation_open_trust_review(
+                conn,
+                user["id"],
+                int(reputation_ensure_user(conn, user["id"]).get("risk_score") or 0),
+                target_kind="listing",
+                target_id=listing_id,
+                reason=str(publication.get("review_reason") or "内容更新复审"),
+            )
         fresh = dict(conn.execute("SELECT * FROM city_listings WHERE id = ?", (listing_id,)).fetchone())
         listing = fetch_listings_with_extras(conn, [fresh], user["id"])[0]
-        self.send_json({"ok": True, "listing": listing, "data": {"listing": listing}})
+        requires_review = bool(publication.get("requires_review"))
+        self.send_json({
+            "ok": True,
+            "listing": listing,
+            "requires_review": requires_review,
+            "data": {"listing": listing, "requires_review": requires_review},
+        })
 
     def api_delete_listing(self, conn: sqlite3.Connection, listing_id: str) -> None:
         user = self.require_user(conn)
@@ -19640,6 +20541,14 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute(
             "UPDATE city_listings SET status = 'closed', deleted_at = ?, updated_at = ? WHERE id = ?",
             (now_iso(), now_iso(), listing_id),
+        )
+        conn.execute(
+            """
+            UPDATE uploaded_files
+               SET status = 'deleted', deleted_at = ?, updated_at = ?
+             WHERE entity_type = 'listing' AND entity_id = ? AND user_id = ? AND deleted_at IS NULL
+            """,
+            (now_iso(), now_iso(), listing_id, user["id"]),
         )
         self.send_json({"ok": True})
 
@@ -20537,6 +21446,29 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("内容不能为空", 400, "empty_content")
         if len(content) > 2000:
             raise APIError("内容过长", 400, "content_too_long")
+        valid_media: list[dict[str, Any]] = []
+        image_count = 0
+        video_count = 0
+        for raw_media_id in media_ids[:10]:
+            media_id = str(raw_media_id or "").strip()
+            if not media_id:
+                continue
+            media_row = conn.execute(
+                "SELECT * FROM media WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+                (media_id, user["id"]),
+            ).fetchone()
+            if not media_row:
+                raise APIError("包含无权使用的媒体文件", 403, "media_forbidden")
+            media_type = str(media_row["type"] or "image")
+            if media_type == "video":
+                video_count += 1
+                if video_count > 1:
+                    raise APIError("每个帖子最多上传 1 个视频", 400, "post_video_limit")
+            elif media_type == "image":
+                image_count += 1
+                if image_count > 9:
+                    raise APIError("每个帖子最多上传 9 张图片", 400, "post_image_limit")
+            valid_media.append(dict(media_row))
         # Region — client may pass any of (country, province, city) or
         # the resolved region_code. We canonicalise here so the row is
         # internally consistent and the index hits.
@@ -20560,10 +21492,28 @@ class Handler(BaseHTTPRequestHandler):
             normalized = str(tag).strip().lstrip("#").lower()
             if normalized:
                 conn.execute("INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (post_id, normalized))
-        for index, media_id in enumerate(media_ids):
+        for index, media_item in enumerate(valid_media):
+            media_id = media_item["id"]
+            media_type = media_item.get("type") or "image"
+            processing_status = "pending" if media_type == "video" else "ready"
             conn.execute(
-                "INSERT INTO post_media (id, post_id, media_id, sort_index) VALUES (?, ?, ?, ?)",
-                (str(uuid.uuid4()), post_id, media_id, index),
+                """
+                INSERT INTO post_media (
+                    id, post_id, media_id, uploaded_file_id, media_type, sort_index, sort_order, is_cover,
+                    duration_seconds, width, height, processing_status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()), post_id, media_id, media_id, media_type, index, index,
+                    1 if index == 0 else 0,
+                    float(media_item.get("duration") or 0), int(media_item.get("width") or 0), int(media_item.get("height") or 0),
+                    processing_status, now_iso(), now_iso(),
+                ),
+            )
+            conn.execute(
+                "UPDATE uploaded_files SET entity_type = 'post', entity_id = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                (post_id, now_iso(), media_id, user["id"]),
             )
         if content_type not in HIGH_INTENT_POST_TYPES:
             reputation_apply_event(conn, user["id"], "first_post", target_kind="post", target_id=post_id)
@@ -20641,6 +21591,14 @@ class Handler(BaseHTTPRequestHandler):
         if row["author_id"] != user["id"]:
             raise APIError("只能删除自己的帖子", 403, "forbidden")
         conn.execute("UPDATE posts SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?", (now_iso(), now_iso(), post_id))
+        conn.execute(
+            """
+            UPDATE uploaded_files
+               SET status = 'deleted', deleted_at = ?, updated_at = ?
+             WHERE entity_type = 'post' AND entity_id = ? AND user_id = ? AND deleted_at IS NULL
+            """,
+            (now_iso(), now_iso(), post_id, user["id"]),
+        )
         _cache_invalidate("feed:hot")
         _cache_invalidate("trending:")
         self.send_json({"ok": True})
@@ -21355,8 +22313,13 @@ class Handler(BaseHTTPRequestHandler):
         row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
         if not row or (row["participant_a"] != user["id"] and row["participant_b"] != user["id"]):
             raise APIError("无权操作", 403, "forbidden")
-        conn.execute("UPDATE conversations SET deleted_at = ? WHERE id = ?", (now_iso(), conv_id))
-        conn.execute("UPDATE messages SET deleted_at = ? WHERE conversation_id = ?", (now_iso(), conv_id))
+        now = now_iso()
+        conn.execute("UPDATE conversations SET deleted_at = ? WHERE id = ?", (now, conv_id))
+        conn.execute("UPDATE messages SET deleted_at = ? WHERE conversation_id = ?", (now, conv_id))
+        conn.execute(
+            "UPDATE message_attachments SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE thread_id = ? AND deleted_at IS NULL",
+            (now, now, conv_id),
+        )
         self.send_json({"ok": True})
 
     def api_messages(self, conn: sqlite3.Connection, conv_id: str, query: dict[str, str]) -> None:
@@ -21379,8 +22342,37 @@ class Handler(BaseHTTPRequestHandler):
                 message_ids,
             ):
                 media_by_msg.setdefault(r["message_id"], []).append(serialize_media(dict(r)))
+        attachments_by_msg: dict[str, list[dict[str, Any]]] = {}
+        if message_ids:
+            placeholders = ",".join("?" * len(message_ids))
+            for r in conn.execute(
+                f"""
+                SELECT
+                  a.id, a.message_id, a.thread_id, a.uploaded_file_id, a.attachment_type,
+                  a.thumbnail_file_id,
+                  COALESCE(NULLIF(a.duration_seconds, 0), f.duration, 0) AS duration_seconds,
+                  a.file_name,
+                  COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
+                  COALESCE(NULLIF(a.content_type, ''), f.content_type, '') AS content_type,
+                  a.visibility, a.status, a.created_at,
+                  f.file_type, f.width, f.height
+                FROM message_attachments a
+                JOIN uploaded_files f ON f.id = a.uploaded_file_id
+                WHERE a.message_id IN ({placeholders})
+                  AND a.deleted_at IS NULL
+                  AND a.status != 'deleted'
+                  AND f.deleted_at IS NULL
+                ORDER BY a.created_at ASC
+                """,
+                message_ids,
+            ):
+                item = serialize_message_attachment(dict(r))
+                attachments_by_msg.setdefault(item["message_id"], []).append(item)
         items = [
-            serialize_message(dict(r), {"media": media_by_msg.get(r["id"], [])})
+            serialize_message(dict(r), {
+                "media": media_by_msg.get(r["id"], []),
+                "attachments": attachments_by_msg.get(r["id"], []),
+            })
             for r in rows
         ]
         self.send_json({"items": items})
@@ -21392,17 +22384,102 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("无权操作", 403, "forbidden")
         data = self.read_json()
         content = (data.get("content") or "").strip()
-        media_ids = data.get("media_ids") or []
-        if not content and not media_ids:
+        attachment_ids = list(dict.fromkeys([
+            str(v or "").strip()
+            for v in (data.get("attachment_ids") or data.get("attachmentIds") or [])
+            if str(v or "").strip()
+        ]))
+        submitted_media_ids = list(dict.fromkeys([
+            str(v or "").strip()
+            for v in (data.get("media_ids") or data.get("mediaIds") or [])
+            if str(v or "").strip()
+        ]))
+        if not content and not attachment_ids and not submitted_media_ids:
             raise APIError("消息不能为空", 400, "empty_message")
+        legacy_media_rows: list[dict[str, Any]] = []
+        attachment_rows: list[dict[str, Any]] = []
+        attachment_lookup_ids = list(dict.fromkeys([*attachment_ids, *submitted_media_ids]))
+        image_count = 0
+        video_count = 0
+        file_count = 0
+        for file_id in attachment_lookup_ids:
+            upload_row = conn.execute(
+                """
+                SELECT * FROM uploaded_files
+                 WHERE id = ?
+                   AND user_id = ?
+                   AND deleted_at IS NULL
+                   AND status IN ('uploaded','processing','ready')
+                """,
+                (file_id, user["id"]),
+            ).fetchone()
+            if upload_row and str(upload_row["purpose"] or "") in {"message_image", "message_video", "message_file"}:
+                upload = dict(upload_row)
+                try:
+                    metadata = json.loads(upload.get("metadata") or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    metadata = {}
+                if str(metadata.get("thread_id") or metadata.get("threadId") or "") != conv_id:
+                    raise APIError("附件不属于该会话", 403, "attachment_thread_mismatch")
+                purpose = str(upload.get("purpose") or "")
+                attachment_type = "image" if purpose == "message_image" else "video" if purpose == "message_video" else "file"
+                if attachment_type == "image":
+                    image_count += 1
+                    if image_count > 9:
+                        raise APIError("每条私信最多发送 9 张图片", 400, "message_image_limit")
+                elif attachment_type == "video":
+                    video_count += 1
+                    if video_count > 1:
+                        raise APIError("每条私信最多发送 1 个视频", 400, "message_video_limit")
+                else:
+                    file_count += 1
+                    if file_count > 1:
+                        raise APIError("每条私信最多发送 1 个附件文件", 400, "message_file_limit")
+                upload["_attachment_type"] = attachment_type
+                attachment_rows.append(upload)
+                continue
+            if file_id in submitted_media_ids:
+                media_row = conn.execute(
+                    "SELECT * FROM media WHERE id = ? AND owner_id = ? AND deleted_at IS NULL",
+                    (file_id, user["id"]),
+                ).fetchone()
+                if media_row:
+                    legacy_media_rows.append(dict(media_row))
+                    continue
+            raise APIError("包含无权使用的私信附件", 403, "attachment_forbidden")
         message_id = str(uuid.uuid4())
+        now = now_iso()
         conn.execute(
             "INSERT INTO messages (id, conversation_id, sender_id, content, created_at, is_read) VALUES (?, ?, ?, ?, ?, 0)",
-            (message_id, conv_id, user["id"], content, now_iso()),
+            (message_id, conv_id, user["id"], content, now),
         )
-        for media_id in media_ids:
-            conn.execute("INSERT INTO message_media VALUES (?, ?)", (message_id, media_id))
-        conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now_iso(), conv_id))
+        for media_row in legacy_media_rows:
+            conn.execute("INSERT OR IGNORE INTO message_media VALUES (?, ?)", (message_id, media_row["id"]))
+        for upload in attachment_rows:
+            attachment_id = "att_" + uuid.uuid4().hex
+            conn.execute(
+                """
+                INSERT INTO message_attachments (
+                    id, message_id, thread_id, uploaded_file_id, attachment_type, thumbnail_file_id,
+                    duration_seconds, file_name, file_size, content_type, visibility, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, 'thread_members_only', 'ready', ?, ?)
+                """,
+                (
+                    attachment_id, message_id, conv_id, upload["id"], upload["_attachment_type"],
+                    float(upload.get("duration") or 0),
+                    Path(upload.get("object_key") or "").name,
+                    int(upload.get("file_size") or 0),
+                    upload.get("content_type") or "",
+                    now, now,
+                ),
+            )
+            conn.execute(
+                "UPDATE uploaded_files SET entity_type = 'message', entity_id = ?, updated_at = ? WHERE id = ?",
+                (message_id, now, upload["id"]),
+            )
+            record_upload_audit(conn, user["id"], "message_attachment_link", file_id=upload["id"], status="ready", metadata={"messageId": message_id, "threadId": conv_id, "attachmentId": attachment_id})
+        conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
         peer_id = row["participant_b"] if row["participant_a"] == user["id"] else row["participant_a"]
         HUB.publish(peer_id, {"type": "message", "conversation_id": conv_id, "message_id": message_id})
         fresh = dict(conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone())
@@ -21410,15 +22487,99 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT m.* FROM message_media mm JOIN media m ON m.id = mm.media_id WHERE mm.message_id = ?",
             (message_id,),
         )]
-        self.send_json({"message": serialize_message(fresh, {"media": media_rows})})
+        attachment_items = [
+            serialize_message_attachment(dict(r))
+            for r in conn.execute(
+                """
+                SELECT
+                  a.id, a.message_id, a.thread_id, a.uploaded_file_id, a.attachment_type,
+                  a.thumbnail_file_id,
+                  COALESCE(NULLIF(a.duration_seconds, 0), f.duration, 0) AS duration_seconds,
+                  a.file_name,
+                  COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
+                  COALESCE(NULLIF(a.content_type, ''), f.content_type, '') AS content_type,
+                  a.visibility, a.status, a.created_at,
+                  f.file_type, f.width, f.height
+                FROM message_attachments a
+                JOIN uploaded_files f ON f.id = a.uploaded_file_id
+                WHERE a.message_id = ?
+                  AND a.deleted_at IS NULL
+                  AND a.status != 'deleted'
+                  AND f.deleted_at IS NULL
+                ORDER BY a.created_at ASC
+                """,
+                (message_id,),
+            )
+        ]
+        self.send_json({"message": serialize_message(fresh, {"media": media_rows, "attachments": attachment_items})})
 
     def api_delete_message(self, conn: sqlite3.Connection, msg_id: str) -> None:
         user = self.require_user(conn)
         row = conn.execute("SELECT * FROM messages WHERE id = ?", (msg_id,)).fetchone()
         if not row or row["sender_id"] != user["id"]:
             raise APIError("无权操作", 403, "forbidden")
-        conn.execute("UPDATE messages SET deleted_at = ? WHERE id = ?", (now_iso(), msg_id))
+        now = now_iso()
+        conn.execute("UPDATE messages SET deleted_at = ? WHERE id = ?", (now, msg_id))
+        conn.execute(
+            "UPDATE message_attachments SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE message_id = ? AND deleted_at IS NULL",
+            (now, now, msg_id),
+        )
         self.send_json({"ok": True})
+
+    def api_message_attachment_view_url(self, conn: sqlite3.Connection, msg_id: str, attachment_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute(
+            """
+            SELECT
+              a.id AS attachment_id,
+              a.message_id,
+              a.thread_id,
+              a.uploaded_file_id,
+              a.status AS attachment_status,
+              f.id AS file_id,
+              f.user_id AS file_owner_id,
+              f.bucket,
+              f.object_key,
+              f.content_type,
+              f.status AS file_status,
+              f.purpose,
+              c.participant_a,
+              c.participant_b
+            FROM message_attachments a
+            JOIN messages m ON m.id = a.message_id AND m.deleted_at IS NULL
+            JOIN conversations c ON c.id = m.conversation_id AND c.deleted_at IS NULL
+            JOIN uploaded_files f ON f.id = a.uploaded_file_id
+            WHERE a.id = ?
+              AND a.message_id = ?
+              AND a.deleted_at IS NULL
+              AND a.status != 'deleted'
+              AND f.deleted_at IS NULL
+              AND f.status != 'deleted'
+            LIMIT 1
+            """,
+            (attachment_id, msg_id),
+        ).fetchone()
+        if not row:
+            raise APIError("附件不存在", 404, "attachment_not_found")
+        d = dict(row)
+        if d["participant_a"] != user["id"] and d["participant_b"] != user["id"] and user.get("role") != "admin":
+            record_upload_audit(conn, user["id"], "message_attachment_view_denied", file_id=d["file_id"], status="failed", reason="thread_forbidden", metadata={"messageId": msg_id, "attachmentId": attachment_id})
+            raise APIError("无权查看该附件", 403, "forbidden")
+        if str(d.get("purpose") or "") not in {"message_image", "message_video", "message_file"}:
+            raise APIError("附件类型不支持", 400, "invalid_attachment_purpose")
+        if str(d.get("file_status") or "") not in {"uploaded", "processing", "ready"}:
+            raise APIError("附件尚未可用", 409, "attachment_not_ready")
+        expires = S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS
+        if d.get("bucket") != "local-dev":
+            url = _s3_presigned_url("GET", d["object_key"], expires=expires)
+        else:
+            exp = int(time.time()) + expires
+            token = _signed_local_download_token(d["file_id"], exp)
+            base = self._request_base_url()
+            path = f"/api/uploads/download/{d['file_id']}?token={token}"
+            url = f"{base}{path}" if base else path
+        record_upload_audit(conn, user["id"], "message_attachment_view_url", file_id=d["file_id"], status="ready", metadata={"messageId": msg_id, "threadId": d["thread_id"], "attachmentId": attachment_id, "expires": expires})
+        self.send_json({"ok": True, "data": {"url": url, "expiresIn": expires}, "url": url, "expiresIn": expires})
 
     def api_mark_conversation_read(self, conn: sqlite3.Connection, conv_id: str) -> None:
         user = self.require_user(conn)
@@ -21427,6 +22588,617 @@ class Handler(BaseHTTPRequestHandler):
             (conv_id, user["id"]),
         )
         self.send_json({"ok": True})
+
+    # ---- S3 / unified uploads ----
+
+    def _assert_upload_entity_permission(
+        self,
+        conn: sqlite3.Connection,
+        user: dict[str, Any],
+        *,
+        purpose: str,
+        entity_type: str,
+        entity_id: str,
+    ) -> None:
+        spec = UPLOAD_PURPOSES[purpose]
+        if spec.get("admin") and user.get("role") != "admin":
+            record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="admin_required", metadata={"purpose": purpose})
+            raise APIError("该文件只能由管理员上传", 403, "admin_required")
+        if purpose == "business_verification_file" and user.get("role") != "admin":
+            record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="admin_required", metadata={"purpose": purpose})
+            raise APIError("认证材料附件只能由后台上传", 403, "admin_required")
+        rep = reputation_ensure_user(conn, user["id"])
+        if int(rep.get("risk_score") or 0) >= 80:
+            record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="high_risk_user", metadata={"purpose": purpose})
+            raise APIError("账号风险过高，暂不能上传文件", 403, "upload_restricted")
+        if entity_type == "post" and entity_id:
+            row = conn.execute("SELECT author_id FROM posts WHERE id = ? AND deleted_at IS NULL", (entity_id,)).fetchone()
+            if not row or row["author_id"] != user["id"]:
+                raise APIError("无权给该帖子上传文件", 403, "forbidden")
+        elif entity_type == "listing" and entity_id:
+            row = conn.execute("SELECT seller_user_id FROM city_listings WHERE id = ? AND deleted_at IS NULL", (entity_id,)).fetchone()
+            if not row or row["seller_user_id"] != user["id"]:
+                raise APIError("无权给该信息上传文件", 403, "forbidden")
+        elif entity_type == "business" and entity_id and user.get("role") != "admin":
+            row = conn.execute("SELECT owner_user_id FROM business_profiles WHERE id = ?", (entity_id,)).fetchone()
+            if not row or row["owner_user_id"] != user["id"]:
+                raise APIError("无权给该商家上传文件", 403, "forbidden")
+        elif entity_type in {"guide_article", "guide_product"} and entity_id and user.get("role") != "admin":
+            raise APIError("Guide 文件只能由管理员上传", 403, "admin_required")
+
+    def _check_upload_quota(
+        self,
+        conn: sqlite3.Connection,
+        user_id: str,
+        *,
+        purpose: str,
+        entity_type: str,
+        entity_id: str,
+    ) -> None:
+        since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        daily = conn.execute(
+            "SELECT COUNT(*) AS c FROM uploaded_files WHERE user_id = ? AND created_at >= ? AND deleted_at IS NULL",
+            (user_id, since),
+        ).fetchone()["c"]
+        if int(daily or 0) >= 120:
+            raise APIError("今日上传次数已达上限", 429, "daily_upload_limit")
+        limit = int(UPLOAD_PURPOSES[purpose].get("count") or 0)
+        if limit <= 0 or purpose in {"avatar", "profile_cover", "business_logo", "business_cover"}:
+            return
+        if not (entity_type and entity_id):
+            return
+        count = conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM uploaded_files
+             WHERE user_id = ? AND purpose = ? AND entity_type = ? AND entity_id = ?
+               AND status NOT IN ('deleted','failed') AND deleted_at IS NULL
+            """,
+            (user_id, purpose, entity_type, entity_id),
+        ).fetchone()["c"]
+        if int(count or 0) >= limit:
+            raise APIError("该内容的上传数量已达上限", 400, "upload_count_limit")
+
+    def api_upload_presign(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        purpose = normalize_upload_purpose(data.get("purpose"))
+        content_type = canonical_upload_mime(purpose, str(data.get("contentType") or data.get("content_type") or ""))
+        try:
+            file_size = int(data.get("fileSize") or data.get("file_size") or 0)
+        except (TypeError, ValueError):
+            raise APIError("文件大小不合法", 400, "invalid_file_size")
+        if file_size <= 0:
+            raise APIError("文件大小不能为空", 400, "invalid_file_size")
+        max_bytes = min(int(UPLOAD_PURPOSES[purpose]["max"]), S3_UPLOAD_MAX_SIZE)
+        if file_size > max_bytes:
+            record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="file_too_large", metadata={"purpose": purpose, "fileSize": file_size})
+            raise APIError("文件太大", 413, "file_too_large")
+        entity_type = normalize_upload_entity_type(data.get("entityType") or data.get("entity_type"))
+        entity_id = str(data.get("entityId") or data.get("entity_id") or "").strip()
+        thread_id = str(data.get("threadId") or data.get("thread_id") or data.get("conversationId") or data.get("conversation_id") or "").strip()
+        group_id = str(data.get("groupId") or data.get("group_id") or "").strip()
+        raw_metadata = data.get("metadata") if isinstance(data.get("metadata"), dict) else {}
+        duration_seconds = max(0.0, float(raw_metadata.get("durationSeconds") or raw_metadata.get("duration_seconds") or data.get("duration") or data.get("durationSeconds") or 0))
+        max_duration_by_purpose = {
+            "post_video": 5 * 60,
+            "article_video": 10 * 60,
+            "experience_video": 5 * 60,
+            "group_post_video": 5 * 60,
+            "message_video": 2 * 60,
+        }
+        if purpose in max_duration_by_purpose and duration_seconds > max_duration_by_purpose[purpose]:
+            raise APIError("视频时长超过限制", 400, "video_duration_too_long")
+        if purpose in {"message_image", "message_video", "message_file"}:
+            if not thread_id:
+                raise APIError("私信上传需要 threadId", 400, "missing_thread_id")
+            thread = conn.execute("SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL", (thread_id,)).fetchone()
+            if not thread or (thread["participant_a"] != user["id"] and thread["participant_b"] != user["id"]):
+                record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="thread_forbidden", metadata={"purpose": purpose, "threadId": thread_id})
+                raise APIError("无权在该会话上传附件", 403, "thread_forbidden")
+            entity_type = "message"
+        self._assert_upload_entity_permission(conn, user, purpose=purpose, entity_type=entity_type, entity_id=entity_id)
+        self._check_upload_quota(conn, user["id"], purpose=purpose, entity_type=entity_type, entity_id=entity_id)
+
+        upload_id = "upload_" + uuid.uuid4().hex
+        file_id = "file_" + uuid.uuid4().hex
+        object_key = upload_object_key(user["id"], purpose, entity_type, entity_id, content_type, thread_id=thread_id, group_id=group_id)
+        is_private = upload_is_private(purpose)
+        cdn_url = upload_public_url(object_key, purpose)
+        use_s3 = s3_ready_for_upload()
+        if use_s3:
+            try:
+                upload_url = _s3_presigned_url("PUT", object_key, content_type=content_type, expires=S3_PRESIGN_EXPIRES_SECONDS)
+            except APIError:
+                if PRODUCTION:
+                    record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="s3_presign_failed", metadata={"purpose": purpose})
+                    raise
+                use_s3 = False
+        if not use_s3:
+            token = _local_upload_token(upload_id, user["id"], object_key)
+            base = self._request_base_url()
+            path = f"/api/uploads/local/{upload_id}?token={quote(token, safe='')}"
+            upload_url = f"{base}{path}" if base else path
+        bucket = AWS_S3_BUCKET if use_s3 else "local-dev"
+        metadata = {
+            "source": "s3" if use_s3 else "local",
+            "thumbnail_url": upload_thumbnail_url(object_key, content_type, purpose),
+            "thread_id": thread_id,
+            "group_id": group_id,
+            "duration_seconds": duration_seconds,
+            "moderation_status": "needs_review" if purpose.endswith("_video") else "clear",
+            "processing_status": "pending" if purpose.endswith("_video") else "ready",
+            "variants": {} if is_private else {
+                "original": cdn_url,
+                "large": cdn_url,
+                "medium": cdn_url,
+                "thumbnail": upload_thumbnail_url(object_key, content_type, purpose) or cdn_url,
+            },
+        }
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO uploaded_files (
+                id, upload_id, user_id, bucket, object_key, public_url, cdn_url, content_type,
+                file_size, file_type, purpose, entity_type, entity_id, status, metadata, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+            """,
+            (
+                file_id, upload_id, user["id"], bucket, object_key, cdn_url, cdn_url, content_type,
+                file_size, upload_file_type(content_type), purpose, entity_type, entity_id,
+                json.dumps(metadata, ensure_ascii=False, sort_keys=True), now, now,
+            ),
+        )
+        record_upload_audit(conn, user["id"], "presign", file_id=file_id, upload_id=upload_id, status="pending", metadata={"purpose": purpose, "entityType": entity_type, "entityId": entity_id, "s3": use_s3})
+        self.send_json({
+            "ok": True,
+            "data": {
+                "uploadId": upload_id,
+                "uploadUrl": upload_url,
+                "fileKey": object_key,
+                "bucket": bucket,
+                "publicUrl": cdn_url or None,
+                "cdnUrl": cdn_url,
+                "expiresIn": S3_PRESIGN_EXPIRES_SECONDS,
+                "headers": {"Content-Type": content_type},
+                "file": serialize_uploaded_file(conn.execute("SELECT * FROM uploaded_files WHERE id = ?", (file_id,)).fetchone()),
+            },
+        })
+
+    def api_upload_local_put(self, conn: sqlite3.Connection, upload_id: str, query: dict[str, str]) -> None:
+        row = conn.execute("SELECT * FROM uploaded_files WHERE upload_id = ? AND deleted_at IS NULL", (upload_id,)).fetchone()
+        if not row:
+            raise APIError("上传不存在", 404, "upload_not_found")
+        d = dict(row)
+        expected_token = _local_upload_token(upload_id, d.get("user_id") or "", d.get("object_key") or "")
+        if not expected_token or not hmac.compare_digest(expected_token, query.get("token") or ""):
+            raise APIError("上传地址已失效", 403, "invalid_upload_token")
+        if d.get("status") not in {"pending", "failed"}:
+            raise APIError("上传状态不允许覆盖", 409, "invalid_upload_state")
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length <= 0:
+            raise APIError("empty upload", 400, "invalid_payload")
+        if length > int(d["file_size"] or 0) or length > min(S3_UPLOAD_MAX_SIZE, int(UPLOAD_PURPOSES[d["purpose"]]["max"])):
+            conn.execute("UPDATE uploaded_files SET status = 'failed', updated_at = ? WHERE id = ?", (now_iso(), d["id"]))
+            record_upload_audit(conn, d["user_id"], "put_failed", file_id=d["id"], upload_id=upload_id, status="failed", reason="file_too_large")
+            raise APIError("文件太大", 413, "file_too_large")
+        with _DBLockReleased():
+            raw = self.rfile.read(length)
+            sniffed = _sniff_mime(raw)
+            if not upload_mime_matches(sniffed, d["content_type"]):
+                raise APIError("文件类型与签名不一致", 415, "mime_mismatch")
+            target = local_upload_path(d["object_key"])
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+        etag = hashlib.md5(raw).hexdigest()
+        conn.execute(
+            "UPDATE uploaded_files SET status = 'uploaded', checksum = ?, etag = ?, updated_at = ? WHERE id = ?",
+            (hashlib.sha256(raw).hexdigest(), etag, now_iso(), d["id"]),
+        )
+        record_upload_audit(conn, d["user_id"], "put", file_id=d["id"], upload_id=upload_id, status="uploaded", metadata={"bytes": length})
+        self.send_empty(200, {"ETag": etag})
+
+    def api_upload_complete(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        upload_id = str(data.get("uploadId") or data.get("upload_id") or "").strip()
+        file_key = str(data.get("fileKey") or data.get("file_key") or "").strip()
+        row = conn.execute(
+            "SELECT * FROM uploaded_files WHERE upload_id = ? AND user_id = ? AND deleted_at IS NULL",
+            (upload_id, user["id"]),
+        ).fetchone()
+        if not row:
+            raise APIError("上传不存在", 404, "upload_not_found")
+        d = dict(row)
+        if file_key and file_key != d["object_key"]:
+            raise APIError("fileKey 不匹配", 400, "file_key_mismatch")
+        if d["status"] not in {"pending", "uploaded", "processing", "ready", "failed"}:
+            raise APIError("上传状态不正确", 409, "invalid_upload_state")
+        head: dict[str, Any] = {}
+        if d.get("bucket") != "local-dev":
+            try:
+                head = _s3_head_object(d["object_key"])
+            except APIError as exc:
+                record_upload_audit(conn, user["id"], "complete_failed", file_id=d["id"], upload_id=upload_id, status="failed", reason=exc.code, metadata={"objectKey": d["object_key"]})
+                raise
+            content_length = int(head.get("ContentLength") or 0)
+            if content_length <= 0:
+                raise APIError("S3 文件为空", 400, "s3_object_empty")
+            if content_length > int(d["file_size"] or 0):
+                raise APIError("S3 文件大小与签名不匹配", 400, "s3_size_mismatch")
+        elif not local_upload_path(d["object_key"]).exists():
+            raise APIError("文件尚未上传完成", 400, "upload_not_found")
+        width = max(0, int(data.get("width") or 0))
+        height = max(0, int(data.get("height") or 0))
+        duration = max(0.0, float(data.get("duration") or 0))
+        etag = str(data.get("etag") or head.get("ETag") or d.get("etag") or "").strip().strip('"')
+        metadata = json.loads(d.get("metadata") or "{}")
+        metadata["thumbnail_url"] = metadata.get("thumbnail_url") or upload_thumbnail_url(d["object_key"], d["content_type"], d["purpose"])
+        metadata["completed_at"] = now_iso()
+        if head:
+            metadata["s3_head_checked_at"] = metadata["completed_at"]
+        conn.execute(
+            """
+            UPDATE uploaded_files
+               SET status = 'ready', width = ?, height = ?, duration = ?, etag = ?, metadata = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (width, height, duration, etag, json.dumps(metadata, ensure_ascii=False, sort_keys=True), now_iso(), d["id"]),
+        )
+        fresh = dict(conn.execute("SELECT * FROM uploaded_files WHERE id = ?", (d["id"],)).fetchone())
+        media = uploaded_file_as_media(fresh)
+        conn.execute(
+            """
+            INSERT INTO media (id, owner_id, type, url, thumb_url, mime, width, height, duration, byte_size, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                url = excluded.url,
+                thumb_url = excluded.thumb_url,
+                mime = excluded.mime,
+                width = excluded.width,
+                height = excluded.height,
+                duration = excluded.duration,
+                byte_size = excluded.byte_size,
+                deleted_at = NULL
+            """,
+            (
+                media["id"], media["owner_id"], media["type"], media["url"], media["thumb_url"],
+                media["mime"], media["width"], media["height"], media["duration"], media["byte_size"], media["created_at"],
+            ),
+        )
+        if fresh["purpose"] in {"avatar", "profile_cover"}:
+            field = "avatar_url" if fresh["purpose"] == "avatar" else "cover_url"
+            conn.execute(f"UPDATE users SET {field} = ?, updated_at = ? WHERE id = ?", (media["url"], now_iso(), user["id"]))
+        record_upload_audit(conn, user["id"], "complete", file_id=fresh["id"], upload_id=upload_id, status="ready")
+        self.send_json({"ok": True, "data": {"file": serialize_uploaded_file(fresh), "media": media}, "file": serialize_uploaded_file(fresh), "media": media})
+
+    def _uploaded_file_for_user(self, conn: sqlite3.Connection, file_id: str, user: dict[str, Any]) -> dict[str, Any]:
+        row = conn.execute("SELECT * FROM uploaded_files WHERE id = ? AND deleted_at IS NULL", (file_id,)).fetchone()
+        if not row:
+            raise APIError("文件不存在", 404, "file_not_found")
+        d = dict(row)
+        if d["user_id"] != user["id"] and user.get("role") != "admin":
+            raise APIError("无权操作", 403, "forbidden")
+        return d
+
+    def api_upload_get(self, conn: sqlite3.Connection, file_id: str) -> None:
+        user = self.require_user(conn)
+        d = self._uploaded_file_for_user(conn, file_id, user)
+        self.send_json({"ok": True, "data": {"file": serialize_uploaded_file(d)}, "file": serialize_uploaded_file(d)})
+
+    def api_upload_delete(self, conn: sqlite3.Connection, file_id: str) -> None:
+        user = self.require_user(conn)
+        d = self._uploaded_file_for_user(conn, file_id, user)
+        linked = conn.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM post_media WHERE media_id = ?) +
+              (SELECT COUNT(*) FROM message_media WHERE media_id = ?) +
+              (SELECT COUNT(*) FROM message_attachments WHERE uploaded_file_id = ? AND deleted_at IS NULL) +
+              (SELECT COUNT(*) FROM listing_media WHERE uploaded_file_id = ? OR id = ?) AS c
+            """,
+            (file_id, file_id, file_id, file_id, file_id),
+        ).fetchone()["c"]
+        if int(linked or 0) > 0 and user.get("role") != "admin":
+            raise APIError("文件已被内容使用，请先解除关联", 409, "file_in_use")
+        now = now_iso()
+        conn.execute("UPDATE uploaded_files SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?", (now, now, file_id))
+        conn.execute("UPDATE media SET deleted_at = ? WHERE id = ?", (now, file_id))
+        record_upload_audit(conn, user["id"], "delete_mark", file_id=file_id, status="deleted")
+        self.send_json({"ok": True, "status": "deleted"})
+
+    def api_admin_uploads(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        limit = max(1, min(int(query.get("limit") or 100), 300))
+        status = (query.get("status") or "").strip()
+        purpose = (query.get("purpose") or "").strip()
+        user_id = (query.get("userId") or query.get("user_id") or "").strip()
+        q = (query.get("q") or "").strip()
+        incomplete = (query.get("incomplete") or "").strip().lower() in {"1", "true", "yes"}
+        large = (query.get("large") or "").strip().lower() in {"1", "true", "yes"}
+        check_object = (query.get("checkObject") or query.get("check_object") or "").strip().lower() in {"1", "true", "yes"}
+        clauses = ["1 = 1"]
+        params: list[Any] = []
+        if status:
+            clauses.append("f.status = ?")
+            params.append(status)
+        if purpose:
+            clauses.append("f.purpose = ?")
+            params.append(purpose)
+        if user_id:
+            clauses.append("f.user_id = ?")
+            params.append(user_id)
+        if incomplete:
+            clauses.append("f.status IN ('pending','uploaded','processing','failed')")
+        if large:
+            clauses.append("f.file_size >= ?")
+            params.append(10 * 1024 * 1024)
+        if q:
+            like = f"%{q}%"
+            clauses.append("(f.id LIKE ? OR f.upload_id LIKE ? OR f.object_key LIKE ? OR u.handle LIKE ? OR u.display_name LIKE ?)")
+            params.extend([like, like, like, like, like])
+        where_sql = " AND ".join(clauses)
+        rows = conn.execute(
+            f"""
+            SELECT f.*, u.handle AS owner_handle, u.display_name AS owner_name
+              FROM uploaded_files f
+              LEFT JOIN users u ON u.id = f.user_id
+             WHERE {where_sql}
+             ORDER BY f.created_at DESC
+             LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+        total = conn.execute(
+            f"SELECT COUNT(*) AS c FROM uploaded_files f LEFT JOIN users u ON u.id = f.user_id WHERE {where_sql}",
+            params,
+        ).fetchone()["c"]
+        items = []
+        for row in rows:
+            item = serialize_uploaded_file(row)
+            item["ownerHandle"] = row["owner_handle"] or ""
+            item["ownerName"] = row["owner_name"] or ""
+            if check_object:
+                if row["bucket"] == "local-dev":
+                    item["objectExists"] = local_upload_path(row["object_key"]).exists()
+                elif row["status"] not in {"pending", "deleted"}:
+                    try:
+                        _s3_head_object(row["object_key"])
+                        item["objectExists"] = True
+                    except APIError:
+                        item["objectExists"] = False
+            items.append(item)
+        self.send_json({"ok": True, "items": items, "total": int(total or 0)})
+
+    def api_admin_update_upload(self, conn: sqlite3.Connection, file_id: str) -> None:
+        admin = self.require_admin(conn)
+        row = conn.execute("SELECT * FROM uploaded_files WHERE id = ?", (file_id,)).fetchone()
+        if not row:
+            raise APIError("文件不存在", 404, "file_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        try:
+            current_metadata = json.loads(row["metadata"] or "{}")
+        except json.JSONDecodeError:
+            current_metadata = {}
+        metadata = dict(current_metadata)
+        action = str(data.get("action") or "").strip()
+        if action == "restore":
+            updates["status"] = "ready"
+            updates["deleted_at"] = ""
+            metadata["restored_at"] = now_iso()
+        elif action in {"flag", "mark_abnormal"}:
+            updates["status"] = "failed"
+            metadata["flagged"] = True
+            metadata["flag_reason"] = str(data.get("reason") or "admin_flagged")[:240]
+            metadata["flagged_at"] = now_iso()
+        if "status" in data:
+            status = str(data.get("status") or "").strip()
+            if status not in {"pending", "uploaded", "processing", "ready", "failed", "deleted"}:
+                raise APIError("状态不合法", 400, "invalid_status")
+            updates["status"] = status
+            if status == "deleted":
+                updates["deleted_at"] = now_iso()
+            else:
+                updates["deleted_at"] = ""
+        if "metadata" in data and isinstance(data["metadata"], dict):
+            metadata.update(data["metadata"])
+        if metadata != current_metadata:
+            updates["metadata"] = json.dumps(metadata, ensure_ascii=False, sort_keys=True)
+        if not updates:
+            return self.send_json({"ok": True, "file": serialize_uploaded_file(row)})
+        updates["updated_at"] = now_iso()
+        cols = ", ".join(f"{col} = ?" for col in updates)
+        conn.execute(f"UPDATE uploaded_files SET {cols} WHERE id = ?", [*updates.values(), file_id])
+        fresh = conn.execute("SELECT * FROM uploaded_files WHERE id = ?", (file_id,)).fetchone()
+        record_upload_audit(conn, admin["id"], "admin_update", file_id=file_id, status=updates.get("status", ""), metadata={"fields": list(updates.keys())})
+        self.send_json({"ok": True, "file": serialize_uploaded_file(fresh)})
+
+    def api_admin_cleanup_temp_uploads(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        hours = max(1, min(int(data.get("hours") or 24), 720))
+        hard_delete = bool(data.get("hardDelete"))
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        rows = conn.execute(
+            """
+            SELECT * FROM uploaded_files
+             WHERE deleted_at IS NULL
+               AND created_at < ?
+               AND (status IN ('pending','failed') OR object_key LIKE 'temp/%')
+             ORDER BY created_at ASC
+             LIMIT 500
+            """,
+            (cutoff,),
+        ).fetchall()
+        now = now_iso()
+        deleted_objects = 0
+        for row in rows:
+            d = dict(row)
+            conn.execute(
+                "UPDATE uploaded_files SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?",
+                (now, now, d["id"]),
+            )
+            if hard_delete and (d.get("object_key") or "").startswith("temp/"):
+                if d.get("bucket") == "local-dev":
+                    target = local_upload_path(d["object_key"])
+                    if target.exists() and target.is_file():
+                        try:
+                            target.unlink()
+                            deleted_objects += 1
+                        except OSError:
+                            pass
+                elif _s3_delete_object(d["object_key"]):
+                    deleted_objects += 1
+            record_upload_audit(conn, admin["id"], "temp_cleanup", file_id=d["id"], upload_id=d.get("upload_id") or "", status="deleted", metadata={"hours": hours, "hardDelete": hard_delete})
+        record_admin_action(conn, admin["id"], "uploads_cleanup_temp", target_kind="uploaded_files", target_id="bulk", metadata={"count": len(rows), "deletedObjects": deleted_objects, "hours": hours, "hardDelete": hard_delete})
+        self.send_json({"ok": True, "count": len(rows), "deletedObjects": deleted_objects})
+
+    def api_admin_delete_upload(self, conn: sqlite3.Connection, file_id: str) -> None:
+        admin = self.require_admin(conn)
+        if not conn.execute("SELECT id FROM uploaded_files WHERE id = ?", (file_id,)).fetchone():
+            raise APIError("文件不存在", 404, "file_not_found")
+        now = now_iso()
+        conn.execute("UPDATE uploaded_files SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?", (now, now, file_id))
+        conn.execute("UPDATE media SET deleted_at = ? WHERE id = ?", (now, file_id))
+        record_upload_audit(conn, admin["id"], "admin_delete_mark", file_id=file_id, status="deleted")
+        self.send_json({"ok": True, "status": "deleted"})
+
+    def _find_uploaded_file_by_url_or_id(self, conn: sqlite3.Connection, value: str) -> dict[str, Any] | None:
+        raw = (value or "").strip()
+        if not raw:
+            return None
+        row = conn.execute(
+            """
+            SELECT * FROM uploaded_files
+             WHERE (id = ? OR cdn_url = ? OR public_url = ? OR object_key = ?)
+               AND deleted_at IS NULL
+               AND status IN ('uploaded','processing','ready')
+             ORDER BY created_at DESC LIMIT 1
+            """,
+            (raw, raw, raw, raw.removeprefix("/media/")),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def api_guide_product_download_url(self, conn: sqlite3.Connection, product_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM guide_products WHERE id = ? OR slug = ? LIMIT 1", (product_id, product_id)).fetchone()
+        if not row:
+            raise APIError("资料/服务不存在", 404, "guide_product_not_found")
+        if row["status"] != "published" or bool(row["is_coming_soon"]):
+            raise APIError("资料尚未发布", 404, "guide_product_not_available")
+        if bool(row["is_service"]) or not bool(row["is_digital"]):
+            raise APIError("该项目不是可下载资料", 400, "guide_product_not_downloadable")
+        owned = conn.execute(
+            "SELECT 1 FROM guide_orders WHERE user_id = ? AND product_id = ? AND status IN ('paid','fulfilled') LIMIT 1",
+            (user["id"], row["id"]),
+        ).fetchone() is not None
+        member_unlocked = bool(row["is_member_included"]) and not bool(row["is_service"]) and has_active_membership(conn, user["id"])
+        if not (owned or member_unlocked or bool(row["is_free"])):
+            record_upload_audit(conn, user["id"], "download_denied", status="failed", reason="not_entitled", metadata={"productId": row["id"]})
+            raise APIError("未解锁该资料", 403, "not_entitled")
+        file_ref = row["file_url"] or ""
+        upload = self._find_uploaded_file_by_url_or_id(conn, file_ref)
+        if not upload:
+            files = conn.execute(
+                """
+                SELECT f.* FROM guide_product_files g
+                JOIN uploaded_files f ON f.id = g.uploaded_file_id
+                WHERE g.product_id = ?
+                  AND f.deleted_at IS NULL
+                  AND f.status IN ('uploaded','processing','ready')
+                ORDER BY g.created_at DESC LIMIT 1
+                """,
+                (row["id"],),
+            ).fetchone()
+            upload = dict(files) if files else None
+        if not upload:
+            raise APIError("资料文件尚未配置", 404, "guide_file_not_found")
+        if str(upload.get("purpose") or "") not in {"guide_product_file", "member_resource_file"}:
+            raise APIError("资料文件类型不正确", 400, "invalid_guide_file")
+        expires = S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS
+        if upload.get("bucket") != "local-dev":
+            url = _s3_presigned_url("GET", upload["object_key"], expires=expires)
+        else:
+            exp = int(time.time()) + expires
+            token = _signed_local_download_token(upload["id"], exp)
+            base = self._request_base_url()
+            path = f"/api/uploads/download/{upload['id']}?token={token}"
+            url = f"{base}{path}" if base else path
+        record_upload_audit(conn, user["id"], "download_url", file_id=upload["id"], status="ready", metadata={"productId": row["id"], "expires": expires})
+        self.send_json({"ok": True, "downloadUrl": url, "expiresIn": expires, "file": serialize_uploaded_file(upload)})
+
+    def api_member_resource_download_url(self, conn: sqlite3.Connection, resource_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute(
+            """
+            SELECT * FROM guide_products
+             WHERE (id = ? OR slug = ?)
+               AND is_member_included = 1
+               AND is_service = 0
+               AND status = 'published'
+             LIMIT 1
+            """,
+            (resource_id, resource_id),
+        ).fetchone()
+        if not row:
+            raise APIError("会员资料不存在", 404, "member_resource_not_found")
+        if not has_active_membership(conn, user["id"]):
+            record_upload_audit(conn, user["id"], "member_download_denied", status="failed", reason="membership_required", metadata={"resourceId": row["id"]})
+            raise APIError("下载会员资料需要有效会员", 403, "MEMBERSHIP_REQUIRED")
+        upload = self._find_uploaded_file_by_url_or_id(conn, row["file_url"] or "")
+        if not upload:
+            files = conn.execute(
+                """
+                SELECT f.* FROM guide_product_files g
+                JOIN uploaded_files f ON f.id = g.uploaded_file_id
+                WHERE g.product_id = ?
+                  AND f.deleted_at IS NULL
+                  AND f.status IN ('uploaded','processing','ready')
+                ORDER BY g.created_at DESC LIMIT 1
+                """,
+                (row["id"],),
+            ).fetchone()
+            upload = dict(files) if files else None
+        if not upload:
+            raise APIError("会员资料文件尚未配置", 404, "member_resource_file_not_found")
+        if str(upload.get("purpose") or "") != "member_resource_file":
+            raise APIError("会员资料文件类型不正确", 400, "invalid_member_resource_file")
+        expires = S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS
+        if upload.get("bucket") != "local-dev":
+            url = _s3_presigned_url("GET", upload["object_key"], expires=expires)
+        else:
+            exp = int(time.time()) + expires
+            token = _signed_local_download_token(upload["id"], exp)
+            base = self._request_base_url()
+            path = f"/api/uploads/download/{upload['id']}?token={token}"
+            url = f"{base}{path}" if base else path
+        record_upload_audit(conn, user["id"], "member_download_url", file_id=upload["id"], status="ready", metadata={"resourceId": row["id"], "expires": expires})
+        self.send_json({"ok": True, "downloadUrl": url, "expiresIn": expires, "file": serialize_uploaded_file(upload)})
+
+    def api_upload_signed_download(self, conn: sqlite3.Connection, file_id: str, query: dict[str, str]) -> None:
+        if not _verify_local_download_token(file_id, query.get("token") or ""):
+            raise APIError("下载链接已失效", 403, "invalid_download_token")
+        row = conn.execute(
+            "SELECT * FROM uploaded_files WHERE id = ? AND status IN ('uploaded','processing','ready') AND deleted_at IS NULL",
+            (file_id,),
+        ).fetchone()
+        if not row:
+            raise APIError("文件不存在", 404, "file_not_found")
+        d = dict(row)
+        target = local_upload_path(d["object_key"])
+        if not target.exists() or target.is_dir():
+            raise APIError("文件不存在", 404, "file_not_found")
+        data = target.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", d["content_type"] or "application/octet-stream")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "private, max-age=60")
+        self.send_header("Content-Disposition", f'attachment; filename="{Path(d["object_key"]).name}"')
+        self._set_cors()
+        self._set_security_headers()
+        self.end_headers()
+        self.wfile.write(data)
 
     def api_upload_media(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -21516,27 +23288,43 @@ class Handler(BaseHTTPRequestHandler):
         if mime not in ALLOWED_MIME:
             raise APIError("不支持的文件类型", 415, "unsupported_media")
         ext = EXT_BY_MIME.get(mime, ".bin")
-        media_id = str(uuid.uuid4())
-        rel_path = f"media/{media_id}{ext}"
-        target = (MEDIA_DIR / f"{media_id}{ext}").resolve()
-        # Defence in depth: media_id is a UUID and ext is whitelisted,
-        # so a path-traversal here would already require a bug. Verify
-        # the final resolved path still lives under MEDIA_DIR before
-        # writing.
-        try:
-            target.relative_to(MEDIA_DIR.resolve())
-        except ValueError:
-            raise APIError("invalid path", 400, "invalid_payload")
+        media_id = "file_" + uuid.uuid4().hex
+        object_key = f"legacy/{user['id']}/{media_id}{ext}"
+        target = local_upload_path(object_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(raw)
         kind = "image" if mime.startswith("image/") else "video" if mime.startswith("video/") else "file"
-        url = f"/{rel_path}"
+        url = upload_public_url(object_key)
+        thumb_url = upload_thumbnail_url(object_key, mime) or url
+        now = now_iso()
+        metadata = {
+            "source": "legacy_media_upload",
+            "thumbnail_url": thumb_url,
+            "variants": {"original": url, "large": url, "medium": url, "thumbnail": thumb_url},
+        }
+        conn.execute(
+            """
+            INSERT INTO uploaded_files (
+                id, upload_id, user_id, bucket, object_key, public_url, cdn_url, content_type,
+                file_size, file_type, purpose, entity_type, entity_id, status, checksum, etag,
+                metadata, created_at, updated_at
+            )
+            VALUES (?, ?, ?, 'local-dev', ?, ?, ?, ?, ?, ?, 'post_image', '', '', 'ready', ?, ?, ?, ?, ?)
+            """,
+            (
+                media_id, "legacy_" + uuid.uuid4().hex, user["id"], object_key, url, url, mime,
+                len(raw), upload_file_type(mime), hashlib.sha256(raw).hexdigest(),
+                hashlib.md5(raw).hexdigest(), json.dumps(metadata, ensure_ascii=False, sort_keys=True), now, now,
+            ),
+        )
         # Width/height/duration intentionally default to 0 — the client
         # used to send these but they were unverified. A future pass
         # can compute them server-side with Pillow/ffprobe.
         conn.execute(
             "INSERT INTO media (id, owner_id, type, url, thumb_url, mime, width, height, duration, byte_size, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)",
-            (media_id, user["id"], kind, url, url, mime, len(raw), now_iso()),
+            (media_id, user["id"], kind, url, thumb_url, mime, len(raw), now),
         )
+        record_upload_audit(conn, user["id"], "legacy_upload", file_id=media_id, status="ready", metadata={"bytes": len(raw), "mime": mime})
         fresh = dict(conn.execute("SELECT * FROM media WHERE id = ?", (media_id,)).fetchone())
         self.send_json({"media": serialize_media(fresh)})
 
@@ -21600,6 +23388,10 @@ class Handler(BaseHTTPRequestHandler):
         if not row or row["owner_id"] != user["id"]:
             raise APIError("无权操作", 403, "forbidden")
         conn.execute("UPDATE media SET deleted_at = ? WHERE id = ?", (now_iso(), media_id))
+        conn.execute(
+            "UPDATE uploaded_files SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+            (now_iso(), now_iso(), media_id, user["id"]),
+        )
         self.send_json({"ok": True})
 
     def api_get_settings(self, conn: sqlite3.Connection) -> None:
