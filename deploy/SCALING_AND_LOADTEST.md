@@ -57,20 +57,20 @@ for p in 8787 8788 8789 8790; do curl -s localhost:$p/api/health; echo; done
 
 ```bash
 # 首页（Next SSR）
-autocannon -c 200 -d 30 -p 10 https://www.machicity.com/
+autocannon -c 200 -d 30 -p 10 https://machicity.com/
 
 # Guide 首页 API（已加 30s 缓存，应几乎全部命中、p99 很低）
-autocannon -c 500 -d 30 https://www.machicity.com/api/guide/home?country=jp
+autocannon -c 500 -d 30 https://machicity.com/api/guide/home?country=jp
 
 # Guide 服务/商品列表
-autocannon -c 300 -d 30 "https://www.machicity.com/api/guide/products?country=jp&limit=20"
+autocannon -c 300 -d 30 "https://machicity.com/api/guide/products?country=jp&limit=20"
 
 # 学校库 / 公司库
-autocannon -c 300 -d 30 "https://www.machicity.com/api/guide/schools?country=jp&page=1&pageSize=20"
-autocannon -c 300 -d 30 "https://www.machicity.com/api/guide/companies?country=jp&page=1&pageSize=20"
+autocannon -c 300 -d 30 "https://machicity.com/api/guide/schools?country=jp&page=1&pageSize=20"
+autocannon -c 300 -d 30 "https://machicity.com/api/guide/companies?country=jp&page=1&pageSize=20"
 
 # 健康检查（不打库，作为基线 RPS 上限参考）
-autocannon -c 100 -d 10 https://www.machicity.com/api/health
+autocannon -c 100 -d 10 https://machicity.com/api/health
 ```
 
 合格判读：`Non-2xx` ≈ 0；`/api/guide/home` p99 < ~300ms（命中缓存）；首页 p99 < ~2.5s；
@@ -93,7 +93,7 @@ export const options = {
   },
   thresholds: { http_req_failed: ["rate<0.01"], http_req_duration: ["p(95)<2500"] },
 };
-const BASE = "https://www.machicity.com";
+const BASE = "https://machicity.com";
 export default function () {
   check(http.get(`${BASE}/api/guide/home?country=jp`), { "guide 200": r => r.status === 200 });
   check(http.get(`${BASE}/api/guide/products?country=jp&limit=20`), { "products 200": r => r.status === 200 });
@@ -119,18 +119,18 @@ tail -f /var/log/nginx/error.log
 ## 3. Lighthouse / Core Web Vitals
 
 ```bash
-npx lighthouse https://www.machicity.com/        --only-categories=performance,seo,best-practices,accessibility --view
-npx lighthouse https://www.machicity.com/guide   --only-categories=performance,seo --view
-npx lighthouse https://www.machicity.com/membership --only-categories=performance,seo --view
+npx lighthouse https://machicity.com/        --only-categories=performance,seo,best-practices,accessibility --view
+npx lighthouse https://machicity.com/guide   --only-categories=performance,seo --view
+npx lighthouse https://machicity.com/membership --only-categories=performance,seo --view
 # 移动端模拟：
-npx lighthouse https://www.machicity.com/guide --preset=mobile --view
+npx lighthouse https://machicity.com/guide --preset=mobile --view
 ```
 目标：Performance ≥ 90、LCP < 2.5s、CLS < 0.1、INP < 200ms。
 
 ---
 
 ## 4. 上线前 checklist（快速）
-- [ ] `curl -s https://www.machicity.com/api/health` 返回 `{"ok":true}`
+- [ ] `curl -s https://machicity.com/api/health` 返回 `{"ok":true}`
 - [ ] 多实例都 active：`systemctl is-active kaix-backend kaix-backend-worker@87{88,89,90}`
 - [ ] `nginx -t` 通过、`upstream` 列了全部实例
 - [ ] autocannon `/api/guide/home` 1000 连接无 5xx

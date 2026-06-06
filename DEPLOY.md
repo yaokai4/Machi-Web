@@ -1,12 +1,12 @@
 # KaiX 上线手册
 
-把这份手册当作"全新一台 Ubuntu/Debian 服务器" → "kaix.app 正式可用"的完整路径。所有内容已经在本地验证过 — 复制粘贴照做就行。
+把这份手册当作"全新一台 Ubuntu/Debian 服务器" → "machicity.com 正式可用"的完整路径。所有内容已经在本地验证过 — 复制粘贴照做就行。
 
 ## 0. 一台服务器需要的东西
 
 - Ubuntu 22.04+ 或 Debian 12+
 - 至少 2 vCPU / 2GB RAM（万人级别的最低门槛，建议 4GB+）
-- 一个解析到这台服务器的域名（这里以 `kaix.app` 为例）
+- 一个解析到这台服务器的域名（这里以 `machicity.com` 为例，当前服务器 IP 是 `13.231.24.239`）
 - 25 / 80 / 443 端口对外开放
 - root / sudo 权限
 
@@ -60,7 +60,7 @@ python3 -c "import secrets; print(secrets.token_urlsafe(48))"
 ```bash
 cd /opt/kaix/web/app
 sudo -u kaix npm ci --no-audit --no-fund
-sudo -u kaix NEXT_PUBLIC_API_BASE=https://kaix.app NEXT_PUBLIC_SITE_URL=https://kaix.app npm run build
+sudo -u kaix NEXT_PUBLIC_API_BASE=https://machicity.com NEXT_PUBLIC_SITE_URL=https://machicity.com npm run build
 ```
 
 ## 5. systemd
@@ -83,7 +83,7 @@ sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t && sudo systemctl reload nginx
 
 # Let's Encrypt — 自动续期由 certbot 装的 systemd timer 完成
-sudo certbot --nginx -d kaix.app -d www.kaix.app --agree-tos -m admin@kaix.app
+sudo certbot --nginx -d machicity.com -d www.machicity.com --agree-tos -m admin@machicity.com
 sudo nginx -t && sudo systemctl reload nginx
 ```
 
@@ -129,7 +129,7 @@ sudo systemctl restart fail2ban
 
 最便宜可行的组合：
 
-- **UptimeRobot**（免费）每分钟拉 `https://kaix.app/healthz`，挂了发邮件 / Webhook。
+- **UptimeRobot**（免费）每分钟拉 `https://machicity.com/healthz`，挂了发邮件 / Webhook。
 - **日志**：journalctl 已经自带轮转。日志聚合可上 Better Stack / Grafana Cloud Free 把 journal 推上去。
 - **错误**：现在错误日志里有 `request_id`，从 nginx 的 X-Request-Id 也能拿到，便于客户排查时溯源。要更系统化可以接 Sentry。
 
@@ -140,7 +140,7 @@ sudo systemctl restart fail2ban
 ```bash
 cd /opt/kaix/repo && sudo -u kaix git pull
 cd /opt/kaix/web/app && sudo -u kaix npm ci --no-audit --no-fund
-sudo -u kaix NEXT_PUBLIC_API_BASE=https://kaix.app NEXT_PUBLIC_SITE_URL=https://kaix.app npm run build
+sudo -u kaix NEXT_PUBLIC_API_BASE=https://machicity.com NEXT_PUBLIC_SITE_URL=https://machicity.com npm run build
 sudo systemctl restart kaix-backend kaix-web
 ```
 
@@ -183,15 +183,15 @@ KAIX_ADMIN_BOOTSTRAP_TOKEN=$(python3 -c "import secrets; print(secrets.token_url
 
 ```bash
 # 检查所有关键端点
-curl -fsS https://kaix.app/healthz
-curl -fsS https://kaix.app/readyz
-curl -fsS -o /dev/null -w "/login %{http_code}\n"  https://kaix.app/login
-curl -fsS -o /dev/null -w "/home  %{http_code}\n"  https://kaix.app/home
-curl -fsS -o /dev/null -w "/robots %{http_code}\n" https://kaix.app/robots.txt
-curl -fsS -o /dev/null -w "/sitemap %{http_code}\n" https://kaix.app/sitemap.xml
+curl -fsS https://machicity.com/healthz
+curl -fsS https://machicity.com/readyz
+curl -fsS -o /dev/null -w "/login %{http_code}\n"  https://machicity.com/login
+curl -fsS -o /dev/null -w "/home  %{http_code}\n"  https://machicity.com/home
+curl -fsS -o /dev/null -w "/robots %{http_code}\n" https://machicity.com/robots.txt
+curl -fsS -o /dev/null -w "/sitemap %{http_code}\n" https://machicity.com/sitemap.xml
 
 # 检查安全头都到了
-curl -fsS -D - -o /dev/null https://kaix.app/home | grep -iE "strict-transport|content-security|x-frame|x-content"
+curl -fsS -D - -o /dev/null https://machicity.com/home | grep -iE "strict-transport|content-security|x-frame|x-content"
 ```
 
 应该看到全部 200，HSTS + CSP + X-Frame-Options + X-Content-Type-Options 都在响应里。

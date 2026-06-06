@@ -4,11 +4,14 @@
 #
 # 用法：
 #   bash web/deploy/deploy.sh
+#
+# 当前生产服务器：
+#   ssh -i /Users/yaokai/Desktop/IT/ios/Machi2.pem ec2-user@13.231.24.239
 
 set -euo pipefail
 
 # ================= 彻底写死，绝不出错 =================
-EC2_HOST="ec2-user@43.207.143.245"
+EC2_HOST="ec2-user@13.231.24.239"
 EC2_KEY="/Users/yaokai/Desktop/IT/ios/Machi2.pem"
 LOCAL_PROJECT_DIR="/Users/yaokai/Desktop/IT/IOS/kaizi"
 PROJECT_NAME="kaizi"
@@ -108,6 +111,23 @@ restore_runtime_data() {
   fi
 }
 
+install_systemd_units() {
+  echo "    [远端] 安装/刷新 systemd 服务并设置开机自启"
+  sudo cp /opt/kaix/web/deploy/kaix-backend.service /etc/systemd/system/kaix-backend.service
+  sudo cp /opt/kaix/web/deploy/kaix-web.service /etc/systemd/system/kaix-web.service
+  if [ -f /opt/kaix/web/deploy/kaix-backend-worker@.service ]; then
+    sudo cp /opt/kaix/web/deploy/kaix-backend-worker@.service /etc/systemd/system/kaix-backend-worker@.service
+  fi
+  sudo systemctl daemon-reload
+  sudo systemctl enable kaix-backend.service kaix-web.service
+  if systemctl list-unit-files nginx.service >/dev/null 2>&1; then
+    sudo systemctl enable nginx.service
+  fi
+  if systemctl list-unit-files caddy.service >/dev/null 2>&1 && systemctl is-active --quiet caddy; then
+    sudo systemctl enable caddy.service
+  fi
+}
+
 echo "    [远端] 准备 release 目录: $RELEASE"
 sudo rm -rf "$RELEASE"
 sudo mkdir -p "$RELEASE"
@@ -145,6 +165,8 @@ if [ -d "$CURRENT" ]; then
 fi
 sudo mv "$RELEASE" "$CURRENT"
 SWAPPED=1
+
+install_systemd_units
 
 echo "    [远端] 启动服务"
 sudo systemctl start kaix-backend.service
@@ -195,7 +217,7 @@ if systemctl list-unit-files nginx.service >/dev/null 2>&1 && systemctl is-activ
 fi
 
 echo "    [远端] 公网边缘检查（防 Caddy/Nginx 未代理到新服务）"
-PUBLIC_BASE="${PUBLIC_BASE:-https://www.machicity.com}"
+PUBLIC_BASE="${PUBLIC_BASE:-https://machicity.com}"
 if curl -fsS --connect-timeout 5 --max-time 15 -o /dev/null "$PUBLIC_BASE/healthz"; then
   echo "    ✅ public /healthz 200"
 else

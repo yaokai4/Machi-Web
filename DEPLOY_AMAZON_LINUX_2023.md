@@ -12,11 +12,23 @@
    - `80/tcp`：`0.0.0.0/0` 和 `::/0`。
    - `443/tcp`：`0.0.0.0/0` 和 `::/0`。
 3. 域名 DNS 添加 A 记录到 EC2 公网 IP：
-   - `machicity.com -> EC2_PUBLIC_IP`
-   - `www.machicity.com -> EC2_PUBLIC_IP`
+   - `machicity.com -> 13.231.24.239`
+   - `www.machicity.com -> 13.231.24.239`
 4. 确认不要把 `3000` 和 `8787` 暴露到公网，这两个端口只给 Nginx 在本机访问。
 
 下面命令默认用 `ec2-user` 登录服务器。
+
+当前生产服务器一键部署命令在本地 Mac 执行：
+
+```bash
+bash web/deploy/deploy.sh
+```
+
+直接 SSH 到当前生产服务器：
+
+```bash
+ssh -i /Users/yaokai/Desktop/IT/ios/Machi2.pem ec2-user@13.231.24.239
+```
 
 ## 1. 设置变量
 
@@ -471,4 +483,3 @@ sudo -u "$APP_USER" npm run build
 sudo systemctl restart kaix-backend.service kaix-web.service
 sudo systemctl reload nginx
 ```
-

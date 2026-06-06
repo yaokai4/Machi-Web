@@ -27,3 +27,7 @@ __pycache__/
 
 # macOS filesystem metadata.
 .DS_Store
+
+# Runtime upload dirs (dev local fallback; prod uses S3). Never commit user media.
+media/messages/
+media/temp/

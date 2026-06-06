@@ -1,7 +1,7 @@
 # Caddy edge for the Docker stack. Auto-HTTPS when MACHI_DOMAIN is a real
 # domain pointed at this host; falls back to :80 for local testing.
 #
-#   MACHI_DOMAIN=www.machicity.com docker compose up -d
+#   MACHI_DOMAIN=machicity.com docker compose up -d
 #   MACHI_DOMAIN=:80              docker compose up -d   # local / behind an LB
 #
 # Upstreams are Docker service names. `backend` is the scalable HTTP pool;

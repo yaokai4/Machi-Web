@@ -25,7 +25,7 @@ cp .env.example .env          # 填真实密钥（KAIX_PASSWORD_PEPPER 等；切
 MACHI_DOMAIN=:80 docker compose -f deploy/docker-compose.yml up -d --build
 
 # 生产（自动 HTTPS，需域名已解析到本机）
-MACHI_DOMAIN=www.machicity.com ACME_EMAIL=hi@machicity.com \
+MACHI_DOMAIN=machicity.com ACME_EMAIL=hi@machicity.com \
   docker compose -f deploy/docker-compose.yml up -d --build
 ```
 

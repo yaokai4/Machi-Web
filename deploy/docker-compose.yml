@@ -2,7 +2,7 @@
 #
 #   cd web
 #   cp .env.example .env            # fill real secrets (NEVER committed)
-#   MACHI_DOMAIN=www.machicity.com docker compose -f deploy/docker-compose.yml up -d --build
+#   MACHI_DOMAIN=machicity.com docker compose -f deploy/docker-compose.yml up -d --build
 #   docker compose -f deploy/docker-compose.yml up -d --scale backend=4   # scale the HTTP pool
 #
 # Persistence: the SQLite DB and uploaded media live on named volumes shared

@@ -11,3 +11,4 @@
 #
 # Install on the server with:  sudo python3 -m pip install -r requirements.txt
 cryptography>=42.0
+boto3>=1.34
