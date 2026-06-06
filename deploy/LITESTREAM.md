@@ -9,10 +9,10 @@
 
 ## 在服务器上安装(一次)
 ```bash
-# 1. 装二进制(amd64;ARM 机型用 arm64 包)
-curl -L https://github.com/benbjohnson/litestream/releases/latest/download/litestream-linux-amd64.tar.gz \
+# 1. 装二进制(pin v0.3.13;"latest"=v0.5.x 资产命名不同、解包会失败)
+curl -fsSL https://github.com/benbjohnson/litestream/releases/download/v0.3.13/litestream-v0.3.13-linux-amd64.tar.gz \
   | sudo tar -xz -C /usr/local/bin litestream
-litestream version
+litestream version   # 应显示 v0.3.13
 
 # 2. 放配置 + systemd 单元(本仓库 web/deploy/ 下)
 sudo cp /opt/kaix/web/deploy/litestream.yml      /etc/litestream.yml
@@ -28,8 +28,8 @@ sudo systemctl status litestream.service --no-pager
 
 ## 验证备份在跑
 ```bash
-litestream snapshots -config /etc/litestream.yml   # 应列出 S3 上的快照
-litestream wal       -config /etc/litestream.yml   # 应看到持续增长的 WAL 段
+litestream snapshots -config /etc/litestream.yml /opt/kaix/web/kaix.db   # 列出 S3 快照
+litestream wal       -config /etc/litestream.yml /opt/kaix/web/kaix.db   # WAL 段
 aws s3 ls s3://machi-s3/backups/kaix.db/ --recursive | tail
 ```
 
