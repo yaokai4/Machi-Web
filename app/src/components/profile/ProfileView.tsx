@@ -63,9 +63,12 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
     location: user.location || "",
     avatar_color: user.avatar_color || "indigo",
     avatar_url: user.avatar_url || "",
+    cover_url: user.cover_url || "",
   });
   const [avatarUploading, setAvatarUploading] = useState(false);
+  const [coverUploading, setCoverUploading] = useState(false);
   const avatarInputRef = useRef<HTMLInputElement | null>(null);
+  const coverInputRef = useRef<HTMLInputElement | null>(null);
 
   // Keep follow / block state in sync with refreshed user data.
   useEffect(() => {
@@ -81,8 +84,9 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
       location: user.location || "",
       avatar_color: user.avatar_color || "indigo",
       avatar_url: user.avatar_url || "",
+      cover_url: user.cover_url || "",
     });
-  }, [editOpen, user.display_name, user.bio, user.location, user.avatar_color, user.avatar_url]);
+  }, [editOpen, user.display_name, user.bio, user.location, user.avatar_color, user.avatar_url, user.cover_url]);
 
   const segmentQuery = useQuery({
     queryKey: ["profile-segment", user.id, segment],
@@ -145,25 +149,28 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
     }
   };
 
-  const uploadAvatar = async (file: File | undefined) => {
+  const uploadProfileImage = async (file: File | undefined, purpose: "avatar" | "profile_cover") => {
     if (!file) return;
     if (!file.type.startsWith("image/")) {
-      pushToast({ kind: "error", message: "请选择图片作为头像" });
+      pushToast({ kind: "error", message: "请选择图片文件" });
       return;
     }
-    if (file.size > 10 * 1024 * 1024) {
-      pushToast({ kind: "error", message: "头像图片不能超过 10MB" });
+    const max = purpose === "avatar" ? 5 * 1024 * 1024 : 10 * 1024 * 1024;
+    if (file.size > max) {
+      pushToast({ kind: "error", message: purpose === "avatar" ? "头像图片不能超过 5MB" : "封面图片不能超过 10MB" });
       return;
     }
-    setAvatarUploading(true);
+    if (purpose === "avatar") setAvatarUploading(true);
+    else setCoverUploading(true);
     try {
-      const media = await api.uploadMediaBase64(file);
-      setDraft((prev) => ({ ...prev, avatar_url: media.url }));
-      pushToast({ kind: "success", message: "头像已上传，保存后生效" });
+      const media = await api.uploadMediaBase64(file, { purpose });
+      setDraft((prev) => ({ ...prev, [purpose === "avatar" ? "avatar_url" : "cover_url"]: media.url }));
+      pushToast({ kind: "success", message: purpose === "avatar" ? "头像已上传，保存后生效" : "封面已上传，保存后生效" });
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
-      setAvatarUploading(false);
+      if (purpose === "avatar") setAvatarUploading(false);
+      else setCoverUploading(false);
     }
   };
 
@@ -187,7 +194,9 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
           className="h-24 sm:h-40 w-full"
           style={{
             background:
-              "linear-gradient(140deg, rgb(var(--kx-accent) / 0.18), rgb(var(--kx-heat) / 0.15) 60%, rgb(var(--kx-repost) / 0.12))",
+              user.cover_url
+                ? `center / cover no-repeat url("${user.cover_url}")`
+                : "linear-gradient(140deg, rgb(var(--kx-accent) / 0.18), rgb(var(--kx-heat) / 0.15) 60%, rgb(var(--kx-repost) / 0.12))",
           }}
         />
         <div className="px-4 -mt-10 sm:-mt-14">
@@ -408,7 +417,39 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                 accept="image/*"
                 className="hidden"
                 onChange={(e) => {
-                  uploadAvatar(e.target.files?.[0]);
+                  uploadProfileImage(e.target.files?.[0], "avatar");
+                  e.target.value = "";
+                }}
+              />
+            </div>
+          </div>
+          <div className="rounded-kx-md border border-kx-stroke bg-kx-soft/40 p-3">
+            <div
+              className="h-24 rounded-kx-md bg-kx-soft"
+              style={{
+                background: draft.cover_url
+                  ? `center / cover no-repeat url("${draft.cover_url}")`
+                  : "linear-gradient(140deg, rgb(var(--kx-accent) / 0.16), rgb(var(--kx-heat) / 0.12))",
+              }}
+            />
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <button type="button" className="kx-button-ghost h-8 px-3 text-xs" onClick={() => coverInputRef.current?.click()} disabled={coverUploading}>
+                {coverUploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Camera className="w-3.5 h-3.5" />}
+                更换封面
+              </button>
+              {draft.cover_url ? (
+                <button type="button" className="kx-button-ghost h-8 px-3 text-xs" onClick={() => setDraft({ ...draft, cover_url: "" })}>
+                  <X className="w-3.5 h-3.5" />
+                  移除封面
+                </button>
+              ) : null}
+              <input
+                ref={coverInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(e) => {
+                  uploadProfileImage(e.target.files?.[0], "profile_cover");
                   e.target.value = "";
                 }}
               />

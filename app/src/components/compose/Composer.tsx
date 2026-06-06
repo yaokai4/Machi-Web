@@ -49,6 +49,29 @@ const REQUIRED_KEYS: Partial<Record<ContentType, string[]>> = {
   poll: ["question", "options"],
 };
 
+function readVideoMetadata(file: File): Promise<{ duration: number; width: number; height: number }> {
+  return new Promise((resolve) => {
+    if (typeof document === "undefined") {
+      resolve({ duration: 0, width: 0, height: 0 });
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    const done = (value: { duration: number; width: number; height: number }) => {
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    video.preload = "metadata";
+    video.onloadedmetadata = () => done({
+      duration: Number.isFinite(video.duration) ? video.duration : 0,
+      width: video.videoWidth || 0,
+      height: video.videoHeight || 0,
+    });
+    video.onerror = () => done({ duration: 0, width: 0, height: 0 });
+    video.src = url;
+  });
+}
+
 const LANGUAGE_PICKER_OPTIONS: ContentLanguage[] = ["zh", "en", "ja", "ko", "fr", "es"];
 const STRICT_STRUCTURED_TYPES = new Set<ContentType>(["poll", "merchant", "service", "coupon", "job_post"]);
 
@@ -111,6 +134,7 @@ export function Composer() {
   const [contentType, setContentType] = useState<ContentType>("dynamic");
   const [attributes, setAttributes] = useState<Record<string, string | boolean>>({});
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<Record<string, { name: string; progress: number; status: string; error?: string }>>({});
   const [submitting, setSubmitting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
@@ -128,6 +152,7 @@ export function Composer() {
       setContent(initialContent);
       setExtraTags(initialTagsFromStore);
       setMedia([]);
+      setUploadProgress({});
       setContentType(initialTypeFromStore ?? "dynamic");
       setAttributes({});
       setTimeout(() => textareaRef.current?.focus(), 40);
@@ -166,14 +191,44 @@ export function Composer() {
     try {
       const uploaded: KXMedia[] = [];
       for (const f of array) {
-        if (f.size > 50 * 1024 * 1024) {
+        const key = `${f.name}-${f.size}-${f.lastModified}`;
+        const isVideo = f.type.startsWith("video/");
+        const purpose = isVideo ? "post_video" : "post_image";
+        const maxBytes = isVideo ? 200 * 1024 * 1024 : 10 * 1024 * 1024;
+        if (f.size > maxBytes) {
           pushToast({ kind: "error", message: `${f.name} ${t("composer_too_large")}` });
           continue;
         }
-        const m = await api.uploadMediaBase64(f);
-        uploaded.push(m);
+        const nextItems = [...media, ...uploaded];
+        if (isVideo && nextItems.filter((item) => item.type === "video").length >= 1) {
+          pushToast({ kind: "error", message: "每个帖子最多上传 1 个视频" });
+          continue;
+        }
+        if (!isVideo && nextItems.filter((item) => item.type === "image").length >= 9) {
+          pushToast({ kind: "error", message: "每个帖子最多上传 9 张图片" });
+          continue;
+        }
+        setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: 0, status: "准备上传" } }));
+        try {
+          const videoMeta = isVideo ? await readVideoMetadata(f) : { duration: 0, width: 0, height: 0 };
+          const m = await api.uploadMediaBase64(f, {
+            purpose,
+            duration: videoMeta.duration,
+            width: videoMeta.width,
+            height: videoMeta.height,
+            metadata: isVideo ? { durationSeconds: videoMeta.duration } : {},
+            onProgress: (event) => {
+              const status = event.stage === "presign" ? "准备上传" : event.stage === "uploading" ? "上传中" : event.stage === "complete" ? "确认中" : event.stage === "success" ? "已完成" : "失败";
+              setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: event.progress, status } }));
+            },
+          });
+          uploaded.push(m);
+          setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: 1, status: "已完成" } }));
+        } catch (err) {
+          setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: 0, status: "失败", error: (err as APIError).message } }));
+        }
       }
-      setMedia((prev) => [...prev, ...uploaded].slice(0, 9));
+      setMedia((prev) => [...prev, ...uploaded].slice(0, 10));
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
@@ -455,6 +510,22 @@ export function Composer() {
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {Object.keys(uploadProgress).length ? (
+              <div className="mt-3 space-y-1.5">
+                {Object.entries(uploadProgress).map(([key, item]) => (
+                  <div key={key} className="rounded-kx-md bg-kx-soft px-3 py-2 text-xs">
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate font-semibold text-kx-text">{item.name}</span>
+                      <span className={item.error ? "font-semibold text-kx-danger" : "font-semibold text-kx-muted"}>{item.error ? "失败" : item.status}</span>
+                    </div>
+                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-kx-stroke/50">
+                      <div className="h-full rounded-full bg-kx-accent transition-all" style={{ width: `${Math.round(item.progress * 100)}%` }} />
+                    </div>
+                    {item.error ? <p className="mt-1 text-kx-danger">{item.error}，请重新选择文件重试。</p> : null}
                   </div>
                 ))}
               </div>

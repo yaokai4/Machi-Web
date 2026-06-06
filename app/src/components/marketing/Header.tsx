@@ -2,11 +2,11 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { Globe2, Menu, X } from "lucide-react";
-import { useEffect, useState } from "react";
+import { ChevronDown, Globe2, Menu, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
-import { localeOptions } from "@/data/machi-home";
+import { localeOptions, type MarketingLocale } from "@/data/machi-home";
 import { Button } from "./Button";
 import { BrandMark, BrandText } from "./BrandText";
 import { useMarketingI18n } from "./MarketingI18n";
@@ -125,7 +125,7 @@ export function Header() {
       ) : null}
       <div
         className={clsx(
-          "relative z-30 mx-auto w-full max-w-[1080px] rounded-full border px-3 py-2 backdrop-blur-2xl transition-all duration-300",
+          "relative z-30 mx-auto w-full max-w-[1180px] rounded-full border px-3 py-2 backdrop-blur-2xl transition-all duration-300",
           // Resting state — light, airy. Scrolled state — a bit more
           // opaque, deeper shadow, so the bar visibly separates from
           // content underneath.
@@ -135,7 +135,7 @@ export function Header() {
           open && "shadow-[0_28px_90px_-54px_rgba(79,70,229,0.92)]",
         )}
       >
-        <div className="flex items-center justify-between gap-3 lg:gap-5">
+        <div className="flex items-center gap-3 lg:gap-4">
           <Link
             href={hrefFor("/")}
             className="flex shrink-0 items-center gap-2.5 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-500"
@@ -155,40 +155,20 @@ export function Header() {
             </span>
           </Link>
 
-          <nav className="hidden min-w-0 items-center justify-center gap-0.5 lg:absolute lg:left-1/2 lg:top-1/2 lg:flex lg:-translate-x-1/2 lg:-translate-y-1/2">
+          <nav className="hidden min-w-0 flex-1 items-center justify-start gap-0.5 lg:ml-3 lg:flex">
             {copy.nav.items.map(([label, href]) => (
               <Link
                 key={href}
                 href={hrefFor(href)}
-                className="whitespace-nowrap rounded-full px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-950/[0.05] hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white xl:px-3.5"
+                className="whitespace-nowrap rounded-full px-2.5 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-950/[0.05] hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white xl:px-3"
               >
                 {label}
               </Link>
             ))}
           </nav>
 
-          <div className="ml-auto hidden shrink-0 items-center gap-2 md:flex lg:ml-0">
-            <div
-              className="flex items-center gap-0.5 rounded-full bg-slate-950/[0.05] p-1 ring-1 ring-slate-900/[0.08] dark:bg-white/10 dark:ring-white/15"
-              aria-label={copy.nav.language}
-            >
-              <Globe2 className="ml-2 h-4 w-4 text-slate-500 dark:text-slate-400" />
-              {localeOptions.map((option) => (
-                <button
-                  key={option.value}
-                  type="button"
-                  onClick={() => switchLocale(option.value)}
-                  className={clsx(
-                    "h-8 rounded-full px-2.5 text-xs font-black transition",
-                    locale === option.value
-                      ? "bg-white text-indigo-700 shadow-sm dark:bg-slate-900 dark:text-sky-300"
-                      : "text-slate-500 hover:text-slate-950 dark:text-slate-400 dark:hover:text-white",
-                  )}
-                >
-                  {option.shortLabel}
-                </button>
-              ))}
-            </div>
+          <div className="ml-auto hidden shrink-0 items-center gap-2 md:flex">
+            <LocaleMenu locale={locale} options={localeOptions} onSelect={switchLocale} label={copy.nav.language} />
             <ThemeToggle compact />
             <Button href="/register" variant="text" size="sm" className="shrink-0 whitespace-nowrap">
               {copy.nav.register}
@@ -226,7 +206,7 @@ export function Header() {
 
       <div
         className={clsx(
-          "absolute left-4 right-4 top-[calc(100%+0.55rem)] z-40 mx-auto max-w-[1080px] md:hidden",
+          "absolute left-4 right-4 top-[calc(100%+0.55rem)] z-40 mx-auto max-w-[1180px] md:hidden",
           "origin-top transform-gpu transition duration-[240ms] ease-out",
           open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : "pointer-events-none -translate-y-2 scale-[0.985] opacity-0",
         )}
@@ -272,5 +252,98 @@ export function Header() {
         </nav>
       </div>
     </header>
+  );
+}
+
+// Compact locale switcher for the desktop header. Collapses the previous
+// always-visible 中/EN/日 segmented control into a single globe pill that
+// opens a small menu — keeps the header short without hiding the option.
+function LocaleMenu({
+  locale,
+  options,
+  onSelect,
+  label,
+}: {
+  locale: MarketingLocale;
+  options: typeof localeOptions;
+  onSelect: (value: MarketingLocale) => void;
+  label: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const current = options.find((option) => option.value === locale) ?? options[0];
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (ref.current && !ref.current.contains(event.target as Node)) setOpen(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    // Defer attaching the outside-click listener by a tick so the same
+    // click that opened the menu can't be caught and immediately close it.
+    const timer = window.setTimeout(() => {
+      document.addEventListener("mousedown", onPointerDown);
+    }, 0);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        aria-label={label}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((value) => !value)}
+        className="inline-flex h-9 items-center gap-1.5 rounded-full bg-slate-950/[0.05] pl-2.5 pr-2 ring-1 ring-slate-900/[0.08] transition hover:bg-slate-950/10 dark:bg-white/10 dark:ring-white/15 dark:hover:bg-white/20"
+      >
+        <Globe2 className="h-4 w-4 text-slate-500 dark:text-slate-400" />
+        <span className="text-xs font-black text-slate-700 dark:text-slate-200">{current.shortLabel}</span>
+        <ChevronDown
+          className={clsx("h-3.5 w-3.5 text-slate-400 transition duration-200 dark:text-slate-500", open && "rotate-180")}
+        />
+      </button>
+      <div
+        role="menu"
+        className={clsx(
+          "absolute right-0 top-[calc(100%+0.5rem)] z-50 w-44 origin-top-right rounded-2xl border border-white/75 bg-white/95 p-1.5 shadow-[0_24px_70px_-40px_rgba(15,23,42,0.7)] backdrop-blur-2xl transition duration-200 ease-out dark:border-white/10 dark:bg-slate-950/90",
+          open
+            ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
+            : "pointer-events-none -translate-y-1 scale-[0.97] opacity-0",
+        )}
+      >
+        {options.map((option) => {
+          const active = option.value === locale;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="menuitemradio"
+              aria-checked={active}
+              onClick={() => {
+                onSelect(option.value);
+                setOpen(false);
+              }}
+              className={clsx(
+                "flex w-full items-center justify-between rounded-xl px-3 py-2 text-sm font-bold transition",
+                active
+                  ? "bg-slate-950/[0.05] text-indigo-700 dark:bg-white/10 dark:text-sky-300"
+                  : "text-slate-600 hover:bg-slate-950/[0.04] hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/5 dark:hover:text-white",
+              )}
+            >
+              <span>{option.label}</span>
+              <span className="ml-3 text-[11px] font-black uppercase tracking-wide text-slate-400">{option.shortLabel}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }

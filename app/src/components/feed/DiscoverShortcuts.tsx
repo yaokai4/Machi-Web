@@ -72,7 +72,7 @@ export function DiscoverShortcutGrid({
         <div className="kx-discover-panel-header">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <h2 className="text-lg font-black text-kx-text">城市入口</h2>
+              <h2 className="text-[17px] font-extrabold text-kx-text/90">城市入口</h2>
               <p className="mt-1 text-sm leading-5 text-kx-subtle">二手、租房、找工作、本地服务……每件事都有自己的入口。选好城市，直接进到你现在需要的板块，浏览和发布都更快一步。</p>
             </div>
             <button
@@ -92,7 +92,7 @@ export function DiscoverShortcutGrid({
             </button>
           </div>
         </div>
-        <div className="grid grid-cols-1 gap-2.5 p-3 sm:grid-cols-2 sm:p-4">
+        <div className="grid grid-cols-2 gap-2.5 p-3 sm:p-4">
           {primaryEntries.map(({ spec, title, subtitle }) => (
             getChannelHref ? (
               <ChannelHeroLink
@@ -294,11 +294,11 @@ function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec;
   return (
     <>
       <ChannelIcon spec={spec} size="lg" />
-      <span className="relative min-w-0 flex-1">
-        <span className="block text-[15px] font-black text-kx-text">{title || spec.title}</span>
-        <span className="mt-1 block text-[13px] leading-5 text-kx-subtle">{subtitle || spec.subtitle}</span>
+      <span className="relative min-w-0 w-full flex-1 sm:w-auto">
+        <span className="block break-words text-[15px] font-extrabold text-kx-text/90">{title || spec.title}</span>
+        <span className="mt-1 block break-words text-xs leading-4 text-kx-subtle sm:text-[13px] sm:leading-5">{subtitle || spec.subtitle}</span>
       </span>
-      <span className="relative mt-0.5 grid h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-soft text-kx-muted transition-all duration-200 group-hover:bg-kx-text group-hover:text-kx-card">
+      <span className="relative mt-0.5 hidden h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-soft text-kx-muted transition-all duration-200 group-hover:bg-kx-accent group-hover:text-white sm:grid">
         <ChevronRight className="h-4 w-4" />
       </span>
     </>
@@ -307,7 +307,7 @@ function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec;
 
 function channelHeroClass(active?: boolean) {
   return [
-    "group relative flex min-h-[112px] items-start gap-3.5 overflow-hidden rounded-kx-lg border p-4 text-left",
+    "group relative flex min-h-[146px] min-w-0 flex-col items-start gap-3 overflow-hidden rounded-kx-lg border p-3 text-left sm:min-h-[112px] sm:flex-row sm:gap-3.5 sm:p-4",
     "bg-kx-card/[0.78] shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
     "hover:-translate-y-0.5 hover:border-kx-accent/35 hover:bg-kx-accentSoft/30 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
     active ? "border-kx-accent/45 bg-kx-accentSoft/60 ring-2 ring-kx-accent/20" : "border-kx-stroke/45",

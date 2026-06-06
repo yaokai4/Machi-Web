@@ -188,7 +188,7 @@ export interface KXRegion {
 export const MediaSchema = z.object({
   id: z.string(),
   owner_id: z.string(),
-  type: z.enum(["image", "video", "file"]),
+  type: z.enum(["image", "video", "audio", "file"]),
   url: z.string(),
   thumb_url: z.string(),
   mime: z.string(),
@@ -199,6 +199,33 @@ export const MediaSchema = z.object({
   created_at: z.string(),
 });
 export type KXMedia = z.infer<typeof MediaSchema>;
+
+export const MessageAttachmentSchema = z.object({
+  id: z.string(),
+  message_id: z.string(),
+  thread_id: z.string().optional(),
+  uploaded_file_id: z.string(),
+  type: z.enum(["image", "video", "audio", "file"]),
+  attachment_type: z.string().optional(),
+  url: z.string().optional(),
+  thumb_url: z.string().optional(),
+  needsSignedUrl: z.boolean().optional(),
+  viewUrlEndpoint: z.string().optional(),
+  thumbnail_file_id: z.string().optional(),
+  duration: z.number().optional(),
+  duration_seconds: z.number().optional(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  file_name: z.string().optional(),
+  file_size: z.number().optional(),
+  byte_size: z.number().optional(),
+  content_type: z.string().optional(),
+  mime: z.string().optional(),
+  visibility: z.string().optional(),
+  status: z.string().optional(),
+  created_at: z.string().optional(),
+});
+export type KXMessageAttachment = z.infer<typeof MessageAttachmentSchema>;
 
 export const CONTENT_TYPES = [
   "dynamic", "image_post", "long_post",
@@ -379,6 +406,7 @@ export const MessageSchema = z.object({
   created_at: z.string(),
   is_read: z.boolean(),
   media: z.array(MediaSchema).optional(),
+  attachments: z.array(MessageAttachmentSchema).optional(),
 });
 export type KXMessage = z.infer<typeof MessageSchema>;
 
@@ -593,7 +621,6 @@ export interface KXCreateListingPayload {
   attributes?: Record<string, unknown>;
   media_ids?: string[];
   mediaIds?: string[];
-  media?: Array<{ url: string; thumbnail_url?: string; media_type?: string }>;
 }
 
 export interface KXReputationBadge {

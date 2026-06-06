@@ -13,7 +13,7 @@ import { MediaGrid } from "@/components/design/MediaGrid";
 import { relativeTime } from "@/lib/format";
 import { useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
-import type { KXMedia, KXMessage, KXUser } from "@/lib/types";
+import type { KXMedia, KXMessage, KXMessageAttachment, KXUser } from "@/lib/types";
 import { showVerifiedBadge } from "@/lib/types";
 
 const EMOJI_GROUPS = [
@@ -36,6 +36,29 @@ const EMOJI_GROUPS = [
 ];
 
 const QUICK_REPLIES = ["你好，我想了解一下", "现在方便聊吗？", "谢谢，我晚点回复"];
+
+function readVideoMetadata(file: File): Promise<{ duration: number; width: number; height: number }> {
+  return new Promise((resolve) => {
+    if (typeof document === "undefined") {
+      resolve({ duration: 0, width: 0, height: 0 });
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    const done = (value: { duration: number; width: number; height: number }) => {
+      URL.revokeObjectURL(url);
+      resolve(value);
+    };
+    video.preload = "metadata";
+    video.onloadedmetadata = () => done({
+      duration: Number.isFinite(video.duration) ? video.duration : 0,
+      width: video.videoWidth || 0,
+      height: video.videoHeight || 0,
+    });
+    video.onerror = () => done({ duration: 0, width: 0, height: 0 });
+    video.src = url;
+  });
+}
 
 export default function ConversationPage() {
   const params = useParams<{ id: string }>();
@@ -92,14 +115,40 @@ export default function ConversationPage() {
     try {
       const uploaded: KXMedia[] = [];
       for (const f of list) {
-        if (f.size > 50 * 1024 * 1024) {
-          pushToast({ kind: "error", message: `${f.name} 超过 50MB 限制` });
+        const isVideo = f.type.startsWith("video/");
+        const purpose = isVideo ? "message_video" : "message_image";
+        const maxBytes = isVideo ? 100 * 1024 * 1024 : 10 * 1024 * 1024;
+        if (f.size > maxBytes) {
+          pushToast({ kind: "error", message: `${f.name} 超过 ${isVideo ? "100MB" : "10MB"} 限制` });
           continue;
         }
-        const m = await api.uploadMediaBase64(f);
-        uploaded.push(m);
+        const nextItems = [...attachments, ...uploaded];
+        if (isVideo && nextItems.filter((item) => item.type === "video").length >= 1) {
+          pushToast({ kind: "error", message: "每条私信最多发送 1 个视频" });
+          continue;
+        }
+        if (!isVideo && nextItems.filter((item) => item.type === "image").length >= 9) {
+          pushToast({ kind: "error", message: "每条私信最多发送 9 张图片" });
+          continue;
+        }
+        const videoMeta = isVideo ? await readVideoMetadata(f) : { duration: 0, width: 0, height: 0 };
+        if (isVideo && videoMeta.duration > 120) {
+          pushToast({ kind: "error", message: `${f.name} 超过 2 分钟限制` });
+          continue;
+        }
+        const { media } = await api.uploadFile(f, {
+          purpose,
+          entityType: "message",
+          threadId: id,
+          duration: videoMeta.duration,
+          width: videoMeta.width,
+          height: videoMeta.height,
+          metadata: isVideo ? { durationSeconds: videoMeta.duration } : {},
+        });
+        const previewUrl = URL.createObjectURL(f);
+        uploaded.push({ ...media, url: previewUrl, thumb_url: previewUrl });
       }
-      setAttachments((prev) => [...prev, ...uploaded].slice(0, 9));
+      setAttachments((prev) => [...prev, ...uploaded].slice(0, 10));
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
@@ -112,8 +161,11 @@ export default function ConversationPage() {
     if (!draft.trim() && attachments.length === 0) return;
     setSending(true);
     try {
-      await api.sendMessage(id, draft.trim(), attachments.map((m) => m.id));
+      await api.sendMessage(id, draft.trim(), [], attachments.map((m) => m.id));
       setDraft("");
+      attachments.forEach((item) => {
+        if (item.url?.startsWith("blob:")) URL.revokeObjectURL(item.url);
+      });
       setAttachments([]);
       setEmojiOpen(false);
       queryClient.invalidateQueries({ queryKey: ["messages", id] });
@@ -229,7 +281,10 @@ export default function ConversationPage() {
                   <button
                     type="button"
                     className="absolute right-1 top-1 rounded-full bg-black/60 p-0.5 text-white backdrop-blur"
-                    onClick={() => setAttachments((prev) => prev.filter((x) => x.id !== m.id))}
+                    onClick={() => {
+                      if (m.url?.startsWith("blob:")) URL.revokeObjectURL(m.url);
+                      setAttachments((prev) => prev.filter((x) => x.id !== m.id));
+                    }}
                     aria-label="移除"
                   >
                     <X className="h-3.5 w-3.5" />
@@ -364,6 +419,9 @@ function Bubble({ msg, mineId, peer, onDelete }: { msg: KXMessage; mineId?: stri
             <MediaGrid items={msg.media} rounded={false} />
           </div>
         ) : null}
+        {msg.attachments?.length ? (
+          <PrivateAttachmentGrid messageId={msg.id} attachments={msg.attachments} mine={mine} />
+        ) : null}
         {msg.content ? (
           <div
             className={clsx(
@@ -391,5 +449,85 @@ function Bubble({ msg, mineId, peer, onDelete }: { msg: KXMessage; mineId?: stri
         </div>
       </div>
     </div>
+  );
+}
+
+function PrivateAttachmentGrid({ messageId, attachments, mine }: { messageId: string; attachments: KXMessageAttachment[]; mine: boolean }) {
+  return (
+    <div
+      className={clsx(
+        "grid max-w-[18rem] gap-1 overflow-hidden rounded-[20px] p-1 shadow-[0_12px_34px_-26px_rgba(15,23,42,0.58)]",
+        attachments.length === 1 ? "grid-cols-1" : "grid-cols-2",
+        mine ? "bg-blue-50/80 ring-1 ring-blue-200/70" : "bg-white/80 ring-1 ring-white/80",
+      )}
+    >
+      {attachments.map((attachment) => (
+        <SignedMessageAttachment key={attachment.id} messageId={messageId} attachment={attachment} />
+      ))}
+    </div>
+  );
+}
+
+function SignedMessageAttachment({ messageId, attachment }: { messageId: string; attachment: KXMessageAttachment }) {
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const isVideo = attachment.type === "video";
+  const isImage = attachment.type === "image";
+
+  const load = async () => {
+    if (loading || url) return;
+    setLoading(true);
+    setError("");
+    try {
+      const result = await api.messageAttachmentViewUrl(messageId, attachment.id);
+      setUrl(result.url);
+    } catch (err) {
+      setError((err as APIError).message || "加载失败");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isImage || isVideo) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [attachment.id, isImage, isVideo]);
+
+  if (url && isVideo) {
+    return (
+      <video
+        src={url}
+        controls
+        playsInline
+        preload="metadata"
+        className="aspect-video w-full rounded-2xl bg-black object-contain"
+      />
+    );
+  }
+
+  if (url && isImage) {
+    // eslint-disable-next-line @next/next/no-img-element
+    return <img src={url} alt="" className="aspect-square w-full rounded-2xl bg-kx-soft object-cover" loading="lazy" decoding="async" />;
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={url ? () => window.open(url, "_blank", "noopener,noreferrer") : load}
+      className="grid min-h-[7rem] place-items-center rounded-2xl bg-white/70 p-3 text-center text-xs font-bold text-kx-muted ring-1 ring-white/80 transition hover:bg-white hover:text-kx-accent"
+    >
+      {loading ? (
+        <Loader2 className="h-5 w-5 animate-spin" />
+      ) : error ? (
+        <span>加载失败，点击重试</span>
+      ) : isVideo ? (
+        <span className="grid gap-2 place-items-center"><Play className="h-6 w-6" />视频</span>
+      ) : isImage ? (
+        <span className="grid gap-2 place-items-center"><ImageIcon className="h-6 w-6" />图片</span>
+      ) : (
+        <span>{attachment.file_name || "附件"}</span>
+      )}
+    </button>
   );
 }

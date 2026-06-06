@@ -212,7 +212,7 @@ export default function HomeClient() {
                 event.preventDefault();
                 goToSearch(event.currentTarget.value);
               }}
-              placeholder="搜索同城动态、经验分享、问答、话题和用户..."
+              placeholder="搜索租房、语言交换、工作、活动、本地问题..."
               className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold text-kx-text placeholder:text-kx-muted focus:outline-none"
             />
           </label>

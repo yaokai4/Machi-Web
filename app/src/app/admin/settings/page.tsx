@@ -5,7 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, ArrowDown, ArrowLeft, ArrowUp, Cpu, FileImage, Globe, HardDrive, ImageIcon, LayoutGrid, Network, Plus, Save, Settings, Server, Trash2, Upload, Wand2, type LucideIcon } from "lucide-react";
+import { Activity, ArrowDown, ArrowLeft, ArrowUp, Cpu, FileImage, Globe, HardDrive, ImageIcon, LayoutGrid, Network, Plus, Save, Settings, ShieldCheck, Server, Trash2, Upload, Wand2, type LucideIcon } from "lucide-react";
 import { api, APIError, type AdminMediaItem, type MarketingCopyBlock, type SiteSettings } from "@/lib/api";
 import {
   ALL_CHANNELS,
@@ -64,6 +64,7 @@ export default function AdminSettingsPage() {
         <SiteBrandSettingsCard />
         <MediaLibraryCard />
         <MarketingCoverageCard />
+        <ContentModerationCard />
         <DiscoverEntrancesCard />
         <QuickCopyCard />
       </main>
@@ -495,6 +496,62 @@ function DiscoverEntrancesCard() {
           <button type="button" className="kx-button-ghost h-9 shrink-0 px-3 text-xs" onClick={add} disabled={!addKey}><Plus className="h-3.5 w-3.5" /> 添加入口</button>
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function ContentModerationCard() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (q.data && enabled === null) setEnabled((q.data.listing_review_enabled ?? "1") !== "0");
+  }, [q.data, enabled]);
+
+  if (q.isError) return <ErrorState title="审核设置加载失败" onRetry={() => q.refetch()} />;
+  if (enabled === null) return <section className="kx-card"><InlineLoading /></section>;
+
+  const save = async (next: boolean) => {
+    setEnabled(next);
+    setSaving(true);
+    try {
+      await api.adminUpdateSiteSettings({ listing_review_enabled: next ? "1" : "0" });
+      await queryClient.invalidateQueries({ queryKey: ["admin-site-settings"] });
+      pushToast({ kind: "success", message: next ? "已开启内容审核，新发布需管理员通过后展示。" : "已关闭内容审核，新发布将立即公开展示。" });
+    } catch (e) {
+      setEnabled(!next);
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="kx-card">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="inline-flex items-center gap-2 text-base font-bold"><ShieldCheck className="h-4 w-4 text-kx-accent" />内容审核</h2>
+          <p className="mt-1 text-xs text-kx-muted">开启后，用户发布的二手、租房、工作、招聘、本地服务、商家优惠会先进入管理员审核队列，通过后才公开（通常 1 天内）。关闭后，新发布立即公开、无需审核。</p>
+        </div>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={enabled}
+          aria-label="内容审核开关"
+          disabled={saving}
+          onClick={() => save(!enabled)}
+          className={`relative h-9 w-16 shrink-0 rounded-full transition disabled:opacity-60 ${enabled ? "bg-kx-accent" : "bg-kx-soft ring-1 ring-inset ring-kx-stroke/60"}`}
+        >
+          <span className={`absolute top-1 grid h-7 w-7 place-items-center rounded-full bg-white shadow transition-all ${enabled ? "left-8" : "left-1"}`} />
+        </button>
+      </div>
+      <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-kx-soft/60 px-3 py-1.5 text-xs font-bold">
+        <span className={`h-2 w-2 rounded-full ${enabled ? "bg-emerald-500" : "bg-amber-500"}`} />
+        {enabled ? "审核中：新发布需管理员通过后展示" : "已关闭：新发布立即公开展示"}
+      </div>
     </section>
   );
 }

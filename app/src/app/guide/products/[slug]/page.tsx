@@ -104,6 +104,19 @@ export default function GuideProductPage() {
     }
   };
 
+  const onDownload = async () => {
+    if (!user) return openAuthPrompt("generic");
+    setBusy(true);
+    try {
+      const r = await guide.downloadUrl(p.slug);
+      window.open(r.downloadUrl, "_blank", "noopener,noreferrer");
+    } catch {
+      pushToast({ kind: "error", message: locale === "en" ? "Download link failed." : locale === "ja" ? "ダウンロードリンクの作成に失敗しました。" : "下载链接生成失败。" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <GuideShell back={{ href: "/guide/services", label: copy.services.title }}>
       <div className="px-4 py-4 sm:px-6">
@@ -176,14 +189,14 @@ export default function GuideProductPage() {
         ) : null}
 
         {/* Purchased content (entitled) */}
-        {canAccess && (p.purchaseContent || p.fileUrl) ? (
+        {canAccess && (p.purchaseContent || p.fileDownloadAvailable || p.hasFile || p.fileUrl) ? (
           <section className="mt-3 rounded-kx-lg border border-emerald-400/30 bg-emerald-400/[0.06] p-5">
             <h2 className="mb-2 inline-flex items-center gap-1.5 text-base font-black text-kx-text"><CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" /> {locale === "en" ? "Purchased content" : locale === "ja" ? "購入済みコンテンツ" : "已购买内容"}</h2>
             {p.purchaseContent ? <p className="whitespace-pre-line text-[15px] leading-8 text-kx-text/90">{p.purchaseContent}</p> : null}
-            {p.fileUrl ? (
-              <a href={p.fileUrl} target="_blank" rel="noopener noreferrer" className="kx-button-primary mt-3 inline-flex h-10 px-5">
+            {p.fileDownloadAvailable || p.hasFile || p.fileUrl ? (
+              <button type="button" onClick={onDownload} disabled={busy} className="kx-button-primary mt-3 inline-flex h-10 px-5 disabled:opacity-60">
                 <Download className="h-4 w-4" /> {locale === "en" ? "Download" : locale === "ja" ? "ダウンロード" : "下载"}{p.fileName ? `（${p.fileName}）` : ""}
-              </a>
+              </button>
             ) : null}
           </section>
         ) : null}

@@ -156,6 +156,7 @@ const ADMIN_MODULES: {
   { href: "/admin/listings/promotions", label: "Listing 推广", desc: "置顶、精选、城市首页推荐", icon: Sparkles },
   { href: "/admin/businesses", label: "商家资料", desc: "商家认证和服务商资料", icon: Store },
   { href: "/admin/seller-verifications", label: "认证审核", desc: "卖家、房源方、招聘方和服务商", icon: BadgeCheck },
+  { href: "/admin/uploads", label: "文件管理", desc: "S3 / CloudFront 文件、状态和清理", icon: HardDrive },
   { href: "/admin/guide", label: "Guide 内容管理", desc: "文章 · 商品 · 服务 · 学校 · 公司", icon: BookOpen },
   { href: "/admin/guide/orders", label: "Guide 订单", desc: "数字资料购买订单", icon: ClipboardList },
   { href: "/admin/guide/service-requests", label: "服务预约", desc: "人工服务预约与处理", icon: CalendarClock },

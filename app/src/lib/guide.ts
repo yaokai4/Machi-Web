@@ -132,6 +132,7 @@ export interface GuideProduct {
   hasPurchaseContent?: boolean;
   hasFile?: boolean;
   fileUrl?: string;
+  fileDownloadAvailable?: boolean;
   fileName?: string;
   fileType?: string;
   fileSize?: number;
@@ -651,6 +652,12 @@ export const guide = {
   purchase: (idOrSlug: string) =>
     greq<{ status: string; message: string; orderId?: string }>(
       "POST", `/api/guide/products/${encodeURIComponent(idOrSlug)}/purchase`, {}),
+  downloadUrl: (idOrSlug: string) =>
+    greq<{ ok: boolean; downloadUrl: string; expiresIn: number }>(
+      "POST", `/api/guide/products/${encodeURIComponent(idOrSlug)}/download-url`, {}),
+  memberResourceDownloadUrl: (idOrSlug: string) =>
+    greq<{ ok: boolean; downloadUrl: string; expiresIn: number }>(
+      "POST", `/api/member/resources/${encodeURIComponent(idOrSlug)}/download-url`, {}),
   // Web Stripe Checkout for a paid Guide product. Price is read server-side;
   // returns { checkoutUrl } to redirect to. iOS must NOT call this for digital
   // resources (App Store rules) — it uses IAP / shows 即将开放.

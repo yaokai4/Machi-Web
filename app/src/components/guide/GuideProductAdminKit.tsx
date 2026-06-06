@@ -7,10 +7,10 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, BadgeDollarSign, LayoutDashboard, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, BadgeDollarSign, Image as ImageIcon, LayoutDashboard, Loader2, Plus, Trash2, Upload } from "lucide-react";
 import { adminGuide, GUIDE_PRODUCT_TYPE_LABELS, type GuideProduct } from "@/lib/guide";
 import { useToasts } from "@/lib/store";
-import { APIError } from "@/lib/api";
+import { api, APIError } from "@/lib/api";
 import { formatPrice } from "@/lib/format";
 import { InlineLoading, ErrorState, EmptyState } from "@/components/design/States";
 
@@ -149,7 +149,7 @@ const PRODUCT_FIELDS: Array<{ section: string; fields: FieldDef[] }> = [
     { key: "productType", label: "商品类型", type: "select", options: PRODUCT_TYPES },
     { key: "tags", label: "标签（逗号分隔）", type: "tags" },
     { key: "targetAudience", label: "适合人群", type: "text" },
-    { key: "coverImage", label: "封面图 URL", type: "text" },
+    { key: "coverImage", label: "封面图 URL / 上传文件 ID", type: "text" },
   ] },
   { section: "说明", fields: [
     { key: "description", label: "商品说明（含服务范围/不包含）", type: "textarea" },
@@ -189,7 +189,7 @@ const PRODUCT_FIELDS: Array<{ section: string; fields: FieldDef[] }> = [
     { key: "cancellationPolicy", label: "取消政策", type: "textarea" },
   ] },
   { section: "文件与支付", fields: [
-    { key: "fileUrl", label: "文件 URL（购后可下载）", type: "text" },
+    { key: "fileUrl", label: "PDF 文件 ID（购后签名下载）", type: "text" },
     { key: "fileName", label: "文件名", type: "text" },
     { key: "fileType", label: "文件类型", type: "text" },
     { key: "stripeProductId", label: "Stripe product id", type: "text" },
@@ -205,6 +205,8 @@ export function GuideProductEditPage({ create = false }: { create?: boolean }) {
   const router = useRouter();
   const pushToast = useToasts((s) => s.push);
   const [form, setForm] = useState<Record<string, unknown>>({ currency: "CNY", status: "draft", categoryKey: "guide_services", productType: "pdf_material" });
+  const [assetUploading, setAssetUploading] = useState<"" | "cover" | "file">("");
+  const [assetProgress, setAssetProgress] = useState(0);
 
   const q = useQuery({ queryKey: ["admin-guide-product", id], queryFn: () => adminGuide.product(id), enabled: !create && id.length > 0 });
   useEffect(() => {
@@ -227,6 +229,37 @@ export function GuideProductEditPage({ create = false }: { create?: boolean }) {
   });
 
   const setV = (k: string, v: unknown) => setForm((f) => ({ ...f, [k]: v }));
+  const uploadAsset = async (file: File | undefined, kind: "cover" | "file") => {
+    if (!file) return;
+    setAssetUploading(kind);
+    setAssetProgress(0);
+    try {
+      const isMemberResource = Boolean(form.isMemberIncluded) && !Boolean(form.isService);
+      const uploaded = await api.uploadFile(file, {
+        purpose: kind === "cover" ? "guide_product_preview" : (isMemberResource ? "member_resource_file" : "guide_product_file"),
+        entityType: kind === "file" && isMemberResource ? "member_resource" : "guide_product",
+        entityId: create ? "" : id,
+        onProgress: (event) => setAssetProgress(event.progress),
+      });
+      if (kind === "cover") {
+        setForm((f) => ({ ...f, coverImage: uploaded.media.url }));
+      } else {
+        setForm((f) => ({
+          ...f,
+          fileUrl: uploaded.file.id,
+          fileName: file.name,
+          fileType: uploaded.file.contentType,
+          fileSize: uploaded.file.fileSize,
+        }));
+      }
+      pushToast({ kind: "success", message: kind === "cover" ? "封面已上传" : "PDF 已上传" });
+    } catch (e) {
+      pushToast({ kind: "error", message: e instanceof APIError ? e.message : "上传失败" });
+    } finally {
+      setAssetUploading("");
+      setAssetProgress(0);
+    }
+  };
   const input = "h-9 w-full rounded-kx-md border border-kx-stroke/70 bg-kx-soft/30 px-2 text-sm text-kx-text outline-none";
   const area = "min-h-20 w-full rounded-kx-md border border-kx-stroke/70 bg-kx-soft/30 px-2 py-1.5 text-sm text-kx-text outline-none";
 
@@ -235,6 +268,27 @@ export function GuideProductEditPage({ create = false }: { create?: boolean }) {
   return (
     <AdminShell title={create ? "新建商品" : "编辑商品"} subtitle="服务类不能设为会员免费；付费数字资料上架前需预览内容或文件。">
       <div className="space-y-5">
+        <section className="rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4">
+          <h2 className="mb-3 text-sm font-black text-kx-text">S3 文件</h2>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="flex cursor-pointer items-center gap-3 rounded-kx-md border border-kx-stroke/70 bg-kx-soft/30 p-3 text-sm font-semibold text-kx-text">
+              {assetUploading === "cover" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
+              <span className="min-w-0 flex-1">上传封面 / 预览图</span>
+              <input type="file" accept="image/*" hidden onChange={(e) => uploadAsset(e.target.files?.[0], "cover")} />
+            </label>
+            <label className="flex cursor-pointer items-center gap-3 rounded-kx-md border border-kx-stroke/70 bg-kx-soft/30 p-3 text-sm font-semibold text-kx-text">
+              {assetUploading === "file" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              <span className="min-w-0 flex-1">上传 Guide PDF</span>
+              <input type="file" accept="application/pdf" hidden onChange={(e) => uploadAsset(e.target.files?.[0], "file")} />
+            </label>
+          </div>
+          {assetUploading ? (
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-kx-soft">
+              <div className="h-full rounded-full bg-kx-accent transition-all" style={{ width: `${Math.round(assetProgress * 100)}%` }} />
+            </div>
+          ) : null}
+          <p className="mt-2 text-xs text-kx-muted">PDF 不会作为永久公开 URL 暴露，用户购买或会员鉴权后通过短期下载链接访问。</p>
+        </section>
         {PRODUCT_FIELDS.map((group) => (
           <section key={group.section} className="rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4">
             <h2 className="mb-3 text-sm font-black text-kx-text">{group.section}</h2>

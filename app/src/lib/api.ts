@@ -177,7 +177,8 @@ export type SiteSettings = Record<
   | "logo_url"
   | "og_image_url"
   | "support_email"
-  | "discover_entrances",
+  | "discover_entrances"
+  | "listing_review_enabled",
   string
 >;
 
@@ -185,6 +186,90 @@ export type AdminMediaItem = KXMedia & {
   owner_handle?: string;
   owner_name?: string;
   display_name?: string;
+};
+
+export type UploadPurpose =
+  | "avatar"
+  | "profile_cover"
+  | "post_image"
+  | "post_video"
+  | "post_audio"
+  | "article_image"
+  | "article_video"
+  | "experience_image"
+  | "experience_video"
+  | "question_image"
+  | "group_post_image"
+  | "group_post_video"
+  | "secondhand_image"
+  | "rental_image"
+  | "job_image"
+  | "service_image"
+  | "discount_image"
+  | "guide_article_image"
+  | "guide_product_preview"
+  | "guide_product_file"
+  | "member_resource_file"
+  | "business_logo"
+  | "business_cover"
+  | "business_verification_file"
+  | "message_image"
+  | "message_video"
+  | "message_file"
+  | "video_thumbnail"
+  | "video_processed_file";
+
+export type UploadedFile = {
+  id: string;
+  uploadId: string;
+  userId: string;
+  bucket: string;
+  objectKey: string;
+  url: string;
+  publicUrl: string;
+  cdnUrl: string;
+  thumbnailUrl: string;
+  contentType: string;
+  fileSize: number;
+  fileType: "image" | "pdf" | "video" | "document" | "other" | string;
+  purpose: UploadPurpose | string;
+  entityType: string;
+  entityId: string;
+  status: "pending" | "uploaded" | "processing" | "ready" | "failed" | "deleted" | string;
+  isPrivate?: boolean;
+  width: number;
+  height: number;
+  duration: number;
+  etag?: string;
+  metadata?: Record<string, unknown>;
+  createdAt?: string;
+  updatedAt?: string;
+  deletedAt?: string | null;
+};
+
+export type AdminUploadedFileItem = UploadedFile & {
+  ownerHandle?: string;
+  ownerName?: string;
+  objectExists?: boolean;
+};
+
+export type UploadProgress = {
+  stage: "presign" | "uploading" | "complete" | "success" | "error";
+  progress: number;
+  file: File;
+};
+
+export type UploadFileOptions = {
+  purpose?: UploadPurpose;
+  entityType?: string;
+  entityId?: string;
+  threadId?: string;
+  groupId?: string;
+  width?: number;
+  height?: number;
+  duration?: number;
+  metadata?: Record<string, unknown>;
+  onProgress?: (event: UploadProgress) => void;
 };
 
 export type ServerMetrics = {
@@ -449,6 +534,93 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
     }
   }
   return (await res.text()) as unknown as T;
+}
+
+type PresignUploadResponse = {
+  ok: true;
+  data: {
+    uploadId: string;
+    uploadUrl: string;
+    fileKey: string;
+    cdnUrl: string;
+    expiresIn: number;
+    headers: Record<string, string>;
+    file: UploadedFile;
+  };
+};
+
+function uploadWithProgress(
+  uploadUrl: string,
+  file: File,
+  headers: Record<string, string>,
+  onProgress?: (progress: number) => void,
+): Promise<{ etag: string }> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", uploadUrl, true);
+    for (const [key, value] of Object.entries(headers || {})) {
+      if (value) xhr.setRequestHeader(key, value);
+    }
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable) return;
+      onProgress?.(Math.min(0.98, event.loaded / Math.max(1, event.total)));
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve({ etag: xhr.getResponseHeader("ETag")?.replaceAll("\"", "") || "" });
+      } else {
+        reject(new APIError({ code: "upload_failed", message: `上传失败 (${xhr.status})` }, xhr.status));
+      }
+    };
+    xhr.onerror = () => reject(new APIError({ code: "network_error", message: "上传失败，请检查网络后重试。" }, 0));
+    xhr.onabort = () => reject(new APIError({ code: "upload_aborted", message: "上传已取消。" }, 0));
+    xhr.send(file);
+  });
+}
+
+async function uploadFileViaPresignedUrl(
+  file: File,
+  options: UploadFileOptions = {},
+): Promise<{ file: UploadedFile; media: KXMedia }> {
+  const purpose = options.purpose || "post_image";
+  options.onProgress?.({ stage: "presign", progress: 0, file });
+  const presign = await request<PresignUploadResponse>("POST", "/api/uploads/presign", {
+    fileName: file.name,
+    contentType: file.type || "application/octet-stream",
+    fileSize: file.size,
+    purpose,
+    entityType: options.entityType || "",
+    entityId: options.entityId || "",
+    threadId: options.threadId || "",
+    groupId: options.groupId || "",
+    duration: options.duration || 0,
+    metadata: options.metadata || {},
+  });
+  const uploaded = await uploadWithProgress(
+    presign.data.uploadUrl,
+    file,
+    presign.data.headers,
+    (progress) => options.onProgress?.({ stage: "uploading", progress, file }),
+  );
+  options.onProgress?.({ stage: "complete", progress: 0.99, file });
+  const completed = await request<{ ok: true; data: { file: UploadedFile; media: KXMedia }; file?: UploadedFile; media?: KXMedia }>(
+    "POST",
+    "/api/uploads/complete",
+    {
+      uploadId: presign.data.uploadId,
+      fileKey: presign.data.fileKey,
+      etag: uploaded.etag,
+      width: options.width || 0,
+      height: options.height || 0,
+      duration: options.duration || 0,
+    },
+  );
+  const result = {
+    file: completed.data?.file || completed.file!,
+    media: completed.data?.media || completed.media!,
+  };
+  options.onProgress?.({ stage: "success", progress: 1, file });
+  return result;
 }
 
 // ---- auth ----
@@ -1034,30 +1206,44 @@ export const api = {
     const { items } = await request<{ items: KXMessage[] }>("GET", `/api/conversations/${encodeURIComponent(conversationId)}/messages`);
     return items;
   },
-  async sendMessage(conversationId: string, content: string, mediaIds: string[] = []): Promise<KXMessage> {
+  async sendMessage(conversationId: string, content: string, mediaIds: string[] = [], attachmentIds: string[] = []): Promise<KXMessage> {
     const { message } = await request<{ message: KXMessage }>(
       "POST",
       `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
-      { content, media_ids: mediaIds },
+      { content, media_ids: mediaIds, attachment_ids: attachmentIds },
     );
     return message;
   },
   async deleteMessage(id: string): Promise<void> {
     await request<void>("DELETE", `/api/messages/${encodeURIComponent(id)}`);
   },
+  async messageAttachmentViewUrl(messageId: string, attachmentId: string): Promise<{ url: string; expiresIn: number }> {
+    const data = await request<{ ok: boolean; data?: { url: string; expiresIn: number }; url?: string; expiresIn?: number }>(
+      "POST",
+      `/api/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/view-url`,
+    );
+    return {
+      url: data.data?.url || data.url || "",
+      expiresIn: data.data?.expiresIn || data.expiresIn || 0,
+    };
+  },
   async markConversationRead(id: string): Promise<void> {
     await request<void>("POST", `/api/conversations/${encodeURIComponent(id)}/read`);
   },
 
   // ---- media ----
-  async uploadMediaBase64(file: File): Promise<KXMedia> {
-    const form = new FormData();
-    form.append("file", file, file.name || "upload");
-    const { media } = await request<{ media: KXMedia }>("POST", `/api/media/upload`, form);
-    return media;
+  async uploadFile(file: File, options: UploadFileOptions = {}): Promise<{ file: UploadedFile; media: KXMedia }> {
+    return uploadFileViaPresignedUrl(file, options);
+  },
+  async uploadMediaBase64(file: File, options: UploadFileOptions = {}): Promise<KXMedia> {
+    const uploaded = await uploadFileViaPresignedUrl(file, options);
+    return uploaded.media;
   },
   async deleteMedia(id: string): Promise<void> {
     await request<void>("DELETE", `/api/media/${encodeURIComponent(id)}`);
+  },
+  async deleteUploadedFile(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/uploads/${encodeURIComponent(id)}`);
   },
 
   // ---- settings ----
@@ -1110,10 +1296,28 @@ export const api = {
     return items;
   },
   async adminUploadMedia(file: File): Promise<KXMedia> {
-    const form = new FormData();
-    form.append("file", file, file.name || "upload");
-    const { media } = await request<{ media: KXMedia }>("POST", `/api/admin/media/upload`, form);
-    return media;
+    return (await uploadFileViaPresignedUrl(file, { purpose: file.type === "application/pdf" ? "guide_product_file" : "guide_article_image" })).media;
+  },
+  async adminUploads(opts: { limit?: number; status?: string; purpose?: string; userId?: string; q?: string; incomplete?: boolean; large?: boolean; checkObject?: boolean } = {}): Promise<{ items: AdminUploadedFileItem[]; total: number }> {
+    const usp = new URLSearchParams();
+    if (opts.limit) usp.set("limit", String(opts.limit));
+    if (opts.status) usp.set("status", opts.status);
+    if (opts.purpose) usp.set("purpose", opts.purpose);
+    if (opts.userId) usp.set("userId", opts.userId);
+    if (opts.q) usp.set("q", opts.q);
+    if (opts.incomplete) usp.set("incomplete", "1");
+    if (opts.large) usp.set("large", "1");
+    if (opts.checkObject) usp.set("checkObject", "1");
+    return request("GET", `/api/admin/uploads?${usp.toString()}`);
+  },
+  async adminUpdateUpload(id: string, patch: { status?: string; action?: "restore" | "flag" | "mark_abnormal"; reason?: string; metadata?: Record<string, unknown> }): Promise<{ file: UploadedFile }> {
+    return request("PATCH", `/api/admin/uploads/${encodeURIComponent(id)}`, patch);
+  },
+  async adminDeleteUpload(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/uploads/${encodeURIComponent(id)}`);
+  },
+  async adminCleanupTempUploads(payload: { hours?: number; hardDelete?: boolean } = {}): Promise<{ count: number; deletedObjects: number }> {
+    return request("POST", `/api/admin/uploads/cleanup-temp`, payload);
   },
   async adminSiteSettings(): Promise<SiteSettings> {
     const { settings } = await request<{ settings: SiteSettings }>("GET", `/api/admin/site-settings`);

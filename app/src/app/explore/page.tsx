@@ -316,11 +316,11 @@ function ExploreFeedHub({
       <div className="kx-discover-panel-header">
         <div className="flex flex-col gap-4">
           <div className="min-w-0">
-            <div className="inline-flex items-center gap-2 rounded-full bg-kx-text px-3 py-1 text-[11px] font-black text-kx-card shadow-kx">
+            <div className="inline-flex items-center gap-1.5 rounded-full bg-kx-accentSoft px-3 py-1 text-[11px] font-extrabold uppercase tracking-[0.12em] text-kx-accent ring-1 ring-inset ring-kx-accent/20">
               <Compass className="h-3.5 w-3.5" />
               城市动态
             </div>
-            <h2 className="mt-3 text-[22px] font-black leading-tight text-kx-text">正在发生、热榜、话题和用户推荐</h2>
+            <h2 className="mt-3 text-[19px] font-extrabold leading-snug tracking-tight text-kx-text/90 sm:text-[21px]">正在发生、热榜、话题和用户推荐</h2>
             <p className="mt-1.5 max-w-2xl text-sm leading-6 text-kx-subtle">
               首页同城推文与趋势内容都在这里，范围可在当前城市与当前国家之间切换。
             </p>
@@ -405,7 +405,7 @@ function HappeningSection({
     <section className="kx-discover-section">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <h2 className="inline-flex items-center gap-2 text-lg font-black text-kx-text">
+          <h2 className="inline-flex items-center gap-2 text-[17px] font-extrabold text-kx-text/90">
             <Compass className="h-4 w-4 text-kx-accent" />
             {title}
           </h2>
@@ -478,7 +478,7 @@ function LocalHotSection({
     <section className="kx-discover-section">
       <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div>
-          <h2 className="inline-flex items-center gap-2 text-lg font-black text-kx-text">
+          <h2 className="inline-flex items-center gap-2 text-[17px] font-extrabold text-kx-text/90">
             <TrendingUp className="h-4 w-4 text-kx-accent" />
             {title}
           </h2>
@@ -589,7 +589,7 @@ function TopicBoard({ topics, loading, error, onRetry }: { topics: KXTrendingTop
     <section className="kx-discover-section">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
-          <h2 className="inline-flex items-center gap-2 text-lg font-black text-kx-text">
+          <h2 className="inline-flex items-center gap-2 text-[17px] font-extrabold text-kx-text/90">
             <Hash className="h-4 w-4 text-kx-accent" />
             话题趋势
           </h2>

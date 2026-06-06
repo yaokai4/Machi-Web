@@ -295,7 +295,8 @@ export function formatListingAttribute(key: string, value: unknown, locale: List
   if (!clean) return "";
 
   if (normalized === "employment_type" || normalized === "job_type") return formatEmploymentType(clean, locale);
-  if (normalized === "salary_type" || normalized === "price_unit") return formatSalaryType(clean, locale);
+  if (normalized === "salary_type") return formatSalaryType(clean, locale);
+  if (normalized === "price_unit") return labelFrom(SALARY_LABELS, clean, locale, clean);
   if (normalized === "japanese_level" || normalized === "required_japanese_level") return formatJapaneseLevel(clean, locale);
   if (normalized === "area_sqm" || normalized === "area" || normalized === "size_sqm") return formatArea(clean, locale);
   if (normalized === "station_distance" || normalized === "station_distance_minutes") return formatStationDistance(clean, locale);

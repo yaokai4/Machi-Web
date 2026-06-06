@@ -23,7 +23,7 @@ import {
   Tag,
   X,
 } from "lucide-react";
-import { api, APIError, isAuthRequiredError } from "@/lib/api";
+import { api, APIError, isAuthRequiredError, type UploadPurpose } from "@/lib/api";
 import type { KXCityListing, KXCreateListingPayload, KXListingInquiry, KXListingMedia, KXListingType, KXMedia } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
@@ -73,6 +73,20 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   discount: ["全部", "餐饮", "生活", "学习", "搬家", "限时"],
   event: ["全部", "今天", "本周", "周末", "免费"],
 };
+
+function listingUploadPurpose(type: KXListingType): UploadPurpose {
+  if (type === "rental") return "rental_image";
+  if (type === "job" || type === "hiring") return "job_image";
+  if (type === "local_service") return "service_image";
+  if (type === "discount" || type === "event") return "discount_image";
+  return "secondhand_image";
+}
+
+function listingMediaLimit(type: KXListingType): number {
+  if (type === "rental") return 20;
+  if (type === "job" || type === "hiring" || type === "discount" || type === "event") return 5;
+  return 10;
+}
 
 type FilterOption = { value: string; label: string };
 type AttributeField = {
@@ -419,27 +433,27 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
   const [location, setLocation] = useState("");
   const [attributes, setAttributes] = useState<Record<string, string>>({});
   const [media, setMedia] = useState<KXMedia[]>([]);
-  const [fallbackImageUrl, setFallbackImageUrl] = useState("");
+  const [uploadProgress, setUploadProgress] = useState<Record<string, { name: string; progress: number; status: string; error?: string }>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [draftSavedAt, setDraftSavedAt] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftKey = `machi.listingDraft.${type}.${regionCode}`;
   const createLabel = type === "rental" || type === "job" || type === "hiring" || type === "local_service" ? "提交审核" : "发布";
   const createFields = useMemo(() => listingFormFields(type), [type]);
+  const mediaLimit = listingMediaLimit(type);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
       const raw = window.localStorage.getItem(draftKey);
       if (!raw) return;
-      const draft = JSON.parse(raw) as { title?: string; description?: string; category?: string; price?: string; location?: string; attributes?: Record<string, string>; fallbackImageUrl?: string };
+      const draft = JSON.parse(raw) as { title?: string; description?: string; category?: string; price?: string; location?: string; attributes?: Record<string, string> };
       setTitle(draft.title || "");
       setDescription(draft.description || "");
       setCategory(draft.category || "");
       setPrice(draft.price || "");
       setLocation(draft.location || "");
       setAttributes(draft.attributes || {});
-      setFallbackImageUrl(draft.fallbackImageUrl || "");
     } catch {
       // local draft corruption should not block publishing
     }
@@ -447,7 +461,7 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
 
   const saveDraft = () => {
     if (typeof window === "undefined") return;
-    window.localStorage.setItem(draftKey, JSON.stringify({ title, description, category, price, location, attributes, fallbackImageUrl }));
+    window.localStorage.setItem(draftKey, JSON.stringify({ title, description, category, price, location, attributes }));
     setDraftSavedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
     pushToast({ kind: "success", message: "草稿已保存" });
   };
@@ -469,15 +483,28 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
 
   const upload = useMutation({
     mutationFn: async (files: FileList) => {
-      const selected = Array.from(files).slice(0, Math.max(0, 10 - media.length));
+      const selected = Array.from(files).slice(0, Math.max(0, mediaLimit - media.length));
       const uploaded: KXMedia[] = [];
       for (const file of selected) {
-        uploaded.push(await api.uploadMediaBase64(file));
+        const key = `${file.name}-${file.size}-${file.lastModified}`;
+        setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 0, status: "准备上传" } }));
+        try {
+          uploaded.push(await api.uploadMediaBase64(file, {
+            purpose: listingUploadPurpose(type),
+            onProgress: (event) => {
+              const status = event.stage === "uploading" ? "上传中" : event.stage === "complete" ? "确认中" : event.stage === "success" ? "已完成" : "准备上传";
+              setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: event.progress, status } }));
+            },
+          }));
+          setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 1, status: "已完成" } }));
+        } catch (err) {
+          setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 0, status: "失败", error: (err as APIError).message } }));
+        }
       }
       return uploaded;
     },
     onSuccess: (items) => {
-      setMedia((current) => [...current, ...items].slice(0, 10));
+      setMedia((current) => [...current, ...items].slice(0, mediaLimit));
       pushToast({ kind: "success", message: "图片已上传" });
     },
     onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
@@ -500,13 +527,12 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
         contact_method: "app_message",
         attributes,
         media_ids: media.map((item) => item.id),
-        media: fallbackImageUrl ? [{ url: fallbackImageUrl, thumbnail_url: fallbackImageUrl, media_type: "image" }] : [],
       };
       return api.createListing(payload);
     },
     onSuccess: (listing) => {
       if (typeof window !== "undefined") window.localStorage.removeItem(draftKey);
-      pushToast({ kind: "success", message: listing.status === "pending_review" ? "已提交审核，可在我的发布查看。" : "发布成功，三端会同步展示。" });
+      pushToast({ kind: "success", message: listing.status === "pending_review" ? "已提交管理员审核，审核时间一般在 1 天内，通过后会自动展示，可在「我的发布」查看。" : "发布成功，三端会同步展示。" });
       router.push(detailHref(listing));
     },
     onError: (e) => {
@@ -591,7 +617,7 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
                   <p className="text-sm font-black text-slate-950">图片</p>
                   <p className="mt-1 text-xs font-semibold text-slate-500">支持上传 1-10 张，第一张作为封面。无图时系统会使用稳定占位图。</p>
                 </div>
-                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={upload.isPending || media.length >= 10} className="h-10 rounded-full bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50">
+                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={upload.isPending || media.length >= mediaLimit} className="h-10 rounded-full bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50">
                   {upload.isPending ? "上传中..." : "上传图片"}
                 </button>
                 <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { if (event.target.files?.length) upload.mutate(event.target.files); event.currentTarget.value = ""; }} />
@@ -609,9 +635,22 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
                   ))}
                 </div>
               ) : null}
-              <Field label="备用图片链接（临时）">
-                <input value={fallbackImageUrl} onChange={(e) => setFallbackImageUrl(e.target.value)} className="kx-input mt-3 h-11" placeholder="仅在无法上传图片时临时使用 https://..." />
-              </Field>
+              {Object.keys(uploadProgress).length ? (
+                <div className="mt-3 space-y-1.5">
+                  {Object.entries(uploadProgress).map(([key, item]) => (
+                    <div key={key} className="rounded-2xl bg-slate-50 px-3 py-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate font-bold text-slate-700">{item.name}</span>
+                        <span className={item.error ? "font-bold text-red-600" : "font-bold text-slate-500"}>{item.error ? "失败" : item.status}</span>
+                      </div>
+                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                        <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${Math.round(item.progress * 100)}%` }} />
+                      </div>
+                      {item.error ? <p className="mt-1 text-red-600">{item.error}，请重新选择文件重试。</p> : null}
+                    </div>
+                  ))}
+                </div>
+              ) : null}
             </section>
 
             <section className="rounded-[24px] border border-slate-200/70 bg-slate-50/70 p-4">
@@ -885,12 +924,14 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
   return (
     <Link href={detailHref(listing)} className="group overflow-hidden rounded-[22px] border border-slate-200/70 bg-white shadow-[0_12px_38px_-32px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_22px_56px_-34px_rgba(15,23,42,0.62)]">
       <div className="relative aspect-[4/3] overflow-hidden bg-slate-100">
-        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.16),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-slate-400">
-          <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/82 text-kx-accent shadow-sm ring-1 ring-slate-200/70">
-            <PlaceholderIcon className="h-5 w-5" />
+        {!listing.cover_url ? (
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.16),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-slate-400">
+            <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/82 text-kx-accent shadow-sm ring-1 ring-slate-200/70">
+              <PlaceholderIcon className="h-5 w-5" />
+            </span>
+            <span className="text-xs font-black">{formatListingType(listing.type)}</span>
           </span>
-          <span className="text-xs font-black">{formatListingType(listing.type)}</span>
-        </div>
+        ) : null}
         {listing.cover_url ? (
           <Image src={listing.cover_url} alt={title} fill sizes="(max-width: 768px) 100vw, 320px" className="relative z-[1] object-cover transition duration-300 group-hover:scale-[1.025]" unoptimized />
         ) : null}
