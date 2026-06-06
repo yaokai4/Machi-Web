@@ -13223,14 +13223,23 @@ class Handler(BaseHTTPRequestHandler):
         self._set_security_headers()
         self.end_headers()
 
-    def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
-        self.send_json({
+    def _error_envelope(self, code: str, message: str) -> dict[str, Any]:
+        # Unified error envelope. requestId is also in the X-Request-Id header;
+        # echoing it in the body lets clients surface it without reading
+        # headers. Additive — existing {error:{code,message}} / {ok,code,message}
+        # consumers keep working. Matches brief §8.
+        rid = getattr(self, "_request_id", "") or ""
+        return {
             "success": False,
             "ok": False,
             "code": code,
             "message": message,
-            "error": {"code": code, "message": message},
-        }, status)
+            "requestId": rid,
+            "error": {"code": code, "message": message, "requestId": rid},
+        }
+
+    def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
+        self.send_json(self._error_envelope(code, message), status)
 
     # --- Generic idempotency (opt-in via the Idempotency-Key header) ----------
     # A repeated write (POST/PATCH/PUT/DELETE) carrying the same
@@ -17082,7 +17091,7 @@ class Handler(BaseHTTPRequestHandler):
             self._set_cors()
             self._set_security_headers()
             self.end_headers()
-            self.wfile.write(b'{"error":{"code":"rate_limited","message":"\xe8\xaf\xb7\xe6\xb1\x82\xe8\xbf\x87\xe4\xba\x8e\xe9\xa2\x91\xe7\xb9\x81\xef\xbc\x8c\xe7\xa8\x8d\xe5\x90\x8e\xe5\x86\x8d\xe8\xaf\x95\xe3\x80\x82"}}')
+            self.wfile.write(json.dumps(self._error_envelope("rate_limited", "请求过于频繁，请稍后再试。"), ensure_ascii=False).encode("utf-8"))
             ACCESS_LOG.warning('%s "%s %s" 429 ip=%s group=%s', self._request_id, method, path, ip, group)
             return
 
