@@ -4619,6 +4619,24 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_message_attachments_file ON message_attachments(uploaded_file_id);
         """,
     ),
+    (
+        35,
+        "idempotency: generic Idempotency-Key store for safe write retries",
+        """
+        CREATE TABLE IF NOT EXISTS idempotency_keys (
+            scope TEXT NOT NULL,
+            idem_key TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT '',
+            ip TEXT NOT NULL DEFAULT '',
+            status INTEGER NOT NULL,
+            response_body BLOB NOT NULL,
+            created_epoch INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (scope, idem_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_idempotency_keys_created ON idempotency_keys(created_epoch);
+        """,
+    ),
 ]
 
 
@@ -13158,6 +13176,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def send_json(self, data: Any, status: int = 200) -> None:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+        # Capture the last JSON response so the idempotency layer can persist
+        # / replay it for a repeated write carrying the same Idempotency-Key.
+        self._idem_capture = (status, body)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -13190,6 +13211,7 @@ class Handler(BaseHTTPRequestHandler):
         return f"{proto}://{host}"
 
     def send_empty(self, status: int = 204, extra_headers: dict[str, str] | None = None) -> None:
+        self._idem_capture = (status, b"")
         self.send_response(status)
         self.send_header("Content-Length", "0")
         self.send_header("X-Machi-Version", "1.0")
@@ -13209,6 +13231,77 @@ class Handler(BaseHTTPRequestHandler):
             "message": message,
             "error": {"code": code, "message": message},
         }, status)
+
+    # --- Generic idempotency (opt-in via the Idempotency-Key header) ----------
+    # A repeated write (POST/PATCH/PUT/DELETE) carrying the same
+    # Idempotency-Key replays the first 2xx response instead of re-running the
+    # handler — so a double-tapped apply / book / create / send-message /
+    # upload-complete cannot create duplicates. No header => zero behavior
+    # change. Auth endpoints are excluded so session tokens are never cached.
+    # All writes already serialize on DB_LOCK, so the check-then-store below is
+    # race-free without a separate "pending" state.
+    def _idempotency_key(self) -> str:
+        key = (self.headers.get("Idempotency-Key") or "").strip()
+        return key[:200] if key else ""
+
+    def _idempotency_lookup(self, conn: sqlite3.Connection, method: str, path: str):
+        key = self._idempotency_key()
+        if (not key or method not in ("POST", "PATCH", "PUT", "DELETE")
+                or path.startswith("/api/auth/")):
+            return None
+        scope = f"{method} {path}"
+        row = conn.execute(
+            "SELECT status, response_body, created_epoch FROM idempotency_keys "
+            "WHERE scope = ? AND idem_key = ?",
+            (scope, key),
+        ).fetchone()
+        if row is None:
+            return None
+        ttl = int(_env("KAIX_IDEMPOTENCY_TTL_SECONDS", "86400") or 86400)
+        if time.time() - (row["created_epoch"] or 0) > ttl:
+            conn.execute(
+                "DELETE FROM idempotency_keys WHERE scope = ? AND idem_key = ?",
+                (scope, key),
+            )
+            return None
+        return int(row["status"]), bytes(row["response_body"])
+
+    def _idempotency_store(self, conn: sqlite3.Connection, method: str, path: str) -> None:
+        key = self._idempotency_key()
+        if (not key or method not in ("POST", "PATCH", "PUT", "DELETE")
+                or path.startswith("/api/auth/")):
+            return
+        captured = getattr(self, "_idem_capture", None)
+        if not captured:
+            return
+        status, body = captured
+        if not (200 <= int(status) < 300):
+            return  # only cache successful, deterministic results
+        conn.execute(
+            "INSERT OR REPLACE INTO idempotency_keys "
+            "(scope, idem_key, user_id, ip, status, response_body, created_epoch, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                f"{method} {path}", key,
+                getattr(self, "_session_user_id", None) or "", self._client_ip(),
+                int(status), body, int(time.time()), now_iso(),
+            ),
+        )
+
+    def _send_idempotent_replay(self, status: int, body: bytes) -> None:
+        self.send_response(status)
+        if body:
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Machi-Version", "1.0")
+        self.send_header("X-KaiX-Version", "1.0")
+        self.send_header("X-Request-Id", getattr(self, "_request_id", "") or "")
+        self.send_header("X-Idempotent-Replay", "true")
+        self._set_cors()
+        self._set_security_headers()
+        self.end_headers()
+        if body:
+            self.wfile.write(body)
 
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", 0) or 0)
@@ -16954,6 +17047,7 @@ class Handler(BaseHTTPRequestHandler):
         query = {k: v[0] if v else "" for k, v in parse_qs(parsed.query).items()}
         self._pending_event_user_id = None
         self._session_user_id = None
+        self._idem_capture = None
         # Stamp every request with a unique id for log correlation.
         self._request_id = secrets.token_hex(8)
         ip = self._client_ip()
@@ -16999,6 +17093,7 @@ class Handler(BaseHTTPRequestHandler):
         # batched in memory (see _should_flush_last_seen).
         need_write_lock = method in ("POST", "PATCH", "PUT", "DELETE") or path == "/api/auth/google/callback"
         lock_held = False
+        response = None
         try:
             if need_write_lock:
                 # Fail fast instead of hanging forever if the lock is wedged
@@ -17009,7 +17104,16 @@ class Handler(BaseHTTPRequestHandler):
                 lock_held = True
             try:
                 with db() as conn:
-                    response = self._route(conn, method, path, query)
+                    # Generic idempotency: a repeated write carrying the same
+                    # Idempotency-Key replays the first 2xx response instead of
+                    # re-running the handler (no header => normal path).
+                    replay = self._idempotency_lookup(conn, method, path)
+                    if replay is not None:
+                        status_code = replay[0]
+                        self._send_idempotent_replay(replay[0], replay[1])
+                    else:
+                        response = self._route(conn, method, path, query)
+                        self._idempotency_store(conn, method, path)
             finally:
                 if lock_held:
                     DB_LOCK.release()
