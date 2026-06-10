@@ -4,7 +4,7 @@ import { useState, memo } from "react";
 import Image from "next/image";
 import clsx from "clsx";
 import { ImageIcon, Play } from "lucide-react";
-import { isLongImage, isVideoMedia, mediaCardAspectRatio, mediaDurationLabel, mediaPreviewImageUrl } from "@/lib/media";
+import { isVideoMedia, mediaCardAspectRatio, mediaDurationLabel, mediaPreviewImageUrl } from "@/lib/media";
 import type { KXMedia } from "@/lib/types";
 import { Lightbox } from "./Lightbox";
 
