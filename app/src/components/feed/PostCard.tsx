@@ -958,7 +958,15 @@ function InteractionBar({
 }) {
   const { t } = useI18n();
   const [repostMenu, setRepostMenu] = useState(false);
+  // Heart-pop is keyed to the click (not the liked attribute) so hearts
+  // never animate when already-liked cards simply mount during scroll.
+  const [likePop, setLikePop] = useState(false);
+  const likePopTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const repostButtonRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => () => {
+    if (likePopTimer.current) clearTimeout(likePopTimer.current);
+  }, []);
 
   useEffect(() => {
     if (!repostMenu) return;
@@ -1022,11 +1030,16 @@ function InteractionBar({
         onClick={(e) => {
           e.preventDefault();
           e.stopPropagation();
+          if (!post.liked) {
+            setLikePop(true);
+            if (likePopTimer.current) clearTimeout(likePopTimer.current);
+            likePopTimer.current = setTimeout(() => setLikePop(false), 450);
+          }
           onLike();
         }}
         aria-label={t("action_like")}
       >
-        <Heart className={clsx("w-4 h-4", post.liked && "fill-kx-like")} /> {compactNumber(post.like_count)}
+        <Heart className={clsx("w-4 h-4", post.liked && "fill-kx-like", likePop && "kx-heart-pop")} /> {compactNumber(post.like_count)}
       </button>
       <button
         className="kx-metric"

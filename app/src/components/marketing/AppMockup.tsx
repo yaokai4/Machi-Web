@@ -45,7 +45,7 @@ const pulseCopy: Record<
     cities: ["Tokyo", "Los Angeles", "Toronto"],
     scenes: ["Dining", "Meetups", "Housing", "Language Exchange", "Events"],
     languages: ["中文", "EN", "日本語"],
-    messages: ["I just moved near Shibuya â any good ramen spots?", "Any local events this weekend?"],
+    messages: ["I just moved near Shibuya — any good ramen spots?", "Any local events this weekend?"],
     posts: [
       { meta: "Tokyo · Dining", title: "Good ramen spots in Shibuya for Friday night?", replies: "3 community replies · 中文 / EN", heat: "Rising" },
       { meta: "Tokyo · Language Exchange", title: "Looking for Japanese-English exchange near Shibuya.", replies: "12 replies · EN / 日本語", heat: "Hot" },
@@ -70,11 +70,13 @@ const pulseCopy: Record<
   },
 };
 
+// Avatar dots stay inside the two brand families (warm coral / cool
+// indigo) — emerald + amber here pushed the card into rainbow territory.
 const avatarColors = [
   "from-orange-300 to-rose-400",
   "from-indigo-300 to-sky-400",
-  "from-emerald-300 to-teal-500",
-  "from-amber-200 to-orange-400",
+  "from-rose-300 to-orange-400",
+  "from-sky-300 to-indigo-400",
 ];
 
 export function AppMockup() {

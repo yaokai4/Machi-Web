@@ -2569,6 +2569,13 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         $kaix_trgm$;
         """,
     ),
+    (
+        41,
+        "messaging privacy: users.dm_privacy gates who may start or continue direct messages",
+        """
+        ALTER TABLE users ADD COLUMN dm_privacy TEXT NOT NULL DEFAULT 'everyone';
+        """,
+    ),
 ]
 
 

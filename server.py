@@ -2160,6 +2160,12 @@ _CACHE: dict[str, tuple[float, Any]] = {}
 # show up within this window. Override via env for tuning without a redeploy.
 GUIDE_HOME_CACHE_TTL = float(os.environ.get("KAIX_GUIDE_HOME_CACHE_TTL", "30"))
 
+# Anonymous feed pages are identical for every guest with the same filters —
+# the landing surfaces (web /home, iOS guest mode, crawlers) hammer them the
+# hardest. A short TTL collapses that fan-out to one DB hit per window
+# without ever serving stale content to logged-in users (they bypass it).
+ANON_FEED_CACHE_TTL = float(os.environ.get("KAIX_ANON_FEED_CACHE_TTL", "20"))
+
 
 def _cache_get(key: str) -> Any | None:
     now = time.monotonic()
@@ -7365,6 +7371,8 @@ def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
         "avatar_url": row.get("avatar_url", ""),
         "avatarUrl": row.get("avatar_url", ""),
         "cover_url": row.get("cover_url", ""),
+        "dm_privacy": (row.get("dm_privacy") or "everyone"),
+        "dmPrivacy": (row.get("dm_privacy") or "everyone"),
         "membership_tier": row.get("membership_tier", "free"),
         "is_verified": bool(row.get("is_verified", 0)),
         "role": role,
@@ -8777,6 +8785,27 @@ class APIError(Exception):
         super().__init__(message)
         self.status = status
         self.code = code
+
+
+def dm_privacy_allows(conn: sqlite3.Connection, sender_id: str, recipient_id: str) -> bool:
+    """Whether the recipient's dm_privacy setting lets sender DM them.
+
+    'everyone' (default) → yes; 'following' → only people the recipient
+    follows; 'none' → nobody. Mutual blocks and reputation gates are
+    enforced separately by the callers; listing-inquiry business threads
+    bypass this on purpose (the contact flow is the product)."""
+    if sender_id == recipient_id:
+        return True
+    row = conn.execute("SELECT dm_privacy FROM users WHERE id = ?", (recipient_id,)).fetchone()
+    privacy = ((row["dm_privacy"] if row else "") or "everyone").strip().lower()
+    if privacy == "none":
+        return False
+    if privacy == "following":
+        return conn.execute(
+            "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?",
+            (recipient_id, sender_id),
+        ).fetchone() is not None
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -18940,6 +18969,11 @@ class Handler(BaseHTTPRequestHandler):
                 if clean and clean not in recent:
                     recent.append(clean)
             updates.append(("recent_region_codes", "|".join(recent[:10])))
+        if "dm_privacy" in data and data["dm_privacy"] is not None:
+            dm_privacy = str(data["dm_privacy"]).strip().lower()
+            if dm_privacy not in {"everyone", "following", "none"}:
+                raise APIError("无效的私信隐私设置", 400, "invalid_dm_privacy")
+            updates.append(("dm_privacy", dm_privacy))
         if "handle" in data and data["handle"]:
             new_handle = normalize_handle(data["handle"])
             if not HANDLE_RE.match(new_handle):
@@ -21181,6 +21215,21 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "local" and not (req_region_code or req_city):
             raise APIError("city required", 400, "missing_region")
 
+        # Guest traffic: identical filters → identical page. Serve from the
+        # short-TTL cache so landing-page bursts cost one query per window.
+        # Logged-in feeds carry per-viewer state (liked/bookmarked/blocked)
+        # and never touch this path; cursor pages are long-tail, skip them.
+        anon_cache_key = None
+        if viewer_id is None and cursor is None and mode != "following":
+            anon_cache_key = "feed:anon:" + ":".join([
+                mode, str(limit), req_region_code, req_country, req_province,
+                req_city, ",".join(content_types),
+            ])
+            cached_payload = _cache_get(anon_cache_key)
+            if cached_payload is not None:
+                self.send_json(cached_payload)
+                return
+
         if mode == "following":
             if not viewer_id:
                 raise APIError("请登录后继续", 401, "AUTH_REQUIRED")
@@ -21215,7 +21264,7 @@ class Handler(BaseHTTPRequestHandler):
             for post in posts:
                 post["explore_hot_score"] = scores.get(post["id"], 0)
                 post["exploreHotScore"] = post["explore_hot_score"]
-            self.send_json({
+            payload = {
                 "items": posts,
                 "next_cursor": None,
                 "mode": mode,
@@ -21226,7 +21275,10 @@ class Handler(BaseHTTPRequestHandler):
                 "viewer": viewer_payload,
                 "canInteract": can_interact,
                 "can_interact": can_interact,
-            })
+            }
+            if anon_cache_key is not None:
+                _cache_put(anon_cache_key, payload, ttl_seconds=ANON_FEED_CACHE_TTL)
+            self.send_json(payload)
             return
         else:
             base = """
@@ -21252,7 +21304,10 @@ class Handler(BaseHTTPRequestHandler):
             extra = rows.pop()
             next_cursor = cursor_encode(extra["created_at"], extra["id"])
         posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
-        self.send_json({"items": posts, "next_cursor": next_cursor, "mode": mode, "viewer": viewer_payload, "canInteract": can_interact, "can_interact": can_interact})
+        payload = {"items": posts, "next_cursor": next_cursor, "mode": mode, "viewer": viewer_payload, "canInteract": can_interact, "can_interact": can_interact}
+        if anon_cache_key is not None:
+            _cache_put(anon_cache_key, payload, ttl_seconds=ANON_FEED_CACHE_TTL)
+        self.send_json(payload)
 
     def api_create_post(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -22285,6 +22340,8 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchone()
         if blocked:
             raise APIError("无法与该用户对话", 403, "blocked")
+        if not dm_privacy_allows(conn, user["id"], peer_row["id"]):
+            raise APIError("对方设置了私信权限，暂时无法发起私信", 403, "dm_privacy_restricted")
         rep = reputation_ensure_user(conn, user["id"])
         controls = reputation_effective_limits(conn, rep, user)
         if _clamp_reputation_score(rep.get("reputation_score")) < 20 or _clamp_risk_score(rep.get("risk_score")) >= int(reputation_limit_map(conn).get("restrict_risk_threshold") or 81):
@@ -22427,6 +22484,15 @@ class Handler(BaseHTTPRequestHandler):
         row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
         if not row or (row["participant_a"] != user["id"] and row["participant_b"] != user["id"]):
             raise APIError("无权操作", 403, "forbidden")
+        other_id = row["participant_b"] if row["participant_a"] == user["id"] else row["participant_a"]
+        # Listing-inquiry threads are business conversations opened by the
+        # contact flow — dm_privacy must not break buyer↔seller follow-ups.
+        is_inquiry_thread = conn.execute(
+            "SELECT 1 FROM listing_inquiries WHERE conversation_id = ? LIMIT 1",
+            (conv_id,),
+        ).fetchone() is not None
+        if not is_inquiry_thread and not dm_privacy_allows(conn, user["id"], other_id):
+            raise APIError("对方设置了私信权限，暂时无法发送私信", 403, "dm_privacy_restricted")
         data = self.read_json()
         content = (data.get("content") or "").strip()
         attachment_ids = list(dict.fromkeys([

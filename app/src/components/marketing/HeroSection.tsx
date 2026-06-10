@@ -2,7 +2,7 @@
 
 import { ArrowRight, Building2, ChevronDown, MonitorSmartphone, Sparkles, UsersRound } from "lucide-react";
 import { AppMockup } from "./AppMockup";
-import { BrandPhrase, BrandText } from "./BrandText";
+import { BrandPhrase } from "./BrandText";
 import { Button } from "./Button";
 import { StoreButton } from "./StoreButtons";
 import { useMarketingI18n } from "./MarketingI18n";
@@ -28,26 +28,27 @@ export function HeroSection() {
             <BrandPhrase text={copy.hero.eyebrow} />
           </span>
 
-          <h1 className="mx-auto mt-5 max-w-[20rem] text-[clamp(2.45rem,12vw,5.5rem)] font-black leading-[0.95] text-slate-950 sm:max-w-none sm:text-[clamp(2.65rem,7vw,5.5rem)] lg:mx-0 dark:text-white">
-            <BrandText>{[copy.hero.titleTop, copy.hero.titleBottom].filter(Boolean).join(" ")}</BrandText>
+          {/* The slogan IS the hero. The previous display-size gradient
+              wordmark duplicated the header logo and split focus across
+              two competing headlines; one ink statement reads calmer and
+              far more premium. The brand word keeps a single refined
+              gradient accent. */}
+          <h1 className="mx-auto mt-6 max-w-[22rem] text-balance text-[clamp(2.3rem,9vw,3.4rem)] font-black leading-[1.08] tracking-[-0.02em] text-slate-950 [overflow-wrap:anywhere] [word-break:break-word] sm:max-w-none sm:text-[clamp(2.6rem,4.6vw,4.35rem)] sm:leading-[1.04] sm:[word-break:normal] lg:mx-0 dark:text-white">
+            {copy.hero.headline}
           </h1>
 
-          <p className="mx-auto mt-5 max-w-[20rem] text-[1.9rem] font-black leading-[1.12] text-slate-950 [overflow-wrap:anywhere] [word-break:break-word] sm:max-w-none sm:text-[clamp(2rem,4.2vw,4.2rem)] sm:leading-[1.04] sm:[word-break:normal] lg:mx-0 dark:text-white">
-            {copy.hero.headline}
+          <p className="mx-auto mt-6 max-w-[21rem] text-base leading-7 text-slate-600 [overflow-wrap:anywhere] sm:max-w-xl sm:text-lg sm:leading-8 lg:mx-0 dark:text-slate-300">
+            <BrandPhrase text={copy.hero.subtitle} />
           </p>
-
-          <p className="mx-auto mt-6 max-w-[21rem] text-lg leading-8 text-slate-700 [overflow-wrap:anywhere] sm:max-w-2xl sm:text-[1.35rem] sm:leading-9 lg:mx-0 dark:text-slate-200">
-            {copy.hero.subtitle}
-          </p>
-          <p className="mx-auto mt-4 max-w-[21rem] text-[15px] font-bold leading-7 text-stone-600 [overflow-wrap:anywhere] sm:max-w-2xl sm:text-base lg:mx-0 dark:text-stone-300">
+          <p className="mx-auto mt-3 max-w-[21rem] text-sm leading-6 text-slate-500 [overflow-wrap:anywhere] sm:max-w-xl lg:mx-0 dark:text-slate-400">
             {copy.hero.supporting}
           </p>
 
-          <div className="mx-auto mt-8 grid w-full max-w-[460px] grid-cols-1 gap-3 sm:grid-cols-2 lg:mx-0 lg:max-w-2xl">
+          <div className="mx-auto mt-9 flex w-full max-w-[460px] flex-col gap-3 sm:flex-row lg:mx-0">
             <Button
               href="/home"
               size="lg"
-              className="h-14 px-6 text-base font-black"
+              className="flex-1 px-7 text-base font-bold sm:h-14"
               iconRight={<ArrowRight className="h-5 w-5" />}
             >
               {copy.hero.primary}
@@ -56,30 +57,30 @@ export function HeroSection() {
               href="#waitlist-form"
               variant="secondary"
               size="lg"
-              className="h-14 px-6 text-base font-black"
+              className="flex-1 px-7 text-base font-bold sm:h-14"
               iconLeft={<UsersRound className="h-5 w-5" />}
             >
               {copy.hero.secondary}
             </Button>
-            <Button
+          </div>
+
+          <div className="mx-auto mt-4 flex w-full max-w-[460px] flex-wrap items-center justify-center gap-x-5 gap-y-2 lg:mx-0 lg:justify-start">
+            <a
               href="#guide"
-              variant="secondary"
-              size="lg"
-              className="h-14 px-6 text-base font-black"
-              iconLeft={<Sparkles className="h-5 w-5" />}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-600 underline-offset-4 transition hover:text-slate-950 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:text-slate-300 dark:hover:text-white"
             >
+              <Sparkles className="h-4 w-4 text-orange-500/80" aria-hidden="true" />
               {copy.hero.tertiary}
-            </Button>
-            <Button
+            </a>
+            <span className="hidden text-slate-300 sm:inline dark:text-white/20" aria-hidden="true">·</span>
+            <a
               href="#business"
-              variant="text"
-              size="lg"
-              className="h-14 px-3 text-base font-black"
-              iconLeft={<Building2 className="h-5 w-5" />}
-              iconRight={<ArrowRight className="h-4 w-4" />}
+              className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-600 underline-offset-4 transition hover:text-slate-950 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:text-slate-300 dark:hover:text-white"
             >
+              <Building2 className="h-4 w-4 text-indigo-500/80" aria-hidden="true" />
               {copy.hero.quaternary}
-            </Button>
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </a>
           </div>
 
           <div className="mx-auto mt-6 flex w-full max-w-[460px] flex-col items-center gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4 lg:mx-0">

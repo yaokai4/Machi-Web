@@ -16,13 +16,16 @@ type ButtonProps = {
 } & React.ButtonHTMLAttributes<HTMLButtonElement>;
 
 const variants: Record<ButtonVariant, string> = {
+  // Ink primary — matches the header's 登录 pill so every page carries one
+  // decisive CTA colour. The old coral→indigo gradient pill competed with
+  // the content and dated the page; brand colour now lives in accents.
   primary:
-    "bg-gradient-to-r from-[#ff6b4a] via-[#ff7043] to-[#4f46e5] text-white shadow-[0_18px_46px_-24px_rgba(255,107,74,0.95)] hover:shadow-[0_22px_52px_-24px_rgba(255,107,74,1)]",
+    "bg-slate-950 text-white shadow-[0_18px_44px_-26px_rgba(15,23,42,0.9)] hover:bg-slate-800 hover:shadow-[0_22px_52px_-26px_rgba(15,23,42,0.95)] dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200",
   secondary:
-    "bg-white/90 text-slate-950 ring-1 ring-slate-200/80 shadow-[0_16px_38px_-28px_rgba(15,23,42,0.7)] backdrop-blur hover:bg-white dark:bg-white/10 dark:text-white dark:ring-white/15 dark:hover:bg-white/15",
+    "bg-white/90 text-slate-950 ring-1 ring-slate-200/80 shadow-[0_16px_38px_-28px_rgba(15,23,42,0.7)] backdrop-blur hover:bg-white hover:ring-slate-300 dark:bg-white/10 dark:text-white dark:ring-white/15 dark:hover:bg-white/15",
   ghost:
     "bg-slate-950/5 text-slate-800 ring-1 ring-slate-900/10 hover:bg-slate-950/10 dark:bg-white/10 dark:text-slate-100 dark:ring-white/15 dark:hover:bg-white/15",
-  text: "bg-transparent text-orange-700 hover:text-stone-950 dark:text-orange-300 dark:hover:text-white",
+  text: "bg-transparent text-slate-600 underline-offset-4 hover:text-slate-950 hover:underline dark:text-slate-300 dark:hover:text-white",
   dark: "bg-slate-950 text-white shadow-[0_18px_44px_-26px_rgba(15,23,42,0.95)] hover:bg-slate-800 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-200",
 };
 

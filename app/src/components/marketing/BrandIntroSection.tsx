@@ -4,11 +4,14 @@ import { Compass, Globe2, MessagesSquare, ShieldCheck } from "lucide-react";
 import { BrandPhrase } from "./BrandText";
 import { useMarketingI18n } from "./MarketingI18n";
 
+// One ink tile for all four pillars — four different gradient families
+// here used to read as a rainbow row. Identity comes from the glyph,
+// weight from the shared tile.
 const pillarMeta = [
-  { icon: Globe2, tone: "from-indigo-500 to-sky-500" },
-  { icon: Compass, tone: "from-emerald-500 to-sky-500" },
-  { icon: MessagesSquare, tone: "from-orange-500 to-rose-500" },
-  { icon: ShieldCheck, tone: "from-teal-500 to-emerald-500" },
+  { icon: Globe2 },
+  { icon: Compass },
+  { icon: MessagesSquare },
+  { icon: ShieldCheck },
 ];
 
 export function BrandIntroSection() {
@@ -33,7 +36,7 @@ export function BrandIntroSection() {
             const Icon = meta.icon;
             return (
               <article key={title} className="mc-reveal mc-glass p-5 sm:p-6">
-                <span className={`inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br ${meta.tone} text-white shadow-[0_14px_30px_-14px_rgba(79,70,229,0.6)]`}>
+                <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 text-white shadow-[0_14px_30px_-16px_rgba(15,23,42,0.8)] ring-1 ring-white/10 dark:bg-white/[0.09] dark:ring-white/15">
                   <Icon className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <h3 className="mt-5 text-xl font-black text-slate-950 dark:text-white">{title}</h3>

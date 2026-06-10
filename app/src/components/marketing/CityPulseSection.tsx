@@ -97,16 +97,20 @@ export function CityPulseSection() {
               ))}
             </div>
 
-            <div className="rounded-[24px] bg-gradient-to-br from-orange-500 to-indigo-600 p-4 text-white shadow-[0_22px_60px_-38px_rgba(255,107,74,0.65)]">
+            <div className="rounded-[24px] bg-slate-950 p-4 text-white shadow-[0_22px_60px_-40px_rgba(15,23,42,0.9)] ring-1 ring-white/10">
               <p className="flex items-center gap-2 text-sm font-black">
-                <Radio className="h-4 w-4" aria-hidden="true" />
+                <Radio className="h-4 w-4 text-orange-400" aria-hidden="true" />
                 City Pulse
+                <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
+                  <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" aria-hidden="true" />
+                  Live
+                </span>
               </p>
               <div className="mt-4 grid grid-cols-3 gap-2">
                 {[72, 48, 64].map((height) => (
-                  <span key={height} className="rounded-xl bg-white/16 p-2">
-                    <span className="block rounded-lg bg-white/70" style={{ height }} />
-                    <span className="mt-2 block h-2 rounded-full bg-white/30" />
+                  <span key={height} className="rounded-xl bg-white/[0.07] p-2 ring-1 ring-white/10">
+                    <span className="block rounded-lg bg-gradient-to-t from-orange-400/85 to-indigo-400/85" style={{ height }} />
+                    <span className="mt-2 block h-2 rounded-full bg-white/20" />
                   </span>
                 ))}
               </div>
