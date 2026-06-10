@@ -22768,6 +22768,19 @@ class Handler(BaseHTTPRequestHandler):
         )
         peer_id = row["participant_b"] if row["participant_a"] == user["id"] else row["participant_a"]
         HUB.publish(peer_id, {"type": "message", "conversation_id": conv_id, "message_id": message_id})
+        # Surface the DM in the recipient's notification feed (bell + the
+        # clients' system-banner pipeline). At most ONE unread 'message'
+        # row per conversation, so a burst of messages can't flood it.
+        if not conn.execute(
+            "SELECT 1 FROM notifications WHERE user_id = ? AND type = 'message' AND target_conversation_id = ? AND is_read = 0 AND deleted_at IS NULL LIMIT 1",
+            (peer_id, conv_id),
+        ).fetchone():
+            notif_preview = content.strip()[:140] if content.strip() else "[附件]"
+            conn.execute(
+                "INSERT INTO notifications (id, user_id, actor_id, type, target_conversation_id, content, created_at) VALUES (?, ?, ?, 'message', ?, ?, ?)",
+                (str(uuid.uuid4()), peer_id, user["id"], conv_id, notif_preview, now),
+            )
+            HUB.publish(peer_id, {"type": "notification", "kind": "message", "conversation_id": conv_id})
         fresh = dict(conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone())
         media_rows = [serialize_media(dict(r)) for r in conn.execute(
             "SELECT m.* FROM message_media mm JOIN media m ON m.id = mm.media_id WHERE mm.message_id = ?",
@@ -23961,6 +23974,12 @@ class Handler(BaseHTTPRequestHandler):
         data["recommend_topics"] = bool(data["recommend_topics"])
         if data.get("appearance") not in ("light", "dark"):
             data["appearance"] = "light"
+        # users.dm_privacy is the enforced source of truth for DM gating
+        # (see dm_privacy_allows); surface it here so the settings row can
+        # never drift from what messaging actually does. Settings speaks
+        # 'nobody', the enforcement column speaks 'none'.
+        enforced = (user.get("dm_privacy") or "everyone").strip().lower()
+        data["privacy_allow_dm"] = "nobody" if enforced == "none" else enforced
         self.send_json({"settings": data})
 
     def api_update_settings(self, conn: sqlite3.Connection) -> None:
@@ -23983,6 +24002,18 @@ class Handler(BaseHTTPRequestHandler):
             sets = ", ".join(f"{f} = ?" for f, _ in updates) + ", updated_at = ?"
             values = [v for _, v in updates] + [now_iso(), user["id"]]
             conn.execute(f"UPDATE settings SET {sets} WHERE user_id = ?", values)
+        if "privacy_allow_dm" in data:
+            # Mirror into the enforced column so the picker actually gates
+            # messaging (the settings row alone was display-only).
+            choice = str(data.get("privacy_allow_dm") or "").strip().lower()
+            mapped = {"everyone": "everyone", "following": "following", "nobody": "none", "none": "none"}.get(choice)
+            if mapped is None:
+                raise APIError("无效的私信隐私设置", 400, "invalid_dm_privacy")
+            conn.execute(
+                "UPDATE users SET dm_privacy = ?, updated_at = ? WHERE id = ?",
+                (mapped, now_iso(), user["id"]),
+            )
+            user["dm_privacy"] = mapped
         self.api_get_settings(conn)
 
     def api_clear_cache(self, conn: sqlite3.Connection) -> None:
