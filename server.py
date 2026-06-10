@@ -797,7 +797,6 @@ REPUTATION_REWARD_DEFAULTS: list[dict[str, Any]] = [
 # user posts: editorial content is authored by official desk identities,
 # keeps source attribution, and never impersonates ordinary users.
 NEWS_DESK_USER_AGENT = _env("KAIX_NEWS_DESK_USER_AGENT", "MachiBot/1.0 (+https://machicity.com)")
-NEWS_DESK_PROMPT_VERSION = "machi_japan_local_editorial_v3"
 NEWS_SOURCE_TYPES = {"rss", "webpage", "metadata", "html_list", "manual", "manual_reference", "api"}
 NEWS_CRAWL_STRATEGIES = {"rss", "meta_only", "metadata", "html_list", "manual"}
 NEWS_CREDIBILITY_LEVELS = {"official", "media", "community", "commercial", "event_platform"}
@@ -826,13 +825,8 @@ HIGH_RISK_NEWS_CATEGORIES = {
     "disaster", "disaster_prevention",
 }
 NEWS_ITEM_STATUSES = {"fetched", "draft_created", "ignored", "duplicate", "error", "deleted"}
-EDITORIAL_AUTHOR_TYPES = {"local_desk", "city_editor", "tokyo_editorial", "osaka_editorial", "japan_editorial", "admin"}
 EDITORIAL_POST_STATUSES = {"draft", "pending_review", "published", "hidden", "deleted"}
 EDITORIAL_REVIEW_STATUSES = {"none", "needs_review", "approved", "rejected"}
-NEWS_CRAWLER_ENABLED = _env("NEWS_CRAWLER_ENABLED", "true").lower() == "true"
-NEWS_CRAWLER_AUTO_FETCH = _env("NEWS_CRAWLER_AUTO_FETCH", "false").lower() == "true"
-NEWS_CRAWLER_MAX_CONCURRENCY = max(1, min(int(_env("NEWS_CRAWLER_MAX_CONCURRENCY", "3") or "3"), 8))
-NEWS_CRAWLER_PER_DOMAIN_CONCURRENCY = max(1, min(int(_env("NEWS_CRAWLER_PER_DOMAIN_CONCURRENCY", "1") or "1"), 4))
 
 # Per-type attribute schema: {attribute_name: ("str"|"int"|"float", max_len_for_str)}.
 # Any field present that isn't listed is silently dropped (so a buggy
@@ -3351,417 +3345,10 @@ def ensure_membership_plans(conn: sqlite3.Connection) -> None:
         )
 
 
-def ensure_news_source_presets(conn: sqlite3.Connection) -> dict[str, int]:
-    """Seed suggested Local News Desk sources as editable config rows.
-    Operators can replace URLs or disable rows from admin; runtime logic
-    reads the database only, never hardcoded source lists."""
-    now = now_iso()
-    presets = [
-        {
-            "name": "Japan Meteorological Agency / JMA",
-            "source_key": "jma-japan-weather",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://www.jma.go.jp/",
-            "allowed_domain": "www.jma.go.jp",
-            "country": "jp",
-            "city": "",
-            "language": "ja",
-            "default_category": "weather_alert",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official public weather/disaster information. Keep source links; do not republish full text.",
-            "crawl_interval_minutes": 30,
-        },
-        {
-            "name": "Tokyo Metropolitan Government",
-            "source_key": "tokyo-metropolitan-government",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://www.metro.tokyo.lg.jp/",
-            "allowed_domain": "www.metro.tokyo.lg.jp",
-            "country": "jp",
-            "city": "tokyo",
-            "language": "ja",
-            "default_category": "local_news",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official Tokyo public notices and city life updates. Store metadata and source URL only.",
-            "crawl_interval_minutes": 240,
-        },
-        {
-            "name": "Osaka Prefecture / Osaka City",
-            "source_key": "osaka-government",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://www.pref.osaka.lg.jp/",
-            "allowed_domain": "www.pref.osaka.lg.jp",
-            "country": "jp",
-            "city": "osaka",
-            "language": "ja",
-            "default_category": "local_news",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official Osaka notices and city life updates. Store metadata and source URL only.",
-            "crawl_interval_minutes": 240,
-        },
-        {
-            "name": "Digital Agency Japan",
-            "source_key": "digital-agency-japan",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://www.digital.go.jp/",
-            "allowed_domain": "www.digital.go.jp",
-            "country": "jp",
-            "city": "",
-            "language": "ja",
-            "default_category": "policy_update",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official policy updates. Manual review required before publishing.",
-            "crawl_interval_minutes": 360,
-        },
-        {
-            "name": "Prime Minister of Japan and His Cabinet",
-            "source_key": "japan-cabinet",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://japan.kantei.go.jp/",
-            "allowed_domain": "japan.kantei.go.jp",
-            "country": "jp",
-            "city": "",
-            "language": "en",
-            "default_category": "policy_update",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official Cabinet updates. Link to source and summarize only.",
-            "crawl_interval_minutes": 360,
-        },
-        {
-            "name": "Tokyo Metro",
-            "source_key": "tokyo-metro",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://www.tokyometro.jp/",
-            "allowed_domain": "www.tokyometro.jp",
-            "country": "jp",
-            "city": "tokyo",
-            "language": "ja",
-            "default_category": "traffic_alert",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official transport notices. Use links, short summaries, and review before publishing.",
-            "crawl_interval_minutes": 60,
-        },
-        {
-            "name": "JR East",
-            "source_key": "jr-east",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://www.jreast.co.jp/",
-            "allowed_domain": "www.jreast.co.jp",
-            "country": "jp",
-            "city": "tokyo",
-            "language": "ja",
-            "default_category": "traffic_alert",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official transport notices. Use links, short summaries, and review before publishing.",
-            "crawl_interval_minutes": 60,
-        },
-        {
-            "name": "JR West",
-            "source_key": "jr-west",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://www.westjr.co.jp/",
-            "allowed_domain": "www.westjr.co.jp",
-            "country": "jp",
-            "city": "osaka",
-            "language": "ja",
-            "default_category": "traffic_alert",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official transport notices. Use links, short summaries, and review before publishing.",
-            "crawl_interval_minutes": 60,
-        },
-        {
-            "name": "Immigration Services Agency of Japan",
-            "source_key": "japan-immigration-services-agency",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://www.moj.go.jp/isa/",
-            "allowed_domain": "www.moj.go.jp",
-            "country": "jp",
-            "city": "",
-            "language": "ja",
-            "default_category": "immigration_visa",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official immigration updates. Manual review and source attribution required.",
-            "crawl_interval_minutes": 360,
-        },
-        {
-            "name": "Tokyo Tourism / Events",
-            "source_key": "tokyo-tourism-events",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://www.gotokyo.org/",
-            "allowed_domain": "www.gotokyo.org",
-            "country": "jp",
-            "city": "tokyo",
-            "language": "ja",
-            "default_category": "city_event",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official tourism/event listings. Store list metadata only; do not reuse images.",
-            "crawl_interval_minutes": 360,
-        },
-        {
-            "name": "Osaka Tourism / Events",
-            "source_key": "osaka-tourism-events",
-            "source_type": "manual",
-            "crawl_strategy": "manual",
-            "source_url": "",
-            "homepage_url": "https://osaka-info.jp/",
-            "allowed_domain": "osaka-info.jp",
-            "country": "jp",
-            "city": "osaka",
-            "language": "ja",
-            "default_category": "city_event",
-            "credibility_level": "official",
-            "copyright_policy_note": "Official tourism/event listings. Store list metadata only; do not reuse images.",
-            "crawl_interval_minutes": 360,
-        },
-    ]
-    presets.extend([
-        {"name": "Ministry of Health, Labour and Welfare", "source_key": "mhlw-japan", "homepage_url": "https://www.mhlw.go.jp/", "allowed_domain": "www.mhlw.go.jp", "country": "jp", "city": "", "language": "ja", "default_category": "health", "credibility_level": "official", "crawl_interval_minutes": 120},
-        {"name": "Ministry of Internal Affairs and Communications", "source_key": "mic-japan", "homepage_url": "https://www.soumu.go.jp/", "allowed_domain": "www.soumu.go.jp", "country": "jp", "city": "", "language": "ja", "default_category": "policy_update", "credibility_level": "official", "crawl_interval_minutes": 120},
-        {"name": "Ministry of Foreign Affairs of Japan", "source_key": "mofa-japan", "homepage_url": "https://www.mofa.go.jp/", "allowed_domain": "www.mofa.go.jp", "country": "jp", "city": "", "language": "en", "default_category": "travel", "credibility_level": "official", "crawl_interval_minutes": 120},
-        {"name": "Japan National Tourism Organization", "source_key": "jnto-japan", "homepage_url": "https://www.japan.travel/en/news/", "allowed_domain": "www.japan.travel", "country": "jp", "city": "", "language": "en", "default_category": "travel", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Tokyo Disaster Prevention", "source_key": "tokyo-disaster-prevention", "homepage_url": "https://www.bousai.metro.tokyo.lg.jp/", "allowed_domain": "www.bousai.metro.tokyo.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "public_safety", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Tokyo Convention & Visitors Bureau", "source_key": "tokyo-convention-visitors-bureau", "homepage_url": "https://www.gotokyo.org/en/", "allowed_domain": "www.gotokyo.org", "country": "jp", "city": "tokyo", "language": "en", "default_category": "travel", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Shinjuku City", "source_key": "shinjuku-city", "homepage_url": "https://www.city.shinjuku.lg.jp/", "allowed_domain": "www.city.shinjuku.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Shibuya City", "source_key": "shibuya-city", "homepage_url": "https://www.city.shibuya.tokyo.jp/", "allowed_domain": "www.city.shibuya.tokyo.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Toshima City", "source_key": "toshima-city", "homepage_url": "https://www.city.toshima.lg.jp/", "allowed_domain": "www.city.toshima.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Nakano City", "source_key": "nakano-city", "homepage_url": "https://www.city.tokyo-nakano.lg.jp/", "allowed_domain": "www.city.tokyo-nakano.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Setagaya City", "source_key": "setagaya-city", "homepage_url": "https://www.city.setagaya.lg.jp/", "allowed_domain": "www.city.setagaya.lg.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Minato City", "source_key": "minato-city", "homepage_url": "https://www.city.minato.tokyo.jp/", "allowed_domain": "www.city.minato.tokyo.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Osaka City", "source_key": "osaka-city", "homepage_url": "https://www.city.osaka.lg.jp/", "allowed_domain": "www.city.osaka.lg.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Osaka Disaster Prevention", "source_key": "osaka-disaster-prevention", "homepage_url": "https://www.pref.osaka.lg.jp/kikikanri/", "allowed_domain": "www.pref.osaka.lg.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "public_safety", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Toei Transportation", "source_key": "toei-transportation", "homepage_url": "https://www.kotsu.metro.tokyo.jp/", "allowed_domain": "www.kotsu.metro.tokyo.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Osaka Metro", "source_key": "osaka-metro", "homepage_url": "https://subway.osakametro.co.jp/", "allowed_domain": "subway.osakametro.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Keio Railway", "source_key": "keio-railway", "homepage_url": "https://www.keio.co.jp/", "allowed_domain": "www.keio.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Odakyu Electric Railway", "source_key": "odakyu-railway", "homepage_url": "https://www.odakyu.jp/", "allowed_domain": "www.odakyu.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Tokyu Railways", "source_key": "tokyu-railways", "homepage_url": "https://www.tokyu.co.jp/", "allowed_domain": "www.tokyu.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Seibu Railway", "source_key": "seibu-railway", "homepage_url": "https://www.seiburailway.jp/", "allowed_domain": "www.seiburailway.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Tobu Railway", "source_key": "tobu-railway", "homepage_url": "https://www.tobu.co.jp/", "allowed_domain": "www.tobu.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Keisei Electric Railway", "source_key": "keisei-railway", "homepage_url": "https://www.keisei.co.jp/", "allowed_domain": "www.keisei.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Keikyu Corporation", "source_key": "keikyu-railway", "homepage_url": "https://www.keikyu.co.jp/", "allowed_domain": "www.keikyu.co.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Hankyu Railway", "source_key": "hankyu-railway", "homepage_url": "https://www.hankyu.co.jp/", "allowed_domain": "www.hankyu.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Hanshin Electric Railway", "source_key": "hanshin-railway", "homepage_url": "https://rail.hanshin.co.jp/", "allowed_domain": "rail.hanshin.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Kintetsu Railway", "source_key": "kintetsu-railway", "homepage_url": "https://www.kintetsu.co.jp/", "allowed_domain": "www.kintetsu.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Keihan Railway", "source_key": "keihan-railway", "homepage_url": "https://www.keihan.co.jp/", "allowed_domain": "www.keihan.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "Nankai Electric Railway", "source_key": "nankai-railway", "homepage_url": "https://www.nankai.co.jp/", "allowed_domain": "www.nankai.co.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "traffic_alert", "credibility_level": "official", "crawl_interval_minutes": 30},
-        {"name": "NHK News", "source_key": "nhk-news", "source_type": "rss", "crawl_strategy": "rss", "source_url": "https://www3.nhk.or.jp/rss/news/cat0.xml", "homepage_url": "https://www3.nhk.or.jp/news/", "allowed_domain": "www3.nhk.or.jp", "country": "jp", "city": "", "language": "ja", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 60},
-        {"name": "NHK Shutoken", "source_key": "nhk-shutoken", "homepage_url": "https://www.nhk.or.jp/shutoken/", "allowed_domain": "www.nhk.or.jp", "country": "jp", "city": "tokyo", "language": "ja", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 60},
-        {"name": "NHK Kansai", "source_key": "nhk-kansai", "homepage_url": "https://www.nhk.or.jp/osaka/", "allowed_domain": "www.nhk.or.jp", "country": "jp", "city": "osaka", "language": "ja", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 60},
-        {"name": "Kyodo News", "source_key": "kyodo-news", "homepage_url": "https://english.kyodonews.net/", "allowed_domain": "english.kyodonews.net", "country": "jp", "city": "", "language": "en", "default_category": "economy", "credibility_level": "media", "crawl_interval_minutes": 120},
-        {"name": "The Japan Times", "source_key": "japan-times", "source_type": "rss", "crawl_strategy": "rss", "source_url": "https://www.japantimes.co.jp/feed/", "homepage_url": "https://www.japantimes.co.jp/", "allowed_domain": "www.japantimes.co.jp", "country": "jp", "city": "", "language": "en", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 120},
-        {"name": "Nippon.com", "source_key": "nippon-com", "homepage_url": "https://www.nippon.com/en/", "allowed_domain": "www.nippon.com", "country": "jp", "city": "", "language": "en", "default_category": "culture", "credibility_level": "media", "crawl_interval_minutes": 120},
-        {"name": "Time Out Tokyo", "source_key": "time-out-tokyo", "homepage_url": "https://www.timeout.com/tokyo", "allowed_domain": "www.timeout.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "city_event", "credibility_level": "media", "crawl_interval_minutes": 360},
-        {"name": "Tokyo Cheapo", "source_key": "tokyo-cheapo", "homepage_url": "https://tokyocheapo.com/", "allowed_domain": "tokyocheapo.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "travel", "credibility_level": "media", "crawl_interval_minutes": 360},
-        {"name": "Savvy Tokyo", "source_key": "savvy-tokyo", "homepage_url": "https://savvytokyo.com/", "allowed_domain": "savvytokyo.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "life_notice", "credibility_level": "media", "crawl_interval_minutes": 360},
-        {"name": "Tokyo Art Beat", "source_key": "tokyo-art-beat", "homepage_url": "https://www.tokyoartbeat.com/en/events", "allowed_domain": "www.tokyoartbeat.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "culture", "credibility_level": "media", "crawl_interval_minutes": 360},
-        {"name": "Peatix Tokyo Public Events", "source_key": "peatix-tokyo-public-events", "homepage_url": "https://peatix.com/search?q=Tokyo", "allowed_domain": "peatix.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "city_event", "credibility_level": "commercial", "crawl_interval_minutes": 360},
-        {"name": "Peatix Osaka Public Events", "source_key": "peatix-osaka-public-events", "homepage_url": "https://peatix.com/search?q=Osaka", "allowed_domain": "peatix.com", "country": "jp", "city": "osaka", "language": "en", "default_category": "city_event", "credibility_level": "commercial", "crawl_interval_minutes": 360},
-        {"name": "Meetup Tokyo Public Events", "source_key": "meetup-tokyo-public-events", "homepage_url": "https://www.meetup.com/find/?location=jp--Tokyo", "allowed_domain": "www.meetup.com", "country": "jp", "city": "tokyo", "language": "en", "default_category": "city_event", "credibility_level": "commercial", "crawl_interval_minutes": 360},
-        {"name": "Meetup Osaka Public Events", "source_key": "meetup-osaka-public-events", "homepage_url": "https://www.meetup.com/find/?location=jp--Osaka", "allowed_domain": "www.meetup.com", "country": "jp", "city": "osaka", "language": "en", "default_category": "city_event", "credibility_level": "commercial", "crawl_interval_minutes": 360},
-        {"name": "University of Tokyo News", "source_key": "university-of-tokyo-news", "homepage_url": "https://www.u-tokyo.ac.jp/en/news/", "allowed_domain": "www.u-tokyo.ac.jp", "country": "jp", "city": "tokyo", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Waseda University News", "source_key": "waseda-university-news", "homepage_url": "https://www.waseda.jp/top/en/news", "allowed_domain": "www.waseda.jp", "country": "jp", "city": "tokyo", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Keio University News", "source_key": "keio-university-news", "homepage_url": "https://www.keio.ac.jp/en/news/", "allowed_domain": "www.keio.ac.jp", "country": "jp", "city": "tokyo", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Osaka University News", "source_key": "osaka-university-news", "homepage_url": "https://www.osaka-u.ac.jp/en/news", "allowed_domain": "www.osaka-u.ac.jp", "country": "jp", "city": "osaka", "language": "en", "default_category": "education", "credibility_level": "official", "crawl_interval_minutes": 360},
-    ])
-    presets.extend([
-        {"name": "Ministry of Justice Japan", "source_key": "moj-japan-rss", "homepage_url": "https://www.moj.go.jp/", "allowed_domain": "www.moj.go.jp", "country": "jp", "city": "", "language": "ja", "default_category": "legal_notice", "credibility_level": "official", "crawl_interval_minutes": 360},
-        {"name": "Japan Today", "source_key": "japan-today-reference", "homepage_url": "https://japantoday.com/", "allowed_domain": "japantoday.com", "country": "jp", "city": "", "language": "en", "default_category": "local_news", "credibility_level": "media", "crawl_interval_minutes": 180},
-        {"name": "Tokyo Taito City Official", "source_key": "taito-city", "homepage_url": "https://www.city.taito.lg.jp/", "allowed_domain": "www.city.taito.lg.jp", "country": "jp", "city": "tokyo", "sub_city": "taito", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
-        {"name": "Tokyo Chiyoda City Official", "source_key": "chiyoda-city", "homepage_url": "https://www.city.chiyoda.lg.jp/", "allowed_domain": "www.city.chiyoda.lg.jp", "country": "jp", "city": "tokyo", "sub_city": "chiyoda", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
-        {"name": "Tokyo Suginami City Official", "source_key": "suginami-city", "homepage_url": "https://www.city.suginami.tokyo.jp/", "allowed_domain": "www.city.suginami.tokyo.jp", "country": "jp", "city": "tokyo", "sub_city": "suginami", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
-        {"name": "Osaka Chuo Ward Official", "source_key": "osaka-chuo-ward", "homepage_url": "https://www.city.osaka.lg.jp/chuo/", "allowed_domain": "www.city.osaka.lg.jp", "country": "jp", "city": "osaka", "sub_city": "chuo", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
-        {"name": "Osaka Kita Ward Official", "source_key": "osaka-kita-ward", "homepage_url": "https://www.city.osaka.lg.jp/kita/", "allowed_domain": "www.city.osaka.lg.jp", "country": "jp", "city": "osaka", "sub_city": "kita", "language": "ja", "default_category": "life_notice", "credibility_level": "official", "crawl_interval_minutes": 720},
-    ])
-    source_overrides: dict[str, dict[str, Any]] = {
-        "digital-agency-japan": {
-            "source_type": "rss", "crawl_strategy": "rss", "source_url": "https://www.digital.go.jp/rss/news.xml",
-            "source_tier": "tier_1_official", "copyright_policy": "metadata_only",
-            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium",
-            "crawl_interval_minutes": 240, "max_items_per_run": 20, "default_category": "digital_life",
-        },
-        "japan-cabinet": {
-            "source_tier": "tier_1_official", "copyright_policy": "official_attribution",
-            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high",
-            "crawl_interval_minutes": 240, "default_category": "policy_update",
-        },
-        "jma-japan-weather": {
-            "source_type": "metadata", "crawl_strategy": "meta_only", "source_url": "https://www.jma.go.jp/jma/index.html",
-            "source_tier": "tier_1_official", "copyright_policy": "metadata_only",
-            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high",
-            "crawl_interval_minutes": 30, "max_items_per_run": 20,
-        },
-        "moj-japan-rss": {
-            "source_type": "metadata", "crawl_strategy": "meta_only", "source_url": "https://www.moj.go.jp/",
-            "source_tier": "tier_1_official", "copyright_policy": "metadata_only",
-            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high",
-            "max_items_per_run": 20,
-        },
-        "japan-immigration-services-agency": {
-            "source_type": "metadata", "crawl_strategy": "meta_only", "source_url": "https://www.moj.go.jp/isa/",
-            "source_tier": "tier_1_official", "copyright_policy": "metadata_only",
-            "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high",
-            "crawl_interval_minutes": 360, "max_items_per_run": 20,
-        },
-        "mhlw-japan": {
-            "source_type": "manual_reference", "crawl_strategy": "manual",
-            "source_tier": "tier_5_manual_reference", "copyright_policy": "redistribution_restricted",
-            "allow_auto_draft": False, "auto_create_draft": False, "allow_auto_publish": False,
-            "official_auto_publish": False, "risk_level": "high",
-            "copyright_policy_note": "MHLW RSS redistribution is restricted. Keep this as a manual editorial reference only.",
-            "crawl_interval_minutes": 720, "max_items_per_run": 10,
-        },
-        "tokyo-metropolitan-government": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 240, "max_items_per_run": 30},
-        "tokyo-disaster-prevention": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "high", "crawl_interval_minutes": 60, "max_items_per_run": 20},
-        "tokyo-tourism-events": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event", "crawl_interval_minutes": 360},
-        "osaka-city": {"source_tier": "tier_2_city_official", "copyright_policy": "cc_by", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 240, "max_items_per_run": 30},
-        "osaka-government": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 240, "max_items_per_run": 30},
-        "osaka-tourism-events": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event", "crawl_interval_minutes": 360},
-        "jr-east": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30, "max_items_per_run": 30},
-        "jr-west": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30, "max_items_per_run": 20},
-        "tokyo-metro": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30},
-        "toei-transportation": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30},
-        "osaka-metro": {"source_tier": "tier_2_city_official", "allow_auto_draft": True, "auto_create_draft": True, "risk_level": "medium", "crawl_interval_minutes": 30},
-        "nhk-news": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "allow_auto_publish": False, "official_auto_publish": False, "crawl_interval_minutes": 120},
-        "nhk-shutoken": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 120},
-        "nhk-kansai": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 120},
-        "japan-times": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 180},
-        "japan-today-reference": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 180},
-        "nippon-com": {"source_tier": "tier_3_public_media", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "crawl_interval_minutes": 240},
-        "time-out-tokyo": {"source_tier": "tier_4_event_lifestyle", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event", "crawl_interval_minutes": 360},
-        "tokyo-art-beat": {"source_tier": "tier_4_event_lifestyle", "copyright_policy": "metadata_only", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event", "crawl_interval_minutes": 360},
-        "peatix-tokyo-public-events": {"source_tier": "tier_4_event_lifestyle", "credibility_level": "event_platform", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event"},
-        "peatix-osaka-public-events": {"source_tier": "tier_4_event_lifestyle", "credibility_level": "event_platform", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event"},
-        "meetup-tokyo-public-events": {"source_tier": "tier_4_event_lifestyle", "credibility_level": "event_platform", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event"},
-        "meetup-osaka-public-events": {"source_tier": "tier_4_event_lifestyle", "credibility_level": "event_platform", "allow_auto_draft": True, "auto_create_draft": True, "default_category": "city_event"},
-    }
-    for src in presets:
-        src.update(source_overrides.get(src.get("source_key", ""), {}))
-    for src in presets:
-        src.setdefault("source_type", "webpage")
-        src.setdefault("crawl_strategy", "meta_only")
-        src.setdefault("source_url", src.get("homepage_url", ""))
-        if not src.get("source_url") and src.get("homepage_url"):
-            src["source_url"] = src["homepage_url"]
-        if src.get("source_type") == "manual" and src.get("source_url"):
-            src["source_type"] = "webpage"
-        if src.get("source_type") == "manual_reference":
-            src["crawl_strategy"] = "manual"
-        if src.get("crawl_strategy") == "manual" and src.get("source_url") and src.get("source_type") not in {"manual", "manual_reference"}:
-            src["crawl_strategy"] = "meta_only"
-        src.setdefault("copyright_policy_note", "Store metadata and source links only; do not republish full text.")
-        src.setdefault("copyright_policy", _normalize_copyright_policy(src.get("copyright_policy"), src.get("copyright_policy_note")))
-        src.setdefault("sub_city", "")
-        src.setdefault("max_items_per_run", 30)
-        src.setdefault("request_timeout_ms", 15000)
-        src.setdefault("require_manual_review", True)
-        src.setdefault("allow_auto_draft", bool(src.get("auto_create_draft", False)))
-        src.setdefault("allow_auto_publish", bool(src.get("official_auto_publish", False)))
-        src.setdefault("auto_create_draft", bool(src.get("allow_auto_draft", False)))
-        src.setdefault("official_auto_publish", bool(src.get("allow_auto_publish", False)))
-        src.setdefault("content_rewrite_required", True)
-        src.setdefault("source_tier", _normalize_source_tier(
-            src.get("source_tier"),
-            credibility=_normalize_credibility(src.get("credibility_level")),
-            city=_normalize_news_city(src.get("city")),
-            source_type=_normalize_source_type(src.get("source_type")),
-            crawl_strategy=_normalize_crawl_strategy(src.get("crawl_strategy"), _normalize_source_type(src.get("source_type"))),
-        ))
-        src.setdefault("risk_level", _normalize_risk_level(src.get("risk_level"), _normalize_news_category(src.get("default_category"))))
-        src.setdefault("is_active", True)
-    result = {"created": 0, "updated": 0, "skipped": 0, "total_presets": len(presets)}
-    for src in presets:
-        existing = conn.execute("SELECT id FROM news_sources WHERE source_key = ?", (src["source_key"],)).fetchone()
-        if existing:
-            conn.execute(
-                """
-                UPDATE news_sources
-                   SET name = ?, source_type = ?, source_url = ?, homepage_url = ?, allowed_domain = ?,
-                       country = ?, city = ?, language = ?, default_category = ?,
-                       credibility_level = ?, copyright_policy_note = ?, crawl_strategy = ?,
-                       max_items_per_run = ?, request_timeout_ms = ?, require_manual_review = ?,
-                       is_active = ?, source_tier = ?, copyright_policy = ?, allow_auto_draft = ?,
-                       allow_auto_publish = ?, auto_create_draft = ?, official_auto_publish = ?,
-                       content_rewrite_required = ?, risk_level = ?, sub_city = ?, updated_at = ?
-                 WHERE source_key = ?
-                """,
-                (
-                    src["name"], src["source_type"], src["source_url"], src["homepage_url"], src["allowed_domain"],
-                    src["country"], src["city"], src["language"], src["default_category"],
-                    src["credibility_level"], src["copyright_policy_note"], src["crawl_strategy"],
-                    src["max_items_per_run"], src["request_timeout_ms"], 1 if src["require_manual_review"] else 0,
-                    1 if src["is_active"] else 0, src["source_tier"], src["copyright_policy"],
-                    1 if src["allow_auto_draft"] else 0, 1 if src["allow_auto_publish"] else 0,
-                    1 if src["auto_create_draft"] else 0, 1 if src["official_auto_publish"] else 0,
-                    1 if src["content_rewrite_required"] else 0, src["risk_level"], src.get("sub_city", ""),
-                    now, src["source_key"],
-                ),
-            )
-            result["updated"] += 1
-            continue
-        conn.execute(
-            """
-            INSERT INTO news_sources
-                (id, name, source_key, source_type, source_url, homepage_url, allowed_domain,
-                 country, city, language, default_category, credibility_level, copyright_policy_note,
-                 crawl_strategy, crawl_interval_minutes, max_items_per_run, request_timeout_ms,
-                 is_active, require_manual_review, auto_create_draft, official_auto_publish,
-                 source_tier, copyright_policy, allow_auto_draft, allow_auto_publish,
-                 content_rewrite_required, risk_level, sub_city, created_by_admin_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
-            """,
-            (
-                str(uuid.uuid4()), src["name"], src["source_key"], src["source_type"], src["source_url"],
-                src["homepage_url"], src["allowed_domain"], src["country"], src["city"], src["language"],
-                src["default_category"], src["credibility_level"], src["copyright_policy_note"],
-                src["crawl_strategy"], src["crawl_interval_minutes"], src["max_items_per_run"],
-                src["request_timeout_ms"], 1 if src["is_active"] else 0, 1 if src["require_manual_review"] else 0,
-                1 if src["auto_create_draft"] else 0, 1 if src["official_auto_publish"] else 0,
-                src["source_tier"], src["copyright_policy"], 1 if src["allow_auto_draft"] else 0,
-                1 if src["allow_auto_publish"] else 0, 1 if src["content_rewrite_required"] else 0,
-                src["risk_level"], src.get("sub_city", ""), now, now,
-            ),
-        )
-        result["created"] += 1
-    return result
-
-
-# =====================================================================
-# Machi Guide / 日本指南 — canonical content contract + serializers + seed
-#
-# This module is the SINGLE SOURCE OF TRUTH for the Guide taxonomy. Both
-# Web and iOS render from the API response (categories / goalEntries /
-# faq are data-driven, never hardcoded on the client), so the category
-# keys are guaranteed identical across platforms.
-#
-# Region rule: the structure is multi-region ready (every row carries a
-# `country`), but the front-end only opens Japan today. Any country other
-# than 'jp' gets a coming_soon payload with empty arrays.
-# =====================================================================
-
 GUIDE_DEFAULT_COUNTRY = "jp"
 GUIDE_OPEN_COUNTRIES = {"jp"}
 GUIDE_CAPITAL_PREFECTURES = {"tokyo", "kanagawa", "chiba", "saitama"}
 GUIDE_KANSAI_PREFECTURES = {"osaka", "kyoto", "hyogo", "nara", "shiga", "wakayama"}
-
 GUIDE_HERO = {
     "title": "日本指南",
     "subtitle": "留学、升学、就职、日语考试和在日生活服务。",
@@ -3769,173 +3356,22 @@ GUIDE_HERO = {
     "searchPlaceholder": "搜索学校、升学、就职、日语、签证、公司、面试和生活资料",
     "quickTags": ["日本学校库", "外国人就职公司", "大学院", "语言学校", "就职", "面试", "JLPT", "签证"],
 }
-
+GUIDE_GOAL_TITLE = "你现在想做什么？"
 GUIDE_EMPTY_STATE = {
     "title": "指南内容暂未开放",
     "body": "Machi Guide 目前优先整理日本地区的升学、就职、留学和生活资料。其他国家和地区将陆续开放。",
     "action": "切换到日本地区",
     "actionCountry": "jp",
 }
-
-GUIDE_GOAL_TITLE = "你现在想做什么？"
-
-GUIDE_REVIEW_DISCLAIMER = "评论内容来自用户个人经验，仅供参考。请勿发布个人隐私、商业机密或未经证实的严重指控。"
 GUIDE_SCHOOL_DISCLAIMER = "学校信息由 Machi 编辑部根据公开资料和人工整理维护，可能存在更新延迟。申请前请以学校官网、招生简章和官方说明为准。"
 GUIDE_COMPANY_DISCLAIMER = "公司信息和评论由 Machi 编辑部整理及用户提交，仅供参考。求职前请以公司官网、招聘页面和正式说明为准。请勿发布隐私、机密或未经证实的严重指控。"
+GUIDE_REVIEW_DISCLAIMER = "评论内容来自用户个人经验，仅供参考。请勿发布个人隐私、商业机密或未经证实的严重指控。"
 
-GUIDE_RESOURCE_ENTRIES: list[dict[str, str]] = [
-    {
-        "key": "japan_schools",
-        "title": "日本学校库",
-        "description": "查找日本大学、大学院、专门学校、语言学校和留学生申请信息。",
-        "icon": "school",
-        "href": "/guide/schools",
-    },
-    {
-        "key": "foreigner_friendly_companies",
-        "title": "外国人就职公司库",
-        "description": "查找适合外国人就职的日本公司、行业、岗位、面试经验和工作评价。",
-        "icon": "building",
-        "href": "/guide/companies",
-    },
-]
+def _normalize_language_tag(raw: Any) -> str:
+    value = str(raw or "zh-CN").strip()
+    aliases = {"zh": "zh-CN", "zh-cn": "zh-CN", "zh-hans": "zh-CN", "en-us": "en", "en-gb": "en", "jp": "ja"}
+    return aliases.get(value.lower(), value if value in {"zh-CN", "en", "ja"} else value[:16])
 
-GUIDE_UI_I18N: dict[str, dict[str, Any]] = {
-    "en": {
-        "hero": {
-            "title": "Japan Guide",
-            "subtitle": "Study, admissions, careers, JLPT preparation, and daily-life support in Japan.",
-            "note": "Curated by the Machi editorial team to help you prepare for life, study, and work in Japan with a clearer plan.",
-            "searchPlaceholder": "Search schools, admissions, careers, Japanese tests, visas, companies, interviews, and life resources",
-            "quickTags": ["Japan school database", "Foreigner-friendly companies", "Graduate school", "Language schools", "Careers", "Interviews", "JLPT", "Visa"],
-        },
-        "empty": {
-            "title": "Guide content is not available for this region yet",
-            "body": "Machi Guide is currently focused on Japan: study abroad, school admissions, careers, Japanese tests, and daily life. More regions will be added over time.",
-            "action": "Switch to Japan",
-            "actionCountry": "jp",
-        },
-        "goalTitle": "What are you trying to do now?",
-        "reviewDisclaimer": "Reviews are personal experiences submitted by users and are for reference only. Do not post private information, trade secrets, or serious claims that cannot be verified.",
-        "schoolDisclaimer": "School information is curated from public sources and manual editorial review. It may lag behind official updates. Always confirm details with the school's official website and latest admission guidelines before applying.",
-        "companyDisclaimer": "Company information and reviews are curated by the Machi editorial team and submitted by users for reference only. Always confirm career information with the company's official website or recruiting pages. Do not post private, confidential, or unverified serious claims.",
-    },
-    "ja": {
-        "hero": {
-            "title": "日本ガイド",
-            "subtitle": "留学、進学、就職、JLPT 対策、日本での生活手続きを整理しています。",
-            "note": "Machi 編集部が、日本での生活・学習・仕事を計画的に準備できるよう整理しています。",
-            "searchPlaceholder": "学校、進学、就職、日本語試験、ビザ、会社、面接、生活資料を検索",
-            "quickTags": ["日本の学校データベース", "外国人向け就職会社", "大学院", "日本語学校", "就職", "面接", "JLPT", "ビザ"],
-        },
-        "empty": {
-            "title": "この地域のガイドはまだ公開されていません",
-            "body": "Machi Guide は現在、日本の留学、進学、就職、日本語試験、生活情報を中心に整理しています。ほかの国・地域も順次追加予定です。",
-            "action": "日本地域に切り替える",
-            "actionCountry": "jp",
-        },
-        "goalTitle": "今、何を準備したいですか？",
-        "reviewDisclaimer": "レビューはユーザー個人の体験に基づく参考情報です。個人情報、営業秘密、確認できない重大な主張は投稿しないでください。",
-        "schoolDisclaimer": "学校情報は公開資料と編集部の確認に基づいて整理していますが、更新が遅れる場合があります。出願前に必ず学校公式サイト・募集要項・公式案内をご確認ください。",
-        "companyDisclaimer": "会社情報とレビューは Machi 編集部の整理およびユーザー投稿に基づく参考情報です。応募前に会社公式サイトや採用ページで最新情報を確認してください。個人情報、機密情報、未確認の重大な主張は投稿しないでください。",
-    },
-}
-
-GUIDE_CATEGORY_I18N: dict[str, dict[str, dict[str, str]]] = {
-    "study_japan": {
-        "en": {"title": "Study in Japan", "subtitle": "Graduate school, vocational schools, transfer admissions", "description": "Graduate school, vocational schools, transfer admissions, research plans, contacting professors, and application documents."},
-        "ja": {"title": "日本進学", "subtitle": "大学院・専門学校・編入", "description": "大学院、専門学校、学部編入、研究計画書、教授連絡、出願書類を整理しています。"},
-    },
-    "career_japan": {
-        "en": {"title": "Careers in Japan", "subtitle": "Job hunting, resumes, interviews, offers", "description": "Japanese job-hunting flow, resumes, entry sheets, interviews, offers, visa changes, and industry research."},
-        "ja": {"title": "日本就職", "subtitle": "就活・履歴書・面接・内定", "description": "日本の就職活動、履歴書、ES、面接、内定、在留資格変更、業界選びを整理しています。"},
-    },
-    "study_abroad_japan": {
-        "en": {"title": "Study Abroad in Japan", "subtitle": "Language schools, visas, arrival", "description": "Language schools, study-abroad documents, visas, arrival preparation, costs, and application flow."},
-        "ja": {"title": "留学申請", "subtitle": "日本語学校・ビザ・入国準備", "description": "日本語学校、留学書類、ビザ、入国準備、費用、申請の流れを整理しています。"},
-    },
-    "jlpt": {
-        "en": {"title": "Japanese Tests", "subtitle": "JLPT N5-N1, vocabulary and grammar", "description": "JLPT N5-N1, vocabulary, grammar, reading, listening, study plans, and resource packs."},
-        "ja": {"title": "日本語試験", "subtitle": "JLPT N5-N1・語彙文法", "description": "JLPT N5-N1、語彙、文法、読解、聴解、学習計画、資料パックを整理しています。"},
-    },
-    "life_japan": {
-        "en": {"title": "Life in Japan", "subtitle": "Residence card, city hall, housing, part-time work", "description": "Residence cards, city-hall procedures, housing, part-time work, bank accounts, SIM cards, insurance, and daily-life checklists."},
-        "ja": {"title": "日本生活", "subtitle": "在留カード・役所・住まい・アルバイト", "description": "在留カード、役所手続き、住まい、アルバイト、銀行口座、スマホ、保険、生活の注意点を整理しています。"},
-    },
-    "guide_services": {
-        "en": {"title": "Resources and Services", "subtitle": "Resource packs, templates, consultation", "description": "Resource packs, templates, courses, consultation, resume review, research-plan review, and application coaching."},
-        "ja": {"title": "資料とサービス", "subtitle": "資料パック・テンプレート・相談", "description": "資料パック、テンプレート、講座、相談、履歴書添削、研究計画書レビュー、申請サポートを整理しています。"},
-    },
-}
-
-GUIDE_SUBCATEGORY_I18N: dict[str, dict[str, str]] = {
-    "graduate_school": {"en": "Graduate school applications", "ja": "大学院申請"},
-    "research_plan": {"en": "Research plan", "ja": "研究計画書"},
-    "professor_contact": {"en": "Contacting professors", "ja": "教授連絡"},
-    "application_documents": {"en": "Application documents", "ja": "出願書類"},
-    "undergraduate_transfer": {"en": "Undergraduate transfer", "ja": "学部・編入"},
-    "vocational_school": {"en": "Vocational schools", "ja": "専門学校"},
-    "scholarship": {"en": "Scholarships", "ja": "奨学金"},
-    "admission_interview": {"en": "Admissions interview", "ja": "面接"},
-    "job_hunting_flow": {"en": "Job-hunting flow", "ja": "就職活動の流れ"},
-    "rirekisho": {"en": "Japanese resume", "ja": "履歴書"},
-    "shokumukeirekisho": {"en": "Work-history document", "ja": "職務経歴書"},
-    "entry_sheet": {"en": "Entry sheet and motivation", "ja": "ES・志望動機"},
-    "job_interview": {"en": "Interviews", "ja": "面接"},
-    "company_selection": {"en": "Choosing companies", "ja": "会社選び"},
-    "company_reviews": {"en": "Company reviews", "ja": "会社レビュー"},
-    "work_visa": {"en": "Work visa change", "ja": "就労ビザ変更"},
-    "industry_guides": {"en": "Industry guides", "ja": "業界ガイド"},
-    "language_school": {"en": "Language school applications", "ja": "日本語学校申請"},
-    "student_visa": {"en": "Student visa", "ja": "留学ビザ"},
-    "arrival_preparation": {"en": "Arrival preparation", "ja": "入国準備"},
-    "study_cost": {"en": "Study costs", "ja": "留学費用"},
-    "school_selection": {"en": "Choosing schools", "ja": "学校選び"},
-    "vocabulary": {"en": "Vocabulary", "ja": "語彙"},
-    "grammar": {"en": "Grammar", "ja": "文法"},
-    "reading": {"en": "Reading", "ja": "読解"},
-    "listening": {"en": "Listening", "ja": "聴解"},
-    "study_plan": {"en": "Study plan", "ja": "学習計画"},
-    "mock_test": {"en": "Mock tests", "ja": "模擬問題"},
-    "jlpt_materials": {"en": "Resource packs", "ja": "資料パック"},
-    "residence_card": {"en": "Residence card", "ja": "在留カード"},
-    "city_hall": {"en": "City-hall procedures", "ja": "役所手続き"},
-    "health_insurance": {"en": "Health insurance", "ja": "国民健康保険"},
-    "pension": {"en": "Pension", "ja": "年金"},
-    "bank_account": {"en": "Bank account", "ja": "銀行口座"},
-    "mobile_sim": {"en": "Mobile SIM", "ja": "スマホ・SIM"},
-    "renting": {"en": "Housing", "ja": "住まい"},
-    "moving": {"en": "Moving", "ja": "引っ越し"},
-    "part_time_job": {"en": "Part-time work", "ja": "アルバイト"},
-    "tax": {"en": "Tax", "ja": "税金"},
-    "transportation": {"en": "Transport", "ja": "交通"},
-    "medical": {"en": "Medical care", "ja": "医療"},
-    "life_tips": {"en": "Life tips", "ja": "生活の注意点"},
-    "service_materials": {"en": "Resource packs", "ja": "資料パック"},
-    "service_templates": {"en": "Templates", "ja": "テンプレート"},
-    "service_consultation": {"en": "Consultation", "ja": "相談サポート"},
-}
-
-GUIDE_GOAL_I18N: dict[str, dict[str, str]] = {
-    "goal_study_abroad": {"en": "I want to study in Japan", "ja": "日本に留学したい"},
-    "goal_language_school": {"en": "I want to apply to a language school", "ja": "日本語学校に申請したい"},
-    "goal_graduate_school": {"en": "I want to apply to graduate school", "ja": "大学院に申請したい"},
-    "goal_find_job": {"en": "I want to find a job in Japan", "ja": "日本で仕事を探したい"},
-    "goal_jlpt": {"en": "I want to prepare for the JLPT", "ja": "日本語試験を準備したい"},
-    "goal_life_setup": {"en": "I want to understand daily-life procedures", "ja": "日本生活の手続きを知りたい"},
-    "goal_buy_materials": {"en": "I want resources or consultation", "ja": "資料購入・相談をしたい"},
-}
-
-GUIDE_RESOURCE_I18N: dict[str, dict[str, dict[str, str]]] = {
-    "japan_schools": {
-        "en": {"title": "Japan School Database", "description": "Find universities, graduate schools, vocational schools, language schools, and application information for international students."},
-        "ja": {"title": "日本の学校データベース", "description": "大学、大学院、専門学校、日本語学校、留学生向けの出願情報を探せます。"},
-    },
-    "foreigner_friendly_companies": {
-        "en": {"title": "Foreigner-Friendly Company Database", "description": "Find Japanese companies, industries, roles, interview notes, and workplace reviews for international job seekers."},
-        "ja": {"title": "外国人向け就職会社データベース", "description": "外国人が応募しやすい日本企業、業界、職種、面接情報、勤務レビューを探せます。"},
-    },
-}
 
 GUIDE_ARTICLE_I18N: dict[str, dict[str, dict[str, str]]] = {
     "graduate-school-full-process": {
@@ -4012,31 +3448,33 @@ GUIDE_ARTICLE_I18N: dict[str, dict[str, dict[str, str]]] = {
     },
 }
 
-GUIDE_PRODUCT_BASE_I18N: dict[str, dict[str, dict[str, str]]] = {
-    "n2-grammar-pack": {
-        "en": {"title": "N2 Grammar Pack", "subtitle": "For N2 preparation and self-study", "description": "Original Machi notes that group high-frequency N2 grammar by meaning, with natural examples and comparisons of similar patterns."},
-        "ja": {"title": "N2 文法整理パック", "subtitle": "N2 対策と自学習向け", "description": "Machi 編集部が N2 の頻出文法を意味別に整理し、自然な例文と似た表現の比較を付けたオリジナル資料です。"},
+GUIDE_CATEGORY_I18N: dict[str, dict[str, dict[str, str]]] = {
+    "study_japan": {
+        "en": {"title": "Study in Japan", "subtitle": "Graduate school, vocational schools, transfer admissions", "description": "Graduate school, vocational schools, transfer admissions, research plans, contacting professors, and application documents."},
+        "ja": {"title": "日本進学", "subtitle": "大学院・専門学校・編入", "description": "大学院、専門学校、学部編入、研究計画書、教授連絡、出願書類を整理しています。"},
     },
-    "research-plan-template-pack": {
-        "en": {"title": "Graduate School Research Plan Template Pack", "subtitle": "Templates, examples, and professor-email samples", "description": "Research-plan structure templates, humanities/science outline examples, and Japanese/English email samples for contacting professors."},
-        "ja": {"title": "大学院研究計画書テンプレートパック", "subtitle": "テンプレート、例、教授連絡メール", "description": "研究計画書の構成テンプレート、文系・理系の例、教授連絡用の日本語・英語メール例をまとめています。"},
+    "career_japan": {
+        "en": {"title": "Careers in Japan", "subtitle": "Job hunting, resumes, interviews, offers", "description": "Japanese job-hunting flow, resumes, entry sheets, interviews, offers, visa changes, and industry research."},
+        "ja": {"title": "日本就職", "subtitle": "就活・履歴書・面接・内定", "description": "日本の就職活動、履歴書、ES、面接、内定、在留資格変更、業界選びを整理しています。"},
     },
-    "rirekisho-review-service": {
-        "en": {"title": "Japanese Resume Review Service", "subtitle": "For people preparing for job hunting in Japan", "description": "Editors or partners with Japan job-hunting experience review your rirekisho and work-history document, covering motivation, self-PR, and formatting."},
-        "ja": {"title": "日本就職・履歴書添削サービス", "subtitle": "就職活動を準備する方向け", "description": "日本就職経験のある編集者・提携者が、履歴書と職務経歴書を確認し、志望動機、自己 PR、形式を中心に改善提案を行います。"},
+    "study_abroad_japan": {
+        "en": {"title": "Study Abroad in Japan", "subtitle": "Language schools, visas, arrival", "description": "Language schools, study-abroad documents, visas, arrival preparation, costs, and application flow."},
+        "ja": {"title": "留学申請", "subtitle": "日本語学校・ビザ・入国準備", "description": "日本語学校、留学書類、ビザ、入国準備、費用、申請の流れを整理しています。"},
     },
-    "language-school-doc-checklist": {
-        "en": {"title": "Language School Application Document Checklist", "subtitle": "Documents to prepare before studying in Japan", "description": "A checklist for common language-school application documents: applicant materials, academic documents, sponsor documents, and timeline reminders."},
-        "ja": {"title": "日本語学校申請書類チェックリスト", "subtitle": "日本留学前の書類準備", "description": "本人書類、学歴書類、経費支弁者書類、提出時期を整理した日本語学校出願用チェックリストです。"},
+    "jlpt": {
+        "en": {"title": "Japanese Tests", "subtitle": "JLPT N5-N1, vocabulary and grammar", "description": "JLPT N5-N1, vocabulary, grammar, reading, listening, study plans, and resource packs."},
+        "ja": {"title": "日本語試験", "subtitle": "JLPT N5-N1・語彙文法", "description": "JLPT N5-N1、語彙、文法、読解、聴解、学習計画、資料パックを整理しています。"},
     },
-    "interview-100-questions": {
-        "en": {"title": "100 Common Japanese Interview Questions", "subtitle": "Prepare for first, second, and final interviews", "description": "High-frequency questions and answer frameworks organized by interview stage and question type, including self-PR, motivation, and reverse questions."},
-        "ja": {"title": "日本面接よくある質問 100", "subtitle": "一次・二次・最終面接の準備", "description": "面接段階と質問タイプ別に、自己 PR、志望動機、逆質問などの頻出質問と回答の考え方を整理しています。"},
+    "life_japan": {
+        "en": {"title": "Life in Japan", "subtitle": "Residence card, city hall, housing, part-time work", "description": "Residence cards, city-hall procedures, housing, part-time work, bank accounts, SIM cards, insurance, and daily-life checklists."},
+        "ja": {"title": "日本生活", "subtitle": "在留カード・役所・住まい・アルバイト", "description": "在留カード、役所手続き、住まい、アルバイト、銀行口座、スマホ、保険、生活の注意点を整理しています。"},
+    },
+    "guide_services": {
+        "en": {"title": "Resources and Services", "subtitle": "Resource packs, templates, consultation", "description": "Resource packs, templates, courses, consultation, resume review, research-plan review, and application coaching."},
+        "ja": {"title": "資料とサービス", "subtitle": "資料パック・テンプレート・相談", "description": "資料パック、テンプレート、講座、相談、履歴書添削、研究計画書レビュー、申請サポートを整理しています。"},
     },
 }
 
-# 6 一级分类 + 子分类。顺序 / key / 图标语义两端一致。icon 是语义 token，
-# 客户端各自映射到自己的图标集（Web=lucide，iOS=SF Symbols）。
 GUIDE_CATEGORY_SEED: list[dict[str, Any]] = [
     {
         "key": "study_japan", "title": "日本升学", "subtitle": "大学院・专门学校・编入",
@@ -4106,24 +3544,6 @@ GUIDE_CATEGORY_SEED: list[dict[str, Any]] = [
     },
 ]
 
-# 用户目标入口（按需求进入，不只按内容分类）。
-GUIDE_GOAL_SEED: list[dict[str, str]] = [
-    {"targetKey": "goal_study_abroad", "title": "我想去日本留学", "categoryKey": "study_abroad_japan", "subCategoryKey": ""},
-    {"targetKey": "goal_language_school", "title": "我想申请语言学校", "categoryKey": "study_abroad_japan", "subCategoryKey": "language_school"},
-    {"targetKey": "goal_graduate_school", "title": "我想申请大学院", "categoryKey": "study_japan", "subCategoryKey": "graduate_school"},
-    {"targetKey": "goal_find_job", "title": "我想在日本找工作", "categoryKey": "career_japan", "subCategoryKey": ""},
-    {"targetKey": "goal_jlpt", "title": "我想准备日语考试", "categoryKey": "jlpt", "subCategoryKey": ""},
-    {"targetKey": "goal_life_setup", "title": "我想了解日本生活手续", "categoryKey": "life_japan", "subCategoryKey": ""},
-    {"targetKey": "goal_buy_materials", "title": "我想买资料或预约咨询", "categoryKey": "guide_services", "subCategoryKey": ""},
-]
-
-GUIDE_TAG_SEED: list[tuple[str, str, str]] = [
-    ("大学院", "graduate_school", "study_japan"), ("语言学校", "language_school", "study_abroad_japan"),
-    ("就职", "job_hunting", "career_japan"), ("面试", "interview", "career_japan"),
-    ("JLPT", "jlpt", "jlpt"), ("签证", "visa", ""),
-    ("租房", "renting", "life_japan"), ("资料包", "materials", "guide_services"),
-]
-
 GUIDE_FAQ_SEED: list[dict[str, str]] = [
     {"q": "语言学校和大学院申请有什么区别？",
      "a": "语言学校面向想先打好日语基础、再升学或就职的人，门槛低、以语言学习和升学指导为主；大学院（修士/博士）是研究生阶段，需要研究计划书、联系教授和出愿材料，对日语或英语成绩、专业背景都有要求。很多人会先读语言学校过渡，再考大学院。",
@@ -4145,6 +3565,172 @@ GUIDE_FAQ_SEED: list[dict[str, str]] = [
      "category_key": ""},
 ]
 
+GUIDE_GOAL_I18N: dict[str, dict[str, str]] = {
+    "goal_study_abroad": {"en": "I want to study in Japan", "ja": "日本に留学したい"},
+    "goal_language_school": {"en": "I want to apply to a language school", "ja": "日本語学校に申請したい"},
+    "goal_graduate_school": {"en": "I want to apply to graduate school", "ja": "大学院に申請したい"},
+    "goal_find_job": {"en": "I want to find a job in Japan", "ja": "日本で仕事を探したい"},
+    "goal_jlpt": {"en": "I want to prepare for the JLPT", "ja": "日本語試験を準備したい"},
+    "goal_life_setup": {"en": "I want to understand daily-life procedures", "ja": "日本生活の手続きを知りたい"},
+    "goal_buy_materials": {"en": "I want resources or consultation", "ja": "資料購入・相談をしたい"},
+}
+
+GUIDE_GOAL_SEED: list[dict[str, str]] = [
+    {"targetKey": "goal_study_abroad", "title": "我想去日本留学", "categoryKey": "study_abroad_japan", "subCategoryKey": ""},
+    {"targetKey": "goal_language_school", "title": "我想申请语言学校", "categoryKey": "study_abroad_japan", "subCategoryKey": "language_school"},
+    {"targetKey": "goal_graduate_school", "title": "我想申请大学院", "categoryKey": "study_japan", "subCategoryKey": "graduate_school"},
+    {"targetKey": "goal_find_job", "title": "我想在日本找工作", "categoryKey": "career_japan", "subCategoryKey": ""},
+    {"targetKey": "goal_jlpt", "title": "我想准备日语考试", "categoryKey": "jlpt", "subCategoryKey": ""},
+    {"targetKey": "goal_life_setup", "title": "我想了解日本生活手续", "categoryKey": "life_japan", "subCategoryKey": ""},
+    {"targetKey": "goal_buy_materials", "title": "我想买资料或预约咨询", "categoryKey": "guide_services", "subCategoryKey": ""},
+]
+
+GUIDE_PRODUCT_BASE_I18N: dict[str, dict[str, dict[str, str]]] = {
+    "n2-grammar-pack": {
+        "en": {"title": "N2 Grammar Pack", "subtitle": "For N2 preparation and self-study", "description": "Original Machi notes that group high-frequency N2 grammar by meaning, with natural examples and comparisons of similar patterns."},
+        "ja": {"title": "N2 文法整理パック", "subtitle": "N2 対策と自学習向け", "description": "Machi 編集部が N2 の頻出文法を意味別に整理し、自然な例文と似た表現の比較を付けたオリジナル資料です。"},
+    },
+    "research-plan-template-pack": {
+        "en": {"title": "Graduate School Research Plan Template Pack", "subtitle": "Templates, examples, and professor-email samples", "description": "Research-plan structure templates, humanities/science outline examples, and Japanese/English email samples for contacting professors."},
+        "ja": {"title": "大学院研究計画書テンプレートパック", "subtitle": "テンプレート、例、教授連絡メール", "description": "研究計画書の構成テンプレート、文系・理系の例、教授連絡用の日本語・英語メール例をまとめています。"},
+    },
+    "rirekisho-review-service": {
+        "en": {"title": "Japanese Resume Review Service", "subtitle": "For people preparing for job hunting in Japan", "description": "Editors or partners with Japan job-hunting experience review your rirekisho and work-history document, covering motivation, self-PR, and formatting."},
+        "ja": {"title": "日本就職・履歴書添削サービス", "subtitle": "就職活動を準備する方向け", "description": "日本就職経験のある編集者・提携者が、履歴書と職務経歴書を確認し、志望動機、自己 PR、形式を中心に改善提案を行います。"},
+    },
+    "language-school-doc-checklist": {
+        "en": {"title": "Language School Application Document Checklist", "subtitle": "Documents to prepare before studying in Japan", "description": "A checklist for common language-school application documents: applicant materials, academic documents, sponsor documents, and timeline reminders."},
+        "ja": {"title": "日本語学校申請書類チェックリスト", "subtitle": "日本留学前の書類準備", "description": "本人書類、学歴書類、経費支弁者書類、提出時期を整理した日本語学校出願用チェックリストです。"},
+    },
+    "interview-100-questions": {
+        "en": {"title": "100 Common Japanese Interview Questions", "subtitle": "Prepare for first, second, and final interviews", "description": "High-frequency questions and answer frameworks organized by interview stage and question type, including self-PR, motivation, and reverse questions."},
+        "ja": {"title": "日本面接よくある質問 100", "subtitle": "一次・二次・最終面接の準備", "description": "面接段階と質問タイプ別に、自己 PR、志望動機、逆質問などの頻出質問と回答の考え方を整理しています。"},
+    },
+}
+
+GUIDE_RESOURCE_ENTRIES: list[dict[str, str]] = [
+    {
+        "key": "japan_schools",
+        "title": "日本学校库",
+        "description": "查找日本大学、大学院、专门学校、语言学校和留学生申请信息。",
+        "icon": "school",
+        "href": "/guide/schools",
+    },
+    {
+        "key": "foreigner_friendly_companies",
+        "title": "外国人就职公司库",
+        "description": "查找适合外国人就职的日本公司、行业、岗位、面试经验和工作评价。",
+        "icon": "building",
+        "href": "/guide/companies",
+    },
+]
+
+GUIDE_RESOURCE_I18N: dict[str, dict[str, dict[str, str]]] = {
+    "japan_schools": {
+        "en": {"title": "Japan School Database", "description": "Find universities, graduate schools, vocational schools, language schools, and application information for international students."},
+        "ja": {"title": "日本の学校データベース", "description": "大学、大学院、専門学校、日本語学校、留学生向けの出願情報を探せます。"},
+    },
+    "foreigner_friendly_companies": {
+        "en": {"title": "Foreigner-Friendly Company Database", "description": "Find Japanese companies, industries, roles, interview notes, and workplace reviews for international job seekers."},
+        "ja": {"title": "外国人向け就職会社データベース", "description": "外国人が応募しやすい日本企業、業界、職種、面接情報、勤務レビューを探せます。"},
+    },
+}
+
+GUIDE_SUBCATEGORY_I18N: dict[str, dict[str, str]] = {
+    "graduate_school": {"en": "Graduate school applications", "ja": "大学院申請"},
+    "research_plan": {"en": "Research plan", "ja": "研究計画書"},
+    "professor_contact": {"en": "Contacting professors", "ja": "教授連絡"},
+    "application_documents": {"en": "Application documents", "ja": "出願書類"},
+    "undergraduate_transfer": {"en": "Undergraduate transfer", "ja": "学部・編入"},
+    "vocational_school": {"en": "Vocational schools", "ja": "専門学校"},
+    "scholarship": {"en": "Scholarships", "ja": "奨学金"},
+    "admission_interview": {"en": "Admissions interview", "ja": "面接"},
+    "job_hunting_flow": {"en": "Job-hunting flow", "ja": "就職活動の流れ"},
+    "rirekisho": {"en": "Japanese resume", "ja": "履歴書"},
+    "shokumukeirekisho": {"en": "Work-history document", "ja": "職務経歴書"},
+    "entry_sheet": {"en": "Entry sheet and motivation", "ja": "ES・志望動機"},
+    "job_interview": {"en": "Interviews", "ja": "面接"},
+    "company_selection": {"en": "Choosing companies", "ja": "会社選び"},
+    "company_reviews": {"en": "Company reviews", "ja": "会社レビュー"},
+    "work_visa": {"en": "Work visa change", "ja": "就労ビザ変更"},
+    "industry_guides": {"en": "Industry guides", "ja": "業界ガイド"},
+    "language_school": {"en": "Language school applications", "ja": "日本語学校申請"},
+    "student_visa": {"en": "Student visa", "ja": "留学ビザ"},
+    "arrival_preparation": {"en": "Arrival preparation", "ja": "入国準備"},
+    "study_cost": {"en": "Study costs", "ja": "留学費用"},
+    "school_selection": {"en": "Choosing schools", "ja": "学校選び"},
+    "vocabulary": {"en": "Vocabulary", "ja": "語彙"},
+    "grammar": {"en": "Grammar", "ja": "文法"},
+    "reading": {"en": "Reading", "ja": "読解"},
+    "listening": {"en": "Listening", "ja": "聴解"},
+    "study_plan": {"en": "Study plan", "ja": "学習計画"},
+    "mock_test": {"en": "Mock tests", "ja": "模擬問題"},
+    "jlpt_materials": {"en": "Resource packs", "ja": "資料パック"},
+    "residence_card": {"en": "Residence card", "ja": "在留カード"},
+    "city_hall": {"en": "City-hall procedures", "ja": "役所手続き"},
+    "health_insurance": {"en": "Health insurance", "ja": "国民健康保険"},
+    "pension": {"en": "Pension", "ja": "年金"},
+    "bank_account": {"en": "Bank account", "ja": "銀行口座"},
+    "mobile_sim": {"en": "Mobile SIM", "ja": "スマホ・SIM"},
+    "renting": {"en": "Housing", "ja": "住まい"},
+    "moving": {"en": "Moving", "ja": "引っ越し"},
+    "part_time_job": {"en": "Part-time work", "ja": "アルバイト"},
+    "tax": {"en": "Tax", "ja": "税金"},
+    "transportation": {"en": "Transport", "ja": "交通"},
+    "medical": {"en": "Medical care", "ja": "医療"},
+    "life_tips": {"en": "Life tips", "ja": "生活の注意点"},
+    "service_materials": {"en": "Resource packs", "ja": "資料パック"},
+    "service_templates": {"en": "Templates", "ja": "テンプレート"},
+    "service_consultation": {"en": "Consultation", "ja": "相談サポート"},
+}
+
+GUIDE_TAG_SEED: list[tuple[str, str, str]] = [
+    ("大学院", "graduate_school", "study_japan"), ("语言学校", "language_school", "study_abroad_japan"),
+    ("就职", "job_hunting", "career_japan"), ("面试", "interview", "career_japan"),
+    ("JLPT", "jlpt", "jlpt"), ("签证", "visa", ""),
+    ("租房", "renting", "life_japan"), ("资料包", "materials", "guide_services"),
+]
+
+GUIDE_UI_I18N: dict[str, dict[str, Any]] = {
+    "en": {
+        "hero": {
+            "title": "Japan Guide",
+            "subtitle": "Study, admissions, careers, JLPT preparation, and daily-life support in Japan.",
+            "note": "Curated by the Machi editorial team to help you prepare for life, study, and work in Japan with a clearer plan.",
+            "searchPlaceholder": "Search schools, admissions, careers, Japanese tests, visas, companies, interviews, and life resources",
+            "quickTags": ["Japan school database", "Foreigner-friendly companies", "Graduate school", "Language schools", "Careers", "Interviews", "JLPT", "Visa"],
+        },
+        "empty": {
+            "title": "Guide content is not available for this region yet",
+            "body": "Machi Guide is currently focused on Japan: study abroad, school admissions, careers, Japanese tests, and daily life. More regions will be added over time.",
+            "action": "Switch to Japan",
+            "actionCountry": "jp",
+        },
+        "goalTitle": "What are you trying to do now?",
+        "reviewDisclaimer": "Reviews are personal experiences submitted by users and are for reference only. Do not post private information, trade secrets, or serious claims that cannot be verified.",
+        "schoolDisclaimer": "School information is curated from public sources and manual editorial review. It may lag behind official updates. Always confirm details with the school's official website and latest admission guidelines before applying.",
+        "companyDisclaimer": "Company information and reviews are curated by the Machi editorial team and submitted by users for reference only. Always confirm career information with the company's official website or recruiting pages. Do not post private, confidential, or unverified serious claims.",
+    },
+    "ja": {
+        "hero": {
+            "title": "日本ガイド",
+            "subtitle": "留学、進学、就職、JLPT 対策、日本での生活手続きを整理しています。",
+            "note": "Machi 編集部が、日本での生活・学習・仕事を計画的に準備できるよう整理しています。",
+            "searchPlaceholder": "学校、進学、就職、日本語試験、ビザ、会社、面接、生活資料を検索",
+            "quickTags": ["日本の学校データベース", "外国人向け就職会社", "大学院", "日本語学校", "就職", "面接", "JLPT", "ビザ"],
+        },
+        "empty": {
+            "title": "この地域のガイドはまだ公開されていません",
+            "body": "Machi Guide は現在、日本の留学、進学、就職、日本語試験、生活情報を中心に整理しています。ほかの国・地域も順次追加予定です。",
+            "action": "日本地域に切り替える",
+            "actionCountry": "jp",
+        },
+        "goalTitle": "今、何を準備したいですか？",
+        "reviewDisclaimer": "レビューはユーザー個人の体験に基づく参考情報です。個人情報、営業秘密、確認できない重大な主張は投稿しないでください。",
+        "schoolDisclaimer": "学校情報は公開資料と編集部の確認に基づいて整理していますが、更新が遅れる場合があります。出願前に必ず学校公式サイト・募集要項・公式案内をご確認ください。",
+        "companyDisclaimer": "会社情報とレビューは Machi 編集部の整理およびユーザー投稿に基づく参考情報です。応募前に会社公式サイトや採用ページで最新情報を確認してください。個人情報、機密情報、未確認の重大な主張は投稿しないでください。",
+    },
+}
 
 def _guide_paras(*paras: str) -> str:
     return "\n\n".join(p for p in paras if p)
@@ -4359,6 +3945,149 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
         "信号一：常年、大量、急招同一岗位。如果一家公司总在高频招人、招聘门槛异常低，可能意味着离职率高。信号二：薪资写法模糊，比如把固定加班费（みなし残業）打包进基本工资、或只写一个很宽的区间、回避具体构成。",
         "信号三：话术过度煽情。大量强调「家族のような職場」「夢」「やりがい」却不谈具体待遇和制度的，要多留个心眼。信号四：面试推进异常快、当场逼你做决定、回避你关于加班和休假的提问。",
         "识别只是第一步，建议结合公开的员工评价、面试中的实际感受、以及离职率/平均年龄等信息交叉验证。Machi 指南的公司评论由真实用户提交并经审核，可作为参考之一；但请理性看待单条评价，避免以偏概全。",
+     )},
+    # ---- 在日生活（扩充批）----
+    {"slug": "renting-initial-costs-explained", "title": "日本租房初期费用全拆解：敷金礼金到底是什么",
+     "category": "life_japan", "sub": "housing", "featured": True,
+     "author": "Machi 日本生活编辑部", "tags": ["租房", "敷金", "礼金", "初期费用"],
+     "summary": "敷金、礼金、仲介手数料、保证会社、火灾保险——第一次租房前看懂每一项钱花在哪。",
+     "body": _guide_paras(
+        "在日本租房，搬进去之前要付的「初期费用」常常达到月租的 4–6 倍，由这些项目组成：敷金（押金，退房时扣除清洁修缮费后返还）、礼金（付给房东的谢礼，不返还）、仲介手数料（中介费，常见为一个月房租+消费税）、前家賃（首月或次月房租）、保证会社利用料、火灾保险、换锁费等。",
+        "敷金礼金各 1 个月是传统行情，但现在「敷金礼金零」的房源也很多——注意零礼金房源有时会把成本转移到清洁费或解约金里，签约前把退房条款看清楚。保证会社是大多数房源的必选项：没有日本保证人的外国人基本都走保证会社，首次费用常见为月租的 50%–100%，之后每年或每两年续费。",
+        "火灾保险一般两年 1.5–2 万日元区间；换锁费 1.5–2.5 万日元常见。部分房源还有「室内消毒」「24 小时支援」等可选项目，签约时可以确认哪些能去掉。",
+        "省钱思路：找敷礼零或 Free Rent（免首月租）房源、避开 1–3 月搬家高峰、考虑 UR 赁贷（无礼金无中介费无保证人，但有收入条件）。所有金额以房源募集条件和重要事项说明书为准。",
+     )},
+    {"slug": "viewing-and-lease-contract-tips", "title": "看房与签约注意事项：重要事项说明里要盯紧什么",
+     "category": "life_japan", "sub": "housing", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["租房", "合同", "看房"],
+     "summary": "看房时检查什么、申込到入居审查的流程、签约时哪些条款最容易踩坑。",
+     "body": _guide_paras(
+        "看房时除了户型采光，重点检查：手机信号、墙壁隔音（敲一敲、留意隣户生活声）、水压、霉味与结露痕迹、垃圾置场的状态、夜间周边环境。木造和轻量铁骨的隔音明显弱于 RC（钢筋混凝土），对声音敏感的人选 RC 会舒服很多。",
+        "流程上：看中后提交入居申込书 → 保证会社与房东审查（通常 3–7 天，会核对在留资格、收入或学校在籍）→ 审查通过后签订赁贷借契约。审查阶段如实填写即可，收入不稳定的学生通常以经费支付人或学校名义补强。",
+        "签约时中介有义务做「重要事項説明」。要盯紧的条款：解约预告期（多为 1 个月前通知）、短期解约违约金（如 1 年内退房付 1 个月房租）、更新料（很多地区每两年 1 个月房租）、退房时的原状回复范围、禁止事项（宠物、乐器、转租等）。",
+        "国土交通省的「原状回復ガイドライン」明确了自然损耗不应由租客承担——退房结算如遇明显不合理的扣款，可以引用该指引协商。合同和重要事项说明书务必保留好。",
+     )},
+    {"slug": "bank-account-opening-guide", "title": "在日本开银行账户：选择、材料与常见被拒原因",
+     "category": "life_japan", "sub": "banking", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["银行", "开户", "ゆうちょ"],
+     "summary": "ゆうちょ、都市银行、网银怎么选，需要什么材料，为什么会被拒。",
+     "body": _guide_paras(
+        "刚到日本最容易开的是ゆうちょ银行（邮储）：对在留时间要求宽松、网点遍布全国，适合作为第一个账户。三菱UFJ、三井住友、みずほ等都市银行功能全，但部分网点对在留未满 6 个月的新人审查较严。乐天银行、住信SBI 等网银无网点、手续费友好，适合作为第二账户。",
+        "开户基本材料：在留卡（地址须与申请一致）、护照、印章（部分银行接受签名）、电话号码；有些银行会要求学生证/在职证明或 My Number。注意：先办好手机号再去开户会顺利很多。",
+        "常见被拒原因：在留期过短（剩余在留期间不足）、住址未更新、无法说明开户用途、短期签证（旅游签不能开户）。被一家拒绝可以换一家银行或网点再试。",
+        "开户后注意：账户长期不用可能被冻结；回国前要么注销账户、要么确认银行允许非居住者保留。绝对不要出售或出借账户——在日本这是犯罪行为，会直接影响在留。",
+     )},
+    {"slug": "mobile-sim-and-internet", "title": "手机卡与家庭网络怎么选：大手、格安与光回线",
+     "category": "life_japan", "sub": "mobile_internet", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["手机", "SIM", "网络"],
+     "summary": "三大运营商、线上品牌与格安 SIM 的取舍，办理材料和家庭光纤的基本概念。",
+     "body": _guide_paras(
+        "日本手机资费大致三档：大手三社（docomo/au/SoftBank）信号与服务最全但月费高；它们的线上品牌（ahamo/povo/LINEMO）性价比高、流程全线上；格安 SIM（楽天モバイル、IIJmio、mineo 等）最便宜，高峰时段网速可能略降。新来者从线上品牌或格安 SIM 起步是常见选择。",
+        "办理通常需要：在留卡、本人名义的日本银行账户或信用卡、有时需要 My Number。部分格安 SIM 支持便利店取卡和 eSIM 即时开通。注意确认在留剩余期间，部分运营商要求在留期 90 天以上。",
+        "家庭网络主流是光回线（光纤），代表有フレッツ光系（docomo光/SoftBank光等）和独立的 NURO 光、auひかり。签约常含工事费分期与 2 年绑定，搬家或解约时注意违约金与设备返还。租房前也可以确认房源是否「インターネット無料」。",
+        "短期或不想施工的替代方案是 Home Router（插电即用）或 Pocket WiFi。选择时把「实际月费=基本费+设备费-优惠」算清楚再比较。",
+     )},
+    {"slug": "seeing-a-doctor-in-japan", "title": "在日本看病：流程、费用与语言支持",
+     "category": "life_japan", "sub": "medical", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["医疗", "保险", "就医"],
+     "summary": "小病去诊所、大病去医院的分诊逻辑，国保 3 割负担，以及找会外语的医生。",
+     "body": _guide_paras(
+        "日本就医的基本逻辑是「先诊所后医院」：感冒发烧、皮肤、牙科等先去街边的クリニック（诊所）；需要进一步检查或手术时，由诊所开「紹介状」转去大医院。没有介绍信直接去大医院，常要加收数千日元的初诊费用。",
+        "持国民健康保险或社会保险就医，窗口自付 30%（3 割负担）。看病记得带保险证（或资格确认书/My Number 卡）与现金，部分小诊所不收信用卡。药一般凭处方到隔壁的调剂药局取。",
+        "语言不通时：各都道府县多有多语言医疗信息网站可按语言搜索医院；东京都的「ひまわり」、AMDA 国际医疗信息中心等提供电话咨询。手机翻译应付一般问诊也基本够用，关键术语可提前查好。",
+        "夜间急病拨 #7119（救急相談，部分地区）咨询是否需要急诊；危及生命直接拨 119 叫救护车（免费）。高额医疗费有「高額療養費制度」兜底，超过自付上限的部分可申请返还。",
+     )},
+    {"slug": "garbage-sorting-and-rules", "title": "垃圾分类与日常生活规则速成",
+     "category": "life_japan", "sub": "daily_life", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["垃圾分类", "生活规则"],
+     "summary": "可燃/不燃/资源/粗大垃圾的基本分法，扔错的后果，以及邻里相处的几条潜规则。",
+     "body": _guide_paras(
+        "日本的垃圾按自治体规则分类，常见四类：可燃（厨余、纸屑）、不燃（金属、玻璃、小家电）、资源（瓶罐、PET 瓶、纸类——通常要洗净）、粗大垃圾（边长超过约 30cm 的家具家电，需提前申请并购买处理券）。每类有固定的收集星期，错过只能等下周。",
+        "搬进新家第一件事就是拿一份所在区的垃圾日历（区役所或官网都有，多数有中英文版）。垃圾要在收集日早上规定时间前放到指定置场，用指定或透明垃圾袋；放错日子或乱扔可能被贴警告，严重的会被邻居投诉到管理公司。",
+        "电视、冰箱、洗衣机、空调四类家电不走粗大垃圾，按家电リサイクル法需付回收费，可让电器店回收或预约收集。电池、灯管、喷雾罐多有单独回收方式，喷雾罐务必用尽再扔。",
+        "邻里相处的潜规则：晚上十点后控制音量（木造房尤其）、阳台不要堆垃圾、楼道不放私物、收快递不在的话尽快处理不在票。这些小事做好，邻里关系基本不会出问题。",
+     )},
+    {"slug": "disaster-preparedness-basics", "title": "地震台风防灾速成：警报、避难与常备物资",
+     "category": "life_japan", "sub": "safety", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["防灾", "地震", "台风"],
+     "summary": "紧急地震速报响起怎么办、避难所怎么找、家里该备什么、110/119 怎么打。",
+     "body": _guide_paras(
+        "手机会自动接收「緊急地震速報」：刺耳警报响起时离震动到达常只有数秒，立即护住头部、远离柜子和玻璃、不要急着跑出门。摇晃停止后再关火、开门确保逃生通道。日本建筑抗震标准高，室内被砸伤的风险往往大于建筑倒塌。",
+        "提前在自治体官网或「防災マップ」确认住处对应的避難所（多为附近小学/中学）和避难路线。大地震后若住所安全，原地避难（在宅避難）也是正式选项之一。台风则关注气象厅的警报级别，按「警戒レベル4」以上的指示行动，提前收好阳台物品、备足水粮。",
+        "家庭常备清单：饮用水（每人每天 3L×3 天起）、即食食品、手电与电池、移动电源、常用药、现金零钱、简易厕所；护照和在留卡的复印件放在防灾包里。手机装好 NHK World、Safety tips 或自治体防灾 App。",
+        "紧急电话：110 报警、119 火灾/救护、171 灾害留言电话。多数都道府县另有多语言灾害咨询热线。记住：地震后不乘电梯、海边大摇晃后立即往高处撤离。",
+     )},
+    {"slug": "drivers-license-conversion", "title": "外国驾照换日本驾照（外免切替）流程",
+     "category": "life_japan", "sub": "driving", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["驾照", "外免切替"],
+     "summary": "谁可以换、需要什么材料、知识与技能确认考什么、各地预约现状。",
+     "body": _guide_paras(
+        "持有效外国驾照、且能证明取得驾照后在发照国累计停留 3 个月以上的人，可以在住地的运转免许中心申请「外免切替」。中国大陆驾照属于需要参加知识确认+技能确认的类别；部分国家/地区（如台湾、韩国、多数欧洲国家）可免试换发。",
+        "基本材料：外国驾照原件（及取得日期证明）、驾照的官方译文（JAF 或大使馆出具）、护照（含出入境记录）、在留卡、住民票、证件照。各地细节略有差异，出发前看清当地免许中心的最新要求。",
+        "知识确认是 10 题左右的交规判断题（多语言可选），相对简单；技能确认在场内进行，考察起步、转弯、坡道、S 弯/曲线、确认安全等基本操作——按日本的「确认动作」标准来做是通过关键，很多人挂在左右确认和压线细节上。",
+        "大城市的预约可能要排几周到几个月，建议尽早预约；技能确认不限次数但每次都要重新预约缴费。换照后初次拿到的是绿色新手期驾照，租车自驾与保险规则与普通驾照相同。",
+     )},
+    # ---- 在日工作（扩充批）----
+    {"slug": "work-visa-gijinkoku-basics", "title": "工作签证基础：技术·人文知识·国际业务到底看什么",
+     "category": "career_japan", "sub": "visa", "featured": True,
+     "author": "Machi 职场编辑部", "tags": ["工作签证", "技人国", "在留资格"],
+     "summary": "最常见工作在留资格的适用范围、学历职务一致性、变更流程与常见拒签原因。",
+     "body": _guide_paras(
+        "「技術・人文知識・国際業務」（俗称技人国）是留学生就职后最常见的在留资格，覆盖工程师、设计、企划、营业、翻译等白领岗位。审查核心是「学历/专业与职务内容的关联性」与「工作的专业性」——单纯体力或店面接客类工作原则上不在范围内。",
+        "学历要件通常为大学本科以上或日本的专门学校毕业（专门士）。专门学校毕业生的职务关联性审查更严格，岗位要与所学专业明显对口。薪资需达到与日本人同等水平。",
+        "从留学变更到技人国：拿到内定后由本人向入管提交在留资格变更许可申请，材料包括公司方的雇佣合同、登记事项证明、决算文书、业务说明，以及本人的毕业（见込）证明、成绩单等。每年 12 月到次年 3 月是申请高峰，毕业前尽早提交。",
+        "常见不许可原因：职务与专业无关、公司规模/财务难以说明雇佣必要性、申请材料前后矛盾、出勤率过低的留学经历。被不许可后可以听取理由并补强再申请。转职时若职务类型变化大，建议申请「就労資格証明書」确认新工作符合在留资格。",
+     )},
+    {"slug": "tenshoku-process-timeline", "title": "日本转职完整流程：从准备到入职的时间线",
+     "category": "career_japan", "sub": "job_change", "featured": False,
+     "author": "Machi 职场编辑部", "tags": ["转职", "职务经历书", "面试"],
+     "summary": "职务经历书怎么写、转职渠道怎么选、面试到内定的节奏、现职怎么体面退出。",
+     "body": _guide_paras(
+        "日本转职的标准节奏是 2–3 个月：准备材料（1–2 周）→ 投递与面试（1–2 个月，通常 2–3 轮）→ 内定与条件确认（1–2 周）→ 向现职提出退职并交接（法定提前 2 周，惯例 1 个月以上）。在职转职是主流，不必裸辞。",
+        "材料上日本特色是「職務経歴書」：A4 一到两页，按时间或项目写清楚你做过什么、用了什么技术/技能、产生了什么可量化的成果。和履历书不同，职务经历书是自由格式，是拉开差距的关键文档。",
+        "渠道组合：转职网站（自助投递）、转职 Agent（顾问推荐+条件交涉，对外国人友好的中介也不少）、Scout 型平台（被动接 offer）、以及内推。工程师等职种用 Scout 平台的命中率高；Agent 能帮你处理面试日程与年收交涉，新手建议至少注册一家。",
+        "面试常被问转职理由——避免单纯抱怨现职，转成「想做的事在贵司能实现」的正向逻辑。拿到内定后确认劳动条件通知书（年收构成、试用期、加班制度），再向现职提交退职意向；交接干净、按规定办理离职手续，行业圈子比想象的小。",
+     )},
+    {"slug": "shukatsu-timeline-for-students", "title": "留学生新卒就活时间线与 ES/SPI/面接备战",
+     "category": "career_japan", "sub": "new_grad", "featured": False,
+     "author": "Machi 职场编辑部", "tags": ["就活", "新卒", "ES", "SPI"],
+     "summary": "大三开始的标准就活节奏、Entry Sheet 与适性检查、留学生的优势打法。",
+     "body": _guide_paras(
+        "日本新卒就活启动极早：大三（修士一年级）夏天参加 Summer Intern，秋冬继续企业研究与 OB/OG 访谈，大三 3 月「広報解禁」开始正式 Entry 与说明会，大四 6 月起面试集中、夏秋陆续内定，次年 4 月统一入职。外资和部分 IT 企业不按此表，更早且全年招聘。",
+        "笔试关通常是 SPI 或玉手箱等适性检查，考语言（日语词汇阅读）与非语言（数学逻辑），留学生要给非语言部分留足练习时间，市面题集刷两遍是基本盘。Entry Sheet（ES）的核心三问：自我 PR、学生时代最努力的事（ガクチカ）、志望动机——用具体经历支撑，不写空话。",
+        "面试从集体到个人通常 2–4 轮，考察逻辑表达与「为什么是这家公司」。留学生的差异化优势：语言能力、跨文化经历、回国市场的理解——把它们落到具体业务场景里讲，而不是停留在『我会中文』。",
+        "渠道上除了 Rikunabi/Mynavi 两大平台，留学生专场招聘会、大学的キャリアセンター、面向外国人的就职支援机构都值得用。内定后记得在毕业前完成在留资格变更，时间线参考工作签证篇。",
+     )},
+    {"slug": "leaving-a-job-checklist", "title": "退职手续清单：保险、年金、税金一个都不能漏",
+     "category": "career_japan", "sub": "job_change", "featured": False,
+     "author": "Machi 职场编辑部", "tags": ["退职", "失业保险", "国保"],
+     "summary": "离职后 14 天内要办什么、失业给付怎么领、空窗期保险年金怎么接续。",
+     "body": _guide_paras(
+        "离职时从公司拿齐四样东西：雇用保険被保険者証、離職票（约 10 天后寄到）、源泉徴収票、年金手帳（若由公司保管）。这些是后续所有手续的钥匙。",
+        "如果离职后不马上入职新公司：14 天内到市区役所把健康保险切换为国民健康保险（或申请原公司保险的任意继续，二选一比较保费），同时把厚生年金切换为国民年金。空窗期间这两项都不能断。",
+        "有失业给付资格的人（一般为离职前两年内缴满 12 个月雇用保险），带離職票到住地的 Hello Work 办理求职登记。自都合离职有约 2 个月的给付限制期，会社都合则当月即可开始领取；领取期间按要求完成求职活动认定即可。",
+        "税金方面：年内再就职的话把源泉徴収票交给新公司做年末调整；年内未再就职则次年自行确定申告退税。住民税是按上一年收入后置征收的，离职后会收到普通征收的缴付书——这笔钱要提前留出来。",
+     )},
+    # ---- JLPT / 留学（扩充批）----
+    {"slug": "jlpt-n2-to-n1-strategy", "title": "从 N2 到 N1：半年备考策略与资料选择",
+     "category": "jlpt", "sub": "n1", "featured": False,
+     "author": "Machi JLPT 编辑部", "tags": ["JLPT", "N1", "备考"],
+     "summary": "N1 和 N2 的真正差距在哪、各科怎么分配时间、冲刺期怎么刷题。",
+     "body": _guide_paras(
+        "N1 与 N2 的差距主要不在语法条目，而在词汇量级、阅读速度与听力的信息密度。N2 飘过的人直接裸考 N1 大概率倒在时间不够：阅读题量大、文章更抽象，听力语速接近正常会话且不再「友好」。",
+        "半年备考的节奏参考：前两个月过完 N1 语法并开始每天 30–50 个新词；中间两个月主攻阅读训练（限时做题，精读错题）+ 每天 30 分钟以上听力（新闻、Podcast、剧集混合）；最后两个月全真模考，按考试时间整卷练，重点解决时间分配。",
+        "资料选择上，语法和词汇各选一本主流教材吃透即可，不要囤书；真题和模拟题的价值远大于第三本语法书。听力推荐把 NHK 新闻当背景常听，再配合真题精听——先盲听、再对照原文找听不出来的音变与表达。",
+        "考试技巧：词汇语法部分快速通过给阅读留时间；阅读先看题再回文定位；听力一旦走神立即放弃该题、跟上下一题。N1 合格线并不高（100/180，单科 19+），策略得当比盲目堆时间有效。",
+     )},
+    {"slug": "scholarships-overview-japan", "title": "日本奖学金体系一览：从 JASSO 到民间财团",
+     "category": "study_abroad_japan", "sub": "scholarship", "featured": False,
+     "author": "Machi 升学编辑部", "tags": ["奖学金", "JASSO", "文部科学省"],
+     "summary": "国费、JASSO、地方与民间财团奖学金的层级、申请路径和现实期望值。",
+     "body": _guide_paras(
+        "日本面向留学生的奖学金大致四层：文部科学省（MEXT）国费奖学金——金额最高（学费全免+每月生活费），通过使馆推荐或大学推荐申请，竞争最激烈；JASSO 学习奖励费——每月数万日元，名额较多，通常入学后经学校申请；地方自治体奖学金；以及数量庞大的民间财团奖学金。",
+        "民间财团（如 Rotary、似鸟、平和中岛、本庄等）单项金额每月 3–20 万日元不等，多数要求通过在籍学校推荐，少数接受直接申请。信息分散是最大门槛：JASSO 官网的奖学金检索、学校国际课的公告板、教务邮件，都要养成定期查看的习惯。",
+        "申请材料的通用配置：成绩单（GPA 很重要）、研究/学习计划、指导教员推荐信、收入状况说明。多数财团奖学金不允许与其他高额奖学金重复领取，申请前看清并给学校如实申报。",
+        "现实期望值：语言学校阶段奖学金很少，学部/大学院阶段机会显著增多；把奖学金当作努力后的补贴而非预算的一部分。学费减免（授業料免除）是另一条独立线路，国公立大学按家庭经济状况审查，记得每学期都要申请。",
      )},
 ]
 
@@ -4707,6 +4436,42 @@ GUIDE_PRODUCT_SEED.extend([
         "需要联系快递、水电煤气等服务的用户",
         ["电话前信息整理", "日语电话代打", "结果整理与反馈"],
         ["费用代缴", "高风险合同承诺", "代签文件"]),
+])
+
+# 会员资料库扩充批：与指南文章配套的模板/清单类原创资料。
+GUIDE_PRODUCT_SEED.extend([
+    {"slug": "renting-initial-cost-worksheet", "title": "租房初期费用核算表", "subtitle": "把敷金礼金中介费一项项算清楚",
+     "category": "life_japan", "sub": "housing", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备在日本租房的用户",
+     "delivery": "会员资料", "tags": ["租房", "初期费用", "会员资料"], "is_featured": 1},
+    {"slug": "lease-contract-check-list", "title": "签约前合同检查清单", "subtitle": "重要事项说明 20 个必看条款",
+     "category": "life_japan", "sub": "housing", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "即将签订赁贷合同的用户",
+     "delivery": "会员资料", "tags": ["租房", "合同", "会员资料"]},
+    {"slug": "first-week-procedures-pack", "title": "入境第一周手续包", "subtitle": "在留卡·住民登记·保险·银行一页流",
+     "category": "life_japan", "sub": "arrival_preparation", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "刚入境或即将入境日本的用户",
+     "delivery": "会员资料", "tags": ["入境", "手续", "会员资料"], "is_featured": 1},
+    {"slug": "research-plan-template-annotated", "title": "研究计划书模板（逐段讲解版）", "subtitle": "结构模板+每一段写什么的批注",
+     "category": "study_japan", "sub": "research_plan", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备大学院出愿的用户",
+     "delivery": "会员资料", "tags": ["研究计划书", "大学院", "会员资料"], "is_featured": 1},
+    {"slug": "shokumu-keirekisho-template", "title": "职务经历书模板与写法示例", "subtitle": "转职材料的核心一页怎么写",
+     "category": "career_japan", "sub": "job_change", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备在日转职的用户",
+     "delivery": "会员资料", "tags": ["转职", "職務経歴書", "会员资料"]},
+    {"slug": "interview-qa-100", "title": "面接想定问答 100 题", "subtitle": "新卒与转职高频问题+回答框架",
+     "category": "career_japan", "sub": "interview", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "正在准备日企面试的用户",
+     "delivery": "会员资料", "tags": ["面接", "就活", "会员资料"]},
+    {"slug": "taishoku-procedures-checklist", "title": "退职手续核对清单", "subtitle": "保险·年金·失业给付·税金时间线",
+     "category": "career_japan", "sub": "job_change", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "即将离职或换工作的用户",
+     "delivery": "会员资料", "tags": ["退职", "手续", "会员资料"]},
+    {"slug": "disaster-kit-checklist", "title": "家庭防灾物资清单", "subtitle": "按人数勾选的常备物资与文件备份表",
+     "category": "life_japan", "sub": "safety", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "所有在日居住用户",
+     "delivery": "会员资料", "tags": ["防灾", "清单", "会员资料"]},
 ])
 
 # 学校/公司种子：只录入官方链接、名称、地区、类型等可维护基础字段。
@@ -5090,6 +4855,43 @@ for _company in [
 ]:
     _append_guide_company_seed(*_company)
 
+# 留学生/外国人关注度最高的国际化大学与语言学校补充批。
+for _school in [
+    ("international-christian-university", "国际基督教大学", "国際基督教大学", "International Christian University", "university", "tokyo", "mitaka", "https://www.icu.ac.jp/", ["Liberal Arts", "International Studies"], 1),
+    ("ritsumeikan-asia-pacific-university", "立命馆亚洲太平洋大学", "立命館アジア太平洋大学", "Ritsumeikan Asia Pacific University", "university", "oita", "beppu", "https://www.apu.ac.jp/", ["International Management", "Asia Pacific Studies"], 1),
+    ("akita-international-university", "国际教养大学", "国際教養大学", "Akita International University", "university", "akita", "akita", "https://web.aiu.ac.jp/", ["Liberal Arts", "Global Business"], 1),
+    ("naganuma-school", "长沼学校（东京日本语学校）", "学校法人長沼スクール 東京日本語学校", "The Naganuma School Tokyo School of Japanese Language", "language_school", "tokyo", "shibuya", "https://www.naganuma-school.ac.jp/", ["Language"]),
+    ("sendagaya-japanese-institute", "千驮谷日本语学校", "千駄ヶ谷日本語学校", "Sendagaya Japanese Institute", "language_school", "tokyo", "shinjuku", "https://jp-sji.org/", ["Language"]),
+    ("meros-language-school", "美罗斯言语学院", "メロス言語学院", "Meros Language School", "language_school", "tokyo", "toshima", "https://www.meros.jp/", ["Language"]),
+    ("human-academy-japanese-language-school", "修曼日本语学校", "ヒューマンアカデミー日本語学校", "Human Academy Japanese Language School", "language_school", "tokyo", "shinjuku", "https://hajl.athuman.com/", ["Language"]),
+    ("intercultural-institute-of-japan", "国际交流学院", "学校法人国際学園 国際外語学院", "Intercultural Institute of Japan", "language_school", "tokyo", "taito", "https://www.incul.com/", ["Language"]),
+    ("tokyo-galaxy-japanese-language-school", "东京银星日本语学校", "東京ギャラクシー日本語学校", "Tokyo Galaxy Japanese Language School", "language_school", "tokyo", "chuo", "https://www.tokyogalaxy.ac.jp/", ["Language"]),
+    ("kobe-denshi", "神户电子专门学校", "神戸電子専門学校", "Kobe Institute of Computing College", "vocational_school", "hyogo", "kobe", "https://www.kobedenshi.ac.jp/", ["IT", "Game", "Sound", "Design"]),
+    ("nippon-engineering-college", "日本工学院专门学校", "日本工学院専門学校", "Nippon Engineering College", "vocational_school", "tokyo", "ota", "https://www.neec.ac.jp/", ["IT", "Design", "Music", "Engineering"]),
+]:
+    _append_guide_school_seed(*_school)
+
+# 外国人求职关注度最高、此前缺席的代表性雇主补充批。
+for _company in [
+    ("toyota", "丰田汽车", "トヨタ自動車株式会社", "Toyota Motor Corporation", "manufacturing", "aichi", "toyota", "https://global.toyota/jp/", "https://www.toyota-recruit.com/", "enterprise", 1, ["automotive", "global"]),
+    ("sony-group", "索尼集团", "ソニーグループ株式会社", "Sony Group Corporation", "electronics", "tokyo", "minato", "https://www.sony.com/ja/", "https://www.sony.com/ja/SonyInfo/Jobs/", "enterprise", 1, ["electronics", "entertainment", "global"]),
+    ("rakuten-group", "乐天集团", "楽天グループ株式会社", "Rakuten Group, Inc.", "it_internet", "tokyo", "setagaya", "https://corp.rakuten.co.jp/", "https://corp.rakuten.co.jp/careers/", "enterprise", 1, ["IT", "ecommerce", "english-friendly"]),
+    ("mercari", "Mercari", "株式会社メルカリ", "Mercari, Inc.", "it_internet", "tokyo", "minato", "https://about.mercari.com/", "https://careers.mercari.com/", "large", 1, ["IT", "marketplace", "english-friendly"]),
+    ("line-yahoo", "LINEヤフー", "LINEヤフー株式会社", "LY Corporation", "it_internet", "tokyo", "chiyoda", "https://www.lycorp.co.jp/ja/", "https://www.lycorp.co.jp/ja/recruit/", "enterprise", 1, ["IT", "internet"]),
+    ("fujitsu", "富士通", "富士通株式会社", "Fujitsu Limited", "it_internet", "kanagawa", "kawasaki", "https://www.fujitsu.com/jp/", "", "enterprise", 1, ["IT", "global"]),
+    ("ntt-data", "NTT数据", "株式会社NTTデータ", "NTT DATA Corporation", "it_internet", "tokyo", "koto", "https://www.nttdata.com/jp/ja/", "", "enterprise", 1, ["IT", "SI"]),
+    ("recruit", "Recruit", "株式会社リクルート", "Recruit Co., Ltd.", "it_internet", "tokyo", "chiyoda", "https://www.recruit.co.jp/", "https://www.recruit.co.jp/employment/", "enterprise", 1, ["IT", "HR"]),
+    ("fast-retailing", "迅销（优衣库母公司）", "株式会社ファーストリテイリング", "Fast Retailing Co., Ltd.", "retail", "yamaguchi", "yamaguchi", "https://www.fastretailing.com/jp/", "https://www.fastretailing.com/employment/ja/", "enterprise", 1, ["retail", "global", "uniqlo"]),
+    ("mufg-bank", "三菱UFJ银行", "株式会社三菱UFJ銀行", "MUFG Bank, Ltd.", "finance", "tokyo", "chiyoda", "https://www.bk.mufg.jp/", "", "enterprise", 1, ["finance", "bank"]),
+    ("mitsubishi-corporation", "三菱商事", "三菱商事株式会社", "Mitsubishi Corporation", "trading", "tokyo", "chiyoda", "https://www.mitsubishicorp.com/", "", "enterprise", 1, ["trading", "global"]),
+    ("itochu", "伊藤忠商事", "伊藤忠商事株式会社", "ITOCHU Corporation", "trading", "tokyo", "minato", "https://www.itochu.co.jp/", "https://career.itochu.co.jp/", "enterprise", 1, ["trading", "global"]),
+    ("mitsui-and-co", "三井物产", "三井物産株式会社", "Mitsui & Co., Ltd.", "trading", "tokyo", "chiyoda", "https://www.mitsui.com/jp/ja/", "", "enterprise", 0, ["trading", "global"]),
+    ("jr-east", "JR东日本", "東日本旅客鉄道株式会社", "East Japan Railway Company", "transport", "tokyo", "shibuya", "https://www.jreast.co.jp/", "", "enterprise", 0, ["railway", "infrastructure"]),
+    ("ana", "全日本空输", "全日本空輸株式会社", "All Nippon Airways Co., Ltd.", "transport", "tokyo", "minato", "https://www.ana.co.jp/", "", "enterprise", 0, ["airline"]),
+    ("shiseido", "资生堂", "株式会社資生堂", "Shiseido Company, Limited", "consumer_goods", "tokyo", "chuo", "https://corp.shiseido.com/jp/", "", "enterprise", 0, ["cosmetics", "global"]),
+]:
+    _append_guide_company_seed(*_company)
+
 
 def serialize_guide_category(row: sqlite3.Row | dict[str, Any], children: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     d = dict(row)
@@ -5393,7 +5195,7 @@ def _guide_split_tags(raw: Any) -> list[str]:
 def _guide_csv(raw: Any) -> str:
     if isinstance(raw, list):
         return ",".join(str(v).strip() for v in raw if str(v).strip())
-    return _news_clean_text(raw, 1000)
+    return _clean_text(raw, 1000)
 
 
 def _guide_quality_score(data: dict[str, Any], fields: list[str], optional_weight: int = 100) -> int:
@@ -7104,7 +6906,6 @@ def init_db() -> None:
         ensure_reputation_seed(conn)
         ensure_guide_schema_extensions(conn)
         ensure_membership_plans(conn)
-        ensure_news_source_presets(conn)
         ensure_guide_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
@@ -7116,66 +6917,6 @@ def init_db() -> None:
         # preserved exactly as-is.
         ensure_seed_admin(conn)
         ensure_reputation_seed(conn)
-
-
-_NEWS_CRAWLER_THREAD: threading.Thread | None = None
-
-
-def _crawler_interval_for_category(category: str) -> int:
-    if category in {"traffic_alert", "weather_alert", "earthquake_alert", "typhoon_alert"}:
-        return 30
-    if category in {"local_news", "policy_update", "immigration_visa"}:
-        return 120
-    if category in {"city_event", "life_notice"}:
-        return 360
-    return 180
-
-
-def start_news_crawler_scheduler() -> None:
-    """Optional deploy-time crawler runner. Disabled by default; when enabled
-    it only harvests metadata into the review pool and never makes content
-    public by itself."""
-    global _NEWS_CRAWLER_THREAD
-    if _NEWS_CRAWLER_THREAD is not None:
-        return
-    if not (NEWS_CRAWLER_ENABLED and NEWS_CRAWLER_AUTO_FETCH):
-        ACCESS_LOG.info("news crawler scheduler disabled (NEWS_CRAWLER_AUTO_FETCH=false)")
-        return
-
-    def _loop() -> None:
-        ACCESS_LOG.info("news crawler scheduler started")
-        while True:
-            try:
-                with DB_LOCK, db() as conn:
-                    rows = conn.execute(
-                        """
-                        SELECT id, default_category, crawl_interval_minutes, last_fetched_at
-                          FROM news_sources
-                         WHERE is_active = 1 AND deleted_at IS NULL
-                         ORDER BY COALESCE(last_fetched_at, '1970-01-01T00:00:00+00:00')
-                         LIMIT 20
-                        """
-                    ).fetchall()
-                    for row in rows:
-                        last = None
-                        try:
-                            last = datetime.fromisoformat((row["last_fetched_at"] or "").replace("Z", "+00:00"))
-                        except Exception:
-                            last = None
-                        interval = int(row["crawl_interval_minutes"] or 0) or _crawler_interval_for_category(row["default_category"])
-                        interval = max(30, interval)
-                        if last and datetime.now(timezone.utc) - last.astimezone(timezone.utc) < timedelta(minutes=interval):
-                            continue
-                        try:
-                            fetch_news_source(conn, row["id"], admin_id="", force=False)
-                        except APIError:
-                            continue
-            except Exception:
-                ERR_LOG.exception("news crawler scheduler iteration failed")
-            time.sleep(60)
-
-    _NEWS_CRAWLER_THREAD = threading.Thread(target=_loop, name="news-crawler-scheduler", daemon=True)
-    _NEWS_CRAWLER_THREAD.start()
 
 
 def seed_region_for_location(location: str) -> tuple[str, str, str, str]:
@@ -11017,26 +10758,22 @@ def log_seed_action(
     )
 
 
-def _news_clean_text(raw: Any, cap: int) -> str:
+def _clean_text(raw: Any, cap: int) -> str:
+    """Strip tags/entities/whitespace from user-supplied text and cap length.
+    The standard sanitizer for guide/admin/feedback payload fields."""
     text = html.unescape(str(raw or ""))
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(r"\s+", " ", text).strip()
     return text[:cap]
 
 
-def _normalize_news_language(raw: Any) -> str:
-    value = str(raw or "zh-CN").strip()
-    aliases = {"zh": "zh-CN", "zh-cn": "zh-CN", "zh-hans": "zh-CN", "en-us": "en", "en-gb": "en", "jp": "ja"}
-    return aliases.get(value.lower(), value if value in {"zh-CN", "en", "ja"} else value[:16])
-
-
-def _normalize_news_country(raw: Any) -> str:
+def _normalize_country_code(raw: Any) -> str:
     value = str(raw or "").strip().lower()
     aliases = {"japan": "jp", "日本": "jp", "jp": "jp", "canada": "ca", "usa": "us", "united states": "us"}
     return aliases.get(value, value[:24])
 
 
-def _normalize_news_city(raw: Any) -> str:
+def _normalize_city_slug(raw: Any) -> str:
     value = str(raw or "").strip().lower()
     aliases = {
         "tokyo": "tokyo", "東京": "tokyo", "东京": "tokyo",
@@ -11047,1350 +10784,9 @@ def _normalize_news_city(raw: Any) -> str:
     return aliases.get(value, value[:48])
 
 
-def _normalize_news_category(raw: Any) -> str:
-    value = str(raw or "local_news").strip().lower()
-    aliases = {
-        "news": "local_news",
-        "本地资讯": "local_news",
-        "城市快讯": "local_news",
-        "traffic": "traffic_alert",
-        "weather": "weather_alert",
-        "earthquake": "earthquake_alert",
-        "typhoon": "typhoon_alert",
-        "policy": "policy_update",
-        "visa": "immigration_visa",
-        "immigration": "immigration_visa",
-        "event": "city_event",
-        "events": "city_event",
-        "safety": "public_safety",
-        "meetup": "city_event",
-        "food": "city_event",
-        "disaster": "weather_alert",
-    }
-    value = aliases.get(value, value)
-    return value if value in NEWS_CATEGORIES else "local_news"
-
-
-def _normalize_source_type(raw: Any) -> str:
-    value = str(raw or "manual").strip().lower()
-    return value if value in NEWS_SOURCE_TYPES else "manual"
-
-
-def _normalize_crawl_strategy(raw: Any, source_type: str = "manual") -> str:
-    value = str(raw or "").strip().lower()
-    if value == "metadata":
-        value = "meta_only"
-    if value in NEWS_CRAWL_STRATEGIES:
-        return value
-    if source_type == "rss":
-        return "rss"
-    if source_type in {"webpage", "metadata", "api"}:
-        return "meta_only"
-    if source_type == "html_list":
-        return "html_list"
-    return "manual"
-
-
-def _normalize_credibility(raw: Any) -> str:
-    value = str(raw or "official").strip().lower()
-    return value if value in NEWS_CREDIBILITY_LEVELS else "official"
-
-
-def _normalize_source_tier(raw: Any, *, credibility: str = "", city: str = "", source_type: str = "", crawl_strategy: str = "") -> str:
-    value = str(raw or "").strip().lower().replace("-", "_")
-    if value in NEWS_SOURCE_TIERS:
-        return value
-    if source_type in {"manual", "manual_reference"} or crawl_strategy == "manual":
-        return "tier_5_manual_reference"
-    if credibility == "official" and city:
-        return "tier_2_city_official"
-    if credibility == "official":
-        return "tier_1_official"
-    if credibility in {"media", "community"}:
-        return "tier_3_public_media"
-    return "tier_4_event_lifestyle"
-
-
-def _normalize_copyright_policy(raw: Any, note: Any = "") -> str:
-    value = str(raw or "").strip().lower().replace("-", "_")
-    if value in NEWS_COPYRIGHT_POLICIES:
-        return value
-    note_l = str(note or "").lower()
-    if any(word in note_l for word in ("restrict", "restricted", "禁止", "不允许", "再分发")):
-        return "redistribution_restricted"
-    if "cc-by" in note_l or "cc by" in note_l or "creative commons" in note_l:
-        return "cc_by"
-    if "official" in note_l or "source" in note_l:
-        return "official_attribution"
-    return "metadata_only"
-
-
-def _normalize_risk_level(raw: Any, category: str = "") -> str:
-    value = str(raw or "").strip().lower()
-    if value in {"low", "medium", "high"}:
-        return value
-    if category in HIGH_RISK_NEWS_CATEGORIES:
-        return "high"
-    if category in {"traffic_alert", "train_delay", "commute", "work_study"}:
-        return "medium"
-    return "low"
-
-
-def _boolish(value: Any, default: bool = False) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, (int, float)):
-        return bool(value)
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "y", "on"}:
-        return True
-    if text in {"0", "false", "no", "n", "off"}:
-        return False
-    return default
-
-
 def _slug_key(value: str) -> str:
     key = re.sub(r"[^a-z0-9]+", "-", (value or "").strip().lower()).strip("-")
     return key[:80] or secrets.token_hex(6)
-
-
-def _parse_news_date(raw: str | None) -> str | None:
-    text = (raw or "").strip()
-    if not text:
-        return None
-    try:
-        parsed = email.utils.parsedate_to_datetime(text)
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc).isoformat()
-    except Exception:
-        pass
-    try:
-        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc).isoformat()
-    except Exception:
-        return None
-
-
-def _news_hash(source_url: str, title: str, published_at: str | None) -> str:
-    raw = f"{source_url or ''}|{title or ''}|{published_at or ''}".encode("utf-8")
-    return hashlib.sha256(raw).hexdigest()
-
-
-def _risk_level_for_category(category: str) -> str:
-    return "high" if category in HIGH_RISK_NEWS_CATEGORIES else "low"
-
-
-def _source_required_for_category(category: str) -> bool:
-    return category in HIGH_RISK_NEWS_CATEGORIES
-
-
-_NEWS_CATEGORY_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
-    ("immigration_visa", ("在留", "ビザ", "visa", "residence card", "出入国", "入管", "immigration", "residence status")),
-    ("traffic_alert", ("運行", "遅延", "見合わせ", "train", "metro", "rail", "traffic", "commute", "通勤", "交通", "delay")),
-    ("earthquake_alert", ("地震", "earthquake", "震度", "津波")),
-    ("typhoon_alert", ("台風", "typhoon", "storm")),
-    ("weather_alert", ("気象", "天気", "大雨", "警報", "weather", "warning", "heatstroke", "熱中症")),
-    ("public_safety", ("防災", "避難", "安全", "safety", "crime", "災害", "disaster", "alert")),
-    ("policy_update", ("制度", "政策", "申請", "マイナンバー", "digital", "行政", "policy", "procedure", "手续", "手続")),
-    ("city_event", ("イベント", "祭", "festival", "market", "exhibition", "展覧", "週末", "weekend", "event")),
-    ("life_notice", ("ごみ", "粗大", "保育", "補助", "区役所", "市役所", "生活", "resident", "service", "garbage", "child support")),
-    ("work_study", ("仕事", "雇用", "労働", "学生", "留学", "work", "study", "job", "student")),
-    ("housing_notice", ("引越", "住宅", "家賃", "rent", "housing", "moving", "搬家", "租房")),
-    ("health", ("健康", "医療", "感染", "health", "medical", "hospital")),
-    ("travel", ("観光", "travel", "tourism", "airport")),
-]
-
-_NEWS_HIGH_RELEVANCE_WORDS = (
-    "租房", "搬家", "在留", "签证", "打工", "工作", "交通", "地震", "台风", "天气警报",
-    "活动", "市集", "展览", "区役所", "手续", "垃圾", "补助", "留学生", "外国居民",
-    "公共服务", "防灾", "安全", "生活成本", "ビザ", "在留", "留学生", "外国人",
-    "区役所", "市役所", "ごみ", "防災", "避難", "遅延", "運休", "申請",
-    "visa", "immigration", "residence", "train", "delay", "commute", "earthquake",
-    "typhoon", "weather", "resident", "garbage", "subsidy", "event", "market",
-)
-_NEWS_LOW_RELEVANCE_WORDS = (
-    "入札", "調達", "公告", "会議", "議事", "人事", "職員募集", "統計", "報告書",
-    "采购", "招标", "会议", "任免", "内部", "统计", "长报表", "企业 pr",
-    "procurement", "tender", "council minutes", "personnel", "statistics", "press release",
-)
-
-
-def _classify_news_category(title: str, summary: str, default_category: str) -> str:
-    default = _normalize_news_category(default_category)
-    text = f"{title} {summary}".lower()
-    for category, keywords in _NEWS_CATEGORY_KEYWORDS:
-        if any(keyword.lower() in text for keyword in keywords):
-            return _normalize_news_category(category)
-    return default
-
-
-def _score_news_relevance(title: str, summary: str, category: str, city: str, source_tier: str) -> tuple[int, str]:
-    text = f"{title} {summary}".lower()
-    score = 45
-    reasons: list[str] = []
-    if source_tier in {"tier_1_official", "tier_2_city_official"}:
-        score += 14
-        reasons.append("official_source")
-    elif source_tier == "tier_3_public_media":
-        score += 5
-        reasons.append("public_media")
-    elif source_tier == "tier_5_manual_reference":
-        score -= 12
-        reasons.append("manual_reference")
-    if city:
-        score += 8
-        reasons.append("city_scoped")
-    if category in {"traffic_alert", "weather_alert", "earthquake_alert", "typhoon_alert", "immigration_visa", "life_notice", "city_event", "public_safety", "work_study", "housing_notice"}:
-        score += 14
-        reasons.append("city_life_category")
-    high_hits = [word for word in _NEWS_HIGH_RELEVANCE_WORDS if word.lower() in text][:6]
-    low_hits = [word for word in _NEWS_LOW_RELEVANCE_WORDS if word.lower() in text][:6]
-    if high_hits:
-        score += min(24, 6 + len(high_hits) * 4)
-        reasons.append("useful_terms:" + ",".join(high_hits[:3]))
-    if low_hits:
-        score -= min(28, 10 + len(low_hits) * 5)
-        reasons.append("low_value_terms:" + ",".join(low_hits[:3]))
-    score = max(0, min(100, score))
-    return score, ",".join(reasons or ["default"])
-
-
-def _news_author_type_for_scope(country: str, city: str) -> str:
-    if country == "jp" and city == "tokyo":
-        return "tokyo_editorial"
-    if country == "jp" and city == "osaka":
-        return "osaka_editorial"
-    if country == "jp":
-        return "japan_editorial"
-    return "local_desk"
-
-
-def _safe_editorial_body(language: str, source_name: str, original_url: str) -> str:
-    source = source_name or "Machi Local Desk"
-    original = original_url or ""
-    if language == "ja":
-        return (
-            "Machi編集部が公開情報をもとに整理しました。生活、通勤、通学、外出に関わる可能性があるため、"
-            "最新情報は公式発表をご確認ください。\n\n"
-            f"出典：{source}\n"
-            f"原文：{original}"
-        )
-    if language == "en":
-        return (
-            "Machi Local Desk summarized this update from public sources. Please check the official source "
-            "for the latest details before making decisions.\n\n"
-            f"Source: {source}\n"
-            f"Original: {original}"
-        )
-    return (
-        "Machi 日本生活编辑部根据公开来源整理了这条资讯。该信息可能影响在日本生活、学习、工作或出行的用户。"
-        "建议查看官方来源确认最新内容。\n\n"
-        f"来源：{source}\n"
-        f"原文：{original}\n\n"
-        "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。"
-    )
-
-
-def _news_city_label(city: str, language: str = "zh-CN") -> str:
-    normalized = _normalize_news_city(city)
-    if normalized == "tokyo":
-        return "東京" if language == "ja" else "Tokyo"
-    if normalized == "osaka":
-        return "大阪" if language == "ja" else "Osaka"
-    return "日本全国" if language == "ja" else "Japan-wide"
-
-
-def _news_category_label(category: str, language: str = "zh-CN") -> str:
-    labels = {
-        "traffic_alert": ("交通提醒", "交通情報", "transport update"),
-        "weather_alert": ("天气灾害提醒", "天気・防災情報", "weather and safety update"),
-        "earthquake_alert": ("地震提醒", "地震情報", "earthquake update"),
-        "typhoon_alert": ("台风提醒", "台風情報", "typhoon update"),
-        "policy_update": ("政策更新", "制度・行政情報", "policy update"),
-        "immigration_visa": ("在留签证", "在留・ビザ情報", "visa and immigration update"),
-        "city_event": ("城市活动", "街のイベント", "local event"),
-        "life_notice": ("生活通知", "暮らしのお知らせ", "local life notice"),
-        "public_safety": ("公共安全", "安全情報", "public safety update"),
-        "travel": ("旅行出行", "旅行・おでかけ", "travel update"),
-    }
-    zh, ja, en = labels.get(_normalize_news_category(category), ("城市快讯", "ローカルニュース", "local news"))
-    if language == "ja":
-        return ja
-    if language == "en":
-        return en
-    return zh
-
-
-def _editorial_quality_issues(body: str, language: str) -> list[str]:
-    text = re.sub(r"\s+", " ", body or "").strip()
-    if language == "en":
-        if len(re.findall(r"\b\w+\b", text)) < 420:
-            return ["too_short"]
-    elif len(text) < 650:
-        return ["too_short"]
-    headings = len(re.findall(r"(^|\n)\s*(一、|二、|三、|四、|五、|六、|#{1,3}\s+|[0-9]+\.\s+)", body or ""))
-    if headings < 4:
-        return ["not_enough_sections"]
-    banned = ("作为一个 AI", "高效便捷", "全方位", "优质服务", "宝藏平台", "震惊", "不看后悔")
-    found = [word for word in banned if word in (body or "")]
-    return [f"banned:{word}" for word in found]
-
-
-def _editorial_quality_score(body: str, language: str, *, source_name: str = "", city: str = "", category: str = "", relevance_score: int = 50) -> int:
-    text = body or ""
-    normalized = re.sub(r"\s+", " ", text).strip()
-    score = 58
-    if language == "en":
-        words = len(re.findall(r"\b\w+\b", normalized))
-        if words >= 800:
-            score += 15
-        elif words >= 420:
-            score += 8
-        else:
-            score -= 20
-    else:
-        length = len(normalized)
-        if length >= 900:
-            score += 15
-        elif length >= 650:
-            score += 8
-        else:
-            score -= 20
-    headings = len(re.findall(r"(^|\n)\s*(一、|二、|三、|四、|五、|六、|#{1,3}\s+|[0-9]+\.\s+)", text))
-    score += min(12, headings * 3)
-    checklist_terms = ("适合", "注意", "下一步", "来源", "官方", "who", "next", "source", "check", "注意したい", "出典", "確認")
-    score += min(12, sum(1 for term in checklist_terms if term.lower() in normalized.lower()) * 2)
-    if source_name:
-        score += 5
-    if city:
-        score += 4
-    if category in HIGH_RISK_NEWS_CATEGORIES and ("官方" in normalized or "official" in normalized.lower() or "公式" in normalized):
-        score += 5
-    score += max(-8, min(8, (int(relevance_score or 50) - 50) // 5))
-    score -= len(_editorial_quality_issues(text, language)) * 18
-    return max(0, min(100, score))
-
-
-def _editorial_longform_from_source(
-    *, language: str, city: str, category: str, source_name: str, source_url: str,
-    title: str, summary: str, published_at: str | None = None, admin_notes: str = "",
-) -> dict[str, Any]:
-    """Rule-based long-form draft used when no external AI key is present.
-    It expands only from public metadata and practical checklists; it never
-    invents facts, copies article text, or impersonates a normal user."""
-    lang = _normalize_news_language(language)
-    city_label = _news_city_label(city, lang)
-    category_label = _news_category_label(category, lang)
-    source = source_name or "Machi Local Desk"
-    original = source_url or ""
-    source_summary = _news_clean_text(summary or title, 700)
-    source_title = _news_clean_text(title or category_label, 160)
-    source_date = published_at or ""
-    risk = _risk_level_for_category(_normalize_news_category(category))
-    disclaimer_zh = "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。"
-    editorial_disclaimer = disclaimer_zh
-    if lang == "ja":
-        normalized_category = _normalize_news_category(category)
-        ja_presets: dict[str, dict[str, str]] = {
-            "traffic_alert": {
-                "lead": "移動前に見ておきたい交通まわりの更新です。普段使う路線や駅、通勤・通学時間帯に関係するかを先に確認してください。",
-                "s1": "一、移動前に見るポイント",
-                "s2": "二、影響が出やすい場面",
-                "s3": "三、出発前にできる準備",
-                "s4": "四、読み違えを防ぐために",
-                "impact": "通勤、通学、待ち合わせ、空港・新幹線への移動、子どもの送迎などは、少しの遅れでも予定全体に響きます。普段より早めに運行会社や自治体のページを確認しておくと安心です。",
-                "todo": "代替ルートを一つ用意し、ICカード残高、終電・最終バス、振替輸送の有無を見ておきます。大雨や混雑が重なる日は、出発時刻を少し前倒しにするだけでも余裕が生まれます。",
-            },
-            "weather_alert": {
-                "lead": "天気や防災に関わる更新です。外出予定だけでなく、家族や同居人との連絡、交通機関、買い物のタイミングにも影響する場合があります。",
-                "s1": "一、まず安全面を確認",
-                "s2": "二、生活で影響が出やすいところ",
-                "s3": "三、今日のうちに整えること",
-                "s4": "四、情報を見る順番",
-                "impact": "通勤・通学、保育園や学校、屋外イベント、買い物、配送、帰宅時間に影響が出ることがあります。警報や注意報の対象地域が自分の市区町村と一致するかを確認してください。",
-                "todo": "モバイルバッテリー、雨具、薬、飲み水、連絡先を確認し、必要なら早めに予定を調整します。避難情報や交通情報は、SNSより公式ページやアプリを優先して見てください。",
-            },
-            "earthquake_alert": {
-                "lead": "地震・防災に関する更新です。不安をあおる情報ではなく、今確認しておくと落ち着いて動ける点を中心に整理します。",
-                "s1": "一、公式情報で確認すること",
-                "s2": "二、家や職場で見直すこと",
-                "s3": "三、家族・同居人と共有すること",
-                "s4": "四、落ち着いて読むために",
-                "impact": "交通、学校、職場、エレベーター、ライフライン、避難場所の確認が必要になる場合があります。自宅だけでなく、よく行く駅や職場周辺の情報も見ておくと安心です。",
-                "todo": "避難場所、集合場所、連絡手段、充電、常備薬、身分証の場所を確認します。被害状況や余震情報は更新されるため、古いスクリーンショットだけで判断しないでください。",
-            },
-            "typhoon_alert": {
-                "lead": "台風や大雨に関する更新です。移動、学校、仕事、配送、買い物の予定を早めに見直すきっかけとして読んでください。",
-                "s1": "一、対象地域と時間帯",
-                "s2": "二、予定に出やすい影響",
-                "s3": "三、早めに済ませたい準備",
-                "s4": "四、無理に動かない判断",
-                "impact": "鉄道やバスの運休、道路の規制、イベント中止、店舗営業時間の変更が起こることがあります。特に帰宅時間帯と荒天のピークが重なるかを見てください。",
-                "todo": "食料、薬、充電、雨具、在宅勤務や授業の連絡、帰宅ルートを確認します。危険な時間帯に移動しない選択も、重要な準備の一つです。",
-            },
-            "policy_update": {
-                "lead": "制度や行政手続きに関する更新です。対象者、開始日、必要書類が自分に当てはまるかを落ち着いて確認しましょう。",
-                "s1": "一、対象者と開始時期",
-                "s2": "二、生活手続きへの影響",
-                "s3": "三、窓口へ行く前の準備",
-                "s4": "四、判断を急がないために",
-                "impact": "区役所での手続き、学校・職場への提出、保険、税金、住民登録、各種申請の期限に関係することがあります。家族の分も含めて確認が必要な場合があります。",
-                "todo": "公式ページを保存し、必要書類、受付期間、対象条件、問い合わせ先をメモします。分からない場合は、窓口や公式の問い合わせ先に確認してから動くほうが安全です。",
-            },
-            "immigration_visa": {
-                "lead": "在留資格やビザに関係する可能性がある更新です。人によって条件が大きく異なるため、概要だけで判断しないようにしてください。",
-                "s1": "一、自分の在留状況と照らす",
-                "s2": "二、期限と書類を確認",
-                "s3": "三、相談先を決める",
-                "s4": "四、二次情報だけで決めない",
-                "impact": "更新期限、就労条件、家族の手続き、学校や勤務先に提出する書類に関わる場合があります。同じ国籍や同じ学校でも、在留資格が違うと必要な対応が変わります。",
-                "todo": "在留カード、申請期限、雇用・在学証明、収入資料、オンライン申請の可否を確認します。不安がある場合は、入管、学校、勤務先、行政書士など適切な窓口に相談してください。",
-            },
-            "city_event": {
-                "lead": "街のイベントや週末の外出に関する更新です。行く前に、日時・場所・予約・変更情報を軽く確認しておくと安心です。",
-                "s1": "一、開催情報を確認",
-                "s2": "二、当日の動き方",
-                "s3": "三、持ち物と予約",
-                "s4": "四、混雑時の見方",
-                "impact": "会場までの移動、混雑、雨天時の変更、入場制限、子ども連れ・友人との待ち合わせに影響することがあります。最寄り駅や終了時間も見ておくと動きやすくなります。",
-                "todo": "公式ページで開催可否、チケット、予約、支払い方法、雨天時の対応を確認します。混雑が予想される場合は、集合場所と帰りのルートを先に決めておきましょう。",
-            },
-            "life_notice": {
-                "lead": "暮らしの手続きや地域サービスに関する更新です。毎日の生活に小さく効いてくる情報なので、必要な人だけがすぐ確認できる形で整理します。",
-                "s1": "一、自分に関係する場面",
-                "s2": "二、確認しておきたい条件",
-                "s3": "三、今日できる小さな準備",
-                "s4": "四、共有するときの注意",
-                "impact": "ごみ出し、公共施設、窓口時間、学校・保育、買い物、地域サービスなどに関係する場合があります。住んでいる区市町村や利用している施設名を照らし合わせてください。",
-                "todo": "変更日、対象地域、受付時間、必要な持ち物、問い合わせ先を確認します。家族や同居人に共有するときは、元リンクも一緒に送ると認識のずれを防げます。",
-            },
-            "public_safety": {
-                "lead": "安全に関わる更新です。怖がるためではなく、生活圏で何を確認すればよいかを短く整理します。",
-                "s1": "一、対象エリアを確認",
-                "s2": "二、日常で気をつける場面",
-                "s3": "三、周囲と共有すること",
-                "s4": "四、確かな情報を優先",
-                "impact": "通学路、夜の帰宅、駅周辺、家族との連絡、近所の移動に影響する場合があります。自分の生活圏と重なるかを先に見てください。",
-                "todo": "自治体や警察、学校、施設からの案内を確認し、必要なら帰宅ルートや待ち合わせ場所を見直します。未確認情報を拡散せず、公式発表を優先してください。",
-            },
-            "travel": {
-                "lead": "旅行やおでかけ前に確認しておきたい更新です。交通、混雑、天候、予約条件が予定に影響するかを見ておきましょう。",
-                "s1": "一、予定と重なるか確認",
-                "s2": "二、移動・予約への影響",
-                "s3": "三、出発前の準備",
-                "s4": "四、現地で困らないために",
-                "impact": "交通ダイヤ、宿泊、イベント、観光施設、天候によって予定変更が必要になる場合があります。出発日だけでなく、帰りの時間も確認してください。",
-                "todo": "予約条件、キャンセル規定、代替ルート、現地の営業時間、支払い方法を確認します。同行者には元リンクを共有して、同じ情報を見られるようにしておくと安心です。",
-            },
-        }
-        preset = ja_presets.get(normalized_category) or {
-            "lead": "日本で暮らす人が日常の予定を立てる前に確認しておきたい公開情報です。",
-            "s1": "一、今回の要点",
-            "s2": "二、暮らしへの影響",
-            "s3": "三、確認しておくこと",
-            "s4": "四、情報の読み方",
-            "impact": "通勤、通学、手続き、買い物、週末の外出など、日常のどこかに関係する場合があります。自分の住む地域や利用しているサービスと重なるかを見てください。",
-            "todo": "公開元のページを保存し、更新日、対象地域、必要な行動、問い合わせ先を確認します。迷う場合は公式窓口や主催者に確認してください。",
-        }
-        editorial_disclaimer = "この内容はMachi編集部が公開情報をもとに整理したものです。最新情報と最終判断は公式発表をご確認ください。"
-        editor_note = admin_notes or "小さな更新でも、生活の予定を少し変えるきっかけになることがあります。必要な人に共有するときは、元リンクも一緒に送ってください。"
-        body = (
-            f"{city_label}で暮らす人向けに、Machi編集部が「{source_title}」を公開情報から整理しました。"
-            f"出典は {source} です。{preset['lead']}\n\n"
-            f"{preset['s1']}\n{source_summary}\n\n"
-            "対象地域、対象者、期間によって受け取り方は変わります。自分の住んでいる区市町村、通勤・通学経路、利用しているサービスと重なるかを先に見てください。"
-            "公開元ページの更新日時も確認しておくと、古い情報で判断しにくくなります。\n\n"
-            f"{preset['s2']}\n{preset['impact']}\n\n"
-            f"{preset['s3']}\n{preset['todo']}\n\n"
-            f"{preset['s4']}\nSNSの短い投稿やスクリーンショットだけで判断せず、必ず公開元の説明を見てください。"
-            "安全、在留、行政手続き、医療、お金に関わる内容は、Machiの整理を入口として使い、最終確認は公式情報で行うのが安心です。\n\n"
-            f"五、Machi編集部メモ\n{editor_note}\n\n"
-            f"出典：{source}\n原文：{original}\n{editorial_disclaimer}"
-        )
-        out_title = source_title if len(source_title) > 12 else f"{city_label}の暮らしで確認したい{category_label}"
-        out_summary = f"{city_label}の{category_label}について、必要な人が先に確認しやすいよう、公開元情報を生活者目線で整理しました。"
-    elif lang == "en":
-        editorial_disclaimer = "Machi Local Desk summarized this update from public sources. Please check the official source for the latest details."
-        body = (
-            f"Machi Local Desk reviewed the public update “{source_title}” from {source} for people living, studying, working, or traveling in {city_label}. "
-            "This is not a copy of the source article and it is not a personal experience post. It is a practical reading guide so you can decide whether the update matters to your day.\n\n"
-            f"1. Start with the source context\n{source_summary}\n\nBefore acting on the update, check who it applies to, where it applies, and whether the timing still matches the latest official page. "
-            "Local notices can change quickly, especially for transport, weather, public safety, city procedures, visa-related information, and events. Save the original link so you can return to it later.\n\n"
-            "2. Where it may touch daily life\nThink through your commute, school schedule, workplace plans, city-office errands, housing arrangements, weekend trips, and family communication. "
-            "Even a small local update can matter if it affects a train line you use, an office you need to visit, a deadline, or an outdoor plan. If the update is not relevant to you today, it may still be useful to someone in your circle.\n\n"
-            "3. What to do next\nOpen the official page, check the publication date, and look for any concrete action: documents to prepare, routes to avoid, hours to confirm, application windows, safety instructions, or contact points. "
-            "For transport and weather updates, prepare a backup route or time buffer. For administrative updates, compare the requirement with your own status before making a decision.\n\n"
-            "4. Read carefully, especially for high-risk topics\nDo not rely only on screenshots or short social posts. If the topic involves safety, immigration, health, money, law, disasters, or public services, treat this Machi post as a starting point and verify details from the official source. "
-            "Conditions, eligibility, dates, and locations can change after the first announcement.\n\n"
-            f"5. Editor's note\n{admin_notes or 'For city life, the useful habit is not reading every notice. It is knowing which source to trust, which details to check, and when to share the update with someone who may need it.'}\n\n"
-            f"Source: {source}\nOriginal: {original}\n{editorial_disclaimer}"
-        )
-        out_title = source_title if len(source_title) > 12 else f"What to check in {city_label}: {category_label}"
-        out_summary = f"A practical {city_label} guide to this {category_label}, with source checks and next steps for local life."
-    else:
-        normalized_category = _normalize_news_category(category)
-        zh_presets: dict[str, dict[str, str]] = {
-            "traffic_alert": {
-                "lead": f"如果你最近在 {city_label} 通勤、上学、赶车或安排周末出门，这条交通相关公开信息值得先看一眼。",
-                "s1": "一、先确认影响范围",
-                "s2": "二、可能影响的日常安排",
-                "s3": "三、出门前可以做的准备",
-                "s4": "四、交通信息怎么读更稳",
-                "impact": "通勤路线、换乘时间、末班车、机场或新干线衔接、接送孩子和外出赴约都可能被影响。即使信息只涉及一条线路，也可能因为换乘连带改变整段行程。",
-                "todo": "先打开运营方或官方来源确认时间，再准备一条替代路线。遇到天气、活动或高峰期叠加时，给自己多留一点缓冲时间会更稳。",
-            },
-            "weather_alert": {
-                "lead": f"如果你最近在 {city_label} 安排外出、通勤、上学或照顾家人，这条天气/防灾信息需要提前确认。",
-                "s1": "一、先看自己所在区域",
-                "s2": "二、哪些生活场景容易被影响",
-                "s3": "三、今天可以提前准备什么",
-                "s4": "四、不要只看截图判断",
-                "impact": "雨具、交通、学校通知、户外活动、配送、买菜和回家时间都可能受到影响。天气类信息变化快，重点是确认对象地区和时间段。",
-                "todo": "检查气象厅、自治体或交通运营方页面，确认是否需要调整出门时间、准备充电宝、药品、雨具和家人联系方式。",
-            },
-            "earthquake_alert": {
-                "lead": f"这是一条和地震/防灾有关的公开信息。Machi 会把它整理成生活检查点，而不是制造紧张感。",
-                "s1": "一、先看官方说明",
-                "s2": "二、检查家和通勤路线",
-                "s3": "三、和身边人同步的信息",
-                "s4": "四、保持更新意识",
-                "impact": "电梯、交通、学校、工作地点、避难场所和家人联络方式都可能需要确认。平时常去的车站、公司、学校周边也值得一起看。",
-                "todo": "确认避难地点、集合方式、充电、常备药、证件位置和紧急联系人。地震相关信息会持续更新，不要只凭旧截图判断。",
-            },
-            "typhoon_alert": {
-                "lead": f"台风和大雨信息会直接影响 {city_label} 的出行、学校、工作和店铺营业，适合提前半天到一天检查。",
-                "s1": "一、先看时间段和地区",
-                "s2": "二、容易被打乱的安排",
-                "s3": "三、提前完成的准备",
-                "s4": "四、必要时减少移动",
-                "impact": "铁路、巴士、道路、活动、店铺营业和回家路线都可能调整。尤其要看恶劣天气高峰是否和通勤/回家时间重合。",
-                "todo": "准备食物、药、充电、雨具，确认远程办公或停课通知。危险时段不移动，本身就是很重要的准备。",
-            },
-            "policy_update": {
-                "lead": f"这类政策/行政更新不一定影响所有人，但如果你在 {city_label} 办手续、上学、工作或和家人一起生活，值得确认适用条件。",
-                "s1": "一、先看对象和生效时间",
-                "s2": "二、可能牵动哪些手续",
-                "s3": "三、去窗口前先准备",
-                "s4": "四、别急着按二手信息操作",
-                "impact": "住民票、保险、税务、学校/公司材料、补助申请、预约窗口和提交期限都可能有关。家人或同住人的材料也可能需要一起核对。",
-                "todo": "保存官方页面，记录对象条件、开始日期、必要文件、办理方式和咨询入口。拿不准时，先问官方窗口再行动。",
-            },
-            "immigration_visa": {
-                "lead": "在留和签证相关信息最怕只看标题。不同在留资格、学校、公司和家庭情况，可能对应完全不同的处理方式。",
-                "s1": "一、先和自己的在留状态对照",
-                "s2": "二、确认期限和材料",
-                "s3": "三、必要时找正确窗口",
-                "s4": "四、不要只依赖转述",
-                "impact": "在留更新、就劳限制、学校/公司证明、家属手续、收入材料和申请期限都可能被影响。同样在日本生活的人，也未必适用同一条规则。",
-                "todo": "查看入管或官方来源，核对在留卡、期限、证明材料和申请方式。不确定时，联系学校、公司、入管或专业人士。",
-            },
-            "city_event": {
-                "lead": f"如果你想在 {city_label} 安排周末、约朋友或找本地活动，这条公开活动信息可以作为出门前的检查入口。",
-                "s1": "一、先确认是否照常举办",
-                "s2": "二、现场体验会受哪些影响",
-                "s3": "三、出发前看这几件事",
-                "s4": "四、适合分享给谁",
-                "impact": "天气、预约、入场限制、付款方式、结束时间、最寄站和现场拥挤程度，都会影响体验。活动看起来轻松，但最好先确认细节。",
-                "todo": "查看主办方页面，确认时间、地点、预约、雨天安排和交通方式。和朋友同行时，把原链接一起发过去最省事。",
-            },
-            "life_notice": {
-                "lead": f"这条生活通知适合在 {city_label} 长住、刚搬来、准备办手续或经常使用公共服务的人先收藏。",
-                "s1": "一、先看自己是否会用到",
-                "s2": "二、日常里会落到哪里",
-                "s3": "三、今天能顺手确认的事",
-                "s4": "四、分享时避免误会",
-                "impact": "垃圾、窗口时间、公共设施、学校/保育、社区服务、预约和材料准备都可能被影响。它不一定紧急，但会影响办事效率。",
-                "todo": "确认变更日期、对象地区、开放时间、需要带的材料和联系电话。发给家人或室友时，最好附上原链接。",
-            },
-            "public_safety": {
-                "lead": f"公共安全信息需要冷静看。Machi 会把和 {city_label} 生活有关的确认点列出来，避免只靠传言判断。",
-                "s1": "一、先看范围和对象",
-                "s2": "二、哪些路线上要留意",
-                "s3": "三、和身边人同步",
-                "s4": "四、优先看可靠来源",
-                "impact": "夜间回家、通学路、车站周边、家人联系和临时出门都可能需要调整。先判断是否和自己的生活圈重叠。",
-                "todo": "查看自治体、警方、学校或设施通知，必要时调整路线和碰面方式。未经确认的信息不要继续扩散。",
-            },
-            "travel": {
-                "lead": f"如果你准备从 {city_label} 出发或到周边旅行，这条信息适合放进出行前检查清单。",
-                "s1": "一、先看是否撞上行程",
-                "s2": "二、交通和预约可能怎么变",
-                "s3": "三、出发前确认清单",
-                "s4": "四、给同行者同步",
-                "impact": "交通、住宿、活动、景点营业、天气和取消规则都可能改变原计划。只确认去程不够，回程也要看。",
-                "todo": "检查预约条件、取消规定、替代路线、营业时间和支付方式。同行者最好一起看同一个官方链接。",
-            },
-        }
-        preset = zh_presets.get(normalized_category) or {
-            "lead": f"如果你最近在 {city_label} 生活、通勤、上学、找房、办手续或安排周末出门，这条公开信息可以先留意一下。",
-            "s1": "一、先看这条信息和谁有关",
-            "s2": "二、它可能影响哪些日常场景",
-            "s3": "三、建议马上做的几个检查",
-            "s4": "四、不要只依赖截图和二手转述",
-            "impact": "通勤、手续、买东西、周末外出、学校或工作安排，都可能因为一条小更新发生变化。重点是确认它和自己的地区、时间、身份是否相关。",
-            "todo": "打开原始来源，确认发布时间、适用对象、地点、日期和联系方式。必要时把关键词记下来，方便之后再查。",
-        }
-        body = (
-            f"{preset['lead']} 这条信息来自「{source}」。"
-            f"Machi 编辑部不会把它写成普通用户体验，也不会复制原文全文；下面只根据公开标题、摘要和来源链接，把和城市生活有关的检查点整理出来。\n\n"
-            f"{preset['s1']}\n{source_summary}\n\n这类{category_label}信息最容易被忽略的地方，是它通常只影响一部分人：某个城市、某条线路、某类手续、某段时间或某些具体场景。"
-            "如果你只看标题，很容易误以为和自己无关，或者反过来被过度提醒。建议先确认三件事：地区是否包含你所在的位置，时间是否还有效，适用对象是否和你的身份或计划有关。\n\n"
-            f"{preset['s2']}\n{preset['impact']} 你不需要把每条资讯都看完，但需要快速判断它会不会影响今天、这一周或接下来一个月的安排。\n\n"
-            f"{preset['s3']}\n{preset['todo']} 如果信息涉及出行、行政、在留、安全或活动变更，建议把原始来源保存下来，之后再核对一次。\n\n"
-            f"{preset['s4']}\n高风险内容尤其要谨慎。天气、地震、台风、在留、政策、公共安全、医疗和金钱相关信息，都不适合只看社交媒体上的一句话总结。"
-            "Machi 可以帮你把公开信息整理成更容易阅读的生活提醒，但最终仍然要以官方来源、主办方或服务提供方的最新说明为准。\n\n"
-            f"五、适合哪些人收藏\n刚到 {city_label} 的留学生、正在找房或搬家的人、每天跨区通勤的人、需要处理手续的在留人群、带家人一起生活的人，都可以把这类信息当作日常检查清单的一部分。"
-            "如果你身边有人正好住在相关区域，也可以把原始链接一起转发给对方，避免只转述造成误解。\n\n"
-            f"六、Machi 编辑部提示\n{admin_notes or '城市生活里真正有用的信息，往往不是一句“有事发生了”，而是你知道下一步该查什么、该问谁、该如何避免临时慌乱。'}\n\n"
-            f"来源：{source}\n原文：{original}\n{editorial_disclaimer}"
-        )
-        out_title = source_title if len(source_title) > 12 else f"{city_label}生活提醒：这条{category_label}建议先确认"
-        out_summary = f"Machi 编辑部根据公开来源整理了 {city_label} 的{category_label}信息，并补充生活场景、检查步骤和注意事项。"
-    tags = [
-        _normalize_news_category(category),
-        _normalize_news_city(city) or "japan",
-        "machi-local-desk",
-        "life-guide",
-    ]
-    relevance_guess = 82 if _normalize_news_city(city) else 72
-    quality_score = _editorial_quality_score(
-        body,
-        lang,
-        source_name=source,
-        city=_normalize_news_city(city),
-        category=_normalize_news_category(category),
-        relevance_score=relevance_guess,
-    )
-    return {
-        "title": out_title[:140],
-        "summary": out_summary[:360],
-        "body": body,
-        "tags": [t for t in tags if t],
-        "category": _normalize_news_category(category),
-        "risk_level": risk,
-        "city_relevance": "high" if _normalize_news_city(city) else "medium",
-        "source_note": f"{source} / {source_date}".strip(" /"),
-        "editorial_disclaimer": editorial_disclaimer,
-        "quality_issues": _editorial_quality_issues(body, lang),
-        "quality_score": quality_score,
-    }
-
-
-def _local_name(tag: str) -> str:
-    return tag.rsplit("}", 1)[-1].lower()
-
-
-def _child_text(node: ET.Element, names: set[str]) -> str:
-    for child in list(node):
-        if _local_name(child.tag) in names:
-            return "".join(child.itertext()).strip()
-    return ""
-
-
-def _atom_link(node: ET.Element, base_url: str) -> str:
-    for child in list(node):
-        if _local_name(child.tag) != "link":
-            continue
-        rel = (child.attrib.get("rel") or "alternate").lower()
-        href = child.attrib.get("href") or child.text or ""
-        if href and rel in ("alternate", ""):
-            return urljoin(base_url, href.strip())
-    return ""
-
-
-def _robots_can_fetch(target_url: str) -> tuple[bool, str]:
-    parsed = urlparse(target_url)
-    if parsed.scheme not in ("http", "https") or not parsed.netloc:
-        return False, "invalid url"
-    robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-    parser = urllib.robotparser.RobotFileParser()
-    try:
-        req = urllib.request.Request(robots_url, headers={"User-Agent": NEWS_DESK_USER_AGENT})
-        with urllib.request.urlopen(req, timeout=5) as resp:
-            body = resp.read(200_000).decode("utf-8", "ignore").splitlines()
-        parser.parse(body)
-        return parser.can_fetch(NEWS_DESK_USER_AGENT, target_url), ""
-    except Exception:
-        # Robots support is best-effort: if robots.txt is unavailable,
-        # stay polite via timeout/rate limit and proceed with metadata only.
-        return True, ""
-
-
-def _fetch_public_text(url: str, max_bytes: int = 512_000) -> str:
-    allowed, reason = _robots_can_fetch(url)
-    if not allowed:
-        raise APIError(f"robots.txt disallows fetching this source: {reason or url}", 400, "robots_disallowed")
-    req = urllib.request.Request(url, headers={
-        "User-Agent": NEWS_DESK_USER_AGENT,
-        "Accept": "application/rss+xml, application/atom+xml, text/xml, text/html;q=0.8, */*;q=0.5",
-    })
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            raw = resp.read(max_bytes + 1)
-    except urllib.error.URLError as exc:
-        raise APIError(f"source fetch failed: {exc}", 502, "source_fetch_failed")
-    if len(raw) > max_bytes:
-        raw = raw[:max_bytes]
-    return raw.decode("utf-8", "ignore")
-
-
-class _NewsMetadataParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__()
-        self.in_title = False
-        self.title_parts: list[str] = []
-        self.meta: dict[str, str] = {}
-        self.canonical = ""
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        attr = {k.lower(): (v or "") for k, v in attrs}
-        if tag.lower() == "title":
-            self.in_title = True
-        elif tag.lower() == "meta":
-            key = (attr.get("property") or attr.get("name") or "").lower()
-            content = attr.get("content") or ""
-            if key and content:
-                self.meta[key] = content
-        elif tag.lower() == "link" and "canonical" in (attr.get("rel") or "").lower():
-            self.canonical = attr.get("href") or self.canonical
-
-    def handle_endtag(self, tag: str) -> None:
-        if tag.lower() == "title":
-            self.in_title = False
-
-    def handle_data(self, data: str) -> None:
-        if self.in_title:
-            self.title_parts.append(data)
-
-
-def _parse_webpage_metadata(html_text: str, source_url: str) -> dict[str, str | None]:
-    parser = _NewsMetadataParser()
-    parser.feed(html_text[:512_000])
-    title = parser.meta.get("og:title") or " ".join(parser.title_parts)
-    summary = parser.meta.get("og:description") or parser.meta.get("description") or ""
-    published = (
-        parser.meta.get("article:published_time")
-        or parser.meta.get("published_time")
-        or parser.meta.get("date")
-        or parser.meta.get("dc.date")
-    )
-    canonical = parser.canonical or source_url
-    return {
-        "title": _news_clean_text(title, 300),
-        "summary": _news_clean_text(summary, 500),
-        "url": urljoin(source_url, canonical),
-        "published_at": _parse_news_date(published),
-        "external_id": canonical or source_url,
-    }
-
-
-def _parse_rss_items(xml_text: str, source_url: str) -> list[dict[str, str | None]]:
-    root = ET.fromstring(xml_text.encode("utf-8"))
-    nodes = [node for node in root.iter() if _local_name(node.tag) in ("item", "entry")]
-    items: list[dict[str, str | None]] = []
-    for node in nodes[:80]:
-        is_atom = _local_name(node.tag) == "entry"
-        title = _news_clean_text(_child_text(node, {"title"}), 300)
-        if not title:
-            continue
-        link = _atom_link(node, source_url) if is_atom else _child_text(node, {"link"})
-        guid = _child_text(node, {"guid", "id"})
-        summary = _child_text(node, {"description", "summary", "subtitle"})
-        published_raw = _child_text(node, {"pubdate", "published", "updated", "date"})
-        published_at = _parse_news_date(published_raw)
-        items.append({
-            "title": title,
-            "summary": _news_clean_text(summary, 500),
-            "url": urljoin(source_url, (link or guid or source_url).strip()),
-            "published_at": published_at,
-            "external_id": _news_clean_text(guid or link, 300),
-        })
-    return items
-
-
-def _news_author_display_name(country: str, city: str, language: str, author_type: str = "local_desk") -> str:
-    city_name = _resolve_region_label(country, "", city) if country and city else ""
-    if country == "jp" and city == "tokyo":
-        if language == "ja":
-            return "Machi 東京編集部"
-        if language == "en":
-            return "Machi Tokyo Desk"
-        return "Machi 东京编辑部"
-    if country == "jp" and city == "osaka":
-        if language == "ja":
-            return "Machi 大阪編集部"
-        if language == "en":
-            return "Machi Osaka Desk"
-        return "Machi 大阪编辑部"
-    if country == "jp" and not city:
-        if language == "ja":
-            return "Machi 日本編集部"
-        if language == "en":
-            return "Machi Japan Desk"
-        return "Machi 日本生活编辑部"
-    if author_type == "city_editor" and city_name:
-        if language == "ja":
-            return f"Machi {city_name}編集部"
-        if language == "en":
-            return f"Machi {city_name} Desk"
-        return f"Machi {city_name}编辑部"
-    if language == "ja":
-        return "Machi ローカルデスク"
-    if language == "en":
-        return "Machi Local Desk"
-    return "Machi 本地生活编辑部"
-
-
-def serialize_news_source(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    source_type = _normalize_source_type(d.get("source_type") or "manual")
-    crawl_strategy = _normalize_crawl_strategy(d.get("crawl_strategy") or "", source_type)
-    credibility = _normalize_credibility(d.get("credibility_level") or "official")
-    city = _normalize_news_city(d.get("city") or "")
-    source_tier = _normalize_source_tier(d.get("source_tier"), credibility=credibility, city=city, source_type=source_type, crawl_strategy=crawl_strategy)
-    copyright_policy = _normalize_copyright_policy(d.get("copyright_policy"), d.get("copyright_policy_note"))
-    allow_auto_draft = bool(d.get("allow_auto_draft", d.get("auto_create_draft", 0)))
-    allow_auto_publish = bool(d.get("allow_auto_publish", d.get("official_auto_publish", 0)))
-    return {
-        **d,
-        "is_active": bool(d.get("is_active", 0)),
-        "require_manual_review": bool(d.get("require_manual_review", 1)),
-        "allow_auto_draft": allow_auto_draft,
-        "allow_auto_publish": allow_auto_publish,
-        "auto_create_draft": allow_auto_draft,
-        "official_auto_publish": allow_auto_publish,
-        "content_rewrite_required": bool(d.get("content_rewrite_required", 1)),
-        "source_tier": source_tier,
-        "copyright_policy": copyright_policy,
-        "risk_level": _normalize_risk_level(d.get("risk_level"), _normalize_news_category(d.get("default_category"))),
-        "crawl_interval_minutes": int(d.get("crawl_interval_minutes") or 0),
-        "max_items_per_run": int(d.get("max_items_per_run") or 30),
-        "request_timeout_ms": int(d.get("request_timeout_ms") or 15000),
-        "last_fetched_count": int(d.get("last_fetched_count") or 0),
-        "last_new_count": int(d.get("last_new_count") or 0),
-        "last_duplicate_count": int(d.get("last_duplicate_count") or 0),
-        "last_error_count": int(d.get("last_error_count") or 0),
-        "allowed_domain": d.get("allowed_domain") or normalize_allowed_domain(d),
-        "crawl_strategy": crawl_strategy,
-        "deleted": bool(d.get("deleted_at")),
-    }
-
-
-def serialize_news_item(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    raw = d.get("raw_metadata") or "{}"
-    if isinstance(raw, str):
-        try:
-            d["raw_metadata"] = json.loads(raw or "{}")
-        except Exception:
-            d["raw_metadata"] = {}
-    d["source_tier"] = _normalize_source_tier(d.get("source_tier"))
-    d["risk_level"] = _normalize_risk_level(d.get("risk_level"), _normalize_news_category(d.get("category")))
-    d["relevance_score"] = int(d.get("relevance_score") or 0)
-    d["quality_score"] = int(d.get("quality_score") or 0)
-    return d
-
-
-def serialize_editorial_comment(row: sqlite3.Row | dict[str, Any], author: dict[str, Any] | None = None) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d["id"],
-        "editorial_post_id": d["editorial_post_id"],
-        "author_id": d["author_id"],
-        "content": d["content"],
-        "created_at": d["created_at"],
-        "updated_at": d["updated_at"],
-        "author": author,
-    }
-
-
-def serialize_editorial_post(conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any], viewer_id: str | None = None) -> dict[str, Any]:
-    d = dict(row)
-    tags = [
-        r["tag"] for r in conn.execute(
-            "SELECT tag FROM editorial_post_tags WHERE editorial_post_id = ? ORDER BY created_at",
-            (d["id"],),
-        )
-    ]
-    save_count = conn.execute(
-        "SELECT COUNT(*) AS c FROM interactions WHERE target_id = ? AND kind = 'news_save'",
-        (d["id"],),
-    ).fetchone()["c"]
-    comment_count = conn.execute(
-        "SELECT COUNT(*) AS c FROM editorial_post_comments WHERE editorial_post_id = ? AND deleted_at IS NULL",
-        (d["id"],),
-    ).fetchone()["c"]
-    saved = False
-    if viewer_id:
-        saved = conn.execute(
-            "SELECT 1 FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'news_save'",
-            (d["id"], viewer_id),
-        ).fetchone() is not None
-    source_note = " / ".join(
-        part for part in [d.get("source_name") or "", d.get("source_published_at") or d.get("published_at") or ""] if part
-    )
-    risk_level = d.get("risk_level") or _risk_level_for_category(str(d.get("category") or ""))
-    quality_score = int(d.get("quality_score") or _editorial_quality_score(
-        str(d.get("body") or ""),
-        str(d.get("language") or "zh-CN"),
-        source_name=str(d.get("source_name") or ""),
-        city=str(d.get("city") or ""),
-        category=str(d.get("category") or ""),
-        relevance_score=int(d.get("relevance_score") or 50),
-    ))
-    official_source_required = bool(d.get("official_source_required", 0))
-    editorial_disclaimer = (
-        d.get("editorial_disclaimer") or "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。"
-        if official_source_required or risk_level == "high"
-        else d.get("editorial_disclaimer") or "此内容来自公开来源，Machi 保留来源名称、时间和原文入口，方便继续查证。"
-    )
-    return {
-        **d,
-        "tags": tags,
-        "save_count": int(save_count or 0),
-        "saveCount": int(save_count or 0),
-        "comment_count": int(comment_count or 0),
-        "commentCount": int(comment_count or 0),
-        "saved": saved,
-        "is_saved": saved,
-        "isSaved": saved,
-        "can_interact": bool(viewer_id),
-        "canInteract": bool(viewer_id),
-        "is_ai_assisted": bool(d.get("is_ai_assisted", 0)),
-        "isAiAssisted": bool(d.get("is_ai_assisted", 0)),
-        "share_count": int(d.get("share_count") or 0),
-        "shareCount": int(d.get("share_count") or 0),
-        "click_source_count": int(d.get("click_source_count") or 0),
-        "clickSourceCount": int(d.get("click_source_count") or 0),
-        "viewCount": int(d.get("view_count") or 0),
-        "risk_level": risk_level,
-        "riskLevel": risk_level,
-        "source_tier": d.get("source_tier") or "tier_3_public_media",
-        "sourceTier": d.get("source_tier") or "tier_3_public_media",
-        "sub_city": d.get("sub_city") or "",
-        "subCity": d.get("sub_city") or "",
-        "relevance_score": int(d.get("relevance_score") or 50),
-        "relevanceScore": int(d.get("relevance_score") or 50),
-        "quality_score": quality_score,
-        "qualityScore": quality_score,
-        "official_source_required": official_source_required,
-        "officialSourceRequired": official_source_required,
-        "is_demo": bool(d.get("is_demo", 0)),
-        "authorDisplayName": d.get("author_display_name", ""),
-        "authorType": d.get("author_type", ""),
-        "sourceName": d.get("source_name") or "",
-        "sourceUrl": d.get("source_url") or "",
-        "originalUrl": d.get("original_url") or "",
-        "sourcePublishedAt": d.get("source_published_at") or "",
-        "publishedAt": d.get("published_at") or "",
-        "createdAt": d.get("created_at") or "",
-        "updatedAt": d.get("updated_at") or "",
-        "source_note": source_note,
-        "sourceNote": source_note,
-        "editorial_disclaimer": editorial_disclaimer,
-        "editorialDisclaimer": editorial_disclaimer,
-    }
-
-
-def log_editorial_action(
-    conn: sqlite3.Connection, *, admin_id: str, action: str,
-    target_type: str, target_id: str, metadata: dict[str, Any] | None = None,
-) -> None:
-    conn.execute(
-        """
-        INSERT INTO editorial_action_logs (id, admin_id, action, target_type, target_id, metadata, created_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        """,
-        (str(uuid.uuid4()), admin_id, action, target_type, target_id,
-         json.dumps(metadata or {}, ensure_ascii=False), now_iso()),
-    )
-
-
-def fetch_news_source(conn: sqlite3.Connection, source_id: str, admin_id: str = "", force: bool = False) -> dict[str, Any]:
-    row = conn.execute("SELECT * FROM news_sources WHERE id = ?", (source_id,)).fetchone()
-    if not row:
-        raise APIError("资讯源不存在", 404, "source_not_found")
-    source = dict(row)
-    if source.get("deleted_at"):
-        raise APIError("资讯源已删除", 404, "source_deleted")
-    if not source.get("is_active"):
-        raise APIError("资讯源已停用", 400, "source_inactive")
-    started = now_iso()
-    now = now_iso()
-    status = "success"
-    fetched_count = new_count = duplicate_count = error_count = 0
-    error_message = ""
-    skipped_reason = ""
-    robots_status = ""
-    http_status: int | None = None
-    parser_status = ""
-    duration_ms = 0
-    created_draft_count = 0
-    published_count = 0
-    try:
-        # Network I/O must NOT hold the global write lock, or every other
-        # writer (login, posting, …) blocks for the entire crawl. Drop the
-        # lock just around the fetch; the DB writes below re-acquire it.
-        with _DBLockReleased():
-            crawl_result = crawl_source(source, force=force)
-        status = crawl_result.status
-        skipped_reason = crawl_result.skipped_reason
-        robots_status = crawl_result.robots_status
-        http_status = crawl_result.http_status
-        parser_status = crawl_result.parser_status
-        duration_ms = crawl_result.duration_ms
-        fetched_count = crawl_result.fetched_count or len(crawl_result.items)
-        for item in crawl_result.items:
-            title = _news_clean_text(item.title, 300)
-            if not title:
-                continue
-            original_url = str(item.url or source.get("source_url") or source.get("homepage_url") or "").strip()
-            published_at = item.published_at
-            hash_key = item.hash_key or _news_hash(original_url or source.get("source_url") or "", title, published_at)
-            duplicate = conn.execute(
-                """
-                SELECT id FROM news_items
-                 WHERE source_id = ?
-                   AND status != 'deleted'
-                   AND (
-                        (original_url <> '' AND original_url = ?)
-                        OR hash_key = ?
-                        OR (LOWER(original_title) = LOWER(?) AND COALESCE(published_at, '') = COALESCE(?, ''))
-                   )
-                 LIMIT 1
-                """,
-                (source["id"], original_url, hash_key, title, published_at or ""),
-            ).fetchone()
-            if duplicate:
-                duplicate_count += 1
-                continue
-            item_id = str(uuid.uuid4())
-            source_type = _normalize_source_type(source.get("source_type") or "manual")
-            source_tier = _normalize_source_tier(
-                source.get("source_tier"),
-                credibility=_normalize_credibility(source.get("credibility_level")),
-                city=_normalize_news_city(source.get("city")),
-                source_type=source_type,
-                crawl_strategy=_normalize_crawl_strategy(source.get("crawl_strategy"), source_type),
-            )
-            summary_text = _news_clean_text(item.summary, 500)
-            category = _classify_news_category(title, summary_text, source.get("default_category") or "local_news")
-            risk_level = _normalize_risk_level(source.get("risk_level"), category)
-            relevance_score, relevance_reason = _score_news_relevance(title, summary_text, category, source.get("city") or "", source_tier)
-            item_quality_score = min(100, max(0, 35 + (20 if summary_text else 0) + (15 if published_at else 0) + (15 if original_url else 0) + (15 if relevance_score >= 80 else 0)))
-            item_status = "ignored" if relevance_score < 40 else "fetched"
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO news_items
-                        (id, source_id, external_id, source_name, source_url, original_url,
-                         original_title, original_summary, original_language, published_at,
-                         fetched_at, country, city, sub_city, category, source_tier, risk_level,
-                         relevance_score, relevance_reason, quality_score, hash_key, status, raw_metadata,
-                         error_message, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
-                    """,
-                    (
-                        item_id, source["id"], item.external_id or "", source.get("name") or "",
-                        source.get("source_url") or "", original_url, title, summary_text,
-                        source.get("language") or "", published_at, now, source.get("country") or "",
-                        source.get("city") or "", source.get("sub_city") or "", category, source_tier, risk_level,
-                        relevance_score, relevance_reason, item_quality_score,
-                        hash_key, item_status, json.dumps(item.raw_metadata or {}, ensure_ascii=False), now, now,
-                    ),
-                )
-                new_count += 1
-                if item_status == "fetched" and relevance_score >= 80 and (source.get("allow_auto_draft") or source.get("auto_create_draft")):
-                    try:
-                        post = _draft_from_news_item(conn, item_id, admin_id or source.get("created_by_admin_id") or "")
-                        created_draft_count += 1
-                        if (source.get("allow_auto_publish") or source.get("official_auto_publish")) and source.get("credibility_level") == "official":
-                            fresh_post = dict(conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post["id"],)).fetchone())
-                            required_ok = all(str(fresh_post.get(k) or "").strip() for k in ("title", "summary", "body", "country", "language", "category"))
-                            source_ok = bool(fresh_post.get("source_name") and (fresh_post.get("original_url") or fresh_post.get("source_url")))
-                            auto_publish_ok = (
-                                required_ok and source_ok
-                                and source_tier in {"tier_1_official", "tier_2_city_official"}
-                                and risk_level != "high"
-                                and _normalize_copyright_policy(source.get("copyright_policy"), source.get("copyright_policy_note")) != "redistribution_restricted"
-                                and int(fresh_post.get("quality_score") or 0) >= 85
-                            )
-                            if auto_publish_ok:
-                                stamp = now_iso()
-                                conn.execute(
-                                    """
-                                    UPDATE editorial_posts
-                                       SET status = 'published', review_status = 'approved',
-                                           published_at = COALESCE(published_at, ?), updated_at = ?
-                                     WHERE id = ?
-                                    """,
-                                    (stamp, stamp, post["id"]),
-                                )
-                                published_count += 1
-                    except APIError as draft_exc:
-                        error_count += 1
-                        error_message = (error_message + "; " + str(draft_exc)).strip("; ")
-            except sqlite3.IntegrityError:
-                duplicate_count += 1
-        if status in {"success", "partial_success", "skipped"}:
-            conn.execute(
-                """
-                UPDATE news_sources
-                   SET last_fetched_at = ?, last_success_at = CASE WHEN ? IN ('success','partial_success') THEN ? ELSE last_success_at END,
-                       last_error = CASE WHEN ? = 'skipped' THEN last_error ELSE '' END,
-                       last_fetched_count = ?, last_new_count = ?, last_duplicate_count = ?,
-                       last_error_count = ?, last_robots_status = ?, last_http_status = ?,
-                       last_parser_status = ?,
-                       updated_at = ?
-                 WHERE id = ?
-                """,
-                (
-                    now, status, now, status, fetched_count, new_count, duplicate_count,
-                    error_count, robots_status, http_status, parser_status, now, source["id"],
-                ),
-            )
-    except CrawlerSkipped as exc:
-        status = "skipped"
-        skipped_reason = exc.code
-        robots_status = exc.code if exc.code.startswith("robots") else robots_status
-        parser_status = "skipped"
-        error_message = str(exc)
-        conn.execute(
-            """
-            UPDATE news_sources
-               SET last_fetched_at = ?, last_error_count = 0, last_robots_status = ?,
-                   last_parser_status = ?, updated_at = ?
-             WHERE id = ?
-            """,
-            (now, skipped_reason, "skipped", now, source["id"]),
-        )
-    except CrawlerError as exc:
-        status = exc.status or "failed"
-        error_count = 1
-        error_message = str(exc)
-        parser_status = getattr(exc, "code", "") or status
-        conn.execute(
-            """
-            UPDATE news_sources
-               SET last_fetched_at = ?, last_error = ?, last_error_count = ?,
-                   last_parser_status = ?, updated_at = ?
-             WHERE id = ?
-            """,
-            (now, error_message[:500], error_count, getattr(exc, "code", "") or status, now, source["id"]),
-        )
-    except Exception as exc:
-        status = "failed"
-        error_count = 1
-        error_message = f"{type(exc).__name__}: {exc}"
-        conn.execute(
-            "UPDATE news_sources SET last_fetched_at = ?, last_error = ?, last_error_count = ?, updated_at = ? WHERE id = ?",
-            (now, error_message[:500], error_count, now, source["id"]),
-        )
-    finished = now_iso()
-    log_id = str(uuid.uuid4())
-    conn.execute(
-        """
-        INSERT INTO news_fetch_logs
-            (id, source_id, status, fetched_count, new_count, duplicate_count, error_count,
-             error_message, started_at, finished_at, created_at, source_name, skipped_reason,
-             source_url, robots_status, http_status, parser_status, duration_ms)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (log_id, source["id"], status, fetched_count, new_count, duplicate_count,
-         error_count, error_message[:1000], started, finished, finished,
-         source.get("name") or "", skipped_reason, source.get("source_url") or "",
-         robots_status, http_status, parser_status, duration_ms),
-    )
-    if admin_id:
-        log_editorial_action(
-            conn, admin_id=admin_id, action="fetch_source", target_type="crawler_source", target_id=source["id"],
-            metadata={
-                "status": status, "new": new_count, "duplicates": duplicate_count,
-                "errors": error_count, "skipped_reason": skipped_reason,
-                "created_drafts": created_draft_count, "published": published_count,
-            },
-        )
-    if status == "failed":
-        raise APIError(error_message or "抓取失败", 502, "fetch_failed")
-    return {
-        "log": {
-            "id": log_id,
-            "source_id": source["id"],
-            "status": status,
-            "fetched_count": fetched_count,
-            "new_count": new_count,
-            "duplicate_count": duplicate_count,
-            "error_count": error_count,
-            "error_message": error_message,
-            "skipped_reason": skipped_reason,
-            "started_at": started,
-            "finished_at": finished,
-            "created_at": finished,
-            "source_name": source.get("name") or "",
-            "source_url": source.get("source_url") or "",
-            "robots_status": robots_status,
-            "http_status": http_status,
-            "parser_status": parser_status,
-            "duration_ms": duration_ms,
-            "created_draft_count": created_draft_count,
-            "published_count": published_count,
-        }
-    }
-
-
-def _editorial_tags_from_payload(raw: Any) -> list[str]:
-    if isinstance(raw, str):
-        raw = re.split(r"[,，#\s]+", raw)
-    if not isinstance(raw, list):
-        return []
-    out: list[str] = []
-    for item in raw:
-        tag = str(item or "").strip().lstrip("#").lower()
-        if not tag or len(tag) > 40 or tag in out:
-            continue
-        out.append(tag)
-        if len(out) >= 12:
-            break
-    return out
-
-
-def replace_editorial_tags(conn: sqlite3.Connection, post_id: str, tags: list[str]) -> None:
-    conn.execute("DELETE FROM editorial_post_tags WHERE editorial_post_id = ?", (post_id,))
-    for tag in tags:
-        conn.execute(
-            "INSERT OR IGNORE INTO editorial_post_tags (id, editorial_post_id, tag, created_at) VALUES (?, ?, ?, ?)",
-            (str(uuid.uuid4()), post_id, tag, now_iso()),
-        )
-
-
-def _draft_from_news_item(
-    conn: sqlite3.Connection,
-    item_id: str,
-    admin_id: str,
-    *,
-    target_language: str | None = None,
-    author_display_name: str = "",
-    create_mode: str = "editor_template",
-) -> dict[str, Any]:
-    item = conn.execute("SELECT * FROM news_items WHERE id = ?", (item_id,)).fetchone()
-    if not item:
-        raise APIError("采集内容不存在", 404, "item_not_found")
-    item_d = dict(item)
-    if item_d["status"] in ("ignored", "duplicate", "deleted"):
-        raise APIError("该内容已忽略或标记重复", 400, "item_unavailable")
-    existing = conn.execute("SELECT * FROM editorial_posts WHERE news_item_id = ? AND status != 'deleted'", (item_id,)).fetchone()
-    if existing:
-        return serialize_editorial_post(conn, existing)
-    country = item_d.get("country") or ""
-    city = item_d.get("city") or ""
-    language = _normalize_news_language(target_language or item_d.get("original_language"))
-    author_type = _news_author_type_for_scope(country, city)
-    author = _news_clean_text(author_display_name, 80) or _news_author_display_name(country, city, language, author_type)
-    title = _news_clean_text(item_d.get("original_title"), 160)
-    summary = _news_clean_text(item_d.get("original_summary") or title, 500)
-    if create_mode == "summary_only":
-        body = _safe_editorial_body(language, item_d.get("source_name") or "", item_d.get("original_url") or "")
-        generated = {
-            "title": title,
-            "summary": summary,
-            "body": body,
-            "tags": [item_d.get("category") or "local_news", item_d.get("city") or "local"],
-            "category": _normalize_news_category(item_d.get("category")),
-            "risk_level": _risk_level_for_category(_normalize_news_category(item_d.get("category"))),
-        }
-    else:
-        generated = _editorial_longform_from_source(
-            language=language,
-            city=city,
-            category=str(item_d.get("category") or "local_news"),
-            source_name=str(item_d.get("source_name") or ""),
-            source_url=str(item_d.get("original_url") or item_d.get("source_url") or ""),
-            title=title,
-            summary=summary,
-            published_at=item_d.get("published_at"),
-        )
-    title = _news_clean_text(generated.get("title") or title, 160)
-    summary = _news_clean_text(generated.get("summary") or summary, 500)
-    body = str(generated.get("body") or body)
-    category = _normalize_news_category(generated.get("category") or item_d.get("category"))
-    risk_level = str(generated.get("risk_level") or _risk_level_for_category(category))
-    source_required = 1 if _source_required_for_category(category) else 0
-    relevance_score = int(item_d.get("relevance_score") or 50)
-    quality_score = int(generated.get("quality_score") or _editorial_quality_score(
-        body,
-        language,
-        source_name=str(item_d.get("source_name") or ""),
-        city=city,
-        category=category,
-        relevance_score=relevance_score,
-    ))
-    disclaimer = str(generated.get("editorial_disclaimer") or "此内容由 Machi 编辑部根据公开来源整理，具体信息请以官方发布为准。")
-    post_id = str(uuid.uuid4())
-    now = now_iso()
-    conn.execute(
-        """
-        INSERT INTO editorial_posts
-            (id, news_item_id, author_type, author_display_name, country, city, language,
-             category, title, summary, body, source_name, source_url, original_url,
-             source_published_at, status, review_status, risk_level, official_source_required,
-             source_tier, sub_city, relevance_score, quality_score, editorial_disclaimer,
-             is_ai_assisted, ai_model, ai_prompt_version, created_by_admin_id, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'needs_review', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            post_id, item_id, author_type, author, country, city,
-            language, category, title, summary, body, item_d.get("source_name"), item_d.get("source_url"),
-            item_d.get("original_url"), item_d.get("published_at"), risk_level, source_required,
-            item_d.get("source_tier") or "tier_3_public_media", item_d.get("sub_city") or "",
-            relevance_score, quality_score, disclaimer,
-            0 if create_mode == "summary_only" else 1,
-            "" if create_mode == "summary_only" else "local_news_desk_rule_assist_v2",
-            "" if create_mode == "summary_only" else NEWS_DESK_PROMPT_VERSION,
-            admin_id, now, now,
-        ),
-    )
-    conn.execute("UPDATE news_items SET status = 'draft_created', updated_at = ? WHERE id = ?", (now, item_id))
-    replace_editorial_tags(conn, post_id, _editorial_tags_from_payload(generated.get("tags")))
-    log_editorial_action(conn, admin_id=admin_id, action="create_draft", target_type="editorial_post", target_id=post_id, metadata={"news_item_id": item_id})
-    fresh = conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone()
-    return serialize_editorial_post(conn, fresh)
-
-
-def _local_news_assist(post: dict[str, Any], task: str, language: str, extra_note: str = "") -> dict[str, Any]:
-    title = _news_clean_text(post.get("title"), 180)
-    summary = _news_clean_text(post.get("summary") or post.get("body"), 420)
-    generated = _editorial_longform_from_source(
-        language=language,
-        city=str(post.get("city") or ""),
-        category=str(post.get("category") or "local_news"),
-        source_name=str(post.get("source_name") or "Machi Local Desk"),
-        source_url=str(post.get("original_url") or post.get("source_url") or ""),
-        title=title,
-        summary=summary,
-        published_at=post.get("source_published_at") or post.get("published_at"),
-        admin_notes=extra_note,
-    )
-    return {
-        "summary": generated["summary"],
-        "body": generated["body"],
-        "title_options": [generated["title"], title, f"Machi Local Desk: {title}"[:120]],
-        "tags": generated["tags"],
-        "category": generated["category"],
-        "city": post.get("city") or "",
-        "task": task or "rewrite",
-        "prompt_version": NEWS_DESK_PROMPT_VERSION,
-        "model": "local_news_desk_rule_assist_v2",
-        "risk_level": generated["risk_level"],
-        "sourceNote": generated["source_note"],
-        "editorialDisclaimer": generated["editorial_disclaimer"],
-        "quality_score": generated.get("quality_score", 0),
-        "quality": {"score": generated.get("quality_score", 0), "issues": generated["quality_issues"], "passed": not generated["quality_issues"] and int(generated.get("quality_score") or 0) >= 70},
-    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -12991,1053 +11387,9 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- Local News Desk / 本地资讯台 ----
 
-    def _clean_news_source_payload(self, data: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
-        existing = existing or {}
-        name = _news_clean_text(data.get("name", existing.get("name", "")), 120)
-        if not name:
-            raise APIError("请填写资讯源名称", 400, "name_required")
-        source_key = _slug_key(str(data.get("source_key") or existing.get("source_key") or name))
-        source_type = _normalize_source_type(data.get("source_type", existing.get("source_type", "manual")))
-        source_url = str(data.get("source_url", existing.get("source_url", "")) or "").strip()[:800]
-        homepage_url = str(data.get("homepage_url", existing.get("homepage_url", "")) or "").strip()[:800]
-        if source_type in ("rss", "webpage", "metadata", "html_list", "api") and not source_url:
-            raise APIError("RSS / webpage 来源需要 source_url", 400, "source_url_required")
-        for key, value in (("source_url", source_url), ("homepage_url", homepage_url)):
-            if value:
-                parsed = urlparse(value)
-                if parsed.scheme not in ("http", "https") or not parsed.netloc:
-                    raise APIError(f"{key} 必须是 http(s) URL", 400, "invalid_url")
-        allowed_domain = _news_clean_text(data.get("allowed_domain", existing.get("allowed_domain", "")), 160).lower()
-        if not allowed_domain:
-            allowed_domain = normalize_allowed_domain({"source_url": source_url, "homepage_url": homepage_url})
-        if source_url and allowed_domain:
-            host = urlparse(source_url).netloc.lower()
-            if host and host != allowed_domain and not host.endswith(f".{allowed_domain}"):
-                raise APIError("source_url 不在 allowed_domain 范围内", 400, "domain_disallowed")
-        crawl_strategy = _normalize_crawl_strategy(data.get("crawl_strategy", existing.get("crawl_strategy", "")), source_type)
-        credibility = _normalize_credibility(data.get("credibility_level", existing.get("credibility_level", "official")))
-        country = _normalize_news_country(data.get("country", existing.get("country", "")))
-        city = _normalize_news_city(data.get("city", existing.get("city", "")))
-        language = _normalize_news_language(data.get("language", existing.get("language", "zh-CN")))
-        category = _normalize_news_category(data.get("default_category", existing.get("default_category", "local_news")))
-        source_tier = _normalize_source_tier(
-            data.get("source_tier", existing.get("source_tier", "")),
-            credibility=credibility,
-            city=city,
-            source_type=source_type,
-            crawl_strategy=crawl_strategy,
-        )
-        copyright_note = _news_clean_text(data.get("copyright_policy_note", existing.get("copyright_policy_note", "")), 1000)
-        copyright_policy = _normalize_copyright_policy(
-            data.get("copyright_policy", existing.get("copyright_policy", "")),
-            copyright_note,
-        )
-        risk_level = _normalize_risk_level(data.get("risk_level", existing.get("risk_level", "")), category)
-        try:
-            interval = int(data.get("crawl_interval_minutes", existing.get("crawl_interval_minutes", 180)) or 180)
-        except (TypeError, ValueError):
-            raise APIError("抓取间隔不合法", 400, "invalid_interval")
-        interval = max(30, min(interval, 24 * 60))
-        try:
-            max_items = int(data.get("max_items_per_run", existing.get("max_items_per_run", 30)) or 30)
-        except (TypeError, ValueError):
-            raise APIError("每次最大抓取数量不合法", 400, "invalid_max_items")
-        max_items = max(1, min(max_items, 50))
-        try:
-            timeout_ms = int(data.get("request_timeout_ms", existing.get("request_timeout_ms", 15000)) or 15000)
-        except (TypeError, ValueError):
-            raise APIError("请求超时时间不合法", 400, "invalid_timeout")
-        timeout_ms = max(1000, min(timeout_ms, 30000))
-        is_active_default = bool(existing.get("is_active")) if existing else False
-        allow_auto_draft = _boolish(
-            data.get("allow_auto_draft", data.get("auto_create_draft", existing.get("allow_auto_draft", existing.get("auto_create_draft", False)))),
-            False,
-        )
-        allow_auto_publish = _boolish(
-            data.get("allow_auto_publish", data.get("official_auto_publish", existing.get("allow_auto_publish", existing.get("official_auto_publish", False)))),
-            False,
-        )
-        content_rewrite_required = _boolish(data.get("content_rewrite_required", existing.get("content_rewrite_required", True)), True)
-        if source_tier == "tier_5_manual_reference" or copyright_policy == "redistribution_restricted":
-            allow_auto_draft = False
-            allow_auto_publish = False
-        if allow_auto_publish and (credibility != "official" or source_tier not in {"tier_1_official", "tier_2_city_official"} or risk_level == "high"):
-            raise APIError("自动发布仅允许低/中风险官方 tier_1/tier_2 来源", 400, "auto_publish_not_allowed")
-        return {
-            "name": name,
-            "source_key": source_key,
-            "source_type": source_type,
-            "source_url": source_url,
-            "homepage_url": homepage_url,
-            "allowed_domain": allowed_domain,
-            "country": country,
-            "city": city,
-            "language": language,
-            "default_category": category,
-            "credibility_level": credibility,
-            "source_tier": source_tier,
-            "copyright_policy": copyright_policy,
-            "copyright_policy_note": copyright_note,
-            "crawl_strategy": crawl_strategy,
-            "sub_city": _news_clean_text(data.get("sub_city", existing.get("sub_city", "")), 80).lower(),
-            "list_selector": _news_clean_text(data.get("list_selector", existing.get("list_selector", "")), 300),
-            "item_selector": _news_clean_text(data.get("item_selector", existing.get("item_selector", "")), 300),
-            "title_selector": _news_clean_text(data.get("title_selector", existing.get("title_selector", "")), 300),
-            "link_selector": _news_clean_text(data.get("link_selector", existing.get("link_selector", "")), 300),
-            "summary_selector": _news_clean_text(data.get("summary_selector", existing.get("summary_selector", "")), 300),
-            "date_selector": _news_clean_text(data.get("date_selector", existing.get("date_selector", "")), 300),
-            "date_format": _news_clean_text(data.get("date_format", existing.get("date_format", "")), 120),
-            "timezone": _news_clean_text(data.get("timezone", existing.get("timezone", "Asia/Tokyo")), 80) or "Asia/Tokyo",
-            "robots_policy": "manual_checked" if str(data.get("robots_policy", existing.get("robots_policy", "respect"))).strip() == "manual_checked" else "respect",
-            "crawl_interval_minutes": interval,
-            "max_items_per_run": max_items,
-            "request_timeout_ms": timeout_ms,
-            "is_active": 1 if data.get("is_active", is_active_default) else 0,
-            "require_manual_review": 1 if _boolish(data.get("require_manual_review", existing.get("require_manual_review", True)), True) else 0,
-            "allow_auto_draft": 1 if allow_auto_draft else 0,
-            "allow_auto_publish": 1 if allow_auto_publish else 0,
-            "auto_create_draft": 1 if allow_auto_draft else 0,
-            "official_auto_publish": 1 if allow_auto_publish else 0,
-            "content_rewrite_required": 1 if content_rewrite_required else 0,
-            "risk_level": risk_level,
-        }
-
-    def api_admin_news_desk(self, conn: sqlite3.Connection) -> None:
-        self.require_admin(conn)
-        today = datetime.now(timezone.utc).date().isoformat()
-        stats = {
-            "today_fetched": conn.execute("SELECT COUNT(*) AS c FROM news_items WHERE fetched_at >= ?", (today,)).fetchone()["c"],
-            "today_new": conn.execute("SELECT COUNT(*) AS c FROM news_items WHERE fetched_at >= ? AND status = 'fetched'", (today,)).fetchone()["c"],
-            "duplicates": conn.execute("SELECT COUNT(*) AS c FROM news_items WHERE status = 'duplicate'").fetchone()["c"],
-            "pending_items": conn.execute("SELECT COUNT(*) AS c FROM news_items WHERE status = 'fetched'").fetchone()["c"],
-            "pending_drafts": conn.execute("SELECT COUNT(*) AS c FROM editorial_posts WHERE status IN ('draft','pending_review')").fetchone()["c"],
-            "published": conn.execute("SELECT COUNT(*) AS c FROM editorial_posts WHERE status = 'published'").fetchone()["c"],
-            "failed_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND last_error <> ''").fetchone()["c"],
-            "sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL").fetchone()["c"],
-            "active_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND is_active = 1").fetchone()["c"],
-            "successful_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND last_success_at IS NOT NULL").fetchone()["c"],
-            "crawler_items": conn.execute("SELECT COUNT(*) AS c FROM news_items WHERE status != 'deleted'").fetchone()["c"],
-            "front_visible": conn.execute("SELECT COUNT(*) AS c FROM editorial_posts WHERE status = 'published' AND country = 'jp'").fetchone()["c"],
-            "auto_draft_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND allow_auto_draft = 1").fetchone()["c"],
-            "auto_publish_sources": conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND allow_auto_publish = 1").fetchone()["c"],
-        }
-        if stats["published"] == 0 and stats["pending_drafts"]:
-            stats["diagnostic_hint"] = "已有草稿，尚未发布。"
-        elif stats["published"] == 0 and stats["pending_items"]:
-            stats["diagnostic_hint"] = "已有采集内容，尚未创建草稿。"
-        elif stats["published"] == 0:
-            stats["diagnostic_hint"] = "暂无本地资讯。请在后台抓取并发布内容。"
-        recent_posts = [
-            serialize_editorial_post(conn, r)
-            for r in conn.execute(
-                "SELECT * FROM editorial_posts WHERE status = 'published' ORDER BY published_at DESC LIMIT 6"
-            )
-        ]
-        recent_logs = [
-            dict(r) for r in conn.execute(
-                "SELECT * FROM news_fetch_logs ORDER BY created_at DESC LIMIT 8"
-            )
-        ]
-        failure_reasons = [
-            {"reason": r["reason"] or "unknown", "count": int(r["c"])}
-            for r in conn.execute(
-                """
-                SELECT COALESCE(NULLIF(parser_status, ''), NULLIF(skipped_reason, ''), NULLIF(error_message, ''), status) AS reason,
-                       COUNT(*) AS c
-                  FROM news_fetch_logs
-                 WHERE status NOT IN ('success','partial_success') OR error_count > 0
-                 GROUP BY reason
-                 ORDER BY c DESC
-                 LIMIT 8
-                """
-            )
-        ]
-        source_tiers = [
-            {"source_tier": r["source_tier"], "count": int(r["c"])}
-            for r in conn.execute(
-                "SELECT source_tier, COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL GROUP BY source_tier ORDER BY c DESC"
-            )
-        ]
-        top_issues: list[str] = []
-        if stats["active_sources"] == 0:
-            top_issues.append("没有启用的日本资讯源")
-        if stats["successful_sources"] == 0 and stats["active_sources"]:
-            top_issues.append("还没有成功抓取记录，请先执行一次官方/东京/大阪来源抓取")
-        if stats["crawler_items"] and stats["pending_drafts"] == 0:
-            top_issues.append("内容池已有采集结果，但自动草稿或批量生成还没有产出")
-        if stats["pending_drafts"] and stats["published"] == 0:
-            top_issues.append("已有编辑部草稿，但尚未审核发布")
-        if stats["failed_sources"]:
-            top_issues.append("存在失败来源，需要查看 robots/http/parser/timeout 日志")
-        if stats["auto_publish_sources"] == 0:
-            top_issues.append("自动发布开关仍全部关闭；如需自动发布，请只给低/中风险官方来源开启")
-        diagnostics = {
-            "failure_reasons": failure_reasons,
-            "source_tiers": source_tiers,
-            "top_issues": top_issues[:10],
-        }
-        self.send_json({"stats": stats, "diagnostics": diagnostics, "recent_posts": recent_posts, "recent_logs": recent_logs})
-
-    def api_admin_news_sources(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
-        self.require_admin(conn)
-        q = (query.get("q") or "").strip()
-        where = ["deleted_at IS NULL"]
-        params: list[Any] = []
-        if q:
-            like = f"%{q}%"
-            where.append("(name LIKE ? OR source_key LIKE ? OR source_url LIKE ? OR homepage_url LIKE ?)")
-            params.extend([like, like, like, like])
-        if query.get("country"):
-            where.append("country = ?")
-            params.append(_normalize_news_country(query["country"]))
-        if query.get("city"):
-            where.append("city = ?")
-            params.append(_normalize_news_city(query["city"]))
-        if query.get("source_tier") or query.get("sourceTier"):
-            where.append("source_tier = ?")
-            params.append(_normalize_source_tier(query.get("source_tier") or query.get("sourceTier")))
-        rows = conn.execute(
-            f"SELECT * FROM news_sources WHERE {' AND '.join(where)} ORDER BY updated_at DESC",
-            params,
-        ).fetchall()
-        self.send_json({"items": [serialize_news_source(r) for r in rows]})
-
-    def api_admin_news_source_detail(self, conn: sqlite3.Connection, source_id: str) -> None:
-        self.require_admin(conn)
-        row = conn.execute("SELECT * FROM news_sources WHERE id = ? AND deleted_at IS NULL", (source_id,)).fetchone()
-        if not row:
-            raise APIError("资讯源不存在", 404, "source_not_found")
-        logs = [
-            dict(r) for r in conn.execute(
-                "SELECT * FROM news_fetch_logs WHERE source_id = ? ORDER BY created_at DESC LIMIT 10",
-                (source_id,),
-            )
-        ]
-        self.send_json({"source": serialize_news_source(row), "recent_logs": logs})
-
-    def api_admin_seed_news_source_presets(self, conn: sqlite3.Connection) -> None:
-        admin = self.require_admin(conn)
-        result = ensure_news_source_presets(conn)
-        total = conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND country = ?", ("jp",)).fetchone()["c"]
-        active = conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL AND country = ? AND is_active = 1", ("jp",)).fetchone()["c"]
-        log_editorial_action(conn, admin_id=admin["id"], action="seed_japan_sources", target_type="crawler_source", target_id="jp", metadata={**result, "total": int(total), "active": int(active)})
-        self.send_json({"total": int(total), "active": int(active), **result})
-
-    def api_admin_create_news_source(self, conn: sqlite3.Connection) -> None:
-        admin = self.require_admin(conn)
-        cleaned = self._clean_news_source_payload(self.read_json())
-        source_id = str(uuid.uuid4())
-        now = now_iso()
-        conn.execute(
-            """
-            INSERT INTO news_sources
-                (id, name, source_key, source_type, source_url, homepage_url, allowed_domain,
-                 country, city, language, default_category, credibility_level, copyright_policy_note,
-                 source_tier, copyright_policy, crawl_strategy, sub_city, list_selector, item_selector, title_selector, link_selector,
-                 summary_selector, date_selector, date_format, timezone, robots_policy,
-                 crawl_interval_minutes, max_items_per_run, request_timeout_ms, is_active,
-                 require_manual_review, allow_auto_draft, allow_auto_publish, auto_create_draft, official_auto_publish,
-                 content_rewrite_required, risk_level,
-                 created_by_admin_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                source_id, cleaned["name"], cleaned["source_key"], cleaned["source_type"],
-                cleaned["source_url"], cleaned["homepage_url"], cleaned["allowed_domain"],
-                cleaned["country"], cleaned["city"], cleaned["language"], cleaned["default_category"],
-                cleaned["credibility_level"], cleaned["copyright_policy_note"], cleaned["source_tier"],
-                cleaned["copyright_policy"], cleaned["crawl_strategy"], cleaned["sub_city"],
-                cleaned["list_selector"], cleaned["item_selector"], cleaned["title_selector"],
-                cleaned["link_selector"], cleaned["summary_selector"], cleaned["date_selector"],
-                cleaned["date_format"], cleaned["timezone"], cleaned["robots_policy"],
-                cleaned["crawl_interval_minutes"], cleaned["max_items_per_run"], cleaned["request_timeout_ms"],
-                cleaned["is_active"], cleaned["require_manual_review"], cleaned["allow_auto_draft"],
-                cleaned["allow_auto_publish"], cleaned["auto_create_draft"], cleaned["official_auto_publish"],
-                cleaned["content_rewrite_required"], cleaned["risk_level"], admin["id"], now, now,
-            ),
-        )
-        log_editorial_action(conn, admin_id=admin["id"], action="create_source", target_type="crawler_source", target_id=source_id)
-        self.send_json({"source": serialize_news_source(conn.execute("SELECT * FROM news_sources WHERE id = ?", (source_id,)).fetchone())}, 201)
-
-    def api_admin_update_news_source(self, conn: sqlite3.Connection, source_id: str) -> None:
-        admin = self.require_admin(conn)
-        row = conn.execute("SELECT * FROM news_sources WHERE id = ? AND deleted_at IS NULL", (source_id,)).fetchone()
-        if not row:
-            raise APIError("资讯源不存在", 404, "source_not_found")
-        cleaned = self._clean_news_source_payload(self.read_json(), dict(row))
-        conn.execute(
-            """
-            UPDATE news_sources
-               SET name = ?, source_key = ?, source_type = ?, source_url = ?, homepage_url = ?,
-                   allowed_domain = ?, country = ?, city = ?, language = ?, default_category = ?,
-                   credibility_level = ?, copyright_policy_note = ?, source_tier = ?, copyright_policy = ?,
-                   crawl_strategy = ?, sub_city = ?, list_selector = ?, item_selector = ?, title_selector = ?, link_selector = ?,
-                   summary_selector = ?, date_selector = ?, date_format = ?, timezone = ?,
-                   robots_policy = ?, crawl_interval_minutes = ?, max_items_per_run = ?,
-                   request_timeout_ms = ?, is_active = ?, require_manual_review = ?,
-                   allow_auto_draft = ?, allow_auto_publish = ?, auto_create_draft = ?,
-                   official_auto_publish = ?, content_rewrite_required = ?, risk_level = ?, updated_at = ?
-             WHERE id = ?
-            """,
-            (
-                cleaned["name"], cleaned["source_key"], cleaned["source_type"], cleaned["source_url"],
-                cleaned["homepage_url"], cleaned["allowed_domain"], cleaned["country"], cleaned["city"],
-                cleaned["language"], cleaned["default_category"], cleaned["credibility_level"],
-                cleaned["copyright_policy_note"], cleaned["source_tier"], cleaned["copyright_policy"],
-                cleaned["crawl_strategy"], cleaned["sub_city"], cleaned["list_selector"],
-                cleaned["item_selector"], cleaned["title_selector"], cleaned["link_selector"],
-                cleaned["summary_selector"], cleaned["date_selector"], cleaned["date_format"],
-                cleaned["timezone"], cleaned["robots_policy"], cleaned["crawl_interval_minutes"],
-                cleaned["max_items_per_run"], cleaned["request_timeout_ms"], cleaned["is_active"],
-                cleaned["require_manual_review"], cleaned["allow_auto_draft"], cleaned["allow_auto_publish"],
-                cleaned["auto_create_draft"], cleaned["official_auto_publish"],
-                cleaned["content_rewrite_required"], cleaned["risk_level"], now_iso(), source_id,
-            ),
-        )
-        log_editorial_action(conn, admin_id=admin["id"], action="update_source", target_type="crawler_source", target_id=source_id)
-        self.send_json({"source": serialize_news_source(conn.execute("SELECT * FROM news_sources WHERE id = ?", (source_id,)).fetchone())})
-
-    def api_admin_toggle_news_source(self, conn: sqlite3.Connection, source_id: str) -> None:
-        admin = self.require_admin(conn)
-        row = conn.execute("SELECT is_active FROM news_sources WHERE id = ? AND deleted_at IS NULL", (source_id,)).fetchone()
-        if not row:
-            raise APIError("资讯源不存在", 404, "source_not_found")
-        next_active = 0 if row["is_active"] else 1
-        conn.execute("UPDATE news_sources SET is_active = ?, updated_at = ? WHERE id = ?", (next_active, now_iso(), source_id))
-        log_editorial_action(conn, admin_id=admin["id"], action=("enable_source" if next_active else "disable_source"), target_type="crawler_source", target_id=source_id, metadata={"is_active": bool(next_active)})
-        self.send_json({"source": serialize_news_source(conn.execute("SELECT * FROM news_sources WHERE id = ?", (source_id,)).fetchone())})
-
-    def api_admin_delete_news_source(self, conn: sqlite3.Connection, source_id: str) -> None:
-        admin = self.require_admin(conn)
-        row = conn.execute("SELECT id FROM news_sources WHERE id = ? AND deleted_at IS NULL", (source_id,)).fetchone()
-        if not row:
-            raise APIError("资讯源不存在", 404, "source_not_found")
-        now = now_iso()
-        conn.execute("UPDATE news_sources SET is_active = 0, deleted_at = ?, updated_at = ? WHERE id = ?", (now, now, source_id))
-        log_editorial_action(conn, admin_id=admin["id"], action="delete_source", target_type="crawler_source", target_id=source_id)
-        self.send_json({"ok": True})
-
-    def api_admin_fetch_news_source(self, conn: sqlite3.Connection, source_id: str) -> None:
-        admin = self.require_admin(conn)
-        result = fetch_news_source(conn, source_id, admin_id=admin["id"], force=True)
-        source = conn.execute("SELECT * FROM news_sources WHERE id = ?", (source_id,)).fetchone()
-        self.send_json({"source": serialize_news_source(source), **result})
-
-    def api_admin_fetch_all_news_sources(self, conn: sqlite3.Connection) -> None:
-        admin = self.require_admin(conn)
-        rows = conn.execute("SELECT id FROM news_sources WHERE is_active = 1 AND deleted_at IS NULL ORDER BY updated_at DESC").fetchall()
-        results: list[dict[str, Any]] = []
-        for row in rows:
-            try:
-                results.append(fetch_news_source(conn, row["id"], admin_id=admin["id"], force=False)["log"])
-            except APIError as exc:
-                results.append({"source_id": row["id"], "status": "failed", "error_message": str(exc)})
-        self.send_json({"items": results})
-
-    def api_admin_fetch_japan_all_news_sources(self, conn: sqlite3.Connection) -> None:
-        admin = self.require_admin(conn)
-        rows = [
-            dict(r) for r in conn.execute(
-                """
-                SELECT id, name, allowed_domain, source_url, homepage_url
-                  FROM news_sources
-                 WHERE is_active = 1 AND deleted_at IS NULL AND country = ?
-                 ORDER BY updated_at DESC
-                """,
-                ("jp",),
-            )
-        ]
-        domain_locks: dict[str, threading.Semaphore] = {}
-        for row in rows:
-            domain = normalize_allowed_domain(row) or row["id"]
-            domain_locks.setdefault(domain, threading.Semaphore(NEWS_CRAWLER_PER_DOMAIN_CONCURRENCY))
-
-        def _run(row: dict[str, Any]) -> dict[str, Any]:
-            domain = normalize_allowed_domain(row) or row["id"]
-            with domain_locks[domain]:
-                try:
-                    with DB_LOCK, db() as worker_conn:
-                        return fetch_news_source(worker_conn, row["id"], admin_id=admin["id"], force=False)["log"]
-                except APIError as exc:
-                    return {
-                        "source_id": row["id"],
-                        "source_name": row.get("name") or "",
-                        "status": "failed",
-                        "fetched_count": 0,
-                        "new_count": 0,
-                        "duplicate_count": 0,
-                        "error_count": 1,
-                        "error_message": str(exc),
-                    }
-
-        logs: list[dict[str, Any]] = []
-        if rows:
-            # Each _run worker acquires DB_LOCK for its own writes. This
-            # request thread is itself a write request holding DB_LOCK, and
-            # it then blocks in as_completed() waiting for those workers — so
-            # if we kept the lock here the workers and this thread would
-            # deadlock (the bug that wedged the entire backend: 87 threads
-            # stuck on DB_LOCK). Drop the lock for the parallel section; it's
-            # re-acquired on exit for the log write below.
-            with _DBLockReleased():
-                with ThreadPoolExecutor(max_workers=NEWS_CRAWLER_MAX_CONCURRENCY) as pool:
-                    futures = [pool.submit(_run, row) for row in rows]
-                    for future in as_completed(futures):
-                        logs.append(future.result())
-        success_sources = sum(1 for log in logs if str(log.get("status")) in {"success", "partial_success", "skipped"})
-        failed_sources = sum(1 for log in logs if str(log.get("status")) == "failed")
-        result = {
-            "total_sources": len(rows),
-            "success_sources": success_sources,
-            "failed_sources": failed_sources,
-            "fetched_count": sum(int(log.get("fetched_count") or 0) for log in logs),
-            "new_count": sum(int(log.get("new_count") or 0) for log in logs),
-            "duplicate_count": sum(int(log.get("duplicate_count") or 0) for log in logs),
-            "error_count": sum(int(log.get("error_count") or 0) for log in logs),
-            "logs": logs,
-        }
-        log_editorial_action(conn, admin_id=admin["id"], action="fetch_japan_all", target_type="crawler_batch", target_id="jp", metadata=result)
-        self.send_json(result)
-
-    def api_admin_fetch_japan_scope_news_sources(self, conn: sqlite3.Connection, scope: str) -> None:
-        admin = self.require_admin(conn)
-        where = ["is_active = 1", "deleted_at IS NULL", "country = ?"]
-        params: list[Any] = ["jp"]
-        action = "fetch_japan_scope"
-        if scope == "official":
-            where.append("credibility_level = 'official'")
-            where.append("source_tier IN ('tier_1_official','tier_2_city_official')")
-            action = "fetch_japan_official"
-        elif scope == "tokyo":
-            where.append("(city = 'tokyo' OR city = '')")
-            action = "fetch_japan_tokyo"
-        elif scope == "osaka":
-            where.append("(city = 'osaka' OR city = '')")
-            action = "fetch_japan_osaka"
-        else:
-            raise APIError("未知抓取范围", 400, "invalid_scope")
-        rows = [
-            dict(r) for r in conn.execute(
-                f"""
-                SELECT id, name, allowed_domain, source_url, homepage_url
-                  FROM news_sources
-                 WHERE {' AND '.join(where)}
-                 ORDER BY updated_at DESC
-                """,
-                params,
-            )
-        ]
-        logs: list[dict[str, Any]] = []
-        domain_locks: dict[str, threading.Semaphore] = {}
-        for row in rows:
-            domain = normalize_allowed_domain(row) or row["id"]
-            domain_locks.setdefault(domain, threading.Semaphore(NEWS_CRAWLER_PER_DOMAIN_CONCURRENCY))
-
-        def _run(row: dict[str, Any]) -> dict[str, Any]:
-            domain = normalize_allowed_domain(row) or row["id"]
-            with domain_locks[domain]:
-                try:
-                    with DB_LOCK, db() as worker_conn:
-                        return fetch_news_source(worker_conn, row["id"], admin_id=admin["id"], force=False)["log"]
-                except APIError as exc:
-                    return {
-                        "source_id": row["id"], "source_name": row.get("name") or "",
-                        "status": "failed", "fetched_count": 0, "new_count": 0,
-                        "duplicate_count": 0, "error_count": 1, "error_message": str(exc),
-                    }
-
-        if rows:
-            with _DBLockReleased():
-                with ThreadPoolExecutor(max_workers=NEWS_CRAWLER_MAX_CONCURRENCY) as pool:
-                    futures = [pool.submit(_run, row) for row in rows]
-                    for future in as_completed(futures):
-                        logs.append(future.result())
-        result = {
-            "scope": scope,
-            "total_sources": len(rows),
-            "success_sources": sum(1 for log in logs if str(log.get("status")) in {"success", "partial_success", "skipped"}),
-            "failed_sources": sum(1 for log in logs if str(log.get("status")) == "failed"),
-            "fetched_count": sum(int(log.get("fetched_count") or 0) for log in logs),
-            "new_count": sum(int(log.get("new_count") or 0) for log in logs),
-            "duplicate_count": sum(int(log.get("duplicate_count") or 0) for log in logs),
-            "error_count": sum(int(log.get("error_count") or 0) for log in logs),
-            "logs": logs,
-        }
-        log_editorial_action(conn, admin_id=admin["id"], action=action, target_type="crawler_batch", target_id=f"jp:{scope}", metadata=result)
-        self.send_json(result)
-
-    def api_admin_news_items(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
-        self.require_admin(conn)
-        status_filter = (query.get("status") or "").strip()
-        where = ["1 = 1"] if status_filter == "deleted" else ["status != 'deleted'"]
-        params: list[Any] = []
-        for key, column in (("sourceId", "source_id"), ("source_id", "source_id"), ("country", "country"), ("city", "city"), ("language", "original_language"), ("category", "category"), ("source_tier", "source_tier"), ("risk_level", "risk_level"), ("status", "status")):
-            value = (query.get(key) or "").strip()
-            if value:
-                where.append(f"{column} = ?")
-                if column == "country":
-                    params.append(_normalize_news_country(value))
-                elif column == "city":
-                    params.append(_normalize_news_city(value))
-                elif column == "category":
-                    params.append(_normalize_news_category(value))
-                elif column == "original_language":
-                    params.append(_normalize_news_language(value))
-                elif column == "source_tier":
-                    params.append(_normalize_source_tier(value))
-                elif column == "risk_level":
-                    params.append(_normalize_risk_level(value))
-                else:
-                    params.append(value)
-        if query.get("minRelevance") or query.get("min_relevance"):
-            where.append("relevance_score >= ?")
-            params.append(max(0, min(100, int(query.get("minRelevance") or query.get("min_relevance") or 0))))
-        if query.get("minQuality") or query.get("min_quality"):
-            where.append("quality_score >= ?")
-            params.append(max(0, min(100, int(query.get("minQuality") or query.get("min_quality") or 0))))
-        keyword = (query.get("keyword") or query.get("q") or "").strip()
-        if keyword:
-            where.append("(original_title LIKE ? OR original_summary LIKE ? OR source_name LIKE ?)")
-            like = f"%{keyword}%"
-            params.extend([like, like, like])
-        page = max(1, int(query.get("page") or 1))
-        limit = max(1, min(int(query.get("limit") or 50), 200))
-        rows = conn.execute(
-            f"SELECT * FROM news_items WHERE {' AND '.join(where)} ORDER BY fetched_at DESC LIMIT ? OFFSET ?",
-            [*params, limit, (page - 1) * limit],
-        ).fetchall()
-        total = conn.execute(f"SELECT COUNT(*) AS c FROM news_items WHERE {' AND '.join(where)}", params).fetchone()["c"]
-        self.send_json({"items": [serialize_news_item(r) for r in rows], "page": page, "limit": limit, "total": int(total)})
-
-    def api_admin_create_draft_from_news_item(self, conn: sqlite3.Connection, item_id: str) -> None:
-        admin = self.require_admin(conn)
-        self.send_json({"post": _draft_from_news_item(conn, item_id, admin["id"])}, 201)
-
-    def api_admin_create_drafts_from_news_items(self, conn: sqlite3.Connection) -> None:
-        admin = self.require_admin(conn)
-        data = self.read_json()
-        item_ids = data.get("itemIds") or data.get("item_ids") or []
-        if not isinstance(item_ids, list) or not item_ids:
-            raise APIError("请选择采集内容", 400, "item_ids_required")
-        target_language = str(data.get("targetLanguage") or data.get("target_language") or "").strip() or None
-        author = _news_clean_text(data.get("authorDisplayName") or data.get("author_display_name") or "", 80)
-        create_mode = str(data.get("createMode") or data.get("create_mode") or "editor_template").strip()
-        if create_mode not in {"summary_only", "editor_template"}:
-            create_mode = "editor_template"
-        posts: list[dict[str, Any]] = []
-        errors: list[dict[str, str]] = []
-        for raw_id in item_ids[:100]:
-            item_id = str(raw_id or "").strip()
-            if not item_id:
-                continue
-            try:
-                posts.append(_draft_from_news_item(conn, item_id, admin["id"], target_language=target_language, author_display_name=author, create_mode=create_mode))
-            except APIError as exc:
-                errors.append({"item_id": item_id, "error": str(exc), "code": exc.code})
-        log_editorial_action(conn, admin_id=admin["id"], action="bulk_create_drafts", target_type="crawler_item", target_id="bulk", metadata={"requested": len(item_ids), "created": len(posts), "errors": errors})
-        self.send_json({"items": posts, "created": len(posts), "errors": errors}, 201)
-
-    def api_admin_update_news_item_status(self, conn: sqlite3.Connection, item_id: str, status: str) -> None:
-        admin = self.require_admin(conn)
-        if status not in {"ignored", "duplicate", "deleted"}:
-            raise APIError("状态不合法", 400, "invalid_status")
-        row = conn.execute("SELECT id FROM news_items WHERE id = ?", (item_id,)).fetchone()
-        if not row:
-            raise APIError("采集内容不存在", 404, "item_not_found")
-        conn.execute("UPDATE news_items SET status = ?, updated_at = ? WHERE id = ?", (status, now_iso(), item_id))
-        action = "delete" if status == "deleted" else ("ignore_item" if status == "ignored" else "mark_duplicate")
-        log_editorial_action(conn, admin_id=admin["id"], action=action, target_type="crawler_item", target_id=item_id)
-        self.send_json({"item": serialize_news_item(conn.execute("SELECT * FROM news_items WHERE id = ?", (item_id,)).fetchone())})
-
-    def _clean_editorial_payload(self, data: dict[str, Any], existing: dict[str, Any] | None = None) -> dict[str, Any]:
-        existing = existing or {}
-        language = _normalize_news_language(data.get("language", existing.get("language", "zh-CN")))
-        author_type = str(data.get("author_type", existing.get("author_type", "local_desk")) or "local_desk").strip()
-        if author_type not in EDITORIAL_AUTHOR_TYPES:
-            author_type = "local_desk"
-        country = _normalize_news_country(data.get("country", existing.get("country", "")))
-        city = _normalize_news_city(data.get("city", existing.get("city", "")))
-        title = _news_clean_text(data.get("title", existing.get("title", "")), 180)
-        if not title:
-            raise APIError("请填写标题", 400, "title_required")
-        summary = _news_clean_text(data.get("summary", existing.get("summary", "")), 500)
-        body = str(data.get("body", existing.get("body", "")) or "").strip()[:6000]
-        if not body and not summary:
-            raise APIError("请填写摘要或正文", 400, "body_required")
-        author = _news_clean_text(data.get("author_display_name", existing.get("author_display_name", "")), 80)
-        if not author:
-            author = _news_author_display_name(country, city, language, author_type)
-        category = _normalize_news_category(data.get("category", existing.get("category", "local_news")))
-        risk_level = str(data.get("risk_level", existing.get("risk_level", _risk_level_for_category(category))) or "low").strip().lower()
-        if risk_level not in {"low", "medium", "high"}:
-            risk_level = _risk_level_for_category(category)
-        official_required_default = _source_required_for_category(category)
-        relevance_score = int(data.get("relevance_score", existing.get("relevance_score", 50)) or 50)
-        relevance_score = max(0, min(100, relevance_score))
-        quality_score = int(data.get("quality_score", existing.get("quality_score", 0)) or 0)
-        if not quality_score and body:
-            quality_score = _editorial_quality_score(body, language, source_name=str(data.get("source_name", existing.get("source_name", "")) or ""), city=city, category=category, relevance_score=relevance_score)
-        return {
-            "author_type": author_type,
-            "author_display_name": author,
-            "country": country,
-            "city": city,
-            "language": language,
-            "category": category,
-            "sub_city": _news_clean_text(data.get("sub_city", existing.get("sub_city", "")), 80).lower(),
-            "source_tier": _normalize_source_tier(data.get("source_tier", existing.get("source_tier", ""))),
-            "relevance_score": relevance_score,
-            "quality_score": quality_score,
-            "editorial_disclaimer": _news_clean_text(data.get("editorial_disclaimer", existing.get("editorial_disclaimer", "")), 800),
-            "title": title,
-            "summary": summary,
-            "body": body,
-            "source_name": _news_clean_text(data.get("source_name", existing.get("source_name", "")), 200),
-            "source_url": str(data.get("source_url", existing.get("source_url", "")) or "").strip()[:800],
-            "original_url": str(data.get("original_url", existing.get("original_url", "")) or "").strip()[:800],
-            "source_published_at": _parse_news_date(str(data.get("source_published_at", existing.get("source_published_at", "")) or "")),
-            "risk_level": risk_level,
-            "official_source_required": 1 if data.get("official_source_required", existing.get("official_source_required", official_required_default)) else 0,
-            "tags": _editorial_tags_from_payload(data.get("tags", [] if not existing else None)),
-        }
-
-    def api_admin_editorial_posts(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
-        self.require_admin(conn)
-        where = ["1 = 1"]
-        params: list[Any] = []
-        for key in ("status", "country", "city", "language", "category"):
-            value = (query.get(key) or "").strip()
-            if value:
-                where.append(f"{key} = ?")
-                if key == "country":
-                    params.append(_normalize_news_country(value))
-                elif key == "city":
-                    params.append(_normalize_news_city(value))
-                elif key == "category":
-                    params.append(_normalize_news_category(value))
-                elif key == "language":
-                    params.append(_normalize_news_language(value))
-                else:
-                    params.append(value)
-        keyword = (query.get("keyword") or query.get("q") or "").strip()
-        if keyword:
-            where.append("(title LIKE ? OR summary LIKE ? OR body LIKE ? OR source_name LIKE ?)")
-            like = f"%{keyword}%"
-            params.extend([like, like, like, like])
-        page = max(1, int(query.get("page") or 1))
-        limit = max(1, min(int(query.get("limit") or 50), 200))
-        rows = conn.execute(
-            f"SELECT * FROM editorial_posts WHERE {' AND '.join(where)} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-            [*params, limit, (page - 1) * limit],
-        ).fetchall()
-        total = conn.execute(f"SELECT COUNT(*) AS c FROM editorial_posts WHERE {' AND '.join(where)}", params).fetchone()["c"]
-        self.send_json({"items": [serialize_editorial_post(conn, r) for r in rows], "page": page, "limit": limit, "total": int(total)})
-
-    def api_admin_create_editorial_post(self, conn: sqlite3.Connection) -> None:
-        admin = self.require_admin(conn)
-        data = self.read_json()
-        cleaned = self._clean_editorial_payload(data)
-        post_id = str(uuid.uuid4())
-        now = now_iso()
-        status = str(data.get("status") or "draft")
-        if status not in {"draft", "pending_review"}:
-            status = "draft"
-        review_status = "needs_review" if status in {"draft", "pending_review"} else "none"
-        conn.execute(
-            """
-            INSERT INTO editorial_posts
-                (id, news_item_id, author_type, author_display_name, country, city, language,
-                 category, title, summary, body, source_name, source_url, original_url,
-                 source_published_at, status, review_status, risk_level, official_source_required,
-                 source_tier, sub_city, relevance_score, quality_score, editorial_disclaimer,
-                 created_by_admin_id, created_at, updated_at)
-            VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                post_id, cleaned["author_type"], cleaned["author_display_name"], cleaned["country"],
-                cleaned["city"], cleaned["language"], cleaned["category"], cleaned["title"],
-                cleaned["summary"], cleaned["body"], cleaned["source_name"], cleaned["source_url"],
-                cleaned["original_url"], cleaned["source_published_at"], status, review_status,
-                cleaned["risk_level"], cleaned["official_source_required"], cleaned["source_tier"],
-                cleaned["sub_city"], cleaned["relevance_score"], cleaned["quality_score"],
-                cleaned["editorial_disclaimer"], admin["id"], now, now,
-            ),
-        )
-        replace_editorial_tags(conn, post_id, cleaned["tags"])
-        log_editorial_action(conn, admin_id=admin["id"], action="create_draft", target_type="editorial_post", target_id=post_id, metadata={"manual": True})
-        self.send_json({"post": serialize_editorial_post(conn, conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone())}, 201)
-
-    def api_admin_update_editorial_post(self, conn: sqlite3.Connection, post_id: str) -> None:
-        admin = self.require_admin(conn)
-        row = conn.execute("SELECT * FROM editorial_posts WHERE id = ? AND status != 'deleted'", (post_id,)).fetchone()
-        if not row:
-            raise APIError("编辑部文章不存在", 404, "editorial_post_not_found")
-        data = self.read_json()
-        cleaned = self._clean_editorial_payload(data, dict(row))
-        status = str(data.get("status", row["status"]) or row["status"])
-        review_status = str(data.get("review_status", row["review_status"]) or row["review_status"])
-        if status not in EDITORIAL_POST_STATUSES:
-            status = row["status"]
-        if review_status not in EDITORIAL_REVIEW_STATUSES:
-            review_status = row["review_status"]
-        conn.execute(
-            """
-            UPDATE editorial_posts
-               SET author_type = ?, author_display_name = ?, country = ?, city = ?, language = ?,
-                   category = ?, title = ?, summary = ?, body = ?, source_name = ?, source_url = ?,
-                   original_url = ?, source_published_at = ?, status = ?, review_status = ?,
-                   risk_level = ?, official_source_required = ?, source_tier = ?, sub_city = ?,
-                   relevance_score = ?, quality_score = ?, editorial_disclaimer = ?, updated_at = ?
-             WHERE id = ?
-            """,
-            (
-                cleaned["author_type"], cleaned["author_display_name"], cleaned["country"], cleaned["city"],
-                cleaned["language"], cleaned["category"], cleaned["title"], cleaned["summary"], cleaned["body"],
-                cleaned["source_name"], cleaned["source_url"], cleaned["original_url"], cleaned["source_published_at"],
-                status, review_status, cleaned["risk_level"], cleaned["official_source_required"],
-                cleaned["source_tier"], cleaned["sub_city"], cleaned["relevance_score"],
-                cleaned["quality_score"], cleaned["editorial_disclaimer"], now_iso(), post_id,
-            ),
-        )
-        if "tags" in data:
-            replace_editorial_tags(conn, post_id, cleaned["tags"])
-        log_editorial_action(conn, admin_id=admin["id"], action="update_post", target_type="editorial_post", target_id=post_id)
-        self.send_json({"post": serialize_editorial_post(conn, conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone())})
-
-    def api_admin_editorial_ai_assist(self, conn: sqlite3.Connection, post_id: str) -> None:
-        admin = self.require_admin(conn)
-        row = conn.execute("SELECT * FROM editorial_posts WHERE id = ? AND status != 'deleted'", (post_id,)).fetchone()
-        if not row:
-            raise APIError("编辑部文章不存在", 404, "editorial_post_not_found")
-        data = self.read_json()
-        post = dict(row)
-        language = _normalize_news_language(data.get("language", post.get("language", "zh-CN")))
-        result = _local_news_assist(post, str(data.get("task") or "rewrite"), language, str(data.get("note") or ""))
-        apply_result = bool(data.get("apply", True))
-        if apply_result:
-            conn.execute(
-                """
-                UPDATE editorial_posts
-                   SET summary = ?, body = ?, category = ?, city = COALESCE(NULLIF(?, ''), city),
-                       risk_level = ?, quality_score = ?, editorial_disclaimer = ?,
-                       is_ai_assisted = 1, ai_model = ?, ai_prompt_version = ?, updated_at = ?
-                 WHERE id = ?
-                """,
-                (
-                    result["summary"], result["body"], result["category"], result["city"],
-                    result["risk_level"], int(result.get("quality_score") or 0), result["editorialDisclaimer"],
-                    result["model"], result["prompt_version"], now_iso(), post_id,
-                ),
-            )
-            replace_editorial_tags(conn, post_id, _editorial_tags_from_payload(result["tags"]))
-        log_editorial_action(conn, admin_id=admin["id"], action="ai_summarize", target_type="editorial_post", target_id=post_id, metadata={"task": result["task"], "prompt_version": result["prompt_version"]})
-        self.send_json({"assist": result, "post": serialize_editorial_post(conn, conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone())})
-
-    def api_admin_editorial_transition(self, conn: sqlite3.Connection, post_id: str, action: str) -> None:
-        admin = self.require_admin(conn)
-        row = conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone()
-        if not row:
-            raise APIError("编辑部文章不存在", 404, "editorial_post_not_found")
-        now = now_iso()
-        post = dict(row)
-        if action == "submit-review":
-            conn.execute(
-                "UPDATE editorial_posts SET status = 'pending_review', review_status = 'needs_review', updated_at = ? WHERE id = ?",
-                (now, post_id),
-            )
-        elif action == "approve":
-            conn.execute(
-                "UPDATE editorial_posts SET review_status = 'approved', reviewed_by_admin_id = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
-                (admin["id"], now, now, post_id),
-            )
-        elif action == "reject":
-            conn.execute(
-                "UPDATE editorial_posts SET status = 'draft', review_status = 'rejected', reviewed_by_admin_id = ?, reviewed_at = ?, updated_at = ? WHERE id = ?",
-                (admin["id"], now, now, post_id),
-            )
-        elif action == "publish":
-            required = ("title", "summary", "body", "country", "language", "category")
-            if any(not str(post.get(k) or "").strip() for k in required):
-                raise APIError("发布前请补齐标题、摘要、正文、国家、语言和分类", 400, "publish_fields_required")
-            if post.get("news_item_id") and (not post.get("source_name") or not post.get("original_url")):
-                raise APIError("采集来源文章发布前必须保留来源名称和原文链接", 400, "source_required")
-            quality_score = int(post.get("quality_score") or _editorial_quality_score(
-                str(post.get("body") or ""),
-                str(post.get("language") or "zh-CN"),
-                source_name=str(post.get("source_name") or ""),
-                city=str(post.get("city") or ""),
-                category=str(post.get("category") or ""),
-                relevance_score=int(post.get("relevance_score") or 50),
-            ))
-            if quality_score < 70:
-                raise APIError("内容质量不足，请重新生成或人工编辑", 400, "quality_score_too_low")
-            if post.get("is_ai_assisted"):
-                issues = _editorial_quality_issues(str(post.get("body") or ""), str(post.get("language") or "zh-CN"))
-                if issues:
-                    raise APIError("内容质量检查未通过：" + ",".join(issues), 400, "quality_check_failed")
-            if (post.get("official_source_required") or post.get("category") in HIGH_RISK_NEWS_CATEGORIES) and not (post.get("source_name") and (post.get("original_url") or post.get("source_url"))):
-                raise APIError("高风险内容发布前必须保留官方来源", 400, "official_source_required")
-            conn.execute(
-                """
-                UPDATE editorial_posts
-                   SET status = 'published', review_status = 'approved', reviewed_by_admin_id = ?,
-                       reviewed_at = ?, published_at = COALESCE(published_at, ?), updated_at = ?
-                 WHERE id = ?
-                """,
-                (admin["id"], now, now, now, post_id),
-            )
-        elif action == "hide":
-            conn.execute("UPDATE editorial_posts SET status = 'hidden', updated_at = ? WHERE id = ?", (now, post_id))
-        elif action == "restore":
-            conn.execute("UPDATE editorial_posts SET status = 'published', updated_at = ? WHERE id = ?", (now, post_id))
-        else:
-            raise APIError("未知操作", 400, "invalid_action")
-        log_editorial_action(conn, admin_id=admin["id"], action=action, target_type="editorial_post", target_id=post_id)
-        self.send_json({"post": serialize_editorial_post(conn, conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone())})
-
-    def api_admin_bulk_publish_editorial_posts(self, conn: sqlite3.Connection) -> None:
-        admin = self.require_admin(conn)
-        data = self.read_json()
-        post_ids = data.get("postIds") or data.get("post_ids") or []
-        confirm_media = bool(data.get("confirmMedia") or data.get("confirm_media"))
-        params: list[Any] = []
-        where = ["p.status IN ('draft','pending_review')"]
-        if isinstance(post_ids, list) and post_ids:
-            clean_ids = [str(x or "").strip() for x in post_ids if str(x or "").strip()][:200]
-            placeholders = ",".join("?" for _ in clean_ids)
-            where.append(f"p.id IN ({placeholders})")
-            params.extend(clean_ids)
-        rows = conn.execute(
-            f"""
-            SELECT p.*, s.credibility_level
-              FROM editorial_posts p
-              LEFT JOIN news_items i ON i.id = p.news_item_id
-              LEFT JOIN news_sources s ON s.id = i.source_id
-             WHERE {' AND '.join(where)}
-             ORDER BY p.updated_at DESC
-             LIMIT 200
-            """,
-            params,
-        ).fetchall()
-        published = 0
-        skipped: list[dict[str, str]] = []
-        now = now_iso()
-        for row in rows:
-            post = dict(row)
-            credibility = post.get("credibility_level") or ("official" if not post.get("news_item_id") else "")
-            if credibility != "official" and not confirm_media:
-                skipped.append({"id": post["id"], "reason": "media_requires_manual_confirmation"})
-                continue
-            required_ok = all(str(post.get(k) or "").strip() for k in ("title", "summary", "body", "country", "language", "category"))
-            source_ok = bool(post.get("source_name") and (post.get("original_url") or post.get("source_url")))
-            if not required_ok or not source_ok:
-                skipped.append({"id": post["id"], "reason": "missing_required_fields_or_source"})
-                continue
-            quality_score = int(post.get("quality_score") or _editorial_quality_score(
-                str(post.get("body") or ""),
-                str(post.get("language") or "zh-CN"),
-                source_name=str(post.get("source_name") or ""),
-                city=str(post.get("city") or ""),
-                category=str(post.get("category") or ""),
-                relevance_score=int(post.get("relevance_score") or 50),
-            ))
-            if quality_score < 70:
-                skipped.append({"id": post["id"], "reason": "quality_score_too_low"})
-                continue
-            if post.get("is_ai_assisted"):
-                issues = _editorial_quality_issues(str(post.get("body") or ""), str(post.get("language") or "zh-CN"))
-                if issues:
-                    skipped.append({"id": post["id"], "reason": "quality_check_failed:" + ",".join(issues)})
-                    continue
-            if (post.get("official_source_required") or post.get("category") in HIGH_RISK_NEWS_CATEGORIES) and not source_ok:
-                skipped.append({"id": post["id"], "reason": "official_source_required"})
-                continue
-            conn.execute(
-                """
-                UPDATE editorial_posts
-                   SET status = 'published', review_status = 'approved', reviewed_by_admin_id = ?,
-                       reviewed_at = ?, published_at = COALESCE(published_at, ?), updated_at = ?
-                 WHERE id = ?
-                """,
-                (admin["id"], now, now, now, post["id"]),
-            )
-            published += 1
-        log_editorial_action(conn, admin_id=admin["id"], action="bulk_publish", target_type="editorial_post", target_id="bulk", metadata={"published": published, "skipped": skipped})
-        self.send_json({"published": published, "skipped": skipped})
-
-    def api_admin_delete_editorial_post(self, conn: sqlite3.Connection, post_id: str) -> None:
-        admin = self.require_admin(conn)
-        row = conn.execute("SELECT id FROM editorial_posts WHERE id = ?", (post_id,)).fetchone()
-        if not row:
-            raise APIError("编辑部文章不存在", 404, "editorial_post_not_found")
-        conn.execute("UPDATE editorial_posts SET status = 'deleted', updated_at = ? WHERE id = ?", (now_iso(), post_id))
-        log_editorial_action(conn, admin_id=admin["id"], action="delete", target_type="editorial_post", target_id=post_id)
-        self.send_json({"ok": True})
-
-    def api_admin_news_desk_logs(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
-        self.require_admin(conn)
-        limit = max(1, min(int(query.get("limit") or 80), 200))
-        fetch_logs = [dict(r) for r in conn.execute("SELECT * FROM news_fetch_logs ORDER BY created_at DESC LIMIT ?", (limit,))]
-        action_logs: list[dict[str, Any]] = []
-        for r in conn.execute("SELECT * FROM editorial_action_logs ORDER BY created_at DESC LIMIT ?", (limit,)):
-            d = dict(r)
-            try:
-                d["metadata"] = json.loads(d.get("metadata") or "{}")
-            except Exception:
-                d["metadata"] = {}
-            action_logs.append(d)
-        self.send_json({"fetch_logs": fetch_logs, "action_logs": action_logs})
-
-    def api_news(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
-        viewer = self.current_session(conn)
-        viewer_id = viewer["user_id"] if viewer else None
-        viewer_is_admin = False
-        if viewer_id:
-            user_row = conn.execute("SELECT role FROM users WHERE id = ?", (viewer_id,)).fetchone()
-            viewer_is_admin = bool(user_row and user_row["role"] == "admin")
-        where = ["status = 'published'"]
-        params: list[Any] = []
-        country = (query.get("country") or "").strip()
-        if country:
-            where.append("country = ?")
-            params.append(_normalize_news_country(country))
-        city_raw = (query.get("city") or "").strip()
-        if city_raw:
-            city = _normalize_news_city(city_raw)
-            if city:
-                where.append("city IN (?, '')")
-                params.append(city)
-            else:
-                where.append("city = ''")
-        language_raw = (query.get("language") or "").strip()
-        if language_raw and language_raw.lower() != "all":
-            where.append("language = ?")
-            params.append(_normalize_news_language(language_raw))
-        category_raw = (query.get("category") or "").strip()
-        if category_raw:
-            category = _normalize_news_category(category_raw)
-            if category == "local_news":
-                where.append("category IN ('local_news','policy_update','life_notice','public_safety','city_event')")
-            else:
-                where.append("category = ?")
-                params.append(category)
-        source_tier_raw = (query.get("sourceTier") or query.get("source_tier") or "").strip()
-        if source_tier_raw:
-            where.append("source_tier = ?")
-            params.append(_normalize_source_tier(source_tier_raw))
-        page = max(1, int(query.get("page") or 1))
-        limit = max(1, min(int(query.get("limit") or 20), 50))
-        sort = (query.get("sort") or "latest").strip()
-        if sort == "popular":
-            order = "ORDER BY (view_count + (SELECT COUNT(*) FROM interactions i WHERE i.target_id = editorial_posts.id AND i.kind = 'news_save') * 4 + (SELECT COUNT(*) FROM editorial_post_comments c WHERE c.editorial_post_id = editorial_posts.id AND c.deleted_at IS NULL) * 3) DESC, published_at DESC"
-        else:
-            order = "ORDER BY published_at DESC, created_at DESC"
-        rows = conn.execute(
-            f"SELECT * FROM editorial_posts WHERE {' AND '.join(where)} {order} LIMIT ? OFFSET ?",
-            [*params, limit, (page - 1) * limit],
-        ).fetchall()
-        total = conn.execute(f"SELECT COUNT(*) AS c FROM editorial_posts WHERE {' AND '.join(where)}", params).fetchone()["c"]
-        payload: dict[str, Any] = {"items": [serialize_editorial_post(conn, r, viewer_id) for r in rows], "page": page, "limit": limit, "total": int(total)}
-        if viewer_is_admin and int(total) == 0:
-            draft_count = conn.execute("SELECT COUNT(*) AS c FROM editorial_posts WHERE status IN ('draft','pending_review')").fetchone()["c"]
-            fetched_count = conn.execute("SELECT COUNT(*) AS c FROM news_items WHERE status = 'fetched'").fetchone()["c"]
-            source_count = conn.execute("SELECT COUNT(*) AS c FROM news_sources WHERE deleted_at IS NULL").fetchone()["c"]
-            payload["diagnostics"] = {
-                "draft_count": int(draft_count),
-                "fetched_count": int(fetched_count),
-                "source_count": int(source_count),
-                "hint": "已有草稿，尚未发布。" if draft_count else ("已有采集内容，尚未创建草稿。" if fetched_count else "暂无本地资讯。请在后台抓取并发布内容。"),
-            }
-        self.send_json(payload)
-
-    def api_news_detail(self, conn: sqlite3.Connection, post_id: str) -> None:
-        viewer = self.current_session(conn)
-        viewer_id = viewer["user_id"] if viewer else None
-        row = conn.execute("SELECT * FROM editorial_posts WHERE id = ? AND status = 'published'", (post_id,)).fetchone()
-        if not row:
-            raise APIError("资讯不存在", 404, "news_not_found")
-        conn.execute("UPDATE editorial_posts SET view_count = view_count + 1 WHERE id = ?", (post_id,))
-        fresh = conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone()
-        post = serialize_editorial_post(conn, fresh, viewer_id)
-        related = [
-            serialize_editorial_post(conn, r, viewer_id)
-            for r in conn.execute(
-                """
-                SELECT * FROM editorial_posts
-                 WHERE status = 'published' AND id <> ? AND country = ? AND (city = ? OR category = ?)
-                 ORDER BY published_at DESC LIMIT 4
-                """,
-                (post_id, post.get("country") or "", post.get("city") or "", post.get("category") or ""),
-            )
-        ]
-        self.send_json({"post": post, "related": related})
-
-    def api_news_save(self, conn: sqlite3.Connection, post_id: str, on: bool) -> None:
-        user = self.require_user(conn)
-        row = conn.execute("SELECT id FROM editorial_posts WHERE id = ? AND status = 'published'", (post_id,)).fetchone()
-        if not row:
-            raise APIError("资讯不存在", 404, "news_not_found")
-        if on:
-            conn.execute(
-                "INSERT OR IGNORE INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, 'news_save', ?)",
-                (str(uuid.uuid4()), post_id, user["id"], now_iso()),
-            )
-        else:
-            conn.execute("DELETE FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'news_save'", (post_id, user["id"]))
-        self.send_json({"post": serialize_editorial_post(conn, conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone(), user["id"])})
-
-    def api_news_metric(self, conn: sqlite3.Connection, post_id: str, metric: str) -> None:
-        row = conn.execute("SELECT id FROM editorial_posts WHERE id = ? AND status = 'published'", (post_id,)).fetchone()
-        if not row:
-            raise APIError("资讯不存在", 404, "news_not_found")
-        if metric == "share":
-            conn.execute("UPDATE editorial_posts SET share_count = share_count + 1 WHERE id = ?", (post_id,))
-        elif metric == "source-click":
-            conn.execute("UPDATE editorial_posts SET click_source_count = click_source_count + 1 WHERE id = ?", (post_id,))
-        else:
-            raise APIError("未知指标", 400, "invalid_metric")
-        self.send_json({"post": serialize_editorial_post(conn, conn.execute("SELECT * FROM editorial_posts WHERE id = ?", (post_id,)).fetchone())})
-
-    def api_news_comments(self, conn: sqlite3.Connection, post_id: str) -> None:
-        row = conn.execute("SELECT id FROM editorial_posts WHERE id = ? AND status = 'published'", (post_id,)).fetchone()
-        if not row:
-            raise APIError("资讯不存在", 404, "news_not_found")
-        rows = conn.execute(
-            "SELECT * FROM editorial_post_comments WHERE editorial_post_id = ? AND deleted_at IS NULL ORDER BY created_at ASC",
-            (post_id,),
-        ).fetchall()
-        authors = fetch_users_by_ids(conn, list({r["author_id"] for r in rows}))
-        self.send_json({"items": [serialize_editorial_comment(r, authors.get(r["author_id"])) for r in rows]})
-
-    def api_news_create_comment(self, conn: sqlite3.Connection, post_id: str) -> None:
-        user = self.require_user(conn)
-        row = conn.execute("SELECT id FROM editorial_posts WHERE id = ? AND status = 'published'", (post_id,)).fetchone()
-        if not row:
-            raise APIError("资讯不存在", 404, "news_not_found")
-        content = _news_clean_text(self.read_json().get("content"), 800)
-        if not content:
-            raise APIError("评论不能为空", 400, "empty_comment")
-        comment_id = str(uuid.uuid4())
-        now = now_iso()
-        conn.execute(
-            "INSERT INTO editorial_post_comments (id, editorial_post_id, author_id, content, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-            (comment_id, post_id, user["id"], content, now, now),
-        )
-        comment = conn.execute("SELECT * FROM editorial_post_comments WHERE id = ?", (comment_id,)).fetchone()
-        self.send_json({"comment": serialize_editorial_comment(comment, serialize_user(user))}, 201)
-
-    # ================================================================
-    # Machi Guide / 日本指南 — public + auth + admin API.
-    #
-    # Region gate: only `country == "jp"` is open today. Any other
-    # country gets a `coming_soon` payload (empty arrays, never 500).
-    # All GET endpoints allow anonymous browsing; purchase / download /
-    # submitting reviews / service requests require login.
-    # ================================================================
-
     def _guide_country(self, query: dict[str, str]) -> str:
         raw = (query.get("country") or "").strip()
-        return _normalize_news_country(raw) if raw else GUIDE_DEFAULT_COUNTRY
+        return _normalize_country_code(raw) if raw else GUIDE_DEFAULT_COUNTRY
 
     def _guide_is_open(self, country: str) -> bool:
         return country in GUIDE_OPEN_COUNTRIES
@@ -14677,7 +12029,7 @@ class Handler(BaseHTTPRequestHandler):
         city = (query.get("city") or "").strip()
         if city:
             where.append("r.city = ?")
-            params.append(_normalize_news_city(city))
+            params.append(_normalize_city_slug(city))
         position = (query.get("position") or "").strip()
         if position:
             where.append("r.position LIKE ?")
@@ -14754,12 +12106,12 @@ class Handler(BaseHTTPRequestHandler):
     def api_guide_create_correction(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         data = self.read_json()
-        target_type = _news_clean_text(data.get("targetType") or data.get("target_type"), 40)
-        target_id = _news_clean_text(data.get("targetId") or data.get("target_id"), 120)
+        target_type = _clean_text(data.get("targetType") or data.get("target_type"), 40)
+        target_id = _clean_text(data.get("targetId") or data.get("target_id"), 120)
         if target_type not in {"school", "company", "program", "admission", "position"} or not target_id:
             raise APIError("纠错目标不正确", 400, "invalid_correction_target")
-        message = _news_clean_text(data.get("message"), 2000)
-        suggested = _news_clean_text(data.get("suggestedValue") or data.get("suggested_value"), 2000)
+        message = _clean_text(data.get("message"), 2000)
+        suggested = _clean_text(data.get("suggestedValue") or data.get("suggested_value"), 2000)
         if not message and not suggested:
             raise APIError("请填写纠错或补充说明", 400, "empty_correction")
         correction_id = str(uuid.uuid4())
@@ -14768,9 +12120,9 @@ class Handler(BaseHTTPRequestHandler):
             "INSERT INTO guide_correction_reports (id, target_type, target_id, user_id, field_name, current_value, "
             "suggested_value, message, source_url, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
             (correction_id, target_type, target_id, user["id"],
-             _news_clean_text(data.get("fieldName") or data.get("field_name"), 120),
-             _news_clean_text(data.get("currentValue") or data.get("current_value"), 2000),
-             suggested, message, _news_clean_text(data.get("sourceUrl") or data.get("source_url"), 500), now, now),
+             _clean_text(data.get("fieldName") or data.get("field_name"), 120),
+             _clean_text(data.get("currentValue") or data.get("current_value"), 2000),
+             suggested, message, _clean_text(data.get("sourceUrl") or data.get("source_url"), 500), now, now),
         )
         self.send_json({"status": "pending", "id": correction_id, "message": "已收到补充信息，将由管理员审核。"}, 201)
 
@@ -14786,12 +12138,12 @@ class Handler(BaseHTTPRequestHandler):
             "recommendation_score, status, report_count, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
             "'pending_review', 0, ?, ?)",
             (review_id, company["id"], user["id"], 1 if data.get("anonymous", True) else 0,
-             _news_clean_text(data.get("position"), 80), _news_clean_text(data.get("employmentType"), 40),
-             _news_clean_text(data.get("pros"), 2000), _news_clean_text(data.get("cons"), 2000),
-             _news_clean_text(data.get("workPeriod"), 80), _news_clean_text(data.get("overtimeLevel"), 40),
-             _news_clean_text(data.get("foreignerSupport"), 400), _news_clean_text(data.get("visaSupport"), 400),
-             _news_clean_text(data.get("salaryBenefits"), 400), _news_clean_text(data.get("careerGrowth"), 400),
-             _news_clean_text(data.get("workLifeBalance"), 400),
+             _clean_text(data.get("position"), 80), _clean_text(data.get("employmentType"), 40),
+             _clean_text(data.get("pros"), 2000), _clean_text(data.get("cons"), 2000),
+             _clean_text(data.get("workPeriod"), 80), _clean_text(data.get("overtimeLevel"), 40),
+             _clean_text(data.get("foreignerSupport"), 400), _clean_text(data.get("visaSupport"), 400),
+             _clean_text(data.get("salaryBenefits"), 400), _clean_text(data.get("careerGrowth"), 400),
+             _clean_text(data.get("workLifeBalance"), 400),
              max(0.0, min(5.0, float(data.get("recommendationScore") or 0))), now, now),
         )
         self.send_json({"status": "pending_review", "id": review_id,
@@ -14809,13 +12161,13 @@ class Handler(BaseHTTPRequestHandler):
             "city, offer_received, duration_weeks, tips, status, report_count, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending_review', 0, ?, ?)",
             (review_id, company["id"], user["id"], 1 if data.get("anonymous", True) else 0,
-             _news_clean_text(data.get("position"), 80), _news_clean_text(data.get("employmentType"), 40),
-             _guide_int(data.get("interviewRounds"), 0, lo=0, hi=20), _news_clean_text(data.get("interviewLanguage"), 40),
-             _news_clean_text(data.get("difficulty"), 40), _news_clean_text(data.get("questions"), 3000),
-             _news_clean_text(data.get("processDescription"), 3000), _news_clean_text(data.get("result"), 40),
-             _guide_int(data.get("interviewYear"), 0, lo=0, hi=2100), _normalize_news_city(data.get("city")),
+             _clean_text(data.get("position"), 80), _clean_text(data.get("employmentType"), 40),
+             _guide_int(data.get("interviewRounds"), 0, lo=0, hi=20), _clean_text(data.get("interviewLanguage"), 40),
+             _clean_text(data.get("difficulty"), 40), _clean_text(data.get("questions"), 3000),
+             _clean_text(data.get("processDescription"), 3000), _clean_text(data.get("result"), 40),
+             _guide_int(data.get("interviewYear"), 0, lo=0, hi=2100), _normalize_city_slug(data.get("city")),
              _guide_payload_bool(data, "offerReceived", "offer_received"), _guide_int(data.get("durationWeeks"), 0, lo=0, hi=52),
-             _news_clean_text(data.get("tips"), 2000), now, now),
+             _clean_text(data.get("tips"), 2000), now, now),
         )
         self.send_json({"status": "pending_review", "id": review_id,
                         "message": "面试经验已提交，将在审核通过后展示。"}, 201)
@@ -14835,16 +12187,16 @@ class Handler(BaseHTTPRequestHandler):
             "INSERT INTO guide_service_requests (id, user_id, product_id, service_type, contact_method, contact_value, "
             "message, preferred_time, preferred_date, service_city, language, current_situation, request_detail, "
             "status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
-            (req_id, user["id"], product_id, _news_clean_text(data.get("serviceType"), 80),
-             _news_clean_text(data.get("contactMethod"), 200),
-             _news_clean_text(data.get("contactValue") or data.get("contact_value"), 300),
-             _news_clean_text(data.get("message"), 2000),
-             _news_clean_text(data.get("preferredTime") or data.get("preferred_time"), 300),
-             _news_clean_text(data.get("preferredDate") or data.get("preferred_date"), 80),
-             _news_clean_text(data.get("serviceCity") or data.get("service_city"), 60),
-             _news_clean_text(data.get("language"), 40),
-             _news_clean_text(data.get("currentSituation") or data.get("current_situation"), 2000),
-             _news_clean_text(data.get("requestDetail") or data.get("request_detail"), 4000),
+            (req_id, user["id"], product_id, _clean_text(data.get("serviceType"), 80),
+             _clean_text(data.get("contactMethod"), 200),
+             _clean_text(data.get("contactValue") or data.get("contact_value"), 300),
+             _clean_text(data.get("message"), 2000),
+             _clean_text(data.get("preferredTime") or data.get("preferred_time"), 300),
+             _clean_text(data.get("preferredDate") or data.get("preferred_date"), 80),
+             _clean_text(data.get("serviceCity") or data.get("service_city"), 60),
+             _clean_text(data.get("language"), 40),
+             _clean_text(data.get("currentSituation") or data.get("current_situation"), 2000),
+             _clean_text(data.get("requestDetail") or data.get("request_detail"), 4000),
              now, now),
         )
         self.send_json({"status": "pending", "id": req_id, "message": "预约咨询已提交，我们会尽快与你联系。"}, 201)
@@ -14980,7 +12332,7 @@ class Handler(BaseHTTPRequestHandler):
         page = _guide_int(query.get("page"), 1, lo=1)
         page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=200)
         where = ["country = ?"]
-        params: list[Any] = [_normalize_news_country(query.get("country") or "jp")]
+        params: list[Any] = [_normalize_country_code(query.get("country") or "jp")]
         for q_key, col in (("status", "status"), ("schoolType", "school_type"), ("prefecture", "prefecture"),
                            ("city", "city"), ("verificationStatus", "verification_status")):
             val = (query.get(q_key) or "").strip().lower()
@@ -15044,7 +12396,7 @@ class Handler(BaseHTTPRequestHandler):
         page = _guide_int(query.get("page"), 1, lo=1)
         page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=200)
         where = ["country = ?"]
-        params: list[Any] = [_normalize_news_country(query.get("country") or "jp")]
+        params: list[Any] = [_normalize_country_code(query.get("country") or "jp")]
         for q_key, col in (("status", "status"), ("industry", "industry"), ("subIndustry", "sub_industry"),
                            ("prefecture", "prefecture"), ("city", "city"), ("companySize", "company_size"),
                            ("verificationStatus", "verification_status")):
@@ -15234,7 +12586,7 @@ class Handler(BaseHTTPRequestHandler):
         page = _guide_int(query.get("page"), 1, lo=1)
         page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=100)
         where = ["country = ?"]
-        params: list[Any] = [_normalize_news_country(query.get("country") or "jp")]
+        params: list[Any] = [_normalize_country_code(query.get("country") or "jp")]
         for q_key, col in (("status", "status"), ("categoryKey", "category_key"), ("productType", "product_type")):
             val = (query.get(q_key) or "").strip()
             if val:
@@ -15323,7 +12675,7 @@ class Handler(BaseHTTPRequestHandler):
         if not row:
             raise APIError("订单不存在", 404, "guide_order_not_found")
         data = self.read_json()
-        status = _news_clean_text(data.get("status") or data.get("orderStatus"), 40)
+        status = _clean_text(data.get("status") or data.get("orderStatus"), 40)
         allowed = {"pending", "paid", "fulfilled", "cancelled", "refunded"}
         if status not in allowed:
             raise APIError("订单状态不正确", 400, "invalid_order_status")
@@ -15339,9 +12691,9 @@ class Handler(BaseHTTPRequestHandler):
         elif status == "refunded":
             updates["refunded_at"] = now
         if "paymentProvider" in data:
-            updates["payment_provider"] = _news_clean_text(data.get("paymentProvider"), 80)
+            updates["payment_provider"] = _clean_text(data.get("paymentProvider"), 80)
         if "paymentMethod" in data:
-            updates["payment_method"] = _news_clean_text(data.get("paymentMethod"), 80)
+            updates["payment_method"] = _clean_text(data.get("paymentMethod"), 80)
         cols = ", ".join(f"{col} = ?" for col in updates)
         conn.execute(f"UPDATE guide_orders SET {cols} WHERE id = ?", [*updates.values(), row["id"]])
         self.send_json({"status": "ok", "id": row["id"], "orderStatus": status})
@@ -15408,23 +12760,23 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("服务预约不存在", 404, "guide_service_request_not_found")
         data = self.read_json()
         updates: dict[str, Any] = {}
-        status = _news_clean_text(data.get("status") or data.get("requestStatus"), 40)
+        status = _clean_text(data.get("status") or data.get("requestStatus"), 40)
         if status:
             if status not in {"pending", "contacted", "confirmed", "paid", "in_progress",
                               "completed", "fulfilled", "cancelled", "refunded"}:
                 raise APIError("预约状态不正确", 400, "invalid_request_status")
             updates["status"] = status
         if "adminNote" in data:
-            updates["admin_note"] = _news_clean_text(data.get("adminNote"), 2000)
+            updates["admin_note"] = _clean_text(data.get("adminNote"), 2000)
         if "assignedAdminId" in data:
-            updates["assigned_admin_id"] = _news_clean_text(data.get("assignedAdminId"), 80)
+            updates["assigned_admin_id"] = _clean_text(data.get("assignedAdminId"), 80)
         self._guide_apply_update(conn, "guide_service_requests", row["id"], updates)
         self.send_json({"status": "ok", "id": row["id"], "requestStatus": updates.get("status")})
 
     def api_admin_guide_create_article(self, conn: sqlite3.Connection) -> None:
         admin = self.require_admin(conn)
         data = self.read_json()
-        title = _news_clean_text(data.get("title"), 200)
+        title = _clean_text(data.get("title"), 200)
         if not title:
             raise APIError("标题不能为空", 400, "empty_title")
         now = now_iso()
@@ -15432,17 +12784,17 @@ class Handler(BaseHTTPRequestHandler):
         slug = self._guide_slugify(data.get("slug") or "", fallback=article_id[:10])
         status = (data.get("status") or "draft").strip()
         tags = data.get("tags")
-        tags_str = ",".join(tags) if isinstance(tags, list) else _news_clean_text(tags, 300)
+        tags_str = ",".join(tags) if isinstance(tags, list) else _clean_text(tags, 300)
         conn.execute(
             "INSERT INTO guide_articles (id, title, slug, summary, body, category_key, sub_category_key, content_type, "
             "country, city, language, cover_image, tags, author_type, author_name, is_featured, is_free, is_paid, status, "
             "view_count, save_count, sort_order, created_at, updated_at, published_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editorial', ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)",
-            (article_id, title, slug, _news_clean_text(data.get("summary"), 600), str(data.get("body") or ""),
+            (article_id, title, slug, _clean_text(data.get("summary"), 600), str(data.get("body") or ""),
              str(data.get("categoryKey") or "").strip(), str(data.get("subCategoryKey") or "").strip(),
-             str(data.get("contentType") or "guide").strip(), _normalize_news_country(data.get("country") or "jp"),
-             _normalize_news_city(data.get("city")), _normalize_news_language(data.get("language") or "zh-CN"),
-             str(data.get("coverImage") or ""), tags_str, _news_clean_text(data.get("authorName"), 80) or "Machi 日本指南编辑部",
+             str(data.get("contentType") or "guide").strip(), _normalize_country_code(data.get("country") or "jp"),
+             _normalize_city_slug(data.get("city")), _normalize_language_tag(data.get("language") or "zh-CN"),
+             str(data.get("coverImage") or ""), tags_str, _clean_text(data.get("authorName"), 80) or "Machi 日本指南编辑部",
              1 if data.get("isFeatured") else 0, 1 if data.get("isFree", True) else 0, 1 if data.get("isPaid") else 0,
              status, _guide_int(data.get("sortOrder"), 0), now, now, now if status == "published" else None),
         )
@@ -15469,7 +12821,7 @@ class Handler(BaseHTTPRequestHandler):
             updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
         if "tags" in data:
             tags = data["tags"]
-            updates["tags"] = ",".join(tags) if isinstance(tags, list) else _news_clean_text(tags, 300)
+            updates["tags"] = ",".join(tags) if isinstance(tags, list) else _clean_text(tags, 300)
         if updates.get("status") == "published" and not conn.execute(
                 "SELECT published_at FROM guide_articles WHERE id = ?", (article_id,)).fetchone()["published_at"]:
             updates["published_at"] = now_iso()
@@ -15514,7 +12866,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_admin_guide_create_product(self, conn: sqlite3.Connection) -> None:
         self.require_admin(conn)
         data = self.read_json()
-        title = _news_clean_text(data.get("title"), 200)
+        title = _clean_text(data.get("title"), 200)
         if not title:
             raise APIError("标题不能为空", 400, "empty_title")
         now = now_iso()
@@ -15523,30 +12875,30 @@ class Handler(BaseHTTPRequestHandler):
         is_service = 1 if data.get("isService") else 0
         is_free = 1 if data.get("isFree") else 0
         coming = 0 if is_free else (1 if data.get("isComingSoon", True) else 0)
-        status = _news_clean_text(data.get("status"), 40) or ("coming_soon" if coming else "published")
+        status = _clean_text(data.get("status"), 40) or ("coming_soon" if coming else "published")
         is_paid = 0 if is_free else 1
         appointment_only = 1 if data.get("isAppointmentOnly") else 0
         price_hidden = 1 if data.get("isPriceHidden") else 0
-        billing_type = _news_clean_text(data.get("billingType"), 40) or ("free" if is_free else ("service_booking" if is_service else "one_time"))
-        billing_period = _news_clean_text(data.get("billingPeriod"), 40) or "none"
-        service_price_type = _news_clean_text(data.get("servicePriceType"), 40) or ("appointment_only" if is_service and (appointment_only or price_hidden) else ("fixed_price" if is_service else ""))
+        billing_type = _clean_text(data.get("billingType"), 40) or ("free" if is_free else ("service_booking" if is_service else "one_time"))
+        billing_period = _clean_text(data.get("billingPeriod"), 40) or "none"
+        service_price_type = _clean_text(data.get("servicePriceType"), 40) or ("appointment_only" if is_service and (appointment_only or price_hidden) else ("fixed_price" if is_service else ""))
         row = {
             "id": product_id,
             "title": title,
             "slug": slug,
-            "subtitle": _news_clean_text(data.get("subtitle"), 200),
+            "subtitle": _clean_text(data.get("subtitle"), 200),
             "description": str(data.get("description") or ""),
             "category_key": str(data.get("categoryKey") or "guide_services").strip(),
             "sub_category_key": str(data.get("subCategoryKey") or "").strip(),
             "product_type": str(data.get("productType") or "pdf_material").strip(),
             "price": _guide_int(data.get("price"), 0, lo=0),
             "currency": normalize_currency(data.get("currency") or "CNY"),
-            "price_label": _news_clean_text(data.get("priceLabel"), 80),
+            "price_label": _clean_text(data.get("priceLabel"), 80),
             "original_price": _guide_int(data.get("originalPrice"), 0, lo=0),
-            "discount_label": _news_clean_text(data.get("discountLabel"), 80),
+            "discount_label": _clean_text(data.get("discountLabel"), 80),
             "is_price_hidden": price_hidden,
             "is_appointment_only": appointment_only,
-            "price_region": _news_clean_text(data.get("priceRegion"), 80),
+            "price_region": _clean_text(data.get("priceRegion"), 80),
             "tax_included": 0 if data.get("taxIncluded") is False else 1,
             "billing_type": billing_type,
             "billing_period": billing_period,
@@ -15559,16 +12911,16 @@ class Handler(BaseHTTPRequestHandler):
             "cancellation_policy": str(data.get("cancellationPolicy") or ""),
             "cover_image": str(data.get("coverImage") or ""),
             "tags": _guide_csv(data.get("tags")),
-            "target_audience": _news_clean_text(data.get("targetAudience"), 300),
-            "delivery_method": _news_clean_text(data.get("deliveryMethod"), 300),
+            "target_audience": _clean_text(data.get("targetAudience"), 300),
+            "delivery_method": _clean_text(data.get("deliveryMethod"), 300),
             "preview_content": str(data.get("previewContent") or ""),
             "purchase_content": str(data.get("purchaseContent") or ""),
             "file_url": str(data.get("fileUrl") or ""),
-            "file_name": _news_clean_text(data.get("fileName"), 240),
-            "file_type": _news_clean_text(data.get("fileType"), 80),
+            "file_name": _clean_text(data.get("fileName"), 240),
+            "file_type": _clean_text(data.get("fileType"), 80),
             "file_size": _guide_int(data.get("fileSize"), 0, lo=0),
-            "country": _normalize_news_country(data.get("country") or "jp"),
-            "language": _normalize_news_language(data.get("language") or "zh-CN"),
+            "country": _normalize_country_code(data.get("country") or "jp"),
+            "language": _normalize_language_tag(data.get("language") or "zh-CN"),
             "is_digital": 0 if is_service else 1,
             "is_service": is_service,
             "is_free": is_free,
@@ -15586,10 +12938,10 @@ class Handler(BaseHTTPRequestHandler):
             "is_featured": 1 if data.get("isFeatured") else 0,
             "refund_policy": str(data.get("refundPolicy") or ""),
             "notes": str(data.get("notes") or ""),
-            "stripe_product_id": _news_clean_text(data.get("stripeProductId"), 120),
-            "stripe_price_id": _news_clean_text(data.get("stripePriceId"), 120),
-            "ios_iap_product_id": _news_clean_text(data.get("iosIapProductId"), 120),
-            "apple_product_id": _news_clean_text(data.get("appleProductId"), 120),
+            "stripe_product_id": _clean_text(data.get("stripeProductId"), 120),
+            "stripe_price_id": _clean_text(data.get("stripePriceId"), 120),
+            "ios_iap_product_id": _clean_text(data.get("iosIapProductId"), 120),
+            "apple_product_id": _clean_text(data.get("appleProductId"), 120),
             "created_at": now,
             "updated_at": now,
             "published_at": now if status == "published" else None,
@@ -15735,7 +13087,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"status": "ok"})
 
     def _guide_create_school_row(self, conn: sqlite3.Connection, data: dict[str, Any], *, default_status: str = "needs_review") -> tuple[str, str]:
-        name = _news_clean_text(data.get("schoolName") or data.get("school_name") or data.get("school_name_en"), 200)
+        name = _clean_text(data.get("schoolName") or data.get("school_name") or data.get("school_name_en"), 200)
         if not name:
             raise APIError("学校名不能为空", 400, "empty_school_name")
         school_id = str(uuid.uuid4())
@@ -15745,15 +13097,15 @@ class Handler(BaseHTTPRequestHandler):
             "id": school_id,
             "slug": slug,
             "school_name": name,
-            "school_name_jp": _news_clean_text(data.get("schoolNameJp") or data.get("school_name_jp"), 200),
-            "school_name_en": _news_clean_text(data.get("schoolNameEn") or data.get("school_name_en"), 200),
-            "school_type": _news_clean_text(data.get("schoolType") or data.get("school_type"), 60) or "other",
-            "country": _normalize_news_country(data.get("country") or "jp"),
-            "prefecture": _news_clean_text(data.get("prefecture"), 80).lower(),
-            "city": _news_clean_text(data.get("city"), 80).lower(),
-            "ward": _news_clean_text(data.get("ward"), 120),
-            "address": _news_clean_text(data.get("address"), 300),
-            "postal_code": _news_clean_text(data.get("postalCode") or data.get("postal_code"), 40),
+            "school_name_jp": _clean_text(data.get("schoolNameJp") or data.get("school_name_jp"), 200),
+            "school_name_en": _clean_text(data.get("schoolNameEn") or data.get("school_name_en"), 200),
+            "school_type": _clean_text(data.get("schoolType") or data.get("school_type"), 60) or "other",
+            "country": _normalize_country_code(data.get("country") or "jp"),
+            "prefecture": _clean_text(data.get("prefecture"), 80).lower(),
+            "city": _clean_text(data.get("city"), 80).lower(),
+            "ward": _clean_text(data.get("ward"), 120),
+            "address": _clean_text(data.get("address"), 300),
+            "postal_code": _clean_text(data.get("postalCode") or data.get("postal_code"), 40),
             "latitude": _guide_float(data.get("latitude")),
             "longitude": _guide_float(data.get("longitude")),
             "website": str(data.get("website") or ""),
@@ -15765,7 +13117,7 @@ class Handler(BaseHTTPRequestHandler):
             "language_support_url": str(data.get("languageSupportUrl") or data.get("language_support_url") or ""),
             "dormitory_url": str(data.get("dormitoryUrl") or data.get("dormitory_url") or ""),
             "description": str(data.get("description") or ""),
-            "short_description": _news_clean_text(data.get("shortDescription") or data.get("short_description"), 500),
+            "short_description": _clean_text(data.get("shortDescription") or data.get("short_description"), 500),
             "is_accepting_international_students": _guide_payload_bool(data, "isAcceptingInternationalStudents", "is_accepting_international_students"),
             "has_english_program": _guide_payload_bool(data, "hasEnglishProgram", "has_english_program"),
             "has_japanese_program": _guide_payload_bool(data, "hasJapaneseProgram", "has_japanese_program"),
@@ -15775,28 +13127,28 @@ class Handler(BaseHTTPRequestHandler):
             "has_language_support": _guide_payload_bool(data, "hasLanguageSupport", "has_language_support"),
             "tuition_min": _guide_int(data.get("tuitionMin") or data.get("tuition_min"), 0, lo=0),
             "tuition_max": _guide_int(data.get("tuitionMax") or data.get("tuition_max"), 0, lo=0),
-            "currency": _news_clean_text(data.get("currency"), 12) or "JPY",
+            "currency": _clean_text(data.get("currency"), 12) or "JPY",
             "application_periods": _guide_csv(data.get("applicationPeriods") or data.get("application_periods")),
             "admission_months": _guide_csv(data.get("admissionMonths") or data.get("admission_months")),
-            "required_japanese_level": _news_clean_text(data.get("requiredJapaneseLevel") or data.get("required_japanese_level"), 40) or "unknown",
-            "required_english_level": _news_clean_text(data.get("requiredEnglishLevel") or data.get("required_english_level"), 40) or "unknown",
-            "eju_required": _news_clean_text(data.get("ejuRequired") or data.get("eju_required"), 40) or "unknown",
-            "jlpt_required": _news_clean_text(data.get("jlptRequired") or data.get("jlpt_required"), 40) or "unknown",
-            "toefl_required": _news_clean_text(data.get("toeflRequired") or data.get("toefl_required"), 40) or "unknown",
-            "ielts_required": _news_clean_text(data.get("ieltsRequired") or data.get("ielts_required"), 40) or "unknown",
+            "required_japanese_level": _clean_text(data.get("requiredJapaneseLevel") or data.get("required_japanese_level"), 40) or "unknown",
+            "required_english_level": _clean_text(data.get("requiredEnglishLevel") or data.get("required_english_level"), 40) or "unknown",
+            "eju_required": _clean_text(data.get("ejuRequired") or data.get("eju_required"), 40) or "unknown",
+            "jlpt_required": _clean_text(data.get("jlptRequired") or data.get("jlpt_required"), 40) or "unknown",
+            "toefl_required": _clean_text(data.get("toeflRequired") or data.get("toefl_required"), 40) or "unknown",
+            "ielts_required": _clean_text(data.get("ieltsRequired") or data.get("ielts_required"), 40) or "unknown",
             "fields_of_study": _guide_csv(data.get("fieldsOfStudy") or data.get("fields_of_study")),
             "departments": _guide_csv(data.get("departments")),
             "faculties": _guide_csv(data.get("faculties")),
             "graduate_schools": _guide_csv(data.get("graduateSchools") or data.get("graduate_schools")),
             "tags": _guide_csv(data.get("tags")),
-            "source_type": _news_clean_text(data.get("sourceType") or data.get("source_type"), 40) or "admin_import",
-            "source_name": _news_clean_text(data.get("sourceName") or data.get("source_name"), 160),
+            "source_type": _clean_text(data.get("sourceType") or data.get("source_type"), 40) or "admin_import",
+            "source_name": _clean_text(data.get("sourceName") or data.get("source_name"), 160),
             "source_url": str(data.get("sourceUrl") or data.get("source_url") or ""),
             "source_last_checked_at": str(data.get("sourceLastCheckedAt") or data.get("source_last_checked_at") or "") or None,
-            "verification_status": _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+            "verification_status": _clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
             "data_quality_score": _guide_int(data.get("dataQualityScore") or data.get("data_quality_score"), _guide_school_quality(dict(data)), lo=0, hi=100),
             "is_featured": 1 if data.get("isFeatured") or data.get("is_featured") else 0,
-            "status": _news_clean_text(data.get("status"), 40) or default_status,
+            "status": _clean_text(data.get("status"), 40) or default_status,
             "created_at": now,
             "updated_at": now,
         }
@@ -15912,7 +13264,7 @@ class Handler(BaseHTTPRequestHandler):
         self.require_admin(conn)
         data = self.read_json()
         school = self._guide_lookup_school(conn, str(data.get("schoolId") or data.get("school_id") or "").strip(), public_only=False)
-        name = _news_clean_text(data.get("programName") or data.get("program_name"), 200)
+        name = _clean_text(data.get("programName") or data.get("program_name"), 200)
         if not name:
             raise APIError("项目名不能为空", 400, "empty_program_name")
         now = now_iso()
@@ -15922,30 +13274,30 @@ class Handler(BaseHTTPRequestHandler):
             "program_type, field, sub_field, faculty_name, department_name, graduate_school_name, language_of_instruction, duration_months, admission_months, application_period, tuition, currency, "
             "required_japanese_level, required_english_level, eju_required, jlpt_required, toefl_required, ielts_required, "
             "description, application_url, source_url, verification_status, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (pid, school["id"], name, _news_clean_text(data.get("programNameJp") or data.get("program_name_jp"), 200),
-             _news_clean_text(data.get("programNameEn") or data.get("program_name_en"), 200),
-             _news_clean_text(data.get("degreeLevel") or data.get("degree_level"), 60) or "other",
-             _news_clean_text(data.get("programType") or data.get("program_type"), 60) or "regular",
-             _news_clean_text(data.get("field"), 120),
-             _news_clean_text(data.get("subField") or data.get("sub_field"), 120),
-             _news_clean_text(data.get("facultyName") or data.get("faculty_name"), 160),
-             _news_clean_text(data.get("departmentName") or data.get("department_name"), 160),
-             _news_clean_text(data.get("graduateSchoolName") or data.get("graduate_school_name"), 160),
-             _news_clean_text(data.get("languageOfInstruction") or data.get("language_of_instruction"), 80),
+            (pid, school["id"], name, _clean_text(data.get("programNameJp") or data.get("program_name_jp"), 200),
+             _clean_text(data.get("programNameEn") or data.get("program_name_en"), 200),
+             _clean_text(data.get("degreeLevel") or data.get("degree_level"), 60) or "other",
+             _clean_text(data.get("programType") or data.get("program_type"), 60) or "regular",
+             _clean_text(data.get("field"), 120),
+             _clean_text(data.get("subField") or data.get("sub_field"), 120),
+             _clean_text(data.get("facultyName") or data.get("faculty_name"), 160),
+             _clean_text(data.get("departmentName") or data.get("department_name"), 160),
+             _clean_text(data.get("graduateSchoolName") or data.get("graduate_school_name"), 160),
+             _clean_text(data.get("languageOfInstruction") or data.get("language_of_instruction"), 80),
              _guide_int(data.get("durationMonths") or data.get("duration_months"), 0, lo=0),
              _guide_csv(data.get("admissionMonths") or data.get("admission_months")),
-             _news_clean_text(data.get("applicationPeriod") or data.get("application_period"), 300),
-             _guide_int(data.get("tuition"), 0, lo=0), _news_clean_text(data.get("currency"), 12) or "JPY",
-             _news_clean_text(data.get("requiredJapaneseLevel") or data.get("required_japanese_level"), 40) or "unknown",
-             _news_clean_text(data.get("requiredEnglishLevel") or data.get("required_english_level"), 40) or "unknown",
-             _news_clean_text(data.get("ejuRequired") or data.get("eju_required"), 40) or "unknown",
-             _news_clean_text(data.get("jlptRequired") or data.get("jlpt_required"), 40) or "unknown",
-             _news_clean_text(data.get("toeflRequired") or data.get("toefl_required"), 40) or "unknown",
-             _news_clean_text(data.get("ieltsRequired") or data.get("ielts_required"), 40) or "unknown",
+             _clean_text(data.get("applicationPeriod") or data.get("application_period"), 300),
+             _guide_int(data.get("tuition"), 0, lo=0), _clean_text(data.get("currency"), 12) or "JPY",
+             _clean_text(data.get("requiredJapaneseLevel") or data.get("required_japanese_level"), 40) or "unknown",
+             _clean_text(data.get("requiredEnglishLevel") or data.get("required_english_level"), 40) or "unknown",
+             _clean_text(data.get("ejuRequired") or data.get("eju_required"), 40) or "unknown",
+             _clean_text(data.get("jlptRequired") or data.get("jlpt_required"), 40) or "unknown",
+             _clean_text(data.get("toeflRequired") or data.get("toefl_required"), 40) or "unknown",
+             _clean_text(data.get("ieltsRequired") or data.get("ielts_required"), 40) or "unknown",
              str(data.get("description") or ""), str(data.get("applicationUrl") or data.get("application_url") or ""),
              str(data.get("sourceUrl") or data.get("source_url") or ""),
-             _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
-             _news_clean_text(data.get("status"), 40) or "needs_review", now, now),
+             _clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+             _clean_text(data.get("status"), 40) or "needs_review", now, now),
         )
         self.send_json({"status": "ok", "id": pid}, 201)
 
@@ -15986,21 +13338,21 @@ class Handler(BaseHTTPRequestHandler):
             "application_deadline, exam_date, result_date, enrollment_month, required_documents, selection_method, application_fee, "
             "tuition_first_year, scholarship_info, notes, source_url, verification_status, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (aid, school["id"], str(data.get("programId") or data.get("program_id") or ""),
-             _news_clean_text(data.get("admissionType") or data.get("admission_type"), 80) or "international_student",
-             _news_clean_text(data.get("targetStudentType") or data.get("target_student_type"), 120),
+             _clean_text(data.get("admissionType") or data.get("admission_type"), 80) or "international_student",
+             _clean_text(data.get("targetStudentType") or data.get("target_student_type"), 120),
              str(data.get("applicationStart") or data.get("application_start") or "") or None,
              str(data.get("applicationDeadline") or data.get("application_deadline") or "") or None,
              str(data.get("examDate") or data.get("exam_date") or "") or None,
              str(data.get("resultDate") or data.get("result_date") or "") or None,
-             _news_clean_text(data.get("enrollmentMonth") or data.get("enrollment_month"), 60),
+             _clean_text(data.get("enrollmentMonth") or data.get("enrollment_month"), 60),
              _guide_csv(data.get("requiredDocuments") or data.get("required_documents")),
-             _news_clean_text(data.get("selectionMethod") or data.get("selection_method"), 500),
+             _clean_text(data.get("selectionMethod") or data.get("selection_method"), 500),
              _guide_int(data.get("applicationFee") or data.get("application_fee"), 0, lo=0),
              _guide_int(data.get("tuitionFirstYear") or data.get("tuition_first_year"), 0, lo=0),
-             _news_clean_text(data.get("scholarshipInfo") or data.get("scholarship_info"), 1000),
-             _news_clean_text(data.get("notes"), 2000), str(data.get("sourceUrl") or data.get("source_url") or ""),
-             _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
-             _news_clean_text(data.get("status"), 40) or "needs_review", now, now),
+             _clean_text(data.get("scholarshipInfo") or data.get("scholarship_info"), 1000),
+             _clean_text(data.get("notes"), 2000), str(data.get("sourceUrl") or data.get("source_url") or ""),
+             _clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+             _clean_text(data.get("status"), 40) or "needs_review", now, now),
         )
         self.send_json({"status": "ok", "id": aid}, 201)
 
@@ -16026,28 +13378,28 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"status": "ok", "id": admission_id})
 
     def _guide_create_company_row(self, conn: sqlite3.Connection, data: dict[str, Any], *, default_status: str = "needs_review") -> tuple[str, str]:
-        name = _news_clean_text(data.get("companyName") or data.get("company_name") or data.get("name"), 200)
+        name = _clean_text(data.get("companyName") or data.get("company_name") or data.get("name"), 200)
         if not name:
             raise APIError("公司名不能为空", 400, "empty_company_name")
         now = now_iso()
         company_id = str(uuid.uuid4())
         slug = self._guide_slugify(data.get("slug") or data.get("companyNameEn") or data.get("company_name_en") or name, fallback=company_id[:10])
-        size = _news_clean_text(data.get("companySize") or data.get("company_size") or data.get("size"), 40) or "unknown"
+        size = _clean_text(data.get("companySize") or data.get("company_size") or data.get("size"), 40) or "unknown"
         row = {
             "id": company_id,
-            "corporate_number": _news_clean_text(data.get("corporateNumber") or data.get("corporate_number"), 40),
+            "corporate_number": _clean_text(data.get("corporateNumber") or data.get("corporate_number"), 40),
             "company_name": name,
-            "company_name_jp": _news_clean_text(data.get("companyNameJp") or data.get("company_name_jp"), 200),
-            "company_name_en": _news_clean_text(data.get("companyNameEn") or data.get("company_name_en"), 200),
+            "company_name_jp": _clean_text(data.get("companyNameJp") or data.get("company_name_jp"), 200),
+            "company_name_en": _clean_text(data.get("companyNameEn") or data.get("company_name_en"), 200),
             "slug": slug,
-            "industry": _news_clean_text(data.get("industry"), 100),
-            "sub_industry": _news_clean_text(data.get("subIndustry") or data.get("sub_industry"), 100),
-            "country": _normalize_news_country(data.get("country") or "jp"),
-            "prefecture": _news_clean_text(data.get("prefecture"), 80).lower(),
-            "city": _news_clean_text(data.get("city"), 80).lower(),
-            "ward": _news_clean_text(data.get("ward"), 120),
-            "address": _news_clean_text(data.get("address"), 300),
-            "postal_code": _news_clean_text(data.get("postalCode") or data.get("postal_code"), 40),
+            "industry": _clean_text(data.get("industry"), 100),
+            "sub_industry": _clean_text(data.get("subIndustry") or data.get("sub_industry"), 100),
+            "country": _normalize_country_code(data.get("country") or "jp"),
+            "prefecture": _clean_text(data.get("prefecture"), 80).lower(),
+            "city": _clean_text(data.get("city"), 80).lower(),
+            "ward": _clean_text(data.get("ward"), 120),
+            "address": _clean_text(data.get("address"), 300),
+            "postal_code": _clean_text(data.get("postalCode") or data.get("postal_code"), 40),
             "latitude": _guide_float(data.get("latitude")),
             "longitude": _guide_float(data.get("longitude")),
             "website": str(data.get("website") or ""),
@@ -16059,7 +13411,7 @@ class Handler(BaseHTTPRequestHandler):
             "company_size": size,
             "founded_year": _guide_int(data.get("foundedYear") or data.get("founded_year"), 0, lo=0, hi=2100),
             "description": str(data.get("description") or ""),
-            "short_description": _news_clean_text(data.get("shortDescription") or data.get("short_description"), 500),
+            "short_description": _clean_text(data.get("shortDescription") or data.get("short_description"), 500),
             "is_foreigner_friendly": _guide_payload_bool(data, "isForeignerFriendly", "is_foreigner_friendly"),
             "accepts_foreign_applicants": _guide_payload_bool(data, "acceptsForeignApplicants", "accepts_foreign_applicants"),
             "supports_work_visa": _guide_payload_bool(data, "supportsWorkVisa", "supports_work_visa"),
@@ -16068,12 +13420,12 @@ class Handler(BaseHTTPRequestHandler):
             "has_english_positions": _guide_payload_bool(data, "hasEnglishPositions", "has_english_positions"),
             "has_global_roles": _guide_payload_bool(data, "hasGlobalRoles", "has_global_roles"),
             "has_foreign_employees": _guide_payload_bool(data, "hasForeignEmployees", "has_foreign_employees"),
-            "japanese_level_required": _news_clean_text(data.get("japaneseLevelRequired") or data.get("japanese_level_required"), 40) or "unknown",
-            "english_level_required": _news_clean_text(data.get("englishLevelRequired") or data.get("english_level_required"), 40) or "unknown",
+            "japanese_level_required": _clean_text(data.get("japaneseLevelRequired") or data.get("japanese_level_required"), 40) or "unknown",
+            "english_level_required": _clean_text(data.get("englishLevelRequired") or data.get("english_level_required"), 40) or "unknown",
             "employment_types": _guide_csv(data.get("employmentTypes") or data.get("employment_types")),
             "average_salary_min": _guide_int(data.get("averageSalaryMin") or data.get("average_salary_min"), 0, lo=0),
             "average_salary_max": _guide_int(data.get("averageSalaryMax") or data.get("average_salary_max"), 0, lo=0),
-            "currency": _news_clean_text(data.get("currency"), 12) or "JPY",
+            "currency": _clean_text(data.get("currency"), 12) or "JPY",
             "foreigner_friendly_score": 0,
             "visa_support_score": 0,
             "interview_difficulty_score": 0,
@@ -16084,14 +13436,14 @@ class Handler(BaseHTTPRequestHandler):
             "review_count": 0,
             "interview_review_count": 0,
             "tags": _guide_csv(data.get("tags")),
-            "source_type": _news_clean_text(data.get("sourceType") or data.get("source_type"), 40) or "admin_import",
-            "source_name": _news_clean_text(data.get("sourceName") or data.get("source_name"), 160),
+            "source_type": _clean_text(data.get("sourceType") or data.get("source_type"), 40) or "admin_import",
+            "source_name": _clean_text(data.get("sourceName") or data.get("source_name"), 160),
             "source_url": str(data.get("sourceUrl") or data.get("source_url") or ""),
             "source_last_checked_at": str(data.get("sourceLastCheckedAt") or data.get("source_last_checked_at") or "") or None,
-            "verification_status": _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+            "verification_status": _clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
             "data_quality_score": _guide_int(data.get("dataQualityScore") or data.get("data_quality_score"), _guide_company_quality(dict(data)), lo=0, hi=100),
             "is_featured": 1 if data.get("isFeatured") or data.get("is_featured") else 0,
-            "status": _news_clean_text(data.get("status"), 40) or default_status,
+            "status": _clean_text(data.get("status"), 40) or default_status,
             "created_at": now,
             "updated_at": now,
         }
@@ -16162,7 +13514,7 @@ class Handler(BaseHTTPRequestHandler):
             if k in data:
                 updates[col] = _guide_payload_bool(data, k)
         if "city" in data:
-            updates["city"] = _news_clean_text(data.get("city"), 80).lower()
+            updates["city"] = _clean_text(data.get("city"), 80).lower()
         for k, col in (("latitude", "latitude"), ("longitude", "longitude")):
             if k in data:
                 updates[col] = _guide_float(data.get(k))
@@ -16214,7 +13566,7 @@ class Handler(BaseHTTPRequestHandler):
         self.require_admin(conn)
         data = self.read_json()
         company = self._guide_lookup_company(conn, str(data.get("companyId") or data.get("company_id") or "").strip())
-        title = _news_clean_text(data.get("positionTitle") or data.get("position_title"), 200)
+        title = _clean_text(data.get("positionTitle") or data.get("position_title"), 200)
         if not title:
             raise APIError("岗位标题不能为空", 400, "empty_position_title")
         now = now_iso()
@@ -16223,20 +13575,20 @@ class Handler(BaseHTTPRequestHandler):
             "INSERT INTO guide_company_positions (id, company_id, position_title, position_title_jp, position_category, "
             "employment_type, city, remote_type, salary_min, salary_max, currency, japanese_level_required, english_level_required, "
             "visa_support, description, requirements, source_url, verification_status, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (pid, company["id"], title, _news_clean_text(data.get("positionTitleJp") or data.get("position_title_jp"), 200),
-             _news_clean_text(data.get("positionCategory") or data.get("position_category"), 80) or "other",
-             _news_clean_text(data.get("employmentType") or data.get("employment_type"), 80),
-             _news_clean_text(data.get("city"), 80).lower(), _news_clean_text(data.get("remoteType") or data.get("remote_type"), 80),
+            (pid, company["id"], title, _clean_text(data.get("positionTitleJp") or data.get("position_title_jp"), 200),
+             _clean_text(data.get("positionCategory") or data.get("position_category"), 80) or "other",
+             _clean_text(data.get("employmentType") or data.get("employment_type"), 80),
+             _clean_text(data.get("city"), 80).lower(), _clean_text(data.get("remoteType") or data.get("remote_type"), 80),
              _guide_int(data.get("salaryMin") or data.get("salary_min"), 0, lo=0),
              _guide_int(data.get("salaryMax") or data.get("salary_max"), 0, lo=0),
-             _news_clean_text(data.get("currency"), 12) or "JPY",
-             _news_clean_text(data.get("japaneseLevelRequired") or data.get("japanese_level_required"), 40) or "unknown",
-             _news_clean_text(data.get("englishLevelRequired") or data.get("english_level_required"), 40) or "unknown",
-             _news_clean_text(data.get("visaSupport") or data.get("visa_support"), 40) or "unknown",
+             _clean_text(data.get("currency"), 12) or "JPY",
+             _clean_text(data.get("japaneseLevelRequired") or data.get("japanese_level_required"), 40) or "unknown",
+             _clean_text(data.get("englishLevelRequired") or data.get("english_level_required"), 40) or "unknown",
+             _clean_text(data.get("visaSupport") or data.get("visa_support"), 40) or "unknown",
              str(data.get("description") or ""), str(data.get("requirements") or ""),
              str(data.get("sourceUrl") or data.get("source_url") or ""),
-             _news_clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
-             _news_clean_text(data.get("status"), 40) or "needs_review", now, now),
+             _clean_text(data.get("verificationStatus") or data.get("verification_status"), 40) or "needs_review",
+             _clean_text(data.get("status"), 40) or "needs_review", now, now),
         )
         self.send_json({"status": "ok", "id": pid}, 201)
 
@@ -16289,7 +13641,7 @@ class Handler(BaseHTTPRequestHandler):
         if not row:
             raise APIError("纠错记录不存在", 404, "guide_correction_not_found")
         data = self.read_json()
-        status = _news_clean_text(data.get("status"), 40)
+        status = _clean_text(data.get("status"), 40)
         if status not in {"pending", "reviewed", "applied", "rejected"}:
             raise APIError("状态不正确", 400, "invalid_correction_status")
         conn.execute("UPDATE guide_correction_reports SET status = ?, updated_at = ? WHERE id = ?", (status, now_iso(), correction_id))
@@ -16919,27 +14271,6 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/marketing-copy" and method == "GET":
             return self.api_marketing_copy(conn, query)
 
-        # Local News Desk public API. Editorial posts are a distinct
-        # official content surface, not ordinary user posts.
-        if path == "/api/news" and method == "GET":
-            return self.api_news(conn, query)
-        if path.startswith("/api/news/"):
-            parts = path[len("/api/news/"):].split("/")
-            news_id = unquote(parts[0])
-            rest = "/".join(parts[1:])
-            if not rest and method == "GET":
-                return self.api_news_detail(conn, news_id)
-            if rest == "save" and method == "POST":
-                return self.api_news_save(conn, news_id, True)
-            if rest == "save" and method == "DELETE":
-                return self.api_news_save(conn, news_id, False)
-            if rest in {"share", "source-click"} and method == "POST":
-                return self.api_news_metric(conn, news_id, rest)
-            if rest == "comments" and method == "GET":
-                return self.api_news_comments(conn, news_id)
-            if rest == "comments" and method == "POST":
-                return self.api_news_create_comment(conn, news_id)
-
         # Machi Guide / 日本指南 — public + auth (replaces the old crawler 资讯 surface)
         if path == "/api/guide/home" and method == "GET":
             return self.api_guide_home(conn, query)
@@ -17265,127 +14596,6 @@ class Handler(BaseHTTPRequestHandler):
 
         # admin: Japan News Crawler aliases. These share the Local News Desk
         # storage surface while exposing product-specific crawler routes.
-        if path == "/api/admin/japan-news-crawler/dashboard" and method == "GET":
-            return self.api_admin_news_desk(conn)
-        if path == "/api/admin/japan-news-crawler/fetch-japan-all" and method == "POST":
-            return self.api_admin_fetch_japan_all_news_sources(conn)
-        if path == "/api/admin/japan-news-crawler/fetch-official" and method == "POST":
-            return self.api_admin_fetch_japan_scope_news_sources(conn, "official")
-        if path == "/api/admin/japan-news-crawler/fetch-tokyo" and method == "POST":
-            return self.api_admin_fetch_japan_scope_news_sources(conn, "tokyo")
-        if path == "/api/admin/japan-news-crawler/fetch-osaka" and method == "POST":
-            return self.api_admin_fetch_japan_scope_news_sources(conn, "osaka")
-        if path == "/api/admin/japan-news-crawler/fetch-all" and method == "POST":
-            return self.api_admin_fetch_all_news_sources(conn)
-        if path == "/api/admin/japan-news-crawler/sources" and method == "GET":
-            return self.api_admin_news_sources(conn, query)
-        if path == "/api/admin/japan-news-crawler/sources" and method == "POST":
-            return self.api_admin_create_news_source(conn)
-        if path == "/api/admin/japan-news-crawler/sources/seed-presets" and method == "POST":
-            return self.api_admin_seed_news_source_presets(conn)
-        if path.startswith("/api/admin/japan-news-crawler/sources/"):
-            parts = path.split("/")
-            source_id = unquote(parts[5]) if len(parts) > 5 else ""
-            action = parts[6] if len(parts) > 6 else ""
-            if method == "GET" and not action:
-                return self.api_admin_news_source_detail(conn, source_id)
-            if method == "PATCH" and not action:
-                return self.api_admin_update_news_source(conn, source_id)
-            if method == "DELETE" and not action:
-                return self.api_admin_delete_news_source(conn, source_id)
-            if method == "POST" and action == "toggle":
-                return self.api_admin_toggle_news_source(conn, source_id)
-            if method == "POST" and action == "fetch":
-                return self.api_admin_fetch_news_source(conn, source_id)
-        if path == "/api/admin/japan-news-crawler/items" and method == "GET":
-            return self.api_admin_news_items(conn, query)
-        if path == "/api/admin/japan-news-crawler/items/create-drafts" and method == "POST":
-            return self.api_admin_create_drafts_from_news_items(conn)
-        if path.startswith("/api/admin/japan-news-crawler/items/"):
-            parts = path.split("/")
-            item_id = unquote(parts[5]) if len(parts) > 5 else ""
-            action = parts[6] if len(parts) > 6 else ""
-            if method == "POST" and action == "create-draft":
-                return self.api_admin_create_draft_from_news_item(conn, item_id)
-            if method == "POST" and action == "ignore":
-                return self.api_admin_update_news_item_status(conn, item_id, "ignored")
-            if method == "POST" and action == "duplicate":
-                return self.api_admin_update_news_item_status(conn, item_id, "duplicate")
-            if method == "DELETE" and not action:
-                return self.api_admin_update_news_item_status(conn, item_id, "deleted")
-        if path == "/api/admin/japan-news-crawler/logs" and method == "GET":
-            return self.api_admin_news_desk_logs(conn, query)
-
-        # admin: Local News Desk / 本地资讯台
-        if path == "/api/admin/news-desk" and method == "GET":
-            return self.api_admin_news_desk(conn)
-        if path == "/api/admin/news-sources/fetch-all" and method == "POST":
-            return self.api_admin_fetch_all_news_sources(conn)
-        if path == "/api/admin/news-sources/fetch-japan-all" and method == "POST":
-            return self.api_admin_fetch_japan_all_news_sources(conn)
-        if path == "/api/admin/news-sources/fetch-official" and method == "POST":
-            return self.api_admin_fetch_japan_scope_news_sources(conn, "official")
-        if path == "/api/admin/news-sources/fetch-tokyo" and method == "POST":
-            return self.api_admin_fetch_japan_scope_news_sources(conn, "tokyo")
-        if path == "/api/admin/news-sources/fetch-osaka" and method == "POST":
-            return self.api_admin_fetch_japan_scope_news_sources(conn, "osaka")
-        if path == "/api/admin/news-sources" and method == "GET":
-            return self.api_admin_news_sources(conn, query)
-        if path == "/api/admin/news-sources" and method == "POST":
-            return self.api_admin_create_news_source(conn)
-        if path == "/api/admin/news-sources/seed-presets" and method == "POST":
-            return self.api_admin_seed_news_source_presets(conn)
-        if path.startswith("/api/admin/news-sources/"):
-            parts = path.split("/")
-            source_id = unquote(parts[4]) if len(parts) > 4 else ""
-            action = parts[5] if len(parts) > 5 else ""
-            if method == "GET" and not action:
-                return self.api_admin_news_source_detail(conn, source_id)
-            if method == "PATCH" and not action:
-                return self.api_admin_update_news_source(conn, source_id)
-            if method == "DELETE" and not action:
-                return self.api_admin_delete_news_source(conn, source_id)
-            if method == "POST" and action == "toggle":
-                return self.api_admin_toggle_news_source(conn, source_id)
-            if method == "POST" and action == "fetch":
-                return self.api_admin_fetch_news_source(conn, source_id)
-        if path == "/api/admin/news-items" and method == "GET":
-            return self.api_admin_news_items(conn, query)
-        if path == "/api/admin/news-items/create-drafts" and method == "POST":
-            return self.api_admin_create_drafts_from_news_items(conn)
-        if path.startswith("/api/admin/news-items/"):
-            parts = path.split("/")
-            item_id = unquote(parts[4]) if len(parts) > 4 else ""
-            action = parts[5] if len(parts) > 5 else ""
-            if method == "POST" and action == "create-draft":
-                return self.api_admin_create_draft_from_news_item(conn, item_id)
-            if method == "POST" and action == "ignore":
-                return self.api_admin_update_news_item_status(conn, item_id, "ignored")
-            if method == "POST" and action == "duplicate":
-                return self.api_admin_update_news_item_status(conn, item_id, "duplicate")
-            if method == "DELETE" and not action:
-                return self.api_admin_update_news_item_status(conn, item_id, "deleted")
-        if path == "/api/admin/editorial-posts" and method == "GET":
-            return self.api_admin_editorial_posts(conn, query)
-        if path == "/api/admin/editorial-posts" and method == "POST":
-            return self.api_admin_create_editorial_post(conn)
-        if path == "/api/admin/editorial-posts/bulk-publish" and method == "POST":
-            return self.api_admin_bulk_publish_editorial_posts(conn)
-        if path.startswith("/api/admin/editorial-posts/"):
-            parts = path.split("/")
-            editorial_id = unquote(parts[4]) if len(parts) > 4 else ""
-            action = parts[5] if len(parts) > 5 else ""
-            if method == "PATCH" and not action:
-                return self.api_admin_update_editorial_post(conn, editorial_id)
-            if method == "POST" and action == "ai-assist":
-                return self.api_admin_editorial_ai_assist(conn, editorial_id)
-            if method == "POST" and action in {"submit-review", "approve", "reject", "publish", "hide", "restore"}:
-                return self.api_admin_editorial_transition(conn, editorial_id, action)
-            if method == "DELETE" and not action:
-                return self.api_admin_delete_editorial_post(conn, editorial_id)
-        if path == "/api/admin/news-desk/logs" and method == "GET":
-            return self.api_admin_news_desk_logs(conn, query)
-
         # admin: City Seed Bot (城市内容助手) — all behind require_admin
         if path == "/api/admin/seed-content/generate" and method == "POST":
             return self.api_admin_seed_generate(conn)
@@ -17511,24 +14721,28 @@ class Handler(BaseHTTPRequestHandler):
         status = get_user_membership_status(conn, user["id"])
         if not status["is_active"]:
             raise APIError("访问会员专属内容需要开通 Machi 认证会员。", 403, "MEMBERSHIP_REQUIRED")
-        city = _normalize_news_city(user.get("city") or "")
-        country = _normalize_news_country(user.get("country") or "jp") or "jp"
-        params: list[Any] = [country]
-        city_clause = ""
-        if city:
-            city_clause = " AND (city = ? OR city = '')"
-            params.append(city)
-        posts = [
-            serialize_editorial_post(conn, r, user["id"])
-            for r in conn.execute(
-                "SELECT * FROM editorial_posts WHERE status = 'published' AND country = ?" + city_clause +
-                " ORDER BY published_at DESC, created_at DESC LIMIT 12",
-                params,
-            )
-        ]
+        # The member shelf is the Guide member library (original editorial
+        # material with lasting value) — the retired news pipeline used to
+        # fill this slot. Clients only rely on id/title/summary.
+        country = (str(user.get("country") or "jp").strip().lower() or "jp")
+        rows = conn.execute(
+            """
+            SELECT * FROM guide_products
+             WHERE country = ? AND status IN ('published','coming_soon')
+               AND is_member_included = 1 AND is_service = 0
+             ORDER BY is_coming_soon ASC, is_featured DESC, sort_order, updated_at DESC
+             LIMIT 12
+            """,
+            (country,),
+        ).fetchall()
+        items = []
+        for r in rows:
+            payload = localize_guide_product_payload(serialize_guide_product(r), "zh-CN")
+            payload["summary"] = payload.get("subtitle") or payload.get("summary") or ""
+            items.append(payload)
         self.send_json({
             "membership": status,
-            "items": posts,
+            "items": items,
             "guides": [
                 {"key": "housing", "title": "租房避坑合集", "description": "看房、初期费用、合同和搬家前后需要确认的事项。"},
                 {"key": "work", "title": "工作招聘发布入口", "description": "会员可发布招聘、打工、引荐等高信任内容。"},
@@ -18054,13 +15268,13 @@ class Handler(BaseHTTPRequestHandler):
         }
         for key, col in text_map.items():
             if key in data:
-                updates[col] = _news_clean_text(data.get(key), 4000 if col == "description" else 200)
+                updates[col] = _clean_text(data.get(key), 4000 if col == "description" else 200)
         if "name" in updates:
             updates.setdefault("name_zh", updates["name"])
         for key, col in (("nameZh", "name_zh"), ("name_zh", "name_zh"), ("nameEn", "name_en"),
                          ("name_en", "name_en"), ("nameJa", "name_ja"), ("name_ja", "name_ja")):
             if key in data:
-                updates[col] = _news_clean_text(data.get(key), 200)
+                updates[col] = _clean_text(data.get(key), 200)
         if "currency" in updates:
             updates["currency"] = normalize_currency(updates["currency"])
         if "billing_period" in updates:
@@ -18097,17 +15311,17 @@ class Handler(BaseHTTPRequestHandler):
             for idx, item in enumerate(raw):
                 if not isinstance(item, dict):
                     continue
-                title = _news_clean_text(item.get("benefit_title") or item.get("title"), 160)
+                title = _clean_text(item.get("benefit_title") or item.get("title"), 160)
                 if not title:
                     continue
                 clean.append({
-                    "key": _news_clean_text(item.get("key"), 80) or f"benefit_{idx + 1}",
+                    "key": _clean_text(item.get("key"), 80) or f"benefit_{idx + 1}",
                     "benefit_title": title,
                     "title": title,
-                    "benefit_description": _news_clean_text(item.get("benefit_description") or item.get("description"), 500),
-                    "description": _news_clean_text(item.get("benefit_description") or item.get("description"), 500),
-                    "benefit_icon": _news_clean_text(item.get("benefit_icon") or item.get("icon"), 80),
-                    "icon": _news_clean_text(item.get("benefit_icon") or item.get("icon"), 80),
+                    "benefit_description": _clean_text(item.get("benefit_description") or item.get("description"), 500),
+                    "description": _clean_text(item.get("benefit_description") or item.get("description"), 500),
+                    "benefit_icon": _clean_text(item.get("benefit_icon") or item.get("icon"), 80),
+                    "icon": _clean_text(item.get("benefit_icon") or item.get("icon"), 80),
                     "is_enabled": bool(item.get("is_enabled", item.get("isEnabled", True))),
                     "sort_order": int(item.get("sort_order") or item.get("sortOrder") or idx + 1),
                 })
@@ -18170,7 +15384,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_admin_pricing(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
-        country = _normalize_news_country(query.get("country") or "jp")
+        country = _normalize_country_code(query.get("country") or "jp")
         products = [serialize_guide_product(r, include_private=True) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? ORDER BY is_service ASC, category_key, sort_order, updated_at DESC",
             (country,),
@@ -24893,17 +22107,14 @@ def run() -> None:
     init_db()
     start_visitor_writer()
     start_thumbnail_worker()
-    # The crawler scheduler is a singleton background job (time-based, not
-    # per-request). When running multiple backend processes behind nginx for
-    # horizontal scaling, only ONE instance should run it — set
-    # KAIX_ENABLE_SCHEDULERS=0 on the extra worker processes so they don't all
-    # crawl at once (duplicate work + DB write contention). Default on, so
-    # single-instance deploys are unaffected.
+    # Singleton background jobs (time-based, not per-request). When running
+    # multiple backend processes behind nginx, only ONE instance should run
+    # them — set KAIX_ENABLE_SCHEDULERS=0 on the extra workers. Default on,
+    # so single-instance deploys are unaffected.
     if _env("KAIX_ENABLE_SCHEDULERS", "1") == "1":
-        start_news_crawler_scheduler()
         start_retention_janitor()
     else:
-        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — crawler scheduler + retention janitor disabled on this worker")
+        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")
     port = int(_env("KAIX_PORT", "8787"))
     server = MachiHTTPServer((host, port), Handler)
