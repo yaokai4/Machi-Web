@@ -45,7 +45,7 @@ import {
   composeRegionCode,
   countryByCode,
 } from "@/lib/regions";
-import { useI18n, type Locale } from "@/lib/i18n";
+import { useI18n, appLocaleToMarketingLocale, type Locale } from "@/lib/i18n";
 import {
   cleanListingText,
   compactListingFields,
@@ -76,6 +76,62 @@ const CHANNEL: Record<ChannelKind, { type: KXListingType; title: string; subtitl
   services: { type: "local_service", title: "本地服务", subtitle: "认证服务方、服务范围和风险提示", icon: Sparkles, search: "搜索翻译、手续、接机、履历书修改、生活支持", createLabel: "发布服务" },
   deals: { type: "discount", title: "优惠", subtitle: "本地商家优惠、有效期和使用规则", icon: Tag, search: "搜索优惠、折扣、商家、有效期", createLabel: "发布优惠" },
 };
+
+// ja/en header copy for each channel. zh above stays the source of truth;
+// localizedChannel() overlays these per the active locale so every
+// `spec.title` usage keeps working untouched.
+const CHANNEL_TEXT: Record<ChannelKind, Record<"title" | "subtitle" | "search" | "createLabel", { ja: string; en: string }>> = {
+  marketplace: {
+    title: { ja: "フリマ", en: "Marketplace" },
+    subtitle: { ja: "写真・価格・場所・取引状況をすっきり整理", en: "Photos, price, location and deal status at a glance" },
+    search: { ja: "家具・家電・教材・電子機器・引越し処分を検索", en: "Search furniture, appliances, textbooks, electronics…" },
+    createLabel: { ja: "出品する", en: "Sell an item" },
+  },
+  rentals: {
+    title: { ja: "賃貸", en: "Rentals" },
+    subtitle: { ja: "家賃・駅・間取り・面積・入居条件を構造化して表示", en: "Rent, station, layout, size and move-in terms, structured" },
+    search: { ja: "エリア・駅・学校・会社・物件キーワードを検索", en: "Search area, station, school, company, keywords" },
+    createLabel: { ja: "物件を掲載", en: "Post a rental" },
+  },
+  jobs: {
+    title: { ja: "求人", en: "Jobs" },
+    subtitle: { ja: "給与・場所・日本語レベル・ビザサポート・採用元認証", en: "Salary, location, Japanese level, visa support, verified employers" },
+    search: { ja: "職種・会社・場所・日本語レベルを検索", en: "Search roles, companies, locations, Japanese level" },
+    createLabel: { ja: "求人を掲載", en: "Post a job" },
+  },
+  services: {
+    title: { ja: "ローカルサービス", en: "Local services" },
+    subtitle: { ja: "認証済みの提供者・対応範囲・注意事項", en: "Verified providers, scope and safety notes" },
+    search: { ja: "翻訳・手続き・送迎・履歴書添削・生活サポートを検索", en: "Search translation, paperwork, pickup, resume help…" },
+    createLabel: { ja: "サービスを掲載", en: "Offer a service" },
+  },
+  deals: {
+    title: { ja: "クーポン", en: "Deals" },
+    subtitle: { ja: "地元店舗の特典・有効期限・利用条件", en: "Local merchant deals, validity and usage rules" },
+    search: { ja: "特典・割引・店舗・有効期限を検索", en: "Search deals, discounts, merchants, validity" },
+    createLabel: { ja: "特典を掲載", en: "Post a deal" },
+  },
+};
+
+/// Tiny inline trilingual pick for one-off UI strings in this kit.
+function pickText(locale: Locale, zh: string, ja: string, en: string): string {
+  const marketing = appLocaleToMarketingLocale(locale);
+  return marketing === "ja" ? ja : marketing === "en" ? en : zh;
+}
+
+function localizedChannel(kind: ChannelKind, locale: Locale) {
+  const base = CHANNEL[kind];
+  const marketing = appLocaleToMarketingLocale(locale);
+  if (marketing === "zh") return base;
+  const text = CHANNEL_TEXT[kind];
+  return {
+    ...base,
+    title: text.title[marketing],
+    subtitle: text.subtitle[marketing],
+    search: text.search[marketing],
+    createLabel: text.createLabel[marketing],
+  };
+}
 
 const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   secondhand: ["全部", "家具", "家电", "电子产品", "教材", "衣物", "生活用品", "搬家出清", "免费送", "求购"],
@@ -277,7 +333,6 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const city = getCityBySlug(citySlug) || getDefaultCity();
-  const spec = CHANNEL[kind];
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [sort, setSort] = useState("latest");
@@ -285,6 +340,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [scope, setScope] = useState<ListingScope>("city");
   const { locale } = useI18n();
+  const spec = localizedChannel(kind, locale);
   const scopeCountry = city.regionCode.split(".")[0] || "jp";
   const scopeCountrySpec = countryByCode(scopeCountry);
   const scopeCountryName = scopeCountrySpec ? countryDisplayName(scopeCountrySpec, locale) : "当前国家";
@@ -413,13 +469,15 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                 ) : null}
               </button>
               <select value={sort} onChange={(e) => setSort(e.target.value)} className="h-10 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 outline-none transition hover:border-blue-300 focus:border-blue-400">
-                <option value="latest">最新发布</option>
-                <option value="price_asc">{spec.type === "rental" ? "租金从低到高" : "价格从低到高"}</option>
-                <option value="price_desc">{spec.type === "rental" ? "租金从高到低" : "价格从高到低"}</option>
-                <option value="popular">最多收藏</option>
+                <option value="latest">{pickText(locale, "最新发布", "新着順", "Newest")}</option>
+                <option value="price_asc">{spec.type === "rental" ? pickText(locale, "租金从低到高", "家賃が安い順", "Rent: low → high") : pickText(locale, "价格从低到高", "価格が安い順", "Price: low → high")}</option>
+                <option value="price_desc">{spec.type === "rental" ? pickText(locale, "租金从高到低", "家賃が高い順", "Rent: high → low") : pickText(locale, "价格从高到低", "価格が高い順", "Price: high → low")}</option>
+                <option value="popular">{pickText(locale, "最多收藏", "人気順", "Most saved")}</option>
               </select>
               <p className="ml-auto hidden text-xs font-bold text-slate-400 sm:block">
-                {visibleItems.length ? `${visibleItems.length} 条结果` : "暂无结果"}
+                {visibleItems.length
+                  ? pickText(locale, `${visibleItems.length} 条结果`, `${visibleItems.length} 件`, `${visibleItems.length} results`)
+                  : pickText(locale, "暂无结果", "結果なし", "No results")}
               </p>
               </div>
               <div className="-mx-1 min-w-0 overflow-x-auto px-1">
@@ -1982,7 +2040,8 @@ function SellerBox({ item }: { item: KXCityListing }) {
 }
 
 function AttributeGrid({ item }: { item: KXCityListing }) {
-  const rows = detailFields(item);
+  const { locale } = useI18n();
+  const rows = detailFields(item, locale);
   if (!rows.length) return null;
   return (
     <dl className="mt-5 grid gap-2 sm:grid-cols-2">
@@ -2138,8 +2197,8 @@ function compactFields(item: KXCityListing) {
   return compactListingFields(item);
 }
 
-function detailFields(item: KXCityListing): Array<[string, string]> {
-  return listingDetailFields(item);
+function detailFields(item: KXCityListing, locale: Locale = "zh-Hans"): Array<[string, string]> {
+  return listingDetailFields(item, appLocaleToMarketingLocale(locale));
 }
 
 function listingTypeLabel(type: KXListingType | string) {

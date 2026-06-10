@@ -951,6 +951,16 @@ CREATE TABLE IF NOT EXISTS guide_faq (
 );
 CREATE INDEX IF NOT EXISTS idx_guide_faq_scope ON guide_faq(country, status, sort_order);
 
+CREATE TABLE IF NOT EXISTS device_push_tokens (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    token TEXT NOT NULL UNIQUE,
+    platform TEXT NOT NULL DEFAULT 'ios',
+    created_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_device_push_tokens_user ON device_push_tokens(user_id);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL,
@@ -2574,6 +2584,21 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         "messaging privacy: users.dm_privacy gates who may start or continue direct messages",
         """
         ALTER TABLE users ADD COLUMN dm_privacy TEXT NOT NULL DEFAULT 'everyone';
+        """,
+    ),
+    (
+        42,
+        "APNs: per-device push tokens so social notifications reach killed apps",
+        """
+        CREATE TABLE IF NOT EXISTS device_push_tokens (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            token TEXT NOT NULL UNIQUE,
+            platform TEXT NOT NULL DEFAULT 'ios',
+            created_at TEXT NOT NULL,
+            last_seen_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_device_push_tokens_user ON device_push_tokens(user_id);
         """,
     ),
 ]

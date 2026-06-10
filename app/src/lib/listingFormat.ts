@@ -339,9 +339,66 @@ export function compactListingFields(item: KXCityListing): string[] {
   return fields.filter((field) => !!clean(field));
 }
 
-export function listingDetailFields(item: KXCityListing): Array<[string, string]> {
-  const attr = (key: string) => formatListingAttribute(key, item.attributes?.[key]);
-  const yesNo = (key: string) => formatBoolean(item.attributes?.[key], "zh", "未注明");
+// Detail-row titles, keyed by the canonical zh string used when building
+// the rows below. Values localize the LABEL only — attribute values go
+// through their own locale-aware formatters.
+const DETAIL_FIELD_LABELS: Record<string, LabelSet> = {
+  "地区": { ja: "エリア", en: "Area" },
+  "最近车站": { ja: "最寄り駅", en: "Nearest station" },
+  "车站距离": { ja: "駅からの距離", en: "To station" },
+  "户型": { ja: "間取り", en: "Layout" },
+  "面积": { ja: "面積", en: "Size" },
+  "押金": { ja: "敷金", en: "Deposit" },
+  "礼金": { ja: "礼金", en: "Key money" },
+  "管理费": { ja: "管理費", en: "Management fee" },
+  "初期费用说明": { ja: "初期費用について", en: "Initial costs" },
+  "入住时间": { ja: "入居可能日", en: "Move-in date" },
+  "租期": { ja: "契約期間", en: "Lease term" },
+  "短租": { ja: "短期", en: "Short-term" },
+  "合租": { ja: "ルームシェア", en: "Roomshare" },
+  "家具家电": { ja: "家具家電", en: "Furnished" },
+  "宠物": { ja: "ペット", en: "Pets" },
+  "公司/店铺": { ja: "会社・店舗", en: "Company" },
+  "地点": { ja: "場所", en: "Location" },
+  "雇佣形式": { ja: "雇用形態", en: "Employment type" },
+  "薪资类型": { ja: "給与形態", en: "Salary type" },
+  "日语要求": { ja: "日本語レベル", en: "Japanese level" },
+  "签证支持说明": { ja: "ビザサポート", en: "Visa support" },
+  "工作时间": { ja: "勤務時間", en: "Working hours" },
+  "交通费": { ja: "交通費", en: "Transport fee" },
+  "外国人友好": { ja: "外国人歓迎", en: "Foreigner friendly" },
+  "无经验可": { ja: "未経験OK", en: "No experience OK" },
+  "留学生可": { ja: "留学生OK", en: "Students OK" },
+  "服务类型": { ja: "サービス種別", en: "Service type" },
+  "可服务城市": { ja: "対応エリア", en: "Service area" },
+  "价格单位": { ja: "料金単位", en: "Price unit" },
+  "可预约时间": { ja: "予約可能時間", en: "Availability" },
+  "不包含内容": { ja: "含まれないもの", en: "Not included" },
+  "服务流程": { ja: "サービスの流れ", en: "Process" },
+  "用户需准备": { ja: "ご準備いただくもの", en: "You prepare" },
+  "取消规则": { ja: "キャンセル規定", en: "Cancellation" },
+  "不保证结果说明": { ja: "結果保証について", en: "No-guarantee note" },
+  "相关攻略/资料": { ja: "関連ガイド", en: "Related guides" },
+  "商家": { ja: "店舗", en: "Merchant" },
+  "优惠内容": { ja: "特典内容", en: "Deal" },
+  "有效期": { ja: "有効期限", en: "Valid until" },
+  "使用规则": { ja: "利用条件", en: "Usage rules" },
+  "商家认证": { ja: "店舗認証", en: "Merchant verification" },
+  "状态": { ja: "ステータス", en: "Status" },
+  "发布类型": { ja: "出品タイプ", en: "Listing type" },
+  "分类": { ja: "カテゴリ", en: "Category" },
+  "新旧程度": { ja: "状態", en: "Condition" },
+  "交易地点": { ja: "受け渡し場所", en: "Meetup location" },
+  "交易方式": { ja: "受け渡し方法", en: "Delivery method" },
+  "品牌": { ja: "ブランド", en: "Brand" },
+};
+
+const NOT_SPECIFIED: Record<ListingLocale, string> = { zh: "未注明", ja: "未記入", en: "Not specified" };
+const VERIFIED_LABEL: Record<ListingLocale, string> = { zh: "已认证", ja: "認証済み", en: "Verified" };
+
+export function listingDetailFields(item: KXCityListing, locale: ListingLocale = "zh"): Array<[string, string]> {
+  const attr = (key: string) => formatListingAttribute(key, item.attributes?.[key], locale);
+  const yesNo = (key: string) => formatBoolean(item.attributes?.[key], locale, NOT_SPECIFIED[locale]);
   const location = cleanListingText(item.location_text);
   const category = cleanListingText(item.category);
 
@@ -397,8 +454,8 @@ export function listingDetailFields(item: KXCityListing): Array<[string, string]
               ["优惠内容", attr("discount_info")],
               ["有效期", attr("valid_until")],
               ["使用规则", attr("usage_rules")],
-              ["商家认证", boolAttr(item, "merchant_verified") || item.verification_status === "verified" ? "已认证" : formatVerificationStatus(item.verification_status)],
-              ["状态", formatListingStatus(item.status, item.type)],
+              ["商家认证", boolAttr(item, "merchant_verified") || item.verification_status === "verified" ? VERIFIED_LABEL[locale] : formatVerificationStatus(item.verification_status, locale)],
+              ["状态", formatListingStatus(item.status, item.type, locale)],
             ]
         : [
             ["发布类型", attr("listing_mode")],
@@ -407,9 +464,11 @@ export function listingDetailFields(item: KXCityListing): Array<[string, string]
             ["交易地点", location],
             ["交易方式", attr("delivery_method")],
             ["品牌", attr("brand")],
-            ["状态", formatListingStatus(item.status, item.type)],
+            ["状态", formatListingStatus(item.status, item.type, locale)],
           ];
-  return rows.filter(([, value]) => !!cleanListingText(value));
+  return rows
+    .filter(([, value]) => !!cleanListingText(value))
+    .map(([label, value]) => [labelFrom(DETAIL_FIELD_LABELS, label, locale, label), value]);
 }
 
 export function formatInquiryType(type?: string | null): string {

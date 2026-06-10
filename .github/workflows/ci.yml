@@ -60,6 +60,7 @@ jobs:
           python scripts/test_pg_xlate.py
           python scripts/test_seed_bot.py
           python scripts/test_stripe_hardening.py
+          python scripts/test_adaptive_captcha.py
 
       - name: Verify SQLite to PostgreSQL migration and runtime
         env:

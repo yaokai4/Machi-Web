@@ -254,10 +254,21 @@ LOGIN_REQUIRE_CODE = _env("KAIX_LOGIN_REQUIRE_CODE", "0") == "1"
 # registration / credential-stuffing guard). Rendered server-side with
 # Pillow so every client — Web, iOS, Android, including China-store builds
 # with no Google services — just displays a PNG; no third-party SDK.
-# KAIX_CAPTCHA_LOGIN_ENABLED exists separately so login enforcement can be
-# staged after older app builds (which don't send a captcha) are retired.
+# KAIX_CAPTCHA_LOGIN_ENABLED:
+#   "1"        — every login needs a captcha (requires all clients to ship the UI)
+#   "0"        — login never asks (legacy-client compatibility)
+#   "adaptive" — only after repeated failures from the same IP / handle.
+#                Old app builds keep working (normal users sign in first
+#                try), while credential-stuffing bots hit the wall after
+#                CAPTCHA_LOGIN_FAIL_THRESHOLD misses. Clients that DO ship
+#                the captcha UI pick the row up automatically because
+#                /api/auth/captcha?scene=login flips enabled per-IP.
 CAPTCHA_ENABLED = _env("KAIX_CAPTCHA_ENABLED", "1") == "1"
-CAPTCHA_LOGIN_ENABLED = _env("KAIX_CAPTCHA_LOGIN_ENABLED", "1") == "1"
+CAPTCHA_LOGIN_MODE = (_env("KAIX_CAPTCHA_LOGIN_ENABLED", "1") or "1").strip().lower()
+if CAPTCHA_LOGIN_MODE not in ("0", "1", "adaptive"):
+    CAPTCHA_LOGIN_MODE = "1"
+CAPTCHA_LOGIN_FAIL_THRESHOLD = max(1, int(_env("KAIX_CAPTCHA_LOGIN_FAIL_THRESHOLD", "3")))
+CAPTCHA_LOGIN_FAIL_WINDOW_SEC = max(60, int(_env("KAIX_CAPTCHA_LOGIN_FAIL_WINDOW_SEC", "900")))
 CAPTCHA_TTL_SEC = int(_env("KAIX_CAPTCHA_TTL_SEC", "300"))                  # 5 minutes
 CAPTCHA_LENGTH = max(4, min(int(_env("KAIX_CAPTCHA_LENGTH", "4")), 8))
 
@@ -2425,6 +2436,72 @@ class _SentryLiteHandler(logging.Handler):
 if KAIX_SENTRY_DSN:
     ERR_LOG.addHandler(_SentryLiteHandler(KAIX_SENTRY_DSN))
     ACCESS_LOG.info("sentry-lite error reporting enabled")
+
+
+# ---------------------------------------------------------------------------
+# Email error digest — the zero-account sibling of Sentry-lite. Set
+# KAIX_ERROR_REPORT_EMAIL and every ERROR-level record is batched into a
+# digest mail through the SAME SMTP transport that already sends
+# verification codes. One mail per window at most (anti-storm), capped
+# detail lines, drops silently when SMTP is down. Both channels can run
+# side by side; either alone ends "users tell us when production breaks".
+# ---------------------------------------------------------------------------
+
+KAIX_ERROR_REPORT_EMAIL = _env("KAIX_ERROR_REPORT_EMAIL", "")
+KAIX_ERROR_REPORT_WINDOW_SEC = max(60, int(_env("KAIX_ERROR_REPORT_WINDOW_SEC", "600")))
+
+
+class _EmailDigestHandler(logging.Handler):
+    _MAX_BUFFER = 200      # hard cap per window — beyond this we only count
+    _MAX_DETAIL = 30       # full lines included in the mail body
+
+    def __init__(self, to: str, window_sec: int) -> None:
+        super().__init__(level=logging.ERROR)
+        self._to = to
+        self._window = window_sec
+        self._lock = threading.Lock()
+        self._buffer: list[str] = []
+        self._dropped = 0
+        threading.Thread(target=self._flush_loop, name="error-digest", daemon=True).start()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = f"{datetime.now(timezone.utc).strftime('%H:%M:%SZ')} {self.format(record)[:600]}"
+            with self._lock:
+                if len(self._buffer) >= self._MAX_BUFFER:
+                    self._dropped += 1
+                else:
+                    self._buffer.append(line)
+        except Exception:
+            pass  # error reporting must never take the request down
+
+    def _flush_loop(self) -> None:
+        while True:
+            time.sleep(self._window)
+            with self._lock:
+                if not self._buffer:
+                    continue
+                lines, self._buffer = self._buffer, []
+                dropped, self._dropped = self._dropped, 0
+            total = len(lines) + dropped
+            body_lines = [
+                f"Machi backend reported {total} error(s) in the last {self._window // 60} minute(s).",
+                "",
+                *lines[: self._MAX_DETAIL],
+            ]
+            if len(lines) > self._MAX_DETAIL or dropped:
+                body_lines.append(f"… and {len(lines) - self._MAX_DETAIL + dropped} more (see server logs)")
+            body_lines += ["", "host: production" if PRODUCTION else "host: development",
+                           "journal: journalctl -u kaix-backend --since '-1h'"]
+            try:
+                send_email(self._to, f"[Machi] 后端错误摘要 × {total}", "\n".join(body_lines))
+            except Exception:
+                pass  # SMTP being down must not loop into more errors
+
+
+if KAIX_ERROR_REPORT_EMAIL:
+    ERR_LOG.addHandler(_EmailDigestHandler(KAIX_ERROR_REPORT_EMAIL, KAIX_ERROR_REPORT_WINDOW_SEC))
+    ACCESS_LOG.info("email error digest enabled (window=%ss)", KAIX_ERROR_REPORT_WINDOW_SEC)
 
 
 # ---------------------------------------------------------------------------
@@ -10187,12 +10264,66 @@ except Exception:  # Pillow missing — captcha enforcement degrades to off.
 CAPTCHA_CHARS = "23456789ACDEFHJKMNPRTUVWXY"
 
 
-def captcha_required_for(scene: str) -> bool:
+# Failed-login tracker backing the "adaptive" login-captcha mode. Process-
+# local like the rate limiter (single-process deployment); keys are both
+# the client IP and the attempted handle so a bot rotating handles from
+# one IP and one targeting a single account from many IPs both trip it.
+_LOGIN_FAIL_LOCK = threading.Lock()
+_LOGIN_FAILURES: dict[str, list[float]] = {}
+_LOGIN_FAIL_GC_THRESHOLD = 5000
+
+
+def _login_failure_keys(ip: str, handle: str = "") -> list[str]:
+    keys = []
+    if ip:
+        keys.append(f"ip:{ip}")
+    if handle:
+        keys.append(f"handle:{handle}")
+    return keys
+
+
+def record_login_failure(ip: str, handle: str = "") -> None:
+    now = time.monotonic()
+    cutoff = now - CAPTCHA_LOGIN_FAIL_WINDOW_SEC
+    with _LOGIN_FAIL_LOCK:
+        if len(_LOGIN_FAILURES) > _LOGIN_FAIL_GC_THRESHOLD:
+            for key, stamps in list(_LOGIN_FAILURES.items()):
+                fresh = [s for s in stamps if s >= cutoff]
+                if fresh:
+                    _LOGIN_FAILURES[key] = fresh
+                else:
+                    _LOGIN_FAILURES.pop(key, None)
+        for key in _login_failure_keys(ip, handle):
+            stamps = [s for s in _LOGIN_FAILURES.get(key, []) if s >= cutoff]
+            stamps.append(now)
+            _LOGIN_FAILURES[key] = stamps
+
+
+def clear_login_failures(ip: str, handle: str = "") -> None:
+    with _LOGIN_FAIL_LOCK:
+        for key in _login_failure_keys(ip, handle):
+            _LOGIN_FAILURES.pop(key, None)
+
+
+def login_failures_exceeded(ip: str, handle: str = "") -> bool:
+    cutoff = time.monotonic() - CAPTCHA_LOGIN_FAIL_WINDOW_SEC
+    with _LOGIN_FAIL_LOCK:
+        for key in _login_failure_keys(ip, handle):
+            if len([s for s in _LOGIN_FAILURES.get(key, []) if s >= cutoff]) >= CAPTCHA_LOGIN_FAIL_THRESHOLD:
+                return True
+    return False
+
+
+def captcha_required_for(scene: str, *, ip: str = "", handle: str = "") -> bool:
     """Whether the given auth scene must present a solved captcha."""
     if not (CAPTCHA_ENABLED and CAPTCHA_AVAILABLE):
         return False
     if scene == "login":
-        return CAPTCHA_LOGIN_ENABLED
+        if CAPTCHA_LOGIN_MODE == "1":
+            return True
+        if CAPTCHA_LOGIN_MODE == "0":
+            return False
+        return login_failures_exceeded(ip, handle)
     return True
 
 
@@ -15764,14 +15895,17 @@ class Handler(BaseHTTPRequestHandler):
         if LOGIN_REQUIRE_CODE:
             raise APIError("请使用验证码登录", 403, "login_code_required")
         data = self.read_json()
-        # Captcha first: bots must solve an image before they get to probe
-        # the password oracle at all.
-        self._enforce_captcha(conn, data, "login")
         handle = normalize_handle(data.get("handle") or data.get("username") or "")
+        # Captcha first: bots must solve an image before they get to probe
+        # the password oracle at all. In adaptive mode this only bites
+        # after repeated failures from this IP / against this handle.
+        self._enforce_captcha(conn, data, "login", handle=handle)
         password = data.get("password") or ""
         row = conn.execute("SELECT * FROM users WHERE handle = ? AND deleted_at IS NULL", (handle,)).fetchone()
         if not row or not verify_password(password, row["password_hash"]):
+            record_login_failure(self._client_ip(), handle)
             raise APIError("用户名或密码不正确", 401, "invalid_credentials")
+        clear_login_failures(self._client_ip(), handle)
         token = self._create_session(conn, row["id"])
         self._set_session_cookie(token)
         self.send_json({"token": token, "user": serialize_user_with_counts(conn, dict(row))})
@@ -16134,16 +16268,17 @@ class Handler(BaseHTTPRequestHandler):
         """Issue an image-captcha challenge for the requested scene
         ('login' or 'register'). `enabled: false` tells clients to hide
         the captcha row entirely, which keeps every app build working
-        across enforcement rollouts/rollbacks."""
+        across enforcement rollouts/rollbacks — and lets the adaptive
+        login mode flip the row on per-IP after repeated failures."""
         data = self.read_json()
         scene = (data.get("scene") or "register").strip()
-        if not captcha_required_for(scene):
+        if not captcha_required_for(scene, ip=self._client_ip()):
             self.send_json({"enabled": False})
             return
         self.send_json({"enabled": True, **issue_captcha(conn, self._client_ip())})
 
-    def _enforce_captcha(self, conn: sqlite3.Connection, data: dict[str, Any], scene: str) -> None:
-        if not captcha_required_for(scene):
+    def _enforce_captcha(self, conn: sqlite3.Connection, data: dict[str, Any], scene: str, handle: str = "") -> None:
+        if not captcha_required_for(scene, ip=self._client_ip(), handle=handle):
             return
         verify_captcha_or_raise(
             conn,
@@ -16229,8 +16364,8 @@ class Handler(BaseHTTPRequestHandler):
         code. Accounts with no email on file fall back to a direct session
         (unless KAIX_LOGIN_REQUIRE_CODE forces a code)."""
         data = self.read_json()
-        self._enforce_captcha(conn, data, "login")
         identifier = normalize_handle(data.get("handle") or data.get("username") or "")
+        self._enforce_captcha(conn, data, "login", handle=identifier)
         email_in = (data.get("email") or "").strip()
         password = data.get("password") or ""
         locale = self._norm_locale(data.get("locale"))
@@ -16240,7 +16375,9 @@ class Handler(BaseHTTPRequestHandler):
         if not row and email_in:
             row = conn.execute("SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email_in.lower(),)).fetchone()
         if not row or not verify_password(password, row["password_hash"]):
+            record_login_failure(self._client_ip(), identifier)
             raise APIError("用户名或密码不正确", 401, "invalid_credentials")
+        clear_login_failures(self._client_ip(), identifier)
         user_email = (row["email"] or "").strip()
         if not is_valid_email(user_email):
             if LOGIN_REQUIRE_CODE:
