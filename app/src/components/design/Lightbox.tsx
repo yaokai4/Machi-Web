@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronLeft, ChevronRight, X, Download } from "lucide-react";
+import { ChevronLeft, ChevronRight, X, Download, ZoomIn, ZoomOut } from "lucide-react";
+import { isVideoMedia, mediaPosterOrFallback, mediaSourceUrl } from "@/lib/media";
 import type { KXMedia } from "@/lib/types";
 
 interface LightboxProps {
@@ -24,12 +25,18 @@ interface LightboxProps {
 export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
   const [index, setIndex] = useState(Math.max(0, Math.min(startIndex, items.length - 1)));
   const [mounted, setMounted] = useState(false);
+  // Fit mode shrinks the media into the viewport; zoom mode renders the image
+  // at full viewport width inside a scroll container so long screenshots can
+  // be read top-to-bottom instead of being shrunk into an unreadable strip.
+  const [zoomed, setZoomed] = useState(false);
   const current = items[index];
 
   const prev = useCallback(() => {
+    setZoomed(false);
     setIndex((i) => (i - 1 + items.length) % items.length);
   }, [items.length]);
   const next = useCallback(() => {
+    setZoomed(false);
     setIndex((i) => (i + 1) % items.length);
   }, [items.length]);
 
@@ -53,6 +60,8 @@ export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
   }, [onClose, prev, next]);
 
   if (!mounted || !current) return null;
+  const currentUrl = mediaSourceUrl(current);
+  const currentPoster = mediaPosterOrFallback(current);
 
   const node = (
     <div
@@ -70,7 +79,7 @@ export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
       </button>
       <a
         className="absolute top-4 right-16 z-[101] text-white/85 hover:text-white p-2 rounded-full bg-white/10 hover:bg-white/20 transition"
-        href={current.url}
+        href={currentUrl}
         download
         target="_blank"
         rel="noreferrer"
@@ -79,6 +88,15 @@ export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
       >
         <Download className="w-5 h-5" />
       </a>
+      {!isVideoMedia(current) ? (
+        <button
+          className="absolute top-4 right-28 z-[101] text-white/85 hover:text-white p-2 rounded-full bg-white/10 hover:bg-white/20 transition"
+          onClick={(e) => { e.stopPropagation(); setZoomed((z) => !z); }}
+          aria-label={zoomed ? "适应屏幕" : "放大查看"}
+        >
+          {zoomed ? <ZoomOut className="w-5 h-5" /> : <ZoomIn className="w-5 h-5" />}
+        </button>
+      ) : null}
       {items.length > 1 ? (
         <>
           <button
@@ -97,29 +115,50 @@ export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
           </button>
         </>
       ) : null}
-      <div
-        className="max-w-[90vw] max-h-[88vh] flex items-center justify-center"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {current.type === "video" ? (
-          <video
-            key={current.id}
-            src={current.url}
-            controls
-            autoPlay
-            playsInline
-            className="max-h-[88vh] max-w-[90vw] rounded-kx-md shadow-kx-glow bg-black"
-          />
-        ) : (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            key={current.id}
-            src={current.url}
-            alt=""
-            className="max-h-[88vh] max-w-[90vw] object-contain rounded-kx-md shadow-kx-glow"
-          />
-        )}
-      </div>
+      {zoomed && !isVideoMedia(current) ? (
+        <div
+          className="absolute inset-0 z-[100] overflow-auto overscroll-contain"
+          onClick={onClose}
+        >
+          <div className="flex min-h-full w-full items-start justify-center" onClick={(e) => e.stopPropagation()}>
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              key={current.id}
+              src={currentUrl}
+              alt=""
+              className="w-full max-w-none cursor-zoom-out"
+              onClick={() => setZoomed(false)}
+            />
+          </div>
+        </div>
+      ) : (
+        <div
+          className="max-w-[90vw] max-h-[88vh] flex items-center justify-center"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {isVideoMedia(current) ? (
+            <video
+              key={current.id}
+              src={currentUrl}
+              poster={currentPoster || undefined}
+              controls
+              autoPlay
+              preload="metadata"
+              playsInline
+              className="max-h-[88vh] max-w-[90vw] rounded-kx-md shadow-kx-glow bg-black"
+            />
+          ) : (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              key={current.id}
+              src={currentUrl}
+              alt=""
+              className="max-h-[88vh] max-w-[90vw] object-contain rounded-kx-md shadow-kx-glow cursor-zoom-in"
+              onClick={() => setZoomed(true)}
+            />
+          )}
+        </div>
+      )}
       {items.length > 1 ? (
         <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-[101] px-3 py-1 rounded-full bg-white/10 text-white/80 text-xs font-semibold">
           {index + 1} / {items.length}

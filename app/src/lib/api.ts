@@ -86,13 +86,10 @@ export function readToken(): string | null {
 export function writeToken(token: string | null): void {
   if (typeof window === "undefined") return;
   try {
-    if (token) {
-      window.localStorage.setItem(TOKEN_KEY, token);
-      window.localStorage.removeItem(LEGACY_TOKEN_KEY);
-    } else {
-      window.localStorage.removeItem(TOKEN_KEY);
-      window.localStorage.removeItem(LEGACY_TOKEN_KEY);
-    }
+    // Browser sessions now live in a backend-issued HttpOnly cookie. Keep
+    // this function to clear legacy Bearer tokens after one-time migration.
+    window.localStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(LEGACY_TOKEN_KEY);
   } catch {
     // quota / privacy mode — non-fatal
   }
@@ -166,6 +163,30 @@ export type VisitorSummary = {
   geoip: string;
 };
 
+export type AdminEmailCampaign = {
+  id: string;
+  admin_id?: string;
+  adminId?: string;
+  subject: string;
+  body: string;
+  audience: "all" | "verified_members" | "active_30d" | string;
+  status: "draft" | "queued" | "sending" | "sent" | "partial" | "failed" | string;
+  recipient_count: number;
+  recipientCount?: number;
+  sent_count: number;
+  sentCount?: number;
+  failed_count: number;
+  failedCount?: number;
+  created_at: string;
+  createdAt?: string;
+  updated_at: string;
+  updatedAt?: string;
+  started_at?: string | null;
+  startedAt?: string | null;
+  finished_at?: string | null;
+  finishedAt?: string | null;
+};
+
 export type SiteSettings = Record<
   | "site_title"
   | "site_title_zh"
@@ -178,7 +199,23 @@ export type SiteSettings = Record<
   | "og_image_url"
   | "support_email"
   | "discover_entrances"
-  | "listing_review_enabled",
+  | "listing_review_enabled"
+  | "explore_happening_days"
+  | "explore_hot_days"
+  | "explore_topic_days"
+  | "explore_like_weight"
+  | "explore_comment_weight"
+  | "explore_repost_weight"
+  | "explore_favorite_weight"
+  | "explore_view_weight"
+  | "explore_time_decay_weight"
+  | "explore_report_penalty"
+  | "explore_min_display"
+  | "explore_fallback_enabled"
+  | "explore_city_isolated"
+  | "explore_exclude_reported"
+  | "explore_exclude_low_quality"
+  | "explore_exclude_banned_users",
   string
 >;
 
@@ -202,10 +239,15 @@ export type UploadPurpose =
   | "group_post_image"
   | "group_post_video"
   | "secondhand_image"
+  | "secondhand_video"
   | "rental_image"
+  | "rental_video"
   | "job_image"
+  | "job_video"
   | "service_image"
+  | "service_video"
   | "discount_image"
+  | "discount_video"
   | "guide_article_image"
   | "guide_product_preview"
   | "guide_product_file"
@@ -271,6 +313,45 @@ export type UploadFileOptions = {
   metadata?: Record<string, unknown>;
   onProgress?: (event: UploadProgress) => void;
 };
+
+const UPLOAD_MIME_BY_EXTENSION: Record<string, string> = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  pjpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  heic: "image/heic",
+  heif: "image/heif",
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
+  qt: "video/quicktime",
+  webm: "video/webm",
+  pdf: "application/pdf",
+};
+
+export function inferUploadContentType(file: Pick<File, "name" | "type">): string {
+  const rawType = (file.type || "").split(";", 1)[0].trim().toLowerCase();
+  const ext = (file.name || "").split(".").pop()?.trim().toLowerCase() || "";
+  const extType = UPLOAD_MIME_BY_EXTENSION[ext];
+  if (rawType && rawType !== "application/octet-stream") {
+    if (rawType === "image/jpg" || rawType === "image/pjpeg") return "image/jpeg";
+    if (rawType === "image/x-png") return "image/png";
+    if (rawType === "video/x-m4v") return "video/mp4";
+    if (rawType === "application/x-pdf") return "application/pdf";
+    return rawType;
+  }
+  return extType || rawType || "application/octet-stream";
+}
+
+export function isUploadImageFile(file: Pick<File, "name" | "type">): boolean {
+  return inferUploadContentType(file).startsWith("image/");
+}
+
+export function isUploadVideoFile(file: Pick<File, "name" | "type">): boolean {
+  return inferUploadContentType(file).startsWith("video/");
+}
 
 export type ServerMetrics = {
   server_time: string;
@@ -440,6 +521,13 @@ export type NewsItemsQuery = {
 const DEFAULT_TIMEOUT_MS = 12_000;
 const RETRYABLE_METHODS = new Set(["GET", "HEAD"]);
 
+function idempotencyKey(prefix: string): string {
+  const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `${prefix}-${id}`;
+}
+
 async function request<T>(method: string, path: string, body?: unknown, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -477,7 +565,7 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
             : body instanceof FormData
               ? body
               : JSON.stringify(body),
-        credentials: "omit",
+        credentials: "same-origin",
         cache: "no-store",
         signal: controller?.signal,
         ...init,
@@ -578,15 +666,40 @@ function uploadWithProgress(
   });
 }
 
+// The backend's presign hands back an ABSOLUTE uploadUrl built from the request
+// Host header (see api_upload_presign). Behind a CDN / reverse proxy that host
+// can be cross-origin, wrong-scheme (http on an https page → mixed content) or
+// an internal-only address the browser cannot reach — exactly the class of
+// "iOS uploads but Web can't" failures, since native clients hit the backend
+// directly and never see the mismatch. For our own streaming endpoint we PUT to
+// a SAME-ORIGIN relative path (through the same proxy that served presign), so
+// the upload works regardless of how the backend computed its base URL. A true
+// S3 / CloudFront presigned URL (a different host that is NOT our /api path)
+// must stay absolute and is left untouched.
+function resolveBrowserUploadUrl(uploadUrl: string): string {
+  if (typeof window === "undefined" || !uploadUrl) return uploadUrl;
+  try {
+    const target = new URL(uploadUrl, window.location.href);
+    if (target.pathname.startsWith("/api/uploads/local/")) {
+      return `${target.pathname}${target.search}`;
+    }
+    return uploadUrl;
+  } catch {
+    return uploadUrl;
+  }
+}
+
 async function uploadFileViaPresignedUrl(
   file: File,
   options: UploadFileOptions = {},
 ): Promise<{ file: UploadedFile; media: KXMedia }> {
   const purpose = options.purpose || "post_image";
+  const actionKey = idempotencyKey("upload");
+  const contentType = inferUploadContentType(file);
   options.onProgress?.({ stage: "presign", progress: 0, file });
   const presign = await request<PresignUploadResponse>("POST", "/api/uploads/presign", {
     fileName: file.name,
-    contentType: file.type || "application/octet-stream",
+    contentType,
     fileSize: file.size,
     purpose,
     entityType: options.entityType || "",
@@ -594,10 +707,11 @@ async function uploadFileViaPresignedUrl(
     threadId: options.threadId || "",
     groupId: options.groupId || "",
     duration: options.duration || 0,
+    durationSeconds: options.duration || 0,
     metadata: options.metadata || {},
-  });
+  }, { headers: { "Idempotency-Key": `${actionKey}-presign` } });
   const uploaded = await uploadWithProgress(
-    presign.data.uploadUrl,
+    resolveBrowserUploadUrl(presign.data.uploadUrl),
     file,
     presign.data.headers,
     (progress) => options.onProgress?.({ stage: "uploading", progress, file }),
@@ -613,14 +727,19 @@ async function uploadFileViaPresignedUrl(
       width: options.width || 0,
       height: options.height || 0,
       duration: options.duration || 0,
+      durationSeconds: options.duration || 0,
     },
+    { headers: { "Idempotency-Key": `${actionKey}-complete` } },
   );
   const result = {
-    file: completed.data?.file || completed.file!,
-    media: completed.data?.media || completed.media!,
+    file: completed.data?.file || completed.file,
+    media: completed.data?.media || completed.media,
   };
+  if (!result.file || !result.media) {
+    throw new APIError({ code: "upload_complete_malformed", message: "上传确认响应异常，请重试。" }, 502);
+  }
   options.onProgress?.({ stage: "success", progress: 1, file });
-  return result;
+  return result as { file: UploadedFile; media: KXMedia };
 }
 
 // ---- auth ----
@@ -813,6 +932,9 @@ export const api = {
   },
   async resolveRegion(code: string): Promise<KXRegion> {
     return request("GET", `/api/regions/resolve?code=${encodeURIComponent(code)}`);
+  },
+  async detectRegion(): Promise<KXRegion & { source?: "account" | "ip" | "fallback"; geo_state?: string }> {
+    return request("GET", "/api/regions/detect");
   },
 
   // Compatibility for stale deployed clients/components that still call
@@ -1019,9 +1141,12 @@ export const api = {
   async listings(opts: {
     type: KXListingType;
     city_slug?: string;
+    city_slugs?: string;
     city?: string;
     country?: string;
+    country_code?: string;
     region_code?: string;
+    region_codes?: string;
     category?: string;
     q?: string;
     sort?: string;
@@ -1043,7 +1168,12 @@ export const api = {
     return listing;
   },
   async createListing(payload: KXCreateListingPayload): Promise<KXCityListing> {
-    const { listing } = await request<{ listing: KXCityListing }>("POST", `/api/listings`, payload);
+    const { listing } = await request<{ listing: KXCityListing }>(
+      "POST",
+      `/api/listings`,
+      payload,
+      { headers: { "Idempotency-Key": idempotencyKey("listing-create") } },
+    );
     return listing;
   },
   async updateListing(id: string, patch: Partial<KXCreateListingPayload> & { status?: string }): Promise<KXCityListing> {
@@ -1060,7 +1190,12 @@ export const api = {
     await request<void>("POST", `/api/listings/${encodeURIComponent(id)}/report`, { reason, note });
   },
   async contactListing(id: string, message: string, contactValue?: string, details?: { label: string; value: string }[]): Promise<{ ok: boolean; message: string; conversation_id?: string; conversationId?: string }> {
-    return request("POST", `/api/listings/${encodeURIComponent(id)}/inquiry`, { message, contact_value: contactValue || "", details: details || [] });
+    return request(
+      "POST",
+      `/api/listings/${encodeURIComponent(id)}/inquiry`,
+      { message, contact_value: contactValue || "", details: details || [] },
+      { headers: { "Idempotency-Key": idempotencyKey("listing-inquiry") } },
+    );
   },
   async myListings(type: KXListingType = "secondhand"): Promise<KXCityListing[]> {
     const { items } = await request<{ items: KXCityListing[] }>("GET", `/api/my/listings?type=${encodeURIComponent(type)}`);
@@ -1160,6 +1295,36 @@ export const api = {
   async trending(): Promise<{ posts: KXPost[]; topics: KXTrendingTopic[]; users: KXUser[] }> {
     return request("GET", `/api/trending`);
   },
+  async exploreHappening(opts: { limit?: number; region_code?: string; country?: string; province?: string; city?: string } = {}): Promise<{ items: KXPost[]; posts: KXPost[]; days: number; fallbackUsed?: boolean }> {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.region_code) params.set("region_code", opts.region_code);
+    if (opts.country) params.set("country", opts.country);
+    if (opts.province) params.set("province", opts.province);
+    if (opts.city) params.set("city", opts.city);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request("GET", `/api/explore/happening${suffix}`);
+  },
+  async exploreHot(opts: { limit?: number; region_code?: string; country?: string; province?: string; city?: string } = {}): Promise<{ items: KXPost[]; posts: KXPost[]; days: number; fallbackUsed?: boolean }> {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.region_code) params.set("region_code", opts.region_code);
+    if (opts.country) params.set("country", opts.country);
+    if (opts.province) params.set("province", opts.province);
+    if (opts.city) params.set("city", opts.city);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request("GET", `/api/explore/hot${suffix}`);
+  },
+  async exploreTopics(opts: { limit?: number; region_code?: string; country?: string; province?: string; city?: string } = {}): Promise<{ topics: KXTrendingTopic[]; items: KXTrendingTopic[]; days: number; fallbackUsed?: boolean }> {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.region_code) params.set("region_code", opts.region_code);
+    if (opts.country) params.set("country", opts.country);
+    if (opts.province) params.set("province", opts.province);
+    if (opts.city) params.set("city", opts.city);
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    return request("GET", `/api/explore/topics${suffix}`);
+  },
   async trendingWeeklyLikes(opts: { limit?: number; days?: number; region_code?: string; country?: string; province?: string; city?: string } = {}): Promise<{ items: KXPost[]; posts: KXPost[]; days: number; metric: "weekly_likes" }> {
     const params = new URLSearchParams();
     if (opts.limit) params.set("limit", String(opts.limit));
@@ -1195,6 +1360,14 @@ export const api = {
     const { items } = await request<{ items: KXConversation[] }>("GET", `/api/conversations`);
     return items;
   },
+  async mutualMessageFriends(opts: { q?: string; limit?: number } = {}): Promise<KXUser[]> {
+    const params = new URLSearchParams();
+    if (opts.q) params.set("q", opts.q);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const suffix = params.toString() ? `?${params.toString()}` : "";
+    const { items } = await request<{ items: KXUser[] }>("GET", `/api/messages/mutual-friends${suffix}`);
+    return items;
+  },
   async openConversation(peerId: string): Promise<KXConversation> {
     const { conversation } = await request<{ conversation: KXConversation }>("POST", `/api/conversations`, { peer_id: peerId });
     return conversation;
@@ -1211,6 +1384,7 @@ export const api = {
       "POST",
       `/api/conversations/${encodeURIComponent(conversationId)}/messages`,
       { content, media_ids: mediaIds, attachment_ids: attachmentIds },
+      { headers: { "Idempotency-Key": idempotencyKey("message-send") } },
     );
     return message;
   },
@@ -1296,7 +1470,7 @@ export const api = {
     return items;
   },
   async adminUploadMedia(file: File): Promise<KXMedia> {
-    return (await uploadFileViaPresignedUrl(file, { purpose: file.type === "application/pdf" ? "guide_product_file" : "guide_article_image" })).media;
+    return (await uploadFileViaPresignedUrl(file, { purpose: inferUploadContentType(file) === "application/pdf" ? "guide_product_file" : "guide_article_image" })).media;
   },
   async adminUploads(opts: { limit?: number; status?: string; purpose?: string; userId?: string; q?: string; incomplete?: boolean; large?: boolean; checkObject?: boolean } = {}): Promise<{ items: AdminUploadedFileItem[]; total: number }> {
     const usp = new URLSearchParams();
@@ -1312,6 +1486,9 @@ export const api = {
   },
   async adminUpdateUpload(id: string, patch: { status?: string; action?: "restore" | "flag" | "mark_abnormal"; reason?: string; metadata?: Record<string, unknown> }): Promise<{ file: UploadedFile }> {
     return request("PATCH", `/api/admin/uploads/${encodeURIComponent(id)}`, patch);
+  },
+  async uploadPrivateViewUrl(id: string): Promise<{ url: string; expiresIn: number }> {
+    return request("POST", `/api/uploads/${encodeURIComponent(id)}/view-url`);
   },
   async adminDeleteUpload(id: string): Promise<void> {
     await request<void>("DELETE", `/api/admin/uploads/${encodeURIComponent(id)}`);
@@ -1338,6 +1515,22 @@ export const api = {
     if (opts.days) usp.set("days", String(opts.days));
     if (opts.q) usp.set("q", opts.q);
     return request("GET", `/api/admin/visitors?${usp.toString()}`);
+  },
+  async adminEmailCampaigns(limit = 50): Promise<AdminEmailCampaign[]> {
+    const { items } = await request<{ items: AdminEmailCampaign[] }>("GET", `/api/admin/email-campaigns?limit=${encodeURIComponent(String(limit))}`);
+    return items;
+  },
+  async adminCreateEmailCampaign(payload: { subject: string; body: string; audience?: string; sendNow?: boolean }): Promise<AdminEmailCampaign> {
+    const { campaign } = await request<{ campaign: AdminEmailCampaign }>("POST", "/api/admin/email-campaigns", payload);
+    return campaign;
+  },
+  async adminUpdateEmailCampaign(id: string, payload: { subject?: string; body?: string; audience?: string; action?: "send" }): Promise<AdminEmailCampaign> {
+    const { campaign } = await request<{ campaign: AdminEmailCampaign }>("PATCH", `/api/admin/email-campaigns/${encodeURIComponent(id)}`, payload);
+    return campaign;
+  },
+  async adminSendEmailCampaign(id: string): Promise<AdminEmailCampaign> {
+    const { campaign } = await request<{ campaign: AdminEmailCampaign }>("POST", `/api/admin/email-campaigns/${encodeURIComponent(id)}/send`);
+    return campaign;
   },
   async adminReputationUsers(opts: { q?: string; status?: string } = {}): Promise<Array<{ user: KXUser; reputation: KXReputationProfile }>> {
     const usp = new URLSearchParams();
@@ -1389,6 +1582,10 @@ export const api = {
   },
   async adminSuspendUser(id: string): Promise<void> {
     await request<void>("DELETE", `/api/admin/users/${encodeURIComponent(id)}`);
+  },
+  async adminRestoreUser(id: string): Promise<KXUser> {
+    const { user } = await request<{ user: KXUser }>("POST", `/api/admin/users/${encodeURIComponent(id)}/restore`);
+    return user;
   },
   async adminPosts(q?: string, opts: { status?: string; content_type?: ContentType; country?: string; city?: string; region_code?: string } = {}): Promise<KXPost[]> {
     const usp = new URLSearchParams();
@@ -1708,7 +1905,7 @@ export const api = {
   async membershipMe(): Promise<KXMembershipMe> {
     return request("GET", `/api/membership/me`);
   },
-  async membershipBenefits(): Promise<{ benefits: Array<{ key: string; title: string; description: string }>; plan: KXMembershipPlan | null; disclaimer: string; requires_membership_content_types: string[] }> {
+  async membershipBenefits(): Promise<{ benefits: Array<{ key: string; title: string; description: string; title_zh?: string; title_en?: string; title_ja?: string; description_zh?: string; description_en?: string; description_ja?: string }>; plan: KXMembershipPlan | null; disclaimer: string; requires_membership_content_types: string[] }> {
     return request("GET", `/api/membership/benefits`);
   },
   async membershipExclusive(): Promise<{ membership: KXMembershipStatus; items: EditorialPost[]; guides: Array<{ key: string; title: string; description: string }> }> {

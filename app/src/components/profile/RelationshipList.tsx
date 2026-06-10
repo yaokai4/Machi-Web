@@ -97,6 +97,11 @@ export function RelationshipList({ handle, kind }: RelationshipListProps) {
                   <Link href={`/u/${u.handle}`} className="font-semibold inline-flex items-center gap-1 hover:underline">
                     {u.display_name}
                     {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
+                    {u.is_mutual || (u.follows_viewer && (following[u.id] ?? u.is_following)) ? (
+                      <span className="rounded-full bg-kx-accent/10 px-1.5 py-0.5 text-[10px] font-bold text-kx-accent">互相关注</span>
+                    ) : u.follows_viewer ? (
+                      <span className="rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold text-slate-500 dark:bg-white/10 dark:text-slate-300">关注了你</span>
+                    ) : null}
                   </Link>
                   <div className="text-xs text-kx-muted">@{u.handle}</div>
                   {u.bio ? <p className="text-sm text-kx-subtle line-clamp-2 mt-1">{u.bio}</p> : null}

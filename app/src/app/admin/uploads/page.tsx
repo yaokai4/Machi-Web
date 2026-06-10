@@ -5,7 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, CheckCircle2, ExternalLink, FileWarning, HardDrive, RotateCcw, Search, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, ExternalLink, FileWarning, HardDrive, RotateCcw, Search, ShieldCheck, Trash2 } from "lucide-react";
 import { api, APIError, type AdminUploadedFileItem } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
@@ -32,10 +32,15 @@ const PURPOSES = [
   "video_thumbnail",
   "video_processed_file",
   "secondhand_image",
+  "secondhand_video",
   "rental_image",
+  "rental_video",
   "job_image",
+  "job_video",
   "service_image",
+  "service_video",
   "discount_image",
+  "discount_video",
   "guide_article_image",
   "guide_product_preview",
   "guide_product_file",
@@ -74,6 +79,7 @@ export default function AdminUploadsPage() {
   const [purpose, setPurpose] = useState("");
   const [checkObject, setCheckObject] = useState(false);
   const [incomplete, setIncomplete] = useState(false);
+  const [openingFileId, setOpeningFileId] = useState("");
 
   useEffect(() => {
     if (sessionStatus === "unauthed") router.replace("/login?redirect=/admin/uploads");
@@ -101,6 +107,24 @@ export default function AdminUploadsPage() {
     onSuccess: (r) => { invalidate(); pushToast({ kind: "success", message: `已清理 ${r.count} 条记录` }); },
     onError: (e) => pushToast({ kind: "error", message: e instanceof APIError ? e.message : "清理失败" }),
   });
+  const openPrivateFile = async (file: AdminUploadedFileItem) => {
+    setOpeningFileId(file.id);
+    try {
+      const { url } = await api.uploadPrivateViewUrl(file.id);
+      const link = document.createElement("a");
+      link.href = url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.download = file.objectKey.split("/").pop() || file.id;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    } catch (e) {
+      pushToast({ kind: "error", message: e instanceof APIError ? e.message : "私密文件打开失败" });
+    } finally {
+      setOpeningFileId("");
+    }
+  };
 
   if (sessionStatus === "loading" || sessionStatus === "idle") return <AppShell><InlineLoading /></AppShell>;
   if (!user) return null;
@@ -186,14 +210,66 @@ export default function AdminUploadsPage() {
                       ) : null}
                     </td>
                     <td className="px-3 py-2">
-                      {f.cdnUrl ? <a href={f.cdnUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-kx-accent hover:underline"><ExternalLink className="h-3.5 w-3.5" /> CDN</a> : <span className="text-kx-muted">私密/无 CDN</span>}
+                      {f.cdnUrl ? (
+                        <a href={f.cdnUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-kx-accent hover:underline">
+                          <ExternalLink className="h-3.5 w-3.5" /> CDN
+                        </a>
+                      ) : f.isPrivate ? (
+                        <span className="text-kx-muted">私密加密对象</span>
+                      ) : (
+                        <span className="text-kx-muted">无 CDN</span>
+                      )}
                       <div className="mt-1 text-kx-muted">{f.bucket}</div>
                     </td>
                     <td className="px-3 py-2">
                       <div className="flex flex-wrap gap-1.5">
-                        <button type="button" onClick={() => patch.mutate({ id: f.id, body: { action: "restore" } })} className="kx-button h-8 px-2"><RotateCcw className="h-3.5 w-3.5" /></button>
-                        <button type="button" onClick={() => patch.mutate({ id: f.id, body: { action: "flag" } })} className="kx-button h-8 px-2"><FileWarning className="h-3.5 w-3.5" /></button>
-                        <button type="button" onClick={() => del.mutate(f.id)} className="kx-button h-8 px-2 text-kx-danger"><Trash2 className="h-3.5 w-3.5" /></button>
+                        {f.isPrivate && ["uploaded", "processing", "ready"].includes(f.status) ? (
+                          <button
+                            type="button"
+                            onClick={() => void openPrivateFile(f)}
+                            disabled={openingFileId === f.id}
+                            className="kx-button h-8 px-2"
+                            aria-label="下载私密文件"
+                            title="下载私密文件"
+                          >
+                            <Download className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
+                        {["failed", "deleted"].includes(f.status) ? (
+                          <button
+                            type="button"
+                            onClick={() => patch.mutate({ id: f.id, body: { action: "restore" } })}
+                            className="kx-button h-8 px-2"
+                            aria-label="恢复文件"
+                            title="恢复文件"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
+                        {f.status !== "deleted" ? (
+                          <button
+                            type="button"
+                            onClick={() => patch.mutate({ id: f.id, body: { action: "flag" } })}
+                            className="kx-button h-8 px-2"
+                            aria-label="标记异常"
+                            title="标记异常"
+                          >
+                            <FileWarning className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
+                        {f.status !== "deleted" ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (window.confirm("确认将该文件标记为已删除？")) del.mutate(f.id);
+                            }}
+                            className="kx-button h-8 px-2 text-kx-danger"
+                            aria-label="删除文件"
+                            title="删除文件"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        ) : null}
                       </div>
                     </td>
                   </tr>

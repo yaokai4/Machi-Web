@@ -165,11 +165,16 @@ def main() -> int:
         bid2 = (payload or {}).get("batch", {}).get("id", "") if kind == "ok" else ""
         n2 = conn.execute("SELECT COUNT(*) c FROM posts WHERE seed_batch_id=?", (bid2,)).fetchone()["c"]
         check("editorial 批次生成成功", kind == "ok" and n2 > 0, f"n2={n2}")
-        # editorial tone → editorial official identity
+        # A Tokyo editorial batch intentionally uses the city-specific
+        # identity instead of the generic "Machi Local Desk" identity.
         ed_author = conn.execute(
             "SELECT u.display_name dn FROM posts p JOIN users u ON u.id=p.author_id WHERE p.seed_batch_id=? LIMIT 1", (bid2,)
         ).fetchone()
-        check("editorial 语气来自编辑部账号", ed_author and "Local Desk" in (ed_author["dn"] or ""), f"author={ed_author['dn'] if ed_author else None}")
+        check(
+            "editorial 语气来自东京编辑部账号",
+            ed_author and ed_author["dn"] == "Machi Tokyo Desk",
+            f"author={ed_author['dn'] if ed_author else None}",
+        )
         kind, code = call("api_admin_seed_clear_city", admin, conn, {"regionCode": RC})  # no confirm
         check("按城市清除缺少 confirm 被拒绝", kind == "err" and code == "confirm_required", f"got {kind}/{code}")
         kind, payload = call("api_admin_seed_clear_city", admin, conn, {"regionCode": RC, "confirm": True})

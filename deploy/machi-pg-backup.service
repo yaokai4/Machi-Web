@@ -1,0 +1,11 @@
+[Unit]
+Description=Machi PostgreSQL dump to S3
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/kaix/pg_backup.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7

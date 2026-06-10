@@ -213,7 +213,10 @@ export function GuideAdminListPage({ kind }: { kind: LibraryKind }) {
       if (v !== undefined && v !== "") usp.set(k, String(v));
     });
     try {
-      const res = await fetch(`${apiBase}/api/admin/guide/${kind}?${usp.toString()}`, { headers: authHeaders() });
+      const res = await fetch(`${apiBase}/api/admin/guide/${kind}?${usp.toString()}`, {
+        headers: authHeaders(),
+        credentials: "same-origin",
+      });
       if (!res.ok) throw new Error(await res.text());
       const blob = await res.blob();
       const url = URL.createObjectURL(blob);

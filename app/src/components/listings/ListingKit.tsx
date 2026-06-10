@@ -15,6 +15,7 @@ import {
   Heart,
   Home,
   MapPin,
+  Play,
   Plus,
   Search,
   Send,
@@ -23,22 +24,28 @@ import {
   Tag,
   X,
 } from "lucide-react";
-import { api, APIError, isAuthRequiredError, type UploadPurpose } from "@/lib/api";
-import type { KXCityListing, KXCreateListingPayload, KXListingInquiry, KXListingMedia, KXListingType, KXMedia } from "@/lib/types";
+import { api, APIError, isAuthRequiredError, isUploadImageFile, isUploadVideoFile, type UploadPurpose } from "@/lib/api";
+import { fallbackVideoPoster, isVideoMedia, mediaDurationLabel, mediaPreviewImageUrl, mediaSourceUrl } from "@/lib/media";
+import { listingTypeRequiresMembership, type KXCityListing, type KXCreateListingPayload, type KXListingInquiry, type KXListingMedia, type KXListingType, type KXMedia } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, PremiumEmptyState, SectionLoading, Skeleton } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
-import { getCityBySlug, getDefaultCity } from "@/config/cities";
+import { CITY_AREA_GROUPS, getCityBySlug, getDefaultCity } from "@/config/cities";
 import {
   REGION_COUNTRIES,
+  cityDisplayName,
+  countryDisplayName,
   resolveRegion,
+  regionDisplayName,
   regionFromUser,
   provincesFor,
+  provinceDisplayName,
   citiesFor,
   composeRegionCode,
   countryByCode,
 } from "@/lib/regions";
+import { useI18n } from "@/lib/i18n";
 import {
   cleanListingText,
   compactListingFields,
@@ -55,6 +62,12 @@ import {
 } from "@/lib/listingFormat";
 
 type ChannelKind = "marketplace" | "rentals" | "jobs" | "services" | "deals";
+type ListingScope = "city" | "country";
+
+const videoFallbackArtworkStyle: React.CSSProperties = {
+  background:
+    "radial-gradient(circle at 28% 18%, rgba(255,255,255,0.26), transparent 34%), linear-gradient(135deg, #0f172a 0%, #1e3a8a 54%, #0f766e 100%)",
+};
 
 const CHANNEL: Record<ChannelKind, { type: KXListingType; title: string; subtitle: string; icon: typeof Home; search: string; createLabel: string }> = {
   marketplace: { type: "secondhand", title: "二手市场", subtitle: "图片、价格、地点和交易状态清晰分离", icon: Tag, search: "搜索家具、家电、教材、电子产品、搬家出清", createLabel: "发布二手" },
@@ -74,18 +87,126 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   event: ["全部", "今天", "本周", "周末", "免费"],
 };
 
-function listingUploadPurpose(type: KXListingType): UploadPurpose {
-  if (type === "rental") return "rental_image";
-  if (type === "job" || type === "hiring") return "job_image";
-  if (type === "local_service") return "service_image";
-  if (type === "discount" || type === "event") return "discount_image";
-  return "secondhand_image";
+function listingUploadPurpose(type: KXListingType, isVideo: boolean): UploadPurpose {
+  if (type === "rental") return isVideo ? "rental_video" : "rental_image";
+  if (type === "job" || type === "hiring") return isVideo ? "job_video" : "job_image";
+  if (type === "local_service") return isVideo ? "service_video" : "service_image";
+  if (type === "discount" || type === "event") return isVideo ? "discount_video" : "discount_image";
+  return isVideo ? "secondhand_video" : "secondhand_image";
 }
 
-function listingMediaLimit(type: KXListingType): number {
+function listingImageLimit(type: KXListingType): number {
   if (type === "rental") return 20;
   if (type === "job" || type === "hiring" || type === "discount" || type === "event") return 5;
   return 10;
+}
+
+async function readListingVideoMetadata(file: File): Promise<{ duration: number; width: number; height: number }> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    let settled = false;
+    const done = (result: { duration: number; width: number; height: number }) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
+      URL.revokeObjectURL(url);
+      resolve(result);
+    };
+    // Some containers/codecs never fire loadedmetadata (and not always onerror
+    // either); without a timeout the whole upload stalls at "准备上传".
+    const timeout = window.setTimeout(() => done({ duration: 0, width: 0, height: 0 }), 8000);
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+    video.onloadedmetadata = () => done({
+      duration: Number.isFinite(video.duration) ? video.duration : 0,
+      width: video.videoWidth || 0,
+      height: video.videoHeight || 0,
+    });
+    video.onerror = () => done({ duration: 0, width: 0, height: 0 });
+    video.src = url;
+  });
+}
+
+type ListingVideoPoster = {
+  file: File;
+  previewUrl: string;
+  width: number;
+  height: number;
+};
+
+type UploadProgressEntry = {
+  name: string;
+  progress: number;
+  status: string;
+  error?: string;
+  file?: File;
+  previewUrl?: string;
+};
+
+function posterFileName(fileName: string): string {
+  const base = fileName.replace(/\.[^.]+$/, "") || "video";
+  return `${base}-poster.jpg`;
+}
+
+async function captureListingVideoPoster(file: File): Promise<ListingVideoPoster | null> {
+  return new Promise((resolve) => {
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    let settled = false;
+    const cleanup = (result: ListingVideoPoster | null) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(url);
+      resolve(result);
+    };
+    const timeout = window.setTimeout(() => cleanup(null), 9000);
+    const finish = () => {
+      window.clearTimeout(timeout);
+      const width = video.videoWidth || 1280;
+      const height = video.videoHeight || 720;
+      if (!width || !height) {
+        cleanup(null);
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        cleanup(null);
+        return;
+      }
+      context.drawImage(video, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          cleanup(null);
+          return;
+        }
+        const poster = new File([blob], posterFileName(file.name), { type: "image/jpeg", lastModified: Date.now() });
+        cleanup({ file: poster, previewUrl: URL.createObjectURL(blob), width, height });
+      }, "image/jpeg", 0.84);
+    };
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+    video.onloadedmetadata = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const target = duration > 1 ? 1 : duration > 0.2 ? 0.1 : 0;
+      if (Math.abs(video.currentTime - target) < 0.02) {
+        finish();
+        return;
+      }
+      video.currentTime = target;
+    };
+    video.onseeked = finish;
+    video.onerror = () => {
+      window.clearTimeout(timeout);
+      cleanup(null);
+    };
+    video.src = url;
+  });
 }
 
 type FilterOption = { value: string; label: string };
@@ -108,14 +229,24 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const [sort, setSort] = useState("latest");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
-  const [scope, setScope] = useState<"city" | "country">("city");
+  const [scope, setScope] = useState<ListingScope>("city");
+  const { locale } = useI18n();
   const scopeCountry = city.regionCode.split(".")[0] || "jp";
-  const scopeCountryName = countryByCode(scopeCountry)?.name || "当前国家";
+  const scopeCountrySpec = countryByCode(scopeCountry);
+  const scopeCountryName = scopeCountrySpec ? countryDisplayName(scopeCountrySpec, locale) : "当前国家";
+  const scopedCity = getCityBySlug(filters.scope_city || "");
+  const scopedArea = CITY_AREA_GROUPS.find((group) => group.slug === filters.scope_area);
 
   const listings = useQuery({
-    queryKey: ["listings", city.slug, kind, spec.type, category, sort, query, scope, JSON.stringify(filters)],
+    queryKey: ["listings", city.slug, kind, spec.type, category, sort, query, scope, filters.scope_area || "", filters.scope_city || "", JSON.stringify(filters)],
     queryFn: async () => {
-      const scoped = scope === "country" ? { country: scopeCountry } : { city_slug: city.slug };
+      const scoped = scopedCity
+        ? { city_slug: scopedCity.slug }
+        : scopedArea
+          ? { city_slugs: scopedArea.cities.join(",") }
+          : scope === "country"
+            ? { country: scopeCountry }
+            : { city_slug: city.slug };
       const shared = { ...scoped, category, sort, q: query, min_price: filters.min_price, max_price: filters.max_price };
       if (kind !== "jobs") return api.listings({ ...shared, type: spec.type });
       const [jobs, hiring] = await Promise.all([
@@ -144,27 +275,27 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   return (
     <AppShell requireAuth={false} wide right={null}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 pt-2 pb-3">
-        <div className="flex items-center gap-2">
+        <div className="relative flex items-center gap-2 pr-12 sm:pr-0">
           <Link href="/explore" className="grid h-10 w-10 place-items-center rounded-full bg-white text-slate-700 shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
             <ArrowLeft className="h-5 w-5" />
           </Link>
           <span className="grid h-10 w-10 place-items-center rounded-2xl bg-slate-950 text-white">
             <spec.icon className="h-5 w-5" />
           </span>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h1 className="truncate text-xl font-black text-slate-950">{city.name} · {spec.title}</h1>
             <p className="truncate text-xs font-semibold text-slate-500">{spec.subtitle}</p>
           </div>
-          <Link href="/notifications" className="ml-auto grid h-10 w-10 place-items-center rounded-full bg-kx-soft">
+          <Link href="/notifications" className="hidden h-10 w-10 shrink-0 place-items-center rounded-full bg-kx-soft sm:grid">
             <Bell className="h-4 w-4" />
           </Link>
           <button
             type="button"
             onClick={() => (user ? window.location.assign(`/listings/create?type=${spec.type}&city=${city.slug}`) : openAuthPrompt("publish"))}
-            className="hidden h-10 items-center gap-2 rounded-full bg-slate-950 px-4 text-sm font-bold text-white sm:inline-flex"
+            className="absolute right-0 top-0 inline-flex h-10 w-10 shrink-0 items-center justify-center gap-2 rounded-full bg-blue-600 text-sm font-bold text-white shadow-[0_12px_28px_-18px_rgba(37,99,235,0.9)] transition hover:bg-blue-700 sm:static sm:w-auto sm:px-4"
           >
             <Plus className="h-4 w-4" />
-            {spec.createLabel}
+            <span className="hidden sm:inline">{spec.createLabel}</span>
           </button>
         </div>
         <form
@@ -255,7 +386,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
             </div>
             {filtersOpen ? (
               <div className="mt-3 border-t border-slate-200/70 pt-3">
-                <ListingFilterPanel type={spec.type} filters={filters} onChange={setFilters} variant="inline" />
+                <ListingFilterPanel type={spec.type} currentCitySlug={city.slug} filters={filters} onChange={setFilters} variant="inline" />
               </div>
             ) : null}
           </section>
@@ -349,9 +480,28 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
       <main className="px-3 py-4 sm:px-4">
         <section className="overflow-hidden rounded-[28px] border border-slate-200/70 bg-white shadow-[0_14px_42px_rgba(15,23,42,0.06)]">
           <div className="grid gap-2 bg-slate-100 p-2 sm:grid-cols-2">
-            {(item.media.length ? item.media : [{ id: "cover", listing_id: item.id, media_type: "image", url: item.cover_url || "", sort_order: 0, is_cover: true } satisfies KXListingMedia]).slice(0, 4).map((media, index) => (
+            {(item.media.length ? item.media : listingCoverMedia(item) ? [listingCoverMedia(item)!] : [{ id: "cover", listing_id: item.id, media_type: "image", url: listingCoverPreview(item), sort_order: 0, is_cover: true } satisfies KXListingMedia]).slice(0, 4).map((media, index) => (
               <div key={media.id || index} className="relative aspect-[4/3] overflow-hidden rounded-2xl bg-slate-200">
-                {media.url ? <Image src={media.url} alt={displayTitle} fill sizes="(max-width: 768px) 50vw, 360px" className="object-cover" unoptimized /> : null}
+                {isVideoMedia(media) ? (
+                  mediaSourceUrl(media) ? (
+                    <video
+                      src={mediaSourceUrl(media)}
+                      poster={mediaPreviewImageUrl(media) || fallbackVideoPoster}
+                      preload="metadata"
+                      controls
+                      playsInline
+                      className="h-full w-full bg-slate-950 object-contain"
+                    />
+                  ) : (
+                    <span className="absolute inset-0 grid place-items-center bg-slate-950 text-white">
+                      <Play className="h-8 w-8 fill-current" />
+                    </span>
+                  )
+                ) : mediaPreviewImageUrl(media) ? (
+                  <Image src={mediaPreviewImageUrl(media)} alt={displayTitle} fill sizes="(max-width: 768px) 50vw, 360px" className="object-cover" unoptimized />
+                ) : (
+                  <span className="absolute inset-0 bg-slate-100" />
+                )}
               </div>
             ))}
           </div>
@@ -420,10 +570,17 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const router = useRouter();
+  const { locale } = useI18n();
   const [type, setType] = useState<KXListingType>(normalizeListingType(initialType));
-  const initialRegionCode = getCityBySlug(cleanListingText(initialCitySlug))?.regionCode || regionFromUser(user)?.region_code || "jp.tokyo.tokyo";
+  const userRegion = useMemo(
+    () => regionFromUser(user),
+    [user],
+  );
+  const initialRegionCode = userRegion?.region_code || getCityBySlug(cleanListingText(initialCitySlug))?.regionCode || "jp.tokyo.tokyo";
   const [country, setCountry] = useState<string>(() => resolveRegion(initialRegionCode)?.country_code || "jp");
   const [regionCode, setRegionCode] = useState<string>(initialRegionCode);
+  const [regionSource, setRegionSource] = useState<"account" | "ip" | "fallback" | "initial">("initial");
+  const [regionEditing, setRegionEditing] = useState(false);
   const selectedRegion = resolveRegion(regionCode);
   const citySlug = selectedRegion?.city_code || "tokyo";
   const [title, setTitle] = useState("");
@@ -433,14 +590,52 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
   const [location, setLocation] = useState("");
   const [attributes, setAttributes] = useState<Record<string, string>>({});
   const [media, setMedia] = useState<KXMedia[]>([]);
-  const [uploadProgress, setUploadProgress] = useState<Record<string, { name: string; progress: number; status: string; error?: string }>>({});
+  const [uploadProgress, setUploadProgress] = useState<Record<string, UploadProgressEntry>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [draftSavedAt, setDraftSavedAt] = useState("");
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const localPreviewUrlsRef = useRef<Set<string>>(new Set());
   const draftKey = `machi.listingDraft.${type}.${regionCode}`;
   const createLabel = type === "rental" || type === "job" || type === "hiring" || type === "local_service" ? "提交审核" : "发布";
   const createFields = useMemo(() => listingFormFields(type), [type]);
-  const mediaLimit = listingMediaLimit(type);
+  const imageLimit = listingImageLimit(type);
+  const mediaLimit = imageLimit;
+  const membershipRequired = listingTypeRequiresMembership(type);
+  const membershipChannelLabel = type === "rental" ? "租房" : type === "job" || type === "hiring" ? "招聘" : "本地商家/服务";
+  const membershipBlocked = membershipRequired && !user?.is_verified_member;
+
+  const rememberLocalPreviewUrl = (url: string) => {
+    if (url.startsWith("blob:")) localPreviewUrlsRef.current.add(url);
+    return url;
+  };
+
+  useEffect(() => () => {
+    localPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    localPreviewUrlsRef.current.clear();
+  }, []);
+
+  useEffect(() => {
+    if (userRegion) {
+      setCountry(userRegion.country_code);
+      setRegionCode(userRegion.region_code);
+      setRegionSource("account");
+      return;
+    }
+    let cancelled = false;
+    api.detectRegion()
+      .then((region) => {
+        if (cancelled || !region.region_code) return;
+        const resolved = resolveRegion(region.region_code);
+        if (!resolved) return;
+        setCountry(resolved.country_code);
+        setRegionCode(resolved.region_code);
+        setRegionSource(region.source || "fallback");
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [userRegion]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -482,36 +677,121 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
   };
 
   const upload = useMutation({
-    mutationFn: async (files: FileList) => {
-      const selected = Array.from(files).slice(0, Math.max(0, mediaLimit - media.length));
+    mutationFn: async (files: FileList | File[]) => {
+      const selected = Array.from(files);
+      if (!user) {
+        throw new APIError({ code: "AUTH_REQUIRED", message: "请先登录后再上传媒体。" }, 401);
+      }
       const uploaded: KXMedia[] = [];
+      let imageCount = media.filter((item) => !isVideoMedia(item)).length;
+      let videoCount = media.filter(isVideoMedia).length;
+      let mediaCount = media.length;
       for (const file of selected) {
         const key = `${file.name}-${file.size}-${file.lastModified}`;
-        setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 0, status: "准备上传" } }));
+        setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 0, status: "准备上传", file } }));
+        const isVideo = isUploadVideoFile(file);
+        const isImage = isUploadImageFile(file);
+        if (!isImage && !isVideo) {
+          setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 0, status: "失败", error: "仅支持图片和视频文件", file } }));
+          continue;
+        }
+        if (mediaCount >= mediaLimit) {
+          setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 0, status: "失败", error: `媒体最多上传 ${mediaLimit} 个，其中最多 1 个视频`, file } }));
+          continue;
+        }
+        if (isVideo && videoCount >= 1) {
+          setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 0, status: "失败", error: "每条信息最多上传 1 个视频", file } }));
+          continue;
+        }
+        if (isImage && imageCount >= imageLimit) {
+          setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 0, status: "失败", error: `图片最多上传 ${imageLimit} 张`, file } }));
+          continue;
+        }
         try {
-          uploaded.push(await api.uploadMediaBase64(file, {
-            purpose: listingUploadPurpose(type),
+          const videoMeta = isVideo ? await readListingVideoMetadata(file) : { duration: 0, width: 0, height: 0 };
+          if (isVideo && videoMeta.duration > (type === "rental" ? 600 : 300)) {
+            throw new APIError({ code: "video_duration_too_long", message: type === "rental" ? "房源视频最长 10 分钟" : "视频最长 5 分钟" }, 400);
+          }
+          let posterFileId = "";
+          let posterUrl = "";
+          let localPosterUrl = "";
+          if (isVideo) {
+            setUploadProgress((current) => ({ ...current, [key]: { ...current[key], name: file.name, progress: 0.05, status: "生成封面", file } }));
+            const poster = await captureListingVideoPoster(file);
+            if (poster) {
+              localPosterUrl = rememberLocalPreviewUrl(poster.previewUrl);
+              setUploadProgress((current) => ({ ...current, [key]: { ...current[key], name: file.name, progress: 0.08, status: "上传封面", file, previewUrl: localPosterUrl } }));
+              const posterUpload = await api.uploadFile(poster.file, {
+                purpose: "video_thumbnail",
+                entityType: "video",
+                width: poster.width,
+                height: poster.height,
+                metadata: { sourceVideoName: file.name },
+                onProgress: (event) => {
+                  const progress = event.stage === "success" ? 0.22 : 0.08 + Math.min(0.12, event.progress * 0.12);
+                  const status = event.stage === "complete" ? "确认封面" : event.stage === "success" ? "封面完成" : "上传封面";
+                  setUploadProgress((current) => ({ ...current, [key]: { ...current[key], name: file.name, progress, status, file, previewUrl: localPosterUrl } }));
+                },
+              });
+              posterFileId = posterUpload.file.id;
+              posterUrl = mediaPreviewImageUrl(posterUpload.media) || mediaSourceUrl(posterUpload.media) || localPosterUrl;
+            }
+          }
+          const uploadedMedia = await api.uploadMediaBase64(file, {
+            purpose: listingUploadPurpose(type, isVideo),
+            entityType: "listing",
+            duration: videoMeta.duration,
+            width: videoMeta.width,
+            height: videoMeta.height,
+            metadata: isVideo ? {
+              durationSeconds: videoMeta.duration,
+              thumbnailFileId: posterFileId,
+              thumbnail_file_id: posterFileId,
+              posterFileId,
+            } : {},
             onProgress: (event) => {
               const status = event.stage === "uploading" ? "上传中" : event.stage === "complete" ? "确认中" : event.stage === "success" ? "已完成" : "准备上传";
-              setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: event.progress, status } }));
+              const base = isVideo ? 0.22 : 0;
+              const span = isVideo ? 0.78 : 1;
+              setUploadProgress((current) => ({ ...current, [key]: { ...current[key], name: file.name, progress: base + event.progress * span, status, file, previewUrl: localPosterUrl || current[key]?.previewUrl } }));
             },
-          }));
-          setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 1, status: "已完成" } }));
+          });
+          uploaded.push(isVideo ? {
+            ...uploadedMedia,
+            thumbnailUrl: uploadedMedia.thumbnailUrl || uploadedMedia.thumbnail_url || posterUrl,
+            thumbnail_url: uploadedMedia.thumbnail_url || uploadedMedia.thumbnailUrl || posterUrl,
+            thumbUrl: uploadedMedia.thumbUrl || uploadedMedia.thumbnailUrl || posterUrl,
+            thumb_url: uploadedMedia.thumb_url || uploadedMedia.thumbnail_url || posterUrl,
+            posterUrl: uploadedMedia.posterUrl || uploadedMedia.poster_url || posterUrl,
+            poster_url: uploadedMedia.poster_url || uploadedMedia.posterUrl || posterUrl,
+          } : uploadedMedia);
+          if (isVideo) videoCount += 1;
+          else imageCount += 1;
+          mediaCount += 1;
+          setUploadProgress((current) => ({ ...current, [key]: { ...current[key], name: file.name, progress: 1, status: "已完成", file, previewUrl: localPosterUrl || current[key]?.previewUrl } }));
         } catch (err) {
-          setUploadProgress((current) => ({ ...current, [key]: { name: file.name, progress: 0, status: "失败", error: (err as APIError).message } }));
+          setUploadProgress((current) => ({ ...current, [key]: { ...current[key], name: file.name, progress: current[key]?.progress || 0, status: "失败", error: (err as APIError).message, file } }));
         }
       }
       return uploaded;
     },
     onSuccess: (items) => {
       setMedia((current) => [...current, ...items].slice(0, mediaLimit));
-      pushToast({ kind: "success", message: "图片已上传" });
+      if (items.length) pushToast({ kind: "success", message: "媒体已上传" });
     },
-    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
+    onError: (e) => {
+      if (isAuthRequiredError(e)) openAuthPrompt("publish");
+      else pushToast({ kind: "error", message: (e as APIError).message });
+    },
   });
   const create = useMutation({
     mutationFn: () => {
       if (!validate()) throw new APIError({ code: "invalid_form", message: "请先补齐必填项。" }, 400);
+      if (membershipBlocked) throw new APIError({ code: "MEMBERSHIP_REQUIRED", message: `发布${membershipChannelLabel}信息需要开通 Machi 会员。` }, 403);
+      if (upload.isPending) throw new APIError({ code: "upload_in_progress", message: "媒体仍在上传，请稍等完成后再发布。" }, 400);
+      const failedUpload = Object.values(uploadProgress).find((item) => item.error);
+      if (failedUpload) throw new APIError({ code: "upload_failed", message: "有媒体上传失败，请删除或重新选择后再发布。" }, 400);
+      const mediaIds = media.map((item) => item.id);
       const payload: KXCreateListingPayload = {
         type,
         city_slug: citySlug,
@@ -526,14 +806,17 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
         location_text: location,
         contact_method: "app_message",
         attributes,
-        media_ids: media.map((item) => item.id),
+        media_ids: mediaIds,
+        mediaIds,
+        cover_media_id: mediaIds[0],
+        coverMediaId: mediaIds[0],
       };
       return api.createListing(payload);
     },
     onSuccess: (listing) => {
       if (typeof window !== "undefined") window.localStorage.removeItem(draftKey);
       pushToast({ kind: "success", message: listing.status === "pending_review" ? "已提交管理员审核，审核时间一般在 1 天内，通过后会自动展示，可在「我的发布」查看。" : "发布成功，三端会同步展示。" });
-      router.push(detailHref(listing));
+      router.push(listing.status === "pending_review" ? "/my/listings" : detailHref(listing));
     },
     onError: (e) => {
       if (isAuthRequiredError(e)) openAuthPrompt("publish");
@@ -564,37 +847,86 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
               </div>
             </section>
 
+            {membershipRequired ? (
+              <section className="flex flex-col gap-3 rounded-[24px] border border-blue-100 bg-blue-50/70 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-start gap-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-white text-blue-600 shadow-sm">
+                    <AlertTriangle className="h-5 w-5" />
+                  </span>
+                  <div>
+                    <p className="font-black text-slate-950">{membershipChannelLabel}发布需要 Machi 会员</p>
+                    <p className="mt-1 font-semibold text-slate-600">会员每月可免费发布 3 条{membershipChannelLabel}信息；提交后会按频道规则进入审核或展示。</p>
+                  </div>
+                </div>
+                {membershipBlocked ? (
+                  <Link href="/membership" className="h-10 shrink-0 rounded-full bg-blue-600 px-4 text-center text-sm font-black leading-10 text-white shadow-[0_10px_24px_-16px_rgba(37,99,235,0.8)]">
+                    开通会员
+                  </Link>
+                ) : (
+                  <span className="h-10 shrink-0 rounded-full bg-white px-4 text-center text-sm font-black leading-10 text-blue-700">会员可发布</span>
+                )}
+              </section>
+            ) : null}
+
             <section className="rounded-[24px] border border-slate-200/70 bg-slate-50/70 p-4">
               <p className="mb-3 text-sm font-black text-slate-950">基础信息</p>
               <div className="grid gap-3 sm:grid-cols-2">
-                <Field label="国家 / 地区" required>
-                  <select
-                    value={country}
-                    onChange={(e) => {
-                      const nextCountry = e.target.value;
-                      setCountry(nextCountry);
-                      const first = publishCityGroups(nextCountry)[0]?.cities[0]?.code;
-                      if (first) setRegionCode(first);
-                    }}
-                    className="kx-input h-11"
-                  >
-                    {REGION_COUNTRIES.map((c) => (
-                      <option key={c.code} value={c.code}>{c.emoji} {c.name}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="城市" required>
-                  <select value={regionCode} onChange={(e) => setRegionCode(e.target.value)} className="kx-input h-11">
-                    {publishCityGroups(country).map((group) => (
-                      group.province ? (
-                        <optgroup key={group.province} label={group.province}>
-                          {group.cities.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
-                        </optgroup>
-                      ) : (
-                        group.cities.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)
-                      )
-                    ))}
-                  </select>
+                <Field label="发布地区" required>
+                  <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2.5">
+                    <div className="flex items-center gap-2">
+                      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-blue-50 text-lg">
+                        {selectedRegion?.country_emoji || "🌐"}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-black text-slate-950">
+                          {selectedRegion ? regionDisplayName(selectedRegion, locale) : regionCode}
+                        </div>
+                        <div className="truncate text-xs font-semibold text-slate-500">
+                          {regionSource === "account" ? "已根据账号当前地区自动选择" : regionSource === "ip" ? "已根据当前位置粗略自动选择" : "已使用默认城市，可手动更改"}
+                        </div>
+                      </div>
+                      <button type="button" className="h-8 shrink-0 rounded-full border border-slate-200 px-3 text-xs font-black text-slate-600" onClick={() => setRegionEditing((v) => !v)}>
+                        {regionEditing ? "收起" : "更改"}
+                      </button>
+                    </div>
+                    {regionEditing ? (
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        <select
+                          value={country}
+                          onChange={(e) => {
+                            const nextCountry = e.target.value;
+                            setCountry(nextCountry);
+                            const first = publishCityGroups(nextCountry, locale)[0]?.cities[0]?.code;
+                            if (first) setRegionCode(first);
+                            setRegionSource("fallback");
+                          }}
+                          className="kx-input h-10"
+                        >
+                          {REGION_COUNTRIES.map((c) => (
+                            <option key={c.code} value={c.code}>{c.emoji} {countryDisplayName(c, locale)}</option>
+                          ))}
+                        </select>
+                        <select
+                          value={regionCode}
+                          onChange={(e) => {
+                            setRegionCode(e.target.value);
+                            setRegionSource("fallback");
+                          }}
+                          className="kx-input h-10"
+                        >
+                          {publishCityGroups(country, locale).map((group) => (
+                            group.province ? (
+                              <optgroup key={group.province} label={group.province}>
+                                {group.cities.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                              </optgroup>
+                            ) : (
+                              group.cities.map((c) => <option key={c.code} value={c.code}>{c.name}</option>)
+                            )
+                          ))}
+                        </select>
+                      </div>
+                    ) : null}
+                  </div>
                 </Field>
                 <Field label="分类" required error={fieldErrors.category}>
                   <input value={category} onChange={(e) => { setCategory(e.target.value); clearFieldError(setFieldErrors, "category"); }} className="kx-input h-11" placeholder={categoryPlaceholder(type)} />
@@ -614,19 +946,60 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
             <section className="rounded-[24px] border border-slate-200/70 bg-white p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-sm font-black text-slate-950">图片</p>
-                  <p className="mt-1 text-xs font-semibold text-slate-500">支持上传 1-10 张，第一张作为封面。无图时系统会使用稳定占位图。</p>
+                  <p className="text-sm font-black text-slate-950">图片与视频</p>
+                  <p className="mt-1 text-xs font-semibold text-slate-500">最多 {mediaLimit} 个媒体，其中最多 1 个视频，第一项作为封面；视频会自动截取首帧封面。</p>
                 </div>
-                <button type="button" onClick={() => fileInputRef.current?.click()} disabled={upload.isPending || media.length >= mediaLimit} className="h-10 rounded-full bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50">
-                  {upload.isPending ? "上传中..." : "上传图片"}
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!user) {
+                      openAuthPrompt("publish");
+                      return;
+                    }
+                    fileInputRef.current?.click();
+                  }}
+                  disabled={upload.isPending || media.length >= mediaLimit}
+                  className="h-10 rounded-full bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50"
+                >
+                  {upload.isPending ? "上传中..." : "添加媒体"}
                 </button>
-                <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={(event) => { if (event.target.files?.length) upload.mutate(event.target.files); event.currentTarget.value = ""; }} />
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept="image/*,video/*"
+                  multiple
+                  hidden
+                  onChange={(event) => {
+                    if (!user) {
+                      openAuthPrompt("publish");
+                      event.currentTarget.value = "";
+                      return;
+                    }
+                    // FileList is a live collection — clearing input.value empties it
+                    // before the async mutation reads it. Snapshot to File[] first.
+                    const files = Array.from(event.target.files ?? []);
+                    event.currentTarget.value = "";
+                    if (files.length) upload.mutate(files);
+                  }}
+                />
               </div>
               {media.length ? (
                 <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-5">
                   {media.map((item, index) => (
                     <div key={item.id} className="group relative aspect-square overflow-hidden rounded-2xl bg-slate-100">
-                      <Image src={item.thumb_url || item.url} alt={`上传图片 ${index + 1}`} fill sizes="128px" className="object-cover" unoptimized />
+                      {mediaPreviewImageUrl(item) ? <Image src={mediaPreviewImageUrl(item)} alt={`上传媒体 ${index + 1}`} fill sizes="128px" className="object-cover" unoptimized /> : null}
+                      {isVideoMedia(item) ? (
+                        <span className={`absolute inset-0 grid place-items-center text-white ${mediaPreviewImageUrl(item) ? "bg-black/15" : "bg-slate-900"}`}>
+                          {!mediaPreviewImageUrl(item) ? (
+                            <span className="absolute inset-0 bg-[linear-gradient(135deg,#0f172a_0%,#1f2937_48%,#111827_100%)]" aria-hidden />
+                          ) : null}
+                          <span className="grid h-10 w-10 place-items-center rounded-full bg-white/18 ring-1 ring-white/25">
+                            <Play className="h-4 w-4 fill-current" />
+                          </span>
+                          {!mediaPreviewImageUrl(item) ? <span className="absolute bottom-2 left-2 rounded-full bg-white/12 px-2 py-0.5 text-[10px] font-black text-white/90 ring-1 ring-white/15">视频已上传</span> : null}
+                          {mediaDurationLabel(item) ? <span className="absolute bottom-2 right-2 rounded-full bg-black/65 px-2 py-0.5 text-[10px] font-black">{mediaDurationLabel(item)}</span> : null}
+                        </span>
+                      ) : null}
                       <button type="button" onClick={() => setMedia((current) => current.filter((m) => m.id !== item.id))} className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full bg-white/90 text-slate-700 opacity-0 shadow-sm transition group-hover:opacity-100">
                         <X className="h-3.5 w-3.5" />
                       </button>
@@ -637,12 +1010,40 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
               ) : null}
               {Object.keys(uploadProgress).length ? (
                 <div className="mt-3 space-y-1.5">
-                  {Object.entries(uploadProgress).map(([key, item]) => (
-                    <div key={key} className="rounded-2xl bg-slate-50 px-3 py-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate font-bold text-slate-700">{item.name}</span>
-                        <span className={item.error ? "font-bold text-red-600" : "font-bold text-slate-500"}>{item.error ? "失败" : item.status}</span>
-                      </div>
+	                  {Object.entries(uploadProgress).map(([key, item]) => (
+	                    <div key={key} className="rounded-2xl bg-slate-50 px-3 py-2 text-xs">
+	                      <div className="flex items-center gap-2">
+	                        {item.previewUrl ? (
+	                          <span className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl bg-slate-200">
+	                            <Image src={item.previewUrl} alt="" fill sizes="40px" className="object-cover" unoptimized />
+	                            <span className="absolute inset-0 grid place-items-center bg-black/15 text-white"><Play className="h-3.5 w-3.5 fill-current" /></span>
+	                          </span>
+	                        ) : null}
+	                        <span className="min-w-0 flex-1 truncate font-bold text-slate-700">{item.name}</span>
+	                        <span className={item.error ? "font-bold text-red-600" : "font-bold text-slate-500"}>
+	                          {item.error ? "失败" : `${item.status} ${Math.round(item.progress * 100)}%`}
+	                        </span>
+	                        {item.error ? (
+	                          <div className="flex shrink-0 gap-1">
+	                            {item.file ? (
+	                              <button
+	                                type="button"
+	                                onClick={() => upload.mutate([item.file as File])}
+	                                className="rounded-full bg-white px-2 py-0.5 font-black text-blue-600 ring-1 ring-blue-100 hover:bg-blue-50"
+	                              >
+	                                重试
+	                              </button>
+	                            ) : null}
+	                            <button type="button" onClick={() => setUploadProgress((current) => {
+	                              const next = { ...current };
+	                              delete next[key];
+	                              return next;
+	                            })} className="rounded-full bg-white px-2 py-0.5 font-black text-slate-500 ring-1 ring-slate-200 hover:text-slate-900">
+	                              清除
+	                            </button>
+	                          </div>
+	                        ) : null}
+	                      </div>
                       <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-200">
                         <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${Math.round(item.progress * 100)}%` }} />
                       </div>
@@ -668,7 +1069,22 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
               </div>
               <div className="flex gap-2">
                 <button type="button" onClick={saveDraft} className="h-11 rounded-full border border-slate-200 bg-white px-4 text-sm font-black text-slate-700">保存草稿</button>
-                <button type="button" disabled={create.isPending} onClick={() => (user ? create.mutate() : openAuthPrompt("publish"))} className="h-11 rounded-full bg-slate-950 px-6 text-sm font-black text-white disabled:opacity-50">
+                <button
+                  type="button"
+                  disabled={create.isPending || upload.isPending}
+                  onClick={() => {
+                    if (!user) {
+                      openAuthPrompt("publish");
+                      return;
+                    }
+                    if (membershipBlocked) {
+                      pushToast({ kind: "error", message: `发布${membershipChannelLabel}信息需要开通 Machi 会员。` });
+                      return;
+                    }
+                    create.mutate();
+                  }}
+                  className="h-11 rounded-full bg-slate-950 px-6 text-sm font-black text-white disabled:opacity-50"
+                >
                   {create.isPending ? "提交中..." : createLabel}
                 </button>
               </div>
@@ -921,19 +1337,33 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
   const title = displayListingTitle(listing) || "城市信息";
   const description = cleanListingText(listing.description);
   const PlaceholderIcon = listingPlaceholderIcon(listing.type);
+  const coverMedia = listingCoverMedia(listing);
+  const coverPreview = listingCoverPreview(listing);
+  const coverIsVideo = listingCoverIsVideo(listing);
+  const coverSource = coverMedia ? mediaSourceUrl(coverMedia) : "";
+  const coverArtwork = coverIsVideo ? (coverPreview || (coverSource ? fallbackVideoPoster : "")) : coverPreview;
+  const useVideoFallbackArtwork = coverIsVideo && !coverPreview;
   return (
     <Link href={detailHref(listing)} className="group overflow-hidden rounded-[22px] border border-slate-200/70 bg-white shadow-[0_12px_38px_-32px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_22px_56px_-34px_rgba(15,23,42,0.62)]">
       <div className="relative aspect-[4/3] overflow-hidden bg-slate-100">
-        {!listing.cover_url ? (
+        {useVideoFallbackArtwork ? (
+          <span className="absolute inset-0 z-[1]" style={videoFallbackArtworkStyle} />
+        ) : coverArtwork ? (
+          <Image src={coverArtwork} alt={title} fill sizes="(max-width: 768px) 100vw, 320px" className="relative z-[1] object-cover transition duration-300 group-hover:scale-[1.025]" unoptimized />
+        ) : (
           <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.16),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-slate-400">
             <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/82 text-kx-accent shadow-sm ring-1 ring-slate-200/70">
               <PlaceholderIcon className="h-5 w-5" />
             </span>
             <span className="text-xs font-black">{formatListingType(listing.type)}</span>
           </span>
-        ) : null}
-        {listing.cover_url ? (
-          <Image src={listing.cover_url} alt={title} fill sizes="(max-width: 768px) 100vw, 320px" className="relative z-[1] object-cover transition duration-300 group-hover:scale-[1.025]" unoptimized />
+        )}
+        {coverIsVideo ? (
+          <span className="absolute inset-0 z-[2] grid place-items-center bg-black/10">
+            <span className="grid h-11 w-11 place-items-center rounded-full bg-black/65 text-white shadow-lg backdrop-blur">
+              <Play className="h-5 w-5 fill-current" />
+            </span>
+          </span>
         ) : null}
         <span className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-white/90 text-slate-700 shadow-sm">
           <Heart className="h-4 w-4" />
@@ -972,6 +1402,22 @@ function listingPlaceholderIcon(type: KXListingType) {
   if (type === "job" || type === "hiring") return Briefcase;
   if (type === "local_service") return Sparkles;
   return Tag;
+}
+
+function listingCoverMedia(listing: KXCityListing): KXListingMedia | null {
+  return listing.card?.coverMedia || listing.coverMedia || listing.cover_media || listing.media?.find((item) => item.is_cover || item.isCover) || listing.media?.[0] || null;
+}
+
+function listingCoverPreview(listing: KXCityListing): string {
+  const coverMedia = listingCoverMedia(listing);
+  const preview = mediaPreviewImageUrl(coverMedia);
+  if (preview) return preview;
+  if (isVideoMedia(coverMedia)) return "";
+  return listing.card?.coverUrl || listing.listingCard?.coverUrl || listing.coverUrl || listing.cover_url || "";
+}
+
+function listingCoverIsVideo(listing: KXCityListing): boolean {
+  return isVideoMedia(listingCoverMedia(listing));
 }
 
 function AdminRecordPage({ title, right, children }: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
@@ -1059,10 +1505,32 @@ function StructuredListCard({ listing }: { listing: KXCityListing }) {
   const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
   const title = displayListingTitle(listing) || "城市信息";
   const description = cleanListingText(listing.description);
+  const coverMedia = listingCoverMedia(listing);
+  const coverPreview = listingCoverPreview(listing);
+  const coverIsVideo = listingCoverIsVideo(listing);
+  const coverSource = coverMedia ? mediaSourceUrl(coverMedia) : "";
+  const coverArtwork = coverIsVideo ? (coverPreview || (coverSource ? fallbackVideoPoster : "")) : coverPreview;
+  const useVideoFallbackArtwork = coverIsVideo && !coverPreview;
+  const PlaceholderIcon = listingPlaceholderIcon(listing.type);
   return (
     <Link href={detailHref(listing)} className="grid gap-3 rounded-2xl border border-slate-200/70 bg-white p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)] transition hover:-translate-y-0.5 hover:shadow-[0_14px_38px_rgba(15,23,42,0.08)] sm:grid-cols-[148px_1fr]">
       <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-100 sm:aspect-square">
-        {listing.cover_url ? <Image src={listing.cover_url} alt={title} fill sizes="148px" className="object-cover" unoptimized /> : null}
+        {useVideoFallbackArtwork ? (
+          <span className="absolute inset-0" style={videoFallbackArtworkStyle} />
+        ) : coverArtwork ? (
+          <Image src={coverArtwork} alt={title} fill sizes="148px" className="object-cover" unoptimized />
+        ) : (
+          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-slate-400">
+            <PlaceholderIcon className="h-5 w-5" />
+          </span>
+        )}
+        {coverIsVideo ? (
+          <span className="absolute inset-0 grid place-items-center bg-black/10">
+            <span className="grid h-10 w-10 place-items-center rounded-full bg-black/65 text-white shadow-lg backdrop-blur">
+              <Play className="h-4 w-4 fill-current" />
+            </span>
+          </span>
+        ) : null}
       </div>
       <div className="min-w-0">
         <div className="flex items-start justify-between gap-3">
@@ -1087,11 +1555,33 @@ function ListingManageCard({ listing, onStatus, onDelete }: { listing: KXCityLis
   const doneLabel = listing.type === "rental" ? "标记已租出" : listing.type === "job" || listing.type === "hiring" ? "标记已招满" : listing.type === "secondhand" ? "标记已售出" : "关闭";
   const title = displayListingTitle(listing) || "城市信息";
   const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
+  const coverMedia = listingCoverMedia(listing);
+  const coverPreview = listingCoverPreview(listing);
+  const coverIsVideo = listingCoverIsVideo(listing);
+  const coverSource = coverMedia ? mediaSourceUrl(coverMedia) : "";
+  const coverArtwork = coverIsVideo ? (coverPreview || (coverSource ? fallbackVideoPoster : "")) : coverPreview;
+  const useVideoFallbackArtwork = coverIsVideo && !coverPreview;
+  const PlaceholderIcon = listingPlaceholderIcon(listing.type);
   return (
     <section className="rounded-2xl border border-slate-200/70 bg-white p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
       <div className="grid gap-3 sm:grid-cols-[148px_1fr]">
         <Link href={detailHref(listing)} className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-100 sm:aspect-square">
-          {listing.cover_url ? <Image src={listing.cover_url} alt={title} fill sizes="148px" className="object-cover" unoptimized /> : null}
+          {useVideoFallbackArtwork ? (
+            <span className="absolute inset-0" style={videoFallbackArtworkStyle} />
+          ) : coverArtwork ? (
+            <Image src={coverArtwork} alt={title} fill sizes="148px" className="object-cover" unoptimized />
+          ) : (
+            <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-slate-400">
+              <PlaceholderIcon className="h-5 w-5" />
+            </span>
+          )}
+          {coverIsVideo ? (
+            <span className="absolute inset-0 grid place-items-center bg-black/10">
+              <span className="grid h-10 w-10 place-items-center rounded-full bg-black/65 text-white shadow-lg backdrop-blur">
+                <Play className="h-4 w-4 fill-current" />
+              </span>
+            </span>
+          ) : null}
         </Link>
         <div className="min-w-0">
           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1325,22 +1815,81 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
 
 function ListingFilterPanel({
   type,
+  currentCitySlug,
   filters,
   onChange,
   variant = "panel",
 }: {
   type: KXListingType;
+  currentCitySlug: string;
   filters: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
   variant?: "panel" | "inline";
 }) {
   const set = (key: string, value: string) => onChange({ ...filters, [key]: value });
+  const setScopeArea = (value: string) => onChange({ ...filters, scope_area: value, scope_city: "" });
+  const setScopeCity = (value: string) => onChange({ ...filters, scope_area: "", scope_city: value });
+  const clearScope = () => onChange({ ...filters, scope_area: "", scope_city: "" });
   const reset = () => onChange({});
+  const currentCity = getCityBySlug(currentCitySlug);
   return (
     <section className={variant === "inline" ? "rounded-[20px] bg-slate-50/70 p-3" : "sticky top-24 rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.045)]"}>
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-black text-slate-950">筛选</h3>
         <button type="button" onClick={reset} className="text-xs font-bold text-slate-400 hover:text-slate-900">清空</button>
+      </div>
+      <div className="mt-3 rounded-[18px] border border-slate-200/70 bg-white p-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <p className="text-xs font-black text-slate-500">城市范围</p>
+            <p className="mt-0.5 text-[11px] font-semibold text-slate-400">关东圈、关西圈和其他热门城市已收进这里。</p>
+          </div>
+          <button
+            type="button"
+            onClick={clearScope}
+            data-active={!filters.scope_area && !filters.scope_city}
+            className="h-8 rounded-full border border-slate-200 px-3 text-xs font-black text-slate-500 transition hover:border-blue-300 hover:text-blue-700 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
+          >
+            跟随顶部
+          </button>
+        </div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {CITY_AREA_GROUPS.map((group) => (
+            <button
+              key={group.slug}
+              type="button"
+              onClick={() => setScopeArea(group.slug)}
+              data-active={filters.scope_area === group.slug}
+              className="h-9 rounded-full border border-slate-200 bg-slate-50 px-3 text-xs font-black text-slate-600 transition hover:border-blue-300 hover:bg-white hover:text-blue-700 data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
+            >
+              {group.label}
+            </button>
+          ))}
+        </div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-3 lg:grid-cols-4">
+          {CITY_AREA_GROUPS.map((group) => (
+            <div key={group.slug} className="rounded-2xl bg-slate-50/80 p-2">
+              <p className="px-1 pb-1 text-[11px] font-black text-slate-400">{group.label}</p>
+              <div className="flex flex-wrap gap-1.5">
+                {group.cities.map((slug) => {
+                  const city = getCityBySlug(slug);
+                  if (!city) return null;
+                  return (
+                    <button
+                      key={slug}
+                      type="button"
+                      onClick={() => setScopeCity(slug)}
+                      data-active={filters.scope_city === slug}
+                      className="h-8 rounded-full px-2.5 text-xs font-black text-slate-500 transition hover:bg-white hover:text-blue-700 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
+                    >
+                      {city.slug === currentCity?.slug ? `${city.name} · 当前` : city.name}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
       <div className={variant === "inline" ? "mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" : "mt-3 grid gap-3"}>
         <div className="grid grid-cols-2 gap-2">
@@ -1561,20 +2110,26 @@ function displayListingTitle(item: KXCityListing) {
 
 // Build the publish-page city options for a country, grouped by province so
 // the picker scales with the selected region instead of a hard-coded short list.
-function publishCityGroups(country: string): Array<{ province: string; cities: Array<{ code: string; name: string }> }> {
+function publishCityGroups(country: string, locale?: string): Array<{ province: string; cities: Array<{ code: string; name: string }> }> {
   const spec = countryByCode(country);
   if (!spec) return [];
   if (spec.has_provinces) {
     return provincesFor(country)
       .map((p) => ({
-        province: p.name,
-        cities: citiesFor(country, p.code).map((c) => ({ code: composeRegionCode(country, p.code, c.code), name: c.name })),
+        province: provinceDisplayName(country, p.code, p.name, locale),
+        cities: citiesFor(country, p.code).map((c) => ({
+          code: composeRegionCode(country, p.code, c.code),
+          name: cityDisplayName(country, p.code, c.code, c.name, locale),
+        })),
       }))
       .filter((g) => g.cities.length > 0);
   }
   return [{
     province: "",
-    cities: citiesFor(country).map((c) => ({ code: composeRegionCode(country, undefined, c.code), name: c.name })),
+    cities: citiesFor(country).map((c) => ({
+      code: composeRegionCode(country, undefined, c.code),
+      name: cityDisplayName(country, undefined, c.code, c.name, locale),
+    })),
   }];
 }
 

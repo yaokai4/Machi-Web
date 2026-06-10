@@ -72,6 +72,8 @@ RELEASE=/opt/kaix.release-$TS
 BACKUP=/opt/kaix.backup-$TS
 FAILED=/opt/kaix.failed-$TS
 SWAPPED=0
+SERVICES_STOPPED=0
+CURRENT_MOVED=0
 
 rollback() {
   local line="$1"
@@ -85,6 +87,17 @@ rollback() {
       sudo mv "$CURRENT" "$FAILED"
     fi
     sudo mv "$BACKUP" "$CURRENT"
+    sudo systemctl start kaix-backend.service || true
+    sleep 2
+    sudo systemctl start kaix-web.service || true
+  elif [ "$CURRENT_MOVED" = "1" ] && [ -d "$BACKUP" ]; then
+    echo "    [远端] release 尚未落位，恢复原目录" >&2
+    sudo mv "$BACKUP" "$CURRENT"
+    sudo systemctl start kaix-backend.service || true
+    sleep 2
+    sudo systemctl start kaix-web.service || true
+  elif [ "$SERVICES_STOPPED" = "1" ]; then
+    echo "    [远端] release 尚未切换，恢复当前版本服务" >&2
     sudo systemctl start kaix-backend.service || true
     sleep 2
     sudo systemctl start kaix-web.service || true
@@ -111,6 +124,34 @@ restore_runtime_data() {
   fi
 }
 
+ensure_runtime_env() {
+  echo "    [远端] 校准生产运行环境变量"
+  sudo python3 - <<'PY'
+from pathlib import Path
+
+path = Path("/etc/kaix.env")
+updates = {
+    "KAIX_MAX_UPLOAD_BYTES": "335544320",
+    "S3_UPLOAD_MAX_SIZE": "335544320",
+}
+lines = path.read_text().splitlines() if path.exists() else []
+seen = set()
+out = []
+for line in lines:
+    key = line.split("=", 1)[0].strip() if "=" in line and not line.lstrip().startswith("#") else ""
+    if key in updates:
+        out.append(f"{key}={updates[key]}")
+        seen.add(key)
+    else:
+        out.append(line)
+for key, value in updates.items():
+    if key not in seen:
+        out.append(f"{key}={value}")
+path.write_text("\n".join(out).rstrip() + "\n")
+PY
+  sudo chmod 600 /etc/kaix.env
+}
+
 install_systemd_units() {
   echo "    [远端] 安装/刷新 systemd 服务并设置开机自启"
   sudo cp /opt/kaix/web/deploy/kaix-backend.service /etc/systemd/system/kaix-backend.service
@@ -118,8 +159,24 @@ install_systemd_units() {
   if [ -f /opt/kaix/web/deploy/kaix-backend-worker@.service ]; then
     sudo cp /opt/kaix/web/deploy/kaix-backend-worker@.service /etc/systemd/system/kaix-backend-worker@.service
   fi
+  if [ -f /opt/kaix/web/deploy/pg_backup.sh ]; then
+    sudo cp /opt/kaix/web/deploy/pg_backup.sh /opt/kaix/pg_backup.sh
+    sudo chmod 755 /opt/kaix/pg_backup.sh
+  fi
+  if [ -f /opt/kaix/web/deploy/verify_pg_backup.sh ]; then
+    sudo chmod 755 /opt/kaix/web/deploy/verify_pg_backup.sh
+  fi
+  if [ -f /opt/kaix/web/deploy/machi-pg-backup.service ]; then
+    sudo cp /opt/kaix/web/deploy/machi-pg-backup.service /etc/systemd/system/machi-pg-backup.service
+  fi
+  if [ -f /opt/kaix/web/deploy/machi-pg-backup.timer ]; then
+    sudo cp /opt/kaix/web/deploy/machi-pg-backup.timer /etc/systemd/system/machi-pg-backup.timer
+  fi
   sudo systemctl daemon-reload
   sudo systemctl enable kaix-backend.service kaix-web.service
+  if systemctl list-unit-files machi-pg-backup.timer >/dev/null 2>&1; then
+    sudo systemctl enable --now machi-pg-backup.timer
+  fi
   if systemctl list-unit-files nginx.service >/dev/null 2>&1; then
     sudo systemctl enable nginx.service
   fi
@@ -137,7 +194,26 @@ test -d "$RELEASE/web/app"
 echo "    [远端] 强力清除解压出来的所有 Mac 隐藏乱码文件"
 sudo find "$RELEASE" -name "._*" -delete
 restore_env_for_build
+ensure_runtime_env
 sudo chown -R kaix:kaix "$RELEASE"
+
+PYTHON_BIN="${PYTHON_BIN:-python3.12}"
+if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
+  echo "    [远端] 安装受支持的 Python 3.12 运行时"
+  sudo dnf install -y python3.12 python3.12-pip
+fi
+"$PYTHON_BIN" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)'
+
+echo "    [远端] 使用 $PYTHON_BIN 创建隔离运行环境并安装锁定依赖"
+sudo -u kaix "$PYTHON_BIN" -m venv "$RELEASE/.venv"
+sudo -u kaix "$RELEASE/.venv/bin/python" -m pip install --upgrade pip
+sudo -u kaix "$RELEASE/.venv/bin/python" -m pip install -r "$RELEASE/web/requirements.txt"
+
+if sudo grep -q '^KAIX_DB_BACKEND=postgres' /etc/kaix.env 2>/dev/null; then
+  echo "    [远端] PostgreSQL 模式预检"
+  grep -q 'class _PgConn' "$RELEASE/web/server.py"
+  sudo -u kaix "$RELEASE/.venv/bin/python" -c 'import psycopg2'
+fi
 
 cd "$RELEASE/web/app"
 
@@ -153,18 +229,51 @@ sudo -u kaix npm run build
 echo "    [远端] 检查所有路由都能编译（防 page.js 静默丢失）"
 sudo -u kaix npm run check-build
 
+if sudo grep -q '^KAIX_DB_BACKEND=postgres' /etc/kaix.env 2>/dev/null \
+    && sudo systemctl cat machi-pg-backup.service >/dev/null 2>&1; then
+  echo "    [远端] 切换前执行 PostgreSQL 即时备份"
+  sudo systemctl start machi-pg-backup.service
+fi
+
 echo "    [远端] 停服务并做最终数据同步"
 sudo systemctl stop kaix-web.service || true
 sudo systemctl stop kaix-backend.service || true
+SERVICES_STOPPED=1
 restore_runtime_data
 sudo chown -R kaix:kaix "$RELEASE"
+
+if sudo grep -q '^KAIX_DB_BACKEND=postgres' /etc/kaix.env 2>/dev/null; then
+  if sudo grep -q '^KAIX_PG_CUTOVER_COMPLETE=1' /etc/kaix.env 2>/dev/null; then
+    echo "    [远端] PostgreSQL 已是唯一真相源，禁止用旧 SQLite 覆盖线上数据"
+  else
+    echo "    [远端] 首次 PostgreSQL 切换：同步停服窗口数据并执行全表一致性校验"
+    sudo "$RELEASE/.venv/bin/python" \
+      "$RELEASE/web/scripts/verify_sqlite_postgres_parity.py" \
+      --sqlite "$RELEASE/web/kaix.db" \
+      --env-file /etc/kaix.env \
+      --sync-from-sqlite
+  fi
+  echo "    [远端] 执行待应用的 PostgreSQL 数据迁移"
+  sudo "$RELEASE/.venv/bin/python" \
+    "$RELEASE/web/scripts/apply_postgres_migrations.py" \
+    --env-file /etc/kaix.env
+  echo "    [远端] 将仍被引用的本地媒体迁移到私有 S3，并切换公开资源到 CloudFront"
+  sudo "$RELEASE/.venv/bin/python" \
+    "$RELEASE/web/scripts/migrate_local_media_to_s3.py" \
+    --media-root "$RELEASE/web/media" \
+    --env-file /etc/kaix.env \
+    --apply
+fi
 
 echo "    [远端] 切换 release"
 if [ -d "$CURRENT" ]; then
   sudo mv "$CURRENT" "$BACKUP"
+  CURRENT_MOVED=1
 fi
 sudo mv "$RELEASE" "$CURRENT"
 SWAPPED=1
+CURRENT_MOVED=0
+SERVICES_STOPPED=0
 
 install_systemd_units
 
@@ -183,10 +292,19 @@ sleep 3
 echo "    [远端] 健康检查"
 sudo systemctl is-active kaix-backend.service kaix-web.service
 
-if curl -fsS http://127.0.0.1:8787/readyz >/dev/null; then
+READY_JSON=$(curl -fsS http://127.0.0.1:8787/readyz)
+if READY_JSON="$READY_JSON" /opt/kaix/.venv/bin/python -c \
+    'import json, os; raise SystemExit(0 if json.loads(os.environ["READY_JSON"]).get("ready") is True else 1)'; then
   echo "    ✅ backend /readyz 200"
 else
   echo "    ❌ backend /readyz 失败" >&2
+  exit 1
+fi
+
+if sudo grep -q '^KAIX_DB_BACKEND=postgres' /etc/kaix.env 2>/dev/null \
+    && ! READY_JSON="$READY_JSON" /opt/kaix/.venv/bin/python -c \
+      'import json, os; raise SystemExit(0 if json.loads(os.environ["READY_JSON"]).get("database") == "postgres" else 1)'; then
+  echo "    ❌ 环境要求 PostgreSQL，但运行中的后端未报告 PostgreSQL" >&2
   exit 1
 fi
 
@@ -211,8 +329,32 @@ if command -v caddy >/dev/null 2>&1 && systemctl list-unit-files caddy.service >
 fi
 
 if systemctl list-unit-files nginx.service >/dev/null 2>&1 && systemctl is-active --quiet nginx; then
-  echo "    [远端] 检测到 Nginx，重载边缘代理"
-  sudo nginx -t
+  echo "    [远端] 检测到 Nginx，安全同步限流配置并重载边缘代理"
+  NGINX_CONFIG=/etc/nginx/conf.d/kaix.conf
+  if [ -f "$NGINX_CONFIG" ]; then
+    NGINX_BACKUP="${NGINX_CONFIG}.deploy-backup"
+    sudo cp "$NGINX_CONFIG" "$NGINX_BACKUP"
+    sudo sed -E -i \
+      -e 's/zone=kaix_api:10m  rate=10r\/s/zone=kaix_api:10m  rate=30r\/s/' \
+      -e 's/zone=kaix_api burst=40 nodelay/zone=kaix_api burst=100 nodelay/' \
+      -e 's/client_max_body_size[[:space:]]+[0-9]+[mMgG];/client_max_body_size 320m;/' \
+      -e 's/(X-Forwarded-For[[:space:]]+)\$proxy_add_x_forwarded_for/\1\$remote_addr/' \
+      "$NGINX_CONFIG"
+    if ! sudo grep -q '^[[:space:]]*limit_req_status[[:space:]]\+429;' "$NGINX_CONFIG"; then
+      sudo sed -i \
+        '/zone=kaix_auth:10m rate=2r\/s;/a limit_req_status 429;' \
+        "$NGINX_CONFIG"
+    fi
+    if ! sudo nginx -t; then
+      echo "    ❌ Nginx 新配置无效，恢复部署前版本" >&2
+      sudo cp "$NGINX_BACKUP" "$NGINX_CONFIG"
+      sudo nginx -t
+      exit 1
+    fi
+    sudo rm -f "$NGINX_BACKUP"
+  else
+    sudo nginx -t
+  fi
   sudo systemctl reload nginx
 fi
 
@@ -237,6 +379,12 @@ if curl -fsS --connect-timeout 5 --max-time 15 -o /dev/null "$PUBLIC_BASE/guide"
 else
   echo "    ❌ public /guide 失败：当前公网 Web 没有代理到 Next.js" >&2
   exit 1
+fi
+
+if sudo grep -q '^KAIX_DB_BACKEND=postgres' /etc/kaix.env 2>/dev/null \
+    && sudo systemctl cat machi-pg-backup.service >/dev/null 2>&1; then
+  echo "    [远端] 新版本健康检查通过，执行 PostgreSQL 上线后备份"
+  sudo systemctl start machi-pg-backup.service
 fi
 
 ls -dt /opt/kaix.backup-* 2>/dev/null | tail -n +5 | xargs -r sudo rm -rf

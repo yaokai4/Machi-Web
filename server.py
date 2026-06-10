@@ -2,11 +2,13 @@
 """Machi unified backend.
 
 Single source of truth for the iOS App and the Web client.
-SQLite-backed. JSON over HTTP. Token sessions in Authorization header.
+PostgreSQL-backed in production, with SQLite for local development and
+emergency rollback. JSON over HTTP. Native clients use Bearer sessions;
+the Web client uses the same session token in an HttpOnly cookie.
 
-This file is intentionally a single-file server: no external dependencies,
-runnable with `python3 server.py`. The schema is designed so it can be
-lifted to Postgres / Aurora without changing the API shape.
+The backend stays dependency-light and runnable with `python3 server.py`;
+large data/helper sections are split into local modules. The schema is
+designed so it can be lifted to Postgres / Aurora without changing the API shape.
 
 API contract (all JSON, all snake_case unless noted):
 
@@ -109,6 +111,7 @@ import shutil
 import smtplib
 import sqlite3
 import ssl
+import tempfile
 import threading
 import time
 import urllib.request
@@ -119,6 +122,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from html.parser import HTMLParser
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Iterable
@@ -128,6 +132,19 @@ import xml.etree.ElementTree as ET
 # City Seed Bot content library — local module, no third-party deps. Holds the
 # curated city-life content pools + generator used by 城市内容助手.
 import seed_content_library as seedlib
+from server_schema import MIGRATIONS, SCHEMA
+from server_regions import (
+    POPULAR_CITIES,
+    REGION_COUNTRIES,
+    REGION_PROVINCES,
+    _cities_for_parent,
+    _country_lookup,
+    _detect_region_code_from_geo,
+    _parse_region_code,
+    _region_payload_for_code,
+    _resolve_region_code,
+    _resolve_region_label,
+)
 from services.crawler import CrawlerError, CrawlerSkipped, crawl_source, normalize_allowed_domain
 
 try:
@@ -184,7 +201,8 @@ if PRODUCTION and PASSWORD_PEPPER == b"kaix-dev-pepper-2026":
     raise SystemExit("Refusing to start in production with the default PASSWORD_PEPPER. Set KAIX_PASSWORD_PEPPER.")
 
 SESSION_TTL_DAYS = int(_env("KAIX_SESSION_TTL_DAYS", "30"))
-MAX_UPLOAD_BYTES = int(_env("KAIX_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
+SESSION_COOKIE_NAME = "machi_session"
+MAX_UPLOAD_BYTES = int(_env("KAIX_MAX_UPLOAD_BYTES", str(320 * 1024 * 1024)))
 MAX_JSON_BYTES = int(_env("KAIX_MAX_JSON_BYTES", str(256 * 1024)))
 # Optional shared secret. When set, only the registration request that
 # carries the matching `bootstrap_token` is promoted to admin. Without
@@ -288,6 +306,10 @@ RATE_LIMITS = {
     "media":  (20, 20),
     "payment": (20, 10),     # order creation / verify — tight money path
 }
+HTTP_REQUEST_QUEUE_SIZE = max(
+    64,
+    min(int(_env("KAIX_HTTP_REQUEST_QUEUE_SIZE", "256") or 256), 1024),
+)
 
 ALLOWED_MIME = {
     "image/jpeg", "image/png", "image/gif", "image/webp", "image/heic",
@@ -334,6 +356,33 @@ EXT_BY_MIME: dict[str, str] = {
     "text/csv": ".csv",
 }
 
+UPLOAD_MIME_BY_EXTENSION: dict[str, str] = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "heic": "image/heic",
+    "heif": "image/heif",
+    "mp4": "video/mp4",
+    "m4v": "video/mp4",
+    "mov": "video/quicktime",
+    "qt": "video/quicktime",
+    "webm": "video/webm",
+    "mp3": "audio/mpeg",
+    "m4a": "audio/mp4",
+    "wav": "audio/wav",
+    "pdf": "application/pdf",
+}
+
+UPLOAD_MIME_ALIASES: dict[str, str] = {
+    "image/jpg": "image/jpeg",
+    "image/pjpeg": "image/jpeg",
+    "image/x-png": "image/png",
+    "video/x-m4v": "video/mp4",
+    "application/x-pdf": "application/pdf",
+}
+
 
 # ---------------------------------------------------------------------------
 # Amazon S3 / upload storage configuration
@@ -348,7 +397,8 @@ PUBLIC_BASE_URL = _env("KAIX_PUBLIC_BASE_URL", "").rstrip("/")
 AWS_REGION = _env("AWS_REGION", "ap-northeast-1")
 AWS_S3_BUCKET = _env("AWS_S3_BUCKET", "")
 AWS_CLOUDFRONT_DOMAIN = _env("AWS_CLOUDFRONT_DOMAIN", "").strip().rstrip("/")
-S3_UPLOAD_MAX_SIZE = int(_env("S3_UPLOAD_MAX_SIZE", str(50 * 1024 * 1024)))
+PRIVATE_MEDIA_KEY_B64 = _env("KAIX_PRIVATE_MEDIA_KEY", "").strip()
+S3_UPLOAD_MAX_SIZE = int(_env("S3_UPLOAD_MAX_SIZE", str(320 * 1024 * 1024)))
 S3_PRESIGN_EXPIRES_SECONDS = max(60, min(int(_env("S3_PRESIGN_EXPIRES_SECONDS", "300")), 900))
 S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS = max(60, min(int(_env("S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS", "600")), 900))
 
@@ -367,10 +417,15 @@ UPLOAD_PURPOSES: dict[str, dict[str, Any]] = {
     "group_post_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9},
     "group_post_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1},
     "secondhand_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 10},
+    "secondhand_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1},
     "rental_image": {"kind": "image", "max": 15 * 1024 * 1024, "count": 20},
+    "rental_video": {"kind": "video", "max": 300 * 1024 * 1024, "count": 1},
     "job_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 5},
+    "job_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1},
     "service_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 10},
+    "service_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1},
     "discount_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 5},
+    "discount_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1},
     "guide_article_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 20, "admin": True},
     "guide_product_preview": {"kind": "image", "max": 10 * 1024 * 1024, "count": 10, "admin": True},
     "guide_product_file": {"kind": "pdf", "max": 50 * 1024 * 1024, "count": 20, "admin": True, "private": True},
@@ -395,6 +450,18 @@ LISTING_PURPOSE_BY_TYPE = {
     "discount": "discount_image",
     "event": "discount_image",
 }
+
+LISTING_VIDEO_PURPOSE_BY_TYPE = {
+    "secondhand": "secondhand_video",
+    "rental": "rental_video",
+    "job": "job_video",
+    "hiring": "job_video",
+    "local_service": "service_video",
+    "discount": "discount_video",
+    "event": "discount_video",
+}
+
+LISTING_UPLOAD_PURPOSES = set(LISTING_PURPOSE_BY_TYPE.values()) | set(LISTING_VIDEO_PURPOSE_BY_TYPE.values())
 
 
 # ---------------------------------------------------------------------------
@@ -550,6 +617,22 @@ LISTING_VERIFICATION_TYPES: set[str] = {
     "seller", "rental_provider", "recruiter", "service_provider", "business",
 }
 LISTING_TYPES_DEFAULT_REVIEW: set[str] = {"rental", "job", "hiring", "local_service"}
+LISTING_TYPES_REQUIRING_MEMBERSHIP: set[str] = {"rental", "job", "hiring", "local_service", "discount"}
+LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT = max(0, int(_env("LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT", "3") or 3))
+LISTING_MEMBERSHIP_QUOTA_GROUPS: dict[str, set[str]] = {
+    "rental": {"rental"},
+    "job": {"job", "hiring"},
+    "hiring": {"job", "hiring"},
+    "local_service": {"local_service", "discount"},
+    "discount": {"local_service", "discount"},
+}
+LISTING_MEMBERSHIP_GROUP_LABELS: dict[str, str] = {
+    "rental": "租房",
+    "job": "招聘",
+    "hiring": "招聘",
+    "local_service": "本地商家/服务",
+    "discount": "本地商家/服务",
+}
 HIGH_INTENT_POST_TYPES: set[str] = {
     "secondhand", "housing", "roommate", "job_seek", "job_post",
     "referral", "service", "merchant", "coupon",
@@ -1057,7 +1140,7 @@ def _sniff_mime(data: bytes) -> str | None:
     # Videos
     if head[4:8] == b"ftyp":
         brand = head[8:12]
-        if brand in (b"isom", b"iso2", b"mp41", b"mp42", b"avc1", b"dash"):
+        if brand in (b"isom", b"iso2", b"mp41", b"mp42", b"avc1", b"dash", b"M4V ", b"M4A ", b"MSNV", b"3gp4", b"3gp5"):
             return "video/mp4"
         if brand == b"qt  ":
             return "video/quicktime"
@@ -1100,9 +1183,76 @@ def upload_mime_matches(sniffed: str | None, expected: str) -> bool:
     return (sniffed or "", expected) in compatible
 
 
+def validate_upload_magic(data: bytes, expected: str) -> str:
+    sniffed = _sniff_mime(data)
+    if not upload_mime_matches(sniffed, expected):
+        raise APIError("文件类型与签名不一致", 415, "mime_mismatch")
+    return sniffed or expected
+
+
 _S3_CLIENT: Any | None = None
 _S3_CREDENTIALS_CHECKED = False
 _S3_CREDENTIALS_AVAILABLE = False
+PRIVATE_MEDIA_CIPHER = "AES-256-GCM"
+PRIVATE_MEDIA_CIPHER_VERSION = 1
+PRIVATE_MEDIA_CHUNK_SIZE = 1024 * 1024
+
+
+def _decode_urlsafe_base64(value: str, *, field: str) -> bytes:
+    try:
+        padded = value + ("=" * (-len(value) % 4))
+        return base64.urlsafe_b64decode(padded.encode("ascii"))
+    except Exception as exc:
+        raise APIError(f"{field} 配置不合法", 500, "private_media_crypto_invalid") from exc
+
+
+def private_media_key() -> bytes:
+    if not PRIVATE_MEDIA_KEY_B64:
+        raise APIError("私密媒体加密密钥未配置", 500, "private_media_key_missing")
+    key = _decode_urlsafe_base64(PRIVATE_MEDIA_KEY_B64, field="KAIX_PRIVATE_MEDIA_KEY")
+    if len(key) != 32:
+        raise APIError("私密媒体加密密钥必须为 32 字节", 500, "private_media_key_invalid")
+    return key
+
+
+def private_media_encryptor(iv: bytes | None = None) -> tuple[Any, bytes]:
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError as exc:
+        raise APIError("cryptography 未安装，无法保护私密媒体", 500, "private_media_crypto_missing") from exc
+    nonce = iv or secrets.token_bytes(12)
+    if len(nonce) != 12:
+        raise APIError("私密媒体随机向量不合法", 500, "private_media_crypto_invalid")
+    return Cipher(algorithms.AES(private_media_key()), modes.GCM(nonce)).encryptor(), nonce
+
+
+def private_media_encryption_metadata(iv: bytes, tag: bytes) -> dict[str, Any]:
+    return {
+        "algorithm": PRIVATE_MEDIA_CIPHER,
+        "version": PRIVATE_MEDIA_CIPHER_VERSION,
+        "iv": base64.urlsafe_b64encode(iv).decode("ascii").rstrip("="),
+        "tag": base64.urlsafe_b64encode(tag).decode("ascii").rstrip("="),
+    }
+
+
+def private_media_decryptor(metadata: dict[str, Any]) -> Any:
+    encryption = metadata.get("encryption")
+    if not isinstance(encryption, dict):
+        raise APIError("私密媒体缺少加密信息", 503, "private_media_encryption_missing")
+    if (
+        encryption.get("algorithm") != PRIVATE_MEDIA_CIPHER
+        or int(encryption.get("version") or 0) != PRIVATE_MEDIA_CIPHER_VERSION
+    ):
+        raise APIError("私密媒体加密格式不受支持", 503, "private_media_encryption_unsupported")
+    iv = _decode_urlsafe_base64(str(encryption.get("iv") or ""), field="private media iv")
+    tag = _decode_urlsafe_base64(str(encryption.get("tag") or ""), field="private media tag")
+    if len(iv) != 12 or len(tag) != 16:
+        raise APIError("私密媒体加密信息不完整", 503, "private_media_encryption_invalid")
+    try:
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    except ImportError as exc:
+        raise APIError("cryptography 未安装，无法读取私密媒体", 500, "private_media_crypto_missing") from exc
+    return Cipher(algorithms.AES(private_media_key()), modes.GCM(iv, tag)).decryptor()
 
 
 def _s3_client() -> Any:
@@ -1176,6 +1326,29 @@ def _s3_head_object(object_key: str) -> dict[str, Any]:
         raise APIError("S3 HeadObject 失败", 502, "s3_head_failed")
     except (BotoCoreError, NoCredentialsError):
         raise APIError("S3 HeadObject 失败", 502, "s3_head_failed")
+
+
+def _s3_read_prefix(object_key: str, length: int = 64 * 1024) -> bytes:
+    if not s3_ready_for_upload():
+        raise APIError("S3 is not configured", 500, "s3_not_configured")
+    try:
+        response = _s3_client().get_object(
+            Bucket=AWS_S3_BUCKET,
+            Key=object_key,
+            Range=f"bytes=0-{max(0, length - 1)}",
+        )
+        body = response["Body"]
+        try:
+            return body.read(length)
+        finally:
+            body.close()
+    except ClientError as exc:
+        code = str((getattr(exc, "response", {}) or {}).get("Error", {}).get("Code") or "")
+        if code in {"404", "NoSuchKey", "NotFound"}:
+            raise APIError("S3 文件尚未上传完成", 400, "s3_object_not_found") from exc
+        raise APIError("S3 文件类型校验失败", 502, "s3_read_failed") from exc
+    except (BotoCoreError, NoCredentialsError) as exc:
+        raise APIError("S3 文件类型校验失败", 502, "s3_read_failed") from exc
 
 
 def _s3_delete_object(object_key: str) -> bool:
@@ -1255,10 +1428,139 @@ def upload_public_url(object_key: str, purpose: str = "") -> str:
 
 
 def upload_thumbnail_url(object_key: str, content_type: str, purpose: str = "") -> str:
-    # The async image-processing pipeline can later swap this to
-    # thumbnails/{...}. Until then we expose the original as the thumbnail
-    # fallback so lists never break while processing catches up.
+    # The async thumbnail worker swaps this fallback for a generated WebP.
+    # Keeping the original URL here prevents broken cards while processing.
     return upload_public_url(object_key, purpose) if content_type.startswith("image/") and not upload_is_private(purpose) else ""
+
+
+def _upload_metadata(raw: Any) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        return dict(raw)
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _media_visibility(purpose: str = "", fallback: str = "public") -> str:
+    if purpose and upload_is_private(purpose):
+        return "private"
+    return fallback or "public"
+
+
+def _media_type_from(content_type: str, stored_type: str = "", file_type: str = "") -> str:
+    content_type = (content_type or "").lower()
+    if content_type.startswith("image/"):
+        return "image"
+    if content_type.startswith("video/"):
+        return "video"
+    if content_type.startswith("audio/"):
+        return "audio"
+    raw = (file_type or stored_type or "file").lower()
+    if raw in {"pdf", "document", "other"}:
+        return "file"
+    return raw if raw in {"image", "video", "audio", "file"} else "file"
+
+
+def normalize_media_dto(row: sqlite3.Row | dict[str, Any], *, fallback_id: str = "") -> dict[str, Any]:
+    """Return the cross-client MediaDTO while preserving legacy aliases."""
+    d = dict(row)
+    metadata = _upload_metadata(d.get("metadata"))
+    metadata.pop("upload_token", None)
+    purpose = d.get("purpose") or ""
+    visibility = d.get("visibility") or _media_visibility(purpose)
+    is_private = visibility != "public" or bool(d.get("isPrivate")) or upload_is_private(purpose)
+    object_key = d.get("object_key") or d.get("objectKey") or ""
+    content_type = d.get("content_type") or d.get("contentType") or d.get("mime") or ""
+    media_type = _media_type_from(content_type, d.get("type") or d.get("media_type") or "", d.get("file_type") or d.get("fileType") or "")
+    stored_url = d.get("cdn_url") or d.get("cdnUrl") or d.get("public_url") or d.get("publicUrl") or d.get("url") or ""
+    if object_key and not stored_url and not is_private:
+        stored_url = upload_public_url(object_key, purpose)
+    if is_private:
+        visibility = "private"
+    public_url = "" if is_private else stored_url
+    raw_thumb = (
+        metadata.get("poster_url")
+        or metadata.get("posterUrl")
+        or metadata.get("thumbnail_url")
+        or metadata.get("thumbnailUrl")
+        or d.get("poster_url")
+        or d.get("posterUrl")
+        or d.get("thumbnail_url")
+        or d.get("thumbnailUrl")
+        or d.get("thumb_url")
+        or d.get("thumbUrl")
+        or ""
+    )
+    if raw_thumb == public_url and media_type == "video":
+        raw_thumb = ""
+    thumbnail_url = "" if is_private else (raw_thumb or (public_url if media_type == "image" else ""))
+    poster_url = "" if is_private else (
+        metadata.get("poster_url")
+        or metadata.get("posterUrl")
+        or thumbnail_url
+        or ""
+    )
+    if poster_url == public_url and media_type == "video":
+        poster_url = ""
+    duration = float(d.get("duration_seconds") or d.get("durationSeconds") or d.get("duration") or metadata.get("duration_seconds") or metadata.get("durationSeconds") or 0)
+    file_size = int(d.get("file_size") or d.get("fileSize") or d.get("byte_size") or d.get("byteSize") or 0)
+    owner_id = d.get("owner_id") or d.get("ownerId") or d.get("user_id") or d.get("userId") or ""
+    payload = {
+        "id": d.get("id") or fallback_id,
+        "remote_id": d.get("remote_id") or d.get("id") or fallback_id,
+        "remoteId": d.get("remote_id") or d.get("id") or fallback_id,
+        "owner_id": owner_id,
+        "ownerId": owner_id,
+        "type": media_type,
+        "visibility": visibility,
+        "objectKey": object_key,
+        "url": public_url,
+        "cdnUrl": public_url,
+        "publicUrl": public_url,
+        "needsSignedUrl": is_private,
+        "needs_signed_url": is_private,
+        "thumbnailUrl": thumbnail_url,
+        "thumbnail_url": thumbnail_url,
+        "thumb_url": thumbnail_url,
+        "thumbUrl": thumbnail_url,
+        "posterUrl": poster_url,
+        "poster_url": poster_url,
+        "contentType": content_type,
+        "content_type": content_type,
+        "mime": content_type,
+        "width": int(d.get("width") or 0),
+        "height": int(d.get("height") or 0),
+        "durationSeconds": duration,
+        "duration_seconds": duration,
+        "duration": duration,
+        "fileSize": file_size,
+        "file_size": file_size,
+        "byte_size": file_size,
+        "status": d.get("status") or d.get("processing_status") or d.get("processingStatus") or "ready",
+        "processing_status": d.get("processing_status") or d.get("processingStatus") or d.get("status") or "ready",
+        "created_at": d.get("created_at") or d.get("createdAt") or "",
+        "createdAt": d.get("created_at") or d.get("createdAt") or "",
+    }
+    if is_private:
+        payload["needsSignedUrl"] = True
+    return payload
+
+
+def media_card_image_url(media: dict[str, Any]) -> str:
+    if (media.get("type") or media.get("media_type")) == "video":
+        return media.get("posterUrl") or media.get("thumbnailUrl") or media.get("thumbnail_url") or ""
+    return media.get("thumbnailUrl") or media.get("thumbnail_url") or media.get("cdnUrl") or media.get("url") or ""
+
+
+def listing_media_thumbnail_url(media: dict[str, Any]) -> str:
+    media_type = media.get("type") or media.get("media_type") or ""
+    url = media.get("url") or media.get("cdnUrl") or ""
+    thumb = media.get("thumbnailUrl") or media.get("thumb_url") or media.get("posterUrl") or ""
+    if media_type == "video":
+        return "" if thumb == url else thumb
+    return thumb or url
 
 
 def upload_allowed_mimes(purpose: str) -> set[str]:
@@ -1276,10 +1578,16 @@ def upload_allowed_mimes(purpose: str) -> set[str]:
     return set()
 
 
-def canonical_upload_mime(purpose: str, content_type: str) -> str:
+def infer_upload_mime_from_filename(file_name: str) -> str:
+    suffix = Path(str(file_name or "").split("?", 1)[0]).suffix.lower().lstrip(".")
+    return UPLOAD_MIME_BY_EXTENSION.get(suffix, "")
+
+
+def canonical_upload_mime(purpose: str, content_type: str, file_name: str = "") -> str:
     content_type = (content_type or "").split(";", 1)[0].strip().lower()
-    if content_type == "image/jpg":
-        content_type = "image/jpeg"
+    content_type = UPLOAD_MIME_ALIASES.get(content_type, content_type)
+    if not content_type or content_type == "application/octet-stream":
+        content_type = infer_upload_mime_from_filename(file_name)
     allowed = upload_allowed_mimes(purpose)
     if content_type not in allowed:
         raise APIError("不支持的文件类型", 415, "unsupported_upload_type")
@@ -1343,15 +1651,21 @@ def upload_object_key(user_id: str, purpose: str, entity_type: str, entity_id: s
         return f"videos/thumbnails/{uuid.uuid4().hex}.jpg"
     if purpose == "video_processed_file":
         return f"videos/processed/{uuid.uuid4().hex}/original{ext}"
-    if purpose in LISTING_PURPOSE_BY_TYPE.values() and entity_type == "listing" and clean_entity_id:
+    if purpose in LISTING_UPLOAD_PURPOSES and entity_type == "listing" and clean_entity_id:
         listing_segment = {
             "secondhand_image": "secondhand",
+            "secondhand_video": "secondhand",
             "rental_image": "rentals",
+            "rental_video": "rentals",
             "job_image": "jobs",
+            "job_video": "jobs",
             "service_image": "services",
+            "service_video": "services",
             "discount_image": "discounts",
+            "discount_video": "discounts",
         }.get(purpose, "images")
-        return f"listings/{listing_segment}/{clean_entity_id}/images/{name}"
+        folder = "videos" if purpose.endswith("_video") else "images"
+        return f"listings/{listing_segment}/{clean_entity_id}/{folder}/{name}"
     if purpose == "guide_article_image" and entity_type == "guide_article" and clean_entity_id:
         return f"guide/articles/{clean_entity_id}/images/{name}"
     if purpose == "guide_product_preview" and entity_type == "guide_product" and clean_entity_id:
@@ -1389,13 +1703,11 @@ def serialize_uploaded_file(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]
     purpose = d.get("purpose") or ""
     is_private = upload_is_private(purpose)
     public_url = "" if is_private else (d.get("cdn_url") or d.get("public_url") or upload_public_url(d.get("object_key") or "", purpose))
-    thumb = "" if is_private else upload_thumbnail_url(d.get("object_key") or "", d.get("content_type") or "", purpose)
-    try:
-        metadata = json.loads(d.get("metadata") or "{}")
-    except (TypeError, json.JSONDecodeError):
-        metadata = {}
+    metadata = _upload_metadata(d.get("metadata"))
     metadata.pop("upload_token", None)
-    return {
+    media = normalize_media_dto(d)
+    thumb = media.get("thumbnailUrl") or ""
+    payload = {
         "id": d.get("id"),
         "uploadId": d.get("upload_id") or "",
         "userId": d.get("user_id") or "",
@@ -1404,7 +1716,7 @@ def serialize_uploaded_file(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]
         "url": public_url,
         "publicUrl": "" if is_private else (d.get("public_url") or public_url),
         "cdnUrl": "" if is_private else (d.get("cdn_url") or public_url),
-        "thumbnailUrl": "" if is_private else (metadata.get("thumbnail_url") or thumb or public_url),
+        "thumbnailUrl": "" if is_private else thumb,
         "contentType": d.get("content_type") or "",
         "fileSize": int(d.get("file_size") or 0),
         "fileType": d.get("file_type") or "other",
@@ -1422,25 +1734,253 @@ def serialize_uploaded_file(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]
         "updatedAt": d.get("updated_at"),
         "deletedAt": d.get("deleted_at"),
     }
+    payload.update({
+        "type": media["type"],
+        "visibility": media["visibility"],
+        "posterUrl": media["posterUrl"],
+        "durationSeconds": media["durationSeconds"],
+    })
+    return payload
 
 
 def uploaded_file_as_media(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     f = serialize_uploaded_file(row)
     media_type = "image" if f["fileType"] == "image" else "file" if f["fileType"] in {"pdf", "document", "other"} else f["fileType"]
-    return {
+    media = normalize_media_dto({**dict(row), "type": media_type})
+    media.update({
         "id": f["id"],
         "remote_id": f["id"],
+        "remoteId": f["id"],
         "owner_id": f["userId"],
+        "ownerId": f["userId"],
         "type": media_type,
         "url": f["cdnUrl"],
-        "thumb_url": f["thumbnailUrl"] or f["cdnUrl"],
+        "cdnUrl": f["cdnUrl"],
+        "publicUrl": f["cdnUrl"],
+        "thumbnailUrl": f["thumbnailUrl"],
+        "thumbnail_url": f["thumbnailUrl"],
+        "thumb_url": f["thumbnailUrl"],
+        "thumbUrl": f["thumbnailUrl"],
+        "posterUrl": f["posterUrl"],
+        "poster_url": f["posterUrl"],
         "mime": f["contentType"],
+        "contentType": f["contentType"],
+        "content_type": f["contentType"],
         "width": f["width"],
         "height": f["height"],
         "duration": f["duration"],
+        "durationSeconds": f["durationSeconds"],
+        "duration_seconds": f["durationSeconds"],
         "byte_size": f["fileSize"],
+        "fileSize": f["fileSize"],
+        "file_size": f["fileSize"],
+        "visibility": f["visibility"],
+        "objectKey": f["objectKey"],
+        "status": f["status"],
         "created_at": f["createdAt"],
-    }
+        "createdAt": f["createdAt"],
+    })
+    return media
+
+
+# ---------------------------------------------------------------------------
+# Public image thumbnails
+#
+# Upload completion stays fast: it only enqueues a file id. A bounded daemon
+# worker downloads the original, applies EXIF orientation, generates a compact
+# WebP, stores it alongside public media, then updates all current card/media
+# references. Original media remains the fallback if processing ever fails.
+# ---------------------------------------------------------------------------
+
+_THUMBNAIL_QUEUE: "queue.Queue[tuple[str, int]]" = queue.Queue(maxsize=1000)
+_THUMBNAIL_WORKER_STARTED = False
+THUMBNAIL_MAX_EDGE = max(320, min(int(_env("KAIX_THUMBNAIL_MAX_EDGE", "720") or 720), 1600))
+
+
+def thumbnail_eligible(row: sqlite3.Row | dict[str, Any]) -> bool:
+    d = dict(row)
+    return (
+        str(d.get("content_type") or "").startswith("image/")
+        and not upload_is_private(str(d.get("purpose") or ""))
+        and str(d.get("status") or "") in {"uploaded", "processing", "ready"}
+        and bool(d.get("object_key"))
+    )
+
+
+def _build_image_thumbnail(raw: bytes, max_edge: int = THUMBNAIL_MAX_EDGE) -> tuple[bytes, int, int]:
+    try:
+        from PIL import Image, ImageOps, UnidentifiedImageError
+    except ImportError as exc:
+        raise RuntimeError("Pillow is required for thumbnail generation") from exc
+    Image.MAX_IMAGE_PIXELS = 50_000_000
+    try:
+        with Image.open(io.BytesIO(raw)) as source:
+            source.seek(0)
+            image = ImageOps.exif_transpose(source)
+            image.thumbnail((max_edge, max_edge), Image.Resampling.LANCZOS)
+            if image.mode not in {"RGB", "RGBA"}:
+                image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+            output = io.BytesIO()
+            image.save(output, format="WEBP", quality=78, method=4)
+            return output.getvalue(), image.width, image.height
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        raise RuntimeError("unsupported or corrupt image") from exc
+
+
+def _thumbnail_object_key(file_id: str) -> str:
+    clean = re.sub(r"[^A-Za-z0-9_.-]", "", file_id)[:160]
+    return f"thumbnails/{clean}.webp"
+
+
+def _update_thumbnail_status(file_id: str, *, status: str, error: str = "") -> None:
+    with DB_LOCK:
+        conn = db()
+        try:
+            row = conn.execute(
+                "SELECT metadata FROM uploaded_files WHERE id = ? AND deleted_at IS NULL",
+                (file_id,),
+            ).fetchone()
+            if not row:
+                return
+            try:
+                metadata = json.loads(row["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            metadata["thumbnail_status"] = status
+            if error:
+                metadata["thumbnail_error"] = error[:200]
+            else:
+                metadata.pop("thumbnail_error", None)
+            conn.execute(
+                "UPDATE uploaded_files SET metadata = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False, sort_keys=True), now_iso(), file_id),
+            )
+        finally:
+            conn.close()
+
+
+def _process_thumbnail(file_id: str) -> None:
+    conn = db()
+    try:
+        row = conn.execute(
+            "SELECT * FROM uploaded_files WHERE id = ? AND deleted_at IS NULL",
+            (file_id,),
+        ).fetchone()
+        if not row or not thumbnail_eligible(row):
+            return
+        d = dict(row)
+        try:
+            metadata = json.loads(d.get("metadata") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            metadata = {}
+        if metadata.get("thumbnail_status") == "ready" and metadata.get("thumbnail_url"):
+            return
+    finally:
+        conn.close()
+
+    if d.get("bucket") == "local-dev":
+        raw = local_upload_path(d["object_key"]).read_bytes()
+    else:
+        response = _s3_client().get_object(Bucket=AWS_S3_BUCKET, Key=d["object_key"])
+        body = response["Body"]
+        try:
+            raw = body.read()
+        finally:
+            body.close()
+    thumb, width, height = _build_image_thumbnail(raw)
+    object_key = _thumbnail_object_key(file_id)
+    if d.get("bucket") == "local-dev":
+        target = local_upload_path(object_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(thumb)
+    else:
+        _s3_client().put_object(
+            Bucket=AWS_S3_BUCKET,
+            Key=object_key,
+            Body=thumb,
+            ContentType="image/webp",
+            CacheControl="public, max-age=31536000, immutable",
+            Metadata={"machi-thumbnail": "1", "source-file-id": file_id},
+        )
+    url = upload_public_url(object_key)
+    with DB_LOCK:
+        conn = db()
+        try:
+            current = conn.execute(
+                "SELECT metadata FROM uploaded_files WHERE id = ? AND deleted_at IS NULL",
+                (file_id,),
+            ).fetchone()
+            if not current:
+                return
+            try:
+                metadata = json.loads(current["metadata"] or "{}")
+            except (TypeError, json.JSONDecodeError):
+                metadata = {}
+            metadata.update({
+                "thumbnail_status": "ready",
+                "thumbnail_url": url,
+                "thumbnail_width": width,
+                "thumbnail_height": height,
+                "thumbnail_generated_at": now_iso(),
+            })
+            variants = metadata.get("variants") if isinstance(metadata.get("variants"), dict) else {}
+            variants["thumbnail"] = url
+            metadata["variants"] = variants
+            conn.execute(
+                "UPDATE uploaded_files SET metadata = ?, updated_at = ? WHERE id = ?",
+                (json.dumps(metadata, ensure_ascii=False, sort_keys=True), now_iso(), file_id),
+            )
+            conn.execute("UPDATE media SET thumb_url = ? WHERE id = ?", (url, file_id))
+            conn.execute(
+                "UPDATE listing_media SET thumbnail_url = ? WHERE uploaded_file_id = ? OR id = ?",
+                (url, file_id, file_id),
+            )
+            record_upload_audit(
+                conn,
+                d.get("user_id") or "",
+                "thumbnail_ready",
+                file_id=file_id,
+                status="ready",
+                metadata={"objectKey": object_key, "bytes": len(thumb), "width": width, "height": height},
+            )
+        finally:
+            conn.close()
+
+
+def _thumbnail_worker_loop() -> None:
+    while True:
+        file_id, attempt = _THUMBNAIL_QUEUE.get()
+        try:
+            _process_thumbnail(file_id)
+        except Exception as exc:
+            if attempt < 2:
+                time.sleep(0.5 * (attempt + 1))
+                try:
+                    _THUMBNAIL_QUEUE.put_nowait((file_id, attempt + 1))
+                except queue.Full:
+                    _update_thumbnail_status(file_id, status="failed", error="thumbnail queue full")
+            else:
+                ERR_LOG.warning("thumbnail generation failed file_id=%s error=%s", file_id, exc)
+                _update_thumbnail_status(file_id, status="failed", error=str(exc))
+        finally:
+            _THUMBNAIL_QUEUE.task_done()
+
+
+def start_thumbnail_worker() -> None:
+    global _THUMBNAIL_WORKER_STARTED
+    if _THUMBNAIL_WORKER_STARTED:
+        return
+    _THUMBNAIL_WORKER_STARTED = True
+    threading.Thread(target=_thumbnail_worker_loop, name="thumbnail-worker", daemon=True).start()
+
+
+def enqueue_thumbnail(file_id: str) -> bool:
+    try:
+        _THUMBNAIL_QUEUE.put_nowait((file_id, 0))
+        return True
+    except queue.Full:
+        ERR_LOG.warning("thumbnail queue full file_id=%s", file_id)
+        return False
 
 
 def record_upload_audit(conn: sqlite3.Connection, user_id: str, action: str, *,
@@ -1458,7 +1998,47 @@ def record_upload_audit(conn: sqlite3.Connection, user_id: str, action: str, *,
         ),
     )
 
-DB_LOCK = threading.RLock()
+# PostgreSQL is the production backend, while SQLite remains the zero-cost
+# local-development and emergency rollback backend. Keep the backend choice
+# close to the lock because write coordination depends on it.
+KAIX_DB_BACKEND = _env("KAIX_DB_BACKEND", "sqlite").strip().lower()
+KAIX_PG_DSN = _env("KAIX_PG_DSN", "")
+
+
+class _BackendAwareDBLock:
+    """Serialize SQLite writes without throttling PostgreSQL.
+
+    SQLite has a single writer, so the process-wide RLock is still valuable
+    there. PostgreSQL provides its own row/index/transaction concurrency and
+    must not be put behind the same process-wide bottleneck.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+
+    @property
+    def enabled(self) -> bool:
+        return KAIX_DB_BACKEND != "postgres"
+
+    def acquire(self, *args: Any, **kwargs: Any) -> bool:
+        if not self.enabled:
+            return True
+        return self._lock.acquire(*args, **kwargs)
+
+    def release(self) -> None:
+        if self.enabled:
+            self._lock.release()
+
+    def __enter__(self) -> "_BackendAwareDBLock":
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        self.release()
+        return False
+
+
+DB_LOCK = _BackendAwareDBLock()
 
 # A write request that cannot acquire the global write lock within this many
 # seconds fails fast with 503 instead of hanging the connection forever.
@@ -1594,317 +2174,18 @@ def _cache_invalidate(prefix: str = "") -> None:
                 _CACHE.pop(k, None)
 
 
+def invalidate_public_ranking_caches() -> None:
+    _cache_invalidate("feed:hot")
+    _cache_invalidate("trending:")
+    _cache_invalidate("explore:")
+
+
 # ---------------------------------------------------------------------------
-# region directory.
+# region payload validation.
 #
-# Machi is a local-life / city-scoped social product. Both
-# the iOS App and the Web client need a single source of truth for the
-# country → province → city tree. Keeping it in-process (no DB tables,
-# no external CDN) means region lookups are zero-latency and the file
-# itself is auditable. The iOS App mirrors this exact tree in
-# `RegionDirectory.swift` so an offline client can still render the
-# picker; both sides agree on `region_code` so posts cross over
-# cleanly.
-#
-# Schema:
-#   COUNTRIES: ordered list of (code, name, emoji, hot?)
-#   PROVINCES: code -> [(province_code, province_name)]      (sub-level countries only)
-#   CITIES:    province_code -> [(city_code, city_name)]     (countries with provinces)
-#              country_code  -> [(city_code, city_name)]     (countries without)
-#   POPULAR_CITIES: ordered list of region_code (for the homepage shortcut)
-#
-# region_code conventions:
-#   "<country_iso2>.<city_slug>"             flat countries (jp, sg, kr, …)
-#   "<country_iso2>.<province_slug>.<city>"  hierarchical (cn, us)
-# All lowercase ASCII, dot-separated. Used as a stable identifier in
-# posts.region_code and the cache keys for hot lists.
+# Region directory data and pure helpers live in server_regions.py.
+# _normalize_region_payload stays here because it raises APIError envelopes.
 # ---------------------------------------------------------------------------
-
-REGION_COUNTRIES: list[dict[str, Any]] = [
-    {"code": "cn", "name": "中国",     "emoji": "🇨🇳", "tier": 1, "has_provinces": True},
-    {"code": "jp", "name": "日本",     "emoji": "🇯🇵", "tier": 1, "has_provinces": True},
-    {"code": "us", "name": "美国",     "emoji": "🇺🇸", "tier": 1, "has_provinces": True},
-    {"code": "sg", "name": "新加坡",   "emoji": "🇸🇬", "tier": 2, "has_provinces": False},
-    {"code": "kr", "name": "韩国",     "emoji": "🇰🇷", "tier": 2, "has_provinces": False},
-    {"code": "uk", "name": "英国",     "emoji": "🇬🇧", "tier": 2, "has_provinces": False},
-    {"code": "fr", "name": "法国",     "emoji": "🇫🇷", "tier": 2, "has_provinces": False},
-    {"code": "au", "name": "澳大利亚", "emoji": "🇦🇺", "tier": 2, "has_provinces": False},
-    {"code": "ca", "name": "加拿大",   "emoji": "🇨🇦", "tier": 2, "has_provinces": False},
-    {"code": "th", "name": "泰国",     "emoji": "🇹🇭", "tier": 3, "has_provinces": False},
-    {"code": "my", "name": "马来西亚", "emoji": "🇲🇾", "tier": 3, "has_provinces": False},
-    {"code": "de", "name": "德国",     "emoji": "🇩🇪", "tier": 3, "has_provinces": False},
-    {"code": "nl", "name": "荷兰",     "emoji": "🇳🇱", "tier": 3, "has_provinces": False},
-]
-
-REGION_PROVINCES: dict[str, list[dict[str, str]]] = {
-    "cn": [
-        {"code": "beijing",    "name": "北京"},
-        {"code": "shanghai",   "name": "上海"},
-        {"code": "tianjin",    "name": "天津"},
-        {"code": "chongqing",  "name": "重庆"},
-        {"code": "zhejiang",   "name": "浙江"},
-        {"code": "jiangsu",    "name": "江苏"},
-        {"code": "guangdong",  "name": "广东"},
-        {"code": "hongkong",   "name": "香港"},
-        {"code": "sichuan",    "name": "四川"},
-        {"code": "shandong",   "name": "山东"},
-        {"code": "fujian",     "name": "福建"},
-        {"code": "henan",      "name": "河南"},
-        {"code": "anhui",      "name": "安徽"},
-        {"code": "hunan",      "name": "湖南"},
-        {"code": "shaanxi",    "name": "陕西"},
-        {"code": "hubei",      "name": "湖北"},
-    ],
-    "jp": [
-        {"code": "tokyo",     "name": "东京都"},
-        {"code": "osaka",     "name": "大阪府"},
-        {"code": "kyoto",     "name": "京都府"},
-        {"code": "fukuoka",   "name": "福冈县"},
-        {"code": "aichi",     "name": "爱知县"},
-        {"code": "kanagawa",  "name": "神奈川县"},
-        {"code": "saitama",   "name": "埼玉县"},
-        {"code": "chiba",     "name": "千叶县"},
-        {"code": "hyogo",     "name": "兵库县"},
-        {"code": "hokkaido",  "name": "北海道"},
-        {"code": "miyagi",    "name": "宫城县"},
-        {"code": "hiroshima", "name": "广岛县"},
-        {"code": "okinawa",   "name": "冲绳县"},
-        {"code": "shizuoka",  "name": "静冈县"},
-        {"code": "ibaraki",   "name": "茨城县"},
-        {"code": "nara",      "name": "奈良县"},
-        {"code": "mie",       "name": "三重县"},
-        {"code": "kumamoto",  "name": "熊本县"},
-        {"code": "kagoshima", "name": "鹿儿岛县"},
-        {"code": "nagano",    "name": "长野县"},
-        {"code": "ishikawa",  "name": "石川县"},
-        {"code": "okayama",   "name": "冈山县"},
-        {"code": "niigata",   "name": "新潟县"},
-        {"code": "tochigi",   "name": "栃木县"},
-        {"code": "gunma",     "name": "群马县"},
-        {"code": "shiga",     "name": "滋贺县"},
-        {"code": "gifu",      "name": "岐阜县"},
-    ],
-    "us": [
-        {"code": "ca", "name": "加利福尼亚"},
-        {"code": "ny", "name": "纽约"},
-        {"code": "wa", "name": "华盛顿"},
-        {"code": "tx", "name": "德克萨斯"},
-        {"code": "fl", "name": "佛罗里达"},
-        {"code": "il", "name": "伊利诺伊"},
-        {"code": "ma", "name": "马萨诸塞"},
-        {"code": "nj", "name": "新泽西"},
-    ],
-}
-
-# Cities are keyed by the parent slug. For hierarchical countries the
-# parent is the province slug; for flat countries it's the country code.
-REGION_CITIES: dict[str, list[dict[str, str]]] = {
-    # ---- China by province ----
-    "shanghai":   [{"code": "shanghai", "name": "上海"}],
-    "beijing":    [{"code": "beijing",  "name": "北京"}],
-    "tianjin":    [{"code": "tianjin",  "name": "天津"}],
-    "chongqing":  [{"code": "chongqing", "name": "重庆"}],
-    "zhejiang":   [{"code": "hangzhou", "name": "杭州"}, {"code": "ningbo", "name": "宁波"}],
-    "jiangsu":    [{"code": "nanjing", "name": "南京"}, {"code": "suzhou", "name": "苏州"}],
-    "guangdong": [
-        {"code": "guangzhou", "name": "广州"},
-        {"code": "shenzhen",  "name": "深圳"},
-        {"code": "foshan",    "name": "佛山"},
-        {"code": "dongguan",  "name": "东莞"},
-    ],
-    "sichuan":  [{"code": "chengdu",  "name": "成都"}],
-    "shandong": [{"code": "qingdao",  "name": "青岛"}],
-    "fujian":   [{"code": "xiamen",   "name": "厦门"}],
-    "henan":    [{"code": "zhengzhou","name": "郑州"}],
-    "anhui":    [{"code": "hefei",    "name": "合肥"}],
-    "hubei":    [{"code": "wuhan",    "name": "武汉"}],
-    "shaanxi":  [{"code": "xian",     "name": "西安"}],
-    "hunan":    [{"code": "changsha", "name": "长沙"}],
-    "hongkong": [{"code": "hongkong", "name": "香港"}],
-    # ---- Japan by prefecture ----
-    "tokyo":    [{"code": "tokyo",    "name": "东京"}],
-    "osaka":    [{"code": "osaka",    "name": "大阪"}],
-    "kyoto":    [{"code": "kyoto",    "name": "京都"}],
-    "fukuoka":  [{"code": "fukuoka",  "name": "福冈"}],
-    "aichi":    [{"code": "nagoya",   "name": "名古屋"}],
-    "kanagawa": [{"code": "yokohama", "name": "横滨"}, {"code": "kawasaki", "name": "川崎"}],
-    "saitama":  [{"code": "saitama",  "name": "埼玉"}],
-    "chiba":    [{"code": "chiba",    "name": "千叶"}],
-    "hyogo":    [{"code": "kobe",     "name": "神户"}],
-    "hokkaido": [{"code": "sapporo",  "name": "札幌"}],
-    "miyagi":   [{"code": "sendai",   "name": "仙台"}],
-    "hiroshima":[{"code": "hiroshima","name": "广岛"}],
-    "okinawa":  [{"code": "naha",     "name": "那霸"}],
-    "shizuoka": [{"code": "shizuoka", "name": "静冈"}],
-    "ibaraki":  [{"code": "tsukuba",  "name": "筑波"}],
-    "nara":     [{"code": "nara",     "name": "奈良"}],
-    "mie":      [{"code": "yokkaichi","name": "四日市"}],
-    "kumamoto": [{"code": "kumamoto", "name": "熊本"}],
-    "kagoshima":[{"code": "kagoshima","name": "鹿儿岛"}],
-    "nagano":   [{"code": "nagano",   "name": "长野"}],
-    "ishikawa": [{"code": "kanazawa", "name": "金泽"}],
-    "okayama":  [{"code": "okayama",  "name": "冈山"}],
-    "niigata":  [{"code": "niigata",  "name": "新潟"}],
-    "tochigi":  [{"code": "utsunomiya", "name": "宇都宫"}],
-    "gunma":    [{"code": "takasaki", "name": "高崎"}],
-    "shiga":    [{"code": "otsu",     "name": "大津"}],
-    "gifu":     [{"code": "gifu",     "name": "岐阜"}],
-    # ---- US by state ----
-    "ca": [
-        {"code": "sf",   "name": "旧金山"},
-        {"code": "la",   "name": "洛杉矶"},
-        {"code": "sd",   "name": "圣地亚哥"},
-        {"code": "sj",   "name": "圣何塞"},
-        {"code": "irvine","name":"尔湾"},
-    ],
-    "ny": [{"code": "nyc", "name": "纽约"}, {"code": "buffalo", "name": "布法罗"}],
-    "wa": [{"code": "seattle", "name": "西雅图"}, {"code": "bellevue", "name": "贝尔维尤"}],
-    "tx": [{"code": "austin", "name": "奥斯汀"}, {"code": "houston", "name": "休斯顿"}, {"code": "dallas", "name": "达拉斯"}],
-    "fl": [{"code": "miami", "name": "迈阿密"}, {"code": "orlando", "name": "奥兰多"}],
-    "il": [{"code": "chicago", "name": "芝加哥"}],
-    "ma": [{"code": "boston",  "name": "波士顿"}],
-    "nj": [{"code": "newark",  "name": "纽瓦克"}],
-    # ---- Flat countries ----
-    "uk": [
-        {"code": "london", "name": "伦敦"},
-        {"code": "manchester", "name": "曼彻斯特"},
-        {"code": "edinburgh", "name": "爱丁堡"},
-        {"code": "birmingham", "name": "伯明翰"},
-        {"code": "glasgow", "name": "格拉斯哥"},
-        {"code": "liverpool", "name": "利物浦"},
-        {"code": "leeds", "name": "利兹"},
-        {"code": "bristol", "name": "布里斯托"},
-        {"code": "cambridge", "name": "剑桥"},
-        {"code": "oxford", "name": "牛津"},
-    ],
-    "ca_country": [],  # placeholder to avoid name clash; CA-country cities listed below by country code
-    "ca_flat":  [{"code": "toronto", "name": "多伦多"}, {"code": "vancouver", "name": "温哥华"}, {"code": "montreal", "name": "蒙特利尔"}],
-    "au":  [
-        {"code": "sydney", "name": "悉尼"},
-        {"code": "melbourne", "name": "墨尔本"},
-        {"code": "brisbane", "name": "布里斯班"},
-        {"code": "perth", "name": "珀斯"},
-        {"code": "adelaide", "name": "阿德莱德"},
-        {"code": "canberra", "name": "堪培拉"},
-        {"code": "goldcoast", "name": "黄金海岸"},
-    ],
-    "sg":  [{"code": "singapore", "name": "新加坡"}],
-    "kr":  [
-        {"code": "seoul", "name": "首尔"},
-        {"code": "busan", "name": "釜山"},
-        {"code": "incheon", "name": "仁川"},
-        {"code": "daegu", "name": "大邱"},
-        {"code": "daejeon", "name": "大田"},
-        {"code": "gwangju", "name": "光州"},
-    ],
-    "th":  [{"code": "bangkok", "name": "曼谷"}, {"code": "chiangmai", "name": "清迈"}, {"code": "phuket", "name": "普吉"}],
-    "my":  [{"code": "kl", "name": "吉隆坡"}, {"code": "penang", "name": "槟城"}],
-    "de":  [{"code": "berlin", "name": "柏林"}, {"code": "munich", "name": "慕尼黑"}, {"code": "hamburg", "name": "汉堡"}],
-    "fr":  [
-        {"code": "paris", "name": "巴黎"},
-        {"code": "lyon", "name": "里昂"},
-        {"code": "marseille", "name": "马赛"},
-        {"code": "toulouse", "name": "图卢兹"},
-        {"code": "nice", "name": "尼斯"},
-        {"code": "bordeaux", "name": "波尔多"},
-    ],
-    "nl":  [{"code": "amsterdam", "name": "阿姆斯特丹"}],
-}
-
-# Hot cities surface as shortcuts on the picker landing page.
-# Tuned for Machi's audience: domestic launch cities and the overseas metros with the largest Chinese-speaking
-# communities (海外华人聚居地). Order roughly mirrors what the picker
-# shows top-to-bottom — keep the most-used cities near the front so
-# the chip grid's first row is high-signal.
-POPULAR_CITIES: list[str] = [
-    # ---- China ----
-    "cn.shanghai.shanghai", "cn.beijing.beijing",
-    "cn.guangdong.shenzhen", "cn.guangdong.guangzhou",
-    "cn.zhejiang.hangzhou", "cn.sichuan.chengdu",
-    "cn.chongqing.chongqing", "cn.hubei.wuhan",
-    "cn.jiangsu.nanjing", "cn.jiangsu.suzhou",
-    "cn.shaanxi.xian", "cn.hunan.changsha",
-    "cn.shandong.qingdao", "cn.fujian.xiamen",
-    "cn.tianjin.tianjin", "cn.henan.zhengzhou",
-    "cn.zhejiang.ningbo", "cn.guangdong.foshan",
-    "cn.guangdong.dongguan", "cn.anhui.hefei",
-    # ---- Japan ----
-    "jp.tokyo.tokyo", "jp.osaka.osaka",
-    "jp.kyoto.kyoto", "jp.fukuoka.fukuoka", "jp.aichi.nagoya",
-    "jp.kanagawa.yokohama", "jp.kanagawa.kawasaki",
-    "jp.saitama.saitama", "jp.chiba.chiba",
-    "jp.hyogo.kobe", "jp.hokkaido.sapporo",
-    "jp.miyagi.sendai", "jp.hiroshima.hiroshima",
-    "jp.okinawa.naha", "jp.shizuoka.shizuoka",
-    # ---- US ----
-    "us.ny.nyc", "us.ca.la", "us.ca.sf", "us.wa.seattle",
-    # ---- Canada ----
-    "ca.toronto", "ca.vancouver", "ca.montreal",
-    # ---- Australia ----
-    "au.sydney", "au.melbourne",
-    # ---- UK ----
-    "uk.london",
-    # ---- France ----
-    "fr.paris",
-    # ---- Other Asia / SEA ----
-    "sg.singapore", "kr.seoul",
-    "th.bangkok",
-]
-
-
-def _cities_for_parent(country_code: str, province_code: str | None) -> list[dict[str, str]]:
-    """Resolve the city list given a parent. Handles both the
-    hierarchical (country has provinces) and flat country cases."""
-    if province_code:
-        # Province-level lookup. The dict uses province slug as key.
-        return REGION_CITIES.get(province_code, [])
-    # Flat country: special-case Canada so it doesn't collide with the
-    # California state slug "ca".
-    if country_code == "ca":
-        return REGION_CITIES.get("ca_flat", [])
-    return REGION_CITIES.get(country_code, [])
-
-
-def _country_lookup(code: str) -> dict[str, Any] | None:
-    for c in REGION_COUNTRIES:
-        if c["code"] == code:
-            return c
-    return None
-
-
-def _resolve_region_code(country: str, province: str, city: str) -> str:
-    """Build the canonical region_code from (country, province, city)
-    slugs. Returns an empty string when inputs are blank — callers
-    treat that as "no region selected"."""
-    country = (country or "").strip().lower()
-    province = (province or "").strip().lower()
-    city = (city or "").strip().lower()
-    if not country or not city:
-        return ""
-    spec = _country_lookup(country)
-    if spec and spec.get("has_provinces") and province:
-        return f"{country}.{province}.{city}"
-    return f"{country}.{city}"
-
-
-def _parse_region_code(code: str) -> tuple[str, str, str]:
-    """Inverse of _resolve_region_code. Returns (country, province, city)
-    slugs; province is "" for flat-country codes."""
-    parts = (code or "").split(".")
-    if len(parts) == 3:
-        return parts[0], parts[1], parts[2]
-    if len(parts) == 2:
-        return parts[0], "", parts[1]
-    return "", "", ""
-
-
-def _resolve_region_label(country: str, province: str, city: str) -> str:
-    """Return the city display name for a valid region, else empty."""
-    for item in _cities_for_parent(country, province or None):
-        if item["code"] == city:
-            return item["name"]
-    return ""
-
 
 def _normalize_region_payload(data: dict[str, Any]) -> tuple[str, str, str, str, str]:
     """Validate and normalize registration/profile region fields.
@@ -2179,15 +2460,45 @@ def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 # psycopg2 is imported lazily so the SQLite/production path never needs it.
 # Remaining SQLite-only SQL (1 INSERT OR REPLACE, 3 strftime) is fixed per-site
 # in following steps.
-KAIX_DB_BACKEND = _env("KAIX_DB_BACKEND", "sqlite").strip().lower()
-KAIX_PG_DSN = _env("KAIX_PG_DSN", "")
-
-
 def _pg_xlate(sql: str, has_params: bool) -> str:
     import re
     if sql.lstrip()[:6].upper() == "PRAGMA":
         return "SELECT 1"
-    s = re.sub(r"(?i)\bLIKE\b", "ILIKE", sql)
+
+    def replace_like_operators(src: str) -> str:
+        out: list[str] = []
+        i = 0
+        in_single = False
+        while i < len(src):
+            ch = src[i]
+            if in_single:
+                out.append(ch)
+                if ch == "'":
+                    if i + 1 < len(src) and src[i + 1] == "'":
+                        out.append(src[i + 1])
+                        i += 2
+                        continue
+                    in_single = False
+                i += 1
+                continue
+            if ch == "'":
+                in_single = True
+                out.append(ch)
+                i += 1
+                continue
+            token = src[i:i + 4]
+            if token.lower() == "like":
+                before = src[i - 1] if i > 0 else ""
+                after = src[i + 4] if i + 4 < len(src) else ""
+                if (not (before.isalnum() or before == "_")) and (not (after.isalnum() or after == "_")):
+                    out.append("ILIKE")
+                    i += 4
+                    continue
+            out.append(ch)
+            i += 1
+        return "".join(out)
+
+    s = replace_like_operators(sql)
     # SQLite scalar MAX/MIN(a, b) -> Postgres GREATEST/LEAST. Only flat 2-arg
     # forms (no nested parens) match, so aggregate MAX(col) is left untouched.
     s = re.sub(r"(?i)\bMAX\s*\(([^()]+,[^()]+)\)", r"GREATEST(\1)", s)
@@ -2209,6 +2520,7 @@ class _PgConn:
     def __init__(self, dsn: str):
         import psycopg2
         import psycopg2.extras
+        self._psycopg2 = psycopg2
         self._extras = psycopg2.extras
         self._c = psycopg2.connect(dsn or "dbname=machi_dev")
         self._c.autocommit = True  # mirror sqlite isolation_level=None
@@ -2216,19 +2528,46 @@ class _PgConn:
 
     def execute(self, sql, params=None):
         cur = self._c.cursor(cursor_factory=self._extras.DictCursor)
-        if params is None:
-            cur.execute(_pg_xlate(sql, False))
-        else:
-            cur.execute(_pg_xlate(sql, True), tuple(params))
+        try:
+            if params is None:
+                cur.execute(_pg_xlate(sql, False))
+            else:
+                cur.execute(_pg_xlate(sql, True), tuple(params))
+        except self._psycopg2.IntegrityError as exc:
+            raise sqlite3.IntegrityError(str(exc)) from exc
+        except self._psycopg2.OperationalError as exc:
+            raise sqlite3.OperationalError(str(exc)) from exc
+        except self._psycopg2.DatabaseError as exc:
+            raise sqlite3.DatabaseError(str(exc)) from exc
         return cur
 
     def executemany(self, sql, seq):
         cur = self._c.cursor()
-        cur.executemany(_pg_xlate(sql, True), [tuple(p) for p in seq])
+        try:
+            cur.executemany(_pg_xlate(sql, True), [tuple(p) for p in seq])
+        except self._psycopg2.IntegrityError as exc:
+            raise sqlite3.IntegrityError(str(exc)) from exc
+        except self._psycopg2.OperationalError as exc:
+            raise sqlite3.OperationalError(str(exc)) from exc
+        except self._psycopg2.DatabaseError as exc:
+            raise sqlite3.DatabaseError(str(exc)) from exc
         return cur
 
     def executescript(self, sql):
-        return None  # SQLite DDL; schema is migrated out-of-band on PG
+        cur = self._c.cursor()
+        try:
+            # psycopg2 accepts a semicolon-delimited command string. This path
+            # is used only by the explicit PostgreSQL migration runner; normal
+            # production startup still treats the migrated PG schema as the
+            # source of truth.
+            cur.execute(_pg_xlate(sql, False))
+        except self._psycopg2.IntegrityError as exc:
+            raise sqlite3.IntegrityError(str(exc)) from exc
+        except self._psycopg2.OperationalError as exc:
+            raise sqlite3.OperationalError(str(exc)) from exc
+        except self._psycopg2.DatabaseError as exc:
+            raise sqlite3.DatabaseError(str(exc)) from exc
+        return cur
 
     def commit(self):
         self._c.commit()
@@ -2278,2464 +2617,12 @@ def db() -> sqlite3.Connection:
     return conn
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
-    id TEXT PRIMARY KEY,
-    handle TEXT UNIQUE NOT NULL,
-    display_name TEXT NOT NULL,
-    email TEXT NOT NULL DEFAULT '',
-    password_hash TEXT NOT NULL,
-    bio TEXT NOT NULL DEFAULT '',
-    location TEXT NOT NULL DEFAULT '',
-    avatar_symbol TEXT NOT NULL DEFAULT 'person.fill',
-    avatar_color TEXT NOT NULL DEFAULT 'indigo',
-    avatar_url TEXT NOT NULL DEFAULT '',
-    cover_url TEXT NOT NULL DEFAULT '',
-    membership_tier TEXT NOT NULL DEFAULT 'free',
-    is_verified INTEGER NOT NULL DEFAULT 0,
-    role TEXT NOT NULL DEFAULT 'member',
-    joined_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    deleted_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS sessions (
-    token TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    device_name TEXT NOT NULL DEFAULT '',
-    user_agent TEXT NOT NULL DEFAULT '',
-    ip TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    last_seen_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-);
-
-CREATE TABLE IF NOT EXISTS posts (
-    id TEXT PRIMARY KEY,
-    author_id TEXT NOT NULL,
-    content TEXT NOT NULL,
-    repost_of_id TEXT,
-    view_count INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'published',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    deleted_at TEXT,
-    FOREIGN KEY(author_id) REFERENCES users(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at);
-
-CREATE TABLE IF NOT EXISTS post_tags (
-    post_id TEXT NOT NULL,
-    tag TEXT NOT NULL,
-    PRIMARY KEY(post_id, tag),
-    FOREIGN KEY(post_id) REFERENCES posts(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_post_tags_tag ON post_tags(tag);
-
-CREATE TABLE IF NOT EXISTS post_media (
-    id TEXT PRIMARY KEY,
-    post_id TEXT NOT NULL,
-    media_id TEXT NOT NULL,
-    sort_index INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY(post_id) REFERENCES posts(id),
-    FOREIGN KEY(media_id) REFERENCES media(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_post_media_post ON post_media(post_id);
-
-CREATE TABLE IF NOT EXISTS post_poll_votes (
-    post_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    option_index INTEGER NOT NULL,
-    created_at TEXT NOT NULL,
-    PRIMARY KEY(post_id, user_id),
-    FOREIGN KEY(post_id) REFERENCES posts(id),
-    FOREIGN KEY(user_id) REFERENCES users(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_post_poll_votes_post ON post_poll_votes(post_id);
-
-CREATE TABLE IF NOT EXISTS interactions (
-    id TEXT PRIMARY KEY,
-    target_id TEXT NOT NULL,
-    user_id TEXT NOT NULL,
-    kind TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE(target_id, user_id, kind)
-);
-
-CREATE INDEX IF NOT EXISTS idx_interactions_target ON interactions(target_id, kind);
-CREATE INDEX IF NOT EXISTS idx_interactions_user ON interactions(user_id, kind);
-
-CREATE TABLE IF NOT EXISTS comments (
-    id TEXT PRIMARY KEY,
-    post_id TEXT NOT NULL,
-    author_id TEXT NOT NULL,
-    content TEXT NOT NULL,
-    parent_comment_id TEXT,
-    reply_to_user_id TEXT,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    deleted_at TEXT,
-    FOREIGN KEY(post_id) REFERENCES posts(id),
-    FOREIGN KEY(author_id) REFERENCES users(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_comments_post ON comments(post_id, created_at);
-
-CREATE TABLE IF NOT EXISTS follows (
-    id TEXT PRIMARY KEY,
-    follower_id TEXT NOT NULL,
-    following_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE(follower_id, following_id)
-);
-
-CREATE TABLE IF NOT EXISTS blocks (
-    id TEXT PRIMARY KEY,
-    blocker_id TEXT NOT NULL,
-    blocked_id TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE(blocker_id, blocked_id)
-);
-
-CREATE TABLE IF NOT EXISTS reports (
-    id TEXT PRIMARY KEY,
-    reporter_id TEXT NOT NULL,
-    target_kind TEXT NOT NULL,
-    target_id TEXT NOT NULL,
-    reason TEXT NOT NULL,
-    note TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS conversations (
-    id TEXT PRIMARY KEY,
-    participant_a TEXT NOT NULL,
-    participant_b TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    deleted_at TEXT,
-    UNIQUE(participant_a, participant_b)
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-    id TEXT PRIMARY KEY,
-    conversation_id TEXT NOT NULL,
-    sender_id TEXT NOT NULL,
-    content TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    is_read INTEGER NOT NULL DEFAULT 0,
-    deleted_at TEXT,
-    FOREIGN KEY(conversation_id) REFERENCES conversations(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, created_at);
-
-CREATE TABLE IF NOT EXISTS message_media (
-    message_id TEXT NOT NULL,
-    media_id TEXT NOT NULL,
-    PRIMARY KEY(message_id, media_id)
-);
-
-CREATE TABLE IF NOT EXISTS notifications (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    actor_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    target_post_id TEXT,
-    target_comment_id TEXT,
-    content TEXT NOT NULL DEFAULT '',
-    is_read INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    deleted_at TEXT,
-    FOREIGN KEY(user_id) REFERENCES users(id),
-    FOREIGN KEY(actor_id) REFERENCES users(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, created_at);
-
-CREATE TABLE IF NOT EXISTS media (
-    id TEXT PRIMARY KEY,
-    owner_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    url TEXT NOT NULL,
-    thumb_url TEXT NOT NULL DEFAULT '',
-    mime TEXT NOT NULL,
-    width INTEGER NOT NULL DEFAULT 0,
-    height INTEGER NOT NULL DEFAULT 0,
-    duration REAL NOT NULL DEFAULT 0,
-    byte_size INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    deleted_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS settings (
-    user_id TEXT PRIMARY KEY,
-    language TEXT NOT NULL DEFAULT '',
-    appearance TEXT NOT NULL DEFAULT 'light',
-    push_likes INTEGER NOT NULL DEFAULT 1,
-    push_comments INTEGER NOT NULL DEFAULT 1,
-    push_follows INTEGER NOT NULL DEFAULT 1,
-    push_messages INTEGER NOT NULL DEFAULT 1,
-    privacy_protect INTEGER NOT NULL DEFAULT 0,
-    privacy_allow_dm TEXT NOT NULL DEFAULT 'everyone',
-    recommend_following INTEGER NOT NULL DEFAULT 1,
-    recommend_topics INTEGER NOT NULL DEFAULT 1,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS site_settings (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS drafts (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    content TEXT NOT NULL DEFAULT '',
-    media_ids TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '',
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS feedback (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    category TEXT NOT NULL DEFAULT 'general',
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS marketing_copy (
-    id TEXT PRIMARY KEY,
-    page_key TEXT NOT NULL,
-    locale TEXT NOT NULL DEFAULT 'zh',
-    title TEXT NOT NULL,
-    body TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'published',
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS search_history (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    query TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_search_history_user ON search_history(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_follows_follower ON follows(follower_id);
-CREATE INDEX IF NOT EXISTS idx_follows_following ON follows(following_id);
-CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON blocks(blocker_id);
-CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id, last_seen_at);
-CREATE INDEX IF NOT EXISTS idx_users_handle ON users(handle);
-CREATE INDEX IF NOT EXISTS idx_media_owner ON media(owner_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_conversations_a ON conversations(participant_a, updated_at);
-CREATE INDEX IF NOT EXISTS idx_conversations_b ON conversations(participant_b, updated_at);
-CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(user_id, updated_at);
-CREATE INDEX IF NOT EXISTS idx_marketing_copy_public ON marketing_copy(page_key, locale, status, sort_order);
-
-CREATE TABLE IF NOT EXISTS news_sources (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    source_key TEXT UNIQUE NOT NULL,
-    source_type TEXT NOT NULL DEFAULT 'manual',
-    source_url TEXT NOT NULL DEFAULT '',
-    homepage_url TEXT NOT NULL DEFAULT '',
-    country TEXT NOT NULL DEFAULT '',
-    city TEXT NOT NULL DEFAULT '',
-    language TEXT NOT NULL DEFAULT 'zh-CN',
-    default_category TEXT NOT NULL DEFAULT 'local_news',
-    credibility_level TEXT NOT NULL DEFAULT 'official',
-    copyright_policy_note TEXT NOT NULL DEFAULT '',
-    crawl_interval_minutes INTEGER NOT NULL DEFAULT 180,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    require_manual_review INTEGER NOT NULL DEFAULT 1,
-    last_fetched_at TEXT,
-    last_success_at TEXT,
-    last_error TEXT NOT NULL DEFAULT '',
-    created_by_admin_id TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_news_sources_city ON news_sources(country, city, is_active);
-CREATE INDEX IF NOT EXISTS idx_news_sources_active ON news_sources(is_active, source_type);
-
-CREATE TABLE IF NOT EXISTS news_items (
-    id TEXT PRIMARY KEY,
-    source_id TEXT NOT NULL,
-    external_id TEXT,
-    source_name TEXT NOT NULL DEFAULT '',
-    source_url TEXT NOT NULL DEFAULT '',
-    original_url TEXT NOT NULL DEFAULT '',
-    original_title TEXT NOT NULL,
-    original_summary TEXT,
-    original_language TEXT NOT NULL DEFAULT '',
-    published_at TEXT,
-    fetched_at TEXT NOT NULL,
-    country TEXT NOT NULL DEFAULT '',
-    city TEXT NOT NULL DEFAULT '',
-    category TEXT NOT NULL DEFAULT 'local_news',
-    hash_key TEXT UNIQUE NOT NULL,
-    status TEXT NOT NULL DEFAULT 'fetched',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(source_id) REFERENCES news_sources(id)
-);
-CREATE INDEX IF NOT EXISTS idx_news_items_pool ON news_items(status, fetched_at);
-CREATE INDEX IF NOT EXISTS idx_news_items_source ON news_items(source_id, fetched_at);
-CREATE INDEX IF NOT EXISTS idx_news_items_city ON news_items(country, city, category, fetched_at);
-
-CREATE TABLE IF NOT EXISTS editorial_posts (
-    id TEXT PRIMARY KEY,
-    news_item_id TEXT,
-    author_type TEXT NOT NULL DEFAULT 'local_desk',
-    author_display_name TEXT NOT NULL DEFAULT 'Machi 本地资讯台',
-    country TEXT NOT NULL DEFAULT '',
-    city TEXT NOT NULL DEFAULT '',
-    language TEXT NOT NULL DEFAULT 'zh-CN',
-    category TEXT NOT NULL DEFAULT 'local_news',
-    title TEXT NOT NULL,
-    summary TEXT NOT NULL DEFAULT '',
-    body TEXT NOT NULL DEFAULT '',
-    source_name TEXT,
-    source_url TEXT,
-    original_url TEXT,
-    source_published_at TEXT,
-    status TEXT NOT NULL DEFAULT 'draft',
-    review_status TEXT NOT NULL DEFAULT 'needs_review',
-    reviewed_by_admin_id TEXT,
-    reviewed_at TEXT,
-    published_at TEXT,
-    view_count INTEGER NOT NULL DEFAULT 0,
-    is_ai_assisted INTEGER NOT NULL DEFAULT 0,
-    ai_model TEXT,
-    ai_prompt_version TEXT,
-    created_by_admin_id TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(news_item_id) REFERENCES news_items(id)
-);
-CREATE INDEX IF NOT EXISTS idx_editorial_posts_public ON editorial_posts(status, country, city, language, category, published_at);
-CREATE INDEX IF NOT EXISTS idx_editorial_posts_review ON editorial_posts(status, review_status, updated_at);
-
-CREATE TABLE IF NOT EXISTS editorial_post_tags (
-    id TEXT PRIMARY KEY,
-    editorial_post_id TEXT NOT NULL,
-    tag TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    UNIQUE(editorial_post_id, tag),
-    FOREIGN KEY(editorial_post_id) REFERENCES editorial_posts(id)
-);
-CREATE INDEX IF NOT EXISTS idx_editorial_tags_post ON editorial_post_tags(editorial_post_id);
-CREATE INDEX IF NOT EXISTS idx_editorial_tags_tag ON editorial_post_tags(tag);
-
-CREATE TABLE IF NOT EXISTS editorial_post_comments (
-    id TEXT PRIMARY KEY,
-    editorial_post_id TEXT NOT NULL,
-    author_id TEXT NOT NULL,
-    content TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    deleted_at TEXT,
-    FOREIGN KEY(editorial_post_id) REFERENCES editorial_posts(id),
-    FOREIGN KEY(author_id) REFERENCES users(id)
-);
-CREATE INDEX IF NOT EXISTS idx_editorial_comments_post ON editorial_post_comments(editorial_post_id, created_at);
-
-CREATE TABLE IF NOT EXISTS news_fetch_logs (
-    id TEXT PRIMARY KEY,
-    source_id TEXT,
-    status TEXT NOT NULL DEFAULT 'success',
-    fetched_count INTEGER NOT NULL DEFAULT 0,
-    new_count INTEGER NOT NULL DEFAULT 0,
-    duplicate_count INTEGER NOT NULL DEFAULT 0,
-    error_count INTEGER NOT NULL DEFAULT 0,
-    error_message TEXT,
-    started_at TEXT NOT NULL,
-    finished_at TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(source_id) REFERENCES news_sources(id)
-);
-CREATE INDEX IF NOT EXISTS idx_news_fetch_logs_source ON news_fetch_logs(source_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_news_fetch_logs_status ON news_fetch_logs(status, created_at);
-
-CREATE TABLE IF NOT EXISTS editorial_action_logs (
-    id TEXT PRIMARY KEY,
-    admin_id TEXT NOT NULL DEFAULT '',
-    action TEXT NOT NULL,
-    target_type TEXT NOT NULL,
-    target_id TEXT NOT NULL,
-    metadata TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_editorial_action_logs_admin ON editorial_action_logs(admin_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_editorial_action_logs_target ON editorial_action_logs(target_type, target_id, created_at);
-
--- Visitor analytics. One row per (de-duplicated) request hitting the API.
--- Deliberately stores NO secrets: never a password, verification code,
--- session token, Authorization header, cookie or form body — only the
--- coarse access metadata an operator needs to see traffic and geography.
-CREATE TABLE IF NOT EXISTS visitor_logs (
-    id TEXT PRIMARY KEY,
-    created_at TEXT NOT NULL,
-    ip TEXT NOT NULL DEFAULT '',
-    ip_hash TEXT NOT NULL DEFAULT '',
-    method TEXT NOT NULL DEFAULT '',
-    path TEXT NOT NULL DEFAULT '',
-    status INTEGER NOT NULL DEFAULT 0,
-    user_id TEXT,
-    user_agent TEXT NOT NULL DEFAULT '',
-    referer TEXT NOT NULL DEFAULT '',
-    country TEXT NOT NULL DEFAULT '',
-    region TEXT NOT NULL DEFAULT '',
-    city TEXT NOT NULL DEFAULT '',
-    org TEXT NOT NULL DEFAULT '',
-    geo_state TEXT NOT NULL DEFAULT 'pending'
-);
-CREATE INDEX IF NOT EXISTS idx_visitor_logs_created ON visitor_logs(created_at);
-CREATE INDEX IF NOT EXISTS idx_visitor_logs_ip ON visitor_logs(ip_hash, created_at);
-CREATE INDEX IF NOT EXISTS idx_visitor_logs_geo ON visitor_logs(geo_state);
-
--- Email verification + password-reset + 2-step-login codes. Codes are
--- stored only as keyed HMAC hashes (see hash_auth_code); the plaintext
--- code lives only in the email that was sent. Rows are single-use and
--- expire; attempts are capped to stop brute force.
-CREATE TABLE IF NOT EXISTS auth_codes (
-    id TEXT PRIMARY KEY,
-    purpose TEXT NOT NULL,           -- register | login | reset
-    email TEXT NOT NULL DEFAULT '',
-    user_id TEXT,                    -- bound for login / reset
-    code_hash TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL,
-    consumed_at TEXT,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    ip TEXT NOT NULL DEFAULT ''
-);
-CREATE INDEX IF NOT EXISTS idx_auth_codes_lookup ON auth_codes(purpose, email, created_at);
-CREATE INDEX IF NOT EXISTS idx_auth_codes_user ON auth_codes(user_id, purpose, created_at);
-
-CREATE TABLE IF NOT EXISTS security_logs (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL DEFAULT '',
-    action TEXT NOT NULL DEFAULT '',
-    ip TEXT NOT NULL DEFAULT '',
-    user_agent TEXT NOT NULL DEFAULT '',
-    metadata TEXT NOT NULL DEFAULT '{}',
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_security_logs_user ON security_logs(user_id, created_at);
-
--- =====================================================================
--- Machi Guide / 日本指南.
---
--- Replaces the old crawler "资讯" surface with an editorial knowledge +
--- service module (升学 / 就职 / 留学 / JLPT / 在日生活 / 资料与服务 +
--- 公司选择与面试评论). Every content table carries `country` (default
--- 'jp') so the structure is multi-region ready, but the front-end only
--- opens Japan today. Old news_* / editorial_posts tables are kept for
--- compatibility — the Guide front never reads them.
--- =====================================================================
-
-CREATE TABLE IF NOT EXISTS guide_categories (
-    id TEXT PRIMARY KEY,
-    key TEXT NOT NULL,
-    parent_key TEXT NOT NULL DEFAULT '',
-    title TEXT NOT NULL,
-    subtitle TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT '',
-    icon TEXT NOT NULL DEFAULT '',
-    color TEXT NOT NULL DEFAULT '',
-    country TEXT NOT NULL DEFAULT 'jp',
-    language TEXT NOT NULL DEFAULT 'zh-CN',
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    is_active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(key, country)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_categories_scope ON guide_categories(country, is_active, parent_key, sort_order);
-
-CREATE TABLE IF NOT EXISTS guide_articles (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    slug TEXT NOT NULL,
-    summary TEXT NOT NULL DEFAULT '',
-    body TEXT NOT NULL DEFAULT '',
-    category_key TEXT NOT NULL DEFAULT '',
-    sub_category_key TEXT NOT NULL DEFAULT '',
-    content_type TEXT NOT NULL DEFAULT 'guide',
-    country TEXT NOT NULL DEFAULT 'jp',
-    city TEXT NOT NULL DEFAULT '',
-    language TEXT NOT NULL DEFAULT 'zh-CN',
-    cover_image TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '',
-    author_type TEXT NOT NULL DEFAULT 'editorial',
-    author_name TEXT NOT NULL DEFAULT 'Machi 日本指南编辑部',
-    is_featured INTEGER NOT NULL DEFAULT 0,
-    is_free INTEGER NOT NULL DEFAULT 1,
-    is_paid INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'draft',
-    view_count INTEGER NOT NULL DEFAULT 0,
-    save_count INTEGER NOT NULL DEFAULT 0,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    published_at TEXT,
-    UNIQUE(slug, country)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_articles_scope ON guide_articles(country, status, category_key, sub_category_key, published_at);
-CREATE INDEX IF NOT EXISTS idx_guide_articles_featured ON guide_articles(country, status, is_featured, published_at);
-
-CREATE TABLE IF NOT EXISTS guide_products (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    slug TEXT NOT NULL,
-    subtitle TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT '',
-    category_key TEXT NOT NULL DEFAULT 'guide_services',
-    sub_category_key TEXT NOT NULL DEFAULT '',
-    product_type TEXT NOT NULL DEFAULT 'pdf_material',
-    price INTEGER NOT NULL DEFAULT 0,
-    currency TEXT NOT NULL DEFAULT 'CNY',
-    price_label TEXT NOT NULL DEFAULT '',
-    original_price INTEGER NOT NULL DEFAULT 0,
-    member_price INTEGER NOT NULL DEFAULT 0,
-    discount_label TEXT NOT NULL DEFAULT '',
-    is_price_hidden INTEGER NOT NULL DEFAULT 0,
-    is_appointment_only INTEGER NOT NULL DEFAULT 0,
-    stripe_product_id TEXT NOT NULL DEFAULT '',
-    stripe_price_id TEXT NOT NULL DEFAULT '',
-    ios_iap_product_id TEXT NOT NULL DEFAULT '',
-    apple_product_id TEXT NOT NULL DEFAULT '',
-    price_region TEXT NOT NULL DEFAULT '',
-    tax_included INTEGER NOT NULL DEFAULT 1,
-    billing_type TEXT NOT NULL DEFAULT 'one_time',
-    billing_period TEXT NOT NULL DEFAULT 'none',
-    service_price_type TEXT NOT NULL DEFAULT '',
-    starting_price INTEGER NOT NULL DEFAULT 0,
-    member_discount_percent INTEGER NOT NULL DEFAULT 0,
-    service_duration_minutes INTEGER NOT NULL DEFAULT 0,
-    deposit_required INTEGER NOT NULL DEFAULT 0,
-    deposit_amount INTEGER NOT NULL DEFAULT 0,
-    cancellation_policy TEXT NOT NULL DEFAULT '',
-    cover_image TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '',
-    target_audience TEXT NOT NULL DEFAULT '',
-    delivery_method TEXT NOT NULL DEFAULT '',
-    preview_content TEXT NOT NULL DEFAULT '',
-    purchase_content TEXT NOT NULL DEFAULT '',
-    file_url TEXT NOT NULL DEFAULT '',
-    file_name TEXT NOT NULL DEFAULT '',
-    file_type TEXT NOT NULL DEFAULT '',
-    file_size INTEGER NOT NULL DEFAULT 0,
-    country TEXT NOT NULL DEFAULT 'jp',
-    language TEXT NOT NULL DEFAULT 'zh-CN',
-    is_digital INTEGER NOT NULL DEFAULT 1,
-    is_service INTEGER NOT NULL DEFAULT 0,
-    is_free INTEGER NOT NULL DEFAULT 0,
-    is_paid INTEGER NOT NULL DEFAULT 1,
-    is_member_included INTEGER NOT NULL DEFAULT 0,
-    is_member_discount INTEGER NOT NULL DEFAULT 0,
-    is_coming_soon INTEGER NOT NULL DEFAULT 1,
-    status TEXT NOT NULL DEFAULT 'coming_soon',
-    purchase_count INTEGER NOT NULL DEFAULT 0,
-    rating REAL NOT NULL DEFAULT 0,
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    is_featured INTEGER NOT NULL DEFAULT 0,
-    refund_policy TEXT NOT NULL DEFAULT '',
-    notes TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    published_at TEXT,
-    UNIQUE(slug, country)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_products_scope ON guide_products(country, status, category_key, product_type, sort_order);
-
-CREATE TABLE IF NOT EXISTS guide_product_files (
-    id TEXT PRIMARY KEY,
-    product_id TEXT NOT NULL,
-    file_url TEXT NOT NULL DEFAULT '',
-    file_name TEXT NOT NULL DEFAULT '',
-    file_type TEXT NOT NULL DEFAULT '',
-    file_size INTEGER NOT NULL DEFAULT 0,
-    download_limit INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    FOREIGN KEY(product_id) REFERENCES guide_products(id)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_product_files_product ON guide_product_files(product_id);
-
-CREATE TABLE IF NOT EXISTS guide_orders (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    product_id TEXT NOT NULL,
-    order_no TEXT UNIQUE NOT NULL,
-    price INTEGER NOT NULL DEFAULT 0,
-    currency TEXT NOT NULL DEFAULT 'CNY',
-    status TEXT NOT NULL DEFAULT 'pending',
-    payment_provider TEXT NOT NULL DEFAULT '',
-    payment_order_id TEXT NOT NULL DEFAULT '',
-    payment_method TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    paid_at TEXT,
-    cancelled_at TEXT,
-    refunded_at TEXT,
-    fulfilled_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_guide_orders_user ON guide_orders(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_guide_orders_product ON guide_orders(product_id, status);
-
-CREATE TABLE IF NOT EXISTS guide_service_requests (
-    id TEXT PRIMARY KEY,
-    user_id TEXT NOT NULL,
-    product_id TEXT NOT NULL DEFAULT '',
-    service_type TEXT NOT NULL DEFAULT '',
-    contact_method TEXT NOT NULL DEFAULT '',
-    contact_value TEXT NOT NULL DEFAULT '',
-    message TEXT NOT NULL DEFAULT '',
-    preferred_time TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'pending',
-    admin_note TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_guide_service_requests_user ON guide_service_requests(user_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_guide_service_requests_status ON guide_service_requests(status, created_at);
-
-CREATE TABLE IF NOT EXISTS guide_companies (
-    id TEXT PRIMARY KEY,
-    corporate_number TEXT NOT NULL DEFAULT '',
-    company_name TEXT NOT NULL,
-    company_name_jp TEXT NOT NULL DEFAULT '',
-    company_name_en TEXT NOT NULL DEFAULT '',
-    slug TEXT NOT NULL,
-    industry TEXT NOT NULL DEFAULT '',
-    sub_industry TEXT NOT NULL DEFAULT '',
-    country TEXT NOT NULL DEFAULT 'jp',
-    prefecture TEXT NOT NULL DEFAULT '',
-    city TEXT NOT NULL DEFAULT '',
-    ward TEXT NOT NULL DEFAULT '',
-    address TEXT NOT NULL DEFAULT '',
-    postal_code TEXT NOT NULL DEFAULT '',
-    latitude REAL,
-    longitude REAL,
-    website TEXT NOT NULL DEFAULT '',
-    career_url TEXT NOT NULL DEFAULT '',
-    new_graduate_url TEXT NOT NULL DEFAULT '',
-    mid_career_url TEXT NOT NULL DEFAULT '',
-    global_career_url TEXT NOT NULL DEFAULT '',
-    size TEXT NOT NULL DEFAULT '',
-    company_size TEXT NOT NULL DEFAULT '',
-    founded_year INTEGER NOT NULL DEFAULT 0,
-    description TEXT NOT NULL DEFAULT '',
-    short_description TEXT NOT NULL DEFAULT '',
-    is_foreigner_friendly INTEGER NOT NULL DEFAULT -1,
-    accepts_foreign_applicants INTEGER NOT NULL DEFAULT -1,
-    supports_work_visa INTEGER NOT NULL DEFAULT -1,
-    supports_new_graduate INTEGER NOT NULL DEFAULT -1,
-    supports_mid_career INTEGER NOT NULL DEFAULT -1,
-    has_english_positions INTEGER NOT NULL DEFAULT -1,
-    has_global_roles INTEGER NOT NULL DEFAULT -1,
-    has_foreign_employees INTEGER NOT NULL DEFAULT -1,
-    japanese_level_required TEXT NOT NULL DEFAULT 'unknown',
-    english_level_required TEXT NOT NULL DEFAULT 'unknown',
-    employment_types TEXT NOT NULL DEFAULT '',
-    average_salary_min INTEGER NOT NULL DEFAULT 0,
-    average_salary_max INTEGER NOT NULL DEFAULT 0,
-    currency TEXT NOT NULL DEFAULT 'JPY',
-    foreigner_friendly_score REAL NOT NULL DEFAULT 0,
-    visa_support_score REAL NOT NULL DEFAULT 0,
-    interview_difficulty_score REAL NOT NULL DEFAULT 0,
-    overtime_score REAL NOT NULL DEFAULT 0,
-    salary_benefit_score REAL NOT NULL DEFAULT 0,
-    work_life_balance_score REAL NOT NULL DEFAULT 0,
-    career_growth_score REAL NOT NULL DEFAULT 0,
-    review_count INTEGER NOT NULL DEFAULT 0,
-    interview_review_count INTEGER NOT NULL DEFAULT 0,
-    tags TEXT NOT NULL DEFAULT '',
-    source_type TEXT NOT NULL DEFAULT 'manual',
-    source_name TEXT NOT NULL DEFAULT '',
-    source_url TEXT NOT NULL DEFAULT '',
-    source_last_checked_at TEXT,
-    verification_status TEXT NOT NULL DEFAULT 'needs_review',
-    data_quality_score INTEGER NOT NULL DEFAULT 0,
-    is_featured INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'published',
-    view_count INTEGER NOT NULL DEFAULT 0,
-    save_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(slug, country)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_companies_scope ON guide_companies(country, status, industry, city);
-
-CREATE TABLE IF NOT EXISTS guide_schools (
-    id TEXT PRIMARY KEY,
-    slug TEXT NOT NULL,
-    school_name TEXT NOT NULL,
-    school_name_jp TEXT NOT NULL DEFAULT '',
-    school_name_en TEXT NOT NULL DEFAULT '',
-    school_type TEXT NOT NULL DEFAULT 'other',
-    country TEXT NOT NULL DEFAULT 'jp',
-    prefecture TEXT NOT NULL DEFAULT '',
-    city TEXT NOT NULL DEFAULT '',
-    ward TEXT NOT NULL DEFAULT '',
-    address TEXT NOT NULL DEFAULT '',
-    postal_code TEXT NOT NULL DEFAULT '',
-    latitude REAL,
-    longitude REAL,
-    website TEXT NOT NULL DEFAULT '',
-    admission_url TEXT NOT NULL DEFAULT '',
-    international_admission_url TEXT NOT NULL DEFAULT '',
-    application_url TEXT NOT NULL DEFAULT '',
-    scholarship_url TEXT NOT NULL DEFAULT '',
-    career_support_url TEXT NOT NULL DEFAULT '',
-    language_support_url TEXT NOT NULL DEFAULT '',
-    dormitory_url TEXT NOT NULL DEFAULT '',
-    description TEXT NOT NULL DEFAULT '',
-    short_description TEXT NOT NULL DEFAULT '',
-    is_accepting_international_students INTEGER NOT NULL DEFAULT -1,
-    has_english_program INTEGER NOT NULL DEFAULT -1,
-    has_japanese_program INTEGER NOT NULL DEFAULT -1,
-    has_scholarship INTEGER NOT NULL DEFAULT -1,
-    has_dormitory INTEGER NOT NULL DEFAULT -1,
-    has_career_support INTEGER NOT NULL DEFAULT -1,
-    has_language_support INTEGER NOT NULL DEFAULT -1,
-    tuition_min INTEGER NOT NULL DEFAULT 0,
-    tuition_max INTEGER NOT NULL DEFAULT 0,
-    currency TEXT NOT NULL DEFAULT 'JPY',
-    application_periods TEXT NOT NULL DEFAULT '',
-    admission_months TEXT NOT NULL DEFAULT '',
-    required_japanese_level TEXT NOT NULL DEFAULT 'unknown',
-    required_english_level TEXT NOT NULL DEFAULT 'unknown',
-    eju_required TEXT NOT NULL DEFAULT 'unknown',
-    jlpt_required TEXT NOT NULL DEFAULT 'unknown',
-    toefl_required TEXT NOT NULL DEFAULT 'unknown',
-    ielts_required TEXT NOT NULL DEFAULT 'unknown',
-    fields_of_study TEXT NOT NULL DEFAULT '',
-    departments TEXT NOT NULL DEFAULT '',
-    faculties TEXT NOT NULL DEFAULT '',
-    graduate_schools TEXT NOT NULL DEFAULT '',
-    tags TEXT NOT NULL DEFAULT '',
-    source_type TEXT NOT NULL DEFAULT 'manual',
-    source_name TEXT NOT NULL DEFAULT '',
-    source_url TEXT NOT NULL DEFAULT '',
-    source_last_checked_at TEXT,
-    verification_status TEXT NOT NULL DEFAULT 'needs_review',
-    data_quality_score INTEGER NOT NULL DEFAULT 0,
-    is_featured INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'published',
-    view_count INTEGER NOT NULL DEFAULT 0,
-    save_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE(slug, country)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_schools_scope ON guide_schools(country, status, school_type, prefecture, city);
-CREATE INDEX IF NOT EXISTS idx_guide_schools_featured ON guide_schools(country, status, is_featured, updated_at);
-
-CREATE TABLE IF NOT EXISTS guide_school_programs (
-    id TEXT PRIMARY KEY,
-    school_id TEXT NOT NULL,
-    program_name TEXT NOT NULL,
-    program_name_jp TEXT NOT NULL DEFAULT '',
-    program_name_en TEXT NOT NULL DEFAULT '',
-    degree_level TEXT NOT NULL DEFAULT 'other',
-    program_type TEXT NOT NULL DEFAULT 'regular',
-    field TEXT NOT NULL DEFAULT '',
-    sub_field TEXT NOT NULL DEFAULT '',
-    faculty_name TEXT NOT NULL DEFAULT '',
-    department_name TEXT NOT NULL DEFAULT '',
-    graduate_school_name TEXT NOT NULL DEFAULT '',
-    language_of_instruction TEXT NOT NULL DEFAULT '',
-    duration_months INTEGER NOT NULL DEFAULT 0,
-    admission_months TEXT NOT NULL DEFAULT '',
-    application_period TEXT NOT NULL DEFAULT '',
-    tuition INTEGER NOT NULL DEFAULT 0,
-    currency TEXT NOT NULL DEFAULT 'JPY',
-    required_japanese_level TEXT NOT NULL DEFAULT 'unknown',
-    required_english_level TEXT NOT NULL DEFAULT 'unknown',
-    eju_required TEXT NOT NULL DEFAULT 'unknown',
-    jlpt_required TEXT NOT NULL DEFAULT 'unknown',
-    toefl_required TEXT NOT NULL DEFAULT 'unknown',
-    ielts_required TEXT NOT NULL DEFAULT 'unknown',
-    description TEXT NOT NULL DEFAULT '',
-    application_url TEXT NOT NULL DEFAULT '',
-    source_url TEXT NOT NULL DEFAULT '',
-    verification_status TEXT NOT NULL DEFAULT 'needs_review',
-    status TEXT NOT NULL DEFAULT 'published',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(school_id) REFERENCES guide_schools(id)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_school_programs_school ON guide_school_programs(school_id, status, degree_level);
-
-CREATE TABLE IF NOT EXISTS guide_school_admissions (
-    id TEXT PRIMARY KEY,
-    school_id TEXT NOT NULL,
-    program_id TEXT NOT NULL DEFAULT '',
-    admission_type TEXT NOT NULL DEFAULT 'international_student',
-    target_student_type TEXT NOT NULL DEFAULT '',
-    application_start TEXT,
-    application_deadline TEXT,
-    exam_date TEXT,
-    result_date TEXT,
-    enrollment_month TEXT NOT NULL DEFAULT '',
-    required_documents TEXT NOT NULL DEFAULT '',
-    selection_method TEXT NOT NULL DEFAULT '',
-    application_fee INTEGER NOT NULL DEFAULT 0,
-    tuition_first_year INTEGER NOT NULL DEFAULT 0,
-    scholarship_info TEXT NOT NULL DEFAULT '',
-    notes TEXT NOT NULL DEFAULT '',
-    source_url TEXT NOT NULL DEFAULT '',
-    verification_status TEXT NOT NULL DEFAULT 'needs_review',
-    status TEXT NOT NULL DEFAULT 'published',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(school_id) REFERENCES guide_schools(id)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_school_admissions_school ON guide_school_admissions(school_id, status, enrollment_month);
-
-CREATE TABLE IF NOT EXISTS guide_company_positions (
-    id TEXT PRIMARY KEY,
-    company_id TEXT NOT NULL,
-    position_title TEXT NOT NULL,
-    position_title_jp TEXT NOT NULL DEFAULT '',
-    position_category TEXT NOT NULL DEFAULT 'other',
-    employment_type TEXT NOT NULL DEFAULT '',
-    city TEXT NOT NULL DEFAULT '',
-    remote_type TEXT NOT NULL DEFAULT '',
-    salary_min INTEGER NOT NULL DEFAULT 0,
-    salary_max INTEGER NOT NULL DEFAULT 0,
-    currency TEXT NOT NULL DEFAULT 'JPY',
-    japanese_level_required TEXT NOT NULL DEFAULT 'unknown',
-    english_level_required TEXT NOT NULL DEFAULT 'unknown',
-    visa_support TEXT NOT NULL DEFAULT 'unknown',
-    description TEXT NOT NULL DEFAULT '',
-    requirements TEXT NOT NULL DEFAULT '',
-    source_url TEXT NOT NULL DEFAULT '',
-    verification_status TEXT NOT NULL DEFAULT 'needs_review',
-    status TEXT NOT NULL DEFAULT 'published',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(company_id) REFERENCES guide_companies(id)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_company_positions_company ON guide_company_positions(company_id, status, position_category);
-
-CREATE TABLE IF NOT EXISTS guide_correction_reports (
-    id TEXT PRIMARY KEY,
-    target_type TEXT NOT NULL,
-    target_id TEXT NOT NULL,
-    user_id TEXT NOT NULL DEFAULT '',
-    field_name TEXT NOT NULL DEFAULT '',
-    current_value TEXT NOT NULL DEFAULT '',
-    suggested_value TEXT NOT NULL DEFAULT '',
-    message TEXT NOT NULL DEFAULT '',
-    source_url TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'pending',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_guide_corrections_target ON guide_correction_reports(target_type, target_id, status, created_at);
-
-CREATE TABLE IF NOT EXISTS guide_company_reviews (
-    id TEXT PRIMARY KEY,
-    company_id TEXT NOT NULL,
-    user_id TEXT NOT NULL DEFAULT '',
-    anonymous INTEGER NOT NULL DEFAULT 1,
-    position TEXT NOT NULL DEFAULT '',
-    employment_type TEXT NOT NULL DEFAULT '',
-    work_period TEXT NOT NULL DEFAULT '',
-    pros TEXT NOT NULL DEFAULT '',
-    cons TEXT NOT NULL DEFAULT '',
-    overtime_level TEXT NOT NULL DEFAULT '',
-    foreigner_support TEXT NOT NULL DEFAULT '',
-    visa_support TEXT NOT NULL DEFAULT '',
-    salary_benefits TEXT NOT NULL DEFAULT '',
-    career_growth TEXT NOT NULL DEFAULT '',
-    work_life_balance TEXT NOT NULL DEFAULT '',
-    recommendation_score REAL NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'pending',
-    report_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(company_id) REFERENCES guide_companies(id)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_company_reviews_company ON guide_company_reviews(company_id, status, created_at);
-
-CREATE TABLE IF NOT EXISTS guide_interview_reviews (
-    id TEXT PRIMARY KEY,
-    company_id TEXT NOT NULL,
-    user_id TEXT NOT NULL DEFAULT '',
-    anonymous INTEGER NOT NULL DEFAULT 1,
-    position TEXT NOT NULL DEFAULT '',
-    employment_type TEXT NOT NULL DEFAULT '',
-    interview_year INTEGER NOT NULL DEFAULT 0,
-    city TEXT NOT NULL DEFAULT '',
-    interview_language TEXT NOT NULL DEFAULT '',
-    interview_rounds INTEGER NOT NULL DEFAULT 0,
-    difficulty TEXT NOT NULL DEFAULT '',
-    questions TEXT NOT NULL DEFAULT '',
-    process_description TEXT NOT NULL DEFAULT '',
-    result TEXT NOT NULL DEFAULT '',
-    offer_received INTEGER NOT NULL DEFAULT -1,
-    duration_weeks INTEGER NOT NULL DEFAULT 0,
-    tips TEXT NOT NULL DEFAULT '',
-    status TEXT NOT NULL DEFAULT 'pending',
-    report_count INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    FOREIGN KEY(company_id) REFERENCES guide_companies(id)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_interview_reviews_company ON guide_interview_reviews(company_id, status, created_at);
-CREATE INDEX IF NOT EXISTS idx_guide_interview_reviews_filter ON guide_interview_reviews(status, city, interview_year);
-
-CREATE TABLE IF NOT EXISTS guide_tags (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    key TEXT NOT NULL,
-    category_key TEXT NOT NULL DEFAULT '',
-    country TEXT NOT NULL DEFAULT 'jp',
-    language TEXT NOT NULL DEFAULT 'zh-CN',
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL,
-    UNIQUE(key, country)
-);
-CREATE INDEX IF NOT EXISTS idx_guide_tags_scope ON guide_tags(country, category_key, sort_order);
-
-CREATE TABLE IF NOT EXISTS guide_faq (
-    id TEXT PRIMARY KEY,
-    question TEXT NOT NULL,
-    answer TEXT NOT NULL DEFAULT '',
-    category_key TEXT NOT NULL DEFAULT '',
-    country TEXT NOT NULL DEFAULT 'jp',
-    language TEXT NOT NULL DEFAULT 'zh-CN',
-    sort_order INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL DEFAULT 'published',
-    created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_guide_faq_scope ON guide_faq(country, status, sort_order);
-
-CREATE TABLE IF NOT EXISTS schema_migrations (
-    version INTEGER PRIMARY KEY,
-    applied_at TEXT NOT NULL,
-    note TEXT NOT NULL DEFAULT ''
-);
-"""
-
-
-# Versioned migrations. Append-only: each entry runs once and only once.
-# Bump the highest version when shipping a schema change. Migrations run
-# inside a transaction; SQLite ALTER is limited but covers ADD COLUMN /
-# CREATE INDEX which is what we need on the move-fast path.
-MIGRATIONS: list[tuple[int, str, str]] = [
-    # (version, note, sql)
-    # Phase 1 of the local-life pivot: posts and users grow region
-    # columns so we can route content by country / province / city.
-    # The columns are nullable so existing rows survive the migration
-    # without a backfill. Region codes are app-defined slugs (e.g.
-    # "cn.shanghai", "jp.tokyo", "us.ca.sf") — see REGION_DIRECTORY.
-    (
-        1,
-        "posts: add country/province/city/region_code",
-        """
-        ALTER TABLE posts ADD COLUMN country TEXT NOT NULL DEFAULT '';
-        ALTER TABLE posts ADD COLUMN province TEXT NOT NULL DEFAULT '';
-        ALTER TABLE posts ADD COLUMN city TEXT NOT NULL DEFAULT '';
-        ALTER TABLE posts ADD COLUMN region_code TEXT NOT NULL DEFAULT '';
-        CREATE INDEX IF NOT EXISTS idx_posts_region ON posts(region_code, created_at);
-        CREATE INDEX IF NOT EXISTS idx_posts_country ON posts(country, created_at);
-        CREATE INDEX IF NOT EXISTS idx_posts_city ON posts(city, created_at);
-        """,
-    ),
-    (
-        2,
-        "users: add country/province/city/current_region_code",
-        """
-        ALTER TABLE users ADD COLUMN country TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN province TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN city TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN current_region_code TEXT NOT NULL DEFAULT '';
-        """,
-    ),
-    # Phase 2 of the local-life pivot: content type discriminator +
-    # JSON attributes blob. The discriminator is indexed because
-    # almost every list-style query filters by it (城市频道 17 个 sub-tab,
-    # 发现页热门租房/二手/招聘 etc.). The blob holds type-specific
-    # fields (price, rent, salary, event_time, …) and is read only
-    # when a post is being rendered in detail or by a typed card.
-    (
-        3,
-        "posts: add content_type + attributes",
-        """
-        ALTER TABLE posts ADD COLUMN content_type TEXT NOT NULL DEFAULT 'dynamic';
-        ALTER TABLE posts ADD COLUMN attributes TEXT NOT NULL DEFAULT '';
-        CREATE INDEX IF NOT EXISTS idx_posts_type ON posts(content_type, created_at);
-        CREATE INDEX IF NOT EXISTS idx_posts_region_type ON posts(region_code, content_type, created_at);
-        """,
-    ),
-    (
-        4,
-        "posts/users: add city platform moderation, boost and creator fields",
-        """
-        ALTER TABLE posts ADD COLUMN report_count INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE posts ADD COLUMN is_boosted INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE posts ADD COLUMN boost_weight INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE posts ADD COLUMN boosted_until TEXT NOT NULL DEFAULT '';
-        CREATE INDEX IF NOT EXISTS idx_posts_status_created ON posts(status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_posts_boosted ON posts(is_boosted, boosted_until);
-
-        ALTER TABLE users ADD COLUMN recent_region_codes TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN total_heat INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE users ADD COLUMN creator_badge TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN is_merchant INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE users ADD COLUMN merchant_verified INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE users ADD COLUMN profile_view_count INTEGER NOT NULL DEFAULT 0;
-        """,
-    ),
-    (
-        5,
-        "legacy seed rows: backfill launch city region codes",
-        """
-        UPDATE users
-        SET
-            country = CASE
-                WHEN location IN ('上海', '北京', '深圳', '广州', '香港', '长沙', '西安', '武汉') THEN 'cn'
-                ELSE 'jp'
-            END,
-            province = CASE
-                WHEN location = '上海' THEN 'shanghai'
-                WHEN location = '北京' THEN 'beijing'
-                WHEN location IN ('深圳', '广州') THEN 'guangdong'
-                WHEN location = '香港' THEN 'hongkong'
-                WHEN location = '长沙' THEN 'hunan'
-                WHEN location = '西安' THEN 'shaanxi'
-                WHEN location = '武汉' THEN 'hubei'
-                WHEN location = '大阪' THEN 'osaka'
-                ELSE 'tokyo'
-            END,
-            city = CASE
-                WHEN location = '上海' THEN 'shanghai'
-                WHEN location = '北京' THEN 'beijing'
-                WHEN location = '深圳' THEN 'shenzhen'
-                WHEN location = '广州' THEN 'guangzhou'
-                WHEN location = '香港' THEN 'hongkong'
-                WHEN location = '长沙' THEN 'changsha'
-                WHEN location = '西安' THEN 'xian'
-                WHEN location = '武汉' THEN 'wuhan'
-                WHEN location = '大阪' THEN 'osaka'
-                ELSE 'tokyo'
-            END,
-            current_region_code = CASE
-                WHEN location = '上海' THEN 'cn.shanghai.shanghai'
-                WHEN location = '北京' THEN 'cn.beijing.beijing'
-                WHEN location = '深圳' THEN 'cn.guangdong.shenzhen'
-                WHEN location = '广州' THEN 'cn.guangdong.guangzhou'
-                WHEN location = '香港' THEN 'cn.hongkong.hongkong'
-                WHEN location = '长沙' THEN 'cn.hunan.changsha'
-                WHEN location = '西安' THEN 'cn.shaanxi.xian'
-                WHEN location = '武汉' THEN 'cn.hubei.wuhan'
-                WHEN location = '大阪' THEN 'jp.osaka.osaka'
-                ELSE 'jp.tokyo.tokyo'
-            END,
-            recent_region_codes = CASE
-                WHEN recent_region_codes = '' THEN CASE
-                    WHEN location = '上海' THEN 'cn.shanghai.shanghai'
-                    WHEN location = '北京' THEN 'cn.beijing.beijing'
-                    WHEN location = '深圳' THEN 'cn.guangdong.shenzhen'
-                    WHEN location = '广州' THEN 'cn.guangdong.guangzhou'
-                    WHEN location = '香港' THEN 'cn.hongkong.hongkong'
-                    WHEN location = '长沙' THEN 'cn.hunan.changsha'
-                    WHEN location = '西安' THEN 'cn.shaanxi.xian'
-                    WHEN location = '武汉' THEN 'cn.hubei.wuhan'
-                    WHEN location = '大阪' THEN 'jp.osaka.osaka'
-                    ELSE 'jp.tokyo.tokyo'
-                END
-                ELSE recent_region_codes
-            END
-        WHERE current_region_code = '';
-
-        UPDATE posts
-        SET
-            country = COALESCE(NULLIF((SELECT country FROM users WHERE users.id = posts.author_id), ''), 'jp'),
-            province = COALESCE(NULLIF((SELECT province FROM users WHERE users.id = posts.author_id), ''), 'tokyo'),
-            city = COALESCE(NULLIF((SELECT city FROM users WHERE users.id = posts.author_id), ''), 'tokyo'),
-            region_code = COALESCE(NULLIF((SELECT current_region_code FROM users WHERE users.id = posts.author_id), ''), 'jp.tokyo.tokyo')
-        WHERE region_code = '';
-        """,
-    ),
-    (
-        6,
-        "legacy deleted posts: align status with deleted_at",
-        """
-        UPDATE posts
-           SET status = 'deleted'
-         WHERE deleted_at IS NOT NULL
-           AND status <> 'deleted';
-        """,
-    ),
-    # Phase 3: content language preference. Powers the App's
-    # LanguageManager + the new ContentLanguageSettingsView so feeds
-    # can rank by user-preferred language. Defaults are empty so
-    # legacy rows fall through to the "no preference" code path on the
-    # client.
-    (
-        7,
-        "posts/settings: add language preferences",
-        """
-        ALTER TABLE posts ADD COLUMN language TEXT NOT NULL DEFAULT '';
-        CREATE INDEX IF NOT EXISTS idx_posts_language ON posts(language, created_at);
-        CREATE INDEX IF NOT EXISTS idx_posts_region_lang ON posts(region_code, language, created_at);
-
-        ALTER TABLE settings ADD COLUMN content_language_preference TEXT NOT NULL DEFAULT '';
-        ALTER TABLE settings ADD COLUMN preferred_content_languages TEXT NOT NULL DEFAULT '';
-
-        ALTER TABLE users ADD COLUMN app_language TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN content_language_preference TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN preferred_content_languages TEXT NOT NULL DEFAULT '';
-        """,
-    ),
-    (
-        8,
-        "marketing site: add editable copy blocks",
-        """
-        CREATE TABLE IF NOT EXISTS marketing_copy (
-            id TEXT PRIMARY KEY,
-            page_key TEXT NOT NULL,
-            locale TEXT NOT NULL DEFAULT 'zh',
-            title TEXT NOT NULL,
-            body TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'published',
-            sort_order INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_marketing_copy_public ON marketing_copy(page_key, locale, status, sort_order);
-        """,
-    ),
-    (
-        9,
-        "posts: add poll votes",
-        """
-        CREATE TABLE IF NOT EXISTS post_poll_votes (
-            post_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            option_index INTEGER NOT NULL,
-            created_at TEXT NOT NULL,
-            PRIMARY KEY(post_id, user_id),
-            FOREIGN KEY(post_id) REFERENCES posts(id),
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_post_poll_votes_post ON post_poll_votes(post_id);
-        """,
-    ),
-    (
-        10,
-        "analytics: add visitor_logs",
-        """
-        CREATE TABLE IF NOT EXISTS visitor_logs (
-            id TEXT PRIMARY KEY,
-            created_at TEXT NOT NULL,
-            ip TEXT NOT NULL DEFAULT '',
-            ip_hash TEXT NOT NULL DEFAULT '',
-            method TEXT NOT NULL DEFAULT '',
-            path TEXT NOT NULL DEFAULT '',
-            status INTEGER NOT NULL DEFAULT 0,
-            user_id TEXT,
-            user_agent TEXT NOT NULL DEFAULT '',
-            referer TEXT NOT NULL DEFAULT '',
-            country TEXT NOT NULL DEFAULT '',
-            region TEXT NOT NULL DEFAULT '',
-            city TEXT NOT NULL DEFAULT '',
-            org TEXT NOT NULL DEFAULT '',
-            geo_state TEXT NOT NULL DEFAULT 'pending'
-        );
-        CREATE INDEX IF NOT EXISTS idx_visitor_logs_created ON visitor_logs(created_at);
-        CREATE INDEX IF NOT EXISTS idx_visitor_logs_ip ON visitor_logs(ip_hash, created_at);
-        CREATE INDEX IF NOT EXISTS idx_visitor_logs_geo ON visitor_logs(geo_state);
-        """,
-    ),
-    (
-        11,
-        "auth: add auth_codes (email verification / reset / 2-step login)",
-        """
-        CREATE TABLE IF NOT EXISTS auth_codes (
-            id TEXT PRIMARY KEY,
-            purpose TEXT NOT NULL,
-            email TEXT NOT NULL DEFAULT '',
-            user_id TEXT,
-            code_hash TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            consumed_at TEXT,
-            attempts INTEGER NOT NULL DEFAULT 0,
-            ip TEXT NOT NULL DEFAULT ''
-        );
-        CREATE INDEX IF NOT EXISTS idx_auth_codes_lookup ON auth_codes(purpose, email, created_at);
-        CREATE INDEX IF NOT EXISTS idx_auth_codes_user ON auth_codes(user_id, purpose, created_at);
-        """,
-    ),
-    # Machi Verified membership + payments. Five new tables plus cache
-    # columns on `users` (the authoritative truth always lives in
-    # user_memberships / payment_orders; the user columns are a read
-    # accelerator kept in sync on every entitlement change). Money is
-    # stored in minor units (fen) as INTEGER — never float.
-    (
-        12,
-        "membership: plans, memberships, orders, webhooks, entitlement events + user cache",
-        """
-        CREATE TABLE IF NOT EXISTS membership_plans (
-            id TEXT PRIMARY KEY,
-            plan_key TEXT UNIQUE NOT NULL,
-            name_zh TEXT NOT NULL DEFAULT '',
-            name_en TEXT NOT NULL DEFAULT '',
-            name_ja TEXT NOT NULL DEFAULT '',
-            amount_cents INTEGER NOT NULL DEFAULT 0,
-            currency TEXT NOT NULL DEFAULT 'CNY',
-            billing_cycle TEXT NOT NULL DEFAULT 'monthly',
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS user_memberships (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            plan_key TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'inactive',
-            started_at TEXT,
-            current_period_start TEXT,
-            current_period_end TEXT,
-            cancel_at_period_end INTEGER NOT NULL DEFAULT 0,
-            canceled_at TEXT,
-            expired_at TEXT,
-            source TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_user_memberships_user ON user_memberships(user_id, status);
-        CREATE INDEX IF NOT EXISTS idx_user_memberships_period ON user_memberships(status, current_period_end);
-
-        CREATE TABLE IF NOT EXISTS payment_orders (
-            id TEXT PRIMARY KEY,
-            order_no TEXT UNIQUE NOT NULL,
-            user_id TEXT NOT NULL,
-            plan_key TEXT NOT NULL,
-            amount_cents INTEGER NOT NULL DEFAULT 0,
-            currency TEXT NOT NULL DEFAULT 'CNY',
-            status TEXT NOT NULL DEFAULT 'pending',
-            payment_provider TEXT NOT NULL DEFAULT '',
-            provider_trade_no TEXT NOT NULL DEFAULT '',
-            provider_user_id TEXT NOT NULL DEFAULT '',
-            client_type TEXT NOT NULL DEFAULT '',
-            metadata_json TEXT NOT NULL DEFAULT '',
-            paid_at TEXT,
-            closed_at TEXT,
-            refunded_at TEXT,
-            expires_at TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_payment_orders_user ON payment_orders(user_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_payment_orders_status ON payment_orders(status, created_at);
-
-        CREATE TABLE IF NOT EXISTS payment_webhooks (
-            id TEXT PRIMARY KEY,
-            provider TEXT NOT NULL DEFAULT '',
-            event_type TEXT NOT NULL DEFAULT '',
-            event_id TEXT NOT NULL DEFAULT '',
-            order_no TEXT NOT NULL DEFAULT '',
-            raw_payload TEXT NOT NULL DEFAULT '',
-            signature_valid INTEGER NOT NULL DEFAULT 0,
-            processed_at TEXT,
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_payment_webhooks_order ON payment_webhooks(order_no, created_at);
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_webhooks_dedup ON payment_webhooks(provider, event_id) WHERE event_id <> '';
-
-        CREATE TABLE IF NOT EXISTS entitlement_events (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            membership_id TEXT NOT NULL DEFAULT '',
-            event_type TEXT NOT NULL DEFAULT '',
-            source TEXT NOT NULL DEFAULT '',
-            metadata_json TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_entitlement_events_user ON entitlement_events(user_id, created_at);
-
-        ALTER TABLE users ADD COLUMN is_verified_member INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE users ADD COLUMN verified_member_until TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN membership_status TEXT NOT NULL DEFAULT 'inactive';
-        ALTER TABLE users ADD COLUMN membership_plan_key TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN verified_badge_type TEXT NOT NULL DEFAULT '';
-        """,
-    ),
-    # City Seed Bot (城市内容助手): cold-start content seeding. Posts grow
-    # four tracking columns so every system-generated row is auditable and
-    # reversible *without ever touching real user content* — clears always
-    # require `is_seed_content = 1 AND seed_batch_id = ?`. Two new tables
-    # track batches and the admin operation log. Purely additive: existing
-    # rows default to is_seed_content = 0 (i.e. real users) and are never
-    # rewritten by this migration.
-    (
-        13,
-        "seed bot: posts seed columns + batches + admin op log",
-        """
-        ALTER TABLE posts ADD COLUMN is_seed_content INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE posts ADD COLUMN seed_batch_id TEXT NOT NULL DEFAULT '';
-        ALTER TABLE posts ADD COLUMN seed_source TEXT NOT NULL DEFAULT '';
-        ALTER TABLE posts ADD COLUMN generated_by TEXT NOT NULL DEFAULT '';
-        CREATE INDEX IF NOT EXISTS idx_posts_seed_batch ON posts(seed_batch_id, status);
-        CREATE INDEX IF NOT EXISTS idx_posts_seed_city ON posts(is_seed_content, region_code, status, created_at);
-
-        CREATE TABLE IF NOT EXISTS seed_content_batches (
-            id TEXT PRIMARY KEY,
-            country TEXT NOT NULL DEFAULT '',
-            province TEXT NOT NULL DEFAULT '',
-            city TEXT NOT NULL DEFAULT '',
-            region_code TEXT NOT NULL DEFAULT '',
-            language TEXT NOT NULL DEFAULT '',
-            content_type TEXT NOT NULL DEFAULT '',
-            tone TEXT NOT NULL DEFAULT '',
-            count INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'draft',
-            created_by_admin_id TEXT NOT NULL DEFAULT '',
-            created_count INTEGER NOT NULL DEFAULT 0,
-            published_count INTEGER NOT NULL DEFAULT 0,
-            cleared_count INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_seed_batches_city ON seed_content_batches(region_code, status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_seed_batches_status ON seed_content_batches(status, created_at);
-
-        CREATE TABLE IF NOT EXISTS admin_seed_content_logs (
-            id TEXT PRIMARY KEY,
-            admin_id TEXT NOT NULL DEFAULT '',
-            action TEXT NOT NULL DEFAULT '',
-            batch_id TEXT NOT NULL DEFAULT '',
-            country TEXT NOT NULL DEFAULT '',
-            city TEXT NOT NULL DEFAULT '',
-            region_code TEXT NOT NULL DEFAULT '',
-            language TEXT NOT NULL DEFAULT '',
-            content_type TEXT NOT NULL DEFAULT '',
-            count INTEGER NOT NULL DEFAULT 0,
-            metadata TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_seed_logs_admin ON admin_seed_content_logs(admin_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_seed_logs_action ON admin_seed_content_logs(action, created_at);
-        """,
-    ),
-    (
-        14,
-        "local news desk: sources, harvested items, editorial posts and logs",
-        """
-        CREATE TABLE IF NOT EXISTS news_sources (
-            id TEXT PRIMARY KEY,
-            name TEXT NOT NULL,
-            source_key TEXT UNIQUE NOT NULL,
-            source_type TEXT NOT NULL DEFAULT 'manual',
-            source_url TEXT NOT NULL DEFAULT '',
-            homepage_url TEXT NOT NULL DEFAULT '',
-            country TEXT NOT NULL DEFAULT '',
-            city TEXT NOT NULL DEFAULT '',
-            language TEXT NOT NULL DEFAULT 'zh-CN',
-            default_category TEXT NOT NULL DEFAULT 'local_news',
-            credibility_level TEXT NOT NULL DEFAULT 'official',
-            copyright_policy_note TEXT NOT NULL DEFAULT '',
-            crawl_interval_minutes INTEGER NOT NULL DEFAULT 180,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            require_manual_review INTEGER NOT NULL DEFAULT 1,
-            last_fetched_at TEXT,
-            last_success_at TEXT,
-            last_error TEXT NOT NULL DEFAULT '',
-            created_by_admin_id TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_news_sources_city ON news_sources(country, city, is_active);
-        CREATE INDEX IF NOT EXISTS idx_news_sources_active ON news_sources(is_active, source_type);
-
-        CREATE TABLE IF NOT EXISTS news_items (
-            id TEXT PRIMARY KEY,
-            source_id TEXT NOT NULL,
-            external_id TEXT,
-            source_name TEXT NOT NULL DEFAULT '',
-            source_url TEXT NOT NULL DEFAULT '',
-            original_url TEXT NOT NULL DEFAULT '',
-            original_title TEXT NOT NULL,
-            original_summary TEXT,
-            original_language TEXT NOT NULL DEFAULT '',
-            published_at TEXT,
-            fetched_at TEXT NOT NULL,
-            country TEXT NOT NULL DEFAULT '',
-            city TEXT NOT NULL DEFAULT '',
-            category TEXT NOT NULL DEFAULT 'local_news',
-            hash_key TEXT UNIQUE NOT NULL,
-            status TEXT NOT NULL DEFAULT 'fetched',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(source_id) REFERENCES news_sources(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_news_items_pool ON news_items(status, fetched_at);
-        CREATE INDEX IF NOT EXISTS idx_news_items_source ON news_items(source_id, fetched_at);
-        CREATE INDEX IF NOT EXISTS idx_news_items_city ON news_items(country, city, category, fetched_at);
-
-        CREATE TABLE IF NOT EXISTS editorial_posts (
-            id TEXT PRIMARY KEY,
-            news_item_id TEXT,
-            author_type TEXT NOT NULL DEFAULT 'local_desk',
-            author_display_name TEXT NOT NULL DEFAULT 'Machi 本地资讯台',
-            country TEXT NOT NULL DEFAULT '',
-            city TEXT NOT NULL DEFAULT '',
-            language TEXT NOT NULL DEFAULT 'zh-CN',
-            category TEXT NOT NULL DEFAULT 'local_news',
-            title TEXT NOT NULL,
-            summary TEXT NOT NULL DEFAULT '',
-            body TEXT NOT NULL DEFAULT '',
-            source_name TEXT,
-            source_url TEXT,
-            original_url TEXT,
-            source_published_at TEXT,
-            status TEXT NOT NULL DEFAULT 'draft',
-            review_status TEXT NOT NULL DEFAULT 'needs_review',
-            reviewed_by_admin_id TEXT,
-            reviewed_at TEXT,
-            published_at TEXT,
-            view_count INTEGER NOT NULL DEFAULT 0,
-            is_ai_assisted INTEGER NOT NULL DEFAULT 0,
-            ai_model TEXT,
-            ai_prompt_version TEXT,
-            created_by_admin_id TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(news_item_id) REFERENCES news_items(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_editorial_posts_public ON editorial_posts(status, country, city, language, category, published_at);
-        CREATE INDEX IF NOT EXISTS idx_editorial_posts_review ON editorial_posts(status, review_status, updated_at);
-
-        CREATE TABLE IF NOT EXISTS editorial_post_tags (
-            id TEXT PRIMARY KEY,
-            editorial_post_id TEXT NOT NULL,
-            tag TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(editorial_post_id, tag),
-            FOREIGN KEY(editorial_post_id) REFERENCES editorial_posts(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_editorial_tags_post ON editorial_post_tags(editorial_post_id);
-        CREATE INDEX IF NOT EXISTS idx_editorial_tags_tag ON editorial_post_tags(tag);
-
-        CREATE TABLE IF NOT EXISTS editorial_post_comments (
-            id TEXT PRIMARY KEY,
-            editorial_post_id TEXT NOT NULL,
-            author_id TEXT NOT NULL,
-            content TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            deleted_at TEXT,
-            FOREIGN KEY(editorial_post_id) REFERENCES editorial_posts(id),
-            FOREIGN KEY(author_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_editorial_comments_post ON editorial_post_comments(editorial_post_id, created_at);
-
-        CREATE TABLE IF NOT EXISTS news_fetch_logs (
-            id TEXT PRIMARY KEY,
-            source_id TEXT,
-            status TEXT NOT NULL DEFAULT 'success',
-            fetched_count INTEGER NOT NULL DEFAULT 0,
-            new_count INTEGER NOT NULL DEFAULT 0,
-            duplicate_count INTEGER NOT NULL DEFAULT 0,
-            error_count INTEGER NOT NULL DEFAULT 0,
-            error_message TEXT,
-            started_at TEXT NOT NULL,
-            finished_at TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(source_id) REFERENCES news_sources(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_news_fetch_logs_source ON news_fetch_logs(source_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_news_fetch_logs_status ON news_fetch_logs(status, created_at);
-
-        CREATE TABLE IF NOT EXISTS editorial_action_logs (
-            id TEXT PRIMARY KEY,
-            admin_id TEXT NOT NULL DEFAULT '',
-            action TEXT NOT NULL,
-            target_type TEXT NOT NULL,
-            target_id TEXT NOT NULL,
-            metadata TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_editorial_action_logs_admin ON editorial_action_logs(admin_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_editorial_action_logs_target ON editorial_action_logs(target_type, target_id, created_at);
-        """,
-    ),
-    (
-        15,
-        "japan news crawler: source controls, metadata, counters and soft delete",
-        """
-        ALTER TABLE news_sources ADD COLUMN allowed_domain TEXT NOT NULL DEFAULT '';
-        ALTER TABLE news_sources ADD COLUMN crawl_strategy TEXT NOT NULL DEFAULT 'manual';
-        ALTER TABLE news_sources ADD COLUMN list_selector TEXT;
-        ALTER TABLE news_sources ADD COLUMN item_selector TEXT;
-        ALTER TABLE news_sources ADD COLUMN title_selector TEXT;
-        ALTER TABLE news_sources ADD COLUMN link_selector TEXT;
-        ALTER TABLE news_sources ADD COLUMN summary_selector TEXT;
-        ALTER TABLE news_sources ADD COLUMN date_selector TEXT;
-        ALTER TABLE news_sources ADD COLUMN date_format TEXT;
-        ALTER TABLE news_sources ADD COLUMN timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo';
-        ALTER TABLE news_sources ADD COLUMN robots_policy TEXT NOT NULL DEFAULT 'respect';
-        ALTER TABLE news_sources ADD COLUMN max_items_per_run INTEGER NOT NULL DEFAULT 30;
-        ALTER TABLE news_sources ADD COLUMN request_timeout_ms INTEGER NOT NULL DEFAULT 15000;
-        ALTER TABLE news_sources ADD COLUMN deleted_at TEXT;
-        UPDATE news_sources
-           SET allowed_domain = COALESCE(NULLIF(allowed_domain, ''), replace(replace(substr(COALESCE(NULLIF(source_url, ''), homepage_url), instr(COALESCE(NULLIF(source_url, ''), homepage_url), '://') + 3), 'www.', ''), '/', ''))
-         WHERE allowed_domain = '';
-        UPDATE news_sources
-           SET crawl_strategy = CASE source_type
-                WHEN 'rss' THEN 'rss'
-                WHEN 'webpage' THEN 'meta_only'
-                WHEN 'html_list' THEN 'html_list'
-                ELSE 'manual'
-           END
-         WHERE crawl_strategy = 'manual';
-        CREATE INDEX IF NOT EXISTS idx_news_sources_deleted ON news_sources(deleted_at, is_active, updated_at);
-
-        ALTER TABLE news_items ADD COLUMN raw_metadata TEXT NOT NULL DEFAULT '{}';
-        ALTER TABLE news_items ADD COLUMN error_message TEXT NOT NULL DEFAULT '';
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_news_items_source_original_unique
-            ON news_items(source_id, original_url)
-            WHERE original_url <> '' AND status != 'deleted';
-
-        ALTER TABLE editorial_posts ADD COLUMN share_count INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE editorial_posts ADD COLUMN click_source_count INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE editorial_posts ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'low';
-        ALTER TABLE editorial_posts ADD COLUMN official_source_required INTEGER NOT NULL DEFAULT 0;
-
-        ALTER TABLE news_fetch_logs ADD COLUMN source_name TEXT NOT NULL DEFAULT '';
-        ALTER TABLE news_fetch_logs ADD COLUMN skipped_reason TEXT NOT NULL DEFAULT '';
-        """,
-    ),
-    (
-        16,
-        "japan news crawler: bulk flow, diagnostics, demo flags and source automation choices",
-        """
-        ALTER TABLE news_sources ADD COLUMN auto_create_draft INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE news_sources ADD COLUMN official_auto_publish INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE news_sources ADD COLUMN last_fetched_count INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE news_sources ADD COLUMN last_new_count INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE news_sources ADD COLUMN last_duplicate_count INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE news_sources ADD COLUMN last_error_count INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE news_sources ADD COLUMN last_robots_status TEXT NOT NULL DEFAULT '';
-        ALTER TABLE news_sources ADD COLUMN last_http_status INTEGER;
-        ALTER TABLE news_sources ADD COLUMN last_parser_status TEXT NOT NULL DEFAULT '';
-
-        ALTER TABLE news_fetch_logs ADD COLUMN source_url TEXT NOT NULL DEFAULT '';
-        ALTER TABLE news_fetch_logs ADD COLUMN robots_status TEXT NOT NULL DEFAULT '';
-        ALTER TABLE news_fetch_logs ADD COLUMN http_status INTEGER;
-        ALTER TABLE news_fetch_logs ADD COLUMN parser_status TEXT NOT NULL DEFAULT '';
-        ALTER TABLE news_fetch_logs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0;
-
-        ALTER TABLE editorial_posts ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0;
-        """,
-    ),
-    (
-        17,
-        "theme settings default to explicit light mode",
-        """
-        UPDATE settings
-           SET appearance = 'light'
-         WHERE appearance IS NULL OR appearance NOT IN ('light', 'dark');
-        """,
-    ),
-    (
-        18,
-        "japan news crawler: tiers, compliance flags, scoring and editorial quality gates",
-        """
-        ALTER TABLE news_sources ADD COLUMN source_tier TEXT NOT NULL DEFAULT 'tier_3_public_media';
-        ALTER TABLE news_sources ADD COLUMN copyright_policy TEXT NOT NULL DEFAULT 'metadata_only';
-        ALTER TABLE news_sources ADD COLUMN allow_auto_draft INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE news_sources ADD COLUMN allow_auto_publish INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE news_sources ADD COLUMN content_rewrite_required INTEGER NOT NULL DEFAULT 1;
-        ALTER TABLE news_sources ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'low';
-        ALTER TABLE news_sources ADD COLUMN sub_city TEXT NOT NULL DEFAULT '';
-        UPDATE news_sources
-           SET source_tier = CASE
-                WHEN source_type = 'manual' OR crawl_strategy = 'manual' THEN 'tier_5_manual_reference'
-                WHEN credibility_level = 'official' AND city <> '' THEN 'tier_2_city_official'
-                WHEN credibility_level = 'official' THEN 'tier_1_official'
-                WHEN credibility_level IN ('media','community') THEN 'tier_3_public_media'
-                ELSE 'tier_4_event_lifestyle'
-           END,
-               copyright_policy = CASE
-                WHEN copyright_policy_note LIKE '%restrict%' OR copyright_policy_note LIKE '%禁止%' THEN 'redistribution_restricted'
-                ELSE 'metadata_only'
-           END,
-               allow_auto_draft = COALESCE(auto_create_draft, 0),
-               allow_auto_publish = COALESCE(official_auto_publish, 0),
-               risk_level = CASE
-                WHEN default_category IN ('weather_alert','earthquake_alert','typhoon_alert','immigration_visa','policy_update','public_safety','health') THEN 'high'
-                WHEN default_category IN ('traffic_alert','work_study') THEN 'medium'
-                ELSE 'low'
-           END;
-        CREATE INDEX IF NOT EXISTS idx_news_sources_tier ON news_sources(source_tier, credibility_level, is_active);
-
-        ALTER TABLE news_items ADD COLUMN source_tier TEXT NOT NULL DEFAULT 'tier_3_public_media';
-        ALTER TABLE news_items ADD COLUMN sub_city TEXT NOT NULL DEFAULT '';
-        ALTER TABLE news_items ADD COLUMN risk_level TEXT NOT NULL DEFAULT 'low';
-        ALTER TABLE news_items ADD COLUMN relevance_score INTEGER NOT NULL DEFAULT 50;
-        ALTER TABLE news_items ADD COLUMN relevance_reason TEXT NOT NULL DEFAULT '';
-        ALTER TABLE news_items ADD COLUMN quality_score INTEGER NOT NULL DEFAULT 0;
-        CREATE INDEX IF NOT EXISTS idx_news_items_relevance ON news_items(relevance_score, quality_score, status);
-
-        ALTER TABLE editorial_posts ADD COLUMN sub_city TEXT NOT NULL DEFAULT '';
-        ALTER TABLE editorial_posts ADD COLUMN source_tier TEXT NOT NULL DEFAULT 'tier_3_public_media';
-        ALTER TABLE editorial_posts ADD COLUMN relevance_score INTEGER NOT NULL DEFAULT 50;
-        ALTER TABLE editorial_posts ADD COLUMN quality_score INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE editorial_posts ADD COLUMN editorial_disclaimer TEXT NOT NULL DEFAULT '';
-        CREATE INDEX IF NOT EXISTS idx_editorial_posts_quality ON editorial_posts(status, quality_score, relevance_score, published_at);
-        """,
-    ),
-    (
-        19,
-        "account security: verification audit logs",
-        """
-        CREATE TABLE IF NOT EXISTS security_logs (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL DEFAULT '',
-            action TEXT NOT NULL DEFAULT '',
-            ip TEXT NOT NULL DEFAULT '',
-            user_agent TEXT NOT NULL DEFAULT '',
-            metadata TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_security_logs_user ON security_logs(user_id, created_at);
-        """,
-    ),
-    (
-        20,
-        "machi guide: japan schools and foreigner-friendly company database",
-        """
-        CREATE TABLE IF NOT EXISTS guide_schools (
-            id TEXT PRIMARY KEY,
-            slug TEXT NOT NULL,
-            school_name TEXT NOT NULL,
-            school_name_jp TEXT NOT NULL DEFAULT '',
-            school_name_en TEXT NOT NULL DEFAULT '',
-            school_type TEXT NOT NULL DEFAULT 'other',
-            country TEXT NOT NULL DEFAULT 'jp',
-            prefecture TEXT NOT NULL DEFAULT '',
-            city TEXT NOT NULL DEFAULT '',
-            address TEXT NOT NULL DEFAULT '',
-            website TEXT NOT NULL DEFAULT '',
-            admission_url TEXT NOT NULL DEFAULT '',
-            international_admission_url TEXT NOT NULL DEFAULT '',
-            application_url TEXT NOT NULL DEFAULT '',
-            scholarship_url TEXT NOT NULL DEFAULT '',
-            career_support_url TEXT NOT NULL DEFAULT '',
-            language_support_url TEXT NOT NULL DEFAULT '',
-            description TEXT NOT NULL DEFAULT '',
-            short_description TEXT NOT NULL DEFAULT '',
-            is_accepting_international_students INTEGER NOT NULL DEFAULT -1,
-            has_english_program INTEGER NOT NULL DEFAULT -1,
-            has_japanese_program INTEGER NOT NULL DEFAULT -1,
-            has_scholarship INTEGER NOT NULL DEFAULT -1,
-            has_dormitory INTEGER NOT NULL DEFAULT -1,
-            has_career_support INTEGER NOT NULL DEFAULT -1,
-            has_language_support INTEGER NOT NULL DEFAULT -1,
-            tuition_min INTEGER NOT NULL DEFAULT 0,
-            tuition_max INTEGER NOT NULL DEFAULT 0,
-            currency TEXT NOT NULL DEFAULT 'JPY',
-            application_periods TEXT NOT NULL DEFAULT '',
-            admission_months TEXT NOT NULL DEFAULT '',
-            required_japanese_level TEXT NOT NULL DEFAULT 'unknown',
-            required_english_level TEXT NOT NULL DEFAULT 'unknown',
-            eju_required TEXT NOT NULL DEFAULT 'unknown',
-            jlpt_required TEXT NOT NULL DEFAULT 'unknown',
-            toefl_required TEXT NOT NULL DEFAULT 'unknown',
-            ielts_required TEXT NOT NULL DEFAULT 'unknown',
-            fields_of_study TEXT NOT NULL DEFAULT '',
-            departments TEXT NOT NULL DEFAULT '',
-            tags TEXT NOT NULL DEFAULT '',
-            source_type TEXT NOT NULL DEFAULT 'manual',
-            source_name TEXT NOT NULL DEFAULT '',
-            source_url TEXT NOT NULL DEFAULT '',
-            source_last_checked_at TEXT,
-            verification_status TEXT NOT NULL DEFAULT 'needs_review',
-            is_featured INTEGER NOT NULL DEFAULT 0,
-            status TEXT NOT NULL DEFAULT 'published',
-            view_count INTEGER NOT NULL DEFAULT 0,
-            save_count INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(slug, country)
-        );
-        CREATE INDEX IF NOT EXISTS idx_guide_schools_scope ON guide_schools(country, status, school_type, prefecture, city);
-        CREATE INDEX IF NOT EXISTS idx_guide_schools_featured ON guide_schools(country, status, is_featured, updated_at);
-
-        CREATE TABLE IF NOT EXISTS guide_school_programs (
-            id TEXT PRIMARY KEY,
-            school_id TEXT NOT NULL,
-            program_name TEXT NOT NULL,
-            program_name_jp TEXT NOT NULL DEFAULT '',
-            program_name_en TEXT NOT NULL DEFAULT '',
-            degree_level TEXT NOT NULL DEFAULT 'other',
-            program_type TEXT NOT NULL DEFAULT 'regular',
-            field TEXT NOT NULL DEFAULT '',
-            language_of_instruction TEXT NOT NULL DEFAULT '',
-            duration_months INTEGER NOT NULL DEFAULT 0,
-            admission_months TEXT NOT NULL DEFAULT '',
-            application_period TEXT NOT NULL DEFAULT '',
-            tuition INTEGER NOT NULL DEFAULT 0,
-            currency TEXT NOT NULL DEFAULT 'JPY',
-            required_japanese_level TEXT NOT NULL DEFAULT 'unknown',
-            required_english_level TEXT NOT NULL DEFAULT 'unknown',
-            eju_required TEXT NOT NULL DEFAULT 'unknown',
-            jlpt_required TEXT NOT NULL DEFAULT 'unknown',
-            toefl_required TEXT NOT NULL DEFAULT 'unknown',
-            ielts_required TEXT NOT NULL DEFAULT 'unknown',
-            description TEXT NOT NULL DEFAULT '',
-            application_url TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'published',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(school_id) REFERENCES guide_schools(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_guide_school_programs_school ON guide_school_programs(school_id, status, degree_level);
-
-        CREATE TABLE IF NOT EXISTS guide_school_admissions (
-            id TEXT PRIMARY KEY,
-            school_id TEXT NOT NULL,
-            program_id TEXT NOT NULL DEFAULT '',
-            admission_type TEXT NOT NULL DEFAULT 'international_student',
-            target_student_type TEXT NOT NULL DEFAULT '',
-            application_start TEXT,
-            application_deadline TEXT,
-            exam_date TEXT,
-            result_date TEXT,
-            enrollment_month TEXT NOT NULL DEFAULT '',
-            required_documents TEXT NOT NULL DEFAULT '',
-            selection_method TEXT NOT NULL DEFAULT '',
-            application_fee INTEGER NOT NULL DEFAULT 0,
-            tuition_first_year INTEGER NOT NULL DEFAULT 0,
-            scholarship_info TEXT NOT NULL DEFAULT '',
-            notes TEXT NOT NULL DEFAULT '',
-            source_url TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'published',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(school_id) REFERENCES guide_schools(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_guide_school_admissions_school ON guide_school_admissions(school_id, status, enrollment_month);
-
-        CREATE TABLE IF NOT EXISTS guide_company_positions (
-            id TEXT PRIMARY KEY,
-            company_id TEXT NOT NULL,
-            position_title TEXT NOT NULL,
-            position_title_jp TEXT NOT NULL DEFAULT '',
-            position_category TEXT NOT NULL DEFAULT 'other',
-            employment_type TEXT NOT NULL DEFAULT '',
-            city TEXT NOT NULL DEFAULT '',
-            remote_type TEXT NOT NULL DEFAULT '',
-            salary_min INTEGER NOT NULL DEFAULT 0,
-            salary_max INTEGER NOT NULL DEFAULT 0,
-            currency TEXT NOT NULL DEFAULT 'JPY',
-            japanese_level_required TEXT NOT NULL DEFAULT 'unknown',
-            english_level_required TEXT NOT NULL DEFAULT 'unknown',
-            visa_support TEXT NOT NULL DEFAULT 'unknown',
-            description TEXT NOT NULL DEFAULT '',
-            requirements TEXT NOT NULL DEFAULT '',
-            source_url TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'published',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(company_id) REFERENCES guide_companies(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_guide_company_positions_company ON guide_company_positions(company_id, status, position_category);
-
-        CREATE TABLE IF NOT EXISTS guide_correction_reports (
-            id TEXT PRIMARY KEY,
-            target_type TEXT NOT NULL,
-            target_id TEXT NOT NULL,
-            user_id TEXT NOT NULL DEFAULT '',
-            field_name TEXT NOT NULL DEFAULT '',
-            current_value TEXT NOT NULL DEFAULT '',
-            suggested_value TEXT NOT NULL DEFAULT '',
-            message TEXT NOT NULL DEFAULT '',
-            source_url TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'pending',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_guide_corrections_target ON guide_correction_reports(target_type, target_id, status, created_at);
-        """,
-    ),
-    (
-        21,
-        "auth: add google oauth identities and state table",
-        """
-        ALTER TABLE users ADD COLUMN google_sub TEXT NOT NULL DEFAULT '';
-        ALTER TABLE users ADD COLUMN auth_provider TEXT NOT NULL DEFAULT 'password';
-        ALTER TABLE users ADD COLUMN email_verified INTEGER NOT NULL DEFAULT 0;
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_sub ON users(google_sub) WHERE google_sub <> '';
-        CREATE INDEX IF NOT EXISTS idx_users_auth_provider ON users(auth_provider, created_at);
-
-        CREATE TABLE IF NOT EXISTS oauth_states (
-            state TEXT PRIMARY KEY,
-            provider TEXT NOT NULL DEFAULT 'google',
-            client TEXT NOT NULL DEFAULT 'web',
-            redirect TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            expires_at TEXT NOT NULL,
-            consumed_at TEXT,
-            ip TEXT NOT NULL DEFAULT ''
-        );
-        CREATE INDEX IF NOT EXISTS idx_oauth_states_expiry ON oauth_states(expires_at, consumed_at);
-        """,
-    ),
-    (
-        22,
-        "settings: let unset language follow system defaults",
-        """
-        UPDATE settings
-           SET language = ''
-         WHERE language = 'zh-Hans';
-        """,
-    ),
-    (
-        23,
-        "auth: oauth_states intent + link_user_id (bind google to an existing account)",
-        """
-        ALTER TABLE oauth_states ADD COLUMN intent TEXT NOT NULL DEFAULT 'login';
-        ALTER TABLE oauth_states ADD COLUMN link_user_id TEXT NOT NULL DEFAULT '';
-        """,
-    ),
-    (
-        24,
-        "city listings: structured marketplace, rentals, jobs and services",
-        """
-        CREATE TABLE IF NOT EXISTS seller_profiles (
-            id TEXT PRIMARY KEY,
-            user_id TEXT UNIQUE NOT NULL,
-            display_name TEXT NOT NULL DEFAULT '',
-            bio TEXT NOT NULL DEFAULT '',
-            verification_status TEXT NOT NULL DEFAULT 'unverified',
-            rating REAL NOT NULL DEFAULT 0,
-            listing_count INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS business_profiles (
-            id TEXT PRIMARY KEY,
-            owner_user_id TEXT NOT NULL DEFAULT '',
-            business_name TEXT NOT NULL,
-            business_type TEXT NOT NULL DEFAULT '',
-            country_code TEXT NOT NULL DEFAULT '',
-            city_slug TEXT NOT NULL DEFAULT '',
-            verification_status TEXT NOT NULL DEFAULT 'pending',
-            contact_method TEXT NOT NULL DEFAULT '',
-            description TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(owner_user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_business_profiles_city ON business_profiles(country_code, city_slug, verification_status);
-
-        CREATE TABLE IF NOT EXISTS city_listings (
-            id TEXT PRIMARY KEY,
-            country_code TEXT NOT NULL DEFAULT '',
-            city_id TEXT NOT NULL DEFAULT '',
-            city_slug TEXT NOT NULL DEFAULT '',
-            region_code TEXT NOT NULL DEFAULT '',
-            language TEXT NOT NULL DEFAULT 'zh-CN',
-            type TEXT NOT NULL,
-            category TEXT NOT NULL DEFAULT '',
-            title TEXT NOT NULL,
-            description TEXT NOT NULL DEFAULT '',
-            price REAL,
-            currency TEXT NOT NULL DEFAULT 'JPY',
-            price_type TEXT NOT NULL DEFAULT '',
-            location_text TEXT NOT NULL DEFAULT '',
-            latitude REAL,
-            longitude REAL,
-            status TEXT NOT NULL DEFAULT 'published',
-            verification_status TEXT NOT NULL DEFAULT 'unverified',
-            seller_user_id TEXT NOT NULL DEFAULT '',
-            business_id TEXT DEFAULT NULL,
-            contact_method TEXT NOT NULL DEFAULT '',
-            view_count INTEGER NOT NULL DEFAULT 0,
-            inquiry_count INTEGER NOT NULL DEFAULT 0,
-            favorite_count INTEGER NOT NULL DEFAULT 0,
-            report_count INTEGER NOT NULL DEFAULT 0,
-            is_promoted INTEGER NOT NULL DEFAULT 0,
-            promotion_weight INTEGER NOT NULL DEFAULT 0,
-            published_at TEXT,
-            expires_at TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            deleted_at TEXT,
-            FOREIGN KEY(seller_user_id) REFERENCES users(id),
-            FOREIGN KEY(business_id) REFERENCES business_profiles(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_city_listings_public ON city_listings(city_slug, type, status, published_at);
-        CREATE INDEX IF NOT EXISTS idx_city_listings_region ON city_listings(region_code, type, status, published_at);
-        CREATE INDEX IF NOT EXISTS idx_city_listings_seller ON city_listings(seller_user_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_city_listings_review ON city_listings(status, verification_status, updated_at);
-        CREATE INDEX IF NOT EXISTS idx_city_listings_search ON city_listings(type, category, city_slug, updated_at);
-
-        CREATE TABLE IF NOT EXISTS listing_media (
-            id TEXT PRIMARY KEY,
-            listing_id TEXT NOT NULL,
-            media_type TEXT NOT NULL DEFAULT 'image',
-            url TEXT NOT NULL,
-            thumbnail_url TEXT NOT NULL DEFAULT '',
-            sort_order INTEGER NOT NULL DEFAULT 0,
-            is_cover INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(listing_id) REFERENCES city_listings(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_listing_media_listing ON listing_media(listing_id, sort_order);
-
-        CREATE TABLE IF NOT EXISTS listing_attributes (
-            id TEXT PRIMARY KEY,
-            listing_id TEXT NOT NULL,
-            key TEXT NOT NULL,
-            value TEXT NOT NULL DEFAULT '',
-            value_type TEXT NOT NULL DEFAULT 'string',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(listing_id, key),
-            FOREIGN KEY(listing_id) REFERENCES city_listings(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_listing_attributes_key ON listing_attributes(key, value);
-
-        CREATE TABLE IF NOT EXISTS listing_inquiries (
-            id TEXT PRIMARY KEY,
-            listing_id TEXT NOT NULL,
-            sender_user_id TEXT NOT NULL DEFAULT '',
-            seller_user_id TEXT NOT NULL DEFAULT '',
-            message TEXT NOT NULL DEFAULT '',
-            contact_value TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'open',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
-            FOREIGN KEY(sender_user_id) REFERENCES users(id),
-            FOREIGN KEY(seller_user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_listing ON listing_inquiries(listing_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_user ON listing_inquiries(sender_user_id, created_at);
-
-        CREATE TABLE IF NOT EXISTS listing_favorites (
-            id TEXT PRIMARY KEY,
-            listing_id TEXT NOT NULL,
-            user_id TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(listing_id, user_id),
-            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_listing_favorites_user ON listing_favorites(user_id, created_at);
-
-        CREATE TABLE IF NOT EXISTS listing_reports (
-            id TEXT PRIMARY KEY,
-            listing_id TEXT NOT NULL,
-            reporter_id TEXT NOT NULL DEFAULT '',
-            reason TEXT NOT NULL DEFAULT 'other',
-            note TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'open',
-            created_at TEXT NOT NULL,
-            resolved_at TEXT,
-            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
-            FOREIGN KEY(reporter_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_listing_reports_listing ON listing_reports(listing_id, status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_listing_reports_status ON listing_reports(status, created_at);
-
-        CREATE TABLE IF NOT EXISTS listing_admin_logs (
-            id TEXT PRIMARY KEY,
-            admin_id TEXT NOT NULL DEFAULT '',
-            listing_id TEXT NOT NULL DEFAULT '',
-            action TEXT NOT NULL DEFAULT '',
-            metadata TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_listing_admin_logs_listing ON listing_admin_logs(listing_id, created_at);
-        """,
-    ),
-    (
-        25,
-        "city listings: inquiry contract, promotion and verification foundations",
-        """
-        ALTER TABLE listing_inquiries ADD COLUMN from_user_id TEXT NOT NULL DEFAULT '';
-        ALTER TABLE listing_inquiries ADD COLUMN to_user_id TEXT NOT NULL DEFAULT '';
-        ALTER TABLE listing_inquiries ADD COLUMN type TEXT NOT NULL DEFAULT 'general';
-        UPDATE listing_inquiries
-           SET from_user_id = sender_user_id
-         WHERE from_user_id = '' AND sender_user_id != '';
-        UPDATE listing_inquiries
-           SET to_user_id = seller_user_id
-         WHERE to_user_id = '' AND seller_user_id != '';
-        UPDATE listing_inquiries
-           SET status = 'new'
-         WHERE status = 'open';
-        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_from ON listing_inquiries(from_user_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_to ON listing_inquiries(to_user_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_status ON listing_inquiries(status, created_at);
-
-        CREATE TABLE IF NOT EXISTS listing_promotions (
-            id TEXT PRIMARY KEY,
-            listing_id TEXT NOT NULL,
-            promotion_type TEXT NOT NULL DEFAULT 'top',
-            placement TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'active',
-            weight INTEGER NOT NULL DEFAULT 10,
-            starts_at TEXT,
-            ends_at TEXT,
-            purchased_by_user_id TEXT NOT NULL DEFAULT '',
-            business_id TEXT DEFAULT NULL,
-            metadata TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
-            FOREIGN KEY(purchased_by_user_id) REFERENCES users(id),
-            FOREIGN KEY(business_id) REFERENCES business_profiles(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_listing_promotions_listing ON listing_promotions(listing_id, status, ends_at);
-        CREATE INDEX IF NOT EXISTS idx_listing_promotions_type ON listing_promotions(promotion_type, placement, status, ends_at);
-
-        CREATE TABLE IF NOT EXISTS listing_verifications (
-            id TEXT PRIMARY KEY,
-            listing_id TEXT NOT NULL DEFAULT '',
-            subject_type TEXT NOT NULL DEFAULT 'seller',
-            subject_id TEXT NOT NULL DEFAULT '',
-            verification_type TEXT NOT NULL DEFAULT 'seller',
-            status TEXT NOT NULL DEFAULT 'pending',
-            reviewer_admin_id TEXT NOT NULL DEFAULT '',
-            note TEXT NOT NULL DEFAULT '',
-            submitted_at TEXT NOT NULL,
-            reviewed_at TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
-            FOREIGN KEY(reviewer_admin_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_listing_verifications_status ON listing_verifications(status, subject_type, created_at);
-        CREATE INDEX IF NOT EXISTS idx_listing_verifications_listing ON listing_verifications(listing_id, status);
-        """,
-    ),
-    (
-        26,
-        "city listings: platform promotion payment metadata",
-        """
-        ALTER TABLE listing_promotions ADD COLUMN price REAL;
-        ALTER TABLE listing_promotions ADD COLUMN currency TEXT NOT NULL DEFAULT 'JPY';
-        ALTER TABLE listing_promotions ADD COLUMN payment_provider TEXT NOT NULL DEFAULT '';
-        ALTER TABLE listing_promotions ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'pending';
-        CREATE INDEX IF NOT EXISTS idx_listing_promotions_payment ON listing_promotions(payment_provider, payment_status, created_at);
-        """,
-    ),
-    (
-        27,
-        "city listings: remove launch placeholder names",
-        """
-        UPDATE listing_attributes
-           SET value = 'Machi Dining'
-         WHERE key = 'company_name' AND value LIKE 'Machi Dining D%';
-        UPDATE listing_attributes
-           SET value = 'Machi Partner'
-         WHERE key = 'company_name' AND value LIKE 'Machi Partner D%';
-        UPDATE listing_attributes
-           SET value = 'Machi Coffee'
-         WHERE key = 'merchant_name' AND value LIKE 'Machi Coffee D%';
-        """,
-    ),
-    (
-        28,
-        "city reputation: xp, trust, badges, rewards and admin audit",
-        """
-        CREATE TABLE IF NOT EXISTS user_reputation (
-            user_id TEXT PRIMARY KEY,
-            xp INTEGER NOT NULL DEFAULT 0,
-            reputation_score INTEGER NOT NULL DEFAULT 70,
-            level INTEGER NOT NULL DEFAULT 1,
-            risk_score INTEGER NOT NULL DEFAULT 0,
-            reputation_status TEXT NOT NULL DEFAULT 'normal',
-            growth_frozen INTEGER NOT NULL DEFAULT 0,
-            frozen_until TEXT,
-            freeze_reason TEXT NOT NULL DEFAULT '',
-            frozen_by_admin_id TEXT NOT NULL DEFAULT '',
-            last_event_at TEXT,
-            violation_count INTEGER NOT NULL DEFAULT 0,
-            helped_users INTEGER NOT NULL DEFAULT 0,
-            quality_posts INTEGER NOT NULL DEFAULT 0,
-            favorites_received INTEGER NOT NULL DEFAULT 0,
-            reports_validated INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_user_reputation_level ON user_reputation(level, xp);
-        CREATE INDEX IF NOT EXISTS idx_user_reputation_risk ON user_reputation(risk_score, reputation_score);
-
-        CREATE TABLE IF NOT EXISTS reputation_events (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            actor_user_id TEXT NOT NULL DEFAULT '',
-            admin_id TEXT NOT NULL DEFAULT '',
-            rule_key TEXT NOT NULL DEFAULT '',
-            event_type TEXT NOT NULL DEFAULT '',
-            target_kind TEXT NOT NULL DEFAULT '',
-            target_id TEXT NOT NULL DEFAULT '',
-            xp_delta INTEGER NOT NULL DEFAULT 0,
-            reputation_delta INTEGER NOT NULL DEFAULT 0,
-            risk_delta INTEGER NOT NULL DEFAULT 0,
-            xp_before INTEGER NOT NULL DEFAULT 0,
-            xp_after INTEGER NOT NULL DEFAULT 0,
-            reputation_before INTEGER NOT NULL DEFAULT 70,
-            reputation_after INTEGER NOT NULL DEFAULT 70,
-            risk_before INTEGER NOT NULL DEFAULT 0,
-            risk_after INTEGER NOT NULL DEFAULT 0,
-            level_before INTEGER NOT NULL DEFAULT 1,
-            level_after INTEGER NOT NULL DEFAULT 1,
-            reason TEXT NOT NULL DEFAULT '',
-            metadata TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_reputation_events_user ON reputation_events(user_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_reputation_events_rule ON reputation_events(rule_key, user_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_reputation_events_target ON reputation_events(target_kind, target_id, created_at);
-
-        CREATE TABLE IF NOT EXISTS reputation_rules (
-            key TEXT PRIMARY KEY,
-            name_zh TEXT NOT NULL,
-            name_en TEXT NOT NULL DEFAULT '',
-            name_ja TEXT NOT NULL DEFAULT '',
-            event_type TEXT NOT NULL DEFAULT '',
-            xp_delta INTEGER NOT NULL DEFAULT 0,
-            reputation_delta INTEGER NOT NULL DEFAULT 0,
-            risk_delta INTEGER NOT NULL DEFAULT 0,
-            daily_xp_cap INTEGER NOT NULL DEFAULT 0,
-            weekly_xp_cap INTEGER NOT NULL DEFAULT 0,
-            monthly_xp_cap INTEGER NOT NULL DEFAULT 0,
-            per_target_daily_xp_cap INTEGER NOT NULL DEFAULT 0,
-            is_one_time INTEGER NOT NULL DEFAULT 0,
-            requires_reviewed INTEGER NOT NULL DEFAULT 0,
-            notify_user INTEGER NOT NULL DEFAULT 0,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS reputation_levels (
-            level INTEGER PRIMARY KEY,
-            xp_required INTEGER NOT NULL DEFAULT 0,
-            name_zh TEXT NOT NULL,
-            name_en TEXT NOT NULL DEFAULT '',
-            name_ja TEXT NOT NULL DEFAULT '',
-            description_zh TEXT NOT NULL DEFAULT '',
-            description_en TEXT NOT NULL DEFAULT '',
-            description_ja TEXT NOT NULL DEFAULT '',
-            privileges_json TEXT NOT NULL DEFAULT '[]',
-            is_active INTEGER NOT NULL DEFAULT 1,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS reputation_privileges (
-            id TEXT PRIMARY KEY,
-            level INTEGER NOT NULL DEFAULT 1,
-            key TEXT NOT NULL,
-            title_zh TEXT NOT NULL,
-            title_en TEXT NOT NULL DEFAULT '',
-            title_ja TEXT NOT NULL DEFAULT '',
-            description_zh TEXT NOT NULL DEFAULT '',
-            is_active INTEGER NOT NULL DEFAULT 1,
-            sort_order INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL,
-            UNIQUE(level, key)
-        );
-        CREATE INDEX IF NOT EXISTS idx_reputation_privileges_level ON reputation_privileges(level, sort_order);
-
-        CREATE TABLE IF NOT EXISTS badges (
-            id TEXT PRIMARY KEY,
-            key TEXT UNIQUE NOT NULL,
-            name_zh TEXT NOT NULL,
-            name_en TEXT NOT NULL DEFAULT '',
-            name_ja TEXT NOT NULL DEFAULT '',
-            category TEXT NOT NULL DEFAULT '',
-            rarity TEXT NOT NULL DEFAULT 'common',
-            description_zh TEXT NOT NULL DEFAULT '',
-            is_official INTEGER NOT NULL DEFAULT 0,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS user_badges (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            badge_id TEXT NOT NULL,
-            granted_by_admin_id TEXT NOT NULL DEFAULT '',
-            reason TEXT NOT NULL DEFAULT '',
-            is_displayed INTEGER NOT NULL DEFAULT 1,
-            revoked_at TEXT,
-            revoked_by_admin_id TEXT NOT NULL DEFAULT '',
-            revoke_reason TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(user_id, badge_id, revoked_at),
-            FOREIGN KEY(user_id) REFERENCES users(id),
-            FOREIGN KEY(badge_id) REFERENCES badges(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_user_badges_user ON user_badges(user_id, revoked_at, created_at);
-
-        CREATE TABLE IF NOT EXISTS reputation_rewards (
-            id TEXT PRIMARY KEY,
-            key TEXT UNIQUE NOT NULL,
-            name_zh TEXT NOT NULL,
-            name_en TEXT NOT NULL DEFAULT '',
-            name_ja TEXT NOT NULL DEFAULT '',
-            reward_type TEXT NOT NULL DEFAULT '',
-            required_level INTEGER NOT NULL DEFAULT 1,
-            quantity INTEGER NOT NULL DEFAULT 1,
-            metadata TEXT NOT NULL DEFAULT '{}',
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS user_rewards (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            reward_id TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'available',
-            quantity INTEGER NOT NULL DEFAULT 1,
-            source_event_id TEXT NOT NULL DEFAULT '',
-            claimed_at TEXT,
-            expires_at TEXT,
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(user_id, reward_id, source_event_id),
-            FOREIGN KEY(user_id) REFERENCES users(id),
-            FOREIGN KEY(reward_id) REFERENCES reputation_rewards(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_user_rewards_user ON user_rewards(user_id, status, created_at);
-
-        CREATE TABLE IF NOT EXISTS reputation_limits (
-            key TEXT PRIMARY KEY,
-            value INTEGER NOT NULL DEFAULT 0,
-            description TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS trust_reviews (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            target_kind TEXT NOT NULL DEFAULT '',
-            target_id TEXT NOT NULL DEFAULT '',
-            review_type TEXT NOT NULL DEFAULT 'risk',
-            status TEXT NOT NULL DEFAULT 'open',
-            risk_score INTEGER NOT NULL DEFAULT 0,
-            reasons TEXT NOT NULL DEFAULT '',
-            assigned_admin_id TEXT NOT NULL DEFAULT '',
-            resolved_by_admin_id TEXT NOT NULL DEFAULT '',
-            resolution TEXT NOT NULL DEFAULT '',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            resolved_at TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_trust_reviews_status ON trust_reviews(status, risk_score, created_at);
-        CREATE INDEX IF NOT EXISTS idx_trust_reviews_user ON trust_reviews(user_id, created_at);
-
-        CREATE TABLE IF NOT EXISTS admin_action_logs (
-            id TEXT PRIMARY KEY,
-            admin_id TEXT NOT NULL DEFAULT '',
-            action TEXT NOT NULL,
-            target_kind TEXT NOT NULL DEFAULT '',
-            target_id TEXT NOT NULL DEFAULT '',
-            metadata TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_admin_action_logs_target ON admin_action_logs(target_kind, target_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_admin_action_logs_admin ON admin_action_logs(admin_id, created_at);
-        """,
-    ),
-    # Contacting a city listing now opens a real DM thread instead of a
-    # write-only inquiry form. Notifications grow listing/conversation
-    # targets so the seller's bell deep-links straight into the chat, and
-    # each inquiry remembers the conversation it spawned so 我的咨询 can jump
-    # back into the thread. Nullable columns — existing rows survive.
-    (
-        29,
-        "listing inquiries: bind conversation + notification deep-links",
-        """
-        ALTER TABLE notifications ADD COLUMN target_listing_id TEXT;
-        ALTER TABLE notifications ADD COLUMN target_conversation_id TEXT;
-        ALTER TABLE listing_inquiries ADD COLUMN conversation_id TEXT NOT NULL DEFAULT '';
-        CREATE INDEX IF NOT EXISTS idx_notifications_listing ON notifications(target_listing_id, created_at);
-        """,
-    ),
-    # Structured intake: rental 预约看房 / job 申请 / service 预约 forms post a
-    # details=[{label,value}] payload that we keep as JSON on the inquiry so
-    # 我的预约/我的申请 and the poster's 管理 can render the full brief.
-    (
-        30,
-        "listing inquiries: structured intake payload",
-        """
-        ALTER TABLE listing_inquiries ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}';
-        """,
-    ),
-    (
-        31,
-        "site settings: editable public brand metadata",
-        """
-        CREATE TABLE IF NOT EXISTS site_settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL DEFAULT '',
-            updated_at TEXT NOT NULL
-        );
-        """,
-    ),
-    # Fast lookup for the inquiry idempotency / anti-double-submit dedupe window
-    # (listing_id + from_user_id + created_at), and a hot index for "我的咨询".
-    (
-        32,
-        "listing inquiries: dedupe + my-inquiries indexes",
-        """
-        CREATE INDEX IF NOT EXISTS idx_listing_inquiries_dedupe ON listing_inquiries(listing_id, from_user_id, created_at);
-        """,
-    ),
-    (
-        33,
-        "uploads: S3 uploaded files, audit logs and listing associations",
-        """
-        CREATE TABLE IF NOT EXISTS uploaded_files (
-            id TEXT PRIMARY KEY,
-            upload_id TEXT UNIQUE NOT NULL,
-            user_id TEXT NOT NULL,
-            bucket TEXT NOT NULL,
-            object_key TEXT NOT NULL,
-            public_url TEXT NOT NULL DEFAULT '',
-            cdn_url TEXT NOT NULL DEFAULT '',
-            content_type TEXT NOT NULL,
-            file_size INTEGER NOT NULL DEFAULT 0,
-            file_type TEXT NOT NULL DEFAULT 'other',
-            purpose TEXT NOT NULL,
-            entity_type TEXT NOT NULL DEFAULT '',
-            entity_id TEXT NOT NULL DEFAULT '',
-            status TEXT NOT NULL DEFAULT 'pending',
-            width INTEGER NOT NULL DEFAULT 0,
-            height INTEGER NOT NULL DEFAULT 0,
-            duration REAL NOT NULL DEFAULT 0,
-            checksum TEXT NOT NULL DEFAULT '',
-            etag TEXT NOT NULL DEFAULT '',
-            metadata TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            deleted_at TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-        CREATE INDEX IF NOT EXISTS idx_uploaded_files_user ON uploaded_files(user_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_uploaded_files_entity ON uploaded_files(entity_type, entity_id, status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_uploaded_files_status ON uploaded_files(status, created_at);
-        CREATE INDEX IF NOT EXISTS idx_uploaded_files_object ON uploaded_files(object_key);
-
-        CREATE TABLE IF NOT EXISTS upload_audit_logs (
-            id TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL DEFAULT '',
-            uploaded_file_id TEXT NOT NULL DEFAULT '',
-            upload_id TEXT NOT NULL DEFAULT '',
-            action TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT '',
-            reason TEXT NOT NULL DEFAULT '',
-            metadata TEXT NOT NULL DEFAULT '{}',
-            created_at TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_upload_audit_file ON upload_audit_logs(uploaded_file_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_upload_audit_user ON upload_audit_logs(user_id, created_at);
-
-        ALTER TABLE listing_media ADD COLUMN uploaded_file_id TEXT NOT NULL DEFAULT '';
-        ALTER TABLE guide_product_files ADD COLUMN uploaded_file_id TEXT NOT NULL DEFAULT '';
-        CREATE INDEX IF NOT EXISTS idx_listing_media_uploaded_file ON listing_media(uploaded_file_id);
-        CREATE INDEX IF NOT EXISTS idx_guide_product_files_uploaded_file ON guide_product_files(uploaded_file_id);
-        """,
-    ),
-    (
-        34,
-        "uploads: post video media and private message attachments",
-        """
-        ALTER TABLE post_media ADD COLUMN uploaded_file_id TEXT NOT NULL DEFAULT '';
-        ALTER TABLE post_media ADD COLUMN media_type TEXT NOT NULL DEFAULT 'image';
-        ALTER TABLE post_media ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE post_media ADD COLUMN is_cover INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE post_media ADD COLUMN thumbnail_file_id TEXT NOT NULL DEFAULT '';
-        ALTER TABLE post_media ADD COLUMN duration_seconds REAL NOT NULL DEFAULT 0;
-        ALTER TABLE post_media ADD COLUMN width INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE post_media ADD COLUMN height INTEGER NOT NULL DEFAULT 0;
-        ALTER TABLE post_media ADD COLUMN processing_status TEXT NOT NULL DEFAULT 'none';
-        ALTER TABLE post_media ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
-        ALTER TABLE post_media ADD COLUMN updated_at TEXT NOT NULL DEFAULT '';
-        CREATE INDEX IF NOT EXISTS idx_post_media_uploaded_file ON post_media(uploaded_file_id);
-        CREATE INDEX IF NOT EXISTS idx_post_media_type ON post_media(media_type, processing_status);
-
-        CREATE TABLE IF NOT EXISTS message_attachments (
-            id TEXT PRIMARY KEY,
-            message_id TEXT NOT NULL,
-            thread_id TEXT NOT NULL,
-            uploaded_file_id TEXT NOT NULL,
-            attachment_type TEXT NOT NULL DEFAULT 'image',
-            thumbnail_file_id TEXT NOT NULL DEFAULT '',
-            duration_seconds REAL NOT NULL DEFAULT 0,
-            file_name TEXT NOT NULL DEFAULT '',
-            file_size INTEGER NOT NULL DEFAULT 0,
-            content_type TEXT NOT NULL DEFAULT '',
-            visibility TEXT NOT NULL DEFAULT 'thread_members_only',
-            status TEXT NOT NULL DEFAULT 'ready',
-            created_at TEXT NOT NULL,
-            updated_at TEXT NOT NULL,
-            deleted_at TEXT
-        );
-        CREATE INDEX IF NOT EXISTS idx_message_attachments_message ON message_attachments(message_id, status);
-        CREATE INDEX IF NOT EXISTS idx_message_attachments_thread ON message_attachments(thread_id, created_at);
-        CREATE INDEX IF NOT EXISTS idx_message_attachments_file ON message_attachments(uploaded_file_id);
-        """,
-    ),
-    (
-        35,
-        "idempotency: generic Idempotency-Key store for safe write retries",
-        """
-        CREATE TABLE IF NOT EXISTS idempotency_keys (
-            scope TEXT NOT NULL,
-            idem_key TEXT NOT NULL,
-            user_id TEXT NOT NULL DEFAULT '',
-            ip TEXT NOT NULL DEFAULT '',
-            status INTEGER NOT NULL,
-            response_body BLOB NOT NULL,
-            created_epoch INTEGER NOT NULL DEFAULT 0,
-            created_at TEXT NOT NULL,
-            PRIMARY KEY (scope, idem_key)
-        );
-        CREATE INDEX IF NOT EXISTS idx_idempotency_keys_created ON idempotency_keys(created_epoch);
-        """,
-    ),
-]
-
+# ---------------------------------------------------------------------------
+# database schema and migrations.
+#
+# The SQL definitions live in server_schema.py; imported names stay available
+# here for scripts/tests that use server.SCHEMA and server.MIGRATIONS.
+# ---------------------------------------------------------------------------
 
 def run_migrations(conn: sqlite3.Connection) -> None:
     """Apply pending migrations in version order."""
@@ -5059,6 +2946,85 @@ def default_membership_benefits() -> list[dict[str, Any]]:
         }
         for idx, (key, title, desc, icon) in enumerate(titles)
     ]
+
+
+MEMBERSHIP_BENEFIT_I18N: dict[str, dict[str, tuple[str, str]]] = {
+    "verified_badge": {
+        "zh": ("蓝色认证标识", "个人主页和内容卡片展示 Machi 认证标识。"),
+        "en": ("Verified badge", "Show a Machi Verified badge next to your name, on your profile, and on public content cards."),
+        "ja": ("認証バッジ", "名前、プロフィール、公開コンテンツカードに Machi 認証バッジを表示します。"),
+    },
+    "profile_verified": {
+        "zh": ("个人主页认证展示", "认证状态在个人主页稳定展示。"),
+        "en": ("Verified profile display", "Your verified status is clearly shown on your profile."),
+        "ja": ("プロフィールでの認証表示", "認証状態をプロフィール上で分かりやすく表示します。"),
+    },
+    "card_verified": {
+        "zh": ("内容卡片认证展示", "你的公开内容卡片显示认证信息。"),
+        "en": ("Verified content cards", "Public content cards show your verified status."),
+        "ja": ("コンテンツカードでの認証表示", "公開コンテンツカードに認証情報を表示します。"),
+    },
+    "trusted_publish": {
+        "zh": ("高信任内容发布", "可发布招聘、租房、本地服务等高信任内容。"),
+        "en": ("High-trust posting access", "Post jobs, housing, local services, and other channels that require stronger trust."),
+        "ja": ("高信頼投稿へのアクセス", "求人、住まい、ローカルサービスなど、信頼性が求められる投稿が可能になります。"),
+    },
+    "higher_quota": {
+        "zh": ("更高每日发布额度", "每日发布额度高于普通账号。"),
+        "en": ("Higher daily posting quota", "Publish more per day than a standard account."),
+        "ja": ("投稿上限の引き上げ", "通常アカウントより多く投稿できます。"),
+    },
+    "priority_review": {
+        "zh": ("优先审核", "内容进入更高优先级审核队列。"),
+        "en": ("Priority review", "Your submitted content enters a higher-priority review queue."),
+        "ja": ("優先審査", "投稿内容が優先度の高い審査キューに入ります。"),
+    },
+    "light_boost": {
+        "zh": ("内容轻微优先展示", "合规内容获得温和展示加成。"),
+        "en": ("Gentle visibility boost", "Compliant content receives a modest visibility lift."),
+        "ja": ("表示機会の軽い優先", "ルールに沿った内容は穏やかな表示優先の対象になります。"),
+    },
+    "exclusive_resources": {
+        "zh": ("查看会员专属资料", "访问会员专属资料、清单和模板。"),
+        "en": ("Member-only resources", "Access member-only resources, checklists, and templates."),
+        "ja": ("メンバー限定資料", "メンバー限定の資料、チェックリスト、テンプレートを確認できます。"),
+    },
+    "jlpt_discount": {
+        "zh": ("JLPT 资料会员折扣", "指定 JLPT 资料享会员价。"),
+        "en": ("JLPT resource discounts", "Get member pricing on selected JLPT resources."),
+        "ja": ("JLPT 資料のメンバー割引", "対象の JLPT 資料をメンバー価格で利用できます。"),
+    },
+    "grad_discount": {
+        "zh": ("大学院申请资料会员折扣", "大学院申请相关资料享会员价。"),
+        "en": ("Graduate-school resource discounts", "Get member pricing on graduate-school application resources."),
+        "ja": ("大学院出願資料のメンバー割引", "大学院出願関連資料をメンバー価格で利用できます。"),
+    },
+    "career_discount": {
+        "zh": ("日本就职资料会员折扣", "日本就职资料和模板享会员价。"),
+        "en": ("Career resource discounts", "Get member pricing on Japan job-hunting resources and templates."),
+        "ja": ("日本就職資料のメンバー割引", "就職関連資料やテンプレートをメンバー価格で利用できます。"),
+    },
+    "life_checklist": {
+        "zh": ("日本生活清单会员可看", "查看入境、租房、手续等生活清单。"),
+        "en": ("Japan life checklists", "Read checklists for arrival, housing, city-hall procedures, and daily setup."),
+        "ja": ("日本生活チェックリスト", "入国、住まい、手続き、生活準備のチェックリストを確認できます。"),
+    },
+    "service_priority": {
+        "zh": ("服务预约优先处理", "人工服务预约优先进入处理队列。"),
+        "en": ("Priority service handling", "Service bookings are handled with higher priority."),
+        "ja": ("サービス予約の優先対応", "個別サービス予約が優先的に処理されます。"),
+    },
+    "service_discount": {
+        "zh": ("指定服务会员优惠", "指定服务支持会员折扣价。"),
+        "en": ("Selected service discounts", "Selected services can be booked with member discounts."),
+        "ja": ("対象サービスのメンバー割引", "対象サービスをメンバー割引で利用できます。"),
+    },
+    "purchase_center": {
+        "zh": ("已购资料统一管理", "集中管理已购资料与会员可看内容。"),
+        "en": ("Unified purchase library", "Manage purchased resources and member-access content in one place."),
+        "ja": ("購入資料の一元管理", "購入済み資料とメンバー閲覧可能コンテンツをまとめて管理できます。"),
+    },
+}
 
 
 def _membership_plan_seed_rows() -> list[dict[str, Any]]:
@@ -8525,8 +6491,14 @@ def reputation_grant_level_rewards(conn: sqlite3.Connection, user_id: str, level
         )
 
 
-def reputation_effective_limits(conn: sqlite3.Connection, rep: dict[str, Any], user: dict[str, Any] | None = None) -> dict[str, Any]:
-    limits = reputation_limit_map(conn)
+def reputation_effective_limits(
+    conn: sqlite3.Connection,
+    rep: dict[str, Any],
+    user: dict[str, Any] | None = None,
+    *,
+    limit_values: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    limits = limit_values if limit_values is not None else reputation_limit_map(conn)
     score = _clamp_reputation_score(rep.get("reputation_score"))
     level = int(rep.get("level") or 1)
     risk = _clamp_risk_score(rep.get("risk_score"))
@@ -8553,21 +6525,96 @@ def reputation_effective_limits(conn: sqlite3.Connection, rep: dict[str, Any], u
     }
 
 
-def reputation_validate_listing_publish(conn: sqlite3.Connection, user: dict[str, Any], listing_type: str) -> tuple[bool, str]:
+def listing_type_requires_membership(listing_type: str) -> bool:
+    return normalize_listing_type(listing_type) in LISTING_TYPES_REQUIRING_MEMBERSHIP
+
+
+def listing_membership_quota_types(listing_type: str) -> set[str]:
+    normalized = normalize_listing_type(listing_type)
+    return LISTING_MEMBERSHIP_QUOTA_GROUPS.get(normalized, {normalized})
+
+
+def _membership_listing_month_start(now: datetime | None = None) -> datetime:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    return current.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+def membership_listing_monthly_usage(
+    conn: sqlite3.Connection,
+    user_id: str,
+    listing_type: str,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    quota_types = sorted(listing_membership_quota_types(listing_type))
+    placeholders = ",".join("?" for _ in quota_types)
+    start = _membership_listing_month_start(now)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS c
+          FROM city_listings
+         WHERE seller_user_id = ?
+           AND type IN ({placeholders})
+           AND status <> 'draft'
+           AND deleted_at IS NULL
+           AND created_at >= ?
+        """,
+        [user_id, *quota_types, start.isoformat()],
+    ).fetchone()
+    used = int((row or {}).get("c") if isinstance(row, dict) else (row["c"] if row else 0) or 0)
+    limit = LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT
+    return {
+        "used": used,
+        "remaining": max(0, limit - used) if limit > 0 else None,
+        "limit": limit,
+        "listing_types": quota_types,
+        "month_start": start.isoformat(),
+    }
+
+
+def require_membership_listing_publish(
+    conn: sqlite3.Connection,
+    user_id: str,
+    listing_type: str,
+    *,
+    enforce_quota: bool = True,
+) -> None:
+    normalized = normalize_listing_type(listing_type)
+    if normalized not in LISTING_TYPES_REQUIRING_MEMBERSHIP:
+        return
+    label = LISTING_MEMBERSHIP_GROUP_LABELS.get(normalized, "该频道")
+    if not has_active_membership(conn, user_id):
+        raise APIError(f"发布{label}信息需要开通 Machi 会员。", 403, "MEMBERSHIP_REQUIRED")
+    if not enforce_quota or LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT <= 0:
+        return
+    usage = membership_listing_monthly_usage(conn, user_id, normalized)
+    if int(usage["used"]) >= int(usage["limit"]):
+        raise APIError(
+            f"Machi 会员每月可免费发布 {usage['limit']} 条{label}信息，本月次数已用完。",
+            403,
+            "MEMBERSHIP_LISTING_QUOTA_EXCEEDED",
+        )
+
+
+def reputation_validate_listing_publish(
+    conn: sqlite3.Connection,
+    user: dict[str, Any],
+    listing_type: str,
+    *,
+    enforce_quota: bool = True,
+) -> tuple[bool, str]:
+    listing_type = normalize_listing_type(listing_type)
     rep = reputation_ensure_user(conn, user["id"])
     controls = reputation_effective_limits(conn, rep, user)
     if listing_type == "secondhand":
         if not controls["can_publish_secondhand"]:
             raise APIError("当前账号信任状态暂不能发布二手信息。", 403, "REPUTATION_LIMITED")
         return bool(controls["secondhand_requires_review"]), "声望抽检"
-    if listing_type == "rental" and not controls["can_publish_rental"]:
-        raise APIError("发布房源需要 Lv.3 且声望至少为正常。", 403, "REPUTATION_LIMITED")
-    if listing_type in {"job", "hiring"} and not controls["can_publish_job"]:
-        raise APIError("发布招聘/职位需要 Lv.3 且声望至少良好。", 403, "REPUTATION_LIMITED")
-    if listing_type == "local_service" and not controls["can_publish_service"]:
-        raise APIError("发布本地服务需要 Lv.3 且声望至少良好。", 403, "REPUTATION_LIMITED")
-    if listing_type == "discount" and not controls["can_publish_discount"]:
-        raise APIError("发布商家优惠需要 Lv.3 且声望至少正常。", 403, "REPUTATION_LIMITED")
+    if listing_type_requires_membership(listing_type):
+        require_membership_listing_publish(conn, user["id"], listing_type, enforce_quota=enforce_quota)
     return bool(controls["high_risk_requires_review"] or listing_type in LISTING_TYPES_DEFAULT_REVIEW), "高信任频道审核"
 
 
@@ -8735,6 +6782,75 @@ def serialize_reputation_profile(
         "updated_at": rep.get("updated_at"),
     }
     return payload
+
+
+def serialize_reputation_admin_summary(
+    row: sqlite3.Row | dict[str, Any],
+    *,
+    levels: dict[int, dict[str, Any]],
+    limits: dict[str, int],
+) -> dict[str, Any]:
+    d = dict(row)
+    xp = int(d.get("xp") or 0)
+    level_number = int(d.get("level") or 1)
+    level = levels.get(level_number) or {
+        "level": level_number,
+        "name_zh": f"Lv.{level_number}",
+        "name_en": f"Lv.{level_number}",
+        "name_ja": f"Lv.{level_number}",
+        "description_zh": "",
+        "xp_required": 0,
+    }
+    next_level = next(
+        (item for number, item in sorted(levels.items()) if number > level_number),
+        None,
+    )
+    score = _clamp_reputation_score(d.get("reputation_score"))
+    status = reputation_status_payload(score)
+    rep = {
+        "xp": xp,
+        "level": level_number,
+        "reputation_score": score,
+        "risk_score": _clamp_risk_score(d.get("risk_score")),
+        "growth_frozen": d.get("growth_frozen"),
+        "frozen_until": d.get("frozen_until"),
+    }
+    return {
+        "user_id": d.get("id") or d.get("user_id") or "",
+        "level": level_number,
+        "level_name": level.get("name_zh") or f"Lv.{level_number}",
+        "levelName": level.get("name_zh") or f"Lv.{level_number}",
+        "level_name_en": level.get("name_en") or "",
+        "level_name_ja": level.get("name_ja") or "",
+        "level_description": level.get("description_zh") or "",
+        "xp": xp,
+        "current_level_xp": int(level.get("xp_required") or 0),
+        "next_level_xp": int(next_level.get("xp_required") or 0) if next_level else None,
+        "nextLevelXp": int(next_level.get("xp_required") or 0) if next_level else None,
+        "xp_to_next": max(0, int(next_level.get("xp_required") or 0) - xp) if next_level else None,
+        "reputation_status": status["status"],
+        "reputationStatus": status["status"],
+        "reputation_label": status["label"],
+        "reputationLabel": status["label"],
+        "reputation_score": score,
+        "risk_score": rep["risk_score"],
+        "public_trust_label": REPUTATION_PUBLIC_TRUST_LABELS.get(status["status"], "待建立记录"),
+        "badges": [],
+        "privileges": [],
+        "rewards": [],
+        "limits": reputation_effective_limits(None, rep, d, limit_values=limits),  # type: ignore[arg-type]
+        "stats": {
+            "helpedUsers": int(d.get("helped_users") or 0),
+            "qualityPosts": int(d.get("quality_posts") or 0),
+            "favoritesReceived": int(d.get("favorites_received") or 0),
+            "violationFreeDays": 0,
+            "reportsValidated": int(d.get("reports_validated") or 0),
+        },
+        "growth_frozen": reputation_growth_is_frozen(rep),
+        "frozen_until": d.get("frozen_until"),
+        "freeze_reason": d.get("freeze_reason") or "",
+        "updated_at": d.get("reputation_updated_at"),
+    }
 
 
 def reputation_violation_free_days(conn: sqlite3.Connection, user_id: str) -> int:
@@ -9107,16 +7223,53 @@ def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
         "membershipPlanKey":    row.get("membership_plan_key", "") or "",
         "verified_badge_type":  row.get("verified_badge_type", "") or "",
         "verifiedBadgeType":    row.get("verified_badge_type", "") or "",
-        "follower_count":       int(row.get("follower_count") or 0) if "follower_count" in row else 0,
-        "following_count":      int(row.get("following_count") or 0) if "following_count" in row else 0,
-        "post_count":           int(row.get("post_count") or 0) if "post_count" in row else 0,
-        "followerCount":        int(row.get("follower_count") or 0) if "follower_count" in row else 0,
-        "followingCount":       int(row.get("following_count") or 0) if "following_count" in row else 0,
-        "postCount":            int(row.get("post_count") or 0) if "post_count" in row else 0,
         "isFollowing":          bool(row.get("is_following", 0)) if "is_following" in row else False,
         "can_message":          True,
         "canMessage":           True,
     }
+    # Social counts are only included when the caller actually computed them.
+    # Emitting hard zeros here made every embedded author payload (feed posts,
+    # comments, …) carry follower_count=0, which clients then wrote over the
+    # real cached values — the "关注/粉丝数突然归零" bug. Absent keys let
+    # clients keep their last known value.
+    if "follower_count" in row:
+        payload["follower_count"] = payload["followerCount"] = int(row.get("follower_count") or 0)
+    if "following_count" in row:
+        payload["following_count"] = payload["followingCount"] = int(row.get("following_count") or 0)
+    if "post_count" in row:
+        payload["post_count"] = payload["postCount"] = int(row.get("post_count") or 0)
+    return payload
+
+
+def user_social_counts(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
+    """Real follower/following/post counts for one user.
+
+    serialize_user only passes counts through when the caller's row already
+    carries them; every "current user" endpoint that skipped this returned
+    hard zeros, which clients then cached over the real values (the
+    follower-count-randomly-resets-to-0 bug). Single-user payloads must
+    always attach these.
+    """
+    followers = conn.execute(
+        "SELECT COUNT(*) AS c FROM follows WHERE following_id = ?", (user_id,)
+    ).fetchone()["c"]
+    following = conn.execute(
+        "SELECT COUNT(*) AS c FROM follows WHERE follower_id = ?", (user_id,)
+    ).fetchone()["c"]
+    posts_count = conn.execute(
+        "SELECT COUNT(*) AS c FROM posts WHERE author_id = ? AND deleted_at IS NULL AND status IN ('published', 'active')",
+        (user_id,),
+    ).fetchone()["c"]
+    return {
+        "follower_count": int(followers), "followerCount": int(followers),
+        "following_count": int(following), "followingCount": int(following),
+        "post_count": int(posts_count), "postCount": int(posts_count),
+    }
+
+
+def serialize_user_with_counts(conn: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
+    payload = serialize_user(row)
+    payload.update(user_social_counts(conn, str(dict(row).get("id") or "")))
     return payload
 
 
@@ -9285,51 +7438,94 @@ def serialize_comment(row: dict[str, Any], extras: dict[str, Any] | None = None)
 
 
 def serialize_media(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    media = normalize_media_dto(row)
+    media.update({
         "id": row["id"],
         "remote_id": row["id"],
-        "owner_id": row["owner_id"],
-        "type": row["type"],
-        "url": row["url"],
-        "thumb_url": row.get("thumb_url") or row["url"],
-        "mime": row["mime"],
+        "remoteId": row["id"],
+        "owner_id": row.get("owner_id") or "",
+        "ownerId": row.get("owner_id") or "",
+        "type": _media_type_from(row.get("mime") or "", row.get("type") or ""),
+        "url": media["url"] or row.get("url", ""),
+        "cdnUrl": media["cdnUrl"] or row.get("url", ""),
+        "publicUrl": media["publicUrl"] or row.get("url", ""),
+        "mime": row.get("mime") or "",
+        "contentType": row.get("mime") or media.get("contentType") or "",
+        "content_type": row.get("mime") or media.get("content_type") or "",
         "width": int(row.get("width") or 0),
         "height": int(row.get("height") or 0),
         "duration": float(row.get("duration") or 0),
+        "durationSeconds": float(row.get("duration") or 0),
+        "duration_seconds": float(row.get("duration") or 0),
         "byte_size": int(row.get("byte_size") or 0),
-        "created_at": row["created_at"],
-    }
+        "fileSize": int(row.get("byte_size") or 0),
+        "file_size": int(row.get("byte_size") or 0),
+        "created_at": row.get("created_at") or "",
+        "createdAt": row.get("created_at") or "",
+    })
+    if media["type"] == "video" and media.get("thumb_url") == media.get("url"):
+        media["thumb_url"] = ""
+        media["thumbUrl"] = ""
+        media["thumbnailUrl"] = ""
+        media["thumbnail_url"] = ""
+    return media
+
+
+def canonical_post_media_type(media_type: str, mime: str, linked_type: str) -> str:
+    """Prefer the stored object's MIME/type over legacy post-link defaults."""
+    normalized_mime = (mime or "").lower()
+    normalized_media = (media_type or "").lower()
+    normalized_link = (linked_type or "").lower()
+    if normalized_mime.startswith("video/") or normalized_media == "video":
+        return "video"
+    if normalized_mime.startswith("image/") or normalized_media == "image":
+        return "image"
+    return normalized_link or normalized_media or "file"
 
 
 def serialize_message_attachment(row: dict[str, Any]) -> dict[str, Any]:
     attachment_type = row.get("attachment_type") or row.get("file_type") or "file"
     message_id = row.get("message_id") or ""
     attachment_id = row.get("id") or ""
-    return {
+    visibility = row.get("visibility") or "thread_members_only"
+    payload = {
         "id": attachment_id,
         "message_id": message_id,
         "thread_id": row.get("thread_id") or "",
         "uploaded_file_id": row.get("uploaded_file_id") or row.get("file_id") or "",
         "type": attachment_type,
+        "visibility": visibility,
+        "objectKey": row.get("object_key") or "",
         "attachment_type": attachment_type,
         "url": "",
+        "cdnUrl": "",
+        "publicUrl": "",
         "thumb_url": "",
+        "thumbUrl": "",
+        "thumbnailUrl": "",
+        "thumbnail_url": "",
+        "posterUrl": "",
+        "poster_url": "",
         "needsSignedUrl": True,
         "viewUrlEndpoint": f"/api/messages/{message_id}/attachments/{attachment_id}/view-url",
         "thumbnail_file_id": row.get("thumbnail_file_id") or "",
         "duration": float(row.get("duration_seconds") or row.get("duration") or 0),
         "duration_seconds": float(row.get("duration_seconds") or row.get("duration") or 0),
+        "durationSeconds": float(row.get("duration_seconds") or row.get("duration") or 0),
         "width": int(row.get("width") or 0),
         "height": int(row.get("height") or 0),
         "file_name": row.get("file_name") or "",
         "file_size": int(row.get("file_size") or 0),
+        "fileSize": int(row.get("file_size") or 0),
         "byte_size": int(row.get("file_size") or 0),
         "content_type": row.get("content_type") or "",
+        "contentType": row.get("content_type") or "",
         "mime": row.get("content_type") or "",
-        "visibility": row.get("visibility") or "thread_members_only",
         "status": row.get("status") or "ready",
         "created_at": row.get("created_at") or "",
+        "createdAt": row.get("created_at") or "",
     }
+    return payload
 
 
 def serialize_notification(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -9377,6 +7573,32 @@ def serialize_conversation(row: dict[str, Any], extras: dict[str, Any] | None = 
         "last_message": extras.get("last_message"),
         "unread_count": int(extras.get("unread_count") or 0),
         "updated_at": row["updated_at"],
+    }
+
+
+def serialize_email_campaign(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "admin_id": row.get("admin_id", ""),
+        "adminId": row.get("admin_id", ""),
+        "subject": row.get("subject", ""),
+        "body": row.get("body", ""),
+        "audience": row.get("audience", "all"),
+        "status": row.get("status", "draft"),
+        "recipient_count": int(row.get("recipient_count") or 0),
+        "recipientCount": int(row.get("recipient_count") or 0),
+        "sent_count": int(row.get("sent_count") or 0),
+        "sentCount": int(row.get("sent_count") or 0),
+        "failed_count": int(row.get("failed_count") or 0),
+        "failedCount": int(row.get("failed_count") or 0),
+        "created_at": row.get("created_at", ""),
+        "createdAt": row.get("created_at", ""),
+        "updated_at": row.get("updated_at", ""),
+        "updatedAt": row.get("updated_at", ""),
+        "started_at": row.get("started_at"),
+        "startedAt": row.get("started_at"),
+        "finished_at": row.get("finished_at"),
+        "finishedAt": row.get("finished_at"),
     }
 
 
@@ -9433,14 +7655,23 @@ def hydrate_post_extras(conn: sqlite3.Connection, post_ids: list[str], current_u
         f"""SELECT pm.post_id, pm.sort_index, pm.sort_order, pm.media_type AS pm_media_type,
                    pm.is_cover, pm.thumbnail_file_id, pm.duration_seconds,
                    pm.width AS pm_width, pm.height AS pm_height,
-                   pm.processing_status, m.*
+                   pm.processing_status, m.*,
+                   uf.object_key, uf.public_url, uf.cdn_url, uf.content_type,
+                   uf.file_size, uf.file_type, uf.purpose, uf.status, uf.metadata
             FROM post_media pm JOIN media m ON m.id = pm.media_id
+            LEFT JOIN uploaded_files uf
+                   ON uf.id = COALESCE(NULLIF(pm.uploaded_file_id, ''), m.id)
+                  AND uf.deleted_at IS NULL
             WHERE pm.post_id IN ({placeholders}) AND m.deleted_at IS NULL
             ORDER BY COALESCE(NULLIF(pm.sort_order, 0), pm.sort_index), pm.sort_index""",
         post_ids,
     ):
         item = serialize_media(dict(row))
-        item["type"] = row["pm_media_type"] or item["type"]
+        item["type"] = canonical_post_media_type(
+            item["type"],
+            item["mime"],
+            row["pm_media_type"],
+        )
         item["media_type"] = item["type"]
         item["is_cover"] = bool(row["is_cover"])
         item["thumbnail_file_id"] = row["thumbnail_file_id"] or ""
@@ -9702,18 +7933,149 @@ def public_listing_attributes(listing_type: str, attrs: Any) -> dict[str, Any]:
     return cleaned
 
 
-def listing_image_fallback(listing_type: str, index: int = 0) -> str:
-    if listing_type == "rental":
-        seed = ["apartment", "interior", "japan-home"][index % 3]
-    elif listing_type in {"job", "hiring"}:
-        seed = ["workplace", "restaurant-job", "office"][index % 3]
-    elif listing_type == "local_service":
-        seed = ["service", "moving", "repair"][index % 3]
-    elif listing_type == "discount":
-        seed = ["local-shop", "coupon", "cafe"][index % 3]
-    else:
-        seed = ["keyboard", "chair", "camera"][index % 3]
-    return f"https://images.unsplash.com/photo-1498050108023-c5249f4df085?w=900&q=80&auto=format&fit=crop&ixid=machi-{seed}"
+LISTING_FALLBACK_ART: dict[str, tuple[str, str, str, str]] = {
+    "secondhand": ("#2563eb", "#f97316", "二手市场", "bag"),
+    "rental": ("#0ea5e9", "#22c55e", "租房", "home"),
+    "job": ("#7c3aed", "#f59e0b", "工作", "briefcase"),
+    "hiring": ("#7c3aed", "#f59e0b", "招聘", "briefcase"),
+    "local_service": ("#0f766e", "#d97706", "本地服务", "tools"),
+    "discount": ("#ea580c", "#2563eb", "优惠", "ticket"),
+    "event": ("#ea580c", "#2563eb", "活动", "ticket"),
+}
+LISTING_FALLBACK_EN_LABEL: dict[str, str] = {
+    "secondhand": "Secondhand",
+    "rental": "Rental",
+    "job": "Jobs",
+    "hiring": "Hiring",
+    "local_service": "Local Service",
+    "discount": "Local Deal",
+    "event": "City Event",
+}
+GENERATED_LISTING_CARD_CACHE: dict[tuple[str, int, str], bytes] = {}
+
+
+def listing_image_fallback(listing_type: str, index: int = 0, base_url: str = "") -> str:
+    path = f"/api/generated/listing-card.png?type={quote((listing_type or 'secondhand').strip(), safe='')}&i={int(index) % 7}"
+    root = (base_url or PUBLIC_BASE_URL).rstrip("/")
+    return f"{root}{path}" if root else path
+
+
+def generated_listing_card_svg(listing_type: str, index: int = 0) -> str:
+    accent, warm, title, icon = LISTING_FALLBACK_ART.get((listing_type or "").strip(), LISTING_FALLBACK_ART["secondhand"])
+    i = int(index) % 7
+    label = html.escape(title)
+    icon_label = {"bag": "□", "home": "⌂", "briefcase": "▣", "tools": "×", "ticket": "%"} .get(icon, "□")
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760" role="img" aria-label="Machi {label}">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f8fafc"/>
+      <stop offset="0.58" stop-color="#eef6ff"/>
+      <stop offset="1" stop-color="#f7fbf5"/>
+    </linearGradient>
+    <radialGradient id="halo" cx="{0.28 + i * 0.04}" cy="{0.2 + i * 0.03}" r="0.55">
+      <stop offset="0" stop-color="{accent}" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="{accent}" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="shadow" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="22" stdDeviation="24" flood-color="#0f172a" flood-opacity="0.16"/>
+    </filter>
+  </defs>
+  <rect width="1200" height="760" fill="url(#bg)"/>
+  <rect width="1200" height="760" fill="url(#halo)"/>
+  <circle cx="{900 - i * 28}" cy="{132 + i * 12}" r="178" fill="{warm}" opacity="0.12"/>
+  <circle cx="{216 + i * 22}" cy="640" r="242" fill="{accent}" opacity="0.10"/>
+  <g filter="url(#shadow)">
+    <rect x="116" y="118" width="968" height="524" rx="54" fill="#ffffff" opacity="0.88"/>
+    <rect x="158" y="160" width="884" height="440" rx="42" fill="#f8fafc" stroke="#e2e8f0" stroke-width="2"/>
+    <circle cx="320" cy="334" r="104" fill="{accent}" opacity="0.12"/>
+    <circle cx="320" cy="334" r="62" fill="{accent}" opacity="0.95"/>
+    <text x="320" y="362" text-anchor="middle" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="78" font-weight="800" fill="#ffffff">{icon_label}</text>
+    <text x="462" y="316" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="62" font-weight="900" fill="#0f172a">Machi</text>
+    <text x="462" y="386" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="48" font-weight="850" fill="{accent}">{label}</text>
+    <rect x="462" y="432" width="356" height="42" rx="21" fill="#e2e8f0"/>
+    <rect x="462" y="494" width="486" height="34" rx="17" fill="#e2e8f0" opacity="0.76"/>
+  </g>
+</svg>"""
+
+
+def _listing_card_font(size: int, *, bold: bool = False):
+    try:
+        from PIL import ImageFont
+    except Exception as exc:
+        raise RuntimeError("Pillow is required for generated listing cards") from exc
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf" if bold else "/System/Library/Fonts/Supplemental/Arial.ttf",
+    ]
+    for path in candidates:
+        try:
+            if path and Path(path).exists():
+                return ImageFont.truetype(path, size=size)
+        except Exception:
+            continue
+    try:
+        return ImageFont.load_default(size=size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def generated_listing_card_png(listing_type: str, index: int = 0) -> bytes:
+    clean_type = normalize_listing_type(listing_type)
+    i = int(index) % 7
+    cache_key = (clean_type, i, "png")
+    if cache_key in GENERATED_LISTING_CARD_CACHE:
+        return GENERATED_LISTING_CARD_CACHE[cache_key]
+    try:
+        from PIL import Image, ImageDraw
+    except Exception as exc:
+        raise RuntimeError("Pillow is required for generated listing cards") from exc
+
+    accent, warm, _title, icon = LISTING_FALLBACK_ART.get(clean_type, LISTING_FALLBACK_ART["secondhand"])
+    label = LISTING_FALLBACK_EN_LABEL.get(clean_type, "Listing")
+    width, height = 1200, 760
+    image = Image.new("RGB", (width, height), "#f8fafc")
+    draw = ImageDraw.Draw(image)
+    for y in range(height):
+        blend = y / max(1, height - 1)
+        r = int(248 * (1 - blend) + 239 * blend)
+        g = int(250 * (1 - blend) + 246 * blend)
+        b = int(252 * (1 - blend) + 255 * blend)
+        draw.line([(0, y), (width, y)], fill=(r, g, b))
+    draw.ellipse((760 - i * 18, 56 + i * 9, 1130 - i * 18, 426 + i * 9), fill=_hex_to_rgba_rgb(warm, 0.13))
+    draw.ellipse((88 + i * 14, 482, 470 + i * 14, 864), fill=_hex_to_rgba_rgb(accent, 0.11))
+    draw.rounded_rectangle((116, 118, 1084, 642), radius=54, fill="#ffffff", outline="#e2e8f0", width=2)
+    draw.rounded_rectangle((158, 160, 1042, 600), radius=42, fill="#f8fafc", outline="#e2e8f0", width=2)
+    draw.ellipse((216, 230, 424, 438), fill=_hex_to_rgba_rgb(accent, 0.14))
+    draw.ellipse((258, 272, 382, 396), fill=accent)
+
+    icon_text = {"bag": "B", "home": "H", "briefcase": "J", "tools": "S", "ticket": "%"}.get(icon, "M")
+    icon_font = _listing_card_font(76, bold=True)
+    title_font = _listing_card_font(74, bold=True)
+    label_font = _listing_card_font(52, bold=True)
+    small_font = _listing_card_font(32, bold=True)
+    icon_box = draw.textbbox((0, 0), icon_text, font=icon_font)
+    draw.text((320 - (icon_box[2] - icon_box[0]) / 2, 334 - (icon_box[3] - icon_box[1]) / 2 - 8), icon_text, font=icon_font, fill="#ffffff")
+    draw.text((462, 272), "Machi", font=title_font, fill="#0f172a")
+    draw.text((462, 366), label, font=label_font, fill=accent)
+    draw.rounded_rectangle((462, 448, 820, 492), radius=22, fill="#e2e8f0")
+    draw.rounded_rectangle((462, 520, 948, 558), radius=19, fill="#e2e8f0")
+    draw.text((196, 548), "Generated default cover", font=small_font, fill="#64748b")
+
+    out = io.BytesIO()
+    image.save(out, format="PNG", optimize=True)
+    data = out.getvalue()
+    GENERATED_LISTING_CARD_CACHE[cache_key] = data
+    return data
+
+
+def _hex_to_rgba_rgb(hex_color: str, opacity: float) -> tuple[int, int, int]:
+    clean = hex_color.strip().lstrip("#")
+    if len(clean) != 6:
+        return (226, 232, 240)
+    bg = (248, 250, 252)
+    fg = tuple(int(clean[i:i + 2], 16) for i in (0, 2, 4))
+    return tuple(int(bg[idx] * (1 - opacity) + fg[idx] * opacity) for idx in range(3))
 
 
 def listing_policy_violation(title: str, description: str, category: str = "") -> str:
@@ -9751,6 +8113,7 @@ def resolve_listing_owner_update_publication(
         conn,
         user,
         normalize_listing_type(current.get("type")),
+        enforce_quota=current_status not in PUBLIC_LISTING_STATUSES,
     )
     review_enabled = _site_settings(conn).get("listing_review_enabled", "1") != "0"
     if review_enabled and requires_review:
@@ -9786,21 +8149,25 @@ def validate_listing_media_for_create(
     if not isinstance(raw_media_ids, list):
         raise APIError("媒体文件格式不正确", 400, "invalid_media_ids")
 
-    media_limit = upload_count_limit_for_listing(listing_type)
     submitted = [str(value or "").strip() for value in raw_media_ids if str(value or "").strip()]
-    if len(submitted) > media_limit:
-        raise APIError("图片数量超过限制", 400, "listing_media_limit")
+    image_purpose = LISTING_PURPOSE_BY_TYPE.get(listing_type, "secondhand_image")
+    video_purpose = LISTING_VIDEO_PURPOSE_BY_TYPE.get(listing_type, "secondhand_video")
+    image_limit = int(UPLOAD_PURPOSES[image_purpose]["count"])
+    video_limit = int(UPLOAD_PURPOSES[video_purpose]["count"])
+    if len(set(submitted)) > image_limit:
+        raise APIError("媒体数量超过限制", 400, "listing_media_limit")
 
-    expected_purpose = LISTING_PURPOSE_BY_TYPE.get(listing_type, "secondhand_image")
     valid_media: list[dict[str, Any]] = []
     seen: set[str] = set()
+    image_count = 0
+    video_count = 0
     for media_id in submitted:
         if media_id in seen:
             continue
         seen.add(media_id)
         media_row = conn.execute(
             """
-            SELECT m.*
+            SELECT m.*, f.purpose AS upload_purpose
               FROM media m
               JOIN uploaded_files f ON f.id = m.id
              WHERE m.id = ?
@@ -9809,14 +8176,23 @@ def validate_listing_media_for_create(
                AND f.user_id = ?
                AND f.deleted_at IS NULL
                AND f.status = 'ready'
-               AND f.purpose = ?
+               AND f.purpose IN (?, ?)
              LIMIT 1
             """,
-            (media_id, user_id, user_id, expected_purpose),
+            (media_id, user_id, user_id, image_purpose, video_purpose),
         ).fetchone()
         if not media_row:
             raise APIError("包含无权使用或尚未完成的媒体文件", 403, "listing_media_forbidden")
-        valid_media.append(dict(media_row))
+        media = dict(media_row)
+        if media.get("upload_purpose") == video_purpose or _media_type_from(media.get("mime") or "", media.get("type") or "") == "video":
+            video_count += 1
+            if video_count > video_limit:
+                raise APIError("每条信息最多上传 1 个视频", 400, "listing_video_limit")
+        else:
+            image_count += 1
+            if image_count > image_limit:
+                raise APIError("图片数量超过限制", 400, "listing_image_limit")
+        valid_media.append(media)
     return valid_media
 
 
@@ -9863,6 +8239,40 @@ def listing_inquiry_type(listing_type: str) -> str:
     if listing_type == "event":
         return "event_consult"
     return "general"
+
+
+def listing_price_card_label(row: dict[str, Any]) -> str:
+    price_type = str(row.get("price_type") or "").lower()
+    price = row.get("price")
+    currency = (row.get("currency") or "JPY").upper()
+    if price_type in {"free", "giveaway"} or price == 0:
+        return "免费"
+    if price is None or price == "":
+        return "面议"
+    try:
+        amount = float(price)
+    except (TypeError, ValueError):
+        return "面议"
+    if currency in {"JPY", "JP¥"}:
+        return f"¥{amount:,.0f}"
+    if amount.is_integer():
+        return f"{amount:,.0f} {currency}"
+    return f"{amount:,.2f} {currency}"
+
+
+def listing_status_card_label(status: str) -> str:
+    return {
+        "published": "发布中",
+        "pending_review": "审核中",
+        "draft": "草稿",
+        "reserved": "已预留",
+        "sold": "已售出",
+        "rented": "已出租",
+        "closed": "已关闭",
+        "expired": "已过期",
+        "rejected": "未通过",
+        "hidden": "已隐藏",
+    }.get(status or "", status or "")
 
 
 def serialize_listing_inquiry(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -9949,11 +8359,37 @@ def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None)
     listing_type = row.get("type", "") or ""
     attrs = public_listing_attributes(listing_type, extras.get("attributes") or {})
     media = extras.get("media") or []
-    cover_url = next((m.get("url", "") for m in media if m.get("is_cover")), "")
+    cover_media = next((m for m in media if m.get("is_cover") or m.get("isCover")), None)
+    if not cover_media and media:
+        cover_media = media[0]
+    cover_url = media_card_image_url(cover_media or {}) if cover_media else ""
     if not cover_url and media:
-        cover_url = media[0].get("url", "")
+        cover_url = media_card_image_url(media[0]) or media[0].get("url", "")
     seller = extras.get("seller")
     liked = bool(extras.get("favorited"))
+    city_label = row.get("city_slug", "") or row.get("region_code", "") or ""
+    location_text = row.get("location_text", "") or ""
+    status = row.get("status", "published")
+    card = {
+        "id": row["id"],
+        "type": listing_type,
+        "title": public_listing_title(row.get("title", "")),
+        "priceLabel": listing_price_card_label(row),
+        "primaryMeta": location_text or city_label,
+        "secondaryMeta": row.get("category", "") or "",
+        "status": status,
+        "statusLabel": listing_status_card_label(status),
+        "verificationStatus": row.get("verification_status", "unverified"),
+        "isVerified": row.get("verification_status") == "verified",
+        "isFavorited": liked,
+        "isPromoted": bool(row.get("is_promoted", 0)),
+        "citySlug": row.get("city_slug", "") or "",
+        "cityLabel": city_label,
+        "coverUrl": cover_url,
+        "coverMedia": cover_media,
+        "createdAt": row.get("created_at"),
+        "publishedAt": row.get("published_at"),
+    }
     payload = {
         "id": row["id"],
         "country_code": row.get("country_code", "") or "",
@@ -10007,8 +8443,12 @@ def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None)
         "updated_at": row.get("updated_at"),
         "updatedAt": row.get("updated_at"),
         "media": media,
+        "coverMedia": cover_media,
+        "cover_media": cover_media,
         "cover_url": cover_url,
         "coverUrl": cover_url,
+        "card": card,
+        "listingCard": card,
         "attributes": attrs,
         "seller": seller,
         "favorited": liked,
@@ -10026,23 +8466,86 @@ def hydrate_listing_extras(conn: sqlite3.Connection, listing_ids: list[str], cur
     placeholders = ",".join("?" * len(listing_ids))
     extras: dict[str, dict[str, Any]] = {lid: {"media": [], "attributes": {}} for lid in listing_ids}
     for row in conn.execute(
-        f"SELECT * FROM listing_media WHERE listing_id IN ({placeholders}) ORDER BY sort_order ASC, created_at ASC",
+        f"""
+        SELECT
+            lm.id AS lm_id,
+            lm.listing_id,
+            lm.media_type,
+            lm.url AS lm_url,
+            lm.thumbnail_url AS lm_thumbnail_url,
+            lm.sort_order,
+            lm.is_cover,
+            lm.created_at AS lm_created_at,
+            lm.uploaded_file_id,
+            uf.id AS uf_id,
+            uf.user_id AS uf_user_id,
+            uf.object_key AS uf_object_key,
+            uf.public_url AS uf_public_url,
+            uf.cdn_url AS uf_cdn_url,
+            uf.content_type AS uf_content_type,
+            uf.file_size AS uf_file_size,
+            uf.file_type AS uf_file_type,
+            uf.purpose AS uf_purpose,
+            uf.status AS uf_status,
+            uf.width AS uf_width,
+            uf.height AS uf_height,
+            uf.duration AS uf_duration,
+            uf.metadata AS uf_metadata,
+            uf.created_at AS uf_created_at
+        FROM listing_media lm
+        LEFT JOIN uploaded_files uf ON uf.id = lm.uploaded_file_id AND uf.deleted_at IS NULL
+        WHERE lm.listing_id IN ({placeholders})
+        ORDER BY lm.sort_order ASC, lm.created_at ASC
+        """,
         listing_ids,
     ):
         item = dict(row)
-        extras.setdefault(item["listing_id"], {}).setdefault("media", []).append({
-            "id": item["id"],
+        media_source = {
+            "id": item.get("uf_id") or item.get("lm_id"),
+            "owner_id": item.get("uf_user_id") or "",
+            "type": item.get("media_type") or item.get("uf_file_type") or "image",
+            "media_type": item.get("media_type") or item.get("uf_file_type") or "image",
+            "url": item.get("uf_cdn_url") or item.get("uf_public_url") or item.get("lm_url") or "",
+            "thumb_url": item.get("lm_thumbnail_url") or "",
+            "thumbnail_url": item.get("lm_thumbnail_url") or "",
+            "object_key": item.get("uf_object_key") or "",
+            "content_type": item.get("uf_content_type") or "",
+            "file_size": item.get("uf_file_size") or 0,
+            "file_type": item.get("uf_file_type") or "",
+            "purpose": item.get("uf_purpose") or "",
+            "status": item.get("uf_status") or "ready",
+            "width": item.get("uf_width") or 0,
+            "height": item.get("uf_height") or 0,
+            "duration": item.get("uf_duration") or 0,
+            "metadata": item.get("uf_metadata") or "{}",
+            "created_at": item.get("uf_created_at") or item.get("lm_created_at") or "",
+        }
+        media_payload = normalize_media_dto(media_source, fallback_id=item.get("lm_id") or "")
+        media_payload.update({
+            "id": item.get("lm_id"),
+            "uploadedFileId": item.get("uploaded_file_id") or item.get("uf_id") or "",
+            "uploaded_file_id": item.get("uploaded_file_id") or item.get("uf_id") or "",
             "listing_id": item["listing_id"],
-            "media_type": item.get("media_type", "image"),
-            "mediaType": item.get("media_type", "image"),
-            "url": item.get("url", ""),
-            "thumbnail_url": item.get("thumbnail_url", "") or item.get("url", ""),
-            "thumbnailUrl": item.get("thumbnail_url", "") or item.get("url", ""),
+            "listingId": item["listing_id"],
+            "media_type": media_payload.get("type") or item.get("media_type", "image"),
+            "mediaType": media_payload.get("type") or item.get("media_type", "image"),
             "sort_order": int(item.get("sort_order") or 0),
             "sortOrder": int(item.get("sort_order") or 0),
             "is_cover": bool(item.get("is_cover", 0)),
             "isCover": bool(item.get("is_cover", 0)),
         })
+        if not media_payload.get("url"):
+            fallback_url = item.get("lm_url") or ""
+            media_payload["url"] = fallback_url
+            media_payload["cdnUrl"] = fallback_url
+            media_payload["publicUrl"] = fallback_url
+        if not media_payload.get("thumbnailUrl") and media_payload.get("type") == "image":
+            fallback_thumb = item.get("lm_thumbnail_url") or item.get("lm_url") or ""
+            media_payload["thumbnailUrl"] = fallback_thumb
+            media_payload["thumbnail_url"] = fallback_thumb
+            media_payload["thumb_url"] = fallback_thumb
+            media_payload["thumbUrl"] = fallback_thumb
+        extras.setdefault(item["listing_id"], {}).setdefault("media", []).append(media_payload)
     for row in conn.execute(
         f"SELECT listing_id, key, value, value_type FROM listing_attributes WHERE listing_id IN ({placeholders})",
         listing_ids,
@@ -10259,8 +8762,10 @@ def _plan_benefits(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
         title = str(item.get("benefit_title") or item.get("title") or "").strip()
         if not title:
             continue
-        out.append({
-            "key": str(item.get("key") or f"benefit_{idx + 1}"),
+        key = str(item.get("key") or f"benefit_{idx + 1}")
+        localized = MEMBERSHIP_BENEFIT_I18N.get(key, {})
+        payload = {
+            "key": key,
             "benefit_title": title,
             "title": title,
             "benefit_description": str(item.get("benefit_description") or item.get("description") or ""),
@@ -10269,7 +8774,11 @@ def _plan_benefits(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
             "icon": str(item.get("benefit_icon") or item.get("icon") or "checkmark.circle"),
             "is_enabled": True,
             "sort_order": int(item.get("sort_order") or item.get("sortOrder") or idx + 1),
-        })
+        }
+        for code, names in localized.items():
+            payload[f"title_{code}"] = names[0]
+            payload[f"description_{code}"] = names[1]
+        out.append(payload)
     return sorted(out, key=lambda x: int(x.get("sort_order") or 0))
 
 
@@ -10669,6 +9178,7 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
             "provider_price_id = COALESCE(NULLIF(?, ''), provider_price_id), provider = ?, updated_at = ? WHERE id = ?",
             (provider_subscription_id or "", provider_price_id or "", source, now_iso(), status.get("membership_id") or ""),
         )
+    queue_membership_payment_email(conn, fresh)
     return fresh
 
 
@@ -10890,6 +9400,7 @@ def settle_guide_order(conn: sqlite3.Connection, order_no: str, payment_intent: 
             "INSERT INTO guide_service_requests (id, user_id, product_id, service_type, status, order_id, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, 'paid', ?, ?, ?)",
             (str(uuid.uuid4()), order["user_id"], prod["id"], prod["product_type"] or "", order["id"], now, now))
+    queue_guide_payment_email(conn, dict(order))
     return True
 
 
@@ -11252,6 +9763,178 @@ def send_email(to: str, subject: str, body: str) -> bool:
     return ok
 
 
+def send_email_async(to: str, subject: str, body: str) -> None:
+    if not is_valid_email(to):
+        return
+
+    def _run() -> None:
+        send_email(to, subject, body)
+
+    threading.Thread(target=_run, name="machi-email", daemon=True).start()
+
+
+def _email_locale(raw: str | None) -> str:
+    value = (raw or "").lower()
+    if value.startswith("ja"):
+        return "ja"
+    if value.startswith("en"):
+        return "en"
+    return "zh"
+
+
+def _email_money(amount_cents: int, currency: str) -> str:
+    return f"{currency.upper()} {amount_cents / 100:.2f}"
+
+
+def queue_membership_payment_email(conn: sqlite3.Connection, order: dict[str, Any]) -> None:
+    user = conn.execute("SELECT email, display_name, language FROM users WHERE id = ? AND deleted_at IS NULL", (order["user_id"],)).fetchone()
+    if not user or not is_valid_email(user["email"] or ""):
+        return
+    locale = _email_locale(user["language"] if "language" in user.keys() else "")
+    name = user["display_name"] or "Machi user"
+    amount = _email_money(int(order.get("amount_cents") or 0), order.get("currency") or "jpy")
+    if locale == "ja":
+        subject = "Machi 認証メンバー決済が完了しました"
+        body = f"{name} 様\n\nMachi 認証メンバーの決済が完了しました。\n\nプラン: {order.get('plan_key') or ''}\n金額: {amount}\n注文番号: {order.get('order_no') or ''}\n\n認証バッジとメンバー特典は Web / iOS / Android で同期されます。"
+    elif locale == "en":
+        subject = "Your Machi Verified payment is complete"
+        body = f"Hi {name},\n\nYour Machi Verified payment has been completed.\n\nPlan: {order.get('plan_key') or ''}\nAmount: {amount}\nOrder: {order.get('order_no') or ''}\n\nYour verified badge and member benefits are synced across Web, iOS, and Android."
+    else:
+        subject = "Machi 认证会员支付成功"
+        body = f"{name}，你好：\n\n你的 Machi 认证会员支付已成功。\n\n套餐：{order.get('plan_key') or ''}\n金额：{amount}\n订单号：{order.get('order_no') or ''}\n\n认证标识和会员权益会在 Web、iOS、Android 同步生效。"
+    send_email_async(user["email"], subject, body)
+
+
+def queue_guide_payment_email(conn: sqlite3.Connection, order: dict[str, Any]) -> None:
+    user = conn.execute("SELECT email, display_name, language FROM users WHERE id = ? AND deleted_at IS NULL", (order["user_id"],)).fetchone()
+    if not user or not is_valid_email(user["email"] or ""):
+        return
+    product = conn.execute("SELECT title, title_en, title_ja FROM guide_products WHERE id = ?", (order["product_id"],)).fetchone()
+    locale = _email_locale(user["language"] if "language" in user.keys() else "")
+    name = user["display_name"] or "Machi user"
+    if product:
+        title = product["title_ja"] if locale == "ja" and product["title_ja"] else product["title_en"] if locale == "en" and product["title_en"] else product["title"]
+    else:
+        title = order.get("product_id") or "Guide"
+    amount = _email_money(int(order.get("price") or 0), order.get("currency") or "jpy")
+    if locale == "ja":
+        subject = "Machi Guide のお支払いが完了しました"
+        body = f"{name} 様\n\nMachi Guide のお支払いが完了しました。\n\n商品: {title}\n金額: {amount}\n注文番号: {order.get('order_no') or ''}\n\n購入済みの資料やサービスは Guide ページから確認できます。"
+    elif locale == "en":
+        subject = "Your Machi Guide payment is complete"
+        body = f"Hi {name},\n\nYour Machi Guide payment has been completed.\n\nItem: {title}\nAmount: {amount}\nOrder: {order.get('order_no') or ''}\n\nYou can access purchased resources or services from Machi Guide."
+    else:
+        subject = "Machi Guide 支付成功"
+        body = f"{name}，你好：\n\n你的 Machi Guide 支付已成功。\n\n项目：{title}\n金额：{amount}\n订单号：{order.get('order_no') or ''}\n\n已购买资料或服务可在 Guide 页面查看。"
+    send_email_async(user["email"], subject, body)
+
+
+EMAIL_CAMPAIGN_AUDIENCES = {"all", "verified_members", "active_30d"}
+
+
+def normalize_email_campaign_audience(value: Any) -> str:
+    audience = str(value or "all").strip().lower()
+    return audience if audience in EMAIL_CAMPAIGN_AUDIENCES else "all"
+
+
+def campaign_recipient_rows(conn: sqlite3.Connection, audience: str) -> list[dict[str, Any]]:
+    base = "SELECT id, email FROM users WHERE deleted_at IS NULL AND email IS NOT NULL AND email <> ''"
+    if audience == "verified_members":
+        rows = conn.execute(base + " AND is_verified_member = 1 ORDER BY created_at DESC").fetchall()
+    elif audience == "active_30d":
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        rows = conn.execute(
+            """
+            SELECT DISTINCT u.id, u.email
+              FROM users u
+              JOIN sessions s ON s.user_id = u.id
+             WHERE u.deleted_at IS NULL
+               AND u.email IS NOT NULL
+               AND u.email <> ''
+               AND s.revoked_at IS NULL
+               AND s.last_seen_at >= ?
+            """,
+            (cutoff,),
+        ).fetchall()
+    else:
+        rows = conn.execute(base + " ORDER BY created_at DESC").fetchall()
+    return [dict(row) for row in rows if is_valid_email(row["email"] or "")]
+
+
+def start_email_campaign_worker(campaign_id: str) -> None:
+    def _run() -> None:
+        subject = ""
+        body = ""
+        recipients: list[dict[str, Any]] = []
+        try:
+            with DB_LOCK, db() as conn:
+                row = conn.execute("SELECT * FROM email_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+                if not row:
+                    return
+                campaign = dict(row)
+                if campaign["status"] not in {"draft", "queued"}:
+                    return
+                subject = campaign["subject"]
+                body = campaign["body"]
+                recipients = campaign_recipient_rows(conn, campaign["audience"])
+                now = now_iso()
+                conn.execute(
+                    "UPDATE email_campaigns SET status = 'sending', recipient_count = ?, sent_count = 0, failed_count = 0, started_at = ?, updated_at = ? WHERE id = ?",
+                    (len(recipients), now, now, campaign_id),
+                )
+                for recipient in recipients:
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO email_campaign_recipients
+                            (id, campaign_id, user_id, email, status, created_at)
+                        VALUES (?, ?, ?, ?, 'pending', ?)
+                        """,
+                        (str(uuid.uuid4()), campaign_id, recipient["id"], recipient["email"], now),
+                    )
+            sent = 0
+            failed = 0
+            for recipient in recipients:
+                ok = send_email(recipient["email"], subject, body)
+                sent_at = now_iso() if ok else None
+                status = "sent" if ok else "failed"
+                error = "" if ok else "send_failed"
+                if ok:
+                    sent += 1
+                else:
+                    failed += 1
+                with DB_LOCK, db() as conn:
+                    conn.execute(
+                        """
+                        UPDATE email_campaign_recipients
+                           SET status = ?, error = ?, sent_at = ?
+                         WHERE campaign_id = ? AND user_id = ?
+                        """,
+                        (status, error, sent_at, campaign_id, recipient["id"]),
+                    )
+                    conn.execute(
+                        "UPDATE email_campaigns SET sent_count = ?, failed_count = ?, updated_at = ? WHERE id = ?",
+                        (sent, failed, now_iso(), campaign_id),
+                    )
+            final_status = "sent" if failed == 0 else "failed" if sent == 0 else "partial"
+            with DB_LOCK, db() as conn:
+                conn.execute(
+                    "UPDATE email_campaigns SET status = ?, sent_count = ?, failed_count = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+                    (final_status, sent, failed, now_iso(), now_iso(), campaign_id),
+                )
+        except Exception:
+            ERR_LOG.warning("email campaign failed id=%s", campaign_id)
+            try:
+                with DB_LOCK, db() as conn:
+                    conn.execute(
+                        "UPDATE email_campaigns SET status = 'failed', finished_at = ?, updated_at = ? WHERE id = ?",
+                        (now_iso(), now_iso(), campaign_id),
+                    )
+            except Exception:
+                pass
+
+    threading.Thread(target=_run, name=f"machi-email-campaign-{campaign_id[:8]}", daemon=True).start()
+
+
 _CODE_EMAIL_TEMPLATES = {
     "register": {
         "zh": ("Machi 注册验证码", "你的 Machi 注册验证码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请忽略本邮件。"),
@@ -11575,6 +10258,22 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     # "1" = new city listings (二手/租房/工作/服务/优惠) go through admin
     # review before appearing publicly; "0" = publish immediately (review off).
     "listing_review_enabled": "1",
+    "explore_happening_days": "3",
+    "explore_hot_days": "10",
+    "explore_topic_days": "7",
+    "explore_like_weight": "3",
+    "explore_comment_weight": "5",
+    "explore_repost_weight": "6",
+    "explore_favorite_weight": "4",
+    "explore_view_weight": "0.2",
+    "explore_time_decay_weight": "8",
+    "explore_report_penalty": "20",
+    "explore_min_display": "5",
+    "explore_fallback_enabled": "1",
+    "explore_city_isolated": "1",
+    "explore_exclude_reported": "1",
+    "explore_exclude_low_quality": "1",
+    "explore_exclude_banned_users": "1",
 }
 SITE_SETTING_KEYS = set(SITE_SETTING_DEFAULTS)
 
@@ -11605,6 +10304,63 @@ def _upsert_site_settings(conn: sqlite3.Connection, updates: dict[str, str]) -> 
             (key, str(value or "")[:1000], ts),
         )
     return _site_settings(conn)
+
+
+def _settings_int(settings: dict[str, str], key: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int(float(settings.get(key, str(default)) or default))
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(value, high))
+
+
+def _settings_float(settings: dict[str, str], key: str, default: float, low: float, high: float) -> float:
+    try:
+        value = float(settings.get(key, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return max(low, min(value, high))
+
+
+def _explore_rank_config(conn: sqlite3.Connection) -> dict[str, Any]:
+    settings = _site_settings(conn)
+    return {
+        "happening_days": _settings_int(settings, "explore_happening_days", 3, 1, 30),
+        "hot_days": _settings_int(settings, "explore_hot_days", 10, 1, 60),
+        "topic_days": _settings_int(settings, "explore_topic_days", 7, 1, 60),
+        "like_weight": _settings_float(settings, "explore_like_weight", 3, 0, 50),
+        "comment_weight": _settings_float(settings, "explore_comment_weight", 5, 0, 50),
+        "repost_weight": _settings_float(settings, "explore_repost_weight", 6, 0, 50),
+        "favorite_weight": _settings_float(settings, "explore_favorite_weight", 4, 0, 50),
+        "view_weight": _settings_float(settings, "explore_view_weight", 0.2, 0, 10),
+        "time_decay_weight": _settings_float(settings, "explore_time_decay_weight", 8, 0, 50),
+        "report_penalty": _settings_float(settings, "explore_report_penalty", 20, 0, 200),
+        "min_display": _settings_int(settings, "explore_min_display", 5, 0, 30),
+        "fallback_enabled": settings.get("explore_fallback_enabled", "1") != "0",
+        "city_isolated": settings.get("explore_city_isolated", "1") != "0",
+        "exclude_reported": settings.get("explore_exclude_reported", "1") != "0",
+        "exclude_low_quality": settings.get("explore_exclude_low_quality", "1") != "0",
+        "exclude_banned_users": settings.get("explore_exclude_banned_users", "1") != "0",
+    }
+
+
+def _explore_heat_score_sql(alias: str, config: dict[str, Any]) -> str:
+    if KAIX_DB_BACKEND == "postgres":
+        hours_since = f"EXTRACT(EPOCH FROM (now() - {alias}.created_at::timestamptz)) / 3600.0"
+        max2 = "GREATEST"
+    else:
+        hours_since = f"(julianday('now') - julianday({alias}.created_at)) * 24.0"
+        max2 = "MAX"
+    decay_hours = max(24.0, float(config.get("hot_days") or 10) * 24.0)
+    return f"""
+      ((SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'like') * {float(config["like_weight"])}
+       + (SELECT COUNT(*) FROM comments c WHERE c.post_id = {alias}.id AND c.deleted_at IS NULL) * {float(config["comment_weight"])}
+       + (SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'repost') * {float(config["repost_weight"])}
+       + (SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'bookmark') * {float(config["favorite_weight"])}
+       + COALESCE({alias}.view_count, 0) * {float(config["view_weight"])}
+       - COALESCE({alias}.report_count, 0) * {float(config["report_penalty"])}
+       + ({max2}(0, {decay_hours} - ({hours_since})) / {decay_hours}) * {float(config["time_decay_weight"])})
+    """
 
 
 def _read_proc_net_bytes() -> tuple[int, int]:
@@ -13236,6 +11992,37 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
         return  # silence default logging
 
+    def end_headers(self) -> None:
+        cookie = getattr(self, "_pending_session_cookie", "")
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+            self._pending_session_cookie = ""
+        super().end_headers()
+
+    def _set_session_cookie(self, token: str) -> None:
+        attributes = [
+            f"{SESSION_COOKIE_NAME}={token}",
+            "Path=/",
+            f"Max-Age={SESSION_TTL_DAYS * 86400}",
+            "HttpOnly",
+            "SameSite=Strict",
+        ]
+        if PRODUCTION:
+            attributes.append("Secure")
+        self._pending_session_cookie = "; ".join(attributes)
+
+    def _clear_session_cookie(self) -> None:
+        attributes = [
+            f"{SESSION_COOKIE_NAME}=",
+            "Path=/",
+            "Max-Age=0",
+            "HttpOnly",
+            "SameSite=Strict",
+        ]
+        if PRODUCTION:
+            attributes.append("Secure")
+        self._pending_session_cookie = "; ".join(attributes)
+
     def handle_one_request(self) -> None:
         # Swallow the "Connection reset by peer" noise that SSE clients
         # emit when they navigate away. Everything else still surfaces.
@@ -13259,9 +12046,12 @@ class Handler(BaseHTTPRequestHandler):
         elif origin in ALLOWED_ORIGINS:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Device-Name")
-        self.send_header("Access-Control-Expose-Headers", "X-Machi-Version, X-KaiX-Version, X-Request-Id")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+        self.send_header(
+            "Access-Control-Allow-Headers",
+            "Authorization, Content-Type, Idempotency-Key, X-Device-Name, X-Requested-With",
+        )
+        self.send_header("Access-Control-Expose-Headers", "ETag, X-Machi-Version, X-KaiX-Version, X-Request-Id")
         self.send_header("Access-Control-Max-Age", "600")
 
     def _set_security_headers(self) -> None:
@@ -13304,15 +12094,6 @@ class Handler(BaseHTTPRequestHandler):
         self._set_security_headers()
         self.end_headers()
 
-    def _request_base_url(self) -> str:
-        if PUBLIC_BASE_URL:
-            return PUBLIC_BASE_URL
-        proto = (self.headers.get("X-Forwarded-Proto") or "http").split(",", 1)[0].strip() or "http"
-        host = (self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "").split(",", 1)[0].strip()
-        if not host:
-            return ""
-        return f"{proto}://{host}"
-
     def send_empty(self, status: int = 204, extra_headers: dict[str, str] | None = None) -> None:
         self._idem_capture = (status, b"")
         self.send_response(status)
@@ -13350,18 +12131,53 @@ class Handler(BaseHTTPRequestHandler):
     # handler — so a double-tapped apply / book / create / send-message /
     # upload-complete cannot create duplicates. No header => zero behavior
     # change. Auth endpoints are excluded so session tokens are never cached.
-    # All writes already serialize on DB_LOCK, so the check-then-store below is
-    # race-free without a separate "pending" state.
-    def _idempotency_key(self) -> str:
-        key = (self.headers.get("Idempotency-Key") or "").strip()
-        return key[:200] if key else ""
-
-    def _idempotency_lookup(self, conn: sqlite3.Connection, method: str, path: str):
+    # SQLite writes serialize on DB_LOCK. PostgreSQL uses a database advisory
+    # lock scoped to (method, path, key), preserving exactly-once behavior
+    # across concurrent requests and multiple backend processes.
+    def _idempotency_scope(self, method: str, path: str) -> str | None:
         key = self._idempotency_key()
         if (not key or method not in ("POST", "PATCH", "PUT", "DELETE")
                 or path.startswith("/api/auth/")):
             return None
-        scope = f"{method} {path}"
+        return f"{method} {path}"
+
+    def _idempotency_key(self) -> str:
+        key = (self.headers.get("Idempotency-Key") or "").strip()
+        return key[:200] if key else ""
+
+    def _idempotency_lock_id(self, method: str, path: str) -> int | None:
+        scope = self._idempotency_scope(method, path)
+        if scope is None:
+            return None
+        digest = hashlib.blake2b(
+            f"{scope}\0{self._idempotency_key()}".encode("utf-8"),
+            digest_size=8,
+            person=b"machi-idem",
+        ).digest()
+        return int.from_bytes(digest, byteorder="big", signed=True)
+
+    def _idempotency_advisory_lock(
+        self, conn: sqlite3.Connection, method: str, path: str
+    ) -> int | None:
+        if KAIX_DB_BACKEND != "postgres":
+            return None
+        lock_id = self._idempotency_lock_id(method, path)
+        if lock_id is not None:
+            conn.execute("SELECT pg_advisory_lock(?)", (lock_id,)).fetchone()
+        return lock_id
+
+    def _idempotency_advisory_unlock(
+        self, conn: sqlite3.Connection, lock_id: int | None
+    ) -> None:
+        if lock_id is None:
+            return
+        conn.execute("SELECT pg_advisory_unlock(?)", (lock_id,)).fetchone()
+
+    def _idempotency_lookup(self, conn: sqlite3.Connection, method: str, path: str):
+        scope = self._idempotency_scope(method, path)
+        if scope is None:
+            return None
+        key = self._idempotency_key()
         row = conn.execute(
             "SELECT status, response_body, created_epoch FROM idempotency_keys "
             "WHERE scope = ? AND idem_key = ?",
@@ -13379,10 +12195,10 @@ class Handler(BaseHTTPRequestHandler):
         return int(row["status"]), bytes(row["response_body"])
 
     def _idempotency_store(self, conn: sqlite3.Connection, method: str, path: str) -> None:
-        key = self._idempotency_key()
-        if (not key or method not in ("POST", "PATCH", "PUT", "DELETE")
-                or path.startswith("/api/auth/")):
+        scope = self._idempotency_scope(method, path)
+        if scope is None:
             return
+        key = self._idempotency_key()
         captured = getattr(self, "_idem_capture", None)
         if not captured:
             return
@@ -13398,7 +12214,7 @@ class Handler(BaseHTTPRequestHandler):
             "response_body=excluded.response_body, created_epoch=excluded.created_epoch, "
             "created_at=excluded.created_at",
             (
-                f"{method} {path}", key,
+                scope, key,
                 getattr(self, "_session_user_id", None) or "", self._client_ip(),
                 int(status), body, int(time.time()), now_iso(),
             ),
@@ -13446,13 +12262,25 @@ class Handler(BaseHTTPRequestHandler):
 
     def current_session(self, conn: sqlite3.Connection) -> dict[str, Any] | None:
         token = ""
+        token_from_cookie = False
         auth = self.headers.get("Authorization") or ""
         if auth.lower().startswith("bearer "):
             token = auth.split(" ", 1)[1].strip()
         if not token:
+            try:
+                cookies = SimpleCookie()
+                cookies.load(self.headers.get("Cookie") or "")
+                morsel = cookies.get(SESSION_COOKIE_NAME)
+                token = morsel.value if morsel else ""
+                token_from_cookie = bool(token)
+            except Exception:
+                token = ""
+        if not token:
             return None
         row = conn.execute("SELECT * FROM sessions WHERE token = ?", (token,)).fetchone()
         if not row:
+            if token_from_cookie:
+                self._clear_session_cookie()
             return None
         expires_at = parse_iso(row["expires_at"])
         if expires_at and expires_at.tzinfo is None:
@@ -13465,6 +12293,8 @@ class Handler(BaseHTTPRequestHandler):
                 conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
             except sqlite3.OperationalError:
                 pass
+            if token_from_cookie:
+                self._clear_session_cookie()
             return None
         # Throttle the last_seen write: in the previous design every
         # authenticated request triggered a row write, which blew up
@@ -13477,6 +12307,10 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         # Cheap stash for the visitor log (avoids a second query in finally).
         self._session_user_id = row["user_id"]
+        if not token_from_cookie:
+            # Existing browser Bearer sessions migrate on their first request.
+            # Native clients ignore Set-Cookie and continue using Bearer.
+            self._set_session_cookie(token)
         return dict(row)
 
     def require_user(self, conn: sqlite3.Connection) -> dict[str, Any]:
@@ -13590,8 +12424,7 @@ class Handler(BaseHTTPRequestHandler):
             count=len(items), metadata={"tone": tone, "publishNow": publish_now, "requested": count},
         )
         if publish_now:
-            _cache_invalidate("feed:hot")
-            _cache_invalidate("trending:")
+            invalidate_public_ranking_caches()
         self.send_json({"batch": self._seed_batch_dict(conn, batch_id, include_items=True),
                         "requested": count, "created": len(items)})
 
@@ -13650,8 +12483,7 @@ class Handler(BaseHTTPRequestHandler):
             region_code=batch["region_code"], language=batch["language"],
             content_type=batch["content_type"], count=published,
         )
-        _cache_invalidate("feed:hot")
-        _cache_invalidate("trending:")
+        invalidate_public_ranking_caches()
         self.send_json({"published": published, "batch": self._seed_batch_dict(conn, batch_id)})
 
     def api_admin_seed_clear(self, conn: sqlite3.Connection, batch_id: str) -> None:
@@ -13680,8 +12512,7 @@ class Handler(BaseHTTPRequestHandler):
             region_code=batch["region_code"], language=batch["language"],
             content_type=batch["content_type"], count=cleared,
         )
-        _cache_invalidate("feed:hot")
-        _cache_invalidate("trending:")
+        invalidate_public_ranking_caches()
         self.send_json({"cleared": cleared, "batch": self._seed_batch_dict(conn, batch_id)})
 
     def api_admin_seed_clear_city(self, conn: sqlite3.Connection) -> None:
@@ -13727,8 +12558,7 @@ class Handler(BaseHTTPRequestHandler):
             country=country, city=city, language=language, content_type=content_type, count=cleared,
             metadata={"region_code": region_code},
         )
-        _cache_invalidate("feed:hot")
-        _cache_invalidate("trending:")
+        invalidate_public_ranking_caches()
         self.send_json({"cleared": cleared, "region_code": region_code})
 
     def api_admin_seed_logs(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -17063,6 +15893,31 @@ class Handler(BaseHTTPRequestHandler):
         self.require_admin(conn)
         return self.api_upload_media(conn)
 
+    def api_generated_listing_card(self, query: dict[str, str], *, image_format: str = "png", head_only: bool = False) -> None:
+        listing_type = normalize_listing_type(query.get("type") or "secondhand")
+        try:
+            index = int(query.get("i") or 0)
+        except (TypeError, ValueError):
+            index = 0
+        if image_format == "svg":
+            body = generated_listing_card_svg(listing_type, index).encode("utf-8")
+            content_type = "image/svg+xml; charset=utf-8"
+        else:
+            body = generated_listing_card_png(listing_type, index)
+            content_type = "image/png"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "public, max-age=31536000")
+        self.send_header("X-Machi-Version", "1.0")
+        self.send_header("X-KaiX-Version", "1.0")
+        self.send_header("X-Request-Id", getattr(self, "_request_id", "") or "")
+        self._set_cors()
+        self._set_security_headers()
+        self.end_headers()
+        if not head_only:
+            self.wfile.write(body)
+
     # ---- HTTP verbs ----
 
     def do_OPTIONS(self) -> None:
@@ -17099,6 +15954,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self._set_cors()
             self.end_headers()
+            return
+        if path in ("/api/generated/listing-card.png", "/api/generated/listing-card.svg"):
+            parsed = urlparse(self.path)
+            query = {k: v[0] if v else "" for k, v in parse_qs(parsed.query).items()}
+            self._request_id = secrets.token_hex(8)
+            self.api_generated_listing_card(query, image_format="svg" if path.endswith(".svg") else "png", head_only=True)
             return
         self.send_error(405)
 
@@ -17174,18 +16035,27 @@ class Handler(BaseHTTPRequestHandler):
         # `/api/health` is an alias of `/healthz` for load balancers / uptime
         # checks that expect the API prefix.
         if path in ("/healthz", "/api/health") and method == "GET":
-            self.send_json({"ok": True, "service": "machi-backend", "ts": now_iso()})
+            self.send_json({
+                "ok": True,
+                "service": "machi-backend",
+                "database": KAIX_DB_BACKEND,
+                "ts": now_iso(),
+            })
             ACCESS_LOG.info('%s "GET %s" 200 ip=%s', self._request_id, path, ip)
             return
         if path in ("/readyz", "/api/health/ready") and method == "GET":
             try:
                 with db() as conn:
                     conn.execute("SELECT 1").fetchone()
-                self.send_json({"ready": True})
+                self.send_json({"ready": True, "database": KAIX_DB_BACKEND})
                 ACCESS_LOG.info('%s "GET %s" 200 ip=%s', self._request_id, path, ip)
             except Exception as exc:
                 self.send_error_json(f"db: {exc}", 503, "not_ready")
                 ACCESS_LOG.warning('%s "GET %s" 503 ip=%s err=%s', self._request_id, path, ip, exc)
+            return
+        if path in ("/api/generated/listing-card.png", "/api/generated/listing-card.svg") and method == "GET":
+            self.api_generated_listing_card(query, image_format="svg" if path.endswith(".svg") else "png")
+            ACCESS_LOG.info('%s "GET %s" 200 ip=%s', self._request_id, path, ip)
             return
 
         # Rate limit before doing any real work.
@@ -17220,16 +16090,19 @@ class Handler(BaseHTTPRequestHandler):
                 lock_held = True
             try:
                 with db() as conn:
-                    # Generic idempotency: a repeated write carrying the same
-                    # Idempotency-Key replays the first 2xx response instead of
-                    # re-running the handler (no header => normal path).
-                    replay = self._idempotency_lookup(conn, method, path)
-                    if replay is not None:
-                        status_code = replay[0]
-                        self._send_idempotent_replay(replay[0], replay[1])
-                    else:
-                        response = self._route(conn, method, path, query)
-                        self._idempotency_store(conn, method, path)
+                    advisory_lock_id = self._idempotency_advisory_lock(conn, method, path)
+                    try:
+                        # Generic idempotency: a repeated write carrying the
+                        # same key replays the first successful response.
+                        replay = self._idempotency_lookup(conn, method, path)
+                        if replay is not None:
+                            status_code = replay[0]
+                            self._send_idempotent_replay(replay[0], replay[1])
+                        else:
+                            response = self._route(conn, method, path, query)
+                            self._idempotency_store(conn, method, path)
+                    finally:
+                        self._idempotency_advisory_unlock(conn, advisory_lock_id)
             finally:
                 if lock_held:
                     DB_LOCK.release()
@@ -17360,6 +16233,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_user_detail(conn, user_id)
             if rest == "posts" and method == "GET":
                 return self.api_user_posts(conn, user_id, query)
+            if rest == "reposts" and method == "GET":
+                return self.api_user_reposts(conn, user_id, query)
             if rest == "replies" and method == "GET":
                 return self.api_user_replies(conn, user_id, query)
             if rest == "media" and method == "GET":
@@ -17543,6 +16418,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_trending(conn)
         if path == "/api/trending/weekly-likes" and method == "GET":
             return self.api_trending_weekly_likes(conn, query)
+        if path == "/api/explore/happening" and method == "GET":
+            return self.api_explore_posts(conn, query, "happening")
+        if path == "/api/explore/hot" and method == "GET":
+            return self.api_explore_posts(conn, query, "hot")
+        if path == "/api/explore/topics" and method == "GET":
+            return self.api_explore_topics(conn, query)
         if path == "/api/topics" and method == "GET":
             return self.api_topics(conn)
         if path.startswith("/api/topics/") and method == "GET":
@@ -17561,6 +16442,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_delete_notification(conn, path.split("/")[3])
 
         # conversations
+        if path == "/api/messages/mutual-friends" and method == "GET":
+            return self.api_mutual_message_friends(conn, query)
+        if path == "/api/messages/conversations/create" and method == "POST":
+            return self.api_create_conversation(conn)
         if path == "/api/conversations" and method == "GET":
             return self.api_conversations(conn)
         if path == "/api/conversations" and method == "POST":
@@ -17594,6 +16479,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_upload_local_put(conn, unquote(path[len("/api/uploads/local/"):]), query)
         if path.startswith("/api/uploads/download/") and method == "GET":
             return self.api_upload_signed_download(conn, unquote(path[len("/api/uploads/download/"):]), query)
+        if path.startswith("/api/uploads/") and path.endswith("/view-url") and method == "POST":
+            parts = path[len("/api/uploads/"):].split("/")
+            if len(parts) == 2 and parts[1] == "view-url":
+                return self.api_upload_private_view_url(conn, unquote(parts[0]))
         if path.startswith("/api/uploads/") and method == "GET":
             return self.api_upload_get(conn, unquote(path[len("/api/uploads/"):]))
         if path.startswith("/api/uploads/") and method == "DELETE":
@@ -17851,6 +16740,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_regions_popular(conn)
         if path == "/api/regions/resolve" and method == "GET":
             return self.api_regions_resolve(conn, query)
+        if path == "/api/regions/detect" and method == "GET":
+            return self.api_regions_detect(conn)
 
         if path == "/api/site-settings" and method == "GET":
             return self.api_site_settings(conn)
@@ -17884,8 +16775,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_update_site_settings(conn)
         if path == "/api/admin/visitors" and method == "GET":
             return self.api_admin_visitors(conn, query)
+        if path == "/api/admin/email-campaigns" and method == "GET":
+            return self.api_admin_email_campaigns(conn, query)
+        if path == "/api/admin/email-campaigns" and method == "POST":
+            return self.api_admin_create_email_campaign(conn)
+        if path.startswith("/api/admin/email-campaigns/"):
+            parts = path[len("/api/admin/email-campaigns/"):].split("/")
+            campaign_id = unquote(parts[0])
+            tail = "/".join(parts[1:])
+            if not tail and method == "PATCH":
+                return self.api_admin_update_email_campaign(conn, campaign_id)
+            if tail == "send" and method == "POST":
+                return self.api_admin_send_email_campaign(conn, campaign_id)
         if path == "/api/admin/users" and method == "GET":
             return self.api_admin_users(conn, query)
+        if path.startswith("/api/admin/users/") and path.endswith("/restore") and method == "POST":
+            return self.api_admin_restore_user(conn, path.split("/")[4])
         if path.startswith("/api/admin/users/") and method == "PATCH":
             return self.api_admin_update_user(conn, path.split("/")[4])
         if path.startswith("/api/admin/users/") and method == "DELETE":
@@ -18290,7 +17195,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({
             "membership": status,
             "plan": serialize_plan(plan) if plan else None,
-            "user": serialize_user(fresh),
+            "user": serialize_user_with_counts(conn, fresh),
         })
 
     def api_create_payment_order(self, conn: sqlite3.Connection) -> None:
@@ -18703,7 +17608,7 @@ class Handler(BaseHTTPRequestHandler):
                                  {"by": admin["handle"], "months": months})
         ACCESS_LOG.info("admin %s granted %s months membership to %s", admin["handle"], months, target["handle"])
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (target["id"],)).fetchone())
-        self.send_json({"membership": status, "user": serialize_user(fresh)})
+        self.send_json({"membership": status, "user": serialize_user_with_counts(conn, fresh)})
 
     def api_admin_cancel_membership(self, conn: sqlite3.Connection) -> None:
         admin = self.require_admin(conn)
@@ -18721,7 +17626,7 @@ class Handler(BaseHTTPRequestHandler):
         status = cancel_membership(conn, target["id"], immediate=immediate, source="admin")
         ACCESS_LOG.info("admin %s canceled membership for %s immediate=%s", admin["handle"], target["handle"], immediate)
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (target["id"],)).fetchone())
-        self.send_json({"membership": status, "user": serialize_user(fresh)})
+        self.send_json({"membership": status, "user": serialize_user_with_counts(conn, fresh)})
 
     def _membership_plan_payload(self, data: dict[str, Any], *, create: bool = False) -> dict[str, Any]:
         updates: dict[str, Any] = {}
@@ -19083,7 +17988,8 @@ class Handler(BaseHTTPRequestHandler):
             reputation_apply_event(conn, user_id, "city_language_set", target_kind="user", target_id=user_id)
         token = self._create_session(conn, user_id)
         user_row = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
-        self.send_json({"token": token, "user": serialize_user(user_row)})
+        self._set_session_cookie(token)
+        self.send_json({"token": token, "user": serialize_user_with_counts(conn, user_row)})
 
     def api_login(self, conn: sqlite3.Connection) -> None:
         # Single-step password login. Kept for existing clients (e.g. the
@@ -19099,9 +18005,12 @@ class Handler(BaseHTTPRequestHandler):
         if not row or not verify_password(password, row["password_hash"]):
             raise APIError("用户名或密码不正确", 401, "invalid_credentials")
         token = self._create_session(conn, row["id"])
-        self.send_json({"token": token, "user": serialize_user(dict(row))})
+        self._set_session_cookie(token)
+        self.send_json({"token": token, "user": serialize_user_with_counts(conn, dict(row))})
 
     def _request_base_url(self) -> str:
+        if PUBLIC_BASE_URL:
+            return PUBLIC_BASE_URL
         proto = (self.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip()
         if not proto:
             proto = "https" if PRODUCTION else "http"
@@ -19136,8 +18045,6 @@ class Handler(BaseHTTPRequestHandler):
             params = {"token": token or ""} if token else {"error": error or "oauth_failed"}
             return f"{self._safe_ios_callback(redirect)}?{urlencode(params)}"
         params: dict[str, str] = {"redirect": self._safe_web_redirect(redirect)}
-        if token:
-            params["token"] = token
         if error:
             params["error"] = error
         return f"/auth/google/callback?{urlencode(params)}"
@@ -19397,6 +18304,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_redirect(self._oauth_link_location(client, redirect=redirect, ok=True))
         user = self._upsert_google_user(conn, profile)
         token = self._create_session(conn, user["id"])
+        if client == "web":
+            self._set_session_cookie(token)
         self.send_redirect(self._oauth_callback_location(client, token=token, redirect=redirect))
 
     def api_google_unlink(self, conn: sqlite3.Connection) -> None:
@@ -19405,7 +18314,7 @@ class Handler(BaseHTTPRequestHandler):
         no verified email), so a user can never lock themselves out."""
         user = self.require_user(conn)
         if not (user["google_sub"] or "").strip():
-            self.send_json({"ok": True, "user": serialize_user(user), "message": "当前账号未绑定 Google"})
+            self.send_json({"ok": True, "user": serialize_user_with_counts(conn, user), "message": "当前账号未绑定 Google"})
             return
         auth_provider = (user["auth_provider"] or "password")
         email_ok = is_valid_email((user["email"] or "").strip()) and bool(user["email_verified"])
@@ -19423,7 +18332,7 @@ class Handler(BaseHTTPRequestHandler):
             ip=self._client_ip(), user_agent=self.headers.get("User-Agent") or "",
         )
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
-        self.send_json({"ok": True, "user": serialize_user(fresh), "message": "已解绑 Google 账号"})
+        self.send_json({"ok": True, "user": serialize_user_with_counts(conn, fresh), "message": "已解绑 Google 账号"})
 
     def _create_session(self, conn: sqlite3.Connection, user_id: str) -> str:
         token = secrets.token_urlsafe(32)
@@ -19443,6 +18352,7 @@ class Handler(BaseHTTPRequestHandler):
         session = self.current_session(conn)
         if session:
             conn.execute("DELETE FROM sessions WHERE token = ?", (session["token"],))
+        self._clear_session_cookie()
         self.send_json({"ok": True})
 
     # ---- email verification + password recovery + 2-step login ----
@@ -19542,7 +18452,8 @@ class Handler(BaseHTTPRequestHandler):
             if LOGIN_REQUIRE_CODE:
                 raise APIError("该账号未绑定邮箱，无法使用验证码登录", 400, "no_email_on_file")
             token = self._create_session(conn, row["id"])
-            self.send_json({"requires_code": False, "token": token, "user": serialize_user(dict(row))})
+            self._set_session_cookie(token)
+            self.send_json({"requires_code": False, "token": token, "user": serialize_user_with_counts(conn, dict(row))})
             return
         result = issue_auth_code(conn, purpose="login", email=user_email, ip=self._client_ip(),
                                  user_id=row["id"], locale=locale)
@@ -19566,7 +18477,8 @@ class Handler(BaseHTTPRequestHandler):
         if not user:
             raise APIError("账号不存在", 404, "user_not_found")
         token = self._create_session(conn, user_id)
-        self.send_json({"token": token, "user": serialize_user(dict(user))})
+        self._set_session_cookie(token)
+        self.send_json({"token": token, "user": serialize_user_with_counts(conn, dict(user))})
 
     def api_change_password(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -19702,7 +18614,7 @@ class Handler(BaseHTTPRequestHandler):
                     f"你的 Machi 绑定邮箱已更改为 {mask_email(new_email)}。如果不是你本人操作，请立即修改密码并联系支持。",
                 )
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
-        self.send_json({"ok": True, "message": "邮箱已更新", "user": serialize_user(fresh)})
+        self.send_json({"ok": True, "message": "邮箱已更新", "user": serialize_user_with_counts(conn, fresh)})
 
     def api_forgot_password(self, conn: sqlite3.Connection) -> None:
         """Send a reset code. Always responds success so an attacker can't
@@ -19737,12 +18649,13 @@ class Handler(BaseHTTPRequestHandler):
                      (hash_password(new_password), now_iso(), row["id"]))
         # A password reset revokes ALL existing sessions.
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
+        self._clear_session_cookie()
         ACCESS_LOG.info("password reset completed for user %s", row["handle"])
         self.send_json({"ok": True})
 
     def api_me(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
-        self.send_json({"user": serialize_user(user)})
+        self.send_json({"user": serialize_user_with_counts(conn, user)})
 
     def api_update_me(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -19799,12 +18712,13 @@ class Handler(BaseHTTPRequestHandler):
             if updated_fields.intersection({"country", "province", "city", "current_region_code", "recent_region_codes"}):
                 reputation_apply_event(conn, user["id"], "city_language_set", target_kind="user", target_id=user["id"])
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
-        self.send_json({"user": serialize_user(fresh)})
+        self.send_json({"user": serialize_user_with_counts(conn, fresh)})
 
     def api_delete_me(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         conn.execute("UPDATE users SET deleted_at = ?, updated_at = ? WHERE id = ?", (now_iso(), now_iso(), user["id"]))
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+        self._clear_session_cookie()
         self.send_json({"ok": True})
 
     def api_bootstrap(self, conn: sqlite3.Connection) -> None:
@@ -19818,7 +18732,7 @@ class Handler(BaseHTTPRequestHandler):
             (user["id"],),
         ).fetchone()["c"]
         self.send_json({
-            "user": serialize_user(user),
+            "user": serialize_user_with_counts(conn, user),
             "feed": feed,
             "unread_notifications": int(unread),
             "server_time": now_iso(),
@@ -19830,12 +18744,7 @@ class Handler(BaseHTTPRequestHandler):
         if not row:
             raise APIError("用户不存在", 404, "user_not_found")
         target = dict(row)
-        followers = conn.execute("SELECT COUNT(*) AS c FROM follows WHERE following_id = ?", (target["id"],)).fetchone()["c"]
-        following = conn.execute("SELECT COUNT(*) AS c FROM follows WHERE follower_id = ?", (target["id"],)).fetchone()["c"]
-        posts_count = conn.execute(
-            "SELECT COUNT(*) AS c FROM posts WHERE author_id = ? AND deleted_at IS NULL AND status IN ('published', 'active')",
-            (target["id"],),
-        ).fetchone()["c"]
+        counts = user_social_counts(conn, target["id"])
         is_following = False
         is_blocked = False
         if viewer:
@@ -19848,10 +18757,8 @@ class Handler(BaseHTTPRequestHandler):
                 (viewer["user_id"], target["id"]),
             ).fetchone())
         payload = serialize_user(target)
+        payload.update(counts)
         payload.update({
-            "follower_count": int(followers),
-            "following_count": int(following),
-            "post_count": int(posts_count),
             "is_following": is_following,
             "is_blocked": is_blocked,
         })
@@ -19894,6 +18801,71 @@ class Handler(BaseHTTPRequestHandler):
     def api_user_posts(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]) -> None:
         posts, next_cursor = self._user_posts_query(conn, user_id, query)
         self.send_json({"items": posts, "next_cursor": next_cursor})
+
+    def api_user_reposts(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        limit = max(1, min(int(query.get("limit") or 30), 50))
+
+        created_rows = list(conn.execute(
+            f"""
+            SELECT p.* FROM posts p
+            WHERE p.author_id = ? AND p.repost_of_id IS NOT NULL
+              AND p.deleted_at IS NULL AND {_visible_status_sql('p')}
+            ORDER BY p.created_at DESC, p.id DESC
+            LIMIT ?
+            """,
+            (user_id, limit + 1),
+        ))
+
+        interaction_rows = list(conn.execute(
+            f"""
+            SELECT i.id AS interaction_id, i.created_at AS interaction_created_at, p.*
+              FROM interactions i
+              JOIN posts p ON p.id = i.target_id
+             WHERE i.user_id = ? AND i.kind = 'repost'
+               AND p.deleted_at IS NULL AND {_visible_status_sql('p')}
+               AND NOT EXISTS (
+                 SELECT 1 FROM posts rp
+                  WHERE rp.author_id = ?
+                    AND rp.repost_of_id = i.target_id
+                    AND COALESCE(rp.content, '') = ''
+                    AND rp.deleted_at IS NULL
+                    AND {_visible_status_sql('rp')}
+               )
+             ORDER BY i.created_at DESC, i.id DESC
+             LIMIT ?
+            """,
+            (user_id, user_id, limit + 1),
+        ))
+
+        post_rows: list[dict[str, Any]] = [dict(row) for row in created_rows]
+        for row in interaction_rows:
+            original = dict(row)
+            created_at = original.get("interaction_created_at") or original.get("created_at") or now_iso()
+            post_rows.append({
+                "id": f"repost:{original.get('interaction_id') or original['id']}",
+                "author_id": user_id,
+                "content": "",
+                "repost_of_id": original["id"],
+                "view_count": 0,
+                "report_count": 0,
+                "status": "active",
+                "deleted_at": None,
+                "country": original.get("country", "") or "",
+                "province": original.get("province", "") or "",
+                "city": original.get("city", "") or "",
+                "region_code": original.get("region_code", "") or "",
+                "content_type": "dynamic",
+                "attributes": "{}",
+                "created_at": created_at,
+                "updated_at": created_at,
+            })
+
+        post_rows.sort(key=lambda item: (str(item.get("created_at") or ""), str(item.get("id") or "")), reverse=True)
+        post_rows = post_rows[:limit]
+        posts = fetch_posts_with_extras(conn, post_rows, viewer_id)
+        self.send_json({"items": posts, "next_cursor": None, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
     def api_user_replies(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]) -> None:
         limit = max(1, min(int(query.get("limit") or 30), 50))
@@ -19981,17 +18953,46 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True, "is_following": on})
 
     def api_relationship(self, conn: sqlite3.Connection, user_id: str, kind: str) -> None:
+        # Clients address users by handle as often as by id (profile routes use
+        # /u/<handle>); follows rows store ids, so resolve first — otherwise a
+        # handle lookup silently returns an empty list.
+        target_row = conn.execute(
+            "SELECT id FROM users WHERE (id = ? OR handle = ?) AND deleted_at IS NULL",
+            (user_id, user_id),
+        ).fetchone()
+        if not target_row:
+            raise APIError("用户不存在", 404, "user_not_found")
+        user_id = target_row["id"]
         if kind == "followers":
-            rows = conn.execute(
+            rows = list(conn.execute(
                 "SELECT u.* FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.following_id = ? ORDER BY f.created_at DESC",
                 (user_id,),
-            )
+            ))
         else:
-            rows = conn.execute(
+            rows = list(conn.execute(
                 "SELECT u.* FROM follows f JOIN users u ON u.id = f.following_id WHERE f.follower_id = ? ORDER BY f.created_at DESC",
                 (user_id,),
-            )
-        self.send_json({"items": [serialize_user(dict(r)) for r in rows]})
+            ))
+        # Viewer-relative state so the list page can render 已关注 / 回关 /
+        # 互相关注 without one request per row.
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        viewer_following: set[str] = set()
+        viewer_followers: set[str] = set()
+        if viewer_id:
+            viewer_following = {r["following_id"] for r in conn.execute(
+                "SELECT following_id FROM follows WHERE follower_id = ?", (viewer_id,))}
+            viewer_followers = {r["follower_id"] for r in conn.execute(
+                "SELECT follower_id FROM follows WHERE following_id = ?", (viewer_id,))}
+        items = []
+        for r in rows:
+            u = serialize_user(dict(r))
+            uid = str(dict(r).get("id") or "")
+            u["is_following"] = u["isFollowing"] = uid in viewer_following
+            u["follows_viewer"] = u["followsViewer"] = uid in viewer_followers
+            u["is_mutual"] = u["isMutual"] = (uid in viewer_following) and (uid in viewer_followers)
+            items.append(u)
+        self.send_json({"items": items})
 
     def api_block(self, conn: sqlite3.Connection, target_id: str, on: bool) -> None:
         user = self.require_user(conn)
@@ -20030,8 +19031,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         if kind == "post":
             conn.execute("UPDATE posts SET report_count = report_count + 1, updated_at = ? WHERE id = ?", (now_iso(), target_id))
-            _cache_invalidate("feed:hot")
-            _cache_invalidate("trending:")
+            invalidate_public_ranking_caches()
         self.send_json({"ok": True})
 
     def api_reputation_me(self, conn: sqlite3.Connection) -> None:
@@ -20307,7 +19307,9 @@ class Handler(BaseHTTPRequestHandler):
         rows = list(conn.execute(
             f"""
             SELECT u.*, r.xp, r.reputation_score, r.level, r.risk_score, r.reputation_status,
-                   r.growth_frozen, r.frozen_until, r.updated_at AS reputation_updated_at
+                   r.growth_frozen, r.frozen_until, r.freeze_reason,
+                   r.helped_users, r.quality_posts, r.favorites_received, r.reports_validated,
+                   r.updated_at AS reputation_updated_at
               FROM users u
               LEFT JOIN user_reputation r ON r.user_id = u.id
              WHERE {' AND '.join(clauses)}
@@ -20316,14 +19318,15 @@ class Handler(BaseHTTPRequestHandler):
             """,
             params,
         ))
-        items = []
-        for row in rows:
-            d = dict(row)
-            reputation_ensure_user(conn, d["id"])
-            items.append({
-                "user": serialize_user(d),
-                "reputation": serialize_reputation_profile(conn, d["id"], viewer_id=admin["id"], admin=True),
-            })
+        levels = {
+            int(row["level"]): dict(row)
+            for row in conn.execute("SELECT * FROM reputation_levels WHERE is_active = 1 ORDER BY level ASC")
+        }
+        limits = reputation_limit_map(conn)
+        items = [{
+            "user": serialize_user(dict(row)),
+            "reputation": serialize_reputation_admin_summary(row, levels=levels, limits=limits),
+        } for row in rows]
         self.send_json({"ok": True, "items": items})
 
     def api_reputation_admin_risk(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -20404,11 +19407,27 @@ class Handler(BaseHTTPRequestHandler):
             params.extend(PUBLIC_LISTING_STATUSES)
 
         city_slug = (query.get("city_slug") or query.get("city") or "").strip().lower()
+        city_slugs = [
+            item.strip().lower()
+            for item in re.split(r"[,，\s]+", str(query.get("city_slugs") or query.get("cities") or ""))
+            if item.strip()
+        ][:32]
         region_code = (query.get("region_code") or "").strip().lower()
+        region_codes = [
+            item.strip().lower()
+            for item in re.split(r"[,，\s]+", str(query.get("region_codes") or query.get("regions") or ""))
+            if item.strip()
+        ][:32]
         country_code = (query.get("country") or query.get("country_code") or "").strip().lower()
-        if city_slug:
+        if city_slugs:
+            clauses.append("city_slug IN (%s)" % ",".join("?" * len(city_slugs)))
+            params.extend(city_slugs)
+        elif city_slug:
             clauses.append("city_slug = ?")
             params.append(city_slug)
+        elif region_codes:
+            clauses.append("region_code IN (%s)" % ",".join("?" * len(region_codes)))
+            params.extend(region_codes)
         elif region_code:
             clauses.append("region_code = ?")
             params.append(region_code)
@@ -20475,7 +19494,9 @@ class Handler(BaseHTTPRequestHandler):
                 "filters": {
                     "type": listing_type,
                     "city_slug": city_slug,
+                    "city_slugs": city_slugs,
                     "region_code": region_code,
+                    "region_codes": region_codes,
                     "country_code": country_code,
                     "category": category,
                     "sort": sort,
@@ -20609,7 +19630,8 @@ class Handler(BaseHTTPRequestHandler):
                 """,
                 (
                     str(uuid.uuid4()), listing_id, media.get("type") or "image",
-                    media.get("url") or "", media.get("thumb_url") or media.get("url") or "",
+                    media.get("url") or media.get("cdnUrl") or "",
+                    listing_media_thumbnail_url(media),
                     idx, 1 if idx == 0 else 0, created, media_id,
                 ),
             )
@@ -20618,7 +19640,7 @@ class Handler(BaseHTTPRequestHandler):
                 (listing_id, now_iso(), media_id, user["id"]),
             )
         if not conn.execute("SELECT id FROM listing_media WHERE listing_id = ? LIMIT 1", (listing_id,)).fetchone():
-            fallback = listing_image_fallback(listing_type)
+            fallback = listing_image_fallback(listing_type, base_url=self._request_base_url())
             conn.execute(
                 """
                 INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
@@ -20628,9 +19650,11 @@ class Handler(BaseHTTPRequestHandler):
             )
         conn.execute(
             """
-            INSERT INTO seller_profiles (id, user_id, display_name, verification_status, created_at, updated_at)
-            VALUES (?, ?, ?, 'unverified', ?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET listing_count = listing_count + 1, updated_at = excluded.updated_at
+            INSERT INTO seller_profiles (id, user_id, display_name, verification_status, listing_count, created_at, updated_at)
+            VALUES (?, ?, ?, 'unverified', 1, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                listing_count = seller_profiles.listing_count + 1,
+                updated_at = excluded.updated_at
             """,
             (str(uuid.uuid4()), user["id"], user["display_name"], created, created),
         )
@@ -21171,6 +20195,100 @@ class Handler(BaseHTTPRequestHandler):
             },
         })
 
+    def api_admin_email_campaigns(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        limit = max(1, min(int(query.get("limit") or 50), 200))
+        rows = list(conn.execute(
+            "SELECT * FROM email_campaigns ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ))
+        self.send_json({"items": [serialize_email_campaign(dict(r)) for r in rows]})
+
+    def api_admin_create_email_campaign(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        subject = str(data.get("subject") or "").strip()
+        body = str(data.get("body") or "").strip()
+        if not subject:
+            raise APIError("邮件标题不能为空", 400, "email_subject_required")
+        if not body:
+            raise APIError("邮件正文不能为空", 400, "email_body_required")
+        if len(subject) > 180:
+            raise APIError("邮件标题过长", 400, "email_subject_too_long")
+        if len(body) > 20000:
+            raise APIError("邮件正文过长", 400, "email_body_too_long")
+        audience = normalize_email_campaign_audience(data.get("audience"))
+        send_now = bool(data.get("sendNow") or data.get("send_now"))
+        campaign_id = "mail_" + uuid.uuid4().hex
+        now = now_iso()
+        status = "queued" if send_now else "draft"
+        conn.execute(
+            """
+            INSERT INTO email_campaigns
+                (id, admin_id, subject, body, audience, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (campaign_id, admin["id"], subject, body, audience, status, now, now),
+        )
+        campaign = dict(conn.execute("SELECT * FROM email_campaigns WHERE id = ?", (campaign_id,)).fetchone())
+        if send_now:
+            start_email_campaign_worker(campaign_id)
+        self.send_json({"campaign": serialize_email_campaign(campaign)})
+
+    def api_admin_update_email_campaign(self, conn: sqlite3.Connection, campaign_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM email_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+        if not row:
+            raise APIError("邮件任务不存在", 404, "email_campaign_not_found")
+        current = dict(row)
+        data = self.read_json()
+        action = str(data.get("action") or "").strip().lower()
+        if action == "send":
+            if current["status"] not in {"draft", "queued"}:
+                raise APIError("当前邮件任务不能重复发送", 409, "email_campaign_not_sendable")
+            conn.execute("UPDATE email_campaigns SET status = 'queued', updated_at = ? WHERE id = ?", (now_iso(), campaign_id))
+            start_email_campaign_worker(campaign_id)
+            fresh = dict(conn.execute("SELECT * FROM email_campaigns WHERE id = ?", (campaign_id,)).fetchone())
+            return self.send_json({"campaign": serialize_email_campaign(fresh)})
+        if current["status"] != "draft":
+            raise APIError("只有草稿可以编辑", 409, "email_campaign_not_editable")
+        updates: dict[str, Any] = {}
+        if "subject" in data:
+            subject = str(data.get("subject") or "").strip()
+            if not subject:
+                raise APIError("邮件标题不能为空", 400, "email_subject_required")
+            if len(subject) > 180:
+                raise APIError("邮件标题过长", 400, "email_subject_too_long")
+            updates["subject"] = subject
+        if "body" in data:
+            body = str(data.get("body") or "").strip()
+            if not body:
+                raise APIError("邮件正文不能为空", 400, "email_body_required")
+            if len(body) > 20000:
+                raise APIError("邮件正文过长", 400, "email_body_too_long")
+            updates["body"] = body
+        if "audience" in data:
+            updates["audience"] = normalize_email_campaign_audience(data.get("audience"))
+        if updates:
+            updates["updated_at"] = now_iso()
+            cols = ", ".join(f"{key} = ?" for key in updates)
+            conn.execute(f"UPDATE email_campaigns SET {cols} WHERE id = ?", [*updates.values(), campaign_id])
+        fresh = dict(conn.execute("SELECT * FROM email_campaigns WHERE id = ?", (campaign_id,)).fetchone())
+        self.send_json({"campaign": serialize_email_campaign(fresh)})
+
+    def api_admin_send_email_campaign(self, conn: sqlite3.Connection, campaign_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM email_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+        if not row:
+            raise APIError("邮件任务不存在", 404, "email_campaign_not_found")
+        current = dict(row)
+        if current["status"] not in {"draft", "queued"}:
+            raise APIError("当前邮件任务不能重复发送", 409, "email_campaign_not_sendable")
+        conn.execute("UPDATE email_campaigns SET status = 'queued', updated_at = ? WHERE id = ?", (now_iso(), campaign_id))
+        start_email_campaign_worker(campaign_id)
+        fresh = dict(conn.execute("SELECT * FROM email_campaigns WHERE id = ?", (campaign_id,)).fetchone())
+        self.send_json({"campaign": serialize_email_campaign(fresh)})
+
     def api_update_listing_inquiry(self, conn: sqlite3.Connection, inquiry_id: str) -> None:
         user = self.require_user(conn)
         row = conn.execute("SELECT * FROM listing_inquiries WHERE id = ?", (inquiry_id,)).fetchone()
@@ -21486,6 +20604,255 @@ class Handler(BaseHTTPRequestHandler):
         ))
         self.send_json({"items": [dict(r) for r in rows]})
 
+    def _explore_region_clause(self, conn: sqlite3.Connection, query: dict[str, str], viewer_id: str | None, alias: str = "p") -> tuple[str, list[Any], dict[str, str]]:
+        region_code = (query.get("region_code") or query.get("regionCode") or "").strip().lower()
+        country = (query.get("country") or "").strip().lower()
+        province = (query.get("province") or "").strip().lower()
+        city = (query.get("city") or "").strip().lower()
+        if not (region_code or country or province or city) and viewer_id:
+            row = conn.execute(
+                "SELECT country, province, city, current_region_code FROM users WHERE id = ?",
+                (viewer_id,),
+            ).fetchone()
+            if row:
+                region_code = (row["current_region_code"] or "").strip().lower()
+                country = (row["country"] or "").strip().lower()
+                province = (row["province"] or "").strip().lower()
+                city = (row["city"] or "").strip().lower()
+        filters: list[str] = []
+        params: list[Any] = []
+        if region_code:
+            filters.append(f"{alias}.region_code = ?")
+            params.append(region_code)
+        else:
+            if country:
+                filters.append(f"{alias}.country = ?")
+                params.append(country)
+            if province:
+                filters.append(f"{alias}.province = ?")
+                params.append(province)
+            if city:
+                filters.append(f"{alias}.city = ?")
+                params.append(city)
+        clause = (" AND " + " AND ".join(filters)) if filters else ""
+        return clause, params, {"region_code": region_code, "country": country, "province": province, "city": city}
+
+    def _explore_ranked_posts(
+        self,
+        conn: sqlite3.Connection,
+        query: dict[str, str],
+        *,
+        kind: str,
+        days: int,
+        limit: int,
+        viewer_id: str | None,
+        config: dict[str, Any],
+    ) -> tuple[list[dict[str, Any]], bool, dict[str, str]]:
+        region_clause, region_params, region_scope = self._explore_region_clause(conn, query, viewer_id)
+        if not config.get("city_isolated"):
+            region_clause = ""
+            region_params = []
+        score_config = dict(config)
+        score_config["hot_days"] = days
+        score_sql = _explore_heat_score_sql("p", score_config)
+        type_clause = " AND p.content_type NOT IN (%s)" % ",".join("?" * len(HIGH_INTENT_POST_TYPES))
+        type_params = sorted(HIGH_INTENT_POST_TYPES)
+        quality_clause = ""
+        if config.get("exclude_reported"):
+            quality_clause += " AND COALESCE(p.report_count, 0) = 0"
+        if config.get("exclude_low_quality"):
+            quality_clause += " AND (length(trim(COALESCE(p.content, ''))) >= 2 OR EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.id))"
+        blocked_ids: set[str] = set()
+        if viewer_id:
+            blocked_ids = {
+                r["blocked_id"]
+                for r in conn.execute("SELECT blocked_id FROM blocks WHERE blocker_id = ?", (viewer_id,))
+            }
+
+        def run_rank(cutoff: str | None, tag: str) -> list[dict[str, Any]]:
+            cache_input = {
+                "kind": kind,
+                "tag": tag,
+                "days": days,
+                "limit": limit,
+                "region": region_scope,
+                "config": score_config,
+                "quality": quality_clause,
+            }
+            cache_key = "explore:posts:" + hashlib.sha1(json.dumps(cache_input, sort_keys=True).encode("utf-8")).hexdigest()
+            cached_rank = _cache_get(cache_key)
+            if cached_rank is None:
+                cutoff_clause = " AND p.created_at >= ?" if cutoff else ""
+                params: list[Any] = []
+                if cutoff:
+                    params.append(cutoff)
+                params.extend(region_params)
+                params.extend(type_params)
+                params.append(limit)
+                user_join = "JOIN users u ON u.id = p.author_id AND u.deleted_at IS NULL" if config.get("exclude_banned_users") else "JOIN users u ON u.id = p.author_id"
+                ranked_rows = list(conn.execute(
+                    f"""
+                    SELECT p.id, {score_sql} AS explore_score
+                      FROM posts p
+                      {user_join}
+                     WHERE p.deleted_at IS NULL
+                       AND p.status IN ('published', 'active')
+                       {cutoff_clause}
+                       {region_clause}
+                       {type_clause}
+                       {quality_clause}
+                     ORDER BY explore_score DESC, p.created_at DESC
+                     LIMIT ?
+                    """,
+                    params,
+                ))
+                cached_rank = [{"id": r["id"], "score": float(r["explore_score"] or 0)} for r in ranked_rows]
+                _cache_put(cache_key, cached_rank, ttl_seconds=30)
+            if not cached_rank:
+                return []
+            ids = [str(item["id"]) for item in cached_rank]
+            placeholders = ",".join("?" * len(ids))
+            rows = list(conn.execute(f"SELECT * FROM posts WHERE id IN ({placeholders})", ids))
+            row_by_id = {r["id"]: dict(r) for r in rows}
+            score_by_id = {str(item["id"]): float(item.get("score") or 0) for item in cached_rank}
+            ordered: list[dict[str, Any]] = []
+            for post_id in ids:
+                row = row_by_id.get(post_id)
+                if not row or row.get("author_id") in blocked_ids:
+                    continue
+                row["explore_score"] = score_by_id.get(post_id, 0)
+                ordered.append(row)
+            return ordered
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        ranked = run_rank(cutoff, "window")
+        fallback_used = False
+        if config.get("fallback_enabled") and len(ranked) < int(config.get("min_display") or 0):
+            existing = {row["id"] for row in ranked}
+            fallback = [row for row in run_rank(None, "fallback") if row["id"] not in existing]
+            if fallback:
+                ranked.extend(fallback[: max(0, limit - len(ranked))])
+                fallback_used = True
+        return ranked[:limit], fallback_used, region_scope
+
+    def api_explore_posts(self, conn: sqlite3.Connection, query: dict[str, str], kind: str) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        limit = max(1, min(int(query.get("limit") or 20), 50))
+        config = _explore_rank_config(conn)
+        days = int(config["happening_days"] if kind == "happening" else config["hot_days"])
+        ranked, fallback_used, region_scope = self._explore_ranked_posts(
+            conn,
+            query,
+            kind=kind,
+            days=days,
+            limit=limit,
+            viewer_id=viewer_id,
+            config=config,
+        )
+        posts = fetch_posts_with_extras(conn, ranked, viewer_id)
+        scores = {row["id"]: float(row.get("explore_score") or 0) for row in ranked}
+        for post in posts:
+            post["explore_hot_score"] = scores.get(post["id"], 0)
+            post["exploreHotScore"] = post["explore_hot_score"]
+        self.send_json({
+            "items": posts,
+            "posts": posts,
+            "mode": kind,
+            "days": days,
+            "fallbackUsed": fallback_used,
+            "fallback_used": fallback_used,
+            "region": region_scope,
+            "config": config,
+            "viewer": {"id": viewer_id} if viewer_id else None,
+            "canInteract": bool(viewer_id),
+            "can_interact": bool(viewer_id),
+        })
+
+    def api_explore_topics(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        limit = max(1, min(int(query.get("limit") or 30), 80))
+        config = _explore_rank_config(conn)
+        days = int(config["topic_days"])
+        region_clause, region_params, region_scope = self._explore_region_clause(conn, query, viewer_id)
+        if not config.get("city_isolated"):
+            region_clause = ""
+            region_params = []
+        score_config = dict(config)
+        score_config["hot_days"] = days
+        score_sql = _explore_heat_score_sql("p", score_config)
+        quality_clause = ""
+        if config.get("exclude_reported"):
+            quality_clause += " AND COALESCE(p.report_count, 0) = 0"
+        if config.get("exclude_low_quality"):
+            quality_clause += " AND (length(trim(COALESCE(p.content, ''))) >= 2 OR EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.id))"
+
+        def query_topics(cutoff: str | None, tag: str) -> list[dict[str, Any]]:
+            cache_input = {"tag": tag, "days": days, "limit": limit, "region": region_scope, "config": score_config, "quality": quality_clause}
+            cache_key = "explore:topics:" + hashlib.sha1(json.dumps(cache_input, sort_keys=True).encode("utf-8")).hexdigest()
+            cached = _cache_get(cache_key)
+            if cached is not None:
+                return cached
+            cutoff_clause = " AND p.created_at >= ?" if cutoff else ""
+            params: list[Any] = []
+            if cutoff:
+                params.append(cutoff)
+            params.extend(region_params)
+            params.append(limit)
+            user_join = "JOIN users u ON u.id = p.author_id AND u.deleted_at IS NULL" if config.get("exclude_banned_users") else "JOIN users u ON u.id = p.author_id"
+            rows = list(conn.execute(
+                f"""
+                SELECT t.tag, COUNT(*) AS post_count, SUM({score_sql}) AS topic_heat
+                  FROM post_tags t
+                  JOIN posts p ON p.id = t.post_id
+                  {user_join}
+                 WHERE p.deleted_at IS NULL
+                   AND p.status IN ('published', 'active')
+                   {cutoff_clause}
+                   {region_clause}
+                   {quality_clause}
+                 GROUP BY t.tag
+                 ORDER BY topic_heat DESC, post_count DESC, t.tag ASC
+                 LIMIT ?
+                """,
+                params,
+            ))
+            items = [
+                {
+                    "tag": r["tag"],
+                    "post_count": int(r["post_count"] or 0),
+                    "postCount": int(r["post_count"] or 0),
+                    "heat": float(r["topic_heat"] or 0),
+                    "topicHeat": float(r["topic_heat"] or 0),
+                }
+                for r in rows
+            ]
+            _cache_put(cache_key, items, ttl_seconds=60)
+            return items
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        topics = query_topics(cutoff, "window")
+        fallback_used = False
+        if config.get("fallback_enabled") and len(topics) < int(config.get("min_display") or 0):
+            seen = {item["tag"] for item in topics}
+            extra = [item for item in query_topics(None, "fallback") if item["tag"] not in seen]
+            if extra:
+                topics.extend(extra[: max(0, limit - len(topics))])
+                fallback_used = True
+        self.send_json({
+            "topics": topics[:limit],
+            "items": topics[:limit],
+            "days": days,
+            "fallbackUsed": fallback_used,
+            "fallback_used": fallback_used,
+            "region": region_scope,
+            "config": config,
+            "viewer": {"id": viewer_id} if viewer_id else None,
+            "canInteract": bool(viewer_id),
+            "can_interact": bool(viewer_id),
+        })
+
     def api_feed(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
@@ -21579,28 +20946,34 @@ class Handler(BaseHTTPRequestHandler):
             """
             base_params = []
         elif mode == "hot":
-            cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
-            # Verified members get a gentle ranking nudge (VERIFIED_BOOST_SCORE,
-            # ~1.05). Applied only to the hot-feed ORDER BY — the displayed
-            # heat_score is unchanged, so it never overpowers real engagement.
-            sql = f"""
-                SELECT * FROM (
-                    SELECT p.*, {_heat_score_sql('p')} AS computed_heat,
-                           COALESCE((SELECT u.is_verified_member FROM users u WHERE u.id = p.author_id), 0) AS author_vm
-                    FROM posts p
-                    WHERE p.deleted_at IS NULL
-                      AND p.status IN ('published', 'active')
-                      AND p.created_at >= ?
-                      {region_clause}
-                      {type_clause}
-                      {blocked_clause}
-                ) ranked
-                ORDER BY (computed_heat * (CASE WHEN author_vm = 1 THEN ? ELSE 1.0 END)) DESC, created_at DESC
-                LIMIT ?
-            """
-            rows = list(conn.execute(sql, [cutoff_24h, *region_params, *type_params, *blocked_params, VERIFIED_BOOST_SCORE, limit]))
-            posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
-            self.send_json({"items": posts, "next_cursor": None, "mode": mode, "viewer": viewer_payload, "canInteract": can_interact, "can_interact": can_interact})
+            config = _explore_rank_config(conn)
+            days = int(config["hot_days"])
+            ranked, fallback_used, region_scope = self._explore_ranked_posts(
+                conn,
+                query,
+                kind="hot",
+                days=days,
+                limit=limit,
+                viewer_id=viewer_id,
+                config=config,
+            )
+            posts = fetch_posts_with_extras(conn, ranked, viewer_id)
+            scores = {row["id"]: float(row.get("explore_score") or 0) for row in ranked}
+            for post in posts:
+                post["explore_hot_score"] = scores.get(post["id"], 0)
+                post["exploreHotScore"] = post["explore_hot_score"]
+            self.send_json({
+                "items": posts,
+                "next_cursor": None,
+                "mode": mode,
+                "days": days,
+                "fallbackUsed": fallback_used,
+                "fallback_used": fallback_used,
+                "region": region_scope,
+                "viewer": viewer_payload,
+                "canInteract": can_interact,
+                "can_interact": can_interact,
+            })
             return
         else:
             base = """
@@ -21691,6 +21064,8 @@ class Handler(BaseHTTPRequestHandler):
                 if image_count > 9:
                     raise APIError("每个帖子最多上传 9 张图片", 400, "post_image_limit")
             valid_media.append(dict(media_row))
+        if image_count > 0 and video_count > 0:
+            raise APIError("图片和视频不能混合发布，请选择 9 张图片或 1 个视频", 400, "post_media_mixed")
         # Region — client may pass any of (country, province, city) or
         # the resolved region_code. We canonicalise here so the row is
         # internally consistent and the index hits.
@@ -21760,8 +21135,7 @@ class Handler(BaseHTTPRequestHandler):
         HUB.broadcast([user["id"]], {"type": "post_created", "post_id": post_id})
         # Drop derived caches so the new post shows up on hot / trending
         # without waiting for the 30s TTL.
-        _cache_invalidate("feed:hot")
-        _cache_invalidate("trending:")
+        invalidate_public_ranking_caches()
         self.send_json({"post": posts[0]})
 
     def api_post_detail(self, conn: sqlite3.Connection, post_id: str) -> None:
@@ -21821,8 +21195,7 @@ class Handler(BaseHTTPRequestHandler):
             """,
             (now_iso(), now_iso(), post_id, user["id"]),
         )
-        _cache_invalidate("feed:hot")
-        _cache_invalidate("trending:")
+        invalidate_public_ranking_caches()
         self.send_json({"ok": True})
 
     def api_post_interaction(self, conn: sqlite3.Connection, post_id: str, kind: str, on: bool) -> None:
@@ -21834,11 +21207,13 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT id FROM interactions WHERE target_id = ? AND user_id = ? AND kind = ?",
             (post_id, user["id"], kind),
         ).fetchone()
+        changed = False
         if on and not existing:
             conn.execute(
                 "INSERT INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
                 (str(uuid.uuid4()), post_id, user["id"], kind, now_iso()),
             )
+            changed = True
             if kind == "bookmark":
                 reputation_apply_event(
                     conn,
@@ -21875,6 +21250,9 @@ class Handler(BaseHTTPRequestHandler):
                 )
         elif not on and existing:
             conn.execute("DELETE FROM interactions WHERE id = ?", (existing["id"],))
+            changed = True
+        if changed:
+            invalidate_public_ranking_caches()
         fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
         posts = fetch_posts_with_extras(conn, [fresh], user["id"])
         self.send_json({"post": posts[0]})
@@ -21884,15 +21262,44 @@ class Handler(BaseHTTPRequestHandler):
         post = conn.execute("SELECT * FROM posts WHERE id = ? AND deleted_at IS NULL", (post_id,)).fetchone()
         if not post:
             raise APIError("帖子不存在", 404, "post_not_found")
+        changed = False
         if on:
             try:
                 conn.execute(
                     "INSERT INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, 'repost', ?)",
                     (str(uuid.uuid4()), post_id, user["id"], now_iso()),
                 )
+                changed = True
             except sqlite3.IntegrityError:
                 pass
-            if post["author_id"] != user["id"]:
+            existing_repost_post = conn.execute(
+                """
+                SELECT id FROM posts
+                 WHERE author_id = ? AND repost_of_id = ?
+                   AND COALESCE(content, '') = ''
+                   AND deleted_at IS NULL
+                 LIMIT 1
+                """,
+                (user["id"], post_id),
+            ).fetchone()
+            if not existing_repost_post:
+                created = now_iso()
+                conn.execute(
+                    """
+                    INSERT INTO posts (
+                        id, author_id, content, repost_of_id, view_count, status,
+                        country, province, city, region_code, content_type, attributes,
+                        created_at, updated_at
+                    ) VALUES (?, ?, '', ?, 1, 'active', ?, ?, ?, ?, 'dynamic', '{}', ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()), user["id"], post_id,
+                        post["country"] or "", post["province"] or "", post["city"] or "", post["region_code"] or "",
+                        created, created,
+                    ),
+                )
+                changed = True
+            if changed and post["author_id"] != user["id"]:
                 conn.execute(
                     "INSERT INTO notifications (id, user_id, actor_id, type, target_post_id, content, created_at) VALUES (?, ?, ?, 'repost', ?, '', ?)",
                     (str(uuid.uuid4()), post["author_id"], user["id"], post_id, now_iso()),
@@ -21903,6 +21310,18 @@ class Handler(BaseHTTPRequestHandler):
                 "DELETE FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'repost'",
                 (post_id, user["id"]),
             )
+            conn.execute(
+                """
+                UPDATE posts
+                   SET status = 'deleted', deleted_at = ?, updated_at = ?
+                 WHERE author_id = ? AND repost_of_id = ?
+                   AND COALESCE(content, '') = ''
+                   AND deleted_at IS NULL
+                """,
+                (now_iso(), now_iso(), user["id"], post_id),
+            )
+        _cache_invalidate("feed:")
+        invalidate_public_ranking_caches()
         fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
         posts = fetch_posts_with_extras(conn, [fresh], user["id"])
         self.send_json({"post": posts[0]})
@@ -22004,10 +21423,35 @@ class Handler(BaseHTTPRequestHandler):
         post = conn.execute("SELECT author_id, content_type FROM posts WHERE id = ? AND deleted_at IS NULL", (post_id,)).fetchone()
         if not post:
             raise APIError("帖子不存在", 404, "post_not_found")
+        parent_comment_id = str(data.get("parent_comment_id") or "").strip()
+        reply_to_user_id = str(data.get("reply_to_user_id") or "").strip()
+        parent_comment: dict[str, Any] | None = None
+        if parent_comment_id:
+            parent_row = conn.execute(
+                "SELECT id, author_id, parent_comment_id FROM comments WHERE id = ? AND post_id = ? AND deleted_at IS NULL",
+                (parent_comment_id, post_id),
+            ).fetchone()
+            if not parent_row:
+                raise APIError("要回复的评论不存在", 404, "parent_comment_not_found")
+            parent_comment = dict(parent_row)
+            if parent_comment.get("parent_comment_id"):
+                root_row = conn.execute(
+                    "SELECT id, author_id FROM comments WHERE id = ? AND post_id = ? AND deleted_at IS NULL",
+                    (parent_comment["parent_comment_id"], post_id),
+                ).fetchone()
+                if root_row:
+                    parent_comment_id = root_row["id"]
+            if not reply_to_user_id:
+                reply_to_user_id = parent_comment["author_id"]
+            elif not conn.execute("SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL", (reply_to_user_id,)).fetchone():
+                reply_to_user_id = parent_comment["author_id"]
+        else:
+            reply_to_user_id = ""
         comment_id = str(uuid.uuid4())
+        now = now_iso()
         conn.execute(
             "INSERT INTO comments (id, post_id, author_id, content, parent_comment_id, reply_to_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (comment_id, post_id, user["id"], content, data.get("parent_comment_id"), data.get("reply_to_user_id"), now_iso(), now_iso()),
+            (comment_id, post_id, user["id"], content, parent_comment_id or None, reply_to_user_id or None, now, now),
         )
         if post["author_id"] != user["id"]:
             reputation_apply_event(
@@ -22028,12 +21472,20 @@ class Handler(BaseHTTPRequestHandler):
                     target_kind="post",
                     target_id=post_id,
                 )
-            ntype = "reply" if data.get("parent_comment_id") else "comment"
+        recipients: dict[str, str] = {}
+        if parent_comment_id:
+            if reply_to_user_id and reply_to_user_id != user["id"]:
+                recipients[reply_to_user_id] = "reply"
+            if parent_comment and parent_comment["author_id"] != user["id"]:
+                recipients.setdefault(parent_comment["author_id"], "reply")
+        if post["author_id"] != user["id"]:
+            recipients.setdefault(post["author_id"], "comment")
+        for recipient_id, ntype in recipients.items():
             conn.execute(
                 "INSERT INTO notifications (id, user_id, actor_id, type, target_post_id, target_comment_id, content, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), post["author_id"], user["id"], ntype, post_id, comment_id, content[:140], now_iso()),
+                (str(uuid.uuid4()), recipient_id, user["id"], ntype, post_id, comment_id, content[:140], now),
             )
-            HUB.publish(post["author_id"], {"type": "notification", "kind": ntype, "post_id": post_id})
+            HUB.publish(recipient_id, {"type": "notification", "kind": ntype, "post_id": post_id, "comment_id": comment_id})
         row = dict(conn.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone())
         comment = serialize_comment(row, {"author": serialize_user(user), "like_count": 0, "liked": False})
         self.send_json({"comment": comment})
@@ -22195,34 +21647,42 @@ class Handler(BaseHTTPRequestHandler):
             cached_ids = [r["id"] for r in id_rows]
             _cache_put(f"trending:{cache_scope}:post_ids", cached_ids, ttl_seconds=30)
         if cached_topics is None:
-            country_clause = "AND p.country = ?" if viewer_country else ""
-            params = (viewer_country,) if viewer_country else ()
-            cached_topics = [
-                {"tag": r["tag"], "post_count": int(r["c"])}
-                for r in conn.execute(
-                    f"""
-                    SELECT t.tag, COUNT(*) AS c
-                    FROM post_tags t
-                    JOIN posts p ON p.id = t.post_id
-                    WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
-                      {country_clause}
-                    GROUP BY t.tag ORDER BY c DESC LIMIT 20
-                    """,
-                    params,
-                )
-            ]
-            _cache_put(f"trending:{cache_scope}:topics", cached_topics, ttl_seconds=60)
+            try:
+                country_clause = "AND p.country = ?" if viewer_country else ""
+                params = (viewer_country,) if viewer_country else ()
+                cached_topics = [
+                    {"tag": r["tag"], "post_count": int(r["c"])}
+                    for r in conn.execute(
+                        f"""
+                        SELECT t.tag, COUNT(*) AS c
+                        FROM post_tags t
+                        JOIN posts p ON p.id = t.post_id
+                        WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
+                          {country_clause}
+                        GROUP BY t.tag ORDER BY c DESC LIMIT 20
+                        """,
+                        params,
+                    )
+                ]
+                _cache_put(f"trending:{cache_scope}:topics", cached_topics, ttl_seconds=60)
+            except Exception as exc:
+                ERR_LOG.warning("trending topics degraded error=%s", exc)
+                cached_topics = []
         if cached_user_ids is None:
-            if viewer_country:
-                cached_user_ids = [r["id"] for r in conn.execute(
-                    "SELECT id FROM users WHERE deleted_at IS NULL AND country = ? ORDER BY is_verified DESC, joined_at LIMIT 12",
-                    (viewer_country,),
-                )]
-            else:
-                cached_user_ids = [r["id"] for r in conn.execute(
-                    "SELECT id FROM users WHERE deleted_at IS NULL ORDER BY is_verified DESC, joined_at LIMIT 12"
-                )]
-            _cache_put(f"trending:{cache_scope}:user_ids", cached_user_ids, ttl_seconds=60)
+            try:
+                if viewer_country:
+                    cached_user_ids = [r["id"] for r in conn.execute(
+                        "SELECT id FROM users WHERE deleted_at IS NULL AND country = ? ORDER BY is_verified DESC, joined_at LIMIT 12",
+                        (viewer_country,),
+                    )]
+                else:
+                    cached_user_ids = [r["id"] for r in conn.execute(
+                        "SELECT id FROM users WHERE deleted_at IS NULL ORDER BY is_verified DESC, joined_at LIMIT 12"
+                    )]
+                _cache_put(f"trending:{cache_scope}:user_ids", cached_user_ids, ttl_seconds=60)
+            except Exception as exc:
+                ERR_LOG.warning("trending users degraded error=%s", exc)
+                cached_user_ids = []
         if cached_ids:
             placeholders = ",".join("?" * len(cached_ids))
             post_rows = list(conn.execute(
@@ -22236,11 +21696,14 @@ class Handler(BaseHTTPRequestHandler):
             posts = []
         users: list[dict[str, Any]] = []
         if cached_user_ids:
-            placeholders = ",".join("?" * len(cached_user_ids))
-            user_rows = list(conn.execute(
-                f"SELECT * FROM users WHERE id IN ({placeholders})", cached_user_ids,
-            ))
-            users = [serialize_user(dict(u)) for u in user_rows]
+            try:
+                placeholders = ",".join("?" * len(cached_user_ids))
+                user_rows = list(conn.execute(
+                    f"SELECT * FROM users WHERE id IN ({placeholders})", cached_user_ids,
+                ))
+                users = [serialize_user(dict(u)) for u in user_rows]
+            except Exception as exc:
+                ERR_LOG.warning("trending user hydration degraded error=%s", exc)
         self.send_json({
             "posts": posts,
             "topics": cached_topics,
@@ -22411,7 +21874,15 @@ class Handler(BaseHTTPRequestHandler):
             (a, b),
         ).fetchone()
         if row:
-            return dict(row)
+            conv = dict(row)
+            hidden_col = "hidden_for_a_at" if conv["participant_a"] == user_id else "hidden_for_b_at"
+            if conv.get("deleted_at") or conv.get(hidden_col):
+                conn.execute(
+                    f"UPDATE conversations SET deleted_at = NULL, {hidden_col} = NULL, updated_at = ? WHERE id = ?",
+                    (now_iso(), conv["id"]),
+                )
+                return dict(conn.execute("SELECT * FROM conversations WHERE id = ?", (conv["id"],)).fetchone())
+            return conv
         conv_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO conversations (id, participant_a, participant_b, updated_at) VALUES (?, ?, ?, ?)",
@@ -22422,7 +21893,17 @@ class Handler(BaseHTTPRequestHandler):
     def api_conversations(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         rows = list(conn.execute(
-            "SELECT * FROM conversations WHERE (participant_a = ? OR participant_b = ?) AND deleted_at IS NULL ORDER BY updated_at DESC",
+            """
+            SELECT *
+              FROM conversations
+             WHERE deleted_at IS NULL
+               AND (
+                 (participant_a = ? AND COALESCE(hidden_for_a_at, '') = '')
+                 OR
+                 (participant_b = ? AND COALESCE(hidden_for_b_at, '') = '')
+               )
+             ORDER BY updated_at DESC
+            """,
             (user["id"], user["id"]),
         ))
         if not rows:
@@ -22435,21 +21916,22 @@ class Handler(BaseHTTPRequestHandler):
             for r in rows
         ]
         users_map = fetch_users_by_ids(conn, peer_ids)
-        # Last message per conversation in one pass — grab the latest
-        # row per conversation_id using a correlated MAX(rowid).
+        # Last message per conversation in one pass. Avoid SQLite-only
+        # rowid so the query works identically on PostgreSQL.
         last_messages: dict[str, dict[str, Any]] = {}
         for row in conn.execute(
             f"""
-            SELECT m.*
-            FROM messages m
-            JOIN (
-              SELECT conversation_id, MAX(rowid) AS max_rowid
-              FROM messages
+            SELECT *
+            FROM (
+              SELECT m.*,
+                     ROW_NUMBER() OVER (
+                       PARTITION BY conversation_id
+                       ORDER BY created_at DESC, id DESC
+                     ) AS machi_rank
+              FROM messages m
               WHERE deleted_at IS NULL AND conversation_id IN ({placeholders})
-              GROUP BY conversation_id
-            ) latest
-              ON latest.conversation_id = m.conversation_id
-              AND latest.max_rowid = m.rowid
+            ) ranked
+            WHERE machi_rank = 1
             """,
             conv_ids,
         ):
@@ -22469,13 +21951,51 @@ class Handler(BaseHTTPRequestHandler):
             [user["id"], *conv_ids],
         ):
             unread_map[row["conversation_id"]] = int(row["c"])
+        last_message_ids = [msg["id"] for msg in last_messages.values()]
+        media_by_last: dict[str, list[dict[str, Any]]] = {}
+        attachments_by_last: dict[str, list[dict[str, Any]]] = {}
+        if last_message_ids:
+            msg_placeholders = ",".join("?" * len(last_message_ids))
+            for r in conn.execute(
+                f"""SELECT mm.message_id, m.* FROM message_media mm
+                    JOIN media m ON m.id = mm.media_id
+                    WHERE mm.message_id IN ({msg_placeholders}) AND m.deleted_at IS NULL""",
+                last_message_ids,
+            ):
+                media_by_last.setdefault(r["message_id"], []).append(serialize_media(dict(r)))
+            for r in conn.execute(
+                f"""
+                SELECT
+                  a.id, a.message_id, a.thread_id, a.uploaded_file_id, a.attachment_type,
+                  a.thumbnail_file_id,
+                  COALESCE(NULLIF(a.duration_seconds, 0), f.duration, 0) AS duration_seconds,
+                  a.file_name,
+                  COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
+                  COALESCE(NULLIF(a.content_type, ''), f.content_type, '') AS content_type,
+                  a.visibility, a.status, a.created_at,
+                  f.file_type, f.width, f.height, f.object_key
+                FROM message_attachments a
+                JOIN uploaded_files f ON f.id = a.uploaded_file_id
+                WHERE a.message_id IN ({msg_placeholders})
+                  AND a.deleted_at IS NULL
+                  AND a.status != 'deleted'
+                  AND f.deleted_at IS NULL
+                ORDER BY a.created_at ASC
+                """,
+                last_message_ids,
+            ):
+                item = serialize_message_attachment(dict(r))
+                attachments_by_last.setdefault(item["message_id"], []).append(item)
         items = []
         for r in rows:
             peer_id = r["participant_b"] if r["participant_a"] == user["id"] else r["participant_a"]
             last = last_messages.get(r["id"])
             items.append(serialize_conversation(dict(r), {
                 "peer": users_map.get(peer_id),
-                "last_message": serialize_message(last) if last else None,
+                "last_message": serialize_message(last, {
+                    "media": media_by_last.get(last["id"], []),
+                    "attachments": attachments_by_last.get(last["id"], []),
+                }) if last else None,
                 "unread_count": unread_map.get(r["id"], 0),
             }))
         self.send_json({"items": items})
@@ -22511,7 +22031,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("当前账号信任状态暂不能主动私信陌生人。", 403, "REPUTATION_LIMITED")
         a, b = sorted([user["id"], peer_row["id"]])
         existing_conv = conn.execute(
-            "SELECT 1 FROM conversations WHERE participant_a = ? AND participant_b = ? AND deleted_at IS NULL",
+            "SELECT 1 FROM conversations WHERE participant_a = ? AND participant_b = ?",
             (a, b),
         ).fetchone()
         if not existing_conv:
@@ -22530,25 +22050,68 @@ class Handler(BaseHTTPRequestHandler):
         conv = self._conversation_for(conn, user["id"], peer_row["id"])
         self.send_json({"conversation": serialize_conversation(conv, {"peer": serialize_user(dict(peer_row))})})
 
+    def api_mutual_message_friends(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        q = str(query.get("q") or "").strip()
+        try:
+            limit = int(query.get("limit") or 50)
+        except (TypeError, ValueError):
+            limit = 50
+        limit = max(1, min(limit, 100))
+        params: list[Any] = [user["id"], user["id"], user["id"]]
+        search_clause = ""
+        if q:
+            like = f"%{q}%"
+            search_clause = "AND (u.handle LIKE ? OR u.display_name LIKE ? OR COALESCE(u.bio, '') LIKE ?)"
+            params.extend([like, like, like])
+        params.append(limit)
+        rows = list(conn.execute(
+            f"""
+            SELECT DISTINCT u.*
+              FROM follows mine
+              JOIN follows back
+                ON back.follower_id = mine.following_id
+               AND back.following_id = mine.follower_id
+              JOIN users u
+                ON u.id = mine.following_id
+             WHERE mine.follower_id = ?
+               AND u.deleted_at IS NULL
+               AND NOT EXISTS (
+                    SELECT 1 FROM blocks b
+                     WHERE (b.blocker_id = ? AND b.blocked_id = u.id)
+                        OR (b.blocker_id = u.id AND b.blocked_id = ?)
+               )
+               {search_clause}
+             ORDER BY LOWER(u.display_name) ASC, LOWER(u.handle) ASC
+             LIMIT ?
+            """,
+            params,
+        ))
+        items = []
+        for r in rows:
+            user_row = dict(r)
+            user_row["is_following"] = 1
+            items.append(serialize_user(user_row))
+        self.send_json({"items": items})
+
     def api_delete_conversation(self, conn: sqlite3.Connection, conv_id: str) -> None:
         user = self.require_user(conn)
         row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
         if not row or (row["participant_a"] != user["id"] and row["participant_b"] != user["id"]):
             raise APIError("无权操作", 403, "forbidden")
         now = now_iso()
-        conn.execute("UPDATE conversations SET deleted_at = ? WHERE id = ?", (now, conv_id))
-        conn.execute("UPDATE messages SET deleted_at = ? WHERE conversation_id = ?", (now, conv_id))
-        conn.execute(
-            "UPDATE message_attachments SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE thread_id = ? AND deleted_at IS NULL",
-            (now, now, conv_id),
-        )
+        hidden_col = "hidden_for_a_at" if row["participant_a"] == user["id"] else "hidden_for_b_at"
+        conn.execute(f"UPDATE conversations SET {hidden_col} = ?, updated_at = ? WHERE id = ?", (now, now, conv_id))
         self.send_json({"ok": True})
 
     def api_messages(self, conn: sqlite3.Connection, conv_id: str, query: dict[str, str]) -> None:
         user = self.require_user(conn)
-        row = conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone()
+        row = conn.execute("SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL", (conv_id,)).fetchone()
         if not row or (row["participant_a"] != user["id"] and row["participant_b"] != user["id"]):
             raise APIError("无权操作", 403, "forbidden")
+        hidden_col = "hidden_for_a_at" if row["participant_a"] == user["id"] else "hidden_for_b_at"
+        if row[hidden_col]:
+            raise APIError("会话已隐藏，请重新发起对话", 404, "conversation_hidden")
         rows = list(conn.execute(
             "SELECT * FROM messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY created_at",
             (conv_id,),
@@ -22577,7 +22140,7 @@ class Handler(BaseHTTPRequestHandler):
                   COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
                   COALESCE(NULLIF(a.content_type, ''), f.content_type, '') AS content_type,
                   a.visibility, a.status, a.created_at,
-                  f.file_type, f.width, f.height
+                  f.file_type, f.width, f.height, f.object_key
                 FROM message_attachments a
                 JOIN uploaded_files f ON f.id = a.uploaded_file_id
                 WHERE a.message_id IN ({placeholders})
@@ -22669,6 +22232,8 @@ class Handler(BaseHTTPRequestHandler):
                     legacy_media_rows.append(dict(media_row))
                     continue
             raise APIError("包含无权使用的私信附件", 403, "attachment_forbidden")
+        if image_count > 0 and video_count > 0:
+            raise APIError("图片和视频不能混合发送，请选择 9 张图片或 1 个视频", 400, "message_media_mixed")
         message_id = str(uuid.uuid4())
         now = now_iso()
         conn.execute(
@@ -22701,7 +22266,10 @@ class Handler(BaseHTTPRequestHandler):
                 (message_id, now, upload["id"]),
             )
             record_upload_audit(conn, user["id"], "message_attachment_link", file_id=upload["id"], status="ready", metadata={"messageId": message_id, "threadId": conv_id, "attachmentId": attachment_id})
-        conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
+        conn.execute(
+            "UPDATE conversations SET updated_at = ?, deleted_at = NULL, hidden_for_a_at = NULL, hidden_for_b_at = NULL WHERE id = ?",
+            (now, conv_id),
+        )
         peer_id = row["participant_b"] if row["participant_a"] == user["id"] else row["participant_a"]
         HUB.publish(peer_id, {"type": "message", "conversation_id": conv_id, "message_id": message_id})
         fresh = dict(conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone())
@@ -22721,7 +22289,7 @@ class Handler(BaseHTTPRequestHandler):
                   COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
                   COALESCE(NULLIF(a.content_type, ''), f.content_type, '') AS content_type,
                   a.visibility, a.status, a.created_at,
-                  f.file_type, f.width, f.height
+                  f.file_type, f.width, f.height, f.object_key
                 FROM message_attachments a
                 JOIN uploaded_files f ON f.id = a.uploaded_file_id
                 WHERE a.message_id = ?
@@ -22792,19 +22360,15 @@ class Handler(BaseHTTPRequestHandler):
         if str(d.get("file_status") or "") not in {"uploaded", "processing", "ready"}:
             raise APIError("附件尚未可用", 409, "attachment_not_ready")
         expires = S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS
-        if d.get("bucket") != "local-dev":
-            url = _s3_presigned_url("GET", d["object_key"], expires=expires)
-        else:
-            exp = int(time.time()) + expires
-            token = _signed_local_download_token(d["file_id"], exp)
-            base = self._request_base_url()
-            path = f"/api/uploads/download/{d['file_id']}?token={token}"
-            url = f"{base}{path}" if base else path
+        url = self._private_download_url(d["file_id"], expires)
         record_upload_audit(conn, user["id"], "message_attachment_view_url", file_id=d["file_id"], status="ready", metadata={"messageId": msg_id, "threadId": d["thread_id"], "attachmentId": attachment_id, "expires": expires})
         self.send_json({"ok": True, "data": {"url": url, "expiresIn": expires}, "url": url, "expiresIn": expires})
 
     def api_mark_conversation_read(self, conn: sqlite3.Connection, conv_id: str) -> None:
         user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL", (conv_id,)).fetchone()
+        if not row or (row["participant_a"] != user["id"] and row["participant_b"] != user["id"]):
+            raise APIError("无权操作", 403, "forbidden")
         conn.execute(
             "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ?",
             (conv_id, user["id"]),
@@ -22812,6 +22376,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True})
 
     # ---- S3 / unified uploads ----
+
+    def _private_download_url(self, file_id: str, expires: int) -> str:
+        exp = int(time.time()) + expires
+        token = _signed_local_download_token(file_id, exp)
+        base = self._request_base_url()
+        path = f"/api/uploads/download/{file_id}?token={token}"
+        return f"{base}{path}" if base else path
 
     def _assert_upload_entity_permission(
         self,
@@ -22884,7 +22455,8 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         data = self.read_json()
         purpose = normalize_upload_purpose(data.get("purpose"))
-        content_type = canonical_upload_mime(purpose, str(data.get("contentType") or data.get("content_type") or ""))
+        file_name = str(data.get("fileName") or data.get("file_name") or "")
+        content_type = canonical_upload_mime(purpose, str(data.get("contentType") or data.get("content_type") or ""), file_name)
         try:
             file_size = int(data.get("fileSize") or data.get("file_size") or 0)
         except (TypeError, ValueError):
@@ -22907,6 +22479,11 @@ class Handler(BaseHTTPRequestHandler):
             "experience_video": 5 * 60,
             "group_post_video": 5 * 60,
             "message_video": 2 * 60,
+            "secondhand_video": 5 * 60,
+            "rental_video": 10 * 60,
+            "job_video": 5 * 60,
+            "service_video": 5 * 60,
+            "discount_video": 5 * 60,
         }
         if purpose in max_duration_by_purpose and duration_seconds > max_duration_by_purpose[purpose]:
             raise APIError("视频时长超过限制", 400, "video_duration_too_long")
@@ -22926,23 +22503,34 @@ class Handler(BaseHTTPRequestHandler):
         object_key = upload_object_key(user["id"], purpose, entity_type, entity_id, content_type, thread_id=thread_id, group_id=group_id)
         is_private = upload_is_private(purpose)
         cdn_url = upload_public_url(object_key, purpose)
-        use_s3 = s3_ready_for_upload()
-        if use_s3:
+        s3_available = s3_ready_for_upload()
+        if PRODUCTION and not s3_available:
+            record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="s3_unavailable", metadata={"purpose": purpose})
+            raise APIError("生产环境对象存储暂不可用", 503, "s3_unavailable")
+        # Browser-to-S3 PUT is fragile unless bucket CORS is perfectly
+        # configured. Use same-origin upload URLs and let the backend stream
+        # verified public/private media into S3 so Web, mobile WebApp and
+        # desktop browsers share the same reliable path.
+        direct_s3 = False
+        if is_private and s3_available:
+            private_media_key()
+        if direct_s3:
             try:
                 upload_url = _s3_presigned_url("PUT", object_key, content_type=content_type, expires=S3_PRESIGN_EXPIRES_SECONDS)
             except APIError:
                 if PRODUCTION:
                     record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="s3_presign_failed", metadata={"purpose": purpose})
                     raise
-                use_s3 = False
-        if not use_s3:
+                direct_s3 = False
+                s3_available = False
+        if not direct_s3:
             token = _local_upload_token(upload_id, user["id"], object_key)
             base = self._request_base_url()
             path = f"/api/uploads/local/{upload_id}?token={quote(token, safe='')}"
             upload_url = f"{base}{path}" if base else path
-        bucket = AWS_S3_BUCKET if use_s3 else "local-dev"
+        bucket = AWS_S3_BUCKET if s3_available else "local-dev"
         metadata = {
-            "source": "s3" if use_s3 else "local",
+            "source": "s3-encrypted-pending" if is_private and s3_available else ("s3" if s3_available else "local"),
             "thumbnail_url": upload_thumbnail_url(object_key, content_type, purpose),
             "thread_id": thread_id,
             "group_id": group_id,
@@ -22956,6 +22544,40 @@ class Handler(BaseHTTPRequestHandler):
                 "thumbnail": upload_thumbnail_url(object_key, content_type, purpose) or cdn_url,
             },
         }
+        if UPLOAD_PURPOSES[purpose].get("kind") == "video" and not is_private:
+            thumbnail_file_id = str(
+                raw_metadata.get("thumbnailFileId")
+                or raw_metadata.get("thumbnail_file_id")
+                or raw_metadata.get("posterFileId")
+                or raw_metadata.get("poster_file_id")
+                or ""
+            ).strip()
+            if thumbnail_file_id:
+                thumbnail_row = conn.execute(
+                    """
+                    SELECT * FROM uploaded_files
+                     WHERE id = ?
+                       AND user_id = ?
+                       AND purpose = 'video_thumbnail'
+                       AND status = 'ready'
+                       AND deleted_at IS NULL
+                     LIMIT 1
+                    """,
+                    (thumbnail_file_id, user["id"]),
+                ).fetchone()
+                if not thumbnail_row:
+                    raise APIError("视频封面尚未上传完成，请重新选择视频。", 400, "invalid_video_thumbnail")
+                thumbnail_media = uploaded_file_as_media(thumbnail_row)
+                thumbnail_url = media_card_image_url(thumbnail_media)
+                if thumbnail_url:
+                    metadata["thumbnail_file_id"] = thumbnail_file_id
+                    metadata["poster_file_id"] = thumbnail_file_id
+                    metadata["thumbnail_url"] = thumbnail_url
+                    metadata["poster_url"] = thumbnail_url
+                    variants = metadata.get("variants") if isinstance(metadata.get("variants"), dict) else {}
+                    variants["thumbnail"] = thumbnail_url
+                    variants["poster"] = thumbnail_url
+                    metadata["variants"] = variants
         now = now_iso()
         conn.execute(
             """
@@ -22971,7 +22593,21 @@ class Handler(BaseHTTPRequestHandler):
                 json.dumps(metadata, ensure_ascii=False, sort_keys=True), now, now,
             ),
         )
-        record_upload_audit(conn, user["id"], "presign", file_id=file_id, upload_id=upload_id, status="pending", metadata={"purpose": purpose, "entityType": entity_type, "entityId": entity_id, "s3": use_s3})
+        record_upload_audit(
+            conn,
+            user["id"],
+            "presign",
+            file_id=file_id,
+            upload_id=upload_id,
+            status="pending",
+            metadata={
+                "purpose": purpose,
+                "entityType": entity_type,
+                "entityId": entity_id,
+                "s3": s3_available,
+                "encrypted": is_private and s3_available,
+            },
+        )
         self.send_json({
             "ok": True,
             "data": {
@@ -23000,24 +22636,132 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", 0) or 0)
         if length <= 0:
             raise APIError("empty upload", 400, "invalid_payload")
-        if length > int(d["file_size"] or 0) or length > min(S3_UPLOAD_MAX_SIZE, int(UPLOAD_PURPOSES[d["purpose"]]["max"])):
+        if length != int(d["file_size"] or 0) or length > min(S3_UPLOAD_MAX_SIZE, int(UPLOAD_PURPOSES[d["purpose"]]["max"])):
             conn.execute("UPDATE uploaded_files SET status = 'failed', updated_at = ? WHERE id = ?", (now_iso(), d["id"]))
-            record_upload_audit(conn, d["user_id"], "put_failed", file_id=d["id"], upload_id=upload_id, status="failed", reason="file_too_large")
-            raise APIError("文件太大", 413, "file_too_large")
-        with _DBLockReleased():
-            raw = self.rfile.read(length)
-            sniffed = _sniff_mime(raw)
-            if not upload_mime_matches(sniffed, d["content_type"]):
-                raise APIError("文件类型与签名不一致", 415, "mime_mismatch")
-            target = local_upload_path(d["object_key"])
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(raw)
-        etag = hashlib.md5(raw).hexdigest()
+            record_upload_audit(conn, d["user_id"], "put_failed", file_id=d["id"], upload_id=upload_id, status="failed", reason="file_size_mismatch")
+            raise APIError("文件大小与签名不一致", 400, "file_size_mismatch")
+        s3_backed = d.get("bucket") != "local-dev"
+        private_s3 = s3_backed and upload_is_private(str(d.get("purpose") or ""))
+        public_s3 = s3_backed and not private_s3
+        checksum = ""
+        etag = ""
+        encryption: dict[str, Any] | None = None
+        temp_name = ""
+        try:
+            with _DBLockReleased():
+                if private_s3:
+                    encryptor, iv = private_media_encryptor()
+                    plain_sha = hashlib.sha256()
+                    plain_md5 = hashlib.md5()
+                    first_chunk = b""
+                    remaining = length
+                    with tempfile.NamedTemporaryFile(prefix="machi-private-", suffix=".enc", delete=False) as encrypted_file:
+                        temp_name = encrypted_file.name
+                        while remaining:
+                            chunk = self.rfile.read(min(PRIVATE_MEDIA_CHUNK_SIZE, remaining))
+                            if not chunk:
+                                raise APIError("上传内容不完整", 400, "upload_truncated")
+                            if not first_chunk:
+                                first_chunk = chunk
+                            remaining -= len(chunk)
+                            plain_sha.update(chunk)
+                            plain_md5.update(chunk)
+                            encrypted_file.write(encryptor.update(chunk))
+                        encrypted_file.write(encryptor.finalize())
+                    validate_upload_magic(first_chunk, d["content_type"])
+                    encryption = private_media_encryption_metadata(iv, encryptor.tag)
+                    _s3_client().upload_file(
+                        temp_name,
+                        AWS_S3_BUCKET,
+                        d["object_key"],
+                        ExtraArgs={
+                            "ContentType": "application/octet-stream",
+                            "Metadata": {
+                                "machi-private": "aes-256-gcm",
+                                "machi-cipher-version": str(PRIVATE_MEDIA_CIPHER_VERSION),
+                            },
+                        },
+                    )
+                    head = _s3_head_object(d["object_key"])
+                    if int(head.get("ContentLength") or -1) != length:
+                        _s3_delete_object(d["object_key"])
+                        raise APIError("私密媒体上传校验失败", 502, "private_media_upload_verify_failed")
+                    checksum = plain_sha.hexdigest()
+                    etag = plain_md5.hexdigest()
+                elif public_s3:
+                    plain_sha = hashlib.sha256()
+                    plain_md5 = hashlib.md5()
+                    first_chunk = b""
+                    remaining = length
+                    with tempfile.NamedTemporaryFile(prefix="machi-public-", suffix=".upload", delete=False) as upload_file:
+                        temp_name = upload_file.name
+                        while remaining:
+                            chunk = self.rfile.read(min(PRIVATE_MEDIA_CHUNK_SIZE, remaining))
+                            if not chunk:
+                                raise APIError("上传内容不完整", 400, "upload_truncated")
+                            if not first_chunk:
+                                first_chunk = chunk
+                            remaining -= len(chunk)
+                            plain_sha.update(chunk)
+                            plain_md5.update(chunk)
+                            upload_file.write(chunk)
+                    validate_upload_magic(first_chunk, d["content_type"])
+                    _s3_client().upload_file(
+                        temp_name,
+                        AWS_S3_BUCKET,
+                        d["object_key"],
+                        ExtraArgs={"ContentType": d["content_type"]},
+                    )
+                    head = _s3_head_object(d["object_key"])
+                    if int(head.get("ContentLength") or -1) != length:
+                        _s3_delete_object(d["object_key"])
+                        raise APIError("媒体上传校验失败", 502, "s3_upload_verify_failed")
+                    checksum = plain_sha.hexdigest()
+                    etag = plain_md5.hexdigest()
+                else:
+                    raw = self.rfile.read(length)
+                    if len(raw) != length:
+                        raise APIError("上传内容不完整", 400, "upload_truncated")
+                    validate_upload_magic(raw, d["content_type"])
+                    target = local_upload_path(d["object_key"])
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_bytes(raw)
+                    checksum = hashlib.sha256(raw).hexdigest()
+                    etag = hashlib.md5(raw).hexdigest()
+        except APIError as exc:
+            conn.execute("UPDATE uploaded_files SET status = 'failed', updated_at = ? WHERE id = ?", (now_iso(), d["id"]))
+            record_upload_audit(conn, d["user_id"], "put_failed", file_id=d["id"], upload_id=upload_id, status="failed", reason=exc.code)
+            raise
+        except (BotoCoreError, ClientError, OSError) as exc:
+            conn.execute("UPDATE uploaded_files SET status = 'failed', updated_at = ? WHERE id = ?", (now_iso(), d["id"]))
+            reason = "private_media_store_failed" if private_s3 else "media_store_failed"
+            message = "私密媒体存储失败" if private_s3 else "媒体存储失败"
+            record_upload_audit(conn, d["user_id"], "put_failed", file_id=d["id"], upload_id=upload_id, status="failed", reason=reason)
+            raise APIError(message, 502, reason) from exc
+        finally:
+            if temp_name:
+                try:
+                    Path(temp_name).unlink(missing_ok=True)
+                except OSError:
+                    pass
+        metadata = json.loads(d.get("metadata") or "{}")
+        if encryption:
+            metadata["source"] = "s3-encrypted"
+            metadata["encryption"] = encryption
+            metadata["encrypted_at"] = now_iso()
         conn.execute(
-            "UPDATE uploaded_files SET status = 'uploaded', checksum = ?, etag = ?, updated_at = ? WHERE id = ?",
-            (hashlib.sha256(raw).hexdigest(), etag, now_iso(), d["id"]),
+            "UPDATE uploaded_files SET status = 'uploaded', checksum = ?, etag = ?, metadata = ?, updated_at = ? WHERE id = ?",
+            (checksum, etag, json.dumps(metadata, ensure_ascii=False, sort_keys=True), now_iso(), d["id"]),
         )
-        record_upload_audit(conn, d["user_id"], "put", file_id=d["id"], upload_id=upload_id, status="uploaded", metadata={"bytes": length})
+        record_upload_audit(
+            conn,
+            d["user_id"],
+            "put",
+            file_id=d["id"],
+            upload_id=upload_id,
+            status="uploaded",
+            metadata={"bytes": length, "encrypted": bool(encryption)},
+        )
         self.send_empty(200, {"ETag": etag})
 
     def api_upload_complete(self, conn: sqlite3.Connection) -> None:
@@ -23046,16 +22790,38 @@ class Handler(BaseHTTPRequestHandler):
             content_length = int(head.get("ContentLength") or 0)
             if content_length <= 0:
                 raise APIError("S3 文件为空", 400, "s3_object_empty")
-            if content_length > int(d["file_size"] or 0):
+            if content_length != int(d["file_size"] or 0):
                 raise APIError("S3 文件大小与签名不匹配", 400, "s3_size_mismatch")
+            if not upload_is_private(str(d.get("purpose") or "")):
+                try:
+                    validate_upload_magic(_s3_read_prefix(d["object_key"]), d["content_type"])
+                except APIError as exc:
+                    _s3_delete_object(d["object_key"])
+                    conn.execute(
+                        "UPDATE uploaded_files SET status = 'failed', updated_at = ? WHERE id = ?",
+                        (now_iso(), d["id"]),
+                    )
+                    record_upload_audit(
+                        conn,
+                        user["id"],
+                        "complete_failed",
+                        file_id=d["id"],
+                        upload_id=upload_id,
+                        status="failed",
+                        reason=exc.code,
+                        metadata={"objectKey": d["object_key"]},
+                    )
+                    raise
         elif not local_upload_path(d["object_key"]).exists():
             raise APIError("文件尚未上传完成", 400, "upload_not_found")
         width = max(0, int(data.get("width") or 0))
         height = max(0, int(data.get("height") or 0))
-        duration = max(0.0, float(data.get("duration") or 0))
+        duration = max(0.0, float(data.get("duration") or data.get("durationSeconds") or data.get("duration_seconds") or 0))
         etag = str(data.get("etag") or head.get("ETag") or d.get("etag") or "").strip().strip('"')
         metadata = json.loads(d.get("metadata") or "{}")
         metadata["thumbnail_url"] = metadata.get("thumbnail_url") or upload_thumbnail_url(d["object_key"], d["content_type"], d["purpose"])
+        if thumbnail_eligible({**d, "status": "ready"}):
+            metadata["thumbnail_status"] = "queued"
         metadata["completed_at"] = now_iso()
         if head:
             metadata["s3_head_checked_at"] = metadata["completed_at"]
@@ -23091,6 +22857,8 @@ class Handler(BaseHTTPRequestHandler):
         if fresh["purpose"] in {"avatar", "profile_cover"}:
             field = "avatar_url" if fresh["purpose"] == "avatar" else "cover_url"
             conn.execute(f"UPDATE users SET {field} = ?, updated_at = ? WHERE id = ?", (media["url"], now_iso(), user["id"]))
+        if thumbnail_eligible(fresh):
+            enqueue_thumbnail(fresh["id"])
         record_upload_audit(conn, user["id"], "complete", file_id=fresh["id"], upload_id=upload_id, status="ready")
         self.send_json({"ok": True, "data": {"file": serialize_uploaded_file(fresh), "media": media}, "file": serialize_uploaded_file(fresh), "media": media})
 
@@ -23107,6 +22875,30 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         d = self._uploaded_file_for_user(conn, file_id, user)
         self.send_json({"ok": True, "data": {"file": serialize_uploaded_file(d)}, "file": serialize_uploaded_file(d)})
+
+    def api_upload_private_view_url(self, conn: sqlite3.Connection, file_id: str) -> None:
+        user = self.require_user(conn)
+        d = self._uploaded_file_for_user(conn, file_id, user)
+        if not upload_is_private(str(d.get("purpose") or "")):
+            raise APIError("公开文件无需私密查看链接", 400, "private_upload_required")
+        if str(d.get("status") or "") not in {"uploaded", "processing", "ready"}:
+            raise APIError("文件尚未可用", 409, "file_not_ready")
+        expires = S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS
+        url = self._private_download_url(file_id, expires)
+        record_upload_audit(
+            conn,
+            user["id"],
+            "private_view_url",
+            file_id=file_id,
+            status="ready",
+            metadata={"purpose": d.get("purpose") or "", "expires": expires},
+        )
+        self.send_json({
+            "ok": True,
+            "data": {"url": url, "expiresIn": expires},
+            "url": url,
+            "expiresIn": expires,
+        })
 
     def api_upload_delete(self, conn: sqlite3.Connection, file_id: str) -> None:
         user = self.require_user(conn)
@@ -23339,14 +23131,7 @@ class Handler(BaseHTTPRequestHandler):
         if str(upload.get("purpose") or "") not in {"guide_product_file", "member_resource_file"}:
             raise APIError("资料文件类型不正确", 400, "invalid_guide_file")
         expires = S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS
-        if upload.get("bucket") != "local-dev":
-            url = _s3_presigned_url("GET", upload["object_key"], expires=expires)
-        else:
-            exp = int(time.time()) + expires
-            token = _signed_local_download_token(upload["id"], exp)
-            base = self._request_base_url()
-            path = f"/api/uploads/download/{upload['id']}?token={token}"
-            url = f"{base}{path}" if base else path
+        url = self._private_download_url(upload["id"], expires)
         record_upload_audit(conn, user["id"], "download_url", file_id=upload["id"], status="ready", metadata={"productId": row["id"], "expires": expires})
         self.send_json({"ok": True, "downloadUrl": url, "expiresIn": expires, "file": serialize_uploaded_file(upload)})
 
@@ -23387,14 +23172,7 @@ class Handler(BaseHTTPRequestHandler):
         if str(upload.get("purpose") or "") != "member_resource_file":
             raise APIError("会员资料文件类型不正确", 400, "invalid_member_resource_file")
         expires = S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS
-        if upload.get("bucket") != "local-dev":
-            url = _s3_presigned_url("GET", upload["object_key"], expires=expires)
-        else:
-            exp = int(time.time()) + expires
-            token = _signed_local_download_token(upload["id"], exp)
-            base = self._request_base_url()
-            path = f"/api/uploads/download/{upload['id']}?token={token}"
-            url = f"{base}{path}" if base else path
+        url = self._private_download_url(upload["id"], expires)
         record_upload_audit(conn, user["id"], "member_download_url", file_id=upload["id"], status="ready", metadata={"resourceId": row["id"], "expires": expires})
         self.send_json({"ok": True, "downloadUrl": url, "expiresIn": expires, "file": serialize_uploaded_file(upload)})
 
@@ -23408,19 +23186,74 @@ class Handler(BaseHTTPRequestHandler):
         if not row:
             raise APIError("文件不存在", 404, "file_not_found")
         d = dict(row)
-        target = local_upload_path(d["object_key"])
-        if not target.exists() or target.is_dir():
-            raise APIError("文件不存在", 404, "file_not_found")
-        data = target.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", d["content_type"] or "application/octet-stream")
-        self.send_header("Content-Length", str(len(data)))
-        self.send_header("Cache-Control", "private, max-age=60")
-        self.send_header("Content-Disposition", f'attachment; filename="{Path(d["object_key"]).name}"')
-        self._set_cors()
-        self._set_security_headers()
-        self.end_headers()
-        self.wfile.write(data)
+        if not upload_is_private(str(d.get("purpose") or "")):
+            raise APIError("该下载地址仅用于私密媒体", 403, "private_download_required")
+        download_path: Path | None = None
+        remove_after = False
+        try:
+            if d.get("bucket") == "local-dev":
+                download_path = local_upload_path(d["object_key"])
+                if not download_path.exists() or download_path.is_dir():
+                    raise APIError("文件不存在", 404, "file_not_found")
+            else:
+                try:
+                    metadata = json.loads(d.get("metadata") or "{}")
+                except (TypeError, json.JSONDecodeError):
+                    metadata = {}
+                decryptor = private_media_decryptor(metadata)
+                from cryptography.exceptions import InvalidTag
+                with _DBLockReleased():
+                    try:
+                        response = _s3_client().get_object(Bucket=AWS_S3_BUCKET, Key=d["object_key"])
+                    except ClientError as exc:
+                        code = str((getattr(exc, "response", {}) or {}).get("Error", {}).get("Code") or "")
+                        if code in {"404", "NoSuchKey", "NotFound"}:
+                            raise APIError("文件不存在", 404, "file_not_found") from exc
+                        raise APIError("私密媒体读取失败", 502, "private_media_read_failed") from exc
+                    except (BotoCoreError, NoCredentialsError) as exc:
+                        raise APIError("私密媒体读取失败", 502, "private_media_read_failed") from exc
+                    body = response["Body"]
+                    with tempfile.NamedTemporaryFile(prefix="machi-private-download-", delete=False) as plain_file:
+                        download_path = Path(plain_file.name)
+                        remove_after = True
+                        try:
+                            while True:
+                                chunk = body.read(PRIVATE_MEDIA_CHUNK_SIZE)
+                                if not chunk:
+                                    break
+                                plain_file.write(decryptor.update(chunk))
+                            plain_file.write(decryptor.finalize())
+                        except InvalidTag as exc:
+                            raise APIError("私密媒体完整性校验失败", 502, "private_media_integrity_failed") from exc
+                        finally:
+                            body.close()
+                expected_size = int(d.get("file_size") or 0)
+                actual_size = download_path.stat().st_size
+                if expected_size and actual_size != expected_size:
+                    raise APIError("私密媒体大小校验失败", 502, "private_media_size_mismatch")
+
+            size = download_path.stat().st_size
+            filename = Path(d["object_key"]).name.replace('"', "")
+            self.send_response(200)
+            self.send_header("Content-Type", d["content_type"] or "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "private, no-store")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self._set_cors()
+            self._set_security_headers()
+            self.end_headers()
+            with download_path.open("rb") as source:
+                while True:
+                    chunk = source.read(PRIVATE_MEDIA_CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+        finally:
+            if remove_after and download_path is not None:
+                try:
+                    download_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
 
     def api_upload_media(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -23855,33 +23688,36 @@ class Handler(BaseHTTPRequestHandler):
         code = (query.get("code") or "").strip()
         if not code:
             raise APIError("code required", 400, "missing_param")
-        country_code, province_code, city_code = _parse_region_code(code)
-        country = _country_lookup(country_code) or {}
-        province_name = ""
-        if province_code:
-            for p in REGION_PROVINCES.get(country_code, []):
-                if p["code"] == province_code:
-                    province_name = p["name"]
-                    break
-        if country.get("has_provinces") and not province_name:
+        payload = _region_payload_for_code(code)
+        if not payload:
             raise APIError("region not found", 404, "region_not_found")
-        city_name = ""
-        for c in _cities_for_parent(country_code, province_code):
-            if c["code"] == city_code:
-                city_name = c["name"]
-                break
-        if not city_name:
-            raise APIError("region not found", 404, "region_not_found")
-        self.send_json({
-            "region_code":   code,
-            "country_code":  country_code,
-            "country_name":  country.get("name", ""),
-            "country_emoji": country.get("emoji", ""),
-            "province_code": province_code,
-            "province_name": province_name,
-            "city_code":     city_code,
-            "city_name":     city_name,
-        })
+        self.send_json(payload)
+
+    def api_regions_detect(self, conn: sqlite3.Connection) -> None:
+        """Best-effort coarse region detection for posting defaults.
+
+        We return only Machi's normalized region object and a source marker;
+        raw IP is never returned to the client.
+        """
+        source = "fallback"
+        viewer = self.current_session(conn)
+        if viewer:
+            row = conn.execute("SELECT current_region_code, country, province, city FROM users WHERE id = ?", (viewer["user_id"],)).fetchone()
+            if row:
+                code = (row["current_region_code"] or "").strip().lower() or _resolve_region_code(row["country"], row["province"], row["city"])
+                payload = _region_payload_for_code(code)
+                if payload:
+                    payload.update({"source": "account", "geo_state": ""})
+                    return self.send_json(payload)
+        geo = resolve_geo(self._client_ip())
+        code = _detect_region_code_from_geo(geo)
+        payload = _region_payload_for_code(code) or _region_payload_for_code("jp.tokyo.tokyo")
+        if not payload:
+            raise APIError("region detect failed", 500, "region_detect_failed")
+        if geo.get("state") == "ok":
+            source = "ip"
+        payload.update({"source": source, "geo_state": geo.get("state", "")})
+        self.send_json(payload)
 
     def api_events_token(self, conn: sqlite3.Connection) -> None:
         """Exchange the long-lived Bearer for a short-lived SSE token.
@@ -24053,6 +23889,8 @@ class Handler(BaseHTTPRequestHandler):
             if key in data:
                 updates[key] = str(data.get(key) or "").strip()
         settings = _upsert_site_settings(conn, updates)
+        if any(key.startswith("explore_") for key in updates):
+            invalidate_public_ranking_caches()
         self.send_json({"settings": settings})
 
     def api_admin_visitors(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -24182,7 +24020,7 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute(f"UPDATE users SET {sets} WHERE id = ?", values)
             ACCESS_LOG.info("admin %s updated user %s fields=%s", admin["handle"], target["handle"], [f for f, _ in updates])
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
-        self.send_json({"user": serialize_user(fresh)})
+        self.send_json({"user": serialize_user_with_counts(conn, fresh)})
 
     def api_admin_delete_user(self, conn: sqlite3.Connection, user_id: str) -> None:
         admin = self.require_admin(conn)
@@ -24196,6 +24034,19 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         ACCESS_LOG.warning("admin %s suspended user %s", admin["handle"], target["handle"])
         self.send_json({"ok": True})
+
+    def api_admin_restore_user(self, conn: sqlite3.Connection, user_id: str) -> None:
+        admin = self.require_admin(conn)
+        target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target:
+            raise APIError("用户不存在", 404, "user_not_found")
+        conn.execute(
+            "UPDATE users SET deleted_at = NULL, updated_at = ? WHERE id = ?",
+            (now_iso(), user_id),
+        )
+        fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+        ACCESS_LOG.warning("admin %s restored user %s", admin["handle"], target["handle"])
+        self.send_json({"user": serialize_user_with_counts(conn, fresh)})
 
     def api_admin_posts(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
@@ -24280,8 +24131,7 @@ class Handler(BaseHTTPRequestHandler):
                     metadata={"content_type": row["content_type"] or "dynamic"},
                     reviewed=True,
                 )
-            _cache_invalidate("feed:hot")
-            _cache_invalidate("trending:")
+            invalidate_public_ranking_caches()
             ACCESS_LOG.info("admin %s updated post %s fields=%s", admin["handle"], post_id, [f for f, _ in updates])
         fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
         post = fetch_posts_with_extras(conn, [fresh], None)[0]
@@ -24305,8 +24155,7 @@ class Handler(BaseHTTPRequestHandler):
             reason="管理员删除内容",
             reviewed=True,
         )
-        _cache_invalidate("feed:hot")
-        _cache_invalidate("trending:")
+        invalidate_public_ranking_caches()
         ACCESS_LOG.warning("admin %s removed post %s", admin["handle"], post_id)
         self.send_json({"ok": True})
 
@@ -24489,9 +24338,24 @@ class Handler(BaseHTTPRequestHandler):
             HUB.unsubscribe(user_id, q)
 
 
+class MachiHTTPServer(ThreadingHTTPServer):
+    # socketserver.TCPServer defaults to a backlog of 5. That turns a normal
+    # burst of parallel app reads into multi-second connection stalls before
+    # the request handler even starts.
+    request_queue_size = HTTP_REQUEST_QUEUE_SIZE
+    daemon_threads = True
+    block_on_close = False
+
+
 def run() -> None:
+    if PRODUCTION and AWS_S3_BUCKET:
+        try:
+            private_media_encryptor()
+        except APIError as exc:
+            raise SystemExit(f"Refusing to start without private media encryption: {exc}") from exc
     init_db()
     start_visitor_writer()
+    start_thumbnail_worker()
     # The crawler scheduler is a singleton background job (time-based, not
     # per-request). When running multiple backend processes behind nginx for
     # horizontal scaling, only ONE instance should run it — set
@@ -24504,9 +24368,14 @@ def run() -> None:
         ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — crawler scheduler disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")
     port = int(_env("KAIX_PORT", "8787"))
-    server = ThreadingHTTPServer((host, port), Handler)
-    server.daemon_threads = True
-    ACCESS_LOG.info("Machi backend starting on http://%s:%s (env=%s)", host, port, "production" if PRODUCTION else "development")
+    server = MachiHTTPServer((host, port), Handler)
+    ACCESS_LOG.info(
+        "Machi backend starting on http://%s:%s (env=%s, backlog=%s)",
+        host,
+        port,
+        "production" if PRODUCTION else "development",
+        HTTP_REQUEST_QUEUE_SIZE,
+    )
 
     import signal
     def _shutdown(signum, _frame):  # noqa: ANN001

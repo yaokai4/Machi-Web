@@ -13,8 +13,8 @@
     "doctor": "node scripts/doctor.mjs",
     "lint": "eslint . --max-warnings=0",
     "test:home:ssr": "node scripts/check-home-ssr.mjs",
-    "type-check": "tsc --noEmit --incremental false",
-    "typecheck": "tsc --noEmit --incremental false",
+    "type-check": "rm -rf .next/types tsconfig.tsbuildinfo && tsc --noEmit --incremental false",
+    "typecheck": "npm run type-check",
     "seed:japan-news-demo": "python3 ../scripts/seed_japan_news_demo.py",
     "seed:japan-news-sources": "python3 ../scripts/seed_japan_news_sources.py"
   },

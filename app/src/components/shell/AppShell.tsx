@@ -5,18 +5,19 @@ import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import clsx from "clsx";
+import { ConfirmDialog } from "@/components/design/Dialog";
 import {
   Bell,
   BadgeCheck,
   Bookmark,
   Compass,
   Home,
+  LayoutDashboard,
   LogIn,
   LogOut,
   Mail,
   MoreHorizontal,
   PenSquare,
-  Search,
   Settings,
   ShieldCheck,
   Sun,
@@ -58,13 +59,13 @@ const NAV_ITEMS = [
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
   { href: "/guide", labelKey: "nav_guide" as I18nKey, icon: GraduationCap, key: "guide", badgeKey: undefined },
   { href: "/membership", labelKey: "mem_title" as I18nKey, icon: BadgeCheck, key: "membership", badgeKey: undefined },
-  { href: "/search", labelKey: "nav_search" as I18nKey, icon: Search, key: "search", badgeKey: undefined },
+  { href: "/my/features", labelKey: "nav_workbench" as I18nKey, icon: LayoutDashboard, key: "features", badgeKey: undefined },
   { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
   { href: "/messages", labelKey: "nav_messages" as I18nKey, icon: Mail, key: "messages", badgeKey: "messages" as const },
   { href: "/settings", labelKey: "nav_settings" as I18nKey, icon: Settings, key: "settings", badgeKey: undefined },
 ];
 
-const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings"]);
+const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings", "features"]);
 
 function currentPathForRedirect(pathname: string | null) {
   return pathname || "/home";
@@ -179,12 +180,20 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
     enabled: !!user,
     refetchInterval: 60000,
   });
+  const siteSettings = useQuery({
+    queryKey: ["site-settings"],
+    queryFn: () => api.siteSettings(),
+    staleTime: 300_000,
+  });
   const badges = {
     notifications: notif.data?.unread_count ?? 0,
     messages: (conv.data || []).reduce((sum, c) => sum + (c.unread_count || 0), 0),
   };
+  const brandTitle = siteSettings.data?.site_title || "Machi";
+  const logoUrl = siteSettings.data?.logo_url || "";
   const listingPublishHref = cityListingPublishHref(pathname) || (isListingWorkspacePath(pathname) ? "/listings/create" : "");
 
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const onLogout = async () => {
     try { await api.logout(); } catch { /* ignore */ }
     setSessionUser(null);
@@ -196,10 +205,15 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
   return (
     <aside className="hidden md:flex flex-col gap-1 w-16 lg:w-64 shrink-0 py-3 px-2 lg:px-3 sticky top-0 self-start h-dvh">
       <Link href="/home" className="px-3 py-3 inline-flex items-center gap-2 text-kx-text">
-        <span className="w-9 h-9 rounded-kx-md bg-kx-accent text-white inline-flex items-center justify-center font-bold text-lg">
-          M
+        <span className="w-9 h-9 overflow-hidden rounded-kx-md bg-kx-accent text-white inline-flex items-center justify-center font-bold text-lg">
+          {logoUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={logoUrl} alt="" className="h-full w-full object-cover" />
+          ) : (
+            "M"
+          )}
         </span>
-        <BrandText className="hidden text-base font-black lg:inline">Machi</BrandText>
+        <BrandText className="hidden text-base font-black lg:inline">{brandTitle}</BrandText>
       </Link>
       <nav className="flex flex-col gap-0.5 mt-1">
         {NAV_ITEMS.map((item) => {
@@ -304,7 +318,7 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
               </div>
             </Link>
             <button
-              onClick={onLogout}
+              onClick={() => setLogoutConfirmOpen(true)}
               className="hidden h-9 w-9 shrink-0 items-center justify-center rounded-full text-kx-muted transition hover:bg-kx-soft hover:text-kx-text lg:inline-flex"
               aria-label={t("logout")}
               title={t("logout")}
@@ -331,6 +345,15 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
           </div>
         )}
       </div>
+      <ConfirmDialog
+        open={logoutConfirmOpen}
+        title="确认退出登录？"
+        description="退出后需要重新输入用户名和密码登录。"
+        confirmLabel="退出"
+        destructive
+        onConfirm={onLogout}
+        onCancel={() => setLogoutConfirmOpen(false)}
+      />
     </aside>
   );
 }
@@ -434,7 +457,7 @@ function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPa
   // post detail with comment box, compose flows. Hiding the TabBar
   // there avoids covering the page's own input bar.
   const hideOn = ["/messages/", "/admin"];
-  const hidden = hideOn.some((p) => pathname?.startsWith(p));
+  const hidden = hideOn.some((p) => pathname?.startsWith(p)) || isListingChannelPath(pathname) || isListingWorkspacePath(pathname);
   const compose = useCompose((s) => s.open);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const user = useSession((s) => s.user);
@@ -616,6 +639,11 @@ function cityListingPublishHref(pathname?: string | null) {
   return `/listings/create?type=${type}&city=${city}`;
 }
 
+function isListingChannelPath(pathname?: string | null) {
+  if (!pathname) return false;
+  return /^\/cities\/[^/]+\/(marketplace|rentals|jobs|services|deals|discounts)\/?$/.test(pathname);
+}
+
 function isListingWorkspacePath(pathname?: string | null) {
   if (!pathname) return false;
   return (
@@ -679,6 +707,7 @@ function MobileMoreSheet({
     };
   }, [open, onClose]);
 
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const onLogout = async () => {
     try { await api.logout(); } catch { /* ignore */ }
     setSessionUser(null);
@@ -698,12 +727,12 @@ function MobileMoreSheet({
         { href: "/bookmarks", label: t("action_bookmark"), icon: Bookmark },
         { href: "/notifications", label: t("nav_notifications"), icon: Bell, badge: unreadNotif },
         { href: "/settings", label: t("nav_settings"), icon: Settings },
-        { href: "/search", label: t("nav_search"), icon: Search },
+        { href: "/my/features", label: t("nav_workbench"), icon: LayoutDashboard },
       ]
     : [
         loginItem,
         registerItem,
-        { href: "/search", label: t("nav_search"), icon: Search },
+        { label: t("nav_workbench"), icon: LayoutDashboard, authKind: "generic" },
         { label: t("action_bookmark"), icon: Bookmark, authKind: "bookmark" },
         { label: t("nav_notifications"), icon: Bell, authKind: "generic" },
         { label: t("nav_settings"), icon: Settings, authKind: "generic" },
@@ -825,7 +854,7 @@ function MobileMoreSheet({
           {user ? (
             <button
               type="button"
-              onClick={onLogout}
+              onClick={() => setLogoutConfirmOpen(true)}
               className="w-full flex items-center gap-3 rounded-2xl px-3 py-3 text-[15px] font-semibold text-kx-danger hover:bg-kx-danger/10"
             >
               <span className="inline-flex w-9 h-9 items-center justify-center rounded-full bg-kx-danger/10 text-kx-danger">
@@ -836,6 +865,15 @@ function MobileMoreSheet({
           ) : null}
         </div>
       </section>
+      <ConfirmDialog
+        open={logoutConfirmOpen}
+        title="确认退出登录？"
+        description="退出后需要重新输入用户名和密码登录。"
+        confirmLabel="退出"
+        destructive
+        onConfirm={onLogout}
+        onCancel={() => setLogoutConfirmOpen(false)}
+      />
     </>
   );
 

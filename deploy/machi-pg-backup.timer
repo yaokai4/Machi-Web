@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Machi PostgreSQL backup at 03:00 JST
+
+[Timer]
+OnCalendar=*-*-* 18:00:00 UTC
+Persistent=true
+RandomizedDelaySec=300
+Unit=machi-pg-backup.service
+
+[Install]
+WantedBy=timers.target

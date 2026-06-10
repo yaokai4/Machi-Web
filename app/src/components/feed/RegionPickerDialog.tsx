@@ -6,7 +6,10 @@ import { ArrowLeft, ChevronRight, Search, X } from "lucide-react";
 import {
   REGION_COUNTRIES,
   citiesFor,
+  cityDisplayName,
+  countryDisplayName,
   provincesFor,
+  provinceDisplayName,
   regionDisplayName,
   resolveRegion,
   searchRegions,
@@ -35,7 +38,7 @@ export function RegionPickerDialog({
   const [country, setCountry] = useState<RegionCountry | null>(null);
   const [province, setProvince] = useState<RegionProvince | null>(null);
   const [mounted, setMounted] = useState(false);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const allowedCountry = allowsAnyCountry ? undefined : initialCountry?.toLowerCase();
 
   const availableCountries = useMemo(
@@ -97,7 +100,13 @@ export function RegionPickerDialog({
     if (country && !allowedCountry) setCountry(null);
   };
 
-  const title = province?.name || country?.name || (lockedCountry ? `${lockedCountry.name}地区` : t("region_picker_title"));
+  const title = province
+    ? provinceDisplayName(country?.code, province.code, province.name, locale)
+    : country
+      ? countryDisplayName(country, locale)
+      : lockedCountry
+        ? countryDisplayName(lockedCountry, locale)
+        : t("region_picker_title");
   const canGoBack = Boolean(province || (country && !allowedCountry));
 
   return createPortal(
@@ -151,9 +160,9 @@ export function RegionPickerDialog({
           </label>
 
           {query.trim() ? (
-            <SearchResultList matches={matches} onSelect={deliver} noMatchesLabel={t("region_no_matches")} />
+            <SearchResultList matches={matches} onSelect={deliver} noMatchesLabel={t("region_no_matches")} locale={locale} />
           ) : country ? (
-            <CountryDrilldown country={country} province={province} onProvince={setProvince} onSelect={deliver} />
+            <CountryDrilldown country={country} province={province} onProvince={setProvince} onSelect={deliver} locale={locale} />
           ) : (
             <RegionPickerLanding
               availableCountries={availableCountries}
@@ -167,6 +176,7 @@ export function RegionPickerDialog({
               onSelect={deliver}
               showCountryList={!allowedCountry}
               labels={{ switchCountry: t("region_switch_country"), switchLocal: t("region_switch_local") }}
+              locale={locale}
             />
           )}
         </div>
@@ -185,6 +195,7 @@ function RegionPickerLanding({
   onSelect,
   showCountryList,
   labels,
+  locale,
 }: {
   availableCountries: RegionCountry[];
   lockedCountry: RegionCountry | null;
@@ -194,6 +205,7 @@ function RegionPickerLanding({
   onSelect: (region: RegionInfo) => void;
   showCountryList: boolean;
   labels: { switchCountry: string; switchLocal: string };
+  locale: string;
 }) {
   const countryForCities = activeCountry ?? lockedCountry;
 
@@ -210,7 +222,7 @@ function RegionPickerLanding({
               className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
             >
               <span className="text-xl">{country.emoji}</span>
-              <span className="font-semibold">{country.name}</span>
+              <span className="font-semibold">{countryDisplayName(country, locale)}</span>
               <ChevronRight className="ml-auto h-4 w-4 text-kx-muted" />
             </button>
           ))}
@@ -224,6 +236,7 @@ function RegionPickerLanding({
             province={null}
             onProvince={(province) => onProvince(countryForCities, province)}
             onSelect={onSelect}
+            locale={locale}
           />
         </section>
       ) : null}
@@ -236,17 +249,19 @@ function CountryDrilldown({
   province,
   onProvince,
   onSelect,
+  locale,
 }: {
   country: RegionCountry;
   province: RegionProvince | null;
   onProvince: (province: RegionProvince) => void;
   onSelect: (region: RegionInfo) => void;
+  locale: string;
 }) {
   if (!country.has_provinces) {
-    return <CityList country={country} onSelect={onSelect} />;
+    return <CityList country={country} onSelect={onSelect} locale={locale} />;
   }
   if (province) {
-    return <CityList country={country} province={province} onSelect={onSelect} />;
+    return <CityList country={country} province={province} onSelect={onSelect} locale={locale} />;
   }
   const provinces = provincesFor(country.code);
   return (
@@ -258,7 +273,7 @@ function CountryDrilldown({
           onClick={() => onProvince(item)}
           className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
         >
-          <span className="font-semibold">{item.name}</span>
+          <span className="font-semibold">{provinceDisplayName(country.code, item.code, item.name, locale)}</span>
           <ChevronRight className="ml-auto h-4 w-4 text-kx-muted" />
         </button>
       ))}
@@ -270,10 +285,12 @@ function CityList({
   country,
   province,
   onSelect,
+  locale,
 }: {
   country: RegionCountry;
   province?: RegionProvince;
   onSelect: (region: RegionInfo) => void;
+  locale: string;
 }) {
   const cities = citiesFor(country.code, province?.code);
   return (
@@ -290,8 +307,8 @@ function CityList({
             className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
             disabled={!region}
           >
-            <span className="font-semibold">{city.name}</span>
-            <span className="ml-auto text-xs font-semibold text-kx-muted">{region ? regionDisplayName(region) : ""}</span>
+            <span className="font-semibold">{cityDisplayName(country.code, province?.code, city.code, city.name, locale)}</span>
+            <span className="ml-auto text-xs font-semibold text-kx-muted">{region ? regionDisplayName(region, locale) : ""}</span>
           </button>
         );
       })}
@@ -303,10 +320,12 @@ function SearchResultList({
   matches,
   onSelect,
   noMatchesLabel,
+  locale,
 }: {
   matches: RegionInfo[];
   onSelect: (region: RegionInfo) => void;
   noMatchesLabel: string;
+  locale: string;
 }) {
   if (!matches.length) {
     return <div className="py-12 text-center text-sm font-semibold text-kx-muted">{noMatchesLabel}</div>;
@@ -322,8 +341,8 @@ function SearchResultList({
         >
           <span className="text-xl">{region.country_emoji}</span>
           <span className="min-w-0 flex-1">
-            <span className="block truncate text-sm font-bold">{region.city_name}</span>
-            <span className="block truncate text-xs font-semibold text-kx-muted">{regionDisplayName(region)}</span>
+            <span className="block truncate text-sm font-bold">{cityDisplayName(region.country_code, region.province_code, region.city_code, region.city_name, locale)}</span>
+            <span className="block truncate text-xs font-semibold text-kx-muted">{regionDisplayName(region, locale)}</span>
           </span>
         </button>
       ))}

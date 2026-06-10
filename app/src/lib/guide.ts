@@ -470,7 +470,7 @@ async function greq<T>(method: string, path: string, body?: unknown): Promise<T>
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body),
-      credentials: "omit",
+      credentials: "same-origin",
       cache: "no-store",
       signal: controller?.signal,
     });

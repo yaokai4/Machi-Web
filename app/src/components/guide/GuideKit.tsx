@@ -225,6 +225,7 @@ export function ResourceEntryCard({ entry }: { entry: GuideResourceEntry }) {
 }
 
 export function ArticleCard({ article, compact = false }: { article: { slug: string; title: string; summary: string; tags: string[]; authorName: string; isFeatured?: boolean }; compact?: boolean }) {
+  const { t } = useI18n();
   return (
     <Link
       href={`/guide/articles/${article.slug}`}
@@ -234,7 +235,7 @@ export function ArticleCard({ article, compact = false }: { article: { slug: str
       ].join(" ")}
     >
       <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-kx-muted">
-        <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-kx-accent">指南</span>
+        <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-kx-accent">{t("nav_guide")}</span>
         <span className="truncate">{article.authorName}</span>
       </div>
       <h3 className={(compact ? "text-base " : "text-lg ") + "line-clamp-2 font-black leading-snug text-kx-text group-hover:text-kx-accent"}>

@@ -74,7 +74,8 @@ autocannon -c 100 -d 10 https://machicity.com/api/health
 ```
 
 合格判读：`Non-2xx` ≈ 0；`/api/guide/home` p99 < ~300ms（命中缓存）；首页 p99 < ~2.5s；
-全程无 502/504。若 429 偏多，是 nginx 限流（api 10r/s、auth 2r/s）在保护你——正常。
+全程无 502/503/504。若 429 偏多，是 nginx 限流（api 30r/s、auth 2r/s）在保护你——正常；
+后端容量测试应直接请求 `http://127.0.0.1:8787`，避免把边缘限流误判成应用故障。
 
 ### 2.2 k6（更接近真实用户路径）
 

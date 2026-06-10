@@ -26,11 +26,15 @@ import {
   type ExploreChannelSpec,
 } from "@/components/feed/DiscoverShortcuts";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { useI18n, type Locale } from "@/lib/i18n";
+import { getChannelTitle } from "@/config/channels";
 import {
+  countryName as localizedCountryName,
   popularRegions as allPopularRegions,
   regionAccountPatch,
   regionFromUser,
   regionHeaderLabel,
+  regionShortLabel,
   resolveRegion,
   type RegionInfo,
 } from "@/lib/regions";
@@ -53,6 +57,8 @@ function ExploreChannelClient() {
   const setUser = useSession((s) => s.setUser);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
+  const { locale } = useI18n();
+  const copy = channelPageCopy(locale);
   const [regionPickerOpen, setRegionPickerOpen] = useState(false);
   const [searchDraft, setSearchDraft] = useState("");
 
@@ -62,8 +68,8 @@ function ExploreChannelClient() {
   const scope: ChannelScope = searchParams.get("scope") === "country" ? "country" : "local";
   const userRegion = regionFromUser(user);
   const currentRegion = regionFromParams(searchParams) || userRegion || resolveRegion("jp.tokyo.tokyo");
-  const cityName = currentRegion?.city_name || "本地";
-  const countryName = currentRegion?.country_name || "当前国家";
+  const cityName = currentRegion ? regionShortLabel(currentRegion, locale) : copy.local;
+  const countryName = currentRegion ? localizedCountryName(currentRegion.country_code, locale) : copy.currentCountry;
   const activePlace = scope === "country" ? countryName : cityName;
 
   const feed = useQuery({
@@ -108,7 +114,7 @@ function ExploreChannelClient() {
       const next = await api.updateRegionLanguage(regionAccountPatch(region));
       setUser(next);
       feed.refetch();
-      pushToast({ kind: "success", message: `已切换到 ${region.city_name}` });
+      pushToast({ kind: "success", message: copy.switched(regionShortLabel(region, locale)) });
     } catch (e) {
       if (isAuthRequiredError(e)) {
         openAuthPrompt("generic");
@@ -133,9 +139,9 @@ function ExploreChannelClient() {
       <AppShell requireAuth={false} right={null}>
         <main className="min-h-[70dvh] px-4 py-8">
           <section className="kx-discover-section mx-auto max-w-xl text-center">
-            <ErrorState title="频道不存在" subtitle="这个发现频道暂时不可用，可以回到发现页重新选择。" />
+            <ErrorState title={copy.missingTitle} subtitle={copy.missingSubtitle} />
             <Link href="/explore" className="kx-button-primary mx-auto mt-4 w-fit justify-center">
-              回到发现
+              {copy.backToExplore}
             </Link>
           </section>
         </main>
@@ -149,13 +155,13 @@ function ExploreChannelClient() {
         <div className="flex items-center gap-2">
           <Link
             href={exploreHref(currentRegion)}
-            aria-label="返回发现"
+            aria-label={copy.backToExplore}
             className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-kx-stroke/45 bg-kx-card/[0.92] text-kx-text shadow-[0_8px_24px_rgba(15,23,42,0.08)] transition hover:bg-kx-soft"
           >
             <ChevronLeft className="h-5 w-5" />
           </Link>
           {user ? (
-            <Link href="/me" aria-label="我的">
+            <Link href="/me" aria-label={copy.profileAria}>
               <Avatar user={user} size={40} />
             </Link>
           ) : (
@@ -167,16 +173,16 @@ function ExploreChannelClient() {
             type="button"
             onClick={() => setRegionPickerOpen(true)}
             className="ml-auto inline-flex h-10 min-w-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-card/[0.92] px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgba(37,99,235,0.75)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35"
-            title="切换地区"
+            title={copy.switchRegion}
           >
-            <span className="max-w-[7.5rem] truncate">{regionHeaderLabel(currentRegion)}</span>
+            <span className="max-w-[7.5rem] truncate">{regionHeaderLabel(currentRegion, locale)}</span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-kx-muted" />
           </button>
           {user ? (
             <Link
               href="/notifications"
               className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-kx-card/[0.92] text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60"
-              aria-label="通知"
+              aria-label={copy.notifications}
             >
               <Bell className="h-[18px] w-[18px] text-kx-text" />
             </Link>
@@ -185,7 +191,7 @@ function ExploreChannelClient() {
               type="button"
               onClick={() => openAuthPrompt("generic")}
               className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/55 bg-kx-card/[0.92] text-kx-text shadow-[0_14px_32px_-26px_rgba(17,22,34,0.65)] transition hover:border-kx-accent/30 hover:bg-kx-accentSoft/60"
-              aria-label="通知"
+              aria-label={copy.notifications}
             >
               <Bell className="h-[18px] w-[18px] text-kx-text" />
             </button>
@@ -197,13 +203,13 @@ function ExploreChannelClient() {
             <input
               value={searchDraft}
               onChange={(event) => setSearchDraft(event.target.value)}
-              placeholder={channelSearchPlaceholder(spec, activePlace)}
+              placeholder={channelSearchPlaceholder(spec, activePlace, locale)}
               className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold text-kx-text placeholder:text-kx-muted focus:outline-none"
             />
           </label>
           {searchDraft.trim() ? (
             <button type="submit" className="h-10 rounded-full bg-kx-accent px-4 text-sm font-black text-white shadow-[0_14px_30px_-22px_rgba(37,99,235,0.85)] transition hover:bg-blue-700">
-              搜索
+              {copy.search}
             </button>
           ) : null}
         </form>
@@ -217,6 +223,7 @@ function ExploreChannelClient() {
             countryName={countryName}
             scope={scope}
             onScopeChange={(nextScope) => updateUrl({ scope: nextScope })}
+            locale={locale}
           />
           <ChannelPostList
             posts={feed.data?.items || []}
@@ -224,13 +231,14 @@ function ExploreChannelClient() {
             error={feed.isError}
             onRetry={() => feed.refetch()}
             placeLabel={activePlace}
-            channelLabel={spec.title}
+            channelLabel={getChannelTitle(spec, locale)}
             scope={scope}
+            locale={locale}
           />
           <section className="kx-discover-section">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold text-kx-text">
               <Sparkles className="h-4 w-4 text-kx-accent" />
-              其他频道
+              {copy.otherChannels}
             </div>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
               {CORE_EXPLORE_CHANNELS.filter((item) => item.slug !== spec.slug).slice(0, 7).map((item) => (
@@ -239,7 +247,7 @@ function ExploreChannelClient() {
                   href={channelHref(item.slug, currentRegion, searchParams)}
                   className="rounded-kx-md border border-kx-stroke/45 bg-kx-card/80 px-3 py-3 text-sm font-semibold text-kx-subtle transition hover:-translate-y-px hover:border-kx-accent/35 hover:bg-kx-accentSoft/35 hover:text-kx-accent hover:shadow-[0_10px_28px_rgba(15,23,42,0.06)]"
                 >
-                  {item.title}
+                  {getChannelTitle(item, locale)}
                 </Link>
               ))}
             </div>
@@ -264,15 +272,18 @@ function ChannelHero({
   countryName,
   scope,
   onScopeChange,
+  locale,
 }: {
   spec: ExploreChannelSpec;
   cityName: string;
   countryName: string;
   scope: ChannelScope;
   onScopeChange: (scope: ChannelScope) => void;
+  locale: Locale;
 }) {
   const placeLabel = scope === "country" ? countryName : cityName;
-  const helper = channelHeroCopy(spec);
+  const helper = channelHeroCopy(spec, locale);
+  const channelTitle = getChannelTitle(spec, locale);
   return (
     <section className="kx-discover-panel">
       <div className="relative p-5">
@@ -282,7 +293,7 @@ function ChannelHero({
           </span>
           <div className="min-w-0 flex-1">
             <h2 className="text-2xl font-black tracking-tight text-kx-text">
-              {placeLabel}{spec.title}
+              {channelHeroTitle(placeLabel, channelTitle, locale)}
             </h2>
             <p className="mt-1 text-sm leading-6 text-kx-subtle">{helper}</p>
           </div>
@@ -318,6 +329,7 @@ function ChannelPostList({
   placeLabel,
   channelLabel,
   scope,
+  locale,
 }: {
   posts: Awaited<ReturnType<typeof api.feed>>["items"];
   loading?: boolean;
@@ -326,20 +338,22 @@ function ChannelPostList({
   placeLabel: string;
   channelLabel: string;
   scope: ChannelScope;
+  locale: Locale;
 }) {
+  const copy = channelPageCopy(locale);
   return (
     <section className="kx-discover-section">
       <div className="mb-3 flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-black text-kx-text">最新内容</h2>
+          <h2 className="text-lg font-black text-kx-text">{copy.latest}</h2>
           <p className="mt-1 text-sm text-kx-subtle">
-            {scope === "country" ? `${placeLabel}范围内的${channelLabel}内容` : `${placeLabel}${channelLabel}相关内容`}
+            {scope === "country" ? copy.countryScopeSubtitle(placeLabel, channelLabel) : copy.localScopeSubtitle(placeLabel, channelLabel)}
           </p>
         </div>
         {error ? (
           <button type="button" onClick={onRetry} className="kx-button-ghost h-9 text-xs">
             <RefreshCw className="h-3.5 w-3.5" />
-            重新加载
+            {copy.reload}
           </button>
         ) : null}
       </div>
@@ -351,8 +365,8 @@ function ChannelPostList({
         </div>
       ) : error ? (
         <div className="kx-discover-state">
-          <p className="text-sm font-semibold text-kx-text">内容暂时无法加载</p>
-          <p className="mt-1 text-sm text-kx-subtle">请稍后再试，或切换城市和范围。</p>
+          <p className="text-sm font-semibold text-kx-text">{copy.contentErrorTitle}</p>
+          <p className="mt-1 text-sm text-kx-subtle">{copy.contentErrorSubtitle}</p>
         </div>
       ) : posts.length ? (
         <div className="space-y-3">
@@ -362,8 +376,8 @@ function ChannelPostList({
         </div>
       ) : (
         <div className="kx-discover-state">
-          <p className="text-sm font-semibold text-kx-text">这个频道暂时没有内容</p>
-          <p className="mt-1 text-sm text-kx-subtle">可以切换范围，或发布第一条相关内容。</p>
+          <p className="text-sm font-semibold text-kx-text">{copy.contentEmptyTitle}</p>
+          <p className="mt-1 text-sm text-kx-subtle">{copy.contentEmptySubtitle}</p>
         </div>
       )}
     </section>
@@ -423,47 +437,236 @@ function exploreHref(region?: RegionInfo) {
   return `/explore?${params.toString()}`;
 }
 
-function channelHeroCopy(spec: ExploreChannelSpec) {
+function channelHeroTitle(placeLabel: string, channelLabel: string, locale: Locale) {
+  if (locale === "en") return `${channelLabel} in ${placeLabel}`;
+  if (locale === "ja") return `${placeLabel}の${channelLabel}`;
+  return `${placeLabel}${channelLabel}`;
+}
+
+function channelHeroCopy(spec: ExploreChannelSpec, locale: Locale) {
   switch (spec.slug) {
     case "news":
-      return "本地快讯、交通提醒和城市生活信息会汇集在这里。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "本地快讯、交通提醒和城市生活信息会汇集在这里。",
+        "zh-Hant": "本地快訊、交通提醒和城市生活資訊會匯集在這裡。",
+        en: "Local news, transit alerts, and city life updates are gathered here.",
+        ja: "地域ニュース、交通情報、街の生活情報をここに集約します。",
+      });
     case "guide":
-      return "生活经验、路线选择和实用攻略，帮你更快熟悉这座城市。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "生活经验、路线选择和实用攻略，帮你更快熟悉这座城市。",
+        "zh-Hant": "生活經驗、路線選擇和實用攻略，幫你更快熟悉這座城市。",
+        en: "Practical guides, routes, and lived experience help you understand the city faster.",
+        ja: "生活経験、行き方、実用ガイドでこの街に早く慣れられます。",
+      });
     case "housing":
-      return "房源、合租、转租和区域经验，集中查看更省心。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "房源、合租、转租和区域经验，集中查看更省心。",
+        "zh-Hant": "房源、合租、轉租和區域經驗，集中查看更省心。",
+        en: "Listings, shared rooms, sublets, and area experience in one focused place.",
+        ja: "物件、シェア、転貸、エリア経験をまとめて確認できます。",
+      });
     case "jobs":
-      return "兼职、正社员、求职经验和岗位线索，按城市聚合。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "兼职、正社员、求职经验和岗位线索，按城市聚合。",
+        "zh-Hant": "兼職、正社員、求職經驗和職缺線索，按城市聚合。",
+        en: "Part-time work, full-time roles, job-search stories, and leads grouped by city.",
+        ja: "アルバイト、正社員、求職経験、求人情報を街ごとに整理します。",
+      });
     case "market":
-      return "闲置、求购和搬家处理信息，适合快速筛选本地交易。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "闲置、求购和搬家处理信息，适合快速筛选本地交易。",
+        "zh-Hant": "閒置、求購和搬家處理資訊，適合快速篩選本地交易。",
+        en: "Secondhand, wanted, and moving-sale posts for faster local trading.",
+        ja: "中古品、探し物、引っ越し処分を地域内で素早く探せます。",
+      });
     case "groups":
-      return "Food meetup、语言交换、本地小组和公开城市活动都在这里。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "Food meetup、语言交换、本地小组和公开城市活动都在这里。",
+        "zh-Hant": "Food meetup、語言交換、本地小組和公開城市活動都在這裡。",
+        en: "Food meetups, language exchange, local groups, and public city events live here.",
+        ja: "食事会、言語交換、地域グループ、公開イベントをここで見つけられます。",
+      });
     case "qa":
-      return "生活疑问、本地手续和实用求助，集中问也集中看。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "生活疑问、本地手续和实用求助，集中问也集中看。",
+        "zh-Hant": "生活疑問、本地手續和實用求助，集中問也集中看。",
+        en: "Everyday questions, paperwork help, and practical local requests in one place.",
+        ja: "生活の疑問、地域の手続き、実用的な相談をまとめて確認できます。",
+      });
     case "services":
-      return "搬家、签证、维修、翻译等本地服务信息。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "搬家、签证、维修、翻译等本地服务信息。",
+        "zh-Hant": "搬家、簽證、維修、翻譯等本地服務資訊。",
+        en: "Moving, visa support, repairs, translation, and other local services.",
+        ja: "引っ越し、ビザ、修理、通訳などの地域サービス情報です。",
+      });
     case "deals":
-      return "优惠、折扣和活动福利，适合顺手收藏。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "优惠、折扣和活动福利，适合顺手收藏。",
+        "zh-Hant": "優惠、折扣和活動福利，適合順手收藏。",
+        en: "Discounts, offers, and event perks worth saving for later.",
+        ja: "割引、キャンペーン、イベント特典を気軽に保存できます。",
+      });
     default:
-      return "相关内容会按城市和范围整理在这里。";
+      return localizedChannelLine(locale, {
+        "zh-Hans": "相关内容会按城市和范围整理在这里。",
+        "zh-Hant": "相關內容會按城市和範圍整理在這裡。",
+        en: "Related posts are organized here by city and scope.",
+        ja: "関連投稿を街と範囲ごとに整理します。",
+      });
   }
 }
 
-function channelSearchPlaceholder(spec: ExploreChannelSpec, placeLabel: string) {
+function channelSearchPlaceholder(spec: ExploreChannelSpec, placeLabel: string, locale: Locale) {
+  const title = getChannelTitle(spec, locale);
   switch (spec.slug) {
     case "news":
-      return `搜索${placeLabel}快讯、交通、提醒...`;
+      return localizedChannelLine(locale, {
+        "zh-Hans": `搜索${placeLabel}快讯、交通、提醒...`,
+        "zh-Hant": `搜尋${placeLabel}快訊、交通、提醒...`,
+        en: `Search news, transit, and alerts in ${placeLabel}...`,
+        ja: `${placeLabel}の速報、交通、注意情報を検索...`,
+      });
     case "housing":
-      return `搜索${placeLabel}租房、合租、房源、区域...`;
+      return localizedChannelLine(locale, {
+        "zh-Hans": `搜索${placeLabel}租房、合租、房源、区域...`,
+        "zh-Hant": `搜尋${placeLabel}租房、合租、房源、區域...`,
+        en: `Search housing, rooms, listings, and areas in ${placeLabel}...`,
+        ja: `${placeLabel}の住まい、シェア、物件、エリアを検索...`,
+      });
     case "jobs":
-      return `搜索${placeLabel}兼职、全职、招聘、内推...`;
+      return localizedChannelLine(locale, {
+        "zh-Hans": `搜索${placeLabel}兼职、全职、招聘、内推...`,
+        "zh-Hant": `搜尋${placeLabel}兼職、全職、招聘、內推...`,
+        en: `Search part-time, full-time, hiring, and referrals in ${placeLabel}...`,
+        ja: `${placeLabel}のアルバイト、正社員、求人、紹介を検索...`,
+      });
     case "market":
-      return `搜索${placeLabel}二手、闲置、求购...`;
+      return localizedChannelLine(locale, {
+        "zh-Hans": `搜索${placeLabel}二手、闲置、求购...`,
+        "zh-Hant": `搜尋${placeLabel}二手、閒置、求購...`,
+        en: `Search secondhand, unused items, and wanted posts in ${placeLabel}...`,
+        ja: `${placeLabel}の中古品、不要品、探し物を検索...`,
+      });
     case "services":
-      return `搜索${placeLabel}翻译、手续、接机、本地服务...`;
+      return localizedChannelLine(locale, {
+        "zh-Hans": `搜索${placeLabel}翻译、手续、接机、本地服务...`,
+        "zh-Hant": `搜尋${placeLabel}翻譯、手續、接機、本地服務...`,
+        en: `Search translation, paperwork, pickup, and services in ${placeLabel}...`,
+        ja: `${placeLabel}の通訳、手続き、送迎、サービスを検索...`,
+      });
     case "groups":
-      return `搜索${placeLabel}Food meetup、语言交换、本地小组...`;
+      return localizedChannelLine(locale, {
+        "zh-Hans": `搜索${placeLabel}Food meetup、语言交换、本地小组...`,
+        "zh-Hant": `搜尋${placeLabel}Food meetup、語言交換、本地小組...`,
+        en: `Search food meetups, language exchange, and local groups in ${placeLabel}...`,
+        ja: `${placeLabel}の食事会、言語交換、地域グループを検索...`,
+      });
     default:
-      return `搜索${placeLabel}${spec.title}...`;
+      return localizedChannelLine(locale, {
+        "zh-Hans": `搜索${placeLabel}${title}...`,
+        "zh-Hant": `搜尋${placeLabel}${title}...`,
+        en: `Search ${title} in ${placeLabel}...`,
+        ja: `${placeLabel}の${title}を検索...`,
+      });
+  }
+}
+
+function localizedChannelLine(locale: Locale, copy: Record<Locale, string>) {
+  return copy[locale] || copy["zh-Hans"];
+}
+
+function channelPageCopy(locale: Locale) {
+  switch (locale) {
+    case "en":
+      return {
+        local: "Local",
+        currentCountry: "Current Country",
+        switched: (region: string) => `Switched to ${region}`,
+        missingTitle: "Channel not found",
+        missingSubtitle: "This discover channel is not available right now. Go back to Discover and choose another one.",
+        backToExplore: "Back to Discover",
+        profileAria: "Profile",
+        switchRegion: "Switch region",
+        notifications: "Notifications",
+        search: "Search",
+        latest: "Latest",
+        countryScopeSubtitle: (place: string, channel: string) => `${channel} posts across ${place}`,
+        localScopeSubtitle: (place: string, channel: string) => `${channel} posts related to ${place}`,
+        reload: "Reload",
+        contentErrorTitle: "Content cannot load right now",
+        contentErrorSubtitle: "Please try again later, or switch city and scope.",
+        contentEmptyTitle: "No content in this channel yet",
+        contentEmptySubtitle: "Switch the scope or publish the first related post.",
+        otherChannels: "Other Channels",
+      };
+    case "ja":
+      return {
+        local: "ローカル",
+        currentCountry: "現在の国",
+        switched: (region: string) => `${region}に切り替えました`,
+        missingTitle: "チャンネルが見つかりません",
+        missingSubtitle: "この発見チャンネルは現在利用できません。発見ページに戻って選び直してください。",
+        backToExplore: "発見に戻る",
+        profileAria: "マイページ",
+        switchRegion: "地域を切り替え",
+        notifications: "通知",
+        search: "検索",
+        latest: "最新",
+        countryScopeSubtitle: (place: string, channel: string) => `${place}全体の${channel}投稿`,
+        localScopeSubtitle: (place: string, channel: string) => `${place}に関連する${channel}投稿`,
+        reload: "再読み込み",
+        contentErrorTitle: "コンテンツを読み込めません",
+        contentErrorSubtitle: "時間を置いて再試行するか、街と範囲を切り替えてください。",
+        contentEmptyTitle: "このチャンネルにはまだ投稿がありません",
+        contentEmptySubtitle: "範囲を切り替えるか、最初の関連投稿を公開できます。",
+        otherChannels: "他のチャンネル",
+      };
+    case "zh-Hant":
+      return {
+        local: "本地",
+        currentCountry: "目前國家",
+        switched: (region: string) => `已切換到 ${region}`,
+        missingTitle: "頻道不存在",
+        missingSubtitle: "這個發現頻道暫時不可用，可以回到發現頁重新選擇。",
+        backToExplore: "回到發現",
+        profileAria: "我的",
+        switchRegion: "切換地區",
+        notifications: "通知",
+        search: "搜尋",
+        latest: "最新內容",
+        countryScopeSubtitle: (place: string, channel: string) => `${place}範圍內的${channel}內容`,
+        localScopeSubtitle: (place: string, channel: string) => `${place}${channel}相關內容`,
+        reload: "重新載入",
+        contentErrorTitle: "內容暫時無法載入",
+        contentErrorSubtitle: "請稍後再試，或切換城市和範圍。",
+        contentEmptyTitle: "這個頻道暫時沒有內容",
+        contentEmptySubtitle: "可以切換範圍，或發布第一條相關內容。",
+        otherChannels: "其他頻道",
+      };
+    default:
+      return {
+        local: "本地",
+        currentCountry: "当前国家",
+        switched: (region: string) => `已切换到 ${region}`,
+        missingTitle: "频道不存在",
+        missingSubtitle: "这个发现频道暂时不可用，可以回到发现页重新选择。",
+        backToExplore: "回到发现",
+        profileAria: "我的",
+        switchRegion: "切换地区",
+        notifications: "通知",
+        search: "搜索",
+        latest: "最新内容",
+        countryScopeSubtitle: (place: string, channel: string) => `${place}范围内的${channel}内容`,
+        localScopeSubtitle: (place: string, channel: string) => `${place}${channel}相关内容`,
+        reload: "重新加载",
+        contentErrorTitle: "内容暂时无法加载",
+        contentErrorSubtitle: "请稍后再试，或切换城市和范围。",
+        contentEmptyTitle: "这个频道暂时没有内容",
+        contentEmptySubtitle: "可以切换范围，或发布第一条相关内容。",
+        otherChannels: "其他频道",
+      };
   }
 }
 

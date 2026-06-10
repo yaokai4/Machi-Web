@@ -1,0 +1,134 @@
+name: Web and API CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-api-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: machi_ci
+          POSTGRES_USER: machi
+          POSTGRES_PASSWORD: machi_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U machi -d machi_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Run backend regression tests
+        run: |
+          set -euo pipefail
+          python scripts/test_auth_cookie.py
+          python scripts/test_private_media_encryption.py
+          python scripts/test_error_envelope.py
+          python scripts/test_idempotency.py
+          python scripts/test_listing_media_security.py
+          python scripts/test_listing_update_moderation.py
+          python scripts/test_anonymous_post_privacy.py
+          python scripts/test_pg_xlate.py
+          python scripts/test_seed_bot.py
+
+      - name: Verify SQLite to PostgreSQL migration and runtime
+        env:
+          PG_DSN: host=127.0.0.1 port=5432 dbname=machi_ci user=machi password=machi_ci
+        run: |
+          set -euo pipefail
+          rm -f /tmp/machi-ci.db
+          KAIX_DB_PATH=/tmp/machi-ci.db KAIX_ENABLE_SCHEDULERS=0 \
+            python -c "import server; server.init_db()"
+          python scripts/migrate_sqlite_to_postgres.py \
+            --sqlite /tmp/machi-ci.db \
+            --pg "$PG_DSN"
+          KAIX_PG_DSN="$PG_DSN" \
+            python scripts/verify_sqlite_postgres_parity.py \
+              --sqlite /tmp/machi-ci.db
+          KAIX_DB_BACKEND=postgres KAIX_PG_DSN="$PG_DSN" \
+            KAIX_ENABLE_SCHEDULERS=0 KAIX_HOST=127.0.0.1 KAIX_PORT=8787 \
+            python server.py >/tmp/machi-api.log 2>&1 &
+          API_PID=$!
+          trap 'kill "$API_PID" 2>/dev/null || true' EXIT
+          READY=0
+          for attempt in {1..30}; do
+            if curl -fsS http://127.0.0.1:8787/readyz >/dev/null; then
+              READY=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$READY" != 1 ]; then
+            cat /tmp/machi-api.log
+            exit 1
+          fi
+          curl -fsS -D /tmp/machi-cookie-headers -c /tmp/machi-cookie-jar \
+            -H 'Content-Type: application/json' \
+            -d '{"handle":"ci_cookie_user","display_name":"CI Cookie","password":"CookiePass123!"}' \
+            http://127.0.0.1:8787/api/auth/register >/tmp/machi-register.json
+          grep -qi 'Set-Cookie: machi_session=.*HttpOnly.*SameSite=Strict' /tmp/machi-cookie-headers
+          curl -fsS -b /tmp/machi-cookie-jar http://127.0.0.1:8787/api/auth/me >/dev/null
+          curl -fsS -b /tmp/machi-cookie-jar -c /tmp/machi-cookie-jar \
+            -X POST http://127.0.0.1:8787/api/auth/logout >/dev/null
+          test "$(curl -sS -o /dev/null -w '%{http_code}' -b /tmp/machi-cookie-jar \
+            http://127.0.0.1:8787/api/auth/me)" = 401
+
+      - name: Install frontend dependencies
+        working-directory: app
+        run: npm ci
+
+      - name: Type-check and lint frontend
+        working-directory: app
+        run: |
+          npm run type-check
+          npm run lint
+
+      - name: Build frontend
+        working-directory: app
+        run: npm run build
+
+      - name: Verify production SSR output
+        working-directory: app
+        run: |
+          set -euo pipefail
+          npm run start >/tmp/machi-web.log 2>&1 &
+          WEB_PID=$!
+          trap 'kill "$WEB_PID" 2>/dev/null || true' EXIT
+          for attempt in {1..60}; do
+            if curl -fsS http://127.0.0.1:3000/home >/dev/null; then
+              HOME_URL=http://127.0.0.1:3000/home npm run test:home:ssr
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/machi-web.log
+          exit 1

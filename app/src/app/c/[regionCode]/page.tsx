@@ -24,6 +24,7 @@ import {
   type Paginated,
 } from "@/lib/types";
 import { resolveRegion, regionDisplayName, regionHeaderLabel } from "@/lib/regions";
+import { useI18n } from "@/lib/i18n";
 
 const PRIMARY_ICONS: Record<CityPrimary, React.ComponentType<{ className?: string }>> = {
   recommend: Sparkles,
@@ -47,6 +48,7 @@ export default function CityChannelPage({
 }) {
   const { regionCode } = use(params);
   const { channel } = use(searchParams);
+  const { locale } = useI18n();
   const decodedCode = decodeURIComponent(regionCode);
   const initialChannel = CITY_CHANNELS.includes(channel as CityChannelKey) ? (channel as CityChannelKey) : "recommend";
   const [primary, setPrimary] = useState<CityPrimary>(() => primaryForChannel(initialChannel));
@@ -120,8 +122,8 @@ export default function CityChannelPage({
             <ChevronLeft className="w-4 h-4" />
           </Link>
           <div className="flex flex-col">
-            <h1 className="text-base font-bold tracking-tight">{regionHeaderLabel(region)}</h1>
-            <span className="text-[11px] text-kx-muted">城市频道 · {region ? regionDisplayName(region) : decodedCode}</span>
+            <h1 className="text-base font-bold tracking-tight">{regionHeaderLabel(region, locale)}</h1>
+            <span className="text-[11px] text-kx-muted">城市频道 · {region ? regionDisplayName(region, locale) : decodedCode}</span>
           </div>
         </div>
 

@@ -60,6 +60,36 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             })()`,
           }}
         />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){
+              try {
+                function usable(url){
+                  return typeof url === 'string' && (/^data:image\\//.test(url) || url.indexOf('/') === 0 || /^https:\\/\\/www\\.machicity\\.com\\//.test(url) || /^https:\\/\\/machicity\\.com\\//.test(url));
+                }
+                function setIcon(rel, href){
+                  var link = document.querySelector('link[rel="' + rel + '"]');
+                  if (!link) {
+                    link = document.createElement('link');
+                    link.setAttribute('rel', rel);
+                    document.head.appendChild(link);
+                  }
+                  link.setAttribute('href', href);
+                }
+                fetch('/api/site-settings', { credentials: 'same-origin' })
+                  .then(function(res){ return res.ok ? res.json() : null; })
+                  .then(function(data){
+                    var logo = data && data.settings && data.settings.logo_url;
+                    if (!usable(logo)) return;
+                    setIcon('icon', logo);
+                    setIcon('shortcut icon', logo);
+                    setIcon('apple-touch-icon', logo);
+                  })
+                  .catch(function(){});
+              } catch(e) {}
+            })()`,
+          }}
+        />
         {/* Self-heal for users carrying a stale service worker from an
             older build. The previous SW cached /_next/static/* and any
             same-origin GET (RSC payloads included), which caused the

@@ -157,6 +157,7 @@ const ADMIN_MODULES: {
   { href: "/admin/businesses", label: "商家资料", desc: "商家认证和服务商资料", icon: Store },
   { href: "/admin/seller-verifications", label: "认证审核", desc: "卖家、房源方、招聘方和服务商", icon: BadgeCheck },
   { href: "/admin/uploads", label: "文件管理", desc: "S3 / CloudFront 文件、状态和清理", icon: HardDrive },
+  { href: "/admin/email", label: "邮件系统", desc: "编辑草稿、群发邮件和广告通知", icon: Send },
   { href: "/admin/guide", label: "Guide 内容管理", desc: "文章 · 商品 · 服务 · 学校 · 公司", icon: BookOpen },
   { href: "/admin/guide/orders", label: "Guide 订单", desc: "数字资料购买订单", icon: ClipboardList },
   { href: "/admin/guide/service-requests", label: "服务预约", desc: "人工服务预约与处理", icon: CalendarClock },
@@ -298,6 +299,14 @@ function UsersPanel() {
       pushToast({ kind: "success", message: "已封禁" });
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
   };
+  const restore = async (id: string) => {
+    try {
+      await api.adminRestoreUser(id);
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-stats"] });
+      pushToast({ kind: "success", message: "已解封" });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
   // Manually grant / extend a Machi Verified membership by one month.
   const grantMembership = async (id: string) => {
     try {
@@ -330,7 +339,7 @@ function UsersPanel() {
               </thead>
               <tbody>
                 {list.data.map((u) => (
-                  <tr key={u.id} className="border-t border-kx-stroke/30 hover:bg-kx-soft/40">
+                  <tr key={u.id} className={clsx("border-t border-kx-stroke/30 hover:bg-kx-soft/40", u.deleted_at && "bg-kx-danger/5 opacity-70")}>
                     <td className="px-4 py-2.5">
                       <Link href={`/u/${u.handle}`} className="flex items-center gap-2 group min-w-0">
                         <Avatar user={u} size={32} />
@@ -338,6 +347,7 @@ function UsersPanel() {
                           <div className="font-semibold truncate inline-flex items-center gap-1 group-hover:underline">
                             {u.display_name}
                             {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
+                            {u.deleted_at ? <span className="rounded-full bg-kx-danger/10 px-2 py-0.5 text-[11px] font-bold text-kx-danger">已封禁</span> : null}
                           </div>
                           <div className="text-xs text-kx-muted truncate">@{u.handle}</div>
                           <div className="text-xs text-kx-muted truncate">
@@ -379,9 +389,15 @@ function UsersPanel() {
                         >
                           会员{u.is_verified_member ? "+1月" : "开通"}
                         </button>
-                        <button className="kx-button-ghost h-8 px-3 text-xs text-kx-danger" onClick={() => setPendingBan(u.id)}>
-                          <Ban className="w-3.5 h-3.5" /> 封禁
-                        </button>
+                        {u.deleted_at ? (
+                          <button className="kx-button-ghost h-8 px-3 text-xs text-emerald-700" onClick={() => restore(u.id)}>
+                            <CheckCircle2 className="w-3.5 h-3.5" /> 解封
+                          </button>
+                        ) : (
+                          <button className="kx-button-ghost h-8 px-3 text-xs text-kx-danger" onClick={() => setPendingBan(u.id)}>
+                            <Ban className="w-3.5 h-3.5" /> 封禁
+                          </button>
+                        )}
                       </div>
                     </td>
                   </tr>
@@ -396,13 +412,14 @@ function UsersPanel() {
           {/* Mobile card stack */}
           <ul className="md:hidden space-y-2">
             {list.data.map((u) => (
-              <li key={u.id} className="kx-card">
+              <li key={u.id} className={clsx("kx-card", u.deleted_at && "border-kx-danger/20 bg-kx-danger/5 opacity-80")}>
                 <div className="flex items-start gap-2.5">
                   <Avatar user={u} size={40} />
                   <div className="min-w-0 flex-1">
                     <Link href={`/u/${u.handle}`} className="font-semibold inline-flex items-center gap-1 hover:underline">
                       {u.display_name}
                       {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
+                      {u.deleted_at ? <span className="rounded-full bg-kx-danger/10 px-2 py-0.5 text-[11px] font-bold text-kx-danger">已封禁</span> : null}
                     </Link>
                     <div className="text-xs text-kx-muted">@{u.handle}</div>
                     <div className="text-xs text-kx-muted mt-1 flex gap-3">
@@ -433,9 +450,15 @@ function UsersPanel() {
                   >
                     会员{u.is_verified_member ? "+1月" : "开通"}
                   </button>
-                  <button className="kx-button-ghost h-8 px-3 text-xs text-kx-danger" onClick={() => setPendingBan(u.id)}>
-                    <Ban className="w-3.5 h-3.5" /> 封禁
-                  </button>
+                  {u.deleted_at ? (
+                    <button className="kx-button-ghost h-8 px-3 text-xs text-emerald-700" onClick={() => restore(u.id)}>
+                      <CheckCircle2 className="w-3.5 h-3.5" /> 解封
+                    </button>
+                  ) : (
+                    <button className="kx-button-ghost h-8 px-3 text-xs text-kx-danger" onClick={() => setPendingBan(u.id)}>
+                      <Ban className="w-3.5 h-3.5" /> 封禁
+                    </button>
+                  )}
                 </div>
               </li>
             ))}

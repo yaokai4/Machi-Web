@@ -7,7 +7,7 @@ Machi uses backend-generated presigned URLs for Web, WebApp, iOS, and future And
 1. Client calls `POST /api/uploads/presign` with file name, content type, size, purpose, optional entity, and optional media metadata such as `duration`, `threadId`, or `groupId`.
 2. Backend validates login, purpose, size, MIME type, ownership, admin-only purposes, and upload quota.
 3. Backend generates the S3 object key and returns a 5 minute PUT URL using boto3's default credential chain.
-4. Client PUTs the file bytes to the signed URL with the returned headers.
+4. Public media PUTs directly to S3. Private media PUTs to the backend, which streams AES-256-GCM ciphertext to S3.
 5. Client calls `POST /api/uploads/complete`.
 6. Backend writes `uploaded_files`, mirrors a compatible `media` row, and links files when posts, listings, products, or private message attachments are saved.
 
@@ -16,6 +16,7 @@ Machi uses backend-generated presigned URLs for Web, WebApp, iOS, and future And
 - `AWS_REGION`
 - `AWS_S3_BUCKET`
 - `AWS_CLOUDFRONT_DOMAIN`
+- `KAIX_PRIVATE_MEDIA_KEY` (a stable base64-encoded 32-byte key)
 - `S3_UPLOAD_MAX_SIZE`
 - `S3_PRESIGN_EXPIRES_SECONDS`
 - `S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS`
@@ -50,8 +51,9 @@ Use this CORS policy on the bucket, then remove localhost after production valid
 - Let CloudFront read from S3 with OAC/OAI.
 - Public images use `https://dog232f3wzni4.cloudfront.net/{object_key}` when `AWS_CLOUDFRONT_DOMAIN` is configured.
 - Public post/listing/business media expose CloudFront `cdn_url` through compatible `media` rows. Private purposes keep `url`, `publicUrl`, `cdnUrl`, and `thumbnailUrl` empty in API responses.
-- Guide paid PDFs do not expose permanent CDN URLs. Clients request `POST /api/guide/products/:id/download-url`, and the backend returns a short-lived signed URL after entitlement checks.
-- Private message images/videos/files do not expose permanent CDN URLs. Message payloads include `attachments[]` metadata plus `viewUrlEndpoint`; clients call `POST /api/messages/:messageId/attachments/:attachmentId/view-url` and the backend verifies conversation membership before returning a short-lived signed URL.
+- Private objects are encrypted with AES-256-GCM before S3 storage. CloudFront may be able to fetch an object key, but it can only return ciphertext.
+- Guide paid PDFs do not expose permanent CDN URLs. After entitlement checks, the backend returns a short-lived application URL and decrypts the S3 object only while streaming it to the authorized client.
+- Private message images/videos/files follow the same encrypted proxy path. Message payloads include `attachments[]` metadata plus `viewUrlEndpoint`; the backend verifies conversation membership before issuing the short-lived application URL.
 
 ## Purposes
 
@@ -80,7 +82,7 @@ Operational/video pipeline:
 
 - `uploaded_files` is the canonical file record for all clients.
 - `post_media` links post media and stores `uploaded_file_id`, `media_type`, ordering, cover flag, thumbnail pointer, dimensions, duration, and processing status.
-- `message_attachments` links private DM attachments to a message and thread. Only conversation members or admins can request the signed view URL.
+- `message_attachments` links private DM attachments to a message and thread. Only conversation members or admins can request the short-lived application view URL.
 - `media` remains the compatibility table for existing Web/iOS surfaces.
 
 ## Limits
@@ -93,4 +95,4 @@ Operational/video pipeline:
 
 ## Local fallback
 
-When S3 credentials are absent, the same API writes objects under `web/media/{object_key}`. This is for development and tests only; production should configure S3 and CloudFront.
+When S3 credentials are absent, the same API writes objects under `web/media/{object_key}`. This is for development and tests only. Production refuses upload requests without S3 and refuses startup with S3 configured but no valid private-media key.

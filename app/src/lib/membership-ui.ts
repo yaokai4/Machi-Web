@@ -213,11 +213,19 @@ export function membershipUi(locale: Locale): MembershipUi {
 export function membershipBenefitCopy(
   key: string,
   locale: Locale,
-  fallback: { title: string; description: string },
+  fallback: { title?: string; description?: string; title_zh?: string; title_en?: string; title_ja?: string; description_zh?: string; description_en?: string; description_ja?: string },
 ): { title: string; description: string } {
   const row = BENEFITS[key];
-  if (!row) return fallback;
-  return split(row[lang(locale)]);
+  const language = lang(locale);
+  if (!row) {
+    const title = language === "en" ? fallback.title_en : language === "ja" ? fallback.title_ja : fallback.title_zh;
+    const description = language === "en" ? fallback.description_en : language === "ja" ? fallback.description_ja : fallback.description_zh;
+    return {
+      title: title || fallback.title || "",
+      description: description || fallback.description || "",
+    };
+  }
+  return split(row[language]);
 }
 
 export function membershipGuideCopy(

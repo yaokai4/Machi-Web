@@ -5,14 +5,16 @@ import { useParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Image as ImageIcon, Loader2, MessageCircle, Play, Send, Smile, Trash2, X } from "lucide-react";
 import clsx from "clsx";
-import { api, APIError } from "@/lib/api";
+import { api, APIError, isUploadImageFile, isUploadVideoFile } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { MediaGrid } from "@/components/design/MediaGrid";
+import { Lightbox } from "@/components/design/Lightbox";
 import { relativeTime } from "@/lib/format";
 import { useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
+import { fallbackVideoPoster, isVideoMedia, mediaCardAspectRatio, mediaPreviewImageUrl, sameOriginApiUrl } from "@/lib/media";
 import type { KXMedia, KXMessage, KXMessageAttachment, KXUser } from "@/lib/types";
 import { showVerifiedBadge } from "@/lib/types";
 
@@ -36,6 +38,10 @@ const EMOJI_GROUPS = [
 ];
 
 const QUICK_REPLIES = ["你好，我想了解一下", "现在方便聊吗？", "谢谢，我晚点回复"];
+const MESSAGE_IMAGE_LIMIT = 9;
+const MESSAGE_VIDEO_LIMIT = 1;
+const MESSAGE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const MESSAGE_VIDEO_MAX_BYTES = 100 * 1024 * 1024;
 
 function readVideoMetadata(file: File): Promise<{ duration: number; width: number; height: number }> {
   return new Promise((resolve) => {
@@ -45,11 +51,20 @@ function readVideoMetadata(file: File): Promise<{ duration: number; width: numbe
     }
     const url = URL.createObjectURL(file);
     const video = document.createElement("video");
+    let settled = false;
     const done = (value: { duration: number; width: number; height: number }) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
       URL.revokeObjectURL(url);
       resolve(value);
     };
+    // Guard against containers that never fire loadedmetadata/onerror,
+    // otherwise the send pipeline hangs forever.
+    const timeout = window.setTimeout(() => done({ duration: 0, width: 0, height: 0 }), 8000);
     video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
     video.onloadedmetadata = () => done({
       duration: Number.isFinite(video.duration) ? video.duration : 0,
       width: video.videoWidth || 0,
@@ -92,6 +107,9 @@ export default function ConversationPage() {
 
   const conv = convQuery.data?.find((c) => c.id === id);
   const peer = conv?.peer;
+  const imageCount = attachments.filter((item) => item.type === "image").length;
+  const hasVideo = attachments.some((item) => item.type === "video");
+  const attachmentLimitReached = hasVideo || imageCount >= MESSAGE_IMAGE_LIMIT;
 
   useEffect(() => {
     if (id) api.markConversationRead(id).catch(() => undefined);
@@ -115,19 +133,32 @@ export default function ConversationPage() {
     try {
       const uploaded: KXMedia[] = [];
       for (const f of list) {
-        const isVideo = f.type.startsWith("video/");
+        const isVideo = isUploadVideoFile(f);
+        const isImage = isUploadImageFile(f);
+        if (!isVideo && !isImage) {
+          pushToast({ kind: "error", message: `${f.name || "所选文件"} 不是支持的图片或视频` });
+          continue;
+        }
         const purpose = isVideo ? "message_video" : "message_image";
-        const maxBytes = isVideo ? 100 * 1024 * 1024 : 10 * 1024 * 1024;
+        const maxBytes = isVideo ? MESSAGE_VIDEO_MAX_BYTES : MESSAGE_IMAGE_MAX_BYTES;
         if (f.size > maxBytes) {
           pushToast({ kind: "error", message: `${f.name} 超过 ${isVideo ? "100MB" : "10MB"} 限制` });
           continue;
         }
         const nextItems = [...attachments, ...uploaded];
-        if (isVideo && nextItems.filter((item) => item.type === "video").length >= 1) {
+        if (isVideo && nextItems.length > 0) {
+          pushToast({ kind: "error", message: "视频私信只能发送 1 个视频，不能和图片混合" });
+          continue;
+        }
+        if (!isVideo && nextItems.some((item) => item.type === "video")) {
+          pushToast({ kind: "error", message: "视频私信不能再添加图片" });
+          continue;
+        }
+        if (isVideo && nextItems.filter((item) => item.type === "video").length >= MESSAGE_VIDEO_LIMIT) {
           pushToast({ kind: "error", message: "每条私信最多发送 1 个视频" });
           continue;
         }
-        if (!isVideo && nextItems.filter((item) => item.type === "image").length >= 9) {
+        if (!isVideo && nextItems.filter((item) => item.type === "image").length >= MESSAGE_IMAGE_LIMIT) {
           pushToast({ kind: "error", message: "每条私信最多发送 9 张图片" });
           continue;
         }
@@ -148,7 +179,10 @@ export default function ConversationPage() {
         const previewUrl = URL.createObjectURL(f);
         uploaded.push({ ...media, url: previewUrl, thumb_url: previewUrl });
       }
-      setAttachments((prev) => [...prev, ...uploaded].slice(0, 10));
+      setAttachments((prev) => {
+        const next = [...prev, ...uploaded];
+        return next.some((item) => item.type === "video") ? next.slice(0, MESSAGE_VIDEO_LIMIT) : next.slice(0, MESSAGE_IMAGE_LIMIT);
+      });
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
@@ -258,16 +292,14 @@ export default function ConversationPage() {
             <div className="mb-2 flex gap-2 overflow-x-auto rounded-[22px] border border-white/70 bg-white/60 p-2 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.5)] backdrop-blur">
               {attachments.map((m) => (
                 <div key={m.id} className="relative h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-kx-soft ring-1 ring-white/70">
-                  {m.type === "video" ? (
+                  {isVideoMedia(m) ? (
                     <>
-                      <video
-                        src={m.url}
-                        poster={m.thumb_url && m.thumb_url !== m.url ? m.thumb_url : undefined}
-                        className="h-full w-full object-cover"
-                        muted
-                        playsInline
-                        preload="metadata"
-                      />
+                      {mediaPreviewImageUrl(m) ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={mediaPreviewImageUrl(m)} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        <span className="absolute inset-0 bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.16),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)]" />
+                      )}
                       <span className="absolute inset-0 grid place-items-center bg-black/10">
                         <span className="grid h-8 w-8 place-items-center rounded-full bg-black/60 text-white">
                           <Play className="h-4 w-4" />
@@ -276,7 +308,7 @@ export default function ConversationPage() {
                     </>
                   ) : (
                     // eslint-disable-next-line @next/next/no-img-element
-                    <img src={m.thumb_url || m.url} alt="" className="h-full w-full object-cover" />
+                    <img src={mediaPreviewImageUrl(m) || m.url} alt="" className="h-full w-full object-cover" />
                   )}
                   <button
                     type="button"
@@ -301,8 +333,9 @@ export default function ConversationPage() {
               type="button"
               className="kx-chat-tool-button"
               onClick={() => fileInput.current?.click()}
-              disabled={uploading}
+              disabled={uploading || attachmentLimitReached}
               aria-label="添加图片或视频"
+              title={hasVideo ? "已添加视频" : imageCount >= MESSAGE_IMAGE_LIMIT ? "最多发送 9 张图片" : undefined}
             >
               {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-5 w-5" />}
             </button>
@@ -313,8 +346,10 @@ export default function ConversationPage() {
               multiple
               className="hidden"
               onChange={(e) => {
-                if (e.target.files) onFiles(e.target.files);
+                // Snapshot before clearing: FileList is live and value="" empties it.
+                const files = Array.from(e.target.files ?? []);
                 e.target.value = "";
+                if (files.length) onFiles(files);
               }}
             />
             <button
@@ -472,6 +507,7 @@ function SignedMessageAttachment({ messageId, attachment }: { messageId: string;
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [viewerOpen, setViewerOpen] = useState(false);
   const isVideo = attachment.type === "video";
   const isImage = attachment.type === "image";
 
@@ -481,7 +517,10 @@ function SignedMessageAttachment({ messageId, attachment }: { messageId: string;
     setError("");
     try {
       const result = await api.messageAttachmentViewUrl(messageId, attachment.id);
-      setUrl(result.url);
+      // The backend signs an ABSOLUTE url from its own request base; behind a
+      // proxy that host/scheme can be unreachable for the browser. Route it
+      // through the page origin instead.
+      setUrl(sameOriginApiUrl(result.url));
     } catch (err) {
       setError((err as APIError).message || "加载失败");
     } finally {
@@ -498,6 +537,7 @@ function SignedMessageAttachment({ messageId, attachment }: { messageId: string;
     return (
       <video
         src={url}
+        poster={fallbackVideoPoster}
         controls
         playsInline
         preload="metadata"
@@ -507,8 +547,27 @@ function SignedMessageAttachment({ messageId, attachment }: { messageId: string;
   }
 
   if (url && isImage) {
-    // eslint-disable-next-line @next/next/no-img-element
-    return <img src={url} alt="" className="aspect-square w-full rounded-2xl bg-kx-soft object-cover" loading="lazy" decoding="async" />;
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setViewerOpen(true)}
+          className="block w-full overflow-hidden rounded-2xl bg-kx-soft"
+          style={{ aspectRatio: mediaCardAspectRatio(attachment) }}
+          aria-label="查看图片"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={url} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" />
+        </button>
+        {viewerOpen ? (
+          <Lightbox
+            items={[{ id: attachment.id, type: "image", url, width: attachment.width, height: attachment.height } as KXMedia]}
+            startIndex={0}
+            onClose={() => setViewerOpen(false)}
+          />
+        ) : null}
+      </>
+    );
   }
 
   return (

@@ -27,14 +27,17 @@ export function FieldShell({
 }) {
   return (
     <div className={className}>
-      <label htmlFor={htmlFor} className="flex items-center justify-between gap-2">
-        <span className="text-sm font-bold text-kx-text">{label}</span>
+      {/* flex-wrap + min-w-0: long localized hints (JA/EN run much longer
+          than ZH) drop to their own line instead of pushing past the right
+          edge on narrow screens. */}
+      <label htmlFor={htmlFor} className="flex flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
+        <span className="shrink-0 text-sm font-bold text-kx-text">{label}</span>
         {error ? null : success ? (
           <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-600 dark:text-emerald-300">
             <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
           </span>
         ) : hint ? (
-          <span className="text-[11px] font-semibold text-kx-muted">{hint}</span>
+          <span className="ml-auto min-w-0 max-w-full break-words text-right text-[11px] font-semibold leading-4 text-kx-muted">{hint}</span>
         ) : null}
       </label>
       <div className="mt-1.5">{children}</div>

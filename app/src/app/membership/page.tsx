@@ -19,6 +19,7 @@ import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import type { KXCreateOrderResult, KXMembershipPlan, PaymentProvider } from "@/lib/types";
 import { formatPrice } from "@/lib/format";
+import { membershipBenefitCopy } from "@/lib/membership-ui";
 
 const BENEFIT_KEYS = [
   "mem_benefit_badge",
@@ -241,7 +242,7 @@ export default function MembershipPage() {
     }
   };
 
-  const priceLabel = planPriceLabel(selectedPlan, t);
+  const priceLabel = planPriceLabel(selectedPlan, t, locale);
   const benefitItems = benefitsQuery.data?.benefits ?? [];
 
   return (
@@ -323,12 +324,12 @@ export default function MembershipPage() {
                       <div className="flex items-start justify-between gap-2">
                         <div>
                           <div className="font-black text-kx-text">{localizedPlanName(p, locale)}</div>
-                          <div className="mt-1 text-xs text-kx-muted">{p.subtitle || periodLabel(p, t)}</div>
+                          <div className="mt-1 text-xs text-kx-muted">{localizedPlanSubtitle(p, locale, t)}</div>
                         </div>
                         {p.isRecommended ? <span className="rounded-full bg-kx-accent px-2 py-0.5 text-[11px] font-bold text-white">{t("mem_recommended")}</span> : null}
                       </div>
-                      <div className="mt-3 text-2xl font-black text-kx-text">{planPriceLabel(p, t)}</div>
-                      {p.discountLabel || p.discount_label ? <div className="mt-1 text-xs font-bold text-emerald-600">{p.discountLabel || p.discount_label}</div> : null}
+                      <div className="mt-3 text-2xl font-black text-kx-text">{planPriceLabel(p, t, locale)}</div>
+                      {localizedDiscountLabel(p, locale) ? <div className="mt-1 text-xs font-bold text-emerald-600">{localizedDiscountLabel(p, locale)}</div> : null}
                     </button>
                   );
                 })}
@@ -339,12 +340,15 @@ export default function MembershipPage() {
             <section className="kx-card">
               <h2 className="font-bold text-kx-text mb-2">{t("mem_benefits_title")}</h2>
               <ul className="space-y-2">
-                {benefitItems.length > 0 ? benefitItems.map((benefit) => (
-                  <li key={benefit.key} className="flex items-start gap-2 text-sm text-kx-text">
-                    <Check className="w-4 h-4 mt-0.5 text-kx-verified shrink-0" />
-                    <span>{benefit.key && BENEFIT_KEYS.includes(benefit.key as (typeof BENEFIT_KEYS)[number]) ? t(benefit.key as (typeof BENEFIT_KEYS)[number]) : benefit.title}</span>
-                  </li>
-                )) : BENEFIT_KEYS.map((key) => (
+                {benefitItems.length > 0 ? benefitItems.map((benefit) => {
+                  const localized = membershipBenefitCopy(benefit.key, locale, benefit);
+                  return (
+                    <li key={benefit.key} className="flex items-start gap-2 text-sm text-kx-text">
+                      <Check className="w-4 h-4 mt-0.5 text-kx-verified shrink-0" />
+                      <span>{localized.title}</span>
+                    </li>
+                  );
+                }) : BENEFIT_KEYS.map((key) => (
                   <li key={key} className="flex items-start gap-2 text-sm text-kx-text">
                     <Check className="w-4 h-4 mt-0.5 text-kx-verified shrink-0" />
                     <span>{t(key)}</span>
@@ -469,15 +473,52 @@ function periodLabel(plan: KXMembershipPlan, t: ReturnType<typeof useI18n>["t"])
   return t("mem_period_plan");
 }
 
-function planPriceLabel(plan: KXMembershipPlan, t: ReturnType<typeof useI18n>["t"]): string {
+function localizedPlanSubtitle(plan: KXMembershipPlan, locale: string, t: ReturnType<typeof useI18n>["t"]): string {
+  if (locale === "zh-Hans" || locale === "zh-Hant") return plan.subtitle || periodLabel(plan, t);
+  return periodLabel(plan, t);
+}
+
+function localizedDiscountLabel(plan: KXMembershipPlan, locale: string): string {
+  const label = plan.discountLabel || plan.discount_label || "";
+  if (!label) return "";
+  if (locale === "en") {
+    if (/2\s*个?月|兩個月|两个月|2\s*ヶ月|2\s*か月/.test(label)) return "Save 2 months";
+    return label.replace(/节省|省|優惠|优惠/g, "Save").replace(/个月|個月/g, "months");
+  }
+  if (locale === "ja") {
+    if (/2\s*个?月|兩個月|两个月|2\s*months?/i.test(label)) return "2か月分お得";
+    return label.replace(/节省|省|優惠|优惠/g, "お得").replace(/个月|個月/g, "か月");
+  }
+  return label;
+}
+
+function localizePriceLabel(label: string, locale: string): string {
+  if (locale === "en") {
+    return label
+      .replace(/价格加载中/g, "Loading price")
+      .replace(/\s*\/\s*月/g, " / mo")
+      .replace(/\/月/g, " / mo")
+      .replace(/\s*\/\s*年/g, " / yr")
+      .replace(/\/年/g, " / yr");
+  }
+  if (locale === "ja") {
+    return label
+      .replace(/价格加载中/g, "価格を読み込み中")
+      .replace(/\s*\/\s*月/g, " / 月")
+      .replace(/\s*\/\s*年/g, " / 年");
+  }
+  return label;
+}
+
+function planPriceLabel(plan: KXMembershipPlan, t: ReturnType<typeof useI18n>["t"], locale: string): string {
   const label = plan.priceLabel || plan.price_label;
-  if (label && label !== "价格加载中") return label;
+  if (label && label !== "价格加载中") return localizePriceLabel(label, locale);
   if (!plan.amount && !plan.amount_cents && !plan.price) return t("mem_price_loading");
-  return formatPrice({
+  return localizePriceLabel(formatPrice({
     price: plan.price ?? plan.amount,
     currency: plan.currency,
     billingPeriod: plan.billingPeriod || plan.billing_period || plan.billing_cycle,
-  });
+  }), locale);
 }
 
 function BankCardPaymentOption({ label }: { label: string }) {

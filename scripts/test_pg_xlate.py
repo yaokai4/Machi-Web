@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from server import _pg_xlate  # noqa: E402
+from server import _PgConn, _pg_xlate  # noqa: E402
 
 
 class PgXlateTests(unittest.TestCase):
@@ -22,6 +22,18 @@ class PgXlateTests(unittest.TestCase):
         self.assertEqual(
             _pg_xlate("SELECT * FROM t WHERE x LIKE ?", True),
             "SELECT * FROM t WHERE x ILIKE %s",
+        )
+
+    def test_like_literal_is_not_rewritten(self):
+        self.assertEqual(
+            _pg_xlate("SELECT COUNT(*) AS c FROM interactions WHERE kind='like' AND target_id IN (?)", True),
+            "SELECT COUNT(*) AS c FROM interactions WHERE kind='like' AND target_id IN (%s)",
+        )
+
+    def test_escaped_string_literal_is_not_rewritten(self):
+        self.assertEqual(
+            _pg_xlate("SELECT * FROM t WHERE label = 'looks like this' AND body LIKE ?", True),
+            "SELECT * FROM t WHERE label = 'looks like this' AND body ILIKE %s",
         )
 
     def test_scalar_max_min_become_greatest_least(self):
@@ -49,6 +61,36 @@ class PgXlateTests(unittest.TestCase):
     def test_no_param_query_is_not_percent_mangled(self):
         # Without params psycopg2 does no % interpolation, so we must not escape.
         self.assertEqual(_pg_xlate("SELECT '100%' AS x", False), "SELECT '100%' AS x")
+
+    def test_postgres_executescript_executes_translated_sql(self):
+        class Cursor:
+            sql = ""
+
+            def execute(self, sql):
+                self.sql = sql
+
+        class Connection:
+            cursor_instance = Cursor()
+
+            def cursor(self):
+                return self.cursor_instance
+
+        class Psycopg:
+            class IntegrityError(Exception):
+                pass
+
+            class OperationalError(Exception):
+                pass
+
+            class DatabaseError(Exception):
+                pass
+
+        conn = object.__new__(_PgConn)
+        conn._c = Connection()
+        conn._psycopg2 = Psycopg()
+        cursor = conn.executescript("UPDATE media SET type = 'video' WHERE mime LIKE 'video/%';")
+        self.assertIs(cursor, conn._c.cursor_instance)
+        self.assertIn("mime ILIKE 'video/%'", cursor.sql)
 
 
 if __name__ == "__main__":

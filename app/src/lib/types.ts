@@ -41,11 +41,14 @@ export const UserSchema = z.object({
   joined_at: z.string().nullable().optional(),
   created_at: z.string().nullable().optional(),
   updated_at: z.string().nullable().optional(),
+  deleted_at: z.string().nullable().optional(),
   follower_count: z.number().optional(),
   following_count: z.number().optional(),
   post_count: z.number().optional(),
   is_following: z.boolean().optional(),
   is_blocked: z.boolean().optional(),
+  follows_viewer: z.boolean().optional(),
+  is_mutual: z.boolean().optional(),
   // Google account binding state (mirrors serialize_user in server.py).
   email_verified: z.boolean().optional(),
   auth_provider: z.string().optional(),
@@ -187,16 +190,38 @@ export interface KXRegion {
 
 export const MediaSchema = z.object({
   id: z.string(),
-  owner_id: z.string(),
-  type: z.enum(["image", "video", "audio", "file"]),
-  url: z.string(),
-  thumb_url: z.string(),
-  mime: z.string(),
+  owner_id: z.string().optional().default(""),
+  ownerId: z.string().optional(),
+  remote_id: z.string().optional(),
+  remoteId: z.string().optional(),
+  type: z.enum(["image", "video", "audio", "file"]).optional().default("image"),
+  visibility: z.string().optional(),
+  objectKey: z.string().optional(),
+  url: z.string().optional().default(""),
+  cdnUrl: z.string().optional(),
+  publicUrl: z.string().optional(),
+  thumb_url: z.string().optional().default(""),
+  thumbUrl: z.string().optional(),
+  thumbnail_url: z.string().optional(),
+  thumbnailUrl: z.string().optional(),
+  poster_url: z.string().optional(),
+  posterUrl: z.string().optional(),
+  mime: z.string().optional().default(""),
+  content_type: z.string().optional(),
+  contentType: z.string().optional(),
   width: z.number().optional(),
   height: z.number().optional(),
   duration: z.number().optional(),
+  duration_seconds: z.number().optional(),
+  durationSeconds: z.number().optional(),
   byte_size: z.number().optional(),
-  created_at: z.string(),
+  file_size: z.number().optional(),
+  fileSize: z.number().optional(),
+  status: z.string().optional(),
+  processing_status: z.string().optional(),
+  processingStatus: z.string().optional(),
+  created_at: z.string().optional().default(""),
+  createdAt: z.string().optional(),
 });
 export type KXMedia = z.infer<typeof MediaSchema>;
 
@@ -275,7 +300,7 @@ export const CONTENT_TYPE_LABELS: Record<ContentType, string> = {
   anonymous: "树洞",
 };
 
-export const PostSchema: z.ZodType<KXPost> = z.lazy(() =>
+export const PostSchema: z.ZodType<KXPost, z.ZodTypeDef, unknown> = z.lazy(() =>
   z.object({
     id: z.string(),
     remote_id: z.string().optional(),
@@ -483,6 +508,13 @@ export type KXListingType =
   | "discount"
   | "event";
 
+export const MEMBERSHIP_REQUIRED_LISTING_TYPES: readonly KXListingType[] = [
+  "rental", "job", "hiring", "local_service", "discount",
+];
+export function listingTypeRequiresMembership(type?: KXListingType | string | null): boolean {
+  return !!type && (MEMBERSHIP_REQUIRED_LISTING_TYPES as readonly string[]).includes(type);
+}
+
 export type KXListingStatus =
   | "draft"
   | "pending_review"
@@ -499,17 +531,63 @@ export type KXListingVerificationStatus = "unverified" | "pending" | "verified" 
 
 export interface KXListingMedia {
   id: string;
+  uploadedFileId?: string;
+  uploaded_file_id?: string;
   listing_id?: string;
   listingId?: string;
   media_type: "image" | "video" | string;
   mediaType?: "image" | "video" | string;
+  type?: "image" | "video" | "audio" | "file" | string;
+  visibility?: string;
+  objectKey?: string;
   url: string;
+  cdnUrl?: string;
+  publicUrl?: string;
+  thumb_url?: string;
+  thumbUrl?: string;
   thumbnail_url?: string;
   thumbnailUrl?: string;
+  poster_url?: string;
+  posterUrl?: string;
+  content_type?: string;
+  contentType?: string;
+  mime?: string;
+  width?: number;
+  height?: number;
+  duration?: number;
+  duration_seconds?: number;
+  durationSeconds?: number;
+  file_size?: number;
+  fileSize?: number;
+  byte_size?: number;
+  status?: string;
+  processing_status?: string;
+  processingStatus?: string;
   sort_order?: number;
   sortOrder?: number;
   is_cover?: boolean;
   isCover?: boolean;
+}
+
+export interface KXListingCard {
+  id: string;
+  type: string;
+  title: string;
+  priceLabel?: string;
+  primaryMeta?: string;
+  secondaryMeta?: string;
+  status?: string;
+  statusLabel?: string;
+  verificationStatus?: string;
+  isVerified?: boolean;
+  isFavorited?: boolean;
+  isPromoted?: boolean;
+  citySlug?: string;
+  cityLabel?: string;
+  coverUrl?: string;
+  coverMedia?: KXListingMedia | null;
+  createdAt?: string | null;
+  publishedAt?: string | null;
 }
 
 export interface KXCityListing {
@@ -565,8 +643,12 @@ export interface KXCityListing {
   updated_at?: string;
   updatedAt?: string | null;
   media: KXListingMedia[];
+  coverMedia?: KXListingMedia | null;
+  cover_media?: KXListingMedia | null;
   cover_url?: string;
   coverUrl?: string;
+  card?: KXListingCard;
+  listingCard?: KXListingCard;
   attributes: Record<string, unknown>;
   seller?: KXUser | null;
   favorited?: boolean;
@@ -621,6 +703,8 @@ export interface KXCreateListingPayload {
   attributes?: Record<string, unknown>;
   media_ids?: string[];
   mediaIds?: string[];
+  cover_media_id?: string;
+  coverMediaId?: string;
 }
 
 export interface KXReputationBadge {
@@ -752,7 +836,7 @@ export interface KXReputationLevel {
 }
 
 export type FeedMode = "recommend" | "plaza" | "local" | "following" | "hot";
-export type ProfileSegment = "posts" | "replies" | "media" | "likes" | "bookmarks";
+export type ProfileSegment = "posts" | "reposts" | "replies" | "media" | "likes" | "bookmarks";
 
 export type CityListingType = KXListingType;
 export type CityListingStatus = KXListingStatus;

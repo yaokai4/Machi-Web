@@ -4,8 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import clsx from "clsx";
-import { Calendar, Camera, Edit3, Flag, Loader2, MapPin, MessageSquarePlus, Shield, UserCheck, UserPlus, X } from "lucide-react";
-import { api, APIError, isAuthRequiredError } from "@/lib/api";
+import { Calendar, Camera, Edit3, Flag, LayoutDashboard, Loader2, MapPin, MessageSquarePlus, Shield, UserCheck, UserPlus, X } from "lucide-react";
+import { api, APIError, isAuthRequiredError, isUploadImageFile } from "@/lib/api";
 import type { KXPost, KXUser, ProfileSegment, KXComment } from "@/lib/types";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { showVerifiedBadge } from "@/lib/types";
@@ -18,18 +18,20 @@ import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useRouter } from "next/navigation";
 import { BrandPhrase } from "@/components/marketing/BrandText";
 import { regionDisplayName, regionFromUser } from "@/lib/regions";
+import { useI18n } from "@/lib/i18n";
 
 interface ProfileViewProps {
   user: KXUser;
   isSelf: boolean;
 }
 
-const SEGMENTS: { value: ProfileSegment; label: string }[] = [
-  { value: "posts", label: "帖子" },
-  { value: "replies", label: "回复" },
-  { value: "media", label: "媒体" },
-  { value: "likes", label: "喜欢" },
-  { value: "bookmarks", label: "收藏" },
+const SEGMENTS: { value: ProfileSegment; labelKey: "profile_section_posts" | "profile_section_reposts" | "profile_section_replies" | "profile_section_media" | "profile_section_likes" | "profile_section_bookmarks" }[] = [
+  { value: "posts", labelKey: "profile_section_posts" },
+  { value: "reposts", labelKey: "profile_section_reposts" },
+  { value: "replies", labelKey: "profile_section_replies" },
+  { value: "media", labelKey: "profile_section_media" },
+  { value: "likes", labelKey: "profile_section_likes" },
+  { value: "bookmarks", labelKey: "profile_section_bookmarks" },
 ];
 
 export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
@@ -39,6 +41,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const setSessionUser = useSession((s) => s.setUser);
   const queryClient = useQueryClient();
+  const { locale, t } = useI18n();
 
   // Always fetch the full user detail so counts (followers / following /
   // posts) are present even when a parent supplies a partial KXUser.
@@ -151,7 +154,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
 
   const uploadProfileImage = async (file: File | undefined, purpose: "avatar" | "profile_cover") => {
     if (!file) return;
-    if (!file.type.startsWith("image/")) {
+    if (!isUploadImageFile(file)) {
       pushToast({ kind: "error", message: "请选择图片文件" });
       return;
     }
@@ -206,13 +209,23 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
             </div>
             <div className="flex items-center gap-2 mb-2">
               {isSelf ? (
-                <button
-                  type="button"
-                  className="inline-flex h-11 items-center gap-2 rounded-full border border-slate-200/80 bg-white px-4 text-sm font-bold text-slate-800 shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
-                  onClick={() => setEditOpen(true)}
-                >
-                  <Edit3 className="w-4 h-4" /> 编辑资料
-                </button>
+                <>
+                  <Link
+                    href="/my/features"
+                    className="grid h-11 w-11 place-items-center rounded-full border border-slate-200/90 bg-white text-slate-800 shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                    aria-label="我的工作台"
+                    title="我的工作台"
+                  >
+                    <LayoutDashboard className="w-5 h-5" />
+                  </Link>
+                  <button
+                    type="button"
+                    className="inline-flex h-11 items-center gap-2 rounded-full border border-slate-200/80 bg-white px-4 text-sm font-bold text-slate-800 shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+                    onClick={() => setEditOpen(true)}
+                  >
+                    <Edit3 className="w-4 h-4" /> 编辑资料
+                  </button>
+                </>
               ) : (
                 <>
                   <button
@@ -270,23 +283,8 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
               </Link>
               <span><strong>{compactNumber(user.post_count || 0)}</strong> <span className="text-kx-muted">帖子</span></span>
             </div>
-            {isSelf ? (
-              <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {[
-                  ["/my/listings", "我的发布"],
-                  ["/my/saved-listings", "我的收藏"],
-                  ["/my/inquiries", "我的咨询"],
-                  ["/my/applications", "我的申请"],
-                  ["/my/bookings", "我的预约"],
-                  ["/my/orders", "我的订单"],
-                  ["/my/membership", "我的会员"],
-                ].map(([href, label]) => (
-                  <Link key={href} href={href} className="rounded-2xl border border-slate-200/70 bg-white px-3 py-2 text-sm font-bold text-slate-800 shadow-[0_8px_24px_rgba(15,23,42,0.04)] hover:border-blue-200 hover:text-blue-700">
-                    {label}
-                  </Link>
-                ))}
-              </div>
-            ) : null}
+            {/* 自己的主页不再堆工作台功能入口 — 右上角的工作台按钮
+                (/my/features) 是唯一入口,主页只展示身份信息和内容。 */}
             {/* Identity / status badges row. Mirrors iOS ProfileView
                 ProfileRoleBadge strip. */}
             {(user.role && user.role !== "member") || user.is_merchant || user.merchant_verified || user.creator_badge || profileRegion ? (
@@ -305,7 +303,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                   <span className="px-2 h-6 inline-flex items-center rounded-full bg-pink-100 text-pink-700 font-bold dark:bg-pink-500/15 dark:text-pink-300">{user.creator_badge}</span>
                 ) : null}
                 {profileRegion ? (
-                  <span className="px-2 h-6 inline-flex items-center rounded-full bg-slate-100 text-slate-700 font-bold dark:bg-white/10 dark:text-slate-200">{profileRegion.country_emoji} {regionDisplayName(profileRegion)}</span>
+                  <span className="px-2 h-6 inline-flex items-center rounded-full bg-slate-100 text-slate-700 font-bold dark:bg-white/10 dark:text-slate-200">{profileRegion.country_emoji} {regionDisplayName(profileRegion, locale)}</span>
                 ) : null}
               </div>
             ) : null}
@@ -333,7 +331,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
 
       <div className="kx-profile-tabs-sticky kx-glass-bar">
         <NavTabs
-          items={filteredSegments.map((s) => ({ value: s.value, label: s.label }))}
+          items={filteredSegments.map((s) => ({ value: s.value, label: t(s.labelKey) }))}
           value={segment}
           onChange={(v) => setSegment(v as ProfileSegment)}
           equalWidth

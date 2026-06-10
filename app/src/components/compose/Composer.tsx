@@ -3,12 +3,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { BarChart3, Image as ImageIcon, Hash, X, Loader2, Send, FileWarning, Languages, Play, Plus } from "lucide-react";
-import { api, APIError } from "@/lib/api";
-import { useCompose, useLanguagePreference, useSession, useToasts } from "@/lib/store";
+import { api, APIError, isUploadVideoFile } from "@/lib/api";
+import { useAuthPrompt, useCompose, useLanguagePreference, useSession, useToasts } from "@/lib/store";
 import { Dialog } from "@/components/design/Dialog";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "@/lib/i18n";
+import { isVideoMedia, mediaPreviewImageUrl } from "@/lib/media";
 import clsx from "clsx";
 import {
   CONTENT_LANGUAGE_LABELS,
@@ -49,6 +50,22 @@ const REQUIRED_KEYS: Partial<Record<ContentType, string[]>> = {
   poll: ["question", "options"],
 };
 
+type VideoPosterCapture = {
+  file: File;
+  previewUrl: string;
+  width: number;
+  height: number;
+};
+
+type UploadProgressEntry = {
+  name: string;
+  progress: number;
+  status: string;
+  error?: string;
+  file?: File;
+  previewUrl?: string;
+};
+
 function readVideoMetadata(file: File): Promise<{ duration: number; width: number; height: number }> {
   return new Promise((resolve) => {
     if (typeof document === "undefined") {
@@ -57,11 +74,20 @@ function readVideoMetadata(file: File): Promise<{ duration: number; width: numbe
     }
     const url = URL.createObjectURL(file);
     const video = document.createElement("video");
+    let settled = false;
     const done = (value: { duration: number; width: number; height: number }) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
       URL.revokeObjectURL(url);
       resolve(value);
     };
+    // Guard against containers that never fire loadedmetadata/onerror,
+    // otherwise the upload pipeline hangs forever.
+    const timeout = window.setTimeout(() => done({ duration: 0, width: 0, height: 0 }), 8000);
     video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
     video.onloadedmetadata = () => done({
       duration: Number.isFinite(video.duration) ? video.duration : 0,
       width: video.videoWidth || 0,
@@ -72,8 +98,80 @@ function readVideoMetadata(file: File): Promise<{ duration: number; width: numbe
   });
 }
 
+function posterFileName(fileName: string): string {
+  const base = fileName.replace(/\.[^.]+$/, "") || "video";
+  return `${base}-poster.jpg`;
+}
+
+function captureVideoPoster(file: File): Promise<VideoPosterCapture | null> {
+  return new Promise((resolve) => {
+    if (typeof document === "undefined") {
+      resolve(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    const video = document.createElement("video");
+    let settled = false;
+    const cleanup = (result: VideoPosterCapture | null) => {
+      if (settled) return;
+      settled = true;
+      URL.revokeObjectURL(url);
+      resolve(result);
+    };
+    const timeout = window.setTimeout(() => cleanup(null), 9000);
+    const finish = () => {
+      window.clearTimeout(timeout);
+      const width = video.videoWidth || 1280;
+      const height = video.videoHeight || 720;
+      if (!width || !height) {
+        cleanup(null);
+        return;
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = width;
+      canvas.height = height;
+      const context = canvas.getContext("2d");
+      if (!context) {
+        cleanup(null);
+        return;
+      }
+      context.drawImage(video, 0, 0, width, height);
+      canvas.toBlob((blob) => {
+        if (!blob) {
+          cleanup(null);
+          return;
+        }
+        const poster = new File([blob], posterFileName(file.name), { type: "image/jpeg", lastModified: Date.now() });
+        cleanup({ file: poster, previewUrl: URL.createObjectURL(blob), width, height });
+      }, "image/jpeg", 0.84);
+    };
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+    video.onloadedmetadata = () => {
+      const duration = Number.isFinite(video.duration) ? video.duration : 0;
+      const target = duration > 1 ? 1 : duration > 0.2 ? 0.1 : 0;
+      if (Math.abs(video.currentTime - target) < 0.02) {
+        finish();
+        return;
+      }
+      video.currentTime = target;
+    };
+    video.onseeked = finish;
+    video.onerror = () => {
+      window.clearTimeout(timeout);
+      cleanup(null);
+    };
+    video.src = url;
+  });
+}
+
 const LANGUAGE_PICKER_OPTIONS: ContentLanguage[] = ["zh", "en", "ja", "ko", "fr", "es"];
 const STRICT_STRUCTURED_TYPES = new Set<ContentType>(["poll", "merchant", "service", "coupon", "job_post"]);
+const POST_IMAGE_LIMIT = 9;
+const POST_VIDEO_LIMIT = 1;
+const POST_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
+const POST_VIDEO_MAX_BYTES = 200 * 1024 * 1024;
 
 const TAG_RE = /#([\p{L}\p{N}_]+)/gu;
 const POLL_MIN_OPTIONS = 2;
@@ -124,6 +222,7 @@ export function Composer() {
   const draftId = useCompose((s) => s.draftId);
 
   const user = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
   const { t } = useI18n();
@@ -134,11 +233,12 @@ export function Composer() {
   const [contentType, setContentType] = useState<ContentType>("dynamic");
   const [attributes, setAttributes] = useState<Record<string, string | boolean>>({});
   const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<Record<string, { name: string; progress: number; status: string; error?: string }>>({});
+  const [uploadProgress, setUploadProgress] = useState<Record<string, UploadProgressEntry>>({});
   const [submitting, setSubmitting] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const localPreviewUrlsRef = useRef<string[]>([]);
 
   // Content language — defaults to the user's preferred (or `zh`
   // when the user picked `followApp` and we can't tell more).
@@ -155,9 +255,16 @@ export function Composer() {
       setUploadProgress({});
       setContentType(initialTypeFromStore ?? "dynamic");
       setAttributes({});
+      localPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      localPreviewUrlsRef.current = [];
       setTimeout(() => textareaRef.current?.focus(), 40);
     }
   }, [isOpen, initialContent, initialTagsFromStore, initialTypeFromStore]);
+
+  useEffect(() => () => {
+    localPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    localPreviewUrlsRef.current = [];
+  }, []);
 
   const inlineTags = Array.from(new Set([...content.matchAll(TAG_RE)].map((m) => m[1].toLowerCase())));
   const tags = Array.from(new Set([...inlineTags, ...extraTags.map((t) => t.toLowerCase())]));
@@ -183,52 +290,130 @@ export function Composer() {
   // Machi Verified gate: high-trust types need an active membership. The
   // server enforces it too (403 MEMBERSHIP_REQUIRED) — this just gates UX.
   const needsMembership = contentTypeRequiresMembership(contentType) && !user?.is_verified_member;
+  const imageCount = media.filter((item) => item.type === "image").length;
+  const hasVideo = media.some((item) => item.type === "video");
+  const mediaLimitReached = hasVideo || imageCount >= POST_IMAGE_LIMIT;
 
   const onFiles = async (files: FileList | File[]) => {
-    const array = Array.from(files);
+    if (!user) {
+      openAuthPrompt("publish");
+      return;
+    }
+    let array = Array.from(files);
     if (!array.length) return;
+    const selectedVideos = array.filter((file) => isUploadVideoFile(file));
+    if (selectedVideos.length && array.length > 1) {
+      pushToast({ kind: "error", message: "视频动态一次只能上传 1 个视频，不能和图片混合。已只保留第一个视频。" });
+      array = [selectedVideos[0]];
+    }
+    if (selectedVideos.length && media.length > 0) {
+      pushToast({ kind: "error", message: "视频动态不能和已添加的图片或视频混合，请先移除当前媒体。" });
+      return;
+    }
     setUploading(true);
     try {
       const uploaded: KXMedia[] = [];
       for (const f of array) {
         const key = `${f.name}-${f.size}-${f.lastModified}`;
-        const isVideo = f.type.startsWith("video/");
+        const isVideo = isUploadVideoFile(f);
         const purpose = isVideo ? "post_video" : "post_image";
-        const maxBytes = isVideo ? 200 * 1024 * 1024 : 10 * 1024 * 1024;
+        const maxBytes = isVideo ? POST_VIDEO_MAX_BYTES : POST_IMAGE_MAX_BYTES;
         if (f.size > maxBytes) {
           pushToast({ kind: "error", message: `${f.name} ${t("composer_too_large")}` });
           continue;
         }
         const nextItems = [...media, ...uploaded];
-        if (isVideo && nextItems.filter((item) => item.type === "video").length >= 1) {
+        if (isVideo && nextItems.length > 0) {
+          pushToast({ kind: "error", message: "视频动态只能上传 1 个视频，不能和图片混合" });
+          continue;
+        }
+        if (!isVideo && nextItems.some((item) => item.type === "video")) {
+          pushToast({ kind: "error", message: "视频动态不能再添加图片" });
+          continue;
+        }
+        if (isVideo && nextItems.filter((item) => item.type === "video").length >= POST_VIDEO_LIMIT) {
           pushToast({ kind: "error", message: "每个帖子最多上传 1 个视频" });
           continue;
         }
-        if (!isVideo && nextItems.filter((item) => item.type === "image").length >= 9) {
+        if (!isVideo && nextItems.filter((item) => item.type === "image").length >= POST_IMAGE_LIMIT) {
           pushToast({ kind: "error", message: "每个帖子最多上传 9 张图片" });
           continue;
         }
-        setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: 0, status: "准备上传" } }));
+        setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: 0, status: "准备上传", file: f } }));
         try {
           const videoMeta = isVideo ? await readVideoMetadata(f) : { duration: 0, width: 0, height: 0 };
+          const poster = isVideo ? await captureVideoPoster(f) : null;
+          if (poster?.previewUrl) localPreviewUrlsRef.current.push(poster.previewUrl);
+          let posterFileId = "";
+          let posterUrl = "";
+          if (poster) {
+            setUploadProgress((prev) => ({
+              ...prev,
+              [key]: { name: f.name, progress: 0.04, status: "生成封面", file: f, previewUrl: poster.previewUrl },
+            }));
+            const posterUpload = await api.uploadFile(poster.file, {
+              purpose: "video_thumbnail",
+              entityType: "video",
+              width: poster.width,
+              height: poster.height,
+              metadata: { sourceVideoName: f.name },
+              onProgress: (event) => {
+                const status = event.stage === "success" ? "封面完成" : "上传封面";
+                setUploadProgress((prev) => ({
+                  ...prev,
+                  [key]: {
+                    name: f.name,
+                    progress: Math.min(0.22, event.progress * 0.22),
+                    status,
+                    file: f,
+                    previewUrl: poster.previewUrl,
+                  },
+                }));
+              },
+            });
+            posterFileId = posterUpload.file.id;
+            posterUrl = posterUpload.media.thumbnailUrl || posterUpload.media.thumbnail_url || posterUpload.media.url || poster.previewUrl;
+          }
           const m = await api.uploadMediaBase64(f, {
             purpose,
             duration: videoMeta.duration,
             width: videoMeta.width,
             height: videoMeta.height,
-            metadata: isVideo ? { durationSeconds: videoMeta.duration } : {},
+            metadata: isVideo ? {
+              durationSeconds: videoMeta.duration,
+              thumbnailFileId: posterFileId,
+              thumbnail_file_id: posterFileId,
+              posterFileId,
+            } : {},
             onProgress: (event) => {
               const status = event.stage === "presign" ? "准备上传" : event.stage === "uploading" ? "上传中" : event.stage === "complete" ? "确认中" : event.stage === "success" ? "已完成" : "失败";
-              setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: event.progress, status } }));
+              const progress = isVideo && poster ? 0.22 + event.progress * 0.78 : event.progress;
+              setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress, status, file: f, previewUrl: poster?.previewUrl } }));
             },
           });
-          uploaded.push(m);
-          setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: 1, status: "已完成" } }));
+          if (isVideo) {
+            const previewUrl = m.thumbnailUrl || m.thumbnail_url || m.thumbUrl || m.thumb_url || m.posterUrl || m.poster_url || posterUrl || poster?.previewUrl || "";
+            uploaded.push({
+              ...m,
+              thumbnailUrl: m.thumbnailUrl || previewUrl || undefined,
+              thumbnail_url: m.thumbnail_url || previewUrl || undefined,
+              thumbUrl: m.thumbUrl || previewUrl || undefined,
+              thumb_url: m.thumb_url || previewUrl,
+              posterUrl: m.posterUrl || previewUrl || undefined,
+              poster_url: m.poster_url || previewUrl || undefined,
+            });
+          } else {
+            uploaded.push(m);
+          }
+          setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: 1, status: "已完成", previewUrl: poster?.previewUrl } }));
         } catch (err) {
-          setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: 0, status: "失败", error: (err as APIError).message } }));
+          setUploadProgress((prev) => ({ ...prev, [key]: { ...prev[key], name: f.name, progress: prev[key]?.progress || 0, status: "失败", error: (err as APIError).message, file: f } }));
         }
       }
-      setMedia((prev) => [...prev, ...uploaded].slice(0, 10));
+      setMedia((prev) => {
+        const next = [...prev, ...uploaded];
+        return next.some((item) => item.type === "video") ? next.slice(0, POST_VIDEO_LIMIT) : next.slice(0, POST_IMAGE_LIMIT);
+      });
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
@@ -482,16 +667,14 @@ export function Composer() {
                       media.length === 1 ? "aspect-[4/3]" : "aspect-square",
                     )}
                   >
-                    {m.type === "video" ? (
+                    {isVideoMedia(m) ? (
                       <>
-                        <video
-                          src={m.url}
-                          poster={m.thumb_url && m.thumb_url !== m.url ? m.thumb_url : undefined}
-                          className="w-full h-full object-cover"
-                          muted
-                          playsInline
-                          preload="metadata"
-                        />
+                        {mediaPreviewImageUrl(m) ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={mediaPreviewImageUrl(m)} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" />
+                        ) : (
+                          <span className="absolute inset-0 bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.16),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)]" />
+                        )}
                         <span className="absolute inset-0 grid place-items-center bg-black/10">
                           <span className="grid h-10 w-10 place-items-center rounded-full bg-black/60 text-white">
                             <Play className="h-5 w-5" />
@@ -500,7 +683,7 @@ export function Composer() {
                       </>
                     ) : (
                       // eslint-disable-next-line @next/next/no-img-element
-                      <img src={m.thumb_url || m.url} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
+                      <img src={mediaPreviewImageUrl(m) || m.url} alt="" className="w-full h-full object-cover" loading="lazy" decoding="async" />
                     )}
                     <button
                       type="button"
@@ -516,19 +699,50 @@ export function Composer() {
             ) : null}
             {Object.keys(uploadProgress).length ? (
               <div className="mt-3 space-y-1.5">
-                {Object.entries(uploadProgress).map(([key, item]) => (
-                  <div key={key} className="rounded-kx-md bg-kx-soft px-3 py-2 text-xs">
-                    <div className="flex items-center gap-2">
-                      <span className="min-w-0 flex-1 truncate font-semibold text-kx-text">{item.name}</span>
-                      <span className={item.error ? "font-semibold text-kx-danger" : "font-semibold text-kx-muted"}>{item.error ? "失败" : item.status}</span>
-                    </div>
-                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-kx-stroke/50">
-                      <div className="h-full rounded-full bg-kx-accent transition-all" style={{ width: `${Math.round(item.progress * 100)}%` }} />
-                    </div>
-                    {item.error ? <p className="mt-1 text-kx-danger">{item.error}，请重新选择文件重试。</p> : null}
-                  </div>
-                ))}
-              </div>
+	                {Object.entries(uploadProgress).map(([key, item]) => (
+	                  <div key={key} className="rounded-kx-md bg-kx-soft px-3 py-2 text-xs">
+	                    <div className="flex items-center gap-2">
+	                      {item.previewUrl ? (
+	                        // eslint-disable-next-line @next/next/no-img-element
+	                        <img src={item.previewUrl} alt="" className="h-9 w-12 shrink-0 rounded-kx-sm object-cover" />
+	                      ) : null}
+	                      <span className="min-w-0 flex-1 truncate font-semibold text-kx-text">{item.name}</span>
+	                      <span className={item.error ? "font-semibold text-kx-danger" : "font-semibold text-kx-muted"}>
+	                        {item.error ? "失败" : item.status} {Math.round(item.progress * 100)}%
+	                      </span>
+	                    </div>
+	                    <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-kx-stroke/50">
+	                      <div className="h-full rounded-full bg-kx-accent transition-all" style={{ width: `${Math.round(item.progress * 100)}%` }} />
+	                    </div>
+	                    {item.error ? (
+	                      <div className="mt-1.5 flex items-center gap-2 text-kx-danger">
+	                        <p className="min-w-0 flex-1">{item.error}</p>
+	                        {item.file ? (
+	                          <button
+	                            type="button"
+	                            className="font-bold text-kx-accent hover:underline disabled:opacity-50"
+	                            disabled={uploading}
+	                            onClick={() => onFiles([item.file!])}
+	                          >
+	                            重试
+	                          </button>
+	                        ) : null}
+	                        <button
+	                          type="button"
+	                          className="font-bold text-kx-muted hover:text-kx-text"
+	                          onClick={() => setUploadProgress((prev) => {
+	                            const next = { ...prev };
+	                            delete next[key];
+	                            return next;
+	                          })}
+	                        >
+	                          清除
+	                        </button>
+	                      </div>
+	                    ) : null}
+	                  </div>
+	                ))}
+	              </div>
             ) : null}
             {tags.length ? (
               <div className="flex flex-wrap gap-1.5 mt-3">
@@ -547,12 +761,19 @@ export function Composer() {
                 ))}
               </div>
             ) : null}
-            <div className="flex items-center gap-2 mt-3">
-              <button
-                onClick={() => fileInput.current?.click()}
-                className="kx-button-ghost"
-                disabled={uploading}
-              >
+	            <div className="flex items-center gap-2 mt-3">
+	              <button
+	                onClick={() => {
+	                  if (!user) {
+	                    openAuthPrompt("publish");
+	                    return;
+	                  }
+	                  fileInput.current?.click();
+	                }}
+	                className="kx-button-ghost"
+	                disabled={uploading || mediaLimitReached}
+	                title={hasVideo ? "已添加视频" : imageCount >= POST_IMAGE_LIMIT ? "最多上传 9 张图片" : undefined}
+	              >
                 {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
                 {t("composer_media")}
               </button>
@@ -592,10 +813,12 @@ export function Composer() {
               accept="image/*,video/*"
               multiple
               className="hidden"
-              onChange={(e) => {
-                if (e.target.files) onFiles(e.target.files);
-                e.target.value = "";
-              }}
+	              onChange={(e) => {
+	                // Snapshot before clearing: FileList is live and value="" empties it.
+	                const files = Array.from(e.target.files ?? []);
+	                e.target.value = "";
+	                if (files.length) onFiles(files);
+	              }}
             />
           </div>
         </div>

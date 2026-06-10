@@ -4,7 +4,7 @@ import { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { AlertCircle, Loader2 } from "lucide-react";
-import { api, writeToken } from "@/lib/api";
+import { api } from "@/lib/api";
 import { useSession, useToasts } from "@/lib/store";
 import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { detectAuthLocale } from "@/lib/authLocale";
@@ -13,7 +13,6 @@ const COPY = {
   zh: {
     loading: "正在完成 Google 登录…",
     denied: "Google 登录未完成，请重新尝试。",
-    missing: "登录回调缺少 token，请重新尝试。",
     failed: "Google 登录已返回，但账号会话初始化失败。请重新尝试。",
     back: "返回登录",
     welcome: (name: string) => `欢迎回来，${name}`,
@@ -21,7 +20,6 @@ const COPY = {
   ja: {
     loading: "Google ログインを完了しています…",
     denied: "Google ログインが完了しませんでした。もう一度お試しください。",
-    missing: "ログイン用 token がありません。もう一度お試しください。",
     failed: "Google ログイン後のセッション初期化に失敗しました。もう一度お試しください。",
     back: "ログインへ戻る",
     welcome: (name: string) => `おかえりなさい、${name}`,
@@ -29,7 +27,6 @@ const COPY = {
   en: {
     loading: "Finishing Google sign-in…",
     denied: "Google sign-in was not completed. Please try again.",
-    missing: "The login callback is missing a token. Please try again.",
     failed: "Google returned successfully, but the session could not be initialized.",
     back: "Back to login",
     welcome: (name: string) => `Welcome back, ${name}`,
@@ -55,7 +52,6 @@ function GoogleCallbackInner() {
   const search = useSearchParams();
   const setUser = useSession((s) => s.setUser);
   const pushToast = useToasts((s) => s.push);
-  const token = search.get("token");
   const error = search.get("error");
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect")), [search]);
   const locale = useMemo(() => detectAuthLocale(), []);
@@ -66,12 +62,7 @@ function GoogleCallbackInner() {
     let cancelled = false;
     async function finish() {
       if (error) return;
-      if (!token) {
-        setMessage(copy.missing);
-        return;
-      }
       try {
-        writeToken(token);
         const user = await api.me();
         if (cancelled) return;
         setUser(user);
@@ -85,9 +76,9 @@ function GoogleCallbackInner() {
     return () => {
       cancelled = true;
     };
-  }, [error, token, redirect, router, setUser, pushToast, copy]);
+  }, [error, redirect, router, setUser, pushToast, copy]);
 
-  const failed = Boolean(error || !token || message.includes("失败") || message.includes("缺少"));
+  const failed = Boolean(error || message === copy.failed);
   return (
     <main className="kx-auth-page grid min-h-dvh place-items-center px-4 py-10">
       <section className="w-full max-w-md rounded-[28px] border border-kx-stroke bg-kx-card p-6 text-center shadow-kx-glow">

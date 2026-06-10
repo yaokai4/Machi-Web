@@ -31,10 +31,10 @@ export default function MessagesPage() {
     refetchInterval: 30000,
   });
 
-  const peerSearch = useQuery({
-    queryKey: ["peer-search", debouncedSearch],
-    queryFn: () => api.search(debouncedSearch, "user"),
-    enabled: debouncedSearch.length > 0 && newOpen,
+  const mutualFriends = useQuery({
+    queryKey: ["mutual-message-friends", debouncedSearch],
+    queryFn: () => api.mutualMessageFriends({ q: debouncedSearch, limit: 50 }),
+    enabled: newOpen,
   });
 
   const startConversation = async (peerId: string) => {
@@ -94,7 +94,7 @@ export default function MessagesPage() {
                       ) : null}
                     </div>
                     <div className="text-sm text-kx-subtle truncate mt-0.5">
-                      {conv.last_message?.content || (conv.last_message?.media?.length ? "[图片]" : "开始对话…")}
+                      {conversationPreview(conv.last_message)}
                     </div>
                   </div>
                   {conv.unread_count > 0 ? (
@@ -121,20 +121,26 @@ export default function MessagesPage() {
       )}
 
       <Dialog open={newOpen} onClose={() => setNewOpen(false)} title={t("msg_new")}>
-        <div className="flex items-center gap-2 mb-2">
-          <Search className="w-4 h-4 text-kx-muted" />
-          <input
+	        <div className="flex items-center gap-2 mb-2">
+	          <Search className="w-4 h-4 text-kx-muted" />
+	          <input
             className="kx-input flex-1"
             placeholder={t("msg_search_user")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            autoFocus
-          />
-        </div>
-        <ul className="max-h-72 overflow-y-auto divide-y divide-kx-stroke/30">
-          {(peerSearch.data?.users || []).map((u) => (
-            <li key={u.id}>
-              <button className="w-full flex items-center gap-2.5 px-2 py-2 hover:bg-kx-soft rounded-kx-sm" onClick={() => startConversation(u.id)}>
+	            autoFocus
+	          />
+	        </div>
+	        <p className="mb-2 text-xs text-kx-muted">{t("msg_mutual_only")}</p>
+	        <ul className="max-h-72 overflow-y-auto divide-y divide-kx-stroke/30">
+	          {mutualFriends.isLoading ? (
+	            <li className="px-2 py-3">
+	              <InlineLoading />
+	            </li>
+	          ) : null}
+	          {(mutualFriends.data || []).map((u) => (
+	            <li key={u.id}>
+	              <button className="w-full flex items-center gap-2.5 px-2 py-2 hover:bg-kx-soft rounded-kx-sm" onClick={() => startConversation(u.id)}>
                 <Avatar user={u} size={36} />
                 <div className="min-w-0 flex-1 text-left">
                   <div className="font-semibold text-sm truncate flex items-center gap-1">
@@ -143,14 +149,28 @@ export default function MessagesPage() {
                   </div>
                   <div className="text-xs text-kx-muted">@{u.handle}</div>
                 </div>
-              </button>
-            </li>
-          ))}
-          {debouncedSearch && !peerSearch.isLoading && !(peerSearch.data?.users || []).length ? (
-            <li className="text-sm text-kx-muted px-2 py-3">{t("msg_no_users")}</li>
-          ) : null}
-        </ul>
+	              </button>
+	            </li>
+	          ))}
+	          {!mutualFriends.isLoading && !(mutualFriends.data || []).length ? (
+	            <li className="text-sm text-kx-muted px-2 py-3">{t("msg_no_users")}</li>
+	          ) : null}
+	        </ul>
       </Dialog>
     </AppShell>
   );
+}
+
+function conversationPreview(message?: { content?: string; media?: Array<{ type?: string }>; attachments?: Array<{ type?: string; attachment_type?: string }> } | null): string {
+  if (!message) return "开始对话…";
+  if (message.content?.trim()) return message.content;
+  const attachment = message.attachments?.[0];
+  const kind = attachment?.type || attachment?.attachment_type;
+  if (kind === "video") return "[视频]";
+  if (kind === "image") return "[图片]";
+  if (message.attachments?.length) return "[附件]";
+  const mediaKind = message.media?.[0]?.type;
+  if (mediaKind === "video") return "[视频]";
+  if (message.media?.length) return "[图片]";
+  return "开始对话…";
 }

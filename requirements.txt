@@ -1,14 +1,15 @@
-# The Machi backend (server.py) runs on the Python standard library alone.
+# Production dependencies:
+# - `cryptography` enables payment verification and AES-GCM private media.
+# - `boto3` enables S3/CloudFront upload flows through the instance role.
+# - `psycopg2-binary` enables the PostgreSQL backend and migration tool.
 #
-# The ONLY optional dependency is `cryptography`, required when you enable
-# the REAL WeChat Pay / Alipay providers:
+# Real payment providers:
 #   - WeChat Pay v3: RSA request signing + AES-GCM webhook decryption
 #   - Alipay: RSA2 signing + signature verification
 #   - Apple IAP: JWS (ES256) signature verification for Production txns
 #
-# It is NOT needed for mock mode (PAYMENT_MOCK_ENABLED=1, dev only) or if
-# you only use Apple IAP on iOS in Sandbox.
-#
-# Install on the server with:  sudo python3 -m pip install -r requirements.txt
+# The deploy script installs these into /opt/kaix/.venv.
 cryptography>=42.0
 boto3>=1.34
+psycopg2-binary>=2.9.9,<3
+Pillow>=10.4,<12

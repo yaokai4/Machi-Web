@@ -18,9 +18,9 @@ import { EmptyState, ErrorState, PostSkeleton } from "@/components/design/States
 import { ChannelEmptyState } from "@/components/feed/ChannelEmptyState";
 import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type Locale } from "@/lib/i18n";
 import { Avatar } from "@/components/design/Avatar";
-import { regionAccountPatch, regionFromUser, regionHeaderLabel, type RegionInfo } from "@/lib/regions";
+import { regionAccountPatch, regionFromUser, regionHeaderLabel, regionShortLabel, type RegionInfo } from "@/lib/regions";
 import clsx from "clsx";
 
 type HotScope = "city" | "country" | "all";
@@ -52,7 +52,8 @@ export default function HomeClient() {
   const userCity = user?.city;
   const userRegionCode = user?.current_region_code;
   const currentRegion = regionFromUser(user);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const copy = homeCopy(locale);
   const MODES: { value: FeedMode; label: string }[] = [
     { value: "recommend", label: t("tab_recommend") },
     { value: "local", label: t("tab_local") },
@@ -60,9 +61,9 @@ export default function HomeClient() {
     { value: "hot", label: t("tab_hot") },
   ];
   const HOT_SCOPES: { value: HotScope; label: string }[] = [
-    { value: "city", label: "城市" },
-    { value: "country", label: "国家" },
-    { value: "all", label: "全站" },
+    { value: "city", label: copy.hotCity },
+    { value: "country", label: copy.hotCountry },
+    { value: "all", label: copy.hotAll },
   ];
   // Memo'd so the feed query's useMemo deps don't see a fresh object
   // reference on every render — without this the feed re-derives the
@@ -137,7 +138,7 @@ export default function HomeClient() {
       setUser(next);
       queryClient.invalidateQueries({ queryKey: ["feed"] });
       queryClient.invalidateQueries({ queryKey: ["explore-hot-city"] });
-      pushToast({ kind: "success", message: `已切换到 ${region.city_name}` });
+      pushToast({ kind: "success", message: copy.switched(regionShortLabel(region, locale)) });
     } catch (err) {
       if (isAuthRequiredError(err)) {
         openAuthPrompt("generic");
@@ -163,7 +164,7 @@ export default function HomeClient() {
       <div data-scrolled={scrolled ? "true" : "false"} className="sticky top-0 z-30 kx-glass-bar px-3 pt-2 pb-2 flex flex-col gap-2">
         <div className="flex items-center gap-2">
           {user ? (
-            <Link href="/me" aria-label="我的">
+            <Link href="/me" aria-label={t("nav_profile")}>
               <Avatar user={user} size={44} />
             </Link>
           ) : null}
@@ -172,10 +173,10 @@ export default function HomeClient() {
             type="button"
             onClick={() => (user ? setRegionPickerOpen(true) : openAuthPrompt("generic"))}
             className="ml-auto inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-white/95 px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgba(37,99,235,0.75)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35 dark:bg-kx-card/[0.9] dark:hover:bg-kx-accentSoft/55"
-            title="切换地区"
+            title={copy.switchRegion}
           >
             <span className="max-w-[7.5rem] truncate">
-              {regionHeaderLabel(currentRegion)}
+              {regionHeaderLabel(currentRegion, locale)}
             </span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-kx-muted" />
           </button>
@@ -212,13 +213,13 @@ export default function HomeClient() {
                 event.preventDefault();
                 goToSearch(event.currentTarget.value);
               }}
-              placeholder="搜索租房、语言交换、工作、活动、本地问题..."
+              placeholder={copy.searchPlaceholder}
               className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold text-kx-text placeholder:text-kx-muted focus:outline-none"
             />
           </label>
           {searchDraft.trim() ? (
             <button type="submit" className="h-10 rounded-full bg-kx-accent px-4 text-sm font-black text-white shadow-[0_14px_30px_-22px_rgba(37,99,235,0.85)] transition hover:bg-blue-700">
-              搜索
+              {copy.search}
             </button>
           ) : null}
         </form>
@@ -258,7 +259,7 @@ export default function HomeClient() {
             <PostSkeleton />
           </>
         ) : feed.isError ? (
-          <ErrorState title="页面暂时无法加载" onRetry={() => feed.refetch()} subtitle="首页内容暂时无法加载，请稍后再试。" />
+          <ErrorState title={copy.loadErrorTitle} onRetry={() => feed.refetch()} subtitle={copy.loadErrorSubtitle} />
         ) : items.length === 0 ? (
           mode === "following" ? (
             <EmptyState
@@ -270,10 +271,10 @@ export default function HomeClient() {
               <div className="rounded-full bg-kx-soft p-3">
                 <MapPin className="h-6 w-6 text-kx-accent" />
               </div>
-              <div className="mt-3 text-base font-semibold text-kx-text">选择当前城市</div>
-              <div className="mt-2 max-w-sm text-sm text-kx-subtle">同城流会根据你的当前地区展示本地动态、经验分享、问答、攻略片段和活动讨论。</div>
+              <div className="mt-3 text-base font-semibold text-kx-text">{copy.pickCityTitle}</div>
+              <div className="mt-2 max-w-sm text-sm text-kx-subtle">{copy.pickCitySubtitle}</div>
               <button type="button" className="kx-button-primary mt-4" onClick={() => (user ? setRegionPickerOpen(true) : openAuthPrompt("generic"))}>
-                选择城市
+                {copy.pickCityAction}
               </button>
             </div>
           ) : (
@@ -307,4 +308,69 @@ export default function HomeClient() {
       />
     </AppShell>
   );
+}
+
+function homeCopy(locale: Locale) {
+  switch (locale) {
+    case "en":
+      return {
+        hotCity: "City",
+        hotCountry: "Country",
+        hotAll: "All",
+        switchRegion: "Switch region",
+        search: "Search",
+        searchPlaceholder: "Search housing, language exchange, jobs, events, and local questions...",
+        switched: (region: string) => `Switched to ${region}`,
+        loadErrorTitle: "This page cannot load right now",
+        loadErrorSubtitle: "The home feed cannot load at the moment. Please try again later.",
+        pickCityTitle: "Choose your current city",
+        pickCitySubtitle: "The local feed uses your current region to show local updates, lived experience, Q&A, guide snippets, and event discussions.",
+        pickCityAction: "Choose City",
+      };
+    case "ja":
+      return {
+        hotCity: "街",
+        hotCountry: "国",
+        hotAll: "全体",
+        switchRegion: "地域を切り替え",
+        search: "検索",
+        searchPlaceholder: "住まい、言語交換、仕事、イベント、地域の質問を検索...",
+        switched: (region: string) => `${region}に切り替えました`,
+        loadErrorTitle: "ページを読み込めません",
+        loadErrorSubtitle: "ホームフィードを現在読み込めません。時間を置いてもう一度お試しください。",
+        pickCityTitle: "現在の街を選択",
+        pickCitySubtitle: "地域フィードは現在の地域をもとに、ローカル情報、体験談、Q&A、ガイド、イベントの会話を表示します。",
+        pickCityAction: "街を選択",
+      };
+    case "zh-Hant":
+      return {
+        hotCity: "城市",
+        hotCountry: "國家",
+        hotAll: "全站",
+        switchRegion: "切換地區",
+        search: "搜尋",
+        searchPlaceholder: "搜尋租房、語言交換、工作、活動、本地問題...",
+        switched: (region: string) => `已切換到 ${region}`,
+        loadErrorTitle: "頁面暫時無法載入",
+        loadErrorSubtitle: "首頁內容暫時無法載入，請稍後再試。",
+        pickCityTitle: "選擇目前城市",
+        pickCitySubtitle: "同城流會根據你的目前地區展示本地動態、經驗分享、問答、攻略片段和活動討論。",
+        pickCityAction: "選擇城市",
+      };
+    default:
+      return {
+        hotCity: "城市",
+        hotCountry: "国家",
+        hotAll: "全站",
+        switchRegion: "切换地区",
+        search: "搜索",
+        searchPlaceholder: "搜索租房、语言交换、工作、活动、本地问题...",
+        switched: (region: string) => `已切换到 ${region}`,
+        loadErrorTitle: "页面暂时无法加载",
+        loadErrorSubtitle: "首页内容暂时无法加载，请稍后再试。",
+        pickCityTitle: "选择当前城市",
+        pickCitySubtitle: "同城流会根据你的当前地区展示本地动态、经验分享、问答、攻略片段和活动讨论。",
+        pickCityAction: "选择城市",
+      };
+  }
 }

@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { api, readToken, writeToken } from "./api";
+import { api, writeToken } from "./api";
 import { useSession, useSettings } from "./store";
 
 export function SessionBootstrap({ children }: { children: React.ReactNode }) {
@@ -12,11 +12,6 @@ export function SessionBootstrap({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    const token = readToken();
-    if (!token) {
-      setStatus("unauthed");
-      return;
-    }
     setStatus("loading");
     api
       .me()

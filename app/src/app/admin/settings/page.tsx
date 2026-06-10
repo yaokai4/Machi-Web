@@ -5,8 +5,8 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, ArrowDown, ArrowLeft, ArrowUp, Cpu, FileImage, Globe, HardDrive, ImageIcon, LayoutGrid, Network, Plus, Save, Settings, ShieldCheck, Server, Trash2, Upload, Wand2, type LucideIcon } from "lucide-react";
-import { api, APIError, type AdminMediaItem, type MarketingCopyBlock, type SiteSettings } from "@/lib/api";
+import { Activity, ArrowDown, ArrowLeft, ArrowUp, Cpu, FileImage, Flame, Globe, HardDrive, ImageIcon, LayoutGrid, Network, Plus, Save, Settings, ShieldCheck, Server, Trash2, Upload, Wand2, type LucideIcon } from "lucide-react";
+import { api, APIError, isUploadImageFile, type AdminMediaItem, type MarketingCopyBlock, type SiteSettings } from "@/lib/api";
 import {
   ALL_CHANNELS,
   DEFAULT_DISCOVER_ENTRANCES,
@@ -65,6 +65,7 @@ export default function AdminSettingsPage() {
         <MediaLibraryCard />
         <MarketingCoverageCard />
         <ContentModerationCard />
+        <ExploreRankingSettingsCard />
         <DiscoverEntrancesCard />
         <QuickCopyCard />
       </main>
@@ -93,7 +94,7 @@ function ServerMetricsCard() {
       <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <Metric icon={Cpu} label="CPU 负载" value={pct(m.cpu.load_percent)} helper={`1m ${m.load_average.one.toFixed(2)} · ${m.cpu.count} cores`} />
         <Metric icon={Activity} label="内存" value={pct(m.memory.used_percent)} helper={`${formatBytes(m.memory.used_bytes)} / ${formatBytes(m.memory.total_bytes)}`} />
-        <Metric icon={HardDrive} label="存储空间" value={pct(m.disk.used_percent)} helper={`${formatBytes(m.disk.free_bytes)} 可用`} />
+        <Metric icon={HardDrive} label="存储空间" value={pct(m.disk.used_percent)} helper={`${formatBytes(m.disk.used_bytes)} / ${formatBytes(m.disk.total_bytes)} · ${formatBytes(m.disk.free_bytes)} 可用 · ${m.disk.path}`} />
         <Metric icon={Network} label="网络累计" value={formatBytes(m.network.rx_bytes + m.network.tx_bytes)} helper={`入 ${formatBytes(m.network.rx_bytes)} · 出 ${formatBytes(m.network.tx_bytes)}`} />
       </div>
       <p className="mt-2 text-[11px] text-kx-muted">服务时间：{fullDateTime(m.server_time)} · 进程 {m.process.pid} · 线程 {m.process.threads}</p>
@@ -119,7 +120,7 @@ function SiteBrandSettingsCard() {
   const update = (key: keyof SiteSettings, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
   const uploadLogo = async (file?: File | null) => {
     if (!file) return;
-    if (!file.type.startsWith("image/")) {
+    if (!isUploadImageFile(file)) {
       pushToast({ kind: "error", message: "Logo 只能上传图片文件" });
       return;
     }
@@ -551,6 +552,123 @@ function ContentModerationCard() {
       <div className="mt-3 inline-flex items-center gap-2 rounded-full bg-kx-soft/60 px-3 py-1.5 text-xs font-bold">
         <span className={`h-2 w-2 rounded-full ${enabled ? "bg-emerald-500" : "bg-amber-500"}`} />
         {enabled ? "审核中：新发布需管理员通过后展示" : "已关闭：新发布立即公开展示"}
+      </div>
+    </section>
+  );
+}
+
+const EXPLORE_NUMERIC_FIELDS: Array<{ key: keyof SiteSettings; label: string; min: number; max: number; step?: string; helper: string }> = [
+  { key: "explore_happening_days", label: "正在发生窗口天数", min: 1, max: 30, helper: "默认 3 天，超过窗口的内容只在 fallback 时补充。" },
+  { key: "explore_hot_days", label: "热榜窗口天数", min: 1, max: 60, helper: "默认 10 天，首页热榜和发现热榜共用。" },
+  { key: "explore_topic_days", label: "话题窗口天数", min: 1, max: 60, helper: "默认 7 天，按话题使用量和互动热度排序。" },
+  { key: "explore_like_weight", label: "点赞权重", min: 0, max: 50, step: "0.1", helper: "默认 3。" },
+  { key: "explore_comment_weight", label: "评论权重", min: 0, max: 50, step: "0.1", helper: "默认 5。" },
+  { key: "explore_repost_weight", label: "转发权重", min: 0, max: 50, step: "0.1", helper: "默认 6。" },
+  { key: "explore_favorite_weight", label: "收藏权重", min: 0, max: 50, step: "0.1", helper: "默认 4。" },
+  { key: "explore_view_weight", label: "浏览权重", min: 0, max: 10, step: "0.1", helper: "默认 0.2，避免浏览量压过真实互动。" },
+  { key: "explore_time_decay_weight", label: "新鲜度加权", min: 0, max: 50, step: "0.1", helper: "默认 8，越新越有轻微加成。" },
+  { key: "explore_report_penalty", label: "举报惩罚", min: 0, max: 200, step: "1", helper: "默认 20，被举报内容会被降权或排除。" },
+  { key: "explore_min_display", label: "最小展示数量", min: 0, max: 30, helper: "不足时按 fallback 规则补最近优质内容。" },
+];
+
+const EXPLORE_SWITCH_FIELDS: Array<{ key: keyof SiteSettings; label: string; helper: string }> = [
+  { key: "explore_fallback_enabled", label: "启用 fallback", helper: "窗口内内容不足时补充近期内容。" },
+  { key: "explore_city_isolated", label: "按城市隔离", helper: "开启后正在发生/热榜优先只看当前城市。" },
+  { key: "explore_exclude_reported", label: "排除被举报内容", helper: "开启后 report_count 大于 0 的内容不进榜。" },
+  { key: "explore_exclude_low_quality", label: "排除低质量内容", helper: "过滤正文过短且无媒体的内容。" },
+  { key: "explore_exclude_banned_users", label: "排除封禁用户内容", helper: "过滤已删除/封禁用户的内容。" },
+];
+
+function ExploreRankingSettingsCard() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
+  const [form, setForm] = useState<Partial<SiteSettings> | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (q.data && form === null) setForm(q.data);
+  }, [q.data, form]);
+
+  if (q.isError) return <ErrorState title="发现排序配置加载失败" onRetry={() => q.refetch()} />;
+  if (!form) return <section className="kx-card"><InlineLoading /></section>;
+
+  const update = (key: keyof SiteSettings, value: string) => setForm((current) => ({ ...(current || {}), [key]: value }));
+  const save = async () => {
+    setSaving(true);
+    try {
+      const patch: Partial<SiteSettings> = {};
+      for (const field of EXPLORE_NUMERIC_FIELDS) {
+        const raw = Number(form[field.key] || 0);
+        const safe = Number.isFinite(raw) ? Math.max(field.min, Math.min(raw, field.max)) : field.min;
+        patch[field.key] = String(safe);
+      }
+      for (const field of EXPLORE_SWITCH_FIELDS) {
+        patch[field.key] = form[field.key] === "0" ? "0" : "1";
+      }
+      await api.adminUpdateSiteSettings(patch);
+      await api.clearCache();
+      await queryClient.invalidateQueries({ queryKey: ["admin-site-settings"] });
+      await queryClient.invalidateQueries({ queryKey: ["explore-happening"] });
+      await queryClient.invalidateQueries({ queryKey: ["explore-hot"] });
+      await queryClient.invalidateQueries({ queryKey: ["explore-topics"] });
+      pushToast({ kind: "success", message: "发现排序配置已保存，榜单缓存已刷新" });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="kx-card">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="inline-flex items-center gap-2 text-base font-bold"><Flame className="h-4 w-4 text-kx-accent" />发现页 · 热度排序</h2>
+          <p className="mt-1 text-xs text-kx-muted">控制正在发生、热榜和话题的时间窗口、权重、fallback 和排除规则。保存后 Web、iOS、Android 统一生效。</p>
+        </div>
+        <button type="button" className="kx-button-primary h-9 px-3 text-xs" onClick={save} disabled={saving}>
+          <Save className="h-3.5 w-3.5" /> {saving ? "保存中…" : "保存排序配置"}
+        </button>
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {EXPLORE_NUMERIC_FIELDS.map((field) => (
+          <Field key={field.key} label={field.label}>
+            <input
+              className="kx-input h-10"
+              type="number"
+              min={field.min}
+              max={field.max}
+              step={field.step || "1"}
+              value={form[field.key] || ""}
+              onChange={(event) => update(field.key, event.target.value)}
+            />
+            <p className="mt-1 text-[11px] leading-4 text-kx-muted">{field.helper}</p>
+          </Field>
+        ))}
+      </div>
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+        {EXPLORE_SWITCH_FIELDS.map((field) => {
+          const enabled = form[field.key] !== "0";
+          return (
+            <button
+              key={field.key}
+              type="button"
+              role="switch"
+              aria-checked={enabled}
+              onClick={() => update(field.key, enabled ? "0" : "1")}
+              className={`rounded-kx-md border p-3 text-left transition ${enabled ? "border-kx-accent/35 bg-kx-accentSoft/60" : "border-kx-stroke/60 bg-kx-soft/30"}`}
+            >
+              <span className="flex items-center justify-between gap-3">
+                <span className="text-sm font-black text-kx-text">{field.label}</span>
+                <span className={`relative h-6 w-11 rounded-full transition ${enabled ? "bg-kx-accent" : "bg-kx-soft ring-1 ring-inset ring-kx-stroke/60"}`}>
+                  <span className={`absolute top-1 h-4 w-4 rounded-full bg-white shadow transition-all ${enabled ? "left-6" : "left-1"}`} />
+                </span>
+              </span>
+              <span className="mt-1 block text-xs leading-5 text-kx-muted">{field.helper}</span>
+            </button>
+          );
+        })}
       </div>
     </section>
   );

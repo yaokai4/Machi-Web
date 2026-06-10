@@ -2,15 +2,30 @@
 
 import { ChevronRight, MapPin } from "lucide-react";
 import { useSession } from "@/lib/store";
-import { regionDisplayName, regionFromUser } from "@/lib/regions";
+import { regionDisplayName, regionFromUser, regionShortLabel } from "@/lib/regions";
+import { useI18n } from "@/lib/i18n";
 
 /// Card surfacing the user's currently-browsing region. Mirrors the iOS
 /// `CurrentRegionCard` and gives the discover landing page a clear
 /// "you're here" frame.
 export function CurrentRegionCard({ onChange }: { onChange?: () => void }) {
   const user = useSession((s) => s.user);
+  const { locale } = useI18n();
   const region = regionFromUser(user);
-  const title = region ? `${region.country_name} · ${region.city_name}` : "选择当前城市";
+  const title = regionDisplayName(region, locale);
+  const city = regionShortLabel(region, locale);
+  const subtitle = region
+    ? locale === "ja"
+      ? `ホーム、発見、ランキングは${city}を中心に更新されます`
+      : locale === "en"
+        ? `Home, Discover and Trending refresh around ${city}`
+        : `首页、发现和热榜会围绕${city}更新`
+    : locale === "ja"
+      ? "都市を選ぶと、ホーム、発見、ランキングに地域コンテンツが表示されます"
+      : locale === "en"
+        ? "Choose a city to make Home, Discover and Trending local"
+        : "选择城市后，首页、发现和热榜会围绕本地内容展开";
+  const switchLabel = locale === "ja" ? "都市を切り替え" : locale === "en" ? "Switch city" : "切换城市";
 
   return (
     <button
@@ -24,17 +39,15 @@ export function CurrentRegionCard({ onChange }: { onChange?: () => void }) {
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-sm font-bold text-kx-text truncate">
-            {region ? title : regionDisplayName(region)}
+            {title}
           </div>
           <div className="text-[11px] text-kx-muted truncate">
-            {region
-              ? `首页、发现和热榜会围绕${region.city_name}更新`
-              : "选择城市后，首页、发现和热榜会围绕本地内容展开"}
+            {subtitle}
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
           <MapPin className="w-3.5 h-3.5 text-kx-accent" />
-          <span className="text-xs font-bold text-kx-accent">切换城市</span>
+          <span className="text-xs font-bold text-kx-accent">{switchLabel}</span>
           <ChevronRight className="w-3.5 h-3.5 text-kx-muted" />
         </div>
       </div>

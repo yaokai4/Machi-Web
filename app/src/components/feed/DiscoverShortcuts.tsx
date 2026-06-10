@@ -12,14 +12,17 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import {
   ALL_CHANNELS,
-  CHANNEL_GROUPS,
   parseDiscoverEntrances,
   getChannelByKey,
+  getChannelCopy,
+  getChannelToolLabel,
+  getLocalizedChannelGroups,
   getChannelContentTypes,
   normalizeChannelKey,
   type ChannelConfig,
   type ChannelKey,
 } from "@/config/channels";
+import { useI18n } from "@/lib/i18n";
 
 export type ExploreChannelSlug = ChannelKey;
 export type ExploreChannelSpec = ChannelConfig;
@@ -42,19 +45,21 @@ export function DiscoverShortcutGrid({
   getChannelHref?: (slug: ExploreChannelSlug) => string;
 }) {
   const [isChannelDialogOpen, setIsChannelDialogOpen] = useState(false);
+  const { locale } = useI18n();
   const siteSettings = useQuery({ queryKey: ["site-settings"], queryFn: () => api.siteSettings(), staleTime: 300_000 });
+  const copy = discoverShortcutCopy(locale);
   const entrances = parseDiscoverEntrances(siteSettings.data?.discover_entrances);
   const primaryEntries = entrances
     .filter((e) => e.enabled && e.tier === "primary")
     .flatMap((e) => {
       const spec = CHANNEL_BY_SLUG.get(e.channel);
-      return spec ? [{ spec, title: e.title, subtitle: e.subtitle }] : [];
+      return spec ? [{ spec, title: entranceTitle(spec, e.title, locale), subtitle: entranceSubtitle(spec, e.subtitle, locale) }] : [];
     });
   const secondaryEntries = entrances
     .filter((e) => e.enabled && e.tier === "secondary")
     .flatMap((e) => {
       const spec = CHANNEL_BY_SLUG.get(e.channel);
-      return spec ? [{ spec, title: e.title }] : [];
+      return spec ? [{ spec, title: entranceTitle(spec, e.title, locale) }] : [];
     });
 
   const closeDialog = () => {
@@ -72,13 +77,13 @@ export function DiscoverShortcutGrid({
         <div className="kx-discover-panel-header">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <h2 className="text-[17px] font-extrabold text-kx-text/90">城市入口</h2>
-              <p className="mt-1 text-sm leading-5 text-kx-subtle">二手、租房、找工作、本地服务……每件事都有自己的入口。选好城市，直接进到你现在需要的板块，浏览和发布都更快一步。</p>
+              <h2 className="text-[17px] font-extrabold text-kx-text/90">{copy.title}</h2>
+              <p className="mt-1 text-sm leading-5 text-kx-subtle">{copy.subtitle}</p>
             </div>
             <button
               data-explore-all-channels
               type="button"
-              aria-label="打开更多频道"
+              aria-label={copy.openMoreAria}
               onClick={(event) => {
                 event.preventDefault();
                 event.stopPropagation();
@@ -87,7 +92,7 @@ export function DiscoverShortcutGrid({
               className="group inline-flex h-9 w-fit shrink-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-accentSoft/70 px-3 text-xs font-black text-kx-accent shadow-[0_10px_28px_-20px_rgba(37,99,235,0.55)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft"
             >
               <Sparkles className="h-3.5 w-3.5" />
-              更多频道
+              {copy.more}
               <ChevronRight className="h-3.5 w-3.5 transition group-hover:translate-x-0.5" />
             </button>
           </div>
@@ -137,6 +142,7 @@ export function DiscoverShortcutGrid({
         <AllChannelDialog
           selectedChannel={selectedChannel}
           getChannelHref={getChannelHref}
+          locale={locale}
           onClose={closeDialog}
           onSelect={(slug) => {
             onSelectChannel(slug);
@@ -167,11 +173,13 @@ function ChannelHeroLink({ spec, title, subtitle, active, href }: { spec: Explor
 function AllChannelDialog({
   selectedChannel,
   getChannelHref,
+  locale,
   onClose,
   onSelect,
 }: {
   selectedChannel?: ExploreChannelSlug;
   getChannelHref?: (slug: ExploreChannelSlug) => string;
+  locale: ReturnType<typeof useI18n>["locale"];
   onClose: () => void;
   onSelect: (slug: ExploreChannelSlug) => void;
 }) {
@@ -197,12 +205,15 @@ function AllChannelDialog({
   }, [onClose]);
 
   if (!mounted) return null;
+  const copy = discoverShortcutCopy(locale);
+  const groups = getLocalizedChannelGroups(locale);
+  const toolLabel = getChannelToolLabel(locale);
 
   return createPortal(
     <div className="fixed inset-0 z-[90]">
       <button
         type="button"
-        aria-label="关闭更多频道"
+        aria-label={copy.closeMoreAria}
         onClick={onClose}
         className="absolute inset-0 bg-kx-text/35 backdrop-blur-[2px]"
       />
@@ -223,8 +234,8 @@ function AllChannelDialog({
         <div className="mx-auto mt-3 h-1.5 w-12 rounded-full bg-kx-stroke/55 md:hidden" />
         <div className="flex items-start justify-between gap-4 border-b border-kx-stroke/40 px-5 py-4">
           <div>
-            <h3 id="all-channel-title" className="text-lg font-semibold text-kx-text">全部频道</h3>
-            <p className="mt-1 text-sm text-kx-subtle">按使用场景分组，投票、长文、匿名提问只作为发布工具。</p>
+            <h3 id="all-channel-title" className="text-lg font-semibold text-kx-text">{copy.allChannels}</h3>
+            <p className="mt-1 text-sm text-kx-subtle">{copy.allChannelsSubtitle}</p>
           </div>
           <button type="button" onClick={onClose} className="grid h-9 w-9 place-items-center rounded-full border border-kx-stroke/55 text-kx-muted transition hover:bg-kx-soft hover:text-kx-text">
             <X className="h-4 w-4" />
@@ -232,7 +243,7 @@ function AllChannelDialog({
         </div>
         <div className="max-h-[calc(75dvh-92px)] overflow-y-auto px-5 py-4 md:max-h-[calc(100vh-220px)]">
           <div className="space-y-5">
-            {CHANNEL_GROUPS.map((group) => (
+            {groups.map((group) => (
               <div key={group.title}>
                 <h4 className="mb-2 text-xs font-semibold uppercase tracking-[0.08em] text-kx-muted">{group.title}</h4>
                 <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -253,7 +264,7 @@ function AllChannelDialog({
                         <span className="min-w-0">
                           <span className="block text-sm font-semibold text-kx-text">{item.label}</span>
                           <span className="block truncate text-xs text-kx-subtle">{item.subtitle}</span>
-                          {item.tool ? <span className="mt-1 inline-flex rounded-full bg-kx-soft px-2 py-0.5 text-[10px] font-bold text-kx-subtle">发布工具</span> : null}
+                          {item.tool ? <span className="mt-1 inline-flex rounded-full bg-kx-soft px-2 py-0.5 text-[10px] font-bold text-kx-subtle">{toolLabel}</span> : null}
                         </span>
                       </>
                     );
@@ -261,7 +272,7 @@ function AllChannelDialog({
                       <Link
                         key={`${group.title}-${item.label}`}
                         href={getChannelHref(slug)}
-                        aria-label={`查看${item.label}`}
+                        aria-label={copy.viewChannel(item.label)}
                         onClick={onClose}
                         className={itemClass}
                       >
@@ -271,7 +282,7 @@ function AllChannelDialog({
                       <button
                         key={`${group.title}-${item.label}`}
                         type="button"
-                        aria-label={`查看${item.label}`}
+                        aria-label={copy.viewChannel(item.label)}
                         onClick={() => onSelect(slug)}
                         className={itemClass}
                       >
@@ -288,6 +299,65 @@ function AllChannelDialog({
     </div>,
     document.body,
   );
+}
+
+function entranceTitle(spec: ExploreChannelSpec, title: string | undefined, locale: ReturnType<typeof useI18n>["locale"]) {
+  if (locale === "zh-Hans" || locale === "zh-Hant") return title || getChannelCopy(spec, locale).title;
+  return getChannelCopy(spec, locale).title;
+}
+
+function entranceSubtitle(spec: ExploreChannelSpec, subtitle: string | undefined, locale: ReturnType<typeof useI18n>["locale"]) {
+  if (locale === "zh-Hans" || locale === "zh-Hant") return subtitle || getChannelCopy(spec, locale).subtitle;
+  return getChannelCopy(spec, locale).subtitle;
+}
+
+function discoverShortcutCopy(locale: ReturnType<typeof useI18n>["locale"]) {
+  switch (locale) {
+    case "en":
+      return {
+        title: "City Entrances",
+        subtitle: "Marketplace, housing, jobs, and local services each have their own lane. Pick a city and jump straight into the section you need.",
+        more: "More Channels",
+        openMoreAria: "Open more channels",
+        closeMoreAria: "Close more channels",
+        allChannels: "All Channels",
+        allChannelsSubtitle: "Grouped by use case. Polls, long posts, and anonymous questions are publishing tools.",
+        viewChannel: (label: string) => `View ${label}`,
+      };
+    case "ja":
+      return {
+        title: "街の入口",
+        subtitle: "フリマ、住まい、仕事、ローカルサービスを用途別に整理。街を選ぶだけで必要な場所へすぐ移動できます。",
+        more: "さらに表示",
+        openMoreAria: "さらにチャンネルを開く",
+        closeMoreAria: "チャンネル一覧を閉じる",
+        allChannels: "すべてのチャンネル",
+        allChannelsSubtitle: "用途別に整理しています。投票、長文、匿名質問は投稿ツールです。",
+        viewChannel: (label: string) => `${label}を見る`,
+      };
+    case "zh-Hant":
+      return {
+        title: "城市入口",
+        subtitle: "二手、租房、找工作、本地服務，每件事都有自己的入口。選好城市，直接進到你現在需要的板塊。",
+        more: "更多頻道",
+        openMoreAria: "打開更多頻道",
+        closeMoreAria: "關閉更多頻道",
+        allChannels: "全部頻道",
+        allChannelsSubtitle: "按使用場景分組，投票、長文、匿名提問只作為發布工具。",
+        viewChannel: (label: string) => `查看${label}`,
+      };
+    default:
+      return {
+        title: "城市入口",
+        subtitle: "二手、租房、找工作、本地服务，每件事都有自己的入口。选好城市，直接进到你现在需要的板块。",
+        more: "更多频道",
+        openMoreAria: "打开更多频道",
+        closeMoreAria: "关闭更多频道",
+        allChannels: "全部频道",
+        allChannelsSubtitle: "按使用场景分组，投票、长文、匿名提问只作为发布工具。",
+        viewChannel: (label: string) => `查看${label}`,
+      };
+  }
 }
 
 function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec; title?: string; subtitle?: string }) {

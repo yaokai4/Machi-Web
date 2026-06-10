@@ -198,6 +198,234 @@ export function getChannelContentTypes(value?: string | null): ContentType[] | u
   return getChannelByKey(value)?.contentTypes;
 }
 
+export type ChannelLocale = "zh-Hans" | "zh-Hant" | "en" | "ja";
+
+const CHANNEL_COPY: Record<ChannelKey, Record<ChannelLocale, { title: string; subtitle: string }>> = {
+  news: {
+    "zh-Hans": { title: "本地快讯", subtitle: "本地新闻、交通和生活提醒" },
+    "zh-Hant": { title: "本地快訊", subtitle: "本地新聞、交通和生活提醒" },
+    en: { title: "Local News", subtitle: "Local news, transit updates, and city alerts" },
+    ja: { title: "ローカル速報", subtitle: "地域ニュース、交通情報、生活のお知らせ" },
+  },
+  guide: {
+    "zh-Hans": { title: "城市指南", subtitle: "攻略、经验、长文和避坑" },
+    "zh-Hant": { title: "城市指南", subtitle: "攻略、經驗、長文和避坑" },
+    en: { title: "City Guide", subtitle: "Guides, lived experience, long reads, and warnings" },
+    ja: { title: "街のガイド", subtitle: "攻略、体験談、長文、注意喚起" },
+  },
+  market: {
+    "zh-Hans": { title: "二手市场", subtitle: "闲置、求购、搬家出清" },
+    "zh-Hant": { title: "二手市場", subtitle: "閒置、求購、搬家出清" },
+    en: { title: "Marketplace", subtitle: "Secondhand items, wanted posts, and moving sales" },
+    ja: { title: "フリマ", subtitle: "中古品、探し物、引っ越し処分" },
+  },
+  housing: {
+    "zh-Hans": { title: "租房", subtitle: "合租、短租、房源信息" },
+    "zh-Hant": { title: "租房", subtitle: "合租、短租、房源資訊" },
+    en: { title: "Housing", subtitle: "Rooms, shares, short stays, and listings" },
+    ja: { title: "住まい", subtitle: "シェア、短期滞在、物件情報" },
+  },
+  jobs: {
+    "zh-Hans": { title: "工作", subtitle: "兼职、全职、招聘和内推" },
+    "zh-Hant": { title: "工作", subtitle: "兼職、全職、招聘和內推" },
+    en: { title: "Jobs", subtitle: "Part-time, full-time, hiring, and referrals" },
+    ja: { title: "仕事", subtitle: "アルバイト、正社員、求人、紹介" },
+  },
+  services: {
+    "zh-Hans": { title: "本地服务", subtitle: "翻译、手续、接机、生活支持" },
+    "zh-Hant": { title: "本地服務", subtitle: "翻譯、手續、接機、生活支援" },
+    en: { title: "Local Services", subtitle: "Translation, paperwork, airport pickup, and support" },
+    ja: { title: "ローカルサービス", subtitle: "通訳、手続き、送迎、生活サポート" },
+  },
+  deals: {
+    "zh-Hans": { title: "商家优惠", subtitle: "折扣福利、本地商家活动" },
+    "zh-Hant": { title: "商家優惠", subtitle: "折扣福利、本地商家活動" },
+    en: { title: "Deals", subtitle: "Discounts, perks, and local business offers" },
+    ja: { title: "お得情報", subtitle: "割引、特典、地域店舗のキャンペーン" },
+  },
+  groups: {
+    "zh-Hans": { title: "活动小组", subtitle: "Food meetup、语言交换、本地小组" },
+    "zh-Hant": { title: "活動小組", subtitle: "Food meetup、語言交換、本地小組" },
+    en: { title: "Groups & Events", subtitle: "Food meetups, language exchange, and local groups" },
+    ja: { title: "イベント・グループ", subtitle: "食事会、言語交換、地域グループ" },
+  },
+  qa: {
+    "zh-Hans": { title: "问答互助", subtitle: "问答、匿名提问和生活求助" },
+    "zh-Hant": { title: "問答互助", subtitle: "問答、匿名提問和生活求助" },
+    en: { title: "Q&A Help", subtitle: "Questions, anonymous posts, and everyday help" },
+    ja: { title: "Q&A・相談", subtitle: "質問、匿名相談、生活の困りごと" },
+  },
+};
+
+export function getChannelCopy(channel: ChannelKey | ChannelConfig, locale: ChannelLocale = "zh-Hans") {
+  const key = typeof channel === "string" ? channel : channel.key;
+  return CHANNEL_COPY[key]?.[locale] || CHANNEL_COPY[key]?.["zh-Hans"] || { title: typeof channel === "string" ? channel : channel.title, subtitle: typeof channel === "string" ? "" : channel.subtitle };
+}
+
+export function getChannelTitle(channel: ChannelKey | ChannelConfig, locale: ChannelLocale = "zh-Hans") {
+  return getChannelCopy(channel, locale).title;
+}
+
+export function getChannelSubtitle(channel: ChannelKey | ChannelConfig, locale: ChannelLocale = "zh-Hans") {
+  return getChannelCopy(channel, locale).subtitle;
+}
+
+const GROUP_TITLE_COPY: Record<string, Record<ChannelLocale, string>> = {
+  城市信息: { "zh-Hans": "城市信息", "zh-Hant": "城市資訊", en: "City Info", ja: "街の情報" },
+  交易生活: { "zh-Hans": "交易生活", "zh-Hant": "交易生活", en: "Living & Trading", ja: "暮らし・取引" },
+  机会工作: { "zh-Hans": "机会工作", "zh-Hant": "機會工作", en: "Jobs & Opportunities", ja: "仕事・機会" },
+  本地连接: { "zh-Hans": "本地连接", "zh-Hant": "本地連結", en: "Local Connections", ja: "地域のつながり" },
+  服务商家: { "zh-Hans": "服务商家", "zh-Hant": "服務商家", en: "Services & Businesses", ja: "サービス・店舗" },
+  内容工具: { "zh-Hans": "内容工具", "zh-Hant": "內容工具", en: "Publishing Tools", ja: "投稿ツール" },
+};
+
+const GROUP_ITEM_COPY: Record<string, Record<ChannelLocale, { label: string; subtitle: string }>> = {
+  本地快讯: {
+    "zh-Hans": { label: "本地快讯", subtitle: "新闻、公告、交通提醒" },
+    "zh-Hant": { label: "本地快訊", subtitle: "新聞、公告、交通提醒" },
+    en: { label: "Local News", subtitle: "News, notices, transit alerts" },
+    ja: { label: "ローカル速報", subtitle: "ニュース、告知、交通情報" },
+  },
+  城市指南: {
+    "zh-Hans": { label: "城市指南", subtitle: "攻略、长文、生活经验" },
+    "zh-Hant": { label: "城市指南", subtitle: "攻略、長文、生活經驗" },
+    en: { label: "City Guide", subtitle: "Guides, long reads, lived tips" },
+    ja: { label: "街のガイド", subtitle: "攻略、長文、生活の知恵" },
+  },
+  问答互助: {
+    "zh-Hans": { label: "问答互助", subtitle: "本地求助和匿名提问" },
+    "zh-Hant": { label: "問答互助", subtitle: "本地求助和匿名提問" },
+    en: { label: "Q&A Help", subtitle: "Local questions and anonymous help" },
+    ja: { label: "Q&A・相談", subtitle: "地域の相談と匿名質問" },
+  },
+  避坑经验: {
+    "zh-Hans": { label: "避坑经验", subtitle: "风险提醒和踩雷复盘" },
+    "zh-Hant": { label: "避坑經驗", subtitle: "風險提醒和踩雷復盤" },
+    en: { label: "Warnings", subtitle: "Risk alerts and cautionary stories" },
+    ja: { label: "注意喚起", subtitle: "リスク情報と失敗談" },
+  },
+  二手市场: {
+    "zh-Hans": { label: "二手市场", subtitle: "闲置、求购、搬家出清" },
+    "zh-Hant": { label: "二手市場", subtitle: "閒置、求購、搬家出清" },
+    en: { label: "Marketplace", subtitle: "Secondhand, wanted, moving sales" },
+    ja: { label: "フリマ", subtitle: "中古品、探し物、引っ越し処分" },
+  },
+  租房: {
+    "zh-Hans": { label: "租房", subtitle: "房源库、合租、短租" },
+    "zh-Hant": { label: "租房", subtitle: "房源庫、合租、短租" },
+    en: { label: "Housing", subtitle: "Listings, shares, short stays" },
+    ja: { label: "住まい", subtitle: "物件、シェア、短期滞在" },
+  },
+  商家优惠: {
+    "zh-Hans": { label: "商家优惠", subtitle: "折扣、福利和本地优惠" },
+    "zh-Hant": { label: "商家優惠", subtitle: "折扣、福利和本地優惠" },
+    en: { label: "Deals", subtitle: "Discounts, perks, local offers" },
+    ja: { label: "お得情報", subtitle: "割引、特典、地域のオファー" },
+  },
+  找工作: {
+    "zh-Hans": { label: "找工作", subtitle: "兼职、全职、求职线索" },
+    "zh-Hant": { label: "找工作", subtitle: "兼職、全職、求職線索" },
+    en: { label: "Find Jobs", subtitle: "Part-time, full-time, job leads" },
+    ja: { label: "仕事を探す", subtitle: "アルバイト、正社員、求人情報" },
+  },
+  招聘: {
+    "zh-Hans": { label: "招聘", subtitle: "职位发布和招聘方认证" },
+    "zh-Hant": { label: "招聘", subtitle: "職位發布和招聘方認證" },
+    en: { label: "Hiring", subtitle: "Job posts and employer verification" },
+    ja: { label: "採用", subtitle: "求人投稿と雇用主認証" },
+  },
+  内推: {
+    "zh-Hans": { label: "内推", subtitle: "公司内推和会员可见线索" },
+    "zh-Hant": { label: "內推", subtitle: "公司內推和會員可見線索" },
+    en: { label: "Referrals", subtitle: "Company referrals and member-only leads" },
+    ja: { label: "紹介", subtitle: "企業紹介と会員向け情報" },
+  },
+  活动小组: {
+    "zh-Hans": { label: "活动小组", subtitle: "公开城市活动和本地小组" },
+    "zh-Hant": { label: "活動小組", subtitle: "公開城市活動和本地小組" },
+    en: { label: "Groups & Events", subtitle: "Public events and local groups" },
+    ja: { label: "イベント・グループ", subtitle: "公開イベントと地域グループ" },
+  },
+  语言交换: {
+    "zh-Hans": { label: "语言交换", subtitle: "公开语言学习活动" },
+    "zh-Hant": { label: "語言交換", subtitle: "公開語言學習活動" },
+    en: { label: "Language Exchange", subtitle: "Public language learning events" },
+    ja: { label: "言語交換", subtitle: "公開の語学イベント" },
+  },
+  "Food meetup": {
+    "zh-Hans": { label: "Food meetup", subtitle: "餐厅、咖啡和小型饭局" },
+    "zh-Hant": { label: "Food meetup", subtitle: "餐廳、咖啡和小型飯局" },
+    en: { label: "Food Meetup", subtitle: "Restaurants, coffee, small meals" },
+    ja: { label: "食事会", subtitle: "レストラン、カフェ、小さな集まり" },
+  },
+  本地小组: {
+    "zh-Hans": { label: "本地小组", subtitle: "运动、周末活动、城市散步" },
+    "zh-Hant": { label: "本地小組", subtitle: "運動、週末活動、城市散步" },
+    en: { label: "Local Groups", subtitle: "Sports, weekends, city walks" },
+    ja: { label: "地域グループ", subtitle: "運動、週末イベント、街歩き" },
+  },
+  本地服务: {
+    "zh-Hans": { label: "本地服务", subtitle: "翻译、手续、接机、生活支持" },
+    "zh-Hant": { label: "本地服務", subtitle: "翻譯、手續、接機、生活支援" },
+    en: { label: "Local Services", subtitle: "Translation, paperwork, pickup, support" },
+    ja: { label: "ローカルサービス", subtitle: "通訳、手続き、送迎、生活支援" },
+  },
+  商家: {
+    "zh-Hans": { label: "商家", subtitle: "本地店铺和服务商资料" },
+    "zh-Hant": { label: "商家", subtitle: "本地店鋪和服務商資料" },
+    en: { label: "Businesses", subtitle: "Local shops and provider profiles" },
+    ja: { label: "店舗", subtitle: "地域店舗とサービス事業者" },
+  },
+  认证商家: {
+    "zh-Hans": { label: "认证商家", subtitle: "已提交认证资料的商家" },
+    "zh-Hant": { label: "認證商家", subtitle: "已提交認證資料的商家" },
+    en: { label: "Verified Businesses", subtitle: "Businesses with submitted credentials" },
+    ja: { label: "認証済み店舗", subtitle: "認証資料を提出済みの店舗" },
+  },
+  投票: {
+    "zh-Hans": { label: "投票", subtitle: "作为发帖工具使用" },
+    "zh-Hant": { label: "投票", subtitle: "作為發帖工具使用" },
+    en: { label: "Poll", subtitle: "Use as a post tool" },
+    ja: { label: "投票", subtitle: "投稿ツールとして使用" },
+  },
+  长文: {
+    "zh-Hans": { label: "长文", subtitle: "作为内容形式使用" },
+    "zh-Hant": { label: "長文", subtitle: "作為內容形式使用" },
+    en: { label: "Long Post", subtitle: "Use as a content format" },
+    ja: { label: "長文", subtitle: "コンテンツ形式として使用" },
+  },
+  匿名提问: {
+    "zh-Hans": { label: "匿名提问", subtitle: "匿名问答/生活吐槽" },
+    "zh-Hant": { label: "匿名提問", subtitle: "匿名問答/生活吐槽" },
+    en: { label: "Anonymous Question", subtitle: "Anonymous Q&A and daily concerns" },
+    ja: { label: "匿名質問", subtitle: "匿名Q&A・生活相談" },
+  },
+};
+
+export function getLocalizedChannelGroups(locale: ChannelLocale = "zh-Hans") {
+  return CHANNEL_GROUPS.map((group) => ({
+    ...group,
+    title: GROUP_TITLE_COPY[group.title]?.[locale] || group.title,
+    items: group.items.map((item) => {
+      const copy = GROUP_ITEM_COPY[item.label]?.[locale];
+      return copy ? { ...item, ...copy } : item;
+    }),
+  }));
+}
+
+export function getChannelToolLabel(locale: ChannelLocale = "zh-Hans") {
+  switch (locale) {
+    case "en":
+      return "Tool";
+    case "ja":
+      return "投稿ツール";
+    case "zh-Hant":
+      return "發布工具";
+    default:
+      return "发布工具";
+  }
+}
+
 export function buildChannelHref(
   citySlug: string | null | undefined,
   channelKey: ChannelKey,

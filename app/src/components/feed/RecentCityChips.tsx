@@ -4,7 +4,8 @@ import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, APIError } from "@/lib/api";
 import { useSession, useToasts } from "@/lib/store";
-import { regionAccountPatch, regionHeaderLabel, resolveRegion } from "@/lib/regions";
+import { regionAccountPatch, regionShortLabel, resolveRegion } from "@/lib/regions";
+import { useI18n } from "@/lib/i18n";
 
 /// Horizontal chip row showing the user's recently-visited city codes.
 /// Mirrors iOS `recentRegionsSection`. Empty list → renders nothing.
@@ -14,6 +15,7 @@ export function RecentCityChips() {
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
   const [busy, setBusy] = useState<string | null>(null);
+  const { locale } = useI18n();
   const currentCountry = user?.country || "jp";
   const recent = (user?.recent_region_codes ?? []).filter((code) => resolveRegion(code)?.country_code === currentCountry);
   if (!recent.length) return null;
@@ -27,7 +29,7 @@ export function RecentCityChips() {
       setUser(next);
       queryClient.invalidateQueries({ queryKey: ["feed"] });
       queryClient.invalidateQueries({ queryKey: ["explore-hot-city"] });
-      pushToast({ kind: "success", message: `已切换到 ${region.city_name}` });
+      pushToast({ kind: "success", message: `已切换到 ${regionShortLabel(region, locale)}` });
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
     } finally {
@@ -50,7 +52,7 @@ export function RecentCityChips() {
               className="shrink-0 inline-flex items-center gap-1 h-9 px-3 rounded-full bg-kx-card border border-kx-stroke/60 text-sm font-semibold text-kx-text hover:border-kx-accent/40 hover:bg-kx-soft/80 hover:shadow-sm transition disabled:opacity-60"
             >
               <span>{region?.country_emoji || "🌐"}</span>
-              <span className="truncate max-w-[7rem]">{region ? regionHeaderLabel(region).replace(`${region.country_emoji} `, "") : code}</span>
+              <span className="truncate max-w-[7rem]">{region ? regionShortLabel(region, locale) : code}</span>
             </button>
           );
         })}

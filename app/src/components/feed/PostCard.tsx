@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { memo, useState, useTransition, useRef, useEffect } from "react";
+import { memo, useState, useRef, useEffect } from "react";
 import clsx from "clsx";
 import {
   Bookmark,
@@ -39,14 +39,17 @@ interface PostCardProps {
   showOriginal?: boolean;
 }
 
-function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal = true }: PostCardProps) {
+type BusyInteraction = "like" | "bookmark" | "repost" | null;
+
+function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false, showOriginal = true }: PostCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const currentUser = useSession((s) => s.user);
-  const { t } = useI18n();
-  const [isPending, startTransition] = useTransition();
+  const { t, locale } = useI18n();
+  const [post, setPost] = useState(incomingPost);
+  const [busyInteraction, setBusyInteraction] = useState<BusyInteraction>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [quoteOpen, setQuoteOpen] = useState(false);
@@ -62,6 +65,10 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState("inappropriate");
 
+  useEffect(() => {
+    setPost(incomingPost);
+  }, [incomingPost]);
+
   // Decide which post to show: a pure repost shows the original; a
   // quote-repost shows both (current post + quoted preview).
   // Backend can return null for content (image-only posts, deleted
@@ -71,6 +78,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
   const isQuote = !!post.repost_of_id && postContent.trim().length > 0;
   const isPureRepost = !!post.repost_of_id && postContent.trim().length === 0;
   const displayPost = isPureRepost && post.original_post ? post.original_post : post;
+  const interactionPost = isPureRepost && post.original_post ? post.original_post : post;
   const displayAuthor = isPureRepost && post.original_post ? post.original_post.author : post.author;
   const displayMedia = isPureRepost && post.original_post ? post.original_post.media : post.media;
   const displayRegion = resolveRegion(displayPost.region_code) || makeRegion(displayPost.country, displayPost.province, displayPost.city);
@@ -84,9 +92,13 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
     </div>
   ) : null;
 
-  const isOwner = currentUser?.id === post.author_id;
+  const isOwner = currentUser?.id === post.author_id && !isPureRepost;
 
   const mutate = (next: KXPost) => {
+    setPost((current) => {
+      const replaced = replacePostInQueryData(current, next);
+      return isPostLike(replaced) ? replaced : current;
+    });
     onUpdate?.(next);
     queryClient.setQueriesData<unknown>({}, (data: unknown) => replacePostInQueryData(data, next));
     queryClient.setQueryData(["post", next.id], next);
@@ -94,77 +106,88 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
 
   const handleLike = () => {
     if (!currentUser) return openAuthPrompt("like");
-    const liked = Boolean(post.liked);
+    if (busyInteraction === "like") return;
+    const targetPost = interactionPost;
+    const liked = Boolean(targetPost.liked);
     const optimistic = {
-      ...post,
+      ...targetPost,
       liked: !liked,
-      like_count: Math.max(0, (post.like_count || 0) + (liked ? -1 : 1)),
+      like_count: Math.max(0, (targetPost.like_count || 0) + (liked ? -1 : 1)),
     };
-    onUpdate?.(optimistic);
-    startTransition(() => {
-      api
-        .toggleLike(post.id, !liked)
-        .then(mutate)
-        .catch((err) => {
-          onUpdate?.(post);
-          if (isAuthRequiredError(err)) {
-            openAuthPrompt("like");
-            return;
-          }
-          pushToast({ kind: "error", message: (err as APIError).message });
-        });
-    });
+    mutate(optimistic);
+    setBusyInteraction("like");
+    api
+      .toggleLike(targetPost.id, !liked)
+      .then(mutate)
+      .catch((err) => {
+        mutate(targetPost);
+        if (isAuthRequiredError(err)) {
+          openAuthPrompt("like");
+          return;
+        }
+        pushToast({ kind: "error", message: (err as APIError).message });
+      })
+      .finally(() => setBusyInteraction((current) => (current === "like" ? null : current)));
   };
 
   const handleBookmark = () => {
     if (!currentUser) return openAuthPrompt("bookmark");
-    const bookmarked = Boolean(post.bookmarked);
+    if (busyInteraction === "bookmark") return;
+    const targetPost = interactionPost;
+    const bookmarked = Boolean(targetPost.bookmarked);
     const optimistic = {
-      ...post,
+      ...targetPost,
       bookmarked: !bookmarked,
-      bookmark_count: Math.max(0, (post.bookmark_count || 0) + (bookmarked ? -1 : 1)),
+      bookmark_count: Math.max(0, (targetPost.bookmark_count || 0) + (bookmarked ? -1 : 1)),
     };
-    onUpdate?.(optimistic);
+    mutate(optimistic);
+    setBusyInteraction("bookmark");
     api
-      .toggleBookmark(post.id, !bookmarked)
+      .toggleBookmark(targetPost.id, !bookmarked)
       .then(mutate)
       .catch((err) => {
-        onUpdate?.(post);
+        mutate(targetPost);
         if (isAuthRequiredError(err)) {
           openAuthPrompt("bookmark");
           return;
         }
         pushToast({ kind: "error", message: (err as APIError).message });
-      });
+      })
+      .finally(() => setBusyInteraction((current) => (current === "bookmark" ? null : current)));
   };
 
   const handleRepost = (mode: "repost" | "undo") => {
     if (!currentUser) return openAuthPrompt("generic");
+    if (busyInteraction === "repost") return;
+    const targetPost = interactionPost;
     const on = mode === "repost";
-    const wasReposted = Boolean(post.reposted);
+    const wasReposted = Boolean(targetPost.reposted);
     const optimistic = {
-      ...post,
+      ...targetPost,
       reposted: on,
-      repost_count: Math.max(0, (post.repost_count || 0) + (on === wasReposted ? 0 : on ? 1 : -1)),
+      repost_count: Math.max(0, (targetPost.repost_count || 0) + (on === wasReposted ? 0 : on ? 1 : -1)),
     };
     mutate(optimistic);
+    setBusyInteraction("repost");
     api
-      .toggleRepost(post.id, on)
+      .toggleRepost(targetPost.id, on)
       .then((next) => {
         mutate(next);
         queryClient.invalidateQueries({ queryKey: ["feed"] });
         queryClient.invalidateQueries({ queryKey: ["trending"] });
-        queryClient.invalidateQueries({ queryKey: ["post", post.id] });
+        queryClient.invalidateQueries({ queryKey: ["profile-segment"] });
+        queryClient.invalidateQueries({ queryKey: ["post", targetPost.id] });
         pushToast({ kind: "success", message: on ? t("post_reposted") : t("action_undo_repost") });
       })
       .catch((err) => {
-        mutate(post);
+        mutate(targetPost);
         if (isAuthRequiredError(err)) {
           openAuthPrompt("generic");
           return;
         }
         pushToast({ kind: "error", message: (err as APIError).message });
-      });
+      })
+      .finally(() => setBusyInteraction((current) => (current === "repost" ? null : current)));
   };
 
   const handleQuote = () => {
@@ -172,12 +195,13 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
     const trimmed = quoteText.trim();
     if (!trimmed) return;
     api
-      .quoteRepost(post.id, trimmed)
+      .quoteRepost(interactionPost.id, trimmed)
       .then(() => {
         setQuoteOpen(false);
         setQuoteText("");
         pushToast({ kind: "success", message: t("post_quote_done") });
         queryClient.invalidateQueries({ queryKey: ["feed"] });
+        queryClient.invalidateQueries({ queryKey: ["profile-segment"] });
       })
       .catch((err) => {
         if (isAuthRequiredError(err)) {
@@ -240,7 +264,8 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
   };
 
   const handleShare = async () => {
-    const url = `${window.location.origin}/p/${post.id}`;
+    const sharePost = isPureRepost && displayPost ? displayPost : post;
+    const url = `${window.location.origin}/p/${sharePost.id}`;
     try {
       if (navigator.share) {
         await navigator.share({ url, text: (displayPost.content ?? "").slice(0, 80) });
@@ -253,14 +278,14 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
     }
   };
 
-  const openPost = () => router.push(`/p/${post.id}`);
+  const openPost = () => router.push(`/p/${(isPureRepost && displayPost ? displayPost : post).id}`);
 
   return (
     <article
       className={clsx(
         "kx-card cursor-pointer hover:bg-kx-card/95 hover:-translate-y-0.5 transition duration-200 relative",
         compact && "p-3",
-        isPending && "opacity-90",
+        busyInteraction && "opacity-90",
       )}
       onClick={(e) => {
         const target = e.target as HTMLElement;
@@ -293,7 +318,7 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
                     className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 font-semibold text-kx-accent hover:bg-kx-accent/10"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    {regionHeaderLabel(displayRegion)}
+                    {regionHeaderLabel(displayRegion, locale)}
                   </Link>
                 </>
               ) : null}
@@ -355,12 +380,13 @@ function PostCardImpl({ post, onUpdate, onDeleted, compact = false, showOriginal
           ) : null}
 
           <InteractionBar
-            post={post}
+            post={interactionPost}
             onLike={handleLike}
             onBookmark={handleBookmark}
             onRepost={handleRepost}
             onQuote={() => (currentUser ? setQuoteOpen(true) : openAuthPrompt("generic"))}
             onComment={openPost}
+            busyInteraction={busyInteraction}
           />
         </div>
 
@@ -839,6 +865,20 @@ function pollStateKey(post: KXPost): string {
   }
 }
 
+function interactionStateKey(post?: KXPost | null): string {
+  if (!post) return "";
+  return [
+    post.id,
+    post.like_count,
+    post.bookmark_count,
+    post.repost_count,
+    post.comment_count,
+    post.liked ? "1" : "0",
+    post.bookmarked ? "1" : "0",
+    post.reposted ? "1" : "0",
+  ].join(":");
+}
+
 function ContentText({ content }: { content: string }) {
   if (!content) return null;
   const segments = tokenizeContent(content);
@@ -906,6 +946,7 @@ function InteractionBar({
   onRepost,
   onQuote,
   onComment,
+  busyInteraction,
 }: {
   post: KXPost;
   onLike: () => void;
@@ -913,6 +954,7 @@ function InteractionBar({
   onRepost: (mode: "repost" | "undo") => void;
   onQuote: () => void;
   onComment: () => void;
+  busyInteraction?: BusyInteraction;
 }) {
   const { t } = useI18n();
   const [repostMenu, setRepostMenu] = useState(false);
@@ -929,7 +971,15 @@ function InteractionBar({
 
   return (
     <div className="mt-3 grid max-w-sm grid-cols-4 items-center gap-1 text-kx-subtle">
-      <button className="kx-metric" onClick={onComment} aria-label={t("action_comment")}>
+      <button
+        className="kx-metric"
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onComment();
+        }}
+        aria-label={t("action_comment")}
+      >
         <MessageCircle className="w-4 h-4" /> {compactNumber(post.comment_count)}
       </button>
       <div className="relative kx-stop" ref={repostButtonRef}>
@@ -937,8 +987,11 @@ function InteractionBar({
           className="kx-metric"
           data-active={post.reposted ? "repost" : undefined}
           aria-label={t("action_repost")}
+          disabled={busyInteraction === "repost"}
           onClick={(e) => {
+            e.preventDefault();
             e.stopPropagation();
+            if (busyInteraction === "repost") return;
             if (post.reposted) setRepostMenu(true);
             else onRepost("repost");
           }}
@@ -962,10 +1015,30 @@ function InteractionBar({
           </div>
         ) : null}
       </div>
-      <button className="kx-metric" data-active={post.liked ? "like" : undefined} onClick={onLike} aria-label={t("action_like")}>
+      <button
+        className="kx-metric"
+        data-active={post.liked ? "like" : undefined}
+        disabled={busyInteraction === "like"}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onLike();
+        }}
+        aria-label={t("action_like")}
+      >
         <Heart className={clsx("w-4 h-4", post.liked && "fill-kx-like")} /> {compactNumber(post.like_count)}
       </button>
-      <button className="kx-metric" data-active={post.bookmarked ? "bookmark" : undefined} onClick={onBookmark} aria-label={t("action_bookmark")}>
+      <button
+        className="kx-metric"
+        data-active={post.bookmarked ? "bookmark" : undefined}
+        disabled={busyInteraction === "bookmark"}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onBookmark();
+        }}
+        aria-label={t("action_bookmark")}
+      >
         <Bookmark className={clsx("w-4 h-4", post.bookmarked && "fill-kx-bookmark")} /> {compactNumber(post.bookmark_count)}
       </button>
     </div>
@@ -1062,6 +1135,7 @@ export const PostCard = memo(PostCardImpl, (prev, next) => {
     p.liked === n.liked &&
     p.bookmarked === n.bookmarked &&
     p.reposted === n.reposted &&
+    interactionStateKey(p.original_post) === interactionStateKey(n.original_post) &&
     pollStateKey(p) === pollStateKey(n) &&
     p.media.length === n.media.length &&
     p.tags.join(",") === n.tags.join(",") &&

@@ -13,6 +13,7 @@ import {
   FileText,
   HelpCircle,
   Languages,
+  LayoutDashboard,
   LogOut,
   MapPin,
   MessageSquareWarning,
@@ -276,6 +277,7 @@ export default function SettingsPage() {
       <div className="px-3 sm:px-4 py-3 space-y-3">
         <Section title="账号">
           <Row icon={UserIcon} label="编辑资料" sub={`@${user?.handle}`} href="/me" />
+          <Row icon={LayoutDashboard} label="我的工作台" sub="发布、咨询、订单和会员入口" href="/my/features" />
           <Row
             icon={Sparkles}
             label={t("mem_title")}
@@ -293,7 +295,7 @@ export default function SettingsPage() {
         </Section>
 
         <Section title="偏好">
-          <RowSwitch icon={MapPin} label="地区设置" valueLabel={regionDisplayName(currentRegion)}>
+          <RowSwitch icon={MapPin} label="地区设置" valueLabel={regionDisplayName(currentRegion, locale)}>
             <button type="button" onClick={() => setRegionOpen(true)} className="text-kx-accent text-sm font-bold hover:underline">
               切换
             </button>

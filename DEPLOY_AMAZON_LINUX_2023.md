@@ -113,6 +113,7 @@ KAIX_PASSWORD_PEPPER=$(python3 -c "import secrets; print(secrets.token_urlsafe(4
 KAIX_ALLOWED_ORIGINS=https://${DOMAIN},https://${WWW_DOMAIN}
 KAIX_HOST=127.0.0.1
 KAIX_PORT=8787
+KAIX_HTTP_REQUEST_QUEUE_SIZE=256
 KAIX_SESSION_TTL_DAYS=30
 KAIX_MAX_UPLOAD_BYTES=52428800
 KAIX_MAX_JSON_BYTES=262144
@@ -196,8 +197,9 @@ sudo journalctl -u kaix-web.service -n 120 --no-pager
 
 ```bash
 sudo tee /etc/nginx/conf.d/kaix.conf > /dev/null <<EOF
-limit_req_zone \$binary_remote_addr zone=kaix_api:10m  rate=10r/s;
+limit_req_zone \$binary_remote_addr zone=kaix_api:10m  rate=30r/s;
 limit_req_zone \$binary_remote_addr zone=kaix_auth:10m rate=2r/s;
+limit_req_status 429;
 
 upstream kaix_backend {
     server 127.0.0.1:8787;
@@ -219,7 +221,7 @@ server {
 
     proxy_set_header Host              \$host;
     proxy_set_header X-Real-IP         \$remote_addr;
-    proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-For   \$remote_addr;
     proxy_set_header X-Forwarded-Proto \$scheme;
     proxy_http_version 1.1;
     proxy_set_header Connection "";
@@ -239,7 +241,7 @@ server {
     }
 
     location /api/ {
-        limit_req zone=kaix_api burst=40 nodelay;
+        limit_req zone=kaix_api burst=100 nodelay;
         proxy_pass http://kaix_backend;
     }
 

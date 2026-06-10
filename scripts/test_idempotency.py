@@ -16,6 +16,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 # Isolate everything BEFORE importing server: module-level config reads
 # KAIX_DB_PATH at import time, so point it at a throwaway file first.
@@ -134,6 +135,48 @@ class IdempotencyLogicTests(unittest.TestCase):
         self.assertEqual(
             h._idempotency_lookup(self.conn, "POST", "/api/drafts"), (200, b'{"b":2}'))
 
+    def test_postgres_advisory_lock_is_stable_and_scope_specific(self):
+        h = make_handler({"Idempotency-Key": "shared"})
+        first = h._idempotency_lock_id("POST", "/api/posts")
+        self.assertEqual(first, h._idempotency_lock_id("POST", "/api/posts"))
+        self.assertNotEqual(first, h._idempotency_lock_id("POST", "/api/drafts"))
+        self.assertIsNone(h._idempotency_lock_id("GET", "/api/posts"))
+        self.assertIsNone(h._idempotency_lock_id("POST", "/api/auth/login"))
+
+    def test_postgres_advisory_lock_and_unlock_use_database(self):
+        class Cursor:
+            def fetchone(self):
+                return (True,)
+
+        class Connection:
+            def __init__(self):
+                self.calls = []
+
+            def execute(self, sql, params):
+                self.calls.append((sql, params))
+                return Cursor()
+
+        h = make_handler({"Idempotency-Key": "lock-me"})
+        conn = Connection()
+        with patch.object(server, "KAIX_DB_BACKEND", "postgres"):
+            lock_id = h._idempotency_advisory_lock(conn, "POST", "/api/posts")
+            h._idempotency_advisory_unlock(conn, lock_id)
+        self.assertEqual(
+            conn.calls,
+            [
+                ("SELECT pg_advisory_lock(?)", (lock_id,)),
+                ("SELECT pg_advisory_unlock(?)", (lock_id,)),
+            ],
+        )
+
+    def test_postgres_disables_process_wide_write_lock(self):
+        lock = server._BackendAwareDBLock()
+        with patch.object(server, "KAIX_DB_BACKEND", "postgres"):
+            self.assertTrue(lock.acquire(timeout=0))
+            lock.release()
+            with lock:
+                pass
+
 
 class MigrationAppliesInRealStartupTests(unittest.TestCase):
     """Run the real SCHEMA + MIGRATIONS chain on a throwaway DB and confirm
@@ -141,6 +184,13 @@ class MigrationAppliesInRealStartupTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls._db_path_patch = patch.object(server, "DB_PATH", Path(_TMP_DB))
+        cls._db_path_patch.start()
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(_TMP_DB + suffix)
+            except OSError:
+                pass
         server.init_db()  # SCHEMA + all MIGRATIONS (incl. 35) on the temp DB
         cls.db = sqlite3.connect(_TMP_DB)
         cls.db.row_factory = sqlite3.Row
@@ -153,6 +203,7 @@ class MigrationAppliesInRealStartupTests(unittest.TestCase):
                 os.unlink(_TMP_DB + suffix)
             except OSError:
                 pass
+        cls._db_path_patch.stop()
 
     def test_idempotency_table_exists(self):
         self.assertIsNotNone(self.db.execute(

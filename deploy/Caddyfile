@@ -10,6 +10,9 @@
 
 machicity.com, www.machicity.com {
 	encode gzip zstd
+	request_body {
+		max_size 320MB
+	}
 
 	header {
 		X-Frame-Options "DENY"

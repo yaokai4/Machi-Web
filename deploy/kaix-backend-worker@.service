@@ -5,9 +5,9 @@
 # so under high concurrency we run several instances behind the nginx
 # `upstream kaix_backend` block and let nginx load-balance.
 #
-# `%i` is the port. All workers share the SAME SQLite WAL database as the
-# primary (concurrent readers + a serialized writer) and must NOT run the
-# crawler scheduler (KAIX_ENABLE_SCHEDULERS=0) — only the primary does.
+# `%i` is the port. All workers share the same PostgreSQL database and must
+# NOT run the crawler scheduler (KAIX_ENABLE_SCHEDULERS=0) — only the primary
+# does.
 #
 # Enable as many workers as you have spare cores, e.g. on a 4-core box:
 #   sudo cp deploy/kaix-backend-worker@.service /etc/systemd/system/
@@ -35,7 +35,7 @@ EnvironmentFile=/etc/kaix.env
 # scheduler disabled so only the primary crawls.
 Environment=KAIX_PORT=%i
 Environment=KAIX_ENABLE_SCHEDULERS=0
-ExecStart=/usr/bin/python3 -u /opt/kaix/web/server.py
+ExecStart=/opt/kaix/.venv/bin/python -u /opt/kaix/web/server.py
 Restart=always
 RestartSec=3
 KillSignal=SIGTERM
