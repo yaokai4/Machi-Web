@@ -59,6 +59,7 @@ jobs:
           python scripts/test_anonymous_post_privacy.py
           python scripts/test_pg_xlate.py
           python scripts/test_seed_bot.py
+          python scripts/test_stripe_hardening.py
 
       - name: Verify SQLite to PostgreSQL migration and runtime
         env:
@@ -74,7 +75,10 @@ jobs:
           KAIX_PG_DSN="$PG_DSN" \
             python scripts/verify_sqlite_postgres_parity.py \
               --sqlite /tmp/machi-ci.db
+          # KAIX_CAPTCHA_ENABLED=0: the smoke register below is captcha-less
+          # by design (captcha has its own dedicated verification flow).
           KAIX_DB_BACKEND=postgres KAIX_PG_DSN="$PG_DSN" \
+            KAIX_CAPTCHA_ENABLED=0 \
             KAIX_ENABLE_SCHEDULERS=0 KAIX_HOST=127.0.0.1 KAIX_PORT=8787 \
             python server.py >/tmp/machi-api.log 2>&1 &
           API_PID=$!

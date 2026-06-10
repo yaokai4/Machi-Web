@@ -45,7 +45,7 @@ import {
   composeRegionCode,
   countryByCode,
 } from "@/lib/regions";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type Locale } from "@/lib/i18n";
 import {
   cleanListingText,
   compactListingFields,
@@ -86,6 +86,60 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   discount: ["全部", "餐饮", "生活", "学习", "搬家", "限时"],
   event: ["全部", "今天", "本周", "周末", "免费"],
 };
+
+// Display-only translations for the category chips. The zh value is the
+// CANONICAL wire/storage format (listings store and filter by it — see
+// `category = ?` in server.py), so only the label localizes, never the
+// value sent to the API.
+const CATEGORY_LABELS: Record<string, { ja: string; en: string }> = {
+  "全部": { ja: "すべて", en: "All" },
+  "家具": { ja: "家具", en: "Furniture" },
+  "家电": { ja: "家電", en: "Appliances" },
+  "电子产品": { ja: "電子機器", en: "Electronics" },
+  "教材": { ja: "教材", en: "Textbooks" },
+  "衣物": { ja: "衣類", en: "Clothing" },
+  "生活用品": { ja: "生活用品", en: "Daily goods" },
+  "搬家出清": { ja: "引越し処分", en: "Moving sale" },
+  "免费送": { ja: "無料譲渡", en: "Free giveaway" },
+  "求购": { ja: "買います", en: "Wanted" },
+  "单人": { ja: "一人暮らし", en: "Single" },
+  "合租": { ja: "ルームシェア", en: "Roomshare" },
+  "短租": { ja: "短期", en: "Short-term" },
+  "整租": { ja: "まるごと賃貸", en: "Entire place" },
+  "家具家电": { ja: "家具家電付き", en: "Furnished" },
+  "近车站": { ja: "駅近", en: "Near station" },
+  "兼职": { ja: "アルバイト", en: "Part-time" },
+  "全职": { ja: "正社員", en: "Full-time" },
+  "派遣": { ja: "派遣", en: "Temp agency" },
+  "实习": { ja: "インターン", en: "Internship" },
+  "时给": { ja: "時給", en: "Hourly pay" },
+  "月给": { ja: "月給", en: "Monthly pay" },
+  "无经验可": { ja: "未経験OK", en: "No experience" },
+  "留学生可": { ja: "留学生OK", en: "Students OK" },
+  "签证支持": { ja: "ビザサポート", en: "Visa support" },
+  "周末": { ja: "週末", en: "Weekend" },
+  "搬家": { ja: "引越し", en: "Moving" },
+  "签证": { ja: "ビザ", en: "Visa" },
+  "维修": { ja: "修理", en: "Repair" },
+  "翻译": { ja: "翻訳", en: "Translation" },
+  "清洁": { ja: "清掃", en: "Cleaning" },
+  "认证服务": { ja: "認定サービス", en: "Verified services" },
+  "餐饮": { ja: "飲食", en: "Dining" },
+  "生活": { ja: "生活", en: "Living" },
+  "学习": { ja: "学習", en: "Study" },
+  "限时": { ja: "期間限定", en: "Limited-time" },
+  "今天": { ja: "今日", en: "Today" },
+  "本周": { ja: "今週", en: "This week" },
+  "免费": { ja: "無料", en: "Free" },
+};
+
+/// zh stays as-is (canonical); ja/en translate when we know the value;
+/// unknown (user-typed) categories fall back to the raw value.
+export function categoryLabel(value: string, locale: Locale): string {
+  if (locale === "ja") return CATEGORY_LABELS[value]?.ja ?? value;
+  if (locale === "en") return CATEGORY_LABELS[value]?.en ?? value;
+  return value;
+}
 
 function listingUploadPurpose(type: KXListingType, isVideo: boolean): UploadPurpose {
   if (type === "rental") return isVideo ? "rental_video" : "rental_image";
@@ -378,7 +432,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                       data-active={category === chip}
                       className="h-10 shrink-0 rounded-full border border-slate-200 bg-white px-3.5 text-sm font-black text-slate-600 transition data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white hover:border-blue-300 hover:text-blue-700"
                     >
-                      {chip}
+                      {categoryLabel(chip, locale)}
                     </button>
                   ))}
                 </div>

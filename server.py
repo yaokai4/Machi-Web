@@ -559,8 +559,19 @@ APPLE_IAP_ENVIRONMENT = _env("APPLE_IAP_ENVIRONMENT", "Sandbox")
 # so Stripe needs no extra packages.
 STRIPE_SECRET_KEY = _env("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = _env("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRICE_CENTS = int(_env("STRIPE_PRICE_CENTS", "199"))  # e.g. 199 = $1.99
+STRIPE_PRICE_CENTS = int(_env("STRIPE_PRICE_CENTS", "199"))  # Stripe minor units (usd→cents, jpy→yen)
 STRIPE_CURRENCY = _env("STRIPE_CURRENCY", "usd").lower()
+# Currencies Stripe treats as zero-decimal: the "minor unit" IS the whole
+# unit (¥500 → unit_amount=500, not 50000). Our plans/products store
+# amount_cents as value×100, so amounts in these currencies must be
+# divided by 100 on the way to Stripe — forgetting this is a silent
+# 100× overcharge.
+STRIPE_ZERO_DECIMAL = {"jpy", "krw", "vnd", "clp", "bif", "djf", "gnf", "kmf",
+                       "mga", "pyg", "rwf", "ugx", "vuv", "xaf", "xof", "xpf"}
+# Reject webhook signatures older than this (replay window). The
+# provider+event_id UNIQUE already dedupes exact replays; this bounds
+# captured-payload replay before the event was ever recorded.
+STRIPE_WEBHOOK_TOLERANCE_SEC = int(_env("STRIPE_WEBHOOK_TOLERANCE_SEC", "300"))
 STRIPE_SUCCESS_URL = _env("STRIPE_SUCCESS_URL", "https://machicity.com/membership?paid=1")
 STRIPE_CANCEL_URL = _env("STRIPE_CANCEL_URL", "https://machicity.com/membership")
 
@@ -2337,6 +2348,83 @@ ERR_LOG = logging.getLogger("kaix.error")
 ERR_LOG.handlers = [_log_handler]
 ERR_LOG.setLevel(logging.WARNING)
 ERR_LOG.propagate = False
+
+
+# ---------------------------------------------------------------------------
+# Sentry-lite error reporting. Set KAIX_SENTRY_DSN and every ERROR-level
+# record on kaix.error (all 500s, migration/payment/worker failures) is
+# forwarded to Sentry's envelope API — pure stdlib, async via a bounded
+# queue + daemon thread, drops silently under backpressure, total no-op
+# without a DSN. Replaces "users tell us when production breaks".
+# ---------------------------------------------------------------------------
+
+KAIX_SENTRY_DSN = _env("KAIX_SENTRY_DSN", "")
+
+
+class _SentryLiteHandler(logging.Handler):
+    def __init__(self, dsn: str) -> None:
+        super().__init__(level=logging.ERROR)
+        from urllib.parse import urlparse
+        parsed = urlparse(dsn)
+        self._key = parsed.username or ""
+        project = (parsed.path or "/").rsplit("/", 1)[-1]
+        self._endpoint = f"{parsed.scheme}://{parsed.hostname}/api/{project}/envelope/"
+        self._queue: "queue.Queue[bytes]" = queue.Queue(maxsize=64)
+        threading.Thread(target=self._drain, name="sentry-lite", daemon=True).start()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            event: dict[str, Any] = {
+                "event_id": uuid.uuid4().hex,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "platform": "python",
+                "level": "error",
+                "logger": record.name,
+                "message": {"formatted": self.format(record)[:4000]},
+                "environment": "production" if PRODUCTION else "development",
+                "tags": {"service": "machi-backend"},
+            }
+            if record.exc_info and record.exc_info[0] is not None:
+                import traceback
+                exc_type, exc_value, tb = record.exc_info
+                frames = [
+                    {"filename": f.filename, "function": f.name, "lineno": f.lineno}
+                    for f in traceback.extract_tb(tb)[-20:]
+                ]
+                event["exception"] = {"values": [{
+                    "type": exc_type.__name__,
+                    "value": str(exc_value)[:1000],
+                    "stacktrace": {"frames": frames},
+                }]}
+            envelope = (
+                json.dumps({"event_id": event["event_id"], "sent_at": event["timestamp"]}) + "\n"
+                + json.dumps({"type": "event"}) + "\n"
+                + json.dumps(event, ensure_ascii=False) + "\n"
+            ).encode("utf-8")
+            self._queue.put_nowait(envelope)
+        except Exception:
+            pass  # error reporting must never take the request down
+
+    def _drain(self) -> None:
+        from urllib.request import Request, urlopen
+        while True:
+            envelope = self._queue.get()
+            try:
+                req = Request(self._endpoint, data=envelope, method="POST")
+                req.add_header("Content-Type", "application/x-sentry-envelope")
+                req.add_header(
+                    "X-Sentry-Auth",
+                    f"Sentry sentry_version=7, sentry_client=machi-lite/1.0, sentry_key={self._key}",
+                )
+                with urlopen(req, timeout=5):
+                    pass
+            except Exception:
+                pass  # network problems just drop the event
+
+
+if KAIX_SENTRY_DSN:
+    ERR_LOG.addHandler(_SentryLiteHandler(KAIX_SENTRY_DSN))
+    ACCESS_LOG.info("sentry-lite error reporting enabled")
 
 
 # ---------------------------------------------------------------------------
@@ -9063,9 +9151,30 @@ def serialize_order(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _stripe_minor_units(amount_cents: int, currency: str) -> int:
+    """Convert our value×100 storage into Stripe minor units for the given
+    currency (zero-decimal currencies divide by 100)."""
+    if (currency or "").lower() in STRIPE_ZERO_DECIMAL:
+        return int(amount_cents) // 100
+    return int(amount_cents)
+
+
 def _order_charge_for_provider(plan: dict[str, Any], provider: str) -> tuple[int, str]:
     """The amount + currency to charge, chosen server-side per provider.
-    A client-supplied amount is never used."""
+    A client-supplied amount is never used.
+
+    Stripe charges the overseas price (STRIPE_PRICE_CENTS in
+    STRIPE_CURRENCY minor units) when configured — a JP/US Stripe account
+    can't present CNY, so reusing the plan's CNY price would fail every
+    checkout. The order row stores Stripe minor units directly so the
+    webhook/confirm `amount_total` comparison stays exact. Falls back to
+    the plan price (converted to minor units) when no override is set."""
+    if provider == "stripe":
+        if STRIPE_PRICE_CENTS > 0:
+            return STRIPE_PRICE_CENTS, STRIPE_CURRENCY.upper()
+        currency = normalize_currency(plan.get("currency") or MEMBERSHIP_CURRENCY)
+        amount = int(plan.get("amount_cents") or round(plan_price_value(plan) * 100))
+        return _stripe_minor_units(amount, currency), currency
     amount = int(plan.get("amount_cents") or round(plan_price_value(plan) * 100))
     return amount, normalize_currency(plan.get("currency") or MEMBERSHIP_CURRENCY)
 
@@ -9112,7 +9221,13 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
     order = dict(row)
     if expected_provider and order.get("payment_provider") != expected_provider:
         raise APIError("订单支付方式不匹配", 400, "provider_mismatch")
-    if paid_amount_cents is not None and int(paid_amount_cents) != int(order["amount_cents"]):
+    # When the order was created against a Stripe Price id, the amount
+    # authority is that Price object (admin-managed in the dashboard) —
+    # our local snapshot may legitimately differ, and the webhook payload
+    # is already signature-verified. Strict equality applies only when WE
+    # set the amount via price_data.
+    price_id_authority = bool(order.get("provider_price_id")) and order.get("payment_provider") == "stripe"
+    if paid_amount_cents is not None and not price_id_authority and int(paid_amount_cents) != int(order["amount_cents"]):
         # Amount tampering — never settle. The charge is defined by the plan.
         raise APIError("支付金额与订单不一致", 400, "amount_mismatch")
     if order["status"] == "paid":
@@ -9330,7 +9445,7 @@ def guide_stripe_checkout_url(order_no: str, amount_cents: int, currency: str, p
         "metadata[kind]": "guide_product",
         "line_items[0][quantity]": "1",
         "line_items[0][price_data][currency]": (currency or "cny").lower(),
-        "line_items[0][price_data][unit_amount]": str(int(amount_cents)),
+        "line_items[0][price_data][unit_amount]": str(_stripe_minor_units(int(amount_cents), currency or "cny")),
         "line_items[0][price_data][product_data][name]": (product_name or "Machi Guide")[:120],
     }
     data = urlencode(fields).encode("utf-8")
@@ -9352,6 +9467,12 @@ def settle_guide_order(conn: sqlite3.Connection, order_no: str, payment_intent: 
     record to action. Trusted only from a verified webhook / server-side confirm."""
     order = conn.execute("SELECT * FROM guide_orders WHERE order_no = ?", (order_no,)).fetchone()
     if not order or order["status"] in ("paid", "fulfilled", "refunded"):
+        return False
+    # Same amount-tampering guard as membership settlement: the webhook's
+    # amount_total (Stripe minor units) must equal what we charged.
+    expected = _stripe_minor_units(int(order["amount_cents"] or 0), str(order["currency"] or "cny"))
+    if amount_cents and expected and int(amount_cents) != expected:
+        ERR_LOG.warning("guide settle amount mismatch order=%s got=%s want=%s", order_no, amount_cents, expected)
         return False
     now = now_iso()
     conn.execute(
@@ -9422,16 +9543,30 @@ def verify_stripe_webhook(headers: dict[str, str], raw_body: bytes) -> dict[str,
     sig_header = headers.get("stripe-signature", "")
     if not sig_header or not STRIPE_WEBHOOK_SECRET:
         return None
-    parts = dict(
-        kv.split("=", 1) for kv in sig_header.split(",") if "=" in kv
-    )
-    ts = parts.get("t", "")
-    v1 = parts.get("v1", "")
-    if not ts or not v1:
+    ts = ""
+    v1_candidates: list[str] = []
+    for kv in sig_header.split(","):
+        if "=" not in kv:
+            continue
+        key, value = kv.split("=", 1)
+        key = key.strip()
+        if key == "t":
+            ts = value.strip()
+        elif key == "v1":
+            # During secret rotation Stripe signs with BOTH secrets and
+            # sends multiple v1 entries — any one matching is valid.
+            v1_candidates.append(value.strip())
+    if not ts or not v1_candidates:
+        return None
+    try:
+        ts_int = int(ts)
+    except ValueError:
+        return None
+    if abs(time.time() - ts_int) > STRIPE_WEBHOOK_TOLERANCE_SEC:
         return None
     signed_payload = f"{ts}.{body_text}".encode("utf-8")
     expected = hmac.new(STRIPE_WEBHOOK_SECRET.encode("utf-8"), signed_payload, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, v1):
+    if not any(hmac.compare_digest(expected, candidate) for candidate in v1_candidates):
         return None
     try:
         return json.loads(body_text)
@@ -16458,8 +16593,11 @@ class Handler(BaseHTTPRequestHandler):
         ))
         next_cursor = None
         if len(rows) > limit:
-            extra = rows.pop()
-            next_cursor = cursor_encode(extra["created_at"], extra["id"])
+            # Last row shown — not the probe row — so the strict `<`
+            # predicate resumes at limit+1 without dropping a post.
+            rows = rows[:limit]
+            last = rows[-1]
+            next_cursor = cursor_encode(last["created_at"], last["id"])
         posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
         return posts, next_cursor
 
@@ -17128,29 +17266,51 @@ class Handler(BaseHTTPRequestHandler):
         if cursor:
             clauses.append("(updated_at, id) < (?, ?)")
             params.extend([cursor[0], cursor[1]])
+            # Promoted rows are hoisted onto page 1 regardless of their
+            # keyset position — without this they'd surface AGAIN when the
+            # cursor walk reaches their natural (updated_at, id) slot.
+            clauses.append("is_promoted = 0")
 
         sort = (query.get("sort") or "latest").strip().lower()
-        if sort in {"price_low", "price_asc"}:
+        if cursor:
+            # Follow-up pages must order by exactly the keyset the cursor
+            # encodes — (updated_at, id). Keeping the is_promoted /
+            # promotion_weight prefix here made page 2+ skip or repeat rows
+            # around promoted listings; a price/popular prefix would do the
+            # same. Promotion pinning and sort flavors are page-1 concerns.
+            order = "updated_at DESC, id DESC"
+        elif sort in {"price_low", "price_asc"}:
             order = "CASE WHEN price IS NULL THEN 1 ELSE 0 END ASC, price ASC, updated_at DESC"
         elif sort in {"price_high", "price_desc"}:
             order = "price DESC, updated_at DESC"
         elif sort in {"popular", "favorite", "favorites"}:
             order = "(favorite_count + inquiry_count + promotion_weight) DESC, updated_at DESC"
-        elif cursor:
-            # Follow-up pages must order by exactly the keyset the cursor
-            # encodes — (updated_at, id). Keeping the is_promoted /
-            # promotion_weight prefix here made page 2+ skip or repeat rows
-            # around promoted listings. Promotion pinning is a page-1 concern.
-            order = "updated_at DESC, id DESC"
         else:
             order = "is_promoted DESC, promotion_weight DESC, updated_at DESC, id DESC"
 
         sql = f"SELECT * FROM city_listings WHERE {' AND '.join(clauses)} ORDER BY {order} LIMIT ?"
         rows = list(conn.execute(sql, [*params, limit + 1]))
         next_cursor = None
-        if len(rows) > limit:
-            extra = rows.pop()
-            next_cursor = cursor_encode(extra["updated_at"], extra["id"])
+        has_more = len(rows) > limit
+        if has_more:
+            rows = rows[:limit]
+        # Cursor pagination only makes sense along the (updated_at, id)
+        # keyset. For price/popular sorts the page is a one-shot ranked
+        # snapshot (limit up to 60) — advertising a cursor there invites
+        # clients into inconsistent pages that skip/repeat rows.
+        if has_more and (sort == "latest" or cursor):
+            # The cursor must encode the LAST ROW SHOWN — the strict `<`
+            # predicate then resumes at limit+1 exactly. Encoding the probe
+            # row (limit+1) silently dropped one row at every page seam.
+            if cursor:
+                anchor = rows[-1]
+            else:
+                # Page 1 hoists promoted rows out of keyset order, so resume
+                # from the oldest ORGANIC row actually shown (promoted rows
+                # are excluded from cursor pages — already surfaced here).
+                organic = [r for r in rows if not r["is_promoted"]] or rows
+                anchor = min(organic, key=lambda r: (str(r["updated_at"]), str(r["id"])))
+            next_cursor = cursor_encode(anchor["updated_at"], anchor["id"])
         items = fetch_listings_with_extras(conn, [dict(r) for r in rows], viewer_id)
         viewer_payload = {"id": viewer_id} if viewer_id else None
         self.send_json({
@@ -18685,8 +18845,12 @@ class Handler(BaseHTTPRequestHandler):
 
         next_cursor = None
         if len(rows) > limit:
-            extra = rows.pop()
-            next_cursor = cursor_encode(extra["created_at"], extra["id"])
+            # Encode the LAST ROW SHOWN, not the probe row — the strict `<`
+            # predicate resumes at limit+1 exactly. Encoding the probe row
+            # silently dropped one post at every page seam.
+            rows = rows[:limit]
+            last = rows[-1]
+            next_cursor = cursor_encode(last["created_at"], last["id"])
         posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
         payload = {"items": posts, "next_cursor": next_cursor, "mode": mode, "viewer": viewer_payload, "canInteract": can_interact, "can_interact": can_interact}
         if anon_cache_key is not None:
