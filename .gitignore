@@ -31,3 +31,6 @@ __pycache__/
 # Runtime upload dirs (dev local fallback; prod uses S3). Never commit user media.
 media/messages/
 media/temp/
+
+# runtime-generated public thumbnails
+media/thumbnails/
