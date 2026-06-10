@@ -2535,6 +2535,40 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON seller_profiles(user_id);
         """,
     ),
+    (
+        40,
+        "search: pg_trgm GIN indexes so user-facing ILIKE '%q%' search stops seq-scanning (PostgreSQL only)",
+        """
+        -- backend: postgres
+        DO $kaix_trgm$
+        BEGIN
+            BEGIN
+                CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            EXCEPTION WHEN OTHERS THEN
+                RAISE NOTICE 'pg_trgm extension unavailable, skipping trigram indexes: %', SQLERRM;
+            END;
+            IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm') THEN
+                CREATE INDEX IF NOT EXISTS idx_trgm_posts_content
+                    ON posts USING gin (content gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_trgm_listings_title
+                    ON city_listings USING gin (title gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_trgm_listings_description
+                    ON city_listings USING gin (description gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_trgm_listings_location
+                    ON city_listings USING gin (location_text gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_trgm_listings_category
+                    ON city_listings USING gin (category gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_trgm_users_handle
+                    ON users USING gin (handle gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_trgm_users_display_name
+                    ON users USING gin (display_name gin_trgm_ops);
+                CREATE INDEX IF NOT EXISTS idx_trgm_post_tags_tag
+                    ON post_tags USING gin (tag gin_trgm_ops);
+            END IF;
+        END
+        $kaix_trgm$;
+        """,
+    ),
 ]
 
 

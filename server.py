@@ -97,6 +97,7 @@ import copy
 import csv
 import email.utils
 import hashlib
+import functools
 import hmac
 import html
 import io
@@ -2087,6 +2088,15 @@ _LAST_SEEN: dict[str, float] = {}
 # in `_SSE_TOKEN_TTL` seconds. Keeping the long-lived token out of the
 # URL stops it from leaking through nginx access logs / Referer headers.
 _SSE_TOKEN_TTL = 300.0
+
+# Hard ceiling on concurrent SSE streams. Each stream parks one handler
+# thread for its whole lifetime — the dominant per-connection cost in this
+# process — so without a cap a reconnect storm can exhaust thread/memory
+# budget on a small host. A client that receives 503 keeps its normal
+# polling behaviour and EventSource retries on its own schedule.
+KAIX_SSE_MAX_CONNECTIONS = max(1, int(_env("KAIX_SSE_MAX_CONNECTIONS", "600")))
+_SSE_ACTIVE_LOCK = threading.Lock()
+_SSE_ACTIVE_COUNT = 0
 _SSE_TOKEN_LOCK = threading.Lock()
 _SSE_TOKENS: dict[str, tuple[str, float]] = {}
 
@@ -2460,6 +2470,13 @@ def row_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
 # psycopg2 is imported lazily so the SQLite/production path never needs it.
 # Remaining SQLite-only SQL (1 INSERT OR REPLACE, 3 strftime) is fixed per-site
 # in following steps.
+#
+# The translation is a pure function of the SQL text, but it used to run its
+# character-walk + regexes on EVERY conn.execute(). Handlers issue the same
+# statement shapes over and over (IN(...) placeholder lists give a bounded
+# family per endpoint), so an LRU keyed on (sql, has_params) turns the
+# per-query translation cost into a dict hit.
+@functools.lru_cache(maxsize=4096)
 def _pg_xlate(sql: str, has_params: bool) -> str:
     import re
     if sql.lstrip()[:6].upper() == "PRAGMA":
@@ -2513,21 +2530,135 @@ def _pg_xlate(sql: str, has_params: bool) -> str:
     return s
 
 
+# --- PostgreSQL connection pool ---------------------------------------------
+# ThreadingHTTPServer services each request on its own thread, and db() used
+# to open a brand-new psycopg2 connection per request: a TCP + auth handshake
+# and a forked PostgreSQL backend process every time. Under load that both
+# slows every request and (worse) races toward PG's max_connections, after
+# which the whole API errors out. The pool keeps warm connections, bounds the
+# total via a semaphore, health-checks on borrow, and fails fast with 503
+# when saturated instead of queueing unboundedly.
+KAIX_PG_POOL_MAX = max(1, int(_env("KAIX_PG_POOL_MAX", "20")))
+KAIX_PG_POOL_ACQUIRE_TIMEOUT_SEC = float(_env("KAIX_PG_POOL_ACQUIRE_TIMEOUT_SEC", "5"))
+
+
+class _PgPool:
+    def __init__(self, dsn: str, maxconn: int, acquire_timeout: float) -> None:
+        self._dsn = dsn
+        self._acquire_timeout = acquire_timeout
+        self._lock = threading.Lock()
+        self._idle: list[Any] = []
+        self._sem = threading.BoundedSemaphore(maxconn)
+
+    def acquire(self) -> Any:
+        import psycopg2
+        if not self._sem.acquire(timeout=self._acquire_timeout):
+            # Saturated: shed load instead of stacking blocked threads.
+            raise APIError("服务器繁忙，请稍后再试", 503, "server_busy")
+        try:
+            while True:
+                with self._lock:
+                    raw = self._idle.pop() if self._idle else None
+                if raw is None:
+                    break
+                if self._ping(raw):
+                    return raw
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+            raw = psycopg2.connect(self._dsn or "dbname=machi_dev")
+            raw.autocommit = True  # mirror sqlite isolation_level=None
+            return raw
+        except BaseException:
+            self._sem.release()
+            raise
+
+    @staticmethod
+    def _ping(raw: Any) -> bool:
+        """A pooled connection may have been severed (PG restart, idle
+        timeout); one localhost round-trip on borrow is far cheaper than
+        handing a dead connection to a request."""
+        try:
+            cur = raw.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            cur.close()
+            return True
+        except Exception:
+            return False
+
+    def release(self, raw: Any, *, discard: bool = False) -> None:
+        try:
+            if raw is None:
+                return
+            if discard or getattr(raw, "closed", True):
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+                return
+            try:
+                # Clears any aborted-transaction state before reuse; a no-op
+                # round trip is skipped by psycopg2 when the conn is idle.
+                raw.rollback()
+            except Exception:
+                try:
+                    raw.close()
+                except Exception:
+                    pass
+                return
+            with self._lock:
+                self._idle.append(raw)
+        finally:
+            self._sem.release()
+
+
+_PG_POOL: "_PgPool | None" = None
+_PG_POOL_INIT_LOCK = threading.Lock()
+
+
+def _pg_pool() -> _PgPool:
+    global _PG_POOL
+    if _PG_POOL is None:
+        with _PG_POOL_INIT_LOCK:
+            if _PG_POOL is None:
+                _PG_POOL = _PgPool(KAIX_PG_DSN, KAIX_PG_POOL_MAX, KAIX_PG_POOL_ACQUIRE_TIMEOUT_SEC)
+    return _PG_POOL
+
+
 class _PgConn:
     """Minimal sqlite3.Connection-compatible adapter over psycopg2.
-    DictCursor rows support both row[0] and row['col']."""
+    DictCursor rows support both row[0] and row['col'].
+
+    Connections come from the process-wide pool; close() (and the context
+    manager exit, and finalization) give the underlying connection back
+    instead of dropping it."""
 
     def __init__(self, dsn: str):
         import psycopg2
         import psycopg2.extras
         self._psycopg2 = psycopg2
         self._extras = psycopg2.extras
-        self._c = psycopg2.connect(dsn or "dbname=machi_dev")
-        self._c.autocommit = True  # mirror sqlite isolation_level=None
+        self._pool = _pg_pool()
+        self._c = self._pool.acquire()
+        self._released = False
         self.row_factory = None     # accepted & ignored (DictCursor used)
 
+    def _give_back(self, *, discard: bool = False) -> None:
+        if self._released:
+            return
+        self._released = True
+        raw, self._c = self._c, None
+        self._pool.release(raw, discard=discard)
+
+    def _raw(self):
+        if self._c is None:
+            raise sqlite3.ProgrammingError("Cannot operate on a closed database.")
+        return self._c
+
     def execute(self, sql, params=None):
-        cur = self._c.cursor(cursor_factory=self._extras.DictCursor)
+        cur = self._raw().cursor(cursor_factory=self._extras.DictCursor)
         try:
             if params is None:
                 cur.execute(_pg_xlate(sql, False))
@@ -2542,7 +2673,7 @@ class _PgConn:
         return cur
 
     def executemany(self, sql, seq):
-        cur = self._c.cursor()
+        cur = self._raw().cursor()
         try:
             cur.executemany(_pg_xlate(sql, True), [tuple(p) for p in seq])
         except self._psycopg2.IntegrityError as exc:
@@ -2554,7 +2685,7 @@ class _PgConn:
         return cur
 
     def executescript(self, sql):
-        cur = self._c.cursor()
+        cur = self._raw().cursor()
         try:
             # psycopg2 accepts a semicolon-delimited command string. This path
             # is used only by the explicit PostgreSQL migration runner; normal
@@ -2570,14 +2701,14 @@ class _PgConn:
         return cur
 
     def commit(self):
-        self._c.commit()
+        self._raw().commit()
 
     def rollback(self):
-        self._c.rollback()
+        self._raw().rollback()
 
     def close(self):
         try:
-            self._c.close()
+            self._give_back()
         except Exception:
             pass
 
@@ -2585,11 +2716,26 @@ class _PgConn:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if exc_type is None:
-            self._c.commit()
-        else:
-            self._c.rollback()
+        discard = False
+        if self._c is not None:
+            try:
+                if exc_type is None:
+                    self._c.commit()
+                else:
+                    self._c.rollback()
+            except Exception:
+                # The connection is in an unknown state — don't pool it.
+                discard = True
+        self._give_back(discard=discard)
         return False
+
+    def __del__(self):
+        # Callers that neither close() nor use the context manager still
+        # return their connection when the wrapper is garbage-collected.
+        try:
+            self._give_back()
+        except Exception:
+            pass
 
 
 def db() -> sqlite3.Connection:
@@ -2624,11 +2770,49 @@ def db() -> sqlite3.Connection:
 # here for scripts/tests that use server.SCHEMA and server.MIGRATIONS.
 # ---------------------------------------------------------------------------
 
+_MIGRATION_BACKEND_RE = re.compile(r"^\s*--\s*backend:\s*([a-z]+)", re.IGNORECASE)
+
+
 def run_migrations(conn: sqlite3.Connection) -> None:
-    """Apply pending migrations in version order."""
-    applied = {row["version"] for row in conn.execute("SELECT version FROM schema_migrations")}
+    """Apply pending migrations in version order.
+
+    A migration whose SQL starts with a ``-- backend: postgres`` (or
+    ``-- backend: sqlite``) marker only *executes* on that backend; on the
+    other backend it is recorded as applied without running, so the version
+    sequence stays linear everywhere.
+    """
+    applied_notes = {
+        row["version"]: (row["note"] or "")
+        for row in conn.execute("SELECT version, note FROM schema_migrations")
+    }
     for version, note, sql in sorted(MIGRATIONS, key=lambda x: x[0]):
-        if version in applied:
+        marker = _MIGRATION_BACKEND_RE.match(sql)
+        target_backend = marker.group(1).lower() if marker else None
+        if version in applied_notes:
+            skipped = re.search(r"\[skipped: ([a-z]+)-only\]$", applied_notes[version])
+            # Self-heal: a snapshot migrated from the other backend carries
+            # "skipped" records for migrations this backend should actually
+            # run (e.g. an SQLite snapshot imported into PostgreSQL). Re-run
+            # those here; everything else is genuinely applied.
+            if not (skipped and skipped.group(1) == KAIX_DB_BACKEND):
+                continue
+            try:
+                conn.executescript(sql)
+                conn.execute(
+                    "UPDATE schema_migrations SET applied_at = ?, note = ? WHERE version = ?",
+                    (now_iso(), note, version),
+                )
+                ACCESS_LOG.info("migration re-applied on target backend version=%s note=%s", version, note)
+            except Exception:
+                ERR_LOG.exception("migration failed version=%s note=%s", version, note)
+                raise
+            continue
+        if target_backend and target_backend != KAIX_DB_BACKEND:
+            conn.execute(
+                "INSERT INTO schema_migrations (version, applied_at, note) VALUES (?, ?, ?)",
+                (version, now_iso(), f"{note} [skipped: {target_backend}-only]"),
+            )
+            ACCESS_LOG.info("migration recorded as no-op version=%s note=%s (backend=%s)", version, note, KAIX_DB_BACKEND)
             continue
         try:
             conn.executescript(sql)
@@ -10235,6 +10419,69 @@ def cleanup_visitor_logs(conn: sqlite3.Connection, days: int) -> int:
     cutoff = (datetime.now(timezone.utc) - timedelta(days=max(0, days))).isoformat()
     cur = conn.execute("DELETE FROM visitor_logs WHERE created_at < ?", (cutoff,))
     return cur.rowcount if cur.rowcount is not None else 0
+
+
+# ---------------------------------------------------------------------------
+# retention janitor.
+#
+# Three tables only ever grew: visitor_logs had a cleanup function that was
+# never scheduled, expired sessions were deleted solely on explicit logout,
+# and idempotency_keys replay records (which embed full response bodies)
+# were kept forever. At real traffic that is unbounded disk growth plus
+# ever-slower scans. One daemon thread sweeps all three on a fixed cadence;
+# like the crawler scheduler it is a singleton job, gated by
+# KAIX_ENABLE_SCHEDULERS so multi-process deploys run exactly one janitor.
+# ---------------------------------------------------------------------------
+
+KAIX_VISITOR_LOG_RETENTION_DAYS = max(1, int(_env("KAIX_VISITOR_LOG_RETENTION_DAYS", "90")))
+KAIX_IDEMPOTENCY_TTL_HOURS = max(1, int(_env("KAIX_IDEMPOTENCY_TTL_HOURS", "48")))
+KAIX_JANITOR_INTERVAL_SEC = max(300, int(_env("KAIX_JANITOR_INTERVAL_SEC", str(6 * 3600))))
+_JANITOR_STARTED = False
+
+
+def run_retention_sweep() -> dict[str, int]:
+    """One pass of the retention sweeps. Returns per-table delete counts."""
+    counts = {"visitor_logs": 0, "sessions": 0, "idempotency_keys": 0}
+    with DB_LOCK:
+        conn = db()
+        try:
+            counts["visitor_logs"] = cleanup_visitor_logs(conn, KAIX_VISITOR_LOG_RETENTION_DAYS)
+            cur = conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now_iso(),))
+            counts["sessions"] = cur.rowcount if cur.rowcount is not None else 0
+            idem_cutoff = int(time.time()) - KAIX_IDEMPOTENCY_TTL_HOURS * 3600
+            cur = conn.execute(
+                "DELETE FROM idempotency_keys WHERE created_epoch > 0 AND created_epoch < ?",
+                (idem_cutoff,),
+            )
+            counts["idempotency_keys"] = cur.rowcount if cur.rowcount is not None else 0
+        finally:
+            conn.close()
+    return counts
+
+
+def start_retention_janitor() -> None:
+    global _JANITOR_STARTED
+    if _JANITOR_STARTED:
+        return
+    _JANITOR_STARTED = True
+
+    def _loop() -> None:
+        # First pass shortly after boot (give migrations/seeds time to
+        # settle), then on the configured cadence.
+        time.sleep(300)
+        while True:
+            try:
+                counts = run_retention_sweep()
+                if any(counts.values()):
+                    ACCESS_LOG.info(
+                        "retention sweep: visitor_logs=%d sessions=%d idempotency_keys=%d",
+                        counts["visitor_logs"], counts["sessions"], counts["idempotency_keys"],
+                    )
+            except Exception:
+                ERR_LOG.exception("retention sweep failed")
+            time.sleep(KAIX_JANITOR_INTERVAL_SEC)
+
+    threading.Thread(target=_loop, name="retention-janitor", daemon=True).start()
 
 
 # ---------------------------------------------------------------------------
@@ -19471,6 +19718,12 @@ class Handler(BaseHTTPRequestHandler):
             order = "price DESC, updated_at DESC"
         elif sort in {"popular", "favorite", "favorites"}:
             order = "(favorite_count + inquiry_count + promotion_weight) DESC, updated_at DESC"
+        elif cursor:
+            # Follow-up pages must order by exactly the keyset the cursor
+            # encodes — (updated_at, id). Keeping the is_promoted /
+            # promotion_weight prefix here made page 2+ skip or repeat rows
+            # around promoted listings. Promotion pinning is a page-1 concern.
+            order = "updated_at DESC, id DESC"
         else:
             order = "is_promoted DESC, promotion_weight DESC, updated_at DESC, id DESC"
 
@@ -21540,13 +21793,20 @@ class Handler(BaseHTTPRequestHandler):
         topics: list[dict[str, Any]] = []
         if kind in ("all", "post"):
             country_clause = "AND country = ?" if viewer_country else ""
-            params: tuple[Any, ...] = (like, like, like, like, like, like, viewer_country) if viewer_country else (like, like, like, like, like, like)
+            params: tuple[Any, ...] = (like, viewer_country) if viewer_country else (like,)
+            # Match on content only. The old OR-chain also pattern-matched
+            # country/province/city (slug codes a user never types),
+            # content_type (q="ran" surfaced every "rant" post) and the raw
+            # attributes JSON (matched on internal keys) — all noise, and the
+            # multi-column OR forced a full-table scan on every search. A
+            # single content predicate is wrong-match-free and uses the
+            # pg_trgm GIN index (migration 40) on PostgreSQL.
             rows = list(conn.execute(
                 f"""
                 SELECT * FROM posts
                 WHERE deleted_at IS NULL
                   AND status IN ('published', 'active')
-                  AND (content LIKE ? OR country LIKE ? OR province LIKE ? OR city LIKE ? OR content_type LIKE ? OR attributes LIKE ?)
+                  AND content LIKE ?
                   {country_clause}
                 ORDER BY created_at DESC LIMIT 30
                 """,
@@ -24309,33 +24569,43 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"ok": True})
 
     def _run_event_stream(self, user_id: str) -> None:
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "keep-alive")
-        self._set_cors()
-        self.end_headers()
-        import queue
-        q: queue.Queue = queue.Queue(maxsize=64)
-        HUB.subscribe(user_id, q)
+        global _SSE_ACTIVE_COUNT
+        with _SSE_ACTIVE_LOCK:
+            if _SSE_ACTIVE_COUNT >= KAIX_SSE_MAX_CONNECTIONS:
+                self.send_error_json("实时通道已满，请稍后重试", 503, "sse_saturated")
+                return
+            _SSE_ACTIVE_COUNT += 1
         try:
-            self.wfile.write(b"event: hello\ndata: {}\n\n")
-            self.wfile.flush()
-            while True:
-                try:
-                    payload = q.get(timeout=20)
-                    self.wfile.write(payload)
-                    self.wfile.flush()
-                except Exception:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "keep-alive")
+            self._set_cors()
+            self.end_headers()
+            import queue
+            q: queue.Queue = queue.Queue(maxsize=64)
+            HUB.subscribe(user_id, q)
+            try:
+                self.wfile.write(b"event: hello\ndata: {}\n\n")
+                self.wfile.flush()
+                while True:
                     try:
-                        self.wfile.write(b":\n\n")
+                        payload = q.get(timeout=20)
+                        self.wfile.write(payload)
                         self.wfile.flush()
                     except Exception:
-                        break
-        except (BrokenPipeError, ConnectionResetError):
-            pass
+                        try:
+                            self.wfile.write(b":\n\n")
+                            self.wfile.flush()
+                        except Exception:
+                            break
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            finally:
+                HUB.unsubscribe(user_id, q)
         finally:
-            HUB.unsubscribe(user_id, q)
+            with _SSE_ACTIVE_LOCK:
+                _SSE_ACTIVE_COUNT -= 1
 
 
 class MachiHTTPServer(ThreadingHTTPServer):
@@ -24364,8 +24634,9 @@ def run() -> None:
     # single-instance deploys are unaffected.
     if _env("KAIX_ENABLE_SCHEDULERS", "1") == "1":
         start_news_crawler_scheduler()
+        start_retention_janitor()
     else:
-        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — crawler scheduler disabled on this worker")
+        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — crawler scheduler + retention janitor disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")
     port = int(_env("KAIX_PORT", "8787"))
     server = MachiHTTPServer((host, port), Handler)

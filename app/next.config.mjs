@@ -7,6 +7,15 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8787";
 // so we relax it; in production we lock it down.
 const dev = process.env.NODE_ENV !== "production";
 
+// In production the API is same-origin behind nginx, so 'self' already
+// covers it. Only widen connect-src for an explicitly configured non-local
+// origin — the dev loopback fallback must never leak into the prod header.
+const connectSrcExtra = dev
+  ? ` ${API_BASE}`
+  : /^https?:\/\/(127\.0\.0\.1|localhost)(:|\/|$)/.test(API_BASE)
+    ? ""
+    : ` ${API_BASE}`;
+
 const cspParts = [
   "default-src 'self'",
   `script-src 'self' ${dev ? "'unsafe-eval' 'unsafe-inline'" : "'unsafe-inline'"}`,
@@ -15,7 +24,7 @@ const cspParts = [
   "media-src 'self' blob: https: http:",
   "font-src 'self' data:",
   // EventSource / fetch / WebSocket
-  `connect-src 'self' ${API_BASE} ws: wss:`,
+  `connect-src 'self'${connectSrcExtra} ws: wss:`,
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",

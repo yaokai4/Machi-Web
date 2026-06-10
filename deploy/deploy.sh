@@ -345,6 +345,13 @@ if systemctl list-unit-files nginx.service >/dev/null 2>&1 && systemctl is-activ
         '/zone=kaix_auth:10m rate=2r\/s;/a limit_req_status 429;' \
         "$NGINX_CONFIG"
     fi
+    # Certbot 写入的 443 server 块默认只有 "listen 443 ssl;"，不带 HTTP/2，
+    # 浏览器全部资源都在 HTTP/1.1 上串行排队。幂等补上 http2 on;（nginx ≥1.25）。
+    if ! sudo grep -q '^[[:space:]]*http2[[:space:]]\+on;' "$NGINX_CONFIG"; then
+      sudo sed -i \
+        '/listen 443 ssl; # managed by Certbot/a\    http2 on;' \
+        "$NGINX_CONFIG"
+    fi
     if ! sudo nginx -t; then
       echo "    ❌ Nginx 新配置无效，恢复部署前版本" >&2
       sudo cp "$NGINX_BACKUP" "$NGINX_CONFIG"
