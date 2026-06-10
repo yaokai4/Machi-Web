@@ -34,3 +34,6 @@ media/temp/
 
 # runtime-generated public thumbnails
 media/thumbnails/
+
+# stray Finder-duplicated db sidecars
+kaix 2.db*

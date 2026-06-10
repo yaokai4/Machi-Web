@@ -134,6 +134,7 @@ import xml.etree.ElementTree as ET
 # curated city-life content pools + generator used by 城市内容助手.
 import seed_content_library as seedlib
 from server_schema import MIGRATIONS, SCHEMA
+import server_apns
 from server_regions import (
     POPULAR_CITIES,
     REGION_COUNTRIES,
@@ -6573,6 +6574,7 @@ def reputation_apply_event(
             (str(uuid.uuid4()), user_id, user_id, f"你已升级为 Lv.{level_after} {reputation_level_for_xp(conn, xp_after)['name_zh']}。", now_iso()),
         )
         HUB.publish(user_id, {"type": "notification", "kind": "reputation_level_up"})
+        server_apns.enqueue(user_id, ntype="system", content=f"你已升级为 Lv.{level_after}")
     elif int(rule_d.get("notify_user") or 0) and (xp_delta or reputation_delta):
         content = f"{rule_d.get('name_zh') or '城市声望'}"
         if xp_delta:
@@ -6586,6 +6588,7 @@ def reputation_apply_event(
             """,
             (str(uuid.uuid4()), user_id, user_id, content, now_iso()),
         )
+        server_apns.enqueue(user_id, ntype="system", content=content)
     if risk_after >= int(reputation_limit_map(conn).get("review_risk_threshold") or 61):
         reputation_open_trust_review(conn, user_id, risk_after, target_kind=target_kind, target_id=target_id, reason=reason or rule_d.get("name_zh") or rule_key)
     return {
@@ -6657,6 +6660,7 @@ def reputation_grant_level_rewards(conn: sqlite3.Connection, user_id: str, level
             """,
             (str(uuid.uuid4()), user_id, user_id, f"你获得一项城市声望奖励：{row['name_zh']}。", now_iso()),
         )
+        server_apns.enqueue(user_id, ntype="system", content=f"你获得一项城市声望奖励：{row['name_zh']}")
 
 
 def reputation_effective_limits(
@@ -14726,6 +14730,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_blocks(conn)
         if path == "/api/devices" and method == "GET":
             return self.api_devices(conn)
+        # MUST stay above the startswith("/api/devices/") DELETE rule, or
+        # the token route gets swallowed by session-revoke.
+        if path == "/api/devices/push-token" and method == "POST":
+            return self.api_register_push_token(conn)
+        if path == "/api/devices/push-token" and method == "DELETE":
+            return self.api_unregister_push_token(conn)
         if path.startswith("/api/devices/") and method == "DELETE":
             return self.api_revoke_device(conn, path.split("/")[3])
 
@@ -16886,6 +16896,7 @@ class Handler(BaseHTTPRequestHandler):
                     (str(uuid.uuid4()), target_id, user["id"], now_iso()),
                 )
                 HUB.publish(target_id, {"type": "notification", "kind": "follow", "actor_id": user["id"]})
+                server_apns.enqueue(target_id, ntype="follow", actor_id=user["id"])
             except sqlite3.IntegrityError:
                 pass
         else:
@@ -17161,6 +17172,7 @@ class Handler(BaseHTTPRequestHandler):
                 """,
                 (str(uuid.uuid4()), user_id, user_id, f"你获得了“{badge['name_zh']}”徽章。", now_iso()),
             )
+            server_apns.enqueue(user_id, ntype="system", content=f"你获得了“{badge['name_zh']}”徽章")
         record_admin_action(conn, admin["id"], "reputation_grant_badge", target_kind="user", target_id=user_id, metadata={"badge_key": badge_key, "reason": reason})
         self.send_json({"ok": True, "reputation": serialize_reputation_profile(conn, user_id, viewer_id=admin["id"], admin=True)})
 
@@ -17937,6 +17949,9 @@ class Handler(BaseHTTPRequestHandler):
                 (str(uuid.uuid4()), seller_id, user["id"], listing_id, conv_id, title[:140], now),
             )
             conn.execute("COMMIT")
+            # After COMMIT — a rolled-back inquiry must never push.
+            server_apns.enqueue(seller_id, ntype="listing_inquiry", actor_id=user["id"],
+                                content=title[:140], conversation_id=conv_id)
         except Exception:
             try:
                 conn.execute("ROLLBACK")
@@ -19123,6 +19138,8 @@ class Handler(BaseHTTPRequestHandler):
                     (str(uuid.uuid4()), original["author_id"], user["id"], repost_of_id, content, now_iso()),
                 )
                 HUB.publish(original["author_id"], {"type": "notification", "kind": "repost"})
+                server_apns.enqueue(original["author_id"], ntype="repost", actor_id=user["id"],
+                                    content=content, post_id=repost_of_id)
         row = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
         posts = fetch_posts_with_extras(conn, [row], user["id"])
         HUB.broadcast([user["id"]], {"type": "post_created", "post_id": post_id})
@@ -19231,6 +19248,7 @@ class Handler(BaseHTTPRequestHandler):
                     (str(uuid.uuid4()), post["author_id"], user["id"], post_id, now_iso()),
                 )
                 HUB.publish(post["author_id"], {"type": "notification", "kind": "like", "post_id": post_id})
+                server_apns.enqueue(post["author_id"], ntype="like", actor_id=user["id"], post_id=post_id)
             if kind == "bookmark" and post["author_id"] != user["id"]:
                 reputation_apply_event(
                     conn,
@@ -19298,6 +19316,7 @@ class Handler(BaseHTTPRequestHandler):
                     (str(uuid.uuid4()), post["author_id"], user["id"], post_id, now_iso()),
                 )
                 HUB.publish(post["author_id"], {"type": "notification", "kind": "repost"})
+                server_apns.enqueue(post["author_id"], ntype="repost", actor_id=user["id"], post_id=post_id)
         else:
             conn.execute(
                 "DELETE FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'repost'",
@@ -19479,6 +19498,8 @@ class Handler(BaseHTTPRequestHandler):
                 (str(uuid.uuid4()), recipient_id, user["id"], ntype, post_id, comment_id, content[:140], now),
             )
             HUB.publish(recipient_id, {"type": "notification", "kind": ntype, "post_id": post_id, "comment_id": comment_id})
+            server_apns.enqueue(recipient_id, ntype=ntype, actor_id=user["id"],
+                                content=content[:140], post_id=post_id)
         row = dict(conn.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone())
         comment = serialize_comment(row, {"author": serialize_user(user), "like_count": 0, "liked": False})
         self.send_json({"comment": comment})
@@ -20283,6 +20304,11 @@ class Handler(BaseHTTPRequestHandler):
         )
         peer_id = row["participant_b"] if row["participant_a"] == user["id"] else row["participant_a"]
         HUB.publish(peer_id, {"type": "message", "conversation_id": conv_id, "message_id": message_id})
+        # Push every DM (messenger semantics) — the bell row below stays
+        # deduped per conversation, but pushes shouldn't be.
+        server_apns.enqueue(peer_id, ntype="message", actor_id=user["id"],
+                            content=(content.strip()[:140] if content.strip() else "[附件]"),
+                            conversation_id=conv_id)
         # Surface the DM in the recipient's notification feed (bell + the
         # clients' system-banner pipeline). At most ONE unread 'message'
         # row per conversation, so a burst of messages can't flood it.
@@ -21555,6 +21581,27 @@ class Handler(BaseHTTPRequestHandler):
         )
         self.send_json({"ok": True})
 
+    def api_register_push_token(self, conn: sqlite3.Connection) -> None:
+        """Bind this device's APNs token to the logged-in account. Called
+        by iOS after the user grants notification permission. Re-binding a
+        token that belonged to another account moves it (shared devices)."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        token = str(data.get("token") or "").strip()
+        if not token:
+            raise APIError("缺少推送 token", 400, "missing_token")
+        server_apns.register_token(conn, user["id"], token, str(data.get("platform") or "ios"), now_iso())
+        self.send_json({"ok": True, "apnsEnabled": server_apns.apns_configured()})
+
+    def api_unregister_push_token(self, conn: sqlite3.Connection) -> None:
+        """Drop a device token (logout / notification opt-out). No auth on
+        purpose: logout clears the bearer before this fires, and the APNs
+        token itself is an unguessable Apple-issued capability — exact
+        knowledge of it IS the authorization to unbind it."""
+        data = self.read_json()
+        server_apns.unregister_token(conn, str(data.get("token") or ""))
+        self.send_json({"ok": True})
+
     def api_devices(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         rows = list(conn.execute(
@@ -22406,6 +22453,8 @@ def run() -> None:
         except APIError as exc:
             raise SystemExit(f"Refusing to start without private media encryption: {exc}") from exc
     init_db()
+    # APNs delivery worker — total no-op until the APNS_* env keys land.
+    server_apns.configure(db, DB_LOCK)
     start_visitor_writer()
     start_thumbnail_worker()
     # Singleton background jobs (time-based, not per-request). When running
