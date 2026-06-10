@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -20,6 +20,7 @@ import { useSession, useToasts } from "@/lib/store";
 import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { FieldShell } from "@/components/design/FieldShell";
 import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
+import { CaptchaBox, EMPTY_CAPTCHA, type CaptchaState } from "@/components/auth/CaptchaBox";
 import { normalizeHandle, validateLogin } from "@/lib/authValidation";
 import { AUTH_COPY, AUTH_LOCALE_KEY, AUTH_LOCALE_OPTIONS, detectAuthLocale, type AuthLocale } from "@/lib/authLocale";
 
@@ -37,8 +38,14 @@ export default function LoginPage() {
 
 // Translates backend error codes / status into something the user can
 // act on instead of the raw "请求失败 (401)".
-function mapLoginError(err: unknown, c: (typeof AUTH_COPY)[AuthLocale]): { field?: "handle" | "password"; message: string } {
+function mapLoginError(err: unknown, c: (typeof AUTH_COPY)[AuthLocale]): { field?: "handle" | "password" | "captcha"; message: string } {
   if (err instanceof APIError) {
+    if (err.code === "captcha_required") {
+      return { field: "captcha", message: c.captchaRequired };
+    }
+    if (err.code === "invalid_captcha" || err.code === "captcha_expired") {
+      return { field: "captcha", message: err.message || c.invalidCaptcha };
+    }
     if (err.status === 401 || err.code === "invalid_credentials") {
       return { field: "password", message: c.loginInvalid };
     }
@@ -77,8 +84,12 @@ function LoginForm() {
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
   const [locale, setLocale] = useState<AuthLocale>(() => detectAuthLocale());
-  const [serverError, setServerError] = useState<{ field?: "handle" | "password"; message: string } | null>(null);
+  const [serverError, setServerError] = useState<{ field?: "handle" | "password" | "captcha"; message: string } | null>(null);
   const [touched, setTouched] = useState<{ handle: boolean; password: boolean }>({ handle: false, password: false });
+  const [captcha, setCaptcha] = useState<CaptchaState>(EMPTY_CAPTCHA);
+  // Bumped after every attempt: the server burns the challenge per submission.
+  const [captchaRefresh, setCaptchaRefresh] = useState(0);
+  const handleCaptchaState = useCallback((state: CaptchaState) => setCaptcha(state), []);
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
   const c = AUTH_COPY[locale];
 
@@ -109,16 +120,28 @@ function LoginForm() {
     const _h = normalizeHandle(handle);
     const _p = password;
     if (!isValid) return;
+    if (captcha.enabled && captcha.captchaId && !captcha.code) {
+      setServerError({ field: "captcha", message: c.captchaRequired });
+      return;
+    }
     setLoading(true);
     setServerError(null);
     try {
-      const { user } = await api.login(_h, _p);
+      const { user } = await api.login(
+        _h,
+        _p,
+        captcha.enabled && captcha.captchaId
+          ? { captcha_id: captcha.captchaId, captcha_code: captcha.code }
+          : undefined,
+      );
       setUser(user);
       pushToast({ kind: "success", message: c.welcomeBack(user.display_name) });
       router.replace(redirect);
     } catch (err) {
       const mapped = mapLoginError(err, c);
       setServerError(mapped);
+      // Every attempt consumes the challenge server-side — show a fresh one.
+      setCaptchaRefresh((v) => v + 1);
     } finally {
       setLoading(false);
     }
@@ -297,6 +320,21 @@ function LoginForm() {
                 </button>
               </div>
             </FieldShell>
+
+            <CaptchaBox
+              scene="login"
+              idPrefix="login"
+              error={serverError?.field === "captcha" ? serverError.message : undefined}
+              refreshSignal={captchaRefresh}
+              onState={handleCaptchaState}
+              labels={{
+                label: c.captcha,
+                placeholder: c.captchaPlaceholder,
+                hint: c.captchaHint,
+                refresh: c.captchaRefresh,
+                loadFailed: c.captchaLoadFailed,
+              }}
+            />
 
             <button
               type="submit"

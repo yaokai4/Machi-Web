@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -21,6 +21,7 @@ import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
 import { regionDisplayName, type RegionInfo } from "@/lib/regions";
 import { FieldShell, PasswordStrength } from "@/components/design/FieldShell";
 import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
+import { CaptchaBox, EMPTY_CAPTCHA, type CaptchaState } from "@/components/auth/CaptchaBox";
 import {
   EMAIL_RE,
   HANDLE_RE,
@@ -32,7 +33,7 @@ import {
 } from "@/lib/authValidation";
 import { AUTH_COPY, AUTH_LOCALE_KEY, AUTH_LOCALE_OPTIONS, detectAuthLocale, type AuthLocale } from "@/lib/authLocale";
 
-type Errors = Partial<Record<"handle" | "displayName" | "email" | "password" | "code" | "terms" | "region", string>>;
+type Errors = Partial<Record<"handle" | "displayName" | "email" | "password" | "code" | "terms" | "region" | "captcha", string>>;
 type Availability = { status: "idle" | "checking" | "available" | "unavailable"; message: string };
 
 // Maps backend errors into a field + friendly message. The server has
@@ -61,6 +62,12 @@ function mapRegisterError(err: unknown, c: (typeof AUTH_COPY)[AuthLocale]): { fi
     }
     if (err.code === "invalid_code" || err.code === "code_expired") {
       return { field: "code", message: err.message || c.invalidCode };
+    }
+    if (err.code === "captcha_required") {
+      return { field: "captcha", message: c.captchaRequired };
+    }
+    if (err.code === "invalid_captcha" || err.code === "captcha_expired") {
+      return { field: "captcha", message: err.message || c.invalidCaptcha };
     }
     if (err.status === 429 || err.code === "rate_limited") {
       return { message: c.rateLimited };
@@ -115,6 +122,10 @@ function RegisterForm() {
   const [emailAvailability, setEmailAvailability] = useState<Availability>({ status: "idle", message: "" });
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [serverError, setServerError] = useState<{ field?: keyof Errors; message: string } | null>(null);
+  const [captcha, setCaptcha] = useState<CaptchaState>(EMPTY_CAPTCHA);
+  // Bumped after each send-code attempt: the server burns the challenge per use.
+  const [captchaRefresh, setCaptchaRefresh] = useState(0);
+  const handleCaptchaState = useCallback((state: CaptchaState) => setCaptcha(state), []);
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
   const c = AUTH_COPY[locale];
 
@@ -200,6 +211,10 @@ function RegisterForm() {
   const sendCode = async () => {
     setTouched((t) => ({ ...t, email: true }));
     if (!EMAIL_RE.test(email.trim())) return;
+    if (captcha.enabled && captcha.captchaId && !captcha.code) {
+      setServerError({ field: "captcha", message: c.captchaRequired });
+      return;
+    }
     setSendingCode(true);
     setServerError(null);
     try {
@@ -208,11 +223,21 @@ function RegisterForm() {
         setEmailAvailability({ status: "unavailable", message: check.message });
         return;
       }
-      await api.sendEmailCode(email.trim(), "register", locale);
+      await api.sendEmailCode(
+        email.trim(),
+        "register",
+        locale,
+        captcha.enabled && captcha.captchaId
+          ? { captcha_id: captcha.captchaId, captcha_code: captcha.code }
+          : undefined,
+      );
+      // The challenge is single-use — a resend needs a fresh image.
+      setCaptchaRefresh((v) => v + 1);
       setCodeCooldown(60);
       pushToast({ kind: "success", message: c.codeSent });
     } catch (err) {
       setServerError(mapRegisterError(err, c));
+      setCaptchaRefresh((v) => v + 1);
     } finally {
       setSendingCode(false);
     }
@@ -420,6 +445,22 @@ function RegisterForm() {
                 aria-describedby={fieldError("displayName") ? "reg-displayName-error" : undefined}
               />
             </FieldShell>
+
+            <CaptchaBox
+              scene="register"
+              idPrefix="reg"
+              className="sm:col-span-2"
+              error={fieldError("captcha")}
+              refreshSignal={captchaRefresh}
+              onState={handleCaptchaState}
+              labels={{
+                label: c.captcha,
+                placeholder: c.captchaPlaceholder,
+                hint: c.captchaHint,
+                refresh: c.captchaRefresh,
+                loadFailed: c.captchaLoadFailed,
+              }}
+            />
 
             <FieldShell
               label={c.email}

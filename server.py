@@ -250,6 +250,17 @@ EMAIL_CODE_LENGTH = 6
 REQUIRE_EMAIL_VERIFICATION = _env("KAIX_REQUIRE_EMAIL_VERIFICATION", "0") == "1"
 LOGIN_REQUIRE_CODE = _env("KAIX_LOGIN_REQUIRE_CODE", "0") == "1"
 
+# Self-hosted image CAPTCHA gating the anonymous auth endpoints (bulk-bot
+# registration / credential-stuffing guard). Rendered server-side with
+# Pillow so every client — Web, iOS, Android, including China-store builds
+# with no Google services — just displays a PNG; no third-party SDK.
+# KAIX_CAPTCHA_LOGIN_ENABLED exists separately so login enforcement can be
+# staged after older app builds (which don't send a captcha) are retired.
+CAPTCHA_ENABLED = _env("KAIX_CAPTCHA_ENABLED", "1") == "1"
+CAPTCHA_LOGIN_ENABLED = _env("KAIX_CAPTCHA_LOGIN_ENABLED", "1") == "1"
+CAPTCHA_TTL_SEC = int(_env("KAIX_CAPTCHA_TTL_SEC", "300"))                  # 5 minutes
+CAPTCHA_LENGTH = max(4, min(int(_env("KAIX_CAPTCHA_LENGTH", "4")), 8))
+
 # Google OAuth. The backend owns the state check and exchanges the code for
 # profile info, then issues the same Machi bearer session used by password
 # login. For local development, the redirect URI can be inferred from the
@@ -10281,6 +10292,128 @@ def consume_auth_code(conn: sqlite3.Connection, *, purpose: str, email: str = ""
     return fresh or row
 
 
+# ---- image CAPTCHA lifecycle (anonymous-auth bot guard) -------------------
+#
+# Challenges live in the existing `auth_codes` table under purpose='captcha'
+# (hashed answer, TTL, single-use) so both DB backends work with no schema
+# migration. One image = exactly one guess: the row is burned on submission
+# BEFORE the answer is compared, so a wrong guess can never be retried
+# against the same image and the answer can't be brute-forced.
+
+try:
+    from PIL import Image as _PILImage, ImageDraw as _PILImageDraw, ImageFont as _PILImageFont, ImageFilter as _PILImageFilter
+    CAPTCHA_AVAILABLE = True
+except Exception:  # Pillow missing — captcha enforcement degrades to off.
+    CAPTCHA_AVAILABLE = False
+
+# Every glyph must survive rotation + noise unambiguously, so confusable
+# pairs are dropped entirely: 0/O/Q, 1/I/L, 2/Z, 5/S, 6/G, 8/B.
+CAPTCHA_CHARS = "23456789ACDEFHJKMNPRTUVWXY"
+
+
+def captcha_required_for(scene: str) -> bool:
+    """Whether the given auth scene must present a solved captcha."""
+    if not (CAPTCHA_ENABLED and CAPTCHA_AVAILABLE):
+        return False
+    if scene == "login":
+        return CAPTCHA_LOGIN_ENABLED
+    return True
+
+
+def _captcha_font(size: int):
+    for path in (
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans-Bold.ttf",
+        "/Library/Fonts/Arial Bold.ttf",
+        "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    ):
+        try:
+            return _PILImageFont.truetype(path, size)
+        except Exception:
+            continue
+    try:
+        # Pillow ≥10.1 bundles a scalable fallback font for load_default(size).
+        return _PILImageFont.load_default(size)
+    except Exception:
+        return _PILImageFont.load_default()
+
+
+def render_captcha_png(text: str) -> bytes:
+    """Distorted-text PNG: per-glyph rotation/jitter + arc and dot noise.
+    Rendered at 2x (clients display ~half size) so it stays crisp on
+    retina/mobile screens. Solid light background so the image reads fine
+    in dark-mode UIs too."""
+    s = 2  # supersampling scale
+    width, height = (44 * len(text) + 24) * s, 56 * s
+    rng = secrets.SystemRandom()
+    img = _PILImage.new("RGB", (width, height), (246, 247, 250))
+    draw = _PILImageDraw.Draw(img)
+    palette = [(31, 41, 75), (88, 28, 96), (12, 74, 110), (124, 45, 18), (6, 78, 59)]
+    # Background interference first so glyphs land on top of it.
+    for _ in range(4):
+        x1, y1 = rng.randint(-20 * s, width), rng.randint(0, height)
+        x2, y2 = rng.randint(0, width + 20 * s), rng.randint(0, height)
+        draw.arc((min(x1, x2), min(y1, y2) - 20 * s, max(x1, x2) + 30 * s, max(y1, y2) + 20 * s),
+                 rng.randint(0, 180), rng.randint(180, 360),
+                 fill=rng.choice(palette), width=2 * s)
+    for _ in range(width * height // (28 * s)):
+        draw.point((rng.randint(0, width - 1), rng.randint(0, height - 1)),
+                   fill=(rng.randint(120, 200),) * 3)
+    font = _captcha_font(38 * s)
+    for i, ch in enumerate(text):
+        tile = _PILImage.new("RGBA", (46 * s, 54 * s), (0, 0, 0, 0))
+        _PILImageDraw.Draw(tile).text((4 * s, 2 * s), ch, font=font, fill=rng.choice(palette))
+        tile = tile.rotate(rng.uniform(-28, 28), expand=True, resample=_PILImage.BICUBIC)
+        img.paste(tile, ((10 + i * 44 + rng.randint(-4, 4)) * s, rng.randint(-6, 4) * s), tile)
+    img = img.filter(_PILImageFilter.SMOOTH)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG", optimize=True)
+    return buf.getvalue()
+
+
+def issue_captcha(conn: sqlite3.Connection, ip: str) -> dict[str, Any]:
+    """Create a captcha challenge; returns the id + inline PNG data URI.
+    The answer is stored hashed only — never logged, never returned."""
+    answer = "".join(secrets.choice(CAPTCHA_CHARS) for _ in range(CAPTCHA_LENGTH))
+    captcha_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc)
+    # Opportunistic purge so abandoned challenges can't bloat the table.
+    conn.execute("DELETE FROM auth_codes WHERE purpose = 'captcha' AND expires_at < ?",
+                 ((now - timedelta(hours=1)).isoformat(),))
+    conn.execute(
+        "INSERT INTO auth_codes (id, purpose, email, user_id, code_hash, created_at, expires_at, attempts, ip) "
+        "VALUES (?, 'captcha', '', NULL, ?, ?, ?, 0, ?)",
+        (captcha_id, hash_auth_code(answer, "", "captcha"), now_iso(),
+         (now + timedelta(seconds=CAPTCHA_TTL_SEC)).isoformat(), (ip or "")[:64]),
+    )
+    png = render_captcha_png(answer)
+    return {
+        "captcha_id": captcha_id,
+        "image": "data:image/png;base64," + base64.b64encode(png).decode("ascii"),
+        "expires_in": CAPTCHA_TTL_SEC,
+    }
+
+
+def verify_captcha_or_raise(conn: sqlite3.Connection, *, captcha_id: str, answer: str) -> None:
+    """One-shot check. Case-insensitive; consumes the challenge regardless
+    of outcome so every retry needs a fresh image."""
+    captcha_id = (captcha_id or "").strip()
+    answer = (answer or "").strip().upper()
+    if not captcha_id or not answer:
+        raise APIError("请输入图形验证码", 400, "captcha_required")
+    row = conn.execute("SELECT * FROM auth_codes WHERE id = ? AND purpose = 'captcha'",
+                       (captcha_id,)).fetchone()
+    if not row or row["consumed_at"]:
+        raise APIError("图形验证码已失效，请点击图片刷新后重试", 400, "invalid_captcha")
+    conn.execute("UPDATE auth_codes SET consumed_at = ?, attempts = attempts + 1 WHERE id = ?",
+                 (now_iso(), row["id"]))
+    expires = parse_iso(row["expires_at"])
+    if expires and expires < datetime.now(timezone.utc):
+        raise APIError("图形验证码已过期，请点击图片刷新后重试", 400, "captcha_expired")
+    if not hmac.compare_digest(row["code_hash"], hash_auth_code(answer, "", "captcha")):
+        raise APIError("图形验证码不正确", 400, "invalid_captcha")
+
+
 # ---------------------------------------------------------------------------
 # visitor analytics: GeoIP resolver + async write path
 #
@@ -16471,6 +16604,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/auth/check-email" and method == "GET":
             return self.api_check_email(conn, query)
         # email verification + password recovery + 2-step login
+        if path == "/api/auth/captcha" and method == "POST":
+            return self.api_captcha(conn)
         if path in ("/api/auth/email/send-code", "/api/auth/send-verification-code") and method == "POST":
             return self.api_send_email_code(conn)
         if path == "/api/auth/verify-code" and method == "POST":
@@ -18220,6 +18355,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise APIError("请填写有效邮箱", 400, "invalid_email")
             validate_password_strength(password)
             consume_auth_code(conn, purpose="register", email=email, code=submitted_code)
+        else:
+            # Codeless (legacy) registration is otherwise a wide-open bot
+            # path — gate it with a captcha. The email-code flow is already
+            # covered: requesting the code consumed a captcha.
+            self._enforce_captcha(conn, data, "register")
         if conn.execute("SELECT 1 FROM users WHERE handle = ?", (handle,)).fetchone():
             raise APIError("用户名已存在", 409, "handle_taken")
         if email and conn.execute("SELECT 1 FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email.lower(),)).fetchone():
@@ -18275,6 +18415,9 @@ class Handler(BaseHTTPRequestHandler):
         if LOGIN_REQUIRE_CODE:
             raise APIError("请使用验证码登录", 403, "login_code_required")
         data = self.read_json()
+        # Captcha first: bots must solve an image before they get to probe
+        # the password oracle at all.
+        self._enforce_captcha(conn, data, "login")
         handle = normalize_handle(data.get("handle") or data.get("username") or "")
         password = data.get("password") or ""
         row = conn.execute("SELECT * FROM users WHERE handle = ? AND deleted_at IS NULL", (handle,)).fetchone()
@@ -18638,6 +18781,27 @@ class Handler(BaseHTTPRequestHandler):
         v = str(value or "").strip().lower()
         return v if v in ("zh", "en", "ja") else "zh"
 
+    def api_captcha(self, conn: sqlite3.Connection) -> None:
+        """Issue an image-captcha challenge for the requested scene
+        ('login' or 'register'). `enabled: false` tells clients to hide
+        the captcha row entirely, which keeps every app build working
+        across enforcement rollouts/rollbacks."""
+        data = self.read_json()
+        scene = (data.get("scene") or "register").strip()
+        if not captcha_required_for(scene):
+            self.send_json({"enabled": False})
+            return
+        self.send_json({"enabled": True, **issue_captcha(conn, self._client_ip())})
+
+    def _enforce_captcha(self, conn: sqlite3.Connection, data: dict[str, Any], scene: str) -> None:
+        if not captcha_required_for(scene):
+            return
+        verify_captcha_or_raise(
+            conn,
+            captcha_id=str(data.get("captcha_id") or ""),
+            answer=str(data.get("captcha_code") or data.get("captcha") or ""),
+        )
+
     def api_send_email_code(self, conn: sqlite3.Connection) -> None:
         """Issue a verification code for sign-up (or self-serve reset). The
         response NEVER contains the code — only whether it was accepted and
@@ -18650,6 +18814,10 @@ class Handler(BaseHTTPRequestHandler):
         secure_purposes = {"change_password", "change_email_old", "change_email_new"}
         if purpose not in ("register", "reset", *secure_purposes):
             raise APIError("不支持的验证码类型", 400, "invalid_purpose")
+        # Anonymous purposes are the bot/email-bomb vector; the secure ones
+        # already require a logged-in session, so no captcha there.
+        if purpose in ("register", "reset"):
+            self._enforce_captcha(conn, data, "register")
         user = self.require_user(conn) if purpose in secure_purposes else None
         user_id = user["id"] if user else None
         if purpose in ("change_password", "change_email_old"):
@@ -18712,6 +18880,7 @@ class Handler(BaseHTTPRequestHandler):
         code. Accounts with no email on file fall back to a direct session
         (unless KAIX_LOGIN_REQUIRE_CODE forces a code)."""
         data = self.read_json()
+        self._enforce_captcha(conn, data, "login")
         identifier = normalize_handle(data.get("handle") or data.get("username") or "")
         email_in = (data.get("email") or "").strip()
         password = data.get("password") or ""
@@ -18896,6 +19065,7 @@ class Handler(BaseHTTPRequestHandler):
         """Send a reset code. Always responds success so an attacker can't
         use this endpoint to enumerate which emails have accounts."""
         data = self.read_json()
+        self._enforce_captcha(conn, data, "register")
         email = (data.get("email") or "").strip()
         locale = self._norm_locale(data.get("locale"))
         if is_valid_email(email):

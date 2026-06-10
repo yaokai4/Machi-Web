@@ -743,9 +743,24 @@ async function uploadFileViaPresignedUrl(
 }
 
 // ---- auth ----
+
+// Image-captcha challenge gating the anonymous auth endpoints. When the
+// server has enforcement off, `enabled` is false and the UI hides the
+// captcha row entirely.
+export type KXCaptcha = {
+  enabled: boolean;
+  captcha_id?: string;
+  image?: string; // data:image/png;base64,…
+  expires_in?: number;
+};
+export type KXCaptchaAnswer = { captcha_id: string; captcha_code: string };
+
 export const api = {
-  async login(handle: string, password: string): Promise<{ token: string; user: KXUser }> {
-    const data = await request<{ token: string; user: KXUser }>("POST", "/api/auth/login", { handle, password });
+  async fetchCaptcha(scene: "login" | "register" = "register"): Promise<KXCaptcha> {
+    return request("POST", "/api/auth/captcha", { scene });
+  },
+  async login(handle: string, password: string, captcha?: KXCaptchaAnswer): Promise<{ token: string; user: KXUser }> {
+    const data = await request<{ token: string; user: KXUser }>("POST", "/api/auth/login", { handle, password, ...(captcha ?? {}) });
     writeToken(data.token);
     return data;
   },
@@ -794,8 +809,9 @@ export const api = {
     email: string,
     purpose: "register" | "reset" | "change_password" | "change_email_old" | "change_email_new" = "register",
     locale?: string,
+    captcha?: KXCaptchaAnswer,
   ): Promise<{ ok: boolean; challenge_id?: string; email_hint?: string; expires_in: number }> {
-    return request("POST", "/api/auth/email/send-code", { email, purpose, locale });
+    return request("POST", "/api/auth/email/send-code", { email, purpose, locale, ...(captcha ?? {}) });
   },
   async verifyEmailCode(email: string, code: string, purpose: "register" | "reset" | "change_password" | "change_email_old" | "change_email_new" = "register", challengeId?: string): Promise<{ ok: boolean; success?: boolean; message?: string }> {
     return request("POST", "/api/auth/verify-code", { email, code, purpose, challenge_id: challengeId });
@@ -843,6 +859,8 @@ export const api = {
     email?: string;
     password: string;
     locale?: string;
+    captcha_id?: string;
+    captcha_code?: string;
   }): Promise<LoginStartResult> {
     const data = await request<LoginStartResult>("POST", "/api/auth/login/start", payload);
     if (data.requires_code === false && data.token) writeToken(data.token);
@@ -867,8 +885,8 @@ export const api = {
   },
   // Request a reset code by email. Always resolves (the server responds
   // generically so this can't be used to enumerate registered addresses).
-  async forgotPassword(email: string, locale?: string): Promise<{ ok: boolean; expires_in: number }> {
-    return request("POST", "/api/auth/forgot-password", { email, locale });
+  async forgotPassword(email: string, locale?: string, captcha?: KXCaptchaAnswer): Promise<{ ok: boolean; expires_in: number }> {
+    return request("POST", "/api/auth/forgot-password", { email, locale, ...(captcha ?? {}) });
   },
   // Complete a password reset with the emailed code. Revokes ALL sessions.
   async resetPassword(email: string, code: string, newPassword: string): Promise<void> {
