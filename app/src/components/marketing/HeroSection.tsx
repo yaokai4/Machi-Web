@@ -71,12 +71,16 @@ export function HeroSection() {
             {copy.hero.supporting}
           </p>
 
-          <div className="mx-auto mt-9 flex w-full max-w-[460px] flex-col gap-3 sm:flex-row lg:mx-0">
+          {/* Grid, not flex-col: `flex-1` children inside a column flexbox
+              take their size from the flex algorithm (basis 0), which
+              silently discards h-14 and collapses the pills to text
+              height on phones. Grid rows always honour the height. */}
+          <div className="mx-auto mt-9 grid w-full max-w-[460px] grid-cols-1 gap-3 sm:grid-cols-2 lg:mx-0">
             <Button
               href="/home"
               variant="brand"
               size="lg"
-              className="h-14 flex-1 px-7 text-base font-black"
+              className="h-14 px-7 text-base font-black"
               iconRight={<ArrowRight className="h-5 w-5" />}
             >
               {copy.hero.primary}
@@ -85,7 +89,7 @@ export function HeroSection() {
               href="#waitlist-form"
               variant="secondary"
               size="lg"
-              className="h-14 flex-1 px-7 text-base font-black"
+              className="h-14 px-7 text-base font-black"
               iconLeft={<UsersRound className="h-5 w-5" />}
             >
               {copy.hero.secondary}
