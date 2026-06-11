@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Search, Sparkles, X } from "lucide-react";
+import { Crown, PackageCheck, Search, Sparkles, X } from "lucide-react";
 import { guide, type GuideArticle } from "@/lib/guide";
 import {
   GuideShell,
@@ -67,6 +67,7 @@ export default function GuideHomeClient() {
   const hero = data.hero;
   const submitSearch = () => setKeyword(draft.trim());
   const searching = keyword.trim().length > 0;
+  const commerceItems = [...data.featuredProducts, ...data.featuredServices];
 
   return (
     <GuideShell right={<GuideRightRail />}>
@@ -155,6 +156,8 @@ export default function GuideHomeClient() {
               </div>
             </section>
 
+            <GuideActionHub productCount={data.featuredProducts.length} serviceCount={data.featuredServices.length} />
+
             {data.resourceEntries?.length ? (
               <section>
                 <GuideSectionTitle title={t("guide_resource_library")} subtitle={t("guide_resource_library_subtitle")} />
@@ -195,6 +198,7 @@ export default function GuideHomeClient() {
             <CategorySpotlight country={country} language={language} categoryKey="study_japan" title={t("guide_study_title")} subtitle={t("guide_study_subtitle")} />
             <CategorySpotlight country={country} language={language} categoryKey="study_abroad_japan" title={t("guide_abroad_title")} subtitle={t("guide_abroad_subtitle")} />
             <CategorySpotlight country={country} language={language} categoryKey="jlpt" title={t("guide_jlpt_title")} subtitle={t("guide_jlpt_subtitle")} />
+            <CategorySpotlight country={country} language={language} categoryKey="life_japan" title={t("guide_life_title")} subtitle={t("guide_life_subtitle")} />
 
             {data.featuredSchools?.length ? (
               <section>
@@ -210,33 +214,16 @@ export default function GuideHomeClient() {
               </section>
             ) : null}
 
-            {/* Materials & services */}
-            {data.featuredProducts.length || data.featuredServices.length ? (
+            {commerceItems.length ? (
               <section>
                 <GuideSectionTitle title={t("guide_materials_title")} subtitle={t("guide_materials_subtitle")} href="/guide/services" />
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {[...data.featuredProducts, ...data.featuredServices].map((p) => (
+                  {commerceItems.slice(0, 6).map((p) => (
                     <ProductCard key={p.id} product={p} />
                   ))}
                 </div>
               </section>
             ) : null}
-
-            <section>
-              <GuideSectionTitle title={t("guide_member_resources_title")} subtitle={t("guide_member_resources_subtitle")} href="/guide/member-resources" />
-              <Link
-                href="/guide/member-resources"
-                className="group flex items-center justify-between gap-4 rounded-kx-lg border border-kx-accent/20 bg-kx-accentSoft/60 p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
-              >
-                <div>
-                  <h3 className="text-base font-black text-kx-text group-hover:text-kx-accent">{t("guide_member_resources_card_title")}</h3>
-                  <p className="mt-1 text-sm leading-6 text-kx-subtle">
-                    {t("guide_member_resources_card_body")}
-                  </p>
-                </div>
-                <span className="shrink-0 rounded-full bg-kx-card px-3 py-1 text-xs font-bold text-kx-accent">{t("guide_member_resources_cta")}</span>
-              </Link>
-            </section>
 
             {/* Companies */}
             {data.companyHighlights.length ? (
@@ -288,6 +275,63 @@ export default function GuideHomeClient() {
   );
 }
 
+function GuideActionHub({ productCount, serviceCount }: { productCount: number; serviceCount: number }) {
+  const { t } = useI18n();
+  const cards = [
+    {
+      href: "/guide/member-resources",
+      icon: Crown,
+      title: t("guide_member_resources_title"),
+      body: t("guide_member_resources_card_body"),
+      cta: t("guide_member_resources_cta"),
+      stat: t("guide_member_resources_cta"),
+    },
+    {
+      href: "/guide/services",
+      icon: PackageCheck,
+      title: t("guide_materials_title"),
+      body: t("guide_materials_subtitle"),
+      cta: t("guide_enter_library"),
+      stat: `${productCount + serviceCount} ${t("guide_action_hub_items")}`,
+    },
+  ];
+  return (
+    <section>
+      <GuideSectionTitle title={t("guide_action_hub_title")} subtitle={t("guide_action_hub_subtitle")} />
+      <div className="grid gap-3 sm:grid-cols-2">
+        {cards.map((card) => {
+          const Icon = card.icon;
+          return (
+            <Link
+              key={card.href}
+              href={card.href}
+              className="group rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+            >
+              <div className="flex items-start gap-3">
+                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
+                  <Icon className="h-5 w-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-start justify-between gap-3">
+                    <h3 className="text-base font-black text-kx-text group-hover:text-kx-accent">{card.title}</h3>
+                    <span className="shrink-0 rounded-full bg-kx-soft px-2.5 py-1 text-[11px] font-bold text-kx-muted">
+                      {card.stat}
+                    </span>
+                  </div>
+                  <p className="mt-1 line-clamp-3 text-sm leading-6 text-kx-subtle">{card.body}</p>
+                  <span className="mt-3 inline-flex rounded-full bg-kx-accent px-3 py-1.5 text-xs font-bold text-white">
+                    {card.cta}
+                  </span>
+                </div>
+              </div>
+            </Link>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function CategorySpotlight({
   country,
   language,
@@ -331,9 +375,9 @@ function GuideRightRail() {
     { href: "/guide/study-japan", label: t("guide_study_title") },
     { href: "/guide/study-abroad-japan", label: t("guide_abroad_title") },
     { href: "/guide/jlpt", label: t("guide_jlpt_title") },
-    { href: "/guide/life-japan", label: t("guide_materials_title") },
-    { href: "/guide/services", label: t("guide_materials_title") },
+    { href: "/guide/life-japan", label: t("guide_life_title") },
     { href: "/guide/member-resources", label: t("guide_member_resources_title") },
+    { href: "/guide/services", label: t("guide_materials_title") },
     { href: "/guide/schools", label: t("guide_schools_title") },
     { href: "/guide/companies", label: t("guide_companies_title") },
   ];

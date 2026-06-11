@@ -2601,6 +2601,67 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_device_push_tokens_user ON device_push_tokens(user_id);
         """,
     ),
+    (
+        43,
+        "businesses: real merchant application, document review and console metadata",
+        """
+        ALTER TABLE business_profiles ADD COLUMN legal_name TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN representative_name TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN registration_number TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN phone TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN email TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN website TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN address TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN postal_code TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN service_categories TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE business_profiles ADD COLUMN service_cities TEXT NOT NULL DEFAULT '[]';
+        ALTER TABLE business_profiles ADD COLUMN opening_hours TEXT NOT NULL DEFAULT '{}';
+        ALTER TABLE business_profiles ADD COLUMN logo_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN cover_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN application_note TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN review_note TEXT NOT NULL DEFAULT '';
+        ALTER TABLE business_profiles ADD COLUMN submitted_at TEXT;
+        ALTER TABLE business_profiles ADD COLUMN reviewed_at TEXT;
+        ALTER TABLE business_profiles ADD COLUMN reviewer_admin_id TEXT NOT NULL DEFAULT '';
+
+        CREATE INDEX IF NOT EXISTS idx_business_profiles_owner
+            ON business_profiles(owner_user_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_business_profiles_review
+            ON business_profiles(verification_status, submitted_at, updated_at);
+
+        CREATE TABLE IF NOT EXISTS business_verification_documents (
+            id TEXT PRIMARY KEY,
+            business_id TEXT NOT NULL,
+            uploaded_file_id TEXT NOT NULL,
+            document_type TEXT NOT NULL DEFAULT 'registration',
+            label TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'submitted',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(business_id, uploaded_file_id),
+            FOREIGN KEY(business_id) REFERENCES business_profiles(id),
+            FOREIGN KEY(uploaded_file_id) REFERENCES uploaded_files(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_business_documents_business
+            ON business_verification_documents(business_id, status, created_at);
+
+        CREATE TABLE IF NOT EXISTS business_review_logs (
+            id TEXT PRIMARY KEY,
+            business_id TEXT NOT NULL,
+            actor_user_id TEXT NOT NULL DEFAULT '',
+            action TEXT NOT NULL,
+            from_status TEXT NOT NULL DEFAULT '',
+            to_status TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(business_id) REFERENCES business_profiles(id),
+            FOREIGN KEY(actor_user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_business_review_logs_business
+            ON business_review_logs(business_id, created_at);
+        """,
+    ),
 ]
 
 

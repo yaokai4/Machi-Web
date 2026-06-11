@@ -707,6 +707,77 @@ export interface KXCreateListingPayload {
   coverMediaId?: string;
 }
 
+export type KXBusinessVerificationStatus = "not_started" | "draft" | "pending" | "needs_review" | "verified" | "rejected" | "suspended";
+
+export interface KXBusinessDocument {
+  id: string;
+  documentId?: string;
+  documentType?: string;
+  label?: string;
+  documentStatus?: string;
+  fileType?: string;
+  contentType?: string;
+  fileSize?: number;
+  purpose?: string;
+  entityId?: string;
+  status?: string;
+  isPrivate?: boolean;
+  createdAt?: string | null;
+}
+
+export interface KXBusinessProfile {
+  id: string;
+  owner_user_id: string;
+  owner?: KXUser | null;
+  business_name: string;
+  business_type: string;
+  legal_name?: string;
+  representative_name?: string;
+  registration_number?: string;
+  country_code: string;
+  city_slug: string;
+  verification_status: KXBusinessVerificationStatus;
+  application_status?: KXBusinessVerificationStatus;
+  contact_method?: string;
+  phone?: string;
+  email?: string;
+  website?: string;
+  address?: string;
+  postal_code?: string;
+  description?: string;
+  service_categories?: string[];
+  service_cities?: string[];
+  opening_hours?: Record<string, unknown>;
+  logo_url?: string;
+  cover_url?: string;
+  application_note?: string;
+  review_note?: string;
+  submitted_at?: string | null;
+  reviewed_at?: string | null;
+  reviewer_admin_id?: string;
+  created_at?: string;
+  updated_at?: string;
+  documents?: KXBusinessDocument[];
+  document_count?: number;
+  listing_count?: number;
+  published_listing_count?: number;
+  inquiry_count?: number;
+}
+
+export interface KXBusinessDashboard {
+  business: KXBusinessProfile | null;
+  metrics: {
+    listings: number;
+    published: number;
+    inquiries: number;
+    new_inquiries: number;
+    favorites: number;
+    views: number;
+  };
+  recent_listings: KXCityListing[];
+  recent_inquiries: KXListingInquiry[];
+}
+
 export interface KXReputationBadge {
   id: string;
   key: string;

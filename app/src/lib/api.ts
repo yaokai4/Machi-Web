@@ -32,6 +32,8 @@ import type {
   KXMembershipInsights,
   PaymentProvider,
   KXCityListing,
+  KXBusinessDashboard,
+  KXBusinessProfile,
   KXCreateListingPayload,
   KXListingInquiry,
   KXListingType,
@@ -1264,6 +1266,30 @@ export const api = {
   async submitFeedback(payload: { category: string; content: string }): Promise<void> {
     await request<void>("POST", `/api/feedback`, payload);
   },
+  async businessProfile(): Promise<{ business: KXBusinessProfile | null; status: string }> {
+    return request("GET", `/api/business/profile`);
+  },
+  async saveBusinessApplication(payload: Partial<KXBusinessProfile> & {
+    businessName?: string;
+    businessType?: string;
+    legalName?: string;
+    representativeName?: string;
+    registrationNumber?: string;
+    countryCode?: string;
+    citySlug?: string;
+    serviceCategories?: string[];
+    serviceCities?: string[];
+    applicationNote?: string;
+    uploaded_file_ids?: string[];
+    uploadedFileIds?: string[];
+    documentTypes?: Record<string, string>;
+    submit?: boolean;
+  }): Promise<{ business: KXBusinessProfile; user?: KXUser }> {
+    return request("POST", `/api/business/application`, payload, { headers: { "Idempotency-Key": idempotencyKey("business-application") } });
+  },
+  async businessDashboard(): Promise<KXBusinessDashboard> {
+    return request("GET", `/api/business/dashboard`);
+  },
 
   // ---- devices ----
   async devices(): Promise<KXDevice[]> {
@@ -1468,12 +1494,17 @@ export const api = {
     const { items } = await request<{ items: Array<Record<string, unknown>> }>("GET", `/api/admin/seller-verifications?${usp.toString()}`);
     return items;
   },
-  async adminBusinesses(opts: { status?: string; verification_status?: string } = {}): Promise<Array<Record<string, unknown>>> {
+  async adminBusinesses(opts: { status?: string; verification_status?: string; q?: string } = {}): Promise<KXBusinessProfile[]> {
     const usp = new URLSearchParams();
     if (opts.status) usp.set("status", opts.status);
     if (opts.verification_status) usp.set("verification_status", opts.verification_status);
-    const { items } = await request<{ items: Array<Record<string, unknown>> }>("GET", `/api/admin/businesses?${usp.toString()}`);
+    if (opts.q) usp.set("q", opts.q);
+    const { items } = await request<{ items: KXBusinessProfile[] }>("GET", `/api/admin/businesses?${usp.toString()}`);
     return items;
+  },
+  async adminUpdateBusiness(id: string, patch: { status?: string; verification_status?: string; review_note?: string; note?: string }): Promise<KXBusinessProfile> {
+    const { business } = await request<{ business: KXBusinessProfile }>("PATCH", `/api/admin/businesses/${encodeURIComponent(id)}`, patch);
+    return business;
   },
   async adminComments(): Promise<KXComment[]> {
     const { items } = await request<{ items: KXComment[] }>("GET", `/api/admin/comments`);

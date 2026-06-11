@@ -12,6 +12,7 @@ import {
   Bell,
   Briefcase,
   CheckCircle2,
+  FileCheck2,
   Heart,
   Home,
   MapPin,
@@ -21,12 +22,13 @@ import {
   Send,
   SlidersHorizontal,
   Sparkles,
+  Store,
   Tag,
   X,
 } from "lucide-react";
 import { api, APIError, isAuthRequiredError, isUploadImageFile, isUploadVideoFile, type UploadPurpose } from "@/lib/api";
 import { fallbackVideoPoster, isVideoMedia, mediaDurationLabel, mediaPreviewImageUrl, mediaSourceUrl } from "@/lib/media";
-import { listingTypeRequiresMembership, type KXCityListing, type KXCreateListingPayload, type KXListingInquiry, type KXListingMedia, type KXListingType, type KXMedia } from "@/lib/types";
+import { listingTypeRequiresMembership, type KXBusinessProfile, type KXCityListing, type KXCreateListingPayload, type KXListingInquiry, type KXListingMedia, type KXListingType, type KXMedia } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, PremiumEmptyState, SectionLoading, Skeleton } from "@/components/design/States";
@@ -73,7 +75,7 @@ const CHANNEL: Record<ChannelKind, { type: KXListingType; title: string; subtitl
   marketplace: { type: "secondhand", title: "二手市场", subtitle: "图片、价格、地点和交易状态清晰分离", icon: Tag, search: "搜索家具、家电、教材、电子产品、搬家出清", createLabel: "发布二手" },
   rentals: { type: "rental", title: "租房", subtitle: "租金、车站、户型、面积和入住条件结构化展示", icon: Home, search: "搜索地区、车站、学校、公司、房源关键词", createLabel: "发布房源" },
   jobs: { type: "job", title: "工作机会", subtitle: "薪资、地点、日语要求、签证支持和招聘方认证", icon: Briefcase, search: "搜索职位、公司、地点、日语要求", createLabel: "发布职位" },
-  services: { type: "local_service", title: "本地服务", subtitle: "认证服务方、服务范围和风险提示", icon: Sparkles, search: "搜索翻译、手续、接机、履历书修改、生活支持", createLabel: "发布服务" },
+  services: { type: "local_service", title: "商家与本地服务", subtitle: "点评、预约、优惠、旅行住宿、景点和生活支持", icon: Sparkles, search: "搜索餐饮点评、酒店民宿、景点门票、一日游、接送机、翻译手续", createLabel: "发布服务" },
   deals: { type: "discount", title: "优惠", subtitle: "本地商家优惠、有效期和使用规则", icon: Tag, search: "搜索优惠、折扣、商家、有效期", createLabel: "发布优惠" },
 };
 
@@ -100,9 +102,9 @@ const CHANNEL_TEXT: Record<ChannelKind, Record<"title" | "subtitle" | "search" |
     createLabel: { ja: "求人を掲載", en: "Post a job" },
   },
   services: {
-    title: { ja: "ローカルサービス", en: "Local services" },
-    subtitle: { ja: "認証済みの提供者・対応範囲・注意事項", en: "Verified providers, scope and safety notes" },
-    search: { ja: "翻訳・手続き・送迎・履歴書添削・生活サポートを検索", en: "Search translation, paperwork, pickup, resume help…" },
+    title: { ja: "店舗・地域サービス", en: "Businesses & local services" },
+    subtitle: { ja: "口コミ、予約、特典、宿泊、観光、生活サポート", en: "Reviews, bookings, deals, stays, attractions and local support" },
+    search: { ja: "飲食、宿泊、観光チケット、送迎、翻訳、手続きを検索", en: "Search dining, stays, attraction tickets, transfers, paperwork…" },
     createLabel: { ja: "サービスを掲載", en: "Offer a service" },
   },
   deals: {
@@ -138,7 +140,7 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   rental: ["全部", "单人", "合租", "短租", "整租", "家具家电", "近车站"],
   job: ["全部", "兼职", "全职", "时给", "月给", "无经验可", "留学生可", "签证支持", "周末"],
   hiring: ["全部", "兼职", "全职", "派遣", "实习", "签证支持"],
-  local_service: ["全部", "搬家", "签证", "维修", "翻译", "清洁", "认证服务"],
+  local_service: ["全部", "餐饮点评", "优惠预约", "酒店民宿", "景点门票", "一日游", "接送机", "翻译手续", "搬家清洁", "维修安装", "认证服务"],
   discount: ["全部", "餐饮", "生活", "学习", "搬家", "限时"],
   event: ["全部", "今天", "本周", "周末", "免费"],
 };
@@ -179,6 +181,15 @@ const CATEGORY_LABELS: Record<string, { ja: string; en: string }> = {
   "维修": { ja: "修理", en: "Repair" },
   "翻译": { ja: "翻訳", en: "Translation" },
   "清洁": { ja: "清掃", en: "Cleaning" },
+  "餐饮点评": { ja: "飲食口コミ", en: "Dining reviews" },
+  "优惠预约": { ja: "予約特典", en: "Deals & booking" },
+  "酒店民宿": { ja: "ホテル・民泊", en: "Hotels & stays" },
+  "景点门票": { ja: "観光チケット", en: "Attraction tickets" },
+  "一日游": { ja: "日帰りツアー", en: "Day trips" },
+  "接送机": { ja: "空港送迎", en: "Airport transfer" },
+  "翻译手续": { ja: "翻訳・手続き", en: "Translation & paperwork" },
+  "搬家清洁": { ja: "引越し・清掃", en: "Moving & cleaning" },
+  "维修安装": { ja: "修理・設置", en: "Repair & installation" },
   "认证服务": { ja: "認定サービス", en: "Verified services" },
   "餐饮": { ja: "飲食", en: "Dining" },
   "生活": { ja: "生活", en: "Living" },
@@ -944,7 +955,7 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
             <Link href="/explore" className="grid h-10 w-10 place-items-center rounded-full bg-slate-100"><ArrowLeft className="h-5 w-5" /></Link>
             <div>
               <h1 className="text-2xl font-black text-slate-950">发布城市信息</h1>
-              <p className="text-sm font-semibold text-slate-500">日常动态留在首页；二手、租房、工作、服务和优惠会进入各自的城市频道。</p>
+              <p className="text-sm font-semibold text-slate-500">日常动态留在首页；二手、租房、工作、商家与本地服务和优惠会进入各自的城市频道。</p>
             </div>
           </div>
           <div className="mt-5 grid gap-5">
@@ -1172,7 +1183,7 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
             </section>
 
             <Field label="描述" required error={fieldErrors.description}>
-              <textarea value={description} onChange={(e) => { setDescription(e.target.value); clearFieldError(setFieldErrors, "description"); }} className="kx-input min-h-32 p-3" placeholder="补充状态、交易方式、入住条件、工作内容、服务范围、使用规则或安全说明。" />
+              <textarea value={description} onChange={(e) => { setDescription(e.target.value); clearFieldError(setFieldErrors, "description"); }} className="kx-input min-h-32 p-3" placeholder="补充状态、交易方式、入住条件、工作内容、服务范围、预约规则、旅行/景点说明或安全提示。" />
             </Field>
             <SafetyNotice type={type} />
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -1368,7 +1379,7 @@ export function AdminListingsPage({
       <main className="px-3 py-4 sm:px-4">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-black text-slate-950">Listing 审核</h1>
-          <select value={type} onChange={(e) => setType(e.target.value)} className="kx-input h-10 w-40"><option value="">全部类型</option><option value="secondhand">二手</option><option value="rental">租房</option><option value="job,hiring">工作</option><option value="job">找工作</option><option value="hiring">招聘</option><option value="local_service">本地服务</option><option value="discount">商家优惠</option><option value="event">活动</option></select>
+          <select value={type} onChange={(e) => setType(e.target.value)} className="kx-input h-10 w-40"><option value="">全部类型</option><option value="secondhand">二手</option><option value="rental">租房</option><option value="job,hiring">工作</option><option value="job">找工作</option><option value="hiring">招聘</option><option value="local_service">商家与本地服务</option><option value="discount">商家优惠</option><option value="event">活动</option></select>
           <select value={status} onChange={(e) => setStatus(e.target.value)} className="kx-input h-10 w-44"><option value="">全部状态</option><option value="pending_review">待审核</option><option value="published">已发布</option><option value="hidden">已下架</option><option value="rejected">已拒绝</option></select>
           <select value={verificationStatus} onChange={(e) => setVerificationStatus(e.target.value)} className="kx-input h-10 w-44"><option value="">全部核验</option><option value="unverified">未认证</option><option value="pending">待核验</option><option value="verified">已认证</option><option value="needs_review">需复核</option><option value="rejected">核验拒绝</option></select>
         </div>
@@ -1434,13 +1445,228 @@ export function AdminSellerVerificationsPage() {
 }
 
 export function AdminBusinessesPage() {
-  const query = useQuery({ queryKey: ["admin-businesses"], queryFn: () => api.adminBusinesses() });
+  const [status, setStatus] = useState("");
+  const [q, setQ] = useState("");
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const query = useQuery({
+    queryKey: ["admin-businesses", status, q],
+    queryFn: () => api.adminBusinesses({ verification_status: status || undefined, q: q || undefined }),
+  });
+  const review = useMutation({
+    mutationFn: ({ id, verification_status, review_note }: { id: string; verification_status: string; review_note: string }) =>
+      api.adminUpdateBusiness(id, { verification_status, review_note }),
+    onSuccess: (business) => {
+      queryClient.invalidateQueries({ queryKey: ["admin-businesses"] });
+      pushToast({ kind: "success", message: `${business.business_name || "商家"} 已更新为 ${adminBusinessStatusLabel(business.verification_status)}` });
+    },
+    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message || "商家审核更新失败" }),
+  });
   return (
-    <AdminRecordPage title="商家资料">
+    <AdminRecordPage
+      title="商家服务后台"
+      right={(
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            className="kx-input h-10 w-56"
+            placeholder="搜索商家、主体、负责人、邮箱"
+          />
+          <select value={status} onChange={(e) => setStatus(e.target.value)} className="kx-input h-10 w-44">
+            <option value="">全部状态</option>
+            <option value="pending">待审核</option>
+            <option value="needs_review">需补充材料</option>
+            <option value="verified">已认证</option>
+            <option value="rejected">已拒绝</option>
+            <option value="suspended">已暂停</option>
+            <option value="draft">草稿</option>
+          </select>
+        </div>
+      )}
+    >
       <AdminRecordQueryState query={query} title="正在加载商家资料" errorTitle="商家资料暂时无法加载" />
-      <AdminRecordList rows={query.data || []} empty={!query.isLoading && !query.isError && !(query.data || []).length} />
+      <div className="divide-y divide-slate-100">
+        {(query.data || []).map((business) => (
+          <AdminBusinessCard
+            key={business.id}
+            business={business}
+            pending={review.isPending}
+            onReview={(nextStatus, note) => review.mutate({ id: business.id, verification_status: nextStatus, review_note: note })}
+          />
+        ))}
+      </div>
+      {!query.isLoading && !query.isError && !(query.data || []).length ? <div className="p-8 text-center text-sm font-semibold text-slate-500">暂无商家申请</div> : null}
     </AdminRecordPage>
   );
+}
+
+function AdminBusinessCard({
+  business,
+  pending,
+  onReview,
+}: {
+  business: KXBusinessProfile;
+  pending: boolean;
+  onReview: (status: string, note: string) => void;
+}) {
+  const [note, setNote] = useState(business.review_note || "");
+  useEffect(() => {
+    setNote(business.review_note || "");
+  }, [business.id, business.review_note]);
+  const owner = business.owner;
+  const categories = business.service_categories?.length ? business.service_categories.join("、") : "未填写";
+  const city = business.city_slug || "未填写";
+  return (
+    <article className="grid gap-4 p-4 lg:grid-cols-[1fr_300px]">
+      <div className="min-w-0">
+        <div className="flex flex-wrap items-center gap-2">
+          <AdminBusinessStatusBadge status={business.verification_status} />
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-black text-slate-500">{business.business_type || "商家服务"}</span>
+          <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{business.document_count || business.documents?.length || 0} 份材料</span>
+        </div>
+        <h2 className="mt-2 truncate text-lg font-black text-slate-950">{business.business_name || "未命名商家"}</h2>
+        <p className="mt-1 line-clamp-2 text-sm font-semibold leading-6 text-slate-600">{business.description || "暂无服务介绍"}</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          <AdminBusinessField label="主体" value={business.legal_name || "未填写"} />
+          <AdminBusinessField label="负责人" value={business.representative_name || "未填写"} />
+          <AdminBusinessField label="登记号/许可" value={business.registration_number || "未填写"} />
+          <AdminBusinessField label="服务城市" value={`${business.country_code || "--"} / ${city}`} />
+          <AdminBusinessField label="电话" value={business.phone || "未填写"} />
+          <AdminBusinessField label="邮箱" value={business.email || "未填写"} />
+          <AdminBusinessField label="地址" value={business.address || "未填写"} />
+          <AdminBusinessField label="分类" value={categories} />
+        </div>
+        {business.application_note ? (
+          <div className="mt-3 rounded-2xl bg-amber-50 px-3 py-2 text-xs font-semibold leading-5 text-amber-900">
+            申请备注：{business.application_note}
+          </div>
+        ) : null}
+        {business.documents?.length ? (
+          <div className="mt-3 grid gap-2 sm:grid-cols-2">
+            {business.documents.slice(0, 4).map((doc) => (
+              <div key={doc.documentId || doc.id} className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
+                <FileCheck2 className="h-4 w-4 shrink-0 text-emerald-600" />
+                <div className="min-w-0">
+                  <p className="truncate text-xs font-black text-slate-700">{doc.documentType || "认证材料"}</p>
+                  <p className="text-[11px] font-semibold text-slate-400">{doc.contentType || doc.fileType || "文件"} · {doc.status || doc.documentStatus || "submitted"}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <aside className="rounded-[22px] bg-slate-50 p-3">
+        <div className="grid grid-cols-3 gap-2">
+          <AdminBusinessMetric icon={Store} label="发布" value={business.listing_count || 0} />
+          <AdminBusinessMetric icon={CheckCircle2} label="展示" value={business.published_listing_count || 0} />
+          <AdminBusinessMetric icon={Bell} label="线索" value={business.inquiry_count || 0} />
+        </div>
+        <div className="mt-3 rounded-2xl bg-white p-3 ring-1 ring-slate-200/70">
+          <p className="text-[11px] font-black text-slate-400">申请人</p>
+          <p className="mt-1 truncate text-sm font-black text-slate-800">{owner?.display_name || owner?.username || owner?.handle || business.owner_user_id}</p>
+          <p className="mt-1 text-xs font-semibold text-slate-500">提交：{business.submitted_at ? formatAdminRecordValue("submitted_at", business.submitted_at) : "未提交"}</p>
+        </div>
+        <textarea
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          className="kx-input mt-3 min-h-24 py-3 text-sm"
+          placeholder="审核意见：通过说明、需补充材料、拒绝原因等"
+        />
+        <div className="mt-3 grid grid-cols-2 gap-2">
+          <AdminBusinessAction disabled={pending} tone="approve" onClick={() => onReview("verified", note)} label="通过认证" />
+          <AdminBusinessAction disabled={pending} tone="review" onClick={() => onReview("needs_review", note || "请补充主体资质、许可证或更清晰的证明材料。")} label="补材料" />
+          <AdminBusinessAction disabled={pending} tone="reject" onClick={() => onReview("rejected", note || "资料不完整或暂不符合认证要求。")} label="拒绝" />
+          <AdminBusinessAction disabled={pending} tone="pause" onClick={() => onReview("suspended", note || "商家服务已暂停展示，请联系后台复核。")} label="暂停" />
+        </div>
+      </aside>
+    </article>
+  );
+}
+
+function AdminBusinessStatusBadge({ status }: { status: string }) {
+  const tone: Record<string, string> = {
+    verified: "bg-emerald-50 text-emerald-700 ring-emerald-200",
+    pending: "bg-amber-50 text-amber-700 ring-amber-200",
+    needs_review: "bg-blue-50 text-blue-700 ring-blue-200",
+    rejected: "bg-rose-50 text-rose-700 ring-rose-200",
+    suspended: "bg-slate-100 text-slate-700 ring-slate-200",
+    draft: "bg-slate-100 text-slate-600 ring-slate-200",
+  };
+  return (
+    <span className={`inline-flex h-7 items-center rounded-full px-3 text-xs font-black ring-1 ${tone[status] || tone.draft}`}>
+      {adminBusinessStatusLabel(status)}
+    </span>
+  );
+}
+
+function AdminBusinessField({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-2xl bg-slate-50 px-3 py-2">
+      <p className="text-[11px] font-black text-slate-400">{label}</p>
+      <p className="mt-0.5 truncate text-xs font-bold text-slate-700">{value}</p>
+    </div>
+  );
+}
+
+function AdminBusinessMetric({
+  icon: Icon,
+  label,
+  value,
+}: {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  value: number;
+}) {
+  return (
+    <div className="rounded-2xl bg-white p-2 text-center ring-1 ring-slate-200/70">
+      <Icon className="mx-auto h-4 w-4 text-blue-600" />
+      <p className="mt-1 text-[11px] font-black text-slate-400">{label}</p>
+      <p className="text-sm font-black text-slate-950">{value}</p>
+    </div>
+  );
+}
+
+function AdminBusinessAction({
+  disabled,
+  tone,
+  label,
+  onClick,
+}: {
+  disabled: boolean;
+  tone: "approve" | "review" | "reject" | "pause";
+  label: string;
+  onClick: () => void;
+}) {
+  const tones: Record<typeof tone, string> = {
+    approve: "bg-emerald-600 text-white hover:bg-emerald-700",
+    review: "bg-blue-600 text-white hover:bg-blue-700",
+    reject: "bg-rose-600 text-white hover:bg-rose-700",
+    pause: "bg-slate-900 text-white hover:bg-slate-800",
+  };
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className={`h-9 rounded-full px-3 text-xs font-black transition disabled:cursor-not-allowed disabled:opacity-45 ${tones[tone]}`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function adminBusinessStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    not_started: "未申请",
+    draft: "草稿",
+    pending: "待审核",
+    needs_review: "需补充材料",
+    verified: "已认证",
+    rejected: "已拒绝",
+    suspended: "已暂停",
+  };
+  return labels[status] || status;
 }
 
 function MarketplaceCard({ listing }: { listing: KXCityListing }) {
@@ -2128,7 +2354,7 @@ function ListingSkeletonGrid({ type }: { type: KXListingType }) {
 }
 
 function ListingEmptyState({ type, cityName }: { type: KXListingType; cityName: string }) {
-  const title = type === "secondhand" ? "这里还没有二手商品" : type === "rental" ? "这里还没有房源" : type === "job" || type === "hiring" ? "这里还没有工作机会" : type === "local_service" ? "这里还没有本地服务" : type === "discount" ? "这里还没有商家优惠" : "这里还没有城市信息";
+  const title = type === "secondhand" ? "这里还没有二手商品" : type === "rental" ? "这里还没有房源" : type === "job" || type === "hiring" ? "这里还没有工作机会" : type === "local_service" ? "这里还没有商家与本地服务" : type === "discount" ? "这里还没有商家优惠" : "这里还没有城市信息";
   const subtitle = type === "secondhand"
     ? "发布第一个闲置、求购或搬家出清，让同城的人看到它。"
     : type === "rental"
@@ -2136,7 +2362,7 @@ function ListingEmptyState({ type, cityName }: { type: KXListingType; cityName: 
       : type === "job" || type === "hiring"
         ? "稍后查看新的兼职、全职和招聘信息。认证招聘方可以发布职位。"
         : type === "local_service"
-          ? "认证服务方可以发布翻译、搬家、维修、生活支持等服务。"
+          ? "认证商家和服务方可以发布点评、预约、住宿、景点、翻译、搬家、维修和生活支持。"
           : type === "discount"
             ? "本地商家可以发布折扣、活动和福利信息。"
             : `稍后查看${cityName}新的本地内容。`;
@@ -2288,7 +2514,7 @@ function defaultPriceType(type: KXListingType) {
 function titlePlaceholder(type: KXListingType) {
   if (type === "rental") return "仙台青叶区 1K";
   if (type === "job" || type === "hiring") return "居酒屋兼职 / 日中双语运营";
-  if (type === "local_service") return "搬家打包服务";
+  if (type === "local_service") return "东京周末一日游 / 机场接送 / 认证翻译服务";
   if (type === "discount") return "学生咖啡 10% 优惠";
   return "Apple Magic Keyboard";
 }
@@ -2296,7 +2522,7 @@ function titlePlaceholder(type: KXListingType) {
 function categoryPlaceholder(type: KXListingType) {
   if (type === "rental") return "单人 / 合租 / 短租";
   if (type === "job" || type === "hiring") return "兼职 / 全职 / 实习";
-  if (type === "local_service") return "翻译 / 搬家 / 手续协助";
+  if (type === "local_service") return "餐饮点评 / 酒店民宿 / 景点门票 / 翻译手续";
   if (type === "discount") return "餐饮 / 学习 / 生活";
   return "家具 / 家电 / 电子产品";
 }
@@ -2363,17 +2589,21 @@ function listingFormFields(type: KXListingType): AttributeField[] {
     { key: "job_requirements", label: "应聘条件", kind: "textarea", placeholder: "说明经验、语言、签证、排班等要求。" },
   ];
   if (type === "local_service") return [
-    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Life Support" },
-    { key: "service_type", label: "服务类型", required: true, kind: "select", options: ["搬家", "签证/手续协助", "维修", "翻译", "清洁", "接机", "生活支持", "履历书修改", "租房申请协助"].map((item) => option(item)) },
-    { key: "service_area", label: "服务范围", required: true, placeholder: "东京 23 区 / 仙台市内" },
+    { key: "business_name", label: "商家 / 服务方名称", required: true, placeholder: "Machi Travel & Local Support" },
+    { key: "service_type", label: "服务类型", required: true, kind: "select", options: ["餐饮点评", "优惠预约", "酒店民宿", "景点门票", "一日游", "接送机", "签证/手续协助", "翻译", "搬家清洁", "维修安装", "生活支持", "租房申请协助"].map((item) => option(item)) },
+    { key: "service_area", label: "服务范围", required: true, placeholder: "东京 23 区 / 成田机场 / 富士山周边" },
     { key: "price_unit", label: "价格单位", placeholder: "每小时 / 每次 / 预约咨询" },
     { key: "availability", label: "可预约时间", placeholder: "平日晚上 / 周末" },
-    { key: "certified_provider", label: "认证服务商", kind: "checkbox" },
-    { key: "service_process", label: "服务流程", kind: "textarea", placeholder: "说明预约、确认、执行、反馈流程。" },
-    { key: "not_included", label: "不包含内容", kind: "textarea", placeholder: "清楚说明不包含的项目，避免误解。" },
-    { key: "user_prepare", label: "用户需准备", kind: "textarea", placeholder: "证件、材料、地址、照片等。" },
+    { key: "booking_required", label: "需要预约", kind: "checkbox" },
+    { key: "certified_provider", label: "认证商家/服务商", kind: "checkbox" },
+    { key: "languages", label: "服务语言", placeholder: "中文 / 日本語 / English" },
+    { key: "rating_note", label: "评分/口碑说明", placeholder: "Google 4.6 / 老客推荐 / 平台新店" },
+    { key: "service_process", label: "服务流程", kind: "textarea", placeholder: "说明咨询、预约、确认、到店/出行/执行、反馈流程。" },
+    { key: "not_included", label: "不包含内容", kind: "textarea", placeholder: "清楚说明不包含的门票、餐费、交通费、材料费或额外项目。" },
+    { key: "user_prepare", label: "用户需准备", kind: "textarea", placeholder: "证件、材料、地址、航班号、人数、日期、照片等。" },
     { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "说明取消、改期和费用规则。" },
-    { key: "no_result_guarantee", label: "结果说明", kind: "textarea", placeholder: "不得承诺签证、房源、录取或工作结果。" },
+    { key: "license_note", label: "资质/许可说明", kind: "textarea", placeholder: "涉及旅行、住宿、票务、医疗、法律等需说明许可或合作方。" },
+    { key: "no_result_guarantee", label: "结果说明", kind: "textarea", placeholder: "不得承诺签证、房源、录取、工作、中奖或收益结果。" },
   ];
   if (type === "discount") return [
     { key: "merchant_name", label: "商家名称", required: true, placeholder: "Machi Coffee" },
@@ -2396,7 +2626,7 @@ function listingFormFields(type: KXListingType): AttributeField[] {
 function safetyTips(type: KXListingType) {
   if (type === "rental") return ["Machi 只是信息平台，不代收押金、订金或房租。", "地址只展示到区域，具体看房前核实发布者身份。", "高风险房源显示待核验，可举报并由后台下架。"];
   if (type === "job" || type === "hiring") return ["招聘不得收押金、保证金或培训费。", "核实招聘方资质、薪资、工作地点和签证说明。", "禁止成人、灰产或违法兼职。"];
-  if (type === "local_service") return ["本地服务默认进入审核，服务方认证状态会展示。", "禁止成人服务、高风险线下服务和违法服务。", "谨慎提供个人信息。"];
+  if (type === "local_service") return ["商家与本地服务默认进入审核，认证状态会展示。", "旅行住宿、景点票务、法律医疗等高信任服务需要补充资质。", "禁止成人服务、高风险线下服务、虚假票务、违规代办和违法服务。", "平台暂不做外卖配送，不代收第三方服务款。"];
   if (type === "discount") return ["确认优惠有效期、适用门店和使用规则。", "不要向未核验商家提前转账或提供敏感信息。", "遇到虚假折扣、诱导消费或强制捆绑请立即举报。"];
   return ["Machi 不代收二手交易款。", "不要提前转账，交易建议选择公共场所。", "核实对方身份，谨慎提供个人信息。", "遇到可疑内容立即举报。"];
 }
@@ -2418,8 +2648,9 @@ function filterOptions(type: KXListingType): Array<{ key: string; label: string;
     { key: "visa_support", label: "签证支持", options: [option("available", "有"), option("consult", "可咨询"), option("none", "无")] },
   ];
   if (type === "local_service") return [
-    { key: "service_type", label: "服务类型", options: ["搬家", "签证/手续协助", "维修", "翻译", "清洁", "接机", "生活支持", "履历书修改", "租房申请协助"].map((item) => option(item)) },
-    { key: "certified_provider", label: "认证服务商", options: [option("true", "已认证")] },
+    { key: "service_type", label: "服务类型", options: ["餐饮点评", "优惠预约", "酒店民宿", "景点门票", "一日游", "接送机", "签证/手续协助", "翻译", "搬家清洁", "维修安装", "生活支持", "租房申请协助"].map((item) => option(item)) },
+    { key: "booking_required", label: "预约", options: [option("true", "需要预约")] },
+    { key: "certified_provider", label: "认证商家/服务商", options: [option("true", "已认证")] },
   ];
   if (type === "discount") return [
     { key: "merchant_verified", label: "商家认证", options: [option("true", "已认证")] },

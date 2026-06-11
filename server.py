@@ -456,7 +456,7 @@ UPLOAD_PURPOSES: dict[str, dict[str, Any]] = {
     "member_resource_file": {"kind": "pdf", "max": 50 * 1024 * 1024, "count": 20, "admin": True, "private": True},
     "business_logo": {"kind": "image", "max": 5 * 1024 * 1024, "count": 1},
     "business_cover": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1},
-    "business_verification_file": {"kind": "pdf", "max": 20 * 1024 * 1024, "count": 10, "admin": True, "private": True},
+    "business_verification_file": {"kind": "verification_file", "max": 20 * 1024 * 1024, "count": 10, "private": True},
     "message_attachment": {"kind": "disabled", "max": 0, "count": 0},
     "message_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9, "private": True},
     "message_video": {"kind": "video", "max": 100 * 1024 * 1024, "count": 1, "private": True},
@@ -1604,6 +1604,8 @@ def upload_allowed_mimes(purpose: str) -> set[str]:
         return AUDIO_UPLOAD_MIME
     if kind == "message_file":
         return MESSAGE_FILE_UPLOAD_MIME
+    if kind == "verification_file":
+        return IMAGE_UPLOAD_MIME | PDF_UPLOAD_MIME
     return set()
 
 
@@ -3070,29 +3072,46 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
     })
     _ensure_columns(conn, "guide_schools", {
         "ward": "TEXT NOT NULL DEFAULT ''",
+        "address": "TEXT NOT NULL DEFAULT ''",
         "postal_code": "TEXT NOT NULL DEFAULT ''",
         "latitude": "REAL",
         "longitude": "REAL",
         "admission_url": "TEXT NOT NULL DEFAULT ''",
+        "international_admission_url": "TEXT NOT NULL DEFAULT ''",
         "application_url": "TEXT NOT NULL DEFAULT ''",
         "scholarship_url": "TEXT NOT NULL DEFAULT ''",
         "career_support_url": "TEXT NOT NULL DEFAULT ''",
         "language_support_url": "TEXT NOT NULL DEFAULT ''",
         "dormitory_url": "TEXT NOT NULL DEFAULT ''",
+        "has_english_program": "INTEGER NOT NULL DEFAULT -1",
         "has_japanese_program": "INTEGER NOT NULL DEFAULT -1",
+        "has_scholarship": "INTEGER NOT NULL DEFAULT -1",
         "has_dormitory": "INTEGER NOT NULL DEFAULT -1",
         "has_career_support": "INTEGER NOT NULL DEFAULT -1",
         "has_language_support": "INTEGER NOT NULL DEFAULT -1",
+        "tuition_min": "INTEGER NOT NULL DEFAULT 0",
+        "tuition_max": "INTEGER NOT NULL DEFAULT 0",
+        "currency": "TEXT NOT NULL DEFAULT 'JPY'",
         "departments": "TEXT NOT NULL DEFAULT ''",
         "faculties": "TEXT NOT NULL DEFAULT ''",
         "graduate_schools": "TEXT NOT NULL DEFAULT ''",
         "application_periods": "TEXT NOT NULL DEFAULT ''",
         "admission_months": "TEXT NOT NULL DEFAULT ''",
+        "required_japanese_level": "TEXT NOT NULL DEFAULT 'unknown'",
         "required_english_level": "TEXT NOT NULL DEFAULT 'unknown'",
         "eju_required": "TEXT NOT NULL DEFAULT 'unknown'",
         "jlpt_required": "TEXT NOT NULL DEFAULT 'unknown'",
         "toefl_required": "TEXT NOT NULL DEFAULT 'unknown'",
         "ielts_required": "TEXT NOT NULL DEFAULT 'unknown'",
+        "tags": "TEXT NOT NULL DEFAULT ''",
+        "source_type": "TEXT NOT NULL DEFAULT 'manual'",
+        "source_name": "TEXT NOT NULL DEFAULT ''",
+        "source_url": "TEXT NOT NULL DEFAULT ''",
+        "source_last_checked_at": "TEXT",
+        "verification_status": "TEXT NOT NULL DEFAULT 'needs_review'",
+        "is_featured": "INTEGER NOT NULL DEFAULT 0",
+        "view_count": "INTEGER NOT NULL DEFAULT 0",
+        "save_count": "INTEGER NOT NULL DEFAULT 0",
         "data_quality_score": "INTEGER NOT NULL DEFAULT 0",
     })
     _ensure_columns(conn, "guide_school_programs", {
@@ -4257,6 +4276,49 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
      )},
 ]
 
+GUIDE_ARTICLE_SEED.extend([
+    {"slug": "university-vs-vocational-school-choice", "title": "大学、大学院、专门学校怎么选：适合人群与风险点",
+     "category": "study_japan", "sub": "school_choice", "featured": False,
+     "author": "Machi 升学编辑部", "tags": ["学校选择", "大学", "专门学校"],
+     "summary": "从升学目标、就业路径、签证关联和费用周期，比较三类学校的真实差异。",
+     "body": _guide_paras(
+        "日本升学不是只看学校名气，而是看你的下一步目标。想做研究、未来读博或进入需要高度专业背景的岗位，大学院更匹配；想系统拿学历、参与新卒就活，学部路线更稳；想快速学习职业技能并进入特定行业，专门学校可能更直接。",
+        "大学院的关键在研究室匹配和研究计划书，适合已经有本科专业基础、能讲清研究问题的人。优点是学术含金量高、国公立学费相对稳定；风险是准备周期长，教授联系和考试难度不可低估。",
+        "专门学校更贴近就业技能，如 IT、设计、动画、酒店、介护、商务等。优点是课程职业导向强、部分学校有就职支援；风险是毕业后的工作签证审查会看专业和岗位关联性，学校质量差异也很大。选校时一定要看毕业生去向、就业率统计口径、留学生比例和退学率。",
+        "学部路线适合希望重新建立学历基础的人，但时间和费用成本最高。最终选择建议用四个问题判断：毕业后要在日本就业还是回国？目标岗位是否要求大学学历？日语和英语成绩能支撑哪个层级？家庭预算能承受几年？把答案写下来，再反推学校类型会清楚很多。",
+     )},
+    {"slug": "labor-conditions-checklist-japan", "title": "内定前必须确认的劳动条件通知书清单",
+     "category": "career_japan", "sub": "job_offer", "featured": False,
+     "author": "Machi 职场编辑部", "tags": ["内定", "劳动条件", "黑心企业"],
+     "summary": "年收、固定残业、试用期、转勤、签证材料——签约前逐项确认，避免入职后踩坑。",
+     "body": _guide_paras(
+        "拿到内定后，不要只看「年收」两个字。正式入职前应要求公司提供劳动条件通知书或雇佣合同，确认工资、工作地点、工作时间、休假、试用期、社会保险、退职规则等核心条款。日本法律要求雇主明示主要劳动条件。",
+        "工资部分重点看：基本给、各类手当、奖金是否保证、交通费上限、加班费计算方式。尤其要看是否有「固定残業代」：它包含多少小时、金额多少、超过部分是否另付。固定残业不是违法，但写不清或超时不付就是高风险信号。",
+        "工作时间要确认所定劳动时间、休息时间、休日、弹性工作制或裁量劳动制是否适用。试用期要看长度、待遇是否变化、解雇条件。工作地点要确认是否有转勤、出向或远程办公规则，外籍员工还要确认公司是否愿意配合在留资格变更材料。",
+        "如果对条款不理解，可以先问 HR，并把回复留在邮件里。遇到要求缴纳保证金、培训费、押金，或拒绝提供书面条件的公司，要高度警惕。内定很珍贵，但签下模糊条件后的代价更高。",
+     )},
+    {"slug": "foreign-student-it-career-japan", "title": "留学生想进日本 IT 公司：路线、作品集与日语要求",
+     "category": "career_japan", "sub": "it_career", "featured": False,
+     "author": "Machi 就职编辑部", "tags": ["IT", "工程师", "留学生就职"],
+     "summary": "文科转码、专门学校/大学院路线、作品集、面试和英文岗位的现实判断。",
+     "body": _guide_paras(
+        "日本 IT 就职对外国人相对开放，但不是「会写代码就行」。公司通常会综合看学历/专业、项目经历、日语沟通、团队协作和签证可行性。留学生常见路线有：大学/大学院信息专业、新卒工程师就活、专门学校 IT 方向、以及自学转职。",
+        "作品集比证书更有说服力。建议准备 2–3 个能在线访问或有完整 README 的项目：说明解决什么问题、你负责什么、技术栈、架构选择、测试和部署方式。GitHub 不需要堆很多半成品，少而完整更有价值。",
+        "日语要求因公司差异很大。传统 SIer、大企业综合职通常要求 N2 以上甚至商务日语；产品型创业公司、外资或英文工作环境可能更看重英文和技术，但岗位数量有限。现实策略是：技术面用项目证明能力，日语至少练到能解释经历、听懂任务和参与团队沟通。",
+        "签证层面，岗位内容需要与学历或专业经历具有合理关联。文科转工程师并非不可能，但要用课程、项目、实习或工作经历补足专业性证明。投递时同时覆盖日企、外资、英文岗位和面向外国人的招聘渠道，命中率会高很多。",
+     )},
+    {"slug": "rental-contract-before-signing", "title": "日本租房签约前 20 个确认点",
+     "category": "life_japan", "sub": "renting", "featured": False,
+     "author": "Machi 日本生活编辑部", "tags": ["租房", "契约", "初期费用"],
+     "summary": "从初期费用、退去清扫、保证公司到网络和垃圾规则，签约前一次问清。",
+     "body": _guide_paras(
+        "日本租房签约前，一定要把费用和规则问清楚。费用清单至少包括：敷金、礼金、中介费、保证公司费、火灾保险、换锁费、清扫费、24 小时支援费、首月房租和日割家租。不要只看月租低，初期费用可能差很多。",
+        "契约条款重点看：普通借家还是定期借家、契约年限、更新料、提前解约通知期、违约金、禁止事项。定期借家不一定能续约，适合短期但风险更高。养宠、乐器、同居、民泊、转租通常都有明确限制，违反可能被解约。",
+        "退去相关要提前确认：清扫费是固定扣除还是按实际，壁纸、地板、烟味、霉斑怎么计算。入住当天拍照保存房间现状，尤其是划痕、污渍、设备故障，发给管理公司留痕。",
+        "生活便利也要问：网络是否免费、是否需要自己签光回线、垃圾置场和分类规则、最近超市/车站、快递箱、有无自行车停车位。签约前多问十分钟，能减少后面几个月的麻烦。",
+     )},
+])
+
 # 资料与服务种子：除一份免费清单外，均为 coming_soon（未接支付前不展示价格购买）。
 GUIDE_PRODUCT_SEED: list[dict[str, Any]] = [
     {"slug": "n2-grammar-pack", "title": "N2 语法整理资料包", "subtitle": "适合 N2 备考和自学",
@@ -4722,10 +4784,15 @@ GUIDE_COMPANY_SEED: list[dict[str, Any]] = [
 def _append_guide_school_seed(slug: str, name: str, name_jp: str, name_en: str, school_type: str,
                               prefecture: str, city: str, website: str = "", fields: list[str] | None = None,
                               featured: int = 0) -> None:
-    if any(s["slug"] == slug for s in GUIDE_SCHOOL_SEED):
-        return
+    field_list = [f for f in (fields or ["unknown"]) if f]
     source_url = website or "https://www.studyinjapan.go.jp/en/search-school/"
-    GUIDE_SCHOOL_SEED.append({
+    type_label = {
+        "university": "大学/大学院",
+        "vocational_school": "专门学校",
+        "language_school": "语言学校",
+    }.get(school_type, "学校")
+    admission_months = "4月,10月" if school_type == "language_school" else "4月"
+    payload = {
         "slug": slug,
         "school_name": name,
         "school_name_jp": name_jp,
@@ -4734,13 +4801,41 @@ def _append_guide_school_seed(slug: str, name: str, name_jp: str, name_en: str, 
         "prefecture": prefecture,
         "city": city,
         "website": website,
-        "fields_of_study": fields or ["unknown"],
+        "international_admission_url": website,
+        "fields_of_study": field_list,
+        "short_description": f"{name} 位于 {prefecture}/{city}，收录为{type_label}档案，可按地区、学校类型和专业方向初筛。",
+        "description": (
+            f"{name}（{name_jp or name_en}）是 Machi 日本学校库的结构化档案。"
+            f"当前整理了学校类型、所在地区、官网链接和留学生常关注方向：{', '.join(field_list)}。"
+            "申请季、语言要求、学费、奖学金和宿舍等细节请以学校官网与最新募集要项为准。"
+        ),
+        "is_accepting_international_students": 1 if website else -1,
+        "has_japanese_program": 1 if school_type in {"language_school", "vocational_school", "university"} else -1,
+        "has_career_support": 1 if school_type in {"vocational_school", "university"} else -1,
+        "has_language_support": 1 if school_type in {"language_school", "vocational_school", "university"} else -1,
+        "application_periods": "请确认学校最新募集要项",
+        "admission_months": admission_months,
+        "required_japanese_level": "按项目确认",
+        "required_english_level": "按项目确认",
+        "tags": [school_type, prefecture, city, *field_list],
         "source_type": "school_website" if website else "study_in_japan",
         "source_name": name_en or name_jp or name,
         "source_url": source_url,
         "verification_status": "needs_review",
         "is_featured": featured,
-    })
+    }
+    existing = next((s for s in GUIDE_SCHOOL_SEED if s["slug"] == slug), None)
+    if existing:
+        merged_fields = sorted({*existing.get("fields_of_study", []), *field_list})
+        merged_tags = sorted({*existing.get("tags", []), *payload["tags"]})
+        for key, value in payload.items():
+            if value not in ("", [], None):
+                existing[key] = value
+        existing["fields_of_study"] = merged_fields
+        existing["tags"] = merged_tags
+        existing["is_featured"] = max(int(existing.get("is_featured", 0)), int(featured))
+        return
+    GUIDE_SCHOOL_SEED.append(payload)
 
 
 for _school in [
@@ -4861,9 +4956,14 @@ for _school in [
 def _append_guide_company_seed(slug: str, name: str, name_jp: str, name_en: str, industry: str,
                                prefecture: str, city: str, website: str, career_url: str = "",
                                size: str = "enterprise", featured: int = 0, tags: list[str] | None = None) -> None:
-    if any(c["slug"] == slug for c in GUIDE_COMPANY_SEED):
-        return
-    GUIDE_COMPANY_SEED.append({
+    tag_list = [t for t in (tags or []) if t]
+    tag_norm = {t.lower() for t in tag_list}
+    global_hint = any(t in tag_norm for t in {"foreign", "global", "english-friendly"}) or "english-friendly" in tag_norm
+    english_hint = "english-friendly" in tag_norm or "foreign" in tag_norm
+    employment_types = ["new_graduate", "mid_career"]
+    if any(t in tag_norm for t in {"it", "ai", "saas", "fintech", "hrtech", "data"}):
+        employment_types.append("engineer")
+    payload = {
         "slug": slug,
         "name": name,
         "name_jp": name_jp,
@@ -4879,8 +4979,35 @@ def _append_guide_company_seed(slug: str, name: str, name_jp: str, name_en: str,
         "source_url": career_url or website,
         "verification_status": "needs_review",
         "is_featured": featured,
-        "tags": tags or [],
-    })
+        "tags": tag_list,
+        "short_description": f"{name} 的公开公司档案，收录行业、地区、官网与招聘入口，适合外国人求职者做初筛。",
+        "description": (
+            f"{name}（{name_jp or name_en}）属于 {industry} 行业，主要地区为 {prefecture}/{city}。"
+            "Machi 仅整理公开基础信息、招聘入口和求职者关注标签；岗位、签证支持、语言要求和制度请以公司招聘页面为准。"
+        ),
+        "is_foreigner_friendly": 1 if global_hint else -1,
+        "accepts_foreign_applicants": 1 if global_hint else -1,
+        "has_english_positions": 1 if english_hint else -1,
+        "has_global_roles": 1 if global_hint else -1,
+        "has_foreign_employees": 1 if global_hint else -1,
+        "supports_new_graduate": 1,
+        "supports_mid_career": 1,
+        "japanese_level_required": "按岗位确认",
+        "english_level_required": "按岗位确认",
+        "employment_types": employment_types,
+    }
+    existing = next((c for c in GUIDE_COMPANY_SEED if c["slug"] == slug), None)
+    if existing:
+        merged_tags = sorted({*existing.get("tags", []), *tag_list})
+        merged_employment = sorted({*existing.get("employment_types", []), *employment_types})
+        for key, value in payload.items():
+            if value not in ("", [], None):
+                existing[key] = value
+        existing["tags"] = merged_tags
+        existing["employment_types"] = merged_employment
+        existing["is_featured"] = max(int(existing.get("is_featured", 0)), int(featured))
+        return
+    GUIDE_COMPANY_SEED.append(payload)
 
 
 for _company in [
@@ -5908,6 +6035,23 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
         source_type = school.get("source_type") or ("official" if school.get("website") else "public_reference")
         source_name = school.get("source_name") or school.get("school_name_en") or school["school_name"]
         verification_status = school.get("verification_status") or "needs_review"
+        international_admission_url = school.get("international_admission_url") or school.get("admission_url") or school.get("website", "")
+        school_fields = school.get("fields_of_study", [])
+        school_tags = school.get("tags") or [
+            school.get("school_type", ""),
+            school.get("prefecture", ""),
+            school.get("city", ""),
+            *school_fields,
+        ]
+        accepts_international = _guide_payload_bool(
+            school, "is_accepting_international_students", default=1 if international_admission_url else -1
+        )
+        has_english_program = _guide_payload_bool(school, "has_english_program", default=-1)
+        has_japanese_program = _guide_payload_bool(school, "has_japanese_program", default=-1)
+        has_scholarship = _guide_payload_bool(school, "has_scholarship", default=-1)
+        has_dormitory = _guide_payload_bool(school, "has_dormitory", default=-1)
+        has_career_support = _guide_payload_bool(school, "has_career_support", default=-1)
+        has_language_support = _guide_payload_bool(school, "has_language_support", default=-1)
         short = school.get("short_description") or "示例学校档案，后续由管理员根据官方资料继续补充申请信息。"
         desc = school.get("description") or (
             f"{school['school_name']} 的基础资料档案。当前仅录入学校名称、类型、地区和官方链接；"
@@ -5917,30 +6061,39 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
             conn.execute(
                 "UPDATE guide_schools SET school_name = ?, school_name_jp = ?, school_name_en = ?, school_type = ?, "
                 "prefecture = ?, city = ?, website = ?, international_admission_url = ?, short_description = ?, "
-                "description = ?, is_accepting_international_students = ?, fields_of_study = ?, source_type = ?, source_name = ?, source_url = ?, "
-                "verification_status = ?, data_quality_score = ?, is_featured = ?, updated_at = ? WHERE id = ?",
+                "description = ?, is_accepting_international_students = ?, has_english_program = ?, has_japanese_program = ?, "
+                "has_scholarship = ?, has_dormitory = ?, has_career_support = ?, has_language_support = ?, application_periods = ?, "
+                "admission_months = ?, required_japanese_level = ?, required_english_level = ?, fields_of_study = ?, tags = ?, "
+                "source_type = ?, source_name = ?, source_url = ?, verification_status = ?, data_quality_score = ?, "
+                "is_featured = ?, updated_at = ? WHERE id = ?",
                 (school["school_name"], school.get("school_name_jp", ""), school.get("school_name_en", ""),
                  school.get("school_type", "other"), school.get("prefecture", ""), school.get("city", ""),
-                 school.get("website", ""), school.get("international_admission_url", ""), short, desc,
-                 1 if school.get("international_admission_url") else -1,
-                 _guide_csv(school.get("fields_of_study", [])), source_type, source_name,
-                 source_url, verification_status, _guide_school_quality(school), int(school.get("is_featured", 0)), now, exists["id"]),
+                 school.get("website", ""), international_admission_url, short, desc,
+                 accepts_international, has_english_program, has_japanese_program, has_scholarship, has_dormitory,
+                 has_career_support, has_language_support, school.get("application_periods", ""),
+                 school.get("admission_months", ""), school.get("required_japanese_level", "unknown"),
+                 school.get("required_english_level", "unknown"), _guide_csv(school_fields), _guide_csv(school_tags),
+                 source_type, source_name, source_url, verification_status, _guide_school_quality(school),
+                 int(school.get("is_featured", 0)), now, exists["id"]),
             )
             continue
         conn.execute(
             "INSERT INTO guide_schools (id, slug, school_name, school_name_jp, school_name_en, school_type, country, "
             "prefecture, city, website, international_admission_url, description, short_description, "
             "is_accepting_international_students, has_english_program, has_japanese_program, has_scholarship, "
-            "has_dormitory, has_career_support, tuition_min, tuition_max, currency, fields_of_study, tags, "
+            "has_dormitory, has_career_support, has_language_support, tuition_min, tuition_max, currency, "
+            "application_periods, admission_months, required_japanese_level, required_english_level, fields_of_study, tags, "
             "source_type, source_name, source_url, verification_status, data_quality_score, is_featured, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, -1, -1, -1, 0, 0, 'JPY', ?, ?, "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'JPY', ?, ?, ?, ?, ?, ?, "
             "?, ?, ?, ?, ?, ?, 'published', ?, ?)",
             (str(uuid.uuid4()), school["slug"], school["school_name"], school.get("school_name_jp", ""),
              school.get("school_name_en", ""), school.get("school_type", "other"), country,
              school.get("prefecture", ""), school.get("city", ""), school.get("website", ""),
-             school.get("international_admission_url", ""), desc, short,
-             1 if school.get("international_admission_url") else -1,
-             _guide_csv(school.get("fields_of_study", [])), _guide_csv([school.get("school_type", ""), *school.get("fields_of_study", [])]),
+             international_admission_url, desc, short,
+             accepts_international, has_english_program, has_japanese_program, has_scholarship, has_dormitory,
+             has_career_support, has_language_support, school.get("application_periods", ""),
+             school.get("admission_months", ""), school.get("required_japanese_level", "unknown"),
+             school.get("required_english_level", "unknown"), _guide_csv(school_fields), _guide_csv(school_tags),
              source_type, source_name, source_url, verification_status, _guide_school_quality(school),
              int(school.get("is_featured", 0)), now, now),
         )
@@ -5951,6 +6104,16 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
         exists = conn.execute(
             "SELECT id FROM guide_companies WHERE slug = ? AND country = ?", (comp["slug"], country)
         ).fetchone()
+        comp_tags = comp.get("tags", [])
+        comp_employment = comp.get("employment_types") or (["new_graduate", "mid_career"] if comp.get("career_url") else [])
+        is_foreigner_friendly = _guide_payload_bool(comp, "is_foreigner_friendly", default=-1)
+        accepts_foreign = _guide_payload_bool(comp, "accepts_foreign_applicants", default=-1)
+        supports_work_visa = _guide_payload_bool(comp, "supports_work_visa", default=-1)
+        supports_new_graduate = _guide_payload_bool(comp, "supports_new_graduate", default=1 if "new_graduate" in comp_employment else -1)
+        supports_mid_career = _guide_payload_bool(comp, "supports_mid_career", default=1 if "mid_career" in comp_employment else -1)
+        has_english_positions = _guide_payload_bool(comp, "has_english_positions", default=-1)
+        has_global_roles = _guide_payload_bool(comp, "has_global_roles", default=-1)
+        has_foreign_employees = _guide_payload_bool(comp, "has_foreign_employees", default=-1)
         if exists:
             source_url = comp.get("source_url") or comp.get("career_url") or comp.get("website", "")
             source_type = comp.get("source_type") or ("official" if comp.get("website") else "public_reference")
@@ -5960,7 +6123,10 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
                 "UPDATE guide_companies SET company_name = ?, company_name_jp = ?, company_name_en = ?, industry = ?, "
                 "country = ?, prefecture = ?, city = ?, website = ?, career_url = ?, size = ?, company_size = ?, "
                 "founded_year = ?, short_description = ?, description = ?, source_type = ?, source_name = ?, "
-                "source_url = ?, verification_status = ?, data_quality_score = ?, is_featured = ?, updated_at = ? WHERE id = ?",
+                "source_url = ?, verification_status = ?, data_quality_score = ?, is_featured = ?, is_foreigner_friendly = ?, "
+                "accepts_foreign_applicants = ?, supports_work_visa = ?, supports_new_graduate = ?, supports_mid_career = ?, "
+                "has_english_positions = ?, has_global_roles = ?, has_foreign_employees = ?, japanese_level_required = ?, "
+                "english_level_required = ?, employment_types = ?, tags = ?, updated_at = ? WHERE id = ?",
                 (comp["name"], comp.get("name_jp", ""), comp.get("name_en", ""), comp.get("industry", ""),
                  country, comp.get("prefecture", ""), comp.get("city", ""), comp.get("website", ""),
                  comp.get("career_url", ""), comp.get("company_size", comp.get("size", "")),
@@ -5968,7 +6134,11 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
                  comp.get("short_description", "示例公司档案，评分与评论需等待真实用户提交并审核。"),
                  comp.get("description", "公开基础信息档案。公司详情、招聘岗位和制度请以公司官网与招聘页面为准。"),
                  source_type, source_name, source_url, verification_status, _guide_company_quality(comp),
-                 int(comp.get("is_featured", 0)), now, exists["id"]),
+                 int(comp.get("is_featured", 0)), is_foreigner_friendly, accepts_foreign, supports_work_visa,
+                 supports_new_graduate, supports_mid_career, has_english_positions, has_global_roles,
+                 has_foreign_employees, comp.get("japanese_level_required", "unknown"),
+                 comp.get("english_level_required", "unknown"), _guide_csv(comp_employment), _guide_csv(comp_tags),
+                 now, exists["id"]),
             )
             continue
         source_url = comp.get("source_url") or comp.get("career_url") or comp.get("website", "")
@@ -5979,10 +6149,12 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
             "INSERT INTO guide_companies (id, company_name, company_name_jp, company_name_en, slug, industry, country, "
             "prefecture, city, website, career_url, size, company_size, founded_year, short_description, description, "
             "is_foreigner_friendly, accepts_foreign_applicants, supports_work_visa, has_english_positions, "
+            "supports_new_graduate, supports_mid_career, has_global_roles, has_foreign_employees, "
+            "japanese_level_required, english_level_required, employment_types, tags, "
             "foreigner_friendly_score, visa_support_score, interview_difficulty_score, overtime_score, "
             "salary_benefit_score, work_life_balance_score, career_growth_score, review_count, interview_review_count, "
             "source_type, source_name, source_url, verification_status, data_quality_score, is_featured, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, -1, -1, -1, -1, 0, 0, 0, 0, 0, 0, 0, 0, 0, "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, 0, 0, 0, 0, "
             "?, ?, ?, ?, ?, ?, 'published', ?, ?)",
             (str(uuid.uuid4()), comp["name"], comp.get("name_jp", ""), comp.get("name_en", ""), comp["slug"],
              comp.get("industry", ""), country, comp.get("prefecture", ""), comp.get("city", ""),
@@ -5990,6 +6162,10 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
              comp.get("company_size", comp.get("size", "")), int(comp.get("founded", 0)),
              comp.get("short_description", "示例公司档案，评分与评论需等待真实用户提交并审核。"),
              comp.get("description", "公开基础信息档案。公司详情、招聘岗位和制度请以公司官网与招聘页面为准。"),
+             is_foreigner_friendly, accepts_foreign, supports_work_visa, has_english_positions,
+             supports_new_graduate, supports_mid_career, has_global_roles, has_foreign_employees,
+             comp.get("japanese_level_required", "unknown"), comp.get("english_level_required", "unknown"),
+             _guide_csv(comp_employment), _guide_csv(comp_tags),
              source_type, source_name, source_url, verification_status, _guide_company_quality(comp),
              int(comp.get("is_featured", 0)), now, now),
         )
@@ -14387,6 +14563,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/reputation/admin/reviews" and method == "GET":
             return self.api_reputation_admin_reviews(conn, query)
 
+        # Merchant verification and operating console. Web and native clients
+        # share this state; verification flags are only changed by admin review.
+        if path in {"/api/business/profile", "/api/business/application", "/api/me/business"} and method == "GET":
+            return self.api_business_profile(conn)
+        if path in {"/api/business/profile", "/api/business/application", "/api/me/business"} and method in {"POST", "PATCH"}:
+            return self.api_upsert_business_application(conn)
+        if path in {"/api/business/dashboard", "/api/me/business/dashboard"} and method == "GET":
+            return self.api_business_dashboard(conn)
+
         # structured city listings (marketplace / rentals / jobs / services)
         if path == "/api/listings" and method == "GET":
             return self.api_listings(conn, query)
@@ -14849,6 +15034,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_listing_reports(conn, query)
         if path == "/api/admin/businesses" and method == "GET":
             return self.api_admin_businesses(conn, query)
+        if path.startswith("/api/admin/businesses/") and method == "PATCH":
+            return self.api_admin_update_business(conn, unquote(path[len("/api/admin/businesses/"):]))
         if path == "/api/admin/seller-verifications" and method == "GET":
             return self.api_admin_listing_verifications(conn, query)
         if path == "/api/admin/comments" and method == "GET":
@@ -18573,19 +18760,415 @@ class Handler(BaseHTTPRequestHandler):
         ))
         self.send_json({"items": [dict(r) for r in rows]})
 
+    def _business_row_for_user(self, conn: sqlite3.Connection, user_id: str) -> dict[str, Any] | None:
+        row = conn.execute(
+            "SELECT * FROM business_profiles WHERE owner_user_id = ? ORDER BY updated_at DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    @staticmethod
+    def _business_json_list(value: Any) -> list[str]:
+        if isinstance(value, list):
+            source = value
+        else:
+            try:
+                source = json.loads(str(value or "[]"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                source = []
+        out: list[str] = []
+        for item in source:
+            text = str(item or "").strip()
+            if text and text not in out:
+                out.append(text[:120])
+        return out[:30]
+
+    def _serialize_business_profile(
+        self,
+        conn: sqlite3.Connection,
+        row: sqlite3.Row | dict[str, Any],
+        *,
+        include_private: bool,
+    ) -> dict[str, Any]:
+        item = dict(row)
+        item["service_categories"] = self._business_json_list(item.get("service_categories"))
+        item["service_cities"] = self._business_json_list(item.get("service_cities"))
+        try:
+            opening_hours = json.loads(item.get("opening_hours") or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            opening_hours = {}
+        item["opening_hours"] = opening_hours if isinstance(opening_hours, dict) else {}
+
+        owner = conn.execute(
+            "SELECT * FROM users WHERE id = ? AND deleted_at IS NULL",
+            (item.get("owner_user_id") or "",),
+        ).fetchone()
+        item["owner"] = serialize_user_with_counts(conn, dict(owner)) if owner else None
+        item["listing_count"] = int(conn.execute(
+            """
+            SELECT COUNT(*) AS c
+              FROM city_listings
+             WHERE deleted_at IS NULL
+               AND (business_id = ? OR (business_id IS NULL AND seller_user_id = ?))
+            """,
+            (item["id"], item.get("owner_user_id") or ""),
+        ).fetchone()["c"] or 0)
+        item["published_listing_count"] = int(conn.execute(
+            """
+            SELECT COUNT(*) AS c
+              FROM city_listings
+             WHERE deleted_at IS NULL AND status = 'published'
+               AND (business_id = ? OR (business_id IS NULL AND seller_user_id = ?))
+            """,
+            (item["id"], item.get("owner_user_id") or ""),
+        ).fetchone()["c"] or 0)
+        item["inquiry_count"] = int(conn.execute(
+            """
+            SELECT COUNT(*) AS c
+              FROM listing_inquiries i
+              JOIN city_listings l ON l.id = i.listing_id
+             WHERE l.deleted_at IS NULL
+               AND (l.business_id = ? OR (l.business_id IS NULL AND l.seller_user_id = ?))
+            """,
+            (item["id"], item.get("owner_user_id") or ""),
+        ).fetchone()["c"] or 0)
+
+        documents: list[dict[str, Any]] = []
+        if include_private:
+            rows = conn.execute(
+                """
+                SELECT d.id AS document_id, d.document_type, d.label,
+                       d.status AS document_status, d.created_at AS document_created_at,
+                       f.*
+                  FROM business_verification_documents d
+                  JOIN uploaded_files f ON f.id = d.uploaded_file_id
+                 WHERE d.business_id = ?
+                   AND d.status != 'deleted'
+                   AND f.deleted_at IS NULL
+                 ORDER BY d.created_at
+                """,
+                (item["id"],),
+            ).fetchall()
+            for document in rows:
+                raw = dict(document)
+                file_payload = serialize_uploaded_file(raw)
+                file_payload.update({
+                    "documentId": raw.get("document_id"),
+                    "documentType": raw.get("document_type") or "registration",
+                    "label": raw.get("label") or "",
+                    "documentStatus": raw.get("document_status") or "submitted",
+                    "createdAt": raw.get("document_created_at") or raw.get("created_at"),
+                })
+                documents.append(file_payload)
+        item["documents"] = documents
+        item["document_count"] = len(documents) if include_private else int(conn.execute(
+            "SELECT COUNT(*) AS c FROM business_verification_documents WHERE business_id = ? AND status != 'deleted'",
+            (item["id"],),
+        ).fetchone()["c"] or 0)
+        item["application_status"] = item.get("verification_status") or "draft"
+        return item
+
+    def api_business_profile(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        row = self._business_row_for_user(conn, user["id"])
+        self.send_json({
+            "business": self._serialize_business_profile(conn, row, include_private=True) if row else None,
+            "status": (row or {}).get("verification_status", "not_started"),
+        })
+
+    def api_upsert_business_application(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        existing = self._business_row_for_user(conn, user["id"])
+        business_id = (existing or {}).get("id") or str(uuid.uuid4())
+        submit = bool(data.get("submit"))
+
+        def clean_list(value: Any) -> list[str]:
+            if isinstance(value, str):
+                value = [part for part in re.split(r"[,，\n]", value) if part.strip()]
+            return self._business_json_list(value)
+
+        fields: dict[str, Any] = {
+            "business_name": _clean_text(data.get("business_name") or data.get("businessName") or (existing or {}).get("business_name"), 120),
+            "business_type": _clean_text(data.get("business_type") or data.get("businessType") or (existing or {}).get("business_type"), 80),
+            "legal_name": _clean_text(data.get("legal_name") or data.get("legalName") or (existing or {}).get("legal_name"), 160),
+            "representative_name": _clean_text(data.get("representative_name") or data.get("representativeName") or (existing or {}).get("representative_name"), 120),
+            "registration_number": _clean_text(data.get("registration_number") or data.get("registrationNumber") or (existing or {}).get("registration_number"), 80),
+            "country_code": _clean_text(data.get("country_code") or data.get("countryCode") or (existing or {}).get("country_code") or user.get("country"), 12).lower(),
+            "city_slug": _clean_text(data.get("city_slug") or data.get("citySlug") or (existing or {}).get("city_slug") or user.get("city"), 100).lower(),
+            "phone": _clean_text(data.get("phone") or (existing or {}).get("phone"), 60),
+            "email": _clean_text(data.get("email") or (existing or {}).get("email") or user.get("email"), 254).lower(),
+            "website": _clean_text(data.get("website") or (existing or {}).get("website"), 500),
+            "address": _clean_text(data.get("address") or (existing or {}).get("address"), 300),
+            "postal_code": _clean_text(data.get("postal_code") or data.get("postalCode") or (existing or {}).get("postal_code"), 30),
+            "contact_method": _clean_text(data.get("contact_method") or data.get("contactMethod") or (existing or {}).get("contact_method"), 200),
+            "description": _clean_text(data.get("description") or (existing or {}).get("description"), 3000),
+            "application_note": _clean_text(data.get("application_note") or data.get("applicationNote") or (existing or {}).get("application_note"), 2000),
+        }
+        service_categories = clean_list(data.get("service_categories") or data.get("serviceCategories") or (existing or {}).get("service_categories"))
+        service_cities = clean_list(data.get("service_cities") or data.get("serviceCities") or (existing or {}).get("service_cities"))
+        opening_hours = data.get("opening_hours") or data.get("openingHours")
+        if not isinstance(opening_hours, dict):
+            try:
+                opening_hours = json.loads((existing or {}).get("opening_hours") or "{}")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                opening_hours = {}
+
+        if not fields["business_name"]:
+            raise APIError("请填写商家名称", 400, "business_name_required")
+        if fields["email"] and not is_valid_email(fields["email"]):
+            raise APIError("商家联系邮箱格式不正确", 400, "invalid_business_email")
+
+        now = now_iso()
+        old_status = (existing or {}).get("verification_status") or "not_started"
+        next_status = old_status if existing else "draft"
+        if submit:
+            required = {
+                "business_type": "商家类型",
+                "legal_name": "主体全称",
+                "representative_name": "负责人姓名",
+                "country_code": "国家/地区",
+                "city_slug": "服务城市",
+                "address": "经营地址",
+                "description": "服务介绍",
+            }
+            missing = [label for key, label in required.items() if not fields[key]]
+            if not fields["phone"] and not fields["email"]:
+                missing.append("电话或邮箱")
+            if not service_categories:
+                missing.append("服务分类")
+            if not service_cities:
+                missing.append("服务城市范围")
+            if missing:
+                raise APIError("请完善：" + "、".join(missing), 400, "business_application_incomplete")
+            next_status = "needs_review" if old_status == "verified" else "pending"
+        elif old_status in {"not_started", "draft"}:
+            next_status = "draft"
+
+        if existing:
+            updates = {
+                **fields,
+                "service_categories": json.dumps(service_categories, ensure_ascii=False),
+                "service_cities": json.dumps(service_cities, ensure_ascii=False),
+                "opening_hours": json.dumps(opening_hours, ensure_ascii=False),
+                "verification_status": next_status,
+                "submitted_at": now if submit else existing.get("submitted_at"),
+                "updated_at": now,
+            }
+            sets = ", ".join(f"{key} = ?" for key in updates)
+            conn.execute(
+                f"UPDATE business_profiles SET {sets} WHERE id = ?",
+                [*updates.values(), business_id],
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO business_profiles (
+                    id, owner_user_id, business_name, business_type, legal_name,
+                    representative_name, registration_number, country_code, city_slug,
+                    verification_status, phone, email, website, address, postal_code,
+                    contact_method, description, service_categories, service_cities,
+                    opening_hours, application_note, submitted_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    business_id, user["id"], fields["business_name"], fields["business_type"], fields["legal_name"],
+                    fields["representative_name"], fields["registration_number"], fields["country_code"], fields["city_slug"],
+                    next_status, fields["phone"], fields["email"], fields["website"], fields["address"], fields["postal_code"],
+                    fields["contact_method"], fields["description"], json.dumps(service_categories, ensure_ascii=False),
+                    json.dumps(service_cities, ensure_ascii=False), json.dumps(opening_hours, ensure_ascii=False),
+                    fields["application_note"], now if submit else None, now, now,
+                ),
+            )
+
+        uploaded_file_ids = data.get("uploaded_file_ids") or data.get("uploadedFileIds") or []
+        if isinstance(uploaded_file_ids, str):
+            uploaded_file_ids = [uploaded_file_ids]
+        uploaded_file_ids = [str(value).strip() for value in uploaded_file_ids if str(value).strip()][:10]
+        document_types = data.get("document_types") or data.get("documentTypes") or {}
+        if not isinstance(document_types, dict):
+            document_types = {}
+        for file_id in uploaded_file_ids:
+            upload = conn.execute(
+                """
+                SELECT * FROM uploaded_files
+                 WHERE id = ? AND user_id = ? AND purpose = 'business_verification_file'
+                   AND entity_type = 'business' AND entity_id = ?
+                   AND status IN ('uploaded','processing','ready') AND deleted_at IS NULL
+                """,
+                (file_id, user["id"], business_id),
+            ).fetchone()
+            if not upload:
+                raise APIError("认证材料不存在或尚未上传完成", 400, "invalid_business_document")
+            document_type = _clean_text(document_types.get(file_id) or "registration", 60)
+            conn.execute(
+                """
+                INSERT INTO business_verification_documents (
+                    id, business_id, uploaded_file_id, document_type, label, status, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'submitted', ?, ?)
+                ON CONFLICT(business_id, uploaded_file_id) DO UPDATE SET
+                    document_type = excluded.document_type,
+                    status = 'submitted',
+                    updated_at = excluded.updated_at
+                """,
+                (str(uuid.uuid4()), business_id, file_id, document_type, "", now, now),
+            )
+
+        document_count = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM business_verification_documents WHERE business_id = ? AND status != 'deleted'",
+            (business_id,),
+        ).fetchone()["c"] or 0)
+        if submit and document_count <= 0:
+            raise APIError("请至少上传一份营业执照、登记证明或负责人身份证明", 400, "business_document_required")
+
+        if old_status != next_status:
+            conn.execute(
+                """
+                INSERT INTO business_review_logs (
+                    id, business_id, actor_user_id, action, from_status, to_status, note, metadata, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(uuid.uuid4()), business_id, user["id"], "submit" if submit else "save_draft",
+                    old_status, next_status, fields["application_note"], "{}", now,
+                ),
+            )
+        if submit:
+            conn.execute(
+                "UPDATE users SET is_merchant = 1, merchant_verified = ?, updated_at = ? WHERE id = ?",
+                (0 if next_status == "needs_review" else int(user.get("merchant_verified") or 0), now, user["id"]),
+            )
+        fresh = dict(conn.execute("SELECT * FROM business_profiles WHERE id = ?", (business_id,)).fetchone())
+        fresh_user = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
+        self.send_json({
+            "ok": True,
+            "business": self._serialize_business_profile(conn, fresh, include_private=True),
+            "user": serialize_user_with_counts(conn, fresh_user),
+        }, 201 if not existing else 200)
+
+    def api_business_dashboard(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        row = self._business_row_for_user(conn, user["id"])
+        if not row:
+            return self.send_json({
+                "business": None,
+                "metrics": {"listings": 0, "published": 0, "inquiries": 0, "new_inquiries": 0, "favorites": 0, "views": 0},
+                "recent_listings": [],
+                "recent_inquiries": [],
+            })
+        business = self._serialize_business_profile(conn, row, include_private=True)
+        listing_rows = list(conn.execute(
+            """
+            SELECT * FROM city_listings
+             WHERE deleted_at IS NULL
+               AND (business_id = ? OR (business_id IS NULL AND seller_user_id = ?))
+             ORDER BY updated_at DESC LIMIT 8
+            """,
+            (row["id"], user["id"]),
+        ))
+        listing_dicts = [dict(item) for item in listing_rows]
+        listing_ids = [item["id"] for item in listing_dicts]
+        recent_listings = fetch_listings_with_extras(conn, listing_dicts, user["id"])
+        recent_inquiries: list[dict[str, Any]] = []
+        if listing_ids:
+            placeholders = ",".join("?" for _ in listing_ids)
+            for inquiry in conn.execute(
+                f"SELECT * FROM listing_inquiries WHERE listing_id IN ({placeholders}) ORDER BY created_at DESC LIMIT 8",
+                listing_ids,
+            ):
+                recent_inquiries.append(dict(inquiry))
+        metrics = {
+            "listings": business["listing_count"],
+            "published": business["published_listing_count"],
+            "inquiries": business["inquiry_count"],
+            "new_inquiries": sum(1 for item in recent_inquiries if (item.get("status") or "") == "new"),
+            "favorites": sum(int(item.get("favorite_count") or 0) for item in listing_dicts),
+            "views": sum(int(item.get("view_count") or 0) for item in listing_dicts),
+        }
+        self.send_json({
+            "business": business,
+            "metrics": metrics,
+            "recent_listings": recent_listings,
+            "recent_inquiries": recent_inquiries,
+        })
+
     def api_admin_businesses(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
         status = (query.get("verification_status") or query.get("status") or "").strip()
+        q = (query.get("q") or "").strip()
         params: list[Any] = []
-        clause = ""
+        clauses: list[str] = []
         if status:
-            clause = "WHERE verification_status = ?"
+            clauses.append("verification_status = ?")
             params.append(status)
+        if q:
+            clauses.append("(business_name LIKE ? OR legal_name LIKE ? OR representative_name LIKE ? OR email LIKE ?)")
+            like = f"%{q}%"
+            params.extend([like, like, like, like])
+        clause = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         rows = list(conn.execute(
             f"SELECT * FROM business_profiles {clause} ORDER BY updated_at DESC LIMIT 200",
             params,
         ))
-        self.send_json({"items": [dict(r) for r in rows]})
+        self.send_json({
+            "items": [self._serialize_business_profile(conn, r, include_private=True) for r in rows],
+        })
+
+    def api_admin_update_business(self, conn: sqlite3.Connection, business_id: str) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        row = conn.execute("SELECT * FROM business_profiles WHERE id = ?", (business_id,)).fetchone()
+        if not row:
+            raise APIError("商家申请不存在", 404, "business_not_found")
+        current = dict(row)
+        status = _clean_text(data.get("verification_status") or data.get("status") or current["verification_status"], 40)
+        allowed = {"draft", "pending", "needs_review", "verified", "rejected", "suspended"}
+        if status not in allowed:
+            raise APIError("商家审核状态不合法", 400, "invalid_business_status")
+        note = _clean_text(data.get("review_note") or data.get("note") or current.get("review_note"), 2000)
+        now = now_iso()
+        conn.execute(
+            """
+            UPDATE business_profiles
+               SET verification_status = ?, review_note = ?, reviewed_at = ?,
+                   reviewer_admin_id = ?, updated_at = ?
+             WHERE id = ?
+            """,
+            (status, note, now, admin["id"], now, business_id),
+        )
+        verified = status == "verified"
+        conn.execute(
+            "UPDATE users SET is_merchant = ?, merchant_verified = ?, updated_at = ? WHERE id = ?",
+            (1 if status != "draft" else 0, 1 if verified else 0, now, current["owner_user_id"]),
+        )
+        if verified:
+            conn.execute(
+                """
+                UPDATE city_listings
+                   SET verification_status = 'verified', updated_at = ?
+                 WHERE business_id = ? AND deleted_at IS NULL
+                """,
+                (now, business_id),
+            )
+        conn.execute(
+            """
+            INSERT INTO business_review_logs (
+                id, business_id, actor_user_id, action, from_status, to_status, note, metadata, created_at
+            )
+            VALUES (?, ?, ?, 'admin_review', ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()), business_id, admin["id"], current["verification_status"], status,
+                note, json.dumps({"source": "admin"}, ensure_ascii=False), now,
+            ),
+        )
+        fresh = dict(conn.execute("SELECT * FROM business_profiles WHERE id = ?", (business_id,)).fetchone())
+        self.send_json({
+            "business": self._serialize_business_profile(conn, fresh, include_private=True),
+        })
 
     def _explore_region_clause(self, conn: sqlite3.Connection, query: dict[str, str], viewer_id: str | None, alias: str = "p") -> tuple[str, list[Any], dict[str, str]]:
         region_code = (query.get("region_code") or query.get("regionCode") or "").strip().lower()
@@ -20447,9 +21030,16 @@ class Handler(BaseHTTPRequestHandler):
         if spec.get("admin") and user.get("role") != "admin":
             record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="admin_required", metadata={"purpose": purpose})
             raise APIError("该文件只能由管理员上传", 403, "admin_required")
-        if purpose == "business_verification_file" and user.get("role") != "admin":
-            record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="admin_required", metadata={"purpose": purpose})
-            raise APIError("认证材料附件只能由后台上传", 403, "admin_required")
+        if purpose == "business_verification_file" and (entity_type != "business" or not entity_id):
+            record_upload_audit(
+                conn,
+                user["id"],
+                "presign_denied",
+                status="failed",
+                reason="business_required",
+                metadata={"purpose": purpose},
+            )
+            raise APIError("请先保存商家申请，再上传认证材料", 400, "business_required")
         rep = reputation_ensure_user(conn, user["id"])
         if int(rep.get("risk_score") or 0) >= 80:
             record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="high_risk_user", metadata={"purpose": purpose})

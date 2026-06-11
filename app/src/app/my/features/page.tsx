@@ -27,12 +27,13 @@ import { useI18n } from "@/lib/i18n";
 import { showVerifiedBadge } from "@/lib/types";
 
 const WORK_ITEMS = [
-  { href: "/listings/create", title: "发布城市信息", subtitle: "二手、租房、招聘、本地服务", icon: BriefcaseBusiness, tone: "text-blue-600 bg-blue-50" },
+  { href: "/listings/create", title: "发布城市信息", subtitle: "二手、租房、招聘、商家与本地服务", icon: BriefcaseBusiness, tone: "text-blue-600 bg-blue-50" },
   { href: "/my/listings", title: "我的发布", subtitle: "审核状态、上下架和详情", icon: ClipboardList, tone: "text-slate-700 bg-slate-100" },
   { href: "/my/saved-listings", title: "我的收藏", subtitle: "收藏的二手、房源和服务", icon: Bookmark, tone: "text-emerald-600 bg-emerald-50" },
   { href: "/my/inquiries", title: "我的咨询", subtitle: "交易、房源和服务沟通", icon: MessageSquare, tone: "text-cyan-600 bg-cyan-50" },
   { href: "/my/applications", title: "我的申请", subtitle: "招聘报名与进度", icon: ListChecks, tone: "text-violet-600 bg-violet-50" },
   { href: "/my/bookings", title: "我的预约", subtitle: "本地服务预约管理", icon: CalendarClock, tone: "text-orange-600 bg-orange-50" },
+  { href: "/my/business", title: "商家服务后台", subtitle: "认证申请、服务发布和线索", icon: Store, tone: "text-teal-700 bg-teal-50" },
   { href: "/my/orders", title: "我的订单", subtitle: "会员、Guide 和服务订单", icon: CreditCard, tone: "text-pink-600 bg-pink-50" },
   { href: "/membership", title: "Machi 会员", subtitle: "认证标识与高信任发布权限", icon: BadgeCheck, tone: "text-blue-700 bg-blue-50" },
   { href: "/settings", title: "账号设置", subtitle: "资料、地区、隐私和安全", icon: Settings, tone: "text-slate-700 bg-slate-100" },

@@ -105,6 +105,7 @@ export function DiscoverShortcutGrid({
                 spec={spec}
                 title={title}
                 subtitle={subtitle}
+                locale={locale}
                 active={selectedChannel === spec.slug}
                 href={getChannelHref(spec.slug)}
               />
@@ -114,6 +115,7 @@ export function DiscoverShortcutGrid({
                 spec={spec}
                 title={title}
                 subtitle={subtitle}
+                locale={locale}
                 active={selectedChannel === spec.slug}
                 onClick={() => onSelectChannel(spec.slug)}
               />
@@ -154,18 +156,18 @@ export function DiscoverShortcutGrid({
   );
 }
 
-function ChannelHeroButton({ spec, title, subtitle, active, onClick }: { spec: ExploreChannelSpec; title?: string; subtitle?: string; active?: boolean; onClick: () => void }) {
+function ChannelHeroButton({ spec, title, subtitle, locale, active, onClick }: { spec: ExploreChannelSpec; title?: string; subtitle?: string; locale: ReturnType<typeof useI18n>["locale"]; active?: boolean; onClick: () => void }) {
   return (
-    <button type="button" onClick={onClick} className={channelHeroClass(active)}>
-      <ChannelHeroInner spec={spec} title={title} subtitle={subtitle} />
+    <button type="button" onClick={onClick} className={channelHeroClass(spec.slug, active)}>
+      <ChannelHeroInner spec={spec} title={title} subtitle={subtitle} locale={locale} />
     </button>
   );
 }
 
-function ChannelHeroLink({ spec, title, subtitle, active, href }: { spec: ExploreChannelSpec; title?: string; subtitle?: string; active?: boolean; href: string }) {
+function ChannelHeroLink({ spec, title, subtitle, locale, active, href }: { spec: ExploreChannelSpec; title?: string; subtitle?: string; locale: ReturnType<typeof useI18n>["locale"]; active?: boolean; href: string }) {
   return (
-    <Link href={href} className={channelHeroClass(active)}>
-      <ChannelHeroInner spec={spec} title={title} subtitle={subtitle} />
+    <Link href={href} className={channelHeroClass(spec.slug, active)}>
+      <ChannelHeroInner spec={spec} title={title} subtitle={subtitle} locale={locale} />
     </Link>
   );
 }
@@ -360,13 +362,22 @@ function discoverShortcutCopy(locale: ReturnType<typeof useI18n>["locale"]) {
   }
 }
 
-function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec; title?: string; subtitle?: string }) {
+function ChannelHeroInner({ spec, title, subtitle, locale }: { spec: ExploreChannelSpec; title?: string; subtitle?: string; locale: ReturnType<typeof useI18n>["locale"] }) {
+  const details = channelHeroDetails(spec.slug, locale);
   return (
     <>
       <ChannelIcon spec={spec} size="lg" />
       <span className="relative min-w-0 w-full flex-1 sm:w-auto">
         <span className="block break-words text-[15px] font-extrabold text-kx-text/90">{title || spec.title}</span>
         <span className="mt-1 block break-words text-xs leading-4 text-kx-subtle sm:text-[13px] sm:leading-5">{subtitle || spec.subtitle}</span>
+        <span className="mt-2 flex flex-wrap gap-1.5">
+          {details.tags.map((tag) => (
+            <span key={tag} className="rounded-full bg-white/72 px-2 py-0.5 text-[10px] font-black text-kx-text/70 ring-1 ring-kx-stroke/35 dark:bg-white/10">
+              {tag}
+            </span>
+          ))}
+        </span>
+        <span className="mt-2 inline-flex text-[11px] font-black text-kx-accent">{details.cta}</span>
       </span>
       <span className="relative mt-0.5 hidden h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-soft text-kx-muted transition-all duration-200 group-hover:bg-kx-accent group-hover:text-white sm:grid">
         <ChevronRight className="h-4 w-4" />
@@ -375,13 +386,65 @@ function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec;
   );
 }
 
-function channelHeroClass(active?: boolean) {
+function channelHeroClass(channel: ExploreChannelSlug, active?: boolean) {
+  const accent = {
+    market: "from-emerald-50/90 via-white to-teal-50/90 hover:border-emerald-300/70",
+    housing: "from-indigo-50/90 via-white to-sky-50/90 hover:border-indigo-300/70",
+    jobs: "from-violet-50/90 via-white to-fuchsia-50/80 hover:border-violet-300/70",
+    services: "from-orange-50/95 via-white to-rose-50/80 hover:border-orange-300/70",
+    guide: "from-emerald-50/80 via-white to-white hover:border-emerald-300/60",
+    news: "from-blue-50/80 via-white to-white hover:border-blue-300/60",
+    deals: "from-rose-50/80 via-white to-white hover:border-rose-300/60",
+    groups: "from-fuchsia-50/80 via-white to-white hover:border-fuchsia-300/60",
+    qa: "from-blue-50/80 via-white to-white hover:border-blue-300/60",
+  } satisfies Record<ExploreChannelSlug, string>;
   return [
-    "group relative flex min-h-[146px] min-w-0 flex-col items-start gap-3 overflow-hidden rounded-kx-lg border p-3 text-left sm:min-h-[112px] sm:flex-row sm:gap-3.5 sm:p-4",
-    "bg-kx-card/[0.78] shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
-    "hover:-translate-y-0.5 hover:border-kx-accent/35 hover:bg-kx-accentSoft/30 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
+    "group relative flex min-h-[184px] min-w-0 flex-col items-start gap-3 overflow-hidden rounded-kx-lg border p-3 text-left sm:min-h-[156px] sm:flex-row sm:gap-3.5 sm:p-4",
+    "bg-gradient-to-br shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
+    "before:absolute before:-right-12 before:-top-14 before:h-28 before:w-28 before:rounded-full before:bg-white/45 before:blur-2xl before:content-['']",
+    "hover:-translate-y-0.5 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
+    accent[channel],
     active ? "border-kx-accent/45 bg-kx-accentSoft/60 ring-2 ring-kx-accent/20" : "border-kx-stroke/45",
   ].join(" ");
+}
+
+function channelHeroDetails(channel: ExploreChannelSlug, locale: ReturnType<typeof useI18n>["locale"]) {
+  const zh = {
+    market: { tags: ["估价", "求购", "交易安全"], cta: "像闲鱼 / Mercari 一样找同城好物" },
+    housing: { tags: ["通勤", "看房预约", "房源核验"], cta: "像 SUUMO / 安居客 一样筛房源" },
+    jobs: { tags: ["薪资", "申请进度", "雇主认证"], cta: "像 Indeed / BOSS 一样找机会" },
+    services: { tags: ["点评", "预约", "酒店景点"], cta: "像美团 / 大众点评一样找服务" },
+    guide: { tags: ["攻略", "手续", "避坑"], cta: "查看城市生活指南" },
+    news: { tags: ["交通", "天气", "公告"], cta: "查看本地快讯" },
+    deals: { tags: ["折扣", "团购", "到店"], cta: "查看附近优惠" },
+    groups: { tags: ["饭局", "语言交换", "活动"], cta: "加入城市小组" },
+    qa: { tags: ["提问", "互助", "匿名"], cta: "发起本地求助" },
+  } satisfies Record<ExploreChannelSlug, { tags: string[]; cta: string }>;
+  const en = {
+    market: { tags: ["Pricing", "Wanted", "Safety"], cta: "Find city deals like Mercari" },
+    housing: { tags: ["Commute", "Viewing", "Verified"], cta: "Filter rentals like SUUMO" },
+    jobs: { tags: ["Salary", "Apply", "Employers"], cta: "Find work like Indeed" },
+    services: { tags: ["Reviews", "Bookings", "Travel"], cta: "Find services, stays, and attractions" },
+    guide: { tags: ["Guides", "Procedures", "Safety"], cta: "Open city guides" },
+    news: { tags: ["Transit", "Weather", "Notices"], cta: "Open local news" },
+    deals: { tags: ["Deals", "Coupons", "Stores"], cta: "Browse nearby deals" },
+    groups: { tags: ["Meetups", "Language", "Events"], cta: "Join local groups" },
+    qa: { tags: ["Questions", "Help", "Anon"], cta: "Ask the city" },
+  } satisfies Record<ExploreChannelSlug, { tags: string[]; cta: string }>;
+  const ja = {
+    market: { tags: ["相場", "探し物", "安全取引"], cta: "Mercari のように街の品を探す" },
+    housing: { tags: ["通勤", "内見予約", "物件確認"], cta: "SUUMO のように住まいを探す" },
+    jobs: { tags: ["給与", "応募管理", "雇用主認証"], cta: "Indeed のように仕事を探す" },
+    services: { tags: ["口コミ", "予約", "宿泊・観光"], cta: "地域サービスと観光を探す" },
+    guide: { tags: ["攻略", "手続き", "注意"], cta: "街のガイドを見る" },
+    news: { tags: ["交通", "天気", "告知"], cta: "地域ニュースを見る" },
+    deals: { tags: ["割引", "特典", "店舗"], cta: "近くのお得情報を見る" },
+    groups: { tags: ["食事会", "言語交換", "イベント"], cta: "地域グループへ" },
+    qa: { tags: ["質問", "助け合い", "匿名"], cta: "街に相談する" },
+  } satisfies Record<ExploreChannelSlug, { tags: string[]; cta: string }>;
+  if (locale === "en") return en[channel];
+  if (locale === "ja") return ja[channel];
+  return zh[channel];
 }
 
 function secondaryChipClass(active?: boolean) {
