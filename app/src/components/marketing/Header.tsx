@@ -125,7 +125,11 @@ export function Header() {
       ) : null}
       <div
         className={clsx(
-          "relative z-30 mx-auto w-full max-w-[1180px] rounded-full border px-3 py-2 backdrop-blur-2xl transition-all duration-300",
+          // Desktop caps at 1040px — narrower than the 1180px content
+          // column on purpose, so the bar reads as a floating pill
+          // rather than a full-width toolbar. Mobile is width-driven
+          // by the viewport, so the cap never applies there.
+          "relative z-30 mx-auto w-full max-w-[1180px] rounded-full border px-3 py-2 backdrop-blur-2xl transition-all duration-300 lg:max-w-[1040px]",
           // Resting state — light, airy. Scrolled state — a bit more
           // opaque, deeper shadow, so the bar visibly separates from
           // content underneath.

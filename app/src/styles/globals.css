@@ -947,31 +947,34 @@ body::before {
   letter-spacing: 0;
   scroll-behavior: smooth;
   padding-top: var(--mc-header-offset);
-  /* Aerated city-air mesh.
-     - Indigo + sky radial pools in the upper third (a sense of
-       horizon / overcast morning light).
-     - A small warm-orange ember low and right — represents the
-       "city pulse" — used sparingly so the page never reads as
-       advertising or warm classifieds.
-     - A near-white lavender / sky / pearl base.
-     The blends stay under 0.18 opacity so foreground copy keeps
-     full contrast over the gradient. */
-  background:
-    radial-gradient(circle at 12% 22%, rgba(255, 107, 74, 0.18), transparent 30%),
-    radial-gradient(circle at 78% 18%, rgba(79, 70, 229, 0.13), transparent 34%),
-    radial-gradient(circle at 58% 82%, rgba(99, 102, 241, 0.06), transparent 28%),
-    linear-gradient(135deg, #FFF8F2 0%, #FFF7ED 48%, #F8FBFF 100%);
+  /* Aurora city-air mesh.
+     - A generous coral pool top-left (the Machi ember) and an indigo
+       pool top-right form a warm→cool horizon behind the hero.
+     - Sky + rose under-glows in the lower half keep long scrolls from
+       fading to flat white.
+     - A film-grain noise tile sits on top of the gradients (but under
+       all content) so the large soft blends never band and the page
+       carries a subtle tactile, printed feel.
+     Pool opacities stay ≤ 0.28 so foreground copy keeps contrast. */
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E"),
+    radial-gradient(ellipse 56% 42% at 8% 14%, rgba(255, 107, 74, 0.28), transparent 64%),
+    radial-gradient(ellipse 52% 44% at 92% 10%, rgba(79, 70, 229, 0.22), transparent 66%),
+    radial-gradient(ellipse 48% 38% at 84% 88%, rgba(14, 165, 233, 0.15), transparent 68%),
+    radial-gradient(ellipse 42% 34% at 14% 86%, rgba(236, 72, 153, 0.10), transparent 66%),
+    linear-gradient(150deg, #FFF1E6 0%, #FBF1FA 40%, #EDF3FF 76%, #FBF5EE 100%);
   background-attachment: fixed;
   animation: mc-page-enter 520ms cubic-bezier(.16, 1, .3, 1) both;
 }
 
 :root.dark .machi-site {
   color-scheme: dark;
-  background:
-    radial-gradient(circle at 12% 22%, rgba(255, 107, 74, 0.22), transparent 32%),
-    radial-gradient(circle at 78% 18%, rgba(79, 70, 229, 0.22), transparent 34%),
-    radial-gradient(circle at 58% 82%, rgba(99, 102, 241, 0.10), transparent 28%),
-    linear-gradient(135deg, #080b18 0%, #0b1124 52%, #080a14 100%);
+  background-image:
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E"),
+    radial-gradient(ellipse 54% 40% at 10% 12%, rgba(255, 107, 74, 0.26), transparent 62%),
+    radial-gradient(ellipse 52% 44% at 90% 10%, rgba(99, 102, 241, 0.30), transparent 64%),
+    radial-gradient(ellipse 46% 36% at 82% 88%, rgba(14, 165, 233, 0.16), transparent 66%),
+    linear-gradient(150deg, #0a0d1d 0%, #10142e 48%, #090c18 100%);
   background-attachment: fixed;
 }
 
@@ -1035,21 +1038,22 @@ body::before {
 
 .mc-brand-gradient {
   color: transparent;
-  /* Two-hue brand ramp (coral → indigo). The previous four-stop
-     black/orange/indigo/green ramp read as a rainbow at display sizes;
-     a warm→cool pair keeps the brand energy with far more restraint. */
-  background-image: linear-gradient(100deg, #f4511e 0%, #e0354b 42%, #4f46e5 100%);
-  background-size: 180% 100%;
+  /* Ink → coral → rose → indigo. The ink head grounds the wordmark so
+     it reads as typography rather than decoration; the warm→cool sweep
+     carries the brand energy at display sizes without the old green
+     tail that tipped it into rainbow territory. */
+  background-image: linear-gradient(108deg, #181233 0%, #ff6b4a 30%, #e0354b 54%, #4f46e5 88%);
+  background-size: 200% 100%;
   background-position: 0% 50%;
   -webkit-background-clip: text;
   background-clip: text;
-  text-shadow: 0 14px 44px rgba(224, 53, 75, 0.12);
-  animation: mc-brand-shimmer 9s ease-in-out infinite;
+  text-shadow: 0 18px 52px rgba(224, 53, 75, 0.16);
+  animation: mc-brand-shimmer 8s ease-in-out infinite;
 }
 
 :root.dark .mc-brand-gradient {
-  background-image: linear-gradient(100deg, #ffa183 0%, #fb8da0 42%, #a5b4fc 100%);
-  text-shadow: 0 14px 44px rgba(224, 53, 75, 0.14);
+  background-image: linear-gradient(108deg, #fff3ea 0%, #ffb199 32%, #fb8da0 56%, #a5b4fc 90%);
+  text-shadow: 0 18px 52px rgba(255, 107, 74, 0.20);
 }
 
 .mc-menu-item {
@@ -1214,25 +1218,52 @@ body::before {
   border-radius: 9999px;
   pointer-events: none;
   background:
-    radial-gradient(circle at 50% 50%, rgba(255, 107, 74, 0.13), transparent 24%),
-    radial-gradient(circle at 58% 42%, rgba(79, 70, 229, 0.10), transparent 38%);
+    radial-gradient(circle at 50% 50%, rgba(255, 107, 74, 0.18), transparent 26%),
+    radial-gradient(circle at 58% 42%, rgba(79, 70, 229, 0.13), transparent 40%);
 }
 
 .mc-echo-ring {
   position: absolute;
   inset: 14%;
   border-radius: 9999px;
-  border: 1px solid rgba(255, 107, 74, 0.22);
+  border: 1px solid rgba(255, 107, 74, 0.30);
   box-shadow:
-    0 0 0 22px rgba(255, 107, 74, 0.045),
-    inset 0 0 40px rgba(79, 70, 229, 0.06);
+    0 0 0 22px rgba(255, 107, 74, 0.06),
+    inset 0 0 40px rgba(79, 70, 229, 0.08);
   animation: mc-echo-ring 7s ease-in-out infinite;
 }
 
 .mc-echo-ring-b {
   inset: 28%;
-  border-color: rgba(79, 70, 229, 0.18);
+  border-color: rgba(79, 70, 229, 0.26);
   animation-delay: -2.2s;
+}
+
+/* Slow-turning conic halo parked behind the hero wordmark. Desktop
+   only (the blur is too expensive for phones, where the echo field
+   already provides atmosphere). */
+.mc-hero-glow {
+  position: absolute;
+  border-radius: 9999px;
+  pointer-events: none;
+  background: conic-gradient(
+    from 210deg at 50% 50%,
+    rgba(255, 107, 74, 0.22),
+    rgba(224, 53, 75, 0.14),
+    rgba(79, 70, 229, 0.20),
+    rgba(14, 165, 233, 0.12),
+    rgba(255, 107, 74, 0.22)
+  );
+  filter: blur(64px);
+  opacity: 0.55;
+  animation: mc-hero-glow 28s linear infinite;
+}
+:root.dark .mc-hero-glow { opacity: 0.4; }
+@keyframes mc-hero-glow {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-hero-glow { animation: none; }
 }
 
 .mc-city-dot {

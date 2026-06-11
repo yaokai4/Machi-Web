@@ -2,10 +2,29 @@
 
 import { ArrowRight, Building2, ChevronDown, MonitorSmartphone, Sparkles, UsersRound } from "lucide-react";
 import { AppMockup } from "./AppMockup";
-import { BrandPhrase } from "./BrandText";
+import { BrandPhrase, BrandText } from "./BrandText";
 import { Button } from "./Button";
 import { StoreButton } from "./StoreButtons";
 import { useMarketingI18n } from "./MarketingI18n";
+
+// CJK text wraps between any two characters, so at display sizes the
+// slogan can split mid-word (在每一座城市，找/到…). Cutting the line into
+// inline-block segments at ideographic commas makes the browser prefer
+// those punctuation points; Latin copy has none and passes through
+// as one segment with normal word wrapping.
+function splitDisplayLines(text: string): string[] {
+  const segments: string[] = [];
+  let buffer = "";
+  for (const ch of text) {
+    buffer += ch;
+    if (ch === "，" || ch === "、") {
+      segments.push(buffer);
+      buffer = "";
+    }
+  }
+  if (buffer) segments.push(buffer);
+  return segments;
+}
 
 export function HeroSection() {
   const { copy } = useMarketingI18n();
@@ -13,6 +32,7 @@ export function HeroSection() {
   return (
     <section className="relative overflow-hidden px-5 pb-16 pt-4 sm:px-8 sm:pt-6 lg:px-16 lg:pb-24 lg:pt-10 xl:px-20">
       <div className="mc-map-grid pointer-events-none absolute inset-x-0 top-16 -z-10 h-[640px] opacity-50 dark:opacity-15" />
+      <div className="mc-hero-glow -z-10 hidden lg:block lg:left-[-4%] lg:top-[2%] lg:h-[620px] lg:w-[620px]" aria-hidden="true" />
       <div className="mc-echo-field pointer-events-none absolute left-[-8%] top-10 -z-10 h-[520px] w-[520px] opacity-70" aria-hidden="true">
         <span className="mc-echo-ring mc-echo-ring-a" />
         <span className="mc-echo-ring mc-echo-ring-b" />
@@ -28,27 +48,35 @@ export function HeroSection() {
             <BrandPhrase text={copy.hero.eyebrow} />
           </span>
 
-          {/* The slogan IS the hero. The previous display-size gradient
-              wordmark duplicated the header logo and split focus across
-              two competing headlines; one ink statement reads calmer and
-              far more premium. The brand word keeps a single refined
-              gradient accent. */}
-          <h1 className="mx-auto mt-6 max-w-[22rem] text-balance text-[clamp(2.3rem,9vw,3.4rem)] font-black leading-[1.08] tracking-[-0.02em] text-slate-950 [overflow-wrap:anywhere] [word-break:break-word] sm:max-w-none sm:text-[clamp(2.6rem,4.6vw,4.35rem)] sm:leading-[1.04] sm:[word-break:normal] lg:mx-0 dark:text-white">
-            {copy.hero.headline}
+          {/* One h1, two registers: the display-size gradient wordmark is
+              the visual anchor (the brand IS the hero), the ink slogan
+              sits beneath at roughly half scale so the two never compete.
+              Both live in the h1 so SEO keeps brand + slogan together. */}
+          <h1 className="mt-7 lg:mt-8">
+            <span className="block text-[clamp(3.3rem,15vw,4.5rem)] font-black leading-[0.95] tracking-[-0.03em] sm:text-[clamp(3.8rem,8vw,6.5rem)]">
+              <BrandText>{[copy.hero.titleTop, copy.hero.titleBottom].filter(Boolean).join(" ") || "Machi"}</BrandText>
+              <span aria-hidden="true" className="text-orange-500 dark:text-orange-400">.</span>
+            </span>
+            <span className="mx-auto mt-3 block max-w-[20rem] text-balance text-[clamp(1.7rem,7.4vw,1.95rem)] font-black leading-[1.18] tracking-[-0.015em] text-slate-950 [overflow-wrap:anywhere] [word-break:break-word] sm:mt-4 sm:max-w-none sm:text-[clamp(2.1rem,3.6vw,3.3rem)] sm:leading-[1.1] sm:[word-break:normal] lg:mx-0 dark:text-white">
+              {splitDisplayLines(copy.hero.headline).map((segment, index) => (
+                <span key={index} className="inline-block">{segment}</span>
+              ))}
+            </span>
           </h1>
 
-          <p className="mx-auto mt-6 max-w-[21rem] text-base leading-7 text-slate-600 [overflow-wrap:anywhere] sm:max-w-xl sm:text-lg sm:leading-8 lg:mx-0 dark:text-slate-300">
+          <p className="mx-auto mt-6 max-w-[21rem] text-[1.0625rem] leading-[1.8] text-slate-600 [overflow-wrap:anywhere] sm:max-w-xl sm:text-xl sm:leading-9 lg:mx-0 dark:text-slate-300">
             <BrandPhrase text={copy.hero.subtitle} />
           </p>
-          <p className="mx-auto mt-3 max-w-[21rem] text-sm leading-6 text-slate-500 [overflow-wrap:anywhere] sm:max-w-xl lg:mx-0 dark:text-slate-400">
+          <p className="mx-auto mt-3 max-w-[21rem] text-[15px] leading-7 text-slate-500 [overflow-wrap:anywhere] sm:max-w-xl sm:text-base lg:mx-0 dark:text-slate-400">
             {copy.hero.supporting}
           </p>
 
           <div className="mx-auto mt-9 flex w-full max-w-[460px] flex-col gap-3 sm:flex-row lg:mx-0">
             <Button
               href="/home"
+              variant="brand"
               size="lg"
-              className="flex-1 px-7 text-base font-bold sm:h-14"
+              className="h-14 flex-1 px-7 text-base font-black"
               iconRight={<ArrowRight className="h-5 w-5" />}
             >
               {copy.hero.primary}
@@ -57,7 +85,7 @@ export function HeroSection() {
               href="#waitlist-form"
               variant="secondary"
               size="lg"
-              className="flex-1 px-7 text-base font-bold sm:h-14"
+              className="h-14 flex-1 px-7 text-base font-black"
               iconLeft={<UsersRound className="h-5 w-5" />}
             >
               {copy.hero.secondary}
