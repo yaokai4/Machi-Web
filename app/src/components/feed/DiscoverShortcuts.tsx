@@ -411,9 +411,9 @@ function channelHeroClass(channel: ExploreChannelSlug, active?: boolean) {
 function channelHeroDetails(channel: ExploreChannelSlug, locale: ReturnType<typeof useI18n>["locale"]) {
   const zh = {
     market: { tags: ["估价", "求购", "交易安全"], cta: "像闲鱼 / Mercari 一样找同城好物" },
-    housing: { tags: ["通勤", "看房预约", "房源核验"], cta: "像 SUUMO / 安居客 一样筛房源" },
+    housing: { tags: ["长租", "民宿短住", "看房预约"], cta: "像爱彼迎 / SUUMO 一样找住处" },
     jobs: { tags: ["薪资", "申请进度", "雇主认证"], cta: "像 Indeed / BOSS 一样找机会" },
-    services: { tags: ["点评", "预约", "酒店景点"], cta: "像美团 / 大众点评一样找服务" },
+    services: { tags: ["餐厅美食", "订座点评", "景点玩乐"], cta: "像大众点评 / 美团一样找吃喝玩乐" },
     guide: { tags: ["攻略", "手续", "避坑"], cta: "查看城市生活指南" },
     news: { tags: ["交通", "天气", "公告"], cta: "查看本地快讯" },
     deals: { tags: ["折扣", "团购", "到店"], cta: "查看附近优惠" },
@@ -422,9 +422,9 @@ function channelHeroDetails(channel: ExploreChannelSlug, locale: ReturnType<type
   } satisfies Record<ExploreChannelSlug, { tags: string[]; cta: string }>;
   const en = {
     market: { tags: ["Pricing", "Wanted", "Safety"], cta: "Find city deals like Mercari" },
-    housing: { tags: ["Commute", "Viewing", "Verified"], cta: "Filter rentals like SUUMO" },
+    housing: { tags: ["Long-term", "Stays", "Viewings"], cta: "Find homes & stays like Airbnb" },
     jobs: { tags: ["Salary", "Apply", "Employers"], cta: "Find work like Indeed" },
-    services: { tags: ["Reviews", "Bookings", "Travel"], cta: "Find services, stays, and attractions" },
+    services: { tags: ["Restaurants", "Reservations", "Attractions"], cta: "Eat & explore like Yelp" },
     guide: { tags: ["Guides", "Procedures", "Safety"], cta: "Open city guides" },
     news: { tags: ["Transit", "Weather", "Notices"], cta: "Open local news" },
     deals: { tags: ["Deals", "Coupons", "Stores"], cta: "Browse nearby deals" },
@@ -433,9 +433,9 @@ function channelHeroDetails(channel: ExploreChannelSlug, locale: ReturnType<type
   } satisfies Record<ExploreChannelSlug, { tags: string[]; cta: string }>;
   const ja = {
     market: { tags: ["相場", "探し物", "安全取引"], cta: "Mercari のように街の品を探す" },
-    housing: { tags: ["通勤", "内見予約", "物件確認"], cta: "SUUMO のように住まいを探す" },
+    housing: { tags: ["賃貸", "民泊・短期", "内見予約"], cta: "Airbnb / SUUMO のように住まいを探す" },
     jobs: { tags: ["給与", "応募管理", "雇用主認証"], cta: "Indeed のように仕事を探す" },
-    services: { tags: ["口コミ", "予約", "宿泊・観光"], cta: "地域サービスと観光を探す" },
+    services: { tags: ["グルメ", "予約・口コミ", "観光体験"], cta: "食べログのようにグルメと体験を探す" },
     guide: { tags: ["攻略", "手続き", "注意"], cta: "街のガイドを見る" },
     news: { tags: ["交通", "天気", "告知"], cta: "地域ニュースを見る" },
     deals: { tags: ["割引", "特典", "店舗"], cta: "近くのお得情報を見る" },

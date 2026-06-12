@@ -6,6 +6,7 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
+  BedDouble,
   CalendarClock,
   CheckCircle2,
   ExternalLink,
@@ -15,6 +16,7 @@ import {
   Star,
   Store,
   Tag,
+  Utensils,
   XCircle,
 } from "lucide-react";
 import { api, APIError } from "@/lib/api";
@@ -58,10 +60,18 @@ export function MerchantListingsPanel() {
           <h2 className="text-xl font-black text-slate-950">服务管理</h2>
           <p className="mt-1 text-sm font-semibold text-slate-500">上下架、标记满约、维护价格与库存状态。</p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Link href="/listings/create?type=local_service" className="inline-flex h-10 items-center gap-1.5 rounded-full bg-orange-500 px-4 text-xs font-black text-white shadow-sm transition hover:bg-orange-600">
             <Plus className="h-3.5 w-3.5" />
             发布服务
+          </Link>
+          <Link href="/listings/create?type=local_service&category=日本料理" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 transition hover:border-rose-300 hover:text-rose-600">
+            <Utensils className="h-3.5 w-3.5" />
+            发布餐厅
+          </Link>
+          <Link href="/listings/create?type=local_service&category=民宿" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 transition hover:border-cyan-300 hover:text-cyan-700">
+            <BedDouble className="h-3.5 w-3.5" />
+            发布住宿
           </Link>
           <Link href="/listings/create?type=discount" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 transition hover:border-orange-300">
             <Tag className="h-3.5 w-3.5" />
@@ -80,7 +90,7 @@ export function MerchantListingsPanel() {
         ))}
         {!items.length ? (
           <p className="rounded-2xl bg-slate-50 p-5 text-sm font-semibold text-slate-500">
-            还没有发布服务。从「发布服务」开始，支持餐饮、酒店民宿、景点门票、一日游、接送机、翻译手续、搬家维修等类目。
+            还没有发布服务。从「发布服务」开始，支持餐厅美食（在线订座）、民宿酒店、景点门票、一日游、接送机、翻译手续、搬家维修等类目。
           </p>
         ) : null}
       </div>

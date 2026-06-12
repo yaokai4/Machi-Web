@@ -979,6 +979,8 @@ export const api = {
     region_code?: string;
     region_codes?: string;
     category?: string;
+    /** 逗号分隔的多类目过滤（如住宿集合、服务分区集合），优先于 category。 */
+    categories?: string;
     q?: string;
     sort?: string;
     min_price?: number | string;

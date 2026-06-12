@@ -220,6 +220,9 @@ export function formatPrice(input: PriceInput, currency = "JPY", locale: Listing
   if (priceType === "starting_from") return `${rendered} 起`;
   if (priceType === "monthly" || priceType === "month") return `${rendered}/月`;
   if (priceType === "hourly" || priceType === "hour") return `${rendered}/小时`;
+  if (priceType === "per_night" || priceType === "nightly") {
+    return locale === "ja" ? `${rendered}/泊` : locale === "en" ? `${rendered}/night` : `${rendered}/晚`;
+  }
   if (priceType === "daily") return `${rendered}/日`;
   if (priceType === "weekly") return `${rendered}/周`;
   if (priceType === "yearly" || priceType === "annual") return `${rendered}/年`;

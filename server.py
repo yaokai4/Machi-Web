@@ -6292,6 +6292,82 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
         },
         {
             "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "居酒屋", "title": "炭火烧鸟与清酒 · Machi 横丁店",
+            "description": "新宿横丁里的烧鸟居酒屋，备长炭现烤串物，配本地清酒。支持在线订座，旺季建议提前一天。",
+            "price": 3000, "currency": "JPY", "price_type": "starting_from", "location_text": "新宿区 · 思出横丁",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "attributes": {
+                "business_name": "Machi 横丁烧鸟",
+                "price_range": "人均 ¥2,500-3,500",
+                "open_hours": "17:00-23:30（周一休）",
+                "reservation_required": True,
+                "booking_required": True,
+                "near_station": "新宿站 西口步行 3 分钟",
+            },
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "中华料理", "title": "川味小馆 · 麻辣香锅与水煮鱼",
+            "description": "高田马场川菜馆，麻辣香锅按斤称、水煮鱼现杀现做。支持订座与包间，留学生出示学生证有优惠。",
+            "price": 1500, "currency": "JPY", "price_type": "starting_from", "location_text": "新宿区 · 高田马场",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "attributes": {
+                "business_name": "川味小馆",
+                "price_range": "人均 ¥1,500-2,500",
+                "open_hours": "11:30-15:00 / 17:00-23:00",
+                "reservation_required": False,
+                "booking_required": True,
+                "near_station": "高田马场站 步行 5 分钟",
+            },
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "咖啡甜品", "title": "白日咖啡 · 抹茶甜品专门",
+            "description": "下北泽安静小店，自家烘焙豆与季节限定抹茶甜品。可预约窗边座位，适合自习与小聚。",
+            "price": 800, "currency": "JPY", "price_type": "starting_from", "location_text": "世田谷区 · 下北泽",
+            "status": "published", "verification_status": "verified",
+            "attributes": {
+                "business_name": "白日咖啡",
+                "price_range": "人均 ¥800-1,500",
+                "open_hours": "10:00-20:00",
+                "reservation_required": False,
+                "near_station": "下北泽站 步行 4 分钟",
+            },
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "民宿", "title": "浅草整套町屋民宿 · 2LDK 近雷门",
+            "description": "整套出租的改造町屋，步行可达雷门与晴空塔观景位。适合家庭或 3-4 人小团体，含自助入住指引与中文房东支持。",
+            "price": 16800, "currency": "JPY", "price_type": "per_night", "location_text": "台东区 · 浅草",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "attributes": {
+                "business_name": "Machi Stay 浅草",
+                "room_type": "整套町屋 2LDK",
+                "max_guests": 4,
+                "check_in_time": "15:00 后自助入住",
+                "check_out_time": "10:00 前",
+                "breakfast_included": False,
+                "near_station": "浅草站 步行 6 分钟",
+            },
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "酒店", "title": "新宿三丁目精品酒店 · 大床房含早",
+            "description": "新宿三丁目站直结的精品酒店，含双人自助早餐与行李寄存。前台支持中英文，适合初次到东京的旅客。",
+            "price": 13500, "currency": "JPY", "price_type": "per_night", "location_text": "新宿区 · 新宿三丁目",
+            "status": "published", "verification_status": "verified",
+            "attributes": {
+                "business_name": "Machi Hotel 新宿",
+                "room_type": "大床房 22㎡",
+                "max_guests": 2,
+                "check_in_time": "15:00",
+                "check_out_time": "11:00",
+                "breakfast_included": True,
+                "near_station": "新宿三丁目站 直结",
+            },
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
             "type": "discount", "category": "优惠", "title": "本地咖啡店学生优惠",
             "description": "出示学生证，指定饮品 10% off。以店内规则为准。",
             "price": 0, "currency": "JPY", "price_type": "discount", "location_text": "高田马场",
@@ -17692,7 +17768,15 @@ class Handler(BaseHTTPRequestHandler):
             params.append(country_code)
 
         category = (query.get("category") or "").strip()
-        if category and category not in {"全部", "all"}:
+        categories = [
+            item.strip()
+            for item in re.split(r"[,，]+", str(query.get("categories") or ""))
+            if item.strip() and item.strip() not in {"全部", "all"}
+        ][:24]
+        if categories:
+            clauses.append("category IN (%s)" % ",".join("?" * len(categories)))
+            params.extend(categories)
+        elif category and category not in {"全部", "all"}:
             clauses.append("category = ?")
             params.append(category)
         q = (query.get("q") or query.get("keyword") or "").strip()

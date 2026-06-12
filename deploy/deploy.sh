@@ -6,16 +6,23 @@
 #   bash web/deploy/deploy.sh
 #
 # 当前生产服务器：
-#   ssh -i /Users/yaokai/Desktop/IT/ios/Machi2.pem ec2-user@13.231.24.239
+#   ssh -i /Users/yaokai/Desktop/IT/ios/Machi2.pem ec2-user@35.79.109.50
 
 set -euo pipefail
 
 # ================= 彻底写死，绝不出错 =================
-EC2_HOST="ec2-user@13.231.24.239"
+EC2_IP="35.79.109.50"
+EC2_HOST="ec2-user@$EC2_IP"
 EC2_KEY="/Users/yaokai/Desktop/IT/ios/Machi2.pem"
 LOCAL_PROJECT_DIR="/Users/yaokai/Desktop/IT/IOS/kaizi"
 PROJECT_NAME="kaizi"
 TARBALL="kaizi-web.tar.gz"
+SSH_OPTS=(
+  -i "$EC2_KEY"
+  -o StrictHostKeyChecking=accept-new
+  -o ServerAliveInterval=15
+  -o ServerAliveCountMax=4
+)
 # =====================================================
 
 cleanup_local_tarball() {
@@ -53,9 +60,11 @@ LOCAL_SHA=$(shasum -a 256 "$TARBALL" | awk '{print $1}')
 echo "    SHA256: $LOCAL_SHA"
 
 echo "==> [本地] 上传到 $EC2_HOST"
-rsync -az --partial --inplace -e "ssh -i $EC2_KEY" "$TARBALL" "$EC2_HOST:/home/ec2-user/$TARBALL"
+ssh "${SSH_OPTS[@]}" "$EC2_HOST" "rm -f /home/ec2-user/$TARBALL.uploading"
+scp "${SSH_OPTS[@]}" "$TARBALL" "$EC2_HOST:/home/ec2-user/$TARBALL.uploading"
+ssh "${SSH_OPTS[@]}" "$EC2_HOST" "mv /home/ec2-user/$TARBALL.uploading /home/ec2-user/$TARBALL"
 
-REMOTE_SHA=$(ssh -i "$EC2_KEY" "$EC2_HOST" "sha256sum /home/ec2-user/$TARBALL | awk '{print \$1}'")
+REMOTE_SHA=$(ssh "${SSH_OPTS[@]}" "$EC2_HOST" "sha256sum /home/ec2-user/$TARBALL | awk '{print \$1}'")
 if [ "$LOCAL_SHA" != "$REMOTE_SHA" ]; then
   echo "❌ 远端包校验失败: local=$LOCAL_SHA remote=$REMOTE_SHA" >&2
   exit 1
@@ -63,7 +72,7 @@ fi
 echo "    远端 SHA256 校验通过"
 
 echo "==> [远端] 解压到新目录 + 干净 build + 原子替换 + smoke test"
-ssh -i "$EC2_KEY" "$EC2_HOST" "TARBALL=/home/ec2-user/$TARBALL bash" <<'REMOTE'
+ssh "${SSH_OPTS[@]}" "$EC2_HOST" "TARBALL=/home/ec2-user/$TARBALL PUBLIC_RESOLVE_IP=$EC2_IP bash" <<'REMOTE'
 set -eEuo pipefail
 
 TS=$(date +%Y%m%d-%H%M%S)
@@ -367,21 +376,34 @@ fi
 
 echo "    [远端] 公网边缘检查（防 Caddy/Nginx 未代理到新服务）"
 PUBLIC_BASE="${PUBLIC_BASE:-https://machicity.com}"
-if curl -fsS --connect-timeout 5 --max-time 15 -o /dev/null "$PUBLIC_BASE/healthz"; then
+PUBLIC_CURL=(curl -fsS --connect-timeout 5 --max-time 15 -o /dev/null)
+if [ -n "${PUBLIC_RESOLVE_IP:-}" ]; then
+  PUBLIC_HOST=$(python3 - <<'PY' "$PUBLIC_BASE"
+from urllib.parse import urlparse
+import sys
+print(urlparse(sys.argv[1]).hostname or "")
+PY
+)
+  if [ -n "$PUBLIC_HOST" ]; then
+    PUBLIC_CURL+=(--resolve "$PUBLIC_HOST:443:$PUBLIC_RESOLVE_IP")
+  fi
+fi
+
+if "${PUBLIC_CURL[@]}" "$PUBLIC_BASE/healthz"; then
   echo "    ✅ public /healthz 200"
 else
   echo "    ❌ public /healthz 失败：请检查 Caddy/Nginx 是否把 /healthz 代理到 127.0.0.1:8787" >&2
   exit 1
 fi
 
-if curl -fsS --connect-timeout 5 --max-time 15 -o /dev/null "$PUBLIC_BASE/api/guide/home?country=jp"; then
+if "${PUBLIC_CURL[@]}" "$PUBLIC_BASE/api/guide/home?country=jp"; then
   echo "    ✅ public /api/guide/home 200"
 else
   echo "    ❌ public /api/guide/home 失败：当前公网 API 没有代理到后端" >&2
   exit 1
 fi
 
-if curl -fsS --connect-timeout 5 --max-time 15 -o /dev/null "$PUBLIC_BASE/guide"; then
+if "${PUBLIC_CURL[@]}" "$PUBLIC_BASE/guide"; then
   echo "    ✅ public /guide 200"
 else
   echo "    ❌ public /guide 失败：当前公网 Web 没有代理到 Next.js" >&2
