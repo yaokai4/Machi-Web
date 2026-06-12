@@ -2664,7 +2664,7 @@ MIGRATIONS: list[tuple[int, str, str]] = [
     ),
     (
         44,
-        "listing reviews: Dianping-style ratings on services/deals + denormalized listing aggregates",
+        "listing reviews: local-service ratings on services/deals + denormalized listing aggregates",
         """
         CREATE TABLE IF NOT EXISTS listing_reviews (
             id TEXT PRIMARY KEY,

@@ -17,6 +17,43 @@ import server  # noqa: E402
 
 
 class ListingMediaContractTests(unittest.TestCase):
+    def test_rich_secondhand_attributes_survive_normalization(self) -> None:
+        raw = {
+            "listing_mode": "sale",
+            "condition": "good",
+            "original_price": "28000",
+            "price_negotiable": True,
+            "purchase_time": "2025 spring",
+            "accessories": "box, charger",
+            "defect_note": "minor scratch",
+            "available_time": "weekends",
+            "pickup_note": "station meetup",
+        }
+        normalized = server.normalize_listing_attributes("secondhand", raw)
+        self.assertEqual(set(normalized), set(raw))
+        self.assertEqual(normalized["price_negotiable"], ("true", "bool"))
+
+    def test_lodging_inventory_attributes_survive_normalization(self) -> None:
+        raw = {
+            "room_type": "double",
+            "max_guests": 2,
+            "minimum_stay": "2 nights",
+            "amenities": "wifi, kitchen",
+            "inventory_note": "weekends limited",
+            "breakfast_included": True,
+            "instant_confirmation": True,
+        }
+        normalized = server.normalize_listing_attributes("local_service", raw)
+        self.assertEqual(set(normalized), set(raw))
+        self.assertEqual(normalized["max_guests"], ("2", "int"))
+
+    def test_listing_update_replaces_attributes_and_media(self) -> None:
+        source = Path(server.__file__).read_text(encoding="utf-8")
+        update_source = source[source.index("    def api_update_listing("):source.index("    def api_delete_listing(")]
+        self.assertIn("DELETE FROM listing_attributes WHERE listing_id = ?", update_source)
+        self.assertIn('media_changed = "media_ids" in data or "mediaIds" in data', update_source)
+        self.assertIn("DELETE FROM listing_media WHERE listing_id = ?", update_source)
+
     def test_every_listing_image_purpose_has_a_video_pair(self) -> None:
         for listing_type, image_purpose in server.LISTING_PURPOSE_BY_TYPE.items():
             video_purpose = server.LISTING_VIDEO_PURPOSE_BY_TYPE[listing_type]

@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -99,7 +99,7 @@ const videoFallbackArtworkStyle: React.CSSProperties = {
 
 const CHANNEL: Record<ChannelKind, { type: KXListingType; title: string; subtitle: string; icon: typeof Home; search: string; createLabel: string }> = {
   marketplace: { type: "secondhand", title: "二手市场", subtitle: "图片、价格、地点、成色和交易方式清晰分离", icon: Tag, search: "搜索家具、家电、手机数码、教材、搬家出清", createLabel: "发布二手" },
-  rentals: { type: "rental", title: "租房 · 住宿", subtitle: "长租房源与民宿短住，价格、车站和入住条件一目了然", icon: Home, search: "搜索地区、车站、民宿、酒店、房源关键词", createLabel: "发布房源" },
+  rentals: { type: "rental", title: "租房 · 住宿", subtitle: "长租、民宿短住与酒店住宿，价格、位置和入住条件一目了然", icon: Home, search: "搜索地区、车站、民宿、酒店、房源关键词", createLabel: "发布房源" },
   jobs: { type: "job", title: "工作机会", subtitle: "薪资、地点、日语要求、签证支持和招聘方认证", icon: Briefcase, search: "搜索职位、公司、地点、日语要求", createLabel: "发布职位" },
   services: { type: "local_service", title: "商家与本地服务", subtitle: "餐厅美食、点评订座、景点玩乐和生活支持", icon: Sparkles, search: "搜索餐厅美食、景点门票、一日游、接送机、翻译手续", createLabel: "发布服务" },
   deals: { type: "discount", title: "优惠", subtitle: "本地商家优惠、有效期和使用规则", icon: Tag, search: "搜索优惠、折扣、商家、有效期", createLabel: "发布优惠" },
@@ -117,7 +117,7 @@ const CHANNEL_TEXT: Record<ChannelKind, Record<"title" | "subtitle" | "search" |
   },
   rentals: {
     title: { ja: "賃貸・宿泊", en: "Homes & Stays" },
-    subtitle: { ja: "長期賃貸も民泊・短期滞在も、料金と駅と条件がひと目でわかる", en: "Long-term rentals and short stays — price, station and terms at a glance" },
+    subtitle: { ja: "長期賃貸・民泊・ホテルを、料金と駅と条件で探せる", en: "Long-term rentals, homestays and hotels — price, location and terms at a glance" },
     search: { ja: "エリア・駅・民泊・ホテル・物件キーワードを検索", en: "Search area, station, guesthouses, hotels, keywords" },
     createLabel: { ja: "物件を掲載", en: "Post a rental" },
   },
@@ -167,7 +167,9 @@ export const FOOD_CATEGORIES = ["中华料理", "日本料理", "居酒屋", "�
 /// 餐厅美食分区还包含两个老类目（已有数据继续生效）。
 const FOOD_SECTION_CATEGORIES = [...FOOD_CATEGORIES, "餐饮点评", "优惠预约"];
 /// 住宿：归属租房页「民宿·短住」标签；"酒店民宿" 为老类目伞值。
-export const STAY_CATEGORIES = ["民宿", "酒店", "温泉旅馆", "公寓式酒店", "酒店民宿"] as const;
+export const HOMESTAY_CATEGORIES = ["民宿"] as const;
+export const HOTEL_CATEGORIES = ["酒店", "温泉旅馆", "公寓式酒店", "酒店民宿"] as const;
+export const STAY_CATEGORIES = [...HOMESTAY_CATEGORIES, ...HOTEL_CATEGORIES] as const;
 const STAY_CATEGORY_SET = new Set<string>(STAY_CATEGORIES);
 const FOOD_CATEGORY_SET = new Set<string>(FOOD_SECTION_CATEGORIES);
 
@@ -182,7 +184,8 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
 };
 
 /// 租房页「民宿·短住」标签下的筛选 chips（全部=整个住宿类目集）。
-const STAY_CHIPS = ["全部", "民宿", "酒店", "温泉旅馆", "公寓式酒店"];
+const HOMESTAY_CHIPS = ["全部", "民宿"];
+const HOTEL_CHIPS = ["全部", "酒店", "温泉旅馆", "公寓式酒店"];
 
 // Display-only translations for the category chips. The zh value is the
 // CANONICAL wire/storage format (listings store and filter by it — see
@@ -405,19 +408,23 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [serviceSection, setServiceSection] = useState("all");
-  // 租房页双标签：长租房源 / 民宿·短住（住宿类 local_service）。
-  const [rentalTab, setRentalTab] = useState<"homes" | "stays">("homes");
+  // 住房频道三分区：长租房源 / 民宿短住 / 酒店住宿。
+  const [rentalTab, setRentalTab] = useState<"homes" | "stays" | "hotels">("homes");
   const [sort, setSort] = useState("latest");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [scope, setScope] = useState<ListingScope>("city");
+  const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const { locale } = useI18n();
   const spec = localizedChannel(kind, locale);
   const staysActive = kind === "rentals" && rentalTab === "stays";
+  const hotelsActive = kind === "rentals" && rentalTab === "hotels";
+  const lodgingActive = staysActive || hotelsActive;
   useEffect(() => {
-    // 服务页「住宿搬家」入口等场景用 ?tab=stays 直达民宿短住。
+    // 服务页的住宿入口可用 ?tab=stays / ?tab=hotels 直达对应分区。
     if (kind !== "rentals" || typeof window === "undefined") return;
-    if (new URLSearchParams(window.location.search).get("tab") === "stays") setRentalTab("stays");
+    const tab = new URLSearchParams(window.location.search).get("tab");
+    if (tab === "stays" || tab === "hotels") setRentalTab(tab);
   }, [kind]);
   const scopeCountry = city.regionCode.split(".")[0] || "jp";
   const scopeCountrySpec = countryByCode(scopeCountry);
@@ -428,9 +435,18 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const sectionCategoriesParam = kind === "services" && category === "全部"
     ? (SERVICE_SECTIONS.find((section) => section.key === serviceSection)?.categories || []).join(",")
     : "";
-  const listings = useQuery({
-    queryKey: ["listings", city.slug, kind, spec.type, category, sort, query, scope, filters.scope_area || "", filters.scope_city || "", JSON.stringify(filters), staysActive, sectionCategoriesParam],
-    queryFn: async () => {
+  // 属性筛选必须传服务端：客户端只过滤已加载页,翻页会漏掉后面页里的匹配项。
+  // scope_* 与价格区间走专用参数,其余 key 原样转 attr_<key>。
+  const serverAttrs = useMemo(() => Object.fromEntries(
+    Object.entries(filters).filter(([key, value]) => String(value || "").trim() && !FILTER_NON_ATTR_KEYS.has(key)),
+  ), [filters]);
+  // 无限分页：cursor 为字符串；工作频道合并 job+hiring 两条流,
+  // 把两个游标编进同一个 JSON pageParam,各自走到尽头为止。
+  const listings = useInfiniteQuery({
+    queryKey: ["listings", city.slug, kind, spec.type, category, sort, query, scope, filters.scope_area || "", filters.scope_city || "", JSON.stringify(filters), rentalTab, sectionCategoriesParam],
+    initialPageParam: "",
+    getNextPageParam: (last: { items: KXCityListing[]; next_cursor: string | null }) => last.next_cursor || undefined,
+    queryFn: async ({ pageParam }) => {
       const scoped = scopedCity
         ? { city_slug: scopedCity.slug }
         : scopedArea
@@ -438,28 +454,34 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
           : scope === "country"
             ? { country: scopeCountry }
             : { city_slug: city.slug };
-      const shared = { ...scoped, category, sort, q: query, min_price: filters.min_price, max_price: filters.max_price };
-      if (staysActive) {
-        // 民宿·短住：拉住宿类 local_service。「全部」用 categories 集合，选中 chip 用单类目。
+      const shared = { ...scoped, category, sort, q: query, min_price: filters.min_price, max_price: filters.max_price, attrs: serverAttrs };
+      if (lodgingActive) {
+        const lodgingCategories = hotelsActive ? HOTEL_CATEGORIES : HOMESTAY_CATEGORIES;
         return api.listings({
           ...shared,
           type: "local_service",
           category: category === "全部" ? "" : category,
-          categories: category === "全部" ? STAY_CATEGORIES.join(",") : "",
+          categories: category === "全部" ? lodgingCategories.join(",") : "",
+          cursor: pageParam || undefined,
         });
       }
       if (kind === "services" && sectionCategoriesParam) {
         // 服务分区（餐厅美食/景点玩乐/生活服务）直接按类目集合取数，分页不漏。
-        return api.listings({ ...shared, type: spec.type, category: "", categories: sectionCategoriesParam });
+        return api.listings({ ...shared, type: spec.type, category: "", categories: sectionCategoriesParam, cursor: pageParam || undefined });
       }
-      if (kind !== "jobs") return api.listings({ ...shared, type: spec.type });
+      if (kind !== "jobs") return api.listings({ ...shared, type: spec.type, cursor: pageParam || undefined });
+      const cursors: { job?: string | null; hiring?: string | null } = pageParam
+        ? JSON.parse(pageParam)
+        : { job: "", hiring: "" };
+      const empty = { items: [] as KXCityListing[], next_cursor: null as string | null, type: spec.type };
       const [jobs, hiring] = await Promise.all([
-        api.listings({ ...shared, type: "job" }),
-        api.listings({ ...shared, type: "hiring" }),
+        cursors.job != null ? api.listings({ ...shared, type: "job", cursor: cursors.job || undefined }) : Promise.resolve(empty),
+        cursors.hiring != null ? api.listings({ ...shared, type: "hiring", cursor: cursors.hiring || undefined }) : Promise.resolve(empty),
       ]);
+      const nextPair = { job: jobs.next_cursor, hiring: hiring.next_cursor };
       return {
         items: [...jobs.items, ...hiring.items].sort(sortListings),
-        next_cursor: jobs.next_cursor || hiring.next_cursor,
+        next_cursor: nextPair.job || nextPair.hiring ? JSON.stringify(nextPair) : null,
         type: spec.type,
       };
     },
@@ -474,8 +496,17 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
     listings.refetch();
   };
   const sectionSpec = SERVICE_SECTIONS.find((section) => section.key === serviceSection);
-  const visibleItems = (listings.data?.items || []).filter((item) => {
-    if (!matchesListingFilters(item, filters)) return false;
+  // 属性筛选已由服务端完成（serverAttrs），这里只保留服务页的类目归组规则。
+  // 跨页按 id 去重：置顶行会同时出现在第 1 页与它的自然 keyset 槽位附近。
+  const loadedItems = useMemo(() => {
+    const seen = new Set<string>();
+    return (listings.data?.pages || []).flatMap((page) => page.items).filter((item) => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  }, [listings.data]);
+  const visibleItems = loadedItems.filter((item) => {
     // 住宿类已整体归入租房页「民宿·短住」，服务页不再展示
     if (kind === "services" && STAY_CATEGORY_SET.has(item.category || "")) return false;
     // services 分区（餐厅美食/景点玩乐/生活服务）在已抓页面上按类目分组过滤
@@ -485,6 +516,23 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
     return true;
   });
   const activeFilterCount = Object.values(filters).filter((value) => String(value || "").trim()).length;
+  const { hasNextPage, isFetchingNextPage, fetchNextPage } = listings;
+
+  useEffect(() => {
+    if (!hasNextPage || isFetchingNextPage) return;
+    const node = loadMoreRef.current;
+    if (!node || typeof IntersectionObserver === "undefined") return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting) && !isFetchingNextPage) {
+          fetchNextPage();
+        }
+      },
+      { rootMargin: "520px 0px" },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, visibleItems.length]);
 
   return (
     <AppShell requireAuth={false} wide right={null}>
@@ -505,7 +553,15 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
           </Link>
           <button
             type="button"
-            onClick={() => (user ? window.location.assign(`/listings/create?type=${spec.type}&city=${city.slug}`) : openAuthPrompt("publish"))}
+            onClick={() => {
+              if (!user) {
+                openAuthPrompt("publish");
+                return;
+              }
+              const targetType = lodgingActive ? "local_service" : spec.type;
+              const targetCategory = hotelsActive ? "酒店" : staysActive ? "民宿" : "";
+              window.location.assign(`/listings/create?type=${targetType}&city=${city.slug}${targetCategory ? `&category=${encodeURIComponent(targetCategory)}` : ""}`);
+            }}
             className="absolute right-0 top-0 inline-flex h-10 w-10 shrink-0 items-center justify-center gap-2 rounded-full bg-blue-600 text-sm font-bold text-white shadow-[0_12px_28px_-18px_rgba(37,99,235,0.9)] transition hover:bg-blue-700 sm:static sm:w-auto sm:px-4"
           >
             <Plus className="h-4 w-4" />
@@ -538,12 +594,13 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
       <main className="px-3 py-4 sm:px-4">
         <section className="mx-auto min-w-0 max-w-6xl">
           {kind === "rentals" ? (
-            // 顶部双标签：长租房源 / 民宿·短住
+            // 顶部三标签：长租房源 / 民宿短住 / 酒店住宿
             <div className="mb-4 flex justify-center">
               <div className="inline-flex items-center rounded-full border border-slate-200/80 bg-white p-1 shadow-[0_14px_36px_-26px_rgba(15,23,42,0.6)]">
                 {([
                   { key: "homes" as const, Icon: Home, label: pickText(locale, "长租房源", "賃貸物件", "Long-term") },
                   { key: "stays" as const, Icon: BedDouble, label: pickText(locale, "民宿·短住", "民泊・短期滞在", "Stays") },
+                  { key: "hotels" as const, Icon: Building2, label: pickText(locale, "酒店", "ホテル", "Hotels") },
                 ]).map(({ key, Icon, label }) => (
                   <button
                     key={key}
@@ -555,7 +612,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                       setFiltersOpen(false);
                     }}
                     data-active={rentalTab === key}
-                    className="inline-flex h-11 items-center gap-2 rounded-full px-5 text-sm font-black text-slate-500 transition data-[active=true]:bg-slate-950 data-[active=true]:text-white data-[active=true]:shadow-[0_12px_26px_-16px_rgba(15,23,42,0.9)] hover:text-slate-800 data-[active=true]:hover:text-white"
+                    className="inline-flex h-11 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-xs font-black text-slate-500 transition data-[active=true]:bg-slate-950 data-[active=true]:text-white data-[active=true]:shadow-[0_12px_26px_-16px_rgba(15,23,42,0.9)] hover:text-slate-800 data-[active=true]:hover:text-white sm:gap-2 sm:px-5 sm:text-sm"
                   >
                     <Icon className="h-4.5 w-4.5" />
                     {label}
@@ -601,13 +658,14 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               </button>
               <select value={sort} onChange={(e) => setSort(e.target.value)} className="h-10 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 outline-none transition hover:border-blue-300 focus:border-blue-400">
                 <option value="latest">{pickText(locale, "最新发布", "新着順", "Newest")}</option>
-                <option value="price_asc">{staysActive ? pickText(locale, "每晚价格从低到高", "1泊料金が安い順", "Nightly: low → high") : spec.type === "rental" ? pickText(locale, "租金从低到高", "家賃が安い順", "Rent: low → high") : pickText(locale, "价格从低到高", "価格が安い順", "Price: low → high")}</option>
-                <option value="price_desc">{staysActive ? pickText(locale, "每晚价格从高到低", "1泊料金が高い順", "Nightly: high → low") : spec.type === "rental" ? pickText(locale, "租金从高到低", "家賃が高い順", "Rent: high → low") : pickText(locale, "价格从高到低", "価格が高い順", "Price: high → low")}</option>
+                <option value="price_asc">{lodgingActive ? pickText(locale, "每晚价格从低到高", "1泊料金が安い順", "Nightly: low → high") : spec.type === "rental" ? pickText(locale, "租金从低到高", "家賃が安い順", "Rent: low → high") : pickText(locale, "价格从低到高", "価格が安い順", "Price: low → high")}</option>
+                <option value="price_desc">{lodgingActive ? pickText(locale, "每晚价格从高到低", "1泊料金が高い順", "Nightly: high → low") : spec.type === "rental" ? pickText(locale, "租金从高到低", "家賃が高い順", "Rent: high → low") : pickText(locale, "价格从高到低", "価格が高い順", "Price: high → low")}</option>
+                {lodgingActive || kind === "services" ? <option value="rating">{pickText(locale, "评分最高", "評価が高い順", "Top rated")}</option> : null}
                 <option value="popular">{pickText(locale, "最多收藏", "人気順", "Most saved")}</option>
               </select>
               <p className="ml-auto hidden text-xs font-bold text-slate-400 sm:block">
                 {visibleItems.length
-                  ? pickText(locale, `${visibleItems.length} 条结果`, `${visibleItems.length} 件`, `${visibleItems.length} results`)
+                  ? pickText(locale, `${visibleItems.length}${listings.hasNextPage ? "+" : ""} 条结果`, `${visibleItems.length}${listings.hasNextPage ? "+" : ""} 件`, `${visibleItems.length}${listings.hasNextPage ? "+" : ""} results`)
                   : pickText(locale, "暂无结果", "結果なし", "No results")}
               </p>
               </div>
@@ -641,7 +699,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               ) : (
                 <div className="-mx-1 min-w-0 overflow-x-auto px-1">
                   <div className="flex gap-2 pb-0.5">
-                    {(staysActive ? STAY_CHIPS : CATEGORY_CHIPS[spec.type] || ["全部"]).map((chip) => (
+                    {(hotelsActive ? HOTEL_CHIPS : staysActive ? HOMESTAY_CHIPS : CATEGORY_CHIPS[spec.type] || ["全部"]).map((chip) => (
                       <button
                         key={chip}
                         type="button"
@@ -656,9 +714,36 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                 </div>
               )}
             </div>
+            {kind === "jobs" ? (
+              // 招聘频道快捷筛选：一次点击落到属性筛选,与面板同一份 filters 状态。
+              <div className="-mx-1 mt-2 min-w-0 overflow-x-auto px-1">
+                <div className="flex gap-2 pb-0.5">
+                  {([
+                    { key: "no_experience_ok", value: "true", label: pickText(locale, "无经验可", "未経験OK", "No experience") },
+                    { key: "student_ok", value: "true", label: pickText(locale, "留学生可", "留学生OK", "Students OK") },
+                    { key: "remote_ok", value: "true", label: pickText(locale, "可远程", "リモート可", "Remote") },
+                    { key: "visa_support", value: "available,true", label: pickText(locale, "签证支持", "ビザサポート", "Visa support") },
+                    { key: "japanese_level", value: "not_required", label: pickText(locale, "日语不限", "日本語不問", "No Japanese") },
+                  ]).map((chip) => {
+                    const active = filters[chip.key] === chip.value;
+                    return (
+                      <button
+                        key={chip.key}
+                        type="button"
+                        onClick={() => setFilters({ ...filters, [chip.key]: active ? "" : chip.value })}
+                        data-active={active}
+                        className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3.5 text-xs font-black text-slate-600 transition hover:border-blue-300 hover:text-blue-700 data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
+                      >
+                        {chip.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
             {filtersOpen ? (
               <div className="mt-3 border-t border-slate-200/70 pt-3">
-                <ListingFilterPanel type={staysActive ? "local_service" : spec.type} currentCitySlug={city.slug} filters={filters} onChange={setFilters} variant="inline" />
+                <ListingFilterPanel type={lodgingActive ? "local_service" : spec.type} context={lodgingActive ? "lodging" : "default"} currentCitySlug={city.slug} filters={filters} onChange={setFilters} variant="inline" />
               </div>
             ) : null}
           </section>
@@ -685,7 +770,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               // 照片主导网格：长租与民宿短住共用同一套视觉语言
               <div className="grid grid-cols-1 gap-x-4 gap-y-7 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {visibleItems.map((listing) => (
-                  <StayListingCard key={listing.id} listing={listing} locale={locale} variant={staysActive ? "stay" : "home"} />
+                  <StayListingCard key={listing.id} listing={listing} locale={locale} variant={lodgingActive ? "stay" : "home"} />
                 ))}
               </div>
             ) : kind === "jobs" ? (
@@ -704,8 +789,22 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               </div>
             )
           ) : (
-            <ListingEmptyState type={staysActive ? "local_service" : spec.type} cityName={city.name} stays={staysActive} />
+            <ListingEmptyState type={lodgingActive ? "local_service" : spec.type} cityName={city.name} stays={lodgingActive} />
           )}
+          {listings.hasNextPage ? (
+            <div ref={loadMoreRef} className="mt-6 flex justify-center">
+              <button
+                type="button"
+                disabled={listings.isFetchingNextPage}
+                onClick={() => listings.fetchNextPage()}
+                className="inline-flex h-11 items-center gap-2 rounded-full border border-slate-200 bg-white px-6 text-sm font-black text-slate-700 shadow-[0_10px_30px_-22px_rgba(15,23,42,0.7)] transition hover:-translate-y-px hover:border-blue-300 hover:text-blue-700 disabled:cursor-wait disabled:opacity-60"
+              >
+                {listings.isFetchingNextPage
+                  ? pickText(locale, "正在加载…", "読み込み中…", "Loading…")
+                  : pickText(locale, "加载更多", "もっと見る", "Load more")}
+              </button>
+            </div>
+          ) : null}
         </section>
       </main>
     </AppShell>
@@ -844,6 +943,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
             </div>
           </div>
         </section>
+        <ListingDetailRecommendations item={item} />
       </main>
       <div
         className="fixed inset-x-0 bottom-0 z-50 border-t border-slate-200/80 bg-white/90 px-3 pt-3 shadow-[0_-12px_40px_-24px_rgba(15,23,42,0.4)] backdrop-blur-xl md:hidden dark:border-white/10 dark:bg-slate-950/85"
@@ -868,7 +968,17 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
   );
 }
 
-export function CreateListingPage({ initialType = "secondhand", initialCitySlug = "tokyo", initialCategory = "" }: { initialType?: string; initialCitySlug?: string; initialCategory?: string } = {}) {
+export function CreateListingPage({
+  initialType = "secondhand",
+  initialCitySlug = "tokyo",
+  initialCategory = "",
+  editListingId = "",
+}: {
+  initialType?: string;
+  initialCitySlug?: string;
+  initialCategory?: string;
+  editListingId?: string;
+} = {}) {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
@@ -896,16 +1006,23 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
   const [uploadProgress, setUploadProgress] = useState<Record<string, UploadProgressEntry>>({});
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [draftSavedAt, setDraftSavedAt] = useState("");
+  const [editHydrated, setEditHydrated] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const localPreviewUrlsRef = useRef<Set<string>>(new Set());
+  const isEditing = Boolean(editListingId);
   const draftKey = `machi.listingDraft.${type}.${regionCode}`;
-  const createLabel = type === "rental" || type === "job" || type === "hiring" || type === "local_service" ? "提交审核" : "发布";
+  const createLabel = isEditing ? "保存修改" : type === "rental" || type === "job" || type === "hiring" || type === "local_service" ? "提交审核" : "发布";
   const createFields = useMemo(() => listingFormFields(type), [type]);
   const imageLimit = listingImageLimit(type);
   const mediaLimit = imageLimit;
   const membershipRequired = listingTypeRequiresMembership(type);
   const membershipChannelLabel = type === "rental" ? "租房" : type === "job" || type === "hiring" ? "招聘" : "本地商家/服务";
-  const membershipBlocked = membershipRequired && !user?.is_verified_member;
+  const membershipBlocked = !isEditing && membershipRequired && !user?.is_verified_member;
+  const editQuery = useQuery({
+    queryKey: ["listing-edit", editListingId],
+    queryFn: () => api.listing(editListingId),
+    enabled: isEditing && Boolean(user),
+  });
 
   const rememberLocalPreviewUrl = (url: string) => {
     if (url.startsWith("blob:")) localPreviewUrlsRef.current.add(url);
@@ -918,6 +1035,7 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
   }, []);
 
   useEffect(() => {
+    if (isEditing) return;
     if (userRegion) {
       setCountry(userRegion.country_code);
       setRegionCode(userRegion.region_code);
@@ -938,9 +1056,55 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
     return () => {
       cancelled = true;
     };
-  }, [userRegion]);
+  }, [isEditing, userRegion]);
 
   useEffect(() => {
+    const listing = editQuery.data;
+    if (!isEditing || !listing || editHydrated) return;
+    const nextRegionCode = listing.region_code || listing.regionCode || getCityBySlug(listing.city_slug || listing.citySlug || "")?.regionCode || regionCode;
+    const nextRegion = resolveRegion(nextRegionCode);
+    setType(listing.type);
+    setCountry(listing.country_code || listing.countryCode || nextRegion?.country_code || country);
+    setRegionCode(nextRegionCode);
+    setRegionSource("initial");
+    setTitle(listing.title || "");
+    setDescription(listing.description || "");
+    setCategory(listing.category || "");
+    setPrice(listing.price == null ? "" : String(listing.price));
+    setLocation(listing.location_text || listing.locationText || "");
+    setAttributes(Object.fromEntries(
+      Object.entries(listing.attributes || {}).map(([key, value]) => [key, String(value ?? "")]),
+    ));
+    setMedia((listing.media || []).flatMap((item) => {
+      const id = item.uploaded_file_id || item.uploadedFileId;
+      if (!id) return [];
+      const rawType = item.media_type || item.mediaType || item.type || "image";
+      const mediaType: "image" | "video" | "audio" | "file" = rawType === "video" ? "video" : "image";
+      return [{
+        id,
+        owner_id: "",
+        type: mediaType,
+        url: item.url || "",
+        cdnUrl: item.cdnUrl,
+        publicUrl: item.publicUrl,
+        thumb_url: item.thumb_url || "",
+        thumbUrl: item.thumbUrl,
+        thumbnail_url: item.thumbnail_url,
+        thumbnailUrl: item.thumbnailUrl,
+        poster_url: item.poster_url,
+        posterUrl: item.posterUrl,
+        mime: item.mime || item.content_type || item.contentType || "",
+        duration: item.duration,
+        duration_seconds: item.duration_seconds,
+        durationSeconds: item.durationSeconds,
+        created_at: "",
+      }];
+    }));
+    setEditHydrated(true);
+  }, [country, editHydrated, editQuery.data, isEditing, regionCode]);
+
+  useEffect(() => {
+    if (isEditing) return;
     if (typeof window === "undefined") return;
     try {
       const raw = window.localStorage.getItem(draftKey);
@@ -955,9 +1119,10 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
     } catch {
       // local draft corruption should not block publishing
     }
-  }, [draftKey]);
+  }, [draftKey, isEditing]);
 
   const saveDraft = () => {
+    if (isEditing) return;
     if (typeof window === "undefined") return;
     window.localStorage.setItem(draftKey, JSON.stringify({ title, description, category, price, location, attributes }));
     setDraftSavedAt(new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }));
@@ -1114,11 +1279,16 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
         cover_media_id: mediaIds[0],
         coverMediaId: mediaIds[0],
       };
-      return api.createListing(payload);
+      return isEditing ? api.updateListing(editListingId, payload) : api.createListing(payload);
     },
     onSuccess: (listing) => {
-      if (typeof window !== "undefined") window.localStorage.removeItem(draftKey);
-      pushToast({ kind: "success", message: listing.status === "pending_review" ? "已提交管理员审核，审核时间一般在 1 天内，通过后会自动展示，可在「我的发布」查看。" : "发布成功，三端会同步展示。" });
+      if (!isEditing && typeof window !== "undefined") window.localStorage.removeItem(draftKey);
+      pushToast({
+        kind: "success",
+        message: listing.status === "pending_review"
+          ? isEditing ? "修改已保存并提交复审，通过后会自动展示。" : "已提交管理员审核，审核时间一般在 1 天内，通过后会自动展示，可在「我的发布」查看。"
+          : isEditing ? "修改已保存，Web 与 iOS 会同步更新。" : "发布成功，三端会同步展示。",
+      });
       router.push(listing.status === "pending_review" ? "/my/listings" : detailHref(listing));
     },
     onError: (e) => {
@@ -1134,8 +1304,8 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
           <div className="flex items-center gap-3">
             <Link href="/explore" className="grid h-10 w-10 place-items-center rounded-full bg-slate-100"><ArrowLeft className="h-5 w-5" /></Link>
             <div>
-              <h1 className="text-2xl font-black text-slate-950">发布城市信息</h1>
-              <p className="text-sm font-semibold text-slate-500">日常动态留在首页；二手、租房、工作、商家与本地服务和优惠会进入各自的城市频道。</p>
+              <h1 className="text-2xl font-black text-slate-950">{isEditing ? "编辑城市信息" : "发布城市信息"}</h1>
+              <p className="text-sm font-semibold text-slate-500">{isEditing ? "修改后的内容会同步到 Web 与 iOS；重要内容变更可能重新进入审核。" : "日常动态留在首页；二手、租房、工作、商家与本地服务和优惠会进入各自的城市频道。"}</p>
             </div>
           </div>
           <div className="mt-5 grid gap-5">
@@ -1143,14 +1313,14 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
               <p className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">选择发布类型</p>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-6">
               {(["secondhand", "rental", "job", "hiring", "local_service", "discount"] as KXListingType[]).map((value) => (
-                <button key={value} type="button" onClick={() => { setType(value); setFieldErrors({}); }} data-active={type === value} className="h-12 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-600 transition hover:-translate-y-px hover:border-blue-200 hover:text-blue-700 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white">
+                <button key={value} type="button" disabled={isEditing} onClick={() => { setType(value); setFieldErrors({}); }} data-active={type === value} className="h-12 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-600 transition hover:-translate-y-px hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-45 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white data-[active=true]:opacity-100">
                   {listingTypeLabel(value)}
                 </button>
               ))}
               </div>
             </section>
 
-            {membershipRequired ? (
+            {membershipRequired && !isEditing ? (
               <section className="flex flex-col gap-3 rounded-[24px] border border-blue-100 bg-blue-50/70 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-3">
                   <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-white text-blue-600 shadow-sm">
@@ -1381,10 +1551,10 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
             <SafetyNotice type={type} />
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div className="text-xs font-semibold text-slate-500">
-                {draftSavedAt ? `草稿已保存于 ${draftSavedAt}` : "草稿会保存在当前浏览器，可随时手动保存。"}
+                {isEditing ? "正在编辑已发布内容，保存后会立即同步或进入复审。" : draftSavedAt ? `草稿已保存于 ${draftSavedAt}` : "草稿会保存在当前浏览器，可随时手动保存。"}
               </div>
               <div className="flex gap-2">
-                <button type="button" onClick={saveDraft} className="h-11 rounded-full border border-slate-200 bg-white px-4 text-sm font-black text-slate-700">保存草稿</button>
+                {!isEditing ? <button type="button" onClick={saveDraft} className="h-11 rounded-full border border-slate-200 bg-white px-4 text-sm font-black text-slate-700">保存草稿</button> : null}
                 <button
                   type="button"
                   disabled={create.isPending || upload.isPending}
@@ -1412,10 +1582,21 @@ export function CreateListingPage({ initialType = "secondhand", initialCitySlug 
   );
 }
 
+/// 我的发布的状态分组：owner 视图一次拿全量,分组在客户端完成。
+const MY_LISTING_STATUS_GROUPS: Array<{ key: string; label: string; statuses: string[] }> = [
+  { key: "all", label: "全部", statuses: [] },
+  { key: "live", label: "展示中", statuses: ["published", "reserved"] },
+  { key: "review", label: "审核中", statuses: ["pending_review"] },
+  { key: "paused", label: "已下架", statuses: ["hidden", "draft"] },
+  { key: "done", label: "已结束", statuses: ["sold", "rented", "closed", "expired"] },
+  { key: "rejected", label: "未通过", statuses: ["rejected"] },
+];
+
 export function MyListingsPage({ saved = false }: { saved?: boolean }) {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
   const [type, setType] = useState<KXListingType>("secondhand");
+  const [statusGroup, setStatusGroup] = useState("all");
   const query = useQuery({
     queryKey: [saved ? "saved-listings" : "my-listings", type],
     queryFn: () => saved ? api.savedListings(type) : api.myListings(type),
@@ -1442,19 +1623,39 @@ export function MyListingsPage({ saved = false }: { saved?: boolean }) {
         <h1 className="text-2xl font-black text-slate-950">{saved ? "我的收藏" : "我的发布"}</h1>
         <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
           {(["secondhand", "rental", "job", "hiring", "local_service", "discount"] as KXListingType[]).map((item) => (
-            <button key={item} onClick={() => setType(item)} data-active={type === item} className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-sm font-bold data-[active=true]:bg-slate-950 data-[active=true]:text-white">
+            <button key={item} onClick={() => { setType(item); setStatusGroup("all"); }} data-active={type === item} className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-sm font-bold data-[active=true]:bg-slate-950 data-[active=true]:text-white">
               {listingTypeLabel(item)}
             </button>
           ))}
         </div>
+        {!saved && (query.data?.length || 0) > 0 ? (
+          <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+            {MY_LISTING_STATUS_GROUPS.map((group) => {
+              const count = group.key === "all"
+                ? (query.data || []).length
+                : (query.data || []).filter((item) => group.statuses.includes(item.status)).length;
+              if (group.key !== "all" && !count) return null;
+              return (
+                <button key={group.key} onClick={() => setStatusGroup(group.key)} data-active={statusGroup === group.key} className="h-8 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-500 data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700">
+                  {group.label} {count}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
         <div className="mt-4 space-y-3">
           {query.isLoading ? <SectionLoading title={saved ? "正在加载收藏" : "正在加载发布"} rows={3} /> : query.isError ? (
             <section className="rounded-3xl border border-slate-200/70 bg-white">
               <ErrorState title={saved ? "收藏暂时无法加载" : "发布记录暂时无法加载"} onRetry={() => query.refetch()} />
             </section>
-          ) : query.data?.length ? query.data.map((item) => (
-            saved ? <StructuredListCard key={item.id} listing={item} /> : <ListingManageCard key={item.id} listing={item} onStatus={(status) => update.mutate({ id: item.id, status })} onDelete={() => remove.mutate(item.id)} />
-          )) : <ListingEmptyState type={type} cityName="本地" />}
+          ) : query.data?.length ? (() => {
+            const activeGroup = MY_LISTING_STATUS_GROUPS.find((group) => group.key === statusGroup);
+            const filtered = (query.data || []).filter((item) => saved || !activeGroup?.statuses.length || activeGroup.statuses.includes(item.status));
+            if (!filtered.length) return <ListingEmptyState type={type} cityName="本地" />;
+            return filtered.map((item) => (
+              saved ? <StructuredListCard key={item.id} listing={item} /> : <ListingManageCard key={item.id} listing={item} onStatus={(status) => update.mutate({ id: item.id, status })} onDelete={() => remove.mutate(item.id)} />
+            ));
+          })() : <ListingEmptyState type={type} cityName="本地" />}
         </div>
       </main>
     </AppShell>
@@ -2132,8 +2333,9 @@ function SecondhandListingCard({ listing }: { listing: KXCityListing }) {
   const condition = listingAttr(listing, "condition");
   const listingMode = listingAttr(listing, "listing_mode");
   const priceNegotiable = listingAttrFlag(listing, "price_negotiable");
-  const pickup = listingAttrFlag(listing, "pickup_available");
-  const shipping = listingAttrFlag(listing, "shipping_available");
+  const deliveryMethod = String((listing.attributes || {}).delivery_method ?? "").trim().toLowerCase();
+  const pickup = listingAttrFlag(listing, "pickup_available") || deliveryMethod === "pickup" || deliveryMethod === "pickup_or_shipping";
+  const shipping = listingAttrFlag(listing, "shipping_available") || deliveryMethod === "shipping" || deliveryMethod === "pickup_or_shipping";
   const free = listing.price === 0;
   const badges = [listingMode, priceNegotiable ? "可议价" : "", pickup ? "可自取" : "", shipping ? "可邮寄" : "", condition]
     .filter((item): item is string => Boolean(item))
@@ -2352,10 +2554,14 @@ function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Local
   const employment = formatListingAttribute("employment_type", listingAttr(listing, "employment_type"), appLocaleToMarketingLocale(locale));
   const japanese = formatListingAttribute("japanese_level", listingAttr(listing, "japanese_level"), appLocaleToMarketingLocale(locale));
   const hours = listingAttr(listing, "working_hours");
+  // visa_support 是枚举（none/consult/available）而非布尔,truthy 检查永远为
+  // false——按枚举判定。
+  const visaSupport = String(listing.attributes?.visa_support ?? "").trim().toLowerCase();
   const tags = [
     employment,
     japanese,
-    listingAttrFlag(listing, "visa_support") ? pickText(locale, "签证支持", "ビザサポート", "Visa support") : "",
+    listingAttrFlag(listing, "remote_ok") ? pickText(locale, "可远程", "リモート可", "Remote OK") : "",
+    visaSupport === "available" || visaSupport === "true" ? pickText(locale, "签证支持", "ビザサポート", "Visa support") : visaSupport === "consult" ? pickText(locale, "签证可咨询", "ビザ相談可", "Visa negotiable") : "",
     listingAttrFlag(listing, "no_experience_ok") ? pickText(locale, "无经验可", "未経験OK", "No experience OK") : "",
     listingAttrFlag(listing, "student_ok") ? pickText(locale, "留学生可", "留学生OK", "Students OK") : "",
     listingAttrFlag(listing, "foreigner_friendly") ? pickText(locale, "外国人友好", "外国人歓迎", "Foreigner friendly") : "",
@@ -3047,12 +3253,14 @@ function ListingFilterPanel({
   filters,
   onChange,
   variant = "panel",
+  context = "default",
 }: {
   type: KXListingType;
   currentCitySlug: string;
   filters: Record<string, string>;
   onChange: (next: Record<string, string>) => void;
   variant?: "panel" | "inline";
+  context?: ListingFilterContext;
 }) {
   const set = (key: string, value: string) => onChange({ ...filters, [key]: value });
   const setScopeArea = (value: string) => onChange({ ...filters, scope_area: value, scope_city: "" });
@@ -3121,14 +3329,14 @@ function ListingFilterPanel({
       </div>
       <div className={variant === "inline" ? "mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" : "mt-3 grid gap-3"}>
         <div className="grid grid-cols-2 gap-2">
-          <Field label={type === "rental" ? "最低租金" : type === "job" || type === "hiring" ? "最低薪资" : "最低价格"}>
+          <Field label={context === "lodging" ? "每晚最低价" : type === "rental" ? "最低租金" : type === "job" || type === "hiring" ? "最低薪资" : "最低价格"}>
             <input value={filters.min_price || ""} onChange={(e) => set("min_price", e.target.value.replace(/[^\d.]/g, ""))} className="kx-input h-10" />
           </Field>
-          <Field label={type === "rental" ? "最高租金" : type === "job" || type === "hiring" ? "最高薪资" : "最高价格"}>
+          <Field label={context === "lodging" ? "每晚最高价" : type === "rental" ? "最高租金" : type === "job" || type === "hiring" ? "最高薪资" : "最高价格"}>
             <input value={filters.max_price || ""} onChange={(e) => set("max_price", e.target.value.replace(/[^\d.]/g, ""))} className="kx-input h-10" />
           </Field>
         </div>
-        {filterOptions(type).map((group) => (
+        {filterOptions(type, context).map((group) => (
           <Field key={group.key} label={group.label}>
             <select value={filters[group.key] || ""} onChange={(e) => set(group.key, e.target.value)} className="kx-input h-10">
               <option value="">不限</option>
@@ -3138,6 +3346,74 @@ function ListingFilterPanel({
         ))}
       </div>
     </section>
+  );
+}
+
+/// 详情页下方两条横滑栏：TA 的其他发布（同卖家）+ 相似推荐（服务端按
+/// 同类目同城→同国→同城逐层补足，不含同卖家）。任一为空则不渲染。
+function ListingDetailRecommendations({ item }: { item: KXCityListing }) {
+  const sellerId = item.seller_user_id || item.sellerUserId || "";
+  const similar = useQuery({
+    queryKey: ["listing-similar", item.id],
+    queryFn: () => api.similarListings(item.id),
+    staleTime: 60_000,
+  });
+  const sellerOthers = useQuery({
+    queryKey: ["listing-seller-others", item.id, sellerId],
+    queryFn: () => api.listings({ type: item.type, seller_id: sellerId, exclude: item.id, limit: 8 }),
+    enabled: Boolean(sellerId),
+    staleTime: 60_000,
+  });
+  const sellerItems = sellerOthers.data?.items || [];
+  const similarItems = similar.data || [];
+  if (!sellerItems.length && !similarItems.length) return null;
+  return (
+    <>
+      {sellerItems.length ? <ListingRail title="TA 的其他发布" items={sellerItems} /> : null}
+      {similarItems.length ? <ListingRail title="相似推荐" items={similarItems} /> : null}
+    </>
+  );
+}
+
+function ListingRail({ title, items }: { title: string; items: KXCityListing[] }) {
+  return (
+    <section className="mt-5">
+      <h3 className="px-1 text-base font-black text-slate-950">{title}</h3>
+      <div className="-mx-1 mt-2 overflow-x-auto px-1 pb-1">
+        <div className="flex gap-3">
+          {items.map((listing) => <MiniListingCard key={listing.id} listing={listing} />)}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function MiniListingCard({ listing }: { listing: KXCityListing }) {
+  const title = displayListingTitle(listing) || "城市信息";
+  const cover = listingCoverPreview(listing);
+  const coverIsVideo = listingCoverIsVideo(listing);
+  const PlaceholderIcon = listingPlaceholderIcon(listing.type);
+  return (
+    <Link href={detailHref(listing)} className="w-44 shrink-0 overflow-hidden rounded-2xl border border-slate-200/70 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.05)] transition hover:-translate-y-0.5 hover:shadow-[0_14px_30px_rgba(15,23,42,0.1)]">
+      <span className="relative block aspect-square bg-slate-100">
+        {coverIsVideo && !cover ? (
+          <span className="absolute inset-0" style={videoFallbackArtworkStyle} />
+        ) : cover ? (
+          <Image src={cover} alt={title} fill sizes="176px" className="object-cover" unoptimized />
+        ) : (
+          <span className="absolute inset-0 grid place-items-center text-slate-400"><PlaceholderIcon className="h-5 w-5" /></span>
+        )}
+        {coverIsVideo ? (
+          <span className="absolute inset-0 grid place-items-center">
+            <span className="grid h-8 w-8 place-items-center rounded-full bg-black/65 text-white"><Play className="h-3.5 w-3.5 fill-current" /></span>
+          </span>
+        ) : null}
+      </span>
+      <span className="block p-2.5">
+        <span className="block text-sm font-black text-slate-950">{priceLabel(listing)}</span>
+        <span className="mt-0.5 line-clamp-2 block text-xs font-bold leading-4 text-slate-600">{title}</span>
+      </span>
+    </Link>
   );
 }
 
@@ -3536,10 +3812,6 @@ function sortListings(a: KXCityListing, b: KXCityListing) {
   return new Date(b.published_at || b.updated_at || b.created_at || 0).getTime() - new Date(a.published_at || a.updated_at || a.created_at || 0).getTime();
 }
 
-function attributeText(item: KXCityListing, key: string) {
-  return formatListingAttribute(key, item.attributes?.[key]);
-}
-
 function compactFields(item: KXCityListing) {
   return compactListingFields(item);
 }
@@ -3705,7 +3977,11 @@ function listingFormFields(type: KXListingType): AttributeField[] {
     { key: "japanese_level", label: "日语要求", required: true, kind: "select", options: [option("not_required", "不限"), option("N5"), option("N4"), option("N3"), option("N2"), option("N1"), option("business", "商务日语")] },
     { key: "visa_support", label: "签证支持", required: true, kind: "select", options: [option("none", "无"), option("consult", "可咨询"), option("available", "有")] },
     { key: "working_hours", label: "工作时间", required: true, placeholder: "18:00-23:30 / 每周 3 天" },
+    { key: "holidays", label: "休日休假", placeholder: "完全周休二日 / 轮班制 / 年假 10 天" },
+    { key: "trial_period", label: "试用期", placeholder: "3 个月（待遇不变）" },
+    { key: "benefits", label: "福利待遇", placeholder: "社保完备、员工餐、升时给、住房补贴" },
     { key: "transportation_fee", label: "交通费", kind: "checkbox" },
+    { key: "remote_ok", label: "可远程", kind: "checkbox" },
     { key: "foreigner_friendly", label: "外国人友好", kind: "checkbox" },
     { key: "no_experience_ok", label: "无经验可", kind: "checkbox" },
     { key: "student_ok", label: "留学生可", kind: "checkbox" },
@@ -3732,7 +4008,11 @@ function listingFormFields(type: KXListingType): AttributeField[] {
     { key: "max_guests", label: "可住人数（住宿类）", placeholder: "2" },
     { key: "check_in_time", label: "入住时间（住宿类）", placeholder: "15:00" },
     { key: "check_out_time", label: "退房时间（住宿类）", placeholder: "10:00" },
+    { key: "minimum_stay", label: "最少入住晚数（住宿类）", placeholder: "1 晚 / 2 晚起" },
+    { key: "amenities", label: "设施服务（住宿类）", placeholder: "Wi-Fi、厨房、洗衣机、停车场、温泉、行李寄存" },
+    { key: "inventory_note", label: "房量与日期说明（住宿类）", kind: "textarea", placeholder: "说明可订日期、剩余房量、旺季限制和儿童入住规则。" },
     { key: "breakfast_included", label: "含早餐（住宿类）", kind: "checkbox" },
+    { key: "instant_confirmation", label: "即时确认（住宿类）", kind: "checkbox" },
     // —— 景点票务 / 一日游 / 接送机 ——
     { key: "ticket_type", label: "票种（景点/行程类）", placeholder: "成人票 / 亲子套票 / 包车" },
     { key: "duration", label: "时长（行程类）", placeholder: "3 小时 / 一日（约 8 小时）" },
@@ -3779,7 +4059,18 @@ function safetyTips(type: KXListingType) {
   return ["Machi 不代收二手交易款。", "不要提前转账，交易建议选择公共场所。", "核实对方身份，谨慎提供个人信息。", "遇到可疑内容立即举报。"];
 }
 
-function filterOptions(type: KXListingType): Array<{ key: string; label: string; options: FilterOption[] }> {
+/// lodging = 租房页「民宿·短住 / 酒店」分区（数据为住宿类 local_service），
+/// 筛选维度与生活服务完全不同，靠 context 切换。
+export type ListingFilterContext = "default" | "lodging";
+
+function filterOptions(type: KXListingType, context: ListingFilterContext = "default"): Array<{ key: string; label: string; options: FilterOption[] }> {
+  if (context === "lodging") return [
+    { key: "gte_max_guests", label: "可住人数", options: [option("2", "2 人及以上"), option("3", "3 人及以上"), option("4", "4 人及以上"), option("6", "6 人及以上")] },
+    { key: "breakfast_included", label: "含早餐", options: [option("true", "含早餐")] },
+    { key: "instant_confirmation", label: "确认方式", options: [option("true", "即时确认")] },
+    { key: "booking_required", label: "预约", options: [option("true", "需要预约")] },
+    { key: "certified_provider", label: "认证商家", options: [option("true", "已认证")] },
+  ];
   if (type === "rental") return [
     { key: "layout", label: "户型", options: ["1R", "1K", "1DK", "1LDK", "2K", "2LDK", "合租"].map((item) => option(item)) },
     { key: "short_term_allowed", label: "短租", options: [option("true", "可")] },
@@ -3793,18 +4084,20 @@ function filterOptions(type: KXListingType): Array<{ key: string; label: string;
     { key: "japanese_level", label: "日语", options: [option("not_required", "不限"), option("N5"), option("N4"), option("N3"), option("N2"), option("N1")] },
     { key: "no_experience_ok", label: "无经验可", options: [option("true", "可")] },
     { key: "student_ok", label: "留学生可", options: [option("true", "可")] },
-    { key: "visa_support", label: "签证支持", options: [option("available", "有"), option("consult", "可咨询"), option("none", "无")] },
+    { key: "remote_ok", label: "远程", options: [option("true", "可远程")] },
+    // "available,true" 兼容老数据：早期 iOS 把 visa_support 存成了布尔。
+    { key: "visa_support", label: "签证支持", options: [option("available,true", "有"), option("consult", "可咨询"), option("none", "无")] },
   ];
   if (type === "local_service") return [
     { key: "service_type", label: "服务类型", options: ["餐厅美食", "餐饮点评", "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "景点门票", "一日游", "接送机", "签证/手续协助", "翻译", "搬家清洁", "维修安装", "生活支持", "租房申请协助"].map((item) => option(item)) },
     { key: "booking_required", label: "预约", options: [option("true", "需要预约")] },
     { key: "breakfast_included", label: "含早餐", options: [option("true", "含")] },
+    { key: "instant_confirmation", label: "确认方式", options: [option("true", "即时确认")] },
     { key: "certified_provider", label: "认证商家/服务商", options: [option("true", "已认证")] },
   ];
-  if (type === "discount") return [
-    { key: "merchant_verified", label: "商家认证", options: [option("true", "已认证")] },
-    { key: "valid_until", label: "有效期", options: [option("active", "有效中")] },
-  ];
+  // 优惠类没有可枚举的真实属性筛选（merchant_verified / valid_until 不在
+  // 属性白名单内，挂出来就是假筛选），只保留价格区间与城市范围。
+  if (type === "discount") return [];
   return [
     { key: "listing_mode", label: "发布类型", options: [option("sale", "出售"), option("free", "免费送"), option("wanted", "求购")] },
     { key: "condition", label: "新旧程度", options: [option("brand_new", "全新"), option("like_new", "几乎全新"), option("good", "良好"), option("used", "有使用痕迹"), option("fair", "可用")] },
@@ -3815,20 +4108,9 @@ function filterOptions(type: KXListingType): Array<{ key: string; label: string;
   ];
 }
 
-function matchesListingFilters(item: KXCityListing, filters: Record<string, string>) {
-  return filterOptions(item.type).every((group) => {
-    const expected = filters[group.key];
-    if (!expected) return true;
-    if (expected === "active") return true;
-    const raw = cleanListingText(item.attributes?.[group.key]).toLowerCase();
-    const actual = attributeText(item, group.key).toLowerCase();
-    const normalizedExpected = expected.toLowerCase();
-    if (expected === "true") return ["可", "true", "1", "是", "有", "yes"].includes(actual) || ["true", "1", "yes", "是", "可", "有"].includes(raw);
-    if (expected === "not_required") return raw === "not_required" || actual.includes("不限");
-    if (expected === "none") return raw === "none" || actual === "无";
-    return raw.includes(normalizedExpected) || actual.includes(normalizedExpected) || actual.includes((group.options.find((itemOption) => itemOption.value === expected)?.label || "").toLowerCase());
-  });
-}
+/// 这些 filter key 走专用查询参数（城市范围 / 价格区间），其余 key 直接
+/// 转成 attr_<key> 交给服务端过滤。
+const FILTER_NON_ATTR_KEYS = new Set(["scope_area", "scope_city", "min_price", "max_price"]);
 
 function normalizeListingType(value?: string | null): KXListingType {
   const normalized = cleanListingText(value).toLowerCase().replace(/[\s-]+/g, "_");

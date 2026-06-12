@@ -653,6 +653,7 @@ LISTING_VERIFICATION_TYPES: set[str] = {
 }
 LISTING_TYPES_DEFAULT_REVIEW: set[str] = {"rental", "job", "hiring", "local_service"}
 LISTING_TYPES_REQUIRING_MEMBERSHIP: set[str] = {"rental", "job", "hiring", "local_service", "discount"}
+BUSINESS_CONSOLE_LISTING_TYPES: tuple[str, ...] = ("local_service", "discount", "event", "hiring")
 LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT = max(0, int(_env("LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT", "3") or 3))
 LISTING_MEMBERSHIP_QUOTA_GROUPS: dict[str, set[str]] = {
     "rental": {"rental"},
@@ -675,7 +676,9 @@ HIGH_INTENT_POST_TYPES: set[str] = {
 LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
     "secondhand": {
         "condition", "delivery_method", "pickup_available", "shipping_available",
-        "brand", "model", "trade_method", "listing_mode",
+        "brand", "model", "trade_method", "listing_mode", "original_price",
+        "price_negotiable", "purchase_time", "accessories", "defect_note",
+        "available_time", "pickup_note",
     },
     "rental": {
         "rent", "deposit", "key_money", "management_fee", "layout", "area_sqm",
@@ -688,23 +691,26 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         "japanese_level", "visa_support", "working_hours", "company_name",
         "foreigner_friendly", "transportation_fee", "no_experience_ok",
         "student_ok", "night_shift", "weekend", "weekend_available", "job_requirements",
+        "remote_ok", "benefits", "holidays", "trial_period",
     },
     "hiring": {
         "salary_min", "salary_max", "salary_type", "employment_type",
         "japanese_level", "visa_support", "working_hours", "company_name",
         "foreigner_friendly", "transportation_fee", "no_experience_ok",
         "student_ok", "night_shift", "weekend", "weekend_available", "job_requirements",
+        "remote_ok", "benefits", "holidays", "trial_period",
     },
     "local_service": {
         "service_area", "service_type", "price_unit", "business_name",
         "certified_provider", "availability", "not_included", "service_process",
         "user_prepare", "cancellation_rule", "no_result_guarantee", "related_guides",
         "booking_required", "rating_note", "license_note",
-        # Dianping-style on-site info
+        # Local-service on-site info
         "open_hours", "price_range", "reservation_required", "store_phone",
-        # Ctrip/Agoda-style stays
+        # Lodging inventory and stay details
         "room_type", "max_guests", "check_in_time", "check_out_time",
-        "breakfast_included", "near_station",
+        "breakfast_included", "near_station", "amenities", "minimum_stay",
+        "instant_confirmation", "inventory_note",
         # attractions / day tours / transfers
         "ticket_type", "duration", "meeting_point", "included_items",
         "languages", "pickup_service",
@@ -8845,7 +8851,7 @@ def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None)
     return payload
 
 
-# ── listing reviews (Dianping/Meituan-style star ratings on services) ──────
+# ── listing reviews (local-service star ratings) ───────────────────────────
 # One review per user per listing, upsert-able. Aggregates are denormalized
 # onto city_listings (rating_avg / rating_count) so list pages never join.
 LISTING_REVIEW_STATUSES: set[str] = {"published", "hidden", "deleted"}
@@ -14739,6 +14745,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_business_profile(conn)
         if path in {"/api/business/profile", "/api/business/application", "/api/me/business"} and method in {"POST", "PATCH"}:
             return self.api_upsert_business_application(conn)
+        if path.startswith("/api/business/documents/") and method == "DELETE":
+            return self.api_delete_business_document(conn, unquote(path[len("/api/business/documents/"):]))
         if path in {"/api/business/dashboard", "/api/me/business/dashboard"} and method == "GET":
             return self.api_business_dashboard(conn)
         if path in {"/api/my/business/reviews", "/api/me/business/reviews", "/api/business/reviews"} and method == "GET":
@@ -14799,6 +14807,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_listing_favorite(conn, listing_id, False)
             if rest == "report" and method == "POST":
                 return self.api_listing_report(conn, listing_id)
+            if rest == "similar" and method == "GET":
+                return self.api_listing_similar(conn, listing_id, query)
             if rest in {"inquiry", "contact", "apply", "application", "book-viewing", "viewing", "book-service", "booking"} and method == "POST":
                 return self.api_listing_inquiry(conn, listing_id)
             if rest == "reviews" and method == "GET":
@@ -17785,6 +17795,72 @@ class Handler(BaseHTTPRequestHandler):
             clauses.append("(title LIKE ? OR description LIKE ? OR location_text LIKE ? OR category LIKE ?)")
             params.extend([like, like, like, like])
 
+        # 属性级筛选（attr_<key>=v1,v2）：枚举/布尔属性存在 listing_attributes,
+        # 必须在服务端过滤,客户端只过滤已加载页会在翻页时漏结果。
+        # 同一 key 多值为 OR,不同 key 之间为 AND。
+        allowed_attr_keys = LISTING_ATTRIBUTE_KEYS.get(listing_type, set())
+        truthy_texts = ("true", "1", "yes", "on")
+        for raw_key, raw_value in query.items():
+            if not raw_key.startswith("attr_"):
+                continue
+            # 数值下限筛选（attr_gte_max_guests=4 → 可住人数 ≥ 4）。
+            if raw_key.startswith("attr_gte_"):
+                attr_key = raw_key[len("attr_gte_"):].strip()
+                if attr_key not in allowed_attr_keys:
+                    continue
+                try:
+                    threshold = float(str(raw_value).strip())
+                except (TypeError, ValueError):
+                    continue
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM listing_attributes la WHERE la.listing_id = city_listings.id"
+                    " AND la.key = ? AND CAST(la.value AS REAL) >= ?)"
+                )
+                params.extend([attr_key, threshold])
+                continue
+            attr_key = raw_key[len("attr_"):].strip()
+            if attr_key not in allowed_attr_keys:
+                continue
+            values = [v.strip() for v in re.split(r"[,，]+", str(raw_value or "")) if v.strip()][:8]
+            if not values:
+                continue
+            expanded: list[str] = []
+            for value in values:
+                if value.lower() in truthy_texts:
+                    expanded.extend(truthy_texts)
+                else:
+                    expanded.append(value)
+            normalized_values = {value.lower() for value in values}
+            if attr_key == "delivery_method":
+                if "pickup" in normalized_values or "shipping" in normalized_values:
+                    expanded.append("pickup_or_shipping")
+                expanded = list(dict.fromkeys(expanded))
+            truthy_requested = bool(normalized_values.intersection(truthy_texts))
+            if attr_key in {"pickup_available", "shipping_available"} and truthy_requested:
+                delivery_values = ("pickup", "pickup_or_shipping") if attr_key == "pickup_available" else ("shipping", "pickup_or_shipping")
+                clauses.append(
+                    "EXISTS (SELECT 1 FROM listing_attributes la WHERE la.listing_id = city_listings.id"
+                    " AND ((la.key = ? AND la.value IN (%s)) OR (la.key = ? AND la.value IN (?, ?))))"
+                    % ",".join("?" * len(expanded))
+                )
+                params.extend([attr_key, *expanded, "delivery_method", *delivery_values])
+                continue
+            clauses.append(
+                "EXISTS (SELECT 1 FROM listing_attributes la WHERE la.listing_id = city_listings.id AND la.key = ? AND la.value IN (%s))"
+                % ",".join("?" * len(expanded))
+            )
+            params.extend([attr_key, *expanded])
+
+        # 指定卖家的公开发布（详情页「TA 的其他发布」），owner=me 私有视图优先。
+        seller_id = (query.get("seller_id") or query.get("seller") or "").strip()
+        if seller_id and not include_private:
+            clauses.append("seller_user_id = ?")
+            params.append(seller_id)
+        exclude_id = (query.get("exclude") or "").strip()
+        if exclude_id:
+            clauses.append("id != ?")
+            params.append(exclude_id)
+
         min_price = query.get("min_price")
         max_price = query.get("max_price")
         if min_price:
@@ -17822,6 +17898,9 @@ class Handler(BaseHTTPRequestHandler):
             order = "price DESC, updated_at DESC"
         elif sort in {"popular", "favorite", "favorites"}:
             order = "(favorite_count + inquiry_count + promotion_weight) DESC, updated_at DESC"
+        elif sort in {"rating", "top_rated"}:
+            # 有评分的排前面（按分数、再按评价数），无评分的按时间垫底。
+            order = "CASE WHEN rating_count > 0 THEN 0 ELSE 1 END ASC, rating_avg DESC, rating_count DESC, updated_at DESC"
         else:
             order = "is_promoted DESC, promotion_weight DESC, updated_at DESC, id DESC"
 
@@ -17892,6 +17971,47 @@ class Handler(BaseHTTPRequestHandler):
         safety_tips = listing_safety_tips(item.get("type", ""))
         viewer_payload = {"id": viewer_id} if viewer_id else None
         self.send_json({"ok": True, "listing": listings[0], "viewer": viewer_payload, "safety_tips": safety_tips, "data": {"listing": listings[0], "viewer": viewer_payload, "safety_tips": safety_tips}})
+
+    def api_listing_similar(self, conn: sqlite3.Connection, listing_id: str, query: dict[str, str]) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        limit = max(1, min(int(query.get("limit") or 8), 16))
+        base = dict(row)
+        picked: list[dict[str, Any]] = []
+        seen_ids = {listing_id}
+        public_marks = ",".join("?" * len(PUBLIC_LISTING_STATUSES))
+
+        # 同类目同城 → 同类目同国 → 同类型同城,逐层补足。相似栏不重复
+        # 当前卖家（详情页另有「TA 的其他发布」栏位）。
+        def pull(clause: str, clause_params: list[Any]) -> None:
+            if len(picked) >= limit:
+                return
+            rows = conn.execute(
+                f"""
+                SELECT * FROM city_listings
+                 WHERE deleted_at IS NULL AND type = ? AND id != ? AND seller_user_id != ?
+                   AND status IN ({public_marks}) AND {clause}
+                 ORDER BY is_promoted DESC, (favorite_count + inquiry_count) DESC, updated_at DESC
+                 LIMIT ?
+                """,
+                [base["type"], listing_id, base["seller_user_id"], *PUBLIC_LISTING_STATUSES, *clause_params, limit],
+            )
+            for candidate in rows:
+                if candidate["id"] in seen_ids or len(picked) >= limit:
+                    continue
+                seen_ids.add(candidate["id"])
+                picked.append(dict(candidate))
+
+        category = (base.get("category") or "").strip()
+        if category:
+            pull("category = ? AND city_slug = ?", [category, base["city_slug"]])
+            pull("category = ? AND country_code = ?", [category, base["country_code"]])
+        pull("city_slug = ?", [base["city_slug"]])
+        items = fetch_listings_with_extras(conn, picked, viewer_id)
+        self.send_json({"ok": True, "items": items, "data": {"items": items}})
 
     def api_create_listing(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -18073,7 +18193,8 @@ class Handler(BaseHTTPRequestHandler):
             )
             raise APIError(forbidden, 400, "prohibited_listing")
 
-        content_changed = any(key in data for key in ("title", "description", "category", "attributes"))
+        media_changed = "media_ids" in data or "mediaIds" in data
+        content_changed = any(key in data for key in ("title", "description", "category", "attributes")) or media_changed
         requested_status: str | None = None
         if "status" in data:
             requested_status = normalize_listing_status(data.get("status"), "")
@@ -18115,14 +18236,66 @@ class Handler(BaseHTTPRequestHandler):
         if "attributes" in data:
             listing_type = row["type"]
             attrs = normalize_listing_attributes(listing_type, data.get("attributes"))
+            conn.execute("DELETE FROM listing_attributes WHERE listing_id = ?", (listing_id,))
             for key, (value, value_type) in attrs.items():
                 conn.execute(
                     """
                     INSERT INTO listing_attributes (id, listing_id, key, value, value_type, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(listing_id, key) DO UPDATE SET value = excluded.value, value_type = excluded.value_type, updated_at = excluded.updated_at
                     """,
                     (str(uuid.uuid4()), listing_id, key, value, value_type, now_iso(), now_iso()),
+                )
+        if media_changed:
+            valid_media = validate_listing_media_for_create(conn, user["id"], row["type"], data)
+            previous_media_ids = {
+                str(media_row["uploaded_file_id"])
+                for media_row in conn.execute(
+                    "SELECT uploaded_file_id FROM listing_media WHERE listing_id = ? AND uploaded_file_id IS NOT NULL",
+                    (listing_id,),
+                )
+                if media_row["uploaded_file_id"]
+            }
+            submitted_media_ids = {str(media_row["id"]) for media_row in valid_media}
+            conn.execute("DELETE FROM listing_media WHERE listing_id = ?", (listing_id,))
+            created = now_iso()
+            for idx, media_row in enumerate(valid_media):
+                media_id = media_row["id"]
+                media = serialize_media(media_row)
+                conn.execute(
+                    """
+                    INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at, uploaded_file_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()), listing_id, media.get("type") or "image",
+                        media.get("url") or media.get("cdnUrl") or "",
+                        listing_media_thumbnail_url(media),
+                        idx, 1 if idx == 0 else 0, created, media_id,
+                    ),
+                )
+                conn.execute(
+                    "UPDATE uploaded_files SET entity_type = 'listing', entity_id = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+                    (listing_id, created, media_id, user["id"]),
+                )
+            removed_media_ids = previous_media_ids - submitted_media_ids
+            if removed_media_ids:
+                placeholders = ", ".join("?" for _ in removed_media_ids)
+                conn.execute(
+                    f"""
+                    UPDATE uploaded_files
+                       SET entity_type = '', entity_id = '', updated_at = ?
+                     WHERE id IN ({placeholders}) AND user_id = ? AND entity_type = 'listing' AND entity_id = ?
+                    """,
+                    [created, *removed_media_ids, user["id"], listing_id],
+                )
+            if not valid_media:
+                fallback = listing_image_fallback(row["type"], base_url=self._request_base_url())
+                conn.execute(
+                    """
+                    INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
+                    VALUES (?, ?, 'image', ?, ?, 0, 1, ?)
+                    """,
+                    (str(uuid.uuid4()), listing_id, fallback, fallback, created),
                 )
         if publication.get("requires_review"):
             reputation_open_trust_review(
@@ -19001,6 +19174,7 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError, json.JSONDecodeError):
             opening_hours = {}
         item["opening_hours"] = opening_hours if isinstance(opening_hours, dict) else {}
+        business_type_marks = ",".join("?" * len(BUSINESS_CONSOLE_LISTING_TYPES))
 
         owner = conn.execute(
             "SELECT * FROM users WHERE id = ? AND deleted_at IS NULL",
@@ -19008,32 +19182,35 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchone()
         item["owner"] = serialize_user_with_counts(conn, dict(owner)) if owner else None
         item["listing_count"] = int(conn.execute(
-            """
+            f"""
             SELECT COUNT(*) AS c
               FROM city_listings
              WHERE deleted_at IS NULL
+               AND type IN ({business_type_marks})
                AND (business_id = ? OR (business_id IS NULL AND seller_user_id = ?))
             """,
-            (item["id"], item.get("owner_user_id") or ""),
+            (*BUSINESS_CONSOLE_LISTING_TYPES, item["id"], item.get("owner_user_id") or ""),
         ).fetchone()["c"] or 0)
         item["published_listing_count"] = int(conn.execute(
-            """
+            f"""
             SELECT COUNT(*) AS c
               FROM city_listings
              WHERE deleted_at IS NULL AND status = 'published'
+               AND type IN ({business_type_marks})
                AND (business_id = ? OR (business_id IS NULL AND seller_user_id = ?))
             """,
-            (item["id"], item.get("owner_user_id") or ""),
+            (*BUSINESS_CONSOLE_LISTING_TYPES, item["id"], item.get("owner_user_id") or ""),
         ).fetchone()["c"] or 0)
         item["inquiry_count"] = int(conn.execute(
-            """
+            f"""
             SELECT COUNT(*) AS c
               FROM listing_inquiries i
               JOIN city_listings l ON l.id = i.listing_id
              WHERE l.deleted_at IS NULL
+               AND l.type IN ({business_type_marks})
                AND (l.business_id = ? OR (l.business_id IS NULL AND l.seller_user_id = ?))
             """,
-            (item["id"], item.get("owner_user_id") or ""),
+            (*BUSINESS_CONSOLE_LISTING_TYPES, item["id"], item.get("owner_user_id") or ""),
         ).fetchone()["c"] or 0)
 
         documents: list[dict[str, Any]] = []
@@ -19126,6 +19303,13 @@ class Handler(BaseHTTPRequestHandler):
                 opening_hours = json.loads((existing or {}).get("opening_hours") or "{}")
             except (TypeError, ValueError, json.JSONDecodeError):
                 opening_hours = {}
+        uploaded_file_ids = data.get("uploaded_file_ids") or data.get("uploadedFileIds") or []
+        if isinstance(uploaded_file_ids, str):
+            uploaded_file_ids = [uploaded_file_ids]
+        uploaded_file_ids = list(dict.fromkeys(str(value).strip() for value in uploaded_file_ids if str(value).strip()))[:10]
+        document_types = data.get("document_types") or data.get("documentTypes") or {}
+        if not isinstance(document_types, dict):
+            document_types = {}
 
         if not fields["business_name"]:
             raise APIError("请填写商家名称", 400, "business_name_required")
@@ -19135,6 +19319,20 @@ class Handler(BaseHTTPRequestHandler):
         now = now_iso()
         old_status = (existing or {}).get("verification_status") or "not_started"
         next_status = old_status if existing else "draft"
+        validated_documents: list[tuple[str, str]] = []
+        for file_id in uploaded_file_ids:
+            upload = conn.execute(
+                """
+                SELECT * FROM uploaded_files
+                 WHERE id = ? AND user_id = ? AND purpose = 'business_verification_file'
+                   AND entity_type = 'business' AND entity_id = ?
+                   AND status IN ('uploaded','processing','ready') AND deleted_at IS NULL
+                """,
+                (file_id, user["id"], business_id),
+            ).fetchone()
+            if not upload:
+                raise APIError("认证材料不存在或尚未上传完成", 400, "invalid_business_document")
+            validated_documents.append((file_id, _clean_text(document_types.get(file_id) or "registration", 60)))
         if submit:
             required = {
                 "business_type": "商家类型",
@@ -19154,6 +19352,12 @@ class Handler(BaseHTTPRequestHandler):
                 missing.append("服务城市范围")
             if missing:
                 raise APIError("请完善：" + "、".join(missing), 400, "business_application_incomplete")
+            document_count = int(conn.execute(
+                "SELECT COUNT(*) AS c FROM business_verification_documents WHERE business_id = ? AND status != 'deleted'",
+                (business_id,),
+            ).fetchone()["c"] or 0)
+            if document_count + len(validated_documents) <= 0:
+                raise APIError("请至少上传一份营业执照、登记证明或负责人身份证明", 400, "business_document_required")
             next_status = "needs_review" if old_status == "verified" else "pending"
         elif old_status in {"not_started", "draft"}:
             next_status = "draft"
@@ -19195,26 +19399,7 @@ class Handler(BaseHTTPRequestHandler):
                 ),
             )
 
-        uploaded_file_ids = data.get("uploaded_file_ids") or data.get("uploadedFileIds") or []
-        if isinstance(uploaded_file_ids, str):
-            uploaded_file_ids = [uploaded_file_ids]
-        uploaded_file_ids = [str(value).strip() for value in uploaded_file_ids if str(value).strip()][:10]
-        document_types = data.get("document_types") or data.get("documentTypes") or {}
-        if not isinstance(document_types, dict):
-            document_types = {}
-        for file_id in uploaded_file_ids:
-            upload = conn.execute(
-                """
-                SELECT * FROM uploaded_files
-                 WHERE id = ? AND user_id = ? AND purpose = 'business_verification_file'
-                   AND entity_type = 'business' AND entity_id = ?
-                   AND status IN ('uploaded','processing','ready') AND deleted_at IS NULL
-                """,
-                (file_id, user["id"], business_id),
-            ).fetchone()
-            if not upload:
-                raise APIError("认证材料不存在或尚未上传完成", 400, "invalid_business_document")
-            document_type = _clean_text(document_types.get(file_id) or "registration", 60)
+        for file_id, document_type in validated_documents:
             conn.execute(
                 """
                 INSERT INTO business_verification_documents (
@@ -19228,13 +19413,6 @@ class Handler(BaseHTTPRequestHandler):
                 """,
                 (str(uuid.uuid4()), business_id, file_id, document_type, "", now, now),
             )
-
-        document_count = int(conn.execute(
-            "SELECT COUNT(*) AS c FROM business_verification_documents WHERE business_id = ? AND status != 'deleted'",
-            (business_id,),
-        ).fetchone()["c"] or 0)
-        if submit and document_count <= 0:
-            raise APIError("请至少上传一份营业执照、登记证明或负责人身份证明", 400, "business_document_required")
 
         if old_status != next_status:
             conn.execute(
@@ -19262,6 +19440,85 @@ class Handler(BaseHTTPRequestHandler):
             "user": serialize_user_with_counts(conn, fresh_user),
         }, 201 if not existing else 200)
 
+    def api_delete_business_document(self, conn: sqlite3.Connection, document_id: str) -> None:
+        user = self.require_user(conn)
+        document_id = _clean_text(document_id, 80)
+        if not document_id:
+            raise APIError("认证材料不存在", 404, "business_document_not_found")
+        business = self._business_row_for_user(conn, user["id"])
+        if not business:
+            raise APIError("请先保存商家申请", 404, "business_not_found")
+        row = conn.execute(
+            """
+            SELECT d.*, f.user_id AS file_user_id
+              FROM business_verification_documents d
+              JOIN uploaded_files f ON f.id = d.uploaded_file_id
+             WHERE d.id = ? AND d.business_id = ? AND d.status != 'deleted'
+               AND f.deleted_at IS NULL
+            """,
+            (document_id, business["id"]),
+        ).fetchone()
+        if not row:
+            raise APIError("认证材料不存在", 404, "business_document_not_found")
+        now = now_iso()
+        conn.execute(
+            "UPDATE business_verification_documents SET status = 'deleted', updated_at = ? WHERE id = ?",
+            (now, document_id),
+        )
+        conn.execute(
+            "UPDATE uploaded_files SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+            (now, now, row["uploaded_file_id"], user["id"]),
+        )
+        remaining = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM business_verification_documents WHERE business_id = ? AND status != 'deleted'",
+            (business["id"],),
+        ).fetchone()["c"] or 0)
+        old_status = business.get("verification_status") or "draft"
+        next_status = old_status
+        if remaining <= 0 and old_status in {"pending", "needs_review"}:
+            next_status = "draft"
+        elif remaining <= 0 and old_status == "verified":
+            next_status = "needs_review"
+        if next_status != old_status:
+            conn.execute(
+                """
+                UPDATE business_profiles
+                   SET verification_status = ?, review_note = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    next_status,
+                    "认证材料已被用户撤回，请补充后重新提交审核。" if next_status == "needs_review" else business.get("review_note", ""),
+                    now,
+                    business["id"],
+                ),
+            )
+            conn.execute(
+                "UPDATE users SET is_merchant = ?, merchant_verified = 0, updated_at = ? WHERE id = ?",
+                (0 if next_status == "draft" else 1, now, user["id"]),
+            )
+        conn.execute(
+            """
+            INSERT INTO business_review_logs (
+                id, business_id, actor_user_id, action, from_status, to_status, note, metadata, created_at
+            )
+            VALUES (?, ?, ?, 'delete_document', ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()), business["id"], user["id"], old_status, next_status,
+                "用户撤回认证材料",
+                json.dumps({"documentId": document_id, "uploadedFileId": row["uploaded_file_id"]}, ensure_ascii=False),
+                now,
+            ),
+        )
+        fresh = dict(conn.execute("SELECT * FROM business_profiles WHERE id = ?", (business["id"],)).fetchone())
+        fresh_user = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
+        self.send_json({
+            "ok": True,
+            "business": self._serialize_business_profile(conn, fresh, include_private=True),
+            "user": serialize_user_with_counts(conn, fresh_user),
+        })
+
     def api_business_dashboard(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         row = self._business_row_for_user(conn, user["id"])
@@ -19273,14 +19530,16 @@ class Handler(BaseHTTPRequestHandler):
                 "recent_inquiries": [],
             })
         business = self._serialize_business_profile(conn, row, include_private=True)
+        business_type_marks = ",".join("?" * len(BUSINESS_CONSOLE_LISTING_TYPES))
         listing_rows = list(conn.execute(
-            """
+            f"""
             SELECT * FROM city_listings
              WHERE deleted_at IS NULL
+               AND type IN ({business_type_marks})
                AND (business_id = ? OR (business_id IS NULL AND seller_user_id = ?))
              ORDER BY updated_at DESC LIMIT 8
             """,
-            (row["id"], user["id"]),
+            (*BUSINESS_CONSOLE_LISTING_TYPES, row["id"], user["id"]),
         ))
         listing_dicts = [dict(item) for item in listing_rows]
         listing_ids = [item["id"] for item in listing_dicts]
@@ -19308,7 +19567,7 @@ class Handler(BaseHTTPRequestHandler):
             "recent_inquiries": recent_inquiries,
         })
 
-    # ── listing reviews: Dianping-style ratings on services/deals ──────────
+    # ── listing reviews: local-service ratings on services/deals ───────────
 
     def api_listing_reviews(self, conn: sqlite3.Connection, listing_id: str, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)

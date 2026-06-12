@@ -18,6 +18,7 @@ import {
   Sparkles,
   Store,
   TicketPercent,
+  Trash2,
   type LucideIcon,
 } from "lucide-react";
 import { api, APIError, isAuthRequiredError, type UploadedFile } from "@/lib/api";
@@ -163,6 +164,20 @@ export default function MyBusinessPage() {
     onError: (e) => {
       if (isAuthRequiredError(e)) openAuthPrompt("generic");
       else pushToast({ kind: "error", message: (e as APIError).message });
+    },
+  });
+
+  const deleteDocument = useMutation({
+    mutationFn: (documentId: string) => api.deleteBusinessDocument(documentId),
+    onSuccess: (res) => {
+      if (res.user) setUser(res.user);
+      queryClient.invalidateQueries({ queryKey: ["business-profile"] });
+      queryClient.invalidateQueries({ queryKey: ["business-dashboard"] });
+      pushToast({ kind: "success", message: "认证材料已撤回。" });
+    },
+    onError: (e) => {
+      if (isAuthRequiredError(e)) openAuthPrompt("generic");
+      else pushToast({ kind: "error", message: (e as APIError).message || "撤回认证材料失败" });
     },
   });
 
@@ -351,6 +366,20 @@ export default function MyBusinessPage() {
                       <p className="text-xs font-semibold text-slate-500">{formatBytes(doc.fileSize || 0)} · {doc.status || doc.documentStatus || "ready"}</p>
                     </div>
                     <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-black text-emerald-700">已加密</span>
+                    <button
+                      type="button"
+                      disabled={!doc.documentId || deleteDocument.isPending}
+                      onClick={() => {
+                        if (!doc.documentId) return;
+                        if (window.confirm("确认撤回这份认证材料？撤回后如材料不足，申请会回到草稿或复核状态。")) {
+                          deleteDocument.mutate(doc.documentId);
+                        }
+                      }}
+                      className="grid h-8 w-8 place-items-center rounded-full text-slate-400 transition hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label="撤回认证材料"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
                   </div>
                 ))}
                 {!business?.documents?.length ? <p className="text-xs font-semibold text-slate-500">保存资料后即可上传材料；正式提交审核时至少需要 1 份材料。</p> : null}

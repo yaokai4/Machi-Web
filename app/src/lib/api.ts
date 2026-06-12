@@ -988,17 +988,33 @@ export const api = {
     status?: string;
     owner?: "me";
     limit?: number;
+    /** keyset 游标（latest 排序下服务端返回 next_cursor）。 */
+    cursor?: string;
+    /** 详情页「TA 的其他发布」：按卖家过滤公开发布。 */
+    seller_id?: string;
+    /** 排除某条 id（如当前详情页自身）。 */
+    exclude?: string;
+    /** 属性级服务端筛选，键为属性名（如 condition），值支持逗号多选。 */
+    attrs?: Record<string, string>;
   }): Promise<{ items: KXCityListing[]; next_cursor: string | null; type: KXListingType }> {
     const params = new URLSearchParams({ type: opts.type });
     for (const [key, value] of Object.entries(opts)) {
-      if (key === "type" || value == null || value === "") continue;
+      if (key === "type" || key === "attrs" || value == null || value === "") continue;
       params.set(key, String(value));
+    }
+    for (const [key, value] of Object.entries(opts.attrs || {})) {
+      if (!key || !value) continue;
+      params.set(`attr_${key}`, value);
     }
     return request("GET", `/api/listings?${params.toString()}`);
   },
   async listing(id: string): Promise<KXCityListing> {
     const { listing } = await request<{ listing: KXCityListing }>("GET", `/api/listings/${encodeURIComponent(id)}`);
     return listing;
+  },
+  async similarListings(id: string, limit = 8): Promise<KXCityListing[]> {
+    const { items } = await request<{ items: KXCityListing[] }>("GET", `/api/listings/${encodeURIComponent(id)}/similar?limit=${limit}`);
+    return items;
   },
   async createListing(payload: KXCreateListingPayload): Promise<KXCityListing> {
     const { listing } = await request<{ listing: KXCityListing }>(
@@ -1064,7 +1080,7 @@ export const api = {
     return request("GET", `/api/my/orders`);
   },
 
-  // ---- listing reviews (Dianping-style ratings on services/deals) ----
+  // ---- listing reviews (local-service ratings on services/deals) ----
   async listingReviews(listingId: string, opts: { limit?: number; offset?: number } = {}): Promise<{
     items: KXListingReview[];
     summary: KXListingReviewSummary;
@@ -1354,6 +1370,9 @@ export const api = {
     submit?: boolean;
   }): Promise<{ business: KXBusinessProfile; user?: KXUser }> {
     return request("POST", `/api/business/application`, payload, { headers: { "Idempotency-Key": idempotencyKey("business-application") } });
+  },
+  async deleteBusinessDocument(documentId: string): Promise<{ business: KXBusinessProfile; user?: KXUser }> {
+    return request("DELETE", `/api/business/documents/${encodeURIComponent(documentId)}`);
   },
   async businessDashboard(): Promise<KXBusinessDashboard> {
     return request("GET", `/api/business/dashboard`);
