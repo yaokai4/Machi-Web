@@ -32,6 +32,7 @@ import {
   ClipboardList,
   CalendarClock,
   ChevronRight,
+  Star,
   Store,
 } from "lucide-react";
 import { api, APIError, type MarketingCopyBlock } from "@/lib/api";
@@ -148,6 +149,7 @@ const ADMIN_MODULES: {
   { href: "/admin/listings/reports", label: "Listing 举报", desc: "举报处理、下架与复核", icon: Flag },
   { href: "/admin/listings/promotions", label: "Listing 推广", desc: "置顶、精选、城市首页推荐", icon: Sparkles },
   { href: "/admin/businesses", label: "商家资料", desc: "商家认证和服务商资料", icon: Store },
+  { href: "/admin/reviews", label: "点评审核", desc: "服务点评的隐藏、恢复与删除", icon: Star },
   { href: "/admin/seller-verifications", label: "认证审核", desc: "卖家、房源方、招聘方和服务商", icon: BadgeCheck },
   { href: "/admin/uploads", label: "文件管理", desc: "S3 / CloudFront 文件、状态和清理", icon: HardDrive },
   { href: "/admin/email", label: "邮件系统", desc: "编辑草稿、群发邮件和广告通知", icon: Send },

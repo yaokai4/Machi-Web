@@ -23,10 +23,20 @@ import {
 import { api, APIError, isAuthRequiredError, type UploadedFile } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading, SectionLoading } from "@/components/design/States";
+import { MerchantLeadsPanel, MerchantListingsPanel, MerchantReviewsPanel } from "@/components/listings/MerchantConsole";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { countryDisplayName, REGION_COUNTRIES } from "@/lib/regions";
 import { useI18n } from "@/lib/i18n";
 import type { KXBusinessDashboard, KXBusinessProfile } from "@/lib/types";
+
+const CONSOLE_TABS = [
+  { key: "application", label: "认证资料" },
+  { key: "listings", label: "服务管理" },
+  { key: "leads", label: "线索与预订" },
+  { key: "reviews", label: "点评管理" },
+] as const;
+
+type ConsoleTab = (typeof CONSOLE_TABS)[number]["key"];
 
 const BUSINESS_TYPES = [
   "餐饮 / 咖啡",
@@ -91,6 +101,7 @@ export default function MyBusinessPage() {
   const [form, setForm] = useState<BusinessFormState>(blankForm);
   const [draftFileIds, setDraftFileIds] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [tab, setTab] = useState<ConsoleTab>("application");
 
   const profile = useQuery({
     queryKey: ["business-profile"],
@@ -207,10 +218,28 @@ export default function MyBusinessPage() {
         <section className="space-y-4">
           <BusinessHero business={business} status={status} />
 
-          {profile.isLoading ? <SectionLoading title="正在加载商家资料" rows={3} /> : null}
-          {profile.isError ? <ErrorState title="商家资料暂时无法加载" onRetry={() => profile.refetch()} /> : null}
+          <nav className="flex gap-1.5 overflow-x-auto rounded-full border border-slate-200/70 bg-white p-1.5 shadow-sm">
+            {CONSOLE_TABS.map((item) => (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setTab(item.key)}
+                data-active={tab === item.key}
+                className="h-10 shrink-0 flex-1 whitespace-nowrap rounded-full px-4 text-sm font-black text-slate-500 transition data-[active=true]:bg-slate-950 data-[active=true]:text-white hover:text-slate-900 data-[active=true]:hover:text-white"
+              >
+                {item.label}
+              </button>
+            ))}
+          </nav>
 
-          <section className="rounded-[28px] border border-slate-200/70 bg-white/95 p-5 shadow-[0_18px_58px_-42px_rgba(15,23,42,0.5)]">
+          {tab === "listings" ? <MerchantListingsPanel /> : null}
+          {tab === "leads" ? <MerchantLeadsPanel /> : null}
+          {tab === "reviews" ? <MerchantReviewsPanel /> : null}
+
+          {tab === "application" && profile.isLoading ? <SectionLoading title="正在加载商家资料" rows={3} /> : null}
+          {tab === "application" && profile.isError ? <ErrorState title="商家资料暂时无法加载" onRetry={() => profile.refetch()} /> : null}
+
+          <section className={tab === "application" ? "rounded-[28px] border border-slate-200/70 bg-white/95 p-5 shadow-[0_18px_58px_-42px_rgba(15,23,42,0.5)]" : "hidden"}>
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <h2 className="text-xl font-black text-slate-950">认证资料</h2>

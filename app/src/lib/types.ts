@@ -656,6 +656,89 @@ export interface KXCityListing {
   can_manage?: boolean;
   canManage?: boolean;
   report_count_open?: number;
+  rating_avg?: number;
+  ratingAvg?: number;
+  rating_count?: number;
+  ratingCount?: number;
+}
+
+export interface KXListingReview {
+  id: string;
+  listing_id: string;
+  listingId?: string;
+  business_id?: string;
+  businessId?: string;
+  user_id: string;
+  userId?: string;
+  rating: number;
+  content: string;
+  visit_date?: string;
+  visitDate?: string;
+  status: "published" | "hidden" | "deleted" | string;
+  owner_reply?: string;
+  ownerReply?: string;
+  owner_reply_at?: string | null;
+  ownerReplyAt?: string | null;
+  helpful_count?: number;
+  helpfulCount?: number;
+  created_at?: string;
+  createdAt?: string;
+  updated_at?: string;
+  updatedAt?: string;
+  author?: KXUser | null;
+  listing_title?: string;
+  listingTitle?: string;
+  listing_type?: string;
+  listingType?: string;
+}
+
+export interface KXListingReviewSummary {
+  rating_avg: number;
+  ratingAvg?: number;
+  rating_count: number;
+  ratingCount?: number;
+  histogram: Record<string, number>;
+  reviewable?: boolean;
+}
+
+export interface KXBusinessPublic {
+  id: string;
+  business_name: string;
+  businessName?: string;
+  business_type?: string;
+  businessType?: string;
+  country_code?: string;
+  countryCode?: string;
+  city_slug?: string;
+  citySlug?: string;
+  address?: string;
+  website?: string;
+  contact_method?: string;
+  contactMethod?: string;
+  description?: string;
+  service_categories?: string[];
+  serviceCategories?: string[];
+  service_cities?: string[];
+  serviceCities?: string[];
+  opening_hours?: Record<string, string>;
+  openingHours?: Record<string, string>;
+  logo_url?: string;
+  logoUrl?: string;
+  cover_url?: string;
+  coverUrl?: string;
+  verification_status?: string;
+  verificationStatus?: string;
+  is_verified?: boolean;
+  isVerified?: boolean;
+  owner?: KXUser | null;
+  published_listing_count?: number;
+  publishedListingCount?: number;
+  rating_avg?: number;
+  ratingAvg?: number;
+  rating_count?: number;
+  ratingCount?: number;
+  created_at?: string;
+  createdAt?: string;
 }
 
 export interface KXListingInquiry {

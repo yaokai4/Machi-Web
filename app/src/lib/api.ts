@@ -34,6 +34,9 @@ import type {
   KXCityListing,
   KXBusinessDashboard,
   KXBusinessProfile,
+  KXBusinessPublic,
+  KXListingReview,
+  KXListingReviewSummary,
   KXCreateListingPayload,
   KXListingInquiry,
   KXListingType,
@@ -1057,6 +1060,69 @@ export const api = {
   },
   async myOrders(): Promise<{ items: Array<Record<string, unknown>>; membership_orders: Array<Record<string, unknown>>; guide_orders: Array<Record<string, unknown>> }> {
     return request("GET", `/api/my/orders`);
+  },
+
+  // ---- listing reviews (Dianping-style ratings on services/deals) ----
+  async listingReviews(listingId: string, opts: { limit?: number; offset?: number } = {}): Promise<{
+    items: KXListingReview[];
+    summary: KXListingReviewSummary;
+    my_review?: KXListingReview | null;
+    myReview?: KXListingReview | null;
+  }> {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.offset) params.set("offset", String(opts.offset));
+    const query = params.toString();
+    return request("GET", `/api/listings/${encodeURIComponent(listingId)}/reviews${query ? `?${query}` : ""}`);
+  },
+  async submitListingReview(listingId: string, payload: { rating: number; content?: string; visit_date?: string }): Promise<{
+    review: KXListingReview;
+    rating_avg: number;
+    rating_count: number;
+  }> {
+    return request("POST", `/api/listings/${encodeURIComponent(listingId)}/reviews`, payload, {
+      headers: { "Idempotency-Key": idempotencyKey("listing-review") },
+    });
+  },
+  async deleteListingReview(listingId: string, reviewId: string): Promise<{ rating_avg: number; rating_count: number }> {
+    return request("DELETE", `/api/listings/${encodeURIComponent(listingId)}/reviews/${encodeURIComponent(reviewId)}`);
+  },
+  async replyListingReview(listingId: string, reviewId: string, content: string): Promise<{ review: KXListingReview }> {
+    return request("POST", `/api/listings/${encodeURIComponent(listingId)}/reviews/${encodeURIComponent(reviewId)}/reply`, { content });
+  },
+  async myBusinessReviews(opts: { status?: string; listingId?: string } = {}): Promise<{
+    items: KXListingReview[];
+    summary: { count: number; rating_avg: number; unreplied: number };
+  }> {
+    const params = new URLSearchParams();
+    if (opts.status) params.set("status", opts.status);
+    if (opts.listingId) params.set("listing_id", opts.listingId);
+    const query = params.toString();
+    return request("GET", `/api/my/business/reviews${query ? `?${query}` : ""}`);
+  },
+
+  // ---- public merchant directory ----
+  async businessesDirectory(opts: { city?: string; category?: string; q?: string } = {}): Promise<{ items: KXBusinessPublic[]; total: number }> {
+    const params = new URLSearchParams();
+    if (opts.city) params.set("city", opts.city);
+    if (opts.category) params.set("category", opts.category);
+    if (opts.q) params.set("q", opts.q);
+    const query = params.toString();
+    return request("GET", `/api/businesses/directory${query ? `?${query}` : ""}`);
+  },
+  async businessPublic(businessId: string): Promise<{ business: KXBusinessPublic; listings: KXCityListing[]; reviews: KXListingReview[] }> {
+    return request("GET", `/api/businesses/${encodeURIComponent(businessId)}/public`);
+  },
+  async adminListingReviews(opts: { status?: string; q?: string } = {}): Promise<KXListingReview[]> {
+    const params = new URLSearchParams();
+    if (opts.status) params.set("status", opts.status);
+    if (opts.q) params.set("q", opts.q);
+    const query = params.toString();
+    const { items } = await request<{ items: KXListingReview[] }>("GET", `/api/admin/listing-reviews${query ? `?${query}` : ""}`);
+    return items;
+  },
+  async adminUpdateListingReview(reviewId: string, status: "published" | "hidden" | "deleted"): Promise<{ review: KXListingReview }> {
+    return request("PATCH", `/api/admin/listing-reviews/${encodeURIComponent(reviewId)}`, { status });
   },
 
   // ---- Machi City Reputation ----

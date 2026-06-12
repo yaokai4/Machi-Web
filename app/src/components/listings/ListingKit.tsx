@@ -9,26 +9,40 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
+  BadgeCheck,
+  Bed,
   Bell,
   Briefcase,
+  Bus,
+  CalendarDays,
   CheckCircle2,
+  ChevronRight,
+  Clock,
   FileCheck2,
   Heart,
   Home,
+  Landmark,
+  Languages,
   MapPin,
+  MessageSquare,
   Play,
   Plus,
   Search,
   Send,
   SlidersHorizontal,
   Sparkles,
+  Star,
   Store,
   Tag,
+  Ticket,
+  Train,
+  Utensils,
+  Wrench,
   X,
 } from "lucide-react";
 import { api, APIError, isAuthRequiredError, isUploadImageFile, isUploadVideoFile, type UploadPurpose } from "@/lib/api";
 import { fallbackVideoPoster, isVideoMedia, mediaDurationLabel, mediaPreviewImageUrl, mediaSourceUrl } from "@/lib/media";
-import { listingTypeRequiresMembership, type KXBusinessProfile, type KXCityListing, type KXCreateListingPayload, type KXListingInquiry, type KXListingMedia, type KXListingType, type KXMedia } from "@/lib/types";
+import { listingTypeRequiresMembership, type KXBusinessProfile, type KXBusinessPublic, type KXCityListing, type KXCreateListingPayload, type KXListingInquiry, type KXListingMedia, type KXListingReview, type KXListingType, type KXMedia } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, PremiumEmptyState, SectionLoading, Skeleton } from "@/components/design/States";
@@ -346,6 +360,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const city = getCityBySlug(citySlug) || getDefaultCity();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
+  const [serviceSection, setServiceSection] = useState("all");
   const [sort, setSort] = useState("latest");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -390,7 +405,15 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
     }
     listings.refetch();
   };
-  const visibleItems = (listings.data?.items || []).filter((item) => matchesListingFilters(item, filters));
+  const sectionSpec = SERVICE_SECTIONS.find((section) => section.key === serviceSection);
+  const visibleItems = (listings.data?.items || []).filter((item) => {
+    if (!matchesListingFilters(item, filters)) return false;
+    // services 分区（到店/旅行住宿/景点玩乐/生活服务）在已抓页面上按类目分组过滤
+    if (kind === "services" && category === "全部" && sectionSpec?.categories.length) {
+      return sectionSpec.categories.includes(item.category || "");
+    }
+    return true;
+  });
   const activeFilterCount = Object.values(filters).filter((value) => String(value || "").trim()).length;
 
   return (
@@ -491,21 +514,50 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                   : pickText(locale, "暂无结果", "結果なし", "No results")}
               </p>
               </div>
-              <div className="-mx-1 min-w-0 overflow-x-auto px-1">
-                <div className="flex gap-2 pb-0.5">
-                  {(CATEGORY_CHIPS[spec.type] || ["全部"]).map((chip) => (
-                    <button
-                      key={chip}
-                      type="button"
-                      onClick={() => setCategory(chip)}
-                      data-active={category === chip}
-                      className="h-10 shrink-0 rounded-full border border-slate-200 bg-white px-3.5 text-sm font-black text-slate-600 transition data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white hover:border-blue-300 hover:text-blue-700"
-                    >
-                      {categoryLabel(chip, locale)}
-                    </button>
-                  ))}
+              {kind === "services" ? (
+                <>
+                  <div className="-mx-1 min-w-0 overflow-x-auto px-1">
+                    <div className="flex gap-2 pb-0.5">
+                      {SERVICE_SECTIONS.map((section) => (
+                        <button
+                          key={section.key}
+                          type="button"
+                          onClick={() => {
+                            setServiceSection(section.key);
+                            setCategory("全部");
+                          }}
+                          data-active={serviceSection === section.key && category === "全部"}
+                          className="h-10 shrink-0 rounded-full border border-slate-200 bg-white px-4 text-sm font-black text-slate-600 transition data-[active=true]:border-orange-500 data-[active=true]:bg-orange-500 data-[active=true]:text-white hover:border-orange-300 hover:text-orange-600"
+                        >
+                          {pickText(locale, section.zh, section.ja, section.en)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <ServiceCategoryIconGrid
+                    active={category}
+                    section={serviceSection}
+                    locale={locale}
+                    onSelect={(value) => setCategory((current) => (current === value ? "全部" : value))}
+                  />
+                </>
+              ) : (
+                <div className="-mx-1 min-w-0 overflow-x-auto px-1">
+                  <div className="flex gap-2 pb-0.5">
+                    {(CATEGORY_CHIPS[spec.type] || ["全部"]).map((chip) => (
+                      <button
+                        key={chip}
+                        type="button"
+                        onClick={() => setCategory(chip)}
+                        data-active={category === chip}
+                        className="h-10 shrink-0 rounded-full border border-slate-200 bg-white px-3.5 text-sm font-black text-slate-600 transition data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white hover:border-blue-300 hover:text-blue-700"
+                      >
+                        {categoryLabel(chip, locale)}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
             {filtersOpen ? (
               <div className="mt-3 border-t border-slate-200/70 pt-3">
@@ -513,6 +565,8 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               </div>
             ) : null}
           </section>
+
+          {kind === "services" ? <VerifiedMerchantsStrip citySlug={city.slug} locale={locale} /> : null}
 
           {listings.isLoading ? (
             <div className="space-y-3">
@@ -524,9 +578,31 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               <ErrorState title="频道暂时无法加载" subtitle="网络或服务器暂时不可用，请稍后重试。" onRetry={() => listings.refetch()} />
             </section>
           ) : visibleItems.length ? (
-            <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))] gap-4">
-              {visibleItems.map((listing) => <MarketplaceCard key={listing.id} listing={listing} />)}
-            </div>
+            kind === "marketplace" ? (
+              // 闲鱼 / Mercari：双列起步的高密度图片瀑布，价格压在图上
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
+                {visibleItems.map((listing) => <MercariStyleCard key={listing.id} listing={listing} />)}
+              </div>
+            ) : kind === "rentals" ? (
+              // SUUMO / 安居客：横向房源行卡，租金与户型/面积/车站结构化
+              <div className="space-y-3">
+                {visibleItems.map((listing) => <RentalRowCard key={listing.id} listing={listing} locale={locale} />)}
+              </div>
+            ) : kind === "jobs" ? (
+              // Indeed / BOSS：职位行卡，薪资高亮 + 标签 + 快速申请
+              <div className="space-y-3">
+                {visibleItems.map((listing) => <JobRowCard key={listing.id} listing={listing} locale={locale} />)}
+              </div>
+            ) : kind === "services" ? (
+              // 大众点评 / 美团 + 携程：评分卡片，预约 CTA
+              <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+                {visibleItems.map((listing) => <ServiceCard key={listing.id} listing={listing} locale={locale} />)}
+              </div>
+            ) : (
+              <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,280px),1fr))] gap-4">
+                {visibleItems.map((listing) => <MarketplaceCard key={listing.id} listing={listing} />)}
+              </div>
+            )
           ) : (
             <ListingEmptyState type={spec.type} cityName={city.name} />
           )}
@@ -633,6 +709,9 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
               <div>
                 <p className="text-3xl font-black text-slate-950">{priceLabel(item)}</p>
                 <h2 className="mt-2 text-2xl font-black text-slate-950">{displayTitle}</h2>
+                {Number(item.rating_count || 0) > 0 ? (
+                  <p className="mt-2"><RatingStars value={Number(item.rating_avg || 0)} count={Number(item.rating_count || 0)} size="md" /></p>
+                ) : null}
                 <p className="mt-2 flex items-center gap-1 text-sm font-semibold text-slate-500"><MapPin className="h-4 w-4" />{cleanListingText(item.location_text) || cityName}</p>
               </div>
               <StatusBadge item={item} />
@@ -640,6 +719,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
             <AttributeGrid item={item} />
             <div className="mt-5 whitespace-pre-line text-[15px] leading-7 text-slate-700">{item.description || "发布者暂未填写详细描述。"}</div>
             <SellerBox item={item} />
+            <ListingReviewsSection listing={item} />
             <SafetyNotice type={item.type} />
             <div className="mt-4 flex flex-wrap gap-2">
               <button type="button" onClick={() => report.mutate()} className="inline-flex h-10 items-center gap-2 rounded-full border border-slate-200 px-4 text-sm font-bold text-slate-600">
@@ -1444,6 +1524,85 @@ export function AdminSellerVerificationsPage() {
   );
 }
 
+export function AdminListingReviewsPage() {
+  const [status, setStatus] = useState("published");
+  const [q, setQ] = useState("");
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const query = useQuery({
+    queryKey: ["admin-listing-reviews", status, q],
+    queryFn: () => api.adminListingReviews({ status: status || undefined, q: q || undefined }),
+  });
+  const update = useMutation({
+    mutationFn: ({ id, next }: { id: string; next: "published" | "hidden" | "deleted" }) => api.adminUpdateListingReview(id, next),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-listing-reviews"] });
+      pushToast({ kind: "success", message: "点评状态已更新，评分已重算。" });
+    },
+    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message || "点评更新失败" }),
+  });
+  const rows = query.data || [];
+  return (
+    <AdminRecordPage
+      title="点评审核"
+      right={(
+        <div className="flex flex-wrap items-center gap-2">
+          <input value={q} onChange={(e) => setQ(e.target.value)} className="kx-input h-10 w-56" placeholder="搜索点评内容、服务标题" />
+          <select value={status} onChange={(e) => setStatus(e.target.value)} className="kx-input h-10 w-36">
+            <option value="">全部状态</option>
+            <option value="published">已发布</option>
+            <option value="hidden">已隐藏</option>
+            <option value="deleted">已删除</option>
+          </select>
+        </div>
+      )}
+    >
+      <AdminRecordQueryState query={query} title="正在加载点评" errorTitle="点评暂时无法加载" />
+      <div className="divide-y divide-slate-100">
+        {rows.map((review) => (
+          <div key={review.id} className="p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <RatingStars value={review.rating} showValue={false} />
+              <span className="text-xs font-black text-slate-500">{review.author?.display_name || review.author?.handle || review.user_id}</span>
+              <span className="text-xs font-bold text-slate-400">{(review.created_at || "").slice(0, 16).replace("T", " ")}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${review.status === "published" ? "bg-emerald-50 text-emerald-700" : review.status === "hidden" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500"}`}>
+                {review.status === "published" ? "已发布" : review.status === "hidden" ? "已隐藏" : "已删除"}
+              </span>
+              {review.listing_title ? (
+                <Link href={`/listings/${encodeURIComponent(review.listing_id)}`} className="truncate text-xs font-black text-blue-600 hover:text-blue-700">
+                  {review.listing_title}
+                </Link>
+              ) : null}
+            </div>
+            {review.content ? <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{review.content}</p> : null}
+            {review.owner_reply ? <p className="mt-1.5 rounded-xl bg-slate-50 p-2.5 text-xs leading-5 text-slate-500">商家回复：{review.owner_reply}</p> : null}
+            <div className="mt-2.5 flex gap-1.5">
+              {review.status !== "hidden" ? (
+                <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "hidden" })} className="h-8 rounded-full border border-amber-200 bg-amber-50 px-3 text-[11px] font-black text-amber-700 disabled:opacity-50">
+                  隐藏
+                </button>
+              ) : null}
+              {review.status !== "published" ? (
+                <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "published" })} className="h-8 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 disabled:opacity-50">
+                  恢复
+                </button>
+              ) : null}
+              {review.status !== "deleted" ? (
+                <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "deleted" })} className="h-8 rounded-full border border-rose-200 bg-rose-50 px-3 text-[11px] font-black text-rose-600 disabled:opacity-50">
+                  删除
+                </button>
+              ) : null}
+            </div>
+          </div>
+        ))}
+        {!query.isLoading && !query.isError && !rows.length ? (
+          <div className="p-8 text-center text-sm font-semibold text-slate-500">暂无点评记录</div>
+        ) : null}
+      </div>
+    </AdminRecordPage>
+  );
+}
+
 export function AdminBusinessesPage() {
   const [status, setStatus] = useState("");
   const [q, setQ] = useState("");
@@ -1732,6 +1891,463 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
         {description ? <p className="mt-2 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">{description}</p> : null}
       </div>
     </Link>
+  );
+}
+
+// ── 服务频道分区（大众点评 / 美团 + 携程式信息架构）─────────────────────────
+const SERVICE_SECTIONS: { key: string; zh: string; ja: string; en: string; categories: string[] }[] = [
+  { key: "all", zh: "全部", ja: "すべて", en: "All", categories: [] },
+  { key: "dining", zh: "到店餐饮", ja: "グルメ", en: "Dining", categories: ["餐饮点评", "优惠预约"] },
+  { key: "travel", zh: "旅行住宿", ja: "旅行・宿泊", en: "Travel & Stays", categories: ["酒店民宿", "接送机"] },
+  { key: "attractions", zh: "景点玩乐", ja: "観光・チケット", en: "Attractions", categories: ["景点门票", "一日游"] },
+  { key: "life", zh: "生活服务", ja: "生活サポート", en: "Local Support", categories: ["翻译手续", "搬家清洁", "维修安装", "认证服务"] },
+];
+
+const SERVICE_CATEGORY_META: Record<string, { Icon: typeof Store; tone: string }> = {
+  "餐饮点评": { Icon: Utensils, tone: "bg-rose-500/10 text-rose-600" },
+  "优惠预约": { Icon: Tag, tone: "bg-orange-500/10 text-orange-600" },
+  "酒店民宿": { Icon: Bed, tone: "bg-cyan-500/10 text-cyan-700" },
+  "景点门票": { Icon: Ticket, tone: "bg-violet-500/10 text-violet-600" },
+  "一日游": { Icon: Landmark, tone: "bg-emerald-500/10 text-emerald-700" },
+  "接送机": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
+  "翻译手续": { Icon: Languages, tone: "bg-indigo-500/10 text-indigo-600" },
+  "搬家清洁": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
+  "维修安装": { Icon: Wrench, tone: "bg-slate-500/10 text-slate-700" },
+  "认证服务": { Icon: BadgeCheck, tone: "bg-emerald-500/10 text-emerald-700" },
+};
+
+function ServiceCategoryIconGrid({
+  active,
+  section,
+  locale,
+  onSelect,
+}: {
+  active: string;
+  section: string;
+  locale: Locale;
+  onSelect: (category: string) => void;
+}) {
+  const sectionSpec = SERVICE_SECTIONS.find((item) => item.key === section);
+  const categories = sectionSpec?.categories.length
+    ? sectionSpec.categories
+    : Object.keys(SERVICE_CATEGORY_META);
+  return (
+    <div className="grid grid-cols-5 gap-1.5 sm:grid-cols-10">
+      {categories.map((category) => {
+        const meta = SERVICE_CATEGORY_META[category] || { Icon: Store, tone: "bg-slate-100 text-slate-600" };
+        const isActive = active === category;
+        return (
+          <button
+            key={category}
+            type="button"
+            onClick={() => onSelect(category)}
+            data-active={isActive}
+            className="group flex flex-col items-center gap-1.5 rounded-2xl px-1 py-2 transition hover:bg-orange-50/80 data-[active=true]:bg-orange-50"
+          >
+            <span className={`grid h-11 w-11 place-items-center rounded-2xl transition group-hover:scale-105 ${isActive ? "bg-orange-500 text-white shadow-[0_10px_22px_-12px_rgba(249,115,22,0.9)]" : meta.tone}`}>
+              <meta.Icon className="h-5 w-5" />
+            </span>
+            <span className={`w-full truncate text-center text-[11px] font-black ${isActive ? "text-orange-600" : "text-slate-600"}`}>
+              {categoryLabel(category, locale)}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function RatingStars({ value, count, size = "sm", showValue = true }: { value: number; count?: number; size?: "sm" | "md"; showValue?: boolean }) {
+  const stars = Math.max(0, Math.min(5, value || 0));
+  const dim = size === "md" ? "h-4.5 w-4.5" : "h-3.5 w-3.5";
+  return (
+    <span className="inline-flex items-center gap-1">
+      <span className="inline-flex items-center gap-0.5">
+        {[1, 2, 3, 4, 5].map((star) => (
+          <Star
+            key={star}
+            className={`${dim} ${star <= Math.round(stars) ? "fill-amber-400 text-amber-400" : "fill-slate-200 text-slate-200"}`}
+          />
+        ))}
+      </span>
+      {showValue && stars > 0 ? <span className={`font-black text-amber-600 ${size === "md" ? "text-base" : "text-xs"}`}>{stars.toFixed(1)}</span> : null}
+      {typeof count === "number" && count > 0 ? <span className="text-xs font-bold text-slate-400">({count})</span> : null}
+    </span>
+  );
+}
+
+function listingAttr(listing: KXCityListing, key: string): string {
+  const raw = (listing.attributes || {})[key];
+  if (raw == null) return "";
+  const value = String(raw).trim();
+  if (!value || value === "false" || value === "0") return "";
+  return value;
+}
+
+function listingAttrFlag(listing: KXCityListing, key: string): boolean {
+  const raw = (listing.attributes || {})[key];
+  if (typeof raw === "boolean") return raw;
+  const value = String(raw ?? "").trim().toLowerCase();
+  return value === "true" || value === "1" || value === "yes" || value === "是";
+}
+
+/// 闲鱼 / Mercari 风：紧凑方图卡，价格压图，状态角标。
+function MercariStyleCard({ listing }: { listing: KXCityListing }) {
+  const title = displayListingTitle(listing) || "城市信息";
+  const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
+  const coverMedia = listingCoverMedia(listing);
+  const coverPreview = listingCoverPreview(listing);
+  const coverIsVideo = listingCoverIsVideo(listing);
+  const coverSource = coverMedia ? mediaSourceUrl(coverMedia) : "";
+  const coverArtwork = coverIsVideo ? (coverPreview || (coverSource ? fallbackVideoPoster : "")) : coverPreview;
+  const useVideoFallbackArtwork = coverIsVideo && !coverPreview;
+  const sold = listing.status === "sold" || listing.status === "rented" || listing.status === "closed";
+  const condition = listingAttr(listing, "condition");
+  const free = listing.price === 0;
+  return (
+    <Link href={detailHref(listing)} className="group overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-[0_10px_30px_-26px_rgba(15,23,42,0.6)] transition hover:-translate-y-0.5 hover:border-emerald-300/70 hover:shadow-[0_18px_44px_-30px_rgba(15,23,42,0.65)]">
+      <div className="relative aspect-square overflow-hidden bg-slate-100">
+        {useVideoFallbackArtwork ? (
+          <span className="absolute inset-0 z-[1]" style={videoFallbackArtworkStyle} />
+        ) : coverArtwork ? (
+          <Image src={coverArtwork} alt={title} fill sizes="(max-width: 640px) 50vw, 240px" className="relative z-[1] object-cover transition duration-300 group-hover:scale-[1.03]" unoptimized />
+        ) : (
+          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(16,185,129,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#effcf4_52%,#f0fdfa)] text-emerald-500/70">
+            <Tag className="h-7 w-7" />
+          </span>
+        )}
+        {coverIsVideo ? (
+          <span className="absolute inset-0 z-[2] grid place-items-center">
+            <span className="grid h-9 w-9 place-items-center rounded-full bg-black/60 text-white shadow-lg backdrop-blur">
+              <Play className="h-4 w-4 fill-current" />
+            </span>
+          </span>
+        ) : null}
+        {/* Mercari 式价格角标 */}
+        <span className={`absolute bottom-2 left-2 z-[2] rounded-lg px-2 py-1 text-sm font-black text-white shadow-lg ${free ? "bg-emerald-600/95" : "bg-slate-950/85"}`}>
+          {free ? "免费送" : priceLabel(listing)}
+        </span>
+        {sold ? (
+          <span className="absolute inset-0 z-[3] grid place-items-center bg-slate-950/55">
+            <span className="rounded-full bg-white px-4 py-1.5 text-sm font-black text-slate-950">{listingStatusText(listing)}</span>
+          </span>
+        ) : null}
+        {condition && !sold ? (
+          <span className="absolute left-2 top-2 z-[2] rounded-full bg-white/92 px-2 py-0.5 text-[10px] font-black text-slate-700 shadow-sm">{condition}</span>
+        ) : null}
+      </div>
+      <div className="space-y-1 p-2.5">
+        <h2 className="line-clamp-2 text-[13px] font-bold leading-[18px] text-slate-900">{title}</h2>
+        <p className="flex items-center gap-1 truncate text-[11px] font-bold text-slate-400">
+          <MapPin className="h-3 w-3 shrink-0" />
+          <span className="truncate">{location}</span>
+          {typeof listing.favorite_count === "number" && listing.favorite_count > 0 ? (
+            <span className="ml-auto inline-flex shrink-0 items-center gap-0.5 text-rose-400"><Heart className="h-3 w-3 fill-current" />{listing.favorite_count}</span>
+          ) : null}
+        </p>
+      </div>
+    </Link>
+  );
+}
+
+/// SUUMO / 安居客风：横向房源行卡，租金大字 + 结构化字段格。
+function RentalRowCard({ listing, locale }: { listing: KXCityListing; locale: Locale }) {
+  const title = displayListingTitle(listing) || "房源信息";
+  const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
+  const coverPreview = listingCoverPreview(listing);
+  const coverIsVideo = listingCoverIsVideo(listing);
+  const layout = listingAttr(listing, "layout");
+  const area = listingAttr(listing, "area_sqm");
+  const station = listingAttr(listing, "nearest_station");
+  const moveIn = listingAttr(listing, "move_in_date");
+  const deposit = listingAttr(listing, "deposit");
+  const keyMoney = listingAttr(listing, "key_money");
+  const managementFee = listingAttr(listing, "management_fee");
+  const noDeposit = deposit === "0" || /无|なし|0円/i.test(deposit);
+  const noKeyMoney = keyMoney === "0" || /无|なし|0円/i.test(keyMoney);
+  const tags = [
+    listingAttrFlag(listing, "furnished") ? pickText(locale, "家具家电", "家具家電付き", "Furnished") : "",
+    listingAttrFlag(listing, "short_term_allowed") ? pickText(locale, "可短租", "短期OK", "Short-term OK") : "",
+    listingAttrFlag(listing, "share_allowed") ? pickText(locale, "可合租", "シェア可", "Share OK") : "",
+    listingAttrFlag(listing, "pet_allowed") ? pickText(locale, "可养宠", "ペット可", "Pets OK") : "",
+    noDeposit && deposit ? pickText(locale, "敷金 0", "敷金なし", "No deposit") : "",
+    noKeyMoney && keyMoney ? pickText(locale, "礼金 0", "礼金なし", "No key money") : "",
+  ].filter(Boolean);
+  const specs: Array<[string, string]> = [
+    [pickText(locale, "户型", "間取り", "Layout"), layout],
+    [pickText(locale, "面积", "面積", "Size"), area ? `${area}㎡` : ""],
+    [pickText(locale, "车站", "最寄り駅", "Station"), station],
+    [pickText(locale, "入住", "入居", "Move-in"), moveIn],
+  ].filter(([, value]) => value) as Array<[string, string]>;
+  return (
+    <Link href={detailHref(listing)} className="group grid gap-3 rounded-[20px] border border-slate-200/70 bg-white p-3 shadow-[0_10px_30px_-26px_rgba(15,23,42,0.6)] transition hover:-translate-y-0.5 hover:border-indigo-300/70 hover:shadow-[0_18px_44px_-30px_rgba(15,23,42,0.62)] sm:grid-cols-[200px_1fr]">
+      <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-100">
+        {coverPreview ? (
+          <Image src={coverPreview} alt={title} fill sizes="200px" className="object-cover transition duration-300 group-hover:scale-[1.02]" unoptimized />
+        ) : (
+          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(99,102,241,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eef2ff_52%,#f5f3ff)] text-indigo-400">
+            <Home className="h-7 w-7" />
+          </span>
+        )}
+        {coverIsVideo ? (
+          <span className="absolute inset-0 grid place-items-center">
+            <span className="grid h-9 w-9 place-items-center rounded-full bg-black/60 text-white"><Play className="h-4 w-4 fill-current" /></span>
+          </span>
+        ) : null}
+        {listing.verification_status === "verified" ? (
+          <span className="absolute left-2 top-2 inline-flex items-center gap-1 rounded-full bg-indigo-600/92 px-2 py-0.5 text-[10px] font-black text-white shadow-sm">
+            <BadgeCheck className="h-3 w-3" />
+            {pickText(locale, "已核验", "確認済み", "Verified")}
+          </span>
+        ) : null}
+      </div>
+      <div className="min-w-0">
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-[22px] font-black leading-none text-indigo-700">
+            {priceLabel(listing)}
+            {managementFee ? <span className="ml-1.5 align-middle text-xs font-bold text-slate-400">{pickText(locale, `管理费 ${managementFee}`, `管理費 ${managementFee}`, `+ mgmt ${managementFee}`)}</span> : null}
+          </p>
+          <StatusBadge item={listing} />
+        </div>
+        <h2 className="mt-1.5 line-clamp-1 text-base font-black text-slate-950">{title}</h2>
+        <p className="mt-1 flex items-center gap-1 truncate text-sm font-semibold text-slate-500">
+          <Train className="h-4 w-4 shrink-0 text-indigo-500" />
+          <span className="truncate">{station || location}</span>
+        </p>
+        {specs.length ? (
+          <div className="mt-2.5 grid grid-cols-2 gap-1.5 sm:grid-cols-4">
+            {specs.map(([label, value]) => (
+              <div key={label} className="rounded-xl bg-slate-50 px-2.5 py-1.5 ring-1 ring-slate-200/60">
+                <p className="text-[10px] font-black text-slate-400">{label}</p>
+                <p className="truncate text-xs font-black text-slate-800">{value}</p>
+              </div>
+            ))}
+          </div>
+        ) : null}
+        {tags.length ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {tags.map((tag) => <span key={tag} className="rounded-md bg-indigo-50 px-2 py-0.5 text-[11px] font-black text-indigo-600 ring-1 ring-indigo-100">{tag}</span>)}
+          </div>
+        ) : null}
+      </div>
+    </Link>
+  );
+}
+
+/// Indeed / BOSS 直聘风：职位行卡，薪资高亮 + 条件标签 + 快速申请。
+function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Locale }) {
+  const title = displayListingTitle(listing) || "职位信息";
+  const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
+  const company = listingAttr(listing, "company_name");
+  const employment = formatListingAttribute("employment_type", listingAttr(listing, "employment_type"), appLocaleToMarketingLocale(locale));
+  const japanese = formatListingAttribute("japanese_level", listingAttr(listing, "japanese_level"), appLocaleToMarketingLocale(locale));
+  const hours = listingAttr(listing, "working_hours");
+  const tags = [
+    employment,
+    japanese,
+    listingAttrFlag(listing, "visa_support") ? pickText(locale, "签证支持", "ビザサポート", "Visa support") : "",
+    listingAttrFlag(listing, "no_experience_ok") ? pickText(locale, "无经验可", "未経験OK", "No experience OK") : "",
+    listingAttrFlag(listing, "student_ok") ? pickText(locale, "留学生可", "留学生OK", "Students OK") : "",
+    listingAttrFlag(listing, "foreigner_friendly") ? pickText(locale, "外国人友好", "外国人歓迎", "Foreigner friendly") : "",
+    listingAttrFlag(listing, "transportation_fee") ? pickText(locale, "交通费支给", "交通費支給", "Commute covered") : "",
+  ].filter(Boolean);
+  return (
+    <Link href={detailHref(listing)} className="group block rounded-[20px] border border-slate-200/70 bg-white p-4 shadow-[0_10px_30px_-26px_rgba(15,23,42,0.6)] transition hover:-translate-y-0.5 hover:border-violet-300/70 hover:shadow-[0_18px_44px_-30px_rgba(15,23,42,0.62)]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="line-clamp-1 text-[17px] font-black text-slate-950 transition group-hover:text-violet-700">{title}</h2>
+          <p className="mt-1 flex min-w-0 items-center gap-1.5 text-sm font-bold text-slate-500">
+            {company ? (
+              <>
+                <span className="truncate">{company}</span>
+                {listing.verification_status === "verified" ? (
+                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-black text-violet-600 ring-1 ring-violet-100">
+                    <BadgeCheck className="h-3 w-3" />
+                    {pickText(locale, "认证雇主", "認証企業", "Verified employer")}
+                  </span>
+                ) : null}
+                <span className="shrink-0 text-slate-300">·</span>
+              </>
+            ) : null}
+            <span className="inline-flex shrink-0 items-center gap-1 text-slate-400"><MapPin className="h-3.5 w-3.5" />{location}</span>
+          </p>
+        </div>
+        <StatusBadge item={listing} />
+      </div>
+      <p className="mt-2.5 text-lg font-black text-emerald-600">{priceLabel(listing)}</p>
+      {tags.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {tags.map((tag) => <span key={tag} className="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600">{tag}</span>)}
+        </div>
+      ) : null}
+      <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5">
+        <span className="flex items-center gap-1 text-xs font-bold text-slate-400">
+          <Clock className="h-3.5 w-3.5" />
+          {hours || formatPublishedAt(listing, locale)}
+        </span>
+        <span className="inline-flex h-8 items-center rounded-full bg-violet-600 px-3.5 text-xs font-black text-white shadow-[0_10px_22px_-14px_rgba(124,58,237,0.95)] transition group-hover:bg-violet-700">
+          {pickText(locale, "立即申请", "応募する", "Apply now")}
+        </span>
+      </div>
+    </Link>
+  );
+}
+
+/// 大众点评 / 携程风：评分 + 类目 + 价位 + 预约 CTA。
+export function ServiceCard({ listing, locale }: { listing: KXCityListing; locale: Locale }) {
+  const title = displayListingTitle(listing) || "服务信息";
+  const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
+  const coverPreview = listingCoverPreview(listing);
+  const coverIsVideo = listingCoverIsVideo(listing);
+  const ratingAvg = Number(listing.rating_avg ?? listing.ratingAvg ?? 0);
+  const ratingCount = Number(listing.rating_count ?? listing.ratingCount ?? 0);
+  const category = listing.category || "";
+  const meta = SERVICE_CATEGORY_META[category];
+  const priceRange = listingAttr(listing, "price_range");
+  const openHours = listingAttr(listing, "open_hours");
+  const isStay = category === "酒店民宿";
+  const isTicket = category === "景点门票" || category === "一日游";
+  const cta = isStay
+    ? pickText(locale, "查房价", "料金を見る", "Check rates")
+    : isTicket
+      ? pickText(locale, "订门票", "チケット予約", "Book tickets")
+      : pickText(locale, "预约", "予約する", "Book");
+  return (
+    <Link href={detailHref(listing)} className="group overflow-hidden rounded-[20px] border border-slate-200/70 bg-white shadow-[0_10px_30px_-26px_rgba(15,23,42,0.6)] transition hover:-translate-y-0.5 hover:border-orange-300/70 hover:shadow-[0_18px_44px_-30px_rgba(15,23,42,0.62)]">
+      <div className="relative aspect-[16/9] overflow-hidden bg-slate-100">
+        {coverPreview ? (
+          <Image src={coverPreview} alt={title} fill sizes="(max-width: 640px) 100vw, 360px" className="object-cover transition duration-300 group-hover:scale-[1.03]" unoptimized />
+        ) : (
+          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(249,115,22,0.13),transparent_34%),linear-gradient(135deg,#fffbf5,#fff7ed_52%,#fef3f2)] text-orange-400">
+            {meta ? <meta.Icon className="h-8 w-8" /> : <Store className="h-8 w-8" />}
+          </span>
+        )}
+        {coverIsVideo ? (
+          <span className="absolute inset-0 grid place-items-center">
+            <span className="grid h-10 w-10 place-items-center rounded-full bg-black/60 text-white"><Play className="h-4 w-4 fill-current" /></span>
+          </span>
+        ) : null}
+        {category ? (
+          <span className="absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-white/94 px-2.5 py-1 text-[11px] font-black text-slate-700 shadow-sm">
+            {meta ? <meta.Icon className="h-3.5 w-3.5" /> : null}
+            {categoryLabel(category, locale)}
+          </span>
+        ) : null}
+        {listing.verification_status === "verified" ? (
+          <span className="absolute right-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-emerald-600/94 px-2 py-1 text-[10px] font-black text-white shadow-sm">
+            <BadgeCheck className="h-3 w-3" />
+            {pickText(locale, "认证商家", "認証店舗", "Verified")}
+          </span>
+        ) : null}
+      </div>
+      <div className="p-3.5">
+        <h2 className="line-clamp-1 text-[15px] font-black text-slate-950">{title}</h2>
+        <div className="mt-1.5 flex items-center justify-between gap-2">
+          {ratingCount > 0 ? (
+            <RatingStars value={ratingAvg} count={ratingCount} />
+          ) : (
+            <span className="text-xs font-bold text-slate-400">{pickText(locale, "暂无点评 · 期待你的体验", "口コミ募集中", "No reviews yet")}</span>
+          )}
+          <span className="shrink-0 text-sm font-black text-orange-600">{priceRange || priceLabel(listing)}</span>
+        </div>
+        <p className="mt-2 flex items-center gap-1 truncate text-xs font-bold text-slate-400">
+          <MapPin className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">{location}</span>
+          {openHours ? (
+            <span className="ml-auto inline-flex shrink-0 items-center gap-1"><Clock className="h-3 w-3" />{openHours}</span>
+          ) : null}
+        </p>
+        <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5">
+          <span className="text-[11px] font-bold text-slate-400">
+            {listing.inquiry_count ? pickText(locale, `${listing.inquiry_count} 人咨询过`, `${listing.inquiry_count} 件の問い合わせ`, `${listing.inquiry_count} inquiries`) : pickText(locale, "在线咨询 · 免费", "オンライン相談無料", "Free to ask")}
+          </span>
+          <span className="inline-flex h-8 items-center rounded-full bg-orange-500 px-3.5 text-xs font-black text-white shadow-[0_10px_22px_-14px_rgba(249,115,22,0.95)] transition group-hover:bg-orange-600">
+            {cta}
+          </span>
+        </div>
+      </div>
+    </Link>
+  );
+}
+
+function formatPublishedAt(listing: KXCityListing, locale: Locale): string {
+  const raw = listing.published_at || listing.created_at || "";
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+  const days = Math.floor((Date.now() - date.getTime()) / 86_400_000);
+  if (days <= 0) return pickText(locale, "今天发布", "本日掲載", "Posted today");
+  if (days < 30) return pickText(locale, `${days} 天前发布`, `${days}日前に掲載`, `Posted ${days}d ago`);
+  return pickText(locale, "30 天以上", "30日以上前", "30d+ ago");
+}
+
+function listingStatusText(listing: KXCityListing): string {
+  return formatListingStatus(listing.status, listing.type);
+}
+
+/// 认证商家横滑条：服务频道里的「大众点评商家」入口。
+function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale: Locale }) {
+  const directory = useQuery({
+    queryKey: ["businesses-directory", citySlug],
+    queryFn: () => api.businessesDirectory({ city: citySlug }),
+    staleTime: 120_000,
+  });
+  const items = directory.data?.items || [];
+  if (directory.isLoading || !items.length) return null;
+  return (
+    <section className="mb-4 rounded-[24px] border border-slate-200/70 bg-white/95 p-3.5 shadow-[0_14px_40px_-34px_rgba(15,23,42,0.55)] sm:p-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-emerald-600/10 text-emerald-700">
+            <Store className="h-4.5 w-4.5" />
+          </span>
+          <div className="min-w-0">
+            <h2 className="truncate text-[15px] font-black text-slate-950">{pickText(locale, "认证商家", "認証店舗", "Verified businesses")}</h2>
+            <p className="truncate text-xs font-semibold text-slate-500">{pickText(locale, "资质审核通过的本地商家与服务方", "審査済みの地元店舗・事業者", "Locally vetted shops & providers")}</p>
+          </div>
+        </div>
+        <Link href={`/businesses?city=${encodeURIComponent(citySlug)}`} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-xs font-black text-emerald-700 transition hover:bg-emerald-100">
+          {pickText(locale, "全部商家", "すべて見る", "View all")}
+          <ChevronRight className="h-3.5 w-3.5" />
+        </Link>
+      </div>
+      <div className="-mx-1 mt-3 overflow-x-auto px-1">
+        <div className="flex gap-2.5 pb-1">
+          {items.slice(0, 12).map((business) => (
+            <Link
+              key={business.id}
+              href={`/businesses/${encodeURIComponent(business.id)}`}
+              className="w-[210px] shrink-0 rounded-2xl border border-slate-200/70 bg-white p-3 transition hover:-translate-y-0.5 hover:border-emerald-300/70 hover:shadow-[0_14px_30px_-22px_rgba(15,23,42,0.5)]"
+            >
+              <div className="flex items-center gap-2.5">
+                <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-emerald-600/10 text-emerald-700">
+                  {business.logo_url ? (
+                    <Image src={business.logo_url} alt={business.business_name} width={40} height={40} className="h-10 w-10 object-cover" unoptimized />
+                  ) : (
+                    <Store className="h-5 w-5" />
+                  )}
+                </span>
+                <div className="min-w-0">
+                  <p className="flex items-center gap-1 truncate text-sm font-black text-slate-950">
+                    <span className="truncate">{business.business_name}</span>
+                    <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
+                  </p>
+                  <p className="truncate text-[11px] font-bold text-slate-400">{business.business_type || (business.service_categories || [])[0] || ""}</p>
+                </div>
+              </div>
+              <div className="mt-2 flex items-center justify-between">
+                {Number(business.rating_count || 0) > 0 ? (
+                  <RatingStars value={Number(business.rating_avg || 0)} count={Number(business.rating_count || 0)} />
+                ) : (
+                  <span className="text-[11px] font-bold text-slate-400">{pickText(locale, "暂无点评", "口コミなし", "No reviews")}</span>
+                )}
+                <span className="text-[11px] font-black text-slate-500">{pickText(locale, `${business.published_listing_count || 0} 个服务`, `サービス${business.published_listing_count || 0}件`, `${business.published_listing_count || 0} services`)}</span>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -2051,7 +2667,7 @@ function DetailContactCard({ item, onContact }: { item: KXCityListing; onContact
 
 type IntakeField = { key: string; label: string; kind?: "text" | "date" | "textarea" | "select"; options?: string[]; placeholder?: string; required?: boolean };
 
-function intakeConfig(type: string): { title: string; noteLabel: string; fields: IntakeField[] } {
+function intakeConfig(type: string, category?: string): { title: string; noteLabel: string; fields: IntakeField[] } {
   if (type === "rental") {
     return {
       title: "预约看房",
@@ -2078,6 +2694,45 @@ function intakeConfig(type: string): { title: string; noteLabel: string; fields:
     };
   }
   if (type === "local_service") {
+    // 携程 / 美团式结构化预订：按服务类目给出真正可用的字段
+    if (category === "酒店民宿") {
+      return {
+        title: "预订住宿",
+        noteLabel: "特殊需求",
+        fields: [
+          { key: "check_in", label: "入住日期", kind: "date", required: true },
+          { key: "check_out", label: "退房日期", kind: "date", required: true },
+          { key: "guests", label: "入住人数", kind: "select", options: ["1 人", "2 人", "3 人", "4 人", "5 人及以上"], required: true },
+          { key: "rooms", label: "房间数", kind: "select", options: ["1 间", "2 间", "3 间及以上"] },
+          { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
+        ],
+      };
+    }
+    if (category === "景点门票" || category === "一日游") {
+      return {
+        title: category === "一日游" ? "预订行程" : "预订门票",
+        noteLabel: "补充说明",
+        fields: [
+          { key: "date", label: "出行日期", kind: "date", required: true },
+          { key: "tickets", label: "人数 / 票数", kind: "select", options: ["1", "2", "3", "4", "5 及以上"], required: true },
+          { key: "language", label: "希望语言", kind: "select", options: ["中文", "日本語", "English", "无要求"] },
+          { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
+        ],
+      };
+    }
+    if (category === "接送机") {
+      return {
+        title: "预约接送机",
+        noteLabel: "补充说明",
+        fields: [
+          { key: "date", label: "用车日期", kind: "date", required: true },
+          { key: "flight", label: "航班号", placeholder: "例如 NH878 / CA181" },
+          { key: "passengers", label: "人数", kind: "select", options: ["1", "2", "3", "4", "5 及以上"], required: true },
+          { key: "luggage", label: "行李数", kind: "select", options: ["1-2 件", "3-4 件", "5 件及以上"] },
+          { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
+        ],
+      };
+    }
     return {
       title: "预约服务",
       noteLabel: "具体需求",
@@ -2094,7 +2749,7 @@ function intakeConfig(type: string): { title: string; noteLabel: string; fields:
 }
 
 function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCityListing; open: boolean; submitting: boolean; onClose: () => void; onSubmit: (message: string, details: { label: string; value: string }[]) => void }) {
-  const config = useMemo(() => intakeConfig(item.type), [item.type]);
+  const config = useMemo(() => intakeConfig(item.type, item.category), [item.type, item.category]);
   const [values, setValues] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -2288,6 +2943,213 @@ function SafetyNotice({ type }: { type: KXListingType }) {
       <ul className="mt-2 space-y-1 text-sm font-semibold leading-6 text-amber-900/80">
         {safetyTips(type).map((tip) => <li key={tip}>· {tip}</li>)}
       </ul>
+    </section>
+  );
+}
+
+// ── 点评区（大众点评式：星级分布 + 写点评 + 商家回复）────────────────────────
+const REVIEWABLE_LISTING_TYPES = new Set<string>(["local_service", "discount", "event"]);
+
+export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
+  const user = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
+  const pushToast = useToasts((s) => s.push);
+  const queryClient = useQueryClient();
+  const [formOpen, setFormOpen] = useState(false);
+  const [rating, setRating] = useState(5);
+  const [content, setContent] = useState("");
+  const [replyFor, setReplyFor] = useState<string | null>(null);
+  const [replyText, setReplyText] = useState("");
+  const reviewable = REVIEWABLE_LISTING_TYPES.has(listing.type);
+  const reviews = useQuery({
+    queryKey: ["listing-reviews", listing.id],
+    queryFn: () => api.listingReviews(listing.id),
+    enabled: reviewable,
+  });
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["listing-reviews", listing.id] });
+    queryClient.invalidateQueries({ queryKey: ["listing", listing.id] });
+  };
+  const submit = useMutation({
+    mutationFn: () => api.submitListingReview(listing.id, { rating, content: content.trim() }),
+    onSuccess: () => {
+      setFormOpen(false);
+      setContent("");
+      pushToast({ kind: "success", message: "点评已发布，感谢分享体验！" });
+      invalidate();
+    },
+    onError: (e) => {
+      if (isAuthRequiredError(e)) openAuthPrompt("generic");
+      else pushToast({ kind: "error", message: (e as APIError).message });
+    },
+  });
+  const remove = useMutation({
+    mutationFn: (reviewId: string) => api.deleteListingReview(listing.id, reviewId),
+    onSuccess: () => {
+      pushToast({ kind: "success", message: "点评已删除。" });
+      invalidate();
+    },
+    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
+  });
+  const reply = useMutation({
+    mutationFn: (vars: { reviewId: string; content: string }) => api.replyListingReview(listing.id, vars.reviewId, vars.content),
+    onSuccess: () => {
+      setReplyFor(null);
+      setReplyText("");
+      pushToast({ kind: "success", message: "回复已发布。" });
+      invalidate();
+    },
+    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
+  });
+  if (!reviewable) return null;
+  const summary = reviews.data?.summary;
+  const items = reviews.data?.items || [];
+  const myReview = reviews.data?.my_review || reviews.data?.myReview || null;
+  const isOwner = !!(user && listing.seller_user_id === user.id);
+  const ratingAvg = Number(summary?.rating_avg ?? summary?.ratingAvg ?? 0);
+  const ratingCount = Number(summary?.rating_count ?? summary?.ratingCount ?? 0);
+  const histogram = summary?.histogram || {};
+  const histogramMax = Math.max(1, ...Object.values(histogram).map((v) => Number(v) || 0));
+  const openForm = () => {
+    if (!user) {
+      openAuthPrompt("generic");
+      return;
+    }
+    if (myReview) {
+      setRating(myReview.rating || 5);
+      setContent(myReview.content || "");
+    }
+    setFormOpen(true);
+  };
+  return (
+    <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h3 className="flex items-center gap-2 text-base font-black text-slate-950">
+          <Star className="h-4.5 w-4.5 fill-amber-400 text-amber-400" />
+          用户点评
+          {ratingCount ? <span className="text-sm font-bold text-slate-400">({ratingCount})</span> : null}
+        </h3>
+        {!isOwner ? (
+          <button type="button" onClick={openForm} className="inline-flex h-9 items-center gap-1.5 rounded-full bg-amber-500 px-3.5 text-xs font-black text-white shadow-[0_10px_22px_-14px_rgba(245,158,11,0.95)] transition hover:bg-amber-600">
+            <MessageSquare className="h-3.5 w-3.5" />
+            {myReview ? "修改我的点评" : "写点评"}
+          </button>
+        ) : null}
+      </div>
+
+      {ratingCount > 0 ? (
+        <div className="mt-4 grid gap-4 sm:grid-cols-[auto_1fr] sm:items-center">
+          <div className="flex flex-col items-center justify-center rounded-2xl bg-amber-50/80 px-6 py-4 ring-1 ring-amber-100">
+            <p className="text-4xl font-black text-amber-600">{ratingAvg.toFixed(1)}</p>
+            <RatingStars value={ratingAvg} showValue={false} />
+            <p className="mt-1 text-xs font-bold text-slate-500">{ratingCount} 条点评</p>
+          </div>
+          <div className="space-y-1.5">
+            {[5, 4, 3, 2, 1].map((star) => {
+              const count = Number(histogram[String(star)] || 0);
+              return (
+                <div key={star} className="flex items-center gap-2">
+                  <span className="w-8 shrink-0 text-right text-xs font-black text-slate-500">{star} 星</span>
+                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
+                    <div className="h-full rounded-full bg-amber-400" style={{ width: `${(count / histogramMax) * 100}%` }} />
+                  </div>
+                  <span className="w-8 shrink-0 text-xs font-bold text-slate-400">{count}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ) : (
+        <p className="mt-3 rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-500">
+          还没有人点评过{listing.type === "local_service" ? "这项服务" : "这条信息"}。体验过的话，写下第一条点评帮助大家做决定。
+        </p>
+      )}
+
+      {formOpen ? (
+        <div className="mt-4 rounded-2xl border border-amber-200/80 bg-amber-50/60 p-4">
+          <p className="text-sm font-black text-slate-900">{myReview ? "修改点评" : "你的体验如何？"}</p>
+          <div className="mt-2 flex items-center gap-1.5">
+            {[1, 2, 3, 4, 5].map((star) => (
+              <button key={star} type="button" onClick={() => setRating(star)} aria-label={`${star} 星`}>
+                <Star className={`h-7 w-7 transition ${star <= rating ? "fill-amber-400 text-amber-400" : "fill-slate-200 text-slate-200 hover:fill-amber-200 hover:text-amber-200"}`} />
+              </button>
+            ))}
+            <span className="ml-1 text-sm font-black text-amber-600">{["很差", "较差", "一般", "不错", "超赞"][rating - 1]}</span>
+          </div>
+          <textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            maxLength={2000}
+            placeholder="服务体验、环境、价格、是否会推荐给朋友…"
+            className="kx-input mt-3 min-h-24 w-full p-3 text-sm"
+          />
+          <div className="mt-3 flex gap-2">
+            <button type="button" disabled={submit.isPending} onClick={() => submit.mutate()} className="inline-flex h-10 items-center gap-2 rounded-full bg-slate-950 px-5 text-sm font-black text-white disabled:opacity-60">
+              <Send className="h-4 w-4" />
+              {submit.isPending ? "发布中…" : "发布点评"}
+            </button>
+            <button type="button" onClick={() => setFormOpen(false)} className="inline-flex h-10 items-center rounded-full border border-slate-200 bg-white px-4 text-sm font-bold text-slate-600">
+              取消
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {items.length ? (
+        <div className="mt-4 space-y-4">
+          {items.map((review) => (
+            <article key={review.id} className="border-t border-slate-100 pt-4 first:border-0 first:pt-0">
+              <div className="flex items-center gap-2.5">
+                <Avatar user={review.author || undefined} size={36} />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-black text-slate-900">{review.author?.display_name || review.author?.handle || "Machi 用户"}</p>
+                  <p className="flex items-center gap-2 text-xs text-slate-400">
+                    <RatingStars value={review.rating} showValue={false} />
+                    <span className="font-bold">{(review.created_at || "").slice(0, 10)}</span>
+                    {review.visit_date ? <span className="font-bold">体验于 {review.visit_date}</span> : null}
+                  </p>
+                </div>
+                {user && review.user_id === user.id ? (
+                  <button type="button" onClick={() => remove.mutate(review.id)} className="shrink-0 text-xs font-bold text-slate-400 transition hover:text-rose-500">
+                    删除
+                  </button>
+                ) : null}
+              </div>
+              {review.content ? <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{review.content}</p> : null}
+              {review.owner_reply ? (
+                <div className="mt-2.5 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-100">
+                  <p className="flex items-center gap-1 text-xs font-black text-slate-500"><Store className="h-3.5 w-3.5" /> 商家回复</p>
+                  <p className="mt-1 text-sm leading-6 text-slate-600">{review.owner_reply}</p>
+                </div>
+              ) : isOwner ? (
+                replyFor === review.id ? (
+                  <div className="mt-2.5 flex gap-2">
+                    <input
+                      value={replyText}
+                      onChange={(e) => setReplyText(e.target.value)}
+                      maxLength={1000}
+                      placeholder="回复这条点评…"
+                      className="kx-input h-10 flex-1 px-3 text-sm"
+                    />
+                    <button
+                      type="button"
+                      disabled={reply.isPending || !replyText.trim()}
+                      onClick={() => reply.mutate({ reviewId: review.id, content: replyText.trim() })}
+                      className="inline-flex h-10 shrink-0 items-center rounded-full bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50"
+                    >
+                      回复
+                    </button>
+                  </div>
+                ) : (
+                  <button type="button" onClick={() => { setReplyFor(review.id); setReplyText(""); }} className="mt-2 text-xs font-black text-blue-600 transition hover:text-blue-700">
+                    回复点评
+                  </button>
+                )
+              ) : null}
+            </article>
+          ))}
+        </div>
+      ) : null}
     </section>
   );
 }
@@ -2592,12 +3454,28 @@ function listingFormFields(type: KXListingType): AttributeField[] {
     { key: "business_name", label: "商家 / 服务方名称", required: true, placeholder: "Machi Travel & Local Support" },
     { key: "service_type", label: "服务类型", required: true, kind: "select", options: ["餐饮点评", "优惠预约", "酒店民宿", "景点门票", "一日游", "接送机", "签证/手续协助", "翻译", "搬家清洁", "维修安装", "生活支持", "租房申请协助"].map((item) => option(item)) },
     { key: "service_area", label: "服务范围", required: true, placeholder: "东京 23 区 / 成田机场 / 富士山周边" },
-    { key: "price_unit", label: "价格单位", placeholder: "每小时 / 每次 / 预约咨询" },
+    { key: "open_hours", label: "营业时间", placeholder: "11:00-22:00 / 前台 24 小时" },
+    { key: "price_range", label: "价格区间 / 人均", placeholder: "¥3,000-5,000 / 人均 ¥1,200" },
+    { key: "price_unit", label: "价格单位", placeholder: "每小时 / 每次 / 每晚 / 预约咨询" },
+    { key: "near_station", label: "最近车站", placeholder: "新宿站东口徒步 3 分钟" },
     { key: "availability", label: "可预约时间", placeholder: "平日晚上 / 周末" },
     { key: "booking_required", label: "需要预约", kind: "checkbox" },
+    { key: "reservation_required", label: "仅限预约制", kind: "checkbox" },
     { key: "certified_provider", label: "认证商家/服务商", kind: "checkbox" },
     { key: "languages", label: "服务语言", placeholder: "中文 / 日本語 / English" },
     { key: "rating_note", label: "评分/口碑说明", placeholder: "Google 4.6 / 老客推荐 / 平台新店" },
+    // —— 旅行住宿（酒店民宿）——
+    { key: "room_type", label: "房型（住宿类）", placeholder: "双床房 / 大床房 / 整套民宿" },
+    { key: "max_guests", label: "可住人数（住宿类）", placeholder: "2" },
+    { key: "check_in_time", label: "入住时间（住宿类）", placeholder: "15:00" },
+    { key: "check_out_time", label: "退房时间（住宿类）", placeholder: "10:00" },
+    { key: "breakfast_included", label: "含早餐（住宿类）", kind: "checkbox" },
+    // —— 景点票务 / 一日游 / 接送机 ——
+    { key: "ticket_type", label: "票种（景点/行程类）", placeholder: "成人票 / 亲子套票 / 包车" },
+    { key: "duration", label: "时长（行程类）", placeholder: "3 小时 / 一日（约 8 小时）" },
+    { key: "meeting_point", label: "集合地点（行程类）", placeholder: "新宿站西口 / 酒店接送" },
+    { key: "included_items", label: "包含内容（行程类）", placeholder: "门票 + 向导 + 车费" },
+    { key: "pickup_service", label: "含酒店接送（行程类）", kind: "checkbox" },
     { key: "service_process", label: "服务流程", kind: "textarea", placeholder: "说明咨询、预约、确认、到店/出行/执行、反馈流程。" },
     { key: "not_included", label: "不包含内容", kind: "textarea", placeholder: "清楚说明不包含的门票、餐费、交通费、材料费或额外项目。" },
     { key: "user_prepare", label: "用户需准备", kind: "textarea", placeholder: "证件、材料、地址、航班号、人数、日期、照片等。" },

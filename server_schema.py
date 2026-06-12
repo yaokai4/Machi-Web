@@ -2662,6 +2662,41 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON business_review_logs(business_id, created_at);
         """,
     ),
+    (
+        44,
+        "listing reviews: Dianping-style ratings on services/deals + denormalized listing aggregates",
+        """
+        CREATE TABLE IF NOT EXISTS listing_reviews (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            business_id TEXT NOT NULL DEFAULT '',
+            user_id TEXT NOT NULL,
+            rating INTEGER NOT NULL DEFAULT 5,
+            content TEXT NOT NULL DEFAULT '',
+            visit_date TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'published',
+            owner_reply TEXT NOT NULL DEFAULT '',
+            owner_reply_at TEXT,
+            helpful_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(listing_id, user_id),
+            FOREIGN KEY(listing_id) REFERENCES city_listings(id),
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_reviews_listing
+            ON listing_reviews(listing_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_reviews_user
+            ON listing_reviews(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_reviews_business
+            ON listing_reviews(business_id, status, created_at);
+
+        ALTER TABLE city_listings ADD COLUMN rating_avg REAL NOT NULL DEFAULT 0;
+        ALTER TABLE city_listings ADD COLUMN rating_count INTEGER NOT NULL DEFAULT 0;
+        CREATE INDEX IF NOT EXISTS idx_city_listings_rating
+            ON city_listings(type, status, rating_avg, rating_count);
+        """,
+    ),
 ]
 
 

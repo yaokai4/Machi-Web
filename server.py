@@ -679,7 +679,7 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
     },
     "rental": {
         "rent", "deposit", "key_money", "management_fee", "layout", "area_sqm",
-        "nearest_station", "move_in_date", "short_term_allowed",
+        "nearest_station", "station_distance_minutes", "move_in_date", "short_term_allowed",
         "share_allowed", "furnished", "pet_allowed", "floor", "building_type",
         "publisher_type", "initial_cost_note", "lease_term",
     },
@@ -687,18 +687,27 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         "salary_min", "salary_max", "salary_type", "employment_type",
         "japanese_level", "visa_support", "working_hours", "company_name",
         "foreigner_friendly", "transportation_fee", "no_experience_ok",
-        "student_ok", "night_shift", "weekend",
+        "student_ok", "night_shift", "weekend", "weekend_available", "job_requirements",
     },
     "hiring": {
         "salary_min", "salary_max", "salary_type", "employment_type",
         "japanese_level", "visa_support", "working_hours", "company_name",
         "foreigner_friendly", "transportation_fee", "no_experience_ok",
-        "student_ok", "night_shift", "weekend",
+        "student_ok", "night_shift", "weekend", "weekend_available", "job_requirements",
     },
     "local_service": {
         "service_area", "service_type", "price_unit", "business_name",
         "certified_provider", "availability", "not_included", "service_process",
         "user_prepare", "cancellation_rule", "no_result_guarantee", "related_guides",
+        "booking_required", "rating_note", "license_note",
+        # Dianping-style on-site info
+        "open_hours", "price_range", "reservation_required", "store_phone",
+        # Ctrip/Agoda-style stays
+        "room_type", "max_guests", "check_in_time", "check_out_time",
+        "breakfast_included", "near_station",
+        # attractions / day tours / transfers
+        "ticket_type", "duration", "meeting_point", "included_items",
+        "languages", "pickup_service",
     },
     "discount": {
         "merchant_name", "discount_info", "valid_until", "usage_rules",
@@ -2660,6 +2669,11 @@ def _pg_xlate(sql: str, has_params: bool) -> str:
     import re
     if sql.lstrip()[:6].upper() == "PRAGMA":
         return "SELECT 1"
+    # SQLite's BEGIN IMMEDIATE/EXCLUSIVE/DEFERRED are a syntax error on
+    # PostgreSQL; the plain BEGIN gives the same all-or-nothing semantics
+    # (autocommit connections start an explicit transaction here).
+    if sql.strip().upper() in {"BEGIN IMMEDIATE", "BEGIN EXCLUSIVE", "BEGIN DEFERRED"}:
+        return "BEGIN"
 
     def replace_like_operators(src: str) -> str:
         out: list[str] = []
@@ -8678,6 +8692,8 @@ def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None)
         "coverMedia": cover_media,
         "createdAt": row.get("created_at"),
         "publishedAt": row.get("published_at"),
+        "ratingAvg": round(float(row.get("rating_avg") or 0), 2),
+        "ratingCount": int(row.get("rating_count") or 0),
     }
     payload = {
         "id": row["id"],
@@ -8723,6 +8739,10 @@ def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None)
         "isPromoted": bool(row.get("is_promoted", 0)),
         "promotion_weight": int(row.get("promotion_weight") or 0),
         "promotionWeight": int(row.get("promotion_weight") or 0),
+        "rating_avg": round(float(row.get("rating_avg") or 0), 2),
+        "ratingAvg": round(float(row.get("rating_avg") or 0), 2),
+        "rating_count": int(row.get("rating_count") or 0),
+        "ratingCount": int(row.get("rating_count") or 0),
         "published_at": row.get("published_at"),
         "publishedAt": row.get("published_at"),
         "expires_at": row.get("expires_at"),
@@ -8747,6 +8767,80 @@ def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None)
         "report_count_open": int(extras.get("open_report_count") or 0),
     }
     return payload
+
+
+# ── listing reviews (Dianping/Meituan-style star ratings on services) ──────
+# One review per user per listing, upsert-able. Aggregates are denormalized
+# onto city_listings (rating_avg / rating_count) so list pages never join.
+LISTING_REVIEW_STATUSES: set[str] = {"published", "hidden", "deleted"}
+# Star reviews only make sense where a merchant serves many customers; C2C
+# verticals (secondhand/rental/job) keep the inquiry/reputation loop instead.
+LISTING_REVIEWABLE_TYPES: set[str] = {"local_service", "discount", "event"}
+
+
+def recompute_listing_rating(conn: sqlite3.Connection, listing_id: str) -> tuple[float, int]:
+    row = conn.execute(
+        "SELECT COUNT(*) AS c, COALESCE(AVG(rating), 0) AS a FROM listing_reviews WHERE listing_id = ? AND status = 'published'",
+        (listing_id,),
+    ).fetchone()
+    count = int(row["c"] or 0)
+    avg = round(float(row["a"] or 0), 2) if count else 0.0
+    conn.execute(
+        "UPDATE city_listings SET rating_avg = ?, rating_count = ? WHERE id = ?",
+        (avg, count, listing_id),
+    )
+    return avg, count
+
+
+def listing_review_histogram(conn: sqlite3.Connection, listing_id: str) -> dict[str, int]:
+    histogram = {str(star): 0 for star in range(1, 6)}
+    for row in conn.execute(
+        "SELECT rating, COUNT(*) AS c FROM listing_reviews WHERE listing_id = ? AND status = 'published' GROUP BY rating",
+        (listing_id,),
+    ):
+        star = str(int(row["rating"] or 0))
+        if star in histogram:
+            histogram[star] = int(row["c"] or 0)
+    return histogram
+
+
+def serialize_listing_review(row: dict[str, Any], author: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "id": row["id"],
+        "listing_id": row.get("listing_id", "") or "",
+        "listingId": row.get("listing_id", "") or "",
+        "business_id": row.get("business_id", "") or "",
+        "businessId": row.get("business_id", "") or "",
+        "user_id": row.get("user_id", "") or "",
+        "userId": row.get("user_id", "") or "",
+        "rating": int(row.get("rating") or 0),
+        "content": row.get("content", "") or "",
+        "visit_date": row.get("visit_date", "") or "",
+        "visitDate": row.get("visit_date", "") or "",
+        "status": row.get("status", "published") or "published",
+        "owner_reply": row.get("owner_reply", "") or "",
+        "ownerReply": row.get("owner_reply", "") or "",
+        "owner_reply_at": row.get("owner_reply_at"),
+        "ownerReplyAt": row.get("owner_reply_at"),
+        "helpful_count": int(row.get("helpful_count") or 0),
+        "helpfulCount": int(row.get("helpful_count") or 0),
+        "created_at": row.get("created_at"),
+        "createdAt": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+        "updatedAt": row.get("updated_at"),
+        "author": author,
+        # merchant-console convenience; filled by callers that join listings
+        "listing_title": row.get("listing_title", "") or "",
+        "listingTitle": row.get("listing_title", "") or "",
+        "listing_type": row.get("listing_type", "") or "",
+        "listingType": row.get("listing_type", "") or "",
+    }
+
+
+def fetch_listing_reviews_with_authors(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    author_ids = list({r.get("user_id") for r in rows if r.get("user_id")})
+    authors = fetch_users_by_ids(conn, author_ids)
+    return [serialize_listing_review(r, authors.get(r.get("user_id", ""))) for r in rows]
 
 
 def hydrate_listing_extras(conn: sqlite3.Connection, listing_ids: list[str], current_user_id: str | None) -> dict[str, dict[str, Any]]:
@@ -14571,6 +14665,13 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_upsert_business_application(conn)
         if path in {"/api/business/dashboard", "/api/me/business/dashboard"} and method == "GET":
             return self.api_business_dashboard(conn)
+        if path in {"/api/my/business/reviews", "/api/me/business/reviews", "/api/business/reviews"} and method == "GET":
+            return self.api_my_business_reviews(conn, query)
+        # Public merchant directory: verified businesses browsable by anyone.
+        if path == "/api/businesses/directory" and method == "GET":
+            return self.api_businesses_directory(conn, query)
+        if path.startswith("/api/businesses/") and path.endswith("/public") and method == "GET":
+            return self.api_business_public(conn, unquote(path[len("/api/businesses/"):-len("/public")]))
 
         # structured city listings (marketplace / rentals / jobs / services)
         if path == "/api/listings" and method == "GET":
@@ -14624,6 +14725,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_listing_report(conn, listing_id)
             if rest in {"inquiry", "contact", "apply", "application", "book-viewing", "viewing", "book-service", "booking"} and method == "POST":
                 return self.api_listing_inquiry(conn, listing_id)
+            if rest == "reviews" and method == "GET":
+                return self.api_listing_reviews(conn, listing_id, query)
+            if rest == "reviews" and method == "POST":
+                return self.api_upsert_listing_review(conn, listing_id)
+            if rest.startswith("reviews/"):
+                review_parts = rest.split("/")
+                review_id = unquote(review_parts[1]) if len(review_parts) > 1 else ""
+                review_tail = review_parts[2:]
+                if review_id and not review_tail and method == "DELETE":
+                    return self.api_delete_listing_review(conn, listing_id, review_id)
+                if review_id and review_tail == ["reply"] and method == "POST":
+                    return self.api_reply_listing_review(conn, listing_id, review_id)
 
         # search
         if path == "/api/search" and method == "GET":
@@ -15036,6 +15149,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_businesses(conn, query)
         if path.startswith("/api/admin/businesses/") and method == "PATCH":
             return self.api_admin_update_business(conn, unquote(path[len("/api/admin/businesses/"):]))
+        if path == "/api/admin/listing-reviews" and method == "GET":
+            return self.api_admin_listing_reviews(conn, query)
+        if path.startswith("/api/admin/listing-reviews/") and method == "PATCH":
+            return self.api_admin_update_listing_review(conn, unquote(path[len("/api/admin/listing-reviews/"):]))
         if path == "/api/admin/seller-verifications" and method == "GET":
             return self.api_admin_listing_verifications(conn, query)
         if path == "/api/admin/comments" and method == "GET":
@@ -18778,7 +18895,9 @@ class Handler(BaseHTTPRequestHandler):
                 source = []
         out: list[str] = []
         for item in source:
-            text = str(item or "").strip()
+            # Self-heal rows that were double-encoded by the old comma-split
+            # update path: strip stray JSON punctuation from each element.
+            text = str(item or "").strip().strip('[]"\\').strip()
             if text and text not in out:
                 out.append(text[:120])
         return out[:30]
@@ -18885,7 +19004,17 @@ class Handler(BaseHTTPRequestHandler):
 
         def clean_list(value: Any) -> list[str]:
             if isinstance(value, str):
-                value = [part for part in re.split(r"[,，\n]", value) if part.strip()]
+                trimmed = value.strip()
+                # Fallbacks read the stored column, which is a JSON array
+                # string — decode it instead of comma-splitting, otherwise a
+                # resubmit without the field double-encodes the list.
+                if trimmed.startswith("["):
+                    try:
+                        value = json.loads(trimmed)
+                    except (ValueError, json.JSONDecodeError):
+                        value = [part for part in re.split(r"[,，\n]", trimmed) if part.strip()]
+                else:
+                    value = [part for part in re.split(r"[,，\n]", value) if part.strip()]
             return self._business_json_list(value)
 
         fields: dict[str, Any] = {
@@ -19094,6 +19223,425 @@ class Handler(BaseHTTPRequestHandler):
             "recent_listings": recent_listings,
             "recent_inquiries": recent_inquiries,
         })
+
+    # ── listing reviews: Dianping-style ratings on services/deals ──────────
+
+    def api_listing_reviews(self, conn: sqlite3.Connection, listing_id: str, query: dict[str, str]) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        listing = conn.execute(
+            "SELECT id, type, seller_user_id, rating_avg, rating_count FROM city_listings WHERE id = ? AND deleted_at IS NULL",
+            (listing_id,),
+        ).fetchone()
+        if not listing:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        try:
+            limit = max(1, min(100, int(query.get("limit") or 50)))
+        except (TypeError, ValueError):
+            limit = 50
+        try:
+            offset = max(0, int(query.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        rows = [dict(r) for r in conn.execute(
+            """
+            SELECT * FROM listing_reviews
+             WHERE listing_id = ? AND status = 'published'
+             ORDER BY created_at DESC
+             LIMIT ? OFFSET ?
+            """,
+            (listing_id, limit, offset),
+        )]
+        items = fetch_listing_reviews_with_authors(conn, rows)
+        summary = {
+            "rating_avg": round(float(listing["rating_avg"] or 0), 2),
+            "ratingAvg": round(float(listing["rating_avg"] or 0), 2),
+            "rating_count": int(listing["rating_count"] or 0),
+            "ratingCount": int(listing["rating_count"] or 0),
+            "histogram": listing_review_histogram(conn, listing_id),
+            "reviewable": listing["type"] in LISTING_REVIEWABLE_TYPES,
+        }
+        my_review = None
+        if viewer_id:
+            mine = conn.execute(
+                "SELECT * FROM listing_reviews WHERE listing_id = ? AND user_id = ? AND status != 'deleted'",
+                (listing_id, viewer_id),
+            ).fetchone()
+            if mine:
+                my_review = fetch_listing_reviews_with_authors(conn, [dict(mine)])[0]
+        payload = {"items": items, "summary": summary, "my_review": my_review, "myReview": my_review}
+        self.send_json({"ok": True, **payload, "data": payload})
+
+    def api_upsert_listing_review(self, conn: sqlite3.Connection, listing_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        listing = dict(row)
+        if listing.get("type") not in LISTING_REVIEWABLE_TYPES:
+            raise APIError("该类型暂不支持点评", 400, "review_not_supported")
+        if listing.get("status") not in PUBLIC_LISTING_STATUSES:
+            raise APIError("该信息当前不可点评", 400, "listing_not_reviewable")
+        if listing.get("seller_user_id") == user["id"]:
+            raise APIError("不能点评自己发布的服务", 400, "self_review")
+        data = self.read_json()
+        try:
+            rating = int(data.get("rating") or 0)
+        except (TypeError, ValueError):
+            rating = 0
+        if rating < 1 or rating > 5:
+            raise APIError("评分需在 1-5 星之间", 400, "invalid_rating")
+        content = _clean_text(data.get("content"), 2000)
+        visit_date = _clean_text(data.get("visit_date") or data.get("visitDate"), 20)
+        now = now_iso()
+        review_id = str(uuid.uuid4())
+        # One review per user per listing. The UNIQUE upsert keeps concurrent
+        # first-reviews from raising; edits re-publish a hidden/deleted row.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            existed = conn.execute(
+                "SELECT id FROM listing_reviews WHERE listing_id = ? AND user_id = ?",
+                (listing_id, user["id"]),
+            ).fetchone()
+            conn.execute(
+                """
+                INSERT INTO listing_reviews (
+                    id, listing_id, business_id, user_id, rating, content, visit_date,
+                    status, owner_reply, helpful_count, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'published', '', 0, ?, ?)
+                ON CONFLICT(listing_id, user_id) DO UPDATE SET
+                    rating = excluded.rating,
+                    content = excluded.content,
+                    visit_date = excluded.visit_date,
+                    status = 'published',
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    review_id, listing_id, listing.get("business_id") or "", user["id"],
+                    rating, content, visit_date, now, now,
+                ),
+            )
+            rating_avg, rating_count = recompute_listing_rating(conn, listing_id)
+            if not existed and listing.get("seller_user_id"):
+                conn.execute(
+                    """
+                    INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, content, created_at)
+                    VALUES (?, ?, ?, 'listing_review', ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()), listing["seller_user_id"], user["id"], listing_id,
+                        f"{rating} 星点评：{(listing.get('title') or '')[:120]}", now,
+                    ),
+                )
+            conn.execute("COMMIT")
+        except Exception:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        if not existed and listing.get("seller_user_id"):
+            HUB.publish(listing["seller_user_id"], {"type": "notification", "kind": "listing_review", "listing_id": listing_id})
+            server_apns.enqueue(listing["seller_user_id"], ntype="listing_review", actor_id=user["id"],
+                                content=f"{rating} 星点评：{(listing.get('title') or '')[:120]}")
+        fresh = conn.execute(
+            "SELECT * FROM listing_reviews WHERE listing_id = ? AND user_id = ?",
+            (listing_id, user["id"]),
+        ).fetchone()
+        review = fetch_listing_reviews_with_authors(conn, [dict(fresh)])[0] if fresh else None
+        payload = {
+            "review": review,
+            "rating_avg": rating_avg, "ratingAvg": rating_avg,
+            "rating_count": rating_count, "ratingCount": rating_count,
+        }
+        self.send_json({"ok": True, **payload, "data": payload}, 200 if existed else 201)
+
+    def api_delete_listing_review(self, conn: sqlite3.Connection, listing_id: str, review_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute(
+            "SELECT * FROM listing_reviews WHERE id = ? AND listing_id = ?",
+            (review_id, listing_id),
+        ).fetchone()
+        if not row:
+            raise APIError("点评不存在", 404, "review_not_found")
+        is_admin = (user.get("role") or "") == "admin"
+        if row["user_id"] != user["id"] and not is_admin:
+            raise APIError("只能删除自己的点评", 403, "forbidden")
+        now = now_iso()
+        conn.execute("UPDATE listing_reviews SET status = 'deleted', updated_at = ? WHERE id = ?", (now, review_id))
+        rating_avg, rating_count = recompute_listing_rating(conn, listing_id)
+        payload = {"rating_avg": rating_avg, "ratingAvg": rating_avg, "rating_count": rating_count, "ratingCount": rating_count}
+        self.send_json({"ok": True, **payload, "data": payload})
+
+    def api_reply_listing_review(self, conn: sqlite3.Connection, listing_id: str, review_id: str) -> None:
+        user = self.require_user(conn)
+        listing = conn.execute(
+            "SELECT id, seller_user_id, title FROM city_listings WHERE id = ? AND deleted_at IS NULL",
+            (listing_id,),
+        ).fetchone()
+        if not listing:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        if listing["seller_user_id"] != user["id"]:
+            raise APIError("只有发布者可以回复点评", 403, "forbidden")
+        row = conn.execute(
+            "SELECT * FROM listing_reviews WHERE id = ? AND listing_id = ? AND status != 'deleted'",
+            (review_id, listing_id),
+        ).fetchone()
+        if not row:
+            raise APIError("点评不存在", 404, "review_not_found")
+        data = self.read_json()
+        reply = _clean_text(data.get("content") or data.get("reply"), 1000)
+        if not reply:
+            raise APIError("请填写回复内容", 400, "reply_required")
+        now = now_iso()
+        conn.execute(
+            "UPDATE listing_reviews SET owner_reply = ?, owner_reply_at = ?, updated_at = ? WHERE id = ?",
+            (reply, now, now, review_id),
+        )
+        conn.execute(
+            """
+            INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, content, created_at)
+            VALUES (?, ?, ?, 'listing_review_reply', ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), row["user_id"], user["id"], listing_id, reply[:140], now),
+        )
+        HUB.publish(row["user_id"], {"type": "notification", "kind": "listing_review_reply", "listing_id": listing_id})
+        server_apns.enqueue(row["user_id"], ntype="listing_review_reply", actor_id=user["id"], content=reply[:140])
+        fresh = conn.execute("SELECT * FROM listing_reviews WHERE id = ?", (review_id,)).fetchone()
+        review = fetch_listing_reviews_with_authors(conn, [dict(fresh)])[0]
+        self.send_json({"ok": True, "review": review, "data": {"review": review}})
+
+    def api_my_business_reviews(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        business = self._business_row_for_user(conn, user["id"])
+        business_id = (business or {}).get("id") or ""
+        status = (query.get("status") or "").strip()
+        clauses = [
+            "l.deleted_at IS NULL",
+            "r.status != 'deleted'",
+            "(l.seller_user_id = ? OR (? != '' AND l.business_id = ?))",
+        ]
+        params: list[Any] = [user["id"], business_id, business_id]
+        if status in LISTING_REVIEW_STATUSES:
+            clauses.append("r.status = ?")
+            params.append(status)
+        listing_filter = (query.get("listing_id") or query.get("listingId") or "").strip()
+        if listing_filter:
+            clauses.append("r.listing_id = ?")
+            params.append(listing_filter)
+        rows = [dict(r) for r in conn.execute(
+            f"""
+            SELECT r.*, l.title AS listing_title, l.type AS listing_type
+              FROM listing_reviews r
+              JOIN city_listings l ON l.id = r.listing_id
+             WHERE {' AND '.join(clauses)}
+             ORDER BY r.created_at DESC
+             LIMIT 100
+            """,
+            params,
+        )]
+        items = fetch_listing_reviews_with_authors(conn, rows)
+        total = len(items)
+        avg = round(sum(i["rating"] for i in items) / total, 2) if total else 0.0
+        unanswered = sum(1 for i in items if not i["owner_reply"])
+        payload = {
+            "items": items,
+            "summary": {"count": total, "rating_avg": avg, "ratingAvg": avg, "unreplied": unanswered},
+        }
+        self.send_json({"ok": True, **payload, "data": payload})
+
+    # ── public business directory (verified merchants) ──────────────────────
+
+    def _business_public_payload(self, conn: sqlite3.Connection, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        item = dict(row)
+        try:
+            opening_hours = json.loads(item.get("opening_hours") or "{}")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            opening_hours = {}
+        owner_row = conn.execute(
+            "SELECT * FROM users WHERE id = ? AND deleted_at IS NULL",
+            (item.get("owner_user_id") or "",),
+        ).fetchone()
+        owner = serialize_user_with_counts(conn, dict(owner_row)) if owner_row else None
+        owner_id = item.get("owner_user_id") or ""
+        published = int(conn.execute(
+            """
+            SELECT COUNT(*) AS c FROM city_listings
+             WHERE deleted_at IS NULL AND status = 'published'
+               AND type IN ('local_service', 'discount', 'event')
+               AND (business_id = ? OR (business_id IS NULL AND seller_user_id = ?))
+            """,
+            (item["id"], owner_id),
+        ).fetchone()["c"] or 0)
+        rating = conn.execute(
+            """
+            SELECT COALESCE(AVG(r.rating), 0) AS a, COUNT(*) AS c
+              FROM listing_reviews r
+              JOIN city_listings l ON l.id = r.listing_id
+             WHERE r.status = 'published' AND l.deleted_at IS NULL
+               AND (l.business_id = ? OR (l.business_id IS NULL AND l.seller_user_id = ?))
+            """,
+            (item["id"], owner_id),
+        ).fetchone()
+        rating_count = int(rating["c"] or 0)
+        rating_avg = round(float(rating["a"] or 0), 2) if rating_count else 0.0
+        # Public whitelist — legal/registration/contact-private fields stay out.
+        return {
+            "id": item["id"],
+            "business_name": item.get("business_name", "") or "",
+            "businessName": item.get("business_name", "") or "",
+            "business_type": item.get("business_type", "") or "",
+            "businessType": item.get("business_type", "") or "",
+            "country_code": item.get("country_code", "") or "",
+            "countryCode": item.get("country_code", "") or "",
+            "city_slug": item.get("city_slug", "") or "",
+            "citySlug": item.get("city_slug", "") or "",
+            "address": item.get("address", "") or "",
+            "website": item.get("website", "") or "",
+            "contact_method": item.get("contact_method", "") or "",
+            "contactMethod": item.get("contact_method", "") or "",
+            "description": item.get("description", "") or "",
+            "service_categories": self._business_json_list(item.get("service_categories")),
+            "serviceCategories": self._business_json_list(item.get("service_categories")),
+            "service_cities": self._business_json_list(item.get("service_cities")),
+            "serviceCities": self._business_json_list(item.get("service_cities")),
+            "opening_hours": opening_hours if isinstance(opening_hours, dict) else {},
+            "openingHours": opening_hours if isinstance(opening_hours, dict) else {},
+            "logo_url": item.get("logo_url", "") or "",
+            "logoUrl": item.get("logo_url", "") or "",
+            "cover_url": item.get("cover_url", "") or "",
+            "coverUrl": item.get("cover_url", "") or "",
+            "verification_status": item.get("verification_status", "") or "",
+            "verificationStatus": item.get("verification_status", "") or "",
+            "is_verified": item.get("verification_status") == "verified",
+            "isVerified": item.get("verification_status") == "verified",
+            "owner": owner,
+            "published_listing_count": published,
+            "publishedListingCount": published,
+            "rating_avg": rating_avg,
+            "ratingAvg": rating_avg,
+            "rating_count": rating_count,
+            "ratingCount": rating_count,
+            "created_at": item.get("created_at"),
+            "createdAt": item.get("created_at"),
+        }
+
+    def api_businesses_directory(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        city = (query.get("city") or query.get("city_slug") or "").strip().lower()
+        category = (query.get("category") or "").strip()
+        q = (query.get("q") or "").strip()
+        clauses = ["verification_status = 'verified'"]
+        params: list[Any] = []
+        if city:
+            clauses.append("(city_slug = ? OR service_cities LIKE ?)")
+            params.extend([city, f'%"{city}"%'])
+        if category and category != "全部":
+            clauses.append("service_categories LIKE ?")
+            params.append(f'%{category}%')
+        if q:
+            clauses.append("(business_name LIKE ? OR description LIKE ? OR business_type LIKE ?)")
+            like = f"%{q}%"
+            params.extend([like, like, like])
+        rows = list(conn.execute(
+            f"""
+            SELECT * FROM business_profiles
+             WHERE {' AND '.join(clauses)}
+             ORDER BY updated_at DESC
+             LIMIT 60
+            """,
+            params,
+        ))
+        items = [self._business_public_payload(conn, r) for r in rows]
+        items.sort(key=lambda b: (b["rating_avg"], b["rating_count"], b["published_listing_count"]), reverse=True)
+        payload = {"items": items, "total": len(items)}
+        self.send_json({"ok": True, **payload, "data": payload})
+
+    def api_business_public(self, conn: sqlite3.Connection, business_id: str) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        row = conn.execute(
+            "SELECT * FROM business_profiles WHERE id = ? AND verification_status = 'verified'",
+            (business_id,),
+        ).fetchone()
+        if not row:
+            raise APIError("商家不存在或未通过认证", 404, "business_not_found")
+        business = self._business_public_payload(conn, row)
+        owner_id = dict(row).get("owner_user_id") or ""
+        listing_rows = [dict(r) for r in conn.execute(
+            """
+            SELECT * FROM city_listings
+             WHERE deleted_at IS NULL AND status IN ('published', 'reserved')
+               AND type IN ('local_service', 'discount', 'event')
+               AND (business_id = ? OR (business_id IS NULL AND seller_user_id = ?))
+             ORDER BY is_promoted DESC, updated_at DESC
+             LIMIT 24
+            """,
+            (business_id, owner_id),
+        )]
+        listings = fetch_listings_with_extras(conn, listing_rows, viewer_id)
+        listing_ids = [r["id"] for r in listing_rows]
+        reviews: list[dict[str, Any]] = []
+        if listing_ids:
+            placeholders = ",".join("?" * len(listing_ids))
+            review_rows = [dict(r) for r in conn.execute(
+                f"""
+                SELECT r.*, l.title AS listing_title, l.type AS listing_type
+                  FROM listing_reviews r
+                  JOIN city_listings l ON l.id = r.listing_id
+                 WHERE r.listing_id IN ({placeholders}) AND r.status = 'published'
+                 ORDER BY r.created_at DESC
+                 LIMIT 12
+                """,
+                listing_ids,
+            )]
+            reviews = fetch_listing_reviews_with_authors(conn, review_rows)
+        payload = {"business": business, "listings": listings, "reviews": reviews}
+        self.send_json({"ok": True, **payload, "data": payload})
+
+    def api_admin_listing_reviews(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        status = (query.get("status") or "").strip()
+        q = (query.get("q") or "").strip()
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if status in LISTING_REVIEW_STATUSES:
+            clauses.append("r.status = ?")
+            params.append(status)
+        if q:
+            clauses.append("(r.content LIKE ? OR l.title LIKE ?)")
+            like = f"%{q}%"
+            params.extend([like, like])
+        rows = [dict(r) for r in conn.execute(
+            f"""
+            SELECT r.*, l.title AS listing_title, l.type AS listing_type
+              FROM listing_reviews r
+              JOIN city_listings l ON l.id = r.listing_id
+             WHERE {' AND '.join(clauses)}
+             ORDER BY r.created_at DESC
+             LIMIT 200
+            """,
+            params,
+        )]
+        items = fetch_listing_reviews_with_authors(conn, rows)
+        self.send_json({"ok": True, "items": items, "data": {"items": items}})
+
+    def api_admin_update_listing_review(self, conn: sqlite3.Connection, review_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM listing_reviews WHERE id = ?", (review_id,)).fetchone()
+        if not row:
+            raise APIError("点评不存在", 404, "review_not_found")
+        data = self.read_json()
+        status = _clean_text(data.get("status"), 20)
+        if status not in LISTING_REVIEW_STATUSES:
+            raise APIError("点评状态不合法", 400, "invalid_review_status")
+        now = now_iso()
+        conn.execute("UPDATE listing_reviews SET status = ?, updated_at = ? WHERE id = ?", (status, now, review_id))
+        rating_avg, rating_count = recompute_listing_rating(conn, row["listing_id"])
+        fresh = conn.execute("SELECT * FROM listing_reviews WHERE id = ?", (review_id,)).fetchone()
+        review = fetch_listing_reviews_with_authors(conn, [dict(fresh)])[0]
+        payload = {"review": review, "rating_avg": rating_avg, "rating_count": rating_count}
+        self.send_json({"ok": True, **payload, "data": payload})
 
     def api_admin_businesses(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
