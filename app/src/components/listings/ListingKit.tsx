@@ -610,6 +610,8 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                       setCategory("全部");
                       setFilters({});
                       setFiltersOpen(false);
+                      // 评分排序只对住宿（local_service）有意义，切回长租时还原
+                      if (key === "homes") setSort((current) => (current === "rating" ? "latest" : current));
                     }}
                     data-active={rentalTab === key}
                     className="inline-flex h-11 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-xs font-black text-slate-500 transition data-[active=true]:bg-slate-950 data-[active=true]:text-white data-[active=true]:shadow-[0_12px_26px_-16px_rgba(15,23,42,0.9)] hover:text-slate-800 data-[active=true]:hover:text-white sm:gap-2 sm:px-5 sm:text-sm"
@@ -662,6 +664,9 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                 <option value="price_desc">{lodgingActive ? pickText(locale, "每晚价格从高到低", "1泊料金が高い順", "Nightly: high → low") : spec.type === "rental" ? pickText(locale, "租金从高到低", "家賃が高い順", "Rent: high → low") : pickText(locale, "价格从高到低", "価格が高い順", "Price: high → low")}</option>
                 {lodgingActive || kind === "services" ? <option value="rating">{pickText(locale, "评分最高", "評価が高い順", "Top rated")}</option> : null}
                 <option value="popular">{pickText(locale, "最多收藏", "人気順", "Most saved")}</option>
+                {kind === "services" || lodgingActive ? (
+                  <option value="rating">{pickText(locale, "评分优先", "評価が高い順", "Top rated")}</option>
+                ) : null}
               </select>
               <p className="ml-auto hidden text-xs font-bold text-slate-400 sm:block">
                 {visibleItems.length
@@ -859,8 +864,9 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
   const item = listing.data;
   const displayTitle = displayListingTitle(item) || item.title;
   const cityName = cityLabel(item.city_slug);
+  const isOwner = !!(user && item.seller_user_id === user.id);
   return (
-    <AppShell requireAuth={false} hideBottomNav right={<DetailContactCard item={item} onContact={openIntake} />}>
+    <AppShell requireAuth={false} hideBottomNav right={<DetailContactCard item={item} onContact={openIntake} isOwner={isOwner} />}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2">
         <div className="flex items-center gap-2">
           <Link href={listingBackHref(item)} className="grid h-10 w-10 place-items-center rounded-full bg-white text-slate-700 shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
@@ -949,13 +955,22 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
         className="fixed inset-x-0 bottom-0 z-50 border-t border-slate-200/80 bg-white/90 px-3 pt-3 shadow-[0_-12px_40px_-24px_rgba(15,23,42,0.4)] backdrop-blur-xl md:hidden dark:border-white/10 dark:bg-slate-950/85"
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
       >
-        <button
-          type="button"
-          onClick={openIntake}
-          className="h-12 w-full rounded-full bg-slate-950 text-sm font-black text-white shadow-[0_16px_34px_-18px_rgba(15,23,42,0.9)] transition active:scale-[0.99] dark:bg-white dark:text-slate-950"
-        >
-          {contactActionLabel(item)}
-        </button>
+        {isOwner ? (
+          <Link
+            href={`/listings/create?type=${item.type}&edit=${item.id}`}
+            className="flex h-12 w-full items-center justify-center rounded-full bg-slate-950 text-sm font-black text-white shadow-[0_16px_34px_-18px_rgba(15,23,42,0.9)] transition active:scale-[0.99] dark:bg-white dark:text-slate-950"
+          >
+            编辑信息
+          </Link>
+        ) : (
+          <button
+            type="button"
+            onClick={openIntake}
+            className="h-12 w-full rounded-full bg-slate-950 text-sm font-black text-white shadow-[0_16px_34px_-18px_rgba(15,23,42,0.9)] transition active:scale-[0.99] dark:bg-white dark:text-slate-950"
+          >
+            {contactActionLabel(item)}
+          </button>
+        )}
       </div>
       <IntakeSheet
         item={item}
@@ -3074,7 +3089,7 @@ function OrderCard({ item }: { item: Record<string, unknown> }) {
   );
 }
 
-function DetailContactCard({ item, onContact }: { item: KXCityListing; onContact: () => void }) {
+function DetailContactCard({ item, onContact, isOwner = false }: { item: KXCityListing; onContact: () => void; isOwner?: boolean }) {
   const label = contactActionLabel(item);
   const location = cleanListingText(item.location_text) || cityLabel(item.city_slug);
   return (
@@ -3082,10 +3097,21 @@ function DetailContactCard({ item, onContact }: { item: KXCityListing; onContact
       <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_12px_36px_rgba(15,23,42,0.06)]">
         <p className="text-2xl font-black text-slate-950">{priceLabel(item)}</p>
         <p className="mt-1 text-sm font-semibold text-slate-500">{location}</p>
-        <button type="button" onClick={onContact} className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-slate-950 text-sm font-black text-white">
-          <Send className="h-4 w-4" />
-          {label}
-        </button>
+        {isOwner ? (
+          <>
+            <Link href={`/listings/create?type=${item.type}&edit=${item.id}`} className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-slate-950 text-sm font-black text-white">
+              编辑信息
+            </Link>
+            <Link href="/my/listings" className="mt-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full border border-slate-200 text-sm font-black text-slate-700">
+              管理我的发布
+            </Link>
+          </>
+        ) : (
+          <button type="button" onClick={onContact} className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-slate-950 text-sm font-black text-white">
+            <Send className="h-4 w-4" />
+            {label}
+          </button>
+        )}
       </section>
       <SafetyNotice type={item.type} />
     </div>
