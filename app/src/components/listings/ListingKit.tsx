@@ -46,7 +46,6 @@ import {
   Tag,
   Ticket,
   Train,
-  Users,
   Utensils,
   UtensilsCrossed,
   Waves,
@@ -99,7 +98,7 @@ const videoFallbackArtworkStyle: React.CSSProperties = {
 };
 
 const CHANNEL: Record<ChannelKind, { type: KXListingType; title: string; subtitle: string; icon: typeof Home; search: string; createLabel: string }> = {
-  marketplace: { type: "secondhand", title: "二手市场", subtitle: "图片、价格、地点和交易状态清晰分离", icon: Tag, search: "搜索家具、家电、教材、电子产品、搬家出清", createLabel: "发布二手" },
+  marketplace: { type: "secondhand", title: "二手市场", subtitle: "图片、价格、地点、成色和交易方式清晰分离", icon: Tag, search: "搜索家具、家电、手机数码、教材、搬家出清", createLabel: "发布二手" },
   rentals: { type: "rental", title: "租房 · 住宿", subtitle: "长租房源与民宿短住，价格、车站和入住条件一目了然", icon: Home, search: "搜索地区、车站、民宿、酒店、房源关键词", createLabel: "发布房源" },
   jobs: { type: "job", title: "工作机会", subtitle: "薪资、地点、日语要求、签证支持和招聘方认证", icon: Briefcase, search: "搜索职位、公司、地点、日语要求", createLabel: "发布职位" },
   services: { type: "local_service", title: "商家与本地服务", subtitle: "餐厅美食、点评订座、景点玩乐和生活支持", icon: Sparkles, search: "搜索餐厅美食、景点门票、一日游、接送机、翻译手续", createLabel: "发布服务" },
@@ -163,17 +162,17 @@ function localizedChannel(kind: ChannelKind, locale: Locale) {
 }
 
 // ── 类目体系（zh 为存储/过滤的规范值，详见 CATEGORY_LABELS 注释）────────────
-/// 餐厅美食：大众点评式菜系类目（local_service 下）。
+/// 餐厅美食：菜系类目（local_service 下）。
 export const FOOD_CATEGORIES = ["中华料理", "日本料理", "居酒屋", "烧肉火锅", "拉面", "寿司海鲜", "咖啡甜品", "西餐", "韩国料理"] as const;
 /// 餐厅美食分区还包含两个老类目（已有数据继续生效）。
 const FOOD_SECTION_CATEGORIES = [...FOOD_CATEGORIES, "餐饮点评", "优惠预约"];
-/// 住宿（爱彼迎式）：归属租房页「民宿·短住」标签；"酒店民宿" 为老类目伞值。
+/// 住宿：归属租房页「民宿·短住」标签；"酒店民宿" 为老类目伞值。
 export const STAY_CATEGORIES = ["民宿", "酒店", "温泉旅馆", "公寓式酒店", "酒店民宿"] as const;
 const STAY_CATEGORY_SET = new Set<string>(STAY_CATEGORIES);
 const FOOD_CATEGORY_SET = new Set<string>(FOOD_SECTION_CATEGORIES);
 
 const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
-  secondhand: ["全部", "家具", "家电", "电子产品", "教材", "衣物", "生活用品", "搬家出清", "免费送", "求购"],
+  secondhand: ["全部", "家具", "家电", "手机数码", "电脑办公", "电子产品", "教材", "书籍教材", "衣物", "生活用品", "母婴儿童", "运动户外", "票券卡券", "搬家出清", "免费送", "求购"],
   rental: ["全部", "单人", "合租", "短租", "整租", "家具家电", "近车站"],
   job: ["全部", "兼职", "全职", "时给", "月给", "无经验可", "留学生可", "签证支持", "周末"],
   hiring: ["全部", "兼职", "全职", "派遣", "实习", "签证支持"],
@@ -193,10 +192,16 @@ const CATEGORY_LABELS: Record<string, { ja: string; en: string }> = {
   "全部": { ja: "すべて", en: "All" },
   "家具": { ja: "家具", en: "Furniture" },
   "家电": { ja: "家電", en: "Appliances" },
+  "手机数码": { ja: "スマホ・デジタル", en: "Phones & gadgets" },
+  "电脑办公": { ja: "PC・オフィス", en: "Computers & office" },
   "电子产品": { ja: "電子機器", en: "Electronics" },
   "教材": { ja: "教材", en: "Textbooks" },
+  "书籍教材": { ja: "本・教材", en: "Books & textbooks" },
   "衣物": { ja: "衣類", en: "Clothing" },
   "生活用品": { ja: "生活用品", en: "Daily goods" },
+  "母婴儿童": { ja: "ベビー・キッズ", en: "Baby & kids" },
+  "运动户外": { ja: "スポーツ・アウトドア", en: "Sports & outdoors" },
+  "票券卡券": { ja: "チケット・ギフト券", en: "Tickets & gift cards" },
   "搬家出清": { ja: "引越し処分", en: "Moving sale" },
   "免费送": { ja: "無料譲渡", en: "Free giveaway" },
   "求购": { ja: "買います", en: "Wanted" },
@@ -400,7 +405,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [serviceSection, setServiceSection] = useState("all");
-  // 租房页（爱彼迎式）双标签：长租房源 / 民宿·短住（住宿类 local_service）。
+  // 租房页双标签：长租房源 / 民宿·短住（住宿类 local_service）。
   const [rentalTab, setRentalTab] = useState<"homes" | "stays">("homes");
   const [sort, setSort] = useState("latest");
   const [filtersOpen, setFiltersOpen] = useState(false);
@@ -533,7 +538,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
       <main className="px-3 py-4 sm:px-4">
         <section className="mx-auto min-w-0 max-w-6xl">
           {kind === "rentals" ? (
-            // 爱彼迎式顶部双标签：长租房源 / 民宿·短住
+            // 顶部双标签：长租房源 / 民宿·短住
             <div className="mb-4 flex justify-center">
               <div className="inline-flex items-center rounded-full border border-slate-200/80 bg-white p-1 shadow-[0_14px_36px_-26px_rgba(15,23,42,0.6)]">
                 {([
@@ -672,24 +677,24 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
             </section>
           ) : visibleItems.length ? (
             kind === "marketplace" ? (
-              // 闲鱼 / Mercari：双列起步的高密度图片瀑布，价格压在图上
+              // 二手市场：双列起步的高密度图片瀑布，价格压在图上
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">
-                {visibleItems.map((listing) => <MercariStyleCard key={listing.id} listing={listing} />)}
+                {visibleItems.map((listing) => <SecondhandListingCard key={listing.id} listing={listing} />)}
               </div>
             ) : kind === "rentals" ? (
-              // 爱彼迎式照片主导网格：长租与民宿短住共用同一套视觉语言
+              // 照片主导网格：长租与民宿短住共用同一套视觉语言
               <div className="grid grid-cols-1 gap-x-4 gap-y-7 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
                 {visibleItems.map((listing) => (
-                  <AirbnbListingCard key={listing.id} listing={listing} locale={locale} variant={staysActive ? "stay" : "home"} />
+                  <StayListingCard key={listing.id} listing={listing} locale={locale} variant={staysActive ? "stay" : "home"} />
                 ))}
               </div>
             ) : kind === "jobs" ? (
-              // Indeed / BOSS：职位行卡，薪资高亮 + 标签 + 快速申请
+              // 职位行卡：薪资高亮 + 标签 + 快速申请
               <div className="space-y-3">
                 {visibleItems.map((listing) => <JobRowCard key={listing.id} listing={listing} locale={locale} />)}
               </div>
             ) : kind === "services" ? (
-              // 大众点评 / 美团 + 携程：评分卡片，预约 CTA
+              // 服务卡片：评分 + 类目 + 价位 + 预约 CTA
               <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
                 {visibleItems.map((listing) => <ServiceCard key={listing.id} listing={listing} locale={locale} />)}
               </div>
@@ -2002,7 +2007,7 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
   );
 }
 
-// ── 服务频道分区（大众点评 / 美团式信息架构）────────────────────────────────
+// ── 服务频道分区──────────────────────────────────────────────────────────
 // 住宿类目已整体搬去租房页「民宿·短住」，这里不再展示。
 const SERVICE_SECTIONS: { key: string; zh: string; ja: string; en: string; categories: string[] }[] = [
   { key: "all", zh: "全部", ja: "すべて", en: "All", categories: [] },
@@ -2113,8 +2118,8 @@ function listingAttrFlag(listing: KXCityListing, key: string): boolean {
   return value === "true" || value === "1" || value === "yes" || value === "是";
 }
 
-/// 闲鱼 / Mercari 风：紧凑方图卡，价格压图，状态角标。
-function MercariStyleCard({ listing }: { listing: KXCityListing }) {
+/// 二手市场卡：紧凑方图卡，价格压图，状态角标。
+function SecondhandListingCard({ listing }: { listing: KXCityListing }) {
   const title = displayListingTitle(listing) || "城市信息";
   const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
   const coverMedia = listingCoverMedia(listing);
@@ -2125,7 +2130,14 @@ function MercariStyleCard({ listing }: { listing: KXCityListing }) {
   const useVideoFallbackArtwork = coverIsVideo && !coverPreview;
   const sold = listing.status === "sold" || listing.status === "rented" || listing.status === "closed";
   const condition = listingAttr(listing, "condition");
+  const listingMode = listingAttr(listing, "listing_mode");
+  const priceNegotiable = listingAttrFlag(listing, "price_negotiable");
+  const pickup = listingAttrFlag(listing, "pickup_available");
+  const shipping = listingAttrFlag(listing, "shipping_available");
   const free = listing.price === 0;
+  const badges = [listingMode, priceNegotiable ? "可议价" : "", pickup ? "可自取" : "", shipping ? "可邮寄" : "", condition]
+    .filter((item): item is string => Boolean(item))
+    .slice(0, 3);
   return (
     <Link href={detailHref(listing)} className="group overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-[0_10px_30px_-26px_rgba(15,23,42,0.6)] transition hover:-translate-y-0.5 hover:border-emerald-300/70 hover:shadow-[0_18px_44px_-30px_rgba(15,23,42,0.65)]">
       <div className="relative aspect-square overflow-hidden bg-slate-100">
@@ -2145,7 +2157,7 @@ function MercariStyleCard({ listing }: { listing: KXCityListing }) {
             </span>
           </span>
         ) : null}
-        {/* Mercari 式价格角标 */}
+        {/* 价格角标 */}
         <span className={`absolute bottom-2 left-2 z-[2] rounded-lg px-2 py-1 text-sm font-black text-white shadow-lg ${free ? "bg-emerald-600/95" : "bg-slate-950/85"}`}>
           {free ? "免费送" : priceLabel(listing)}
         </span>
@@ -2157,9 +2169,17 @@ function MercariStyleCard({ listing }: { listing: KXCityListing }) {
         {condition && !sold ? (
           <span className="absolute left-2 top-2 z-[2] rounded-full bg-white/92 px-2 py-0.5 text-[10px] font-black text-slate-700 shadow-sm">{condition}</span>
         ) : null}
+        <ListingHeartButton listing={listing} />
       </div>
       <div className="space-y-1 p-2.5">
         <h2 className="line-clamp-2 text-[13px] font-bold leading-[18px] text-slate-900">{title}</h2>
+        {badges.length ? (
+          <div className="flex flex-wrap gap-1">
+            {badges.map((badge) => (
+              <span key={badge} className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-black text-emerald-700">{badge}</span>
+            ))}
+          </div>
+        ) : null}
         <p className="flex items-center gap-1 truncate text-[11px] font-bold text-slate-400">
           <MapPin className="h-3 w-3 shrink-0" />
           <span className="truncate">{location}</span>
@@ -2172,8 +2192,8 @@ function MercariStyleCard({ listing }: { listing: KXCityListing }) {
   );
 }
 
-/// SUUMO / 安居客风：横向房源行卡，租金大字 + 结构化字段格。
-/// 卡片上的心愿收藏（爱彼迎式右上角爱心）：乐观切换，未登录引导。
+/// 横向房源行卡，租金大字 + 结构化字段格。
+/// 卡片上的心愿收藏：乐观切换，未登录引导。
 function ListingHeartButton({ listing }: { listing: KXCityListing }) {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
@@ -2209,9 +2229,9 @@ function ListingHeartButton({ listing }: { listing: KXCityListing }) {
   );
 }
 
-/// 爱彼迎式房源/住宿卡：大图主导、心愿收藏、评分内联、价格收尾。
+/// 房源/住宿卡：大图主导、心愿收藏、评分内联、价格收尾。
 /// variant=home（长租：户型/面积/敷礼金）、stay（民宿短住：房型/可住人数/每晚价）。
-function AirbnbListingCard({ listing, locale, variant }: { listing: KXCityListing; locale: Locale; variant: "home" | "stay" }) {
+function StayListingCard({ listing, locale, variant }: { listing: KXCityListing; locale: Locale; variant: "home" | "stay" }) {
   const title = displayListingTitle(listing) || (variant === "stay" ? "住宿信息" : "房源信息");
   const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
   const coverPreview = listingCoverPreview(listing);
@@ -2314,7 +2334,7 @@ function StaysMovedCard({ citySlug, locale }: { citySlug: string; locale: Locale
       </span>
       <div className="min-w-0 flex-1">
         <p className="truncate text-[15px] font-black text-slate-950">{pickText(locale, "找民宿、酒店、温泉旅馆？", "民泊・ホテル・温泉旅館をお探し？", "Looking for stays, hotels or ryokan?")}</p>
-        <p className="truncate text-xs font-semibold text-slate-500">{pickText(locale, "住宿已搬到「租房 · 住宿」的 民宿·短住 标签，像爱彼迎一样挑", "宿泊は「賃貸・宿泊」の 民泊・短期滞在 タブへ", "Stays now live under Homes & Stays → Stays tab")}</p>
+        <p className="truncate text-xs font-semibold text-slate-500">{pickText(locale, "住宿已搬到「租房 · 住宿」的 民宿·短住 标签，按日期、地区和预算筛选", "宿泊は「賃貸・宿泊」の 民泊・短期滞在 タブへ", "Stays now live under Homes & Stays → Stays tab")}</p>
       </div>
       <span className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full bg-slate-950 px-3.5 text-xs font-black text-white">
         {pickText(locale, "去看住宿", "宿泊を見る", "Browse stays")}
@@ -2324,7 +2344,7 @@ function StaysMovedCard({ citySlug, locale }: { citySlug: string; locale: Locale
   );
 }
 
-/// Indeed / BOSS 直聘风：职位行卡，薪资高亮 + 条件标签 + 快速申请。
+/// 职位行卡：薪资高亮 + 条件标签 + 快速申请。
 function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Locale }) {
   const title = displayListingTitle(listing) || "职位信息";
   const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
@@ -2391,7 +2411,7 @@ function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Local
   );
 }
 
-/// 大众点评 / 携程风：评分 + 类目 + 价位 + 预约 CTA。
+/// 服务卡：评分 + 类目 + 价位 + 预约 CTA。
 export function ServiceCard({ listing, locale }: { listing: KXCityListing; locale: Locale }) {
   const title = displayListingTitle(listing) || "服务信息";
   const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
@@ -2486,7 +2506,7 @@ function listingStatusText(listing: KXCityListing): string {
   return formatListingStatus(listing.status, listing.type);
 }
 
-/// 认证商家横滑条：服务频道里的「大众点评商家」入口。
+/// 认证商家横滑条：服务频道里的认证商家入口。
 function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale: Locale }) {
   const directory = useQuery({
     queryKey: ["businesses-directory", citySlug],
@@ -2895,7 +2915,7 @@ function intakeConfig(type: string, category?: string): { title: string; noteLab
     };
   }
   if (type === "local_service") {
-    // 携程 / 美团式结构化预订：按服务类目给出真正可用的字段
+    // 结构化预订：按服务类目给出真正可用的字段
     if (STAY_CATEGORY_SET.has(category || "")) {
       return {
         title: "预订住宿",
@@ -2910,7 +2930,7 @@ function intakeConfig(type: string, category?: string): { title: string; noteLab
       };
     }
     if (FOOD_CATEGORY_SET.has(category || "")) {
-      // 大众点评式在线订座
+      // 餐饮在线订座
       return {
         title: "在线订座",
         noteLabel: "备注（忌口 / 包间 / 儿童座椅等）",
@@ -3162,7 +3182,7 @@ function SafetyNotice({ type }: { type: KXListingType }) {
   );
 }
 
-// ── 点评区（大众点评式：星级分布 + 写点评 + 商家回复）────────────────────────
+// ── 点评区：星级分布 + 写点评 + 商家回复 ───────────────────────────────────
 const REVIEWABLE_LISTING_TYPES = new Set<string>(["local_service", "discount", "event"]);
 
 export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
@@ -3427,7 +3447,7 @@ function Field({ label, children, required, error }: { label: string; children: 
 
 function ListingSkeletonGrid({ type }: { type: KXListingType }) {
   if (type === "rental") {
-    // 爱彼迎式照片网格的骨架
+    // 照片网格的骨架
     return (
       <div className="grid grid-cols-1 gap-x-4 gap-y-7 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {Array.from({ length: 8 }).map((_, i) => (
@@ -3449,7 +3469,7 @@ function ListingEmptyState({ type, cityName, stays = false }: { type: KXListingT
     return (
       <PremiumEmptyState
         title="这里还没有民宿和酒店"
-        subtitle="认证商家可以发布民宿、酒店、温泉旅馆和公寓式酒店，像爱彼迎一样展示给同城旅客。"
+        subtitle="认证商家可以发布民宿、酒店、温泉旅馆和公寓式酒店，审核通过后展示给同城旅客。"
         action={{ label: "发布住宿", href: "/listings/create?type=local_service&category=民宿" }}
         secondaryAction={{ label: "返回发现", href: "/explore" }}
       />
@@ -3621,7 +3641,7 @@ function titlePlaceholder(type: KXListingType) {
   if (type === "job" || type === "hiring") return "居酒屋兼职 / 日中双语运营";
   if (type === "local_service") return "东京周末一日游 / 机场接送 / 认证翻译服务";
   if (type === "discount") return "学生咖啡 10% 优惠";
-  return "Apple Magic Keyboard";
+  return "日文配列键盘 / 搬家出清书桌";
 }
 
 function categoryPlaceholder(type: KXListingType) {
@@ -3706,7 +3726,7 @@ function listingFormFields(type: KXListingType): AttributeField[] {
     { key: "reservation_required", label: "仅限预约制", kind: "checkbox" },
     { key: "certified_provider", label: "认证商家/服务商", kind: "checkbox" },
     { key: "languages", label: "服务语言", placeholder: "中文 / 日本語 / English" },
-    { key: "rating_note", label: "评分/口碑说明", placeholder: "Google 4.6 / 老客推荐 / 平台新店" },
+    { key: "rating_note", label: "评分/口碑说明", placeholder: "公开评分 4.6 / 老客推荐 / 平台新店" },
     // —— 旅行住宿（酒店民宿）——
     { key: "room_type", label: "房型（住宿类）", placeholder: "双床房 / 大床房 / 整套民宿" },
     { key: "max_guests", label: "可住人数（住宿类）", placeholder: "2" },
@@ -3737,8 +3757,15 @@ function listingFormFields(type: KXListingType): AttributeField[] {
     { key: "listing_mode", label: "发布类型", required: true, kind: "select", options: [option("sale", "出售"), option("free", "免费送"), option("wanted", "求购")] },
     { key: "condition", label: "新旧程度", required: true, kind: "select", options: [option("brand_new", "全新"), option("like_new", "几乎全新"), option("good", "良好"), option("used", "有使用痕迹"), option("fair", "可用")] },
     { key: "delivery_method", label: "交易方式", required: true, kind: "select", options: [option("meetup", "面交"), option("pickup", "自取"), option("shipping", "邮寄"), option("negotiable", "可商量")] },
-    { key: "brand", label: "品牌", placeholder: "Apple / IKEA / Nitori" },
-    { key: "model", label: "型号", placeholder: "Magic Keyboard / MALM" },
+    { key: "brand", label: "品牌", placeholder: "可选：品牌名 / 无品牌 / 自有款" },
+    { key: "model", label: "型号", placeholder: "可选：13 寸笔记本 / 白色书桌 / 日文配列键盘" },
+    { key: "original_price", label: "原价 / 参考价", placeholder: "例如 28000" },
+    { key: "price_negotiable", label: "价格可商量", kind: "checkbox" },
+    { key: "purchase_time", label: "购买时间", placeholder: "例如 2025 年春 / 使用约 6 个月" },
+    { key: "accessories", label: "配件 / 包装", placeholder: "原盒、充电器、说明书、保修卡" },
+    { key: "defect_note", label: "瑕疵 / 使用痕迹", kind: "textarea", placeholder: "如有划痕、缺件、维修史请提前说明；没有可写“无明显瑕疵”。" },
+    { key: "available_time", label: "可交易时间", placeholder: "平日 19:00 后 / 周末下午" },
+    { key: "pickup_note", label: "取货 / 邮寄说明", kind: "textarea", placeholder: "例如 新宿站面交，邮寄需买家承担运费。" },
     { key: "pickup_available", label: "可自取", kind: "checkbox" },
     { key: "shipping_available", label: "可邮寄", kind: "checkbox" },
   ];
@@ -3779,9 +3806,12 @@ function filterOptions(type: KXListingType): Array<{ key: string; label: string;
     { key: "valid_until", label: "有效期", options: [option("active", "有效中")] },
   ];
   return [
+    { key: "listing_mode", label: "发布类型", options: [option("sale", "出售"), option("free", "免费送"), option("wanted", "求购")] },
     { key: "condition", label: "新旧程度", options: [option("brand_new", "全新"), option("like_new", "几乎全新"), option("good", "良好"), option("used", "有使用痕迹"), option("fair", "可用")] },
     { key: "delivery_method", label: "交易方式", options: [option("meetup", "面交"), option("pickup", "自取"), option("shipping", "邮寄"), option("negotiable", "可商量")] },
-    { key: "listing_mode", label: "发布类型", options: [option("sale", "出售"), option("free", "免费送"), option("wanted", "求购")] },
+    { key: "price_negotiable", label: "价格", options: [option("true", "可议价")] },
+    { key: "pickup_available", label: "自取", options: [option("true", "可自取")] },
+    { key: "shipping_available", label: "邮寄", options: [option("true", "可邮寄")] },
   ];
 }
 

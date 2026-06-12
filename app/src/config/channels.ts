@@ -142,7 +142,7 @@ export const CHANNEL_GROUPS: Array<{ title: string; items: ChannelGroupItem[] }>
 ];
 
 export const CHANNEL_FILTERS: Partial<Record<ChannelKey, string[]>> = {
-  market: ["全部", "家具", "家电", "电子产品", "搬家出清", "免费送", "求购"],
+  market: ["全部", "家具", "家电", "手机数码", "电脑办公", "电子产品", "教材", "书籍教材", "衣物", "生活用品", "母婴儿童", "运动户外", "票券卡券", "搬家出清", "免费送", "求购"],
   housing: ["全部", "单人", "合租", "短租", "整租", "家具家电"],
   jobs: ["全部", "兼职", "全职", "日语 N3 可", "留学生可", "签证支持"],
   services: ["全部", "餐饮点评", "优惠预约", "酒店民宿", "景点门票", "一日游", "接送机", "翻译手续", "搬家清洁", "维修安装"],

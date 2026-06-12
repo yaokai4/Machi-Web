@@ -39,7 +39,7 @@ const DIRECTORY_CATEGORIES = [
   "本地向导",
 ];
 
-/// 认证商家目录 —— 大众点评式商家列表（仅展示审核通过的商家）。
+/// 认证商家目录 —— 按评分、服务类型和城市筛选审核通过的商家。
 export function BusinessDirectoryPage({ citySlug }: { citySlug?: string }) {
   const city = getCityBySlug(citySlug || "") || getDefaultCity();
   const [category, setCategory] = useState("全部");
@@ -173,7 +173,7 @@ function BusinessDirectoryCard({ business }: { business: KXBusinessPublic }) {
   );
 }
 
-/// 商家公开主页 —— 店铺资料 + 在线服务 + 点评（大众点评商家详情式）。
+/// 商家公开主页 —— 店铺资料 + 在线服务 + 点评。
 export function BusinessPublicPage({ businessId }: { businessId: string }) {
   const { locale } = useI18n();
   const profile = useQuery({
