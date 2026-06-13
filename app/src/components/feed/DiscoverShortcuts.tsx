@@ -364,8 +364,8 @@ function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec;
     <>
       <ChannelIcon spec={spec} size="lg" />
       <span className="relative min-w-0 w-full flex-1">
-        <span className="block break-words text-[15px] font-extrabold text-kx-text/90">{title || spec.title}</span>
-        <span className="mt-1 block break-words text-xs leading-5 text-kx-subtle">{subtitle || spec.subtitle}</span>
+        <span className="line-clamp-2 break-words text-[15px] font-extrabold leading-snug text-kx-text/90">{title || spec.title}</span>
+        <span className="mt-1 line-clamp-2 break-words text-xs leading-5 text-kx-subtle">{subtitle || spec.subtitle}</span>
       </span>
       <span className="relative mt-0.5 hidden h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-soft text-kx-muted transition-all duration-200 group-hover:bg-kx-accent group-hover:text-white sm:grid">
         <ChevronRight className="h-4 w-4" />
@@ -387,7 +387,7 @@ function channelHeroClass(channel: ExploreChannelSlug, active?: boolean) {
     qa: "from-blue-50/80 via-white to-white hover:border-blue-300/60",
   } satisfies Record<ExploreChannelSlug, string>;
   return [
-    "group relative flex min-h-[92px] min-w-0 flex-row items-center gap-3 overflow-hidden rounded-kx-lg border p-3 text-left sm:gap-3.5 sm:p-3.5",
+    "group relative flex min-h-[112px] min-w-0 flex-row items-center gap-3 overflow-hidden rounded-kx-lg border p-3 text-left sm:gap-3.5 sm:p-3.5",
     "bg-gradient-to-br shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
     "before:absolute before:-right-12 before:-top-14 before:h-28 before:w-28 before:rounded-full before:bg-white/45 before:blur-2xl before:content-['']",
     "hover:-translate-y-0.5 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
