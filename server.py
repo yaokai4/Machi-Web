@@ -11413,6 +11413,13 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     # JSON array describing the 发现页「城市入口」layout (admin-editable).
     # Empty string = use the app's built-in default entrances.
     "discover_entrances": "",
+    # Right rail (PC) content controls. The trending/recommend widgets are
+    # rendered by `api_trending`; these toggle the hot-topics list, the
+    # recommended-people list, and let an admin pin specific handles to
+    # feature (comma/space/、separated; overrides auto-recommend when set).
+    "right_rail_show_trending": "1",
+    "right_rail_show_recommended": "1",
+    "right_rail_pinned_handles": "",
     # "1" = new city listings (二手/租房/工作/服务/优惠) go through admin
     # review before appearing publicly; "0" = publish immediately (review off).
     "listing_review_enabled": "1",
@@ -21589,6 +21596,26 @@ class Handler(BaseHTTPRequestHandler):
                 users = [serialize_user(dict(u)) for u in user_rows]
             except Exception as exc:
                 ERR_LOG.warning("trending user hydration degraded error=%s", exc)
+        # Admin-configurable right rail: applied post-cache (settings read is
+        # cheap) so the heavy aggregation stays cached while the admin can
+        # toggle sections or pin specific people to feature.
+        rail = _site_settings(conn)
+        if rail.get("right_rail_show_trending", "1") == "0":
+            cached_topics = []
+        pinned = [h.strip().lstrip("@") for h in re.split(r"[,\s，、]+", rail.get("right_rail_pinned_handles", "") or "") if h.strip()]
+        if pinned:
+            featured: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for handle in pinned[:8]:
+                if handle.lower() in seen:
+                    continue
+                row = conn.execute("SELECT * FROM users WHERE handle = ? AND deleted_at IS NULL", (handle,)).fetchone()
+                if row:
+                    featured.append(serialize_user(dict(row)))
+                    seen.add(handle.lower())
+            users = featured
+        elif rail.get("right_rail_show_recommended", "1") == "0":
+            users = []
         self.send_json({
             "posts": posts,
             "topics": cached_topics,

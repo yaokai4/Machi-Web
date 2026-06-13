@@ -65,6 +65,7 @@ export default function AdminSettingsPage() {
         <MediaLibraryCard />
         <MarketingCoverageCard />
         <ContentModerationCard />
+        <RightRailCard />
         <ExploreRankingSettingsCard />
         <DiscoverEntrancesCard />
         <QuickCopyCard />
@@ -553,6 +554,96 @@ function ContentModerationCard() {
         <span className={`h-2 w-2 rounded-full ${enabled ? "bg-emerald-500" : "bg-amber-500"}`} />
         {enabled ? "审核中：新发布需管理员通过后展示" : "已关闭：新发布立即公开展示"}
       </div>
+    </section>
+  );
+}
+
+function RightRailCard() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
+  const [showTrending, setShowTrending] = useState<boolean | null>(null);
+  const [showRecommended, setShowRecommended] = useState<boolean | null>(null);
+  const [handles, setHandles] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (q.data && showTrending === null) {
+      setShowTrending((q.data.right_rail_show_trending ?? "1") !== "0");
+      setShowRecommended((q.data.right_rail_show_recommended ?? "1") !== "0");
+      setHandles(q.data.right_rail_pinned_handles ?? "");
+    }
+  }, [q.data, showTrending]);
+
+  if (q.isError) return <ErrorState title="右侧栏设置加载失败" onRetry={() => q.refetch()} />;
+  if (showTrending === null || showRecommended === null) return <section className="kx-card"><InlineLoading /></section>;
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.adminUpdateSiteSettings({
+        right_rail_show_trending: showTrending ? "1" : "0",
+        right_rail_show_recommended: showRecommended ? "1" : "0",
+        right_rail_pinned_handles: handles.trim(),
+      });
+      await queryClient.invalidateQueries({ queryKey: ["admin-site-settings"] });
+      await queryClient.invalidateQueries({ queryKey: ["trending"] });
+      pushToast({ kind: "success", message: "右侧栏设置已保存" });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggle = (label: string, on: boolean, onToggle: () => void) => (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      onClick={onToggle}
+      className={`relative h-9 w-16 shrink-0 rounded-full transition ${on ? "bg-kx-accent" : "bg-kx-soft ring-1 ring-inset ring-kx-stroke/60"}`}
+    >
+      <span className={`absolute top-1 grid h-7 w-7 place-items-center rounded-full bg-white shadow transition-all ${on ? "left-8" : "left-1"}`} />
+    </button>
+  );
+
+  return (
+    <section className="kx-card">
+      <div className="min-w-0">
+        <h2 className="inline-flex items-center gap-2 text-base font-bold"><Flame className="h-4 w-4 text-kx-accent" />右侧栏 · 热榜与推荐</h2>
+        <p className="mt-1 text-xs text-kx-muted">控制 PC 端各页右侧栏内容。发现页点进的二手 / 租房 / 工作 / 商家服务等列表页不显示右侧栏，其余页面都会展示。</p>
+      </div>
+      <div className="mt-3 divide-y divide-kx-stroke/30">
+        <div className="flex items-start justify-between gap-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-kx-text">显示热榜话题</p>
+            <p className="mt-0.5 text-xs text-kx-muted">右侧栏顶部的热门话题榜。</p>
+          </div>
+          {toggle("显示热榜话题", showTrending, () => setShowTrending((v) => !v))}
+        </div>
+        <div className="flex items-start justify-between gap-3 py-2.5">
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-kx-text">显示推荐关注</p>
+            <p className="mt-0.5 text-xs text-kx-muted">右侧栏的「推荐关注」用户列表。</p>
+          </div>
+          {toggle("显示推荐关注", showRecommended, () => setShowRecommended((v) => !v))}
+        </div>
+      </div>
+      <label className="mt-3 block">
+        <span className="text-sm font-bold text-kx-text">指定推荐关注（用户名）</span>
+        <p className="mt-0.5 text-xs text-kx-muted">填写后固定展示这些账号（最多 8 个），覆盖自动推荐。用逗号、空格或顿号分隔，可带或不带 @；留空则自动推荐。</p>
+        <input
+          className="kx-input mt-2 h-10 w-full"
+          placeholder="例如：citylive, tokyo_jobdesk, kaizi"
+          value={handles}
+          onChange={(e) => setHandles(e.target.value)}
+        />
+      </label>
+      <button type="button" disabled={saving} onClick={save} className="kx-button-primary mt-3 h-10 px-5 text-sm disabled:opacity-60">
+        <Save className="h-4 w-4" /> 保存右侧栏设置
+      </button>
     </section>
   );
 }
