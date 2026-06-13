@@ -412,7 +412,7 @@ function ChannelIcon({ spec, size = "md" }: { spec: ExploreChannelSpec; size?: "
   const icon = size === "lg" ? "h-6 w-6" : size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
   return (
     <span className={`grid shrink-0 place-items-center ${box} ${classes}`}>
-      <spec.Icon className={icon} strokeWidth={size === "lg" ? 2.1 : 2} />
+      <spec.Icon className={icon} />
     </span>
   );
 }
