@@ -11471,6 +11471,38 @@ def _upsert_site_settings(conn: sqlite3.Connection, updates: dict[str, str]) -> 
     return _site_settings(conn)
 
 
+def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
+    """Scrub an account's PII, free its handle, make the password unusable,
+    hide its authored content and drop its sessions. Shared by user-initiated
+    account deletion (DELETE /api/auth/me, App Store 5.1.1(v) / GDPR) and admin
+    erase — both need a real, irreversible removal of the person's data, not a
+    mere `deleted_at` flag. Backend-agnostic (no FK-cascade surgery), so it
+    behaves identically on SQLite and Postgres."""
+    now = now_iso()
+    short = uuid.uuid4().hex[:12]
+    # A random hash with no known preimage — the account can never be signed
+    # into again, even by its former owner.
+    dead_hash = hash_password(uuid.uuid4().hex + uuid.uuid4().hex)
+    conn.execute(
+        "UPDATE users SET handle = ?, display_name = '已注销用户', email = '', email_verified = 0, "
+        "password_hash = ?, bio = '', location = '', avatar_url = '', cover_url = '', "
+        "google_sub = '', auth_provider = 'password', is_verified = 0, is_verified_member = 0, "
+        "membership_status = 'inactive', merchant_verified = 0, is_merchant = 0, "
+        "deleted_at = ?, updated_at = ? WHERE id = ?",
+        (f"deleted_{short}", dead_hash, now, now, user_id),
+    )
+    conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    conn.execute(
+        "UPDATE posts SET status = 'deleted', deleted_at = ?, updated_at = ? "
+        "WHERE author_id = ? AND deleted_at IS NULL",
+        (now, now, user_id),
+    )
+    conn.execute(
+        "UPDATE comments SET deleted_at = ? WHERE author_id = ? AND deleted_at IS NULL",
+        (now, user_id),
+    )
+
+
 def _settings_int(settings: dict[str, str], key: str, default: int, low: int, high: int) -> int:
     try:
         value = int(float(settings.get(key, str(default)) or default))
@@ -17449,10 +17481,13 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"user": serialize_user_with_counts(conn, fresh)})
 
     def api_delete_me(self, conn: sqlite3.Connection) -> None:
+        # User-initiated account deletion (App Store 5.1.1(v) / GDPR): really
+        # scrub PII, free the handle, hide content and drop sessions — not just
+        # flag deleted_at. Shared with admin erase via anonymize_user_account.
         user = self.require_user(conn)
-        conn.execute("UPDATE users SET deleted_at = ?, updated_at = ? WHERE id = ?", (now_iso(), now_iso(), user["id"]))
-        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user["id"],))
+        anonymize_user_account(conn, user["id"])
         self._clear_session_cookie()
+        ACCESS_LOG.warning("user %s self-deleted account (%s)", user["handle"], user["id"])
         self.send_json({"ok": True})
 
     def api_bootstrap(self, conn: sqlite3.Connection) -> None:
@@ -24085,29 +24120,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("不能删除自己的账号", 400, "cannot_delete_self")
         if (target["role"] or "member") == "admin":
             raise APIError("不能删除管理员账号，请先取消其管理员权限", 400, "cannot_delete_admin")
-        now = now_iso()
-        short = uuid.uuid4().hex[:12]
-        # A random hash with no known preimage — the account can never be
-        # signed into again, even by its former owner.
-        dead_hash = hash_password(uuid.uuid4().hex + uuid.uuid4().hex)
-        conn.execute(
-            "UPDATE users SET handle = ?, display_name = '已注销用户', email = '', email_verified = 0, "
-            "password_hash = ?, bio = '', location = '', avatar_url = '', cover_url = '', "
-            "google_sub = '', auth_provider = 'password', is_verified = 0, is_verified_member = 0, "
-            "membership_status = 'inactive', merchant_verified = 0, is_merchant = 0, "
-            "deleted_at = ?, updated_at = ? WHERE id = ?",
-            (f"deleted_{short}", dead_hash, now, now, user_id),
-        )
-        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
-        conn.execute(
-            "UPDATE posts SET status = 'deleted', deleted_at = ?, updated_at = ? "
-            "WHERE author_id = ? AND deleted_at IS NULL",
-            (now, now, user_id),
-        )
-        conn.execute(
-            "UPDATE comments SET deleted_at = ? WHERE author_id = ? AND deleted_at IS NULL",
-            (now, user_id),
-        )
+        anonymize_user_account(conn, user_id)
         ACCESS_LOG.warning("admin %s erased user %s (%s)", admin["handle"], target["handle"], user_id)
         self.send_json({"ok": True, "erased": True})
 
