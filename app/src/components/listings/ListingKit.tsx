@@ -1,7 +1,7 @@
 "use client";
 
 import type React from "react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -14,6 +14,7 @@ import {
   BedDouble,
   Beer,
   Bell,
+  BookOpen,
   Briefcase,
   Building2,
   Bus,
@@ -166,6 +167,8 @@ function localizedChannel(kind: ChannelKind, locale: Locale) {
 export const FOOD_CATEGORIES = ["中华料理", "日本料理", "居酒屋", "烧肉火锅", "拉面", "寿司海鲜", "咖啡甜品", "西餐", "韩国料理"] as const;
 /// 餐厅美食分区还包含两个老类目（已有数据继续生效）。
 const FOOD_SECTION_CATEGORIES = [...FOOD_CATEGORIES, "餐饮点评", "优惠预约"];
+/// 生活服务分区同时兼容新细分类与旧伞类目，保证发布端和发现端不脱节。
+const LIFE_SECTION_CATEGORIES = ["翻译手续", "签证/手续协助", "翻译", "搬家清洁", "搬家", "清洁", "维修安装", "美容美发", "宠物服务", "生活支持", "租房申请协助", "认证服务"] as const;
 /// 住宿：归属租房页「民宿·短住」标签；"酒店民宿" 为老类目伞值。
 export const HOMESTAY_CATEGORIES = ["民宿"] as const;
 export const HOTEL_CATEGORIES = ["酒店", "温泉旅馆", "公寓式酒店", "酒店民宿"] as const;
@@ -178,7 +181,7 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   rental: ["全部", "单人", "合租", "短租", "整租", "家具家电", "近车站"],
   job: ["全部", "兼职", "全职", "时给", "月给", "无经验可", "留学生可", "签证支持", "周末"],
   hiring: ["全部", "兼职", "全职", "派遣", "实习", "签证支持"],
-  local_service: ["全部", ...FOOD_CATEGORIES, "餐饮点评", "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "酒店民宿", "景点门票", "一日游", "接送机", "翻译手续", "搬家清洁", "维修安装", "认证服务"],
+  local_service: ["全部", ...FOOD_CATEGORIES, "餐饮点评", "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "酒店民宿", "景点门票", "一日游", "接送机", ...LIFE_SECTION_CATEGORIES],
   discount: ["全部", "餐饮", "生活", "学习", "搬家", "限时"],
   event: ["全部", "今天", "本周", "周末", "免费"],
 };
@@ -229,6 +232,11 @@ const CATEGORY_LABELS: Record<string, { ja: string; en: string }> = {
   "维修": { ja: "修理", en: "Repair" },
   "翻译": { ja: "翻訳", en: "Translation" },
   "清洁": { ja: "清掃", en: "Cleaning" },
+  "美容美发": { ja: "美容・ヘア", en: "Beauty & hair" },
+  "宠物服务": { ja: "ペットサービス", en: "Pet care" },
+  "生活支持": { ja: "生活サポート", en: "Life support" },
+  "签证/手续协助": { ja: "ビザ・手続きサポート", en: "Visa & paperwork" },
+  "租房申请协助": { ja: "賃貸申込サポート", en: "Rental application help" },
   "餐饮点评": { ja: "飲食口コミ", en: "Dining reviews" },
   "优惠预约": { ja: "予約特典", en: "Deals & booking" },
   "中华料理": { ja: "中華料理", en: "Chinese" },
@@ -401,6 +409,12 @@ type AttributeField = {
   options?: FilterOption[];
 };
 
+function getRentalTabFromUrl(): "homes" | "stays" | "hotels" {
+  if (typeof window === "undefined") return "homes";
+  const tab = new URLSearchParams(window.location.search).get("tab");
+  return tab === "stays" || tab === "hotels" ? tab : "homes";
+}
+
 export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; kind: ChannelKind }) {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
@@ -423,8 +437,11 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   useEffect(() => {
     // 服务页的住宿入口可用 ?tab=stays / ?tab=hotels 直达对应分区。
     if (kind !== "rentals" || typeof window === "undefined") return;
-    const tab = new URLSearchParams(window.location.search).get("tab");
-    if (tab === "stays" || tab === "hotels") setRentalTab(tab);
+    const tab = getRentalTabFromUrl();
+    setRentalTab(tab);
+    setCategory("全部");
+    setFilters({});
+    setFiltersOpen(false);
   }, [kind]);
   const scopeCountry = city.regionCode.split(".")[0] || "jp";
   const scopeCountrySpec = countryByCode(scopeCountry);
@@ -536,19 +553,20 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
 
   return (
     <AppShell requireAuth={false} wide right={null}>
-      <header className="sticky top-0 z-30 kx-glass-bar px-3 pt-2 pb-3">
+      <div className="kx-listing-page" data-kind={kind}>
+      <header className="kx-listing-header sticky top-0 z-30 px-3 pb-3 pt-2">
         <div className="relative flex items-center gap-2 pr-12 sm:pr-0">
-          <Link href="/explore" className="grid h-10 w-10 place-items-center rounded-full bg-white text-slate-700 shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
+          <Link href="/explore" className="kx-listing-icon-button">
             <ArrowLeft className="h-5 w-5" />
           </Link>
-          <span className="grid h-10 w-10 place-items-center rounded-2xl bg-slate-950 text-white">
+          <span className="kx-listing-channel-icon">
             <spec.icon className="h-5 w-5" />
           </span>
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-xl font-black text-slate-950">{city.name} · {spec.title}</h1>
-            <p className="truncate text-xs font-semibold text-slate-500">{spec.subtitle}</p>
+            <h1 className="truncate text-xl font-black text-[rgb(var(--kx-living-ink))]">{city.name} · {spec.title}</h1>
+            <p className="truncate text-xs font-semibold text-[rgb(var(--kx-living-muted))]">{spec.subtitle}</p>
           </div>
-          <Link href="/notifications" className="hidden h-10 w-10 shrink-0 place-items-center rounded-full bg-kx-soft sm:grid">
+          <Link href="/notifications" className="kx-listing-icon-button hidden sm:grid">
             <Bell className="h-4 w-4" />
           </Link>
           <button
@@ -562,41 +580,68 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               const targetCategory = hotelsActive ? "酒店" : staysActive ? "民宿" : "";
               window.location.assign(`/listings/create?type=${targetType}&city=${city.slug}${targetCategory ? `&category=${encodeURIComponent(targetCategory)}` : ""}`);
             }}
-            className="absolute right-0 top-0 inline-flex h-10 w-10 shrink-0 items-center justify-center gap-2 rounded-full bg-blue-600 text-sm font-bold text-white shadow-[0_12px_28px_-18px_rgba(37,99,235,0.9)] transition hover:bg-blue-700 sm:static sm:w-auto sm:px-4"
+            className="kx-listing-primary-action absolute right-0 top-0 sm:static sm:w-auto sm:px-4"
           >
             <Plus className="h-4 w-4" />
             <span className="hidden sm:inline">{spec.createLabel}</span>
           </button>
         </div>
-        <form
-          className="mt-3 flex h-11 items-center gap-2 rounded-2xl border border-slate-200/70 bg-white px-3 text-sm shadow-[0_8px_30px_rgba(15,23,42,0.04)]"
-          onSubmit={(event) => {
-            event.preventDefault();
-            applySearch(String(new FormData(event.currentTarget).get("q") || ""));
-          }}
-        >
-          <Search className="h-4 w-4 text-blue-600" />
-          <input
-            name="q"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(event) => {
-              if (event.key !== "Enter") return;
+        {kind === "jobs" ? (
+          <form
+            className="kx-job-search mt-3"
+            onSubmit={(event) => {
               event.preventDefault();
-              applySearch(event.currentTarget.value);
+              applySearch(String(new FormData(event.currentTarget).get("q") || ""));
             }}
-            className="min-w-0 flex-1 bg-transparent font-semibold outline-none placeholder:text-slate-400"
-            placeholder={spec.search}
-          />
-        </form>
+          >
+            <label className="kx-job-search-field">
+              <Search className="h-5 w-5" />
+              <input
+                name="q"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                className="min-w-0 flex-1 bg-transparent font-semibold outline-none placeholder:text-slate-400"
+                placeholder={pickText(locale, "职位、公司或关键词", "職種・会社・キーワード", "Role, company or keywords")}
+              />
+            </label>
+            <button type="button" onClick={() => setFiltersOpen(true)} className="kx-job-search-field text-left">
+              <MapPin className="h-5 w-5" />
+              <span className="min-w-0 flex-1 truncate font-semibold">{scopedCity?.name || city.name}</span>
+            </button>
+            <button type="submit" className="kx-job-search-submit">
+              <Search className="h-4 w-4" />
+              {pickText(locale, "搜索工作", "求人検索", "Search jobs")}
+            </button>
+          </form>
+        ) : (
+          <form
+            className="kx-living-search mt-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              applySearch(String(new FormData(event.currentTarget).get("q") || ""));
+            }}
+          >
+            <Search className="h-5 w-5" />
+            <input
+              name="q"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              className="min-w-0 flex-1 bg-transparent font-semibold outline-none placeholder:text-slate-400"
+              placeholder={spec.search}
+            />
+            <button type="submit" className="kx-living-search-submit" aria-label={pickText(locale, "搜索", "検索", "Search")}>
+              <Search className="h-4 w-4" />
+            </button>
+          </form>
+        )}
       </header>
 
-      <main className="px-3 py-4 sm:px-4">
+      <main className="px-3 py-5 sm:px-5">
         <section className="mx-auto min-w-0 max-w-6xl">
           {kind === "rentals" ? (
             // 顶部三标签：长租房源 / 民宿短住 / 酒店住宿
             <div className="mb-4 flex justify-center">
-              <div className="inline-flex items-center rounded-full border border-slate-200/80 bg-white p-1 shadow-[0_14px_36px_-26px_rgba(15,23,42,0.6)]">
+              <div className="kx-listing-tabset">
                 {([
                   { key: "homes" as const, Icon: Home, label: pickText(locale, "长租房源", "賃貸物件", "Long-term") },
                   { key: "stays" as const, Icon: BedDouble, label: pickText(locale, "民宿·短住", "民泊・短期滞在", "Stays") },
@@ -614,7 +659,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                       if (key === "homes") setSort((current) => (current === "rating" ? "latest" : current));
                     }}
                     data-active={rentalTab === key}
-                    className="inline-flex h-11 items-center gap-1.5 whitespace-nowrap rounded-full px-3 text-xs font-black text-slate-500 transition data-[active=true]:bg-slate-950 data-[active=true]:text-white data-[active=true]:shadow-[0_12px_26px_-16px_rgba(15,23,42,0.9)] hover:text-slate-800 data-[active=true]:hover:text-white sm:gap-2 sm:px-5 sm:text-sm"
+                    className="kx-listing-tab"
                   >
                     <Icon className="h-4.5 w-4.5" />
                     {label}
@@ -623,7 +668,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               </div>
             </div>
           ) : null}
-          <section className="mb-4 rounded-[24px] border border-slate-200/70 bg-white/95 p-3 shadow-[0_14px_40px_-34px_rgba(15,23,42,0.55)] ring-1 ring-white/75 sm:p-4">
+          <section className="kx-listing-controls mb-5">
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2">
               <div className="inline-flex shrink-0 items-center rounded-full border border-slate-200 bg-slate-100/80 p-0.5">
@@ -648,21 +693,20 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                 type="button"
                 onClick={() => setFiltersOpen((value) => !value)}
                 data-active={filtersOpen}
-                className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 transition hover:border-blue-300 hover:text-blue-700 data-[active=true]:border-blue-300 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
+                className="kx-filter-button"
               >
                 <SlidersHorizontal className="h-4 w-4" />
                 筛选
                 {activeFilterCount ? (
-                  <span className="grid h-5 min-w-5 place-items-center rounded-full bg-blue-600 px-1 text-[11px] leading-none text-white">
+                  <span className="grid h-5 min-w-5 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] px-1 text-[11px] leading-none text-white">
                     {activeFilterCount}
                   </span>
                 ) : null}
               </button>
-              <select value={sort} onChange={(e) => setSort(e.target.value)} className="h-10 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-sm font-black text-slate-700 outline-none transition hover:border-blue-300 focus:border-blue-400">
+              <select value={sort} onChange={(e) => setSort(e.target.value)} className="kx-sort-select">
                 <option value="latest">{pickText(locale, "最新发布", "新着順", "Newest")}</option>
                 <option value="price_asc">{lodgingActive ? pickText(locale, "每晚价格从低到高", "1泊料金が安い順", "Nightly: low → high") : spec.type === "rental" ? pickText(locale, "租金从低到高", "家賃が安い順", "Rent: low → high") : pickText(locale, "价格从低到高", "価格が安い順", "Price: low → high")}</option>
                 <option value="price_desc">{lodgingActive ? pickText(locale, "每晚价格从高到低", "1泊料金が高い順", "Nightly: high → low") : spec.type === "rental" ? pickText(locale, "租金从高到低", "家賃が高い順", "Rent: high → low") : pickText(locale, "价格从高到低", "価格が高い順", "Price: high → low")}</option>
-                {lodgingActive || kind === "services" ? <option value="rating">{pickText(locale, "评分最高", "評価が高い順", "Top rated")}</option> : null}
                 <option value="popular">{pickText(locale, "最多收藏", "人気順", "Most saved")}</option>
                 {kind === "services" || lodgingActive ? (
                   <option value="rating">{pickText(locale, "评分优先", "評価が高い順", "Top rated")}</option>
@@ -687,19 +731,23 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                             setCategory("全部");
                           }}
                           data-active={serviceSection === section.key && category === "全部"}
-                          className="h-10 shrink-0 rounded-full border border-slate-200 bg-white px-4 text-sm font-black text-slate-600 transition data-[active=true]:border-orange-500 data-[active=true]:bg-orange-500 data-[active=true]:text-white hover:border-orange-300 hover:text-orange-600"
+                          className="kx-category-chip"
                         >
                           {pickText(locale, section.zh, section.ja, section.en)}
                         </button>
                       ))}
                     </div>
                   </div>
-                  <ServiceCategoryIconGrid
-                    active={category}
-                    section={serviceSection}
-                    locale={locale}
-                    onSelect={(value) => setCategory((current) => (current === value ? "全部" : value))}
-                  />
+                  {/* 「全部」只展示三个一级分区，避免几十个类目图标霸屏；
+                      选中具体分区后才展开该区的细分类目网格（渐进式披露）。 */}
+                  {serviceSection !== "all" ? (
+                    <ServiceCategoryIconGrid
+                      active={category}
+                      section={serviceSection}
+                      locale={locale}
+                      onSelect={(value) => setCategory((current) => (current === value ? "全部" : value))}
+                    />
+                  ) : null}
                 </>
               ) : (
                 <div className="-mx-1 min-w-0 overflow-x-auto px-1">
@@ -710,7 +758,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                         type="button"
                         onClick={() => setCategory(chip)}
                         data-active={category === chip}
-                        className="h-10 shrink-0 rounded-full border border-slate-200 bg-white px-3.5 text-sm font-black text-slate-600 transition data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white hover:border-blue-300 hover:text-blue-700"
+                        className="kx-category-chip"
                       >
                         {categoryLabel(chip, locale)}
                       </button>
@@ -737,7 +785,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                         type="button"
                         onClick={() => setFilters({ ...filters, [chip.key]: active ? "" : chip.value })}
                         data-active={active}
-                        className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3.5 text-xs font-black text-slate-600 transition hover:border-blue-300 hover:text-blue-700 data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
+                        className="kx-job-filter-chip"
                       >
                         {chip.label}
                       </button>
@@ -780,8 +828,13 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               </div>
             ) : kind === "jobs" ? (
               // 职位行卡：薪资高亮 + 标签 + 快速申请
-              <div className="space-y-3">
-                {visibleItems.map((listing) => <JobRowCard key={listing.id} listing={listing} locale={locale} />)}
+              <div className="kx-job-list">
+                {visibleItems.map((listing, index) => (
+                  <Fragment key={listing.id}>
+                    <JobRowCard listing={listing} locale={locale} />
+                    {index === 1 ? <JobGuideInsert locale={locale} /> : null}
+                  </Fragment>
+                ))}
               </div>
             ) : kind === "services" ? (
               // 服务卡片：评分 + 类目 + 价位 + 预约 CTA
@@ -812,6 +865,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
           ) : null}
         </section>
       </main>
+      </div>
     </AppShell>
   );
 }
@@ -867,25 +921,28 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
   const isOwner = !!(user && item.seller_user_id === user.id);
   return (
     <AppShell requireAuth={false} hideBottomNav right={<DetailContactCard item={item} onContact={openIntake} isOwner={isOwner} />}>
-      <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2">
+      <header className="kx-living-detail-header sticky top-0 z-30 px-3 py-2">
         <div className="flex items-center gap-2">
-          <Link href={listingBackHref(item)} className="grid h-10 w-10 place-items-center rounded-full bg-white text-slate-700 shadow-[0_8px_24px_rgba(15,23,42,0.08)]">
+          <Link href={listingBackHref(item)} className="kx-listing-icon-button">
             <ArrowLeft className="h-5 w-5" />
           </Link>
           <div className="min-w-0">
-            <p className="text-xs font-bold text-slate-500">{cityName} · {listingTypeLabel(item.type)}</p>
-            <h1 className="truncate text-lg font-black text-slate-950">{displayTitle}</h1>
+            <p className="text-xs font-bold text-[rgb(var(--kx-living-muted))]">{cityName} · {listingTypeLabel(item.type)}</p>
+            <h1 className="truncate text-lg font-black text-[rgb(var(--kx-living-ink))]">{displayTitle}</h1>
           </div>
-          <button type="button" onClick={() => favorite.mutate()} className="ml-auto grid h-10 w-10 place-items-center rounded-full bg-kx-soft">
+          <button type="button" onClick={() => favorite.mutate()} className="kx-listing-icon-button ml-auto">
             <Heart className={`h-4 w-4 ${item.favorited ? "fill-rose-500 text-rose-500" : "text-slate-700"}`} />
           </button>
         </div>
       </header>
-      <main className="px-3 py-4 sm:px-4">
-        <section className="overflow-hidden rounded-[28px] border border-slate-200/70 bg-white shadow-[0_14px_42px_rgba(15,23,42,0.06)]">
-          <div className="grid gap-2 bg-slate-100 p-2 sm:grid-cols-2">
-            {(item.media.length ? item.media : listingCoverMedia(item) ? [listingCoverMedia(item)!] : [{ id: "cover", listing_id: item.id, media_type: "image", url: listingCoverPreview(item), sort_order: 0, is_cover: true } satisfies KXListingMedia]).slice(0, 4).map((media, index) => (
-              <div key={media.id || index} className="relative aspect-[4/3] overflow-hidden rounded-2xl bg-slate-200">
+      <main className="kx-listing-detail-page px-3 py-4 sm:px-4" data-kind={item.type}>
+        <section className="kx-living-detail-shell">
+          {(() => {
+            const galleryMedia = (item.media.length ? item.media : listingCoverMedia(item) ? [listingCoverMedia(item)!] : [{ id: "cover", listing_id: item.id, media_type: "image", url: listingCoverPreview(item), sort_order: 0, is_cover: true } satisfies KXListingMedia]).slice(0, 4);
+            return (
+          <div className={`kx-living-detail-gallery grid gap-2 p-2 ${galleryMedia.length > 1 ? "sm:grid-cols-2" : ""}`}>
+            {galleryMedia.map((media, index) => (
+              <div key={media.id || index} className={`relative overflow-hidden rounded-[20px] bg-[rgb(var(--kx-living-soft))] ${galleryMedia.length === 1 ? "aspect-[16/9] sm:aspect-[21/9]" : "aspect-[4/3]"}`}>
                 {isVideoMedia(media) ? (
                   mediaSourceUrl(media) ? (
                     <video
@@ -909,25 +966,27 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
               </div>
             ))}
           </div>
-          <div className="p-5">
+            );
+          })()}
+          <div className="p-5 sm:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <p className="text-3xl font-black text-slate-950">{priceLabel(item)}</p>
-                <h2 className="mt-2 text-2xl font-black text-slate-950">{displayTitle}</h2>
+                <p className="kx-living-detail-price text-3xl font-black">{priceLabel(item)}</p>
+                <h2 className="mt-2 text-2xl font-black text-[rgb(var(--kx-living-ink))]">{displayTitle}</h2>
                 {Number(item.rating_count || 0) > 0 ? (
                   <p className="mt-2"><RatingStars value={Number(item.rating_avg || 0)} count={Number(item.rating_count || 0)} size="md" /></p>
                 ) : null}
-                <p className="mt-2 flex items-center gap-1 text-sm font-semibold text-slate-500"><MapPin className="h-4 w-4" />{cleanListingText(item.location_text) || cityName}</p>
+                <p className="mt-2 flex items-center gap-1 text-sm font-semibold text-[rgb(var(--kx-living-muted))]"><MapPin className="h-4 w-4" />{cleanListingText(item.location_text) || cityName}</p>
               </div>
               <StatusBadge item={item} />
             </div>
             <AttributeGrid item={item} />
-            <div className="mt-5 whitespace-pre-line text-[15px] leading-7 text-slate-700">{item.description || "发布者暂未填写详细描述。"}</div>
+            <div className="mt-5 whitespace-pre-line text-[15px] leading-7 text-[rgb(var(--kx-living-muted))]">{item.description || "发布者暂未填写详细描述。"}</div>
             <SellerBox item={item} />
             <ListingReviewsSection listing={item} />
             <SafetyNotice type={item.type} />
             <div className="mt-4 flex flex-wrap gap-2">
-              <button type="button" onClick={() => report.mutate()} className="inline-flex h-10 items-center gap-2 rounded-full border border-slate-200 px-4 text-sm font-bold text-slate-600">
+              <button type="button" onClick={() => report.mutate()} className="kx-living-detail-secondary">
                 <AlertTriangle className="h-4 w-4" />
                 举报
               </button>
@@ -942,7 +1001,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
                     pushToast({ kind: "success", message: "链接已复制" });
                   }
                 }}
-                className="inline-flex h-10 items-center gap-2 rounded-full border border-slate-200 px-4 text-sm font-bold text-slate-600"
+                className="kx-living-detail-secondary"
               >
                 分享
               </button>
@@ -952,13 +1011,13 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
         <ListingDetailRecommendations item={item} />
       </main>
       <div
-        className="fixed inset-x-0 bottom-0 z-50 border-t border-slate-200/80 bg-white/90 px-3 pt-3 shadow-[0_-12px_40px_-24px_rgba(15,23,42,0.4)] backdrop-blur-xl md:hidden dark:border-white/10 dark:bg-slate-950/85"
+        className="kx-living-detail-bottom fixed inset-x-0 bottom-0 z-50 px-3 pt-3 md:hidden"
         style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
       >
         {isOwner ? (
           <Link
             href={`/listings/create?type=${item.type}&edit=${item.id}`}
-            className="flex h-12 w-full items-center justify-center rounded-full bg-slate-950 text-sm font-black text-white shadow-[0_16px_34px_-18px_rgba(15,23,42,0.9)] transition active:scale-[0.99] dark:bg-white dark:text-slate-950"
+            className="kx-living-detail-primary flex h-12 w-full items-center justify-center rounded-full text-sm font-black text-white transition active:scale-[0.99]"
           >
             编辑信息
           </Link>
@@ -966,7 +1025,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
           <button
             type="button"
             onClick={openIntake}
-            className="h-12 w-full rounded-full bg-slate-950 text-sm font-black text-white shadow-[0_16px_34px_-18px_rgba(15,23,42,0.9)] transition active:scale-[0.99] dark:bg-white dark:text-slate-950"
+            className="kx-living-detail-primary h-12 w-full rounded-full text-sm font-black text-white transition active:scale-[0.99]"
           >
             {contactActionLabel(item)}
           </button>
@@ -2229,7 +2288,7 @@ const SERVICE_SECTIONS: { key: string; zh: string; ja: string; en: string; categ
   { key: "all", zh: "全部", ja: "すべて", en: "All", categories: [] },
   { key: "food", zh: "餐厅美食", ja: "グルメ", en: "Food & Dining", categories: FOOD_SECTION_CATEGORIES },
   { key: "fun", zh: "景点玩乐", ja: "観光・体験", en: "Attractions & Tours", categories: ["景点门票", "一日游", "接送机"] },
-  { key: "life", zh: "生活服务", ja: "生活サポート", en: "Local Support", categories: ["翻译手续", "搬家清洁", "维修安装", "认证服务"] },
+  { key: "life", zh: "生活服务", ja: "生活サポート", en: "Local Support", categories: [...LIFE_SECTION_CATEGORIES] },
 ];
 
 const SERVICE_CATEGORY_META: Record<string, { Icon: typeof Store; tone: string }> = {
@@ -2253,8 +2312,16 @@ const SERVICE_CATEGORY_META: Record<string, { Icon: typeof Store; tone: string }
   "一日游": { Icon: Landmark, tone: "bg-emerald-500/10 text-emerald-700" },
   "接送机": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
   "翻译手续": { Icon: Languages, tone: "bg-indigo-500/10 text-indigo-600" },
+  "签证/手续协助": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
+  "翻译": { Icon: Languages, tone: "bg-indigo-500/10 text-indigo-600" },
   "搬家清洁": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
+  "搬家": { Icon: Bus, tone: "bg-cyan-500/10 text-cyan-700" },
+  "清洁": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
   "维修安装": { Icon: Wrench, tone: "bg-slate-500/10 text-slate-700" },
+  "美容美发": { Icon: Sparkles, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
+  "宠物服务": { Icon: Heart, tone: "bg-rose-500/10 text-rose-600" },
+  "生活支持": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
+  "租房申请协助": { Icon: Home, tone: "bg-orange-500/10 text-orange-600" },
   "认证服务": { Icon: BadgeCheck, tone: "bg-emerald-500/10 text-emerald-700" },
 };
 
@@ -2356,14 +2423,14 @@ function SecondhandListingCard({ listing }: { listing: KXCityListing }) {
     .filter((item): item is string => Boolean(item))
     .slice(0, 3);
   return (
-    <Link href={detailHref(listing)} className="group overflow-hidden rounded-2xl border border-slate-200/60 bg-white shadow-[0_10px_30px_-26px_rgba(15,23,42,0.6)] transition hover:-translate-y-0.5 hover:border-emerald-300/70 hover:shadow-[0_18px_44px_-30px_rgba(15,23,42,0.65)]">
+    <Link href={detailHref(listing)} className="kx-secondhand-card group">
       <div className="relative aspect-square overflow-hidden bg-slate-100">
         {useVideoFallbackArtwork ? (
           <span className="absolute inset-0 z-[1]" style={videoFallbackArtworkStyle} />
         ) : coverArtwork ? (
           <Image src={coverArtwork} alt={title} fill sizes="(max-width: 640px) 50vw, 240px" className="relative z-[1] object-cover transition duration-300 group-hover:scale-[1.03]" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(16,185,129,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#effcf4_52%,#f0fdfa)] text-emerald-500/70">
+          <span className="absolute inset-0 grid place-items-center bg-[#f0eee8] text-emerald-700/60">
             <Tag className="h-7 w-7" />
           </span>
         )}
@@ -2389,15 +2456,15 @@ function SecondhandListingCard({ listing }: { listing: KXCityListing }) {
         <ListingHeartButton listing={listing} />
       </div>
       <div className="space-y-1 p-2.5">
-        <h2 className="line-clamp-2 text-[13px] font-bold leading-[18px] text-slate-900">{title}</h2>
+        <h2 className="line-clamp-2 text-[13px] font-bold leading-[18px] text-[rgb(var(--kx-living-ink))]">{title}</h2>
         {badges.length ? (
           <div className="flex flex-wrap gap-1">
             {badges.map((badge) => (
-              <span key={badge} className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-black text-emerald-700">{badge}</span>
+              <span key={badge} className="rounded-full bg-emerald-50 px-1.5 py-0.5 text-[10px] font-black text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300">{badge}</span>
             ))}
           </div>
         ) : null}
-        <p className="flex items-center gap-1 truncate text-[11px] font-bold text-slate-400">
+        <p className="flex items-center gap-1 truncate text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
           <MapPin className="h-3 w-3 shrink-0" />
           <span className="truncate">{location}</span>
           {typeof listing.favorite_count === "number" && listing.favorite_count > 0 ? (
@@ -2484,11 +2551,11 @@ function StayListingCard({ listing, locale, variant }: { listing: KXCityListing;
     : [];
   return (
     <Link href={detailHref(listing)} className="group block">
-      <div className="relative aspect-[4/3] overflow-hidden rounded-[22px] bg-slate-100 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.65)]">
+      <div className="kx-stay-image relative aspect-[4/3] overflow-hidden bg-slate-100">
         {coverPreview ? (
           <Image src={coverPreview} alt={title} fill sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 300px" className="object-cover transition duration-300 group-hover:scale-[1.04]" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(14,165,233,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eff6ff_52%,#ecfeff)] text-sky-400">
+          <span className="absolute inset-0 grid place-items-center bg-[rgb(var(--kx-living-soft))] text-[rgb(var(--kx-living-accent))]/55">
             {variant === "stay" ? <BedDouble className="h-8 w-8" /> : <Home className="h-8 w-8" />}
           </span>
         )}
@@ -2507,31 +2574,31 @@ function StayListingCard({ listing, locale, variant }: { listing: KXCityListing;
       </div>
       <div className="mt-2.5 px-0.5">
         <div className="flex items-start justify-between gap-2">
-          <h2 className="line-clamp-1 text-[15px] font-black text-slate-950">{title}</h2>
+          <h2 className="line-clamp-1 text-[15px] font-black text-[rgb(var(--kx-living-ink))]">{title}</h2>
           {ratingCount > 0 ? (
-            <span className="inline-flex shrink-0 items-center gap-1 text-[13px] font-black text-slate-900">
-              <Star className="h-3.5 w-3.5 fill-slate-900 text-slate-900" />
+            <span className="inline-flex shrink-0 items-center gap-1 text-[13px] font-black text-[rgb(var(--kx-living-ink))]">
+              <Star className="h-3.5 w-3.5 fill-current" />
               {ratingAvg.toFixed(1)}
-              <span className="font-bold text-slate-400">({ratingCount})</span>
+              <span className="font-bold text-[rgb(var(--kx-living-muted))]">({ratingCount})</span>
             </span>
           ) : variant === "stay" ? (
-            <span className="mt-0.5 shrink-0 rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-black text-rose-600">{pickText(locale, "新上线", "新着", "New")}</span>
+            <span className="mt-0.5 shrink-0 rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-black text-rose-600 dark:bg-rose-500/15">{pickText(locale, "新上线", "新着", "New")}</span>
           ) : null}
         </div>
-        <p className="mt-0.5 line-clamp-1 text-[13px] font-semibold text-slate-500">
-          <Train className="mr-1 inline h-3.5 w-3.5 align-[-2px] text-slate-400" />
+        <p className="mt-0.5 line-clamp-1 text-[13px] font-semibold text-[rgb(var(--kx-living-muted))]">
+          <Train className="mr-1 inline h-3.5 w-3.5 align-[-2px] opacity-70" />
           {station || location}
         </p>
-        {subline ? <p className="mt-0.5 line-clamp-1 text-[13px] font-semibold text-slate-500">{subline}</p> : null}
-        <p className="mt-1.5 text-[15px] font-black text-slate-950">
+        {subline ? <p className="mt-0.5 line-clamp-1 text-[13px] font-semibold text-[rgb(var(--kx-living-muted))]">{subline}</p> : null}
+        <p className="mt-1.5 text-[15px] font-black text-[rgb(var(--kx-living-ink))]">
           {priceLabel(listing)}
           {variant === "home" && managementFee ? (
-            <span className="ml-1.5 text-xs font-bold text-slate-400">{pickText(locale, `管理费 ${managementFee}`, `管理費 ${managementFee}`, `+ mgmt ${managementFee}`)}</span>
+            <span className="ml-1.5 text-xs font-bold text-[rgb(var(--kx-living-muted))]">{pickText(locale, `管理费 ${managementFee}`, `管理費 ${managementFee}`, `+ mgmt ${managementFee}`)}</span>
           ) : null}
         </p>
         {tags.length ? (
           <div className="mt-1.5 flex flex-wrap gap-1.5">
-            {tags.map((tag) => <span key={tag} className="rounded-md bg-slate-100 px-2 py-0.5 text-[11px] font-black text-slate-600">{tag}</span>)}
+            {tags.map((tag) => <span key={tag} className="rounded-md bg-[rgb(var(--kx-living-soft))] px-2 py-0.5 text-[11px] font-black text-[rgb(var(--kx-living-muted))]">{tag}</span>)}
           </div>
         ) : null}
       </div>
@@ -2583,11 +2650,14 @@ function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Local
     listingAttrFlag(listing, "transportation_fee") ? pickText(locale, "交通费支给", "交通費支給", "Commute covered") : "",
   ].filter(Boolean);
   const urgent = Number(listing.promotion_weight || 0) > 0;
+  const companyMark = (company || title).trim().slice(0, 1).toUpperCase();
   return (
-    <Link href={detailHref(listing)} className="group block rounded-[20px] border border-slate-200/70 bg-white p-4 shadow-[0_10px_30px_-26px_rgba(15,23,42,0.6)] transition hover:-translate-y-0.5 hover:border-violet-300/70 hover:shadow-[0_18px_44px_-30px_rgba(15,23,42,0.62)]">
+    <Link href={detailHref(listing)} className="kx-job-row group">
+      <div className="kx-job-company-mark">{companyMark}</div>
+      <div className="min-w-0 flex-1">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 className="line-clamp-1 text-[17px] font-black text-slate-950 transition group-hover:text-violet-700">
+          <h2 className="line-clamp-1 text-[17px] font-black text-[rgb(var(--kx-living-ink))] transition group-hover:text-[rgb(var(--kx-living-accent))]">
             {urgent ? (
               <span className="mr-1.5 inline-flex translate-y-[-2px] items-center rounded-md bg-rose-50 px-1.5 py-0.5 align-middle text-[10px] font-black text-rose-600 ring-1 ring-rose-100">
                 {pickText(locale, "急招", "急募", "Urgent")}
@@ -2595,39 +2665,59 @@ function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Local
             ) : null}
             {title}
           </h2>
-          <p className="mt-1 flex min-w-0 items-center gap-1.5 text-sm font-bold text-slate-500">
+          <p className="mt-1 flex min-w-0 items-center gap-1.5 text-sm font-bold text-[rgb(var(--kx-living-muted))]">
             {company ? (
               <>
                 <span className="truncate">{company}</span>
                 {listing.verification_status === "verified" ? (
-                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-black text-violet-600 ring-1 ring-violet-100">
+                  <span className="inline-flex shrink-0 items-center gap-0.5 rounded-full bg-violet-50 px-1.5 py-0.5 text-[10px] font-black text-violet-600 ring-1 ring-violet-100 dark:bg-violet-500/15 dark:text-violet-300 dark:ring-violet-500/25">
                     <BadgeCheck className="h-3 w-3" />
                     {pickText(locale, "认证雇主", "認証企業", "Verified employer")}
                   </span>
                 ) : null}
-                <span className="shrink-0 text-slate-300">·</span>
+                <span className="shrink-0 opacity-50">·</span>
               </>
             ) : null}
-            <span className="inline-flex shrink-0 items-center gap-1 text-slate-400"><MapPin className="h-3.5 w-3.5" />{location}</span>
+            <span className="inline-flex shrink-0 items-center gap-1 opacity-90"><MapPin className="h-3.5 w-3.5" />{location}</span>
           </p>
         </div>
         <StatusBadge item={listing} />
       </div>
-      <p className="mt-2.5 text-lg font-black text-emerald-600">{priceLabel(listing)}</p>
+      <p className="mt-2.5 text-lg font-black text-[rgb(var(--kx-living-accent))]">{priceLabel(listing)}</p>
       {tags.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
-          {tags.map((tag) => <span key={tag} className="rounded-md bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600">{tag}</span>)}
+          {tags.map((tag) => <span key={tag} className="rounded-md bg-[rgb(var(--kx-living-soft))] px-2 py-1 text-[11px] font-black text-[rgb(var(--kx-living-muted))]">{tag}</span>)}
         </div>
       ) : null}
-      <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5">
-        <span className="flex items-center gap-1 text-xs font-bold text-slate-400">
+      <div className="mt-3 flex items-center justify-between border-t border-[rgb(var(--kx-stroke))]/15 pt-2.5">
+        <span className="flex items-center gap-1 text-xs font-bold text-[rgb(var(--kx-living-muted))]">
           <Clock className="h-3.5 w-3.5" />
           {hours || formatPublishedAt(listing, locale)}
         </span>
-        <span className="inline-flex h-8 items-center rounded-full bg-violet-600 px-3.5 text-xs font-black text-white shadow-[0_10px_22px_-14px_rgba(124,58,237,0.95)] transition group-hover:bg-violet-700">
-          {pickText(locale, "立即申请", "応募する", "Apply now")}
+        <span className="inline-flex items-center gap-1 text-xs font-black text-[rgb(var(--kx-living-accent))]">
+          {pickText(locale, "查看职位", "求人を見る", "View role")}
+          <ChevronRight className="h-4 w-4" />
         </span>
       </div>
+      </div>
+    </Link>
+  );
+}
+
+function JobGuideInsert({ locale }: { locale: Locale }) {
+  return (
+    <Link href="/guide/career-japan" className="kx-job-guide-insert">
+      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-violet-100 text-violet-700 dark:bg-violet-500/18 dark:text-violet-300">
+        <BookOpen className="h-5 w-5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[11px] font-black text-violet-600 dark:text-violet-300">{pickText(locale, "求职指南", "就職ガイド", "Career guide")}</span>
+        <span className="mt-0.5 block truncate text-sm font-black text-[rgb(var(--kx-living-ink))]">
+          {pickText(locale, "日本求职：第一次面试准备清单", "日本就職：初めての面接準備", "Japan job search: first interview checklist")}
+        </span>
+        <span className="mt-0.5 block text-xs font-semibold text-[rgb(var(--kx-living-muted))]">{pickText(locale, "指南 · 8 分钟阅读", "ガイド · 8分", "Guide · 8 min")}</span>
+      </span>
+      <ChevronRight className="h-5 w-5 shrink-0 text-[rgb(var(--kx-living-muted))]" />
     </Link>
   );
 }
@@ -2655,12 +2745,12 @@ export function ServiceCard({ listing, locale }: { listing: KXCityListing; local
         ? pickText(locale, "在线订座", "席を予約", "Reserve a table")
         : pickText(locale, "预约", "予約する", "Book");
   return (
-    <Link href={detailHref(listing)} className="group overflow-hidden rounded-[20px] border border-slate-200/70 bg-white shadow-[0_10px_30px_-26px_rgba(15,23,42,0.6)] transition hover:-translate-y-0.5 hover:border-orange-300/70 hover:shadow-[0_18px_44px_-30px_rgba(15,23,42,0.62)]">
+    <Link href={detailHref(listing)} className="kx-service-card group">
       <div className="relative aspect-[16/9] overflow-hidden bg-slate-100">
         {coverPreview ? (
           <Image src={coverPreview} alt={title} fill sizes="(max-width: 640px) 100vw, 360px" className="object-cover transition duration-300 group-hover:scale-[1.03]" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(249,115,22,0.13),transparent_34%),linear-gradient(135deg,#fffbf5,#fff7ed_52%,#fef3f2)] text-orange-400">
+          <span className="absolute inset-0 grid place-items-center bg-[#f1ede5] text-orange-700/55">
             {meta ? <meta.Icon className="h-8 w-8" /> : <Store className="h-8 w-8" />}
           </span>
         )}
@@ -2683,27 +2773,27 @@ export function ServiceCard({ listing, locale }: { listing: KXCityListing; local
         ) : null}
       </div>
       <div className="p-3.5">
-        <h2 className="line-clamp-1 text-[15px] font-black text-slate-950">{title}</h2>
+        <h2 className="line-clamp-1 text-[15px] font-black text-[rgb(var(--kx-living-ink))]">{title}</h2>
         <div className="mt-1.5 flex items-center justify-between gap-2">
           {ratingCount > 0 ? (
             <RatingStars value={ratingAvg} count={ratingCount} />
           ) : (
-            <span className="text-xs font-bold text-slate-400">{pickText(locale, "暂无点评 · 期待你的体验", "口コミ募集中", "No reviews yet")}</span>
+            <span className="text-xs font-bold text-[rgb(var(--kx-living-muted))]">{pickText(locale, "暂无点评 · 期待你的体验", "口コミ募集中", "No reviews yet")}</span>
           )}
-          <span className="shrink-0 text-sm font-black text-orange-600">{priceRange || priceLabel(listing)}</span>
+          <span className="shrink-0 text-sm font-black text-[rgb(var(--kx-living-warm))]">{priceRange || priceLabel(listing)}</span>
         </div>
-        <p className="mt-2 flex items-center gap-1 truncate text-xs font-bold text-slate-400">
+        <p className="mt-2 flex items-center gap-1 truncate text-xs font-bold text-[rgb(var(--kx-living-muted))]">
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{location}</span>
           {openHours ? (
             <span className="ml-auto inline-flex shrink-0 items-center gap-1"><Clock className="h-3 w-3" />{openHours}</span>
           ) : null}
         </p>
-        <div className="mt-3 flex items-center justify-between border-t border-slate-100 pt-2.5">
-          <span className="text-[11px] font-bold text-slate-400">
+        <div className="mt-3 flex items-center justify-between border-t border-[rgb(var(--kx-stroke))]/15 pt-2.5">
+          <span className="text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
             {listing.inquiry_count ? pickText(locale, `${listing.inquiry_count} 人咨询过`, `${listing.inquiry_count} 件の問い合わせ`, `${listing.inquiry_count} inquiries`) : pickText(locale, "在线咨询 · 免费", "オンライン相談無料", "Free to ask")}
           </span>
-          <span className="inline-flex h-8 items-center rounded-full bg-orange-500 px-3.5 text-xs font-black text-white shadow-[0_10px_22px_-14px_rgba(249,115,22,0.95)] transition group-hover:bg-orange-600">
+          <span className="inline-flex h-8 items-center rounded-full bg-[rgb(var(--kx-living-accent))] px-3.5 text-xs font-black text-white shadow-[0_10px_22px_-14px_rgba(20,112,103,0.9)] transition group-hover:brightness-95">
             {cta}
           </span>
         </div>
@@ -2737,15 +2827,15 @@ function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale
   const items = directory.data?.items || [];
   if (directory.isLoading || !items.length) return null;
   return (
-    <section className="mb-4 rounded-[24px] border border-slate-200/70 bg-white/95 p-3.5 shadow-[0_14px_40px_-34px_rgba(15,23,42,0.55)] sm:p-4">
+    <section className="kx-living-contact-card mb-4 !rounded-[24px] p-3.5 sm:p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
-          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-emerald-600/10 text-emerald-700">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-emerald-600/10 text-emerald-700 dark:text-emerald-300">
             <Store className="h-4.5 w-4.5" />
           </span>
           <div className="min-w-0">
-            <h2 className="truncate text-[15px] font-black text-slate-950">{pickText(locale, "认证商家", "認証店舗", "Verified businesses")}</h2>
-            <p className="truncate text-xs font-semibold text-slate-500">{pickText(locale, "资质审核通过的本地商家与服务方", "審査済みの地元店舗・事業者", "Locally vetted shops & providers")}</p>
+            <h2 className="truncate text-[15px] font-black text-[rgb(var(--kx-living-ink))]">{pickText(locale, "认证商家", "認証店舗", "Verified businesses")}</h2>
+            <p className="truncate text-xs font-semibold text-[rgb(var(--kx-living-muted))]">{pickText(locale, "资质审核通过的本地商家与服务方", "審査済みの地元店舗・事業者", "Locally vetted shops & providers")}</p>
           </div>
         </div>
         <Link href={`/businesses?city=${encodeURIComponent(citySlug)}`} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-xs font-black text-emerald-700 transition hover:bg-emerald-100">
@@ -2759,10 +2849,10 @@ function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale
             <Link
               key={business.id}
               href={`/businesses/${encodeURIComponent(business.id)}`}
-              className="w-[210px] shrink-0 rounded-2xl border border-slate-200/70 bg-white p-3 transition hover:-translate-y-0.5 hover:border-emerald-300/70 hover:shadow-[0_14px_30px_-22px_rgba(15,23,42,0.5)]"
+              className="kx-living-mini-card w-[210px] shrink-0 rounded-2xl p-3 transition hover:-translate-y-0.5"
             >
               <div className="flex items-center gap-2.5">
-                <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-emerald-600/10 text-emerald-700">
+                <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-emerald-600/10 text-emerald-700 dark:text-emerald-300">
                   {business.logo_url ? (
                     <Image src={business.logo_url} alt={business.business_name} width={40} height={40} className="h-10 w-10 object-cover" unoptimized />
                   ) : (
@@ -2770,20 +2860,20 @@ function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale
                   )}
                 </span>
                 <div className="min-w-0">
-                  <p className="flex items-center gap-1 truncate text-sm font-black text-slate-950">
+                  <p className="flex items-center gap-1 truncate text-sm font-black text-[rgb(var(--kx-living-ink))]">
                     <span className="truncate">{business.business_name}</span>
                     <BadgeCheck className="h-3.5 w-3.5 shrink-0 text-emerald-600" />
                   </p>
-                  <p className="truncate text-[11px] font-bold text-slate-400">{business.business_type || (business.service_categories || [])[0] || ""}</p>
+                  <p className="truncate text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">{business.business_type || (business.service_categories || [])[0] || ""}</p>
                 </div>
               </div>
               <div className="mt-2 flex items-center justify-between">
                 {Number(business.rating_count || 0) > 0 ? (
                   <RatingStars value={Number(business.rating_avg || 0)} count={Number(business.rating_count || 0)} />
                 ) : (
-                  <span className="text-[11px] font-bold text-slate-400">{pickText(locale, "暂无点评", "口コミなし", "No reviews")}</span>
+                  <span className="text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">{pickText(locale, "暂无点评", "口コミなし", "No reviews")}</span>
                 )}
-                <span className="text-[11px] font-black text-slate-500">{pickText(locale, `${business.published_listing_count || 0} 个服务`, `サービス${business.published_listing_count || 0}件`, `${business.published_listing_count || 0} services`)}</span>
+                <span className="text-[11px] font-black text-[rgb(var(--kx-living-muted))]">{pickText(locale, `${business.published_listing_count || 0} 个服务`, `サービス${business.published_listing_count || 0}件`, `${business.published_listing_count || 0} services`)}</span>
               </div>
             </Link>
           ))}
@@ -3094,12 +3184,12 @@ function DetailContactCard({ item, onContact, isOwner = false }: { item: KXCityL
   const location = cleanListingText(item.location_text) || cityLabel(item.city_slug);
   return (
     <div className="space-y-3">
-      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_12px_36px_rgba(15,23,42,0.06)]">
-        <p className="text-2xl font-black text-slate-950">{priceLabel(item)}</p>
-        <p className="mt-1 text-sm font-semibold text-slate-500">{location}</p>
+      <section className="kx-living-contact-card">
+        <p className="kx-living-detail-price text-2xl font-black">{priceLabel(item)}</p>
+        <p className="mt-1 text-sm font-semibold text-[rgb(var(--kx-living-muted))]">{location}</p>
         {isOwner ? (
           <>
-            <Link href={`/listings/create?type=${item.type}&edit=${item.id}`} className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-slate-950 text-sm font-black text-white">
+            <Link href={`/listings/create?type=${item.type}&edit=${item.id}`} className="kx-living-detail-primary mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full text-sm font-black text-white">
               编辑信息
             </Link>
             <Link href="/my/listings" className="mt-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full border border-slate-200 text-sm font-black text-slate-700">
@@ -3107,7 +3197,7 @@ function DetailContactCard({ item, onContact, isOwner = false }: { item: KXCityL
             </Link>
           </>
         ) : (
-          <button type="button" onClick={onContact} className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-slate-950 text-sm font-black text-white">
+          <button type="button" onClick={onContact} className="kx-living-detail-primary mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full text-sm font-black text-white">
             <Send className="h-4 w-4" />
             {label}
           </button>
@@ -3403,8 +3493,8 @@ function ListingDetailRecommendations({ item }: { item: KXCityListing }) {
 
 function ListingRail({ title, items }: { title: string; items: KXCityListing[] }) {
   return (
-    <section className="mt-5">
-      <h3 className="px-1 text-base font-black text-slate-950">{title}</h3>
+    <section className="mt-7">
+      <h3 className="px-1 text-base font-black text-[rgb(var(--kx-living-ink))]">{title}</h3>
       <div className="-mx-1 mt-2 overflow-x-auto px-1 pb-1">
         <div className="flex gap-3">
           {items.map((listing) => <MiniListingCard key={listing.id} listing={listing} />)}
@@ -3420,8 +3510,8 @@ function MiniListingCard({ listing }: { listing: KXCityListing }) {
   const coverIsVideo = listingCoverIsVideo(listing);
   const PlaceholderIcon = listingPlaceholderIcon(listing.type);
   return (
-    <Link href={detailHref(listing)} className="w-44 shrink-0 overflow-hidden rounded-2xl border border-slate-200/70 bg-white shadow-[0_8px_24px_rgba(15,23,42,0.05)] transition hover:-translate-y-0.5 hover:shadow-[0_14px_30px_rgba(15,23,42,0.1)]">
-      <span className="relative block aspect-square bg-slate-100">
+    <Link href={detailHref(listing)} className="kx-living-mini-card w-44 shrink-0 overflow-hidden rounded-[20px] transition hover:-translate-y-0.5">
+      <span className="relative block aspect-square bg-[rgb(var(--kx-living-soft))]">
         {coverIsVideo && !cover ? (
           <span className="absolute inset-0" style={videoFallbackArtworkStyle} />
         ) : cover ? (
@@ -3436,8 +3526,8 @@ function MiniListingCard({ listing }: { listing: KXCityListing }) {
         ) : null}
       </span>
       <span className="block p-2.5">
-        <span className="block text-sm font-black text-slate-950">{priceLabel(listing)}</span>
-        <span className="mt-0.5 line-clamp-2 block text-xs font-bold leading-4 text-slate-600">{title}</span>
+        <span className="block text-sm font-black text-[rgb(var(--kx-living-ink))]">{priceLabel(listing)}</span>
+        <span className="mt-0.5 line-clamp-2 block text-xs font-bold leading-4 text-[rgb(var(--kx-living-muted))]">{title}</span>
       </span>
     </Link>
   );

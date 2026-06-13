@@ -168,14 +168,22 @@ function LoginForm() {
   return (
     <div className="kx-auth-page px-4 py-6 sm:py-10">
       <div className="mx-auto grid min-h-[calc(100dvh-3rem)] w-full max-w-5xl overflow-hidden rounded-[28px] border border-kx-stroke/70 bg-kx-card shadow-kx-glow lg:grid-cols-[0.9fr_1.1fr]">
-        {/* ─────────── LEFT brand pane ─────────── */}
-        <aside className="hidden flex-col justify-between bg-gradient-to-br from-kx-accent/14 via-kx-card to-sky-100/70 p-8 lg:flex dark:from-kx-accent/20 dark:via-kx-card dark:to-sky-500/10">
-          <div>
+        {/* ─────────── LEFT brand pane — rich brand-green, premium ─────────── */}
+        <aside
+          className="relative hidden flex-col justify-between overflow-hidden p-9 text-white lg:flex"
+          style={{ background: "linear-gradient(157deg, rgb(34 140 126) 0%, rgb(20 112 103) 50%, rgb(11 74 67) 100%)" }}
+        >
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{ background: "radial-gradient(135% 85% at 88% -12%, rgba(255,255,255,0.22), transparent 55%)" }}
+            aria-hidden="true"
+          />
+          <div className="relative">
             <div className="inline-flex items-center gap-3">
-              <BrandMark className="h-14 w-14 rounded-[18px] text-2xl" />
+              <BrandMark className="h-14 w-14 rounded-[18px] text-2xl ring-1 ring-white/25" />
               <div>
-                <div className="text-3xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
-                <p className="mt-1 text-sm font-semibold text-kx-subtle">{c.brandTagline}</p>
+                <div className="text-3xl font-black tracking-tight text-white">Machi</div>
+                <p className="mt-1 text-sm font-semibold text-white/75">{c.brandTagline}</p>
               </div>
             </div>
 
@@ -187,21 +195,21 @@ function LoginForm() {
                 { Icon: ShieldCheck, title: c.leftLoginItems[3][0], body: c.leftLoginItems[3][1] },
               ].map(({ Icon, title, body }) => (
                 <li key={title} className="flex items-start gap-3">
-                  <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-kx-accent/10 text-kx-accent ring-1 ring-kx-accent/20">
+                  <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-white ring-1 ring-white/25 backdrop-blur-sm">
                     <Icon className="h-4 w-4" />
                   </span>
                   <div className="min-w-0">
-                    <p className="text-sm font-black text-kx-text">{title}</p>
-                    <p className="mt-0.5 text-[13px] leading-5 text-kx-subtle">{body}</p>
+                    <p className="text-sm font-black text-white">{title}</p>
+                    <p className="mt-0.5 text-[13px] leading-5 text-white/70">{body}</p>
                   </div>
                 </li>
               ))}
             </ul>
           </div>
 
-          <div className="rounded-kx-lg bg-white/70 p-4 ring-1 ring-white/80 dark:bg-white/[0.05] dark:ring-white/10">
-            <div className="text-[11px] font-black uppercase tracking-[0.16em] text-kx-accent">{c.cityFirstFeed}</div>
-            <p className="mt-2 text-sm font-semibold leading-6 text-kx-subtle">
+          <div className="relative rounded-kx-lg bg-white/12 p-4 ring-1 ring-white/25 backdrop-blur-sm">
+            <div className="text-[11px] font-black uppercase tracking-[0.16em] text-white/90">{c.cityFirstFeed}</div>
+            <p className="mt-2 text-sm font-semibold leading-6 text-white/80">
               {c.cityFirstBody}
             </p>
           </div>

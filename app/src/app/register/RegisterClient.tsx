@@ -292,47 +292,55 @@ function RegisterForm() {
   return (
     <div className="kx-auth-page px-4 py-6 sm:py-10">
       <div className="mx-auto grid min-h-[calc(100dvh-3rem)] w-full max-w-5xl overflow-hidden rounded-[28px] border border-kx-stroke/70 bg-kx-card shadow-kx-glow lg:grid-cols-[0.9fr_1.1fr]">
-        {/* ─────────── LEFT brand pane ─────────── */}
-        <aside className="hidden flex-col justify-between bg-gradient-to-br from-kx-accent/14 via-kx-card to-sky-100/70 p-8 lg:flex dark:from-kx-accent/20 dark:via-kx-card dark:to-sky-500/10">
-          <div>
+        {/* ─────────── LEFT brand pane — rich brand-green, premium ─────────── */}
+        <aside
+          className="relative hidden flex-col justify-between overflow-hidden p-9 text-white lg:flex"
+          style={{ background: "linear-gradient(157deg, rgb(34 140 126) 0%, rgb(20 112 103) 50%, rgb(11 74 67) 100%)" }}
+        >
+          <div
+            className="pointer-events-none absolute inset-0"
+            style={{ background: "radial-gradient(135% 85% at 88% -12%, rgba(255,255,255,0.22), transparent 55%)" }}
+            aria-hidden="true"
+          />
+          <div className="relative">
             <div className="inline-flex items-center gap-3">
-              <BrandMark className="h-14 w-14 rounded-[18px] text-2xl" />
+              <BrandMark className="h-14 w-14 rounded-[18px] text-2xl ring-1 ring-white/25" />
               <div>
-                <div className="text-3xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
-                <p className="mt-1 text-sm font-semibold text-kx-subtle">{c.brandTagline}</p>
+                <div className="text-3xl font-black tracking-tight text-white">Machi</div>
+                <p className="mt-1 text-sm font-semibold text-white/75">{c.brandTagline}</p>
               </div>
             </div>
 
-            <p className="mt-10 text-sm font-semibold leading-7 text-kx-subtle">
+            <p className="mt-10 text-sm font-semibold leading-7 text-white/80">
               {c.leftRegisterIntro}
             </p>
-            <p className="mt-3 text-sm font-bold leading-7 text-kx-accent">
+            <p className="mt-3 text-sm font-bold leading-7 text-white">
               {c.leftRegisterAccent}
             </p>
 
             <ol className="mt-8 space-y-3">
               {c.leftRegisterSteps.map((step, idx) => (
                 <li key={step} className="flex items-start gap-3">
-                  <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-kx-accent text-white text-xs font-black shadow-sm">
+                  <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/20 text-white text-xs font-black ring-1 ring-white/30">
                     {idx + 1}
                   </span>
-                  <span className="text-sm font-semibold leading-6 text-kx-text">{step}</span>
+                  <span className="text-sm font-semibold leading-6 text-white/90">{step}</span>
                 </li>
               ))}
             </ol>
           </div>
-          <div className="grid grid-cols-3 gap-3 text-center">
-            <div className="rounded-kx-lg bg-white/70 px-3 py-4 ring-1 ring-white/80 dark:bg-white/[0.05] dark:ring-white/10">
-              <div className="text-xl font-black text-kx-text">12</div>
-              <div className="mt-1 text-[11px] font-bold text-kx-muted">{c.statChannels}</div>
+          <div className="relative grid grid-cols-3 gap-3 text-center">
+            <div className="rounded-kx-lg bg-white/12 px-3 py-4 ring-1 ring-white/25 backdrop-blur-sm">
+              <div className="text-xl font-black text-white">12</div>
+              <div className="mt-1 text-[11px] font-bold text-white/70">{c.statChannels}</div>
             </div>
-            <div className="rounded-kx-lg bg-white/70 px-3 py-4 ring-1 ring-white/80 dark:bg-white/[0.05] dark:ring-white/10">
-              <div className="text-xl font-black text-kx-text">8+</div>
-              <div className="mt-1 text-[11px] font-bold text-kx-muted">{c.statCategories}</div>
+            <div className="rounded-kx-lg bg-white/12 px-3 py-4 ring-1 ring-white/25 backdrop-blur-sm">
+              <div className="text-xl font-black text-white">8+</div>
+              <div className="mt-1 text-[11px] font-bold text-white/70">{c.statCategories}</div>
             </div>
-            <div className="rounded-kx-lg bg-white/70 px-3 py-4 ring-1 ring-white/80 dark:bg-white/[0.05] dark:ring-white/10">
-              <div className="text-xl font-black text-kx-text">{c.statCountries}</div>
-              <div className="mt-1 text-[11px] font-bold text-kx-muted">{c.currentCity}</div>
+            <div className="rounded-kx-lg bg-white/12 px-3 py-4 ring-1 ring-white/25 backdrop-blur-sm">
+              <div className="text-xl font-black text-white">{c.statCountries}</div>
+              <div className="mt-1 text-[11px] font-bold text-white/70">{c.currentCity}</div>
             </div>
           </div>
         </aside>

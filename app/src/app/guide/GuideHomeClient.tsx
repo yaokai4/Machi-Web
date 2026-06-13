@@ -72,16 +72,16 @@ export default function GuideHomeClient() {
   return (
     <GuideShell right={<GuideRightRail />}>
       {/* Hero */}
-      <header className="bg-gradient-to-b from-[#FFF7EE] to-[#FBF9F6] px-4 pb-5 pt-6 dark:from-kx-surface dark:to-transparent sm:px-6">
-        <div className="inline-flex items-center gap-1.5 rounded-full bg-kx-card px-2.5 py-1 text-[11px] font-bold text-kx-accent shadow-sm">
+      <header className="kx-guide-hero px-4 pb-6 pt-7 sm:px-7 sm:pt-9">
+        <div className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">
           <Sparkles className="h-3.5 w-3.5" /> {t("guide_badge")}
         </div>
-        <h1 className="mt-3 text-2xl font-black leading-tight text-kx-text sm:text-3xl">{hero.title}</h1>
-        <p className="mt-1.5 text-sm font-semibold text-kx-subtle sm:text-base">{hero.subtitle}</p>
-        <p className="mt-1 max-w-xl text-xs leading-6 text-kx-muted">{hero.note}</p>
+        <h1 className="mt-4 max-w-2xl text-3xl font-black leading-[1.12] tracking-[-0.025em] text-kx-text sm:text-4xl">{hero.title}</h1>
+        <p className="mt-2 text-sm font-semibold text-kx-subtle sm:text-base">{hero.subtitle}</p>
+        <p className="mt-1.5 max-w-xl text-xs leading-6 text-kx-muted">{hero.note}</p>
 
-        <div className="mt-4 flex items-center gap-2 rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 py-2 shadow-sm">
-          <Search className="h-4 w-4 shrink-0 text-kx-muted" />
+        <div className="kx-guide-search mt-6">
+          <Search className="h-5 w-5 shrink-0 text-kx-muted" />
           <input
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -89,7 +89,7 @@ export default function GuideHomeClient() {
               if (e.key === "Enter") submitSearch();
             }}
             placeholder={hero.searchPlaceholder}
-            className="min-w-0 flex-1 bg-transparent text-sm text-kx-text outline-none placeholder:text-kx-muted"
+            className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold text-kx-text outline-none placeholder:text-kx-muted"
           />
           {searching ? (
             <button
@@ -98,13 +98,13 @@ export default function GuideHomeClient() {
                 setKeyword("");
                 setDraft("");
               }}
-              className="rounded-full p-1 text-kx-muted hover:bg-kx-soft"
+              className="rounded-full p-1.5 text-kx-muted hover:bg-kx-soft"
               aria-label={t("guide_clear_search")}
             >
               <X className="h-4 w-4" />
             </button>
           ) : (
-            <button type="button" onClick={submitSearch} className="kx-button-primary h-8 px-3 text-xs">
+            <button type="button" onClick={submitSearch} className="kx-guide-search-button">
               {t("guide_search_button")}
             </button>
           )}
@@ -118,7 +118,7 @@ export default function GuideHomeClient() {
                 setDraft(tag);
                 setKeyword(tag);
               }}
-              className="rounded-full bg-kx-card px-3 py-1 text-xs font-semibold text-kx-subtle shadow-sm transition hover:text-kx-accent"
+              className="rounded-full border border-kx-stroke/35 bg-white/55 px-3 py-1 text-xs font-semibold text-kx-subtle transition hover:border-kx-accent/35 hover:text-kx-accent dark:bg-white/5"
             >
               {tag}
             </button>
@@ -126,7 +126,7 @@ export default function GuideHomeClient() {
         </div>
       </header>
 
-      <div className="space-y-8 px-4 py-6 sm:px-6">
+      <div className="space-y-10 px-4 py-7 sm:px-7">
         {searching ? (
           <section>
             <GuideSectionTitle title={`${t("guide_search_results_prefix")} "${keyword}"`} subtitle={`${search.data?.total ?? 0} ${t("guide_search_results_suffix")}`} />
@@ -258,7 +258,7 @@ export default function GuideHomeClient() {
                 <GuideSectionTitle title={t("guide_faq")} />
                 <div className="space-y-2">
                   {data.faq.map((f) => (
-                    <details key={f.id} className="group rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4">
+                    <details key={f.id} className="kx-guide-faq group p-4">
                       <summary className="cursor-pointer list-none text-sm font-bold text-kx-text marker:hidden">
                         {f.question}
                       </summary>
@@ -305,7 +305,7 @@ function GuideActionHub({ productCount, serviceCount }: { productCount: number; 
             <Link
               key={card.href}
               href={card.href}
-              className="group rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 shadow-sm transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+              className="kx-guide-action-card group p-4"
             >
               <div className="flex items-start gap-3">
                 <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">

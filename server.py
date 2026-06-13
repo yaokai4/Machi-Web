@@ -6245,7 +6245,26 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "使用半年，功能正常，适合同城自取。面交请选择公共场所。",
             "price": 8000, "currency": "JPY", "price_type": "fixed", "location_text": "新宿站附近",
             "status": "published", "verification_status": "unverified", "promoted": True,
+            "image_url": "https://images.unsplash.com/photo-1587829741301-dc798b83add3?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"condition": "9成新", "delivery_method": "自取 / 面交", "pickup_available": True, "shipping_available": False, "brand": "Apple"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "secondhand", "category": "运动户外", "title": "通勤公路自行车 · 单速改装",
+            "description": "车架无裂痕，刹车和链条刚保养过。含车锁与前灯，建议到店复检后骑行。",
+            "price": 14000, "currency": "JPY", "price_type": "fixed", "location_text": "世田谷区 · 三轩茶屋",
+            "status": "published", "verification_status": "unverified",
+            "image_url": "https://images.unsplash.com/photo-1485965120184-e220f721d03e?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"condition": "8成新", "delivery_method": "自取", "pickup_available": True, "shipping_available": False, "purchase_year": "2024"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "secondhand", "category": "家具", "title": "北欧风单人沙发椅 · 米白布面",
+            "description": "搬家出清，椅面干净无破损，宠物无烟环境。可拆洗椅套，需自行搬运或约轻型货车。",
+            "price": 6500, "currency": "JPY", "price_type": "fixed", "location_text": "目黑区 · 中目黑",
+            "status": "published", "verification_status": "unverified",
+            "image_url": "https://images.unsplash.com/photo-1567538096630-e0c55bd6374c?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"condition": "9成新", "delivery_method": "自取 / 可约货车", "pickup_available": True, "shipping_available": False},
         },
         {
             "city_slug": "sendai", "region_code": "jp.miyagi.sendai", "country_code": "jp",
@@ -6261,7 +6280,69 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "地址仅展示到区域，具体看房请先核实发布者身份。Machi 不代收押金或房租。",
             "price": 78000, "currency": "JPY", "price_type": "monthly", "location_text": "丰岛区 · 池袋",
             "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.86, "reviews": 38,
+            "image_url": "https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"rent": 78000, "deposit": "1个月", "key_money": "0", "management_fee": 6000, "layout": "1K", "area_sqm": 23.4, "nearest_station": "池袋站 步行8分钟", "move_in_date": "2026-07", "short_term_allowed": False, "furnished": False, "pet_allowed": False},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "rental", "category": "单人", "title": "中野站 1R 朝南公寓 · 家具可选",
+            "description": "采光通透的单人公寓，步行范围内有商店街和超市。支持线上看房，初期费用会在预约后提供完整明细。",
+            "price": 72000, "currency": "JPY", "price_type": "monthly", "location_text": "中野区 · 中野",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.79, "reviews": 24,
+            "image_url": "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"rent": 72000, "deposit": "1个月", "key_money": "0", "management_fee": 5000, "layout": "1R", "area_sqm": 21.0, "nearest_station": "中野站 步行7分钟", "station_distance_minutes": 7, "move_in_date": "随时", "short_term_allowed": False, "furnished": True, "pet_allowed": False, "floor": "4层", "building_type": "钢筋混凝土", "lease_term": "2年"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "rental", "category": "双人", "title": "吉祥寺 1LDK · 公园旁安静住宅",
+            "description": "适合两人居住的独立卧室户型，步行可到井之头公园。房源支持宠物咨询，签约前请确认管理规则。",
+            "price": 126000, "currency": "JPY", "price_type": "monthly", "location_text": "武藏野市 · 吉祥寺",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.93, "reviews": 41,
+            "image_url": "https://images.unsplash.com/photo-1493809842364-78817add7ffb?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"rent": 126000, "deposit": "1个月", "key_money": "1个月", "management_fee": 8000, "layout": "1LDK", "area_sqm": 39.8, "nearest_station": "吉祥寺站 步行11分钟", "station_distance_minutes": 11, "move_in_date": "2026-08", "short_term_allowed": False, "furnished": False, "pet_allowed": True, "floor": "2层", "building_type": "低层公寓", "lease_term": "2年"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "rental", "category": "合租", "title": "新大久保 Share House · 独立房间",
+            "description": "共用厨房和客厅，房间带锁并配书桌。包含网络与公共区域清洁，适合刚到东京的学生和在职人士。",
+            "price": 59000, "currency": "JPY", "price_type": "monthly", "location_text": "新宿区 · 新大久保",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.72, "reviews": 57,
+            "image_url": "https://images.unsplash.com/photo-1560185008-b033106af5c3?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"rent": 59000, "deposit": "3万日元", "key_money": "0", "management_fee": 12000, "layout": "独立单间", "area_sqm": 12.5, "nearest_station": "新大久保站 步行6分钟", "station_distance_minutes": 6, "move_in_date": "随时", "short_term_allowed": True, "share_allowed": True, "furnished": True, "pet_allowed": False, "lease_term": "3个月起"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "rental", "category": "单人", "title": "清澄白河 1K · 河畔设计公寓",
+            "description": "安静街区里的简洁内装，附近有咖啡店与河边步道。浴室干湿分离，可预约工作日晚间看房。",
+            "price": 94000, "currency": "JPY", "price_type": "monthly", "location_text": "江东区 · 清澄白河",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.89, "reviews": 32,
+            "image_url": "https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"rent": 94000, "deposit": "1个月", "key_money": "0", "management_fee": 7000, "layout": "1K", "area_sqm": 26.1, "nearest_station": "清澄白河站 步行5分钟", "station_distance_minutes": 5, "move_in_date": "2026-07 下旬", "short_term_allowed": False, "furnished": False, "pet_allowed": False, "floor": "6层", "building_type": "设计公寓", "lease_term": "2年"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "rental", "category": "家庭", "title": "练马 2LDK · 亲子友好带阳台",
+            "description": "收纳充足的家庭户型，附近有公园、保育园与大型超市。可提供停车位空位确认和学区信息。",
+            "price": 148000, "currency": "JPY", "price_type": "monthly", "location_text": "练马区 · 小竹向原",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.84, "reviews": 19,
+            "image_url": "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"rent": 148000, "deposit": "1个月", "key_money": "1个月", "management_fee": 10000, "layout": "2LDK", "area_sqm": 58.4, "nearest_station": "小竹向原站 步行9分钟", "station_distance_minutes": 9, "move_in_date": "2026-09", "short_term_allowed": False, "furnished": False, "pet_allowed": False, "floor": "3层", "building_type": "家庭公寓", "lease_term": "2年"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "rental", "category": "短租", "title": "上野家具公寓 · 一个月起租",
+            "description": "配齐床、桌椅、洗衣机与基础餐具，水电网络可打包结算。适合实习、语言学校短期课程或过渡居住。",
+            "price": 118000, "currency": "JPY", "price_type": "monthly", "location_text": "台东区 · 上野",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.77, "reviews": 63,
+            "image_url": "https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"rent": 118000, "deposit": "0", "key_money": "0", "management_fee": 12000, "layout": "1DK", "area_sqm": 30.2, "nearest_station": "上野站 步行8分钟", "station_distance_minutes": 8, "move_in_date": "随时", "short_term_allowed": True, "furnished": True, "pet_allowed": False, "lease_term": "1个月起"},
         },
         {
             "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
@@ -6281,10 +6362,51 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
         },
         {
             "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "job", "category": "兼职", "title": "便利店早班店员 · 站内直结",
+            "description": "收银、补货和简单清洁，店长会带教一周。早班时段固定，适合上午没课的留学生。",
+            "price": 1150, "currency": "JPY", "price_type": "hourly", "location_text": "新宿区 · 高田马场",
+            "status": "published", "verification_status": "verified",
+            "attributes": {"salary_min": 1150, "salary_max": 1300, "salary_type": "hourly", "employment_type": "part_time", "japanese_level": "N3 可", "visa_support": "none", "working_hours": "06:00-11:00", "company_name": "Machi Mart", "foreigner_friendly": True, "transportation_fee": True, "student_ok": True, "trial_period": "2周带教"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "job", "category": "全职", "title": "中文客服专员 · 可部分在宅",
+            "description": "处理中文用户咨询与工单，入职培训一个月。每周最多三天远程，需要基础日语邮件能力。",
+            "price": 280000, "currency": "JPY", "price_type": "monthly", "location_text": "港区 · 滨松町",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "attributes": {"salary_min": 280000, "salary_max": 350000, "salary_type": "monthly", "employment_type": "full_time", "japanese_level": "N2", "visa_support": "consult", "working_hours": "09:30-18:30", "company_name": "Sakura Connect", "foreigner_friendly": True, "remote_ok": True, "benefits": "社保完备、远程补贴", "holidays": "周末双休"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "job", "category": "兼职", "title": "仓库理货员 · 周末班次",
+            "description": "电商仓库分拣与贴标，工作内容简单，现场有中文同事。班次可在 App 内自选。",
+            "price": 1300, "currency": "JPY", "price_type": "hourly", "location_text": "江东区 · 丰洲",
+            "status": "published", "verification_status": "verified",
+            "attributes": {"salary_min": 1300, "salary_max": 1500, "salary_type": "hourly", "employment_type": "part_time", "japanese_level": "日语不限", "visa_support": "none", "working_hours": "09:00-18:00（周六日）", "company_name": "Tokyo Logi", "foreigner_friendly": True, "transportation_fee": True, "student_ok": True, "holidays": "班次自选"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "job", "category": "兼职", "title": "中华料理厨房帮工 · 包工作餐",
+            "description": "备菜、洗碗和出餐协助，老板会中文。晚班为主，时薪随熟练度上调。",
+            "price": 1250, "currency": "JPY", "price_type": "hourly", "location_text": "丰岛区 · 池袋",
+            "status": "published", "verification_status": "verified",
+            "attributes": {"salary_min": 1250, "salary_max": 1400, "salary_type": "hourly", "employment_type": "part_time", "japanese_level": "日语不限", "visa_support": "none", "working_hours": "17:00-22:00", "company_name": "福临门食堂", "foreigner_friendly": True, "student_ok": True, "benefits": "包工作餐"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "hiring", "category": "招聘", "title": "IT 桥梁工程师（中日双语）",
+            "description": "对接中日开发团队的需求沟通与进度管理，可申请技术签证支持。面试全程线上。",
+            "price": 420000, "currency": "JPY", "price_type": "monthly", "location_text": "千代田区 · 大手町",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "attributes": {"salary_min": 420000, "salary_max": 550000, "salary_type": "monthly", "employment_type": "full_time", "japanese_level": "N1/商务", "visa_support": "support", "working_hours": "09:00-18:00（弹性）", "company_name": "Bridge Works", "foreigner_friendly": True, "remote_ok": True, "benefits": "签证支持、搬迁补贴", "holidays": "完全周休二日"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
             "type": "local_service", "category": "翻译", "title": "日语电话代打与手续翻译",
             "description": "可协助联系房东、学校、银行和役所。服务前先确认范围与费用，不处理违法或高风险委托。",
             "price": 3000, "currency": "JPY", "price_type": "starting_from", "location_text": "东京 23 区 / 线上",
             "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.92, "reviews": 126,
             "attributes": {
                 "service_type": "翻译",
                 "service_area": "东京 23 区 / 线上",
@@ -6302,6 +6424,8 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "新宿横丁里的烧鸟居酒屋，备长炭现烤串物，配本地清酒。支持在线订座，旺季建议提前一天。",
             "price": 3000, "currency": "JPY", "price_type": "starting_from", "location_text": "新宿区 · 思出横丁",
             "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.88, "reviews": 214,
+            "image_url": "https://images.unsplash.com/photo-1514933651103-005eec06c04b?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "Machi 横丁烧鸟",
                 "price_range": "人均 ¥2,500-3,500",
@@ -6317,6 +6441,8 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "高田马场川菜馆，麻辣香锅按斤称、水煮鱼现杀现做。支持订座与包间，留学生出示学生证有优惠。",
             "price": 1500, "currency": "JPY", "price_type": "starting_from", "location_text": "新宿区 · 高田马场",
             "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.76, "reviews": 183,
+            "image_url": "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "川味小馆",
                 "price_range": "人均 ¥1,500-2,500",
@@ -6332,6 +6458,8 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "下北泽安静小店，自家烘焙豆与季节限定抹茶甜品。可预约窗边座位，适合自习与小聚。",
             "price": 800, "currency": "JPY", "price_type": "starting_from", "location_text": "世田谷区 · 下北泽",
             "status": "published", "verification_status": "verified",
+            "rating": 4.91, "reviews": 98,
+            "image_url": "https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "白日咖啡",
                 "price_range": "人均 ¥800-1,500",
@@ -6346,6 +6474,8 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "整套出租的改造町屋，步行可达雷门与晴空塔观景位。适合家庭或 3-4 人小团体，含自助入住指引与中文房东支持。",
             "price": 16800, "currency": "JPY", "price_type": "per_night", "location_text": "台东区 · 浅草",
             "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.96, "reviews": 146,
+            "image_url": "https://images.unsplash.com/photo-1611892440504-42a792e24d32?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "Machi Stay 浅草",
                 "room_type": "整套町屋 2LDK",
@@ -6362,6 +6492,8 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "新宿三丁目站直结的精品酒店，含双人自助早餐与行李寄存。前台支持中英文，适合初次到东京的旅客。",
             "price": 13500, "currency": "JPY", "price_type": "per_night", "location_text": "新宿区 · 新宿三丁目",
             "status": "published", "verification_status": "verified",
+            "rating": 4.82, "reviews": 309,
+            "image_url": "https://images.unsplash.com/photo-1590490360182-c33d57733427?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "Machi Hotel 新宿",
                 "room_type": "大床房 22㎡",
@@ -6371,6 +6503,146 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
                 "breakfast_included": True,
                 "near_station": "新宿三丁目站 直结",
             },
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "日本料理", "title": "神乐坂季节料理 · 小份会席",
+            "description": "以旬味鱼介和江户蔬菜为主的小型料理店，可选择六品或八品套餐。店内安静，支持纪念日备注。",
+            "price": 4800, "currency": "JPY", "price_type": "starting_from", "location_text": "新宿区 · 神乐坂",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.94, "reviews": 167,
+            "image_url": "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "旬味 神乐", "price_range": "人均 ¥4,800-8,000", "open_hours": "17:30-22:30（周二休）", "reservation_required": True, "booking_required": True, "near_station": "饭田桥站 步行7分钟", "availability": "晚餐"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "拉面", "title": "谷中鸡白汤拉面 · 清爽浓汤",
+            "description": "慢炖鸡白汤配自制细面，提供少油、少盐和素食浇头选项。午餐高峰可能排队，晚间相对轻松。",
+            "price": 1100, "currency": "JPY", "price_type": "starting_from", "location_text": "台东区 · 谷中",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.83, "reviews": 352,
+            "image_url": "https://images.unsplash.com/photo-1591814468924-caf88d1232e1?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "谷中白汤研究所", "price_range": "人均 ¥1,000-1,500", "open_hours": "11:00-15:00 / 18:00-21:30", "reservation_required": False, "near_station": "日暮里站 步行8分钟"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "烧肉火锅", "title": "惠比寿炭火烧肉 · 双人精选套餐",
+            "description": "提供国产牛双人套餐和单点菜单，排烟良好，支持生日甜点与儿童餐具。订座后可在站内确认忌口。",
+            "price": 5500, "currency": "JPY", "price_type": "starting_from", "location_text": "涩谷区 · 惠比寿",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.87, "reviews": 238,
+            "image_url": "https://images.unsplash.com/photo-1552566626-52f8b828add9?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "炭火 灯", "price_range": "人均 ¥5,000-7,000", "open_hours": "17:00-23:00", "reservation_required": True, "booking_required": True, "near_station": "惠比寿站 步行4分钟"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "咖啡甜品", "title": "清澄庭院咖啡 · 手冲与早午餐",
+            "description": "自然光庭院座位与开放式烘焙区，工作日可带电脑。周末早午餐建议提前预约，宠物可坐室外席。",
+            "price": 950, "currency": "JPY", "price_type": "starting_from", "location_text": "江东区 · 清澄白河",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.90, "reviews": 121,
+            "image_url": "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "庭与豆", "price_range": "人均 ¥900-1,800", "open_hours": "08:30-19:00", "reservation_required": False, "booking_required": True, "near_station": "清澄白河站 步行6分钟"},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "民宿", "title": "谷中庭院町屋 · 两卧室整套入住",
+            "description": "保留木格窗与小庭院的整套町屋，适合 4-5 人家庭。提供儿童床、行李寄存和中英文入住指南。",
+            "price": 21800, "currency": "JPY", "price_type": "per_night", "location_text": "台东区 · 谷中银座",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.98, "reviews": 92,
+            "image_url": "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "Yanaka Garden Stay", "room_type": "整套町屋 2LDK", "max_guests": 5, "check_in_time": "16:00 后", "check_out_time": "10:00 前", "breakfast_included": False, "near_station": "千驮木站 步行5分钟", "amenities": "厨房、洗衣机、儿童床、庭院", "minimum_stay": "2晚", "instant_confirmation": True},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "民宿", "title": "高圆寺阁楼民宿 · 商店街旁整套",
+            "description": "木质阁楼与开放厨房组成的轻松小屋，适合朋友或小家庭。附近有古着店、咖啡馆和夜间仍营业的超市。",
+            "price": 14800, "currency": "JPY", "price_type": "per_night", "location_text": "杉并区 · 高圆寺",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.91, "reviews": 74,
+            "image_url": "https://images.unsplash.com/photo-1571508601891-ca5e7a713859?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "Koenji Loft Stay", "room_type": "整套阁楼 1LDK", "max_guests": 3, "check_in_time": "15:00 后", "check_out_time": "10:00 前", "breakfast_included": False, "near_station": "高圆寺站 步行7分钟", "amenities": "厨房、投影仪、洗衣机、行李寄存", "minimum_stay": "1晚", "instant_confirmation": True},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.kanagawa.kamakura", "country_code": "jp",
+            "type": "local_service", "category": "民宿", "title": "镰仓海边小屋 · 步行看日落",
+            "description": "离海岸步行三分钟的两层小屋，配露台和冲浪板存放区。适合周末慢住，可从东京当天轻松抵达。",
+            "price": 19800, "currency": "JPY", "price_type": "per_night", "location_text": "神奈川县 · 镰仓",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.97, "reviews": 131,
+            "image_url": "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "Kamakura Shore House", "room_type": "整套小屋 2LDK", "max_guests": 4, "check_in_time": "15:00 后", "check_out_time": "10:00 前", "breakfast_included": False, "near_station": "长谷站 步行9分钟", "amenities": "露台、厨房、洗衣机、浴缸", "minimum_stay": "2晚", "instant_confirmation": True},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.saitama.kawagoe", "country_code": "jp",
+            "type": "local_service", "category": "民宿", "title": "川越藏造老屋 · 庭院和室",
+            "description": "在藏造街区住进修复后的传统老屋，保留梁柱与榻榻米，并加入现代卫浴。提供附近早餐店和散步路线。",
+            "price": 17600, "currency": "JPY", "price_type": "per_night", "location_text": "埼玉县 · 川越",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.94, "reviews": 69,
+            "image_url": "https://images.unsplash.com/photo-1480796927426-f609979314bd?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "Kawagoe Kura Stay", "room_type": "整套古民家 2DK", "max_guests": 4, "check_in_time": "15:30 后", "check_out_time": "10:00 前", "breakfast_included": False, "near_station": "本川越站 步行12分钟", "amenities": "庭院、和室、厨房、浴缸", "minimum_stay": "1晚", "instant_confirmation": False},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "公寓式酒店", "title": "代代木家庭公寓酒店 · 带厨房",
+            "description": "带完整厨房和洗烘一体机的家庭房，适合连续入住。步行可到新宿御苑，前台可代收行李。",
+            "price": 19600, "currency": "JPY", "price_type": "per_night", "location_text": "涩谷区 · 代代木",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.89, "reviews": 174,
+            "image_url": "https://images.unsplash.com/photo-1631049307264-da0ec9d70304?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "Yoyogi Residence Hotel", "room_type": "家庭套房 38㎡", "max_guests": 4, "check_in_time": "15:00", "check_out_time": "11:00", "breakfast_included": False, "near_station": "代代木站 步行4分钟", "amenities": "厨房、洗烘机、浴缸、行李寄存", "minimum_stay": "1晚", "instant_confirmation": True},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "温泉旅馆", "title": "箱根山景温泉旅馆 · 一泊二食",
+            "description": "从东京出发约九十分钟，含会席晚餐与和式早餐。可预约私汤时段，提供小田原站接驳说明。",
+            "price": 28600, "currency": "JPY", "price_type": "per_night", "location_text": "神奈川县 · 箱根",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.95, "reviews": 263,
+            "image_url": "https://images.unsplash.com/photo-1492571350019-22de08371fd3?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"business_name": "箱根 山之音", "room_type": "和室 10叠", "max_guests": 3, "check_in_time": "15:00", "check_out_time": "10:00", "breakfast_included": True, "near_station": "箱根汤本站 巴士15分钟", "amenities": "温泉、私汤、两餐、接驳咨询", "minimum_stay": "1晚", "instant_confirmation": False},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "清洁", "title": "搬家前后深度清洁 · 东京 23 区",
+            "description": "按房型报价，覆盖厨房、浴室、窗槽与地面。预约前提供照片即可确认范围，不临时追加未说明费用。",
+            "price": 9800, "currency": "JPY", "price_type": "starting_from", "location_text": "东京 23 区",
+            "status": "published", "verification_status": "verified", "promoted": True,
+            "rating": 4.93, "reviews": 207,
+            "image_url": "https://images.unsplash.com/photo-1527515637462-cff94eecc1ac?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"service_type": "居家清洁", "service_area": "东京 23 区", "price_unit": "1R/1K 起", "business_name": "Machi Clean", "certified_provider": True, "availability": "每日 09:00-19:00", "service_process": "上传房间照片、确认范围与报价、选择时段、完成后验收。", "user_prepare": "收好贵重物品并确保水电可用", "cancellation_rule": "前一天 18:00 前可免费改期", "booking_required": True},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "美容美发", "title": "日中双语发型工作室 · 剪发与染发",
+            "description": "预约制小型工作室，可用中文沟通发型、发色和护理预算。染发前会说明所需时间与追加项目。",
+            "price": 4800, "currency": "JPY", "price_type": "starting_from", "location_text": "涩谷区 · 原宿",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.88, "reviews": 154,
+            "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"service_type": "剪发 / 染发 / 护理", "service_area": "原宿店", "price_unit": "剪发起", "business_name": "Atelier Nagi", "certified_provider": True, "availability": "11:00-20:00（周三休）", "service_process": "选择项目、填写发质需求、确认报价与时长、到店服务。", "cancellation_rule": "24小时内取消可能收取席位费", "booking_required": True},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "搬家", "title": "留学生小型搬家 · 可选打包协助",
+            "description": "适合单人宿舍和 1K 房型，车型、楼层与大型物品会在报价前确认。全程通过站内记录需求与费用。",
+            "price": 12000, "currency": "JPY", "price_type": "starting_from", "location_text": "东京 / 埼玉 / 千叶",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.85, "reviews": 119,
+            "image_url": "https://images.unsplash.com/photo-1600518464441-9154a4dea21b?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"service_type": "小型搬家", "service_area": "东京 / 埼玉 / 千叶", "price_unit": "轻型车一台起", "business_name": "Machi Move", "certified_provider": True, "availability": "每日 08:00-20:00", "service_process": "填写起终点与物品清单、确认车辆与报价、预约时段、现场核对后搬运。", "user_prepare": "提前封箱并注明易碎物品", "not_included": "钢琴、大型保险柜、危险品", "booking_required": True},
+        },
+        {
+            "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
+            "type": "local_service", "category": "宠物服务", "title": "猫咪上门照护 · 每次 45 分钟",
+            "description": "提供喂食、换水、清理猫砂和简短陪伴，服务后发送图文记录。首次预约会先在线确认门锁和应急联系人。",
+            "price": 3200, "currency": "JPY", "price_type": "starting_from", "location_text": "东京西部 8 区",
+            "status": "published", "verification_status": "verified",
+            "rating": 4.97, "reviews": 88,
+            "image_url": "https://images.unsplash.com/photo-1518791841217-8f162f1e1131?w=1400&q=84&auto=format&fit=crop",
+            "attributes": {"service_type": "上门宠物照护", "service_area": "中野、杉并、练马、世田谷等", "price_unit": "45分钟 / 1次", "business_name": "Machi Pet Care", "certified_provider": True, "availability": "07:00-21:00", "service_process": "提交宠物信息、视频确认需求、预约时段、服务后发送记录。", "user_prepare": "准备足量食物、猫砂与兽医联系方式", "cancellation_rule": "前一天可免费改期", "booking_required": True},
         },
         {
             "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
@@ -6390,7 +6662,43 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             """,
             (sample["city_slug"], sample["type"], sample["title"]),
         ).fetchone()
+        rating_avg = float(sample.get("rating") or 0)
+        rating_count = int(sample.get("reviews") or 0)
+        cover_url = str(sample.get("image_url") or listing_image_fallback(sample["type"], index))
         if exists:
+            listing_id = exists["id"]
+            conn.execute(
+                """
+                UPDATE city_listings
+                   SET description = ?, price = ?, currency = ?, price_type = ?, location_text = ?,
+                       status = ?, verification_status = ?, is_promoted = ?, promotion_weight = ?,
+                       rating_avg = ?, rating_count = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    sample["description"], sample["price"], sample["currency"], sample["price_type"],
+                    sample["location_text"], sample["status"], sample["verification_status"],
+                    1 if sample.get("promoted") else 0, 20 if sample.get("promoted") else 0,
+                    rating_avg, rating_count, now, listing_id,
+                ),
+            )
+            cover = conn.execute(
+                "SELECT id FROM listing_media WHERE listing_id = ? AND is_cover = 1 ORDER BY sort_order ASC LIMIT 1",
+                (listing_id,),
+            ).fetchone()
+            if cover:
+                conn.execute(
+                    "UPDATE listing_media SET url = ?, thumbnail_url = ? WHERE id = ?",
+                    (cover_url, cover_url, cover["id"]),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
+                    VALUES (?, ?, 'image', ?, ?, 0, 1, ?)
+                    """,
+                    (str(uuid.uuid4()), listing_id, cover_url, cover_url, now),
+                )
             continue
         listing_id = str(uuid.uuid4())
         promoted = bool(sample.get("promoted"))
@@ -6401,10 +6709,11 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
                 category, title, description, price, currency, price_type, location_text,
                 status, verification_status, seller_user_id, business_id, contact_method,
                 view_count, inquiry_count, favorite_count, report_count, is_promoted,
-                promotion_weight, published_at, expires_at, created_at, updated_at
+                promotion_weight, published_at, expires_at, created_at, updated_at,
+                rating_avg, rating_count
             )
             VALUES (?, ?, ?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'app_message',
-                    0, 0, 0, 0, ?, ?, ?, ?, ?, ?)
+                    0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 listing_id,
@@ -6429,6 +6738,8 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
                 (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
                 now,
                 now,
+                rating_avg,
+                rating_count,
             ),
         )
         conn.execute(
@@ -6436,7 +6747,7 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)
             VALUES (?, ?, 'image', ?, ?, 0, 1, ?)
             """,
-            (str(uuid.uuid4()), listing_id, listing_image_fallback(sample["type"], index), listing_image_fallback(sample["type"], index), now),
+            (str(uuid.uuid4()), listing_id, cover_url, cover_url, now),
         )
         for key, (value, value_type) in normalize_listing_attributes(sample["type"], sample.get("attributes")).items():
             conn.execute(
@@ -8337,12 +8648,30 @@ LISTING_FALLBACK_EN_LABEL: dict[str, str] = {
     "event": "City Event",
 }
 GENERATED_LISTING_CARD_CACHE: dict[tuple[str, int, str], bytes] = {}
+LISTING_FALLBACK_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "listing-fallbacks"
+LISTING_FALLBACK_ASSET_BY_TYPE: dict[str, str] = {
+    "secondhand": "secondhand.png",
+    "rental": "rental.png",
+    "job": "job.png",
+    "hiring": "job.png",
+    "local_service": "local-service.png",
+    "discount": "local-service.png",
+    "event": "local-service.png",
+}
 
 
 def listing_image_fallback(listing_type: str, index: int = 0, base_url: str = "") -> str:
     path = f"/api/generated/listing-card.png?type={quote((listing_type or 'secondhand').strip(), safe='')}&i={int(index) % 7}"
     root = (base_url or PUBLIC_BASE_URL).rstrip("/")
     return f"{root}{path}" if root else path
+
+
+def public_listing_media_url(value: Any) -> str:
+    """Keep generated covers portable across local, staging, and production hosts."""
+    text = str(value or "").strip()
+    marker = "/api/generated/listing-card"
+    marker_index = text.find(marker)
+    return text[marker_index:] if marker_index >= 0 else text
 
 
 def generated_listing_card_svg(listing_type: str, index: int = 0) -> str:
@@ -8405,12 +8734,69 @@ def _listing_card_font(size: int, *, bold: bool = False):
         return ImageFont.load_default()
 
 
+def _listing_fallback_asset_variant(asset_path: Path, index: int) -> bytes:
+    """Derive per-index variants from one fallback artwork so neighbouring
+    cards without real photos don't repeat the exact same cover. Variants are
+    mirror + slight re-crops; index 0 stays the untouched original."""
+    raw = asset_path.read_bytes()
+    i = int(index) % 7
+    if i == 0:
+        return raw
+    try:
+        from PIL import Image
+    except Exception:
+        return raw
+    try:
+        import io
+
+        image = Image.open(io.BytesIO(raw)).convert("RGB")
+        width, height = image.size
+        if i % 2 == 1:
+            image = image.transpose(Image.FLIP_LEFT_RIGHT)
+        # Re-crop windows wander a few percent per index, keeping most of the
+        # artwork while shifting the composition enough to read as distinct.
+        inset = 0.025 + (i % 4) * 0.02
+        dx = int(width * inset * (1 if i in (1, 2, 5) else 0.4))
+        dy = int(height * inset * (1 if i in (3, 4, 6) else 0.4))
+        image = image.crop((dx, dy, width - max(1, dx // 2), height - max(1, dy // 2)))
+        image = image.resize((width, height), Image.LANCZOS)
+        out = io.BytesIO()
+        # compress_level 3: visually identical, ~5x faster than optimize=True,
+        # keeps the cold-cache first paint quick on mobile clients.
+        image.save(out, format="PNG", compress_level=3)
+        return out.getvalue()
+    except Exception:
+        return raw
+
+
+def start_listing_fallback_warmup() -> None:
+    """Pre-encode every fallback cover variant in the background so the first
+    real request never pays the re-encode latency (mobile clients treat a
+    slow first byte as a failed image)."""
+
+    def _warm() -> None:
+        for listing_type in sorted(set(LISTING_FALLBACK_ASSET_BY_TYPE)):
+            for i in range(7):
+                try:
+                    generated_listing_card_png(listing_type, i)
+                except Exception:
+                    return
+
+    threading.Thread(target=_warm, name="listing-fallback-warmup", daemon=True).start()
+
+
 def generated_listing_card_png(listing_type: str, index: int = 0) -> bytes:
     clean_type = normalize_listing_type(listing_type)
     i = int(index) % 7
     cache_key = (clean_type, i, "png")
     if cache_key in GENERATED_LISTING_CARD_CACHE:
         return GENERATED_LISTING_CARD_CACHE[cache_key]
+    asset_name = LISTING_FALLBACK_ASSET_BY_TYPE.get(clean_type, "secondhand.png")
+    asset_path = LISTING_FALLBACK_ASSET_DIR / asset_name
+    if asset_path.is_file():
+        data = _listing_fallback_asset_variant(asset_path, i)
+        GENERATED_LISTING_CARD_CACHE[cache_key] = data
+        return data
     try:
         from PIL import Image, ImageDraw
     except Exception as exc:
@@ -8970,9 +9356,9 @@ def hydrate_listing_extras(conn: sqlite3.Connection, listing_ids: list[str], cur
             "owner_id": item.get("uf_user_id") or "",
             "type": item.get("media_type") or item.get("uf_file_type") or "image",
             "media_type": item.get("media_type") or item.get("uf_file_type") or "image",
-            "url": item.get("uf_cdn_url") or item.get("uf_public_url") or item.get("lm_url") or "",
-            "thumb_url": item.get("lm_thumbnail_url") or "",
-            "thumbnail_url": item.get("lm_thumbnail_url") or "",
+            "url": item.get("uf_cdn_url") or item.get("uf_public_url") or public_listing_media_url(item.get("lm_url")),
+            "thumb_url": public_listing_media_url(item.get("lm_thumbnail_url")),
+            "thumbnail_url": public_listing_media_url(item.get("lm_thumbnail_url")),
             "object_key": item.get("uf_object_key") or "",
             "content_type": item.get("uf_content_type") or "",
             "file_size": item.get("uf_file_size") or 0,
@@ -9000,12 +9386,12 @@ def hydrate_listing_extras(conn: sqlite3.Connection, listing_ids: list[str], cur
             "isCover": bool(item.get("is_cover", 0)),
         })
         if not media_payload.get("url"):
-            fallback_url = item.get("lm_url") or ""
+            fallback_url = public_listing_media_url(item.get("lm_url"))
             media_payload["url"] = fallback_url
             media_payload["cdnUrl"] = fallback_url
             media_payload["publicUrl"] = fallback_url
         if not media_payload.get("thumbnailUrl") and media_payload.get("type") == "image":
-            fallback_thumb = item.get("lm_thumbnail_url") or item.get("lm_url") or ""
+            fallback_thumb = public_listing_media_url(item.get("lm_thumbnail_url") or item.get("lm_url"))
             media_payload["thumbnailUrl"] = fallback_thumb
             media_payload["thumbnail_url"] = fallback_thumb
             media_payload["thumb_url"] = fallback_thumb
@@ -15193,6 +15579,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_users(conn, query)
         if path.startswith("/api/admin/users/") and path.endswith("/restore") and method == "POST":
             return self.api_admin_restore_user(conn, path.split("/")[4])
+        if path.startswith("/api/admin/users/") and path.endswith("/password") and method == "POST":
+            return self.api_admin_set_user_password(conn, path.split("/")[4])
+        if path.startswith("/api/admin/users/") and path.endswith("/erase") and method == "POST":
+            return self.api_admin_erase_user(conn, path.split("/")[4])
         if path.startswith("/api/admin/users/") and method == "PATCH":
             return self.api_admin_update_user(conn, path.split("/")[4])
         if path.startswith("/api/admin/users/") and method == "DELETE":
@@ -23571,6 +23961,23 @@ class Handler(BaseHTTPRequestHandler):
         updates: list[tuple[str, Any]] = []
         if "is_verified" in data:
             updates.append(("is_verified", 1 if data["is_verified"] else 0))
+        if "email" in data:
+            email = str(data.get("email") or "").strip().lower()
+            if email:
+                if not is_valid_email(email):
+                    raise APIError("邮箱格式不正确", 400, "invalid_email")
+                dupe = conn.execute(
+                    "SELECT id FROM users WHERE lower(email) = ? AND id != ?",
+                    (email, user_id),
+                ).fetchone()
+                if dupe:
+                    raise APIError("该邮箱已被其他账号使用", 400, "email_taken")
+                # Admin-set address is trusted, so it is marked verified.
+                updates.append(("email", email))
+                updates.append(("email_verified", 1))
+            else:
+                updates.append(("email", ""))
+                updates.append(("email_verified", 0))
         if "role" in data and data["role"] in ("member", "creator", "admin"):
             # Don't let an admin demote themselves and then strand the system.
             if data["role"] != "admin" and target["id"] == admin["id"]:
@@ -23617,6 +24024,65 @@ class Handler(BaseHTTPRequestHandler):
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
         ACCESS_LOG.warning("admin %s restored user %s", admin["handle"], target["handle"])
         self.send_json({"user": serialize_user_with_counts(conn, fresh)})
+
+    def api_admin_set_user_password(self, conn: sqlite3.Connection, user_id: str) -> None:
+        """Admin-set a user's password. The plaintext is never logged or
+        echoed; we only persist the salted PBKDF2 hash and drop every live
+        session so the change takes effect immediately everywhere."""
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target:
+            raise APIError("用户不存在", 404, "user_not_found")
+        password = data.get("password")
+        validate_password_strength(password)
+        conn.execute(
+            "UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?",
+            (hash_password(password), now_iso(), user_id),
+        )
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        ACCESS_LOG.warning("admin %s reset password for user %s", admin["handle"], target["handle"])
+        self.send_json({"ok": True})
+
+    def api_admin_erase_user(self, conn: sqlite3.Connection, user_id: str) -> None:
+        """Permanently erase an account: scrub its PII, free the handle, make
+        the password unusable, hide its content and drop sessions. Distinct
+        from the recoverable ban (`api_admin_delete_user`) — this cannot be
+        undone to the original identity. Backend-agnostic (no FK-cascade
+        surgery), so it behaves identically on SQLite and Postgres."""
+        admin = self.require_admin(conn)
+        target = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        if not target:
+            raise APIError("用户不存在", 404, "user_not_found")
+        if target["id"] == admin["id"]:
+            raise APIError("不能删除自己的账号", 400, "cannot_delete_self")
+        if (target["role"] or "member") == "admin":
+            raise APIError("不能删除管理员账号，请先取消其管理员权限", 400, "cannot_delete_admin")
+        now = now_iso()
+        short = uuid.uuid4().hex[:12]
+        # A random hash with no known preimage — the account can never be
+        # signed into again, even by its former owner.
+        dead_hash = hash_password(uuid.uuid4().hex + uuid.uuid4().hex)
+        conn.execute(
+            "UPDATE users SET handle = ?, display_name = '已注销用户', email = '', email_verified = 0, "
+            "password_hash = ?, bio = '', location = '', avatar_url = '', cover_url = '', "
+            "google_sub = '', auth_provider = 'password', is_verified = 0, is_verified_member = 0, "
+            "membership_status = 'inactive', merchant_verified = 0, is_merchant = 0, "
+            "deleted_at = ?, updated_at = ? WHERE id = ?",
+            (f"deleted_{short}", dead_hash, now, now, user_id),
+        )
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute(
+            "UPDATE posts SET status = 'deleted', deleted_at = ?, updated_at = ? "
+            "WHERE author_id = ? AND deleted_at IS NULL",
+            (now, now, user_id),
+        )
+        conn.execute(
+            "UPDATE comments SET deleted_at = ? WHERE author_id = ? AND deleted_at IS NULL",
+            (now, user_id),
+        )
+        ACCESS_LOG.warning("admin %s erased user %s (%s)", admin["handle"], target["handle"], user_id)
+        self.send_json({"ok": True, "erased": True})
 
     def api_admin_posts(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
@@ -23938,6 +24404,7 @@ def run() -> None:
     server_apns.configure(db, DB_LOCK)
     start_visitor_writer()
     start_thumbnail_worker()
+    start_listing_fallback_warmup()
     # Singleton background jobs (time-based, not per-request). When running
     # multiple backend processes behind nginx, only ONE instance should run
     # them — set KAIX_ENABLE_SCHEDULERS=0 on the extra workers. Default on,

@@ -75,11 +75,8 @@ export function DiscoverShortcutGrid({
     <section className="space-y-4">
       <section className="kx-discover-panel">
         <div className="kx-discover-panel-header">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <h2 className="text-[17px] font-extrabold text-kx-text/90">{copy.title}</h2>
-              <p className="mt-1 text-sm leading-5 text-kx-subtle">{copy.subtitle}</p>
-            </div>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-[17px] font-extrabold text-kx-text/90">{copy.title}</h2>
             <button
               data-explore-all-channels
               type="button"
@@ -89,7 +86,7 @@ export function DiscoverShortcutGrid({
                 event.stopPropagation();
                 setIsChannelDialogOpen(true);
               }}
-              className="group inline-flex h-9 w-fit shrink-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-accentSoft/70 px-3 text-xs font-black text-kx-accent shadow-[0_10px_28px_-20px_rgba(37,99,235,0.55)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft"
+              className="group inline-flex h-9 w-fit shrink-0 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-kx-accentSoft/70 px-3 text-xs font-black text-kx-accent shadow-[0_10px_28px_-20px_rgba(20,112,103,0.45)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft"
             >
               <Sparkles className="h-3.5 w-3.5" />
               {copy.more}
@@ -362,22 +359,13 @@ function discoverShortcutCopy(locale: ReturnType<typeof useI18n>["locale"]) {
   }
 }
 
-function ChannelHeroInner({ spec, title, subtitle, locale }: { spec: ExploreChannelSpec; title?: string; subtitle?: string; locale: ReturnType<typeof useI18n>["locale"] }) {
-  const details = channelHeroDetails(spec.slug, locale);
+function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec; title?: string; subtitle?: string; locale: ReturnType<typeof useI18n>["locale"] }) {
   return (
     <>
       <ChannelIcon spec={spec} size="lg" />
-      <span className="relative min-w-0 w-full flex-1 sm:w-auto">
+      <span className="relative min-w-0 w-full flex-1">
         <span className="block break-words text-[15px] font-extrabold text-kx-text/90">{title || spec.title}</span>
-        <span className="mt-1 block break-words text-xs leading-4 text-kx-subtle sm:text-[13px] sm:leading-5">{subtitle || spec.subtitle}</span>
-        <span className="mt-2 flex flex-wrap gap-1.5">
-          {details.tags.map((tag) => (
-            <span key={tag} className="rounded-full bg-white/72 px-2 py-0.5 text-[10px] font-black text-kx-text/70 ring-1 ring-kx-stroke/35 dark:bg-white/10">
-              {tag}
-            </span>
-          ))}
-        </span>
-        <span className="mt-2 inline-flex text-[11px] font-black text-kx-accent">{details.cta}</span>
+        <span className="mt-1 block break-words text-xs leading-5 text-kx-subtle">{subtitle || spec.subtitle}</span>
       </span>
       <span className="relative mt-0.5 hidden h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-soft text-kx-muted transition-all duration-200 group-hover:bg-kx-accent group-hover:text-white sm:grid">
         <ChevronRight className="h-4 w-4" />
@@ -399,52 +387,13 @@ function channelHeroClass(channel: ExploreChannelSlug, active?: boolean) {
     qa: "from-blue-50/80 via-white to-white hover:border-blue-300/60",
   } satisfies Record<ExploreChannelSlug, string>;
   return [
-    "group relative flex min-h-[184px] min-w-0 flex-col items-start gap-3 overflow-hidden rounded-kx-lg border p-3 text-left sm:min-h-[156px] sm:flex-row sm:gap-3.5 sm:p-4",
+    "group relative flex min-h-[92px] min-w-0 flex-row items-center gap-3 overflow-hidden rounded-kx-lg border p-3 text-left sm:gap-3.5 sm:p-3.5",
     "bg-gradient-to-br shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
     "before:absolute before:-right-12 before:-top-14 before:h-28 before:w-28 before:rounded-full before:bg-white/45 before:blur-2xl before:content-['']",
     "hover:-translate-y-0.5 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
     accent[channel],
     active ? "border-kx-accent/45 bg-kx-accentSoft/60 ring-2 ring-kx-accent/20" : "border-kx-stroke/45",
   ].join(" ");
-}
-
-function channelHeroDetails(channel: ExploreChannelSlug, locale: ReturnType<typeof useI18n>["locale"]) {
-  const zh = {
-    market: { tags: ["估价", "求购", "交易安全"], cta: "按价格、地点和交易状态找同城好物" },
-    housing: { tags: ["长租", "民宿短住", "看房预约"], cta: "按车站、预算和入住条件找住处" },
-    jobs: { tags: ["薪资", "申请进度", "雇主认证"], cta: "按薪资、地点和签证支持找机会" },
-    services: { tags: ["餐厅美食", "订座点评", "景点玩乐"], cta: "按评分、预约和距离找本地服务" },
-    guide: { tags: ["攻略", "手续", "避坑"], cta: "查看城市生活指南" },
-    news: { tags: ["交通", "天气", "公告"], cta: "查看本地快讯" },
-    deals: { tags: ["折扣", "团购", "到店"], cta: "查看附近优惠" },
-    groups: { tags: ["饭局", "语言交换", "活动"], cta: "加入城市小组" },
-    qa: { tags: ["提问", "互助", "匿名"], cta: "发起本地求助" },
-  } satisfies Record<ExploreChannelSlug, { tags: string[]; cta: string }>;
-  const en = {
-    market: { tags: ["Pricing", "Wanted", "Safety"], cta: "Find local items by price, place and status" },
-    housing: { tags: ["Long-term", "Stays", "Viewings"], cta: "Find homes by station, budget and move-in needs" },
-    jobs: { tags: ["Salary", "Apply", "Employers"], cta: "Find work by salary, location and visa support" },
-    services: { tags: ["Restaurants", "Reservations", "Attractions"], cta: "Find local services by rating, booking and distance" },
-    guide: { tags: ["Guides", "Procedures", "Safety"], cta: "Open city guides" },
-    news: { tags: ["Transit", "Weather", "Notices"], cta: "Open local news" },
-    deals: { tags: ["Deals", "Coupons", "Stores"], cta: "Browse nearby deals" },
-    groups: { tags: ["Meetups", "Language", "Events"], cta: "Join local groups" },
-    qa: { tags: ["Questions", "Help", "Anon"], cta: "Ask the city" },
-  } satisfies Record<ExploreChannelSlug, { tags: string[]; cta: string }>;
-  const ja = {
-    market: { tags: ["相場", "探し物", "安全取引"], cta: "価格・場所・取引状況で街の品を探す" },
-    housing: { tags: ["賃貸", "民泊・短期", "内見予約"], cta: "駅・予算・入居条件で住まいを探す" },
-    jobs: { tags: ["給与", "応募管理", "雇用主認証"], cta: "給与・場所・ビザサポートで仕事を探す" },
-    services: { tags: ["グルメ", "予約・口コミ", "観光体験"], cta: "評価・予約・距離で地域サービスを探す" },
-    guide: { tags: ["攻略", "手続き", "注意"], cta: "街のガイドを見る" },
-    news: { tags: ["交通", "天気", "告知"], cta: "地域ニュースを見る" },
-    deals: { tags: ["割引", "特典", "店舗"], cta: "近くのお得情報を見る" },
-    groups: { tags: ["食事会", "言語交換", "イベント"], cta: "地域グループへ" },
-    qa: { tags: ["質問", "助け合い", "匿名"], cta: "街に相談する" },
-  } satisfies Record<ExploreChannelSlug, { tags: string[]; cta: string }>;
-  if (locale === "en") return en[channel];
-  if (locale === "ja") return ja[channel];
-  return zh[channel];
 }
 
 function secondaryChipClass(active?: boolean) {
@@ -455,14 +404,42 @@ function secondaryChipClass(active?: boolean) {
 }
 
 function ChannelIcon({ spec, size = "md" }: { spec: ExploreChannelSpec; size?: "sm" | "md" | "lg" }) {
-  const classes = toneClass(spec.tone);
-  const box = size === "lg" ? "h-12 w-12 rounded-[18px]" : size === "sm" ? "h-8 w-8" : "h-9 w-9";
-  const icon = size === "lg" ? "h-5 w-5" : size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
+  // Large hero tiles use a vibrant, solid-filled icon (white glyph + soft
+  // colored shadow) so the city entrances read as premium app launchers
+  // rather than flat tinted chips. Smaller sizes keep the light tint.
+  const classes = size === "lg" ? solidToneClass(spec.tone) : toneClass(spec.tone);
+  const box = size === "lg" ? "h-12 w-12 rounded-[18px]" : size === "sm" ? "h-8 w-8 rounded-xl" : "h-9 w-9 rounded-xl";
+  const icon = size === "lg" ? "h-6 w-6" : size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
   return (
     <span className={`grid shrink-0 place-items-center ${box} ${classes}`}>
-      <spec.Icon className={icon} />
+      <spec.Icon className={icon} strokeWidth={size === "lg" ? 2.1 : 2} />
     </span>
   );
+}
+
+// Vibrant, solid-filled icon backgrounds for the large city-entrance tiles —
+// a saturated gradient + matching soft shadow, with a white glyph on top.
+function solidToneClass(tone: ExploreChannelSpec["tone"]) {
+  switch (tone) {
+    case "blue":
+      return "bg-gradient-to-br from-blue-500 to-blue-600 text-white shadow-[0_12px_26px_-12px_rgba(37,99,235,0.65)]";
+    case "emerald":
+      return "bg-gradient-to-br from-emerald-500 to-emerald-600 text-white shadow-[0_12px_26px_-12px_rgba(16,185,129,0.6)]";
+    case "indigo":
+      return "bg-gradient-to-br from-indigo-500 to-indigo-600 text-white shadow-[0_12px_26px_-12px_rgba(99,102,241,0.65)]";
+    case "violet":
+      return "bg-gradient-to-br from-violet-500 to-violet-600 text-white shadow-[0_12px_26px_-12px_rgba(139,92,246,0.65)]";
+    case "teal":
+      return "bg-gradient-to-br from-teal-500 to-teal-600 text-white shadow-[0_12px_26px_-12px_rgba(20,184,166,0.6)]";
+    case "rose":
+      return "bg-gradient-to-br from-rose-500 to-rose-600 text-white shadow-[0_12px_26px_-12px_rgba(244,63,94,0.6)]";
+    case "orange":
+      return "bg-gradient-to-br from-orange-400 to-orange-500 text-white shadow-[0_12px_26px_-12px_rgba(249,115,22,0.6)]";
+    case "fuchsia":
+      return "bg-gradient-to-br from-fuchsia-500 to-fuchsia-600 text-white shadow-[0_12px_26px_-12px_rgba(217,70,239,0.6)]";
+    default:
+      return "bg-gradient-to-br from-slate-500 to-slate-600 text-white shadow-[0_12px_26px_-12px_rgba(71,85,105,0.55)]";
+  }
 }
 
 function toneClass(tone: ExploreChannelSpec["tone"]) {

@@ -13,7 +13,6 @@ import {
   LayoutDashboard,
   ListChecks,
   MessageSquare,
-  PackageCheck,
   Settings,
   Star,
   Store,
@@ -38,7 +37,7 @@ const WORK_ITEMS = [
   { href: "/my/bookings", title: "我的预约", subtitle: "本地服务、住宿和行程预订", icon: CalendarClock, tone: "text-orange-600 bg-orange-50", badge: "" },
   { href: "/my/business", title: "商家服务后台", subtitle: "认证申请、服务管理、线索和点评", icon: Store, tone: "text-teal-700 bg-teal-50", badge: "merchant" },
   { href: "/my/orders", title: "我的订单", subtitle: "会员、Guide 和服务订单", icon: CreditCard, tone: "text-pink-600 bg-pink-50", badge: "" },
-  { href: "/membership", title: "Machi 会员", subtitle: "认证标识与高信任发布权限", icon: BadgeCheck, tone: "text-blue-700 bg-blue-50", badge: "" },
+  { href: "/membership", title: "Machi 会员", subtitle: "认证标识与高信任发布权限", icon: BadgeCheck, tone: "text-blue-700 bg-blue-50", badge: "membership" },
   { href: "/settings", title: "账号设置", subtitle: "资料、地区、隐私和安全", icon: Settings, tone: "text-slate-700 bg-slate-100", badge: "" },
 ];
 
@@ -119,7 +118,9 @@ export default function MyFeaturesPage() {
             const badgeCount = item.badge === "leads" ? newLeadCount : 0;
             const merchantBadge = item.badge === "merchant"
               ? (user?.merchant_verified ? "已认证" : user?.is_merchant ? "审核中" : "未开通")
-              : "";
+              : item.badge === "membership" && user?.is_verified_member
+                ? "已开通"
+                : "";
             return (
               <Link key={item.href} href={item.href} className="group rounded-[22px] border border-slate-200/70 bg-white p-4 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-blue-200">
                 <div className="flex items-center gap-3">
@@ -135,7 +136,7 @@ export default function MyFeaturesPage() {
                     <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-950">
                       {item.title}
                       {merchantBadge ? (
-                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${merchantBadge === "已认证" ? "bg-emerald-50 text-emerald-700" : merchantBadge === "审核中" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500"}`}>
+                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${merchantBadge === "已认证" || merchantBadge === "已开通" ? "bg-emerald-50 text-emerald-700" : merchantBadge === "审核中" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500"}`}>
                           {merchantBadge}
                         </span>
                       ) : null}
@@ -147,12 +148,6 @@ export default function MyFeaturesPage() {
               </Link>
             );
           })}
-        </section>
-
-        <section className="grid gap-3 sm:grid-cols-3">
-          <MiniMetric icon={LayoutDashboard} title="资料完整度" value={user?.bio ? "已完善" : "待完善"} />
-          <MiniMetric icon={Store} title="商家状态" value={user?.merchant_verified ? "已认证" : user?.is_merchant ? "审核中" : "未开通"} />
-          <MiniMetric icon={PackageCheck} title="会员状态" value={user?.is_verified_member ? "已开通" : "普通成员"} />
         </section>
       </main>
     </AppShell>

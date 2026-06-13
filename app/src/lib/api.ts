@@ -1515,7 +1515,7 @@ export const api = {
     const { items } = await request<{ items: KXUser[] }>("GET", `/api/admin/users?${usp.toString()}`);
     return items;
   },
-  async adminUpdateUser(id: string, patch: { is_verified?: boolean; role?: string; membership_tier?: string; creator_badge?: string; is_merchant?: boolean; merchant_verified?: boolean }): Promise<KXUser> {
+  async adminUpdateUser(id: string, patch: { is_verified?: boolean; role?: string; membership_tier?: string; creator_badge?: string; is_merchant?: boolean; merchant_verified?: boolean; email?: string }): Promise<KXUser> {
     const { user } = await request<{ user: KXUser }>("PATCH", `/api/admin/users/${encodeURIComponent(id)}`, patch);
     return user;
   },
@@ -1525,6 +1525,16 @@ export const api = {
   async adminRestoreUser(id: string): Promise<KXUser> {
     const { user } = await request<{ user: KXUser }>("POST", `/api/admin/users/${encodeURIComponent(id)}/restore`);
     return user;
+  },
+  // Admin-set a user's password. Plaintext is sent over the existing
+  // HTTPS/session-authed channel and never persisted client-side.
+  async adminSetUserPassword(id: string, password: string): Promise<void> {
+    await request<void>("POST", `/api/admin/users/${encodeURIComponent(id)}/password`, { password });
+  },
+  // Permanent account erasure (scrubs PII + hides content) — distinct from
+  // the recoverable suspend/ban above.
+  async adminEraseUser(id: string): Promise<void> {
+    await request<void>("POST", `/api/admin/users/${encodeURIComponent(id)}/erase`);
   },
   async adminPosts(q?: string, opts: { status?: string; content_type?: ContentType; country?: string; city?: string; region_code?: string } = {}): Promise<KXPost[]> {
     const usp = new URLSearchParams();

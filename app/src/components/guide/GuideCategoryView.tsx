@@ -72,21 +72,19 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
 
   return (
     <GuideShell back={{ href: "/guide", label: copy.back }}>
-      <header className="px-4 pb-4 pt-3 sm:px-6">
+      <header className="kx-guide-channel-header">
         <div className="flex items-center gap-3">
-          <span
-            className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-white shadow-sm"
-            style={{ backgroundColor: category?.color || "#2563EB" }}
-          >
+          <span className="kx-guide-channel-icon">
             <Icon className="h-6 w-6" />
           </span>
           <div className="min-w-0">
-            <h1 className="text-xl font-black leading-tight text-kx-text sm:text-2xl">{category?.title || copy.back}</h1>
-            {category?.subtitle ? <p className="text-xs text-kx-muted">{category.subtitle}</p> : null}
+            <p className="text-[11px] font-black uppercase tracking-[0.18em] text-[rgb(var(--kx-living-accent))]">Machi Guide</p>
+            <h1 className="mt-1 text-xl font-black leading-tight text-[rgb(var(--kx-living-ink))] sm:text-2xl">{category?.title || copy.back}</h1>
+            {category?.subtitle ? <p className="mt-1 text-xs font-semibold text-[rgb(var(--kx-living-muted))]">{category.subtitle}</p> : null}
           </div>
         </div>
         {category?.description ? (
-          <p className="mt-2.5 max-w-2xl text-sm leading-7 text-kx-subtle">{category.description}</p>
+          <p className="mt-3 max-w-2xl text-sm leading-7 text-[rgb(var(--kx-living-muted))]">{category.description}</p>
         ) : null}
 
         {subs.length ? (

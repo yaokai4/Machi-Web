@@ -83,6 +83,9 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
   const router = useRouter();
   const pathname = usePathname();
   const ownsViewportBottom = pathname?.startsWith("/messages/");
+  // The left nav rail is the primary desktop navigation and must be present on
+  // every page — collapsing it to home-only stranded users on inner pages with
+  // no way to navigate. Mobile keeps the floating bottom tab bar.
   const [redirectPath, setRedirectPath] = useState(() => currentPathForRedirect(pathname));
 
   useEffect(() => {
@@ -144,7 +147,10 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
       <AuthRequiredDialog />
       <div className="relative z-[1] mx-auto flex w-full max-w-kx-shell">
         <Sidebar pathname={pathname} redirectPath={redirectPath} user={user} />
-        <main className={clsx("kx-shell-main flex-1 min-w-0 border-x border-kx-stroke/35", wide ? "lg:max-w-none" : "lg:max-w-kx-feed")}>
+        <main className={clsx(
+          "kx-shell-main flex-1 min-w-0 border-x border-kx-stroke/35",
+          wide ? "lg:max-w-none" : "lg:max-w-kx-feed",
+        )}>
           <div className={clsx("kx-page-enter", ownsViewportBottom ? "pb-0" : "pb-36 md:pb-8")}>
             <ErrorBoundary>{children}</ErrorBoundary>
           </div>
@@ -760,14 +766,11 @@ function MobileMoreSheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby="mobile-more-title"
-        className="fixed inset-x-0 bottom-0 z-[90] max-h-[80dvh] overflow-y-auto overflow-x-hidden overscroll-contain rounded-t-3xl bg-kx-surface shadow-[0_-20px_60px_-20px_rgba(15,23,42,0.35)] transform-gpu animate-kx-slide-up md:hidden"
-        style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 12px)" }}
+        className="fixed inset-x-0 mx-auto z-[90] max-h-[72dvh] overflow-y-auto overflow-x-hidden overscroll-contain rounded-3xl border border-kx-stroke/60 bg-kx-surface shadow-[0_24px_70px_-22px_rgba(15,23,42,0.5)] transform-gpu animate-kx-slide-up md:hidden"
+        style={{ width: "min(calc(100vw - 1.2rem), 24rem)", bottom: "calc(env(safe-area-inset-bottom) + 5.25rem)", paddingBottom: "0.5rem" }}
         onClick={(event) => event.stopPropagation()}
       >
-        <div className="flex items-center justify-between px-4 pt-3 pb-2">
-          <div className="h-1 w-10 rounded-full bg-kx-stroke/70 mx-auto" />
-        </div>
-        <div className="flex items-center justify-between px-5 pt-1 pb-3">
+        <div className="flex items-center justify-between px-5 pt-4 pb-3">
           <h2 id="mobile-more-title" className="text-base font-black text-kx-text">{t("more_menu")}</h2>
           <button
             type="button"

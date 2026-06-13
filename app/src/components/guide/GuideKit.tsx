@@ -81,7 +81,7 @@ export function GuideShell({
 }) {
   return (
     <AppShell requireAuth={false} right={right}>
-      <div className="min-h-full bg-[#FBF9F6] dark:bg-transparent">
+      <div className="kx-guide-page min-h-full">
         {back ? (
           <div className="px-4 pt-3">
             <Link
@@ -168,7 +168,7 @@ export function GuideSectionTitle({
   return (
     <div className="mb-3 flex items-end justify-between gap-3">
       <div className="min-w-0">
-        <h2 className="text-lg font-black leading-tight text-kx-text">{title}</h2>
+        <h2 className="text-xl font-black leading-tight tracking-[-0.01em] text-kx-text">{title}</h2>
         {subtitle ? <p className="mt-0.5 text-xs leading-5 text-kx-muted">{subtitle}</p> : null}
       </div>
       {href ? (
@@ -185,10 +185,10 @@ export function CategoryCard({ category }: { category: GuideCategory }) {
   return (
     <Link
       href={categoryHref(category.key)}
-      className="group flex flex-col gap-2 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+      className="kx-guide-category-card group"
     >
       <span
-        className="grid h-11 w-11 place-items-center rounded-2xl text-white shadow-sm"
+        className="grid h-11 w-11 place-items-center rounded-2xl text-white"
         style={{ backgroundColor: category.color || "#2563EB" }}
       >
         <Icon className="h-5 w-5" />
@@ -208,7 +208,7 @@ export function ResourceEntryCard({ entry }: { entry: GuideResourceEntry }) {
   return (
     <Link
       href={entry.href}
-      className="group flex min-h-[138px] flex-col justify-between rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+      className="kx-guide-resource-card group"
     >
       <div className="flex items-start gap-3">
         <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
@@ -230,7 +230,7 @@ export function ArticleCard({ article, compact = false }: { article: { slug: str
     <Link
       href={`/guide/articles/${article.slug}`}
       className={[
-        "group block rounded-kx-lg border border-kx-stroke/50 bg-kx-card transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx",
+        "kx-guide-article-card group block",
         compact ? "p-3.5" : "p-4 sm:p-5",
       ].join(" ")}
     >
@@ -277,7 +277,7 @@ export function ProductCard({ product }: { product: GuideProduct }) {
   return (
     <Link
       href={`/guide/products/${product.slug}`}
-      className="group flex flex-col rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+      className="kx-guide-product-card group flex flex-col p-4"
     >
       <div className="mb-2 flex items-center justify-between gap-2">
         <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">{typeLabel}</span>
@@ -316,7 +316,7 @@ export function SchoolCard({ school }: { school: GuideSchool }) {
   return (
     <Link
       href={`/guide/schools/${school.slug || school.id}`}
-      className="group block rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+      className="kx-guide-directory-card group block p-4"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -350,7 +350,7 @@ export function CompanyCard({ company }: { company: GuideCompany }) {
   return (
     <Link
       href={`/guide/companies/${company.slug || company.id}`}
-      className="group block rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx"
+      className="kx-guide-directory-card group block p-4"
     >
       <div className="flex items-start justify-between gap-2">
         <div className="min-w-0">

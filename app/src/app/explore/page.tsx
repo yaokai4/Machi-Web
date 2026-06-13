@@ -371,19 +371,7 @@ function ExploreFeedHub({
   return (
     <section className="kx-discover-panel">
       <div className="kx-discover-panel-header">
-        <div className="flex flex-col gap-4">
-          <div className="min-w-0">
-            <div className="inline-flex items-center gap-1.5 rounded-full bg-kx-accentSoft px-3 py-1 text-[11px] font-extrabold uppercase tracking-[0.12em] text-kx-accent ring-1 ring-inset ring-kx-accent/20">
-              <Compass className="h-3.5 w-3.5" />
-              {copy.cityPulse}
-            </div>
-            <h2 className="mt-3 text-[19px] font-extrabold leading-snug tracking-tight text-kx-text/90 sm:text-[21px]">{copy.hubTitle}</h2>
-            <p className="mt-1.5 max-w-2xl text-sm leading-6 text-kx-subtle">
-              {copy.hubSubtitle}
-            </p>
-          </div>
-          <ExplorePanelTabs active={activePanel} onChange={onPanelChange} locale={locale} />
-        </div>
+        <ExplorePanelTabs active={activePanel} onChange={onPanelChange} locale={locale} />
       </div>
 
       <div className="p-3 sm:p-4">

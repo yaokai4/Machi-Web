@@ -34,12 +34,18 @@ import {
   ChevronRight,
   Star,
   Store,
+  KeyRound,
+  Mail,
+  Pencil,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { api, APIError, type MarketingCopyBlock } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
-import { ConfirmDialog } from "@/components/design/Dialog";
+import { ConfirmDialog, Dialog } from "@/components/design/Dialog";
+import type { KXUser } from "@/lib/types";
 import { NavTabs } from "@/components/design/NavTabs";
 import { useSession, useToasts } from "@/lib/store";
 import { fullDateTime, relativeTime, compactNumber } from "@/lib/format";
@@ -273,6 +279,8 @@ function UsersPanel() {
   const [q, setQ] = useState("");
   const dq = useDebounce(q, 250);
   const [pendingBan, setPendingBan] = useState<string | null>(null);
+  const [manageUser, setManageUser] = useState<KXUser | null>(null);
+  const [pendingErase, setPendingErase] = useState<KXUser | null>(null);
   const list = useQuery({
     queryKey: ["admin-users", dq],
     queryFn: () => api.adminUsers(dq || undefined),
@@ -308,6 +316,31 @@ function UsersPanel() {
       await api.adminGrantMembership({ userId: id, months: 1 });
       queryClient.invalidateQueries({ queryKey: ["admin-users"] });
       pushToast({ kind: "success", message: "已开通 / 延长 1 个月认证会员" });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
+  const saveEmail = async (id: string, email: string): Promise<boolean> => {
+    try {
+      await api.adminUpdateUser(id, { email });
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      pushToast({ kind: "success", message: email ? "邮箱已更新" : "已清除邮箱" });
+      return true;
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); return false; }
+  };
+  const setUserPassword = async (id: string, password: string): Promise<boolean> => {
+    try {
+      await api.adminSetUserPassword(id, password);
+      pushToast({ kind: "success", message: "密码已重置，该用户需用新密码重新登录" });
+      return true;
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); return false; }
+  };
+  const erase = async (u: KXUser) => {
+    try {
+      await api.adminEraseUser(u.id);
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-stats"] });
+      setPendingErase(null);
+      setManageUser(null);
+      pushToast({ kind: "success", message: "账号已永久删除" });
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
   };
 
@@ -365,6 +398,13 @@ function UsersPanel() {
                     <td className="px-3 py-2.5 text-xs text-kx-muted whitespace-nowrap">{u.joined_at ? fullDateTime(u.joined_at).split(" ")[0] : ""}</td>
                     <td className="px-3 py-2.5 text-right">
                       <div className="inline-flex gap-1">
+                        <button
+                          className="kx-button-ghost h-8 px-3 text-xs"
+                          onClick={() => setManageUser(u)}
+                          title="修改邮箱 / 密码、删除账号"
+                        >
+                          <Pencil className="w-3.5 h-3.5" /> 管理
+                        </button>
                         <button
                           className={clsx("kx-button-ghost h-8 px-3 text-xs", u.is_verified && "bg-kx-accentSoft text-kx-accent")}
                           onClick={() => update(u.id, { is_verified: !u.is_verified })}
@@ -433,6 +473,12 @@ function UsersPanel() {
                     <option value="admin">admin</option>
                   </select>
                   <button
+                    className="kx-button-ghost h-8 px-3 text-xs"
+                    onClick={() => setManageUser(u)}
+                  >
+                    <Pencil className="w-3.5 h-3.5" /> 管理
+                  </button>
+                  <button
                     className={clsx("kx-button-ghost h-8 px-3 text-xs", u.is_verified && "bg-kx-accentSoft text-kx-accent")}
                     onClick={() => update(u.id, { is_verified: !u.is_verified })}
                   >
@@ -470,7 +516,155 @@ function UsersPanel() {
         onConfirm={() => pendingBan && suspend(pendingBan)}
         onCancel={() => setPendingBan(null)}
       />
+      <UserManageDialog
+        user={manageUser}
+        onClose={() => setManageUser(null)}
+        onSaveEmail={saveEmail}
+        onSetPassword={setUserPassword}
+        onErase={(u) => setPendingErase(u)}
+      />
+      <ConfirmDialog
+        open={!!pendingErase}
+        title={pendingErase ? `永久删除 @${pendingErase.handle}？` : "永久删除账号？"}
+        description="将清除该用户的资料、邮箱和密码，释放其用户名，隐藏其全部帖子与评论，并退出所有登录会话。与“封禁”不同，此操作不可恢复。"
+        destructive
+        confirmLabel="永久删除"
+        onConfirm={() => pendingErase && erase(pendingErase)}
+        onCancel={() => setPendingErase(null)}
+      />
     </div>
+  );
+}
+
+function UserManageDialog({
+  user,
+  onClose,
+  onSaveEmail,
+  onSetPassword,
+  onErase,
+}: {
+  user: KXUser | null;
+  onClose: () => void;
+  onSaveEmail: (id: string, email: string) => Promise<boolean>;
+  onSetPassword: (id: string, password: string) => Promise<boolean>;
+  onErase: (user: KXUser) => void;
+}) {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [savingEmail, setSavingEmail] = useState(false);
+  const [savingPw, setSavingPw] = useState(false);
+
+  useEffect(() => {
+    setEmail(user?.email || "");
+    setPassword("");
+    setShowPw(false);
+  }, [user]);
+
+  if (!user) return null;
+  const id = user.id;
+  const emailDirty = email.trim().toLowerCase() !== (user.email || "").trim().toLowerCase();
+  const pwValid = password.length >= 8 && /[A-Za-z]/.test(password) && /\d/.test(password);
+
+  const handleSaveEmail = async () => {
+    setSavingEmail(true);
+    await onSaveEmail(id, email.trim());
+    setSavingEmail(false);
+  };
+  const handleSetPassword = async () => {
+    setSavingPw(true);
+    const ok = await onSetPassword(id, password);
+    setSavingPw(false);
+    if (ok) setPassword("");
+  };
+
+  return (
+    <Dialog open={!!user} onClose={onClose} title={`管理用户 @${user.handle}`} maxWidth="30rem">
+      <div className="space-y-5">
+        <div className="flex items-center gap-3">
+          <Avatar user={user} size={44} />
+          <div className="min-w-0">
+            <div className="font-bold truncate">{user.display_name}</div>
+            <div className="text-xs text-kx-muted truncate">@{user.handle} · {user.role || "member"}</div>
+          </div>
+        </div>
+
+        {/* Email */}
+        <div className="space-y-2">
+          <label className="flex items-center gap-1.5 text-xs font-bold text-kx-muted">
+            <Mail className="h-3.5 w-3.5" /> 邮箱
+          </label>
+          <div className="flex gap-2">
+            <input
+              className="kx-input h-10 flex-1"
+              type="email"
+              autoComplete="off"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="user@example.com"
+            />
+            <button
+              className="kx-button-primary h-10 px-4 text-sm disabled:opacity-50"
+              disabled={savingEmail || !emailDirty}
+              onClick={handleSaveEmail}
+            >
+              保存
+            </button>
+          </div>
+          <p className="text-[11px] text-kx-muted">修改后将标记为已验证；留空可清除该用户邮箱。</p>
+        </div>
+
+        {/* Password */}
+        <div className="space-y-2">
+          <label className="flex items-center gap-1.5 text-xs font-bold text-kx-muted">
+            <KeyRound className="h-3.5 w-3.5" /> 重置密码
+          </label>
+          <div className="flex gap-2">
+            <div className="relative flex-1">
+              <input
+                className="kx-input h-10 w-full pr-10"
+                type={showPw ? "text" : "password"}
+                autoComplete="new-password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="至少 8 位，含字母和数字"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPw((v) => !v)}
+                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-kx-muted hover:bg-kx-soft hover:text-kx-text"
+                aria-label={showPw ? "隐藏密码" : "显示密码"}
+                tabIndex={-1}
+              >
+                {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            </div>
+            <button
+              className="kx-button-primary h-10 px-4 text-sm disabled:opacity-50"
+              disabled={savingPw || !pwValid}
+              onClick={handleSetPassword}
+            >
+              设置
+            </button>
+          </div>
+          <p className="text-[11px] text-kx-muted">设置后该用户全部登录会话立即失效，需用新密码重新登录。</p>
+        </div>
+
+        {/* Danger zone */}
+        <div className="rounded-kx-lg border border-kx-danger/30 bg-kx-danger/5 p-3">
+          <div className="text-sm font-bold text-kx-danger">永久删除账号</div>
+          <p className="mt-1 text-[11px] leading-5 text-kx-subtle">
+            清除资料、邮箱与密码，释放用户名，隐藏其全部内容。与“封禁”不同，删除不可恢复。
+          </p>
+          <button
+            className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-kx-danger/40 px-3 py-1.5 text-xs font-bold text-kx-danger transition hover:bg-kx-danger/10"
+            onClick={() => onErase(user)}
+          >
+            <Trash2 className="h-3.5 w-3.5" /> 永久删除
+          </button>
+        </div>
+      </div>
+    </Dialog>
   );
 }
 
