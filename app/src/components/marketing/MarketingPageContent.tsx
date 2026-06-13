@@ -1,7 +1,6 @@
 "use client";
 
 import { AnnouncementSection } from "./AnnouncementSection";
-import { BrandIntroSection } from "./BrandIntroSection";
 import { BrandStorySection } from "./BrandStorySection";
 import { BusinessSection } from "./BusinessSection";
 import { CityPulseSection } from "./CityPulseSection";
@@ -24,17 +23,20 @@ export function MarketingPageContent() {
       <MarketingMotion />
       <Header />
       <HeroSection />
-      <BrandIntroSection />
+      {/* Narrative flow: value prop → live product → what you can do →
+          trust → business → story/founder → FAQ. WhyMachi is the strongest
+          "what is Machi" section, so it leads (the thinner, overlapping
+          BrandIntro that used to sit here was folded into it). */}
+      <WhyMachiSection />
       <CityPulseSection />
+      <FeatureChannelGrid />
       <GuideSection />
       <SocialConnectionSection />
-      <FeatureChannelGrid />
-      <WhyMachiSection />
-      <BrandStorySection />
-      <FounderSection />
-      <LanguageSection />
       <SafetySection />
       <BusinessSection />
+      <LanguageSection />
+      <BrandStorySection />
+      <FounderSection />
       <AnnouncementSection />
       <FAQSection />
       <Footer />
