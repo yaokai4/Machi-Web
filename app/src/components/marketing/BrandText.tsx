@@ -14,12 +14,17 @@ export function BrandMark({ className }: { className?: string }) {
   return (
     <span
       className={clsx(
-        "relative inline-flex shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-600 via-violet-600 to-sky-500 font-black text-white shadow-[0_16px_42px_-22px_rgba(79,70,229,0.95)]",
+        "relative inline-flex shrink-0 items-center justify-center rounded-[30%] bg-gradient-to-br from-[#157A60] via-[#0F6E56] to-[#0E5A47] text-white shadow-[0_16px_42px_-22px_rgba(14,107,84,0.95)]",
         className,
       )}
+      aria-hidden="true"
     >
-      M
-      <span className="absolute -right-1 -top-1 h-[28%] w-[28%] rounded-full bg-orange-400 ring-2 ring-white dark:ring-slate-950" />
+      {/* Rooftop "M": the two peaks read as a small skyline — local life in a city. */}
+      <svg viewBox="0 0 100 100" className="h-[56%] w-[56%]" fill="none">
+        <polyline points="24,70 24,34 50,57 76,34 76,70" stroke="currentColor" strokeWidth="13" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+      {/* Locator dot — the "echo" that pins the brand to a place. */}
+      <span className="absolute -right-1 -top-1 h-[26%] w-[26%] rounded-full bg-[#F4A33A] ring-2 ring-white dark:ring-slate-950" />
     </span>
   );
 }
