@@ -286,6 +286,98 @@ GOOGLE_OAUTH_USERINFO_URL = "https://openidconnect.googleapis.com/v1/userinfo"
 GOOGLE_OAUTH_STATE_TTL_SEC = int(_env("GOOGLE_OAUTH_STATE_TTL_SEC", "600"))
 GOOGLE_IOS_CALLBACK_URL = _env("GOOGLE_IOS_CALLBACK_URL", "machi://auth/google")
 
+# Sign in with Apple (native iOS). The app obtains an identity token (a JWT
+# signed by Apple) and posts it here; we verify the signature against Apple's
+# published public keys and the audience against our bundle id. No client
+# secret needed for the native flow.
+APPLE_ISSUER = "https://appleid.apple.com"
+APPLE_KEYS_URL = "https://appleid.apple.com/auth/keys"
+# Comma-separated list of allowed audiences (bundle ids). Defaults to the app.
+APPLE_AUDIENCES = [a.strip() for a in _env("APPLE_BUNDLE_ID", "com.yaokai.kaizi").split(",") if a.strip()]
+_apple_jwks_cache: dict[str, Any] = {"keys": [], "fetched_at": 0.0}
+
+
+def _b64url_decode(segment: str) -> bytes:
+    pad = "=" * (-len(segment) % 4)
+    return base64.urlsafe_b64decode(segment + pad)
+
+
+def _fetch_apple_jwks(force: bool = False) -> list[dict[str, Any]]:
+    now = time.time()
+    if not force and _apple_jwks_cache["keys"] and (now - _apple_jwks_cache["fetched_at"]) < 3600:
+        return _apple_jwks_cache["keys"]
+    req = urllib.request.Request(APPLE_KEYS_URL, headers={"Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=8) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    keys = data.get("keys", []) if isinstance(data, dict) else []
+    if keys:
+        _apple_jwks_cache["keys"] = keys
+        _apple_jwks_cache["fetched_at"] = now
+    return keys
+
+
+def verify_apple_identity_token(identity_token: str, expected_nonce: str | None = None) -> dict[str, Any]:
+    """Verify a Sign in with Apple identity token (RS256 JWT) against Apple's
+    published JWKS plus our issuer/audience/expiry (and the nonce, if used).
+    Returns the decoded claims (sub, email, ...) or raises APIError. No third-
+    party JWT lib — uses the already-present `cryptography` for RSA verify."""
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+    from cryptography.hazmat.primitives import hashes
+
+    parts = (identity_token or "").strip().split(".")
+    if len(parts) != 3:
+        raise APIError("Apple 凭证格式错误", 400, "apple_token_invalid")
+    header_b64, payload_b64, sig_b64 = parts
+    try:
+        header = json.loads(_b64url_decode(header_b64))
+        claims = json.loads(_b64url_decode(payload_b64))
+        signature = _b64url_decode(sig_b64)
+    except Exception:
+        raise APIError("Apple 凭证解析失败", 400, "apple_token_invalid")
+    kid = header.get("kid")
+    if header.get("alg") != "RS256" or not kid:
+        raise APIError("Apple 凭证算法不支持", 400, "apple_token_invalid")
+
+    def _find_key() -> dict[str, Any] | None:
+        for k in _fetch_apple_jwks():
+            if k.get("kid") == kid:
+                return k
+        return None
+
+    jwk = _find_key()
+    if jwk is None:  # key rotation — refresh once
+        _apple_jwks_cache["fetched_at"] = 0.0
+        jwk = _find_key()
+    if jwk is None:
+        raise APIError("Apple 凭证验证失败", 401, "apple_token_invalid")
+
+    try:
+        n = int.from_bytes(_b64url_decode(jwk["n"]), "big")
+        e = int.from_bytes(_b64url_decode(jwk["e"]), "big")
+        public_key = rsa.RSAPublicNumbers(e=e, n=n).public_key()
+        public_key.verify(
+            signature,
+            f"{header_b64}.{payload_b64}".encode("ascii"),
+            padding.PKCS1v15(),
+            hashes.SHA256(),
+        )
+    except Exception:
+        raise APIError("Apple 凭证签名无效", 401, "apple_token_invalid")
+
+    if claims.get("iss") != APPLE_ISSUER:
+        raise APIError("Apple 凭证签发方不匹配", 401, "apple_token_invalid")
+    if claims.get("aud") not in APPLE_AUDIENCES:
+        raise APIError("Apple 凭证受众不匹配", 401, "apple_token_invalid")
+    exp = claims.get("exp")
+    if not isinstance(exp, (int, float)) or exp < time.time() - 30:
+        raise APIError("Apple 凭证已过期，请重试", 401, "apple_token_expired")
+    if expected_nonce:
+        if claims.get("nonce") != hashlib.sha256(expected_nonce.encode("utf-8")).hexdigest():
+            raise APIError("Apple 凭证校验失败", 401, "apple_token_invalid")
+    if not claims.get("sub"):
+        raise APIError("Apple 凭证缺少用户标识", 400, "apple_token_invalid")
+    return claims
+
 # Email transport. "console_file" (default) writes each message to a local,
 # git-ignored dev outbox so codes can be read during development WITHOUT ever
 # being written to the logger. Production should use "smtp" or "resend".
@@ -14984,6 +15076,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_register(conn)
         if path == "/api/auth/login" and method == "POST":
             return self.api_login(conn)
+        if path == "/api/auth/apple" and method == "POST":
+            return self.api_apple_native(conn)
         if path == "/api/auth/google/start" and method == "GET":
             return self.api_google_start(conn, query)
         if path == "/api/auth/google/callback" and method == "GET":
@@ -16906,6 +17000,79 @@ class Handler(BaseHTTPRequestHandler):
         )
         conn.execute("INSERT INTO settings (user_id, language, updated_at) VALUES (?, '', ?)", (user_id, now_iso()))
         return dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    def _upsert_apple_user(self, conn: sqlite3.Connection, sub: str, email: str, name: str) -> dict[str, Any]:
+        """Find-or-create the Machi account behind a verified Apple identity.
+        Mirrors `_upsert_google_user`: match by apple_sub, else link a matching
+        verified email, else create. Apple may omit email/name after the first
+        sign-in, which is fine — apple_sub is the stable key."""
+        sub = (sub or "").strip()
+        if not sub:
+            raise APIError("Apple 账号缺少唯一标识", 400, "apple_profile_invalid")
+        email = (email or "").strip().lower()
+        name = ((name or "").strip() or (email.split("@", 1)[0] if email else "") or "Apple 用户")[:60]
+
+        row = conn.execute("SELECT * FROM users WHERE apple_sub = ? AND deleted_at IS NULL", (sub,)).fetchone()
+        if row:
+            if email and not row["email"]:
+                conn.execute("UPDATE users SET email = ?, email_verified = 1, updated_at = ? WHERE id = ?",
+                             (email, now_iso(), row["id"]))
+            return dict(conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone())
+
+        if email:
+            existing = conn.execute("SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email,)).fetchone()
+            if existing:
+                conn.execute("UPDATE users SET apple_sub = ?, email_verified = 1, updated_at = ? WHERE id = ?",
+                             (sub, now_iso(), existing["id"]))
+                return dict(conn.execute("SELECT * FROM users WHERE id = ?", (existing["id"],)).fetchone())
+
+        user_id = str(uuid.uuid4())
+        handle = self._unique_google_handle(conn, email, name)
+        country, province, city, region_code, city_label = ("jp", "tokyo", "tokyo", "jp.tokyo.tokyo", "东京")
+        conn.execute(
+            """
+            INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
+                               avatar_symbol, avatar_color, avatar_url, cover_url, membership_tier,
+                               is_verified, role, country, province, city, current_region_code,
+                               recent_region_codes, apple_sub, auth_provider, email_verified,
+                               joined_at, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, '', ?, 'person.fill', 'indigo', '', '', 'free', 0, 'member',
+                    ?, ?, ?, ?, ?, ?, 'apple', ?, ?, ?, ?)
+            """,
+            (
+                user_id, handle, name, email, hash_password(secrets.token_urlsafe(32)),
+                city_label, country, province, city, region_code, region_code,
+                sub, 1 if email else 0, now_iso(), now_iso(), now_iso(),
+            ),
+        )
+        conn.execute("INSERT INTO settings (user_id, language, updated_at) VALUES (?, '', ?)", (user_id, now_iso()))
+        return dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    def api_apple_native(self, conn: sqlite3.Connection) -> None:
+        """Native Sign in with Apple: verify the posted identity token, then
+        find-or-create the account and issue the same session as every other
+        login. The token is the trust anchor — `email`/`full_name` from the
+        body are only used as display fallbacks on first sign-in."""
+        data = self.read_json()
+        identity_token = str(data.get("identity_token") or data.get("identityToken") or "").strip()
+        if not identity_token:
+            raise APIError("缺少 Apple 凭证", 400, "apple_token_invalid")
+        nonce = str(data.get("nonce") or "").strip() or None
+        try:
+            with _DBLockReleased():
+                claims = verify_apple_identity_token(identity_token, expected_nonce=nonce)
+        except APIError:
+            raise
+        except urllib.error.URLError:
+            raise APIError("无法连接 Apple 验证服务，请稍后重试", 503, "apple_verify_unavailable")
+        sub = str(claims.get("sub") or "")
+        email = str(claims.get("email") or data.get("email") or "")
+        full_name = str(data.get("full_name") or data.get("fullName") or "")
+        user = self._upsert_apple_user(conn, sub, email, full_name)
+        token = self._create_session(conn, user["id"])
+        self._set_session_cookie(token)
+        ACCESS_LOG.info("apple sign-in user %s (%s)", user["handle"], user["id"])
+        self.send_json({"token": token, "user": serialize_user_with_counts(conn, user)})
 
     def _link_google_to_user(self, conn: sqlite3.Connection, user_id: str, profile: dict[str, Any]) -> dict[str, Any]:
         """Attach a verified Google identity to an ALREADY-authenticated account

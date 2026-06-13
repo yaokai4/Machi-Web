@@ -2697,6 +2697,14 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON city_listings(type, status, rating_avg, rating_count);
         """,
     ),
+    (
+        45,
+        "auth: add Sign in with Apple identity column",
+        """
+        ALTER TABLE users ADD COLUMN apple_sub TEXT NOT NULL DEFAULT '';
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_sub ON users(apple_sub) WHERE apple_sub <> '';
+        """,
+    ),
 ]
 
 
