@@ -11657,8 +11657,8 @@ def _settings_float(settings: dict[str, str], key: str, default: float, low: flo
 def _explore_rank_config(conn: sqlite3.Connection) -> dict[str, Any]:
     settings = _site_settings(conn)
     return {
-        "happening_days": _settings_int(settings, "explore_happening_days", 3, 1, 30),
-        "hot_days": _settings_int(settings, "explore_hot_days", 10, 1, 60),
+        "happening_days": _settings_int(settings, "explore_happening_days", 2, 1, 30),
+        "hot_days": _settings_int(settings, "explore_hot_days", 7, 1, 60),
         "topic_days": _settings_int(settings, "explore_topic_days", 7, 1, 60),
         "like_weight": _settings_float(settings, "explore_like_weight", 3, 0, 50),
         "comment_weight": _settings_float(settings, "explore_comment_weight", 5, 0, 50),
