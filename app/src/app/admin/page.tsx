@@ -521,6 +521,7 @@ function UsersPanel() {
         onClose={() => setManageUser(null)}
         onSaveEmail={saveEmail}
         onSetPassword={setUserPassword}
+        onSaveTags={(id, customTags) => update(id, { custom_tags: customTags })}
         onErase={(u) => setPendingErase(u)}
       />
       <ConfirmDialog
@@ -541,12 +542,14 @@ function UserManageDialog({
   onClose,
   onSaveEmail,
   onSetPassword,
+  onSaveTags,
   onErase,
 }: {
   user: KXUser | null;
   onClose: () => void;
   onSaveEmail: (id: string, email: string) => Promise<boolean>;
   onSetPassword: (id: string, password: string) => Promise<boolean>;
+  onSaveTags: (id: string, tags: string[]) => Promise<void>;
   onErase: (user: KXUser) => void;
 }) {
   const [email, setEmail] = useState("");
@@ -554,11 +557,14 @@ function UserManageDialog({
   const [showPw, setShowPw] = useState(false);
   const [savingEmail, setSavingEmail] = useState(false);
   const [savingPw, setSavingPw] = useState(false);
+  const [tags, setTags] = useState("");
+  const [savingTags, setSavingTags] = useState(false);
 
   useEffect(() => {
     setEmail(user?.email || "");
     setPassword("");
     setShowPw(false);
+    setTags((user?.custom_tags || []).join("、"));
   }, [user]);
 
   if (!user) return null;
@@ -648,6 +654,34 @@ function UserManageDialog({
             </button>
           </div>
           <p className="text-[11px] text-kx-muted">设置后该用户全部登录会话立即失效，需用新密码重新登录。</p>
+        </div>
+
+        {/* Custom tags — bordered chips on the user's profile (优质房东 / 资深卖家…). */}
+        <div className="space-y-2">
+          <label className="flex items-center gap-1.5 text-xs font-bold text-kx-muted">
+            <BadgeCheck className="h-3.5 w-3.5" /> 用户标签
+          </label>
+          <div className="flex gap-2">
+            <input
+              className="kx-input h-10 flex-1"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder="如：优质房东、资深卖家（顿号或逗号分隔，最多 6 个）"
+            />
+            <button
+              className="kx-button-primary h-10 px-4 text-sm disabled:opacity-50"
+              disabled={savingTags}
+              onClick={async () => {
+                setSavingTags(true);
+                const list = tags.split(/[、,，]/).map((s) => s.trim()).filter(Boolean).slice(0, 6);
+                await onSaveTags(id, list);
+                setSavingTags(false);
+              }}
+            >
+              保存
+            </button>
+          </div>
+          <p className="text-[11px] text-kx-muted">标签会以描边胶囊展示在该用户主页（如认证、达人身份）。留空可清除。</p>
         </div>
 
         {/* Danger zone */}

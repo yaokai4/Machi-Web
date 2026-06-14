@@ -35,6 +35,8 @@ export const UserSchema = z.object({
   recent_region_codes: z.array(z.string()).optional(),
   total_heat: z.number().optional(),
   creator_badge: z.string().optional(),
+  custom_tags: z.array(z.string()).optional(),
+  listing_counts: z.record(z.string(), z.number()).optional(),
   is_merchant: z.boolean().optional(),
   merchant_verified: z.boolean().optional(),
   profile_view_count: z.number().optional(),

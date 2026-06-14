@@ -305,8 +305,14 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                 {profileRegion ? (
                   <span className="px-2 h-6 inline-flex items-center rounded-full bg-slate-100 text-slate-700 font-bold dark:bg-white/10 dark:text-slate-200">{profileRegion.country_emoji} {regionDisplayName(profileRegion, locale)}</span>
                 ) : null}
+                {/* Admin-assigned custom tags — bordered chips. */}
+                {(user.custom_tags || []).map((tag) => (
+                  <span key={tag} className="px-2 h-6 inline-flex items-center rounded-full bg-kx-accent/[0.07] text-kx-accent font-bold ring-1 ring-kx-accent/30">{tag}</span>
+                ))}
               </div>
             ) : null}
+            {/* Tappable listing-count tags — jump to this user's posts of that type. */}
+            <ProfileListingCountTags userId={user.id} counts={user.listing_counts} citySlug={profileRegion?.city_code || "tokyo"} />
             {!isSelf ? (
               <div className="mt-3 flex flex-wrap items-center gap-1.5 text-xs">
                 <button
@@ -517,6 +523,46 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
         onConfirm={submitBlock}
         onCancel={() => setBlockOpen(false)}
       />
+    </div>
+  );
+}
+
+// Tappable listing-count tags on a profile: "出售二手 5" → that seller's
+// secondhand listings (channel page reads ?seller=). Mirrors iOS.
+const LISTING_TAG_META: Record<string, { label: string; channel: string }> = {
+  secondhand: { label: "二手", channel: "marketplace" },
+  rental: { label: "租房", channel: "rentals" },
+  job: { label: "招聘", channel: "jobs" },
+  hiring: { label: "招聘", channel: "jobs" },
+  local_service: { label: "本地服务", channel: "services" },
+  discount: { label: "优惠", channel: "deals" },
+};
+
+function ProfileListingCountTags({ userId, counts, citySlug }: { userId: string; counts?: Record<string, number>; citySlug: string }) {
+  if (!counts) return null;
+  // job + hiring both map to the jobs channel — merge so we show one "招聘 N".
+  const merged = new Map<string, { label: string; channel: string; count: number }>();
+  for (const [type, count] of Object.entries(counts)) {
+    const meta = LISTING_TAG_META[type];
+    if (!meta || !count) continue;
+    const existing = merged.get(meta.channel);
+    if (existing) existing.count += count;
+    else merged.set(meta.channel, { ...meta, count });
+  }
+  const tags = [...merged.values()];
+  if (!tags.length) return null;
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-1.5">
+      {tags.map((tag) => (
+        <Link
+          key={tag.channel}
+          href={`/cities/${encodeURIComponent(citySlug)}/${tag.channel}?seller=${encodeURIComponent(userId)}`}
+          className="inline-flex h-7 items-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-2.5 text-[11px] font-black text-kx-subtle transition hover:border-kx-accent/40 hover:text-kx-accent"
+        >
+          {tag.label}
+          <span className="grid h-4 min-w-4 place-items-center rounded-full bg-kx-accent/10 px-1 text-kx-accent">{tag.count}</span>
+        </Link>
+      ))}
     </div>
   );
 }

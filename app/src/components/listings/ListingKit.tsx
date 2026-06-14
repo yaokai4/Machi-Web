@@ -428,6 +428,12 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [scope, setScope] = useState<ListingScope>("city");
+  // Optional ?seller=<userId> filter — drives the profile's "TA 的发布" view.
+  const [sellerFilter, setSellerFilter] = useState("");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setSellerFilter(new URLSearchParams(window.location.search).get("seller") || "");
+  }, [kind]);
   const loadMoreRef = useRef<HTMLDivElement | null>(null);
   const { locale } = useI18n();
   const spec = localizedChannel(kind, locale);
@@ -460,7 +466,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   // 无限分页：cursor 为字符串；工作频道合并 job+hiring 两条流,
   // 把两个游标编进同一个 JSON pageParam,各自走到尽头为止。
   const listings = useInfiniteQuery({
-    queryKey: ["listings", city.slug, kind, spec.type, category, sort, query, scope, filters.scope_area || "", filters.scope_city || "", JSON.stringify(filters), rentalTab, sectionCategoriesParam],
+    queryKey: ["listings", city.slug, kind, spec.type, category, sort, query, scope, filters.scope_area || "", filters.scope_city || "", JSON.stringify(filters), rentalTab, sectionCategoriesParam, sellerFilter],
     initialPageParam: "",
     getNextPageParam: (last: { items: KXCityListing[]; next_cursor: string | null }) => last.next_cursor || undefined,
     queryFn: async ({ pageParam }) => {
@@ -471,7 +477,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
           : scope === "country"
             ? { country: scopeCountry }
             : { city_slug: city.slug };
-      const shared = { ...scoped, category, sort, q: query, min_price: filters.min_price, max_price: filters.max_price, attrs: serverAttrs };
+      const shared = { ...scoped, category, sort, q: query, min_price: filters.min_price, max_price: filters.max_price, attrs: serverAttrs, ...(sellerFilter ? { seller_id: sellerFilter } : {}) };
       if (lodgingActive) {
         const lodgingCategories = hotelsActive ? HOTEL_CATEGORIES : HOMESTAY_CATEGORIES;
         return api.listings({
@@ -638,6 +644,24 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
 
       <main className="px-3 py-5 sm:px-5">
         <section className="mx-auto min-w-0 max-w-6xl">
+          {sellerFilter ? (
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-2xl border border-kx-accent/25 bg-kx-accent/[0.07] px-4 py-3">
+              <span className="inline-flex items-center gap-2 text-sm font-black text-kx-accent">
+                <Store className="h-4 w-4" />
+                {pickText(locale, "正在查看 TA 的发布", "この出品者の投稿", "This seller’s posts")}
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setSellerFilter("");
+                  if (typeof window !== "undefined") window.history.replaceState(null, "", window.location.pathname);
+                }}
+                className="inline-flex h-8 items-center gap-1 rounded-full bg-kx-card px-3 text-xs font-black text-kx-subtle ring-1 ring-kx-stroke/60 transition hover:text-kx-accent"
+              >
+                {pickText(locale, "查看全部", "すべて表示", "View all")}
+              </button>
+            </div>
+          ) : null}
           {kind === "rentals" ? (
             // 顶部三标签：长租房源 / 民宿短住 / 酒店住宿
             <div className="mb-4 flex justify-center">

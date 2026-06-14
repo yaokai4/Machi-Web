@@ -3306,6 +3306,11 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "sort_order": "INTEGER NOT NULL DEFAULT 0",
         "benefits": "TEXT NOT NULL DEFAULT '[]'",
     })
+    # Admin-assignable freeform tags on a user (e.g. 优质房东 / 资深卖家), stored
+    # as a "|"-separated string and surfaced as bordered chips on the profile.
+    _ensure_columns(conn, "users", {
+        "custom_tags": "TEXT NOT NULL DEFAULT ''",
+    })
     _ensure_columns(conn, "user_memberships", {
         "billing_period": "TEXT NOT NULL DEFAULT ''",
         "price": "REAL NOT NULL DEFAULT 0",
@@ -8031,6 +8036,8 @@ def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
         "recent_region_codes": [code for code in (row.get("recent_region_codes", "") or "").split("|") if code],
         "total_heat":          int(row.get("total_heat") or 0),
         "creator_badge":       row.get("creator_badge", "") or "",
+        "custom_tags":         [tag for tag in (row.get("custom_tags", "") or "").split("|") if tag.strip()],
+        "customTags":          [tag for tag in (row.get("custom_tags", "") or "").split("|") if tag.strip()],
         "is_merchant":         bool(row.get("is_merchant", 0)),
         "merchant_verified":   bool(row.get("merchant_verified", 0)),
         "profile_view_count":  int(row.get("profile_view_count") or 0),
@@ -8095,9 +8102,30 @@ def user_social_counts(conn: sqlite3.Connection, user_id: str) -> dict[str, int]
     }
 
 
+def user_listing_counts(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
+    """Published city-listing counts per type for one seller (二手/租房/招聘/服务…),
+    powering the profile's tappable count tags ("出售二手 5" → that user's items)."""
+    if not user_id:
+        return {}
+    placeholders = ",".join(["?"] * len(PUBLIC_LISTING_STATUSES))
+    rows = conn.execute(
+        f"""
+        SELECT type, COUNT(*) AS c FROM city_listings
+         WHERE seller_user_id = ? AND deleted_at IS NULL AND status IN ({placeholders})
+         GROUP BY type
+        """,
+        (user_id, *PUBLIC_LISTING_STATUSES),
+    ).fetchall()
+    return {str(dict(r)["type"]): int(dict(r)["c"]) for r in rows if int(dict(r)["c"]) > 0}
+
+
 def serialize_user_with_counts(conn: sqlite3.Connection, row: dict[str, Any]) -> dict[str, Any]:
     payload = serialize_user(row)
-    payload.update(user_social_counts(conn, str(dict(row).get("id") or "")))
+    uid = str(dict(row).get("id") or "")
+    payload.update(user_social_counts(conn, uid))
+    counts = user_listing_counts(conn, uid)
+    payload["listing_counts"] = counts
+    payload["listingCounts"] = counts
     return payload
 
 
@@ -17737,9 +17765,12 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchone())
         payload = serialize_user(target)
         payload.update(counts)
+        listing_counts = user_listing_counts(conn, target["id"])
         payload.update({
             "is_following": is_following,
             "is_blocked": is_blocked,
+            "listing_counts": listing_counts,
+            "listingCounts": listing_counts,
         })
         viewer_id = viewer["user_id"] if viewer else None
         self.send_json({"user": payload, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
@@ -24259,6 +24290,18 @@ class Handler(BaseHTTPRequestHandler):
             updates.append(("membership_tier", data["membership_tier"]))
         if "creator_badge" in data:
             updates.append(("creator_badge", str(data["creator_badge"])[:80]))
+        if "custom_tags" in data:
+            raw_tags = data["custom_tags"]
+            if isinstance(raw_tags, str):
+                raw_tags = [part for part in raw_tags.replace("，", ",").replace("|", ",").split(",")]
+            tags = []
+            for tag in (raw_tags or []):
+                cleaned = str(tag).strip()[:20]
+                if cleaned and cleaned not in tags:
+                    tags.append(cleaned)
+                if len(tags) >= 6:
+                    break
+            updates.append(("custom_tags", "|".join(tags)))
         if "is_merchant" in data:
             updates.append(("is_merchant", 1 if data["is_merchant"] else 0))
         if "merchant_verified" in data:
