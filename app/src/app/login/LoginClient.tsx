@@ -185,44 +185,47 @@ function LoginForm() {
   return (
     <div className="kx-auth-page px-4 py-6 sm:py-10">
       <div className="mx-auto grid min-h-[calc(100dvh-3rem)] w-full max-w-5xl overflow-hidden rounded-[28px] border border-kx-stroke/70 bg-kx-card shadow-kx-glow lg:grid-cols-[0.9fr_1.1fr]">
-        {/* ─────────── LEFT brand pane — rich brand-green, premium ─────────── */}
+        {/* ─────────── LEFT brand pane — soft layered pastel mesh, light & airy ─────────── */}
         <aside
-          className="relative hidden flex-col justify-between overflow-hidden p-9 text-white lg:flex"
-          style={{ background: "linear-gradient(158deg, #38C79A 0%, #1FAE83 44%, #138C68 100%)" }}
+          className="relative hidden flex-col justify-between overflow-hidden p-9 lg:flex"
+          style={{
+            background: [
+              "radial-gradient(at 16% 10%, rgba(56,199,154,0.20) 0px, transparent 46%)",
+              "radial-gradient(at 84% 6%, rgba(120,196,255,0.16) 0px, transparent 44%)",
+              "radial-gradient(at 78% 86%, rgba(255,178,138,0.18) 0px, transparent 46%)",
+              "radial-gradient(at 22% 82%, rgba(108,220,182,0.22) 0px, transparent 50%)",
+              "radial-gradient(at 50% 50%, rgba(196,232,255,0.10) 0px, transparent 60%)",
+              "linear-gradient(160deg, #FBFDFB 0%, #F3FAF6 48%, #FCF7F2 100%)",
+            ].join(", "),
+          }}
         >
-          <div
-            className="pointer-events-none absolute inset-0"
-            style={{ background: "radial-gradient(120% 80% at 85% -10%, rgba(255,255,255,0.30), transparent 52%)" }}
-            aria-hidden="true"
-          />
-          <div
-            className="pointer-events-none absolute -bottom-24 -left-16 h-72 w-72 rounded-full opacity-40 blur-2xl"
-            style={{ background: "radial-gradient(circle, rgba(120,232,196,0.55), transparent 70%)" }}
-            aria-hidden="true"
-          />
+          {/* Soft floating colour orbs layered on top for depth (very light). */}
+          <div className="pointer-events-none absolute -left-20 top-10 h-64 w-64 rounded-full opacity-60 blur-3xl" style={{ background: "radial-gradient(circle, rgba(56,199,154,0.30), transparent 70%)" }} aria-hidden="true" />
+          <div className="pointer-events-none absolute -right-16 bottom-24 h-72 w-72 rounded-full opacity-50 blur-3xl" style={{ background: "radial-gradient(circle, rgba(255,186,150,0.28), transparent 70%)" }} aria-hidden="true" />
+
           <div className="relative">
             <div className="inline-flex items-center gap-3">
-              <BrandMark className="h-14 w-14 rounded-[18px] text-2xl ring-1 ring-white/25" />
+              <BrandMark className="h-14 w-14 rounded-[18px] text-2xl shadow-[0_16px_36px_-18px_rgba(20,112,103,0.55)]" />
               <div>
-                <div className="text-3xl font-black tracking-tight text-white">Machi</div>
-                <p className="mt-1 text-sm font-semibold text-white/75">{c.brandTagline}</p>
+                <div className="text-3xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
+                <p className="mt-1 text-sm font-semibold text-kx-subtle">{c.brandTagline}</p>
               </div>
             </div>
 
-            <ul className="mt-10 space-y-4">
+            <ul className="mt-10 space-y-3.5">
               {[
                 { Icon: MapPin, title: c.leftLoginItems[0][0], body: c.leftLoginItems[0][1] },
                 { Icon: Compass, title: c.leftLoginItems[1][0], body: c.leftLoginItems[1][1] },
                 { Icon: Sparkles, title: c.leftLoginItems[2][0], body: c.leftLoginItems[2][1] },
                 { Icon: ShieldCheck, title: c.leftLoginItems[3][0], body: c.leftLoginItems[3][1] },
               ].map(({ Icon, title, body }) => (
-                <li key={title} className="flex items-start gap-3">
-                  <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-white/15 text-white ring-1 ring-white/25 backdrop-blur-sm">
+                <li key={title} className="flex items-start gap-3 rounded-2xl border border-white/60 bg-white/45 p-3 shadow-[0_10px_30px_-24px_rgba(15,23,42,0.45)] backdrop-blur-sm">
+                  <span className="mt-0.5 inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-2xl bg-kx-accent/12 text-kx-accent ring-1 ring-kx-accent/20">
                     <Icon className="h-4 w-4" />
                   </span>
                   <div className="min-w-0">
-                    <p className="text-sm font-black text-white">{title}</p>
-                    <p className="mt-0.5 text-[13px] leading-5 text-white/70">{body}</p>
+                    <p className="text-sm font-black text-kx-text">{title}</p>
+                    <p className="mt-0.5 text-[13px] leading-5 text-kx-subtle">{body}</p>
                   </div>
                 </li>
               ))}
@@ -231,17 +234,17 @@ function LoginForm() {
 
           <div className="relative space-y-3">
             {announcement ? (
-              <div className="rounded-kx-lg bg-white/15 p-4 ring-1 ring-white/30 backdrop-blur-sm">
-                <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.16em] text-white/95">
+              <div className="rounded-kx-lg border border-kx-accent/25 bg-white/65 p-4 shadow-[0_12px_34px_-26px_rgba(15,23,42,0.5)] backdrop-blur-sm">
+                <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.16em] text-kx-accent">
                   <Megaphone className="h-3.5 w-3.5" />
                   {announcementLabel}
                 </div>
-                <p className="mt-2 whitespace-pre-line text-sm font-semibold leading-6 text-white/85">{announcement}</p>
+                <p className="mt-2 whitespace-pre-line text-sm font-semibold leading-6 text-kx-text/85">{announcement}</p>
               </div>
             ) : null}
-            <div className="rounded-kx-lg bg-white/12 p-4 ring-1 ring-white/25 backdrop-blur-sm">
-              <div className="text-[11px] font-black uppercase tracking-[0.16em] text-white/90">{c.cityFirstFeed}</div>
-              <p className="mt-2 text-sm font-semibold leading-6 text-white/80">
+            <div className="rounded-kx-lg border border-white/60 bg-white/45 p-4 shadow-[0_12px_34px_-26px_rgba(15,23,42,0.5)] backdrop-blur-sm">
+              <div className="text-[11px] font-black uppercase tracking-[0.16em] text-kx-accent">{c.cityFirstFeed}</div>
+              <p className="mt-2 text-sm font-semibold leading-6 text-kx-subtle">
                 {c.cityFirstBody}
               </p>
             </div>

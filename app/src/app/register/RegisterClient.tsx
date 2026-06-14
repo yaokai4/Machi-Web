@@ -292,61 +292,56 @@ function RegisterForm() {
   return (
     <div className="kx-auth-page px-4 py-6 sm:py-10">
       <div className="mx-auto grid min-h-[calc(100dvh-3rem)] w-full max-w-5xl overflow-hidden rounded-[28px] border border-kx-stroke/70 bg-kx-card shadow-kx-glow lg:grid-cols-[0.9fr_1.1fr]">
-        {/* ─────────── LEFT brand pane — rich brand-green, premium ─────────── */}
+        {/* ─────────── LEFT brand pane — soft layered pastel mesh, light & airy ─────────── */}
         <aside
-          className="relative hidden flex-col justify-between overflow-hidden p-9 text-white lg:flex"
-          style={{ background: "linear-gradient(158deg, #38C79A 0%, #1FAE83 44%, #138C68 100%)" }}
+          className="relative hidden flex-col justify-between overflow-hidden p-9 lg:flex"
+          style={{
+            background: [
+              "radial-gradient(at 16% 10%, rgba(56,199,154,0.20) 0px, transparent 46%)",
+              "radial-gradient(at 84% 6%, rgba(120,196,255,0.16) 0px, transparent 44%)",
+              "radial-gradient(at 78% 86%, rgba(255,178,138,0.18) 0px, transparent 46%)",
+              "radial-gradient(at 22% 82%, rgba(108,220,182,0.22) 0px, transparent 50%)",
+              "radial-gradient(at 50% 50%, rgba(196,232,255,0.10) 0px, transparent 60%)",
+              "linear-gradient(160deg, #FBFDFB 0%, #F3FAF6 48%, #FCF7F2 100%)",
+            ].join(", "),
+          }}
         >
-          <div
-            className="pointer-events-none absolute inset-0"
-            style={{ background: "radial-gradient(120% 80% at 85% -10%, rgba(255,255,255,0.30), transparent 52%)" }}
-            aria-hidden="true"
-          />
-          <div
-            className="pointer-events-none absolute -bottom-24 -left-16 h-72 w-72 rounded-full opacity-40 blur-2xl"
-            style={{ background: "radial-gradient(circle, rgba(120,232,196,0.55), transparent 70%)" }}
-            aria-hidden="true"
-          />
+          <div className="pointer-events-none absolute -left-20 top-10 h-64 w-64 rounded-full opacity-60 blur-3xl" style={{ background: "radial-gradient(circle, rgba(56,199,154,0.30), transparent 70%)" }} aria-hidden="true" />
+          <div className="pointer-events-none absolute -right-16 bottom-24 h-72 w-72 rounded-full opacity-50 blur-3xl" style={{ background: "radial-gradient(circle, rgba(255,186,150,0.28), transparent 70%)" }} aria-hidden="true" />
           <div className="relative">
             <div className="inline-flex items-center gap-3">
-              <BrandMark className="h-14 w-14 rounded-[18px] text-2xl ring-1 ring-white/25" />
+              <BrandMark className="h-14 w-14 rounded-[18px] text-2xl shadow-[0_16px_36px_-18px_rgba(20,112,103,0.55)]" />
               <div>
-                <div className="text-3xl font-black tracking-tight text-white">Machi</div>
-                <p className="mt-1 text-sm font-semibold text-white/75">{c.brandTagline}</p>
+                <div className="text-3xl font-black tracking-tight"><BrandText>Machi</BrandText></div>
+                <p className="mt-1 text-sm font-semibold text-kx-subtle">{c.brandTagline}</p>
               </div>
             </div>
 
-            <p className="mt-10 text-sm font-semibold leading-7 text-white/80">
+            <p className="mt-10 text-sm font-semibold leading-7 text-kx-subtle">
               {c.leftRegisterIntro}
             </p>
-            <p className="mt-3 text-sm font-bold leading-7 text-white">
+            <p className="mt-3 text-sm font-black leading-7 text-kx-text">
               {c.leftRegisterAccent}
             </p>
 
-            <ol className="mt-8 space-y-3">
+            <ol className="mt-8 space-y-2.5">
               {c.leftRegisterSteps.map((step, idx) => (
-                <li key={step} className="flex items-start gap-3">
-                  <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-white/20 text-white text-xs font-black ring-1 ring-white/30">
+                <li key={step} className="flex items-start gap-3 rounded-2xl border border-white/60 bg-white/45 p-3 shadow-[0_10px_30px_-24px_rgba(15,23,42,0.45)] backdrop-blur-sm">
+                  <span className="mt-0.5 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-kx-accent/12 text-kx-accent text-xs font-black ring-1 ring-kx-accent/20">
                     {idx + 1}
                   </span>
-                  <span className="text-sm font-semibold leading-6 text-white/90">{step}</span>
+                  <span className="text-sm font-semibold leading-6 text-kx-text">{step}</span>
                 </li>
               ))}
             </ol>
           </div>
           <div className="relative grid grid-cols-3 gap-3 text-center">
-            <div className="rounded-kx-lg bg-white/12 px-3 py-4 ring-1 ring-white/25 backdrop-blur-sm">
-              <div className="text-xl font-black text-white">12</div>
-              <div className="mt-1 text-[11px] font-bold text-white/70">{c.statChannels}</div>
-            </div>
-            <div className="rounded-kx-lg bg-white/12 px-3 py-4 ring-1 ring-white/25 backdrop-blur-sm">
-              <div className="text-xl font-black text-white">8+</div>
-              <div className="mt-1 text-[11px] font-bold text-white/70">{c.statCategories}</div>
-            </div>
-            <div className="rounded-kx-lg bg-white/12 px-3 py-4 ring-1 ring-white/25 backdrop-blur-sm">
-              <div className="text-xl font-black text-white">{c.statCountries}</div>
-              <div className="mt-1 text-[11px] font-bold text-white/70">{c.currentCity}</div>
-            </div>
+            {[["12", c.statChannels], ["8+", c.statCategories], [c.statCountries, c.currentCity]].map(([n, label], i) => (
+              <div key={i} className="rounded-kx-lg border border-white/60 bg-white/55 px-3 py-4 shadow-[0_10px_30px_-24px_rgba(15,23,42,0.45)] backdrop-blur-sm">
+                <div className="text-xl font-black text-kx-accent">{n}</div>
+                <div className="mt-1 text-[11px] font-bold text-kx-subtle">{label}</div>
+              </div>
+            ))}
           </div>
         </aside>
 

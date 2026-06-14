@@ -107,6 +107,24 @@ export const REGION_PROVINCES: Record<string, RegionProvince[]> = {
   ],
 };
 
+// 日本「都市圈」分组：选地区时按生活圈聚合，比一长串都道府县更易定位。
+// 关东圈=一都三县及周边；关西圈=京阪神+奈良等；中部以名古屋为核心；其余按九州/北海道/东北/其他归类。
+export interface MetroCircle {
+  code: string;
+  name: string;
+  provinceCodes: string[];
+}
+
+export const JP_METRO_CIRCLES: MetroCircle[] = [
+  { code: "kanto", name: "关东圈", provinceCodes: ["tokyo", "kanagawa", "saitama", "chiba", "ibaraki", "tochigi", "gunma"] },
+  { code: "kansai", name: "关西圈", provinceCodes: ["osaka", "kyoto", "hyogo", "nara", "shiga", "mie"] },
+  { code: "nagoya", name: "名古屋·中部", provinceCodes: ["aichi", "gifu", "shizuoka", "nagano", "niigata", "ishikawa"] },
+  { code: "fukuoka", name: "福冈·九州", provinceCodes: ["fukuoka", "kumamoto", "kagoshima"] },
+  { code: "sapporo", name: "札幌·北海道", provinceCodes: ["hokkaido"] },
+  { code: "sendai", name: "仙台·东北", provinceCodes: ["miyagi"] },
+  { code: "other", name: "其他城市", provinceCodes: ["hiroshima", "okayama", "okinawa"] },
+];
+
 export const REGION_CITIES: Record<string, RegionCity[]> = {
   shanghai: [{ code: "shanghai", name: "上海" }],
   beijing: [{ code: "beijing", name: "北京" }],
@@ -486,6 +504,21 @@ export function citiesFor(country?: string, province?: string): RegionCity[] {
   if (province) return REGION_CITIES[province.toLowerCase()] || [];
   if (c === "ca") return REGION_CITIES.ca_flat || [];
   return REGION_CITIES[c] || [];
+}
+
+/// All resolvable city regions inside a Japan metro circle, flattened across its
+/// member prefectures. Used by the region picker's 都市圈 → 城市 drilldown.
+export function regionsForMetroCircle(circleCode: string): RegionInfo[] {
+  const circle = JP_METRO_CIRCLES.find((item) => item.code === circleCode);
+  if (!circle) return [];
+  const out: RegionInfo[] = [];
+  for (const provinceCode of circle.provinceCodes) {
+    for (const city of REGION_CITIES[provinceCode] || []) {
+      const region = resolveRegion(`jp.${provinceCode}.${city.code}`);
+      if (region) out.push(region);
+    }
+  }
+  return out;
 }
 
 export function composeRegionCode(country?: string, province?: string, city?: string): string {

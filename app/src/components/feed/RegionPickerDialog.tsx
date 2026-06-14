@@ -5,6 +5,8 @@ import { createPortal } from "react-dom";
 import { ArrowLeft, ChevronRight, Search, X } from "lucide-react";
 import {
   REGION_COUNTRIES,
+  JP_METRO_CIRCLES,
+  regionsForMetroCircle,
   citiesFor,
   cityDisplayName,
   countryDisplayName,
@@ -37,6 +39,7 @@ export function RegionPickerDialog({
   const [query, setQuery] = useState("");
   const [country, setCountry] = useState<RegionCountry | null>(null);
   const [province, setProvince] = useState<RegionProvince | null>(null);
+  const [circle, setCircle] = useState<string | null>(null);
   const [mounted, setMounted] = useState(false);
   const { t, locale } = useI18n();
   const allowedCountry = allowsAnyCountry ? undefined : initialCountry?.toLowerCase();
@@ -49,13 +52,6 @@ export function RegionPickerDialog({
     [allowedCountry],
   );
   const lockedCountry = allowedCountry ? (availableCountries[0] ?? null) : null;
-  const defaultCountry = useMemo(
-    () => {
-      const code = (allowedCountry || initialCountry || "jp").toLowerCase();
-      return availableCountries.find((item) => item.code === code) ?? availableCountries[0] ?? null;
-    },
-    [allowedCountry, availableCountries, initialCountry],
-  );
   const matches = useMemo(() => {
     return searchRegions(query, allowedCountry);
   }, [query, allowedCountry]);
@@ -69,6 +65,7 @@ export function RegionPickerDialog({
     setQuery("");
     setCountry(null);
     setProvince(null);
+    setCircle(null);
   }, [open, allowedCountry]);
 
   useEffect(() => {
@@ -92,7 +89,14 @@ export function RegionPickerDialog({
     onClose();
   };
 
+  const isJapan = country?.code === "jp";
+  const activeCircle = circle ? JP_METRO_CIRCLES.find((item) => item.code === circle) : null;
+
   const goBack = () => {
+    if (circle) {
+      setCircle(null);
+      return;
+    }
     if (province) {
       setProvince(null);
       return;
@@ -100,14 +104,16 @@ export function RegionPickerDialog({
     if (country && !allowedCountry) setCountry(null);
   };
 
-  const title = province
-    ? provinceDisplayName(country?.code, province.code, province.name, locale)
-    : country
-      ? countryDisplayName(country, locale)
-      : lockedCountry
-        ? countryDisplayName(lockedCountry, locale)
-        : t("region_picker_title");
-  const canGoBack = Boolean(province || (country && !allowedCountry));
+  const title = activeCircle
+    ? activeCircle.name
+    : province
+      ? provinceDisplayName(country?.code, province.code, province.name, locale)
+      : country
+        ? countryDisplayName(country, locale)
+        : lockedCountry
+          ? countryDisplayName(lockedCountry, locale)
+          : t("region_picker_title");
+  const canGoBack = Boolean(circle || province || (country && !allowedCountry));
 
   return createPortal(
     <div
@@ -161,21 +167,20 @@ export function RegionPickerDialog({
 
           {query.trim() ? (
             <SearchResultList matches={matches} onSelect={deliver} noMatchesLabel={t("region_no_matches")} locale={locale} />
+          ) : (isJapan || lockedCountry?.code === "jp") ? (
+            // 日本：都市圈 → 城市（关东圈/关西圈/名古屋…），避免一长串都道府县。
+            <JapanCircleDrilldown circle={circle} onCircle={setCircle} onSelect={deliver} locale={locale} />
           ) : country ? (
             <CountryDrilldown country={country} province={province} onProvince={setProvince} onSelect={deliver} locale={locale} />
+          ) : lockedCountry ? (
+            <CountryDrilldown country={lockedCountry} province={province} onProvince={setProvince} onSelect={deliver} locale={locale} />
           ) : (
+            // 落地页只展示国家列表；选定国家后再下钻，不再重复堆叠「本国城市」。
             <RegionPickerLanding
               availableCountries={availableCountries}
-              lockedCountry={lockedCountry}
-              activeCountry={lockedCountry ?? defaultCountry}
               onCountry={setCountry}
-              onProvince={(nextCountry, nextProvince) => {
-                setCountry(nextCountry);
-                setProvince(nextProvince);
-              }}
-              onSelect={deliver}
               showCountryList={!allowedCountry}
-              labels={{ switchCountry: t("region_switch_country"), switchLocal: t("region_switch_local") }}
+              labels={{ switchCountry: t("region_switch_country") }}
               locale={locale}
             />
           )}
@@ -188,58 +193,87 @@ export function RegionPickerDialog({
 
 function RegionPickerLanding({
   availableCountries,
-  lockedCountry,
-  activeCountry,
   onCountry,
-  onProvince,
-  onSelect,
   showCountryList,
   labels,
   locale,
 }: {
   availableCountries: RegionCountry[];
-  lockedCountry: RegionCountry | null;
-  activeCountry: RegionCountry | null;
   onCountry: (country: RegionCountry) => void;
-  onProvince: (country: RegionCountry, province: RegionProvince) => void;
-  onSelect: (region: RegionInfo) => void;
   showCountryList: boolean;
-  labels: { switchCountry: string; switchLocal: string };
+  labels: { switchCountry: string };
   locale: string;
 }) {
-  const countryForCities = activeCountry ?? lockedCountry;
-
+  if (!showCountryList) return null;
   return (
-    <div className="space-y-5">
-      {showCountryList ? <section>
-        <h3 className="kx-section-title mb-2 px-0">{labels.switchCountry}</h3>
-        <div className="overflow-hidden rounded-kx-lg bg-kx-card ring-1 ring-kx-stroke/70">
-          {availableCountries.map((country) => (
-            <button
-              key={country.code}
-              type="button"
-              onClick={() => onCountry(country)}
-              className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
-            >
-              <span className="text-xl">{country.emoji}</span>
-              <span className="font-semibold">{countryDisplayName(country, locale)}</span>
-              <ChevronRight className="ml-auto h-4 w-4 text-kx-muted" />
-            </button>
-          ))}
-        </div>
-      </section> : null}
-      {countryForCities ? (
-        <section className="space-y-3">
-          <h3 className="kx-section-title px-0">{labels.switchLocal}</h3>
-          <CountryDrilldown
-            country={countryForCities}
-            province={null}
-            onProvince={(province) => onProvince(countryForCities, province)}
-            onSelect={onSelect}
-            locale={locale}
-          />
-        </section>
-      ) : null}
+    <section>
+      <h3 className="kx-section-title mb-2 px-0">{labels.switchCountry}</h3>
+      <div className="overflow-hidden rounded-kx-lg bg-kx-card ring-1 ring-kx-stroke/70">
+        {availableCountries.map((country) => (
+          <button
+            key={country.code}
+            type="button"
+            onClick={() => onCountry(country)}
+            className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+          >
+            <span className="text-xl">{country.emoji}</span>
+            <span className="font-semibold">{countryDisplayName(country, locale)}</span>
+            <ChevronRight className="ml-auto h-4 w-4 text-kx-muted" />
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/// Japan picker: metro circles first (关东圈/关西圈/名古屋…), then the cities
+/// inside the chosen circle — far easier to locate than a flat 都道府县 list.
+function JapanCircleDrilldown({
+  circle,
+  onCircle,
+  onSelect,
+  locale,
+}: {
+  circle: string | null;
+  onCircle: (code: string) => void;
+  onSelect: (region: RegionInfo) => void;
+  locale: string;
+}) {
+  if (circle) {
+    const regions = regionsForMetroCircle(circle);
+    return (
+      <div className="overflow-hidden rounded-kx-lg bg-kx-card ring-1 ring-kx-stroke/70">
+        {regions.map((region) => (
+          <button
+            key={region.region_code}
+            type="button"
+            onClick={() => onSelect(region)}
+            className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+          >
+            <span className="font-semibold">{cityDisplayName(region.country_code, region.province_code, region.city_code, region.city_name, locale)}</span>
+            <span className="ml-auto text-xs font-semibold text-kx-muted">{provinceDisplayName(region.country_code, region.province_code, region.province_name, locale)}</span>
+          </button>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="overflow-hidden rounded-kx-lg bg-kx-card ring-1 ring-kx-stroke/70">
+      {JP_METRO_CIRCLES.map((item) => {
+        const count = regionsForMetroCircle(item.code).length;
+        return (
+          <button
+            key={item.code}
+            type="button"
+            onClick={() => onCircle(item.code)}
+            className="flex w-full items-center gap-3 border-b border-kx-stroke/40 px-4 py-3 text-left last:border-0 hover:bg-kx-soft/70"
+          >
+            <span className="font-semibold">{item.name}</span>
+            <span className="ml-auto text-xs font-semibold text-kx-muted">{count} 城</span>
+            <ChevronRight className="h-4 w-4 text-kx-muted" />
+          </button>
+        );
+      })}
     </div>
   );
 }
