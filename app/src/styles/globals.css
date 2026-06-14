@@ -262,12 +262,15 @@ body::before {
      (z 80) and make it fully opaque, so the sheet + bar read as one bright
      white unit floating over the dimmed feed instead of the bar going dark. */
   .kx-mobile-tabbar[data-elevated="true"] {
-    z-index: 85;
+    /* Sit above the sheet (z 90) so the bar caps the sheet's flat bottom edge
+       into one seamless drawer; flat top connects to the sheet, rounded
+       bottom keeps the pill foot. */
+    z-index: 95;
     background: rgb(var(--kx-surface));
+    border-top: 0;
     border-color: rgba(15, 23, 42, 0.06);
-    box-shadow:
-      inset 0 1px 0 rgba(255, 255, 255, 0.72),
-      0 14px 40px -18px rgba(15, 23, 42, 0.34);
+    border-radius: 0 0 999px 999px;
+    box-shadow: 0 16px 40px -18px rgba(15, 23, 42, 0.32);
   }
 
   .kx-mobile-tabbar-item {
@@ -378,8 +381,10 @@ body::before {
   :root.dark .kx-mobile-tabbar[data-elevated="true"],
   [data-theme="dark"] .kx-mobile-tabbar[data-elevated="true"] {
     background: rgb(var(--kx-surface));
+    border-top: 0;
     border-color: rgba(255, 255, 255, 0.10);
-    box-shadow: 0 14px 40px -16px rgba(0, 0, 0, 0.6);
+    border-radius: 0 0 999px 999px;
+    box-shadow: 0 16px 40px -16px rgba(0, 0, 0, 0.6);
   }
 
   :root.dark .kx-mobile-floating-compose,

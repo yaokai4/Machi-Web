@@ -767,8 +767,8 @@ function MobileMoreSheet({
         role="dialog"
         aria-modal="true"
         aria-labelledby="mobile-more-title"
-        className="fixed inset-x-0 mx-auto z-[90] max-h-[72dvh] overflow-y-auto overflow-x-hidden overscroll-contain rounded-3xl border border-kx-stroke/60 bg-kx-surface shadow-[0_24px_70px_-22px_rgba(15,23,42,0.5)] transform-gpu animate-kx-slide-up md:hidden"
-        style={{ width: "min(calc(100vw - 1.2rem), 24rem)", bottom: "calc(env(safe-area-inset-bottom) + 5.25rem)", paddingBottom: "0.5rem" }}
+        className="fixed inset-x-0 mx-auto z-[90] max-h-[72dvh] overflow-y-auto overflow-x-hidden overscroll-contain rounded-t-[26px] border border-b-0 border-kx-stroke/60 bg-kx-surface shadow-[0_24px_70px_-22px_rgba(15,23,42,0.5)] transform-gpu animate-kx-slide-up md:hidden"
+        style={{ width: "min(calc(100vw - 1.2rem), 23.5rem)", bottom: "calc(max(1.1rem, env(safe-area-inset-bottom) + 0.35rem) + 3.6rem)", paddingBottom: "0.9rem" }}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 pt-4 pb-3">
@@ -842,7 +842,7 @@ function MobileMoreSheet({
             })}
           </ul>
         </nav>
-        <div className="border-t border-kx-stroke/40 mt-2 px-3 pt-3 pb-2 space-y-1">
+        <div className="mt-1 px-3 pt-1 pb-2 space-y-1">
           <button
             type="button"
             onClick={() => {
