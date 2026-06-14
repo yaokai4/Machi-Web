@@ -1664,21 +1664,20 @@ body::before {
 
 .mc-brand-gradient {
   color: transparent;
-  /* Brand-green sweep: deep forest → bright leaf. The dark head grounds
-     the wordmark so it reads as typography rather than decoration, while
-     the deep→bright green carries Machi's identity at display sizes. */
-  background-image: linear-gradient(108deg, #0B4D3C 0%, #0F6E56 30%, #16895F 56%, #23A883 90%);
+  /* Ink → coral → rose → indigo. The wordmark keeps its colourful sweep
+     (the brand green lives in the icon mark, not the wordmark). */
+  background-image: linear-gradient(108deg, #181233 0%, #ff6b4a 30%, #e0354b 54%, #4f46e5 88%);
   background-size: 200% 100%;
   background-position: 0% 50%;
   -webkit-background-clip: text;
   background-clip: text;
-  text-shadow: 0 18px 52px rgba(15, 110, 86, 0.18);
+  text-shadow: 0 18px 52px rgba(224, 53, 75, 0.16);
   animation: mc-brand-shimmer 8s ease-in-out infinite;
 }
 
 :root.dark .mc-brand-gradient {
-  background-image: linear-gradient(108deg, #Dff3ea 0%, #8FE0C5 32%, #4CC9A2 60%, #2BBA92 90%);
-  text-shadow: 0 18px 52px rgba(43, 186, 146, 0.20);
+  background-image: linear-gradient(108deg, #fff3ea 0%, #ffb199 32%, #fb8da0 56%, #a5b4fc 90%);
+  text-shadow: 0 18px 52px rgba(255, 107, 74, 0.20);
 }
 
 .mc-menu-item {

@@ -14,7 +14,7 @@ export function BrandMark({ className }: { className?: string }) {
   return (
     <span
       className={clsx(
-        "relative inline-flex shrink-0 items-center justify-center rounded-[30%] bg-gradient-to-br from-[#157A60] via-[#0F6E56] to-[#0E5A47] text-white shadow-[0_16px_42px_-22px_rgba(14,107,84,0.95)]",
+        "relative inline-flex shrink-0 items-center justify-center rounded-[30%] bg-gradient-to-br from-[#2BB089] via-[#1A9C76] to-[#138C68] text-white shadow-[0_16px_42px_-22px_rgba(26,156,118,0.9)]",
         className,
       )}
       aria-hidden="true"
