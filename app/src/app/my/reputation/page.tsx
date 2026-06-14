@@ -4,7 +4,7 @@ import { useEffect } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Award, BadgeCheck, ChevronRight, History, ShieldCheck, Sparkles } from "lucide-react";
+import { ArrowLeft, Award, BadgeCheck, ChevronRight, History, ShieldCheck, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import type { KXReputationEvent, KXReputationLevel } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
@@ -38,19 +38,29 @@ export default function MyReputationPage() {
 
   if (status === "loading" || status === "idle") {
     return (
-      <AppShell>
+      <AppShell wide right={null}>
         <InlineLoading />
       </AppShell>
     );
   }
 
   return (
-    <AppShell>
+    <AppShell wide right={null}>
       <header className="sticky top-0 z-30 kx-glass-bar px-4 py-3">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-xs font-bold uppercase tracking-wide text-kx-muted">Machi City Reputation</p>
-            <h1 className="text-xl font-black text-kx-text">城市声望</h1>
+          <div className="flex min-w-0 items-center gap-3">
+            <button
+              type="button"
+              onClick={() => router.back()}
+              aria-label="返回"
+              className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-kx-stroke/60 bg-kx-card text-kx-text transition hover:border-kx-accent/40 hover:text-kx-accent active:scale-95"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </button>
+            <div className="min-w-0">
+              <p className="text-xs font-bold uppercase tracking-wide text-kx-muted">Machi City Reputation</p>
+              <h1 className="text-xl font-black text-kx-text">城市声望</h1>
+            </div>
           </div>
           <Link href="/me" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke px-3 text-sm font-bold text-kx-text">
             我的主页 <ChevronRight className="h-4 w-4" />

@@ -1690,6 +1690,28 @@ const MY_LISTING_STATUS_GROUPS: Array<{ key: string; label: string; statuses: st
   { key: "rejected", label: "未通过", statuses: ["rejected"] },
 ];
 
+/// Shared workbench page header: a back button + title, so every page reached
+/// from the 工作台 has a clear way back. Used across all /my/* pages.
+function WorkbenchBackHeader({ title, subtitle }: { title: string; subtitle?: string }) {
+  const router = useRouter();
+  return (
+    <div className="mb-4 flex items-center gap-3">
+      <button
+        type="button"
+        onClick={() => router.back()}
+        aria-label="返回"
+        className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-kx-stroke/60 bg-kx-card text-kx-text shadow-[0_8px_22px_-16px_rgba(15,23,42,0.5)] transition hover:border-kx-accent/40 hover:text-kx-accent active:scale-95"
+      >
+        <ArrowLeft className="h-5 w-5" />
+      </button>
+      <div className="min-w-0">
+        <h1 className="truncate text-2xl font-black text-kx-text">{title}</h1>
+        {subtitle ? <p className="truncate text-sm font-semibold text-kx-subtle">{subtitle}</p> : null}
+      </div>
+    </div>
+  );
+}
+
 export function MyListingsPage({ saved = false }: { saved?: boolean }) {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
@@ -1716,9 +1738,9 @@ export function MyListingsPage({ saved = false }: { saved?: boolean }) {
     onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
   });
   return (
-    <AppShell requireAuth>
-      <main className="px-3 py-4 sm:px-4">
-        <h1 className="text-2xl font-black text-slate-950">{saved ? "我的收藏" : "我的发布"}</h1>
+    <AppShell requireAuth wide right={null}>
+      <main className="mx-auto max-w-5xl px-3 py-4 sm:px-4">
+        <WorkbenchBackHeader title={saved ? "我的收藏" : "我的发布"} />
         <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
           {(["secondhand", "rental", "job", "hiring", "local_service", "discount"] as KXListingType[]).map((item) => (
             <button key={item} onClick={() => { setType(item); setStatusGroup("all"); }} data-active={type === item} className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-sm font-bold data-[active=true]:bg-slate-950 data-[active=true]:text-white">
@@ -1784,10 +1806,9 @@ export function MyListingInquiriesPage({ mode = "inquiries" }: { mode?: "inquiri
     },
   });
   return (
-    <AppShell requireAuth>
-      <main className="px-3 py-4 sm:px-4">
-        <h1 className="text-2xl font-black text-slate-950">{title}</h1>
-        <p className="mt-1 text-sm font-semibold text-slate-500">联系记录绑定具体城市信息，避免把高意图咨询混进普通私信。</p>
+    <AppShell requireAuth wide right={null}>
+      <main className="mx-auto max-w-5xl px-3 py-4 sm:px-4">
+        <WorkbenchBackHeader title={title} subtitle="联系记录绑定具体城市信息，避免把高意图咨询混进普通私信。" />
         <div className="mt-4 space-y-3">
           {query.isLoading ? <SectionLoading title={loadingTitle} rows={3} /> : null}
           {query.isError ? (
@@ -1816,10 +1837,9 @@ export function MyOrdersPage() {
   });
   const items = query.data?.items || [];
   return (
-    <AppShell requireAuth>
-      <main className="px-3 py-4 sm:px-4">
-        <h1 className="text-2xl font-black text-slate-950">我的订单</h1>
-        <p className="mt-1 text-sm font-semibold text-slate-500">会员订单、Guide 资料订单和服务类订单统一追踪。</p>
+    <AppShell requireAuth wide right={null}>
+      <main className="mx-auto max-w-5xl px-3 py-4 sm:px-4">
+        <WorkbenchBackHeader title="我的订单" subtitle="会员订单、Guide 资料订单和服务类订单统一追踪。" />
         <div className="mt-4 space-y-3">
           {query.isLoading ? <SectionLoading title="正在加载订单" rows={3} /> : null}
           {query.isError ? (

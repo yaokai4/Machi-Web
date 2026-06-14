@@ -213,14 +213,14 @@ export default function MyBusinessPage() {
 
   if (!user) {
     return (
-      <AppShell>
+      <AppShell wide right={null}>
         <InlineLoading />
       </AppShell>
     );
   }
 
   return (
-    <AppShell>
+    <AppShell wide right={null}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2">
         <div className="flex items-center gap-2">
           <Link href="/my/features" className="grid h-10 w-10 place-items-center rounded-full bg-white text-slate-700 shadow-sm">

@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
+  ArrowLeft,
   BadgeCheck,
   Bookmark,
   BriefcaseBusiness,
@@ -44,6 +46,7 @@ const WORK_ITEMS = [
 export default function MyFeaturesPage() {
   const user = useSession((s) => s.user);
   const { locale } = useI18n();
+  const router = useRouter();
   const region = regionFromUser(user);
   const newLeads = useQuery({
     queryKey: ["workbench-new-leads"],
@@ -61,8 +64,16 @@ export default function MyFeaturesPage() {
   const merchantMetrics = dashboard.data?.metrics;
 
   return (
-    <AppShell>
+    <AppShell wide right={null}>
       <main className="mx-auto flex w-full max-w-5xl flex-col gap-5 px-3 py-4 sm:px-5">
+        <button
+          type="button"
+          onClick={() => router.back()}
+          aria-label="返回"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/60 bg-kx-card text-kx-text shadow-[0_8px_22px_-16px_rgba(15,23,42,0.5)] transition hover:border-kx-accent/40 hover:text-kx-accent active:scale-95"
+        >
+          <ArrowLeft className="h-5 w-5" />
+        </button>
         <section className="rounded-[28px] border border-slate-200/70 bg-white/90 p-5 shadow-[0_18px_58px_-42px_rgba(15,23,42,0.55)]">
           <div className="flex items-start gap-4">
             <Avatar user={user || undefined} size={64} />
