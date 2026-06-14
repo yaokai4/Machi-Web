@@ -2565,7 +2565,7 @@ function StayListingCard({ listing, locale, variant }: { listing: KXCityListing;
           </span>
         ) : null}
         {listing.verification_status === "verified" ? (
-          <span className="absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-white/94 px-2.5 py-1 text-[11px] font-black text-slate-800 shadow-sm">
+          <span className="absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-white/94 px-2.5 py-1 text-[11px] font-black text-slate-800 shadow-sm ring-1 ring-slate-900/10 backdrop-blur-sm dark:bg-slate-900/90 dark:text-slate-100 dark:ring-white/15">
             <BadgeCheck className="h-3.5 w-3.5 text-emerald-600" />
             {variant === "stay" ? pickText(locale, "认证房东", "認証ホスト", "Verified host") : pickText(locale, "已核验", "確認済み", "Verified")}
           </span>

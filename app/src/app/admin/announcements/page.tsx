@@ -132,14 +132,14 @@ export default function AdminAnnouncementsPage() {
 
   if (!me || !isAdmin) {
     return (
-      <AppShell>
+      <AppShell right={null} wide>
         <div className="p-8 text-center text-kx-muted">仅管理员可访问。</div>
       </AppShell>
     );
   }
 
   return (
-    <AppShell>
+    <AppShell right={null} wide>
       <header className="sticky top-0 z-30 kx-glass-bar px-4 py-3 flex items-center gap-3">
         <Link href="/admin" className="kx-button-ghost h-8 w-8 inline-flex items-center justify-center" aria-label="返回">
           <ArrowLeft className="w-4 h-4" />

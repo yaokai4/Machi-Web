@@ -76,7 +76,7 @@ export default function AdminEmailPage() {
   const canSubmit = subject.trim().length > 0 && body.trim().length > 0 && !save.isPending;
 
   return (
-    <AppShell>
+    <AppShell right={null} wide>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2">
         <Link href="/admin" className="inline-flex items-center gap-1 text-xs font-bold text-kx-muted hover:text-kx-accent">
           <ArrowLeft className="h-4 w-4" /> 管理后台

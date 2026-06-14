@@ -144,9 +144,9 @@ export function Header() {
             href={hrefFor("/")}
             className="flex shrink-0 items-center gap-2.5 rounded-full focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-500"
           >
-            {logoUrl ? (
+            {logoUrl && logoUrl !== "/icon.svg" ? (
               <span
-                className="h-9 w-9 shrink-0 rounded-full bg-cover bg-center bg-no-repeat shadow-[0_16px_42px_-22px_rgba(79,70,229,0.95)] ring-1 ring-slate-900/10 sm:h-10 sm:w-10"
+                className="h-9 w-9 shrink-0 rounded-full bg-cover bg-center bg-no-repeat shadow-[0_16px_42px_-22px_rgba(26,156,118,0.9)] ring-1 ring-slate-900/10 sm:h-10 sm:w-10"
                 style={{ backgroundImage: `url("${logoUrl.replace(/"/g, "%22")}")` }}
                 role="img"
                 aria-label={brandTitle}

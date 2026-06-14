@@ -88,7 +88,7 @@ export default function AdminPage() {
 
   if (status === "loading" || status === "idle") {
     return (
-      <AppShell>
+      <AppShell right={null} wide>
         <InlineLoading />
       </AppShell>
     );
@@ -96,7 +96,7 @@ export default function AdminPage() {
   if (!user) return null;
   if (user.role !== "admin") {
     return (
-      <AppShell>
+      <AppShell right={null} wide>
         <div className="px-6 py-16 text-center">
           <div className="inline-flex w-12 h-12 items-center justify-center rounded-full bg-kx-danger/10 text-kx-danger mb-3">
             <AlertCircle className="w-6 h-6" />
@@ -110,7 +110,7 @@ export default function AdminPage() {
   }
 
   return (
-    <AppShell>
+    <AppShell right={null} wide>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
         <ShieldCheck className="w-5 h-5 text-kx-accent" />
         <h1 className="text-lg font-bold">管理后台</h1>

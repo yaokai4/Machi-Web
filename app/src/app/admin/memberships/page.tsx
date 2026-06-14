@@ -26,7 +26,7 @@ export default function AdminMembershipsPage() {
   if (user.role !== "admin") return <AppShell><main className="px-6 py-16 text-center font-bold">无权访问</main></AppShell>;
 
   return (
-    <AppShell>
+    <AppShell right={null} wide>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2">
         <Link href="/admin" className="inline-flex items-center gap-1 text-xs font-bold text-kx-muted hover:text-kx-accent">
           <ArrowLeft className="h-4 w-4" /> 管理后台

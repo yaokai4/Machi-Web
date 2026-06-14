@@ -49,7 +49,7 @@ export default function AdminSettingsPage() {
   if (user.role !== "admin") return <AppShell><main className="px-6 py-16 text-center font-bold">无权访问</main></AppShell>;
 
   return (
-    <AppShell>
+    <AppShell right={null} wide>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2">
         <Link href="/admin" className="inline-flex items-center gap-1 text-xs font-bold text-kx-muted hover:text-kx-accent">
           <ArrowLeft className="h-4 w-4" /> 管理后台
@@ -239,6 +239,15 @@ function SiteBrandSettingsCard() {
         <LocaleTextArea label="中文描述" value={form.site_description_zh || ""} onChange={(v) => update("site_description_zh", v)} rows={4} />
         <LocaleTextArea label="English description" value={form.site_description_en || ""} onChange={(v) => update("site_description_en", v)} rows={4} />
         <LocaleTextArea label="日本語説明" value={form.site_description_ja || ""} onChange={(v) => update("site_description_ja", v)} rows={4} />
+      </div>
+      <div className="mt-3">
+        <LocaleTextArea
+          label="登录页公告（留空则不显示）"
+          value={form.login_announcement || ""}
+          onChange={(v) => update("login_announcement", v)}
+          rows={3}
+        />
+        <p className="mt-1 text-xs text-kx-muted">显示在登录页左侧品牌栏底部与移动端登录表单上方。支持换行。</p>
       </div>
     </section>
   );

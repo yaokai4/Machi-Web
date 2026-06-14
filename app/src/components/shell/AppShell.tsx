@@ -37,7 +37,7 @@ import { Avatar } from "@/components/design/Avatar";
 import { Toaster } from "@/components/design/Toaster";
 import { Composer } from "@/components/compose/Composer";
 import { AuthRequiredDialog, authRedirectHref } from "@/components/auth/AuthRequiredDialog";
-import { BrandText } from "@/components/marketing/BrandText";
+import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { useRealtime } from "@/lib/realtime";
 import { useGlobalShortcuts } from "@/lib/keyboard";
 import { ErrorBoundary } from "@/components/design/ErrorBoundary";
@@ -211,14 +211,14 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
   return (
     <aside className="hidden md:flex flex-col gap-1 w-16 lg:w-64 shrink-0 py-3 px-2 lg:px-3 sticky top-0 self-start h-dvh">
       <Link href="/home" className="px-3 py-3 inline-flex items-center gap-2 text-kx-text">
-        <span className="w-9 h-9 overflow-hidden rounded-kx-md bg-kx-accent text-white inline-flex items-center justify-center font-bold text-lg">
-          {logoUrl ? (
-            // eslint-disable-next-line @next/next/no-img-element
+        {logoUrl && logoUrl !== "/icon.svg" ? (
+          <span className="w-9 h-9 overflow-hidden rounded-[30%] inline-flex items-center justify-center">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src={logoUrl} alt="" className="h-full w-full object-cover" />
-          ) : (
-            "M"
-          )}
-        </span>
+          </span>
+        ) : (
+          <BrandMark className="h-9 w-9 text-base" />
+        )}
         <BrandText className="hidden text-base font-black lg:inline">{brandTitle}</BrandText>
       </Link>
       <nav className="flex flex-col gap-0.5 mt-1">

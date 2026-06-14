@@ -203,6 +203,7 @@ export type SiteSettings = Record<
   | "logo_url"
   | "og_image_url"
   | "support_email"
+  | "login_announcement"
   | "discover_entrances"
   | "right_rail_show_trending"
   | "right_rail_show_recommended"

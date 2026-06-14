@@ -11502,6 +11502,9 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "logo_url": "/icon.svg",
     "og_image_url": "/og-image.png",
     "support_email": "hi@machicity.com",
+    # Login-page announcement (admin-editable). Empty = no notice shown.
+    # Shown on the login brand pane and above the mobile login form.
+    "login_announcement": "",
     # JSON array describing the 发现页「城市入口」layout (admin-editable).
     # Empty string = use the app's built-in default entrances.
     "discover_entrances": "",
@@ -11515,8 +11518,8 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     # "1" = new city listings (二手/租房/工作/服务/优惠) go through admin
     # review before appearing publicly; "0" = publish immediately (review off).
     "listing_review_enabled": "1",
-    "explore_happening_days": "3",
-    "explore_hot_days": "10",
+    "explore_happening_days": "2",
+    "explore_hot_days": "7",
     "explore_topic_days": "7",
     "explore_like_weight": "3",
     "explore_comment_weight": "5",

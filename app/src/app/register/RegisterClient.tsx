@@ -295,11 +295,16 @@ function RegisterForm() {
         {/* ─────────── LEFT brand pane — rich brand-green, premium ─────────── */}
         <aside
           className="relative hidden flex-col justify-between overflow-hidden p-9 text-white lg:flex"
-          style={{ background: "linear-gradient(157deg, rgb(34 140 126) 0%, rgb(20 112 103) 50%, rgb(11 74 67) 100%)" }}
+          style={{ background: "linear-gradient(158deg, #38C79A 0%, #1FAE83 44%, #138C68 100%)" }}
         >
           <div
             className="pointer-events-none absolute inset-0"
-            style={{ background: "radial-gradient(135% 85% at 88% -12%, rgba(255,255,255,0.22), transparent 55%)" }}
+            style={{ background: "radial-gradient(120% 80% at 85% -10%, rgba(255,255,255,0.30), transparent 52%)" }}
+            aria-hidden="true"
+          />
+          <div
+            className="pointer-events-none absolute -bottom-24 -left-16 h-72 w-72 rounded-full opacity-40 blur-2xl"
+            style={{ background: "radial-gradient(circle, rgba(120,232,196,0.55), transparent 70%)" }}
             aria-hidden="true"
           />
           <div className="relative">

@@ -133,7 +133,7 @@ export default function AdminUploadsPage() {
   }
 
   return (
-    <AppShell>
+    <AppShell right={null} wide>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2">
         <div className="flex items-center gap-2">
           <HardDrive className="h-5 w-5 text-kx-accent" />

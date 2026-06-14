@@ -12,6 +12,7 @@ import {
   Loader2,
   LogIn,
   MapPin,
+  Megaphone,
   ShieldCheck,
   Sparkles,
 } from "lucide-react";
@@ -92,6 +93,22 @@ function LoginForm() {
   const handleCaptchaState = useCallback((state: CaptchaState) => setCaptcha(state), []);
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
   const c = AUTH_COPY[locale];
+  // Admin-editable login announcement (site_settings.login_announcement).
+  // Empty string = nothing rendered.
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => {
+    let alive = true;
+    api
+      .siteSettings()
+      .then((s) => {
+        if (alive) setAnnouncement((s.login_announcement || "").trim());
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const announcementLabel = locale === "en" ? "Announcement" : locale === "ja" ? "お知らせ" : "公告";
 
   const changeLocale = (next: AuthLocale) => {
     setLocale(next);
@@ -171,11 +188,16 @@ function LoginForm() {
         {/* ─────────── LEFT brand pane — rich brand-green, premium ─────────── */}
         <aside
           className="relative hidden flex-col justify-between overflow-hidden p-9 text-white lg:flex"
-          style={{ background: "linear-gradient(157deg, rgb(34 140 126) 0%, rgb(20 112 103) 50%, rgb(11 74 67) 100%)" }}
+          style={{ background: "linear-gradient(158deg, #38C79A 0%, #1FAE83 44%, #138C68 100%)" }}
         >
           <div
             className="pointer-events-none absolute inset-0"
-            style={{ background: "radial-gradient(135% 85% at 88% -12%, rgba(255,255,255,0.22), transparent 55%)" }}
+            style={{ background: "radial-gradient(120% 80% at 85% -10%, rgba(255,255,255,0.30), transparent 52%)" }}
+            aria-hidden="true"
+          />
+          <div
+            className="pointer-events-none absolute -bottom-24 -left-16 h-72 w-72 rounded-full opacity-40 blur-2xl"
+            style={{ background: "radial-gradient(circle, rgba(120,232,196,0.55), transparent 70%)" }}
             aria-hidden="true"
           />
           <div className="relative">
@@ -207,11 +229,22 @@ function LoginForm() {
             </ul>
           </div>
 
-          <div className="relative rounded-kx-lg bg-white/12 p-4 ring-1 ring-white/25 backdrop-blur-sm">
-            <div className="text-[11px] font-black uppercase tracking-[0.16em] text-white/90">{c.cityFirstFeed}</div>
-            <p className="mt-2 text-sm font-semibold leading-6 text-white/80">
-              {c.cityFirstBody}
-            </p>
+          <div className="relative space-y-3">
+            {announcement ? (
+              <div className="rounded-kx-lg bg-white/15 p-4 ring-1 ring-white/30 backdrop-blur-sm">
+                <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.16em] text-white/95">
+                  <Megaphone className="h-3.5 w-3.5" />
+                  {announcementLabel}
+                </div>
+                <p className="mt-2 whitespace-pre-line text-sm font-semibold leading-6 text-white/85">{announcement}</p>
+              </div>
+            ) : null}
+            <div className="rounded-kx-lg bg-white/12 p-4 ring-1 ring-white/25 backdrop-blur-sm">
+              <div className="text-[11px] font-black uppercase tracking-[0.16em] text-white/90">{c.cityFirstFeed}</div>
+              <p className="mt-2 text-sm font-semibold leading-6 text-white/80">
+                {c.cityFirstBody}
+              </p>
+            </div>
           </div>
         </aside>
 
@@ -247,6 +280,16 @@ function LoginForm() {
               {c.loginSubtitle}
             </p>
           </header>
+
+          {announcement ? (
+            <div className="mb-4 rounded-kx-lg border border-kx-accent/30 bg-kx-accent/[0.08] p-3.5 lg:hidden">
+              <div className="flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.16em] text-kx-accent">
+                <Megaphone className="h-3.5 w-3.5" />
+                {announcementLabel}
+              </div>
+              <p className="mt-1.5 whitespace-pre-line text-sm font-semibold leading-6 text-kx-text">{announcement}</p>
+            </div>
+          ) : null}
 
           <GoogleSignInButton
             label={c.google}
