@@ -31,7 +31,7 @@ import { useI18n } from "@/lib/i18n";
 import { showVerifiedBadge } from "@/lib/types";
 
 const WORK_ITEMS = [
-  { href: "/listings/create", title: "发布城市信息", subtitle: "二手、租房、招聘、商家与本地服务", icon: BriefcaseBusiness, tone: "text-blue-600 bg-blue-50", badge: "" },
+  { href: "/listings/create", title: "发布城市信息", subtitle: "二手、租房、招聘、商家与服务", icon: BriefcaseBusiness, tone: "text-blue-600 bg-blue-50", badge: "" },
   { href: "/my/listings", title: "我的发布", subtitle: "审核状态、上下架和详情", icon: ClipboardList, tone: "text-slate-700 bg-slate-100", badge: "" },
   { href: "/my/saved-listings", title: "我的收藏", subtitle: "收藏的二手、房源和服务", icon: Bookmark, tone: "text-emerald-600 bg-emerald-50", badge: "" },
   { href: "/my/inquiries", title: "我的咨询", subtitle: "交易、房源和服务沟通", icon: MessageSquare, tone: "text-cyan-600 bg-cyan-50", badge: "leads" },

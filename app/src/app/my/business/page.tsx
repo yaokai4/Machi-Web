@@ -417,7 +417,7 @@ export default function MyBusinessPage() {
               <ActionLink href="/listings/create?type=local_service" icon={BriefcaseBusiness} title="发布服务" subtitle="翻译、手续、接机、旅行、维修" />
               <ActionLink href="/listings/create?type=discount" icon={TicketPercent} title="发布优惠" subtitle="到店折扣、套餐、体验券" />
               <ActionLink href="/my/inquiries?role=received" icon={MessageSquare} title="管理线索" subtitle="咨询、预约、报名和看房" />
-              <ActionLink href="/cities/tokyo/services" icon={Store} title="查看商家与本地服务" subtitle="用户侧入口预览" />
+              <ActionLink href="/cities/tokyo/services" icon={Store} title="查看商家与服务" subtitle="用户侧入口预览" />
             </div>
           </section>
           <section className="rounded-[24px] border border-amber-200/70 bg-amber-50 p-4 text-sm text-amber-900">
@@ -448,7 +448,7 @@ function BusinessHero({ business, status }: { business: KXBusinessProfile | null
             <StatusPill status={status} />
           </div>
           <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-slate-600">
-            商家与本地服务覆盖餐厅美食、在线订座、优惠、民宿酒店、景点票务和本地支持。完成认证后，你可以在城市入口内发布服务、优惠和活动，并从工作台管理订座、住宿预订与线索。
+            商家与服务覆盖餐厅美食、在线订座、优惠、民宿酒店、景点票务和本地支持。完成认证后，你可以在城市入口内发布服务、优惠和活动，并从工作台管理订座、住宿预订与线索。
           </p>
         </div>
       </div>

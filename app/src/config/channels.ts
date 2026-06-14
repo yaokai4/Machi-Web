@@ -63,7 +63,7 @@ export const PRIMARY_CHANNELS: ChannelConfig[] = [
   channel({ key: "market", label: "二手市场", subtitle: "闲置、求购、搬家出清", Icon: ShoppingBag, tone: "teal", contentTypes: ["secondhand"], legacySlugs: ["secondhand", "marketplace"] }),
   channel({ key: "housing", label: "租房 · 住宿", subtitle: "长租房源、民宿短住、看房预约", Icon: Home, tone: "indigo", contentTypes: ["housing", "roommate"], legacySlugs: ["rent", "rental", "rentals"] }),
   channel({ key: "jobs", label: "工作", subtitle: "兼职、全职、招聘和内推", Icon: Briefcase, tone: "violet", contentTypes: ["job_seek", "job_post", "referral"], legacySlugs: ["job", "recruiting", "recruit", "referral", "hiring"] }),
-  channel({ key: "services", label: "商家与本地服务", subtitle: "餐厅美食、点评订座、景点玩乐和生活支持", Icon: Wrench, tone: "orange", contentTypes: ["service", "merchant"], legacySlugs: ["service", "merchant", "business", "businesses", "local-service", "local_services"] }),
+  channel({ key: "services", label: "商家与服务", subtitle: "餐厅美食、点评订座、景点玩乐和生活支持", Icon: Wrench, tone: "orange", contentTypes: ["service", "merchant"], legacySlugs: ["service", "merchant", "business", "businesses", "local-service", "local_services"] }),
   channel({ key: "deals", label: "商家优惠", subtitle: "折扣福利、本地商家活动", Icon: Tag, tone: "rose", contentTypes: ["coupon"], legacySlugs: ["coupon", "discount", "discounts"] }),
   channel({ key: "groups", label: "活动小组", subtitle: "Food meetup、语言交换、本地小组", Icon: Users, tone: "fuchsia", contentTypes: ["meetup", "dining", "event"], legacySlugs: ["food", "dining", "events", "event", "meetup"] }),
   channel({ key: "qa", label: "问答互助", subtitle: "问答、匿名提问和生活求助", Icon: HelpCircle, tone: "blue", contentTypes: ["question", "anonymous"], legacySlugs: ["question", "treehole", "anonymous"] }),
@@ -125,7 +125,7 @@ export const CHANNEL_GROUPS: Array<{ title: string; items: ChannelGroupItem[] }>
   {
     title: "服务商家",
     items: [
-      { label: "商家与本地服务", subtitle: "点评、预约、优惠和生活支持", channel: "services", Icon: Store },
+      { label: "商家与服务", subtitle: "点评、预约、优惠和生活支持", channel: "services", Icon: Store },
       { label: "旅行住宿", subtitle: "酒店、民宿、接送机和行程", channel: "services", Icon: Store },
       { label: "景点票务", subtitle: "门票、一日游和本地向导", channel: "services", Icon: Wrench },
       { label: "认证商家", subtitle: "已提交认证资料的商家", channel: "services", Icon: Store },
@@ -233,7 +233,7 @@ const CHANNEL_COPY: Record<ChannelKey, Record<ChannelLocale, { title: string; su
     ja: { title: "仕事", subtitle: "アルバイト、正社員、求人、紹介" },
   },
   services: {
-    "zh-Hans": { title: "商家与本地服务", subtitle: "餐厅美食、点评订座、景点玩乐和生活支持" },
+    "zh-Hans": { title: "商家与服务", subtitle: "餐厅美食、点评订座、景点玩乐和生活支持" },
     "zh-Hant": { title: "商家與本地服務", subtitle: "餐廳美食、點評訂座、景點玩樂和生活支援" },
     en: { title: "Businesses & Local Services", subtitle: "Restaurants, reviews & reservations, attractions, and support" },
     ja: { title: "店舗・地域サービス", subtitle: "グルメ、口コミ・予約、観光体験、生活サポート" },
@@ -366,13 +366,13 @@ const GROUP_ITEM_COPY: Record<string, Record<ChannelLocale, { label: string; sub
     ja: { label: "地域グループ", subtitle: "運動、週末イベント、街歩き" },
   },
   本地服务: {
-    "zh-Hans": { label: "商家与本地服务", subtitle: "餐厅美食、点评订座、景点玩乐" },
+    "zh-Hans": { label: "商家与服务", subtitle: "餐厅美食、点评订座、景点玩乐" },
     "zh-Hant": { label: "商家與本地服務", subtitle: "餐廳美食、點評訂座、景點玩樂" },
     en: { label: "Businesses & Services", subtitle: "Restaurants, reservations, attractions" },
     ja: { label: "店舗・地域サービス", subtitle: "グルメ、予約、観光体験" },
   },
-  商家与本地服务: {
-    "zh-Hans": { label: "商家与本地服务", subtitle: "点评、预约、优惠和生活支持" },
+  商家与服务: {
+    "zh-Hans": { label: "商家与服务", subtitle: "点评、预约、优惠和生活支持" },
     "zh-Hant": { label: "商家與本地服務", subtitle: "點評、預約、優惠和生活支援" },
     en: { label: "Businesses & Services", subtitle: "Reviews, bookings, deals, local support" },
     ja: { label: "店舗・地域サービス", subtitle: "口コミ、予約、特典、生活サポート" },

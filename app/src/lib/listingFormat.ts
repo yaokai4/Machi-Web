@@ -30,7 +30,7 @@ const LISTING_TYPE_LABELS: Record<string, LabelSet> = {
   rental: { zh: "租房", en: "Rentals", ja: "住まい" },
   job: { zh: "找工作", en: "Jobs", ja: "仕事探し" },
   hiring: { zh: "招聘", en: "Hiring", ja: "求人" },
-  local_service: { zh: "商家与本地服务", en: "Businesses & local services", ja: "店舗・地域サービス" },
+  local_service: { zh: "商家与服务", en: "Businesses & local services", ja: "店舗・地域サービス" },
   discount: { zh: "商家优惠", en: "Deals", ja: "お得情報" },
   event: { zh: "活动小组", en: "Events", ja: "イベント" },
 };

@@ -102,7 +102,7 @@ const CHANNEL: Record<ChannelKind, { type: KXListingType; title: string; subtitl
   marketplace: { type: "secondhand", title: "二手市场", subtitle: "图片、价格、地点、成色和交易方式清晰分离", icon: Tag, search: "搜索家具、家电、手机数码、教材、搬家出清", createLabel: "发布二手" },
   rentals: { type: "rental", title: "租房 · 住宿", subtitle: "长租、民宿短住与酒店住宿，价格、位置和入住条件一目了然", icon: Home, search: "搜索地区、车站、民宿、酒店、房源关键词", createLabel: "发布房源" },
   jobs: { type: "job", title: "工作机会", subtitle: "薪资、地点、日语要求、签证支持和招聘方认证", icon: Briefcase, search: "搜索职位、公司、地点、日语要求", createLabel: "发布职位" },
-  services: { type: "local_service", title: "商家与本地服务", subtitle: "餐厅美食、点评订座、景点玩乐和生活支持", icon: Sparkles, search: "搜索餐厅美食、景点门票、一日游、接送机、翻译手续", createLabel: "发布服务" },
+  services: { type: "local_service", title: "商家与服务", subtitle: "餐厅美食、点评订座、景点玩乐和生活支持", icon: Sparkles, search: "搜索餐厅美食、景点门票、一日游、接送机、翻译手续", createLabel: "发布服务" },
   deals: { type: "discount", title: "优惠", subtitle: "本地商家优惠、有效期和使用规则", icon: Tag, search: "搜索优惠、折扣、商家、有效期", createLabel: "发布优惠" },
 };
 
@@ -1403,7 +1403,7 @@ export function CreateListingPage({
             <Link href="/explore" className="grid h-10 w-10 place-items-center rounded-full bg-slate-100"><ArrowLeft className="h-5 w-5" /></Link>
             <div>
               <h1 className="text-2xl font-black text-slate-950">{isEditing ? "编辑城市信息" : "发布城市信息"}</h1>
-              <p className="text-sm font-semibold text-slate-500">{isEditing ? "修改后的内容会同步到 Web 与 iOS；重要内容变更可能重新进入审核。" : "日常动态留在首页；二手、租房、工作、商家与本地服务和优惠会进入各自的城市频道。"}</p>
+              <p className="text-sm font-semibold text-slate-500">{isEditing ? "修改后的内容会同步到 Web 与 iOS；重要内容变更可能重新进入审核。" : "日常动态留在首页；二手、租房、工作、商家与服务和优惠会进入各自的城市频道。"}</p>
             </div>
           </div>
           <div className="mt-5 grid gap-5">
@@ -1891,7 +1891,7 @@ export function AdminListingsPage({
       <main className="px-3 py-4 sm:px-4">
         <div className="flex flex-wrap items-center gap-3">
           <h1 className="text-2xl font-black text-slate-950">Listing 审核</h1>
-          <select value={type} onChange={(e) => setType(e.target.value)} className="kx-input h-10 w-40"><option value="">全部类型</option><option value="secondhand">二手</option><option value="rental">租房</option><option value="job,hiring">工作</option><option value="job">找工作</option><option value="hiring">招聘</option><option value="local_service">商家与本地服务</option><option value="discount">商家优惠</option><option value="event">活动</option></select>
+          <select value={type} onChange={(e) => setType(e.target.value)} className="kx-input h-10 w-40"><option value="">全部类型</option><option value="secondhand">二手</option><option value="rental">租房</option><option value="job,hiring">工作</option><option value="job">找工作</option><option value="hiring">招聘</option><option value="local_service">商家与服务</option><option value="discount">商家优惠</option><option value="event">活动</option></select>
           <select value={status} onChange={(e) => setStatus(e.target.value)} className="kx-input h-10 w-44"><option value="">全部状态</option><option value="pending_review">待审核</option><option value="published">已发布</option><option value="hidden">已下架</option><option value="rejected">已拒绝</option></select>
           <select value={verificationStatus} onChange={(e) => setVerificationStatus(e.target.value)} className="kx-input h-10 w-44"><option value="">全部核验</option><option value="unverified">未认证</option><option value="pending">待核验</option><option value="verified">已认证</option><option value="needs_review">需复核</option><option value="rejected">核验拒绝</option></select>
         </div>
@@ -3911,7 +3911,7 @@ function ListingEmptyState({ type, cityName, stays = false }: { type: KXListingT
       />
     );
   }
-  const title = type === "secondhand" ? "这里还没有二手商品" : type === "rental" ? "这里还没有房源" : type === "job" || type === "hiring" ? "这里还没有工作机会" : type === "local_service" ? "这里还没有商家与本地服务" : type === "discount" ? "这里还没有商家优惠" : "这里还没有城市信息";
+  const title = type === "secondhand" ? "这里还没有二手商品" : type === "rental" ? "这里还没有房源" : type === "job" || type === "hiring" ? "这里还没有工作机会" : type === "local_service" ? "这里还没有商家与服务" : type === "discount" ? "这里还没有商家优惠" : "这里还没有城市信息";
   const subtitle = type === "secondhand"
     ? "发布第一个闲置、求购或搬家出清，让同城的人看到它。"
     : type === "rental"
@@ -4214,7 +4214,7 @@ function listingFormFields(type: KXListingType): AttributeField[] {
 function safetyTips(type: KXListingType) {
   if (type === "rental") return ["Machi 只是信息平台，不代收押金、订金或房租。", "地址只展示到区域，具体看房前核实发布者身份。", "高风险房源显示待核验，可举报并由后台下架。"];
   if (type === "job" || type === "hiring") return ["招聘不得收押金、保证金或培训费。", "核实招聘方资质、薪资、工作地点和签证说明。", "禁止成人、灰产或违法兼职。"];
-  if (type === "local_service") return ["商家与本地服务默认进入审核，认证状态会展示。", "旅行住宿、景点票务、法律医疗等高信任服务需要补充资质。", "禁止成人服务、高风险线下服务、虚假票务、违规代办和违法服务。", "平台暂不做外卖配送，不代收第三方服务款。"];
+  if (type === "local_service") return ["商家与服务默认进入审核，认证状态会展示。", "旅行住宿、景点票务、法律医疗等高信任服务需要补充资质。", "禁止成人服务、高风险线下服务、虚假票务、违规代办和违法服务。", "平台暂不做外卖配送，不代收第三方服务款。"];
   if (type === "discount") return ["确认优惠有效期、适用门店和使用规则。", "不要向未核验商家提前转账或提供敏感信息。", "遇到虚假折扣、诱导消费或强制捆绑请立即举报。"];
   return ["Machi 不代收二手交易款。", "不要提前转账，交易建议选择公共场所。", "核实对方身份，谨慎提供个人信息。", "遇到可疑内容立即举报。"];
 }
