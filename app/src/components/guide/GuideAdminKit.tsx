@@ -40,7 +40,7 @@ type AdminDetail = { status: string; school?: GuideSchool; company?: GuideCompan
 
 const GUIDE_ADMIN_LINKS = [
   { href: "/admin/pricing", label: "价格管理" },
-  { href: "/admin/guide/products", label: "资料与服务商品" },
+  { href: "/admin/guide/products", label: "商城商品" },
   { href: "/admin/guide/member-resources", label: "会员资料" },
   { href: "/admin/guide/orders", label: "订单" },
   { href: "/admin/guide/service-requests", label: "服务预约" },

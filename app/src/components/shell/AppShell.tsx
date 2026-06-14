@@ -541,6 +541,7 @@ function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPa
       ) : null}
       <nav
         className="kx-mobile-tabbar md:hidden px-2 py-2"
+        data-elevated={moreOpen}
         style={{ bottom: "max(1.1rem, calc(env(safe-area-inset-bottom) + 0.35rem))" }}
       >
         <ul className="relative z-[1] flex h-12 items-center justify-between">

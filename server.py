@@ -19656,6 +19656,28 @@ class Handler(BaseHTTPRequestHandler):
                 metadata={"listing_type": row["type"]},
                 reviewed=True,
             )
+            # Email the seller why their listing came down and how to relist —
+            # closes the "下架要有邮件通知 + 可重新上架" loop. Non-blocking.
+            seller = conn.execute(
+                "SELECT email, display_name FROM users WHERE id = ?",
+                (row["seller_user_id"],),
+            ).fetchone()
+            if seller and is_valid_email((seller["email"] or "")):
+                listing_title = (row["title"] or "你的城市信息").strip() or "你的城市信息"
+                status_label = "已下架" if updates.get("status") == "hidden" else "未通过审核"
+                greet = f"，{seller['display_name']}" if seller["display_name"] else ""
+                send_email_async(
+                    seller["email"],
+                    f"[Machi]「{listing_title}」{status_label}",
+                    (
+                        f"你好{greet}：\n\n"
+                        f"你在 Machi 发布的「{listing_title}」{status_label}。\n"
+                        f"原因：{reason_text}\n\n"
+                        f"你可以在 App 或网页端的「我的城市发布」里按要求修改后重新提交，"
+                        f"通过审核即可重新上架。如有疑问，可联系平台客服。\n\n"
+                        f"— Machi 团队"
+                    ),
+                )
         if bool(data.get("promotion_type")):
             now = now_iso()
             promotion_type = normalize_listing_promotion_type(data.get("promotion_type"))

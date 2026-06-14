@@ -52,7 +52,7 @@ function AdminShell({ title, subtitle, right, children }: { title: string; subti
 
 export function GuideProductsAdminPage({
   initialFilters = {},
-  title = "资料与服务商品",
+  title = "商城商品",
   subtitle = "增删改查、价格、说明、文件、会员权限、Stripe/IAP 字段、上下架。",
 }: {
   initialFilters?: Record<string, string>;
