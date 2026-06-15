@@ -5,16 +5,17 @@ import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { BrandMark, BrandPhrase, BrandText } from "./BrandText";
 import { useMarketingI18n } from "./MarketingI18n";
+import { SocialBrandIcon, type SocialBrand } from "./SocialBrandIcon";
 import { api, type SiteSettings } from "@/lib/api";
 
-const socialChannels: Array<{ key: keyof SiteSettings; label: string; tone: string; mark: string }> = [
-  { key: "social_x_url", label: "X", tone: "from-slate-950 to-slate-700", mark: "X" },
-  { key: "social_instagram_url", label: "Instagram", tone: "from-[#f97316] via-[#ec4899] to-[#6366f1]", mark: "IG" },
-  { key: "social_tiktok_url", label: "TikTok", tone: "from-slate-950 via-[#111827] to-[#ef4444]", mark: "TT" },
-  { key: "social_youtube_url", label: "YouTube", tone: "from-[#ef4444] to-[#b91c1c]", mark: "YT" },
-  { key: "social_linkedin_url", label: "LinkedIn", tone: "from-[#0a66c2] to-[#164e8a]", mark: "in" },
-  { key: "social_xiaohongshu_url", label: "小红书", tone: "from-[#ff2442] to-[#c91834]", mark: "红" },
-  { key: "social_douyin_url", label: "抖音", tone: "from-slate-950 via-[#111827] to-[#06b6d4]", mark: "抖" },
+const socialChannels: Array<{ key: keyof SiteSettings; label: string; brand: SocialBrand }> = [
+  { key: "social_x_url", label: "X", brand: "x" },
+  { key: "social_instagram_url", label: "Instagram", brand: "instagram" },
+  { key: "social_tiktok_url", label: "TikTok", brand: "tiktok" },
+  { key: "social_youtube_url", label: "YouTube", brand: "youtube" },
+  { key: "social_linkedin_url", label: "LinkedIn", brand: "linkedin" },
+  { key: "social_xiaohongshu_url", label: "小红书", brand: "xiaohongshu" },
+  { key: "social_douyin_url", label: "抖音", brand: "douyin" },
 ];
 
 /// Real routes for every footer link. Order matches the labels in
@@ -93,7 +94,12 @@ export function Footer() {
                       : "cursor-default bg-slate-100/70 text-slate-400 dark:bg-white/7 dark:text-slate-500"
                   }`}
                 >
-                  <SocialGlyph mark={social.mark} tone={social.tone} />
+                  <SocialBrandIcon
+                    brand={social.brand}
+                    className={`h-6 w-6 shrink-0 shadow-sm transition ${
+                      active ? "opacity-100" : "grayscale opacity-45"
+                    }`}
+                  />
                   <span>{social.label}</span>
                 </a>
               </li>
@@ -140,13 +146,5 @@ export function Footer() {
         </p>
       </div>
     </footer>
-  );
-}
-
-function SocialGlyph({ mark, tone }: { mark: string; tone: string }) {
-  return (
-    <span className={`grid h-5 w-5 place-items-center rounded-full bg-gradient-to-br ${tone} text-[9px] font-black leading-none text-white shadow-sm`}>
-      {mark}
-    </span>
   );
 }

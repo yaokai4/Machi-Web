@@ -1,5 +1,6 @@
 "use client";
 
+import clsx from "clsx";
 import { ArrowRight, BookOpen, Building2, ChevronDown, MonitorSmartphone, Sparkles } from "lucide-react";
 import { usePathname } from "next/navigation";
 import { AppMockup } from "./AppMockup";
@@ -29,6 +30,7 @@ function splitDisplayLines(text: string): string[] {
 
 export function HeroSection() {
   const { copy, locale } = useMarketingI18n();
+  const isJapanese = locale === "ja";
   const pathname = usePathname();
   const explicitLocale = pathname === "/zh" || pathname.startsWith("/zh/")
     ? "zh"
@@ -39,6 +41,17 @@ export function HeroSection() {
         : null;
   const aboutPath = explicitLocale || locale !== "zh" ? `/${explicitLocale ?? locale}/about` : "/about";
   const aboutHref = `${aboutPath}#founder`;
+  const headlineSizeClass = isJapanese
+    ? "text-[clamp(1.95rem,7.2vw,2.3rem)] sm:text-[clamp(2.25rem,3.25vw,3rem)] lg:text-[clamp(2.35rem,3vw,3.1rem)] xl:text-[clamp(2.55rem,3vw,3.25rem)]"
+    : "text-[clamp(1.7rem,7.4vw,1.95rem)] sm:text-[clamp(2.1rem,3.6vw,3.3rem)]";
+  const subtitleClass = isJapanese
+    ? "max-w-[22rem] text-[1rem] leading-[1.9] sm:max-w-2xl sm:text-[1.0625rem] sm:leading-8"
+    : "max-w-[21rem] text-[1.0625rem] leading-[1.8] sm:max-w-xl sm:text-xl sm:leading-9";
+  const supportingClass = isJapanese
+    ? "max-w-[22rem] text-[15px] leading-7 sm:max-w-2xl sm:text-base sm:leading-8"
+    : "max-w-[21rem] text-[15px] leading-7 sm:max-w-xl sm:text-base";
+  const ctaWidthClass = isJapanese ? "max-w-[560px]" : "max-w-[460px]";
+  const ctaButtonClass = isJapanese ? "h-14 px-6 text-base font-black whitespace-nowrap" : "h-14 px-7 text-base font-black";
 
   return (
     <section className="relative overflow-hidden px-5 pb-16 pt-4 sm:px-8 sm:pt-6 lg:px-16 lg:pb-24 lg:pt-10 xl:px-20">
@@ -53,7 +66,7 @@ export function HeroSection() {
 
       <div className="mx-auto grid max-w-[1180px] items-center gap-12 lg:grid-cols-[1.04fr_0.96fr] xl:gap-16">
         {/* ─────────── LEFT — pitch + CTA ─────────── */}
-        <div className="mc-reveal order-1 mx-auto w-full min-w-0 max-w-[620px] text-center lg:mx-0 lg:text-left">
+        <div className={clsx("mc-reveal order-1 mx-auto w-full min-w-0 text-center lg:mx-0 lg:text-left", isJapanese ? "max-w-[660px]" : "max-w-[620px]")}>
           <span className="mc-pill inline-flex items-center gap-1.5 bg-white/80 text-[#76576f] ring-1 ring-rose-100 backdrop-blur dark:bg-white/[0.06] dark:text-rose-200 dark:ring-white/10">
             <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
             <BrandPhrase text={copy.hero.eyebrow} />
@@ -68,17 +81,17 @@ export function HeroSection() {
               <BrandText>{[copy.hero.titleTop, copy.hero.titleBottom].filter(Boolean).join(" ") || "Machi"}</BrandText>
               <span aria-hidden="true" className="text-orange-500 dark:text-orange-400">.</span>
             </span>
-            <span className="mx-auto mt-3 block max-w-[20rem] text-balance text-[clamp(1.7rem,7.4vw,1.95rem)] font-black leading-[1.18] tracking-[-0.015em] text-slate-950 [overflow-wrap:anywhere] [word-break:break-word] sm:mt-4 sm:max-w-none sm:text-[clamp(2.1rem,3.6vw,3.3rem)] sm:leading-[1.1] sm:[word-break:normal] lg:mx-0 dark:text-white">
+            <span className={clsx("mx-auto mt-3 block max-w-[20rem] text-balance font-black leading-[1.18] tracking-[-0.015em] text-slate-950 [overflow-wrap:anywhere] [word-break:break-word] sm:mt-4 sm:max-w-none sm:leading-[1.1] sm:[word-break:normal] lg:mx-0 dark:text-white", headlineSizeClass)}>
               {splitDisplayLines(copy.hero.headline).map((segment, index) => (
                 <span key={index} className="inline-block">{segment}</span>
               ))}
             </span>
           </h1>
 
-          <p className="mx-auto mt-6 max-w-[21rem] text-[1.0625rem] leading-[1.8] text-slate-600 [overflow-wrap:anywhere] sm:max-w-xl sm:text-xl sm:leading-9 lg:mx-0 dark:text-slate-300">
+          <p className={clsx("mx-auto mt-6 text-slate-600 [overflow-wrap:anywhere] lg:mx-0 dark:text-slate-300", subtitleClass)}>
             <BrandPhrase text={copy.hero.subtitle} />
           </p>
-          <p className="mx-auto mt-3 max-w-[21rem] text-[15px] leading-7 text-slate-500 [overflow-wrap:anywhere] sm:max-w-xl sm:text-base lg:mx-0 dark:text-slate-400">
+          <p className={clsx("mx-auto mt-3 text-slate-500 [overflow-wrap:anywhere] lg:mx-0 dark:text-slate-400", supportingClass)}>
             {copy.hero.supporting}
           </p>
 
@@ -86,12 +99,12 @@ export function HeroSection() {
               take their size from the flex algorithm (basis 0), which
               silently discards h-14 and collapses the pills to text
               height on phones. Grid rows always honour the height. */}
-          <div className="mx-auto mt-9 grid w-full max-w-[460px] grid-cols-1 gap-3 sm:grid-cols-2 lg:mx-0">
+          <div className={clsx("mx-auto mt-9 grid w-full grid-cols-1 gap-3 sm:grid-cols-2 lg:mx-0", ctaWidthClass)}>
             <Button
               href="/home"
               variant="brand"
               size="lg"
-              className="h-14 px-7 text-base font-black"
+              className={ctaButtonClass}
               iconRight={<ArrowRight className="h-5 w-5" />}
             >
               {copy.hero.primary}
@@ -100,7 +113,7 @@ export function HeroSection() {
               href={aboutHref}
               variant="secondary"
               size="lg"
-              className="h-14 px-7 text-base font-black"
+              className={ctaButtonClass}
               iconLeft={<BookOpen className="h-5 w-5" />}
             >
               {copy.hero.secondary}

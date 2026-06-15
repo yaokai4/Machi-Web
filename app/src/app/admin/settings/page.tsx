@@ -23,6 +23,7 @@ import { fullDateTime } from "@/lib/format";
 import { marketingCopy, type MarketingLocale } from "@/data/machi-home";
 import { marketingPageLabels, marketingPages, type MarketingPageId } from "@/data/marketing-pages";
 import { flattenMarketingCopyStrings, scopeMarketingCopyOverrides } from "@/lib/marketingCopyOverrides";
+import { SocialBrandIcon, type SocialBrand } from "@/components/marketing/SocialBrandIcon";
 
 type SitePageKey = MarketingPageId | "home";
 
@@ -257,14 +258,14 @@ function SiteBrandSettingsCard() {
   );
 }
 
-const SOCIAL_FIELDS: Array<{ key: keyof SiteSettings; label: string; helper: string }> = [
-  { key: "social_x_url", label: "X", helper: "全球实时动态与产品公告。" },
-  { key: "social_instagram_url", label: "Instagram", helper: "品牌视觉、城市故事与活动照片。" },
-  { key: "social_tiktok_url", label: "TikTok", helper: "海外短视频账号链接。" },
-  { key: "social_youtube_url", label: "YouTube", helper: "产品介绍、城市指南与长视频。" },
-  { key: "social_linkedin_url", label: "LinkedIn", helper: "团队、招聘与商业合作。" },
-  { key: "social_xiaohongshu_url", label: "小红书", helper: "国内种草、生活指南与品牌内容。" },
-  { key: "social_douyin_url", label: "抖音", helper: "国内短视频账号链接。" },
+const SOCIAL_FIELDS: Array<{ key: keyof SiteSettings; label: string; helper: string; brand: SocialBrand }> = [
+  { key: "social_x_url", label: "X", helper: "全球实时动态与产品公告。", brand: "x" },
+  { key: "social_instagram_url", label: "Instagram", helper: "品牌视觉、城市故事与活动照片。", brand: "instagram" },
+  { key: "social_tiktok_url", label: "TikTok", helper: "海外短视频账号链接。", brand: "tiktok" },
+  { key: "social_youtube_url", label: "YouTube", helper: "产品介绍、城市指南与长视频。", brand: "youtube" },
+  { key: "social_linkedin_url", label: "LinkedIn", helper: "团队、招聘与商业合作。", brand: "linkedin" },
+  { key: "social_xiaohongshu_url", label: "小红书", helper: "国内种草、生活指南与品牌内容。", brand: "xiaohongshu" },
+  { key: "social_douyin_url", label: "抖音", helper: "国内短视频账号链接。", brand: "douyin" },
 ];
 
 function SocialLinksCard() {
@@ -313,9 +314,7 @@ function SocialLinksCard() {
         {SOCIAL_FIELDS.map((field) => (
           <Field key={field.key} label={field.label}>
             <div className="flex gap-2">
-              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-kx-accentSoft text-xs font-black text-kx-accent">
-                {socialInitial(field.label)}
-              </span>
+              <SocialBrandIcon brand={field.brand} className="h-10 w-10 shrink-0 shadow-sm" />
               <input
                 className="kx-input h-10"
                 placeholder={`https://.../${field.label}`}
@@ -1040,14 +1039,6 @@ function QuickCopyCard() {
       <button className="kx-button-primary mt-3" onClick={save} disabled={busy}>{busy ? "保存中…" : "保存文案"}</button>
     </section>
   );
-}
-
-function socialInitial(label: string): string {
-  if (label === "小红书") return "红";
-  if (label === "抖音") return "抖";
-  if (label === "Instagram") return "IG";
-  if (label === "LinkedIn") return "in";
-  return label.slice(0, 2);
 }
 
 function copyFieldLabel(path: string): string {
