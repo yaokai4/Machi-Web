@@ -41,13 +41,13 @@ export function FounderSection({
         className={
           isFull
             ? "mc-reveal mt-8 grid overflow-hidden rounded-[30px] border border-white/60 bg-white/80 shadow-[0_28px_90px_-58px_rgba(15,23,42,0.72)] backdrop-blur lg:grid-cols-[0.88fr_1.12fr] dark:border-white/10 dark:bg-white/[0.05]"
-            : "mc-reveal relative mt-8 overflow-hidden rounded-[32px] bg-gradient-to-br from-indigo-700 via-violet-700 to-sky-500 p-6 text-white shadow-[0_34px_90px_-54px_rgba(79,70,229,0.95)] sm:p-9"
+            : "mc-reveal relative mt-8 overflow-hidden rounded-[32px] bg-gradient-to-br from-indigo-500 via-violet-500 to-sky-400 p-6 text-white shadow-[0_34px_90px_-54px_rgba(79,70,229,0.95)] sm:p-9"
         }
       >
         <span aria-hidden="true" className={isFull ? "hidden" : "pointer-events-none absolute -right-20 -top-24 h-72 w-72 rounded-full bg-white/16 blur-3xl"} />
         <span aria-hidden="true" className={isFull ? "hidden" : "pointer-events-none absolute -bottom-28 -left-16 h-64 w-64 rounded-full bg-white/10 blur-3xl"} />
 
-        <aside className={isFull ? "relative overflow-hidden bg-gradient-to-br from-indigo-700 via-violet-700 to-sky-500 p-6 text-white sm:p-8" : "relative"}>
+        <aside className={isFull ? "relative overflow-hidden bg-gradient-to-br from-indigo-500 via-violet-500 to-sky-400 p-6 text-white sm:p-8" : "relative"}>
           {isFull ? (
             <>
               <span aria-hidden="true" className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-white/15 blur-3xl" />
