@@ -1006,6 +1006,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
             </div>
             <AttributeGrid item={item} />
             <div className="mt-5 whitespace-pre-line text-[15px] leading-7 text-[rgb(var(--kx-living-muted))]">{item.description || "发布者暂未填写详细描述。"}</div>
+            <MerchantMenuPackages item={item} />
             <SellerBox item={item} />
             <ListingReviewsSection listing={item} />
             <SafetyNotice type={item.type} />
@@ -1171,7 +1172,12 @@ export function CreateListingPage({
     setPrice(listing.price == null ? "" : String(listing.price));
     setLocation(listing.location_text || listing.locationText || "");
     setAttributes(Object.fromEntries(
-      Object.entries(listing.attributes || {}).map(([key, value]) => [key, String(value ?? "")]),
+      Object.entries(listing.attributes || {}).map(([key, value]) => {
+        // menu / packages 是结构化数组,编辑时还原成「一行一项」文本供 textarea 使用。
+        if (key === "menu") return [key, menuToLines(value)];
+        if (key === "packages") return [key, packagesToLines(value)];
+        return [key, String(value ?? "")];
+      }),
     ));
     setMedia((listing.media || []).flatMap((item) => {
       const id = item.uploaded_file_id || item.uploadedFileId;
@@ -1358,6 +1364,13 @@ export function CreateListingPage({
       const failedUpload = Object.values(uploadProgress).find((item) => item.error);
       if (failedUpload) throw new APIError({ code: "upload_failed", message: "有媒体上传失败，请删除或重新选择后再发布。" }, 400);
       const mediaIds = media.map((item) => item.id);
+      // 菜单 / 团购套餐:表单里是「一行一项」的文本,提交时解析成结构化数组
+      // (后端按 json 属性存储)。
+      const finalAttributes: Record<string, unknown> = { ...attributes };
+      if (type === "local_service") {
+        if (typeof attributes.menu === "string") finalAttributes.menu = parseMenuLines(attributes.menu);
+        if (typeof attributes.packages === "string") finalAttributes.packages = parsePackageLines(attributes.packages);
+      }
       const payload: KXCreateListingPayload = {
         type,
         city_slug: citySlug,
@@ -1371,7 +1384,7 @@ export function CreateListingPage({
         price_type: defaultPriceType(type),
         location_text: location,
         contact_method: "app_message",
-        attributes,
+        attributes: finalAttributes,
         media_ids: mediaIds,
         mediaIds,
         cover_media_id: mediaIds[0],
@@ -2443,6 +2456,119 @@ function listingAttrFlag(listing: KXCityListing, key: string): boolean {
   if (typeof raw === "boolean") return raw;
   const value = String(raw ?? "").trim().toLowerCase();
   return value === "true" || value === "1" || value === "yes" || value === "是";
+}
+
+type MenuDish = { name?: string; price?: string; desc?: string };
+type ListingPackage = { title?: string; price?: string; original_price?: string; includes?: string; note?: string };
+
+/// menu / packages come back as parsed arrays (json attribute type); tolerate a
+/// raw JSON string too in case an old row stored it that way.
+function listingAttrArray<T>(listing: KXCityListing, key: string): T[] {
+  const raw = (listing.attributes || {})[key];
+  if (Array.isArray(raw)) return raw as T[];
+  if (typeof raw === "string" && raw.trim().startsWith("[")) {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as T[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
+// 「一行一项,用 | 分隔」<-> 结构化数组。商家在发布页里按行填写,提交解析成数组;
+// 编辑时再把数组还原成多行文本。
+function parseMenuLines(text: string): MenuDish[] {
+  return text.split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
+    const p = line.split("|").map((s) => s.trim());
+    return { name: p[0] || "", price: p[1] || "", desc: p[2] || "" };
+  }).filter((d) => d.name);
+}
+function parsePackageLines(text: string): ListingPackage[] {
+  return text.split("\n").map((l) => l.trim()).filter(Boolean).map((line) => {
+    const p = line.split("|").map((s) => s.trim());
+    return { title: p[0] || "", price: p[1] || "", original_price: p[2] || "", includes: p[3] || "" };
+  }).filter((x) => x.title);
+}
+function menuToLines(raw: unknown): string {
+  if (!Array.isArray(raw)) return typeof raw === "string" ? raw : "";
+  return (raw as MenuDish[]).map((d) => [d.name, d.price, d.desc].filter((x) => (x || "").toString().trim()).join(" | ")).join("\n");
+}
+function packagesToLines(raw: unknown): string {
+  if (!Array.isArray(raw)) return typeof raw === "string" ? raw : "";
+  return (raw as ListingPackage[]).map((p) => [p.title, p.price, p.original_price, p.includes].filter((x) => (x || "").toString().trim()).join(" | ")).join("\n");
+}
+
+/// 商家详情：团购套餐(先展示、暂不支持购买) + 菜单 + 预约/到店信息。仅商家与服务
+/// (local_service) 展示;无数据时不渲染。
+function MerchantMenuPackages({ item }: { item: KXCityListing }) {
+  if (item.type !== "local_service") return null;
+  const packages = listingAttrArray<ListingPackage>(item, "packages").filter((p) => (p?.title || "").trim());
+  const menu = listingAttrArray<MenuDish>(item, "menu").filter((d) => (d?.name || "").trim());
+  const reservationRequired = listingAttrFlag(item, "reservation_required");
+  const reservationNote = listingAttr(item, "reservation_note");
+  const openHours = listingAttr(item, "open_hours");
+  const storePhone = listingAttr(item, "store_phone");
+  const hasReservation = reservationRequired || !!reservationNote || !!openHours || !!storePhone;
+  if (!packages.length && !menu.length && !hasReservation) return null;
+
+  return (
+    <div className="mt-6 space-y-5">
+      {packages.length ? (
+        <section>
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-base font-black text-[rgb(var(--kx-living-ink))]">团购套餐</h3>
+            <span className="rounded-full bg-[rgb(var(--kx-living-soft))] px-2.5 py-1 text-[11px] font-black text-[rgb(var(--kx-living-muted))]">暂不支持线上购买</span>
+          </div>
+          <div className="mt-3 grid gap-2.5">
+            {packages.map((p, i) => (
+              <div key={i} className="rounded-2xl border border-[rgb(var(--kx-living-ink))]/10 bg-[rgb(var(--kx-living-surface))] p-4">
+                <div className="flex items-start justify-between gap-3">
+                  <p className="min-w-0 font-black text-[rgb(var(--kx-living-ink))]">{p.title}</p>
+                  <div className="shrink-0 text-right">
+                    {p.price ? <p className="font-black text-[rgb(var(--kx-living-warm))]">{p.price}</p> : null}
+                    {p.original_price ? <p className="text-xs font-semibold text-[rgb(var(--kx-living-muted))] line-through">{p.original_price}</p> : null}
+                  </div>
+                </div>
+                {p.includes ? <p className="mt-1.5 whitespace-pre-line text-sm leading-6 text-[rgb(var(--kx-living-muted))]">{p.includes}</p> : null}
+                {p.note ? <p className="mt-1 text-xs font-semibold text-[rgb(var(--kx-living-muted))]">{p.note}</p> : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {menu.length ? (
+        <section>
+          <h3 className="text-base font-black text-[rgb(var(--kx-living-ink))]">菜单</h3>
+          <div className="mt-2 divide-y divide-[rgb(var(--kx-living-ink))]/10 rounded-2xl border border-[rgb(var(--kx-living-ink))]/10 bg-[rgb(var(--kx-living-surface))] px-4">
+            {menu.map((d, i) => (
+              <div key={i} className="flex items-baseline justify-between gap-3 py-2.5">
+                <div className="min-w-0">
+                  <p className="font-bold text-[rgb(var(--kx-living-ink))]">{d.name}</p>
+                  {d.desc ? <p className="mt-0.5 text-xs text-[rgb(var(--kx-living-muted))]">{d.desc}</p> : null}
+                </div>
+                {d.price ? <p className="shrink-0 font-black text-[rgb(var(--kx-living-warm))]">{d.price}</p> : null}
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : null}
+
+      {hasReservation ? (
+        <section className="rounded-2xl border border-[rgb(var(--kx-living-ink))]/10 bg-[rgb(var(--kx-living-surface))] p-4">
+          <h3 className="text-sm font-black text-[rgb(var(--kx-living-ink))]">预约 · 到店</h3>
+          <div className="mt-2 space-y-1.5 text-sm font-semibold text-[rgb(var(--kx-living-muted))]">
+            {openHours ? <p>营业时间 · {openHours}</p> : null}
+            {reservationRequired ? <p>本店采用预约制，建议先预约再到店。</p> : null}
+            {reservationNote ? <p className="whitespace-pre-line">{reservationNote}</p> : null}
+            {storePhone ? <p>到店电话 · {storePhone}</p> : null}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
 }
 
 /// 二手市场卡：紧凑方图卡，价格压图，状态角标。
@@ -4160,6 +4286,9 @@ function listingFormFields(type: KXListingType): AttributeField[] {
     { key: "availability", label: "可预约时间", placeholder: "平日晚上 / 周末" },
     { key: "booking_required", label: "需要预约", kind: "checkbox" },
     { key: "reservation_required", label: "仅限预约制", kind: "checkbox" },
+    { key: "reservation_note", label: "预约说明", kind: "textarea", placeholder: "如何预约、可预约时段、几人起订、是否需要定金等。" },
+    { key: "menu", label: "菜单（每行一道：菜名 | 价格 | 备注）", kind: "textarea", placeholder: "麻婆豆腐 | ¥980\n口水鸡 | ¥1,080 | 微辣\n招牌炒饭 | ¥880" },
+    { key: "packages", label: "团购套餐（每行一个：套餐名 | 现价 | 原价 | 包含；先展示，暂不支持线上购买）", kind: "textarea", placeholder: "双人精选套餐 | ¥3,980 | ¥5,200 | 4 菜 1 汤 + 2 杯饮料\n单人午市套餐 | ¥1,280 | | 主菜 + 小菜 + 饮料" },
     { key: "certified_provider", label: "认证商家/服务商", kind: "checkbox" },
     { key: "languages", label: "服务语言", placeholder: "中文 / 日本語 / English" },
     { key: "rating_note", label: "评分/口碑说明", placeholder: "公开评分 4.6 / 老客推荐 / 平台新店" },

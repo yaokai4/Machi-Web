@@ -802,6 +802,8 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         "booking_required", "rating_note", "license_note",
         # Local-service on-site info
         "open_hours", "price_range", "reservation_required", "store_phone",
+        # 餐厅/商家详情:菜单(dishes) + 团购套餐(packages, 先展示不支持购买) + 预约说明
+        "menu", "packages", "reservation_note",
         # Lodging inventory and stay details
         "room_type", "max_guests", "check_in_time", "check_out_time",
         "breakfast_included", "near_station", "amenities", "minimum_stay",
@@ -8726,6 +8728,8 @@ def listing_value_type(value: Any) -> str:
         return "int"
     if isinstance(value, float):
         return "float"
+    if isinstance(value, (list, dict)):
+        return "json"
     return "string"
 
 
@@ -8736,6 +8740,13 @@ def listing_value_to_text(value: Any) -> str:
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, (list, dict)):
+        # Structured attributes (菜单 / 团购套餐). Serialize compactly; cap big
+        # so a full restaurant menu survives but a payload can't run away.
+        try:
+            return json.dumps(value, ensure_ascii=False, separators=(",", ":"))[:16000]
+        except Exception:
+            return ""
     return str(value).strip()[:1000]
 
 
@@ -8752,6 +8763,11 @@ def listing_text_to_value(value: str, value_type: str) -> Any:
             return float(value)
         except Exception:
             return 0.0
+    if value_type == "json":
+        try:
+            return json.loads(value)
+        except Exception:
+            return None
     return value
 
 
