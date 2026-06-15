@@ -23,9 +23,9 @@ const socialCopy: Record<
 > = {
   zh: {
     label: "City Community",
-    title: "不只是本地信息，也是一座城市的社区入口。",
-    body: "Machi 帮助用户发现本地信息、分享真实生活经验、提出问题、参与公开城市讨论、找到语言交换小组、了解本地活动，并加入围绕城市生活展开的社区互动。",
-    note: "Machi 的社交功能围绕公开城市话题、本地小组、社区讨论、活动、语言交换、问答、租房、工作、本地服务和日常城市生活展开。",
+    title: "一座城市真正的入口，是有人愿意与你分享生活。",
+    body: "在 Machi，你可以寻找信息，也可以留下经验；可以参加城市话题、语言交换与本地活动，也可以在需要时认真问一句。",
+    note: "所有连接都从公开、具体的城市生活开始，并以尊重、边界与安全为前提。",
     city: "Tokyo · 同城社区",
     peopleTitle: "同城社区",
     peopleMeta: "城市话题 · 本地小组 · 语言交换",
@@ -40,9 +40,9 @@ const socialCopy: Record<
   },
   en: {
     label: "City Community",
-    title: "More than local information — join your city community.",
-    body: "Machi helps people discover local information, share lived experience, ask questions, join public city discussions, find language exchange groups, explore local events, and participate in community activities.",
-    note: "Machi social features are built around public city topics, local groups, community discussions, events, language exchange, Q&A, housing, jobs, services, and everyday local life.",
+    title: "The truest way into a city is through people willing to share how life works there.",
+    body: "On Machi, you can look for practical information and leave something useful behind. Join a city discussion, find a language exchange or local event, or ask an honest question when you need help.",
+    note: "Every connection begins with public, specific city life and is shaped by respect, boundaries, and safety.",
     city: "Tokyo · City community",
     peopleTitle: "Local community",
     peopleMeta: "city topics · local groups · language exchange",
@@ -57,9 +57,9 @@ const socialCopy: Record<
   },
   ja: {
     label: "City Community",
-    title: "地域情報だけではなく、街のコミュニティに参加する場所。",
-    body: "Machi は、地域情報の発見、生活経験の共有、質問、公開された都市トピックへの参加、言語交換グループ、地域イベント、コミュニティ活動への参加をサポートします。",
-    note: "Machi はデーティングサービスまたはマッチメイキングサービスではありません。ソーシャル機能は、公開された都市トピック、地域グループ、コミュニティ投稿、イベント、言語交換、Q&A、住まい、仕事、サービス、日常の地域生活を中心に設計されています。",
+    title: "街へのいちばん自然な入口は、暮らしを分けてくれる人との出会いです。",
+    body: "Machi では、必要な情報を探すだけでなく、自分の経験を次の人へ残せます。街の話題に参加し、言語交換や地域の催しを見つけ、困ったときには率直に尋ねることができます。",
+    note: "つながりの起点は、公開された具体的な街の暮らしです。互いへの敬意、適切な距離、安全を大切にします。",
     city: "Tokyo · 街のコミュニティ",
     peopleTitle: "街のコミュニティ",
     peopleMeta: "都市トピック · 地域グループ · 言語交換",

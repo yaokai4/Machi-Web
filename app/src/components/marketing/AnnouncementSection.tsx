@@ -26,7 +26,8 @@ const ICON_BY_TYPE: Record<string, LucideIcon> = {
   "お知らせ": Megaphone,
   "ニュース": Newspaper,
   "アプリ更新": Smartphone,
-  "通報": Bell,
+  "ご案内": Bell,
+  "トピック": FileText,
   "情報": FileText,
 };
 function iconFor(type: string): LucideIcon {

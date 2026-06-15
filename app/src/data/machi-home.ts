@@ -104,12 +104,12 @@ export const marketingCopy = {
       language: "语言",
     },
     hero: {
-      eyebrow: "本地生活 + 同城社区",
+      eyebrow: "城市生活 · 本地连接",
       titleTop: "Machi",
       titleBottom: "",
       headline: "在每一座城市，找到生活的回声。",
-      subtitle: "刚到一座城市，租房、找工作、买二手、想认识同城的人——信息散在各种群和网站里，真假难辨。Machi 按你所在的城市和语言，把这些都收进一个地方：看得见、找得到、有人回应。",
-      supporting: "我们先把日本做透：租房、求职、留学、在日生活这些真正要用到的信息和踩坑经验，都整理清楚。之后会一座城市一座城市地往加拿大、澳洲、英国、美国等地铺开。",
+      subtitle: "刚到一座城市，真正需要的往往不是更多信息，而是可信的答案：住在哪里、工作怎么找、手续如何办、谁愿意分享走过的路。Machi 按城市与语言，把这些散落的经验重新整理在一起。",
+      supporting: "我们从日本出发，先把在日生活、求职、留学与城市社区做深。随后，再跟随真实需求，一座城市、一种语言地走向更远的地方。",
       primary: "进入 Web Beta",
       secondary: "查看创始人故事",
       tertiary: "查看 Machi Guide",
@@ -142,8 +142,8 @@ export const marketingCopy = {
     },
     brandIntro: {
       label: "What is Machi",
-      title: "Machi 不是信息列表，也不是只看热闹的社交平台。",
-      body: "Machi 把一座城市里的信息、经验、需求和人与人的连接，按照城市、语言、主题和生活场景重新组织起来。它既有城市内容，也有同城连接、社区、服务、商家、招聘、租房和多语言场景。",
+      title: "Machi 不是一张信息清单，也不是一条只供旁观的信息流。",
+      body: "它把城市里的经验、需求与人与人的回应，按地点、语言和生活场景重新组织，让信息重新靠近它真正发生的地方。",
       pillars: [
         ["City-based", "按国家、城市和地区组织内容，让信息回到真实生活发生的地方。"],
         ["Language-aware", "界面语言和内容语言分开，支持多语言城市里的真实表达。"],
@@ -153,8 +153,8 @@ export const marketingCopy = {
     },
     guideSection: {
       label: "Machi Guide",
-      title: "Machi Guide：从日本开始的城市生活指南",
-      body: "Guide 是 Machi 的城市知识层。我们先从日本开始整理留学、升学、就职、日语考级、生活手续、学校库、公司库和本地服务。之后，这套结构会扩展到加拿大、澳洲、英国、法国、德国、韩国、美国等更多国家和城市。",
+      title: "Machi Guide：把一座城市，读成可以生活的地方。",
+      body: "我们从日本开始，整理生活手续、升学、求职、JLPT、学校与公司资料，以及真正会用到的本地服务。不是把答案堆在一起，而是让每一步都有清楚的来路。",
       cta: "进入 Machi Guide",
       expansion: "下一步扩展：Canada · Australia · United Kingdom · France · Germany · South Korea · United States",
       cards: [
@@ -170,7 +170,7 @@ export const marketingCopy = {
     brandStory: {
       label: "品牌故事",
       title: "在每一座城市，找到生活的回声。",
-      lead: "每一座城市，都不只是地图上的一个名字。真正的城市，藏在无数普通人的日常里。",
+      lead: "城市不只由道路与建筑构成。它更像一部被无数普通人共同写下、仍在继续的生活史。",
       cityLines: [
         "东京不是只有地铁、霓虹和高楼。",
         "大阪不是只有街道、美食和人潮。",
@@ -180,12 +180,12 @@ export const marketingCopy = {
         "多伦多不只是湖岸、街车和远方。",
       ],
       paragraphs: [
-        "它藏在一个刚搬来的人问：这个区适合住吗？也藏在准备回国的人说：这些家具低价出。",
-        "它藏在找工作的人分享面试经验，也藏在一篇租房攻略、一条避坑提醒、一场本地活动讨论、一次回答里。",
-        "这些声音很小，却很真实。它们散落在群聊、社交平台、论坛和朋友之间，也散落在每个人刚到一座城市时的迷茫和寻找里。",
-        "Machi 想做的，是把这些散落的声音重新汇聚起来，让城市经验不再只是零散的信息。",
-        "在 Machi，你看到的不只是内容。你看到的是一座城市正在发生的生活。",
-        "真正让人留在一座城市的，不只是地址，而是你在这里找到的生活感。",
+        "它在一句“这个街区适合住吗”里，也在一张离开前转手的书桌、一份面试后的笔记里。",
+        "它在租房的提醒、周末的相约、一次认真回答中，慢慢显出一座城市真实的轮廓。",
+        "这些声音并不宏大，却足够具体。只是它们常常散落在群聊、信息流与朋友之间，很快被新的消息淹没。",
+        "Machi 想把它们重新带回城市，让经验不再只是偶然听见，而能在需要时被再次找到。",
+        "你在 Machi 看见的，不只是内容，而是此刻有人如何在这里生活。",
+        "真正让一座城市变得亲近的，从来不只是地址，而是你终于在其中找到了自己的日常。",
       ],
       highlights: [
         ["提问", "这个区适合住吗？"],
@@ -197,26 +197,28 @@ export const marketingCopy = {
       closing: "Machi，就是让这些声音被看见、被找到、被回应的地方。",
     },
     founder: {
-      eyebrow: "创始人",
-      title: "创始人",
-      name: "姚凱 / YAOKAI",
-      role: "Founder, Machi City",
-      meta: "2019 年 10 月来到日本留学",
+      eyebrow: "创始人的话",
+      title: "我是姚凯。Machi，始于我在异乡生活的那些具体时刻。",
+      name: "姚凯 / YAOKAI",
+      role: "Machi City 创始人 · 独立产品创作者",
+      meta: "2019 年 10 月来到日本",
       avatar: "姚",
       readMore: "阅读完整创始人故事",
-      bio: "2019 年 10 月来到日本留学，从自己的跨国生活经历出发，创立 Machi。",
-      quote: "“城市不只是地图上的名字，而是人真正生活、寻找、参与和重新开始的地方。”",
+      bio: "2019 年，我来到日本留学。Machi 不是来自一份抽象的商业计划，而是来自我一次次找房、办手续、寻找工作与理解一座陌生城市的过程。",
+      quote: "“我想做的，不是再增加一个信息平台，而是让一个人在陌生城市里少一点无措，多一点可以抵达的生活。”",
       paragraphs: [
-        "Machi City 由姚凱 / YAOKAI 创立，是一个从 0 开始搭建的原创项目。",
-        "2019 年 10 月，姚凱来到日本留学。刚到一个陌生国家和陌生城市时，他很快感受到一个很现实的问题：真正有用的生活信息，往往并不集中在一个地方。",
-        "租房、打工、二手、办手续、交通、活动、本地服务、避坑经验和生活提醒，构成了一个人真正生活在城市里的日常。但这些信息常常散落在群聊、社交平台、本地网站、朋友之间，以及不同语言的信息环境里。",
-        "对刚来到一座城市的人来说，找到准确、有用、可信的信息并不容易；而对已经生活在这里的人来说，想要分享经验、发布需求、寻找同频的人，也缺少一个更清晰、更有秩序的地方。",
-        "Machi City 正是从这样的经历和观察中开始的。",
-        "它不是一个冰冷的信息库，也不是单纯的社交产品。Machi 希望把一座城市里的资讯、经验、需求和社区参与，按照国家、城市、语言和内容类型重新整理起来，让那些原本散落的城市生活，被看见、被找到、被回应。",
-        "Machi 来自日语「街 / まち」。它不是地图上的城市名，而是人真正生活、参与、寻找和重新开始的地方。",
-        "姚凱的理念很简单：",
+        "我是姚凯，也是从零开始做出 Machi 的人。",
+        "2019 年 10 月，我来到日本留学。刚抵达一座陌生城市时，最消耗人的往往不是某一件大事，而是无数细小却必须解决的问题：住在哪里、手续怎么办、工作从哪里找、哪些经验值得相信。",
+        "答案并非不存在。它们只是散落在群聊、社交平台、地方网站、朋友的记忆和不同语言之间。对刚来的人而言，很难判断；对已经生活在这里的人而言，也缺少一个能把经验留下来的地方。",
+        "我由此开始构想 Machi：不是做一座冰冷的信息仓库，也不是再造一条永远刷不完的信息流，而是让城市里的知识、需求与人与人的回应，拥有清楚的归属。",
+        "Machi 这个名字来自日语的「街 / まち」。对我来说，街不是地图上的一个点，而是一个人学习生活、建立关系，也允许自己重新开始的地方。",
+        "我希望 Machi 能让那些微小却重要的声音被保留下来。有人提出问题，有人分享走过的路，也有人因此少绕一点弯，早一点在陌生之地找到自己的节奏。",
       ],
-      closing: "让城市里的信息不再散落。\n让陌生的地方慢慢变得可生活。\n让更多人在一座城市里，找到生活的回声。",
+      closing: "让散落的信息，重新拥有城市的坐标。\n让陌生的地方，慢慢长出生活的轮廓。\n让每一次真诚的发问，都有机会得到回应。",
+      siteEyebrow: "继续认识我",
+      siteTitle: "在 Machi 之外，我也持续写作、设计与构建。",
+      siteBody: "在 yaokai.me，我记录做产品的思考、走过的路，以及仍在发生的作品。那里不是另一份履历，而是我持续创造的现场。",
+      siteCta: "前往 yaokai.me",
     },
     announcementsSection: {
       label: "公告中心",
@@ -252,8 +254,8 @@ export const marketingCopy = {
     },
     featureSection: {
       label: "城市频道",
-	      title: "城市生活信息、机会和社区活动，都按场景归位。",
-      body: "找房子、找工作、买卖二手、约饭、问路、避坑——一座城市里要用到的事，按场景分好类，按你的城市和语言来看，不用再在十几个微信群里来回翻。",
+	      title: "把城市里纷杂的事，放回各自清楚的位置。",
+      body: "找住处、寻工作、转手闲置、参加活动、提出问题。Machi 按城市、语言与生活场景整理，让需要的信息不再淹没在无尽的聊天记录里。",
       groups: [
         {
           title: "City Info",
@@ -284,8 +286,8 @@ export const marketingCopy = {
     },
     languageSection: {
       label: "多语言",
-      title: "为多语言城市而生。",
-      body: "用户不仅可以切换 App 语言，也可以选择内容语言。比如在东京查看中文内容，在多伦多查看日语内容，在洛杉矶查看英文内容。",
+      title: "一座城市，可以有很多种母语。",
+      body: "界面语言与内容语言彼此独立。你可以在东京阅读中文经验，在多伦多寻找日语内容，也可以在洛杉矶用英文理解附近正在发生的生活。",
       chips: ["中文", "English", "日本語", "한국어", "Français", "Español"],
       contextTitle: "多语言推荐",
       contextLabel: "推荐上下文",
@@ -302,8 +304,8 @@ export const marketingCopy = {
     },
     businessSection: {
       label: "商家合作",
-      title: "让本地商家从“被看见”变成“被需要”。",
-      body: "商家需要先提交公司/店铺信息、服务内容、联系方式和服务城市。通过认证后，可以发布服务卡片、优惠、招聘、活动和本地推广，让需求出现在对应城市、频道和语言里。",
+      title: "好的本地服务，不该只被看见，更应该在需要时被找到。",
+      body: "通过认证的商家与服务者，可以在对应城市、频道和语言中发布服务、优惠、招聘与活动。清楚说明自己是谁，也准确抵达真正有需要的人。",
       primary: "申请合作",
       secondary: "查看广告方案",
       consoleLabel: "商家后台",
@@ -320,7 +322,7 @@ export const marketingCopy = {
     safetySection: {
       label: "安全",
       title: "真实的连接，需要真实的边界。",
-      body: "Machi 为社区互动、线下活动、美食、语言交换、租房、二手、招聘和商家合作提供安全提醒、举报、拉黑、内容审核和账号处罚机制。",
+      body: "从公开讨论到线下见面，从租房与二手交易到招聘和本地服务，Machi 以提醒、举报、屏蔽、审核与账号处置，守住每一次连接应有的边界。",
     },
     download: {
       label: "从你的城市开始",
@@ -360,7 +362,7 @@ export const marketingCopy = {
     common: { open: "进入" },
     footer: {
       tagline: "在每一座城市，找到生活的回声。",
-	      description: "让城市里的问题、经验、机会和社区参与，被看见、被找到、被回应。machicity.com",
+	      description: "让问题有去处，让经验被留下，让一座城市里真诚的声音彼此抵达。",
       groups: [
         ["导航", ["关于", "功能", "指南", "商家合作", "安全", "FAQ"]],
         ["合作", ["商家合作", "广告投放", "招聘推广", "租房推广", "系统合作"]],
@@ -450,12 +452,12 @@ export const marketingCopy = {
       language: "Language",
     },
     hero: {
-      eyebrow: "Local life + local social",
+      eyebrow: "City life · local connection",
       titleTop: "Machi",
       titleBottom: "",
       headline: "Find the echoes of life in every city.",
-      subtitle: "Machi is a city-based local life and social community platform organized by country, city and language. Housing, secondhand deals, jobs, hiring, events, Q&A, local services, business offers, meetups and lived experience can be found, shared and answered in one city space.",
-      supporting: "We are starting with Japan and gradually expanding Machi Guide and city communities to Canada, Australia, the United Kingdom, France, Germany, South Korea, the United States and more regions.",
+      subtitle: "In a new city, you rarely need more noise. You need answers you can trust: where to live, how to find work, which paperwork matters, and who has already walked the road ahead. Machi gathers that scattered local knowledge by city and language.",
+      supporting: "We are beginning in Japan, going deep on everyday life, study, work, and local community. From there, Machi will grow carefully, one city and one language at a time.",
       primary: "Enter Web Beta",
       secondary: "Read the founder's story",
       tertiary: "Explore Machi Guide",
@@ -488,8 +490,8 @@ export const marketingCopy = {
     },
     brandIntro: {
       label: "What is Machi",
-      title: "Machi is not just a list of posts or another endless social feed.",
-      body: "It organizes local information, lived experience, real needs and human connection by city, language, topic and everyday scene. Machi includes city content, local connection, community, services, business, hiring, housing and multilingual everyday life.",
+      title: "Machi is neither a directory nor another feed made for passive scrolling.",
+      body: "It organizes local experience, practical needs, and human replies by place, language, and everyday context, bringing information back to where life actually happens.",
       pillars: [
         ["City-based", "Organized by country, region and city, so local information stays close to where life happens."],
         ["Language-aware", "Interface language and content language are separate for multilingual cities."],
@@ -499,8 +501,8 @@ export const marketingCopy = {
     },
     guideSection: {
       label: "Machi Guide",
-      title: "Machi Guide: city-life guides starting with Japan",
-      body: "Guide is the knowledge layer of Machi. We are starting with Japan — study, school applications, job hunting, JLPT, local procedures, school directories, company directories and local services — and will expand this structure to more countries and cities.",
+      title: "Machi Guide: read a city until it becomes a place you can live.",
+      body: "We begin in Japan with the things people genuinely need: local procedures, study, careers, JLPT, school and company references, and dependable services. The aim is not to pile up answers, but to make every next step easier to understand.",
       cta: "Explore Machi Guide",
       expansion: "Next regions: Canada · Australia · United Kingdom · France · Germany · South Korea · United States",
       cards: [
@@ -516,7 +518,7 @@ export const marketingCopy = {
     brandStory: {
       label: "Brand story",
       title: "Find the echoes of life in every city.",
-      lead: "A city is never only a name on a map. Its real shape lives inside ordinary days.",
+      lead: "A city is not made of streets and buildings alone. It is a living record, written every day by the people who call it home.",
       cityLines: [
         "Tokyo is more than trains, neon and towers.",
         "Osaka is more than streets, food and crowds.",
@@ -526,12 +528,12 @@ export const marketingCopy = {
         "Toronto is more than lake views, streetcars and distance.",
       ],
       paragraphs: [
-        "It lives in someone new asking whether a neighborhood is good to live in, and in someone leaving the city selling furniture at a fair price.",
-        "It lives in interview notes, weekend food discussions, housing guides, safety reminders, local events and answers from people who have been there.",
-        "These voices are small, but real. They scatter across chats, social feeds, forums, friends and the uncertain first days in a new city.",
-        "Machi gathers those scattered voices back together so a city's real experience stops being a pile of fragments.",
-        "In Machi, you do not only see content. You see the life that is happening in a city right now.",
-        "What keeps people in a city is not only an address. It is the sense of life they find there.",
+        "It lives in the question “Is this a good neighborhood?” and in a desk passed on before someone leaves town.",
+        "It takes shape in interview notes, a housing warning, a weekend invitation, and an answer written with care.",
+        "None of these voices is grand, but each is specific. Too often they vanish beneath newer messages in chats, feeds, and private conversations.",
+        "Machi brings them back into the city, so useful experience is not merely overheard once, but can be found again when it matters.",
+        "What you see in Machi is not content in the abstract. It is how people are living here, now.",
+        "An address tells you where you are. A sense of everyday life is what makes a city begin to feel like your own.",
       ],
       highlights: [
         ["Questions", "Is this neighborhood a good place to live?"],
@@ -543,26 +545,28 @@ export const marketingCopy = {
       closing: "Machi is where those voices can be seen, found and answered.",
     },
     founder: {
-      eyebrow: "Founder",
-      title: "Founder",
+      eyebrow: "A note from the founder",
+      title: "I’m Yao Kai. Machi began in the ordinary moments of building a life far from home.",
       name: "Yao Kai / YAOKAI",
-      role: "Founder, Machi City",
-      meta: "Came to Japan as an international student in October 2019",
+      role: "Founder of Machi City · Independent product builder",
+      meta: "Moved to Japan in October 2019",
       avatar: "Y",
       readMore: "Read the full founder story",
-      bio: "Came to Japan to study in October 2019, and built Machi from his own experience of cross-border life and city migration.",
-	      quote: "“A city is not just a name on a map. It is where people live, search, participate, and begin again.”",
+      bio: "I moved to Japan as an international student in 2019. Machi did not begin as an abstract business plan; it grew out of the daily work of finding a home, navigating paperwork, looking for work, and learning how a new city really functions.",
+      quote: "“I did not want to build another feed. I wanted to make an unfamiliar city feel a little more legible, and a little more livable.”",
       paragraphs: [
-        "Machi City was founded by Yao Kai / YAOKAI as an original project built from the ground up.",
-        "In October 2019, Yao Kai came to Japan as an international student. Living in a new country and a new city, he quickly noticed a simple but real problem: the most useful information about everyday life is often scattered.",
-        "Housing, part-time jobs, secondhand items, local services, city procedures, transportation, events, safety tips, and real experiences are spread across group chats, social platforms, local websites, friends, and different language environments.",
-        "For someone arriving in a new city, finding accurate, useful, and trustworthy information is not always easy. For people already living there, sharing experiences, posting needs, and finding meaningful connections also lacks a clearer and more organized place.",
-        "Machi City began from that experience and observation.",
-	        "Machi is not meant to be a cold information database, nor just another social product. It is built to organize the scattered pieces of city life by country, city, language, and content type — helping useful information, real experiences, needs, and community participation be seen, found, and answered.",
-	        "The name Machi comes from the Japanese word “街 / まち.” It is not just a city name on a map, but the place where people actually live, participate, search, and begin again.",
-        "Yao Kai’s idea is simple:",
+        "I’m Yao Kai, and I have built Machi from the ground up.",
+        "I moved to Japan in October 2019 as an international student. In a new country, the hardest part was rarely one dramatic obstacle. It was the accumulation of small, necessary questions: where to live, how to handle paperwork, where to look for work, and which advice to trust.",
+        "The answers existed, but they were scattered across group chats, social platforms, local websites, friends’ memories, and different languages. Newcomers struggled to judge what was reliable; long-time residents had no lasting place to leave what they had learned.",
+        "That experience became the beginning of Machi. I did not want to build a cold database or another endless social feed. I wanted local knowledge, real needs, and human replies to have a clear place in the city they belong to.",
+        "The name comes from the Japanese word “街 / まち.” To me, a machi is more than a point on a map. It is where a person learns how to live, forms relationships, and sometimes begins again.",
+        "My hope is simple: preserve the small voices that matter. One person asks, another shares the road they have already walked, and someone else finds their footing a little sooner.",
       ],
-      closing: "Make city information less scattered.\nMake unfamiliar places easier to live in.\nHelp more people find the echoes of life in every city.",
+      closing: "Give scattered knowledge a place in the city.\nGive unfamiliar streets the beginnings of a life.\nGive every sincere question a chance to be answered.",
+      siteEyebrow: "Beyond Machi",
+      siteTitle: "I continue to write, design, and build.",
+      siteBody: "At yaokai.me, I share notes on making products, the path that brought me here, and the work still taking shape. It is less a résumé than a living record of what I am creating.",
+      siteCta: "Visit yaokai.me",
     },
     announcementsSection: {
       label: "Updates",
@@ -598,8 +602,8 @@ export const marketingCopy = {
     },
     featureSection: {
       label: "City channels",
-	      title: "Local information, opportunity and community activities, organized by real city scenes.",
-	      body: "Machi organizes news, guides, public city topics, local groups, dining, events, language exchange, housing, secondhand, jobs, hiring, Q&A, services and local tips by city and language.",
+	      title: "A clear place for the many things that make up city life.",
+	      body: "Housing, work, secondhand exchange, events, questions, services, and local groups are organized by city, language, and everyday need, so useful information is not lost in an endless stream.",
       groups: [
         {
           title: "City Info",
@@ -619,14 +623,14 @@ export const marketingCopy = {
       ],
     },
 	    trendingSection: { label: "Trends", title: "See what is trending in your city.", subtitle: "Heat ranking uses likes, comments, saves, reposts and time decay to surface what matters in the city right now.", cardTitle: "Tokyo Trends", cardSubtitle: "City ranking", formulaTitle: "Heat formula", heatLabel: "Heat", formula: ["likes", "comments", "saves", "reposts"] },
-    languageSection: { label: "Languages", title: "Built for multilingual cities.", body: "Users can switch the app language and choose content languages, such as Chinese content in Tokyo, Japanese content in Toronto or English content in Los Angeles.", chips: ["中文", "English", "日本語", "한국어", "Français", "Español"], contextTitle: "Language-aware ranking", contextLabel: "Recommendation context", regionLabel: "Current region", region: "Canada · Toronto", contentLanguageLabel: "Content language", contentLanguage: "Japanese", priorityLabel: "Priority", priority: ["Japanese content in Toronto", "Japanese content in Canada", "Global Japanese trending content", "High-heat Toronto content in other languages"] },
+    languageSection: { label: "Languages", title: "One city can hold many mother tongues.", body: "Interface and content languages are independent. Read Chinese experience in Tokyo, find Japanese voices in Toronto, or understand nearby life in English in Los Angeles.", chips: ["中文", "English", "日本語", "한국어", "Français", "Español"], contextTitle: "Language-aware discovery", contextLabel: "Discovery context", regionLabel: "Current region", region: "Canada · Toronto", contentLanguageLabel: "Content language", contentLanguage: "Japanese", priorityLabel: "Shown first", priority: ["Japanese content in Toronto", "Japanese content in Canada", "Noteworthy Japanese content across Machi", "Relevant Toronto content in other languages"] },
     useCaseSection: { label: "City moments", title: "Made for real life in a city." },
-    businessSection: { label: "Business", title: "Help local businesses move from visibility to real demand.", body: "Businesses submit company or store details, service content, contact methods and target cities first. Once verified, they can publish service cards, offers, hiring posts, events and local promotions inside the right city, channel and language context.", primary: "Apply for partnership", secondary: "View ad plans", consoleLabel: "Business console", consoleTitle: "Tokyo partner campaign", verified: "Verified business", partnerTitle: "Verified local partner", partnerBody: "Verification details, service content, city reach, order leads and channel operations.", campaigns: [["Restaurant offers and dining events", "Verified business"], ["Language school trial classes", "Service content"], ["Local hiring and service leads", "City channel"]] },
-	    safetySection: { label: "Safety", title: "Real community needs real boundaries.", body: "Machi builds safety prompts, reporting, blocking, content review and account enforcement into public city topics, local groups, dining groups, language exchange, housing, secondhand, hiring and business scenes." },
+    businessSection: { label: "Business", title: "Good local services should be found at the moment they are needed.", body: "Verified businesses and service providers can publish services, offers, hiring, and events in the right city, channel, and language. Clear about who they are, and relevant to the people they hope to reach.", primary: "Apply for partnership", secondary: "View ad plans", consoleLabel: "Business console", consoleTitle: "Tokyo partner campaign", verified: "Verified business", partnerTitle: "Verified local partner", partnerBody: "Verification details, service content, city reach, order leads and channel operations.", campaigns: [["Restaurant offers and dining events", "Verified business"], ["Language school trial classes", "Service content"], ["Local hiring and service leads", "City channel"]] },
+	    safetySection: { label: "Safety", title: "Real connection needs clear boundaries.", body: "From public conversations and in-person gatherings to housing, secondhand exchange, hiring, and local services, Machi uses prompts, reporting, blocking, review, and account action to protect the space around every interaction." },
 	    download: { label: "Start with your city", title: "Download Machi", body: "Machi Web Beta is available now. After registration, you can use city home, discovery and search, notifications, messages, posting, profiles and community participation. The iOS and Android apps are in preparation, and App Store / Google Play availability will be marked clearly when ready.", primary: "Get app launch updates", secondary: "Join local community", appStore: "iOS: Coming soon", googlePlay: "Android: Coming soon", webBeta: "Web Beta: Live now", formLabel: "Launch updates", formTitle: "Notify me when the app launches", email: "Email", cityLabel: "Preferred city", languageLabel: "Language preference", intentLabel: "I want to use Machi for", cityOptions: ["Tokyo", "Los Angeles", "Toronto", "Other city"], languageOptions: ["English", "中文", "日本語"], intentOptions: ["Local life info", "Community participation", "Food meetups", "Event groups", "Language exchange", "Housing", "Secondhand", "Jobs", "Hiring", "Business promotion", "Local services"], notify: "Notify me", sending: "Sending…", success: "Received. We'll notify you when the iOS / Android app launches; you can use Machi on the Web now.", errorInvalid: "That email does not look right. Please double-check.", errorSubmit: "Could not submit just now. Please try again.", benefitsTitle: "What you will get", benefits: [["Web Beta access", "City home, discovery, search, notifications, messages, posting and profiles are available on the Web."], ["App launch notices", "Be notified when iOS and Android are ready."], ["More cities and guides", "Updates for new cities, new countries and Japan Guide." ]], privacy: "We only email you about app launch, city openings and guide updates. We never sell your email or sign you up for other lists." },
     faqSection: { label: "FAQ", title: "Questions before launch." },
     common: { open: "Open" },
-	    footer: { tagline: "Find the echoes of life in every city.", description: "Local questions, experience, opportunities and community participation, seen and found. machicity.com", groups: [["Navigation", ["About", "Features", "Guide", "Business", "Safety", "FAQ"]], ["Partnership", ["Business", "Advertising", "Hiring promotion", "Housing promotion", "System partnership"]], ["Legal", ["Privacy Policy", "Terms of Service", "Membership Terms", "Service Terms", "Refund Policy", "Community Guidelines", "Commercial Disclosure", "Cookie Policy", "Contact"]]] },
+	    footer: { tagline: "Find the echoes of life in every city.", description: "A place for questions to land, experience to remain, and sincere local voices to reach one another.", groups: [["Navigation", ["About", "Features", "Guide", "Business", "Safety", "FAQ"]], ["Partnership", ["Business", "Advertising", "Hiring promotion", "Housing promotion", "System partnership"]], ["Legal", ["Privacy Policy", "Terms of Service", "Membership Terms", "Service Terms", "Refund Policy", "Community Guidelines", "Commercial Disclosure", "Cookie Policy", "Contact"]]] },
     cities: withCityTone([
       { name: "Tokyo", country: "Japan", description: "Housing warnings, food meetups, language exchange and local groups are being refined first.", posts: "Housing · Dining · Language Exchange · Groups", heat: "Web Beta live", status: "Web Beta live", sampleLabel: "Launch-stage data", languageTags: ["中文", "EN", "日本語"], sceneTags: ["Housing", "Dining", "Language Exchange", "Groups"], highlight: "Shibuya, Shinjuku and bay-area life signals" },
 	      { name: "Los Angeles", country: "United States", description: "Jobs, events, dining, local services and multilingual community spaces are in preparation.", posts: "Jobs · Events · Dining · Local Services", heat: "Preparing", status: "Preparing", sampleLabel: "Launch-stage data", languageTags: ["EN", "中文", "日本語"], sceneTags: ["Jobs", "Events", "Dining", "Local Services"], highlight: "Westside, Eastside and service demand" },
@@ -703,12 +707,12 @@ export const marketingCopy = {
       language: "言語",
     },
     hero: {
-      eyebrow: "ローカル生活 + 同城ソーシャル",
+      eyebrow: "街の暮らし・地域のつながり",
       titleTop: "Machi",
       titleBottom: "",
       headline: "すべての街で、暮らしのこだまを見つける。",
-      subtitle: "Machi は、国・都市・言語ごとに暮らしの情報と人のつながりを整理するローカルライフ・コミュニティプラットフォームです。住まい、中古品、仕事、求人、イベント、Q&A、地域サービス、お店の情報、地域グループ、実際の生活経験を、一つの街の空間で見つけ、共有し、つなげることができます。",
-      supporting: "まずは日本から始まり、今後はカナダ、オーストラリア、英国、フランス、ドイツ、韓国、米国など、より多くの国と都市へ Machi Guide と都市コミュニティを広げていきます。",
+      subtitle: "知らない街で必要なのは、情報の多さより、信頼できる手がかりです。どこに住むか、仕事をどう探すか、手続きは何から始めるか。Machi は、街と言語ごとに散らばる暮らしの知恵を、一つの場所へつなぎ直します。",
+      supporting: "まずは日本で、暮らし、進学、仕事、地域のつながりを深く整えます。その先は、実際の声に耳を澄ませながら、一つの街、一つの言語ずつ広げていきます。",
       primary: "Web Betaを見る",
       secondary: "創設者の物語を読む",
       tertiary: "Machi Guideを見る",
@@ -737,8 +741,8 @@ export const marketingCopy = {
     },
     brandIntro: {
       label: "Machi とは",
-      title: "Machi は、単なる投稿一覧でも、終わりのないSNSフィードでもありません。",
-      body: "都市、言語、トピック、日常のシーンごとに、地域情報、生活経験、実際のニーズ、人とのつながりを整理します。都市コンテンツ、同じ街のつながり、コミュニティ、サービス、事業者、求人、住まい、多言語の生活シーンをひとつにつなげます。",
+      title: "Machi は情報の一覧でも、眺め続けるためのタイムラインでもありません。",
+      body: "街の経験、必要としていること、人から人への返事を、場所、言語、暮らしの場面ごとに整理し、情報を本来の街へ戻します。",
       pillars: [
         ["City-based", "国、地域、都市ごとに整理し、情報を暮らしが起きる場所へ戻します。"],
         ["Language-aware", "画面言語と投稿言語を分け、多言語都市の自然な表現を支えます。"],
@@ -748,8 +752,8 @@ export const marketingCopy = {
     },
     guideSection: {
       label: "Machi Guide",
-      title: "Machi Guide：日本から始まる都市生活ガイド",
-      body: "Guide は Machi の都市知識レイヤーです。まずは日本から、留学、進学、就職、JLPT、生活手続き、学校データベース、会社データベース、地域サービスを整理し、今後さらに多くの国と都市へ展開していきます。",
+      title: "Machi Guide：街を、暮らせる場所として読み解く。",
+      body: "日本での手続き、進学、就職、JLPT、学校や企業の情報、地域サービスまで、実際に必要になる順序で整理します。答えを並べるのではなく、次の一歩がわかるガイドを目指します。",
       cta: "Machi Guideを見る",
       expansion: "次の地域：カナダ · オーストラリア · 英国 · フランス · ドイツ · 韓国 · 米国",
       cards: [
@@ -765,7 +769,7 @@ export const marketingCopy = {
     brandStory: {
       label: "ブランドストーリー",
       title: "すべての街で、暮らしのこだまを見つける。",
-      lead: "都市は地図の上の名前だけではありません。本当の姿は、そこに暮らす人たちの日常の中にあります。",
+      lead: "街は、道や建物だけでできているわけではありません。そこに暮らす人たちが、毎日少しずつ書き足していく生活の記録です。",
       cityLines: [
         "東京は電車、ネオン、高層ビルだけではない。",
         "大阪は街並み、食べ物、人の流れだけではない。",
@@ -775,12 +779,12 @@ export const marketingCopy = {
         "トロントは湖岸、ストリートカー、遠さだけではない。",
       ],
       paragraphs: [
-        "新しく来た人が「このエリアは住みやすい？」と聞く声や、帰国前の人が家具を譲る投稿の中にあります。",
-        "面接経験、週末の食事の誘い、住まいのガイド、注意喚起、地域イベント、誰かの回答の中にもあります。",
-        "その声は小さいけれど、とても本物です。チャット、SNS、フォーラム、友人の間、そして新しい街で迷う時間に散らばっています。",
-        "Machi は、その散らばった声をもう一度集め、地域の暮らしを断片的な情報で終わらせないための場所です。",
-        "Machi で見えるのは、ただの投稿ではありません。今その都市で起きている暮らしです。",
-        "人を都市にとどめるのは住所だけではなく、そこで見つける生活感です。",
+        "「この辺りは住みやすいですか」という問いや、街を離れる前に譲られる一台の机の中に、暮らしはあります。",
+        "面接を終えた人のメモ、住まいの注意点、週末の誘い、誰かが丁寧に書いた返事にも、街の輪郭がにじみます。",
+        "どれも大きな声ではありません。だからこそ、チャットやタイムラインの新しい話題に埋もれ、すぐ見えなくなってしまいます。",
+        "Machi は、その声をもう一度街へ戻します。偶然目にするだけでなく、必要なときにたどり着ける経験へ変えるために。",
+        "Machi に並ぶのは、抽象的なコンテンツではありません。いま、ここで営まれている暮らしです。",
+        "住所は居場所を示します。でも、街を自分の場所に変えるのは、そこで見つけた日常です。",
       ],
       highlights: [
         ["質問", "このエリアは住みやすい？"],
@@ -792,32 +796,34 @@ export const marketingCopy = {
       closing: "Machi は、その声が見つかり、届き、返ってくる場所です。",
     },
     founder: {
-      eyebrow: "創設者",
-      title: "創設者",
+      eyebrow: "創設者から",
+      title: "姚凱です。Machi は、異国で暮らしを一からつくった日々から生まれました。",
       name: "姚凱 / YAOKAI",
-      role: "Founder, Machi City",
-      meta: "2019年10月に留学生として来日",
+      role: "Machi City 創設者 / プロダクトビルダー",
+      meta: "2019年10月、留学のため来日",
       avatar: "姚",
       readMore: "創設者のストーリーを読む",
-      bio: "2019年10月に留学のため来日し、自身の国境を越えた生活体験から Machi を創設しました。",
-	      quote: "「街は地図上の名前ではなく、人が暮らし、探し、参加し、また始める場所です。」",
+      bio: "2019年、留学のため日本へ来ました。Machi の出発点は、抽象的な事業計画ではありません。住まいを探し、手続きを覚え、仕事を探しながら、知らない街で暮らしを組み立てていった実感です。",
+      quote: "「増やしたかったのは情報ではなく、知らない街で暮らし始める人が、次の一歩を見つけられる場所でした。」",
       paragraphs: [
-        "Machi City は、姚凱 / YAOKAI によってゼロから立ち上げられたオリジナルプロジェクトです。",
-        "2019年10月、姚凱は留学生として日本に来ました。新しい国、新しい街で暮らし始めたとき、彼はひとつの現実的な課題に気づきました。日々の生活に本当に役立つ情報は、いつも分かりやすく一か所にまとまっているわけではないということです。",
-        "住まい、アルバイト、中古品、地域サービス、手続き、交通、イベント、防災情報、生活の経験は、グループチャット、SNS、地域サイト、友人との会話、そして異なる言語環境の中に散らばっています。",
-        "新しい街に来た人にとって、正確で役立つ情報を見つけることは簡単ではありません。すでにその街で暮らしている人にとっても、経験を共有したり、必要なことを投稿したり、つながりを見つけたりするための、より分かりやすく整理された場所はまだ十分ではありません。",
-        "Machi City は、そうした経験と気づきから始まりました。",
-	        "Machi は、冷たい情報データベースでも、単なるソーシャルプロダクトでもありません。街の中に散らばる生活情報、経験、必要なこと、コミュニティ参加を、国・都市・言語・内容ごとに整理するためのローカルライフプラットフォームです。",
-	        "Machi は日本語の「街 / まち」に由来します。それは地図上の都市名ではなく、人が実際に暮らし、参加し、探し、また始める場所を意味します。",
-        "姚凱の理念はシンプルです。",
+        "姚凱です。Machi をゼロからつくっています。",
+        "2019年10月、留学生として日本に来ました。新しい国で難しかったのは、大きな壁が一つあったことではありません。住まい、手続き、仕事、日々の買い物。小さくても避けて通れない問いが、毎日のように続くことでした。",
+        "答えはどこかにあります。ただ、チャットやSNS、地域サイト、友人の記憶、いくつもの言語の中に散らばり、初めて来た人には確かめにくい。長く暮らす人にとっても、経験をきちんと残せる場所は多くありません。",
+        "その実感が Machi の原点です。冷たい情報庫でも、終わりのないタイムラインでもなく、街の知恵や必要としていること、人から人への応答が、あるべき場所に収まるプロダクトをつくりたいと思いました。",
+        "Machi という名は、日本語の「街 / まち」から取りました。私にとって街は、地図上の点ではありません。暮らし方を覚え、人と出会い、ときにはもう一度始める場所です。",
+        "小さくても大切な声を、流れて消えるままにしない。誰かの問いに、すでにその道を歩いた人の経験が届き、知らない街で少し早く自分の歩幅を見つけられる。Machi を、そんな場所に育てていきます。",
       ],
-      closing: "街の情報をもっと見つけやすくすること。\n知らない場所でも生活を始めやすくすること。\nすべての街で、暮らしのこだまを見つけられるようにすること。",
+      closing: "散らばる情報に、街という輪郭を。\n知らない土地に、暮らしの手がかりを。\nそして、声を上げた人に、きちんと届く応答を。",
+      siteEyebrow: "Machi の外側で",
+      siteTitle: "書き、考え、つくり続けています。",
+      siteBody: "yaokai.me では、プロダクトづくりの記録、ここまで歩いてきた道、いま形にしている仕事を綴っています。履歴書というより、制作の現在地に近い場所です。",
+      siteCta: "yaokai.me へ",
     },
-    announcementsSection: { label: "お知らせ", title: "Machi 最新のお知らせ。", body: "プロダクトの進捗、初期都市計画、早期公開、提携受付、重要なお知らせをここで共有します。", manageHint: "公式の公開情報はこのサイトでお知らせします。", manageLabel: "すべてのお知らせ", composerTitle: "情報を公開", titlePlaceholder: "タイトル例：東京チャンネルまもなく公開", bodyPlaceholder: "公告、通知、情報の本文を書く", publish: "公開", empty: "内容を書いてから公開してください。", saved: "公式サイトのお知らせに公開しました。", tabs: ["公告", "ニュース", "アプリ更新", "通知", "情報"], defaultItems: [{ type: "公告", title: "Machi Web Beta を公開", date: "2026.06", body: "登録後、都市ホーム、発見、検索、通知、メッセージ、投稿、プロフィール、同じ街のつながりを利用できます。" }, { type: "ニュース", title: "日本 Guide を公開", date: "2026.06", body: "生活、進学、就職、JLPT、学校データベース、会社データベース、資料、サービスを先に整理しています。" }, { type: "アプリ更新", title: "Google ログインに対応", date: "2026.06", body: "Web と iOS のログイン導線で Google ログインに対応しました。App Store / Google Play は引き続き準備中です。" }, { type: "通知", title: "より多くの国と都市を準備中", date: "2026.06", body: "カナダ、オーストラリア、英国、フランス、ドイツ、韓国、米国などを都市ごとに準備しています。" }, { type: "情報", title: "ビジネス提携の受付を開始", date: "2026.06", body: "店舗、採用担当、不動産、地域サービス事業者は提携希望を送信できます。" }] },
+    announcementsSection: { label: "お知らせ", title: "Machi からのお知らせ", body: "プロダクトの進捗、公開予定の街、先行利用、提携に関する情報をお届けします。", manageHint: "最新の公式情報は、こちらでご確認ください。", manageLabel: "お知らせ一覧", composerTitle: "お知らせを公開", titlePlaceholder: "例：東京チャンネルを近日公開します", bodyPlaceholder: "お知らせの本文を入力", publish: "公開", empty: "本文を入力してください。", saved: "お知らせを公開しました。", tabs: ["お知らせ", "ニュース", "アプリ更新", "ご案内", "トピック"], defaultItems: [{ type: "お知らせ", title: "Machi Web Beta を公開しました", date: "2026.06", body: "登録後、街のホーム、検索、通知、メッセージ、投稿、プロフィール、地域コミュニティを利用できます。" }, { type: "ニュース", title: "日本 Guide を公開しました", date: "2026.06", body: "暮らし、進学、就職、JLPT、学校・企業情報、資料、サービスを順次整えています。" }, { type: "アプリ更新", title: "Google ログインに対応しました", date: "2026.06", body: "Web と iOS で Google ログインを利用できます。App Store / Google Play 版は引き続き準備中です。" }, { type: "ご案内", title: "新しい国と街を準備しています", date: "2026.06", body: "カナダ、オーストラリア、英国、フランス、ドイツ、韓国、米国などへ、街ごとに展開していきます。" }, { type: "トピック", title: "ビジネス提携の受付を始めました", date: "2026.06", body: "店舗、採用担当、不動産、地域サービス事業者からのご相談を受け付けています。" }] },
     citySection: {
       label: "都市",
-      title: "初期ベータ都市は、リアルな生活シーンから。",
-      body: "Machi は一つひとつの都市から育ちます。まずは日本で Guide、サービス、都市コミュニティを磨き、その後カナダ、オーストラリア、英国、フランス、ドイツ、韓国、米国などを準備します。都市カードは初期公開ステータスを表示します。",
+      title: "最初の街は、毎日の暮らしから。",
+      body: "Machi は、街ごとの声を確かめながら育ちます。まず日本でガイド、サービス、地域コミュニティを磨き、その後、実際の需要に合わせて海外の街へ広げます。",
       badge: "初期公開データ",
       switcherLabel: "現在の都市",
       switcherActive: "日本 · 東京",
@@ -827,8 +833,8 @@ export const marketingCopy = {
     },
 	    featureSection: {
 	      label: "都市チャンネル",
-	      title: "地域情報、機会、コミュニティ活動を、街のシーンごとに整理。",
-      body: "ニュース、ガイド、ソーシャル、地域グループ、食事、イベント、言語交換、住まい、中古、仕事、求人、Q&A、サービス、注意情報を都市と言語で整理します。",
+	      title: "街のさまざまな用事に、わかりやすい居場所を。",
+      body: "住まい、仕事、譲り合い、イベント、相談、地域サービス。街と言語、暮らしの場面ごとに整理し、必要な情報へ迷わずたどり着けるようにします。",
       groups: [
         {
           title: "City Info",
@@ -848,16 +854,16 @@ export const marketingCopy = {
       ],
     },
 	    trendingSection: { label: "トレンド", title: "街で話題のことを見る。", subtitle: "熱度はいいね、コメント、保存、再投稿、時間減衰をもとに、今その都市で注目すべき内容を表示します。", cardTitle: "東京トレンド", cardSubtitle: "都市ランキング", formulaTitle: "熱度の式", heatLabel: "熱度", formula: ["いいね", "コメント", "保存", "再投稿"] },
-    languageSection: { label: "多言語", title: "多言語都市のために。", body: "アプリ言語だけでなく、コンテンツ言語も選べます。東京で中国語の投稿、トロントで日本語の投稿、ロサンゼルスで英語の投稿を探せます。", chips: ["中文", "English", "日本語", "한국어", "Français", "Español"], contextTitle: "多言語レコメンド", contextLabel: "推薦コンテキスト", regionLabel: "現在の地域", region: "カナダ · トロント", contentLanguageLabel: "コンテンツ言語", contentLanguage: "日本語", priorityLabel: "優先表示", priority: ["トロントの日本語投稿", "カナダの日本語投稿", "全体の日本語トレンド", "トロントの他言語高熱度投稿"] },
-    useCaseSection: { label: "街のシーン", title: "本物の街の暮らしのために。" },
-    businessSection: { label: "ビジネス", title: "地域の事業者を、必要としている人へ届ける。", body: "事業者は会社・店舗情報、サービス内容、連絡先、対応都市を提出します。認証後、サービスカード、特典、求人、イベント、地域プロモーションを都市・チャンネル・言語に合わせて掲載できます。", primary: "提携を申し込む", secondary: "広告プランを見る", consoleLabel: "ビジネス管理", consoleTitle: "東京パートナー施策", verified: "認証事業者", partnerTitle: "認証ローカルパートナー", partnerBody: "認証情報、サービス内容、都市内露出、注文導線、チャンネル運営。", campaigns: [["レストラン特典と食事会", "認証事業者"], ["語学学校の体験レッスン", "サービス内容"], ["地域求人とサービス相談", "都市チャンネル"]] },
-	    safetySection: { label: "安全", title: "本当のコミュニティには、確かな境界が必要です。", body: "公開された都市トピック、地域グループ、対面の活動、食事の集まり、言語交換、住まい、中古、求人、事業者シーンに、安全通知・通報・ブロック・審査・アカウント制限を組み込みます。" },
+    languageSection: { label: "多言語", title: "一つの街に、いくつもの母語があっていい。", body: "画面の言語と、読むコンテンツの言語は別々に選べます。東京で中国語の経験を読み、トロントで日本語の声を探し、ロサンゼルスの暮らしを英語で知ることができます。", chips: ["中文", "English", "日本語", "한국어", "Français", "Español"], contextTitle: "言語に合わせた発見", contextLabel: "表示の条件", regionLabel: "現在の地域", region: "カナダ · トロント", contentLanguageLabel: "コンテンツ言語", contentLanguage: "日本語", priorityLabel: "優先して表示", priority: ["トロントの日本語投稿", "カナダの日本語投稿", "Machi 全体で注目されている日本語投稿", "トロントの関連する他言語投稿"] },
+    useCaseSection: { label: "街の場面", title: "毎日の暮らしから設計する。" },
+    businessSection: { label: "ビジネス", title: "良い地域サービスを、必要な瞬間に見つけられるように。", body: "認証された店舗や事業者は、街、チャンネル、言語に合わせて、サービス、特典、求人、イベントを掲載できます。誰が届けているのかを明確にし、本当に必要としている人へつなぎます。", primary: "提携を申し込む", secondary: "広告プランを見る", consoleLabel: "ビジネス管理", consoleTitle: "東京パートナー施策", verified: "認証事業者", partnerTitle: "認証ローカルパートナー", partnerBody: "認証情報、サービス内容、街での掲載、問い合わせ導線、チャンネル運営。", campaigns: [["レストランの特典と食事会", "認証事業者"], ["語学学校の体験レッスン", "サービス内容"], ["地域の求人とサービス相談", "都市チャンネル"]] },
+	    safetySection: { label: "安全", title: "人とつながる場所には、明確な境界が必要です。", body: "公開のやり取りや対面の集まりから、住まい、譲り合い、求人、地域サービスまで。注意喚起、通報、ブロック、審査、アカウント対応によって、一つひとつのやり取りを守ります。" },
 	    download: { label: "都市から始めよう", title: "Machi をダウンロード", body: "Machi Web Beta は現在利用できます。登録後、都市ホーム、発見と検索、通知、メッセージ、投稿、プロフィール、コミュニティ参加を使えます。iOS と Android アプリは準備中で、App Store / Google Play の提供状況は公開時に明確に表示します。", primary: "アプリ公開通知を受け取る", secondary: "地域コミュニティに参加", appStore: "iOS：近日公開", googlePlay: "Android：近日公開", webBeta: "Web Beta：公開中", formLabel: "公開通知", formTitle: "アプリ公開時に通知を受け取る", email: "Email", cityLabel: "Preferred city", languageLabel: "Language preference", intentLabel: "I want to use Machi for", cityOptions: ["Tokyo", "Los Angeles", "Toronto", "その他の都市"], languageOptions: ["日本語", "English", "中文"], intentOptions: ["ローカル生活情報", "コミュニティに参加", "食事の集まり", "イベントグループ", "言語交換", "住まい", "中古", "仕事探し", "求人", "事業者プロモーション", "地域サービス"], notify: "通知を受け取る", sending: "送信中…", success: "受け付けました。iOS / Android アプリ公開時にお知らせします。現在は Web 版で Machi を利用できます。", errorInvalid: "メールアドレスの形式を確認してください。", errorSubmit: "送信に失敗しました。時間をおいて再度お試しください。", benefitsTitle: "登録後に受け取れる内容", benefits: [["現在利用できる Web Beta", "都市ホーム、発見、検索、通知、メッセージ、投稿、プロフィールを Web で利用できます。"], ["アプリ公開通知", "iOS と Android の準備が整った時にお知らせします。"], ["都市とガイドの更新", "新しい都市、国、日本 Guide の更新を受け取れます。"]], privacy: "アプリ公開、都市公開、ガイド更新以外でメールは送りません。メールアドレスを販売することも、他のリストに登録することもありません。" },
     faqSection: { label: "よくある質問", title: "ローンチ前に知りたいこと。" },
     common: { open: "開く" },
-	    footer: { tagline: "すべての街で、暮らしのこだまを見つける。", description: "街の質問、経験、機会、コミュニティ参加が見つかる場所。machicity.com", groups: [["ナビ", ["概要", "機能", "ガイド", "ビジネス", "安全", "FAQ"]], ["提携", ["店舗提携", "広告掲載", "採用プロモーション", "住まいプロモーション", "システム提携"]], ["法務", ["プライバシー", "利用規約", "会員規約", "サービス予約規約", "返金ポリシー", "コミュニティ規範", "特定商取引法に基づく表記", "Cookie ポリシー", "お問い合わせ"]]] },
+	    footer: { tagline: "すべての街で、暮らしのこだまを見つける。", description: "問いに行き先を。経験に残る場所を。街の中の誠実な声が、互いに届くために。", groups: [["ナビ", ["概要", "機能", "ガイド", "ビジネス", "安全", "FAQ"]], ["提携", ["店舗提携", "広告掲載", "採用プロモーション", "住まいプロモーション", "システム提携"]], ["法務", ["プライバシー", "利用規約", "会員規約", "サービス予約規約", "返金ポリシー", "コミュニティ規範", "特定商取引法に基づく表記", "Cookie ポリシー", "お問い合わせ"]]] },
 	    cities: withCityTone([{ name: "Tokyo", country: "Japan", description: "住まいの注意、食事、言語交換、地域グループを先に磨いています。", posts: "Housing · Dining · Language Exchange · Groups", heat: "Web Beta live", status: "Web Beta live", sampleLabel: "初期公開データ", languageTags: ["中文", "EN", "日本語"], sceneTags: ["Housing", "Dining", "Language Exchange", "Groups"], highlight: "渋谷、新宿、湾岸の暮らし" }, { name: "Los Angeles", country: "United States", description: "仕事、イベント、食事、地域サービス、多言語コミュニティを準備中です。", posts: "Jobs · Events · Dining · Local Services", heat: "Preparing", status: "Preparing", sampleLabel: "初期公開データ", languageTags: ["EN", "中文", "日本語"], sceneTags: ["Jobs", "Events", "Dining", "Local Services"], highlight: "地域ごとの生活とサービス需要" }, { name: "Toronto", country: "Canada", description: "住まい、仕事、多言語 Q&A、新しい街での生活サポートを準備中です。", posts: "Housing · Jobs · Multilingual Q&A · Groups", heat: "Preparing", status: "Preparing", sampleLabel: "初期公開データ", languageTags: ["EN", "中文", "日本語"], sceneTags: ["Housing", "Jobs", "Q&A", "Groups"], highlight: "新しい街での生活サポート" }]),
-	    features: withFeatureMeta([{ title: "ニュース", badge: "News", description: "地域ニュース、制度、交通、安全のお知らせ。" }, { title: "ガイド", badge: "Guides", description: "住まい、ビザ、銀行、携帯、手続き、生活経験。" }, { title: "ソーシャル", badge: "City topics", description: "公開された都市トピック、地域グループ、趣味コミュニティ。" }, { title: "グループ", badge: "Local", description: "食事の集まり、イベントグループ、スポーツグループ、言語交換、週末の地域イベント。" }, { title: "食事", badge: "Dining", description: "食事、カフェ、店巡り、地域の食事イベント。" }, { title: "イベント", badge: "Events", description: "展示、Citywalk、講座、ボードゲーム、運動、交流会。" }, { title: "言語交換", badge: "Language Exchange", description: "中国語、英語、日本語などの言語交換グループ。" }, { title: "住まい", badge: "Housing", description: "物件、サブリース、シェア、ルームメイト、注意点。" }, { title: "中古", badge: "Secondhand", description: "不要品、探し物、引越しセール、無料譲渡。" }, { title: "仕事探し", badge: "Jobs", description: "アルバイト、正社員、インターン、リモート、経験談。" }, { title: "求人", badge: "Hiring", description: "地域店舗、企業、団体が求人と業界コミュニティを公開。" }, { title: "Q&A", badge: "Q&A", description: "ビザ、住まい、仕事、学校、医療などの相談。" }, { title: "サービス", badge: "Services", description: "引越し、翻訳、ビザ、留学、保険、修理、税務。" }, { title: "注意情報", badge: "Avoid", description: "住まい、取引、求人、イベント、対面のリスク提醒。" }]),
+	    features: withFeatureMeta([{ title: "ニュース", badge: "News", description: "地域ニュース、制度、交通、安全に関するお知らせ。" }, { title: "ガイド", badge: "Guides", description: "住まい、ビザ、銀行、携帯、各種手続き、生活の知恵。" }, { title: "街の話題", badge: "City topics", description: "公開の地域トピック、ローカルグループ、趣味のコミュニティ。" }, { title: "グループ", badge: "Local", description: "食事会、イベント、スポーツ、言語交換、週末の集まり。" }, { title: "食事", badge: "Dining", description: "食事会、カフェ、店巡り、街の食にまつわる話題。" }, { title: "イベント", badge: "Events", description: "展示、まち歩き、講座、ボードゲーム、スポーツ、交流会。" }, { title: "言語交換", badge: "Language Exchange", description: "中国語、英語、日本語などを学び合う地域グループ。" }, { title: "住まい", badge: "Housing", description: "賃貸、転貸、シェア、ルームメイト、契約時の注意点。" }, { title: "譲り合い", badge: "Secondhand", description: "不要品、探し物、引っ越し前の譲渡、無料のお譲り。" }, { title: "仕事探し", badge: "Jobs", description: "アルバイト、正社員、インターン、リモート、求職経験。" }, { title: "求人", badge: "Hiring", description: "地域の店舗、企業、団体からの募集情報。" }, { title: "Q&A", badge: "Q&A", description: "ビザ、住まい、仕事、学校、医療など、街の暮らしに関する相談。" }, { title: "サービス", badge: "Services", description: "引っ越し、翻訳、ビザ、留学、保険、修理、税務。" }, { title: "注意情報", badge: "Avoid", description: "住まい、取引、求人、イベント、対面時の注意点。" }]),
     trendingPosts: [{ title: "東京の住まいガイド", heat: "56.2K", category: "住まい" }, { title: "新宿で週末ごはん", heat: "38.9K", category: "食事" }, { title: "渋谷のアルバイト採用、日本語 N3 以上", heat: "21.6K", category: "採用" }, { title: "引越し中古家具、格安引き取り", heat: "18.4K", category: "中古" }],
     useCases: [{ title: "新しい都市に来た時", description: "ガイド、住まい、手続き、仕事探し。", icon: "MapPinned" }, { title: "引越しや帰国", description: "中古出品、転貸、引越しサービス探し。", icon: "PackageOpen" }, { title: "仕事を探す", description: "採用、アルバイト、紹介、面接経験。", icon: "BriefcaseBusiness" }, { title: "週末に出かけたい", description: "食事、イベント、展示、Citywalk。", icon: "Sparkles" }, { title: "困った時", description: "質問して地域ユーザーの経験を得る。", icon: "CircleHelp" }, { title: "地域ビジネス", description: "割引、採用、イベントを都市ユーザーへ。", icon: "Store" }],
     safetyItems: [
@@ -909,7 +915,23 @@ export const marketingCopy = {
   useCaseSection: { label: string; title: string };
   businessSection: { label: string; title: string; body: string; primary: string; secondary: string; consoleLabel: string; consoleTitle: string; verified: string; partnerTitle: string; partnerBody: string; campaigns: Array<[string, string]> };
   safetySection: { label: string; title: string; body: string };
-  founder: { eyebrow: string; title: string; name: string; role: string; meta: string; avatar: string; readMore: string; bio: string; quote: string; paragraphs: string[]; closing: string };
+  founder: {
+    eyebrow: string;
+    title: string;
+    name: string;
+    role: string;
+    meta: string;
+    avatar: string;
+    readMore: string;
+    bio: string;
+    quote: string;
+    paragraphs: string[];
+    closing: string;
+    siteEyebrow: string;
+    siteTitle: string;
+    siteBody: string;
+    siteCta: string;
+  };
   download: {
     label: string;
     title: string;

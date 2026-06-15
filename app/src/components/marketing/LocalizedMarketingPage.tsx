@@ -15,56 +15,6 @@ import { FounderSection } from "./FounderSection";
 
 const CONTACT_EMAIL = "hi@machicity.com";
 
-const FOUNDER_SITE_URL = "https://yaokai.me/about";
-
-// Closing card for the About page. It both fills the quiet space above the
-// footer and points readers to the founder's own world — the page is, after
-// all, the story of one person. Copy is trilingual to match the rest of /about.
-const founderSiteCopy: Record<MarketingLocale, { eyebrow: string; title: string; body: string; cta: string }> = {
-  zh: {
-    eyebrow: "关于创始人",
-    title: "城市之外，还有一个写代码的人",
-    body: "Machi 始于一个人对城市的观察，也始于一份不甘心让有用信息继续散落的执拗。如果你想认识 Machi 背后的人——他走过的路、做过的产品，以及此刻仍在搭建的东西——欢迎到他的个人空间坐一坐。",
-    cta: "走进 yaokai.me",
-  },
-  en: {
-    eyebrow: "About the founder",
-    title: "Beyond the city, there is a person writing the code",
-    body: "Machi began with one person's quiet observation of city life — and a refusal to let useful information stay scattered. If you would like to meet the person behind it: the path he has walked, the things he has built, and what he is still building today, his own space is open.",
-    cta: "Visit yaokai.me",
-  },
-  ja: {
-    eyebrow: "創設者について",
-    title: "街の向こうに、コードを書くひとりの人がいる",
-    body: "Machi は、ひとりの人の街への観察と、「散らばった情報をこのままにしたくない」という小さな意地から始まりました。その背後にいる人——歩んできた道、つくってきたもの、いま挑んでいること——を知りたい方は、彼の個人サイトへどうぞ。",
-    cta: "yaokai.me を訪ねる",
-  },
-};
-
-function FounderSiteCard({ locale }: { locale: MarketingLocale }) {
-  const c = founderSiteCopy[locale] ?? founderSiteCopy.zh;
-  return (
-    <article className="mc-reveal relative overflow-hidden rounded-[28px] bg-gradient-to-br from-indigo-600 via-violet-600 to-sky-500 p-7 text-white shadow-[0_30px_80px_-50px_rgba(79,70,229,0.95)] sm:p-10">
-      <span aria-hidden="true" className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-white/15 blur-3xl" />
-      <span aria-hidden="true" className="pointer-events-none absolute -bottom-24 -left-10 h-56 w-56 rounded-full bg-white/10 blur-3xl" />
-      <div className="relative max-w-2xl">
-        <p className="text-xs font-black uppercase tracking-[0.18em] text-white/70">{c.eyebrow}</p>
-        <h2 className="mt-3 text-2xl font-black leading-tight sm:text-3xl">{c.title}</h2>
-        <p className="mt-4 text-sm leading-7 text-white/90 sm:text-base">{c.body}</p>
-        <a
-          href={FOUNDER_SITE_URL}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="mt-7 inline-flex min-h-11 items-center gap-2 rounded-full bg-white px-5 text-sm font-black text-indigo-700 shadow-[0_18px_46px_-26px_rgba(0,0,0,0.6)] transition hover:-translate-y-0.5 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-white"
-        >
-          {c.cta}
-          <ArrowRight className="h-4 w-4" aria-hidden="true" />
-        </a>
-      </div>
-    </article>
-  );
-}
-
 export function LocalizedMarketingPage({
   pageId,
   initialLocale,
@@ -91,7 +41,6 @@ function LocalizedMarketingPageInner({ pageId }: { pageId: MarketingPageId }) {
           {pageId === "about" && index === 0 ? <FounderSection variant="full" inFrame /> : null}
         </Fragment>
       ))}
-      {pageId === "about" ? <FounderSiteCard locale={locale} /> : null}
       {pageId === "download" ? <DownloadCTA /> : null}
       <MarketingCmsBlocks pageId={pageId} />
     </MarketingPageFrame>

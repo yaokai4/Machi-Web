@@ -17,9 +17,9 @@ const whyCopy: Record<
 > = {
   zh: {
     label: "Why Machi",
-    title: "Machi 不是普通信息平台，而是城市生活信息 + 本地经验 + 同城社区 + 真实的本地连接。",
-    body: "它的独特价值不是“信息很多”，而是在每一座城市，找到生活的回声；在生活的回声里，遇到能搭把手的人。",
-    machi: "Machi 按城市、语言、频道、兴趣和真实生活场景组织信息与人，让你不仅能找到本地信息，也能在同一座城市里互相帮上忙。",
+    title: "信息并不稀缺。真正稀缺的，是与此刻、此地、此人有关的答案。",
+    body: "Machi 不追求把更多内容推到你面前，而是让城市里的经验有位置、问题有回应、人与人之间的帮助有机会发生。",
+    machi: "Machi 按城市、语言与生活场景组织信息和人。你找到的不只是本地内容，也是在同一座城市里，愿意认真回应的人。",
     comparisons: [
       ["微信群 / Line 群", "信息沉底、无法搜索、容易错过重点，也很难认识群外的新朋友。"],
       ["Facebook Groups", "噪音多、分类弱、跨语言体验差，社交连接不够精确。"],
@@ -30,9 +30,9 @@ const whyCopy: Record<
   },
   en: {
     label: "Why Machi",
-    title: "Machi is not a classifieds board. It is local life information + lived experience + city-based community + real local connection.",
-    body: "The value is not “more posts.” It is finding the echoes of life in every city, then finding people who can actually help inside those echoes.",
-    machi: "Machi organizes information and people by city, language, channel, interest and real-life scene, so you can find local information and help each other in the same city.",
+    title: "Information is abundant. What is rare is an answer that belongs to this place, this moment, and the person asking.",
+    body: "Machi is not designed to put more posts in front of you. It gives local experience a place, questions a path to an answer, and people a reason to help one another.",
+    machi: "Machi organizes knowledge and people by city, language, and everyday need. What you find is not only local information, but someone nearby willing to answer with care.",
     comparisons: [
       ["WeChat / LINE groups", "Information sinks, search is weak, important things are missed and it is hard to connect with people beyond the group."],
       ["Facebook Groups", "Noisy, weakly categorized, poor cross-language experience and imprecise social connection."],
@@ -43,9 +43,9 @@ const whyCopy: Record<
   },
   ja: {
     label: "Why Machi",
-    title: "Machi は単なる情報サイトではなく、地域情報 + 生活経験 + 同じ街のコミュニティ + 本物のローカルなつながりの場所です。",
-    body: "価値は「情報が多い」ことではありません。すべての街で暮らしのこだまを見つけ、そのこだまの中で助け合える人とつながることです。",
-    machi: "Machi は都市、言語、チャンネル、興味、生活シーンで情報と人を整理し、地域情報だけでなく同じ街の人と助け合えるようにします。",
+    title: "情報はあふれています。足りないのは、いま、ここで暮らす人にきちんと届く答えです。",
+    body: "Machi が増やしたいのは投稿の数ではありません。街の経験に居場所をつくり、問いに返事が届き、人どうしの助け合いが生まれる余地をつくります。",
+    machi: "街、言語、暮らしの場面ごとに、情報と人を整理する。見つかるのは地域情報だけでなく、同じ街で丁寧に答えてくれる誰かです。",
     comparisons: [
       ["WeChat / LINE グループ", "情報が流れて沈み、検索しづらく、重要な内容を逃しやすく、グループ外の新しい人とも出会いにくい。"],
       ["Facebook Groups", "ノイズが多く、分類が弱く、多言語体験が弱く、つながりが精密ではありません。"],

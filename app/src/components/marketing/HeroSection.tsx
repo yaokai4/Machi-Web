@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowRight, BookOpen, Building2, ChevronDown, MonitorSmartphone, Sparkles } from "lucide-react";
+import { usePathname } from "next/navigation";
 import { AppMockup } from "./AppMockup";
 import { BrandPhrase, BrandText } from "./BrandText";
 import { Button } from "./Button";
@@ -27,7 +28,17 @@ function splitDisplayLines(text: string): string[] {
 }
 
 export function HeroSection() {
-  const { copy } = useMarketingI18n();
+  const { copy, locale } = useMarketingI18n();
+  const pathname = usePathname();
+  const explicitLocale = pathname === "/zh" || pathname.startsWith("/zh/")
+    ? "zh"
+    : pathname === "/en" || pathname.startsWith("/en/")
+      ? "en"
+      : pathname === "/ja" || pathname.startsWith("/ja/")
+        ? "ja"
+        : null;
+  const aboutPath = explicitLocale || locale !== "zh" ? `/${explicitLocale ?? locale}/about` : "/about";
+  const aboutHref = `${aboutPath}#founder`;
 
   return (
     <section className="relative overflow-hidden px-5 pb-16 pt-4 sm:px-8 sm:pt-6 lg:px-16 lg:pb-24 lg:pt-10 xl:px-20">
@@ -86,7 +97,7 @@ export function HeroSection() {
               {copy.hero.primary}
             </Button>
             <Button
-              href="/about"
+              href={aboutHref}
               variant="secondary"
               size="lg"
               className="h-14 px-7 text-base font-black"

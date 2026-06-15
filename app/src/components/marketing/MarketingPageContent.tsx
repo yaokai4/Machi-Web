@@ -23,20 +23,20 @@ export function MarketingPageContent() {
       <MarketingMotion />
       <Header />
       <HeroSection />
-      {/* Narrative flow: value prop → live product → what you can do →
-          trust → business → story/founder → FAQ. WhyMachi is the strongest
-          "what is Machi" section, so it leads (the thinner, overlapping
-          BrandIntro that used to sit here was folded into it). */}
+      {/* Narrative flow: value → product → guide → founder → community →
+          trust → business → brand story → updates. The founder belongs
+          after visitors understand the product, but before the long-form
+          community and brand narrative. */}
       <WhyMachiSection />
       <CityPulseSection />
       <FeatureChannelGrid />
       <GuideSection />
+      <FounderSection />
       <SocialConnectionSection />
       <SafetySection />
       <BusinessSection />
       <LanguageSection />
       <BrandStorySection />
-      <FounderSection />
       <AnnouncementSection />
       <FAQSection />
       <Footer />
