@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowRight, Building2, ChevronDown, MonitorSmartphone, Sparkles, UsersRound } from "lucide-react";
+import { ArrowRight, BookOpen, Building2, ChevronDown, MonitorSmartphone, Sparkles } from "lucide-react";
 import { AppMockup } from "./AppMockup";
 import { BrandPhrase, BrandText } from "./BrandText";
 import { Button } from "./Button";
@@ -86,11 +86,11 @@ export function HeroSection() {
               {copy.hero.primary}
             </Button>
             <Button
-              href="#waitlist-form"
+              href="/about"
               variant="secondary"
               size="lg"
               className="h-14 px-7 text-base font-black"
-              iconLeft={<UsersRound className="h-5 w-5" />}
+              iconLeft={<BookOpen className="h-5 w-5" />}
             >
               {copy.hero.secondary}
             </Button>

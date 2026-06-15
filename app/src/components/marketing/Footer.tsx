@@ -101,7 +101,18 @@ export function Footer() {
 
       <div className="mx-auto mt-10 flex max-w-[1120px] flex-col gap-3 pt-6 text-sm font-semibold text-slate-500 sm:flex-row sm:items-center sm:justify-between dark:text-slate-500">
         <p>© 2026 <BrandText className="font-black">Machi</BrandText>. All rights reserved.</p>
-        <p>machicity.com</p>
+        <p className="flex items-center gap-2.5">
+          <a
+            href="https://yaokai.me/about"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="transition hover:text-slate-950 dark:hover:text-white"
+          >
+            Made by YAOKAI · yaokai.me
+          </a>
+          <span aria-hidden="true" className="text-slate-300 dark:text-white/20">·</span>
+          <span>machicity.com</span>
+        </p>
       </div>
     </footer>
   );
