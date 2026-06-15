@@ -8,10 +8,10 @@ let autoServer = null;
 
 const checks = [
   ["H1 brand", /<h1[^>]*>[^<]*Machi[^<]*<\/h1>/i],
-  ["Chinese title", "在每一座城市，找到生活的回声。"],
-  ["English title", "Find the echoes of life in every city."],
-  ["Japanese title", "すべての街で、暮らしのこだまを見つける。"],
-  ["city community explanation", "按城市和语言组织的本地生活与同城社交社区"],
+  ["Chinese title", "让陌生的城市，也有生活的门路。"],
+  ["English title", "Find your way into a new city."],
+  ["Japanese title", "知らない街でも、暮らし方は見つけられる。"],
+  ["city community explanation", "按城市和语言整理租房、二手、工作、活动、问答、本地服务、语言交换和真实生活经验"],
   ["feed shell", "首页信息流"],
   ["feed tabs", "推荐、同城、关注、热榜"],
   ["search placeholder", "搜索租房、语言交换、工作、活动、本地问题"],

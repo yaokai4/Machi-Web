@@ -58,7 +58,7 @@ export default function MyReputationPage() {
               <ArrowLeft className="h-5 w-5" />
             </button>
             <div className="min-w-0">
-              <p className="text-xs font-bold uppercase tracking-wide text-kx-muted">Machi City Reputation</p>
+              <p className="text-xs font-bold uppercase tracking-wide text-kx-muted">Machi Reputation</p>
               <h1 className="text-xl font-black text-kx-text">城市声望</h1>
             </div>
           </div>

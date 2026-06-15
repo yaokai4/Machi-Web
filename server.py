@@ -822,7 +822,7 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
     },
 }
 
-# Machi City Reputation. The server is the source of truth; clients only
+# Machi Reputation. The server is the source of truth; clients only
 # render the current snapshot and configurable rule/level rows.
 REPUTATION_DEFAULT_SCORE = 70
 REPUTATION_MIN_SCORE = 0
@@ -854,8 +854,8 @@ REPUTATION_LEVEL_DEFAULTS: list[dict[str, Any]] = [
     {"level": 6, "xp": 3000, "zh": "可信发布者", "en": "Trusted Publisher", "ja": "信頼できる投稿者", "desc": "具备申请可信卖家、服务者和招聘方的基础。", "privileges": ["申请可信卖家", "申请认证服务者", "更多发布额度", "可信贡献标识"]},
     {"level": 7, "xp": 6000, "zh": "城市专家", "en": "City Expert", "ja": "街のエキスパート", "desc": "高质量内容和专题共创机会提升。", "privileges": ["精选内容机会", "城市专题共创", "会员折扣券"]},
     {"level": 8, "xp": 12000, "zh": "城市守望者", "en": "City Steward", "ja": "街の見守り人", "desc": "可参与轻量城市内容治理。", "privileges": ["城市内容治理", "有效举报奖励提升", "新功能优先体验"]},
-    {"level": 9, "xp": 25000, "zh": "Machi 城市合伙人", "en": "Machi City Partner", "ja": "Machi 街のパートナー", "desc": "参与城市运营合作和本地活动。", "privileges": ["城市运营合作", "本地活动合作", "官方推荐展示"]},
-    {"level": 10, "xp": 50000, "zh": "Machi 城市大使", "en": "Machi City Ambassador", "ja": "Machi 街のアンバサダー", "desc": "代表高可信城市贡献者参与新城市测试。", "privileges": ["城市大使标识", "官方认证展示", "专属运营联系"]},
+    {"level": 9, "xp": 25000, "zh": "Machi 城市合伙人", "en": "Machi Local Partner", "ja": "Machi 街のパートナー", "desc": "参与城市运营合作和本地活动。", "privileges": ["城市运营合作", "本地活动合作", "官方推荐展示"]},
+    {"level": 10, "xp": 50000, "zh": "Machi 城市大使", "en": "Machi Community Ambassador", "ja": "Machi 街のアンバサダー", "desc": "代表高可信城市贡献者参与新城市测试。", "privileges": ["城市大使标识", "官方认证展示", "专属运营联系"]},
 ]
 REPUTATION_RULE_DEFAULTS: list[dict[str, Any]] = [
     {"key": "profile_completed", "name": "完善资料", "kind": "onboarding", "xp": 20, "rep": 0, "risk": -1, "daily": 20, "weekly": 20, "monthly": 20, "target_daily": 0, "one_time": 1, "reviewed": 0, "notify": 0},
@@ -11580,9 +11580,9 @@ def start_retention_janitor() -> None:
 
 SITE_SETTING_DEFAULTS: dict[str, str] = {
     "site_title": "Machi",
-    "site_title_zh": "Machi City｜在每一座城市，找到生活的回声",
-    "site_title_en": "Machi City | Find the echoes of life in every city",
-    "site_title_ja": "Machi City｜すべての街で、暮らしのこだまを見つける",
+    "site_title_zh": "Machi｜让陌生的城市，也有生活的门路",
+    "site_title_en": "Machi | Find your way into a new city",
+    "site_title_ja": "Machi｜知らない街でも、暮らし方は見つけられる",
     "site_description_zh": "Machi 是按国家、城市和语言组织内容的本地生活与同城连接平台。",
     "site_description_en": "Machi is a city-based local life platform organized by country, city and language.",
     "site_description_ja": "Machi は国・都市・言語ごとに暮らしの情報を整理するローカルライフプラットフォームです。",
@@ -15312,7 +15312,7 @@ class Handler(BaseHTTPRequestHandler):
             if rest == "report" and method == "POST":
                 return self.api_report(conn, "comment", comment_id)
 
-        # Machi City Reputation
+        # Machi Reputation
         if path == "/api/reputation/me" and method == "GET":
             return self.api_reputation_me(conn)
         if path == "/api/reputation/logs/me" and method == "GET":

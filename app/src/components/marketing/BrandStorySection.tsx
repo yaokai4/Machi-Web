@@ -18,7 +18,7 @@ export function BrandStorySection() {
       <div className="mx-auto max-w-[1120px]">
         <div className="grid gap-8 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
           <div className="mc-reveal lg:py-8">
-            <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1.5 text-xs font-black text-indigo-700 ring-1 ring-indigo-100 backdrop-blur dark:bg-white/10 dark:text-sky-300 dark:ring-white/10">
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1.5 text-xs font-black text-[#76576f] ring-1 ring-rose-100 backdrop-blur dark:bg-white/10 dark:text-rose-200 dark:ring-white/10">
               <Radio className="h-3.5 w-3.5" />
               {copy.brandStory.label}
             </div>
@@ -37,7 +37,7 @@ export function BrandStorySection() {
             </div>
 
             <div className="mt-4 overflow-hidden rounded-[28px] border border-indigo-100/80 bg-white/[0.76] p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5">
-              <div className="flex items-center gap-2 text-xs font-black text-indigo-700 dark:text-sky-300">
+              <div className="flex items-center gap-2 text-xs font-black text-[#76576f] dark:text-rose-200">
                 <Radio className="h-4 w-4" />
                 <span>{copy.brandStory.echoLabel}</span>
               </div>
@@ -76,7 +76,7 @@ export function BrandStorySection() {
                     key={title}
                     className="rounded-2xl border border-slate-200/70 bg-white/[0.78] p-4 shadow-sm backdrop-blur dark:border-white/10 dark:bg-white/5"
                   >
-                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-indigo-600 text-white shadow-lg shadow-indigo-500/20">
+                    <span className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-[#765f78] text-white shadow-lg shadow-rose-500/15">
                       <Icon className="h-4 w-4" />
                     </span>
                     <h3 className="mt-3 text-sm font-black text-slate-950 dark:text-white">{title}</h3>

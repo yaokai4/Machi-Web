@@ -15,9 +15,9 @@ import {
 
 const META: Record<"zh" | "en" | "ja", { title: string; description: string; keywords: string[] }> = {
   zh: {
-    title: "Machi City｜在每一座城市，找到生活的回声",
+    title: "Machi｜让陌生的城市，也有生活的门路",
     description:
-      "Machi 是一个按国家、城市和语言组织内容的本地生活与同城连接平台。发现租房、二手、工作、活动、问答、本地服务、商家优惠和真实城市经验。",
+      "Machi 按城市和语言，整理租房、生活手续、求职、二手、本地服务、问答与真实经验。先从日本开始，让刚来的人少走弯路，也让住久的人把有用的事留给后来者。",
     keywords: [
       "Machi",
       "Machi",
@@ -38,9 +38,9 @@ const META: Record<"zh" | "en" | "ja", { title: string; description: string; key
     ],
   },
   en: {
-    title: "Machi City | Find the echoes of life in every city",
+    title: "Machi | Find your way into a new city",
     description:
-      "Machi is a city-based local life and social community platform organized by country, city and language. Discover housing, secondhand deals, jobs, events, Q&A, local services, business offers and real city-life experience.",
+      "Machi organizes housing, paperwork, jobs, secondhand exchange, local services, Q&A, and first-hand advice by city and language. We are starting in Japan and building outward from real local needs.",
     keywords: [
       "Machi",
       "Machi",
@@ -59,9 +59,9 @@ const META: Record<"zh" | "en" | "ja", { title: string; description: string; key
     ],
   },
   ja: {
-    title: "Machi City｜すべての街で、暮らしのこだまを見つける",
+    title: "Machi｜知らない街でも、暮らし方は見つけられる",
     description:
-      "Machi は、国・都市・言語ごとに暮らしの情報と人のつながりを整理するローカルライフ・コミュニティプラットフォームです。住まい、中古品、仕事、イベント、Q&A、地域サービス、街の実体験を見つけることができます。",
+      "Machi は、住まい、手続き、仕事、譲り合い、地域サービス、Q&A、実際の経験を、街と言語ごとに整理するローカルライフ・プラットフォームです。まず日本から、暮らしに必要な道筋を整えています。",
     keywords: [
       "Machi",
       "Machi",

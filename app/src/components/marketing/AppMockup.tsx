@@ -21,19 +21,19 @@ const pulseCopy: Record<
   }
 > = {
   zh: {
-    title: "City Echo",
-    subtitle: "城市里的信息和人，正在互相回应。",
-    live: "Tokyo pulse",
+    title: "城市回声",
+    subtitle: "有用的信息被留下，也有人在此刻回应。",
+    live: "东京正在发生",
     languageLabel: "语言",
-    sceneLabel: "场景",
-    cities: ["Tokyo", "Los Angeles", "Toronto"],
-    scenes: ["Dining", "Meetups", "Housing", "Language Exchange", "Events"],
+    sceneLabel: "生活场景",
+    cities: ["东京", "洛杉矶", "多伦多"],
+    scenes: ["美食", "线下活动", "租房", "语言交换", "城市活动"],
     languages: ["中文", "EN", "日本語"],
-    messages: ["我刚到涩谷，想看看本地拉面讨论。", "周末有什么社区活动推荐？"],
+    messages: ["刚到涩谷，有没有适合一个人去的拉面店？", "这个周末附近有什么社区活动？"],
     posts: [
-      { meta: "Tokyo · Dining", title: "周五涩谷有哪些拉面店值得讨论？", replies: "3 community replies · 中文 / EN", heat: "Rising" },
-      { meta: "Tokyo · Language Exchange", title: "Looking for Japanese-English exchange near Shibuya.", replies: "12 replies · EN / 日本語", heat: "Hot" },
-      { meta: "Tokyo · Housing", title: "新宿租房有哪些坑要避开？", replies: "28 answers · 中文", heat: "Trusted" },
+      { meta: "东京 · 美食", title: "周五晚上，涩谷有哪些拉面店值得去？", replies: "3 条本地回复 · 中文 / EN", heat: "热度上升" },
+      { meta: "东京 · 语言交换", title: "想在涩谷附近找日英语言交换。", replies: "12 条回复 · EN / 日本語", heat: "正在热门" },
+      { meta: "东京 · 租房", title: "第一次在新宿租房，有哪些细节容易忽略？", replies: "28 条经验 · 中文", heat: "经验较多" },
     ],
   },
   en: {
@@ -53,19 +53,19 @@ const pulseCopy: Record<
     ],
   },
   ja: {
-    title: "City Pulse",
-    subtitle: "街の情報と人のつながりを、都市と言語で整理。",
-    live: "Tokyo pulse",
+    title: "街のいま",
+    subtitle: "必要な情報と、同じ街で暮らす人の経験が行き交います。",
+    live: "東京でいま",
     languageLabel: "言語",
-    sceneLabel: "シーン",
-    cities: ["Tokyo", "Los Angeles", "Toronto"],
-    scenes: ["Dining", "Meetups", "Housing", "Language Exchange", "Events"],
+    sceneLabel: "暮らしの場面",
+    cities: ["東京", "ロサンゼルス", "トロント"],
+    scenes: ["食事", "地域の集まり", "住まい", "言語交換", "イベント"],
     languages: ["中文", "EN", "日本語"],
-    messages: ["渋谷に来たばかりです。ラーメン情報を知りたいです。", "週末の地域イベントはありますか？"],
+    messages: ["渋谷に来たばかりです。一人でも入りやすいラーメン店はありますか？", "今週末、近くで参加できる地域イベントはありますか？"],
     posts: [
-      { meta: "Tokyo · Dining", title: "金曜夜の渋谷でおすすめのラーメン店は？", replies: "3 community replies · 中文 / EN", heat: "Rising" },
-      { meta: "Tokyo · Language Exchange", title: "Looking for Japanese-English exchange near Shibuya.", replies: "12 replies · EN / 日本語", heat: "Hot" },
-      { meta: "Tokyo · Housing", title: "新宿で部屋を借りる時の注意点は？", replies: "28 answers · 中文", heat: "Trusted" },
+      { meta: "東京 · 食事", title: "金曜の夜、渋谷で一人でも入りやすいラーメン店は？", replies: "地域から3件の返信 · 中文 / EN", heat: "注目度上昇" },
+      { meta: "東京 · 言語交換", title: "渋谷の近くで、日英の言語交換を探しています。", replies: "12件の返信 · EN / 日本語", heat: "話題" },
+      { meta: "東京 · 住まい", title: "新宿で初めて部屋を借りるとき、何に気をつければいい？", replies: "28件の経験談 · 中文", heat: "参考多数" },
     ],
   },
 };
@@ -194,7 +194,7 @@ export function AppMockup() {
                   "max-w-[78%] rounded-2xl px-3 py-2 text-sm font-bold leading-5 shadow-sm",
                   index % 2 === 0
                     ? "bg-orange-50 text-stone-800 ring-1 ring-orange-100 dark:bg-orange-500/10 dark:text-orange-50 dark:ring-orange-300/20"
-                    : "bg-indigo-600 text-white",
+                    : "bg-[#765f78] text-white",
                 )}>
                   {message}
                 </p>

@@ -14,7 +14,7 @@ export const metadata: Metadata = {
     default: "Machi",
     template: "%s | Machi",
   },
-  description: "Machi 是按城市和语言组织的本地生活与同城社交社区。在每一座城市，找到生活的回声。",
+  description: "Machi 按城市和语言，整理租房、生活手续、求职、二手、本地服务、问答与真实经验。让陌生的城市，也有生活的门路。",
   applicationName: "Machi",
   appleWebApp: { capable: true, title: "Machi", statusBarStyle: "default" },
   manifest: "/manifest.webmanifest",
@@ -213,7 +213,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
           </SessionBootstrap>
         </QueryProvider>
         <ServiceWorkerRegistrar />
-        <SiteSplash />
+        <SiteSplash locale={locale} />
       </body>
     </html>
   );

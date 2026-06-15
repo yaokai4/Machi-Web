@@ -225,7 +225,7 @@ export function Header() {
               style={{ animationDelay: `${index * 34}ms` }}
             >
               <span>{label}</span>
-              <span className="h-1.5 w-1.5 rounded-full bg-gradient-to-r from-indigo-500 to-sky-400 opacity-60" />
+              <span className="h-1.5 w-1.5 rounded-full bg-gradient-to-r from-rose-500 to-[#8a6b91] opacity-70" />
             </Link>
           ))}
           <div className="grid grid-cols-3 gap-2 px-1 pt-2">
@@ -237,7 +237,7 @@ export function Header() {
                 className={clsx(
                   "h-10 rounded-2xl text-sm font-black ring-1 transition active:scale-[0.98]",
                   locale === option.value
-                    ? "bg-gradient-to-r from-indigo-600 via-violet-600 to-sky-500 text-white ring-transparent shadow-[0_12px_34px_-22px_rgba(79,70,229,0.95)]"
+                    ? "bg-[linear-gradient(110deg,#ff7657_0%,#d94b5f_52%,#84658f_100%)] text-white ring-transparent shadow-[0_12px_34px_-22px_rgba(201,74,88,0.72)]"
                     : "bg-white text-slate-600 ring-slate-200 hover:text-slate-950 dark:bg-white/10 dark:text-slate-200 dark:ring-white/15",
                 )}
               >

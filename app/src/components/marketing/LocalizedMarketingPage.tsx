@@ -66,7 +66,7 @@ function MarketingBlock({ block, openLabel }: { block: MarketingPageBlock; openL
       <MarketingCard title={block.title} subtitle={block.body} className="mc-reveal">
         <Link
           href={`mailto:${CONTACT_EMAIL}`}
-          className="mt-6 inline-flex min-h-11 items-center gap-2 rounded-full bg-gradient-to-r from-indigo-600 via-violet-600 to-sky-500 px-5 text-sm font-black text-white shadow-[0_18px_46px_-26px_rgba(79,70,229,0.95)] transition hover:-translate-y-0.5"
+          className="mt-6 inline-flex min-h-11 items-center gap-2 rounded-full bg-[linear-gradient(110deg,#ff7657_0%,#d94b5f_48%,#84658f_100%)] px-5 text-sm font-black text-white shadow-[0_18px_46px_-26px_rgba(201,74,88,0.72)] transition hover:-translate-y-0.5"
         >
           <Mail className="h-4 w-4" aria-hidden="true" />
           {CONTACT_EMAIL}
@@ -93,13 +93,13 @@ function MarketingBlock({ block, openLabel }: { block: MarketingPageBlock; openL
               key={item.title}
               className="group rounded-[22px] bg-white/[0.62] p-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.78),0_18px_46px_-42px_rgba(15,23,42,0.65)] transition duration-300 hover:-translate-y-0.5 hover:bg-white/80 dark:bg-white/[0.05] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.09)]"
             >
-              {item.meta ? <p className="text-[11px] font-black uppercase text-indigo-600 dark:text-sky-300">{item.meta}</p> : null}
+              {item.meta ? <p className="text-[11px] font-black uppercase text-[#9a536f] dark:text-rose-200">{item.meta}</p> : null}
               <h3 className="text-base font-black text-slate-950 dark:text-white">
                 <BrandPhrase text={item.title} />
               </h3>
               <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-300">{item.body}</p>
               {item.href ? (
-                <Link href={item.href} className="mt-4 inline-flex items-center gap-1 text-sm font-black text-indigo-700 dark:text-sky-300">
+                <Link href={item.href} className="mt-4 inline-flex items-center gap-1 text-sm font-black text-[#76576f] dark:text-rose-200">
                   <MonitorSmartphone className="h-4 w-4" aria-hidden="true" />
                   <span>{openLabel}</span>
                   <ArrowRight className="h-4 w-4 transition group-hover:translate-x-0.5" aria-hidden="true" />

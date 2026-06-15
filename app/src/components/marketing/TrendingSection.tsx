@@ -17,7 +17,7 @@ export function TrendingSection() {
       <div className="mx-auto grid max-w-[1180px] gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
         {/* ─────────── LEFT — product preview card ─────────── */}
         <div className="mc-reveal relative">
-          <div className="relative overflow-hidden rounded-[28px] bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 p-5 text-white shadow-[0_30px_80px_-44px_rgba(15,23,42,0.95)] sm:p-7">
+          <div className="relative overflow-hidden rounded-[28px] bg-[linear-gradient(145deg,#25211f_0%,#342a2b_58%,#493641_100%)] p-5 text-white shadow-[0_30px_80px_-44px_rgba(55,40,43,0.9)] sm:p-7">
             <div className="pointer-events-none absolute -right-12 -top-12 h-44 w-44 rounded-full bg-orange-400/15 blur-3xl" aria-hidden="true" />
             <div className="pointer-events-none absolute -bottom-16 -left-12 h-40 w-40 rounded-full bg-indigo-400/15 blur-3xl" aria-hidden="true" />
 

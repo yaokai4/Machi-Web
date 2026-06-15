@@ -12,31 +12,39 @@ const copyByLocale: Record<
     title: string;
     body: string;
     pulse: string;
+    panelTitle: string;
+    liveLabel: string;
     cities: Array<[string, string]>;
     echoes: Array<[string, string]>;
   }
 > = {
   zh: {
-    label: "城市回声",
-    title: "当一座城市开始回应你，陌生感就会慢慢退去。",
-    body: "一个问题、一段经验、一次相约，看似微小，却共同构成城市正在发生的生活。Machi 让这些声音彼此抵达。",
-    pulse: "让发问、分享与回应，发生在同一座城市。",
+    label: "同城问答",
+    title: "你遇到的问题，也许这座城市里已经有人走过。",
+    body: "租房合同怎么看，手续先办哪一项，周末附近有什么活动。问题落在具体的城市里，回答才有真正可用的背景。",
+    pulse: "同一座城市，让经验离需要它的人更近。",
+    panelTitle: "城市动态",
+    liveLabel: "正在发生",
     cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
     echoes: [["有人发问", "新宿租房有哪些坑要避开？"], ["有人回应", "我去年住过这个区，可以分享合同注意点。"], ["有人连接", "周五涩谷拉面局，还有两个位置。"]],
   },
   en: {
-    label: "City Echo",
-    title: "A city begins to feel less unfamiliar when it answers back.",
-    body: "A question, a piece of experience, an invitation: each is small, yet together they reveal the life already unfolding around you. Machi helps those voices reach one another.",
-    pulse: "Questions, experience, and replies, grounded in the same city.",
+    label: "Local Q&A",
+    title: "Someone in the city has probably faced the same question.",
+    body: "How to read a lease, which paperwork comes first, what is happening nearby this weekend: an answer becomes useful when it comes with a real place and context.",
+    pulse: "Keep local experience close to the people who need it.",
+    panelTitle: "City activity",
+    liveLabel: "Happening now",
     cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
     echoes: [["Someone asks", "What should I avoid when renting in Shinjuku?"], ["Someone answers", "I lived there last year. Here is what to check in the contract."], ["Someone connects", "Friday ramen in Shibuya. Two seats left."]],
   },
   ja: {
-    label: "街のこだま",
-    title: "街から返事が届くと、知らない場所は少しずつ自分の居場所になります。",
-    body: "一つの問い、一つの経験、一度の誘い。どれも小さく見えて、いま街で営まれている暮らしを形づくっています。Machi は、その声どうしが届く道をつくります。",
-    pulse: "問い、経験、返事を、同じ街の中でつなぐ。",
+    label: "街のQ&A",
+    title: "その困りごとを、同じ街で先に経験した人がいるかもしれません。",
+    body: "賃貸契約の見方、手続きの順番、週末に参加できる催し。具体的な街と背景がわかるからこそ、回答は実際の暮らしに役立ちます。",
+    pulse: "街の経験を、必要としている人の近くに。",
+    panelTitle: "街の動き",
+    liveLabel: "いま",
     cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
     echoes: [["誰かが聞く", "新宿で部屋を借りる時の注意点は？"], ["誰かが答える", "去年そのエリアに住んでいました。契約で見る点を共有できます。"], ["誰かとつながる", "金曜の渋谷ラーメン会、あと二席あります。"]],
   },
@@ -97,13 +105,13 @@ export function CityPulseSection() {
               ))}
             </div>
 
-            <div className="rounded-[24px] bg-slate-950 p-4 text-white shadow-[0_22px_60px_-40px_rgba(15,23,42,0.9)] ring-1 ring-white/10">
+            <div className="rounded-[24px] bg-[#282321] p-4 text-white shadow-[0_22px_60px_-40px_rgba(55,40,43,0.85)] ring-1 ring-white/10">
               <p className="flex items-center gap-2 text-sm font-black">
                 <Radio className="h-4 w-4 text-orange-400" aria-hidden="true" />
-                City Pulse
+                {copy.panelTitle}
                 <span className="ml-auto inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider text-white/45">
                   <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-400" aria-hidden="true" />
-                  Live
+                  {copy.liveLabel}
                 </span>
               </p>
               <div className="mt-4 grid grid-cols-3 gap-2">

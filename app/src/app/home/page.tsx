@@ -1,9 +1,9 @@
 import type { Metadata } from "next";
 import HomeClient from "./HomeClient";
 
-const title = "Machi | 在每一座城市，找到生活的回声 | Machi City Home";
+const title = "Machi | 让陌生的城市，也有生活的门路";
 const description =
-  "Machi 是按城市和语言组织的本地生活与同城社交社区。用户可以发现城市里的租房、二手、工作、活动、问答、本地经验、语言交换小组和社区互助。";
+  "Machi 按城市和语言整理租房、二手、工作、活动、问答、本地服务、语言交换和真实生活经验。";
 
 export const metadata: Metadata = {
   title: { absolute: title },
@@ -23,7 +23,7 @@ export const metadata: Metadata = {
     url: "https://www.machicity.com/home",
     siteName: "Machi",
     type: "website",
-    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi City home" }],
+    images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi home" }],
   },
   twitter: {
     card: "summary_large_image",
@@ -37,7 +37,6 @@ const structuredData = {
   "@context": "https://schema.org",
   "@type": "WebApplication",
   name: "Machi",
-  alternateName: "Machi City",
   applicationCategory: "LifestyleApplication",
   operatingSystem: "Web, iOS",
   url: "https://www.machicity.com/home",
@@ -63,10 +62,10 @@ function HomeSsrSnapshot() {
   return (
     <section className="sr-only" aria-label="Machi Web App home summary">
       <h1>Machi</h1>
-      <p>在每一座城市，找到生活的回声。</p>
-      <p>Machi City · Find the echoes of life in every city.</p>
-      <p>Machi City · すべての街で、暮らしのこだまを見つける。</p>
-      <p>Machi 是按城市和语言组织的本地生活与同城社交社区。用户可以发现城市信息、社区讨论和本地经验。</p>
+      <p>让陌生的城市，也有生活的门路。</p>
+      <p>Machi · Find your way into a new city.</p>
+      <p>Machi · 知らない街でも、暮らし方は見つけられる。</p>
+      <p>Machi 按城市和语言整理租房、二手、工作、活动、问答、本地服务、语言交换和真实生活经验。</p>
       <h2>首页信息流</h2>
       <p>推荐、同城、关注、热榜。</p>
       <p>搜索租房、语言交换、工作、活动、本地问题。</p>

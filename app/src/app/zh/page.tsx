@@ -4,9 +4,9 @@ import { MarketingPageContent } from "@/components/marketing/MarketingPageConten
 import { marketingCopy } from "@/data/machi-home";
 import { localeAlternates } from "@/lib/marketing-locale";
 
-const title = "Machi City｜在每一座城市，找到生活的回声";
+const title = "Machi｜让陌生的城市，也有生活的门路";
 const description =
-  "Machi 是一个按国家、城市和语言组织内容的本地生活与同城连接平台。发现租房、二手、工作、活动、问答、本地服务、商家优惠和真实城市经验。";
+  "Machi 按城市和语言，整理租房、生活手续、求职、二手、本地服务、问答与真实经验。先从日本开始，让刚来的人少走弯路，也让住久的人把有用的事留给后来者。";
 
 export const metadata: Metadata = {
   title: { absolute: title },

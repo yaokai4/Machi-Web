@@ -77,85 +77,82 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
   about: {
     zh: {
       eyebrow: "关于 Machi",
-      title: "一座城市，应该让生活有迹可循。",
-      intro: "Machi 由姚凯创立，从东京出发，把散落在不同语言、平台与人际之间的生活经验，重新安放回一座座具体的城市。",
+      title: "让一座城市，成为可以好好生活的地方。",
+      intro: "Machi 由姚凯在东京创立。我们按城市和语言，整理生活指南、租房、二手、工作、问答、本地服务与社区连接，让实用信息更容易找到，也更容易判断。",
       blocks: [
-        { title: "Machi 从哪里开始", subtitle: "认识一座城市，往往不是从攻略开始，而是从别人的生活里开始。", body: "真正有用的城市信息，常常很小：一份租约里容易忽略的条款，一条求职路上的提醒，一件临行前转手的家具，一场周末活动，或一句“我也经历过”。\n\n它们散落在群聊、社交平台、地方网站和不同语言之间，出现得偶然，也消失得很快。Machi 想做的，是为这些经验留下清晰的坐标，让它们在需要的时候，仍然能被找到。" },
+        { title: "为什么做 Machi", subtitle: "真正让人困住的，往往不是没有答案，而是不知道哪个答案仍然适合自己。", body: "租房合同里容易忽略的条款，办理手续的先后顺序，求职时应该留意的条件，搬家前想转手的家具，周末附近的活动。这些信息都很具体，也都与城市、时间和语言有关。\n\n它们常常散在群聊、社交平台、地方网站和朋友之间。Machi 把这些经验重新放回它发生的城市，保留必要的背景，让后来的人在真正需要时还能找到。" },
         { title: "我们珍视的事", variant: "grid", items: [
-          { title: "城市有坐标", body: "每一条内容都回到真实发生的地方，而不是成为漂浮在信息流里的碎片。" },
-          { title: "经验有来处", body: "我们珍惜亲身经历、清楚来源和诚实表达，也为信任保留必要的边界。" },
-          { title: "语言不是门槛", body: "中文、英文、日文与更多语言，都应该在同一座城市里被平等听见。" },
-          { title: "克制，才走得久", body: "少一点打扰和上瘾设计，多一点清楚、安静与真正有用。" },
+          { title: "信息落在具体城市", body: "同一件事在不同国家和地区可能完全不同，地点是理解信息的第一层背景。" },
+          { title: "经验带着时间与来处", body: "亲身经历、明确来源和更新时间，能帮助人判断一条信息是否仍然适用。" },
+          { title: "语言不挡住生活", body: "界面语言和内容语言分别选择，让多语言城市里的每个人都能找到与自己有关的内容。" },
+          { title: "设计服务于理解", body: "少一点干扰，少一点为了停留而设计的机制，把清楚、可信与好用放在前面。" },
         ] },
-        { title: "我们怎样理解产品", variant: "grid", items: [
-          { title: "从城市开始", body: "国家、地区、城市构成内容的骨架，让信息始终贴近生活发生的地方。" },
-          { title: "让语言各归其位", body: "界面语言与内容语言彼此独立，多语言城市不必只用一种声音说话。" },
-          { title: "围绕真实日常", body: "住、行、工作、二手、活动、问答与服务，来自生活本身，而不是被包装出来的场景。" },
-          { title: "与本地共同生长", body: "居民、商家、招聘方和服务者在同一座城市里彼此发现，也彼此建立信任。" },
+        { title: "Machi 由什么组成", variant: "grid", items: [
+          { title: "Guide", body: "从日本开始，整理生活手续、升学、求职、JLPT、学校与公司资料，以及实际会用到的服务。" },
+          { title: "城市频道", body: "租房、二手、工作、招聘、活动、问答和本地服务，按城市与主题各归其位。" },
+          { title: "多语言社区", body: "在同一座城市里，用熟悉的语言提问、分享经验、参加小组，也看见其他语言的本地内容。" },
+          { title: "可信的本地连接", body: "通过认证、风险提示、举报、屏蔽和审核，为人与人、人与服务之间的连接保留边界。" },
         ] },
-        { title: "Machi 的生长路径", variant: "list", items: [
-          { meta: "NOW", title: "从日本与东京打好地基", body: "先把在日生活、求职、留学与城市社区中真正高频的问题做深、做清楚。" },
-          { meta: "NEXT", title: "开放首批海外城市", body: "根据真实需求，逐步连接洛杉矶、多伦多及更多多语言城市。" },
-          { meta: "TOGETHER", title: "建立可信的本地生态", body: "让居民、商家、招聘方、房源方与服务者，在清楚的规则下长期共生。" },
-          { meta: "BEYOND", title: "让更多语言与城市被看见", body: "不追求一次铺开世界，而是一座城市、一种语言地认真生长。" },
+        { title: "接下来怎样生长", variant: "list", items: [
+          { meta: "现在", title: "先把日本与东京做好", body: "继续完善在日生活、求职、升学、Guide 与城市社区，让高频问题有清楚、可靠的答案。" },
+          { meta: "下一步", title: "根据真实需求开放新城市", body: "不以地图上的覆盖数量为目标，而是确认内容、服务与社区条件后，再进入下一座城市。" },
+          { meta: "长期", title: "建立可持续的本地生态", body: "让居民、商家、招聘方、住居相关服务与社区组织，在明确规则下参与并建立信任。" },
         ] },
-        { title: "今天的我们", subtitle: "Machi 仍是一支小而专注的团队。", body: "我们不急着把功能堆满，而是愿意把每一条路径、每一种语言、每一个城市入口做得更准确一些。\n\n从东京开始，我们正在慢慢积累内容的可信度、社区的温度与产品的耐久度。希望很多年以后，Machi 仍是一个让人愿意回来寻找生活答案的地方。" },
+        { title: "今天的 Machi", subtitle: "我们仍是一支小而专注的团队。", body: "Web 版已经开放，iOS 与 Android 正在准备。现阶段，我们更在意每一条路径是否清楚、每一种语言是否自然、每一个公开状态是否诚实。\n\n从东京开始，我们想把 Machi 做成一个很多年后仍然有用的地方：人在需要时愿意回来，也愿意把自己的经验留给别人。" },
         { title: "与我们联系", variant: "contact", body: "品牌合作、媒体采访、城市建议或早期参与，欢迎写信至 hi@machicity.com。" },
       ],
     },
     en: {
       eyebrow: "About Machi",
-      title: "City life should be easier to find your way through.",
-      intro: "Founded by Yao Kai in Tokyo, Machi brings the practical knowledge scattered across languages, platforms, and personal circles back into the cities where it belongs.",
+      title: "Make a city easier to live in, one useful answer at a time.",
+      intro: "Founded by Yao Kai in Tokyo, Machi organizes guides, housing, secondhand exchange, jobs, questions, local services, and community connections by city and language.",
       blocks: [
-        { title: "Where Machi begins", subtitle: "You rarely come to know a city through a guidebook alone. More often, you learn it through other people's lives.", body: "The most useful local knowledge is often modest in size: a clause in a lease that is easy to miss, a warning before a job interview, a desk passed on before someone moves away, a weekend gathering, or a simple “I have been through this too.”\n\nThese details drift through group chats, social feeds, local websites, and different languages. They appear by chance and disappear just as quickly. Machi gives them a place and a clear local context, so they can still be found when someone needs them." },
+        { title: "Why Machi exists", subtitle: "The problem is often not a lack of answers, but not knowing which answer still applies to you.", body: "A clause that is easy to miss in a lease, the right order for local paperwork, what to check before accepting a job, furniture someone hopes to pass on before moving, or an event happening nearby this weekend: useful local information is specific to place, time, and language.\n\nToday it is scattered across group chats, social platforms, local sites, and personal circles. Machi brings that experience back into the city where it happened, with enough context for someone else to find and judge it later." },
         { title: "What we value", variant: "grid", items: [
-          { title: "A real sense of place", body: "Every post belongs to somewhere specific, not to an endless stream detached from daily life." },
-          { title: "Experience with a source", body: "We value first-hand knowledge, clear context, and honest expression, with thoughtful boundaries around trust." },
-          { title: "Language without hierarchy", body: "Chinese, English, Japanese, and more should be equally at home in the same city." },
-          { title: "Quiet by design", body: "Less interruption and engineered compulsion; more clarity, usefulness, and room to breathe." },
+          { title: "Information belongs somewhere", body: "The same question can have a different answer in every country and city. Place is the first layer of context." },
+          { title: "Experience needs a date and source", body: "First-hand knowledge, clear origins, and recent updates help people decide whether advice still applies." },
+          { title: "Language should not block daily life", body: "Interface and content languages are chosen separately, so multilingual cities are not reduced to a single voice." },
+          { title: "Design should aid understanding", body: "Less distraction and fewer mechanics built only for attention; more clarity, trust, and practical use." },
         ] },
-        { title: "How we think about the product", variant: "grid", items: [
-          { title: "Built around cities", body: "Country, region, and city form the structure, keeping information close to where life actually happens." },
-          { title: "Language on your terms", body: "Interface and content languages are separate, because multilingual cities should never be reduced to one voice." },
-          { title: "Shaped by ordinary life", body: "Housing, work, secondhand exchange, events, questions, and services begin with real needs, not invented use cases." },
-          { title: "Growing with local people", body: "Residents, businesses, recruiters, and service providers can find one another and build trust within the same city." },
+        { title: "What makes up Machi", variant: "grid", items: [
+          { title: "Guide", body: "Starting in Japan, with practical help for daily procedures, study, careers, JLPT, school and company research, and useful services." },
+          { title: "City channels", body: "Housing, secondhand, jobs, hiring, events, Q&A, and local services, each with a clear city and topic." },
+          { title: "Multilingual community", body: "Ask questions, share experience, join groups, and discover local content in the languages that work for you." },
+          { title: "Trusted local connection", body: "Verification, risk prompts, reporting, blocking, and review create clearer boundaries between people and services." },
         ] },
         { title: "How Machi will grow", variant: "list", items: [
-          { meta: "NOW", title: "Build a strong foundation in Japan", body: "Go deep on the questions that matter most to people studying, working, and building a life in Japan." },
-          { meta: "NEXT", title: "Open the first international cities", body: "Expand thoughtfully into Los Angeles, Toronto, and other multilingual cities as real demand emerges." },
-          { meta: "TOGETHER", title: "Create a trusted local ecosystem", body: "Give residents, businesses, recruiters, housing providers, and local services clear rules for participating together." },
-          { meta: "BEYOND", title: "Make room for more cities and languages", body: "Not the whole world at once, but one city and one language at a time, with care." },
+          { meta: "NOW", title: "Build Japan and Tokyo well", body: "Keep improving daily-life, career, study, Guide, and city-community paths around the questions people ask most." },
+          { meta: "NEXT", title: "Open new cities when the need is real", body: "We care less about filling a map than having the content, services, and community conditions to support a city properly." },
+          { meta: "LONG TERM", title: "Build a sustainable local ecosystem", body: "Create clear rules for residents, businesses, recruiters, housing-related services, and community organizations to participate with trust." },
         ] },
-        { title: "Who we are today", subtitle: "Machi is still built by a small, focused team.", body: "We are not in a hurry to fill the product with features. We would rather make each path, language, and city entrance more considered and more dependable.\n\nStarting in Tokyo, we are building trust in the content, warmth in the community, and durability in the product. Years from now, we hope Machi will still be a place people return to when they need to find their footing." },
+        { title: "Machi today", subtitle: "We are still a small, focused team.", body: "The web app is live, while iOS and Android are in preparation. At this stage, we care about whether every path is clear, every language feels natural, and every public status is honest.\n\nStarting in Tokyo, we want to build something that remains useful years from now: a place people return to when they need help, and contribute to when they have something worth passing on." },
         { title: "Get in touch", variant: "contact", body: "For partnerships, press, city suggestions, or early participation, write to hi@machicity.com." },
       ],
     },
     ja: {
       eyebrow: "Machi について",
-      title: "街の暮らしに、たどれる道筋を。",
-      intro: "Machi は、姚凱が東京で立ち上げたローカルライフプラットフォームです。言語やサービスの壁を越えて散らばる暮らしの知恵を、街という単位でもう一度つなぎ直します。",
+      title: "街で暮らすための手がかりを、必要な人へ。",
+      intro: "Machi は、姚凱が東京で立ち上げたローカルライフプラットフォームです。ガイド、住まい、譲り合い、仕事、相談、地域サービス、コミュニティを、街と言語ごとに整理します。",
       blocks: [
-        { title: "Machi の原点", subtitle: "街を知る手がかりは、観光案内よりも、誰かの暮らしの中にあります。", body: "本当に役立つ情報は、たいていささやかなものです。賃貸契約で見落としやすい一文、仕事を探すときの注意点、引っ越し前に譲られる家具、週末の集まり、あるいは「私も同じことで困った」というひと言。\n\nけれど、そうした知恵はチャットやSNS、地域サイト、いくつもの言語のあいだに散らばり、すぐに流れてしまいます。Machi は、一つひとつの経験に街という住所を与え、必要なときにきちんとたどり着ける場所をつくります。" },
+        { title: "Machi をつくる理由", subtitle: "答えがないのではなく、今の自分に合う答えを見つけにくい。そこから始まりました。", body: "賃貸契約で見落としやすい項目、役所手続きの順番、仕事を選ぶときの注意点、引っ越し前に譲りたい家具、今週末の地域イベント。役に立つ情報は、街や時期、言語によって変わります。\n\nところが、その多くはグループチャットやSNS、地域サイト、知人どうしの会話に散らばり、すぐに流れてしまいます。Machi は、経験を生まれた街へ戻し、あとから必要になった人が判断できる背景とともに残します。" },
         { title: "大切にしていること", variant: "grid", items: [
-          { title: "街に根ざす", body: "情報を大きな流れに放り込まず、実際に暮らしが営まれている場所へ戻します。" },
-          { title: "経験の背景を大切にする", body: "実体験、明確な出典、誠実な言葉を尊重し、信頼のための境界も丁寧に設けます。" },
-          { title: "ことばの違いを壁にしない", body: "日本語、中国語、英語、そしてほかの言語も、同じ街の中で等しく届くようにします。" },
-          { title: "静かに、長く使える", body: "気を引き続ける仕掛けより、わかりやすさと余白、毎日の役立ち方を選びます。" },
+          { title: "情報を具体的な街に結びつける", body: "同じ質問でも、国や街が変われば答えは変わります。場所は情報を理解するための大切な背景です。" },
+          { title: "経験の時期と出どころを示す", body: "実体験、明確な情報源、更新時期がわかれば、今も使える情報か判断しやすくなります。" },
+          { title: "言語を暮らしの壁にしない", body: "画面とコンテンツの言語を別々に選べるため、多言語の街を一つの言葉だけで扱いません。" },
+          { title: "理解しやすい設計を優先する", body: "注意を奪う仕掛けを減らし、わかりやすさ、信頼、実際の使いやすさを大切にします。" },
         ] },
-        { title: "プロダクトの考え方", variant: "grid", items: [
-          { title: "街から探せる", body: "国、地域、都市を情報の骨格にして、暮らしが起きる場所から探せるようにします。" },
-          { title: "言語を選べる", body: "画面の言語と読むコンテンツの言語を分け、多言語の街を一つの声に閉じ込めません。" },
-          { title: "日常に沿っている", body: "住まい、仕事、譲り合い、イベント、相談、サービス。起点はいつも実際の暮らしです。" },
-          { title: "地域とともに育つ", body: "住民、お店、採用担当、住まいの提供者、地域サービスが、同じ街で信頼を育てられる設計を目指します。" },
+        { title: "Machi を構成するもの", variant: "grid", items: [
+          { title: "Guide", body: "まずは日本から、生活手続き、進学、就職、JLPT、学校・企業情報、実際に使うサービスを整理します。" },
+          { title: "街のチャンネル", body: "住まい、譲り合い、仕事、求人、イベント、Q&A、地域サービスを街とテーマごとに探せます。" },
+          { title: "多言語コミュニティ", body: "使いやすい言語で質問や共有ができ、ほかの言語で発信された地域情報にも出会えます。" },
+          { title: "信頼できる地域のつながり", body: "認証、注意喚起、通報、ブロック、審査によって、人とサービスの間に必要な境界を設けます。" },
         ] },
-        { title: "Machi の育て方", variant: "list", items: [
-          { meta: "NOW", title: "まず、日本で足元を固める", body: "日本で暮らす人、学ぶ人、働く人が本当に必要とする情報を、深く、わかりやすく整えます。" },
-          { meta: "NEXT", title: "最初の海外都市へ", body: "実際の声を確かめながら、ロサンゼルス、トロントをはじめとする多言語都市へ広げます。" },
-          { meta: "TOGETHER", title: "信頼できる地域の循環をつくる", body: "住民、お店、採用、住まい、地域サービスが、明確なルールのもとで長く関われる環境を整えます。" },
-          { meta: "BEYOND", title: "街と言語を、少しずつ増やす", body: "世界を一度に覆うのではなく、一つの街、一つの言語と丁寧に向き合います。" },
+        { title: "これからの育て方", variant: "list", items: [
+          { meta: "現在", title: "まず日本と東京を丁寧につくる", body: "日本での暮らし、仕事、進学、Guide、地域コミュニティを、よくある疑問から着実に改善します。" },
+          { meta: "次の段階", title: "必要とされる街から広げる", body: "地図を埋めることより、情報、サービス、コミュニティをきちんと支えられるかを確かめてから次の街へ進みます。" },
+          { meta: "長期", title: "持続する地域の仕組みをつくる", body: "住民、店舗、採用担当、住まいに関わる事業者、地域団体が、明確なルールのもとで参加できる環境を整えます。" },
         ] },
-        { title: "いまの私たち", subtitle: "Machi は、まだ小さなチームで育てています。", body: "機能を急いで増やすより、迷わず使える導線、自然に読める言葉、街ごとの入口を一つずつ確かめることを大切にしています。\n\n東京から始めて、情報への信頼、コミュニティの温度、長く使えるプロダクトの強さを積み重ねていきます。何年先でも、暮らしの手がかりを探しに戻ってこられる場所でありたいと考えています。" },
+        { title: "現在の Machi", subtitle: "まだ小さなチームで開発しています。", body: "Web 版は公開済みで、iOS と Android は準備中です。今は、導線がわかりやすいか、各言語が自然に読めるか、公開状況を正確に伝えているかを一つずつ確かめています。\n\n東京から始め、何年後も役に立つプロダクトを目指します。困ったときに戻ってこられ、知っていることがあれば次の人へ渡せる。Machi を、そんな場所に育てていきます。" },
         { title: "お問い合わせ", variant: "contact", body: "提携、取材、街に関するご提案、先行利用については、hi@machicity.com までご連絡ください。" },
       ],
     },
@@ -163,8 +160,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
   features: {
     zh: {
       eyebrow: "功能",
-      title: "城市经验的完整功能矩阵。",
-      intro: "从内容、交易、工作到线下连接，Machi 把一座城市需要的日常入口整理在同一个 App。",
+      title: "在一座城市里真正会用到的，都放在清楚的位置。",
+      intro: "从 Guide、问答和搜索，到租房、二手、工作、服务与本地社区，Machi 用城市和语言把这些入口连在一起。",
       blocks: [
         { title: "内容频道", variant: "grid", items: [
           { title: "新闻与攻略", body: "本地快讯、政策提醒、生活经验和避坑指南。" },
@@ -178,7 +175,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
           { title: "服务", body: "搬家、签证、翻译、维修、报税等本地服务。" },
           { title: "工作与招聘", body: "找工作、兼职、全职、实习、内推和本地招聘。" },
         ] },
-	        { title: "Community & Offline", variant: "grid", items: [
+		        { title: "社区与线下活动", variant: "grid", items: [
 	          { title: "同城社区", body: "公开城市话题、本地互助、兴趣小组和社区讨论。" },
 	          { title: "本地小组", body: "美食聚会、咖啡讨论、活动小组、运动小组和周末本地活动。" },
 	          { title: "活动 / 语言交换 / 问答", body: "围绕城市活动、语言学习和生活问题参与社区互动。" },
@@ -188,8 +185,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     },
     en: {
       eyebrow: "Features",
-      title: "A complete city-experience feature set.",
-      intro: "From content and local exchange to jobs and offline connections, Machi organizes city life into one app.",
+      title: "The everyday parts of city life, each with a clear place.",
+      intro: "From Guide, Q&A, and search to housing, secondhand exchange, jobs, services, and local community, Machi connects the practical paths people use in a city.",
       blocks: [
         { title: "Content channels", variant: "grid", items: [
           { title: "News and guides", body: "Local updates, policy reminders, lived experience and practical guides." },
@@ -207,42 +204,42 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
 	          { title: "City community", body: "Public city topics, local help, interest groups and community discussions." },
 	          { title: "Local groups", body: "Food meetups, café discussions, event groups, sports groups and weekend community posts." },
 	          { title: "Events / Language Exchange / Q&A", body: "Take part in community activities around city events, language learning and local questions." },
-	          { title: "Avoid", body: "Local warnings for housing, transactions, hiring and offline community activities." },
+	          { title: "Safety notes", body: "Local warnings for housing, transactions, hiring and in-person community activities." },
 	        ] },
       ],
     },
     ja: {
       eyebrow: "機能",
-      title: "地域生活に必要な機能をひとつに。",
-      intro: "コンテンツ、取引、仕事、オフラインのつながりまで、Machi は街の暮らしの入口を整理します。",
+      title: "街でよく使うものを、迷わず探せる場所に。",
+      intro: "Guide、Q&A、検索から、住まい、譲り合い、仕事、地域サービス、コミュニティまで。Machi は、街と言語を軸に日々の入口をつなぎます。",
       blocks: [
         { title: "コンテンツチャンネル", variant: "grid", items: [
-          { title: "ニュースとガイド", body: "地域ニュース、制度の注意、生活経験、避けたい落とし穴。" },
-          { title: "Q&A と経験", body: "散らばった質問を検索できる街の知識へ。" },
-          { title: "トレンド", body: "都市、国、全体の三層で話題を発見。" },
+          { title: "ニュースとガイド", body: "地域ニュース、制度の変更、生活上の注意、実体験にもとづくガイド。" },
+          { title: "Q&A と体験談", body: "街の中に散らばる疑問と回答を、あとから検索できる形で残します。" },
+          { title: "トレンド", body: "街、国、Machi 全体の三つの範囲から、今注目されている話題を見つけます。" },
           { title: "多言語投稿", body: "ユーザーが選んだ投稿言語を優先します。" },
         ] },
         { title: "取引と機会", variant: "grid", items: [
-          { title: "フリマ", body: "譲渡、引っ越し売り、探し物、無料譲渡。" },
-          { title: "住まい", body: "賃貸、サブリース、シェア、ルームメイト、注意喚起。" },
+          { title: "譲り合い", body: "中古品の出品、引っ越し前の整理、探し物、無料での譲渡。" },
+          { title: "住まい", body: "賃貸、転貸、シェアハウス、ルームメイト探し、契約時の注意点。" },
           { title: "サービス", body: "引っ越し、ビザ、翻訳、修理、税務など。" },
           { title: "仕事と採用", body: "バイト、正社員、インターン、紹介、地域採用。" },
         ] },
 	        { title: "コミュニティとオフライン", variant: "grid", items: [
-	          { title: "街のコミュニティ", body: "公開された都市トピック、地域の助け合い、趣味グループ、コミュニティ投稿。" },
-	          { title: "地域グループ", body: "食事の集まり、カフェ討論、イベントグループ、スポーツグループ、週末の地域投稿。" },
-	          { title: "イベント / 言語交換 / Q&A", body: "地域イベント、言語学習、生活の質問を中心にコミュニティ参加。" },
+	          { title: "街のコミュニティ", body: "公開された街の話題、地域の助け合い、趣味のグループ、コミュニティ投稿。" },
+	          { title: "地域グループ", body: "食事、カフェでの交流、イベント、スポーツ、週末の集まり。" },
+	          { title: "イベント・言語交換・Q&A", body: "地域イベント、言語学習、暮らしの質問をきっかけに参加できます。" },
 	          { title: "注意情報", body: "住まい、取引、求人、オフラインのコミュニティ活動に関するリスクを共有。" },
 	        ] },
       ],
     },
   },
   cities: {
-    zh: { eyebrow: "城市", title: "Machi 按城市生长，而不是假装已经覆盖全球。", intro: "我们先在日本打磨 Guide、服务和城市社区，再逐步扩展到加拿大、澳洲、英国、法国、德国、韩国、美国等地区。早期城市会清楚标注开放状态。", blocks: [{ title: "Now building", variant: "grid", items: [
-	      { title: "Japan · Tokyo", meta: "Now building", body: "东京优先打磨城市社区、生活信息、Guide、服务和本地小组。" },
-      { title: "Japan · Osaka", meta: "Preparing", body: "围绕生活指南、本地活动、招聘、二手和服务场景准备。" },
-	      { title: "Japan · Kyoto", meta: "Preparing", body: "面向留学、旅游之外的真实生活经验和本地社区准备。" },
-    ] }, { title: "Next regions", variant: "grid", items: [
+    zh: { eyebrow: "城市", title: "先认真做好一座城市，再走向下一座。", intro: "Machi 目前以日本和东京为重点，完善 Guide、城市内容、服务与社区功能。其他城市会根据真实需求和准备程度逐步开放，并清楚标注状态。", blocks: [{ title: "正在建设", variant: "grid", items: [
+	      { title: "日本 · 东京", meta: "重点建设", body: "优先完善城市社区、在日生活信息、Machi Guide、本地服务与小组。" },
+      { title: "日本 · 大阪", meta: "准备中", body: "围绕生活指南、本地活动、工作、二手和服务场景进行准备。" },
+	      { title: "日本 · 京都", meta: "准备中", body: "整理留学与旅游之外的长期生活经验，并为本地社区做准备。" },
+    ] }, { title: "下一阶段", variant: "grid", items: [
       { title: "Canada", body: "多语言城市、租房、工作、本地问答和新移居者支持。" },
       { title: "Australia", body: "城市社区、服务、活动、二手和生活手续。" },
       { title: "United Kingdom", body: "学习、工作、租房和本地服务场景。" },
@@ -250,11 +247,11 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Germany", body: "手续、工作、住房和城市问答。" },
 	      { title: "South Korea", body: "生活信息、语言交换、活动和本地社区。" },
       { title: "United States", body: "首批海外城市将以真实需求和社区密度逐步开放。" },
-    ] }, { title: "Future city layers", variant: "list", items: [
-      { title: "Housing / Jobs / Services", body: "租房、工作、本地服务和商家优惠会按城市与语言组织。" },
-      { title: "Events / Language Exchange / Q&A", body: "活动、语言交换、同城问答和真实经验会成为每个城市的生活层。" },
+    ] }, { title: "每座城市会逐步拥有", variant: "list", items: [
+      { title: "租房、工作与服务", body: "房源、工作、本地服务与商家信息，会按城市、地区和语言整理。" },
+      { title: "活动、语言交换与问答", body: "本地活动、兴趣小组、语言交换、问答与真实经验，会共同构成城市社区。" },
     ] }] },
-    en: { eyebrow: "Cities", title: "Machi grows city by city, not from an empty global map.", intro: "We are starting with Japan to refine Guide, services and city communities, then expanding to Canada, Australia, the United Kingdom, France, Germany, South Korea, the United States and more regions. Early cities are clearly marked with launch status.", blocks: [{ title: "Now building", variant: "grid", items: [
+    en: { eyebrow: "Cities", title: "Build one city well, then earn the right to open the next.", intro: "Machi is currently focused on Japan and Tokyo, improving Guide, city content, services, and community features. Other cities will open gradually as real demand and local readiness grow, with status shown clearly.", blocks: [{ title: "Now building", variant: "grid", items: [
 	      { title: "Japan · Tokyo", meta: "Now building", body: "Tokyo is where we refine city community, local information, Guide, services and local groups first." },
       { title: "Japan · Osaka", meta: "Preparing", body: "Preparing life guides, local events, hiring, secondhand and service scenes." },
 	      { title: "Japan · Kyoto", meta: "Preparing", body: "Preparing real everyday experience and local community beyond travel and study." },
@@ -266,67 +263,67 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Germany", body: "Procedures, work, housing and city Q&A." },
 	      { title: "South Korea", body: "Local information, language exchange, events and city communities." },
       { title: "United States", body: "First overseas cities will open gradually by real demand and community density." },
-    ] }, { title: "Future city layers", variant: "list", items: [
-      { title: "Housing / Jobs / Services", body: "Housing, jobs, local services and business offers organized by city and language." },
-      { title: "Events / Language Exchange / Q&A", body: "Events, language exchange, city Q&A and lived experience become the everyday layer of each city." },
+    ] }, { title: "What each city will grow into", variant: "list", items: [
+      { title: "Housing, jobs, and services", body: "Listings, work, local services, and business information organized by city, area, and language." },
+      { title: "Events, language exchange, and Q&A", body: "Local events, interest groups, language exchange, questions, and lived experience forming a useful city community." },
     ] }] },
-    ja: { eyebrow: "都市", title: "Machi は空白の世界地図からではなく、一つひとつの都市から育ちます。", intro: "まずは日本で Guide、サービス、都市コミュニティを磨き、その後カナダ、オーストラリア、英国、フランス、ドイツ、韓国、米国などへ広げていきます。初期都市は公開ステータスを明記します。", blocks: [{ title: "Now building", variant: "grid", items: [
-	      { title: "Japan · Tokyo", meta: "Now building", body: "東京で都市コミュニティ、生活情報、Guide、サービス、地域グループを先に磨きます。" },
-      { title: "Japan · Osaka", meta: "Preparing", body: "生活ガイド、地域イベント、求人、中古、サービスシーンを準備しています。" },
-	      { title: "Japan · Kyoto", meta: "Preparing", body: "観光や留学だけでない、実際の暮らしと地域コミュニティを準備しています。" },
-    ] }, { title: "Next regions", variant: "grid", items: [
-      { title: "Canada", body: "多言語都市、住まい、仕事、Q&A、新生活サポート。" },
-      { title: "Australia", body: "都市コミュニティ、サービス、イベント、中古、生活手続き。" },
-      { title: "United Kingdom", body: "学び、仕事、住まい、地域サービスのシーン。" },
+    ja: { eyebrow: "街", title: "一つの街をきちんと育ててから、次の街へ。", intro: "Machi は現在、日本と東京を中心に、Guide、街の情報、地域サービス、コミュニティ機能を整えています。ほかの街は、実際の需要と準備状況を確かめながら段階的に公開し、状態も明確に表示します。", blocks: [{ title: "現在取り組んでいる街", variant: "grid", items: [
+	      { title: "日本 · 東京", meta: "重点開発中", body: "地域コミュニティ、日本での生活情報、Machi Guide、地域サービス、グループ機能を優先して改善しています。" },
+      { title: "日本 · 大阪", meta: "準備中", body: "生活ガイド、地域イベント、仕事、譲り合い、サービスに関する準備を進めています。" },
+	      { title: "日本 · 京都", meta: "準備中", body: "観光や留学だけではない、長く暮らす人のための情報と地域コミュニティを準備しています。" },
+    ] }, { title: "次の地域", variant: "grid", items: [
+      { title: "カナダ", body: "多言語で暮らす街、住まい、仕事、Q&A、新生活のサポート。" },
+      { title: "オーストラリア", body: "地域コミュニティ、サービス、イベント、譲り合い、暮らしの手続き。" },
+      { title: "英国", body: "学び、仕事、住まい、地域サービスに関する情報。" },
       { title: "France", body: "多言語の生活ガイド、イベント、地域サービス。" },
-      { title: "Germany", body: "手続き、仕事、住まい、都市 Q&A。" },
-	      { title: "South Korea", body: "生活情報、言語交換、イベント、地域コミュニティ。" },
-      { title: "United States", body: "実際の需要とコミュニティ密度に合わせて初期都市を広げます。" },
-    ] }, { title: "Future city layers", variant: "list", items: [
-      { title: "Housing / Jobs / Services", body: "住まい、仕事、地域サービス、お店の特典を都市と言語で整理します。" },
-      { title: "Events / Language Exchange / Q&A", body: "イベント、言語交換、都市 Q&A、生活経験が各都市の暮らしの層になります。" },
+      { title: "ドイツ", body: "暮らしの手続き、仕事、住まい、街の Q&A。" },
+	      { title: "韓国", body: "生活情報、言語交換、イベント、地域コミュニティ。" },
+      { title: "米国", body: "実際の需要とコミュニティの育ち方を見ながら、対応する街を広げます。" },
+    ] }, { title: "それぞれの街で育てるもの", variant: "list", items: [
+      { title: "住まい・仕事・地域サービス", body: "物件、仕事、地域サービス、事業者情報を、街・エリア・言語ごとに整理します。" },
+      { title: "イベント・言語交換・Q&A", body: "地域イベント、趣味のグループ、言語交換、質問、実体験をつなぎ、役に立つ地域コミュニティを育てます。" },
     ] }] },
   },
   guide: {
-    zh: { eyebrow: "Machi Guide", title: "Machi Guide：从日本开始的城市生活指南", intro: "Guide 是 Machi 的城市知识层。我们先从日本开始整理生活、升学、就职、JLPT、学校库、公司库、资料和服务，未来会把这套结构扩展到更多国家和城市。", blocks: [{ title: "日本地区已整理的方向", variant: "grid", items: [
+    zh: { eyebrow: "Machi Guide", title: "把在日本生活的每一步，讲得更清楚。", intro: "Machi Guide 从真实流程出发，整理生活手续、升学、求职、JLPT、学校与公司资料，以及实际会用到的服务。它是 Machi 的知识部分，但不是 Machi 的全部。", blocks: [{ title: "目前重点整理", variant: "grid", items: [
       { title: "日本生活", body: "银行卡、手机卡、年金、保险、役所手续、租房和打工。" },
       { title: "日本升学", body: "大学院、专门学校、研究计划书、教授联系和出愿材料。" },
       { title: "日本就职", body: "履历书、职务经歴书、ES、面试、公司选择和签证变更。" },
       { title: "日语考级", body: "JLPT N5-N1、词汇语法、阅读听力和备考资料。" },
       { title: "学校库与公司库", body: "大学、大学院、专门学校、语言学校，以及外国人就职参考。" },
 	      { title: "资料与服务", body: "模板、清单、翻译、接机、手续协助和申请辅导。" },
-    ] }, { title: "边界说明", variant: "legal", items: [
-	      { title: "Guide 不是 Machi 的全部", body: "Machi 还包括城市内容、本地小组、社区、服务、商家、招聘、租房和多语言场景。" },
-      { title: "不保证结果", body: "升学、签证、就业、租房、开户等结果取决于用户资料、第三方机构和当地规则。" },
-      { title: "会继续扩展", body: "加拿大、澳洲、英国、法国、德国、韩国、美国等地区会按城市需求逐步加入。" },
+    ] }, { title: "使用前请了解", variant: "legal", items: [
+		      { title: "Guide 是 Machi 的一部分", body: "Machi 还包括城市内容、租房、二手、工作、问答、本地小组、商家与服务等功能。" },
+      { title: "信息不能替代专业判断", body: "升学、签证、就业、租房、开户等结果取决于个人材料、第三方机构与当地规则。重要事项请同时向官方或专业人士确认。" },
+      { title: "内容会持续更新", body: "我们会先把日本内容做深，再根据城市需求逐步扩展到其他国家和地区。" },
     ] }] },
-    en: { eyebrow: "Machi Guide", title: "Machi Guide: city-life guides starting with Japan", intro: "Guide is the knowledge layer of Machi. We are starting with Japan — life, school applications, job hunting, JLPT, school directories, company directories, materials and services — and will expand the structure to more countries and cities.", blocks: [{ title: "Japan areas now being organized", variant: "grid", items: [
+    en: { eyebrow: "Machi Guide", title: "Make each step of life in Japan easier to understand.", intro: "Machi Guide follows the real processes people face: daily paperwork, study, careers, JLPT, school and company research, and practical services. It is the knowledge side of Machi, but not the whole product.", blocks: [{ title: "Our current focus", variant: "grid", items: [
       { title: "Life in Japan", body: "Banking, mobile plans, pension, insurance, city office procedures, housing and part-time work." },
       { title: "Study in Japan", body: "Graduate school, vocational schools, research plans, professor outreach and application materials." },
       { title: "Career in Japan", body: "Resume, rirekisho, ES, interviews, company selection and visa change." },
       { title: "JLPT", body: "JLPT N5-N1, vocabulary, grammar, reading, listening and preparation materials." },
       { title: "School and company directories", body: "Universities, graduate schools, vocational schools, language schools and foreigner-friendly company references." },
       { title: "Materials and services", body: "Templates, checklists, translation, airport pickup, procedure support and application coaching." },
-    ] }, { title: "Boundaries", variant: "legal", items: [
-	      { title: "Guide is not all of Machi", body: "Machi also includes city content, local groups, community, services, businesses, hiring, housing and multilingual scenes." },
-      { title: "No guaranteed outcomes", body: "Study, visa, employment, housing and banking outcomes depend on user materials, third parties and local rules." },
-      { title: "Expanding gradually", body: "Canada, Australia, the United Kingdom, France, Germany, South Korea, the United States and more regions will be added by city demand." },
+    ] }, { title: "Before you rely on a guide", variant: "legal", items: [
+		      { title: "Guide is one part of Machi", body: "Machi also includes city content, housing, secondhand exchange, jobs, Q&A, local groups, businesses, and services." },
+      { title: "Information is not a guarantee", body: "Study, visa, employment, housing, and banking outcomes depend on personal documents, third parties, and local rules. Confirm important matters with official or qualified sources." },
+      { title: "Content will keep changing", body: "We are going deeper in Japan first, then expanding to other countries and regions as city needs become clear." },
     ] }] },
-    ja: { eyebrow: "Machi Guide", title: "Machi Guide：日本から始まる都市生活ガイド", intro: "Guide は Machi の都市知識レイヤーです。まずは日本から、生活、進学、就職、JLPT、学校データベース、会社データベース、資料、サービスを整理し、今後さらに多くの国と都市へ展開していきます。", blocks: [{ title: "日本で整理している領域", variant: "grid", items: [
+    ja: { eyebrow: "Machi Guide", title: "日本で暮らす一つひとつの手順を、わかりやすく。", intro: "Machi Guide は、日々の手続き、進学、就職、JLPT、学校・企業情報、実際に使うサービスを、現実の流れに沿って整理します。Machi の知識を支える機能ですが、プロダクトのすべてではありません。", blocks: [{ title: "現在重点的に整理している分野", variant: "grid", items: [
       { title: "日本生活", body: "銀行口座、携帯、年金、保険、役所手続き、住まい、アルバイト。" },
       { title: "日本進学", body: "大学院、専門学校、研究計画書、教授連絡、出願書類。" },
       { title: "日本就職", body: "履歴書、職務経歴書、ES、面接、会社選び、ビザ変更。" },
       { title: "JLPT", body: "JLPT N5-N1、語彙、文法、読解、聴解、学習資料。" },
       { title: "学校・会社データベース", body: "大学、大学院、専門学校、日本語学校、外国人就職向け会社情報。" },
 	      { title: "資料とサービス", body: "テンプレート、チェックリスト、翻訳、空港送迎、手続きサポート、申請サポート。" },
-    ] }, { title: "位置づけ", variant: "legal", items: [
-	      { title: "Guide は Machi のすべてではありません", body: "Machi には都市コンテンツ、地域グループ、コミュニティ、サービス、事業者、求人、住まい、多言語シーンがあります。" },
-      { title: "結果を保証しません", body: "進学、ビザ、就職、住まい、口座開設などの結果は、本人資料、第三者、現地ルールに左右されます。" },
-      { title: "段階的に拡大します", body: "カナダ、オーストラリア、英国、フランス、ドイツ、韓国、米国などを都市需要に合わせて追加します。" },
+    ] }, { title: "利用する前に", variant: "legal", items: [
+		      { title: "Guide は Machi の一部です", body: "Machi には、街の情報、住まい、譲り合い、仕事、Q&A、地域グループ、事業者、サービスなどの機能もあります。" },
+      { title: "情報は結果を保証するものではありません", body: "進学、在留資格、就職、住まい、口座開設などは、本人の書類、第三者機関、現地の制度に左右されます。重要な事項は公式窓口や専門家にもご確認ください。" },
+      { title: "内容は継続して更新します", body: "まず日本の情報を充実させ、街ごとの需要を確かめながらほかの国や地域へ広げます。" },
     ] }] },
   },
   business: {
-    zh: { eyebrow: "商家合作", title: "让本地商家从“被看见”变成“被需要”。", intro: "商家入驻不是简单投广告。餐厅、语言学校、活动组织者、健身房、课程机构、本地服务商、招聘方和房产服务方，需要先提交公司/店铺信息、服务内容、联系方式和服务城市；通过认证后，再进入对应城市、频道和语言场景。", blocks: [{ title: "认证后可以发布", variant: "grid", items: [
+    zh: { eyebrow: "商家合作", title: "让真正有用的本地服务，出现在需要它的人面前。", intro: "Machi 的商家合作不只是一块广告位。餐厅、语言学校、活动组织者、本地服务商、招聘方与房产服务方提交真实资料并通过认证后，才能在对应城市、频道和语言中发布。", blocks: [{ title: "认证后可以发布", variant: "grid", items: [
       { title: "服务卡片", body: "展示公司/店铺名称、服务范围、价格区间、联系方式、地址和官网，让用户知道你具体能解决什么问题。" },
       { title: "优惠与活动", body: "发布餐厅优惠、体验课、城市活动、团体报名和限时活动，和真实生活场景放在一起。" },
       { title: "招聘与岗位", body: "发布兼职、全职、实习和本地岗位，补充公司信息、工作内容、薪资范围和联系方式。" },
@@ -341,7 +338,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "清晰标记商家", body: "认证商家、推广内容和普通用户内容会有明确区分。" },
       { title: "接受复核与下架", body: "虚假服务、误导价格、风险招聘、虚假房源和骚扰行为会被复核、限制或下架。" },
     ] }] },
-    en: { eyebrow: "For Business", title: "Help local businesses move from visibility to real demand.", intro: "Business onboarding is not just ad buying. Restaurants, language schools, event organizers, gyms, studios, local service providers, recruiters and housing teams submit company or store details, service content, contact methods and target cities first. After verification, they can appear in the right city, channel and language context.", blocks: [{ title: "After verification, businesses can publish", variant: "grid", items: [
+    en: { eyebrow: "For Business", title: "Put genuinely useful local services in front of people who need them.", intro: "A Machi business presence is more than an ad slot. Restaurants, language schools, event organizers, local service providers, recruiters, and housing teams submit real business details and pass verification before publishing in the relevant city, channel, and language.", blocks: [{ title: "After verification, businesses can publish", variant: "grid", items: [
       { title: "Service cards", body: "Show business name, service scope, price range, contact methods, address and website so users know exactly what you provide." },
       { title: "Offers and events", body: "Publish dining offers, trial classes, city events, group signups and time-limited campaigns in real local-life contexts." },
       { title: "Hiring posts", body: "Post part-time, full-time and internship roles with company details, role content, pay range and contact information." },
@@ -356,16 +353,16 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Clear business labels", body: "Verified businesses, promoted content and user posts are separated clearly." },
       { title: "Review and removal", body: "False services, misleading prices, risky hiring, fake listings and harassment can be reviewed, limited or removed." },
     ] }] },
-    ja: { eyebrow: "ビジネス", title: "地域の事業者を、必要としている人へ届ける。", intro: "事業者向け機能は、単なる広告枠ではありません。レストラン、語学学校、イベント主催者、ジム、教室、地域サービス、採用担当、不動産関連事業者は、会社・店舗情報、サービス内容、連絡先、対応都市を提出し、認証後に都市・チャンネル・言語に合った場所へ掲載できます。", blocks: [{ title: "認証後に掲載できる内容", variant: "grid", items: [
+    ja: { eyebrow: "ビジネス", title: "役に立つ地域サービスを、必要としている人へ。", intro: "Machi の事業者向け機能は、単なる広告枠ではありません。飲食店、語学学校、イベント主催者、地域サービス、採用担当、不動産関連事業者は、実在する事業情報を提出し、認証後に街・チャンネル・言語に合った形で掲載できます。", blocks: [{ title: "認証後に掲載できる内容", variant: "grid", items: [
       { title: "サービスカード", body: "会社・店舗名、対応範囲、価格帯、連絡先、住所、公式サイトを表示し、何を提供できるかを明確にします。" },
       { title: "特典とイベント", body: "飲食店の特典、体験レッスン、地域イベント、グループ参加、期間限定企画を掲載できます。" },
       { title: "求人投稿", body: "アルバイト、正社員、インターンの求人に、会社情報、仕事内容、給与目安、連絡先を添えて掲載できます。" },
-      { title: "都市別プロモーション", body: "都市、チャンネル、言語、内容タイプに合わせて、関係のあるユーザーへ届けます。" },
+      { title: "街別プロモーション", body: "街、チャンネル、言語、内容の種類に合わせて、関係のあるユーザーへ届けます。" },
     ] }, { title: "相性のよい事業者", variant: "grid", items: [
       { title: "レストラン・カフェ", body: "食事会、地域特典、予約、イベント。" },
       { title: "語学学校・教室", body: "体験レッスン、言語交換、学習グループ、地域募集。" },
       { title: "地域サービス", body: "引っ越し、修理、翻訳、ビザ、留学、税務、保険など。" },
-      { title: "採用・住まい関連", body: "地域求人、アルバイト募集、住まいサポート、サブリース、生活相談。" },
+      { title: "採用・住まい関連", body: "地域求人、アルバイト募集、住まい探し、転貸の相談、生活サポート。" },
     ] }, { title: "運用ルール", variant: "list", items: [
       { title: "先に情報提出", body: "商用投稿には会社・店舗情報、サービス内容、連絡先、対応都市が必要です。" },
       { title: "事業者表示を明確に", body: "認証事業者、プロモーション、一般投稿は区別して表示します。" },
@@ -373,71 +370,71 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     ] }] },
   },
   safety: {
-	    zh: { eyebrow: "安全", title: "真实的社区，需要真实的边界。", intro: "社区讨论、线下活动、美食聚会、语言交换、租房、二手、招聘和商家服务都需要明确边界、举报、拉黑、审核和认证机制。", blocks: [{ title: "安全能力", variant: "grid", items: [
-	      { title: "Community safety", body: "不要过早分享住址、证件和财务信息；遇到骚扰、诈骗、冒犯内容可以举报或拉黑。" },
-	      { title: "Offline activity safety", body: "线下社区活动请选择公共场所，告诉朋友地点，保留沟通记录并遵守安全提示。" },
-	      { title: "Housing safety", body: "不要提前转账给未验证房东，确认地址、合同和房东身份。" },
-	      { title: "Jobs & hiring safety", body: "不要支付入职押金，确认公司官网、地址和联系方式。" },
-	      { title: "Report and block", body: "提供举报、屏蔽、内容审核、下架和账号限制机制。" },
-	      { title: "Prohibited services", body: "Machi 禁止成人服务、性服务、违法线下服务、高风险私人线下交易，以及任何暗示付费私人线下活动的内容或交易。" },
-	      { title: "Community scope", body: "Machi 的社区功能仅限于公开城市话题、本地小组、问答、活动、语言交换、本地信息、租房、工作、本地服务和日常城市生活讨论。" },
-	      { title: "Community guidelines", body: "覆盖骚扰、仇恨言论、诈骗、冒充、违规线下服务和危险行为。" },
+	    zh: { eyebrow: "安全", title: "连接可以自然发生，边界必须事先清楚。", intro: "从公开讨论和线下活动，到租房、二手、招聘与本地服务，Machi 把风险提示、举报、屏蔽、审核和认证放进对应的使用场景。", blocks: [{ title: "安全机制", variant: "grid", items: [
+	      { title: "社区安全", body: "不要过早分享住址、证件和财务信息；遇到骚扰、诈骗或冒犯内容，可以举报或屏蔽。" },
+	      { title: "线下活动安全", body: "第一次见面请选择公共场所，告诉朋友时间与地点，并保留必要的沟通记录。" },
+	      { title: "租房安全", body: "不要向未经核实的房东提前转账，确认地址、合同、身份与付款方式。" },
+	      { title: "求职与招聘安全", body: "不要支付入职押金，核实公司官网、地址、联系方式与实际工作内容。" },
+	      { title: "举报与屏蔽", body: "提供举报、屏蔽、内容审核、下架和账号限制等处理机制。" },
+	      { title: "禁止的服务", body: "禁止成人与性服务、违法线下服务、高风险私人交易，以及暗示付费私人陪伴的内容或交易。" },
+	      { title: "社区功能范围", body: "社区用于公开城市话题、本地小组、问答、活动、语言交换、租房、工作、服务和日常生活讨论。" },
+	      { title: "社区规则", body: "禁止骚扰、仇恨、诈骗、冒充、危险行为及其他伤害用户的内容。" },
 	    ] }] },
-	    en: { eyebrow: "Safety", title: "Real community needs real boundaries.", intro: "Community discussions, local activities, dining groups, language exchange, housing, secondhand, jobs, hiring and business services all need boundaries, reports, blocks, review and verification.", blocks: [{ title: "Safety tools", variant: "grid", items: [
+	    en: { eyebrow: "Safety", title: "Connections can happen naturally. Boundaries should be clear from the start.", intro: "From public discussions and in-person activities to housing, secondhand exchange, hiring, and local services, Machi places risk guidance, reporting, blocking, review, and verification in the relevant flow.", blocks: [{ title: "Safety tools", variant: "grid", items: [
 	      { title: "Community safety", body: "Do not share address, ID or financial details too early. Report or block harassment, scams and offensive content." },
-	      { title: "Offline activity safety", body: "For offline community activities, meet in public places, tell a friend where you are going and keep communication records." },
-	      { title: "Housing safety", body: "Do not prepay unverified landlords. Check addresses, contracts and identities." },
-	      { title: "Jobs & hiring safety", body: "Never pay job deposits. Check company websites, addresses and contacts." },
+	      { title: "In-person safety", body: "Meet in a public place the first time, tell a friend when and where you are going, and keep relevant messages." },
+	      { title: "Housing safety", body: "Do not prepay an unverified landlord. Check the address, contract, identity, and payment method." },
+	      { title: "Jobs and hiring", body: "Never pay a job deposit. Verify the company, address, contact details, and actual role." },
 	      { title: "Report and block", body: "Reporting, blocking, review, takedowns and account limits form the enforcement flow." },
 	      { title: "Prohibited services", body: "Machi prohibits adult services, illegal high-risk offline services, sexual services, and any content or transaction that suggests paid private offline activity." },
 	      { title: "Community scope", body: "Community features are limited to public city topics, local groups, Q&A, events, language exchange, local information, housing, jobs, services, and everyday city-life discussions." },
 	      { title: "Community guidelines", body: "Guidelines cover harassment, hate, scams, impersonation, prohibited offline services and dangerous conduct." },
 	    ] }] },
-	    ja: { eyebrow: "安全", title: "本当のコミュニティには、確かな境界が必要です。", intro: "コミュニティ投稿、地域活動、食事の集まり、言語交換、住まい、中古、仕事、求人、事業者サービスには、境界線、通報、ブロック、審査、認証が必要です。", blocks: [{ title: "安全機能", variant: "grid", items: [
-	      { title: "Community safety", body: "住所、身分証、財務情報を早く共有しない。嫌がらせや詐欺は通報・ブロックできます。" },
-	      { title: "Offline activity safety", body: "オフラインのコミュニティ活動は公共の場所で行い、友人に場所を伝え、記録を残します。" },
-	      { title: "Housing safety", body: "未確認の貸主へ前払いせず、住所、契約、本人確認を行います。" },
-	      { title: "Jobs & hiring safety", body: "入職保証金を払わず、会社サイト、住所、連絡先を確認します。" },
-	      { title: "Report and block", body: "通報、ブロック、審査、削除、アカウント制限の流れを整備します。" },
-	      { title: "Prohibited services", body: "Machi では、デーティングサービス、恋愛マッチング、結婚紹介、エスコートサービス、有料同伴、アダルトサービス、性的サービス、および有料のオフライン同伴を示唆する内容や取引を禁止しています。" },
-	      { title: "Community scope", body: "コミュニティ機能は、公開された都市トピック、地域グループ、Q&A、イベント、言語交換、地域情報、住まい、仕事、サービス、日常の都市生活に関する投稿に限定されます。" },
-	      { title: "Community guidelines", body: "嫌がらせ、ヘイト、詐欺、なりすまし、禁止されたオフラインサービス、危険行為を禁止します。" },
+	    ja: { eyebrow: "安全", title: "つながりは自然に。守るべき境界は、最初から明確に。", intro: "公開のやり取りや地域の活動から、住まい、譲り合い、求人、地域サービスまで。Machi は、それぞれの場面に注意喚起、通報、ブロック、審査、認証の仕組みを設けます。", blocks: [{ title: "安全のための仕組み", variant: "grid", items: [
+	      { title: "コミュニティの安全", body: "住所、身分証、金銭に関する情報を早い段階で共有しないでください。嫌がらせや詐欺は通報・ブロックできます。" },
+	      { title: "対面時の安全", body: "初めて会うときは公共の場所を選び、日時と場所を友人に伝え、必要なやり取りを残してください。" },
+	      { title: "住まいの安全", body: "確認できていない貸主へ前払いせず、住所、契約、本人確認、支払方法を確かめてください。" },
+	      { title: "仕事と求人の安全", body: "採用のための保証金や手数料は支払わず、会社情報、所在地、連絡先、仕事内容を確認してください。" },
+	      { title: "通報とブロック", body: "通報、ブロック、審査、削除、アカウント制限などの対応を行います。" },
+	      { title: "禁止しているサービス", body: "アダルト・性的サービス、違法な対面サービス、高リスクの個人間取引、有料の私的な同伴を示唆する内容や取引は禁止です。" },
+	      { title: "コミュニティ機能の範囲", body: "街の話題、地域グループ、Q&A、イベント、言語交換、住まい、仕事、サービス、日常生活に関する公開投稿を対象とします。" },
+	      { title: "コミュニティ規範", body: "嫌がらせ、ヘイト、詐欺、なりすまし、危険行為など、ユーザーを傷つける行為を禁止します。" },
 	    ] }] },
   },
   download: {
-    zh: { eyebrow: "下载", title: "下载 Machi", intro: "Machi Web Beta 已经可体验。iOS 和 Android App 正在筹备中，正式上架前会明确标注 Coming soon。", blocks: [{ title: "Web Beta 可体验", variant: "grid", items: [
-	      { title: "城市首页", body: "进入城市生活脉搏。" }, { title: "发现与搜索", body: "找租房、工作、问答、活动和本地服务。" }, { title: "通知与私信", body: "接收社区回复并跟进本地话题。" }, { title: "发布与主页", body: "发布内容，展示真实个人主页。" }, { title: "社区参与", body: "参与公开城市话题、本地小组、活动讨论和语言交换。" },
+    zh: { eyebrow: "使用 Machi", title: "Web 版已经开放，App 正在路上。", intro: "现在可以直接注册并使用 Machi Web。iOS 与 Android 正在准备，正式上架前会始终明确标注状态。", blocks: [{ title: "Web 版可以做什么", variant: "grid", items: [
+	      { title: "城市首页", body: "查看与你所在城市有关的内容、频道和动态。" }, { title: "发现与搜索", body: "查找租房、工作、问答、活动与本地服务。" }, { title: "通知与私信", body: "接收回复、关注话题，并继续一对一沟通。" }, { title: "发布与个人主页", body: "分享经验、提出需求，也让别人了解你的公开身份。" }, { title: "社区参与", body: "加入公开城市话题、本地小组、活动讨论和语言交换。" },
     ] }, { title: "状态", variant: "list", items: [{ title: "iOS", body: "即将上线" }, { title: "Android", body: "即将上线" }, { title: "Web Beta", body: "已开放体验" }] }] },
-    en: { eyebrow: "Download", title: "Download Machi", intro: "Machi Web Beta is available now. The iOS and Android apps are in preparation and remain marked Coming soon until official store release.", blocks: [{ title: "In Web Beta, you can use", variant: "grid", items: [
-	      { title: "City home", body: "Open the pulse of a city." }, { title: "Discovery and search", body: "Find housing, jobs, Q&A, events and local services." }, { title: "Notifications and messages", body: "Follow community replies and local topics." }, { title: "Posting and profiles", body: "Post content and build a real profile." }, { title: "Community participation", body: "Join public city topics, local groups, event discussions and language exchange." },
+    en: { eyebrow: "Use Machi", title: "The web app is live. Mobile apps are on the way.", intro: "You can register and use Machi Web now. iOS and Android are in preparation, with availability kept clearly marked until each store release.", blocks: [{ title: "What you can do on the web", variant: "grid", items: [
+	      { title: "City home", body: "See content, channels, and activity related to your city." }, { title: "Discovery and search", body: "Find housing, jobs, Q&A, events, and local services." }, { title: "Notifications and messages", body: "Follow replies and local topics, then continue conversations privately." }, { title: "Posting and profiles", body: "Share experience, post a need, and present a clear public profile." }, { title: "Community participation", body: "Join public city topics, local groups, event discussions, and language exchange." },
     ] }, { title: "Status", variant: "list", items: [{ title: "iOS", body: "Coming soon" }, { title: "Android", body: "Coming soon" }, { title: "Web Beta", body: "Available now" }] }] },
-    ja: { eyebrow: "ダウンロード", title: "Machi をダウンロード", intro: "Machi Web Beta は現在利用できます。iOS と Android アプリは準備中で、正式公開までは Coming soon と表示します。", blocks: [{ title: "Web Beta で使える機能", variant: "grid", items: [
-	      { title: "都市ホーム", body: "街の脈動に入る。" }, { title: "発見と検索", body: "住まい、仕事、Q&A、イベント、地域サービスを探す。" }, { title: "通知とメッセージ", body: "コミュニティ返信と地域トピックを確認する。" }, { title: "投稿とプロフィール", body: "投稿し、実在感のあるプロフィールを持つ。" }, { title: "コミュニティ参加", body: "公開された都市トピック、地域グループ、イベント討論、言語交換に参加する。" },
+    ja: { eyebrow: "Machi を使う", title: "Web 版は公開中。アプリも準備を進めています。", intro: "Machi Web は現在ご利用いただけます。iOS と Android は準備中で、ストアで正式公開するまでは提供状況を明確に表示します。", blocks: [{ title: "Web 版でできること", variant: "grid", items: [
+	      { title: "街のホーム", body: "現在の街に関係する投稿、チャンネル、動きを確認できます。" }, { title: "発見と検索", body: "住まい、仕事、Q&A、イベント、地域サービスを探せます。" }, { title: "通知とメッセージ", body: "返信や地域の話題を確認し、必要に応じて個別にやり取りできます。" }, { title: "投稿とプロフィール", body: "経験や必要としていることを投稿し、公開プロフィールで自分を伝えられます。" }, { title: "コミュニティへの参加", body: "街の話題、地域グループ、イベント、言語交換に参加できます。" },
     ] }, { title: "ステータス", variant: "list", items: [{ title: "iOS", body: "近日公開" }, { title: "Android", body: "近日公開" }, { title: "Web Beta", body: "利用できます" }] }] },
   },
   updates: {
-    zh: { eyebrow: "更新", title: "Machi 最新进展", intro: "这里同步产品进展、首批城市计划、Guide 更新、早期开放、合作开放和重要通知。", blocks: [{ title: "当前状态", variant: "list", items: [
+    zh: { eyebrow: "更新", title: "Machi 正在做到哪里", intro: "产品状态、Guide 更新、新城市准备与合作开放，都在这里如实记录。", blocks: [{ title: "当前状态", variant: "list", items: [
       { meta: "2026.06", title: "Web Beta 已开放体验", body: "用户可以注册并使用城市首页、发现与搜索、通知、私信、发布、个人主页和同城连接。" },
       { meta: "2026.06", title: "日本 Guide 持续整理", body: "生活、升学、就职、JLPT、学校库、公司库、资料与服务优先完善。" },
       { meta: "2026.06", title: "更多国家和城市筹备中", body: "加拿大、澳洲、英国、法国、德国、韩国、美国等地区会按需求逐步展开。" },
       { meta: "2026.06", title: "商家合作通道开放", body: "本地商家、服务提供者、招聘方、房源方、活动组织者和教育机构可以申请合作。" },
     ] }] },
-    en: { eyebrow: "Updates", title: "Latest from Machi", intro: "Product progress, first-city plans, Guide updates, test invitations, partnership openings and important notices from Machi.", blocks: [{ title: "Current status", variant: "list", items: [
+    en: { eyebrow: "Updates", title: "Where Machi stands today", intro: "An honest record of product status, Guide updates, new-city preparation, and partnership openings.", blocks: [{ title: "Current status", variant: "list", items: [
       { meta: "2026.06", title: "Web Beta is available", body: "Users can register and use city home, discovery, search, notifications, messages, posting, profiles and local connection." },
       { meta: "2026.06", title: "Japan Guide keeps expanding", body: "Life, school applications, job hunting, JLPT, school directories, company directories, materials and services are being refined first." },
       { meta: "2026.06", title: "More countries and cities in preparation", body: "Canada, Australia, the United Kingdom, France, Germany, South Korea, the United States and more regions will roll out by demand." },
       { meta: "2026.06", title: "Business partnership channel is open", body: "Local businesses, service providers, recruiters, housing providers, event organizers and education partners can apply." },
     ] }] },
-    ja: { eyebrow: "更新", title: "Machi 最新情報", intro: "プロダクト進捗、初期都市計画、Guide 更新、テスト招待、提携受付、重要なお知らせを掲載します。", blocks: [{ title: "現在の状況", variant: "list", items: [
-      { meta: "2026.06", title: "Web Beta を利用できます", body: "登録後、都市ホーム、発見、検索、通知、メッセージ、投稿、プロフィール、同じ街のつながりを利用できます。" },
+    ja: { eyebrow: "更新情報", title: "現在の Machi について", intro: "プロダクトの公開状況、Guide の更新、新しい街の準備、提携受付について、事実に沿ってお知らせします。", blocks: [{ title: "現在の状況", variant: "list", items: [
+      { meta: "2026.06", title: "Web Beta を利用できます", body: "登録後、街のホーム、発見、検索、通知、メッセージ、投稿、プロフィール、地域コミュニティを利用できます。" },
       { meta: "2026.06", title: "日本 Guide を継続整理中", body: "生活、進学、就職、JLPT、学校データベース、会社データベース、資料、サービスを優先しています。" },
       { meta: "2026.06", title: "より多くの国と都市を準備中", body: "カナダ、オーストラリア、英国、フランス、ドイツ、韓国、米国などを需要に合わせて展開します。" },
       { meta: "2026.06", title: "ビジネス提携の受付を開始", body: "店舗、サービス提供者、採用担当、住まい関連、イベント主催者、教育機関が申請できます。" },
     ] }] },
   },
   faq: {
-	    zh: { eyebrow: "FAQ", title: "常见问题", intro: "关于 Machi 是什么、是否只做日本、Guide、城市、语言、安全、商家、付费服务和账号删除的说明。", blocks: [{ title: "产品与定位", variant: "legal", items: [
-	      { title: "Machi 是什么？", body: "Machi 是按国家、城市和语言组织内容的本地生活与同城连接平台。" },
+	    zh: { eyebrow: "FAQ", title: "关于 Machi，你可能想知道的事", intro: "这里说明产品定位、开放范围、Guide、安全机制、商家合作、付费服务与账号管理。", blocks: [{ title: "产品与定位", variant: "legal", items: [
+	      { title: "Machi 是什么？", body: "Machi 是按国家、城市和语言组织内容的本地生活与城市社区平台，包含 Guide、问答、租房、二手、工作、本地服务、小组与活动等功能。" },
 	      { title: "Machi 是城市社区吗？", body: "是。Machi 是一个按城市和语言组织的本地生活与社区平台，内容包括本地信息、城市指南、问答、社区讨论、语言交换小组、活动、租房、工作、本地服务和商家信息。\n\nMachi 的社交功能服务于公开城市话题和社区参与，不承接私人介绍类服务。" },
 	      { title: "Machi 只做日本吗？", body: "不是。Machi 从日本 Guide 和首批城市开始，之后会扩展到更多国家和城市。" },
 	      { title: "Machi 是留学中介吗？", body: "不是。Guide 会整理日本升学、就职和生活资料，但 Machi 的长期目标是全球城市本地生活平台。" },
@@ -447,8 +444,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "可以删除账号吗？", body: "可以。用户可以管理个人资料并申请删除账号；公开内容可能已经被其他用户看到或互动。" },
       { title: "如何联系 Machi？", body: "合作、媒体、商家申请、城市建议或隐私请求可发送至 hi@machicity.com。" },
     ] }] },
-	    en: { eyebrow: "FAQ", title: "Frequently Asked Questions", intro: "Answers about what Machi is, Japan-first expansion, Guide, cities, languages, safety, businesses, paid services and account deletion.", blocks: [{ title: "Product and positioning", variant: "legal", items: [
-	      { title: "What is Machi?", body: "Machi is a city-based local life and social community platform organized by country, city and language." },
+	    en: { eyebrow: "FAQ", title: "A few things worth knowing about Machi", intro: "Clear answers on the product, availability, Guide, safety, business participation, paid services, and account management.", blocks: [{ title: "Product and positioning", variant: "legal", items: [
+	      { title: "What is Machi?", body: "Machi is a local-life and city-community platform organized by country, city, and language, with Guide, Q&A, housing, secondhand exchange, jobs, local services, groups, and events." },
 	      { title: "Is Machi a city community app?", body: "Yes. Machi is a city-based local life and community platform for local information, city guides, Q&A, community discussions, language exchange groups, events, housing, jobs, services, and business listings.\n\nSocial features are designed around public city topics and community participation, not private-introduction services." },
 	      { title: "Is Machi only for Japan?", body: "No. Machi starts with Japan Guide and selected city communities, then expands to more countries and cities." },
 	      { title: "Is Machi a study abroad agency?", body: "No. Guide organizes Japan study, career and life resources, but Machi's long-term goal is a global city local-life platform." },
@@ -458,51 +455,51 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Can I delete my account?", body: "Yes. Users can manage profile information and request deletion; public content may already have been seen or interacted with." },
       { title: "How can I contact Machi?", body: "For partnerships, press, business applications, city ideas or privacy requests, email hi@machicity.com." },
     ] }] },
-	    ja: { eyebrow: "FAQ", title: "よくある質問", intro: "Machi の位置づけ、日本から始める理由、Guide、都市、言語、安全、事業者、有料サービス、アカウント削除について。", blocks: [{ title: "プロダクトと位置づけ", variant: "legal", items: [
-	      { title: "Machi とは？", body: "Machi は、国・都市・言語ごとに暮らしの情報と人のつながりを整理するローカルライフ・コミュニティプラットフォームです。" },
-	      { title: "Machi はデーティングアプリですか？", body: "いいえ。Machi はデーティングサービスまたはマッチメイキングサービスではありません。Machi は、都市と言語ごとに地域情報、都市ガイド、Q&A、コミュニティ投稿、言語交換グループ、イベント、住まい、仕事、サービス、事業者情報を整理するローカルライフ・コミュニティプラットフォームです。\n\nMachi は、恋愛マッチング、結婚紹介、同伴サービス、有料同伴、アダルトサービス、一対一のデート紹介を提供しません。ソーシャル機能は、公開された都市トピックとコミュニティ参加を目的としています。" },
-	      { title: "Machi は日本だけですか？", body: "いいえ。日本 Guide と一部都市コミュニティから始まり、より多くの国と都市へ広がります。" },
-	      { title: "Machi は留学エージェントですか？", body: "いいえ。Guide は日本の進学、就職、生活資料を整理しますが、Machi の長期目標は世界の都市生活プラットフォームです。" },
+	    ja: { eyebrow: "FAQ", title: "Machi について、よくいただく質問", intro: "プロダクトの位置づけ、利用できる地域、Guide、安全対策、事業者の参加、有料サービス、アカウント管理について説明します。", blocks: [{ title: "プロダクトと位置づけ", variant: "legal", items: [
+	      { title: "Machi とは？", body: "Machi は、国・街・言語ごとに暮らしの情報と地域のつながりを整理するプラットフォームです。Guide、Q&A、住まい、譲り合い、仕事、地域サービス、グループ、イベントなどを扱います。" },
+	      { title: "Machi はデーティングアプリですか？", body: "いいえ。Machi は、街の情報、Guide、Q&A、地域グループ、言語交換、イベント、住まい、仕事、サービス、事業者情報を扱うローカルライフ・コミュニティです。\n\n恋愛相手の紹介、結婚紹介、有料同伴、アダルトサービス、一対一のデート仲介は提供しません。交流機能は、公開された街の話題と地域コミュニティへの参加を目的としています。" },
+	      { title: "Machi は日本だけですか？", body: "いいえ。まず日本 Guide と東京を中心に体験を整え、実際の需要を確かめながら、ほかの国や街へ広げていきます。" },
+	      { title: "Machi は留学エージェントですか？", body: "いいえ。Guide では日本の進学、就職、暮らしに関する情報を整理しますが、Machi 全体は街での暮らしを支えるプラットフォームです。" },
     ] }, { title: "利用と安全", variant: "legal", items: [
       { title: "住まい、求人、中古品を投稿できますか？", body: "できます。正確で分かりやすく、現地法に従う必要があり、審査、リスク表示、通報の対象になります。" },
       { title: "有料サービスは結果を保証しますか？", body: "保証しません。進学、就職、ビザ、住まい、口座開設、合格、採用などは本人資料、第三者、現地ルールに左右されます。" },
       { title: "アカウントを削除できますか？", body: "できます。プロフィール管理や削除申請ができます。公開投稿はすでに他のユーザーに見られている場合があります。" },
-      { title: "Machi に連絡するには？", body: "提携、取材、事業者申請、都市提案、プライバシー関連は hi@machicity.com まで。" },
+      { title: "Machi に連絡するには？", body: "提携、取材、事業者のお申し込み、街の展開に関するご提案、プライバシーのお問い合わせは hi@machicity.com までお送りください。" },
     ] }] },
   },
   ads: {
-    zh: { eyebrow: "广告投放", title: "城市级曝光，精准触达本地用户。", intro: "按城市、频道、语言和内容场景投放，让广告更像有用信息。", blocks: [{ title: "投放场景", variant: "grid", items: [{ title: "城市首页", body: "进入城市时最先看到的曝光位。" }, { title: "频道置顶", body: "租房、招聘、优惠、活动等频道内推荐。" }, { title: "热榜旁曝光", body: "围绕城市关注内容获得自然触达。" }] }] },
-    en: { eyebrow: "Ads", title: "City-level reach for a local audience.", intro: "Target by city, channel, language and local intent so ads feel useful.", blocks: [{ title: "Placements", variant: "grid", items: [{ title: "City home", body: "High-visibility entry when users open a city." }, { title: "Channel pin", body: "Promoted spots in housing, hiring, deals and events." }, { title: "Trend context", body: "Appear near what the city is already paying attention to." }] }] },
-    ja: { eyebrow: "広告", title: "地域のユーザーに届く都市別プロモーション。", intro: "都市、チャンネル、言語、利用シーンに合わせて、役立つ情報として届けます。", blocks: [{ title: "掲載場所", variant: "grid", items: [{ title: "都市ホーム", body: "都市を開いた時に目に入る入口。" }, { title: "チャンネル固定", body: "住まい、採用、割引、イベント内で表示。" }, { title: "トレンド周辺", body: "街で注目されている話題の近くで自然に接触。" }] }] },
+    zh: { eyebrow: "广告投放", title: "只在真正相关的城市与场景里出现。", intro: "按城市、频道、语言和用户正在寻找的内容投放，并明确标注推广属性，让商业信息有用，也有边界。", blocks: [{ title: "投放场景", variant: "grid", items: [{ title: "城市首页", body: "在用户进入对应城市时展示相关品牌或服务。" }, { title: "频道推荐", body: "在租房、招聘、优惠、活动等匹配的频道中展示。" }, { title: "热门话题周边", body: "围绕城市正在关注的内容获得自然、清楚标注的曝光。" }] }] },
+    en: { eyebrow: "Advertising", title: "Appear only where the city and context are genuinely relevant.", intro: "Target by city, channel, language, and current user intent, with promotional content labeled clearly so it stays useful and bounded.", blocks: [{ title: "Placements", variant: "grid", items: [{ title: "City home", body: "Show a relevant brand or service when someone enters the matching city." }, { title: "Channel recommendations", body: "Appear within relevant housing, hiring, offers, or event channels." }, { title: "Alongside local interest", body: "Reach people near topics the city already cares about, with clear promotional labeling." }] }] },
+    ja: { eyebrow: "広告掲載", title: "関係のある街と場面にだけ、きちんと届ける。", intro: "街、チャンネル、言語、ユーザーが探している内容に合わせて配信し、広告であることも明確に表示します。", blocks: [{ title: "掲載場所", variant: "grid", items: [{ title: "街のホーム", body: "該当する街を開いたユーザーに、関連するブランドやサービスを表示します。" }, { title: "チャンネル内のおすすめ", body: "住まい、採用、特典、イベントなど、内容に合うチャンネルへ掲載します。" }, { title: "地域で注目される話題の近く", body: "街で関心を集めている内容の周辺に、広告であることを示したうえで掲載します。" }] }] },
   },
   contact: {
-    zh: { eyebrow: "联系", title: "和 Machi 团队联系。", intro: "合作、媒体、城市开放、问题反馈和早期体验都可以从这里开始。", blocks: [{ title: "联系方式", variant: "contact", body: "邮箱 hi@machicity.com。请在邮件里说明城市、合作类型和你的联系方式。" }, { title: "我们会优先回复", variant: "list", items: [{ title: "城市合作", body: "本地组织、学校、社群和服务机构。" }, { title: "商家合作", body: "门店、招聘方、房产中介和服务商。" }, { title: "产品反馈", body: "官网、Web 端和 App 体验问题。" }] }] },
-    en: { eyebrow: "Contact", title: "Talk to the Machi team.", intro: "Partnerships, press, city launches, feedback and beta access can start here.", blocks: [{ title: "Email", variant: "contact", body: "Contact hi@machicity.com. Please include your city, partnership type and contact details." }, { title: "Priority topics", variant: "list", items: [{ title: "City partnerships", body: "Local organizations, schools, communities and service providers." }, { title: "Business partnerships", body: "Stores, recruiters, housing agents and service teams." }, { title: "Product feedback", body: "Website, Web app and mobile app experience issues." }] }] },
-    ja: { eyebrow: "お問い合わせ", title: "Machi チームへ連絡する。", intro: "提携、取材、都市展開、フィードバック、テスト参加はこちらから。", blocks: [{ title: "メール", variant: "contact", body: "hi@machicity.com まで。都市、提携内容、連絡先をご記入ください。" }, { title: "優先的に確認する内容", variant: "list", items: [{ title: "都市提携", body: "地域団体、学校、コミュニティ、サービス機関。" }, { title: "事業者提携", body: "店舗、採用担当、不動産、サービス事業者。" }, { title: "製品フィードバック", body: "公式サイト、Web、アプリの体験に関する問題。" }] }] },
+    zh: { eyebrow: "联系", title: "有想一起完成的事，欢迎写信给我们。", intro: "无论是城市合作、媒体采访、商家申请，还是产品里的一个具体问题，都可以从这里开始。", blocks: [{ title: "联系方式", variant: "contact", body: "请发送至 hi@machicity.com，并尽量说明所在城市、来意与方便联系的方式。" }, { title: "我们会优先回复", variant: "list", items: [{ title: "城市合作", body: "本地组织、学校、社群和服务机构。" }, { title: "商家合作", body: "门店、招聘方、房产中介和服务商。" }, { title: "产品反馈", body: "官网、Web 端和 App 中可以复现的体验问题。" }] }] },
+    en: { eyebrow: "Contact", title: "If there is something worth building together, write to us.", intro: "City partnerships, press, business applications, and specific product feedback can all begin here.", blocks: [{ title: "Email", variant: "contact", body: "Write to hi@machicity.com and, where possible, include your city, reason for contacting us, and the best way to reply." }, { title: "Priority topics", variant: "list", items: [{ title: "City partnerships", body: "Local organizations, schools, communities, and service providers." }, { title: "Business partnerships", body: "Stores, recruiters, housing agents, and service teams." }, { title: "Product feedback", body: "Reproducible issues across the website, web app, or mobile experience." }] }] },
+    ja: { eyebrow: "お問い合わせ", title: "一緒に取り組めそうなことがあれば、お聞かせください。", intro: "地域との連携、取材、事業者のお申し込み、具体的なプロダクトのご意見を受け付けています。", blocks: [{ title: "メール", variant: "contact", body: "hi@machicity.com まで、街、連絡の目的、返信先をできるだけ具体的にご記入ください。" }, { title: "優先して確認する内容", variant: "list", items: [{ title: "地域との連携", body: "地域団体、学校、コミュニティ、サービス事業者。" }, { title: "事業者との提携", body: "店舗、採用担当、不動産関連事業者、地域サービス。" }, { title: "プロダクトへのご意見", body: "公式サイト、Web 版、アプリで再現できる具体的な問題。" }] }] },
   },
   partners: {
-    zh: { eyebrow: "系统合作", title: "把城市资源接入 Machi。", intro: "面向城市社群、学校、服务机构、媒体和本地组织开放合作。", blocks: [{ title: "合作方向", variant: "grid", items: [{ title: "内容合作", body: "本地攻略、新闻、活动和服务目录。" }, { title: "城市运营", body: "共建城市频道、精选内容和活动计划。" }, { title: "数据与服务", body: "未来可扩展安全合规的数据接口和服务线索。" }] }] },
-    en: { eyebrow: "Partners", title: "Bring city resources into Machi.", intro: "Open to local communities, schools, service institutions, media and city organizations.", blocks: [{ title: "Partnership paths", variant: "grid", items: [{ title: "Content", body: "Local guides, news, events and service directories." }, { title: "City operations", body: "Co-build city channels, curated posts and event plans." }, { title: "Data and services", body: "Future compliant APIs and service leads." }] }] },
-    ja: { eyebrow: "パートナー", title: "都市のリソースを Machi へ。", intro: "地域コミュニティ、学校、サービス機関、メディア、地域団体と連携します。", blocks: [{ title: "連携の方向", variant: "grid", items: [{ title: "コンテンツ", body: "地域ガイド、ニュース、イベント、サービス一覧。" }, { title: "都市運営", body: "都市チャンネル、注目投稿、イベント計画を共創。" }, { title: "データとサービス", body: "将来的な安全で適法なAPIやサービス導線。" }] }] },
+    zh: { eyebrow: "合作伙伴", title: "把真正属于这座城市的资源，带到需要它的人面前。", intro: "Machi 面向本地社群、学校、服务机构、媒体与城市组织开放合作，并优先考虑内容是否真实、持续且对当地用户有用。", blocks: [{ title: "合作方向", variant: "grid", items: [{ title: "内容合作", body: "共同整理本地攻略、新闻、活动和服务目录。" }, { title: "城市共建", body: "一起完善城市频道、精选内容与社区活动。" }, { title: "数据与服务", body: "在安全、合规和用户知情的前提下，探索数据接口与服务连接。" }] }] },
+    en: { eyebrow: "Partners", title: "Bring genuinely local resources closer to the people who need them.", intro: "Machi works with local communities, schools, service organizations, media, and city groups, with priority given to information that is real, sustainable, and useful to residents.", blocks: [{ title: "Ways to work together", variant: "grid", items: [{ title: "Content", body: "Develop local guides, news, events, and service directories together." }, { title: "City building", body: "Improve city channels, curated content, and community activities." }, { title: "Data and services", body: "Explore compliant data connections and service pathways with safety and user awareness built in." }] }] },
+    ja: { eyebrow: "パートナー", title: "その街に根ざした情報やサービスを、必要な人の近くへ。", intro: "Machi は、地域コミュニティ、学校、サービス事業者、メディア、地域団体との連携を受け付けています。実在し、継続でき、地域の利用者に役立つことを大切にします。", blocks: [{ title: "連携のかたち", variant: "grid", items: [{ title: "コンテンツ", body: "地域ガイド、ニュース、イベント、サービス一覧を一緒に整えます。" }, { title: "街のコミュニティづくり", body: "街のチャンネル、注目コンテンツ、地域の活動をともに育てます。" }, { title: "データとサービス", body: "安全性、法令、利用者への説明を前提に、データ連携やサービス導線を検討します。" }] }] },
   },
   "jobs-promotion": {
-    zh: { eyebrow: "招聘推广", title: "让本地岗位被合适的人看到。", intro: "面向商家、企业和机构，按城市、语言、签证和岗位类型推广招聘。", blocks: [{ title: "适用岗位", variant: "grid", items: [{ title: "兼职", body: "餐饮、零售、活动、服务行业。" }, { title: "全职", body: "本地企业、跨境团队和门店管理。" }, { title: "实习", body: "面向学生和新入职人群。" }] }] },
-    en: { eyebrow: "Hiring", title: "Show local jobs to the right people.", intro: "For merchants, companies and institutions, with promotion by city, language, visa fit and role type.", blocks: [{ title: "Role types", variant: "grid", items: [{ title: "Part-time", body: "Food, retail, events and local services." }, { title: "Full-time", body: "Local companies, cross-border teams and store operations." }, { title: "Internships", body: "For students and early-career talent." }] }] },
-    ja: { eyebrow: "採用プロモーション", title: "地域の求人を、合う人へ届ける。", intro: "店舗、企業、機関向けに、都市、言語、ビザ、職種で採用情報を届けます。", blocks: [{ title: "対象求人", variant: "grid", items: [{ title: "アルバイト", body: "飲食、小売、イベント、地域サービス。" }, { title: "正社員", body: "地域企業、越境チーム、店舗運営。" }, { title: "インターン", body: "学生と若手人材向け。" }] }] },
+    zh: { eyebrow: "招聘推广", title: "让一份真实的本地工作，遇见真正适合的人。", intro: "面向商家、企业与机构，按城市、语言、在留资格要求和岗位类型清楚展示招聘信息。", blocks: [{ title: "适用岗位", variant: "grid", items: [{ title: "兼职", body: "餐饮、零售、活动和本地服务行业。" }, { title: "全职", body: "本地企业、跨境团队与门店运营岗位。" }, { title: "实习", body: "面向学生和职业起步阶段的人群。" }] }] },
+    en: { eyebrow: "Hiring", title: "Help a real local role find the person it genuinely fits.", intro: "For businesses and organizations, with clear job information organized by city, language, residence-status requirements, and role type.", blocks: [{ title: "Role types", variant: "grid", items: [{ title: "Part-time", body: "Food, retail, events, and local services." }, { title: "Full-time", body: "Local companies, cross-border teams, and store operations." }, { title: "Internships", body: "For students and people at the beginning of their careers." }] }] },
+    ja: { eyebrow: "採用プロモーション", title: "地域の仕事を、本当に合う人へ。", intro: "店舗、企業、団体向けに、街、言語、在留資格の条件、雇用形態を明確にした求人情報を届けます。", blocks: [{ title: "対象となる求人", variant: "grid", items: [{ title: "アルバイト", body: "飲食、小売、イベント、地域サービス。" }, { title: "正社員", body: "地域企業、海外と関わるチーム、店舗運営。" }, { title: "インターン", body: "学生や、これからキャリアを始める人向け。" }] }] },
   },
   "housing-promotion": {
-    zh: { eyebrow: "租房推广", title: "把房源放到正在找房的人面前。", intro: "面向房产中介、转租用户和公寓运营方，支持城市、区域、价格和语言匹配。", blocks: [{ title: "推广内容", variant: "grid", items: [{ title: "整租与合租", body: "清晰展示区域、租金、入住时间和室友要求。" }, { title: "转租", body: "适合短周期流转和同城快速曝光。" }, { title: "租房避坑", body: "用透明信息建立用户信任。" }] }] },
-    en: { eyebrow: "Housing", title: "Put listings in front of active renters.", intro: "For agents, subletters and apartment operators, with city, area, price and language matching.", blocks: [{ title: "Promotion content", variant: "grid", items: [{ title: "Rentals and shares", body: "Show area, rent, move-in time and roommate needs clearly." }, { title: "Sublets", body: "Fast city-level exposure for short cycles." }, { title: "Housing guidance", body: "Build trust through transparent information." }] }] },
-    ja: { eyebrow: "住まいプロモーション", title: "探している人の目の前に物件を。", intro: "不動産、サブリース、アパート運営者向けに、都市、地域、価格、言語でマッチングします。", blocks: [{ title: "掲載内容", variant: "grid", items: [{ title: "賃貸とシェア", body: "地域、家賃、入居時期、同居条件を明確に。" }, { title: "サブリース", body: "短期の入れ替わりに素早く都市内露出。" }, { title: "住まいガイド", body: "透明な情報で信頼をつくります。" }] }] },
+    zh: { eyebrow: "租房推广", title: "让房源信息足够透明，再抵达正在找房的人。", intro: "面向房产中介、合规转租用户与公寓运营方，按城市、区域、价格、入住时间与语言展示房源。", blocks: [{ title: "推广内容", variant: "grid", items: [{ title: "整租与合租", body: "清楚展示区域、租金、费用、入住时间和同住条件。" }, { title: "合规转租", body: "说明授权情况、可租期限、合同条件与交接方式。" }, { title: "租房信息与提醒", body: "用完整信息、风险提示与可核实资料建立信任。" }] }] },
+    en: { eyebrow: "Housing", title: "Make a listing transparent before putting it in front of active renters.", intro: "For agents, compliant subletters, and property operators, with listings organized by city, area, price, move-in date, and language.", blocks: [{ title: "Promotion content", variant: "grid", items: [{ title: "Rentals and shared homes", body: "Show the area, rent, fees, move-in date, and shared-living conditions clearly." }, { title: "Compliant sublets", body: "State permission, available term, contract conditions, and handover details." }, { title: "Housing information and warnings", body: "Build trust with complete details, risk prompts, and verifiable information." }] }] },
+    ja: { eyebrow: "住まいの掲載", title: "探している人へ届ける前に、物件情報をわかりやすく。", intro: "不動産事業者、適法な転貸を行う人、物件運営者向けに、街、エリア、家賃、入居時期、言語に合わせて掲載します。", blocks: [{ title: "掲載できる内容", variant: "grid", items: [{ title: "賃貸・シェア", body: "エリア、家賃、諸費用、入居時期、共同生活の条件を明確に表示します。" }, { title: "適法な転貸", body: "貸主の許可、利用できる期間、契約条件、引き渡し方法を記載します。" }, { title: "住まいの情報と注意点", body: "十分な情報、リスク表示、確認できる資料によって信頼につなげます。" }] }] },
   },
   "safety-center": {
-	    zh: { eyebrow: "安全中心", title: "把风险提醒放在用户需要的时候。", intro: "安全中心覆盖社区讨论、线下活动、美食聚会、语言交换、租房、二手、招聘、商家认证、举报拉黑和社区规范。", blocks: [{ title: "线下社区活动安全", variant: "list", items: [{ title: "选择公共地点", body: "线下社区活动建议选择公共场所，不要第一次就去私人空间。" }, { title: "告诉朋友", body: "告诉朋友你的活动地点和大致时间。" }, { title: "保留记录", body: "保留沟通记录，遇到危险或骚扰及时举报。" }] }, { title: "禁止内容与服务", variant: "legal", items: [{ title: "禁止高风险服务", body: "Machi 禁止成人服务、性服务、违法线下服务、高风险私人线下交易，以及任何暗示付费私人线下活动的内容或交易。" }, { title: "社区功能范围", body: "Machi 的社区功能仅限于公开城市话题、本地小组、问答、活动、语言交换、本地信息、租房、工作、本地服务和日常城市生活讨论。" }] }, { title: "交易与招聘安全", variant: "grid", items: [{ title: "租房安全", body: "不要提前转账给未验证房东；确认地址、合同和房东身份；警惕低价房源和平台外付款链接。" }, { title: "二手安全", body: "优先公共场所交易，高价值物品建议线下面交验货，不提前支付大额定金。" }, { title: "招聘安全", body: "不要支付入职押金，警惕没有公司信息或高薪但先付款的职位。" }] }] },
-	    en: { eyebrow: "Safety Center", title: "Show risk guidance when users need it.", intro: "The Safety Center covers community safety, local activities, dining groups, language exchange, housing, secondhand, jobs, business verification, report/block and community guidelines.", blocks: [{ title: "Offline community activity safety", variant: "list", items: [{ title: "Choose public places", body: "For offline community activities, meet in public places and avoid private spaces for a first meeting." }, { title: "Tell a friend", body: "Tell a friend where and when you are joining the activity." }, { title: "Keep records", body: "Keep communication records and report danger or harassment quickly." }] }, { title: "Prohibited content and services", variant: "legal", items: [{ title: "Prohibited high-risk services", body: "Machi prohibits adult services, illegal high-risk offline services, sexual services, and any content or transaction that suggests paid private offline activity." }, { title: "Community feature scope", body: "Community features are limited to public city topics, local groups, Q&A, events, language exchange, local information, housing, jobs, services, and everyday city-life discussions." }] }, { title: "Transaction and hiring safety", variant: "grid", items: [{ title: "Housing safety", body: "Do not prepay unverified landlords; check addresses, contracts and identity; beware off-platform payment links." }, { title: "Secondhand safety", body: "Prefer public places, inspect high-value items in person and avoid large deposits." }, { title: "Hiring safety", body: "Never pay job deposits; watch for missing company info or high-pay roles that ask for money first." }] }] },
-	    ja: { eyebrow: "安全センター", title: "必要な時にリスク情報を届ける。", intro: "安全センターはコミュニティ投稿、地域活動、食事の集まり、言語交換、住まい、中古、求人、事業者認証、通報・ブロック、コミュニティ規範を扱います。", blocks: [{ title: "オフラインのコミュニティ活動安全", variant: "list", items: [{ title: "公共の場所を選ぶ", body: "オフラインのコミュニティ活動は公共の場所で行い、初回から個人宅などは避けます。" }, { title: "友人に伝える", body: "活動の場所と時間を友人に伝えます。" }, { title: "記録を残す", body: "やり取りを残し、危険や嫌がらせはすぐ通報します。" }] }, { title: "禁止コンテンツとサービス", variant: "legal", items: [{ title: "禁止される高リスクサービス", body: "Machi では、デーティングサービス、恋愛マッチング、結婚紹介、エスコートサービス、有料同伴、アダルトサービス、性的サービス、および有料のオフライン同伴を示唆する内容や取引を禁止しています。" }, { title: "コミュニティ機能の範囲", body: "コミュニティ機能は、公開された都市トピック、地域グループ、Q&A、イベント、言語交換、地域情報、住まい、仕事、サービス、日常の都市生活に関する投稿に限定されます。" }] }, { title: "取引と求人の安全", variant: "grid", items: [{ title: "住まい安全", body: "未確認の貸主へ前払いしない。住所、契約、本人確認を行い、外部決済リンクに注意します。" }, { title: "中古安全", body: "公共の場所を優先し、高額品は対面確認。大きな前金は避けます。" }, { title: "求人安全", body: "入職保証金を払わず、会社情報がない求人や先払いを求める高収入求人に注意します。" }] }] },
+	    zh: { eyebrow: "安全中心", title: "在真正需要判断的时刻，给出清楚的提醒。", intro: "从公开讨论、线下活动和语言交换，到租房、二手交易、招聘与本地服务，安全提示会出现在对应的使用场景里。", blocks: [{ title: "参加线下活动前", variant: "list", items: [{ title: "选择公共地点", body: "第一次见面尽量选择人流稳定、容易离开的公共场所，不要贸然前往私人空间。" }, { title: "告诉信任的人", body: "把活动时间、地点和同行者信息告诉家人或朋友，并约定必要的联系时间。" }, { title: "保留沟通记录", body: "重要约定尽量留在平台内；遇到威胁、骚扰或可疑行为，请及时离开并举报。" }] }, { title: "不被允许的内容与服务", variant: "legal", items: [{ title: "高风险与违法服务", body: "Machi 禁止成人或性服务、违法线下服务、高风险私人交易，以及暗示付费私人陪伴的内容或交易。" }, { title: "社区功能的边界", body: "社区功能服务于公开城市话题、本地小组、问答、活动、语言交换、租房、工作、地域服务与日常生活讨论，不提供私人介绍或陪伴交易。" }] }, { title: "交易、租房与招聘", variant: "grid", items: [{ title: "租房", body: "不要向未经验证的房东提前转账；核对地址、合同和身份，并警惕明显低价房源与平台外付款链接。" }, { title: "二手交易", body: "优先在公共场所交易；高价值物品当面验货，不提前支付大额定金。" }, { title: "招聘", body: "不要支付所谓入职押金或培训保证金；核实公司主体、工作地点、联系方式和实际岗位内容。" }] }] },
+	    en: { eyebrow: "Safety Center", title: "Clear guidance at the moments that call for judgment.", intro: "From public discussions, local events, and language exchange to housing, secondhand transactions, hiring, and local services, Machi places practical safety guidance in the relevant flow.", blocks: [{ title: "Before meeting in person", variant: "list", items: [{ title: "Choose a public place", body: "For a first meeting, choose a well-trafficked place that is easy to leave. Avoid private spaces." }, { title: "Tell someone you trust", body: "Share the time, place, and who you are meeting with a friend or family member." }, { title: "Keep a record", body: "Keep important arrangements on the platform. Leave and report promptly if you encounter threats, harassment, or suspicious behavior." }] }, { title: "Content and services we do not allow", variant: "legal", items: [{ title: "Illegal and high-risk services", body: "Machi prohibits adult or sexual services, illegal offline services, high-risk private transactions, and content or transactions suggesting paid private companionship." }, { title: "The scope of community features", body: "Community features support public city topics, local groups, Q&A, events, language exchange, housing, work, local services, and everyday city life. They are not a channel for private introductions or paid companionship." }] }, { title: "Housing, transactions, and hiring", variant: "grid", items: [{ title: "Housing", body: "Do not prepay an unverified landlord. Check the address, contract, and identity, and beware unusually cheap listings or off-platform payment links." }, { title: "Secondhand", body: "Prefer public places, inspect high-value items in person, and avoid large advance deposits." }, { title: "Hiring", body: "Never pay a job deposit or training guarantee. Verify the company, workplace, contact details, and actual role." }] }] },
+	    ja: { eyebrow: "安全センター", title: "判断が必要な場面に、わかりやすい注意を。", intro: "公開のやり取り、地域の活動、言語交換から、住まい、譲り合い、求人、地域サービスまで。それぞれの場面に合った安全情報を届けます。", blocks: [{ title: "実際に会う前に", variant: "list", items: [{ title: "人目のある場所を選ぶ", body: "初めて会うときは、人通りがあり、必要ならすぐ離れられる場所を選んでください。個人宅などは避けましょう。" }, { title: "信頼できる人に伝える", body: "会う時間と場所、相手についてわかっていることを、家族や友人に共有してください。" }, { title: "やり取りを残す", body: "大切な約束はできるだけプラットフォーム上に残し、脅しや嫌がらせ、不審な行動があれば、その場を離れて通報してください。" }] }, { title: "認めていない内容とサービス", variant: "legal", items: [{ title: "違法・高リスクのサービス", body: "アダルト・性的サービス、違法な対面サービス、高リスクの個人間取引、有料の私的な同伴を示唆する内容や取引は禁止しています。" }, { title: "コミュニティ機能の範囲", body: "街の話題、地域グループ、Q&A、イベント、言語交換、住まい、仕事、地域サービス、日常生活に関する公開のやり取りを対象としています。個人的な紹介や有料同伴のための機能ではありません。" }] }, { title: "住まい・取引・求人", variant: "grid", items: [{ title: "住まい", body: "確認できていない貸主へ前払いせず、住所、契約内容、相手の身元を確かめてください。相場より極端に安い物件や外部の決済リンクにも注意が必要です。" }, { title: "譲り合い・中古取引", body: "人目のある場所を選び、高額品は対面で状態を確認してください。大きな前金は避けましょう。" }, { title: "求人", body: "採用のための保証金や研修費は支払わず、会社情報、勤務地、連絡先、実際の仕事内容を確認してください。" }] }] },
   },
   privacy: {
     zh: { eyebrow: "隐私政策", title: "我们尊重你的城市生活和个人边界。", intro: "本政策说明 Machi 如何处理账号、个人资料、公开内容、城市选择、设备、日志、Cookie、支付、会员订单、服务预约、私信和通知相关信息。", blocks: [{ title: "我们是谁与核心原则", variant: "legal", items: [
-      { title: "服务主体", body: "Machi City 提供按国家、城市和语言组织内容的本地生活与同城连接服务。联系方式：hi@machicity.com。" },
+      { title: "服务主体", body: "Machi 提供按国家、城市和语言组织内容的本地生活与同城连接服务。联系方式：hi@machicity.com。" },
       { title: "不出售个人数据", body: "Machi 不向广告商出售用户个人数据，也不会把邮箱用于无关广告列表。" },
       { title: "最小必要与用户控制", body: "我们只收集提供服务、安全审核、支付、会员和预约所需的信息。你可以管理资料、语言、通知和账号删除请求。" },
     ] }, { title: "我们收集的信息", variant: "legal", items: [
@@ -522,7 +519,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "政策更新", body: "政策更新会在官网发布。重大变化会通过站内通知、邮件或其他合理方式提醒。" },
     ] }] },
     en: { eyebrow: "Privacy Policy", title: "We respect your city life and personal boundaries.", intro: "This policy explains how Machi handles account, profile, public content, city selection, device, log, cookie, payment, membership, order, service booking, messaging and notification data.", blocks: [{ title: "Who we are and principles", variant: "legal", items: [
-      { title: "Service provider", body: "Machi City provides a local life and city connection service organized by country, city and language. Contact: hi@machicity.com." },
+      { title: "Service provider", body: "Machi provides a local life and city connection service organized by country, city and language. Contact: hi@machicity.com." },
       { title: "No sale of personal data", body: "Machi does not sell users' personal data to advertisers and does not add emails to unrelated ad lists." },
       { title: "Data minimization and control", body: "We collect what is needed to provide the service, safety review, payments, memberships and service bookings. You can manage profile, languages, notifications and deletion requests." },
     ] }, { title: "Information we collect", variant: "legal", items: [
@@ -542,7 +539,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Policy updates", body: "Updates are posted on the website. Major changes may be announced through in-app notice, email or other reasonable methods." },
     ] }] },
     ja: { eyebrow: "プライバシーポリシー", title: "あなたの暮らしと境界を尊重します。", intro: "本ポリシーは、Machi がアカウント、プロフィール、公開コンテンツ、都市選択、端末、ログ、Cookie、支払い、会員、注文、サービス予約、メッセージ、通知データを扱う方法を説明します。", blocks: [{ title: "運営者と基本方針", variant: "legal", items: [
-      { title: "サービス提供者", body: "Machi City は、国・都市・言語ごとに地域生活とつながりを整理するサービスを提供します。連絡先：hi@machicity.com。" },
+      { title: "サービス提供者", body: "Machi は、国・都市・言語ごとに地域の暮らしとつながりを整理するサービスです。連絡先：hi@machicity.com。" },
       { title: "個人データを販売しません", body: "Machi はユーザーの個人データを広告主に販売せず、メールを無関係な広告リストへ登録しません。" },
       { title: "必要最小限とユーザー管理", body: "サービス提供、安全審査、支払い、会員、サービス予約に必要な情報を扱います。プロフィール、言語、通知、削除申請を管理できます。" },
     ] }, { title: "収集する情報", variant: "legal", items: [
@@ -602,15 +599,15 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Service changes, law and contact", body: "Machi may change, suspend or end parts of the service. Disputes follow applicable enforceable law and venue rules. Contact hi@machicity.com." },
     ] }] },
     ja: { eyebrow: "利用規約", title: "信頼できる地域コミュニティを一緒に守る。", intro: "Machi を利用することで、プラットフォーム規則、コミュニティ規範、ソーシャル安全ポリシー、有料規約、現地法に従うことに同意します。Machi はプラットフォームおよび情報サービスであり、ユーザー投稿の完全な正確性を保証しません。", blocks: [{ title: "サービスとアカウント", variant: "legal", items: [
-      { title: "サービス内容", body: "Machi は地域生活情報、都市コミュニティ、地域グループ、Guide、会員、デジタル資料、サービス予約、事業者提携、関連情報ツールを提供します。" },
+      { title: "サービス内容", body: "Machi は地域の生活情報、街のコミュニティ、地域グループ、Guide、会員向け機能、デジタル資料、サービス予約、事業者提携、関連情報ツールを提供します。" },
       { title: "アカウント登録", body: "正確で連絡可能な情報を提供し、アカウントを安全に管理してください。なりすまし、譲渡、安全機能の回避は禁止です。" },
-      { title: "ユーザー責任", body: "投稿、メッセージ、取引、対面、予約、事業者コンテンツについて責任を負い、現地法、平台規則、第三者規約に従う必要があります。" },
+      { title: "ユーザー責任", body: "投稿、メッセージ、取引、対面、予約、事業者コンテンツについて責任を負い、現地法、プラットフォームの規則、第三者の利用規約に従う必要があります。" },
     ] }, { title: "コンテンツ、コミュニティ、安全", variant: "legal", items: [
       { title: "投稿ルール", body: "内容は正確で明確、誤解を招かず、権利とプライバシーを尊重する必要があります。Machi は審査、表示順位、ラベル、削除、表示制限を行う場合があります。" },
       { title: "禁止内容", body: "嫌がらせ、ヘイト・差別、詐欺、なりすまし、虚偽求人、虚偽物件、危険な対面誘い、成人・違法・暴力コンテンツ、プライバシー侵害、スパムは禁止です。" },
       { title: "通報と審査", body: "Machi は通報、ブロック、コンテンツ審査、事業者再確認、リスク表示、アカウント制限、停止、削除を行う場合があります。" },
     ] }, { title: "有料機能、事業者、高リスク情報", variant: "legal", items: [
-      { title: "会員、資料、サービス予約", body: "会員特典、資料購入、サービス予約、返金、キャンセルは該当規約、注文画面、支払い平台ルールに従います。Machi の決済機能は、デーティング、マッチメイキング、エスコートサービス、有料同伴、アダルトサービス、または一対一の恋愛紹介には使用されません。" },
+      { title: "会員、資料、サービス予約", body: "会員特典、資料購入、サービス予約、返金、キャンセルは、該当する規約、注文画面、決済プラットフォームの規則に従います。Machi の決済機能は、デーティング、マッチメイキング、エスコートサービス、有料同伴、アダルトサービス、または一対一の恋愛紹介には使用されません。" },
       { title: "事業者と地域サービス", body: "事業者、求人、住まい、サービス、イベントは現地法に従う必要があります。Machi は認証や表示を行う場合がありますが、品質、価格、利用可否、結果を保証しません。" },
       { title: "高リスク情報の免責", body: "Machi は住まい、取引、採用、合格、ビザ、口座開設、就職、事業者サービスの結果を保証しません。ユーザー自身で確認してください。" },
       { title: "オフライン対面の免責", body: "対面、取引、イベント、言語交換の安全はユーザー自身で判断し、公共の場所を優先し、記録を残し、リスクは速やかに通報してください。" },
@@ -647,15 +644,15 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Benefit changes and contact", body: "Machi may adjust membership benefits, resource scope, discounts and prices with reasonable notice. Contact hi@machicity.com." },
     ] }] },
     ja: { eyebrow: "会員規約", title: "Machi 認証会員規約", intro: "本規約は、Machi 認証会員、月額・年額、特典、会員資料、割引、自動更新、解約、返金について説明します。", blocks: [{ title: "会員と特典", variant: "legal", items: [
-      { title: "会員の説明", body: "Machi 認証会員は、都市生活、Guide 資料、会員限定コンテンツ、一部割引のための有料特典であり、身元保証や結果保証ではありません。" },
-      { title: "月額、年額、地域別価格", body: "会員は月額または年額で提供される場合があります。価格、通貨、税、支払い方法は地域、平台、プロモーションにより変わります。" },
+      { title: "会員の説明", body: "Machi 認証会員は、街での暮らし、Guide 資料、会員限定コンテンツ、一部割引のための有料特典であり、身元や結果を保証するものではありません。" },
+      { title: "月額、年額、地域別価格", body: "会員は月額または年額で提供される場合があります。価格、通貨、税、支払い方法は、地域、利用するプラットフォーム、プロモーションによって変わります。" },
       { title: "会員資料と割引", body: "会員は指定資料、テンプレート、チェックリスト、限定コンテンツを閲覧でき、一部サービスやデジタル資料の割引を受ける場合があります。" },
       { title: "サービスは原則無料ではありません", body: "相談、翻訳、送迎、手続きサポート、申請サポート等は、注文画面で明記されない限り会員無料特典ではありません。" },
       { title: "決済利用の範囲", body: "Machi の決済機能は、デーティング、マッチメイキング、エスコートサービス、有料同伴、アダルトサービス、または一対一の恋愛紹介には使用されません。" },
     ] }, { title: "購読、解約、返金", variant: "legal", items: [
-      { title: "自動更新", body: "App Store、Google Play、Web 支払いの購読は、各平台規則に従い自動更新される場合があります。" },
-      { title: "解約", body: "App Store / Google Play の購読は各平台で管理します。Web 支払いは注文画面またはサポート案内に従います。解約しても支払い済み期間の権利は通常継続します。" },
-      { title: "返金", body: "App Store / Google Play の返金は各平台が処理します。Web 返金は注文状態、利用状況、現地法、返金ポリシーに従います。" },
+      { title: "自動更新", body: "App Store、Google Play、Web 決済の購読は、それぞれのプラットフォームの規則に従って自動更新される場合があります。" },
+      { title: "解約", body: "App Store / Google Play の購読は、各ストアで管理します。Web 決済は注文画面またはサポートの案内に従います。解約後も、通常は支払い済み期間の特典を利用できます。" },
+      { title: "返金", body: "App Store / Google Play の返金は各ストアが処理します。Web 決済の返金は、注文状態、利用状況、現地法、返金ポリシーに従います。" },
       { title: "特典変更と連絡", body: "Machi は会員特典、資料範囲、割引、価格を合理的に変更する場合があります。連絡先：hi@machicity.com。" },
     ] }] },
   },
@@ -713,8 +710,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Partial refunds", body: "If service has started, human work was invested or third-party costs occurred, only partial refunds or no refund may be available." },
       { title: "How to request", body: "Send order number, account email, reason and relevant screenshots to hi@machicity.com." },
     ] }] },
-    ja: { eyebrow: "返金ポリシー", title: "返金とキャンセルのルール", intro: "本ポリシーは、会員、デジタル資料、サービス予約、App Store / Google Play 購読、Web 支払いの返金について説明します。", blocks: [{ title: "平台と支払い方法", variant: "legal", items: [
-      { title: "App Store / Google Play", body: "Apple または Google 経由の購読・アプリ内購入の返金は、各平台の規則に従って処理されます。" },
+    ja: { eyebrow: "返金ポリシー", title: "返金とキャンセルのルール", intro: "本ポリシーは、会員、デジタル資料、サービス予約、App Store / Google Play 購読、Web 支払いの返金について説明します。", blocks: [{ title: "プラットフォームと支払い方法", variant: "legal", items: [
+      { title: "App Store / Google Play", body: "Apple または Google 経由の購読・アプリ内購入の返金は、各ストアの規則に従って処理されます。" },
       { title: "Web 支払い", body: "Web、Stripe、その他 Web 決済の注文は、注文状態、利用状況、サービス進行、現地法をもとに判断します。" },
       { title: "デジタル資料", body: "ダウンロード、解除、閲覧済みのデジタル資料は、法令上必要な場合や重大な問題がある場合を除き、通常返金対象外です。" },
     ] }, { title: "サービス予約", variant: "legal", items: [
@@ -758,7 +755,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
   "commercial-disclosure": {
     zh: { eyebrow: "商业披露", title: "商业披露（特定商取引法に基づく表記）", intro: "本页面列出 Machi Web 支付、会员、数字资料和服务预约相关的商业披露信息。此页面用于满足日本支付审核与网站披露要求，不构成法律意见。", blocks: [
       { title: "商家基本信息", variant: "legal", items: [
-        { title: "法定名称", body: "Machi City / 运营者：姚凱（如依法或经合理要求需要更完整的法定名称，将立即披露）。" },
+        { title: "法定名称", body: "Machi / 运营者：姚凱（如依法或经合理要求需要更完整的法定名称，将立即披露）。" },
         { title: "地址", body: "如经要求将立即披露。请通过 hi@machicity.com 联系并说明订单号、请求目的和联系方式。" },
         { title: "电话号码", body: "如经要求将立即披露。客服优先通过电子邮件处理，必要时安排日语沟通。" },
         { title: "邮箱地址", body: "hi@machicity.com" },
@@ -786,7 +783,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     ] },
     en: { eyebrow: "Commercial Disclosure", title: "Commercial Disclosure", intro: "This page provides commercial disclosure information for Machi Web payments, memberships, digital resources and service bookings. It is prepared for Japanese payment review and website disclosure purposes and is not legal advice.", blocks: [
       { title: "Business Information", variant: "legal", items: [
-        { title: "Legal name", body: "Machi City / Operator: Yao Kai. Additional legal name details will be disclosed without delay upon lawful or reasonable request." },
+        { title: "Legal name", body: "Machi / Operator: Yao Kai. Additional legal name details will be disclosed without delay upon lawful or reasonable request." },
         { title: "Address", body: "Will be disclosed without delay upon request. Contact hi@machicity.com with the relevant order number, request purpose and contact details." },
         { title: "Phone number", body: "Will be disclosed without delay upon request. Customer support is primarily handled by email, with Japanese communication arranged when necessary." },
         { title: "Email address", body: "hi@machicity.com" },
@@ -814,7 +811,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     ] },
     ja: { eyebrow: "特定商取引法に基づく表記", title: "特定商取引法に基づく表記", intro: "本ページは、Machi Web の決済、会員、デジタル資料、サービス予約に関する商取引上の表示事項をまとめたものです。日本の決済審査およびサイト表示のために作成しており、法的助言ではありません。", blocks: [
       { title: "事業者情報", variant: "legal", items: [
-        { title: "販売事業者の名称", body: "Machi City / 運営者：Yao Kai。法令上または合理的な請求がある場合、追加の法定名称情報を遅滞なく開示します。" },
+        { title: "販売事業者の名称", body: "Machi / 運営者：Yao Kai。法令上または合理的な請求がある場合、追加の法定名称情報を遅滞なく開示します。" },
         { title: "所在地", body: "請求があれば遅滞なく開示します。hi@machicity.com へ、注文番号、請求目的、連絡先をご記入ください。" },
         { title: "電話番号", body: "請求があれば遅滞なく開示します。お問い合わせは原則メールで受け付け、必要に応じて日本語での連絡を調整します。" },
         { title: "メールアドレス", body: "hi@machicity.com" },
@@ -823,14 +820,14 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "販売条件", variant: "legal", items: [
         { title: "販売価格", body: "会員プラン、デジタル資料、サービス予約、商品ページに表示される金額に従います。価格は原則として税込表示とし、税額や地域差がある場合は注文画面に表示します。" },
         { title: "追加料金", body: "インターネット通信料はユーザー負担です。サービス予約では交通費、公的手数料、資料費、第三者機関費用、銀行または決済事業者手数料が発生する場合があり、予見可能な範囲で注文画面またはサービス説明に表示します。" },
-        { title: "利用可能な支払方法", body: "Web 決済は主に Stripe が対応するカード、Apple Pay、Google Pay 等を利用します。App Store / Google Play 経由の購入は各平台規則に従います。実際に利用可能な方法は決済画面に表示されます。" },
+        { title: "利用可能な支払方法", body: "Web 決済は主に Stripe が対応するカード、Apple Pay、Google Pay 等を利用します。App Store / Google Play 経由の購入は、各ストアの規則に従います。実際に利用できる方法は決済画面に表示されます。" },
         { title: "支払時期", body: "カード、Apple Pay、Google Pay など即時決済は注文確定時に処理されます。銀行振込その他の非即時決済を提供する場合は、注文画面に表示される期限に従います。" },
         { title: "引渡し時期", body: "デジタル資料は通常、決済確認後ただちに、または短時間で閲覧可能になります。会員特典は通常、決済確認後に有効化されます。サービス予約は、依頼内容と日程確認後、合意した日時に提供します。" },
       ] },
       { title: "キャンセル、返品、返金", variant: "legal", items: [
         { title: "お客様都合のキャンセルまたは返金", body: "開始前のサービス予約は、注文画面および返金ポリシーに従い、キャンセル、変更、返金を申請できます。ダウンロード済み、解除済み、閲覧済みのデジタル資料は、法令上必要な場合または重大な問題がある場合を除き、通常返金対象外です。" },
         { title: "不具合がある商品またはサービス", body: "デジタル資料にアクセスできない、ファイルが著しく破損している、注文特典が有効化されない、サービスが注文説明と著しく異なる場合は hi@machicity.com へご連絡ください。確認後、修正、再提供、同等代替、一部返金または返金を行う場合があります。" },
-        { title: "継続課金契約", body: "会員購読は App Store、Google Play、Stripe または Web 注文画面の規則に従い解約できます。解約しても通常、支払い済み期間の権利は継続し、自動更新の状態は各平台に従います。" },
+        { title: "継続課金契約", body: "会員購読は、App Store、Google Play、Stripe または Web 注文画面の規則に従って解約できます。解約後も、通常は支払い済み期間の特典を利用でき、自動更新の状態は各プラットフォームの表示に従います。" },
         { title: "決済利用の範囲", body: "Machi の決済機能は、デーティング、マッチメイキング、エスコートサービス、有料同伴、アダルトサービス、または一対一の恋愛紹介には使用されません。" },
       ] },
       { title: "任意表示事項", variant: "legal", items: [

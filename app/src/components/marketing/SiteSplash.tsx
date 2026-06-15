@@ -18,7 +18,15 @@
 /// The splash node is owned by the inline script after first paint
 /// and React never updates it again, so suppressing the warning is
 /// the right call here.
-export function SiteSplash() {
+import type { MarketingLocale } from "@/data/machi-home";
+
+const splashTagline: Record<MarketingLocale, string> = {
+  zh: "让陌生的城市，也有生活的门路",
+  en: "Find your way into a new city",
+  ja: "知らない街でも、暮らし方は見つけられる",
+};
+
+export function SiteSplash({ locale }: { locale: MarketingLocale }) {
   return (
     <>
       <div
@@ -37,8 +45,8 @@ export function SiteSplash() {
             M<span className="machi-splash-dot" />
           </span>
           <div className="machi-splash-text">
-            <p className="machi-splash-title">Machi&nbsp;City</p>
-            <p className="machi-splash-tagline">在每一座城市，找到生活的回声</p>
+            <p className="machi-splash-title">Machi</p>
+            <p className="machi-splash-tagline">{splashTagline[locale]}</p>
           </div>
           <span className="machi-splash-bar">
             <span className="machi-splash-bar-fill" />

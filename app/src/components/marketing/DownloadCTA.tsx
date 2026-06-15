@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertCircle, Bell, CheckCircle2, Loader2, Mail, Send, ShieldCheck, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "./Button";
 import { BrandPhrase } from "./BrandText";
 import { useMarketingI18n } from "./MarketingI18n";
@@ -24,11 +24,6 @@ export function DownloadCTA() {
   const [language, setLanguage] = useState(copy.download.languageOptions[0]);
   const [intent, setIntent] = useState(copy.download.intentOptions[0]);
   const [state, setState] = useState<FormState>({ kind: "idle" });
-  const webBetaFeatures = useMemo(
-    () => ["city home", "discovery and search", "notifications", "messages", "posting", "profiles", "local connections"],
-    [],
-  );
-
   const isSending = state.kind === "sending";
   const isSuccess = state.kind === "success";
   const isError = state.kind === "error";
@@ -72,7 +67,7 @@ export function DownloadCTA() {
 
           <div className="relative grid items-stretch gap-4 lg:grid-cols-2">
             {/* ─────────── LEFT — dark pitch ─────────── */}
-            <div className="relative overflow-hidden rounded-[28px] bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 px-6 py-8 text-white shadow-[0_24px_80px_-48px_rgba(15,23,42,0.9)] sm:px-9 sm:py-10 lg:px-10">
+            <div className="relative overflow-hidden rounded-[28px] bg-[linear-gradient(145deg,#25211f_0%,#3b2d31_56%,#4c3544_100%)] px-6 py-8 text-white shadow-[0_24px_80px_-48px_rgba(55,40,43,0.88)] sm:px-9 sm:py-10 lg:px-10">
               <div className="pointer-events-none absolute -left-24 -top-24 h-64 w-64 rounded-full bg-indigo-500/25 blur-3xl" />
               <div className="pointer-events-none absolute -bottom-28 left-1/3 h-64 w-64 rounded-full bg-sky-400/20 blur-3xl" />
 
@@ -89,7 +84,7 @@ export function DownloadCTA() {
                 </p>
 
                 <div className="mt-6 grid gap-2 sm:grid-cols-2">
-                  {webBetaFeatures.map((feature) => (
+                  {copy.download.webFeatures.map((feature) => (
                     <span key={feature} className="rounded-2xl bg-white/8 px-3 py-2 text-xs font-black text-white/72 ring-1 ring-white/10">
                       {feature}
                     </span>
@@ -123,7 +118,7 @@ export function DownloadCTA() {
             {/* ─────────── RIGHT — form + benefits ─────────── */}
             <div className="rounded-[28px] border border-white/70 bg-white/95 p-5 text-slate-950 shadow-[0_18px_70px_-54px_rgba(15,23,42,0.8)] sm:p-7 dark:border-white/15 dark:bg-white/[0.06] dark:text-white">
               <div className="flex items-center gap-3">
-                <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-600 via-violet-600 to-sky-500 text-white shadow-[0_18px_34px_-18px_rgba(79,70,229,0.75)]">
+                <span className="inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-[linear-gradient(135deg,#ff7657_0%,#d94b5f_50%,#84658f_100%)] text-white shadow-[0_18px_34px_-18px_rgba(201,74,88,0.68)]">
                   <Mail className="h-5 w-5" aria-hidden="true" />
                 </span>
                 <div>

@@ -1147,7 +1147,7 @@ export const api = {
     return request("PATCH", `/api/admin/listing-reviews/${encodeURIComponent(reviewId)}`, { status });
   },
 
-  // ---- Machi City Reputation ----
+  // ---- Machi Reputation ----
   async reputationMe(): Promise<KXReputationProfile> {
     const { data } = await request<{ data: KXReputationProfile }>("GET", `/api/reputation/me`);
     return data;

@@ -111,7 +111,7 @@ export function Footer() {
             Made by YAOKAI · yaokai.me
           </a>
           <span aria-hidden="true" className="text-slate-300 dark:text-white/20">·</span>
-          <span>machicity.com</span>
+          <span>Machi</span>
         </p>
       </div>
     </footer>

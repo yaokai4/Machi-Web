@@ -60,7 +60,7 @@ export function GuideSection() {
                   href="/guide"
                   className="mc-reveal group rounded-[22px] border border-white/70 bg-white/82 p-4 shadow-[0_16px_44px_-40px_rgba(15,23,42,0.58)] backdrop-blur transition duration-300 hover:-translate-y-0.5 hover:border-indigo-200 hover:bg-white dark:border-white/10 dark:bg-white/[0.05] dark:hover:bg-white/[0.08]"
                 >
-                  <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-700 ring-1 ring-indigo-100 transition group-hover:bg-indigo-600 group-hover:text-white dark:bg-indigo-500/10 dark:text-indigo-200 dark:ring-indigo-400/20">
+                  <span className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-rose-50 text-[#76576f] ring-1 ring-rose-100 transition group-hover:bg-[#765f78] group-hover:text-white dark:bg-rose-500/10 dark:text-rose-200 dark:ring-rose-300/20">
                     <Icon className="h-5 w-5" aria-hidden="true" />
                   </span>
                   <h3 className="mt-4 text-base font-black text-slate-950 dark:text-white">

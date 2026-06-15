@@ -54,7 +54,7 @@ export function HeroSection() {
       <div className="mx-auto grid max-w-[1180px] items-center gap-12 lg:grid-cols-[1.04fr_0.96fr] xl:gap-16">
         {/* ─────────── LEFT — pitch + CTA ─────────── */}
         <div className="mc-reveal order-1 mx-auto w-full min-w-0 max-w-[620px] text-center lg:mx-0 lg:text-left">
-          <span className="mc-pill inline-flex items-center gap-1.5 bg-white/80 text-indigo-700 ring-1 ring-indigo-100 backdrop-blur dark:bg-white/[0.06] dark:text-sky-200 dark:ring-white/10">
+          <span className="mc-pill inline-flex items-center gap-1.5 bg-white/80 text-[#76576f] ring-1 ring-rose-100 backdrop-blur dark:bg-white/[0.06] dark:text-rose-200 dark:ring-white/10">
             <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
             <BrandPhrase text={copy.hero.eyebrow} />
           </span>

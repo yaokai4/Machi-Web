@@ -13,46 +13,50 @@ const whyCopy: Record<
     body: string;
     machi: string;
     comparisons: Array<[string, string]>;
+    signals: string[];
   }
 > = {
   zh: {
     label: "Why Machi",
-    title: "信息并不稀缺。真正稀缺的，是与此刻、此地、此人有关的答案。",
-    body: "Machi 不追求把更多内容推到你面前，而是让城市里的经验有位置、问题有回应、人与人之间的帮助有机会发生。",
-    machi: "Machi 按城市、语言与生活场景组织信息和人。你找到的不只是本地内容，也是在同一座城市里，愿意认真回应的人。",
+    title: "答案很多，难的是找到仍然适合此时、此地、此刻的那一个。",
+    body: "一条经验有没有用，往往取决于它发生在哪里、什么时候、适合什么样的人。Machi 把这些上下文保留下来，让本地信息更容易判断，也更容易行动。",
+    machi: "Machi 按城市、语言和生活场景整理信息与人。你可以找到具体的本地内容，也能看见来自同一座城市、有真实背景的回答。",
     comparisons: [
-      ["微信群 / Line 群", "信息沉底、无法搜索、容易错过重点，也很难认识群外的新朋友。"],
-      ["Facebook Groups", "噪音多、分类弱、跨语言体验差，社交连接不够精确。"],
-      ["Craigslist / 传统分类站", "偏交易，缺少真实经验、问答和人与人之间的连接。"],
-      ["小红书 / 社交媒体", "内容分散，城市结构不稳定，适合浏览，但不一定适合建立本地关系。"],
-      ["点评 / 黄页类 App", "偏商户评分和列表，缺少真实经验、问答和人与人之间的本地互助。"],
+      ["群聊里的经验", "来得快，也容易沉下去。过几天再想找，往往已经翻不到了。"],
+      ["社交平台上的分享", "有启发，但常常缺少具体城市、时间和个人处境，未必能直接照着做。"],
+      ["分类信息网站", "适合找房源、工作或物品，却很难看见发布者的经验和后续回应。"],
+      ["搜索结果", "答案很多，新旧混在一起，也未必适合你的语言和所在地区。"],
+      ["本地生活平台", "擅长店铺、评分与预约，较少承载居民之间持续的问答和互助。"],
     ],
+    signals: ["城市与语言", "频道与场景", "真实经验与信任"],
   },
   en: {
     label: "Why Machi",
-    title: "Information is abundant. What is rare is an answer that belongs to this place, this moment, and the person asking.",
-    body: "Machi is not designed to put more posts in front of you. It gives local experience a place, questions a path to an answer, and people a reason to help one another.",
-    machi: "Machi organizes knowledge and people by city, language, and everyday need. What you find is not only local information, but someone nearby willing to answer with care.",
+    title: "There are plenty of answers. The hard part is knowing which one still fits your place and situation.",
+    body: "Local advice only makes sense with context: where it happened, when it was true, and who it was useful for. Machi keeps that context close, making information easier to judge and act on.",
+    machi: "Machi organizes information and people by city, language, and everyday need. You can find specific local content and answers grounded in real experience nearby.",
     comparisons: [
-      ["WeChat / LINE groups", "Information sinks, search is weak, important things are missed and it is hard to connect with people beyond the group."],
-      ["Facebook Groups", "Noisy, weakly categorized, poor cross-language experience and imprecise social connection."],
-      ["Craigslist / classifieds", "Transaction-heavy, with little lived experience, Q&A or person-to-person connection."],
-      ["Social media feeds", "Content is scattered, city structure is unstable and browsing does not always build local relationships."],
-      ["Review / listing apps", "Focused on ratings and listings, with little lived experience, Q&A or local mutual help between people."],
+      ["Advice in group chats", "It arrives quickly and disappears just as fast. A few days later, the useful message can be nearly impossible to find."],
+      ["Posts on social platforms", "Often helpful, but the city, date, and personal circumstances may be missing, making the advice hard to apply."],
+      ["Classified listings", "Useful for finding a home, job, or item, but rarely show the experience or conversation behind the listing."],
+      ["Search results", "There is no shortage of answers, but old and new information mix together and may not fit your language or location."],
+      ["Local review apps", "Strong on venues, ratings, and bookings; less suited to ongoing questions and mutual help between residents."],
     ],
+    signals: ["City & language", "Channels & context", "Experience & trust"],
   },
   ja: {
     label: "Why Machi",
-    title: "情報はあふれています。足りないのは、いま、ここで暮らす人にきちんと届く答えです。",
-    body: "Machi が増やしたいのは投稿の数ではありません。街の経験に居場所をつくり、問いに返事が届き、人どうしの助け合いが生まれる余地をつくります。",
-    machi: "街、言語、暮らしの場面ごとに、情報と人を整理する。見つかるのは地域情報だけでなく、同じ街で丁寧に答えてくれる誰かです。",
+    title: "答えはたくさんあります。難しいのは、今の自分に合う情報を見分けることです。",
+    body: "地域の情報は、いつ、どこで、どんな人に役立ったのかがわかって初めて判断できます。Machi は、その背景を残しながら、次の行動につながる形で整理します。",
+    machi: "Machi は、街・言語・暮らしの目的ごとに情報と人をつなぎます。具体的な地域情報と、同じ街で得られた実体験にもとづく回答を探せます。",
     comparisons: [
-      ["WeChat / LINE グループ", "情報が流れて沈み、検索しづらく、重要な内容を逃しやすく、グループ外の新しい人とも出会いにくい。"],
-      ["Facebook Groups", "ノイズが多く、分類が弱く、多言語体験が弱く、つながりが精密ではありません。"],
-      ["Craigslist / 従来の分類サイト", "取引中心で、生活経験、Q&A、人と人のつながりが不足しています。"],
-      ["SNS フィード", "内容が散らばり、都市構造が安定せず、見るには良いが地域関係を作るには弱い。"],
-      ["レビュー / 名簿系アプリ", "店舗評価や一覧が中心で、生活経験、Q&A、人どうしの助け合いが不足しています。"],
+      ["グループチャットの情報", "すぐ届く一方で、すぐに流れてしまいます。数日後に探し直すのは簡単ではありません。"],
+      ["SNS の体験談", "参考になっても、地域や時期、書いた人の状況がわからず、そのまま自分に当てはめにくいことがあります。"],
+      ["クラシファイドサイト", "住まいや仕事、物を探すには便利ですが、掲載の背景やその後のやり取りは見えにくいままです。"],
+      ["検索結果", "新旧の情報が混ざり、自分の言語や住んでいる地域に合うか判断しづらいことがあります。"],
+      ["地域情報アプリ", "店舗検索や口コミ、予約には強い一方、住民どうしの継続的な相談や助け合いには向いていません。"],
     ],
+    signals: ["街と言語", "チャンネルと目的", "実体験と信頼"],
   },
 };
 
@@ -108,9 +112,9 @@ export function WhyMachiSection() {
               </p>
               <div className="mt-8 grid gap-3">
                 {[
-                  { icon: Search, label: "city + language" },
-                  { icon: MessageSquareDashed, label: "channels + scenes" },
-                  { icon: UsersRound, label: "people + trust" },
+                  { icon: Search, label: copy.signals[0] },
+                  { icon: MessageSquareDashed, label: copy.signals[1] },
+                  { icon: UsersRound, label: copy.signals[2] },
                 ].map(({ icon: Icon, label }) => (
                   <div key={label} className="flex items-center gap-3 rounded-2xl bg-white/8 px-4 py-3">
                     <Icon className="h-4 w-4 text-orange-200" aria-hidden="true" />

@@ -1133,7 +1133,7 @@ export const CITY_CHANNEL_DESCRIPTIONS: Record<CityChannelKey, string> = {
   jobPost: "本地商家、企业、机构发布招聘和内推。",
   meetup: "学习、运动、摄影、语言交换和本地活动小组。",
   dining: "美食聚会、咖啡、探店和周末本地餐厅讨论。",
-  event: "展览、Citywalk、桌游、运动、线下聚会。",
+  event: "展览、城市漫步、桌游、运动、线下聚会。",
   question: "签证、租房、工作、学校、医疗等本地求助。",
   service: "搬家、翻译、签证、留学、保险、维修、报税。",
   merchant: "本地店铺、服务商和认证商家内容。",
