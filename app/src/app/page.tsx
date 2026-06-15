@@ -15,9 +15,9 @@ import {
 
 const META: Record<"zh" | "en" | "ja", { title: string; description: string; keywords: string[] }> = {
   zh: {
-    title: "Machi｜让陌生的城市，也有生活的门路",
+    title: "Machi｜在每一座城市，找到生活的回声",
     description:
-      "Machi 按城市和语言，整理租房、生活手续、求职、二手、本地服务、问答与真实经验。先从日本开始，让刚来的人少走弯路，也让住久的人把有用的事留给后来者。",
+      "Machi 按城市和语言，整理租房、手续、求职、二手、本地服务、问答与真实经验。先把日本市场做透，再走向韩国、澳洲、加拿大、美国、英国等城市。",
     keywords: [
       "Machi",
       "Machi",
@@ -38,9 +38,9 @@ const META: Record<"zh" | "en" | "ja", { title: string; description: string; key
     ],
   },
   en: {
-    title: "Machi | Find your way into a new city",
+    title: "Machi | Find the echoes of real life in every city",
     description:
-      "Machi organizes housing, paperwork, jobs, secondhand exchange, local services, Q&A, and first-hand advice by city and language. We are starting in Japan and building outward from real local needs.",
+      "Machi organizes housing, paperwork, jobs, secondhand exchange, local services, Q&A, and lived experience by city and language. We are starting in Japan, then expanding to Korea, Australia, Canada, the United States, and the United Kingdom.",
     keywords: [
       "Machi",
       "Machi",
@@ -59,9 +59,9 @@ const META: Record<"zh" | "en" | "ja", { title: string; description: string; key
     ],
   },
   ja: {
-    title: "Machi｜知らない街でも、暮らし方は見つけられる",
+    title: "Machi｜どの街でも、暮らしの声を見つける",
     description:
-      "Machi は、住まい、手続き、仕事、譲り合い、地域サービス、Q&A、実際の経験を、街と言語ごとに整理するローカルライフ・プラットフォームです。まず日本から、暮らしに必要な道筋を整えています。",
+      "Machi は街と言語ごとに、住まい、手続き、仕事、譲り合い、地域サービス、Q&A、実体験を整理します。まず日本から丁寧につくり、韓国、オーストラリア、カナダ、米国、英国へ広げていきます。",
     keywords: [
       "Machi",
       "Machi",

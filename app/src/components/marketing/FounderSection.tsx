@@ -35,7 +35,7 @@ export function FounderSection({
     <div className={isFull ? "mx-auto max-w-[1080px]" : "mx-auto max-w-[1040px]"}>
       <div className="mc-reveal flex flex-col gap-3">
         {f.eyebrow !== f.title ? <p className="mc-eyebrow">{f.eyebrow}</p> : null}
-        <h2 className="max-w-[1040px] text-3xl font-black leading-tight text-slate-950 sm:text-[2.5rem] lg:text-[2.75rem] dark:text-white">
+        <h2 className="max-w-[1080px] text-[2.35rem] font-black leading-[1.08] tracking-[-0.025em] text-slate-950 sm:text-[3.2rem] lg:text-[4rem] dark:text-white">
           {founderTitleParts.map((part) => (
             <span key={part} className="block [text-wrap:balance]">
               {part}
@@ -48,7 +48,7 @@ export function FounderSection({
         className={
           isFull
             ? "mc-reveal mt-8 grid overflow-hidden rounded-[30px] border border-white/60 bg-white/80 shadow-[0_28px_90px_-58px_rgba(15,23,42,0.72)] backdrop-blur lg:grid-cols-[0.88fr_1.12fr] dark:border-white/10 dark:bg-white/[0.05]"
-            : "mc-founder-surface mc-reveal relative mt-8 overflow-hidden rounded-[32px] p-6 shadow-[0_34px_90px_-56px_rgba(112,71,72,0.72)] sm:p-9"
+            : "mc-founder-surface mc-reveal relative mt-10 overflow-hidden rounded-[34px] p-6 shadow-[0_34px_90px_-56px_rgba(112,71,72,0.72)] sm:p-10"
         }
       >
         <span aria-hidden="true" className={isFull ? "hidden" : "pointer-events-none absolute -right-20 -top-24 h-72 w-72 rounded-full bg-white/45 blur-3xl dark:bg-white/10"} />
@@ -71,14 +71,14 @@ export function FounderSection({
               {f.avatar}
             </span>
             <div className="min-w-0">
-              <h3 className={isFull ? "relative text-lg font-black text-stone-950 dark:text-white" : "text-lg font-black text-stone-950 dark:text-white"}>{f.name}</h3>
-              <p className="mt-0.5 text-sm font-semibold text-stone-700 dark:text-white/82">{f.role}</p>
+              <h3 className={isFull ? "relative text-xl font-black text-stone-950 dark:text-white" : "text-xl font-black text-stone-950 dark:text-white"}>{f.name}</h3>
+              <p className="mt-1 text-[15px] font-semibold text-stone-700 dark:text-white/82">{f.role}</p>
               <p className="mt-1 text-xs font-bold leading-5 text-stone-500 dark:text-white/58">{f.meta}</p>
             </div>
           </div>
 
           {isFull ? (
-            <blockquote className="relative mt-6 rounded-[22px] border border-stone-900/10 bg-white/45 p-5 text-base font-black leading-8 text-stone-900 backdrop-blur dark:border-white/15 dark:bg-white/10 dark:text-white">
+            <blockquote className="relative mt-6 rounded-[24px] border border-stone-900/10 bg-white/45 p-5 text-lg font-black leading-9 text-stone-900 backdrop-blur sm:text-xl dark:border-white/15 dark:bg-white/10 dark:text-white">
               <Quote className="mb-3 h-5 w-5 text-rose-600/70 dark:text-white/72" aria-hidden="true" />
               {f.quote}
             </blockquote>
@@ -87,7 +87,7 @@ export function FounderSection({
           <div className={isFull ? "relative mt-7 border-t border-stone-900/10 pt-6 dark:border-white/15" : "mt-7 max-w-2xl"}>
             <p className="text-xs font-black uppercase tracking-[0.18em] text-rose-700/75 dark:text-white/58">{f.siteEyebrow}</p>
             <h3 className="mt-3 text-2xl font-black leading-tight text-stone-950 sm:text-3xl dark:text-white">{f.siteTitle}</h3>
-            <p className="mt-4 text-sm leading-7 text-stone-700 sm:text-base dark:text-white/82">{f.siteBody}</p>
+            <p className="mt-4 text-base leading-8 text-stone-700 sm:text-[17px] dark:text-white/82">{f.siteBody}</p>
             <div className="mt-6 flex flex-wrap gap-3">
               {!isFull ? (
                 <Link
@@ -117,7 +117,7 @@ export function FounderSection({
           <div className="p-6 sm:p-8">
             <div className="space-y-4">
               {f.paragraphs.map((paragraph, index) => (
-                <p key={index} className="text-[15px] leading-7 text-slate-600 dark:text-slate-300">
+                <p key={index} className="text-base leading-8 text-slate-600 sm:text-[17px] sm:leading-9 dark:text-slate-300">
                   {paragraph}
                 </p>
               ))}
@@ -129,7 +129,7 @@ export function FounderSection({
             </div>
           </div>
         ) : (
-          <p className="relative mt-6 max-w-3xl border-t border-stone-900/10 pt-5 text-[15px] leading-7 text-stone-700 dark:border-white/15 dark:text-white/76">{f.bio}</p>
+          <p className="relative mt-7 max-w-3xl border-t border-stone-900/10 pt-6 text-base leading-8 text-stone-700 sm:text-[17px] sm:leading-9 dark:border-white/15 dark:text-white/78">{f.bio}</p>
         )}
       </article>
     </div>

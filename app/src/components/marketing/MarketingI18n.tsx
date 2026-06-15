@@ -1,12 +1,16 @@
 "use client";
 
 import { createContext, useContext, useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { marketingCopy, type MarketingLocale } from "@/data/machi-home";
+import { api } from "@/lib/api";
+import { applyMarketingCopyOverrides, scopeMarketingCopyOverrides } from "@/lib/marketingCopyOverrides";
 
 type MarketingI18nValue = {
   locale: MarketingLocale;
   setLocale: (locale: MarketingLocale) => void;
   copy: (typeof marketingCopy)[MarketingLocale];
+  overrides: Record<string, string>;
 };
 
 const MarketingI18nContext = createContext<MarketingI18nValue | null>(null);
@@ -77,6 +81,11 @@ export function MarketingLocaleProvider({
   preferClientLocale?: boolean;
 }) {
   const [locale, setLocaleState] = useState<MarketingLocale>(initialLocale);
+  const overrides = useQuery({
+    queryKey: ["marketing-copy-overrides", locale],
+    queryFn: () => api.marketingCopyOverrides(locale),
+    staleTime: 60_000,
+  });
 
   // Client-side: if the user has previously chosen a different locale
   // via the in-page switcher, honour that. Skipped when the server
@@ -111,9 +120,13 @@ export function MarketingLocaleProvider({
     return {
       locale,
       setLocale,
-      copy: marketingCopy[locale],
+      overrides: overrides.data?.overrides || {},
+      copy: applyMarketingCopyOverrides(
+        marketingCopy[locale],
+        scopeMarketingCopyOverrides(overrides.data?.overrides, "home."),
+      ),
     };
-  }, [locale]);
+  }, [locale, overrides.data?.overrides]);
 
   useEffect(() => {
     if (typeof document !== "undefined") {

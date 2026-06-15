@@ -125,11 +125,9 @@ export function Header() {
       ) : null}
       <div
         className={clsx(
-          // Desktop caps at 1040px — narrower than the 1180px content
-          // column on purpose, so the bar reads as a floating pill
-          // rather than a full-width toolbar. Mobile is width-driven
-          // by the viewport, so the cap never applies there.
-          "relative z-30 mx-auto w-full max-w-[1180px] rounded-full border px-3 py-2 backdrop-blur-2xl transition-all duration-300 lg:max-w-[1040px]",
+          // The marketing nav now has fuller page coverage, so desktop
+          // uses the full content width while keeping the floating pill feel.
+          "relative z-30 mx-auto w-full max-w-[1180px] rounded-full border px-3 py-2 backdrop-blur-2xl transition-all duration-300",
           // Resting state — light, airy. Scrolled state — a bit more
           // opaque, deeper shadow, so the bar visibly separates from
           // content underneath.
@@ -159,12 +157,12 @@ export function Header() {
             </span>
           </Link>
 
-          <nav className="hidden min-w-0 flex-1 items-center justify-start gap-0.5 lg:ml-3 lg:flex">
+          <nav className="hidden min-w-0 flex-1 items-center justify-start gap-0.5 lg:ml-2 lg:flex xl:ml-3">
             {copy.nav.items.map(([label, href]) => (
               <Link
                 key={href}
                 href={hrefFor(href)}
-                className="whitespace-nowrap rounded-full px-2.5 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-950/[0.05] hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white xl:px-3"
+                className="whitespace-nowrap rounded-full px-2 py-2 text-[13px] font-semibold text-slate-600 transition hover:bg-slate-950/[0.05] hover:text-slate-950 dark:text-slate-300 dark:hover:bg-white/10 dark:hover:text-white xl:px-2.5 xl:text-sm"
               >
                 {label}
               </Link>

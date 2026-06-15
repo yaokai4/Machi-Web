@@ -2,10 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { BrandMark, BrandPhrase, BrandText } from "./BrandText";
 import { useMarketingI18n } from "./MarketingI18n";
+import { api, type SiteSettings } from "@/lib/api";
 
-const socials = ["X", "Instagram", "TikTok", "YouTube", "LinkedIn"];
+const socialChannels: Array<{ key: keyof SiteSettings; label: string; tone: string; mark: string }> = [
+  { key: "social_x_url", label: "X", tone: "from-slate-950 to-slate-700", mark: "X" },
+  { key: "social_instagram_url", label: "Instagram", tone: "from-[#f97316] via-[#ec4899] to-[#6366f1]", mark: "IG" },
+  { key: "social_tiktok_url", label: "TikTok", tone: "from-slate-950 via-[#111827] to-[#ef4444]", mark: "TT" },
+  { key: "social_youtube_url", label: "YouTube", tone: "from-[#ef4444] to-[#b91c1c]", mark: "YT" },
+  { key: "social_linkedin_url", label: "LinkedIn", tone: "from-[#0a66c2] to-[#164e8a]", mark: "in" },
+  { key: "social_xiaohongshu_url", label: "小红书", tone: "from-[#ff2442] to-[#c91834]", mark: "红" },
+  { key: "social_douyin_url", label: "抖音", tone: "from-slate-950 via-[#111827] to-[#06b6d4]", mark: "抖" },
+];
 
 /// Real routes for every footer link. Order matches the labels in
 /// `copy.footer.groups` so the i18n table stays drop-in. Each href
@@ -13,7 +23,7 @@ const socials = ["X", "Instagram", "TikTok", "YouTube", "LinkedIn"];
 /// anchor — or the user lands on a 404.
 const groupHrefs: string[][] = [
   // 导航 / Navigation / ナビ
-  ["/about", "/features", "/guide", "/business", "/safety", "/faq"],
+  ["/about", "/features", "/guide", "/business", "/safety", "/faq", "/cities", "/download"],
   // 合作 / Partners
   ["/business", "/ads", "/jobs-promotion", "/housing-promotion", "/partners"],
   // 法律 / Legal
@@ -33,6 +43,11 @@ const groupHrefs: string[][] = [
 export function Footer() {
   const { copy } = useMarketingI18n();
   const pathname = usePathname();
+  const siteSettings = useQuery({
+    queryKey: ["site-settings"],
+    queryFn: () => api.siteSettings(),
+    staleTime: 300_000,
+  });
   const localePrefix = pathname === "/zh" || pathname.startsWith("/zh/")
     ? "/zh"
     : pathname === "/en" || pathname.startsWith("/en/")
@@ -61,17 +76,29 @@ export function Footer() {
             <BrandPhrase text={copy.footer.description} />
           </p>
           <ul className="mt-6 flex flex-wrap gap-2" aria-label="Machi social channels">
-            {socials.map((social) => (
-              <li key={social}>
+            {socialChannels.map((social) => {
+              const href = (siteSettings.data?.[social.key] || "").trim();
+              const active = /^https?:\/\//i.test(href);
+              return (
+              <li key={social.key}>
                 <a
-                  href="#top"
-                  aria-label={`${social} — coming soon`}
-                  className="inline-flex rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-600 transition hover:bg-slate-950 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white dark:hover:text-slate-950"
+                  href={active ? href : "#top"}
+                  target={active ? "_blank" : undefined}
+                  rel={active ? "noopener noreferrer" : undefined}
+                  aria-label={active ? social.label : `${social.label} link not configured`}
+                  aria-disabled={!active}
+                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 ${
+                    active
+                      ? "bg-slate-100 text-slate-700 hover:bg-slate-950 hover:text-white dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white dark:hover:text-slate-950"
+                      : "cursor-default bg-slate-100/70 text-slate-400 dark:bg-white/7 dark:text-slate-500"
+                  }`}
                 >
-                  {social}
+                  <SocialGlyph mark={social.mark} tone={social.tone} />
+                  <span>{social.label}</span>
                 </a>
               </li>
-            ))}
+              );
+            })}
           </ul>
         </div>
 
@@ -110,10 +137,16 @@ export function Footer() {
           >
             Made by YAOKAI · yaokai.me
           </a>
-          <span aria-hidden="true" className="text-slate-300 dark:text-white/20">·</span>
-          <span>Machi</span>
         </p>
       </div>
     </footer>
+  );
+}
+
+function SocialGlyph({ mark, tone }: { mark: string; tone: string }) {
+  return (
+    <span className={`grid h-5 w-5 place-items-center rounded-full bg-gradient-to-br ${tone} text-[9px] font-black leading-none text-white shadow-sm`}>
+      {mark}
+    </span>
   );
 }

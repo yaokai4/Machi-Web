@@ -1,10 +1,11 @@
 "use client";
 
-import { Fragment } from "react";
+import { Fragment, useMemo } from "react";
 import Link from "next/link";
 import { ArrowRight, Mail, MonitorSmartphone } from "lucide-react";
 import { marketingPages, type MarketingPageBlock, type MarketingPageId } from "@/data/marketing-pages";
 import type { MarketingLocale } from "@/data/machi-home";
+import { applyMarketingCopyOverrides, scopeMarketingCopyOverrides } from "@/lib/marketingCopyOverrides";
 import { BrandPhrase } from "./BrandText";
 import { MarketingLocaleProvider, useMarketingI18n } from "./MarketingI18n";
 import { MarketingCmsBlocks } from "./MarketingCmsBlocks";
@@ -30,8 +31,14 @@ export function LocalizedMarketingPage({
 }
 
 function LocalizedMarketingPageInner({ pageId }: { pageId: MarketingPageId }) {
-  const { locale, copy } = useMarketingI18n();
-  const page = marketingPages[pageId][locale] ?? marketingPages[pageId].zh;
+  const { locale, copy, overrides } = useMarketingI18n();
+  const page = useMemo(
+    () => applyMarketingCopyOverrides(
+      marketingPages[pageId][locale] ?? marketingPages[pageId].zh,
+      scopeMarketingCopyOverrides(overrides, `pages.${pageId}.`),
+    ),
+    [locale, overrides, pageId],
+  );
 
   return (
     <MarketingPageFrame eyebrow={page.eyebrow} title={page.title} intro={page.intro}>

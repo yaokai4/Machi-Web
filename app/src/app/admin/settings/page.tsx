@@ -20,7 +20,9 @@ import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { useSession, useToasts } from "@/lib/store";
 import { fullDateTime } from "@/lib/format";
-import { marketingPageLabels, type MarketingPageId } from "@/data/marketing-pages";
+import { marketingCopy, type MarketingLocale } from "@/data/machi-home";
+import { marketingPageLabels, marketingPages, type MarketingPageId } from "@/data/marketing-pages";
+import { flattenMarketingCopyStrings, scopeMarketingCopyOverrides } from "@/lib/marketingCopyOverrides";
 
 type SitePageKey = MarketingPageId | "home";
 
@@ -29,7 +31,7 @@ const PAGE_OPTIONS: Array<{ value: SitePageKey; label: string }> = [
   ...(Object.entries(marketingPageLabels) as Array<[MarketingPageId, string]>).map(([value, label]) => ({ value, label })),
 ];
 
-const LOCALES = [
+const LOCALES: Array<{ value: MarketingLocale; label: string }> = [
   { value: "zh", label: "中文" },
   { value: "en", label: "English" },
   { value: "ja", label: "日本語" },
@@ -62,6 +64,8 @@ export default function AdminSettingsPage() {
         <SiteInfoCard />
         <ServerMetricsCard />
         <SiteBrandSettingsCard />
+        <SocialLinksCard />
+        <MasterCopyEditorCard />
         <MediaLibraryCard />
         <MarketingCoverageCard />
         <ContentModerationCard />
@@ -248,6 +252,215 @@ function SiteBrandSettingsCard() {
           rows={3}
         />
         <p className="mt-1 text-xs text-kx-muted">显示在登录页左侧品牌栏底部与移动端登录表单上方。支持换行。</p>
+      </div>
+    </section>
+  );
+}
+
+const SOCIAL_FIELDS: Array<{ key: keyof SiteSettings; label: string; helper: string }> = [
+  { key: "social_x_url", label: "X", helper: "全球实时动态与产品公告。" },
+  { key: "social_instagram_url", label: "Instagram", helper: "品牌视觉、城市故事与活动照片。" },
+  { key: "social_tiktok_url", label: "TikTok", helper: "海外短视频账号链接。" },
+  { key: "social_youtube_url", label: "YouTube", helper: "产品介绍、城市指南与长视频。" },
+  { key: "social_linkedin_url", label: "LinkedIn", helper: "团队、招聘与商业合作。" },
+  { key: "social_xiaohongshu_url", label: "小红书", helper: "国内种草、生活指南与品牌内容。" },
+  { key: "social_douyin_url", label: "抖音", helper: "国内短视频账号链接。" },
+];
+
+function SocialLinksCard() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
+  const [form, setForm] = useState<Partial<SiteSettings>>({});
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (q.data) setForm(q.data);
+  }, [q.data]);
+
+  const update = (key: keyof SiteSettings, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
+  const save = async () => {
+    setBusy(true);
+    try {
+      const patch: Partial<SiteSettings> = {};
+      for (const field of SOCIAL_FIELDS) patch[field.key] = (form[field.key] || "").trim();
+      await api.adminUpdateSiteSettings(patch);
+      await queryClient.invalidateQueries({ queryKey: ["admin-site-settings"] });
+      await queryClient.invalidateQueries({ queryKey: ["site-settings"] });
+      pushToast({ kind: "success", message: "官网 SNS 链接已保存" });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (q.isError) return <ErrorState title="SNS 设置加载失败" onRetry={() => q.refetch()} />;
+  if (!q.data) return <InlineLoading />;
+
+  return (
+    <section className="kx-card">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="inline-flex items-center gap-2 text-base font-bold"><Globe className="h-4 w-4 text-kx-accent" />官网底部 SNS 链接</h2>
+          <p className="mt-1 text-xs text-kx-muted">这些链接会显示在官网页脚，包含小红书与抖音。留空时前台会保留图标但显示为未配置状态。</p>
+        </div>
+        <button type="button" className="kx-button-primary h-9 px-3 text-xs" onClick={save} disabled={busy}>
+          <Save className="h-3.5 w-3.5" /> {busy ? "保存中…" : "保存 SNS"}
+        </button>
+      </div>
+      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {SOCIAL_FIELDS.map((field) => (
+          <Field key={field.key} label={field.label}>
+            <div className="flex gap-2">
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-kx-accentSoft text-xs font-black text-kx-accent">
+                {socialInitial(field.label)}
+              </span>
+              <input
+                className="kx-input h-10"
+                placeholder={`https://.../${field.label}`}
+                value={form[field.key] || ""}
+                onChange={(event) => update(field.key, event.target.value)}
+              />
+            </div>
+            <p className="mt-1 text-[11px] leading-4 text-kx-muted">{field.helper}</p>
+          </Field>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MasterCopyEditorCard() {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const [pageKey, setPageKey] = useState<SitePageKey>("home");
+  const [locale, setLocale] = useState<MarketingLocale>("zh");
+  const [search, setSearch] = useState("");
+  const [draft, setDraft] = useState<Record<string, string>>({});
+  const [busy, setBusy] = useState(false);
+  const overridesQuery = useQuery({
+    queryKey: ["admin-marketing-copy-overrides", locale],
+    queryFn: () => api.adminMarketingCopyOverrides(locale),
+  });
+  const prefix = pageKey === "home" ? "home." : `pages.${pageKey}.`;
+  const defaults = useMemo(() => {
+    const source = pageKey === "home"
+      ? marketingCopy[locale]
+      : marketingPages[pageKey][locale] ?? marketingPages[pageKey].zh;
+    return flattenMarketingCopyStrings(source);
+  }, [locale, pageKey]);
+  const scopedOverrides = useMemo(
+    () => scopeMarketingCopyOverrides(overridesQuery.data?.overrides, prefix),
+    [overridesQuery.data?.overrides, prefix],
+  );
+  const rows = useMemo(() => {
+    const needle = search.trim().toLowerCase();
+    return Object.entries(defaults)
+      .filter(([path, value]) => {
+        if (!needle) return true;
+        return path.toLowerCase().includes(needle) || value.toLowerCase().includes(needle) || (draft[path] || "").toLowerCase().includes(needle);
+      })
+      .sort(([a], [b]) => a.localeCompare(b, "en"));
+  }, [defaults, draft, search]);
+
+  useEffect(() => {
+    const next: Record<string, string> = {};
+    for (const [path, value] of Object.entries(defaults)) {
+      next[path] = scopedOverrides[path] ?? value;
+    }
+    setDraft(next);
+  }, [defaults, scopedOverrides]);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const values: Record<string, string> = {};
+      for (const [path, defaultValue] of Object.entries(defaults)) {
+        const current = (draft[path] ?? "").trim();
+        values[`${prefix}${path}`] = current === defaultValue.trim() ? "" : current;
+      }
+      await api.adminUpdateMarketingCopyOverrides(locale, values);
+      await queryClient.invalidateQueries({ queryKey: ["admin-marketing-copy-overrides", locale] });
+      await queryClient.invalidateQueries({ queryKey: ["marketing-copy-overrides", locale] });
+      pushToast({ kind: "success", message: "官网主文案已保存，前台会读取最新覆盖内容" });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetVisible = () => {
+    setDraft((prev) => {
+      const next = { ...prev };
+      for (const [path, value] of rows) next[path] = value;
+      return next;
+    });
+    pushToast({ kind: "success", message: "已把当前筛选结果恢复为代码默认文案，保存后生效" });
+  };
+
+  if (overridesQuery.isError) return <ErrorState title="官网主文案加载失败" onRetry={() => overridesQuery.refetch()} />;
+
+  return (
+    <section className="kx-card">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="inline-flex items-center gap-2 text-base font-bold"><Globe className="h-4 w-4 text-kx-accent" />官网主文案总编辑</h2>
+          <p className="mt-1 text-xs text-kx-muted">读取代码里的当前三语官网文案，并在原内容上逐字段修改。保存的是覆盖值，删除覆盖即可回到默认文案。</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <button type="button" className="kx-button-ghost h-9 px-3 text-xs" onClick={resetVisible}>恢复当前筛选默认</button>
+          <button type="button" className="kx-button-primary h-9 px-3 text-xs" onClick={save} disabled={busy || overridesQuery.isLoading}>
+            <Save className="h-3.5 w-3.5" /> {busy ? "保存中…" : "保存主文案"}
+          </button>
+        </div>
+      </div>
+
+      <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_11rem_11rem]">
+        <input className="kx-input h-10" placeholder="搜索字段名或当前文案…" value={search} onChange={(event) => setSearch(event.target.value)} />
+        <select className="kx-input h-10" value={pageKey} onChange={(event) => setPageKey(event.target.value as SitePageKey)}>
+          {PAGE_OPTIONS.map((page) => <option key={page.value} value={page.value}>{page.label}</option>)}
+        </select>
+        <select className="kx-input h-10" value={locale} onChange={(event) => setLocale(event.target.value as MarketingLocale)}>
+          {LOCALES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+        </select>
+      </div>
+
+      {overridesQuery.isLoading ? <InlineLoading /> : null}
+      <div className="mt-3 max-h-[720px] space-y-2 overflow-y-auto pr-1">
+        {rows.map(([path, defaultValue]) => {
+          const value = draft[path] ?? defaultValue;
+          const isOverridden = scopedOverrides[path] !== undefined && value.trim() !== defaultValue.trim();
+          const isLong = value.length > 72 || defaultValue.length > 72 || value.includes("\n") || defaultValue.includes("\n");
+          return (
+            <div key={path} className="rounded-kx-md border border-kx-stroke/60 bg-kx-soft/30 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-xs font-black text-kx-text">{copyFieldLabel(path)}</div>
+                  <div className="mt-0.5 font-mono text-[11px] text-kx-muted">{prefix}{path}</div>
+                </div>
+                <span className={`rounded-full px-2 py-0.5 text-[11px] font-black ${isOverridden ? "bg-kx-accentSoft text-kx-accent" : "bg-kx-card text-kx-muted"}`}>
+                  {isOverridden ? "已覆盖" : "默认"}
+                </span>
+              </div>
+              {isLong ? (
+                <textarea
+                  className="kx-textarea mt-2 min-h-24"
+                  value={value}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, [path]: event.target.value }))}
+                />
+              ) : (
+                <input
+                  className="kx-input mt-2 h-10"
+                  value={value}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, [path]: event.target.value }))}
+                />
+              )}
+            </div>
+          );
+        })}
+        {!rows.length ? <div className="rounded-kx-md bg-kx-soft p-6 text-center text-sm font-semibold text-kx-muted">没有匹配的文案字段。</div> : null}
       </div>
     </section>
   );
@@ -827,6 +1040,26 @@ function QuickCopyCard() {
       <button className="kx-button-primary mt-3" onClick={save} disabled={busy}>{busy ? "保存中…" : "保存文案"}</button>
     </section>
   );
+}
+
+function socialInitial(label: string): string {
+  if (label === "小红书") return "红";
+  if (label === "抖音") return "抖";
+  if (label === "Instagram") return "IG";
+  if (label === "LinkedIn") return "in";
+  return label.slice(0, 2);
+}
+
+function copyFieldLabel(path: string): string {
+  return path
+    .replace(/^nav\.items\.(\d+)\.0$/, "导航文字 $1")
+    .replace(/^nav\.items\.(\d+)\.1$/, "导航链接 $1")
+    .replace(/^hero\./, "首页首屏 / ")
+    .replace(/^founder\./, "创始人 / ")
+    .replace(/^footer\./, "页脚 / ")
+    .replace(/^blocks\.(\d+)\./, "页面区块 $1 / ")
+    .replace(/^items\.(\d+)\./, "项目 $1 / ")
+    .replaceAll(".", " / ");
 }
 
 function Info({ label, value }: { label: string; value: string }) {

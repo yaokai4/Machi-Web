@@ -23,15 +23,13 @@ export function MarketingPageContent() {
       <MarketingMotion />
       <Header />
       <HeroSection />
-      {/* Narrative flow: value → product → guide → founder → community →
-          trust → business → brand story → updates. The founder belongs
-          after visitors understand the product, but before the long-form
-          community and brand narrative. */}
+      {/* Narrative flow: value → product signal → founder → channels →
+          guide → community → trust → business → brand story → updates. */}
       <WhyMachiSection />
       <CityPulseSection />
+      <FounderSection />
       <FeatureChannelGrid />
       <GuideSection />
-      <FounderSection />
       <SocialConnectionSection />
       <SafetySection />
       <BusinessSection />

@@ -125,6 +125,11 @@ export type MarketingCopyBlock = {
   updated_at: string;
 };
 
+export type MarketingCopyOverrides = {
+  locale: "zh" | "en" | "ja";
+  overrides: Record<string, string>;
+};
+
 // Returned by /api/auth/login/start. Either the account requires an emailed
 // code (two-step), or — when the account has no email and the server isn't
 // enforcing codes — a session is issued directly.
@@ -203,6 +208,13 @@ export type SiteSettings = Record<
   | "logo_url"
   | "og_image_url"
   | "support_email"
+  | "social_x_url"
+  | "social_instagram_url"
+  | "social_tiktok_url"
+  | "social_youtube_url"
+  | "social_linkedin_url"
+  | "social_xiaohongshu_url"
+  | "social_douyin_url"
   | "login_announcement"
   | "discover_entrances"
   | "right_rail_show_trending"
@@ -853,6 +865,10 @@ export const api = {
     const usp = new URLSearchParams({ page, locale });
     const { items } = await request<{ items: MarketingCopyBlock[] }>("GET", `/api/marketing-copy?${usp.toString()}`);
     return items;
+  },
+  async marketingCopyOverrides(locale: "zh" | "en" | "ja"): Promise<MarketingCopyOverrides> {
+    const usp = new URLSearchParams({ locale });
+    return request("GET", `/api/marketing-copy-overrides?${usp.toString()}`);
   },
   async resolveRegion(code: string): Promise<KXRegion> {
     return request("GET", `/api/regions/resolve?code=${encodeURIComponent(code)}`);
@@ -1646,6 +1662,16 @@ export const api = {
   },
   async adminDeleteMarketingCopy(id: string): Promise<void> {
     await request<void>("DELETE", `/api/admin/marketing-copy/${encodeURIComponent(id)}`);
+  },
+  async adminMarketingCopyOverrides(locale: "zh" | "en" | "ja"): Promise<MarketingCopyOverrides> {
+    const usp = new URLSearchParams({ locale });
+    return request("GET", `/api/admin/marketing-copy-overrides?${usp.toString()}`);
+  },
+  async adminUpdateMarketingCopyOverrides(
+    locale: "zh" | "en" | "ja",
+    values: Record<string, string>,
+  ): Promise<MarketingCopyOverrides> {
+    return request("PATCH", `/api/admin/marketing-copy-overrides`, { locale, values });
   },
 
   // ---- admin: Local News Desk (本地资讯台) ----

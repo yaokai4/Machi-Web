@@ -249,6 +249,14 @@ CREATE TABLE IF NOT EXISTS marketing_copy (
     updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS marketing_copy_overrides (
+    locale TEXT NOT NULL,
+    copy_key TEXT NOT NULL,
+    value TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(locale, copy_key)
+);
+
 CREATE TABLE IF NOT EXISTS search_history (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -267,6 +275,7 @@ CREATE INDEX IF NOT EXISTS idx_conversations_a ON conversations(participant_a, u
 CREATE INDEX IF NOT EXISTS idx_conversations_b ON conversations(participant_b, updated_at);
 CREATE INDEX IF NOT EXISTS idx_drafts_user ON drafts(user_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_marketing_copy_public ON marketing_copy(page_key, locale, status, sort_order);
+CREATE INDEX IF NOT EXISTS idx_marketing_copy_overrides_locale ON marketing_copy_overrides(locale, copy_key);
 
 CREATE TABLE IF NOT EXISTS news_sources (
     id TEXT PRIMARY KEY,
@@ -2703,6 +2712,21 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         """
         ALTER TABLE users ADD COLUMN apple_sub TEXT NOT NULL DEFAULT '';
         CREATE UNIQUE INDEX IF NOT EXISTS idx_users_apple_sub ON users(apple_sub) WHERE apple_sub <> '';
+        """,
+    ),
+    (
+        46,
+        "marketing: editable master copy overrides",
+        """
+        CREATE TABLE IF NOT EXISTS marketing_copy_overrides (
+            locale TEXT NOT NULL,
+            copy_key TEXT NOT NULL,
+            value TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(locale, copy_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_marketing_copy_overrides_locale
+            ON marketing_copy_overrides(locale, copy_key);
         """,
     ),
 ]

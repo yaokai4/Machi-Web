@@ -24,7 +24,7 @@ const variants: Record<ButtonVariant, string> = {
   // Brand gradient — reserved for the single hero CTA so the page keeps
   // exactly one full-colour pill. Warm→cool sweep matches the wordmark.
   brand:
-    "bg-[linear-gradient(110deg,#ff7657_0%,#d94b5f_48%,#84658f_100%)] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_22px_56px_-24px_rgba(201,74,88,0.58)] ring-1 ring-white/20 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.28),0_26px_64px_-24px_rgba(132,101,143,0.58)] hover:brightness-[1.06] hover:saturate-[1.04]",
+    "bg-[linear-gradient(110deg,#ff6b4a_0%,#ef3157_45%,#4f46e5_100%)] text-white shadow-[inset_0_1px_0_rgba(255,255,255,0.30),0_24px_62px_-24px_rgba(100,70,229,0.66)] ring-1 ring-white/25 hover:shadow-[inset_0_1px_0_rgba(255,255,255,0.30),0_30px_72px_-24px_rgba(79,70,229,0.70)] hover:brightness-[1.07] hover:saturate-[1.08]",
   secondary:
     "bg-white/90 text-slate-950 ring-1 ring-slate-200/80 shadow-[0_16px_38px_-28px_rgba(15,23,42,0.7)] backdrop-blur hover:bg-white hover:ring-slate-300 dark:bg-white/10 dark:text-white dark:ring-white/15 dark:hover:bg-white/15",
   ghost:

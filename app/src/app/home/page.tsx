@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import HomeClient from "./HomeClient";
 
-const title = "Machi | 让陌生的城市，也有生活的门路";
+const title = "Machi | 在每一座城市，找到生活的回声";
 const description =
   "Machi 按城市和语言整理租房、二手、工作、活动、问答、本地服务、语言交换和真实生活经验。";
 
@@ -62,9 +62,9 @@ function HomeSsrSnapshot() {
   return (
     <section className="sr-only" aria-label="Machi Web App home summary">
       <h1>Machi</h1>
-      <p>让陌生的城市，也有生活的门路。</p>
-      <p>Machi · Find your way into a new city.</p>
-      <p>Machi · 知らない街でも、暮らし方は見つけられる。</p>
+      <p>在每一座城市，找到生活的回声。</p>
+      <p>Machi · Find the echoes of real life in every city.</p>
+      <p>Machi · どの街でも、暮らしの声を見つける。</p>
       <p>Machi 按城市和语言整理租房、二手、工作、活动、问答、本地服务、语言交换和真实生活经验。</p>
       <h2>首页信息流</h2>
       <p>推荐、同城、关注、热榜。</p>

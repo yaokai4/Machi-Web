@@ -11580,15 +11580,22 @@ def start_retention_janitor() -> None:
 
 SITE_SETTING_DEFAULTS: dict[str, str] = {
     "site_title": "Machi",
-    "site_title_zh": "Machi｜让陌生的城市，也有生活的门路",
-    "site_title_en": "Machi | Find your way into a new city",
-    "site_title_ja": "Machi｜知らない街でも、暮らし方は見つけられる",
-    "site_description_zh": "Machi 是按国家、城市和语言组织内容的本地生活与同城连接平台。",
-    "site_description_en": "Machi is a city-based local life platform organized by country, city and language.",
-    "site_description_ja": "Machi は国・都市・言語ごとに暮らしの情報を整理するローカルライフプラットフォームです。",
+    "site_title_zh": "Machi｜在每一座城市，找到生活的回声",
+    "site_title_en": "Machi | Find the echoes of real life in every city",
+    "site_title_ja": "Machi｜どの街でも、暮らしの声を見つける",
+    "site_description_zh": "Machi 按城市和语言，整理租房、手续、求职、二手、本地服务、问答与真实经验。先把日本市场做透，再走向下一座城市。",
+    "site_description_en": "Machi organizes housing, paperwork, jobs, secondhand exchange, local services, Q&A, and lived experience by city and language. We are starting in Japan, then moving city by city.",
+    "site_description_ja": "Machi は街と言語ごとに、住まい、手続き、仕事、譲り合い、地域サービス、Q&A、実体験を整理します。まず日本から丁寧につくり、次の街へ広げていきます。",
     "logo_url": "/icon.svg",
     "og_image_url": "/og-image.png",
     "support_email": "hi@machicity.com",
+    "social_x_url": "",
+    "social_instagram_url": "",
+    "social_tiktok_url": "",
+    "social_youtube_url": "",
+    "social_linkedin_url": "",
+    "social_xiaohongshu_url": "",
+    "social_douyin_url": "",
     # Login-page announcement (admin-editable). Empty = no notice shown.
     # Shown on the login brand pane and above the mobile login form.
     "login_announcement": "",
@@ -15533,6 +15540,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_feedback(conn)
         if path == "/api/marketing-copy" and method == "GET":
             return self.api_marketing_copy(conn, query)
+        if path == "/api/marketing-copy-overrides" and method == "GET":
+            return self.api_marketing_copy_overrides(conn, query)
 
         # Machi Guide / 日本指南 — public + auth (replaces the old crawler 资讯 surface)
         if path == "/api/guide/home" and method == "GET":
@@ -15868,6 +15877,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_marketing_copy(conn, query)
         if path == "/api/admin/marketing-copy" and method == "POST":
             return self.api_admin_create_marketing_copy(conn)
+        if path == "/api/admin/marketing-copy-overrides" and method == "GET":
+            return self.api_admin_marketing_copy_overrides(conn, query)
+        if path == "/api/admin/marketing-copy-overrides" and method in ("PATCH", "POST"):
+            return self.api_admin_update_marketing_copy_overrides(conn)
         if path.startswith("/api/admin/marketing-copy/") and method == "PATCH":
             return self.api_admin_update_marketing_copy(conn, path.split("/")[4])
         if path.startswith("/api/admin/marketing-copy/") and method == "DELETE":
@@ -24149,6 +24162,35 @@ class Handler(BaseHTTPRequestHandler):
         ))
         self.send_json({"items": [self._serialize_marketing_copy(r) for r in rows]})
 
+    def _clean_marketing_override_locale(self, value: Any) -> str:
+        locale = str(value or "zh").strip().lower()
+        if locale not in ("zh", "en", "ja"):
+            raise APIError("语言不合法", 400, "invalid_locale")
+        return locale
+
+    def _clean_marketing_override_key(self, value: Any) -> str:
+        key = str(value or "").strip()
+        if len(key) > 180 or not re.match(r"^(home|pages\.[a-z0-9-]+)\.[A-Za-z0-9_.-]+$", key):
+            raise APIError("文案字段不合法", 400, "invalid_copy_key")
+        return key
+
+    def _read_marketing_copy_overrides(self, conn: sqlite3.Connection, locale: str) -> dict[str, str]:
+        try:
+            rows = conn.execute(
+                "SELECT copy_key, value FROM marketing_copy_overrides WHERE locale = ? ORDER BY copy_key ASC",
+                (locale,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            return {}
+        return {str(row["copy_key"]): str(row["value"] or "") for row in rows}
+
+    def api_marketing_copy_overrides(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        try:
+            locale = self._clean_marketing_override_locale(query.get("locale") or "zh")
+        except APIError:
+            locale = "zh"
+        self.send_json({"locale": locale, "overrides": self._read_marketing_copy_overrides(conn, locale)})
+
     def api_site_settings(self, conn: sqlite3.Connection) -> None:
         self.send_json({"settings": _site_settings(conn)})
 
@@ -24224,6 +24266,40 @@ class Handler(BaseHTTPRequestHandler):
         if any(key.startswith("explore_") for key in updates):
             invalidate_public_ranking_caches()
         self.send_json({"settings": settings})
+
+    def api_admin_marketing_copy_overrides(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        locale = self._clean_marketing_override_locale(query.get("locale") or "zh")
+        self.send_json({"locale": locale, "overrides": self._read_marketing_copy_overrides(conn, locale)})
+
+    def api_admin_update_marketing_copy_overrides(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        locale = self._clean_marketing_override_locale(data.get("locale") or "zh")
+        raw_values = data.get("values") if isinstance(data.get("values"), dict) else data.get("overrides")
+        if not isinstance(raw_values, dict):
+            raise APIError("文案内容不合法", 400, "invalid_overrides")
+        timestamp = now_iso()
+        changed = 0
+        for raw_key, raw_value in raw_values.items():
+            key = self._clean_marketing_override_key(raw_key)
+            value = str(raw_value or "").strip()
+            if value:
+                conn.execute(
+                    """
+                    INSERT INTO marketing_copy_overrides (locale, copy_key, value, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    ON CONFLICT(locale, copy_key)
+                    DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+                    """,
+                    (locale, key, value[:12000], timestamp),
+                )
+                changed += 1
+            else:
+                conn.execute("DELETE FROM marketing_copy_overrides WHERE locale = ? AND copy_key = ?", (locale, key))
+                changed += 1
+        ACCESS_LOG.info("admin %s updated marketing master copy locale=%s fields=%d", admin["handle"], locale, changed)
+        self.send_json({"locale": locale, "overrides": self._read_marketing_copy_overrides(conn, locale)})
 
     def api_admin_visitors(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         """Admin-only access log: recent visits with IP + resolved region,

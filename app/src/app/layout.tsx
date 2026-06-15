@@ -14,7 +14,7 @@ export const metadata: Metadata = {
     default: "Machi",
     template: "%s | Machi",
   },
-  description: "Machi 按城市和语言，整理租房、生活手续、求职、二手、本地服务、问答与真实经验。让陌生的城市，也有生活的门路。",
+  description: "Machi 按城市和语言，整理租房、手续、求职、二手、本地服务、问答与真实经验。在每一座城市，找到生活的回声。",
   applicationName: "Machi",
   appleWebApp: { capable: true, title: "Machi", statusBarStyle: "default" },
   manifest: "/manifest.webmanifest",

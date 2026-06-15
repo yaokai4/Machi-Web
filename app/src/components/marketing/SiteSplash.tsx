@@ -21,9 +21,9 @@
 import type { MarketingLocale } from "@/data/machi-home";
 
 const splashTagline: Record<MarketingLocale, string> = {
-  zh: "让陌生的城市，也有生活的门路",
-  en: "Find your way into a new city",
-  ja: "知らない街でも、暮らし方は見つけられる",
+  zh: "在每一座城市，找到生活的回声",
+  en: "Find the echoes of real life in every city",
+  ja: "どの街でも、暮らしの声を見つける",
 };
 
 export function SiteSplash({ locale }: { locale: MarketingLocale }) {
