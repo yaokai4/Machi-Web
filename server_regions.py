@@ -318,6 +318,84 @@ def _resolve_region_label(country: str, province: str, city: str) -> str:
     return ""
 
 
+# 日本「都市圈」聚合：同城 / 二手 / 租房 / 工作 / 商家 都按生活圈(关东圈/关西圈…)
+# 合并展示,而不是只看单个城市(城市之间离得很近,单城太窄)。province codes 与
+# iOS KaiXRegionDirectory.jpMetroCircles / web JP_METRO_CIRCLES 保持一致。
+JP_METRO_CIRCLES: dict[str, list[str]] = {
+    "kanto":   ["tokyo", "kanagawa", "saitama", "chiba", "ibaraki", "tochigi", "gunma"],
+    "kansai":  ["osaka", "kyoto", "hyogo", "nara", "shiga", "mie"],
+    "nagoya":  ["aichi", "gifu", "shizuoka", "nagano", "niigata", "ishikawa"],
+    "fukuoka": ["fukuoka", "kumamoto", "kagoshima"],
+    "sapporo": ["hokkaido"],
+    "sendai":  ["miyagi"],
+    "other":   ["hiroshima", "okayama", "okinawa"],
+}
+
+
+def _jp_circle_for_province(province_code: str) -> str | None:
+    p = (province_code or "").lower()
+    for code, provs in JP_METRO_CIRCLES.items():
+        if p in provs:
+            return code
+    return None
+
+
+def _dedupe(seq: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for s in seq:
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def metro_circle_city_slugs(country: str, province: str, city: str) -> list[str]:
+    """City slugs of the JP 都市圈 that contains (province, city). Non-JP or an
+    unmatched province returns just [city] — so the caller's filter stays a
+    single city. The origin city is always first."""
+    country = (country or "").lower()
+    city = (city or "").lower()
+    if country != "jp" or not city:
+        return [city] if city else []
+    circle = _jp_circle_for_province(province)
+    if not circle:
+        return [city]
+    slugs = [city]
+    for prov in JP_METRO_CIRCLES[circle]:
+        slugs.extend(c["code"] for c in _cities_for_parent("jp", prov))
+    return _dedupe(slugs)
+
+
+def metro_circle_city_slugs_for_city(country: str, city: str) -> list[str]:
+    """metro_circle_city_slugs but discovers the province from a bare city slug
+    (used when only the city is known, no region_code)."""
+    country = (country or "").lower()
+    city = (city or "").lower()
+    if country != "jp" or not city:
+        return [city] if city else []
+    for prov in REGION_PROVINCES.get("jp", []):
+        for ci in _cities_for_parent("jp", prov["code"]):
+            if ci["code"] == city:
+                return metro_circle_city_slugs("jp", prov["code"], city)
+    return [city]
+
+
+def metro_circle_region_codes(region_code: str) -> list[str]:
+    """Every region_code inside the JP 都市圈 of `region_code`. Non-JP or an
+    unmatched code returns just [region_code]."""
+    country, province, city = _parse_region_code(region_code)
+    if country != "jp" or not city:
+        return [region_code] if region_code else []
+    circle = _jp_circle_for_province(province)
+    if not circle:
+        return [region_code]
+    codes = [region_code]
+    for prov in JP_METRO_CIRCLES[circle]:
+        codes.extend(f"jp.{prov}.{c['code']}" for c in _cities_for_parent("jp", prov))
+    return _dedupe(codes)
+
+
 _GEO_COUNTRY_ALIASES = {
     "china": "cn", "cn": "cn", "中国": "cn", "中國": "cn",
     "japan": "jp", "jp": "jp", "日本": "jp",
@@ -435,6 +513,10 @@ __all__ = [
     "REGION_CITIES",
     "REGION_COUNTRIES",
     "REGION_PROVINCES",
+    "JP_METRO_CIRCLES",
+    "metro_circle_city_slugs",
+    "metro_circle_city_slugs_for_city",
+    "metro_circle_region_codes",
     "_cities_for_parent",
     "_country_lookup",
     "_detect_region_code_from_geo",

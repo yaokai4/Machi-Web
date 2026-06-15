@@ -139,6 +139,9 @@ from server_regions import (
     POPULAR_CITIES,
     REGION_COUNTRIES,
     REGION_PROVINCES,
+    metro_circle_city_slugs,
+    metro_circle_city_slugs_for_city,
+    metro_circle_region_codes,
     _cities_for_parent,
     _country_lookup,
     _detect_region_code_from_geo,
@@ -18434,6 +18437,18 @@ class Handler(BaseHTTPRequestHandler):
             if item.strip()
         ][:32]
         country_code = (query.get("country") or query.get("country_code") or "").strip().lower()
+        # 都市圈聚合:单个城市/region 默认扩展为整个生活圈(关东圈/关西圈…)的城市集合。
+        # 显式传 city_slugs/region_codes 或 exact=1 时不扩展。
+        exact_city = (query.get("exact") or "").strip() in {"1", "true", "yes"}
+        if not exact_city and not city_slugs and region_code:
+            expanded = metro_circle_region_codes(region_code)
+            if len(expanded) > 1:
+                region_codes = expanded
+                region_code = ""
+        if not exact_city and not city_slugs and not region_codes and city_slug:
+            circle = metro_circle_city_slugs_for_city(country_code or "jp", city_slug)
+            if len(circle) > 1:
+                city_slugs = circle
         if city_slugs:
             clauses.append("city_slug IN (%s)" % ",".join("?" * len(city_slugs)))
             params.extend(city_slugs)
@@ -21061,21 +21076,37 @@ class Handler(BaseHTTPRequestHandler):
                 req_province = (viewer_row["province"] or "").lower()
                 req_city     = (viewer_row["city"] or "").lower()
 
+        # 都市圈聚合:同城默认按生活圈(关东圈/关西圈…)合并,而不是单个城市。
+        # 传 exact=1 可退回单城(用于明确只看某一城)。
+        exact_city = (query.get("exact") or "").strip() in {"1", "true", "yes"}
         if req_region_code:
-            region_clause = " AND p.region_code = ?"
-            region_params.append(req_region_code)
+            circle_codes = [req_region_code] if exact_city else metro_circle_region_codes(req_region_code)
+            if len(circle_codes) > 1:
+                region_clause = " AND p.region_code IN (%s)" % ",".join("?" * len(circle_codes))
+                region_params.extend(circle_codes)
+            else:
+                region_clause = " AND p.region_code = ?"
+                region_params.append(req_region_code)
         elif req_country or req_city:
-            clauses = []
-            if req_country:
-                clauses.append("p.country = ?")
+            circle_slugs = [] if exact_city else metro_circle_city_slugs(req_country, req_province, req_city)
+            if req_country == "jp" and len(circle_slugs) > 1:
+                # JP 城市:按整个都市圈的城市集合过滤(忽略单一 province/city)。
+                clauses = ["p.country = ?", "p.city IN (%s)" % ",".join("?" * len(circle_slugs))]
                 region_params.append(req_country)
-            if req_province:
-                clauses.append("p.province = ?")
-                region_params.append(req_province)
-            if req_city:
-                clauses.append("p.city = ?")
-                region_params.append(req_city)
-            region_clause = " AND " + " AND ".join(clauses)
+                region_params.extend(circle_slugs)
+                region_clause = " AND " + " AND ".join(clauses)
+            else:
+                clauses = []
+                if req_country:
+                    clauses.append("p.country = ?")
+                    region_params.append(req_country)
+                if req_province:
+                    clauses.append("p.province = ?")
+                    region_params.append(req_province)
+                if req_city:
+                    clauses.append("p.city = ?")
+                    region_params.append(req_city)
+                region_clause = " AND " + " AND ".join(clauses)
 
         if mode == "local" and not (req_region_code or req_city):
             raise APIError("city required", 400, "missing_region")
