@@ -419,10 +419,20 @@ RATE_LIMITS = {
     # group           -> (capacity, refill_per_minute)
     "auth":   (10, 5),       # /api/auth/* — brute-force guard
     "email":  (5, 2),        # /api/auth/*/send-code — code-spam guard
-    "write":  (60, 60),      # mutating endpoints
+    # Carrier NAT means many real mobile users can share one apparent IP.
+    # Keep auth/payment tight, but let normal writes breathe so a city event
+    # with many simultaneous posts does not turn into false 429s.
+    "write":  (600, 600),    # mutating endpoints
     "read":   (300, 300),    # reads
     "search": (40, 40),
     "media":  (20, 20),
+    # A 9-image post uses presign + local PUT + complete for every item.
+    # Keep uploads in their own bucket so a legitimate album does not
+    # exhaust the generic media quota before the post can be created. The
+    # authenticated daily upload quota is the abuse guard here; this bucket
+    # needs to tolerate many users behind the same carrier/NAT IP.
+    "upload": (20000, 20000),
+    "upload_stream": (6000, 6000),
     "payment": (20, 10),     # order creation / verify — tight money path
 }
 HTTP_REQUEST_QUEUE_SIZE = max(
@@ -1621,6 +1631,10 @@ def normalize_media_dto(row: sqlite3.Row | dict[str, Any], *, fallback_id: str =
     if is_private:
         visibility = "private"
     public_url = "" if is_private else stored_url
+    variants = metadata.get("variants") if isinstance(metadata.get("variants"), dict) else {}
+    original_url = "" if is_private else (variants.get("original") or variants.get("source") or public_url)
+    large_url = "" if is_private else (variants.get("large") or original_url)
+    medium_url = "" if is_private else (variants.get("medium") or large_url or original_url)
     raw_thumb = (
         metadata.get("poster_url")
         or metadata.get("posterUrl")
@@ -1660,6 +1674,12 @@ def normalize_media_dto(row: sqlite3.Row | dict[str, Any], *, fallback_id: str =
         "url": public_url,
         "cdnUrl": public_url,
         "publicUrl": public_url,
+        "originalUrl": original_url,
+        "original_url": original_url,
+        "largeUrl": large_url,
+        "large_url": large_url,
+        "mediumUrl": medium_url,
+        "medium_url": medium_url,
         "needsSignedUrl": is_private,
         "needs_signed_url": is_private,
         "thumbnailUrl": thumbnail_url,
@@ -2451,7 +2471,11 @@ def _rate_group_for(path: str, method: str) -> str:
         return "payment"
     if path.startswith("/api/search"):
         return "search"
-    if path.startswith("/api/media/") or path.startswith("/api/uploads/"):
+    if path.startswith("/api/uploads/local/"):
+        return "upload_stream"
+    if path.startswith("/api/uploads/"):
+        return "upload"
+    if path.startswith("/api/media/"):
         return "media"
     if method in ("POST", "PATCH", "PUT", "DELETE"):
         return "write"
@@ -20829,21 +20853,42 @@ class Handler(BaseHTTPRequestHandler):
                 city = (row["city"] or "").strip().lower()
         filters: list[str] = []
         params: list[Any] = []
+        exact_city = (query.get("exact") or "").strip() in {"1", "true", "yes"}
         if region_code:
-            filters.append(f"{alias}.region_code = ?")
-            params.append(region_code)
+            circle_codes = [region_code] if exact_city else metro_circle_region_codes(region_code)
+            if len(circle_codes) > 1:
+                filters.append(f"{alias}.region_code IN (%s)" % ",".join("?" * len(circle_codes)))
+                params.extend(circle_codes)
+            else:
+                filters.append(f"{alias}.region_code = ?")
+                params.append(region_code)
         else:
-            if country:
+            circle_slugs = [] if exact_city else metro_circle_city_slugs(country, province, city)
+            if country == "jp" and len(circle_slugs) > 1:
                 filters.append(f"{alias}.country = ?")
                 params.append(country)
-            if province:
-                filters.append(f"{alias}.province = ?")
-                params.append(province)
-            if city:
-                filters.append(f"{alias}.city = ?")
-                params.append(city)
+                filters.append(f"{alias}.city IN (%s)" % ",".join("?" * len(circle_slugs)))
+                params.extend(circle_slugs)
+            else:
+                if country:
+                    filters.append(f"{alias}.country = ?")
+                    params.append(country)
+                if province:
+                    filters.append(f"{alias}.province = ?")
+                    params.append(province)
+                if city:
+                    filters.append(f"{alias}.city = ?")
+                    params.append(city)
         clause = (" AND " + " AND ".join(filters)) if filters else ""
-        return clause, params, {"region_code": region_code, "country": country, "province": province, "city": city}
+        return clause, params, {
+            "region_code": region_code,
+            "country": country,
+            "province": province,
+            "city": city,
+            "region_codes": ",".join(circle_codes) if region_code and len(circle_codes) > 1 else "",
+            "cities": ",".join(circle_slugs) if not region_code and len(circle_slugs) > 1 else "",
+            "exact": "1" if exact_city else "0",
+        }
 
     def _explore_ranked_posts(
         self,
@@ -22826,10 +22871,16 @@ class Handler(BaseHTTPRequestHandler):
             record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="s3_unavailable", metadata={"purpose": purpose})
             raise APIError("生产环境对象存储暂不可用", 503, "s3_unavailable")
         # Browser-to-S3 PUT is fragile unless bucket CORS is perfectly
-        # configured. Use same-origin upload URLs and let the backend stream
-        # verified public/private media into S3 so Web, mobile WebApp and
-        # desktop browsers share the same reliable path.
-        direct_s3 = False
+        # configured. Native clients do not have CORS, and direct-to-S3 keeps
+        # large photo/video traffic off the app server when many users upload
+        # at once. Web can keep the same-origin relay by omitting directS3.
+        direct_requested = str(
+            data.get("directS3")
+            or data.get("direct_s3")
+            or data.get("direct_s3_upload")
+            or ""
+        ).strip().lower() in {"1", "true", "yes", "ios", "native"}
+        direct_s3 = bool(direct_requested and s3_available and not is_private)
         if is_private and s3_available:
             private_media_key()
         if direct_s3:
@@ -22923,6 +22974,7 @@ class Handler(BaseHTTPRequestHandler):
                 "entityType": entity_type,
                 "entityId": entity_id,
                 "s3": s3_available,
+                "directS3": direct_s3,
                 "encrypted": is_private and s3_available,
             },
         )

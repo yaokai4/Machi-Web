@@ -118,10 +118,10 @@ export interface MetroCircle {
 export const JP_METRO_CIRCLES: MetroCircle[] = [
   { code: "kanto", name: "关东圈", provinceCodes: ["tokyo", "kanagawa", "saitama", "chiba", "ibaraki", "tochigi", "gunma"] },
   { code: "kansai", name: "关西圈", provinceCodes: ["osaka", "kyoto", "hyogo", "nara", "shiga", "mie"] },
-  { code: "nagoya", name: "名古屋·中部", provinceCodes: ["aichi", "gifu", "shizuoka", "nagano", "niigata", "ishikawa"] },
-  { code: "fukuoka", name: "福冈·九州", provinceCodes: ["fukuoka", "kumamoto", "kagoshima"] },
-  { code: "sapporo", name: "札幌·北海道", provinceCodes: ["hokkaido"] },
-  { code: "sendai", name: "仙台·东北", provinceCodes: ["miyagi"] },
+  { code: "nagoya", name: "名古屋・中部", provinceCodes: ["aichi", "gifu", "shizuoka", "nagano", "niigata", "ishikawa"] },
+  { code: "fukuoka", name: "福冈・九州", provinceCodes: ["fukuoka", "kumamoto", "kagoshima"] },
+  { code: "sapporo", name: "札幌・北海道", provinceCodes: ["hokkaido"] },
+  { code: "sendai", name: "仙台・东北", provinceCodes: ["miyagi"] },
   { code: "other", name: "其他城市", provinceCodes: ["hiroshima", "okayama", "okinawa"] },
 ];
 
