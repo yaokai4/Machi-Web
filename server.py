@@ -8780,6 +8780,18 @@ def normalize_listing_attributes(listing_type: str, raw: Any) -> dict[str, tuple
         k = str(key or "").strip()
         if not k or (allowed and k not in allowed):
             continue
+        # menu / packages: web sends arrays; iOS sends a JSON string (its
+        # attributes map is string-only). Parse the string back to a list so
+        # both clients land the same structured json attribute.
+        if k in {"menu", "packages"} and isinstance(value, str):
+            stripped = value.strip()
+            if stripped.startswith("["):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list):
+                        value = parsed
+                except Exception:
+                    pass
         text = listing_value_to_text(value)
         if text == "":
             continue
