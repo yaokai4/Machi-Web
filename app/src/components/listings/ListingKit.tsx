@@ -110,7 +110,7 @@ const CHANNEL: Record<ChannelKind, { type: KXListingType; title: string; subtitl
   marketplace: { type: "secondhand", title: "二手市场", subtitle: "图片、价格、地点、成色和交易方式清晰分离", icon: Tag, search: "搜索家具、家电、手机数码、教材、搬家出清", createLabel: "发布二手" },
   rentals: { type: "rental", title: "租房 · 住宿", subtitle: "长租、民宿短住与酒店住宿，价格、位置和入住条件一目了然", icon: Home, search: "搜索地区、车站、民宿、酒店、房源关键词", createLabel: "发布房源" },
   jobs: { type: "job", title: "工作机会", subtitle: "薪资、地点、日语要求、签证支持和招聘方认证", icon: Briefcase, search: "搜索职位、公司、地点、日语要求", createLabel: "发布职位" },
-  services: { type: "local_service", title: "商家与服务", subtitle: "餐厅美食、点评订座、景点玩乐和生活支持", icon: Sparkles, search: "搜索餐厅美食、景点门票、一日游、接送机、翻译手续", createLabel: "发布服务" },
+  services: { type: "local_service", title: "商家与服务", subtitle: "餐饮预约、住宿短住、旅行票务、接送交通、翻译手续和生活支持", icon: Sparkles, search: "搜索餐饮预约、旅行票务、机场接送、翻译手续、生活服务", createLabel: "发布服务" },
   deals: { type: "discount", title: "优惠", subtitle: "本地商家优惠、有效期和使用规则", icon: Tag, search: "搜索优惠、折扣、商家、有效期", createLabel: "发布优惠" },
 };
 
@@ -138,8 +138,8 @@ const CHANNEL_TEXT: Record<ChannelKind, Record<"title" | "subtitle" | "search" |
   },
   services: {
     title: { ja: "店舗・地域サービス", en: "Businesses & local services" },
-    subtitle: { ja: "グルメ・口コミ予約・観光体験・生活サポート", en: "Food & dining, reviews & booking, attractions and local support" },
-    search: { ja: "グルメ、観光チケット、日帰りツアー、送迎、翻訳・手続きを検索", en: "Search restaurants, attraction tickets, day trips, transfers, paperwork…" },
+    subtitle: { ja: "飲食予約・宿泊・旅行チケット・送迎・生活サポート", en: "Dining, stays, travel tickets, transfers and local support" },
+    search: { ja: "飲食予約、旅行チケット、空港送迎、翻訳・手続き、生活サポートを検索", en: "Search dining, travel tickets, transfers, paperwork and local support" },
     createLabel: { ja: "サービスを掲載", en: "Offer a service" },
   },
   deals: {
@@ -173,16 +173,16 @@ function localizedChannel(kind: ChannelKind, locale: Locale) {
 // ── 类目体系（zh 为存储/过滤的规范值，详见 CATEGORY_LABELS 注释）────────────
 /// 餐厅美食：菜系类目（local_service 下）。
 export const FOOD_CATEGORIES = ["中华料理", "日本料理", "居酒屋", "烧肉火锅", "拉面", "寿司海鲜", "咖啡甜品", "西餐", "韩国料理"] as const;
-/// 餐厅美食分区还包含两个老类目（已有数据继续生效）。
-const FOOD_SECTION_CATEGORIES = ["餐厅美食", ...FOOD_CATEGORIES, "餐饮点评", "优惠预约"];
+const FOOD_SECTION_CATEGORIES = ["餐厅美食", ...FOOD_CATEGORIES, "优惠预约"];
+const LODGING_SECTION_CATEGORIES = ["民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓"] as const;
 const TRAVEL_SECTION_CATEGORIES = ["景点门票", "一日游", "本地向导", "体验活动", "包车行程"] as const;
-const TRANSFER_SECTION_CATEGORIES = ["机场接送", "车站接送", "包车", "行李协助", "接送机"] as const;
-const PAPERWORK_SECTION_CATEGORIES = ["材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "签证材料整理", "翻译手续", "签证/手续协助", "翻译"] as const;
-const MOVING_SECTION_CATEGORIES = ["搬家", "退房清洁", "粗大垃圾协助", "行李搬运", "家具家电配送协助", "搬家清洁", "清洁"] as const;
+const TRANSFER_SECTION_CATEGORIES = ["机场接送", "车站接送", "包车", "行李协助"] as const;
+const PAPERWORK_SECTION_CATEGORIES = ["材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "签证材料整理"] as const;
+const MOVING_SECTION_CATEGORIES = ["搬家", "退房清洁", "粗大垃圾协助", "行李搬运", "家具家电配送协助"] as const;
 const LIFE_SETUP_SECTION_CATEGORIES = ["手机卡开通", "网络开通", "水电煤协助", "地址登记协助", "粗大垃圾预约", "生活跑腿", "生活支持"] as const;
 const BEAUTY_HEALTH_SECTION_CATEGORIES = ["美容美发", "美甲", "按摩", "皮肤管理", "体检/牙科预约协助"] as const;
 const PET_FAMILY_SECTION_CATEGORIES = ["宠物寄养", "遛狗", "临时照看", "儿童用品租赁", "家庭协助", "宠物服务"] as const;
-/// 生活服务分区同时兼容新细分类与旧伞类目，保证发布端和发现端不脱节。
+/// 第一阶段正式服务分类。旧伞类目仍保留在映射中兼容已有数据，但不进入新发布主流程。
 const LIFE_SECTION_CATEGORIES = [
   ...PAPERWORK_SECTION_CATEGORIES,
   ...MOVING_SECTION_CATEGORIES,
@@ -201,7 +201,7 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   rental: ["全部", "单人", "合租", "短租", "整租", "家具家电", "近车站"],
   job: ["全部", "兼职", "全职", "时给", "月给", "无经验可", "留学生可", "签证支持", "周末"],
   hiring: ["全部", "兼职", "全职", "派遣", "实习", "签证支持"],
-  local_service: ["全部", ...FOOD_CATEGORIES, "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓", ...TRAVEL_SECTION_CATEGORIES, ...TRANSFER_SECTION_CATEGORIES, ...LIFE_SECTION_CATEGORIES, ...PET_FAMILY_SECTION_CATEGORIES],
+  local_service: ["全部", ...FOOD_SECTION_CATEGORIES, ...LODGING_SECTION_CATEGORIES, ...TRAVEL_SECTION_CATEGORIES, ...TRANSFER_SECTION_CATEGORIES, ...LIFE_SECTION_CATEGORIES],
   discount: ["全部", "餐饮", "生活", "学习", "搬家", "限时"],
   event: ["全部", "今天", "本周", "周末", "免费"],
 };
@@ -252,7 +252,10 @@ function serviceSectionDescription(key: string): string {
     stay: "民宿、酒店、温泉旅馆和短住",
     travel: "景点门票、一日游、本地向导",
     transfer: "机场/车站接送、包车和行李协助",
-    life: "翻译手续、生活开通、搬家清洁",
+    paperwork: "材料翻译、市役所陪同、银行卡/手机卡和租房申请协助",
+    moving: "搬家、退房清洁、粗大垃圾和配送协助",
+    life: "手机卡、网络、水电煤、地址登记和生活跑腿",
+    beauty: "美容美发、美甲、按摩、皮肤管理和体检/牙科预约协助",
   }[key] || "本地实用服务";
 }
 
@@ -267,7 +270,10 @@ function createGroupLabel(group: CreateCategoryGroup, locale: Locale): string {
     stay: ["住宿短住", "宿泊・短期滞在", "Stays"],
     travel: ["旅行票务", "観光・チケット", "Travel"],
     transfer: ["接送交通", "送迎・交通", "Transfer"],
-    life: ["生活支持", "生活サポート", "Local support"],
+    paperwork: ["翻译手续", "翻訳・手続き", "Paperwork"],
+    moving: ["搬家清洁", "引越し・清掃", "Moving"],
+    life: ["生活开通", "生活手続き", "Life setup"],
+    beauty: ["美容健康", "美容・健康予約", "Beauty"],
     other: ["其他", "その他", "Other"],
   };
   const copy = labels[group.key];
@@ -285,7 +291,10 @@ function createGroupDescription(group: CreateCategoryGroup, locale: Locale): str
     stay: ["民宿、酒店、温泉旅馆和短住", "民泊・ホテル・短期滞在", "Homestays, hotels and short stays"],
     travel: ["景点门票、一日游、本地向导", "観光チケット・日帰りツアー", "Tickets, day trips and guides"],
     transfer: ["机场/车站接送、包车和行李协助", "空港送迎・貸切・荷物サポート", "Airport transfers, charters and luggage"],
-    life: ["翻译手续、生活开通、搬家清洁", "翻訳・手続き・生活セットアップ", "Paperwork, life setup and cleaning"],
+    paperwork: ["材料翻译、市役所陪同、银行卡/手机卡和租房申请协助", "書類翻訳・役所同行・銀行/SIM・賃貸申込サポート", "Documents, city office, bank/SIM and rental application help"],
+    moving: ["搬家、退房清洁、粗大垃圾和配送协助", "引越し・退去清掃・粗大ごみ・配送補助", "Moving, move-out cleaning, oversized trash and delivery help"],
+    life: ["手机卡、网络、水电煤、地址登记和生活跑腿", "SIM・ネット・ライフライン・住所登録・生活代行", "SIM, internet, utilities, address registration and local errands"],
+    beauty: ["美容美发、美甲、按摩、皮肤管理和体检/牙科预约协助", "美容・ネイル・マッサージ・肌ケア・健診/歯科予約", "Hair, nails, massage, skin care and health booking help"],
     other: ["后台新增或自定义分类", "管理画面で追加された分類", "Admin or custom categories"],
   };
   const copy = descriptions[group.key];
@@ -294,7 +303,7 @@ function createGroupDescription(group: CreateCategoryGroup, locale: Locale): str
 
 /// 租房页「民宿·短住」标签下的筛选 chips（全部=整个住宿类目集）。
 const HOMESTAY_CHIPS = ["全部", "民宿"];
-const HOTEL_CHIPS = ["全部", "酒店", "温泉旅馆", "公寓式酒店"];
+const HOTEL_CHIPS = ["全部", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓"];
 
 // Display-only translations for the category chips. The zh value is the
 // CANONICAL wire/storage format (listings store and filter by it — see
@@ -696,7 +705,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
         });
       }
       if (kind === "services" && sectionCategoriesParam) {
-        // 服务分区（餐厅美食/景点玩乐/生活服务）直接按类目集合取数，分页不漏。
+        // 服务分区直接按正式类目集合取数，分页不漏。
         return api.listings({ ...shared, type: spec.type, category: "", categories: sectionCategoriesParam, cursor: pageParam || undefined });
       }
       if (kind !== "jobs") return api.listings({ ...shared, type: spec.type, cursor: pageParam || undefined });
@@ -739,7 +748,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const visibleItems = loadedItems.filter((item) => {
     // 住宿类已整体归入租房页「民宿·短住」，服务页不再展示
     if (kind === "services" && STAY_CATEGORY_SET.has(item.category || "")) return false;
-    // services 分区（餐厅美食/景点玩乐/生活服务）在已抓页面上按类目分组过滤
+    // services 分区在已抓页面上按正式类目集合过滤
     if (kind === "services" && category === "全部" && sectionSpec?.categories.length) {
       return sectionSpec.categories.includes(item.category || "");
     }
@@ -2643,14 +2652,17 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
 }
 
 // ── 服务频道分区──────────────────────────────────────────────────────────
-// 住宿类目已整体搬去租房页「民宿·短住」，这里不再展示。
+// 与发布页第一阶段正式类目保持一致；旧伞类目只做详情/筛选兼容。
 const SERVICE_SECTIONS: { key: string; zh: string; ja: string; en: string; categories: string[] }[] = [
   { key: "all", zh: "全部", ja: "すべて", en: "All", categories: [] },
   { key: "food", zh: "餐饮预约", ja: "グルメ予約", en: "Food & Dining", categories: FOOD_SECTION_CATEGORIES },
-  { key: "stay", zh: "住宿短住", ja: "宿泊", en: "Stays", categories: [...STAY_CATEGORIES] },
+  { key: "stay", zh: "住宿短住", ja: "宿泊・短期滞在", en: "Stays", categories: [...LODGING_SECTION_CATEGORIES] },
   { key: "travel", zh: "旅行票务", ja: "観光・体験", en: "Travel & Tickets", categories: [...TRAVEL_SECTION_CATEGORIES] },
   { key: "transfer", zh: "接送交通", ja: "送迎・交通", en: "Transfer", categories: [...TRANSFER_SECTION_CATEGORIES] },
-  { key: "life", zh: "生活支持", ja: "生活サポート", en: "Local Support", categories: [...LIFE_SECTION_CATEGORIES] },
+  { key: "paperwork", zh: "翻译手续", ja: "翻訳・手続き", en: "Paperwork", categories: [...PAPERWORK_SECTION_CATEGORIES] },
+  { key: "moving", zh: "搬家清洁", ja: "引越し・清掃", en: "Moving", categories: [...MOVING_SECTION_CATEGORIES] },
+  { key: "life", zh: "生活开通", ja: "生活手続き", en: "Life setup", categories: [...LIFE_SETUP_SECTION_CATEGORIES] },
+  { key: "beauty", zh: "美容健康", ja: "美容・健康予約", en: "Beauty", categories: [...BEAUTY_HEALTH_SECTION_CATEGORIES] },
 ];
 
 const SERVICE_CATEGORY_META: Record<string, { Icon: typeof Store; tone: string }> = {
@@ -4535,7 +4547,7 @@ function ListingEmptyState({ type, cityName, stays = false }: { type: KXListingT
       : type === "job" || type === "hiring"
         ? "稍后查看新的兼职、全职和招聘信息。认证招聘方可以发布职位。"
         : type === "local_service"
-          ? "认证商家和服务方可以发布餐厅美食、景点玩乐、翻译、搬家、维修和生活支持。"
+          ? "认证商家和服务方可以发布餐饮预约、住宿短住、旅行票务、接送交通、翻译手续、搬家清洁和生活服务。"
           : type === "discount"
             ? "本地商家可以发布折扣、活动和福利信息。"
             : `稍后查看${cityName}新的本地内容。`;
@@ -4702,7 +4714,7 @@ function defaultPriceType(type: KXListingType) {
 function titlePlaceholder(type: KXListingType) {
   if (type === "rental") return "仙台青叶区 1K";
   if (type === "job" || type === "hiring") return "居酒屋兼职 / 日中双语运营";
-  if (type === "local_service") return "东京周末一日游 / 机场接送 / 认证翻译服务";
+  if (type === "local_service") return "东京周末一日游 / 机场接送 / 材料翻译协助";
   if (type === "discount") return "学生咖啡 10% 优惠";
   return "日文配列键盘 / 搬家出清书桌";
 }
@@ -4818,25 +4830,25 @@ const SERVICE_VERTICALS = new Set<ServiceVertical>(Object.values(SERVICE_VERTICA
 
 const SERVICE_TYPE_OPTIONS: Record<ServiceVertical, string[]> = {
   food_restaurant: ["餐厅美食", ...FOOD_CATEGORIES],
-  dining_booking: ["餐饮点评", "优惠预约"],
-  lodging: ["民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓", "酒店民宿"],
+  dining_booking: ["优惠预约"],
+  lodging: [...LODGING_SECTION_CATEGORIES],
   attraction_ticket: ["景点门票"],
   day_tour: ["一日游", "本地向导", "体验活动", "包车行程"],
-  airport_transfer: ["机场接送", "车站接送", "包车", "行李协助", "接送机"],
-  paperwork_translation: ["材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "签证材料整理", "翻译手续", "签证/手续协助", "翻译"],
-  moving_cleaning: ["搬家", "退房清洁", "粗大垃圾协助", "行李搬运", "家具家电配送协助", "搬家清洁", "清洁"],
-  life_setup: ["手机卡开通", "网络开通", "水电煤协助", "地址登记协助", "粗大垃圾预约", "家具家电配送协助", "生活跑腿", "生活支持"],
+  airport_transfer: [...TRANSFER_SECTION_CATEGORIES],
+  paperwork_translation: [...PAPERWORK_SECTION_CATEGORIES],
+  moving_cleaning: [...MOVING_SECTION_CATEGORIES],
+  life_setup: [...LIFE_SETUP_SECTION_CATEGORIES],
   beauty_health: ["美容美发", "美甲", "按摩", "皮肤管理", "体检/牙科预约协助"],
-  pet_family: ["宠物寄养", "遛狗", "临时照看", "儿童用品租赁", "家庭协助", "宠物服务"],
+  pet_family: [...PET_FAMILY_SECTION_CATEGORIES],
 };
 
 const SERVICE_VERTICAL_LABEL: Record<ServiceVertical, string> = {
   food_restaurant: "餐厅美食",
-  dining_booking: "餐饮点评 / 优惠预约",
-  lodging: "民宿 / 酒店",
+  dining_booking: "餐饮预约优惠",
+  lodging: "住宿短住",
   attraction_ticket: "景点门票",
   day_tour: "一日游 / 本地向导",
-  airport_transfer: "接送机",
+  airport_transfer: "接送与交通",
   paperwork_translation: "翻译 / 手续协助",
   moving_cleaning: "搬家 / 清洁",
   life_setup: "生活开通 / 住后支持",
@@ -5120,7 +5132,7 @@ function listingFormFields(type: KXListingType, category = "", attrs: Record<str
 function safetyTips(type: KXListingType) {
   if (type === "rental") return ["Machi 只是信息平台，不代收押金、订金或房租。", "地址只展示到区域，具体看房前核实发布者身份。", "高风险房源显示待核验，可举报并由后台下架。"];
   if (type === "job" || type === "hiring") return ["招聘不得收押金、保证金或培训费。", "核实招聘方资质、薪资、工作地点和签证说明。", "禁止成人、灰产或违法兼职。"];
-  if (type === "local_service") return ["商家与服务默认进入审核，认证状态会展示。", "旅行住宿、景点票务、法律医疗等高信任服务需要补充资质。", "禁止成人服务、高风险线下服务、虚假票务、违规代办和违法服务。", "平台暂不做外卖配送，不代收第三方服务款。"];
+  if (type === "local_service") return ["商家与服务默认进入审核，认证状态会展示。", "餐饮、住宿、票务、旅行、接送交通和手续协助需写清资质、包含/不包含内容和取消规则。", "暂不开放外卖配送、维修安装、学习咨询；禁止成人服务、高风险线下服务、虚假票务、违规代办和违法服务。", "平台暂不做外卖配送，不代收第三方服务款。"];
   if (type === "discount") return ["确认优惠有效期、适用门店和使用规则。", "不要向未核验商家提前转账或提供敏感信息。", "遇到虚假折扣、诱导消费或强制捆绑请立即举报。"];
   return ["Machi 不代收二手交易款。", "不要提前转账，交易建议选择公共场所。", "核实对方身份，谨慎提供个人信息。", "遇到可疑内容立即举报。"];
 }
@@ -5155,7 +5167,7 @@ function filterOptions(type: KXListingType, context: ListingFilterContext = "def
     { key: "visa_support", label: "签证支持", options: [option("available,true", "有"), option("consult", "可咨询"), option("none", "无")] },
   ];
   if (type === "local_service") return [
-    { key: "service_type", label: "服务类型", options: ["餐厅美食", "餐饮点评", "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓", "景点门票", "一日游", "本地向导", "机场接送", "车站接送", "包车", "行李协助", "材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "搬家", "退房清洁", "粗大垃圾协助", "手机卡开通", "网络开通", "水电煤协助", "地址登记协助", "美容美发", "美甲", "按摩", "宠物寄养", "家庭协助"].map((item) => option(item)) },
+    { key: "service_type", label: "服务类型", options: [...FOOD_SECTION_CATEGORIES, ...LODGING_SECTION_CATEGORIES, ...TRAVEL_SECTION_CATEGORIES, ...TRANSFER_SECTION_CATEGORIES, ...LIFE_SECTION_CATEGORIES].map((item) => option(item)) },
     { key: "booking_required", label: "预约", options: [option("true", "需要预约")] },
     { key: "breakfast_included", label: "含早餐", options: [option("true", "含")] },
     { key: "instant_confirmation", label: "确认方式", options: [option("true", "即时确认")] },

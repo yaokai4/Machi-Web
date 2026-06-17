@@ -496,10 +496,10 @@ function channelHeroCopy(spec: ExploreChannelSpec, locale: Locale) {
       });
     case "services":
       return localizedChannelLine(locale, {
-        "zh-Hans": "搬家、签证、维修、翻译等本地服务信息。",
-        "zh-Hant": "搬家、簽證、維修、翻譯等本地服務資訊。",
-        en: "Moving, visa support, repairs, translation, and other local services.",
-        ja: "引っ越し、ビザ、修理、通訳などの地域サービス情報です。",
+        "zh-Hans": "餐饮预约、住宿短住、旅行票务、接送交通、翻译手续、搬家清洁和生活开通。",
+        "zh-Hant": "餐飲預約、住宿短住、旅行票務、接送交通、翻譯手續、搬家清潔和生活開通。",
+        en: "Dining, stays, travel tickets, transfers, paperwork, moving, cleaning, and life setup.",
+        ja: "飲食予約、宿泊・短期滞在、旅行チケット、送迎、翻訳・手続き、引越し清掃、生活手続き。",
       });
     case "deals":
       return localizedChannelLine(locale, {

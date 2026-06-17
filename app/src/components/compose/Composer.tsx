@@ -947,7 +947,7 @@ const TYPED_FIELDS: Partial<Record<ContentType, TypedField[]>> = {
   ],
   service: [
     { key: "company_name", label: "公司 / 店铺名称" },
-    { key: "service_type", label: "服务类型", placeholder: "搬家 / 语言学校 / 签证咨询 / 家政 / 维修" },
+    { key: "service_type", label: "服务类型", placeholder: "餐饮预约 / 机场接送 / 材料翻译 / 搬家清洁 / 生活开通" },
     { key: "service_description", label: "服务内容", placeholder: "服务范围、适合人群、交付方式", kind: "textarea" },
     { key: "price_range", label: "价格范围" },
     { key: "contact_method", label: "联系方式" },

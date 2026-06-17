@@ -40,25 +40,27 @@ const CONSOLE_TABS = [
 type ConsoleTab = (typeof CONSOLE_TABS)[number]["key"];
 
 const BUSINESS_TYPES = [
-  "餐厅美食",
-  "咖啡甜品",
-  "生活服务",
-  "民宿 / 酒店",
-  "景点票务",
-  "旅行玩乐",
+  "餐饮预约",
+  "住宿短住",
+  "旅行票务",
   "接送交通",
-  "房产服务",
-  "招聘雇主",
-  "搬家清洁",
   "翻译手续",
+  "搬家清洁",
   "生活开通",
   "美容健康",
-  "宠物家庭",
 ];
 
 const SERVICE_CATEGORIES = [
   "餐厅美食",
-  "在线订座",
+  "中华料理",
+  "日本料理",
+  "居酒屋",
+  "烧肉火锅",
+  "拉面",
+  "寿司海鲜",
+  "咖啡甜品",
+  "西餐",
+  "韩国料理",
   "优惠预约",
   "民宿",
   "酒店",
@@ -94,15 +96,12 @@ const SERVICE_CATEGORIES = [
   "按摩",
   "皮肤管理",
   "体检/牙科预约协助",
-  "宠物照看",
-  "亲子摄影",
-  "家政陪同",
 ];
 
 function blankForm() {
   return {
     business_name: "",
-    business_type: "生活服务",
+    business_type: "生活开通",
     legal_name: "",
     representative_name: "",
     registration_number: "",
@@ -116,7 +115,7 @@ function blankForm() {
     contact_method: "",
     description: "",
     application_note: "",
-    service_categories: ["生活服务"],
+    service_categories: ["生活开通"],
     service_cities: ["tokyo"],
   };
 }
@@ -154,7 +153,7 @@ export default function MyBusinessPage() {
     setForm({
       ...blankForm(),
       business_name: business.business_name || "",
-      business_type: business.business_type || "生活服务",
+      business_type: business.business_type || "生活开通",
       legal_name: business.legal_name || "",
       representative_name: business.representative_name || "",
       registration_number: business.registration_number || "",
@@ -168,7 +167,7 @@ export default function MyBusinessPage() {
       contact_method: business.contact_method || "",
       description: business.description || "",
       application_note: business.application_note || "",
-      service_categories: business.service_categories?.length ? business.service_categories : ["生活服务"],
+      service_categories: business.service_categories?.length ? business.service_categories : ["生活开通"],
       service_cities: business.service_cities?.length ? business.service_cities : [business.city_slug || "tokyo"],
     });
   }, [business]);
@@ -297,7 +296,7 @@ export default function MyBusinessPage() {
 
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
               <Field label="商家/品牌名称" required>
-                <input value={form.business_name} onChange={(e) => setFormValue(setForm, "business_name", e.target.value)} className="kx-input h-11" placeholder="Machi Coffee / 东京生活服务" />
+                <input value={form.business_name} onChange={(e) => setFormValue(setForm, "business_name", e.target.value)} className="kx-input h-11" placeholder="Machi Coffee / 东京接送服务" />
               </Field>
               <Field label="商家类型" required>
                 <select value={form.business_type} onChange={(e) => setFormValue(setForm, "business_type", e.target.value)} className="kx-input h-11">
@@ -442,7 +441,7 @@ export default function MyBusinessPage() {
           <section className="rounded-[24px] border border-slate-200/70 bg-white p-4">
             <h3 className="text-sm font-black text-slate-950">认证后可以做什么</h3>
             <div className="mt-3 grid gap-2">
-              <ActionLink href="/listings/create?type=local_service" icon={BriefcaseBusiness} title="发布服务" subtitle="翻译、手续、接机、旅行、维修" />
+              <ActionLink href="/listings/create?type=local_service" icon={BriefcaseBusiness} title="发布服务" subtitle="餐饮、住宿、旅行、接送、手续、生活" />
               <ActionLink href="/listings/create?type=discount" icon={TicketPercent} title="发布优惠" subtitle="到店折扣、套餐、体验券" />
               <ActionLink href="/my/inquiries?role=received" icon={MessageSquare} title="管理线索" subtitle="咨询、预约、报名和看房" />
               <ActionLink href="/cities/tokyo/services" icon={Store} title="查看商家与服务" subtitle="用户侧入口预览" />
