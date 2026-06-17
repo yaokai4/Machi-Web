@@ -83,6 +83,9 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
   const router = useRouter();
   const pathname = usePathname();
   const ownsViewportBottom = pathname?.startsWith("/messages/");
+  const isAdminPath = pathname?.startsWith("/admin") ?? false;
+  const useWideLayout = wide || isAdminPath;
+  const showRightSidebar = !isAdminPath && right !== null;
   // The left nav rail is the primary desktop navigation and must be present on
   // every page — collapsing it to home-only stranded users on inner pages with
   // no way to navigate. Mobile keeps the floating bottom tab bar.
@@ -149,13 +152,13 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
         <Sidebar pathname={pathname} redirectPath={redirectPath} user={user} />
         <main className={clsx(
           "kx-shell-main flex-1 min-w-0 border-x border-kx-stroke/35",
-          wide ? "lg:max-w-none" : "lg:max-w-kx-feed",
+          useWideLayout ? "lg:max-w-none" : "lg:max-w-kx-feed",
         )}>
           <div className={clsx("kx-page-enter", ownsViewportBottom ? "pb-0" : "pb-36 md:pb-8")}>
             <ErrorBoundary>{children}</ErrorBoundary>
           </div>
         </main>
-        {right === null ? null : <RightSidebar>{right}</RightSidebar>}
+        {showRightSidebar ? <RightSidebar>{right}</RightSidebar> : null}
       </div>
       {!hideBottomNav ? <MobileTabBar pathname={pathname} redirectPath={redirectPath} /> : null}
     </div>

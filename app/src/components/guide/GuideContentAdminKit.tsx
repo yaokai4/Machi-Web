@@ -681,7 +681,7 @@ export function GuideArticleEditPage({ create = false }: { create?: boolean }) {
       subtitle="文章应包含清晰步骤、材料清单、时间线、风险提醒和相关服务，不再只写空泛概述。"
     >
       <form
-        className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]"
+        className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]"
         onSubmit={(event) => {
           event.preventDefault();
           save.mutate();
@@ -690,7 +690,7 @@ export function GuideArticleEditPage({ create = false }: { create?: boolean }) {
         <section className="space-y-3 rounded-kx-lg border border-kx-stroke/60 bg-kx-card p-4">
           <TextField field={{ key: "title", label: "标题", required: true }} value={form.title} onChange={(value) => setForm((f) => ({ ...f, title: String(value) }))} />
           <TextField field={{ key: "summary", label: "摘要", type: "textarea", rows: 3, required: true }} value={form.summary} onChange={(value) => setForm((f) => ({ ...f, summary: String(value) }))} />
-          <TextField field={{ key: "body", label: "正文", type: "textarea", rows: 18, placeholder: "建议包含：适合人群、准备材料、办理步骤、费用、时间线、常见坑、下一步行动。" }} value={form.body} onChange={(value) => setForm((f) => ({ ...f, body: String(value) }))} />
+          <TextField field={{ key: "body", label: "正文", type: "textarea", rows: 28, placeholder: "建议包含：适合人群、准备材料、办理步骤、费用、时间线、常见坑、下一步行动。" }} value={form.body} onChange={(value) => setForm((f) => ({ ...f, body: String(value) }))} />
           <div className="grid gap-3 sm:grid-cols-2">
             <TextField field={{ key: "seoTitle", label: "SEO 标题" }} value={form.seoTitle} onChange={(value) => setForm((f) => ({ ...f, seoTitle: String(value) }))} />
             <TextField field={{ key: "seoDescription", label: "SEO 描述" }} value={form.seoDescription} onChange={(value) => setForm((f) => ({ ...f, seoDescription: String(value) }))} />
