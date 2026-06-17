@@ -148,6 +148,8 @@ const PRODUCT_FIELDS: Array<{ section: string; fields: FieldDef[] }> = [
     { key: "subCategoryKey", label: "子分类 key", type: "text" },
     { key: "productType", label: "商品类型", type: "select", options: PRODUCT_TYPES },
     { key: "tags", label: "标签（逗号分隔）", type: "tags" },
+    { key: "relatedArticleSlugs", label: "关联文章 slug（逗号分隔）", type: "tags", hint: "用于从商品反向挂到 Guide 文章路径" },
+    { key: "topicSlugs", label: "关联专题 slug（逗号分隔）", type: "tags", hint: "用于专题页聚合商品/服务" },
     { key: "targetAudience", label: "适合人群", type: "text" },
     { key: "coverImage", label: "封面图 URL / 上传文件 ID", type: "text" },
   ] },
@@ -212,13 +214,24 @@ export function GuideProductEditPage({ create = false }: { create?: boolean }) {
   useEffect(() => {
     if (q.data?.product) {
       const p = q.data.product as unknown as Record<string, unknown>;
-      setForm({ ...p, tags: Array.isArray(p.tags) ? (p.tags as string[]).join(", ") : p.tags });
+      setForm({
+        ...p,
+        tags: Array.isArray(p.tags) ? (p.tags as string[]).join(", ") : p.tags,
+        relatedArticleSlugs: Array.isArray(p.relatedArticleSlugs) ? (p.relatedArticleSlugs as string[]).join(", ") : p.relatedArticleSlugs,
+        topicSlugs: Array.isArray(p.topicSlugs) ? (p.topicSlugs as string[]).join(", ") : p.topicSlugs,
+      });
     }
   }, [q.data]);
 
   const save = useMutation({
     mutationFn: () => {
-      const body = { ...form, tags: typeof form.tags === "string" ? (form.tags as string).split(",").map((s) => s.trim()).filter(Boolean) : form.tags };
+      const csv = (value: unknown) => typeof value === "string" ? value.split(",").map((s) => s.trim()).filter(Boolean) : value;
+      const body = {
+        ...form,
+        tags: csv(form.tags),
+        relatedArticleSlugs: csv(form.relatedArticleSlugs),
+        topicSlugs: csv(form.topicSlugs),
+      };
       return create ? adminGuide.createProduct(body) : adminGuide.updateProduct(id, body);
     },
     onSuccess: (r) => {
@@ -306,6 +319,7 @@ export function GuideProductEditPage({ create = false }: { create?: boolean }) {
                 return (
                   <label key={f.key as string} className={f.type === "textarea" ? "block sm:col-span-2" : "block"}>
                     <span className="mb-1 block text-xs font-semibold text-kx-muted">{f.label}</span>
+                    {f.hint ? <span className="mb-1 block text-[11px] font-semibold text-kx-muted/80">{f.hint}</span> : null}
                     {f.type === "select" ? (
                       <select className={input} value={(val as string) || ""} onChange={(e) => setV(f.key as string, e.target.value)}>
                         {(f.options || []).map((o) => <option key={o} value={o}>{f.key === "productType" ? GUIDE_PRODUCT_TYPE_LABELS[o] || o : o}</option>)}

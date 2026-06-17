@@ -123,6 +123,8 @@ export interface GuideProduct {
   ctaLabel?: string;
   coverImage: string;
   tags: string[];
+  relatedArticleSlugs?: string[];
+  topicSlugs?: string[];
   targetAudience: string;
   deliveryMethod: string;
   country: string;

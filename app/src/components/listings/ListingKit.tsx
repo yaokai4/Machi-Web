@@ -1172,14 +1172,15 @@ export function CreateListingPage({
     setCategory(listing.category || "");
     setPrice(listing.price == null ? "" : String(listing.price));
     setLocation(listing.location_text || listing.locationText || "");
-    setAttributes(Object.fromEntries(
+    const hydratedAttributes = Object.fromEntries(
       Object.entries(listing.attributes || {}).map(([key, value]) => {
         // menu / packages 是结构化数组,编辑时还原成「一行一项」文本供 textarea 使用。
         if (key === "menu") return [key, menuToLines(value)];
         if (key === "packages") return [key, packagesToLines(value)];
         return [key, String(value ?? "")];
       }),
-    ));
+    );
+    setAttributes(listing.type === "local_service" ? sanitizeServiceAttributesForCategory(listing.category || "", hydratedAttributes) : hydratedAttributes);
     setMedia((listing.media || []).flatMap((item) => {
       const id = item.uploaded_file_id || item.uploadedFileId;
       if (!id) return [];
@@ -1217,14 +1218,15 @@ export function CreateListingPage({
       const draft = JSON.parse(raw) as { title?: string; description?: string; category?: string; price?: string; location?: string; attributes?: Record<string, string> };
       setTitle(draft.title || "");
       setDescription(draft.description || "");
-      setCategory(draft.category || "");
+      const draftCategory = draft.category || "";
+      setCategory(draftCategory);
       setPrice(draft.price || "");
       setLocation(draft.location || "");
-      setAttributes(draft.attributes || {});
+      setAttributes(type === "local_service" ? sanitizeServiceAttributesForCategory(draftCategory, draft.attributes || {}) : (draft.attributes || {}));
     } catch {
       // local draft corruption should not block publishing
     }
-  }, [draftKey, isEditing]);
+  }, [draftKey, isEditing, type]);
 
   const saveDraft = () => {
     if (isEditing) return;
@@ -4362,12 +4364,12 @@ const SERVICE_VERTICAL_LABEL: Record<ServiceVertical, string> = {
 };
 
 function getServiceVertical(category: string, attrs: Record<string, unknown> = {}): ServiceVertical | "" {
-  const explicit = cleanListingText(attrs.service_vertical);
-  if (SERVICE_VERTICALS.has(explicit as ServiceVertical)) return explicit as ServiceVertical;
   const categoryKey = cleanListingText(category);
   if (SERVICE_VERTICAL_BY_CATEGORY[categoryKey]) return SERVICE_VERTICAL_BY_CATEGORY[categoryKey];
   const serviceType = cleanListingText(attrs.service_type);
   if (SERVICE_VERTICAL_BY_CATEGORY[serviceType]) return SERVICE_VERTICAL_BY_CATEGORY[serviceType];
+  const explicit = cleanListingText(attrs.service_vertical);
+  if (SERVICE_VERTICALS.has(explicit as ServiceVertical)) return explicit as ServiceVertical;
   if (attrs.menu || attrs.packages) return "food_restaurant";
   if (attrs.room_type || attrs.max_guests || attrs.check_in_time) return "lodging";
   if (attrs.airport_route || attrs.vehicle_type || attrs.flight_info_note) return "airport_transfer";
@@ -4376,6 +4378,10 @@ function getServiceVertical(category: string, attrs: Record<string, unknown> = {
   if (attrs.property_size || attrs.item_volume || attrs.vehicle_staff) return "moving_cleaning";
   if (attrs.ticket_type && attrs.meeting_point) return attrs.pickup_service ? "day_tour" : "attraction_ticket";
   return "";
+}
+
+function getServiceVerticalForCategorySelection(category: string): ServiceVertical | "" {
+  return SERVICE_VERTICAL_BY_CATEGORY[cleanListingText(category)] || "";
 }
 
 function serviceFieldsForCategory(category: string, attrs: Record<string, unknown> = {}): AttributeField[] {
@@ -4516,16 +4522,18 @@ function serviceFieldsForCategory(category: string, attrs: Record<string, unknow
 }
 
 function sanitizeServiceAttributesForCategory(category: string, current: Record<string, string>): Record<string, string> {
-  const vertical = getServiceVertical(category, current);
-  if (!vertical) return { service_type: cleanListingText(category), service_vertical: "" };
-  const allowed = new Set(serviceFieldsForCategory(category, current).map((field) => field.key));
+  const cleanCategory = cleanListingText(category);
+  const selection = cleanCategory || cleanListingText(current.service_type);
+  const vertical = getServiceVerticalForCategorySelection(selection);
+  if (!vertical) return { service_type: selection, service_vertical: "" };
+  const allowed = new Set(serviceFieldsForCategory(selection, { service_vertical: vertical }).map((field) => field.key));
   allowed.add("service_type");
   allowed.add("service_vertical");
   const next: Record<string, string> = {};
   Object.entries(current).forEach(([key, value]) => {
     if (allowed.has(key) && String(value || "").trim()) next[key] = value;
   });
-  next.service_type = cleanListingText(category);
+  next.service_type = selection;
   next.service_vertical = vertical;
   return next;
 }

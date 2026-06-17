@@ -570,6 +570,8 @@ CREATE TABLE IF NOT EXISTS guide_products (
     cancellation_policy TEXT NOT NULL DEFAULT '',
     cover_image TEXT NOT NULL DEFAULT '',
     tags TEXT NOT NULL DEFAULT '',
+    related_article_slugs TEXT NOT NULL DEFAULT '',
+    topic_slugs TEXT NOT NULL DEFAULT '',
     target_audience TEXT NOT NULL DEFAULT '',
     delivery_method TEXT NOT NULL DEFAULT '',
     preview_content TEXT NOT NULL DEFAULT '',
@@ -2832,6 +2834,15 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         );
         CREATE INDEX IF NOT EXISTS idx_guide_home_modules_scope
             ON guide_home_modules(country, language, status, is_active, sort_order);
+        """,
+    ),
+    (
+        48,
+        "guide products: related articles and topic associations",
+        """
+        -- backend: postgres
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS related_article_slugs TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS topic_slugs TEXT NOT NULL DEFAULT '';
         """,
     ),
 ]

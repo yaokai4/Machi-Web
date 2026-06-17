@@ -3464,6 +3464,8 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "deposit_required": "INTEGER NOT NULL DEFAULT 0",
         "deposit_amount": "INTEGER NOT NULL DEFAULT 0",
         "cancellation_policy": "TEXT NOT NULL DEFAULT ''",
+        "related_article_slugs": "TEXT NOT NULL DEFAULT ''",
+        "topic_slugs": "TEXT NOT NULL DEFAULT ''",
     })
     _ensure_columns(conn, "membership_plans", {
         "name": "TEXT NOT NULL DEFAULT ''",
@@ -6217,6 +6219,8 @@ def serialize_guide_product(row: sqlite3.Row | dict[str, Any], *, include_privat
         "depositAmount": int(d.get("deposit_amount") or 0), "deposit_amount": int(d.get("deposit_amount") or 0),
         "cancellationPolicy": d.get("cancellation_policy") or "", "cancellation_policy": d.get("cancellation_policy") or "",
         "coverImage": d.get("cover_image") or "", "tags": _guide_split_tags(d.get("tags")),
+        "relatedArticleSlugs": _guide_split_tags(d.get("related_article_slugs")),
+        "topicSlugs": _guide_split_tags(d.get("topic_slugs")),
         "targetAudience": d.get("target_audience") or "", "deliveryMethod": d.get("delivery_method") or "",
         "previewContent": d.get("preview_content") or "",
         "hasPurchaseContent": bool(d.get("purchase_content")), "hasFile": bool(d.get("file_url")),
@@ -9285,15 +9289,15 @@ def listing_text_to_value(value: str, value_type: str) -> Any:
 
 
 def infer_service_vertical(category: Any, attrs: dict[str, Any]) -> str:
-    explicit = str(attrs.get("service_vertical") or "").strip()
-    if explicit in SERVICE_VERTICAL_ATTRIBUTE_KEYS:
-        return explicit
     category_text = str(category or "").strip()
     if category_text in SERVICE_VERTICAL_BY_CATEGORY:
         return SERVICE_VERTICAL_BY_CATEGORY[category_text]
     service_type = str(attrs.get("service_type") or "").strip()
     if service_type in SERVICE_VERTICAL_BY_CATEGORY:
         return SERVICE_VERTICAL_BY_CATEGORY[service_type]
+    explicit = str(attrs.get("service_vertical") or "").strip()
+    if explicit in SERVICE_VERTICAL_ATTRIBUTE_KEYS:
+        return explicit
     if attrs.get("menu") or attrs.get("packages"):
         return "food_restaurant"
     if attrs.get("room_type") or attrs.get("max_guests") or attrs.get("check_in_time"):
@@ -15267,6 +15271,8 @@ class Handler(BaseHTTPRequestHandler):
             "cancellation_policy": str(data.get("cancellationPolicy") or ""),
             "cover_image": str(data.get("coverImage") or ""),
             "tags": _guide_csv(data.get("tags")),
+            "related_article_slugs": _guide_csv(data.get("relatedArticleSlugs")),
+            "topic_slugs": _guide_csv(data.get("topicSlugs")),
             "target_audience": _clean_text(data.get("targetAudience"), 300),
             "delivery_method": _clean_text(data.get("deliveryMethod"), 300),
             "preview_content": str(data.get("previewContent") or ""),
@@ -15388,6 +15394,10 @@ class Handler(BaseHTTPRequestHandler):
             updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
         if "tags" in data:
             updates["tags"] = _guide_csv(data["tags"])
+        if "relatedArticleSlugs" in data:
+            updates["related_article_slugs"] = _guide_csv(data["relatedArticleSlugs"])
+        if "topicSlugs" in data:
+            updates["topic_slugs"] = _guide_csv(data["topicSlugs"])
         if updates.get("is_service") == 1 and updates.get("is_member_included") == 1:
             raise APIError("服务类商品不能设置为会员免费内容，可设置会员折扣。", 400, "service_member_included")
         if updates.get("is_service") == 1:
