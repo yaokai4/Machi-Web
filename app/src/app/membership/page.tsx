@@ -605,6 +605,8 @@ const PAYMENT_LOGOS = [
   { name: "Visa", src: "/payment-logos/visa.svg", width: 62 },
   { name: "Mastercard", src: "/payment-logos/mastercard.svg", width: 70 },
   { name: "American Express", src: "/payment-logos/amex.svg", width: 72 },
+  { name: "JCB", src: "/payment-logos/jcb.svg", width: 66 },
+  { name: "Alipay", src: "/payment-logos/alipay.svg", width: 98 },
 ] as const;
 
 function SupportedPaymentLogos() {
