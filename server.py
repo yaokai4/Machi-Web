@@ -3863,6 +3863,29 @@ def ensure_membership_plans(conn: sqlite3.Connection) -> None:
             f"INSERT INTO membership_plans ({', '.join(row.keys())}) VALUES ({', '.join(['?'] * len(row))})",
             tuple(row.values()),
         )
+    # Copy-only migration for old production rows: remove subscription wording
+    # without touching admin-edited prices, currencies, IAP IDs or benefits.
+    conn.execute(
+        "UPDATE membership_plans SET subtitle = ?, updated_at = ? "
+        "WHERE plan_key IN (?, ?) AND subtitle = ?",
+        (
+            "按月购买，到期前可再次续购",
+            now,
+            MEMBERSHIP_PLAN_MONTHLY_KEY,
+            MEMBERSHIP_LEGACY_PLAN_KEY,
+            "按月订阅，随时管理",
+        ),
+    )
+    conn.execute(
+        "UPDATE membership_plans SET description = ?, updated_at = ? "
+        "WHERE plan_key = ? AND description = ?",
+        (
+            "一次购买一年，同步获得 Machi 认证会员全部权益。",
+            now,
+            MEMBERSHIP_PLAN_YEARLY_KEY,
+            "包年订阅，同步获得 Machi 认证会员全部权益。",
+        ),
+    )
 
 
 GUIDE_DEFAULT_COUNTRY = "jp"
