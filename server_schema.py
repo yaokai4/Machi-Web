@@ -2776,6 +2776,64 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON marketing_copy_overrides(locale, copy_key);
         """,
     ),
+    (
+        47,
+        "guide cms: editable taxonomy, topics, home modules and article SEO",
+        """
+        -- backend: postgres
+        ALTER TABLE guide_categories ADD COLUMN IF NOT EXISTS seo_title TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_categories ADD COLUMN IF NOT EXISTS seo_description TEXT NOT NULL DEFAULT '';
+
+        ALTER TABLE guide_articles ADD COLUMN IF NOT EXISTS seo_title TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_articles ADD COLUMN IF NOT EXISTS seo_description TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_articles ADD COLUMN IF NOT EXISTS related_article_slugs TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_articles ADD COLUMN IF NOT EXISTS related_product_slugs TEXT NOT NULL DEFAULT '';
+
+        ALTER TABLE guide_tags ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_tags ADD COLUMN IF NOT EXISTS is_active INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE guide_tags ADD COLUMN IF NOT EXISTS updated_at TEXT NOT NULL DEFAULT '';
+
+        CREATE TABLE IF NOT EXISTS guide_topics (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            category_key TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '',
+            article_slugs TEXT NOT NULL DEFAULT '',
+            product_slugs TEXT NOT NULL DEFAULT '',
+            cover_image TEXT NOT NULL DEFAULT '',
+            country TEXT NOT NULL DEFAULT 'jp',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            published_at TEXT,
+            UNIQUE(slug, country)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_topics_scope
+            ON guide_topics(country, status, category_key, sort_order);
+
+        CREATE TABLE IF NOT EXISTS guide_home_modules (
+            id TEXT PRIMARY KEY,
+            module_key TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            subtitle TEXT NOT NULL DEFAULT '',
+            content_json TEXT NOT NULL DEFAULT '{}',
+            country TEXT NOT NULL DEFAULT 'jp',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(module_key, country, language)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_home_modules_scope
+            ON guide_home_modules(country, language, status, is_active, sort_order);
+        """,
+    ),
 ]
 
 
