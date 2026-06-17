@@ -34,9 +34,19 @@ const LEAD_STATUS_FILTERS: Array<[string, string]> = [
   ["reviewing", "处理中"],
   ["contacted", "已联系"],
   ["confirmed", "已确认"],
+  ["rescheduled", "待改期"],
   ["rejected", "已拒绝"],
   ["completed", "已完成"],
   ["closed", "已关闭"],
+];
+
+const LEAD_TYPE_FILTERS: Array<[string, string]> = [
+  ["", "全部入口"],
+  ["local_service", "商家服务"],
+  ["discount", "优惠"],
+  ["rental", "租房"],
+  ["job,hiring", "工作"],
+  ["secondhand", "二手"],
 ];
 
 const LEAD_STATUS_TONES: Record<string, string> = {
@@ -45,6 +55,7 @@ const LEAD_STATUS_TONES: Record<string, string> = {
   reviewing: "bg-blue-50 text-blue-700",
   contacted: "bg-cyan-50 text-cyan-700",
   confirmed: "bg-emerald-50 text-emerald-700",
+  rescheduled: "bg-violet-50 text-violet-700",
   completed: "bg-slate-950 text-white",
   rejected: "bg-rose-50 text-rose-700",
   closed: "bg-slate-100 text-slate-500",
@@ -113,7 +124,7 @@ export function MerchantListingsPanel() {
         ))}
         {!items.length ? (
           <p className="rounded-2xl bg-slate-50 p-5 text-sm font-semibold text-slate-500">
-            还没有发布服务。从「发布服务」开始，支持餐厅美食（在线订座）、民宿酒店、景点门票、一日游、接送机、翻译手续、搬家维修等类目。
+            还没有发布服务。从「发布服务」开始，支持餐厅美食（在线订座）、民宿酒店、景点门票、一日游、接送交通、翻译手续、搬家清洁、生活开通等类目。
           </p>
         ) : null}
       </div>
@@ -171,9 +182,10 @@ export function MerchantLeadsPanel() {
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
   const [statusFilter, setStatusFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
   const leads = useQuery({
-    queryKey: ["merchant-leads", statusFilter],
-    queryFn: () => api.myListingInquiries({ role: "received", status: statusFilter || undefined }),
+    queryKey: ["merchant-leads", statusFilter, typeFilter],
+    queryFn: () => api.myListingInquiries({ role: "received", status: statusFilter || undefined, type: typeFilter || undefined }),
   });
   const update = useMutation({
     mutationFn: (vars: { id: string; status: string }) => api.updateListingInquiry(vars.id, { status: vars.status }),
@@ -192,18 +204,33 @@ export function MerchantLeadsPanel() {
           <h2 className="text-xl font-black text-slate-950">线索与预订</h2>
           <p className="mt-1 text-sm font-semibold text-slate-500">申请、预约和咨询集中处理；私信只作为补充沟通。</p>
         </div>
-        <div className="flex flex-wrap gap-1.5">
-          {LEAD_STATUS_FILTERS.map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setStatusFilter(value)}
-              data-active={statusFilter === value}
-              className="h-9 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
-            >
-              {label}
-            </button>
-          ))}
+        <div className="flex max-w-full flex-col gap-2 sm:items-end">
+          <div className="flex max-w-full gap-1.5 overflow-x-auto pb-0.5">
+            {LEAD_TYPE_FILTERS.map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setTypeFilter(value)}
+                data-active={typeFilter === value}
+                className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition data-[active=true]:border-emerald-600 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-700"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <div className="flex max-w-full gap-1.5 overflow-x-auto pb-0.5">
+            {LEAD_STATUS_FILTERS.map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                onClick={() => setStatusFilter(value)}
+                data-active={statusFilter === value}
+                className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
+              >
+                {label}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
       {leads.isLoading ? (
@@ -217,7 +244,7 @@ export function MerchantLeadsPanel() {
           ))}
           {!items.length ? (
             <p className="rounded-2xl bg-slate-50 p-5 text-sm font-semibold text-slate-500">
-              暂无{statusFilter ? formatInquiryStatus(statusFilter) : ""}线索。用户提交的申请、预约和咨询会出现在这里。
+              暂无{statusFilter ? formatInquiryStatus(statusFilter) : ""}记录。用户提交的申请、预约和咨询会出现在这里，私信只用于后续补充沟通。
             </p>
           ) : null}
         </div>
@@ -232,20 +259,23 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
   const details = Array.isArray(inquiry.details) ? inquiry.details : Array.isArray((inquiry.metadata || {}).details) ? ((inquiry.metadata || {}).details as { label: string; value: string }[]) : [];
   const status = inquiry.status || "submitted";
   const statusTone = LEAD_STATUS_TONES[status] || "bg-slate-100 text-slate-500";
+  const listing = inquiry.listing;
+  const listingTitle = (listing && cleanListingText(listing.title)) || "城市信息";
   return (
-    <div className="rounded-2xl border border-slate-200/70 bg-white p-3.5">
+    <div className="rounded-[24px] border border-slate-200/70 bg-white p-3.5 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.55)]">
       <div className="flex items-center gap-2.5">
         <Avatar user={fromUser || undefined} size={36} />
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-2 text-sm font-black text-slate-950">
             <span className="truncate">{fromUser?.display_name || fromUser?.handle || "Machi 用户"}</span>
             <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-600">{formatInquiryType(inquiry.type)}</span>
+            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600">正式记录</span>
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone}`}>
               {formatInquiryStatus(status)}
             </span>
           </p>
           <p className="mt-0.5 truncate text-xs font-bold text-slate-400">
-            {(inquiry.listing && cleanListingText(inquiry.listing.title)) || "服务"} · {(inquiry.created_at || "").slice(0, 16).replace("T", " ")}
+            {listingTitle} · {(inquiry.created_at || "").slice(0, 16).replace("T", " ")}
           </p>
         </div>
       </div>
@@ -260,10 +290,16 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
         </div>
       ) : null}
       <div className="mt-3 flex flex-wrap gap-1.5">
+        {listing ? (
+          <Link href={`/listings/${encodeURIComponent(listing.id)}`} className="inline-flex h-8 items-center gap-1 rounded-full border border-slate-200 bg-white px-3 text-[11px] font-black text-slate-600 transition hover:border-slate-400">
+            <ExternalLink className="h-3 w-3" />
+            查看信息
+          </Link>
+        ) : null}
         {conversation ? (
           <Link href={`/messages/${encodeURIComponent(conversation)}`} className="inline-flex h-8 items-center gap-1 rounded-full bg-slate-950 px-3 text-[11px] font-black text-white">
             <MessageSquare className="h-3 w-3" />
-            打开对话
+            补充沟通
           </Link>
         ) : null}
         {status !== "reviewing" && status !== "confirmed" && status !== "completed" && status !== "closed" ? (
@@ -282,6 +318,12 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
           <button type="button" disabled={pending} onClick={() => onStatus("confirmed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50">
             <CheckCircle2 className="h-3 w-3" />
             确认
+          </button>
+        ) : null}
+        {status !== "rescheduled" && status !== "completed" && status !== "closed" && status !== "rejected" ? (
+          <button type="button" disabled={pending} onClick={() => onStatus("rescheduled")} className="inline-flex h-8 items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-3 text-[11px] font-black text-violet-700 transition hover:bg-violet-100 disabled:opacity-50">
+            <CalendarClock className="h-3 w-3" />
+            改期
           </button>
         ) : null}
         {status !== "rejected" && status !== "completed" && status !== "closed" ? (

@@ -206,6 +206,56 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   event: ["全部", "今天", "本周", "周末", "免费"],
 };
 
+type CreateCategoryGroup = { key: string; label: string; description: string; categories: string[] };
+
+const SECONDHAND_CREATE_GROUPS: CreateCategoryGroup[] = [
+  { key: "home", label: "家具家居", description: "桌椅床柜、搬家出清、生活用品", categories: ["家具", "家电", "生活用品", "搬家出清", "免费送"] },
+  { key: "digital", label: "数码办公", description: "手机、电脑、外设和电子产品", categories: ["手机数码", "电脑办公", "电子产品"] },
+  { key: "study", label: "学习票券", description: "教材、书籍、考试资料和票券卡券", categories: ["教材", "书籍教材", "票券卡券"] },
+  { key: "fashion", label: "衣物儿童", description: "衣物、母婴、运动户外用品", categories: ["衣物", "母婴儿童", "运动户外"] },
+  { key: "wanted", label: "求购", description: "找物品、收二手、可商量", categories: ["求购"] },
+];
+
+function createCategoryGroupsFor(type: KXListingType, choices: string[]): CreateCategoryGroup[] {
+  const allowed = new Set(choices);
+  if (type === "secondhand") {
+    return appendUngroupedCategories(
+      SECONDHAND_CREATE_GROUPS.map((group) => ({ ...group, categories: group.categories.filter((item) => allowed.has(item)) })).filter((group) => group.categories.length),
+      choices,
+    );
+  }
+  if (type === "local_service") {
+    const groups = SERVICE_SECTIONS
+      .filter((section) => section.key !== "all")
+      .map((section) => ({
+        key: section.key,
+        label: section.zh,
+        description: serviceSectionDescription(section.key),
+        categories: section.categories.filter((item) => allowed.has(item)),
+      }))
+      .filter((group) => group.categories.length);
+    return appendUngroupedCategories(groups, choices);
+  }
+  return [];
+}
+
+function appendUngroupedCategories(groups: CreateCategoryGroup[], choices: string[]): CreateCategoryGroup[] {
+  const grouped = new Set(groups.flatMap((group) => group.categories));
+  const rest = choices.filter((item) => !grouped.has(item));
+  if (!rest.length) return groups;
+  return [...groups, { key: "other", label: "其他", description: "后台新增或自定义分类", categories: rest }];
+}
+
+function serviceSectionDescription(key: string): string {
+  return {
+    food: "餐厅、咖啡、点评与到店预约",
+    stay: "民宿、酒店、温泉旅馆和短住",
+    travel: "景点门票、一日游、本地向导",
+    transfer: "机场/车站接送、包车和行李协助",
+    life: "翻译手续、生活开通、搬家清洁",
+  }[key] || "本地实用服务";
+}
+
 /// 租房页「民宿·短住」标签下的筛选 chips（全部=整个住宿类目集）。
 const HOMESTAY_CHIPS = ["全部", "民宿"];
 const HOTEL_CHIPS = ["全部", "酒店", "温泉旅馆", "公寓式酒店"];
@@ -1229,6 +1279,7 @@ export function CreateListingPage({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState(cleanListingText(initialCategory));
+  const [categoryGroup, setCategoryGroup] = useState("");
   const [price, setPrice] = useState("");
   const [location, setLocation] = useState("");
   const [attributes, setAttributes] = useState<Record<string, string>>({});
@@ -1252,6 +1303,9 @@ export function CreateListingPage({
     const configured = taxonomyCategories(taxonomyQuery.data);
     return configured.length ? configured : (CATEGORY_CHIPS[type] || []).filter((chip) => chip !== "全部");
   }, [taxonomyQuery.data, type]);
+  const categoryGroups = useMemo(() => createCategoryGroupsFor(type, categoryChoices), [categoryChoices, type]);
+  const activeCategoryGroup = categoryGroups.find((group) => group.key === categoryGroup) || categoryGroups[0];
+  const visibleCategoryChoices = categoryGroups.length ? activeCategoryGroup?.categories || [] : categoryChoices;
   const createFields = useMemo(
     () => taxonomyFieldsFor(type, category, attributes, taxonomyQuery.data),
     [attributes, category, taxonomyQuery.data, type],
@@ -1301,6 +1355,16 @@ export function CreateListingPage({
       cancelled = true;
     };
   }, [isEditing, userRegion]);
+
+  useEffect(() => {
+    if (!categoryGroups.length) {
+      if (categoryGroup) setCategoryGroup("");
+      return;
+    }
+    const selectedGroup = category ? categoryGroups.find((group) => group.categories.includes(category))?.key : "";
+    const nextGroup = selectedGroup || (categoryGroups.some((group) => group.key === categoryGroup) ? categoryGroup : categoryGroups[0].key);
+    if (nextGroup !== categoryGroup) setCategoryGroup(nextGroup);
+  }, [category, categoryGroup, categoryGroups]);
 
   useEffect(() => {
     const listing = editQuery.data;
@@ -1383,6 +1447,7 @@ export function CreateListingPage({
   const applyType = (nextType: KXListingType) => {
     setType(nextType);
     setCategory("");
+    setCategoryGroup("");
     setAttributes({});
     setFieldErrors({});
   };
@@ -1685,8 +1750,27 @@ export function CreateListingPage({
                   </div>
                 </Field>
                 <Field field="category" label="分类" required error={fieldErrors.category}>
+                  {categoryGroups.length ? (
+                    <div className="mb-3 space-y-2">
+                      <div className="flex gap-2 overflow-x-auto pb-1">
+                        {categoryGroups.map((group) => (
+                          <button
+                            key={group.key}
+                            type="button"
+                            onClick={() => setCategoryGroup(group.key)}
+                            data-active={activeCategoryGroup?.key === group.key}
+                            className="group min-w-[132px] shrink-0 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-slate-300 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950"
+                          >
+                            <span className="block text-sm font-black text-slate-800 group-data-[active=true]:text-white">{group.label}</span>
+                            <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400 group-data-[active=true]:text-white/65">{group.description}</span>
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-xs font-bold text-slate-400">先选一级方向，再选择具体二级分类，发布后会按都市圈频道展示。</p>
+                    </div>
+                  ) : null}
                   <div className="flex flex-wrap gap-1.5 pb-1.5">
-                    {categoryChoices.map((chip) => (
+                    {visibleCategoryChoices.map((chip) => (
                       <button
                         key={chip}
                         type="button"
@@ -3481,26 +3565,58 @@ function ListingManageCard({ listing, onStatus, onDelete }: { listing: KXCityLis
 
 function InquiryCard({ inquiry }: { inquiry: KXListingInquiry }) {
   const item = inquiry.listing;
+  const created = inquiry.created_at ? new Date(inquiry.created_at).toLocaleString("zh-CN") : "";
+  const conversationId = inquiry.conversation_id || inquiry.conversationId;
+  const details = Array.isArray(inquiry.details) ? inquiry.details : [];
+  const title = item ? displayListingTitle(item) || item.title : "城市信息记录";
   return (
-    <section className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black text-slate-600">{inquiryTypeLabel(inquiry.type)}</span>
-        <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-black text-blue-700">{inquiryStatusLabel(inquiry.status)}</span>
-        <span className="text-xs font-bold text-slate-400">{inquiry.created_at ? new Date(inquiry.created_at).toLocaleString("zh-CN") : ""}</span>
+    <section className="rounded-[28px] border border-slate-200/70 bg-white p-4 shadow-[0_18px_58px_-46px_rgba(15,23,42,0.48)]">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="inline-flex h-7 items-center gap-1 rounded-full bg-emerald-50 px-2.5 text-xs font-black text-emerald-700">
+              <FileCheck2 className="h-3.5 w-3.5" />
+              正式记录
+            </span>
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-600">{inquiryTypeLabel(inquiry.type)}</span>
+            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700">{inquiryStatusLabel(inquiry.status)}</span>
+          </div>
+          {item ? (
+            <Link href={detailHref(item)} className="mt-2 block text-base font-black text-slate-950 hover:text-blue-700">{title}</Link>
+          ) : (
+            <h3 className="mt-2 text-base font-black text-slate-950">{title}</h3>
+          )}
+        </div>
+        {created ? <span className="shrink-0 rounded-full bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-400">{created}</span> : null}
       </div>
-      {item ? <Link href={detailHref(item)} className="mt-2 block text-base font-black text-slate-950 hover:text-blue-700">{displayListingTitle(item) || item.title}</Link> : null}
-      <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-600">{inquiry.message}</p>
-      {inquiry.details && inquiry.details.length ? (
-        <dl className="mt-2 space-y-1 rounded-xl bg-slate-50 p-3 text-xs">
-          {inquiry.details.map((d, i) => (
-            <div key={i} className="flex gap-2"><dt className="shrink-0 font-black text-slate-500">{d.label}</dt><dd className="text-slate-700">{d.value}</dd></div>
+      {inquiry.message ? (
+        <p className="mt-3 whitespace-pre-line rounded-2xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">{inquiry.message}</p>
+      ) : null}
+      {details.length ? (
+        <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
+          {details.slice(0, 8).map((d, i) => (
+            <div key={`${d.label}-${i}`} className="rounded-2xl bg-amber-50/70 px-3 py-2 ring-1 ring-amber-100">
+              <dt className="font-black text-amber-700">{d.label}</dt>
+              <dd className="mt-0.5 break-words font-semibold leading-5 text-slate-700">{d.value}</dd>
+            </div>
           ))}
         </dl>
       ) : null}
-      {inquiry.conversation_id ? (
-        <Link href={`/messages/${inquiry.conversation_id}`} className="mt-3 inline-flex items-center gap-1 text-sm font-black text-blue-700 hover:text-blue-800">进入对话 →</Link>
-      ) : null}
-      <p className="mt-3 text-xs font-semibold text-amber-700">请在确认身份和信息真实性后再交换联系方式；Machi 不代收交易款、押金、保证金或第三方服务款。</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {item ? (
+          <Link href={detailHref(item)} className="inline-flex h-9 items-center justify-center gap-1 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 transition hover:border-slate-400">
+            查看发布
+            <ChevronRight className="h-3.5 w-3.5" />
+          </Link>
+        ) : null}
+        {conversationId ? (
+          <Link href={`/messages/${encodeURIComponent(conversationId)}`} className="inline-flex h-9 items-center justify-center gap-1 rounded-full bg-slate-950 px-3 text-xs font-black text-white transition hover:bg-slate-800">
+            <MessageSquare className="h-3.5 w-3.5" />
+            补充沟通
+          </Link>
+        ) : null}
+      </div>
+      <p className="mt-3 text-xs font-semibold leading-5 text-amber-700">请在确认身份和信息真实性后再交换联系方式；Machi 不代收交易款、押金、保证金或第三方服务款。</p>
     </section>
   );
 }
