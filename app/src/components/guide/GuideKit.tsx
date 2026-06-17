@@ -182,6 +182,10 @@ export function GuideSectionTitle({
 
 export function CategoryCard({ category }: { category: GuideCategory }) {
   const Icon = categoryIconFor(category.icon);
+  const countParts = [
+    typeof category.articleCount === "number" ? `${category.articleCount} 篇指南` : "",
+    typeof category.productCount === "number" ? `${category.productCount} 个资料/服务` : "",
+  ].filter(Boolean);
   return (
     <Link
       href={categoryHref(category.key)}
@@ -198,6 +202,15 @@ export function CategoryCard({ category }: { category: GuideCategory }) {
         {category.subtitle ? <p className="mt-0.5 text-xs text-kx-muted">{category.subtitle}</p> : null}
       </div>
       <p className="line-clamp-2 text-xs leading-5 text-kx-subtle">{category.description}</p>
+      {countParts.length ? (
+        <div className="mt-auto flex flex-wrap gap-1.5 pt-1">
+          {countParts.map((part) => (
+            <span key={part} className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">
+              {part}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </Link>
   );
 }

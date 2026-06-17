@@ -8,6 +8,7 @@ import {
   GuideShell,
   GuideComingSoon,
   GuideSectionTitle,
+  ArticleCard,
   ProductCard,
   useGuideCountry,
 } from "@/components/guide/GuideKit";
@@ -28,6 +29,18 @@ const MATERIAL_TYPES = [
   { value: "course", zh: "课程", en: "Courses", ja: "講座" },
 ];
 
+const SERVICE_ARTICLE_COPY = {
+  zh: { title: "服务指南", subtitle: "先看流程、材料、价格口径和退款规则，再决定购买或预约。" },
+  en: { title: "Service guides", subtitle: "Read scope, materials, pricing notes and refund rules before booking." },
+  ja: { title: "サービスガイド", subtitle: "予約前に流れ、必要資料、料金、返金条件を確認できます。" },
+};
+
+function serviceArticleCopy(locale: string) {
+  if (locale === "en") return SERVICE_ARTICLE_COPY.en;
+  if (locale === "ja") return SERVICE_ARTICLE_COPY.ja;
+  return SERVICE_ARTICLE_COPY.zh;
+}
+
 export default function GuideServicesPage() {
   const country = useGuideCountry();
   const { locale } = useI18n();
@@ -40,6 +53,11 @@ export default function GuideServicesPage() {
     queryKey: ["guide", "services", country, language],
     queryFn: () => guide.products({ country, language, pageSize: 60 }),
     staleTime: 30_000,
+  });
+  const articles = useQuery({
+    queryKey: ["guide", "services", "articles", country, language],
+    queryFn: () => guide.articles({ country, language, categoryKey: "guide_services", pageSize: 9 }),
+    staleTime: 60_000,
   });
 
   const all = useMemo(() => products.data?.items ?? [], [products.data]);
@@ -59,6 +77,7 @@ export default function GuideServicesPage() {
 
   const showMaterials = kind === "all" || kind === "material";
   const showServices = kind === "all" || kind === "service";
+  const articleCopy = serviceArticleCopy(locale);
   const isEmpty =
     !products.isLoading &&
     !products.isError &&
@@ -128,6 +147,20 @@ export default function GuideServicesPage() {
               <section>
                 <GuideSectionTitle title={copy.services.humanTitle} subtitle={copy.services.humanSubtitle} />
                 <ProductGrid items={services} icon={<Wrench className="h-4 w-4" />} />
+              </section>
+            ) : null}
+
+            {(articles.data?.items.length ?? 0) > 0 ? (
+              <section>
+                <GuideSectionTitle
+                  title={articleCopy.title}
+                  subtitle={articleCopy.subtitle}
+                />
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {articles.data!.items.map((article) => (
+                    <ArticleCard key={article.id} article={article} compact />
+                  ))}
+                </div>
               </section>
             ) : null}
           </>

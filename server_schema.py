@@ -487,6 +487,8 @@ CREATE TABLE IF NOT EXISTS guide_categories (
     title TEXT NOT NULL,
     subtitle TEXT NOT NULL DEFAULT '',
     description TEXT NOT NULL DEFAULT '',
+    seo_title TEXT NOT NULL DEFAULT '',
+    seo_description TEXT NOT NULL DEFAULT '',
     icon TEXT NOT NULL DEFAULT '',
     color TEXT NOT NULL DEFAULT '',
     country TEXT NOT NULL DEFAULT 'jp',
@@ -513,6 +515,10 @@ CREATE TABLE IF NOT EXISTS guide_articles (
     language TEXT NOT NULL DEFAULT 'zh-CN',
     cover_image TEXT NOT NULL DEFAULT '',
     tags TEXT NOT NULL DEFAULT '',
+    seo_title TEXT NOT NULL DEFAULT '',
+    seo_description TEXT NOT NULL DEFAULT '',
+    related_article_slugs TEXT NOT NULL DEFAULT '',
+    related_product_slugs TEXT NOT NULL DEFAULT '',
     author_type TEXT NOT NULL DEFAULT 'editorial',
     author_name TEXT NOT NULL DEFAULT 'Machi 日本指南编辑部',
     is_featured INTEGER NOT NULL DEFAULT 0,
@@ -937,14 +943,38 @@ CREATE TABLE IF NOT EXISTS guide_tags (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     key TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
     category_key TEXT NOT NULL DEFAULT '',
     country TEXT NOT NULL DEFAULT 'jp',
     language TEXT NOT NULL DEFAULT 'zh-CN',
     sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
     UNIQUE(key, country)
 );
 CREATE INDEX IF NOT EXISTS idx_guide_tags_scope ON guide_tags(country, category_key, sort_order);
+
+CREATE TABLE IF NOT EXISTS guide_topics (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    slug TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    category_key TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    article_slugs TEXT NOT NULL DEFAULT '',
+    product_slugs TEXT NOT NULL DEFAULT '',
+    cover_image TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT 'jp',
+    language TEXT NOT NULL DEFAULT 'zh-CN',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'draft',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    published_at TEXT,
+    UNIQUE(slug, country)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_topics_scope ON guide_topics(country, status, category_key, sort_order);
 
 CREATE TABLE IF NOT EXISTS guide_faq (
     id TEXT PRIMARY KEY,
@@ -959,6 +989,23 @@ CREATE TABLE IF NOT EXISTS guide_faq (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_guide_faq_scope ON guide_faq(country, status, sort_order);
+
+CREATE TABLE IF NOT EXISTS guide_home_modules (
+    id TEXT PRIMARY KEY,
+    module_key TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    subtitle TEXT NOT NULL DEFAULT '',
+    content_json TEXT NOT NULL DEFAULT '{}',
+    country TEXT NOT NULL DEFAULT 'jp',
+    language TEXT NOT NULL DEFAULT 'zh-CN',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'published',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(module_key, country, language)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_home_modules_scope ON guide_home_modules(country, language, status, is_active, sort_order);
 
 CREATE TABLE IF NOT EXISTS device_push_tokens (
     id TEXT PRIMARY KEY,

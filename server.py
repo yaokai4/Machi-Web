@@ -3262,6 +3262,61 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
     Fresh databases get the full SCHEMA above. Existing databases need additive
     columns, but SQLite has no `ADD COLUMN IF NOT EXISTS`, so this uses PRAGMA.
     """
+    _ensure_columns(conn, "guide_categories", {
+        "seo_title": "TEXT NOT NULL DEFAULT ''",
+        "seo_description": "TEXT NOT NULL DEFAULT ''",
+    })
+    _ensure_columns(conn, "guide_articles", {
+        "seo_title": "TEXT NOT NULL DEFAULT ''",
+        "seo_description": "TEXT NOT NULL DEFAULT ''",
+        "related_article_slugs": "TEXT NOT NULL DEFAULT ''",
+        "related_product_slugs": "TEXT NOT NULL DEFAULT ''",
+    })
+    _ensure_columns(conn, "guide_tags", {
+        "description": "TEXT NOT NULL DEFAULT ''",
+        "is_active": "INTEGER NOT NULL DEFAULT 1",
+        "updated_at": "TEXT NOT NULL DEFAULT ''",
+    })
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_topics (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            slug TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            category_key TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '',
+            article_slugs TEXT NOT NULL DEFAULT '',
+            product_slugs TEXT NOT NULL DEFAULT '',
+            cover_image TEXT NOT NULL DEFAULT '',
+            country TEXT NOT NULL DEFAULT 'jp',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'draft',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            published_at TEXT,
+            UNIQUE(slug, country)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_topics_scope ON guide_topics(country, status, category_key, sort_order)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_home_modules (
+            id TEXT PRIMARY KEY,
+            module_key TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            subtitle TEXT NOT NULL DEFAULT '',
+            content_json TEXT NOT NULL DEFAULT '{}',
+            country TEXT NOT NULL DEFAULT 'jp',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(module_key, country, language)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_home_modules_scope ON guide_home_modules(country, language, status, is_active, sort_order)")
     _ensure_columns(conn, "guide_companies", {
         "corporate_number": "TEXT NOT NULL DEFAULT ''",
         "company_name_en": "TEXT NOT NULL DEFAULT ''",
@@ -4011,6 +4066,56 @@ GUIDE_GOAL_SEED: list[dict[str, str]] = [
     {"targetKey": "goal_buy_materials", "title": "我想买资料或预约咨询", "categoryKey": "guide_services", "subCategoryKey": ""},
 ]
 
+GUIDE_HOME_MODULE_SEED: list[dict[str, Any]] = [
+    {"moduleKey": "hero", "title": "日本指南首页 Hero", "subtitle": "搜索、快搜标签和定位文案", "sortOrder": 1, "content": GUIDE_HERO},
+    {"moduleKey": "categories", "title": "核心分类", "subtitle": "六大入口与子分类", "sortOrder": 10},
+    {"moduleKey": "goals", "title": "目标入口", "subtitle": "按用户目的进入对应指南", "sortOrder": 20},
+    {"moduleKey": "resources", "title": "资料库入口", "subtitle": "学校库与公司库", "sortOrder": 30},
+    {"moduleKey": "featuredArticles", "title": "精选指南", "subtitle": "编辑部精选文章", "sortOrder": 40},
+    {"moduleKey": "categorySpotlights", "title": "分类专题区", "subtitle": "六大入口下的文章聚合", "sortOrder": 50},
+    {"moduleKey": "featuredSchools", "title": "学校库推荐", "subtitle": "精选学校档案", "sortOrder": 60},
+    {"moduleKey": "commerce", "title": "资料与服务", "subtitle": "商品、会员资料与人工服务", "sortOrder": 70},
+    {"moduleKey": "companyHighlights", "title": "公司库推荐", "subtitle": "外国人就职公司档案", "sortOrder": 80},
+    {"moduleKey": "latestArticles", "title": "最新更新", "subtitle": "最近发布的指南文章", "sortOrder": 90},
+    {"moduleKey": "faq", "title": "常见问题", "subtitle": "Guide FAQ", "sortOrder": 100},
+]
+
+GUIDE_TOPIC_SEED: list[dict[str, Any]] = [
+    {
+        "slug": "graduate-school-application-start",
+        "title": "大学院申请从 0 到出愿",
+        "description": "把选研究室、教授联系、研究计划书、出愿材料和面试串成一条完整路径。",
+        "categoryKey": "study_japan",
+        "tags": ["大学院", "研究计划书", "教授联系"],
+        "articleSlugs": ["graduate-school-full-process", "research-plan-what-to-write", "contact-professor-email"],
+        "productSlugs": ["research-plan-template-pack", "application-documents-checklist", "graduate-school-consultation"],
+        "sortOrder": 10,
+        "status": "published",
+    },
+    {
+        "slug": "japan-arrival-first-month",
+        "title": "刚到日本第一个月",
+        "description": "住民登记、保险、银行卡、手机卡、租房和生活规则的集中整理。",
+        "categoryKey": "life_japan",
+        "tags": ["入境", "役所", "银行卡", "租房"],
+        "articleSlugs": ["first-week-in-japan-checklist", "residence-card-and-juminhyo", "bank-account-opening-guide", "rental-contract-before-signing"],
+        "productSlugs": ["arrival-one-day-support", "bank-account-support", "mobile-sim-support"],
+        "sortOrder": 20,
+        "status": "published",
+    },
+    {
+        "slug": "japan-job-hunting-starter",
+        "title": "日本就职起步包",
+        "description": "就活时间线、履历书/职务经歴书、面试和签证变更的基本路径。",
+        "categoryKey": "career_japan",
+        "tags": ["就活", "面试", "工作签证"],
+        "articleSlugs": ["job-hunting-full-process", "shukatsu-timeline-for-students", "work-visa-gijinkoku-basics"],
+        "productSlugs": ["interview-100-questions", "japan-job-mock-interview", "shokumukeirekisho-revision"],
+        "sortOrder": 30,
+        "status": "published",
+    },
+]
+
 GUIDE_PRODUCT_BASE_I18N: dict[str, dict[str, dict[str, str]]] = {
     "n2-grammar-pack": {
         "en": {"title": "N2 Grammar Pack", "subtitle": "For N2 preparation and self-study", "description": "Original Machi notes that group high-frequency N2 grammar by meaning, with natural examples and comparisons of similar patterns."},
@@ -4548,16 +4653,196 @@ GUIDE_ARTICLE_SEED.extend([
         "日语要求因公司差异很大。传统 SIer、大企业综合职通常要求 N2 以上甚至商务日语；产品型创业公司、外资或英文工作环境可能更看重英文和技术，但岗位数量有限。现实策略是：技术面用项目证明能力，日语至少练到能解释经历、听懂任务和参与团队沟通。",
         "签证层面，岗位内容需要与学历或专业经历具有合理关联。文科转工程师并非不可能，但要用课程、项目、实习或工作经历补足专业性证明。投递时同时覆盖日企、外资、英文岗位和面向外国人的招聘渠道，命中率会高很多。",
      )},
-    {"slug": "rental-contract-before-signing", "title": "日本租房签约前 20 个确认点",
-     "category": "life_japan", "sub": "renting", "featured": False,
-     "author": "Machi 日本生活编辑部", "tags": ["租房", "契约", "初期费用"],
-     "summary": "从初期费用、退去清扫、保证公司到网络和垃圾规则，签约前一次问清。",
-     "body": _guide_paras(
-        "日本租房签约前，一定要把费用和规则问清楚。费用清单至少包括：敷金、礼金、中介费、保证公司费、火灾保险、换锁费、清扫费、24 小时支援费、首月房租和日割家租。不要只看月租低，初期费用可能差很多。",
-        "契约条款重点看：普通借家还是定期借家、契约年限、更新料、提前解约通知期、违约金、禁止事项。定期借家不一定能续约，适合短期但风险更高。养宠、乐器、同居、民泊、转租通常都有明确限制，违反可能被解约。",
-        "退去相关要提前确认：清扫费是固定扣除还是按实际，壁纸、地板、烟味、霉斑怎么计算。入住当天拍照保存房间现状，尤其是划痕、污渍、设备故障，发给管理公司留痕。",
-        "生活便利也要问：网络是否免费、是否需要自己签光回线、垃圾置场和分类规则、最近超市/车站、快递箱、有无自行车停车位。签约前多问十分钟，能减少后面几个月的麻烦。",
-     )},
+        {"slug": "rental-contract-before-signing", "title": "日本租房签约前 20 个确认点",
+         "category": "life_japan", "sub": "renting", "featured": False,
+         "author": "Machi 日本生活编辑部", "tags": ["租房", "契约", "初期费用"],
+         "summary": "从初期费用、退去清扫、保证公司到网络和垃圾规则，签约前一次问清。",
+         "body": _guide_paras(
+            "日本租房签约前，一定要把费用和规则问清楚。费用清单至少包括：敷金、礼金、中介费、保证公司费、火灾保险、换锁费、清扫费、24 小时支援费、首月房租和日割家租。不要只看月租低，初期费用可能差很多。",
+            "契约条款重点看：普通借家还是定期借家、契约年限、更新料、提前解约通知期、违约金、禁止事项。定期借家不一定能续约，适合短期但风险更高。养宠、乐器、同居、民泊、转租通常都有明确限制，违反可能被解约。",
+            "退去相关要提前确认：清扫费是固定扣除还是按实际，壁纸、地板、烟味、霉斑怎么计算。入住当天拍照保存房间现状，尤其是划痕、污渍、设备故障，发给管理公司留痕。",
+            "生活便利也要问：网络是否免费、是否需要自己签光回线、垃圾置场和分类规则、最近超市/车站、快递箱、有无自行车停车位。签约前多问十分钟，能减少后面几个月的麻烦。",
+         )},
+        {"slug": "application-documents-checklist-grad", "title": "大学院出愿材料清单：成绩单、毕业证明、推荐信怎么准备",
+         "category": "study_japan", "sub": "application_documents", "featured": False,
+         "author": "Machi 升学编辑部", "tags": ["出愿材料", "大学院", "证明书"],
+         "summary": "把大学院申请常见材料拆成学校证明、研究材料、语言成绩和邮寄检查四组。",
+         "body": _guide_paras(
+            "大学院出愿材料可以分成四组：学校证明类、研究材料类、语言成绩类和身份经费类。学校证明通常包括毕业/预毕业证明、成绩单、学位证明和推荐信；研究材料通常包括研究计划书、志望理由书、作品集或论文摘要。",
+            "准备时不要只看中文清单，要逐字确认募集要项里的原文要求：是否需要原件、是否接受英文、是否要学校密封、是否需要日本语译文。海外大学开证明常有周期，建议提前 2–3 个月预约。",
+            "邮寄前用一张表核对：文件名、语言、份数、是否盖章、是否密封、截止日、邮寄方式和追踪号。很多失误不是不会写材料，而是漏交、格式不符或错过必着日期。",
+         )},
+        {"slug": "graduate-school-interview-prep", "title": "大学院面试怎么准备：教授真正想确认什么",
+         "category": "study_japan", "sub": "admission_interview", "featured": False,
+         "author": "Machi 升学编辑部", "tags": ["大学院", "面试", "研究计划"],
+         "summary": "围绕研究计划、先行研究、方法可行性和入学后计划准备回答。",
+         "body": _guide_paras(
+            "大学院面试不是闲聊，教授主要确认四件事：你是否理解自己的研究主题、是否读过相关先行研究、方法是否可行、入学后能否在研究室持续推进。自我介绍可以短，研究说明必须清楚。",
+            "建议准备 5 分钟版本和 1 分钟版本的研究说明。5 分钟版本讲背景、问题意识、方法和预期成果；1 分钟版本用于教授打断或时间很短的情况。每个关键词都要能解释，不要堆自己说不清的术语。",
+            "常见问题包括：为什么选这个研究室、为什么不是国内继续读、毕业后计划、日语/英语能力、经费来源。回答要具体，最好结合教授论文、课程、研究室项目，而不是只说学校有名。",
+         )},
+        {"slug": "vocational-school-application-japan", "title": "日本专门学校申请：适合人群、材料和就业风险",
+         "category": "study_japan", "sub": "vocational_school", "featured": False,
+         "author": "Machi 升学编辑部", "tags": ["专门学校", "就职", "留学生"],
+         "summary": "专门学校更职业导向，但必须确认专业、就业去向和签证关联。",
+         "body": _guide_paras(
+            "专门学校适合希望快速学习职业技能并在日本就业的人，常见方向包括 IT、设计、动画、酒店、介护、商务和语言翻译。申请门槛通常低于大学院，但学校质量差异很大。",
+            "选校时重点看三项数据：留学生毕业率、就业率统计口径、毕业生进入的行业和岗位。只写“就业率 95%”不够，要看是否包含非正社员、回国就业、非专业相关岗位。",
+            "签证风险也要提前想清楚。毕业后的工作内容需要和所学专业有关联，不能只看能不能入学。申请前把目标岗位、课程内容和未来签证类型连起来判断，会比单纯看学费更可靠。",
+         )},
+        {"slug": "scholarship-and-tuition-waiver-grad", "title": "大学院奖学金和学费减免：什么时候申请、看什么条件",
+         "category": "study_japan", "sub": "scholarship", "featured": False,
+         "author": "Machi 升学编辑部", "tags": ["奖学金", "学费减免", "大学院"],
+         "summary": "把国费、JASSO、民间财团和大学学费减免分开规划。",
+         "body": _guide_paras(
+            "大学院阶段的经济支持一般分为四类：国费奖学金、JASSO、民间财团奖学金和大学内部学费减免。不同项目申请时间不同，有些在入学前，有些入学后通过学校推荐。",
+            "不要把奖学金当成固定预算。更稳妥的做法是先准备能覆盖第一年主要费用的资金，再把奖学金作为减压项。申请材料通常会看成绩、研究计划、推荐信、家庭收入和面试表现。",
+            "学费减免和奖学金是两条线。国公立大学常有授业料免除或半免制度，但通常每学期都要重新申请。错过学校通知就可能失去机会，入学后要养成查看教务和国际课邮件的习惯。",
+         )},
+        {"slug": "student-visa-documents-parent-sponsor", "title": "留学签证经费支付人材料怎么准备",
+         "category": "study_abroad_japan", "sub": "student_visa", "featured": False,
+         "author": "Machi 留学编辑部", "tags": ["留学签证", "经费支付人", "COE"],
+         "summary": "说明经费支付书、存款证明、收入证明和亲属关系材料的准备逻辑。",
+         "body": _guide_paras(
+            "留学签证材料里，经费支付人的核心作用是证明你在日本学习期间有稳定资金来源。常见材料包括经费支付书、存款证明、在职/收入证明、纳税证明、亲属关系证明和理由说明。",
+            "存款金额没有一个全国统一的魔法数字，学校和入管会综合看学费、住宿费、生活费、学习期限和家庭收入稳定性。金额够但收入来源说不清，仍然可能被追问。",
+            "材料要保持一致：支付人姓名、地址、公司信息、年收入、存款金额、亲属关系不要前后矛盾。翻译件建议保留格式和印章说明，提交前让学校或行政书士逐项核对。",
+         )},
+        {"slug": "language-school-selection-criteria", "title": "语言学校怎么选：不要只看学费和位置",
+         "category": "study_abroad_japan", "sub": "school_selection", "featured": False,
+         "author": "Machi 留学编辑部", "tags": ["语言学校", "选校", "升学"],
+         "summary": "从升学辅导、出席管理、签证通过率和学生构成判断语言学校质量。",
+         "body": _guide_paras(
+            "语言学校不是越便宜越好，也不是离市中心越近越好。真正影响体验的是课程强度、升学辅导、班级分层、出席管理、老师稳定性、学生国籍构成和学校对签证材料的熟悉程度。",
+            "如果目标是升学，要看学校是否有大学院/专门学校指导、是否提供研究计划书或面试辅导、往年合格实绩是否具体。只展示几张名校 logo，但没有人数和年份，参考价值有限。",
+            "如果目标是先适应日本生活，要确认住宿支援、打工规则说明、役所手续协助和紧急联系机制。语言学校是过渡期，选校的本质是选一个能把你带到下一步的环境。",
+         )},
+        {"slug": "arrival-prep-before-flight", "title": "赴日前 30 天准备清单：文件、住宿、现金和手机",
+         "category": "study_abroad_japan", "sub": "arrival_preparation", "featured": False,
+         "author": "Machi 留学编辑部", "tags": ["入境准备", "清单", "留学"],
+         "summary": "把出发前一个月该确认的证件、住宿、交通、现金和通讯事项列清楚。",
+         "body": _guide_paras(
+            "赴日前 30 天先确认所有文件：护照、签证、COE 复印件、入学许可、住宿地址、学校联系方式、疫苗或保险材料、证件照片。重要文件建议纸质和云端各备一份。",
+            "住宿和交通要提前确认到达当天路线，尤其是晚班机。准备日元现金用于交通、餐饮、初期生活和无法刷卡的小额场景。手机方面，可以先准备短期流量卡，落地后再办理长期 SIM。",
+            "行李不需要把生活用品全部带齐，日本便利店和百元店能解决很多小物。更重要的是带好印章或签名习惯、常用药、转换插头、适合面试/开学式的衣服，以及能让你第一周不慌的清单。",
+         )},
+        {"slug": "study-cost-budget-template", "title": "日本留学预算表怎么做：一次性费用和每月费用分开算",
+         "category": "study_abroad_japan", "sub": "study_cost", "featured": False,
+         "author": "Machi 留学编辑部", "tags": ["留学费用", "预算", "生活费"],
+         "summary": "用一次性费用、月度固定支出和弹性支出三层做预算。",
+         "body": _guide_paras(
+            "日本留学预算不能只算学费。建议分成三层：一次性费用、月度固定支出、弹性支出。一次性费用包括入学金、第一期学费、机票、住宿初期费、家具家电、保险和签证材料。",
+            "月度固定支出包括房租、水电网、手机、交通、国民健康保险、餐费和教材。东京圈生活费明显高于地方城市，但地方也可能交通成本更高、打工机会更少。",
+            "预算表里最好加 10%–20% 机动金。刚到日本的前两个月通常花费最高，打工也不一定马上找到。把现金流留足，比之后被迫借钱或影响出席率要安全得多。",
+         )},
+        {"slug": "jlpt-n3-to-n2-roadmap", "title": "从 N3 到 N2：三个月备考路线",
+         "category": "jlpt", "sub": "jlpt_n2", "featured": False,
+         "author": "Machi 日语编辑部", "tags": ["JLPT", "N2", "学习计划"],
+         "summary": "把词汇、语法、阅读和听力拆到 12 周，避免只刷题不复盘。",
+         "body": _guide_paras(
+            "N3 到 N2 的差距主要在词汇抽象度、语法细节、长文阅读速度和听力信息量。三个月备考建议按 12 周拆：前 6 周补知识点，中间 4 周做综合训练，最后 2 周模拟和错题回收。",
+            "每天结构可以固定为：词汇 30 分钟、语法 30 分钟、阅读 40 分钟、听力 20 分钟。真正有效的是错题复盘，记录错因：单词不认识、句子结构没看懂、选项陷阱、时间不够。",
+            "临近考试不要无限刷新题。把近两个月错过的语法和阅读文章重新做一遍，确认自己能讲清为什么选这个答案。能解释错因，才算真的补上。",
+         )},
+        {"slug": "jlpt-vocabulary-system", "title": "JLPT 词汇怎么背：词根、场景和复习周期",
+         "category": "jlpt", "sub": "vocabulary", "featured": False,
+         "author": "Machi 日语编辑部", "tags": ["词汇", "JLPT", "记忆"],
+         "summary": "不要孤立背单词，按汉字、搭配、场景和间隔复习建立词汇网。",
+         "body": _guide_paras(
+            "JLPT 词汇最怕只背中文意思。建议按汉字、词性、搭配和场景建立关联。例如「認める」不只是“承认”，还要记住常见搭配和语气，知道它和「許す」「受け入れる」的差别。",
+            "复习周期比一次背多少更重要。当天新词晚上回看，第二天复习，一周后复习，一个月后再复习。每次复习不要只看，要遮住释义主动回忆，并造一个短句。",
+            "备考后期把词汇放回阅读和听力里。你真正需要的是看到词能快速判断句意，听到词能跟上上下文，而不是在单词 App 里认识它。",
+         )},
+        {"slug": "jlpt-listening-training", "title": "JLPT 听力训练：从听不懂到抓重点",
+         "category": "jlpt", "sub": "listening", "featured": False,
+         "author": "Machi 日语编辑部", "tags": ["听力", "JLPT", "备考"],
+         "summary": "用题型、关键词、影子跟读和复听笔记提升听力稳定性。",
+         "body": _guide_paras(
+            "JLPT 听力不是每个词都听懂才做题，而是抓任务、人物关系、转折和最终决定。做题前先看选项，预测会出现的关键词；听的时候重点标记「でも」「それで」「結局」「やっぱり」这类转折和结论信号。",
+            "训练分三步：第一遍按考试节奏做题，第二遍看原文确认没听出的句子，第三遍影子跟读 3–5 遍。跟读的目标不是发音像主播，而是让耳朵习惯日语语速和省略。",
+            "错题要记录类型：词没听出来、语法没反应过来、选项理解错、注意力断掉。不同错因对应不同训练，不要把所有问题都归结为“听力差”。",
+         )},
+        {"slug": "jlpt-mock-test-review-method", "title": "JLPT 模拟题复盘方法：分数之外要看什么",
+         "category": "jlpt", "sub": "mock_test", "featured": False,
+         "author": "Machi 日语编辑部", "tags": ["模拟题", "JLPT", "复盘"],
+         "summary": "模拟题的价值在于定位薄弱题型、时间分配和错题规律。",
+         "body": _guide_paras(
+            "做模拟题不能只看总分。每次模拟后至少记录四项：各部分正确率、用时、错题类型、是否有没做完。特别是阅读，很多人不是不会，而是时间分配失控。",
+            "复盘时把错题分成知识型、理解型、粗心型和时间型。知识型要回到词汇语法表；理解型要重读原文；粗心型要训练标记；时间型要调整做题顺序。",
+            "最后两周建议固定考试时间做完整模拟，让身体适应集中时段。模拟后第二天再回看错题，比当场情绪化改答案更有效。",
+         )},
+        {"slug": "how-to-use-machi-materials", "title": "Machi 资料包怎么用：先诊断、再补短板",
+         "category": "guide_services", "sub": "service_materials", "featured": True,
+         "author": "Machi Guide 编辑部", "tags": ["资料包", "使用方法", "学习计划"],
+         "summary": "资料包不是越多越好，关键是先知道自己缺什么，再用清单和模板补短板。",
+         "body": _guide_paras(
+            "资料包的正确用法不是一次下载一堆文件，而是先做诊断：你现在卡在信息不清、材料不会写、时间线混乱，还是面试表达不稳。不同问题需要不同资料。",
+            "建议按三步使用：先读总览文章理解流程，再下载清单核对材料，最后使用模板完成自己的版本。模板只能提供结构，不能替代真实经历和目标学校/公司要求。",
+            "如果你已经有半成品材料，可以把资料包当成复核工具：逐项看是否缺信息、是否表达太空、是否和募集要项或岗位要求匹配。这样比从零复制更安全。",
+         )},
+        {"slug": "service-template-editing-rules", "title": "模板资料使用规则：哪些可以套用，哪些必须重写",
+         "category": "guide_services", "sub": "service_templates", "featured": False,
+         "author": "Machi Guide 编辑部", "tags": ["模板", "写作", "材料"],
+         "summary": "研究计划书、简历、志望理由书可以参考结构，但核心内容必须个性化。",
+         "body": _guide_paras(
+            "模板最适合解决结构问题，比如标题顺序、段落分配、敬语格式和检查清单。它不适合直接解决内容问题，因为教授、学校、公司真正看的仍然是你的背景、目标和匹配度。",
+            "可以套用的是：邮件礼貌格式、材料清单、履历书基本版式、研究计划书大纲。必须重写的是：志望理由、研究问题、经历描述、职业目标和为什么选择对方。",
+            "使用模板时建议保留一版原始模板和一版自己的改写稿。每次修改都回到官方要求检查，确保没有把模板里的示例学校、专业、日期或无关表达带进最终稿。",
+         )},
+        {"slug": "consultation-before-booking", "title": "预约咨询前要准备什么：让一次沟通真正有用",
+         "category": "guide_services", "sub": "service_consultation", "featured": False,
+         "author": "Machi Guide 编辑部", "tags": ["咨询", "预约", "准备"],
+         "summary": "提前整理背景、目标、材料和具体问题，可以显著提高咨询效率。",
+         "body": _guide_paras(
+            "咨询前请先整理四类信息：你的当前背景、目标学校/公司或考试、已经准备的材料、最想解决的三个问题。越具体，咨询越能进入实质判断。",
+            "不建议把咨询当作“对方替你决定人生”。咨询更适合帮助你确认路线、识别风险、拆时间线和优化材料。最终选择仍然要结合预算、语言能力、家庭计划和长期目标。",
+            "如果是材料修改服务，请提前提交可编辑文件和目标要求。只发截图或口头描述，很难给出细致意见。咨询后建议把行动项写成清单，按截止日推进。",
+         )},
+        {"slug": "refund-and-delivery-rules-guide", "title": "资料和服务的交付、取消与退款规则怎么写清楚",
+         "category": "guide_services", "sub": "service_consultation", "featured": False,
+         "author": "Machi Guide 编辑部", "tags": ["退款规则", "服务说明", "交付"],
+         "summary": "数字资料、人工咨询和材料修改要分别写清交付方式、时限和退款边界。",
+         "body": _guide_paras(
+            "数字资料和人工服务的规则不能混在一起。数字资料需要写清是否可下载、是否永久可看、是否包含后续更新；人工服务需要写清交付周期、沟通方式、修改次数和预约改期规则。",
+            "退款边界要前置展示。例如资料已下载后通常不支持无理由退款；人工服务在开始前可按规则取消，开始后按已发生工作量处理。写得越清楚，后续争议越少。",
+            "后台发布商品或服务时，建议把适合人群、不适合人群、包含内容、不包含内容、预约方式、取消规则都填完整。用户买之前理解越充分，体验越稳定。",
+         )},
+        {"slug": "research-plan-review-service-scope", "title": "研究计划书修改服务适合谁：范围和交付标准",
+         "category": "guide_services", "sub": "service_consultation", "featured": False,
+         "author": "Machi Guide 编辑部", "tags": ["研究计划书", "修改服务", "大学院"],
+         "summary": "说明研究计划书修改能帮你优化结构和论证，但不会代写研究内容。",
+         "body": _guide_paras(
+            "研究计划书修改适合已经有主题、先行研究和初稿的人。服务重点通常是结构、逻辑、问题意识、方法可行性、日文表达和与目标研究室的匹配，而不是从零代写。",
+            "提交前最好准备目标教授信息、募集要项、研究计划书初稿、简历和成绩背景。只有知道目标和限制，修改建议才不会变成泛泛而谈。",
+            "合理期待是：让计划书更清楚、更像研究、更符合申请场景。它不能保证合格，也不能替代你对文献和研究主题的理解。",
+         )},
+        {"slug": "resume-review-service-scope", "title": "履历书修改服务适合谁：自己 PR、志望动机和职务经历",
+         "category": "guide_services", "sub": "service_consultation", "featured": False,
+         "author": "Machi Guide 编辑部", "tags": ["履历书", "就职", "修改服务"],
+         "summary": "把日本就职材料修改的范围、输入材料和交付结果讲清楚。",
+         "body": _guide_paras(
+            "履历书和职务经歴书修改适合已经有目标行业或岗位、但不知道如何表达经历的人。修改重点是经历提炼、日文表达、岗位匹配、成果量化和版式规范。",
+            "如果只说“帮我写好看一点”，效果通常有限。更好的提交方式是同时给出目标岗位 JD、已有履历、项目经历、打工/实习经历和希望突出的能力。",
+            "修改服务不能替你虚构经历，也不能保证内定。它能帮助你把真实经历表达得更清楚，让面试官更容易看到你和岗位的关联。",
+         )},
+        {"slug": "free-checklist-vs-paid-pack", "title": "免费清单和付费资料包有什么区别",
+         "category": "guide_services", "sub": "service_materials", "featured": False,
+         "author": "Machi Guide 编辑部", "tags": ["免费清单", "付费资料", "会员"],
+         "summary": "免费清单适合快速确认方向，付费资料更适合深入写作、模板和案例。",
+         "body": _guide_paras(
+            "免费清单适合解决“我该准备哪些东西”的问题，帮助你快速确认流程、材料和时间线。它通常不会包含大量示例、模板和个性化解释。",
+            "付费资料包更适合已经决定路线、需要落地执行的人，例如研究计划书模板、履历书示例、申请材料打包清单、面试问题库和详细讲解。",
+            "选择时看自己的阶段：刚开始先用免费清单建立地图；进入材料写作和临近截止日，再考虑更细的模板或人工服务。这样不会花冤枉钱，也不会只看免费内容卡住。",
+         )},
+        {"slug": "member-resource-library-guide", "title": "会员资料库怎么用：把资料、折扣和服务串起来",
+         "category": "guide_services", "sub": "service_materials", "featured": False,
+         "author": "Machi Guide 编辑部", "tags": ["会员资料", "资料库", "服务"],
+         "summary": "会员资料库不是单个文件，而是围绕升学、就职、生活和日语的长期工具箱。",
+         "body": _guide_paras(
+            "会员资料库适合长期在日本升学、求职或生活的人。它的价值不只是一份 PDF，而是把清单、模板、更新说明、相关服务和优惠串在一起。",
+            "建议按目标建立自己的资料夹：升学、就职、日语、生活手续。每个目标下先看总览，再拿对应清单和模板执行。不要把所有资料一次看完，信息量太大反而容易拖延。",
+            "当后台新增资料或更新规则时，会员资料库可以作为统一入口。对用户来说，最重要的是知道“下一步该打开哪个文件”，而不是堆满看不完的资料。",
+         )},
 ])
 
 # 资料与服务种子：除一份免费清单外，均为 coming_soon（未接支付前不展示价格购买）。
@@ -5434,7 +5719,11 @@ def serialize_guide_category(row: sqlite3.Row | dict[str, Any], children: list[d
         "title": d.get("title"), "subtitle": d.get("subtitle") or "",
         "description": d.get("description") or "", "icon": d.get("icon") or "",
         "color": d.get("color") or "", "country": d.get("country") or "jp",
+        "language": d.get("language") or "zh-CN",
+        "seoTitle": d.get("seo_title") or "",
+        "seoDescription": d.get("seo_description") or "",
         "sortOrder": int(d.get("sort_order") or 0),
+        "isActive": bool(d.get("is_active", 1)),
     }
     if children is not None:
         out["subCategories"] = children
@@ -5832,6 +6121,10 @@ def serialize_guide_article(row: sqlite3.Row | dict[str, Any], include_body: boo
         "isFeatured": bool(d.get("is_featured")), "isFree": bool(d.get("is_free")),
         "isPaid": bool(d.get("is_paid")), "status": d.get("status") or "published",
         "viewCount": int(d.get("view_count") or 0), "saveCount": int(d.get("save_count") or 0),
+        "seoTitle": d.get("seo_title") or "", "seoDescription": d.get("seo_description") or "",
+        "relatedArticleSlugs": _guide_split_tags(d.get("related_article_slugs")),
+        "relatedProductSlugs": _guide_split_tags(d.get("related_product_slugs")),
+        "sortOrder": int(d.get("sort_order") or 0),
         "publishedAt": d.get("published_at"), "updatedAt": d.get("updated_at"),
     }
     if include_body:
@@ -6148,7 +6441,53 @@ def serialize_guide_faq(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     d = dict(row)
     return {
         "id": d.get("id"), "question": d.get("question"), "answer": d.get("answer") or "",
-        "categoryKey": d.get("category_key") or "",
+        "categoryKey": d.get("category_key") or "", "country": d.get("country") or "jp",
+        "language": d.get("language") or "zh-CN", "sortOrder": int(d.get("sort_order") or 0),
+        "status": d.get("status") or "published", "createdAt": d.get("created_at"),
+        "updatedAt": d.get("updated_at"),
+    }
+
+
+def serialize_guide_tag(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"), "name": d.get("name") or "", "key": d.get("key") or "",
+        "description": d.get("description") or "", "categoryKey": d.get("category_key") or "",
+        "country": d.get("country") or "jp", "language": d.get("language") or "zh-CN",
+        "sortOrder": int(d.get("sort_order") or 0), "isActive": bool(d.get("is_active", 1)),
+        "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+    }
+
+
+def serialize_guide_topic(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"), "title": d.get("title") or "", "slug": d.get("slug") or "",
+        "description": d.get("description") or "", "categoryKey": d.get("category_key") or "",
+        "tags": _guide_split_tags(d.get("tags")), "articleSlugs": _guide_split_tags(d.get("article_slugs")),
+        "productSlugs": _guide_split_tags(d.get("product_slugs")), "coverImage": d.get("cover_image") or "",
+        "country": d.get("country") or "jp", "language": d.get("language") or "zh-CN",
+        "sortOrder": int(d.get("sort_order") or 0), "status": d.get("status") or "draft",
+        "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+        "publishedAt": d.get("published_at"),
+    }
+
+
+def serialize_guide_home_module(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    content = {}
+    try:
+        content = json.loads(d.get("content_json") or "{}")
+    except (TypeError, json.JSONDecodeError):
+        content = {}
+    return {
+        "id": d.get("id"), "moduleKey": d.get("module_key") or "",
+        "title": d.get("title") or "", "subtitle": d.get("subtitle") or "",
+        "content": content, "contentJson": d.get("content_json") or "{}",
+        "country": d.get("country") or "jp", "language": d.get("language") or "zh-CN",
+        "sortOrder": int(d.get("sort_order") or 0), "isActive": bool(d.get("is_active", 1)),
+        "status": d.get("status") or "published", "createdAt": d.get("created_at"),
+        "updatedAt": d.get("updated_at"),
     }
 
 
@@ -6161,7 +6500,10 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
     company review tables are left empty until real users submit and pass review.
     """
     now = now_iso()
-    result = {"categories": 0, "articles": 0, "products": 0, "schools": 0, "companies": 0, "faq": 0, "tags": 0}
+    result = {
+        "categories": 0, "articles": 0, "products": 0, "schools": 0, "companies": 0,
+        "faq": 0, "tags": 0, "topics": 0, "homeModules": 0,
+    }
     country = GUIDE_DEFAULT_COUNTRY
 
     # --- categories (top-level + children) ---
@@ -6174,7 +6516,8 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
         child_order = 0
         for child_key, child_title in cat.get("children", []):
             child_order += 1
-            _guide_upsert_category(conn, child_key, cat["key"], child_title, "", "", cat.get("icon", ""),
+            child_desc = f"围绕{child_title}的步骤、材料、时间线、费用和常见风险，持续补充文章、清单与相关服务。"
+            _guide_upsert_category(conn, child_key, cat["key"], child_title, "", child_desc, cat.get("icon", ""),
                                    cat.get("color", ""), country, child_order, now, result)
 
     # --- tags ---
@@ -6184,11 +6527,53 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
         exists = conn.execute("SELECT id FROM guide_tags WHERE key = ? AND country = ?", (key, country)).fetchone()
         if not exists:
             conn.execute(
-                "INSERT INTO guide_tags (id, name, key, category_key, country, language, sort_order, created_at) "
-                "VALUES (?, ?, ?, ?, ?, 'zh-CN', ?, ?)",
-                (str(uuid.uuid4()), name, key, cat_key, country, tag_order, now),
+                "INSERT INTO guide_tags (id, name, key, description, category_key, country, language, sort_order, is_active, created_at, updated_at) "
+                "VALUES (?, ?, ?, '', ?, ?, 'zh-CN', ?, 1, ?, ?)",
+                (str(uuid.uuid4()), name, key, cat_key, country, tag_order, now, now),
             )
             result["tags"] += 1
+
+    # --- topics / themed paths ---
+    for topic in GUIDE_TOPIC_SEED:
+        exists = conn.execute(
+            "SELECT id FROM guide_topics WHERE slug = ? AND country = ?", (topic["slug"], country)
+        ).fetchone()
+        if exists:
+            continue
+        status = str(topic.get("status") or "draft")
+        conn.execute(
+            "INSERT INTO guide_topics (id, title, slug, description, category_key, tags, article_slugs, product_slugs, "
+            "cover_image, country, language, sort_order, status, created_at, updated_at, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()), topic["title"], topic["slug"], topic.get("description", ""),
+                topic.get("categoryKey", ""), _guide_csv(topic.get("tags", [])),
+                _guide_csv(topic.get("articleSlugs", [])), _guide_csv(topic.get("productSlugs", [])),
+                topic.get("coverImage", ""), country, _guide_int(topic.get("sortOrder"), 0),
+                status, now, now, now if status == "published" else None,
+            ),
+        )
+        result["topics"] += 1
+
+    # --- home modules ---
+    for module in GUIDE_HOME_MODULE_SEED:
+        key = str(module["moduleKey"])
+        exists = conn.execute(
+            "SELECT id FROM guide_home_modules WHERE module_key = ? AND country = ? AND language = 'zh-CN'",
+            (key, country),
+        ).fetchone()
+        if exists:
+            continue
+        conn.execute(
+            "INSERT INTO guide_home_modules (id, module_key, title, subtitle, content_json, country, language, "
+            "sort_order, is_active, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'zh-CN', ?, 1, 'published', ?, ?)",
+            (
+                str(uuid.uuid4()), key, module.get("title", ""), module.get("subtitle", ""),
+                json.dumps(module.get("content") or {}, ensure_ascii=False), country,
+                _guide_int(module.get("sortOrder"), 0), now, now,
+            ),
+        )
+        result["homeModules"] += 1
 
     # --- faq ---
     faq_order = 0
@@ -6216,15 +6601,24 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
             continue
         conn.execute(
             "INSERT INTO guide_articles (id, title, slug, summary, body, category_key, sub_category_key, "
-            "content_type, country, city, language, cover_image, tags, author_type, author_name, is_featured, "
+            "content_type, country, city, language, cover_image, seo_title, seo_description, tags, author_type, author_name, is_featured, "
             "is_free, is_paid, status, view_count, save_count, sort_order, created_at, updated_at, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'guide', ?, '', 'zh-CN', '', ?, 'editorial', ?, ?, 1, 0, 'published', 0, 0, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'guide', ?, '', 'zh-CN', '', ?, ?, ?, 'editorial', ?, ?, 1, 0, 'published', 0, 0, ?, ?, ?, ?)",
             (str(uuid.uuid4()), art["title"], art["slug"], art.get("summary", ""), art.get("body", ""),
-             art["category"], art.get("sub", ""), country, ",".join(art.get("tags", [])),
+             art["category"], art.get("sub", ""), country, art.get("seo_title", art["title"]),
+             art.get("seo_description", art.get("summary", "")), ",".join(art.get("tags", [])),
              art.get("author", "Machi 日本指南编辑部"), 1 if art.get("featured") else 0,
              art_order, now, now, now),
         )
         result["articles"] += 1
+    conn.execute(
+        "UPDATE guide_articles SET seo_title = title WHERE country = ? AND (seo_title IS NULL OR seo_title = '')",
+        (country,),
+    )
+    conn.execute(
+        "UPDATE guide_articles SET seo_description = summary WHERE country = ? AND (seo_description IS NULL OR seo_description = '')",
+        (country,),
+    )
 
     # --- products ---
     prod_order = 0
@@ -12803,6 +13197,31 @@ class Handler(BaseHTTPRequestHandler):
         base.update(extra)
         return base
 
+    def _guide_content_counts(self, conn: sqlite3.Connection, country: str, category_key: str, sub_key: str = "") -> dict[str, int]:
+        article_where = ["country = ?", "status = 'published'"]
+        product_where = ["country = ?", "status IN ('published','coming_soon')"]
+        article_params: list[Any] = [country]
+        product_params: list[Any] = [country]
+        if sub_key:
+            article_where.extend(["category_key = ?", "sub_category_key = ?"])
+            product_where.extend(["category_key = ?", "sub_category_key = ?"])
+            article_params.extend([category_key, sub_key])
+            product_params.extend([category_key, sub_key])
+        else:
+            article_where.append("category_key = ?")
+            product_where.append("category_key = ?")
+            article_params.append(category_key)
+            product_params.append(category_key)
+        article_count = conn.execute(
+            f"SELECT COUNT(*) AS c FROM guide_articles WHERE {' AND '.join(article_where)}",
+            article_params,
+        ).fetchone()["c"]
+        product_count = conn.execute(
+            f"SELECT COUNT(*) AS c FROM guide_products WHERE {' AND '.join(product_where)}",
+            product_params,
+        ).fetchone()["c"]
+        return {"articleCount": int(article_count), "productCount": int(product_count)}
+
     def _guide_categories_payload(self, conn: sqlite3.Connection, country: str, language: str = "zh-CN") -> list[dict[str, Any]]:
         tops = conn.execute(
             "SELECT * FROM guide_categories WHERE country = ? AND parent_key = '' AND is_active = 1 ORDER BY sort_order",
@@ -12814,8 +13233,37 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT * FROM guide_categories WHERE country = ? AND parent_key = ? AND is_active = 1 ORDER BY sort_order",
                 (country, top["key"]),
             ).fetchall()
-            out.append(localize_guide_category_payload(serialize_guide_category(top, [serialize_guide_category(k) for k in kids]), language))
+            child_items = []
+            for k in kids:
+                child = serialize_guide_category(k)
+                child.update(self._guide_content_counts(conn, country, top["key"], child["key"]))
+                child_items.append(child)
+            item = serialize_guide_category(top, child_items)
+            item.update(self._guide_content_counts(conn, country, item["key"]))
+            out.append(localize_guide_category_payload(item, language))
         return out
+
+    def _guide_home_modules_payload(self, conn: sqlite3.Connection, country: str, language: str) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT * FROM guide_home_modules WHERE country = ? AND language IN (?, 'zh-CN') "
+            "ORDER BY CASE WHEN language = ? THEN 0 ELSE 1 END, sort_order",
+            (country, language, language),
+        ).fetchall()
+        seen: set[str] = set()
+        modules: list[dict[str, Any]] = []
+        for row in rows:
+            key = row["module_key"]
+            if key in seen:
+                continue
+            seen.add(key)
+            modules.append(serialize_guide_home_module(row))
+        return modules
+
+    def _guide_module_enabled(self, modules: list[dict[str, Any]], key: str) -> bool:
+        for module in modules:
+            if module.get("moduleKey") == key:
+                return bool(module.get("isActive")) and str(module.get("status") or "published") == "published"
+        return True
 
     def api_guide_home(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
@@ -12836,34 +13284,44 @@ class Handler(BaseHTTPRequestHandler):
         cached_payload = _cache_get(cache_key)
         if cached_payload is not None:
             return self.send_json(cached_payload)
+        home_modules = self._guide_home_modules_payload(conn, country, language)
+        hero = _guide_localized_ui("hero", language, GUIDE_HERO)
+        hero_module = next((m for m in home_modules if m.get("moduleKey") == "hero" and m.get("isActive")), None)
+        if hero_module and isinstance(hero_module.get("content"), dict):
+            hero = {**hero, **{k: v for k, v in hero_module["content"].items() if v not in ("", None, [])}}
+        module_on = lambda key: self._guide_module_enabled(home_modules, key)
         featured_articles = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND is_featured = 1 "
-            "ORDER BY sort_order, published_at DESC LIMIT 6", (country,)).fetchall()]
+            "ORDER BY sort_order, published_at DESC LIMIT 6", (country,)).fetchall()] if module_on("featuredArticles") else []
         latest_articles = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' "
-            "ORDER BY published_at DESC, created_at DESC LIMIT 8", (country,)).fetchall()]
+            "ORDER BY published_at DESC, created_at DESC LIMIT 8", (country,)).fetchall()] if module_on("latestArticles") else []
         featured_products = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? AND is_service = 0 AND status IN ('published','coming_soon') "
-            "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()]
+            "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()] if module_on("commerce") else []
         featured_services = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? AND is_service = 1 AND status IN ('published','coming_soon') "
-            "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()]
+            "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()] if module_on("commerce") else []
         featured_schools = [localize_guide_school_payload(serialize_guide_school(r), language) for r in conn.execute(
             "SELECT * FROM guide_schools WHERE country = ? AND status = 'published' "
-            "ORDER BY is_featured DESC, data_quality_score DESC, updated_at DESC LIMIT 6", (country,)).fetchall()]
+            "ORDER BY is_featured DESC, data_quality_score DESC, updated_at DESC LIMIT 6", (country,)).fetchall()] if module_on("featuredSchools") else []
         companies = [localize_guide_company_payload(serialize_guide_company(r), language) for r in conn.execute(
             "SELECT * FROM guide_companies WHERE country = ? AND status = 'published' AND (website <> '' OR career_url <> '' OR global_career_url <> '') AND data_quality_score >= 15 "
-            "ORDER BY is_featured DESC, data_quality_score DESC, review_count DESC, created_at DESC LIMIT 6", (country,)).fetchall()]
+            "ORDER BY is_featured DESC, data_quality_score DESC, review_count DESC, created_at DESC LIMIT 6", (country,)).fetchall()] if module_on("companyHighlights") else []
         faqs = [serialize_guide_faq(r) for r in conn.execute(
             "SELECT * FROM guide_faq WHERE country = ? AND status = 'published' ORDER BY sort_order LIMIT 8",
-            (country,)).fetchall()]
+            (country,)).fetchall()] if module_on("faq") else []
+        categories = self._guide_categories_payload(conn, country, language) if module_on("categories") else []
+        resource_entries = [localize_guide_resource(r, language) for r in GUIDE_RESOURCE_ENTRIES] if module_on("resources") else []
+        goal_entries = [localize_guide_goal(g, language) for g in GUIDE_GOAL_SEED] if module_on("goals") else []
         payload = {
             "status": "ok", "country": country, "language": language,
-            "hero": _guide_localized_ui("hero", language, GUIDE_HERO),
-            "categories": self._guide_categories_payload(conn, country, language),
-            "resourceEntries": [localize_guide_resource(r, language) for r in GUIDE_RESOURCE_ENTRIES],
-            "goals": {"title": _guide_localized_ui("goalTitle", language, GUIDE_GOAL_TITLE), "entries": [localize_guide_goal(g, language) for g in GUIDE_GOAL_SEED]},
-            "goalEntries": [localize_guide_goal(g, language) for g in GUIDE_GOAL_SEED],
+            "hero": hero,
+            "categories": categories,
+            "homeModules": home_modules,
+            "resourceEntries": resource_entries,
+            "goals": {"title": _guide_localized_ui("goalTitle", language, GUIDE_GOAL_TITLE), "entries": goal_entries},
+            "goalEntries": goal_entries,
             "featuredArticles": featured_articles,
             "featuredProducts": featured_products,
             "featuredServices": featured_services,
@@ -13731,6 +14189,480 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _guide_clear_public_cache(self) -> None:
+        _cache_invalidate("guide_home:")
+
+    def api_admin_guide_overview(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        country = GUIDE_DEFAULT_COUNTRY
+        article_stats = {r["status"] or "unknown": int(r["c"]) for r in conn.execute(
+            "SELECT status, COUNT(*) AS c FROM guide_articles WHERE country = ? GROUP BY status", (country,)
+        ).fetchall()}
+        product_stats = {r["status"] or "unknown": int(r["c"]) for r in conn.execute(
+            "SELECT status, COUNT(*) AS c FROM guide_products WHERE country = ? GROUP BY status", (country,)
+        ).fetchall()}
+        empty_categories = []
+        for cat in self._guide_categories_payload(conn, country, "zh-CN"):
+            if int(cat.get("articleCount") or 0) == 0 and int(cat.get("productCount") or 0) == 0:
+                empty_categories.append(cat)
+            for child in cat.get("subCategories") or []:
+                if int(child.get("articleCount") or 0) == 0 and int(child.get("productCount") or 0) == 0:
+                    empty_categories.append(child)
+        missing_seo = conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_articles WHERE country = ? AND status != 'archived' "
+            "AND (seo_title = '' OR seo_description = '')",
+            (country,),
+        ).fetchone()["c"]
+        recent_articles = [serialize_guide_article(r) for r in conn.execute(
+            "SELECT * FROM guide_articles WHERE country = ? ORDER BY updated_at DESC LIMIT 8", (country,)
+        ).fetchall()]
+        self.send_json({
+            "status": "ok",
+            "stats": {
+                "articles": sum(article_stats.values()), "publishedArticles": article_stats.get("published", 0),
+                "draftArticles": article_stats.get("draft", 0), "hiddenArticles": article_stats.get("hidden", 0),
+                "products": sum(product_stats.values()), "publishedProducts": product_stats.get("published", 0),
+                "draftProducts": product_stats.get("draft", 0), "emptyCategories": len(empty_categories),
+                "missingSeo": int(missing_seo),
+                "topics": int(conn.execute("SELECT COUNT(*) AS c FROM guide_topics WHERE country = ?", (country,)).fetchone()["c"]),
+                "faq": int(conn.execute("SELECT COUNT(*) AS c FROM guide_faq WHERE country = ?", (country,)).fetchone()["c"]),
+            },
+            "emptyCategories": empty_categories[:12],
+            "recentArticles": recent_articles,
+        })
+
+    def api_admin_guide_articles(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        page = _guide_int(query.get("page"), 1, lo=1)
+        page_size = _guide_int(query.get("pageSize") or query.get("limit"), 50, lo=1, hi=100)
+        where = ["country = ?"]
+        params: list[Any] = [_normalize_country_code(query.get("country") or "jp")]
+        for q_key, col in (("status", "status"), ("categoryKey", "category_key"), ("subCategoryKey", "sub_category_key")):
+            val = (query.get(q_key) or "").strip()
+            if val:
+                where.append(f"{col} = ?")
+                params.append(val)
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append("(title LIKE ? OR summary LIKE ? OR body LIKE ? OR slug LIKE ? OR tags LIKE ?)")
+            params.extend([kw, kw, kw, kw, kw])
+        clause = " AND ".join(where)
+        order = {
+            "published": "published_at DESC, updated_at DESC",
+            "oldest": "updated_at ASC",
+            "sort": "sort_order ASC, updated_at DESC",
+        }.get((query.get("sort") or "updated").strip(), "updated_at DESC")
+        rows = conn.execute(
+            f"SELECT * FROM guide_articles WHERE {clause} ORDER BY {order} LIMIT ? OFFSET ?",
+            [*params, page_size, (page - 1) * page_size],
+        ).fetchall()
+        total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_articles WHERE {clause}", params).fetchone()["c"]
+        country = params[0]
+        stats = {
+            "total": int(total),
+            "published": int(conn.execute("SELECT COUNT(*) AS c FROM guide_articles WHERE country = ? AND status = 'published'", (country,)).fetchone()["c"]),
+            "draft": int(conn.execute("SELECT COUNT(*) AS c FROM guide_articles WHERE country = ? AND status = 'draft'", (country,)).fetchone()["c"]),
+            "hidden": int(conn.execute("SELECT COUNT(*) AS c FROM guide_articles WHERE country = ? AND status = 'hidden'", (country,)).fetchone()["c"]),
+            "missingSeo": int(conn.execute(
+                "SELECT COUNT(*) AS c FROM guide_articles WHERE country = ? AND (seo_title = '' OR seo_description = '')",
+                (country,),
+            ).fetchone()["c"]),
+        }
+        self.send_json({
+            "status": "ok", "items": [serialize_guide_article(r, include_body=False) for r in rows],
+            "page": page, "pageSize": page_size, "total": int(total), "stats": stats,
+        })
+
+    def api_admin_guide_article_detail(self, conn: sqlite3.Connection, article_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM guide_articles WHERE id = ? OR slug = ? LIMIT 1", (article_id, article_id)).fetchone()
+        if not row:
+            raise APIError("指南内容不存在", 404, "guide_article_not_found")
+        self.send_json({"status": "ok", "article": serialize_guide_article(row, include_body=True)})
+
+    def api_admin_guide_categories(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        country = _normalize_country_code(query.get("country") or "jp")
+        if (query.get("flat") or "") in {"1", "true", "yes"}:
+            rows = conn.execute(
+                "SELECT * FROM guide_categories WHERE country = ? ORDER BY parent_key, sort_order", (country,)
+            ).fetchall()
+            return self.send_json({"status": "ok", "items": [serialize_guide_category(r) for r in rows], "total": len(rows)})
+        self.send_json({"status": "ok", "categories": self._guide_categories_payload(conn, country, query.get("language") or "zh-CN")})
+
+    def api_admin_guide_category_detail(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM guide_categories WHERE id = ? OR key = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("分类不存在", 404, "guide_category_not_found")
+        self.send_json({"status": "ok", "category": serialize_guide_category(row)})
+
+    def api_admin_guide_create_category(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        title = _clean_text(data.get("title"), 120)
+        if not title:
+            raise APIError("分类名称不能为空", 400, "empty_category_title")
+        now = now_iso()
+        key = self._guide_slugify(data.get("key") or title, fallback=uuid.uuid4().hex[:8]).replace("-", "_")
+        country = _normalize_country_code(data.get("country") or "jp")
+        row_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_categories (id, key, parent_key, title, subtitle, description, seo_title, seo_description, "
+            "icon, color, country, language, sort_order, is_active, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row_id, key, _clean_text(data.get("parentKey"), 80), title,
+                _clean_text(data.get("subtitle"), 160), _clean_text(data.get("description"), 800),
+                _clean_text(data.get("seoTitle"), 160), _clean_text(data.get("seoDescription"), 240),
+                _clean_text(data.get("icon"), 40), _clean_text(data.get("color"), 40), country,
+                _normalize_language_tag(data.get("language") or "zh-CN"), _guide_int(data.get("sortOrder"), 0),
+                1 if data.get("isActive", True) else 0, now, now,
+            ),
+        )
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row_id, "key": key}, 201)
+
+    def api_admin_guide_update_category(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_categories WHERE id = ? OR key = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("分类不存在", 404, "guide_category_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        field_map = {
+            "key": "key", "parentKey": "parent_key", "title": "title", "subtitle": "subtitle",
+            "description": "description", "seoTitle": "seo_title", "seoDescription": "seo_description",
+            "icon": "icon", "color": "color", "language": "language",
+        }
+        for key, col in field_map.items():
+            if key in data:
+                updates[col] = _clean_text(data.get(key), 800 if key == "description" else 240)
+        if "sortOrder" in data:
+            updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
+        if "isActive" in data:
+            updates["is_active"] = 1 if data.get("isActive") else 0
+        self._guide_apply_update(conn, "guide_categories", row["id"], updates)
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row["id"]})
+
+    def api_admin_guide_delete_category(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_categories WHERE id = ? OR key = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("分类不存在", 404, "guide_category_not_found")
+        self._guide_apply_update(conn, "guide_categories", row["id"], {"is_active": 0})
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok"})
+
+    def api_admin_guide_tags(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        country = _normalize_country_code(query.get("country") or "jp")
+        where = ["country = ?"]
+        params: list[Any] = [country]
+        if query.get("categoryKey"):
+            where.append("category_key = ?")
+            params.append(query["categoryKey"])
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            where.append("(name LIKE ? OR key LIKE ? OR description LIKE ?)")
+            kw = f"%{keyword}%"
+            params.extend([kw, kw, kw])
+        rows = conn.execute(
+            f"SELECT * FROM guide_tags WHERE {' AND '.join(where)} ORDER BY is_active DESC, sort_order, name",
+            params,
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_tag(r) for r in rows], "total": len(rows)})
+
+    def api_admin_guide_tag_detail(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM guide_tags WHERE id = ? OR key = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("标签不存在", 404, "guide_tag_not_found")
+        self.send_json({"status": "ok", "tag": serialize_guide_tag(row)})
+
+    def api_admin_guide_create_tag(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        name = _clean_text(data.get("name"), 80)
+        if not name:
+            raise APIError("标签名称不能为空", 400, "empty_tag_name")
+        now = now_iso()
+        row_id = str(uuid.uuid4())
+        key = self._guide_slugify(data.get("key") or name, fallback=row_id[:8]).replace("-", "_")
+        conn.execute(
+            "INSERT INTO guide_tags (id, name, key, description, category_key, country, language, sort_order, is_active, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row_id, name, key, _clean_text(data.get("description"), 500),
+                _clean_text(data.get("categoryKey"), 80), _normalize_country_code(data.get("country") or "jp"),
+                _normalize_language_tag(data.get("language") or "zh-CN"), _guide_int(data.get("sortOrder"), 0),
+                1 if data.get("isActive", True) else 0, now, now,
+            ),
+        )
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row_id, "key": key}, 201)
+
+    def api_admin_guide_update_tag(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_tags WHERE id = ? OR key = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("标签不存在", 404, "guide_tag_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for key, col in (("name", "name"), ("key", "key"), ("description", "description"), ("categoryKey", "category_key"), ("language", "language")):
+            if key in data:
+                updates[col] = _clean_text(data.get(key), 500 if key == "description" else 120)
+        if "sortOrder" in data:
+            updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
+        if "isActive" in data:
+            updates["is_active"] = 1 if data.get("isActive") else 0
+        self._guide_apply_update(conn, "guide_tags", row["id"], updates)
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row["id"]})
+
+    def api_admin_guide_delete_tag(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_tags WHERE id = ? OR key = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("标签不存在", 404, "guide_tag_not_found")
+        self._guide_apply_update(conn, "guide_tags", row["id"], {"is_active": 0})
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok"})
+
+    def api_admin_guide_topics(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        country = _normalize_country_code(query.get("country") or "jp")
+        where = ["country = ?"]
+        params: list[Any] = [country]
+        for q_key, col in (("status", "status"), ("categoryKey", "category_key")):
+            if query.get(q_key):
+                where.append(f"{col} = ?")
+                params.append(query[q_key])
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append("(title LIKE ? OR slug LIKE ? OR description LIKE ? OR tags LIKE ?)")
+            params.extend([kw, kw, kw, kw])
+        rows = conn.execute(
+            f"SELECT * FROM guide_topics WHERE {' AND '.join(where)} ORDER BY sort_order, updated_at DESC",
+            params,
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_topic(r) for r in rows], "total": len(rows)})
+
+    def api_admin_guide_topic_detail(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM guide_topics WHERE id = ? OR slug = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("专题不存在", 404, "guide_topic_not_found")
+        self.send_json({"status": "ok", "topic": serialize_guide_topic(row)})
+
+    def api_admin_guide_create_topic(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        title = _clean_text(data.get("title"), 160)
+        if not title:
+            raise APIError("专题标题不能为空", 400, "empty_topic_title")
+        now = now_iso()
+        row_id = str(uuid.uuid4())
+        slug = self._guide_slugify(data.get("slug") or title, fallback=row_id[:8])
+        status = _clean_text(data.get("status") or "draft", 40)
+        conn.execute(
+            "INSERT INTO guide_topics (id, title, slug, description, category_key, tags, article_slugs, product_slugs, cover_image, "
+            "country, language, sort_order, status, created_at, updated_at, published_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row_id, title, slug, _clean_text(data.get("description"), 1200), _clean_text(data.get("categoryKey"), 80),
+                _guide_csv(data.get("tags")), _guide_csv(data.get("articleSlugs")), _guide_csv(data.get("productSlugs")),
+                _clean_text(data.get("coverImage"), 500), _normalize_country_code(data.get("country") or "jp"),
+                _normalize_language_tag(data.get("language") or "zh-CN"), _guide_int(data.get("sortOrder"), 0),
+                status, now, now, now if status == "published" else None,
+            ),
+        )
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row_id, "slug": slug}, 201)
+
+    def api_admin_guide_update_topic(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id, published_at FROM guide_topics WHERE id = ? OR slug = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("专题不存在", 404, "guide_topic_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for key, col in (("title", "title"), ("slug", "slug"), ("description", "description"), ("categoryKey", "category_key"), ("coverImage", "cover_image"), ("status", "status"), ("language", "language")):
+            if key in data:
+                updates[col] = _clean_text(data.get(key), 1200 if key == "description" else 500)
+        for key, col in (("tags", "tags"), ("articleSlugs", "article_slugs"), ("productSlugs", "product_slugs")):
+            if key in data:
+                updates[col] = _guide_csv(data.get(key))
+        if "sortOrder" in data:
+            updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
+        if updates.get("status") == "published" and not row["published_at"]:
+            updates["published_at"] = now_iso()
+        self._guide_apply_update(conn, "guide_topics", row["id"], updates)
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row["id"]})
+
+    def api_admin_guide_delete_topic(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_topics WHERE id = ? OR slug = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("专题不存在", 404, "guide_topic_not_found")
+        self._guide_apply_update(conn, "guide_topics", row["id"], {"status": "archived"})
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok"})
+
+    def api_admin_guide_faq(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        country = _normalize_country_code(query.get("country") or "jp")
+        where = ["country = ?"]
+        params: list[Any] = [country]
+        for q_key, col in (("status", "status"), ("categoryKey", "category_key")):
+            if query.get(q_key):
+                where.append(f"{col} = ?")
+                params.append(query[q_key])
+        keyword = (query.get("keyword") or query.get("q") or "").strip()
+        if keyword:
+            kw = f"%{keyword}%"
+            where.append("(question LIKE ? OR answer LIKE ?)")
+            params.extend([kw, kw])
+        rows = conn.execute(
+            f"SELECT * FROM guide_faq WHERE {' AND '.join(where)} ORDER BY sort_order, updated_at DESC",
+            params,
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_faq(r) for r in rows], "total": len(rows)})
+
+    def api_admin_guide_faq_detail(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM guide_faq WHERE id = ? LIMIT 1", (raw_id,)).fetchone()
+        if not row:
+            raise APIError("FAQ 不存在", 404, "guide_faq_not_found")
+        self.send_json({"status": "ok", "faq": serialize_guide_faq(row)})
+
+    def api_admin_guide_create_faq(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        question = _clean_text(data.get("question"), 300)
+        if not question:
+            raise APIError("问题不能为空", 400, "empty_faq_question")
+        now = now_iso()
+        row_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_faq (id, question, answer, category_key, country, language, sort_order, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row_id, question, _clean_text(data.get("answer"), 2000), _clean_text(data.get("categoryKey"), 80),
+                _normalize_country_code(data.get("country") or "jp"), _normalize_language_tag(data.get("language") or "zh-CN"),
+                _guide_int(data.get("sortOrder"), 0), _clean_text(data.get("status") or "published", 40), now, now,
+            ),
+        )
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row_id}, 201)
+
+    def api_admin_guide_update_faq(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_faq WHERE id = ? LIMIT 1", (raw_id,)).fetchone()
+        if not row:
+            raise APIError("FAQ 不存在", 404, "guide_faq_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for key, col in (("question", "question"), ("answer", "answer"), ("categoryKey", "category_key"), ("status", "status"), ("language", "language")):
+            if key in data:
+                updates[col] = _clean_text(data.get(key), 2000 if key == "answer" else 300)
+        if "sortOrder" in data:
+            updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
+        self._guide_apply_update(conn, "guide_faq", row["id"], updates)
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row["id"]})
+
+    def api_admin_guide_delete_faq(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_faq WHERE id = ? LIMIT 1", (raw_id,)).fetchone()
+        if not row:
+            raise APIError("FAQ 不存在", 404, "guide_faq_not_found")
+        conn.execute("DELETE FROM guide_faq WHERE id = ?", (row["id"],))
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok"})
+
+    def _guide_module_content_json(self, data: dict[str, Any]) -> str:
+        if isinstance(data.get("content"), dict):
+            return json.dumps(data.get("content") or {}, ensure_ascii=False)
+        raw = data.get("contentJson")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise APIError(f"模块 JSON 不正确：{exc}", 400, "invalid_module_json")
+            return raw
+        return "{}"
+
+    def api_admin_guide_home_modules(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        country = _normalize_country_code(query.get("country") or "jp")
+        language = _normalize_language_tag(query.get("language") or "zh-CN")
+        rows = conn.execute(
+            "SELECT * FROM guide_home_modules WHERE country = ? AND language = ? ORDER BY sort_order",
+            (country, language),
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_home_module(r) for r in rows], "total": len(rows)})
+
+    def api_admin_guide_home_module_detail(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM guide_home_modules WHERE id = ? OR module_key = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("首页模块不存在", 404, "guide_home_module_not_found")
+        self.send_json({"status": "ok", "module": serialize_guide_home_module(row)})
+
+    def api_admin_guide_create_home_module(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        module_key = self._guide_slugify(data.get("moduleKey") or data.get("key") or "", fallback="")
+        if not module_key:
+            raise APIError("模块 key 不能为空", 400, "empty_module_key")
+        now = now_iso()
+        row_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_home_modules (id, module_key, title, subtitle, content_json, country, language, sort_order, is_active, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row_id, module_key, _clean_text(data.get("title"), 160), _clean_text(data.get("subtitle"), 240),
+                self._guide_module_content_json(data), _normalize_country_code(data.get("country") or "jp"),
+                _normalize_language_tag(data.get("language") or "zh-CN"), _guide_int(data.get("sortOrder"), 0),
+                1 if data.get("isActive", True) else 0, _clean_text(data.get("status") or "published", 40), now, now,
+            ),
+        )
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row_id, "moduleKey": module_key}, 201)
+
+    def api_admin_guide_update_home_module(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_home_modules WHERE id = ? OR module_key = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("首页模块不存在", 404, "guide_home_module_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for key, col in (("moduleKey", "module_key"), ("title", "title"), ("subtitle", "subtitle"), ("status", "status"), ("language", "language")):
+            if key in data:
+                updates[col] = _clean_text(data.get(key), 240)
+        if "content" in data or "contentJson" in data:
+            updates["content_json"] = self._guide_module_content_json(data)
+        if "sortOrder" in data:
+            updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
+        if "isActive" in data:
+            updates["is_active"] = 1 if data.get("isActive") else 0
+        self._guide_apply_update(conn, "guide_home_modules", row["id"], updates)
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row["id"]})
+
+    def api_admin_guide_delete_home_module(self, conn: sqlite3.Connection, raw_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_home_modules WHERE id = ? OR module_key = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("首页模块不存在", 404, "guide_home_module_not_found")
+        self._guide_apply_update(conn, "guide_home_modules", row["id"], {"is_active": 0})
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok"})
+
     def api_admin_guide_schools(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
         page = _guide_int(query.get("page"), 1, lo=1)
@@ -14191,17 +15123,22 @@ class Handler(BaseHTTPRequestHandler):
         tags_str = ",".join(tags) if isinstance(tags, list) else _clean_text(tags, 300)
         conn.execute(
             "INSERT INTO guide_articles (id, title, slug, summary, body, category_key, sub_category_key, content_type, "
-            "country, city, language, cover_image, tags, author_type, author_name, is_featured, is_free, is_paid, status, "
-            "view_count, save_count, sort_order, created_at, updated_at, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editorial', ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)",
+            "country, city, language, cover_image, seo_title, seo_description, tags, related_article_slugs, "
+            "related_product_slugs, author_type, author_name, is_featured, is_free, is_paid, status, view_count, "
+            "save_count, sort_order, created_at, updated_at, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editorial', ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)",
             (article_id, title, slug, _clean_text(data.get("summary"), 600), str(data.get("body") or ""),
              str(data.get("categoryKey") or "").strip(), str(data.get("subCategoryKey") or "").strip(),
              str(data.get("contentType") or "guide").strip(), _normalize_country_code(data.get("country") or "jp"),
              _normalize_city_slug(data.get("city")), _normalize_language_tag(data.get("language") or "zh-CN"),
-             str(data.get("coverImage") or ""), tags_str, _clean_text(data.get("authorName"), 80) or "Machi 日本指南编辑部",
+             str(data.get("coverImage") or ""), _clean_text(data.get("seoTitle"), 220),
+             _clean_text(data.get("seoDescription"), 320), tags_str,
+             _guide_csv(data.get("relatedArticleSlugs")), _guide_csv(data.get("relatedProductSlugs")),
+             _clean_text(data.get("authorName"), 80) or "Machi 日本指南编辑部",
              1 if data.get("isFeatured") else 0, 1 if data.get("isFree", True) else 0, 1 if data.get("isPaid") else 0,
              status, _guide_int(data.get("sortOrder"), 0), now, now, now if status == "published" else None),
         )
+        self._guide_clear_public_cache()
         self.send_json({"status": "ok", "id": article_id, "slug": slug}, 201)
 
     def api_admin_guide_update_article(self, conn: sqlite3.Connection, article_id: str) -> None:
@@ -14210,14 +15147,23 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("指南内容不存在", 404, "guide_article_not_found")
         data = self.read_json()
         field_map = {
-            "title": "title", "summary": "summary", "body": "body", "categoryKey": "category_key",
+            "title": "title", "slug": "slug", "summary": "summary", "body": "body", "categoryKey": "category_key",
             "subCategoryKey": "sub_category_key", "contentType": "content_type", "coverImage": "cover_image",
-            "authorName": "author_name", "status": "status",
+            "seoTitle": "seo_title", "seoDescription": "seo_description", "authorName": "author_name",
+            "country": "country", "city": "city", "language": "language", "status": "status",
         }
         updates: dict[str, Any] = {}
         for k, col in field_map.items():
             if k in data:
                 updates[col] = str(data[k] or "")
+        if "slug" in updates:
+            updates["slug"] = self._guide_slugify(updates["slug"], fallback=article_id[:10])
+        if "country" in updates:
+            updates["country"] = _normalize_country_code(updates["country"] or "jp")
+        if "city" in updates:
+            updates["city"] = _normalize_city_slug(updates["city"])
+        if "language" in updates:
+            updates["language"] = _normalize_language_tag(updates["language"] or "zh-CN")
         for k, col in (("isFeatured", "is_featured"), ("isFree", "is_free"), ("isPaid", "is_paid")):
             if k in data:
                 updates[col] = 1 if data[k] else 0
@@ -14226,15 +15172,21 @@ class Handler(BaseHTTPRequestHandler):
         if "tags" in data:
             tags = data["tags"]
             updates["tags"] = ",".join(tags) if isinstance(tags, list) else _clean_text(tags, 300)
+        if "relatedArticleSlugs" in data:
+            updates["related_article_slugs"] = _guide_csv(data.get("relatedArticleSlugs"))
+        if "relatedProductSlugs" in data:
+            updates["related_product_slugs"] = _guide_csv(data.get("relatedProductSlugs"))
         if updates.get("status") == "published" and not conn.execute(
                 "SELECT published_at FROM guide_articles WHERE id = ?", (article_id,)).fetchone()["published_at"]:
             updates["published_at"] = now_iso()
         self._guide_apply_update(conn, "guide_articles", article_id, updates)
+        self._guide_clear_public_cache()
         self.send_json({"status": "ok", "id": article_id})
 
     def api_admin_guide_delete_article(self, conn: sqlite3.Connection, article_id: str) -> None:
         self.require_admin(conn)
         conn.execute("DELETE FROM guide_articles WHERE id = ?", (article_id,))
+        self._guide_clear_public_cache()
         self.send_json({"status": "ok"})
 
     def api_admin_guide_product_detail(self, conn: sqlite3.Connection, product_id: str) -> None:
@@ -14381,6 +15333,7 @@ class Handler(BaseHTTPRequestHandler):
                 "UPDATE uploaded_files SET entity_type = 'guide_product', entity_id = ?, purpose = 'guide_product_preview', updated_at = ? WHERE id = ?",
                 (product_id, now_iso(), cover_upload["id"]),
             )
+        self._guide_clear_public_cache()
         self.send_json({"status": "ok", "id": product_id, "slug": slug}, 201)
 
     def api_admin_guide_update_product(self, conn: sqlite3.Connection, product_id: str) -> None:
@@ -14483,11 +15436,13 @@ class Handler(BaseHTTPRequestHandler):
                     "UPDATE uploaded_files SET entity_type = 'guide_product', entity_id = ?, purpose = 'guide_product_preview', updated_at = ? WHERE id = ?",
                     (product_id, now_iso(), cover_upload["id"]),
                 )
+        self._guide_clear_public_cache()
         self.send_json({"status": "ok", "id": product_id})
 
     def api_admin_guide_delete_product(self, conn: sqlite3.Connection, product_id: str) -> None:
         self.require_admin(conn)
         conn.execute("DELETE FROM guide_products WHERE id = ?", (product_id,))
+        self._guide_clear_public_cache()
         self.send_json({"status": "ok"})
 
     def _guide_create_school_row(self, conn: sqlite3.Connection, data: dict[str, Any], *, default_status: str = "needs_review") -> tuple[str, str]:
@@ -15788,6 +16743,80 @@ class Handler(BaseHTTPRequestHandler):
         # Machi Guide — admin write + moderation (API only this round; UI later)
         if path == "/api/admin/guide/uploads" and method == "POST":
             return self.api_admin_guide_upload(conn)
+        if path == "/api/admin/guide/overview" and method == "GET":
+            return self.api_admin_guide_overview(conn)
+        if path == "/api/admin/guide/articles" and method == "GET":
+            return self.api_admin_guide_articles(conn, query)
+        if path == "/api/admin/guide/articles" and method == "POST":
+            return self.api_admin_guide_create_article(conn)
+        if path.startswith("/api/admin/guide/articles/"):
+            article_id = unquote(path[len("/api/admin/guide/articles/"):])
+            if method == "GET":
+                return self.api_admin_guide_article_detail(conn, article_id)
+            if method == "PATCH":
+                return self.api_admin_guide_update_article(conn, article_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_article(conn, article_id)
+        if path == "/api/admin/guide/categories" and method == "GET":
+            return self.api_admin_guide_categories(conn, query)
+        if path == "/api/admin/guide/categories" and method == "POST":
+            return self.api_admin_guide_create_category(conn)
+        if path.startswith("/api/admin/guide/categories/"):
+            category_id = unquote(path[len("/api/admin/guide/categories/"):])
+            if method == "GET":
+                return self.api_admin_guide_category_detail(conn, category_id)
+            if method == "PATCH":
+                return self.api_admin_guide_update_category(conn, category_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_category(conn, category_id)
+        if path == "/api/admin/guide/tags" and method == "GET":
+            return self.api_admin_guide_tags(conn, query)
+        if path == "/api/admin/guide/tags" and method == "POST":
+            return self.api_admin_guide_create_tag(conn)
+        if path.startswith("/api/admin/guide/tags/"):
+            tag_id = unquote(path[len("/api/admin/guide/tags/"):])
+            if method == "GET":
+                return self.api_admin_guide_tag_detail(conn, tag_id)
+            if method == "PATCH":
+                return self.api_admin_guide_update_tag(conn, tag_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_tag(conn, tag_id)
+        if path == "/api/admin/guide/topics" and method == "GET":
+            return self.api_admin_guide_topics(conn, query)
+        if path == "/api/admin/guide/topics" and method == "POST":
+            return self.api_admin_guide_create_topic(conn)
+        if path.startswith("/api/admin/guide/topics/"):
+            topic_id = unquote(path[len("/api/admin/guide/topics/"):])
+            if method == "GET":
+                return self.api_admin_guide_topic_detail(conn, topic_id)
+            if method == "PATCH":
+                return self.api_admin_guide_update_topic(conn, topic_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_topic(conn, topic_id)
+        if path == "/api/admin/guide/faq" and method == "GET":
+            return self.api_admin_guide_faq(conn, query)
+        if path == "/api/admin/guide/faq" and method == "POST":
+            return self.api_admin_guide_create_faq(conn)
+        if path.startswith("/api/admin/guide/faq/"):
+            faq_id = unquote(path[len("/api/admin/guide/faq/"):])
+            if method == "GET":
+                return self.api_admin_guide_faq_detail(conn, faq_id)
+            if method == "PATCH":
+                return self.api_admin_guide_update_faq(conn, faq_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_faq(conn, faq_id)
+        if path == "/api/admin/guide/home-modules" and method == "GET":
+            return self.api_admin_guide_home_modules(conn, query)
+        if path == "/api/admin/guide/home-modules" and method == "POST":
+            return self.api_admin_guide_create_home_module(conn)
+        if path.startswith("/api/admin/guide/home-modules/"):
+            module_id = unquote(path[len("/api/admin/guide/home-modules/"):])
+            if method == "GET":
+                return self.api_admin_guide_home_module_detail(conn, module_id)
+            if method == "PATCH":
+                return self.api_admin_guide_update_home_module(conn, module_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_home_module(conn, module_id)
         if path == "/api/admin/guide/products" and method == "GET":
             return self.api_admin_guide_products(conn, query)
         if path == "/api/admin/guide/orders" and method == "GET":
@@ -15823,14 +16852,6 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_guide_reviews(conn, "company", query)
         if path == "/api/admin/guide/corrections" and method == "GET":
             return self.api_admin_guide_corrections(conn, query)
-        if path == "/api/admin/guide/articles" and method == "POST":
-            return self.api_admin_guide_create_article(conn)
-        if path.startswith("/api/admin/guide/articles/"):
-            article_id = unquote(path[len("/api/admin/guide/articles/"):])
-            if method == "PATCH":
-                return self.api_admin_guide_update_article(conn, article_id)
-            if method == "DELETE":
-                return self.api_admin_guide_delete_article(conn, article_id)
         if path == "/api/admin/guide/products" and method == "POST":
             return self.api_admin_guide_create_product(conn)
         if path.startswith("/api/admin/guide/products/"):

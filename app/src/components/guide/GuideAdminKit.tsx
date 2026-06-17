@@ -38,7 +38,13 @@ type LibraryKind = "schools" | "companies";
 type AdminRow = Record<string, unknown> & { id?: string; slug?: string; status?: string; verificationStatus?: string };
 type AdminDetail = { status: string; school?: GuideSchool; company?: GuideCompany };
 
-const GUIDE_ADMIN_LINKS = [
+export const GUIDE_ADMIN_LINKS = [
+  { href: "/admin/guide/articles", label: "指南文章" },
+  { href: "/admin/guide/categories", label: "指南分类" },
+  { href: "/admin/guide/tags", label: "标签" },
+  { href: "/admin/guide/topics", label: "专题" },
+  { href: "/admin/guide/faq", label: "FAQ" },
+  { href: "/admin/guide/home-modules", label: "首页模块" },
   { href: "/admin/pricing", label: "价格管理" },
   { href: "/admin/guide/products", label: "商城商品" },
   { href: "/admin/guide/member-resources", label: "会员资料" },
@@ -97,7 +103,7 @@ function useAdminGuard() {
   return { user, loading, denied, login };
 }
 
-function GuideAdminShell({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
+export function GuideAdminShell({ title, subtitle, children }: { title: string; subtitle?: string; children: React.ReactNode }) {
   const guard = useAdminGuard();
   if (guard.loading) {
     return (
@@ -166,8 +172,23 @@ function StatStrip({ stats }: { stats?: Record<string, unknown> }) {
 }
 
 export function GuideAdminHomePage() {
+  const overview = useQuery({
+    queryKey: ["admin-guide", "overview"],
+    queryFn: () => adminGuide.overview(),
+    staleTime: 30_000,
+  });
+
   return (
-    <GuideAdminShell title="Machi Guide 管理" subtitle="学校库、公司库、导入、审核与纠错集中维护。">
+    <GuideAdminShell title="Machi Guide 管理" subtitle="文章、分类、专题、商品、学校、公司与用户提交统一维护。">
+      {overview.data?.stats ? <div className="mb-4"><StatStrip stats={overview.data.stats} /></div> : null}
+      {(overview.data?.emptyCategories.length ?? 0) > 0 ? (
+        <section className="mb-4 rounded-kx-lg border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+          <div className="font-black">需要补内容的分类</div>
+          <p className="mt-1 text-xs leading-5 text-amber-800">
+            {overview.data!.emptyCategories.slice(0, 6).map((c) => c.title || c.key).join("、")} 暂时没有文章或资料。建议优先补齐核心入口，避免前台卡片点进去过空。
+          </p>
+        </section>
+      ) : null}
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
         {GUIDE_ADMIN_LINKS.map((item) => (
           <Link key={item.href} href={item.href} className="rounded-kx-lg border border-kx-stroke/60 bg-kx-card p-4 transition hover:border-kx-accent/50 hover:shadow-kx">

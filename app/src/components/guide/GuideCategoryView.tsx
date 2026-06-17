@@ -69,6 +69,12 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
   const category = cats.data?.categories.find((c) => c.key === categoryKey);
   const Icon = categoryIconFor(category?.icon);
   const subs = category?.subCategories ?? [];
+  const activeSubCategory = subs.find((s) => s.key === activeSub);
+  const currentScope = activeSubCategory || category;
+  const scopeCounts = [
+    typeof currentScope?.articleCount === "number" ? `${currentScope.articleCount} 篇指南` : "",
+    typeof currentScope?.productCount === "number" ? `${currentScope.productCount} 个资料/服务` : "",
+  ].filter(Boolean);
 
   return (
     <GuideShell back={{ href: "/guide", label: copy.back }}>
@@ -85,6 +91,15 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
         </div>
         {category?.description ? (
           <p className="mt-3 max-w-2xl text-sm leading-7 text-[rgb(var(--kx-living-muted))]">{category.description}</p>
+        ) : null}
+        {scopeCounts.length ? (
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {scopeCounts.map((item) => (
+              <span key={item} className="rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-black text-[rgb(var(--kx-living-muted))] ring-1 ring-black/5">
+                {item}
+              </span>
+            ))}
+          </div>
         ) : null}
 
         {subs.length ? (
@@ -108,6 +123,14 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
                 {s.title}
               </button>
             ))}
+          </div>
+        ) : null}
+        {activeSubCategory ? (
+          <div className="mt-3 rounded-kx-lg border border-white/70 bg-white/70 p-3 shadow-sm">
+            <div className="text-sm font-black text-[rgb(var(--kx-living-ink))]">{activeSubCategory.title}</div>
+            {activeSubCategory.description ? (
+              <p className="mt-1 text-xs leading-5 text-[rgb(var(--kx-living-muted))]">{activeSubCategory.description}</p>
+            ) : null}
           </div>
         ) : null}
       </header>
@@ -139,7 +162,10 @@ export function GuideCategoryView({ categoryKey }: { categoryKey: string }) {
           ) : articles.isError ? (
             <ErrorState title={copy.category.loadError} subtitle={copy.retryLater} onRetry={() => articles.refetch()} />
           ) : (articles.data?.items.length ?? 0) === 0 ? (
-            <EmptyState title={copy.category.emptyTitle} subtitle={copy.category.emptySubtitle} />
+            <EmptyState
+              title={activeSubCategory ? `${activeSubCategory.title} 正在补充内容` : copy.category.emptyTitle}
+              subtitle={activeSubCategory ? "这个子分类还没有发布文章或资料，可以先查看全部内容，后台也可以优先补齐这里。" : copy.category.emptySubtitle}
+            />
           ) : (
             <div className="grid gap-3 sm:grid-cols-2">
               {articles.data!.items.map((a) => (

@@ -34,7 +34,13 @@ export interface GuideCategory {
   icon: string;
   color: string;
   country: string;
+  language?: string;
   sortOrder: number;
+  articleCount?: number;
+  productCount?: number;
+  seoTitle?: string;
+  seoDescription?: string;
+  isActive?: boolean;
   subCategories?: GuideCategory[];
 }
 
@@ -66,7 +72,11 @@ export interface GuideArticle {
   city: string;
   language: string;
   coverImage: string;
+  seoTitle?: string;
+  seoDescription?: string;
   tags: string[];
+  relatedArticleSlugs?: string[];
+  relatedProductSlugs?: string[];
   authorType: string;
   authorName: string;
   isFeatured: boolean;
@@ -75,6 +85,7 @@ export interface GuideArticle {
   status: string;
   viewCount: number;
   saveCount: number;
+  sortOrder?: number;
   publishedAt: string | null;
   updatedAt: string | null;
 }
@@ -411,6 +422,65 @@ export interface GuideFaq {
   question: string;
   answer: string;
   categoryKey: string;
+  country?: string;
+  language?: string;
+  sortOrder?: number;
+  status?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface GuideTag {
+  id: string;
+  name: string;
+  key: string;
+  categoryKey: string;
+  description?: string;
+  sortOrder?: number;
+  isActive?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface GuideTopic {
+  id: string;
+  title: string;
+  slug: string;
+  description: string;
+  categoryKey: string;
+  tags: string[];
+  articleSlugs: string[];
+  productSlugs: string[];
+  coverImage: string;
+  country: string;
+  language: string;
+  sortOrder: number;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+  publishedAt?: string | null;
+}
+
+export interface GuideHomeModule {
+  id: string;
+  moduleKey: string;
+  title: string;
+  subtitle: string;
+  contentJson: Record<string, unknown>;
+  country: string;
+  language: string;
+  sortOrder: number;
+  isActive: boolean;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface GuideAdminOverview {
+  status: string;
+  stats: Record<string, number>;
+  emptyCategories: GuideCategory[];
+  recentArticles: GuideArticle[];
 }
 
 export interface GuideHomeResponse {
@@ -430,6 +500,7 @@ export interface GuideHomeResponse {
   companyHighlights: GuideCompany[];
   latestArticles: GuideArticle[];
   faq: GuideFaq[];
+  homeModules?: GuideHomeModule[];
   reviewDisclaimer?: string;
   schoolDisclaimer?: string;
   companyDisclaimer?: string;
@@ -670,6 +741,72 @@ export const guide = {
 };
 
 export const adminGuide = {
+  overview: () =>
+    greq<GuideAdminOverview>("GET", "/api/admin/guide/overview"),
+  articles: (p: GuideListParams & { status?: string } = {}) =>
+    greq<GuideAdminPaged<GuideArticle>>("GET", `/api/admin/guide/articles${qs({ ...p })}`),
+  article: (idOrSlug: string) =>
+    greq<{ status: string; article: GuideArticle }>(
+      "GET", `/api/admin/guide/articles/${encodeURIComponent(idOrSlug)}`),
+  createArticle: (body: Record<string, unknown>) =>
+    greq<{ status: string; id: string; slug: string }>("POST", "/api/admin/guide/articles", body),
+  updateArticle: (id: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/articles/${encodeURIComponent(id)}`, body),
+  deleteArticle: (id: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/articles/${encodeURIComponent(id)}`),
+  categories: (p: { country?: string; language?: string; parentKey?: string } = {}) =>
+    greq<{ status: string; items: GuideCategory[]; total: number }>(
+      "GET", `/api/admin/guide/categories${qs({ ...p, flat: 1 })}`),
+  category: (idOrKey: string) =>
+    greq<{ status: string; category: GuideCategory }>(
+      "GET", `/api/admin/guide/categories/${encodeURIComponent(idOrKey)}`),
+  createCategory: (body: Record<string, unknown>) =>
+    greq<{ status: string; id: string; key: string }>("POST", "/api/admin/guide/categories", body),
+  updateCategory: (idOrKey: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/categories/${encodeURIComponent(idOrKey)}`, body),
+  deleteCategory: (idOrKey: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/categories/${encodeURIComponent(idOrKey)}`),
+  tags: (p: { categoryKey?: string } = {}) =>
+    greq<{ status: string; items: GuideTag[]; total: number }>("GET", `/api/admin/guide/tags${qs(p)}`),
+  tag: (idOrSlug: string) =>
+    greq<{ status: string; tag: GuideTag }>("GET", `/api/admin/guide/tags/${encodeURIComponent(idOrSlug)}`),
+  createTag: (body: Record<string, unknown>) =>
+    greq<{ status: string; id: string; slug: string }>("POST", "/api/admin/guide/tags", body),
+  updateTag: (idOrSlug: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/tags/${encodeURIComponent(idOrSlug)}`, body),
+  deleteTag: (idOrSlug: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/tags/${encodeURIComponent(idOrSlug)}`),
+  topics: (p: { categoryKey?: string; status?: string } = {}) =>
+    greq<{ status: string; items: GuideTopic[]; total: number }>("GET", `/api/admin/guide/topics${qs(p)}`),
+  topic: (idOrSlug: string) =>
+    greq<{ status: string; topic: GuideTopic }>("GET", `/api/admin/guide/topics/${encodeURIComponent(idOrSlug)}`),
+  createTopic: (body: Record<string, unknown>) =>
+    greq<{ status: string; id: string; slug: string }>("POST", "/api/admin/guide/topics", body),
+  updateTopic: (idOrSlug: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/topics/${encodeURIComponent(idOrSlug)}`, body),
+  deleteTopic: (idOrSlug: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/topics/${encodeURIComponent(idOrSlug)}`),
+  faq: (p: { categoryKey?: string; status?: string } = {}) =>
+    greq<{ status: string; items: GuideFaq[]; total: number }>("GET", `/api/admin/guide/faq${qs(p)}`),
+  faqItem: (id: string) =>
+    greq<{ status: string; faq: GuideFaq }>("GET", `/api/admin/guide/faq/${encodeURIComponent(id)}`),
+  createFaq: (body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("POST", "/api/admin/guide/faq", body),
+  updateFaq: (id: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/faq/${encodeURIComponent(id)}`, body),
+  deleteFaq: (id: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/faq/${encodeURIComponent(id)}`),
+  homeModules: (p: { country?: string; language?: string } = {}) =>
+    greq<{ status: string; items: GuideHomeModule[]; total: number }>("GET", `/api/admin/guide/home-modules${qs(p)}`),
+  homeModule: (idOrKey: string) =>
+    greq<{ status: string; module: GuideHomeModule }>(
+      "GET", `/api/admin/guide/home-modules/${encodeURIComponent(idOrKey)}`),
+  createHomeModule: (body: Record<string, unknown>) =>
+    greq<{ status: string; id: string; moduleKey: string }>("POST", "/api/admin/guide/home-modules", body),
+  updateHomeModule: (idOrKey: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/home-modules/${encodeURIComponent(idOrKey)}`, body),
+  deleteHomeModule: (idOrKey: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/home-modules/${encodeURIComponent(idOrKey)}`),
   schools: (p: GuideListParams & { status?: string; verificationStatus?: string; export?: string; format?: string } = {}) =>
     greq<GuideAdminPaged<GuideSchool>>("GET", `/api/admin/guide/schools${qs({ ...p })}`),
   school: (idOrSlug: string) =>
