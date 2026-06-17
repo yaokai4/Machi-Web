@@ -2939,6 +2939,22 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON listing_taxonomy_fields(listing_type, category_key, is_active, sort_order);
         """,
     ),
+    (
+        50,
+        "membership copy: remove legacy subscription wording",
+        """
+        -- backend: postgres
+        UPDATE membership_plans
+           SET subtitle = '按月购买，到期前可再次续购'
+         WHERE plan_key IN ('machi_verified_monthly', 'machi_verified_monthly_cny_10')
+           AND subtitle = '按月订阅，随时管理';
+
+        UPDATE membership_plans
+           SET description = '一次购买一年，同步获得 Machi 认证会员全部权益。'
+         WHERE plan_key = 'machi_verified_yearly'
+           AND description = '包年订阅，同步获得 Machi 认证会员全部权益。';
+        """,
+    ),
 ]
 
 
