@@ -1009,6 +1009,50 @@ CREATE TABLE IF NOT EXISTS guide_home_modules (
 );
 CREATE INDEX IF NOT EXISTS idx_guide_home_modules_scope ON guide_home_modules(country, language, status, is_active, sort_order);
 
+CREATE TABLE IF NOT EXISTS listing_taxonomy_categories (
+    id TEXT PRIMARY KEY,
+    listing_type TEXT NOT NULL,
+    category_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    label_ja TEXT NOT NULL DEFAULT '',
+    label_en TEXT NOT NULL DEFAULT '',
+    section_key TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(listing_type, category_key)
+);
+CREATE INDEX IF NOT EXISTS idx_listing_taxonomy_categories_scope
+    ON listing_taxonomy_categories(listing_type, is_active, section_key, sort_order);
+
+CREATE TABLE IF NOT EXISTS listing_taxonomy_fields (
+    id TEXT PRIMARY KEY,
+    listing_type TEXT NOT NULL,
+    category_key TEXT NOT NULL DEFAULT '',
+    field_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    label_ja TEXT NOT NULL DEFAULT '',
+    label_en TEXT NOT NULL DEFAULT '',
+    field_kind TEXT NOT NULL DEFAULT 'text',
+    placeholder TEXT NOT NULL DEFAULT '',
+    placeholder_ja TEXT NOT NULL DEFAULT '',
+    placeholder_en TEXT NOT NULL DEFAULT '',
+    help_text TEXT NOT NULL DEFAULT '',
+    options_json TEXT NOT NULL DEFAULT '[]',
+    required INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    metadata TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(listing_type, category_key, field_key)
+);
+CREATE INDEX IF NOT EXISTS idx_listing_taxonomy_fields_scope
+    ON listing_taxonomy_fields(listing_type, category_key, is_active, sort_order);
+
 CREATE TABLE IF NOT EXISTS device_push_tokens (
     id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL,
@@ -2843,6 +2887,56 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         -- backend: postgres
         ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS related_article_slugs TEXT NOT NULL DEFAULT '';
         ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS topic_slugs TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        49,
+        "listing taxonomy: editable categories and fields",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS listing_taxonomy_categories (
+            id TEXT PRIMARY KEY,
+            listing_type TEXT NOT NULL,
+            category_key TEXT NOT NULL,
+            label TEXT NOT NULL,
+            label_ja TEXT NOT NULL DEFAULT '',
+            label_en TEXT NOT NULL DEFAULT '',
+            section_key TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            is_active INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(listing_type, category_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_taxonomy_categories_scope
+            ON listing_taxonomy_categories(listing_type, is_active, section_key, sort_order);
+
+        CREATE TABLE IF NOT EXISTS listing_taxonomy_fields (
+            id TEXT PRIMARY KEY,
+            listing_type TEXT NOT NULL,
+            category_key TEXT NOT NULL DEFAULT '',
+            field_key TEXT NOT NULL,
+            label TEXT NOT NULL,
+            label_ja TEXT NOT NULL DEFAULT '',
+            label_en TEXT NOT NULL DEFAULT '',
+            field_kind TEXT NOT NULL DEFAULT 'text',
+            placeholder TEXT NOT NULL DEFAULT '',
+            placeholder_ja TEXT NOT NULL DEFAULT '',
+            placeholder_en TEXT NOT NULL DEFAULT '',
+            help_text TEXT NOT NULL DEFAULT '',
+            options_json TEXT NOT NULL DEFAULT '[]',
+            required INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            metadata TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(listing_type, category_key, field_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_taxonomy_fields_scope
+            ON listing_taxonomy_fields(listing_type, category_key, is_active, sort_order);
         """,
     ),
 ]

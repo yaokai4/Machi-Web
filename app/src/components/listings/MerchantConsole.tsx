@@ -10,6 +10,7 @@ import {
   CalendarClock,
   CheckCircle2,
   ExternalLink,
+  Flag,
   MessageSquare,
   Plus,
   Send,
@@ -26,6 +27,28 @@ import { Avatar } from "@/components/design/Avatar";
 import { useToasts } from "@/lib/store";
 import { RatingStars } from "@/components/listings/ListingKit";
 import { cleanListingText, formatInquiryStatus, formatInquiryType, formatListingStatus, formatPrice } from "@/lib/listingFormat";
+
+const LEAD_STATUS_FILTERS: Array<[string, string]> = [
+  ["", "全部"],
+  ["submitted", "新提交"],
+  ["reviewing", "处理中"],
+  ["contacted", "已联系"],
+  ["confirmed", "已确认"],
+  ["rejected", "已拒绝"],
+  ["completed", "已完成"],
+  ["closed", "已关闭"],
+];
+
+const LEAD_STATUS_TONES: Record<string, string> = {
+  submitted: "bg-orange-50 text-orange-700",
+  new: "bg-orange-50 text-orange-700",
+  reviewing: "bg-blue-50 text-blue-700",
+  contacted: "bg-cyan-50 text-cyan-700",
+  confirmed: "bg-emerald-50 text-emerald-700",
+  completed: "bg-slate-950 text-white",
+  rejected: "bg-rose-50 text-rose-700",
+  closed: "bg-slate-100 text-slate-500",
+};
 
 /// 商家服务管理面板：本地服务 + 优惠的上下架与状态流转。
 export function MerchantListingsPanel() {
@@ -167,10 +190,10 @@ export function MerchantLeadsPanel() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-black text-slate-950">线索与预订</h2>
-          <p className="mt-1 text-sm font-semibold text-slate-500">咨询、预约、报名集中处理：回复后标记，成交后关闭。</p>
+          <p className="mt-1 text-sm font-semibold text-slate-500">申请、预约和咨询集中处理；私信只作为补充沟通。</p>
         </div>
-        <div className="flex gap-1.5">
-          {[["", "全部"], ["new", "新线索"], ["replied", "已回复"], ["closed", "已关闭"]].map(([value, label]) => (
+        <div className="flex flex-wrap gap-1.5">
+          {LEAD_STATUS_FILTERS.map(([value, label]) => (
             <button
               key={value}
               type="button"
@@ -194,7 +217,7 @@ export function MerchantLeadsPanel() {
           ))}
           {!items.length ? (
             <p className="rounded-2xl bg-slate-50 p-5 text-sm font-semibold text-slate-500">
-              暂无{statusFilter === "new" ? "新" : ""}线索。服务发布并通过审核后，用户的咨询和预订会出现在这里。
+              暂无{statusFilter ? formatInquiryStatus(statusFilter) : ""}线索。用户提交的申请、预约和咨询会出现在这里。
             </p>
           ) : null}
         </div>
@@ -207,7 +230,8 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
   const fromUser = inquiry.from_user || inquiry.fromUser;
   const conversation = inquiry.conversation_id || inquiry.conversationId;
   const details = Array.isArray(inquiry.details) ? inquiry.details : Array.isArray((inquiry.metadata || {}).details) ? ((inquiry.metadata || {}).details as { label: string; value: string }[]) : [];
-  const status = inquiry.status || "new";
+  const status = inquiry.status || "submitted";
+  const statusTone = LEAD_STATUS_TONES[status] || "bg-slate-100 text-slate-500";
   return (
     <div className="rounded-2xl border border-slate-200/70 bg-white p-3.5">
       <div className="flex items-center gap-2.5">
@@ -216,7 +240,7 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
           <p className="flex flex-wrap items-center gap-2 text-sm font-black text-slate-950">
             <span className="truncate">{fromUser?.display_name || fromUser?.handle || "Machi 用户"}</span>
             <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-600">{formatInquiryType(inquiry.type)}</span>
-            <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${status === "new" ? "bg-orange-50 text-orange-600" : status === "replied" ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
+            <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone}`}>
               {formatInquiryStatus(status)}
             </span>
           </p>
@@ -242,10 +266,34 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
             打开对话
           </Link>
         ) : null}
-        {status === "new" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("replied")} className="inline-flex h-8 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50">
+        {status !== "reviewing" && status !== "confirmed" && status !== "completed" && status !== "closed" ? (
+          <button type="button" disabled={pending} onClick={() => onStatus("reviewing")} className="inline-flex h-8 items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-3 text-[11px] font-black text-blue-700 transition hover:bg-blue-100 disabled:opacity-50">
+            <CalendarClock className="h-3 w-3" />
+            标记处理中
+          </button>
+        ) : null}
+        {status !== "contacted" && status !== "confirmed" && status !== "completed" && status !== "closed" ? (
+          <button type="button" disabled={pending} onClick={() => onStatus("contacted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 px-3 text-[11px] font-black text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50">
+            <Send className="h-3 w-3" />
+            已联系
+          </button>
+        ) : null}
+        {status !== "confirmed" && status !== "completed" && status !== "closed" && status !== "rejected" ? (
+          <button type="button" disabled={pending} onClick={() => onStatus("confirmed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50">
             <CheckCircle2 className="h-3 w-3" />
-            标记已回复
+            确认
+          </button>
+        ) : null}
+        {status !== "rejected" && status !== "completed" && status !== "closed" ? (
+          <button type="button" disabled={pending} onClick={() => onStatus("rejected")} className="inline-flex h-8 items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-3 text-[11px] font-black text-rose-700 transition hover:bg-rose-100 disabled:opacity-50">
+            <XCircle className="h-3 w-3" />
+            拒绝
+          </button>
+        ) : null}
+        {status !== "completed" && status !== "closed" && status !== "rejected" ? (
+          <button type="button" disabled={pending} onClick={() => onStatus("completed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-slate-200 bg-slate-950 px-3 text-[11px] font-black text-white transition hover:bg-slate-800 disabled:opacity-50">
+            <Flag className="h-3 w-3" />
+            完成
           </button>
         ) : null}
         {status !== "closed" ? (
@@ -254,7 +302,7 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
             关闭
           </button>
         ) : (
-          <button type="button" disabled={pending} onClick={() => onStatus("new")} className="inline-flex h-8 items-center gap-1 rounded-full border border-slate-200 px-3 text-[11px] font-black text-slate-500 transition hover:border-blue-300 hover:text-blue-600 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("submitted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-slate-200 px-3 text-[11px] font-black text-slate-500 transition hover:border-blue-300 hover:text-blue-600 disabled:opacity-50">
             <CalendarClock className="h-3 w-3" />
             重新打开
           </button>

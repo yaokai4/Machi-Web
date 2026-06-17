@@ -771,6 +771,66 @@ export interface KXListingInquiry {
   toUser?: KXUser | null;
 }
 
+export interface KXListingTaxonomyCategory {
+  id: string;
+  listing_type: string;
+  listingType?: string;
+  category_key: string;
+  categoryKey?: string;
+  label: string;
+  label_ja?: string;
+  labelJa?: string;
+  label_en?: string;
+  labelEn?: string;
+  section_key?: string;
+  sectionKey?: string;
+  description?: string;
+  is_active?: boolean;
+  isActive?: boolean;
+  sort_order?: number;
+  sortOrder?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface KXListingTaxonomyField {
+  id: string;
+  listing_type: string;
+  listingType?: string;
+  category_key: string;
+  categoryKey?: string;
+  field_key: string;
+  fieldKey?: string;
+  label: string;
+  label_ja?: string;
+  labelJa?: string;
+  label_en?: string;
+  labelEn?: string;
+  kind: "text" | "textarea" | "select" | "checkbox" | "date" | string;
+  field_kind?: string;
+  fieldKind?: string;
+  placeholder?: string;
+  placeholder_ja?: string;
+  placeholderJa?: string;
+  placeholder_en?: string;
+  placeholderEn?: string;
+  help_text?: string;
+  helpText?: string;
+  options?: string[];
+  required?: boolean;
+  is_active?: boolean;
+  isActive?: boolean;
+  sort_order?: number;
+  sortOrder?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface KXListingTaxonomyPayload {
+  listing_type: KXListingType | string;
+  listingType?: KXListingType | string;
+  categories: KXListingTaxonomyCategory[];
+  fields: KXListingTaxonomyField[];
+}
+
 export interface KXCreateListingPayload {
   type: KXListingType;
   title: string;

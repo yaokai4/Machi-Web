@@ -152,6 +152,7 @@ const ADMIN_MODULES: {
   { href: "/admin/pricing", label: "商品 / 服务 / 会员定价", desc: "价格、货币、会员价、Stripe / IAP ID", icon: Boxes },
   { href: "/admin/reputation", label: "城市声望", desc: "等级、信任、风险与徽章", icon: ShieldCheck },
   { href: "/admin/listings/review", label: "Listing 审核", desc: "二手 · 租房 · 工作 · 服务 · 优惠", icon: ShieldCheck },
+  { href: "/admin/listings/taxonomy", label: "发布分类与字段", desc: "二手 · 租房 · 工作 · 商家服务字段配置", icon: Settings },
   { href: "/admin/listings/reports", label: "Listing 举报", desc: "举报处理、下架与复核", icon: Flag },
   { href: "/admin/listings/promotions", label: "Listing 推广", desc: "置顶、精选、城市首页推荐", icon: Sparkles },
   { href: "/admin/businesses", label: "商家资料", desc: "商家认证和服务商资料", icon: Store },

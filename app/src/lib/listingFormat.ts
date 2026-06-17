@@ -352,8 +352,9 @@ type ServiceVertical =
   | "airport_transfer"
   | "paperwork_translation"
   | "moving_cleaning"
-  | "repair_installation"
-  | "beauty_pet_life";
+  | "life_setup"
+  | "beauty_health"
+  | "pet_family";
 
 const SERVICE_VERTICAL_BY_CATEGORY: Record<string, ServiceVertical> = {
   "餐厅美食": "food_restaurant",
@@ -372,23 +373,53 @@ const SERVICE_VERTICAL_BY_CATEGORY: Record<string, ServiceVertical> = {
   "酒店": "lodging",
   "温泉旅馆": "lodging",
   "公寓式酒店": "lodging",
+  "短住公寓": "lodging",
   "酒店民宿": "lodging",
   "景点门票": "attraction_ticket",
   "一日游": "day_tour",
   "本地向导": "day_tour",
+  "体验活动": "day_tour",
+  "包车行程": "day_tour",
   "接送机": "airport_transfer",
+  "机场接送": "airport_transfer",
+  "车站接送": "airport_transfer",
+  "包车": "airport_transfer",
+  "行李协助": "airport_transfer",
+  "材料翻译": "paperwork_translation",
+  "市役所陪同": "paperwork_translation",
+  "银行卡协助": "paperwork_translation",
+  "手机卡协助": "paperwork_translation",
+  "签证材料整理": "paperwork_translation",
   "翻译手续": "paperwork_translation",
   "签证/手续协助": "paperwork_translation",
   "翻译": "paperwork_translation",
   "租房申请协助": "paperwork_translation",
   "认证服务": "paperwork_translation",
+  "退房清洁": "moving_cleaning",
+  "粗大垃圾协助": "moving_cleaning",
+  "行李搬运": "moving_cleaning",
+  "家具家电配送协助": "moving_cleaning",
   "搬家清洁": "moving_cleaning",
   "搬家": "moving_cleaning",
   "清洁": "moving_cleaning",
-  "维修安装": "repair_installation",
-  "美容美发": "beauty_pet_life",
-  "宠物服务": "beauty_pet_life",
-  "生活支持": "beauty_pet_life",
+  "手机卡开通": "life_setup",
+  "网络开通": "life_setup",
+  "水电煤协助": "life_setup",
+  "地址登记协助": "life_setup",
+  "粗大垃圾预约": "life_setup",
+  "生活跑腿": "life_setup",
+  "生活支持": "life_setup",
+  "美容美发": "beauty_health",
+  "美甲": "beauty_health",
+  "按摩": "beauty_health",
+  "皮肤管理": "beauty_health",
+  "体检/牙科预约协助": "beauty_health",
+  "宠物寄养": "pet_family",
+  "遛狗": "pet_family",
+  "临时照看": "pet_family",
+  "儿童用品租赁": "pet_family",
+  "家庭协助": "pet_family",
+  "宠物服务": "pet_family",
 };
 
 const SERVICE_VERTICALS = new Set<ServiceVertical>(Object.values(SERVICE_VERTICAL_BY_CATEGORY));
@@ -404,9 +435,12 @@ function serviceVerticalForListing(item: KXCityListing): ServiceVertical | "" {
   if (attrs.menu || attrs.packages) return "food_restaurant";
   if (attrs.room_type || attrs.max_guests || attrs.check_in_time) return "lodging";
   if (attrs.airport_route || attrs.vehicle_type || attrs.flight_info_note) return "airport_transfer";
-  if (attrs.document_type || attrs.required_materials || attrs.delivery_time || attrs.no_result_guarantee) return "paperwork_translation";
-  if (attrs.project_type || attrs.device_brand_model || attrs.warranty_note) return "repair_installation";
+  if (attrs.document_type || attrs.no_result_guarantee) return "paperwork_translation";
   if (attrs.property_size || attrs.item_volume || attrs.vehicle_staff) return "moving_cleaning";
+  if (attrs.setup_type || attrs.cannot_guarantee) return "life_setup";
+  if (attrs.beauty_service || attrs.medical_disclaimer) return "beauty_health";
+  if (attrs.service_target) return "pet_family";
+  if (attrs.required_materials || attrs.delivery_time) return "paperwork_translation";
   if (attrs.ticket_type && attrs.meeting_point) return attrs.pickup_service ? "day_tour" : "attraction_ticket";
   return "";
 }
@@ -648,28 +682,40 @@ export function listingDetailFields(item: KXCityListing, locale: ListingLocale =
               ["夜间/追加费用", attr("surcharge_note")],
               ["取消规则", attr("cancellation_rule")],
             ];
-            if (vertical === "repair_installation") return [
+            if (vertical === "life_setup") return [
               ...common,
-              ["项目类型", attr("project_type")],
-              ["品牌/型号", attr("device_brand_model")],
-              ["上门区域", attr("service_area") || location],
-              ["上门费", attr("onsite_fee")],
-              ["配件费", attr("parts_fee")],
-              ["保修说明", attr("warranty_note")],
-              ["不可服务范围", attr("unavailable_scope")],
+              ["服务区域", attr("service_area") || location],
+              ["服务类型", attr("setup_type")],
+              ["所需材料", attr("required_materials")],
+              ["预计耗时", attr("delivery_time")],
+              ["服务方式", attr("service_process")],
+              ["用户需准备", attr("user_prepare")],
+              ["不可承诺事项", attr("cannot_guarantee")],
+              ["价格说明", attr("price_range")],
               ["取消规则", attr("cancellation_rule")],
             ];
-            if (vertical === "beauty_pet_life") return [
+            if (vertical === "beauty_health") return [
               ...common,
               ["服务范围", attr("service_area") || location],
+              ["服务项目", attr("beauty_service")],
               ["营业时间", attr("open_hours")],
               ["价格区间", attr("price_range")],
               ["可预约时间", attr("availability")],
-              ["包含内容", attr("included_items")],
-              ["不包含内容", attr("not_included")],
-              ["用户需准备", attr("user_prepare")],
+              ["服务时长", attr("duration")],
+              ["注意事项", attr("user_prepare")],
+              ["医疗免责声明", attr("medical_disclaimer")],
               ["取消规则", attr("cancellation_rule")],
               ["资质/许可说明", attr("license_note")],
+            ];
+            if (vertical === "pet_family") return [
+              ...common,
+              ["服务范围", attr("service_area") || location],
+              ["服务对象", attr("service_target")],
+              ["可预约时间", attr("availability")],
+              ["价格说明", attr("price_range")],
+              ["注意事项", attr("user_prepare")],
+              ["安全/资质说明", attr("license_note")],
+              ["取消规则", attr("cancellation_rule")],
             ];
             return [
               ...common,
@@ -713,17 +759,45 @@ export function listingDetailFields(item: KXCityListing, locale: ListingLocale =
 export function formatInquiryType(type?: string | null): string {
   const labels: Record<string, string> = {
     secondhand_consult: "商品咨询",
+    secondhand_trade_request: "交易咨询",
     rental_consult: "房源咨询",
+    rental_viewing: "看房预约",
+    rental_application: "租房申请",
     job_apply: "职位申请",
     service_booking: "服务预约",
+    restaurant_booking: "餐饮订座",
+    stay_booking: "住宿预订",
+    travel_ticket_booking: "旅行票务",
+    transfer_booking: "接送预约",
+    paperwork_booking: "手续协助",
+    moving_cleaning_booking: "搬家清洁",
+    life_setup_booking: "生活开通",
+    beauty_health_booking: "美容健康",
+    pet_family_booking: "宠物家庭",
     discount_consult: "优惠咨询",
+    discount_claim: "优惠咨询",
     event_consult: "活动咨询",
+    general_consult: "城市咨询",
   };
   return labels[normalizedKey(type)] || "城市咨询";
 }
 
 export function formatInquiryStatus(status?: string | null): string {
-  const labels: Record<string, string> = { new: "新咨询", replied: "已回复", closed: "已关闭", spam: "骚扰", reported: "已举报" };
+  const labels: Record<string, string> = {
+    submitted: "已提交",
+    new: "新提交",
+    reviewing: "处理中",
+    contacted: "已联系",
+    replied: "已回复",
+    confirmed: "已确认",
+    rescheduled: "待改期",
+    rejected: "已拒绝",
+    withdrawn: "已撤回",
+    completed: "已完成",
+    closed: "已关闭",
+    spam: "骚扰",
+    reported: "已举报",
+  };
   return labels[normalizedKey(status)] || FALLBACK.zh;
 }
 

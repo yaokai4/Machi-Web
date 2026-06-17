@@ -39,6 +39,9 @@ import type {
   KXListingReviewSummary,
   KXCreateListingPayload,
   KXListingInquiry,
+  KXListingTaxonomyCategory,
+  KXListingTaxonomyField,
+  KXListingTaxonomyPayload,
   KXListingType,
   KXReputationBadge,
   KXReputationEvent,
@@ -1052,13 +1055,50 @@ export const api = {
   async deleteListing(id: string): Promise<void> {
     await request<void>("DELETE", `/api/listings/${encodeURIComponent(id)}`);
   },
+  async listingTaxonomy(type: KXListingType | string): Promise<KXListingTaxonomyPayload> {
+    return request("GET", `/api/listing-taxonomy?type=${encodeURIComponent(type)}`);
+  },
+  async adminListingTaxonomy(type?: KXListingType | string): Promise<KXListingTaxonomyPayload | { items: KXListingTaxonomyPayload[] }> {
+    return request("GET", `/api/admin/listing-taxonomy${type ? `?type=${encodeURIComponent(type)}` : ""}`);
+  },
+  async adminCreateTaxonomyCategory(payload: Partial<KXListingTaxonomyCategory>): Promise<{ category: KXListingTaxonomyCategory }> {
+    return request("POST", `/api/admin/listing-taxonomy/categories`, payload);
+  },
+  async adminUpdateTaxonomyCategory(id: string, payload: Partial<KXListingTaxonomyCategory>): Promise<{ category: KXListingTaxonomyCategory }> {
+    return request("PATCH", `/api/admin/listing-taxonomy/categories/${encodeURIComponent(id)}`, payload);
+  },
+  async adminDeleteTaxonomyCategory(id: string): Promise<{ ok: boolean; deleted: boolean }> {
+    return request("DELETE", `/api/admin/listing-taxonomy/categories/${encodeURIComponent(id)}`);
+  },
+  async adminCreateTaxonomyField(payload: Partial<KXListingTaxonomyField>): Promise<{ field: KXListingTaxonomyField }> {
+    return request("POST", `/api/admin/listing-taxonomy/fields`, payload);
+  },
+  async adminUpdateTaxonomyField(id: string, payload: Partial<KXListingTaxonomyField>): Promise<{ field: KXListingTaxonomyField }> {
+    return request("PATCH", `/api/admin/listing-taxonomy/fields/${encodeURIComponent(id)}`, payload);
+  },
+  async adminDeleteTaxonomyField(id: string): Promise<{ ok: boolean; deleted: boolean }> {
+    return request("DELETE", `/api/admin/listing-taxonomy/fields/${encodeURIComponent(id)}`);
+  },
   async favoriteListing(id: string, on: boolean): Promise<void> {
     await request<void>(on ? "POST" : "DELETE", `/api/listings/${encodeURIComponent(id)}/favorite`);
   },
   async reportListing(id: string, reason: string, note?: string): Promise<void> {
     await request<void>("POST", `/api/listings/${encodeURIComponent(id)}/report`, { reason, note });
   },
-  async contactListing(id: string, message: string, contactValue?: string, details?: { label: string; value: string }[]): Promise<{ ok: boolean; message: string; conversation_id?: string; conversationId?: string }> {
+  async contactListing(id: string, message: string, contactValue?: string, details?: { label: string; value: string }[]): Promise<{
+    ok: boolean;
+    message: string;
+    conversation_id?: string;
+    conversationId?: string;
+    inquiry_id?: string;
+    inquiryId?: string;
+    type?: string;
+    status?: string;
+    success_title?: string;
+    successTitle?: string;
+    details?: { label: string; value: string }[];
+    metadata?: Record<string, unknown>;
+  }> {
     return request(
       "POST",
       `/api/listings/${encodeURIComponent(id)}/inquiry`,

@@ -748,7 +748,10 @@ PUBLIC_LISTING_STATUSES: tuple[str, ...] = ("published", "reserved")
 LISTING_VERIFICATION_STATUSES: set[str] = {
     "unverified", "pending", "verified", "needs_review", "rejected",
 }
-LISTING_INQUIRY_STATUSES: set[str] = {"new", "replied", "closed", "spam", "reported"}
+LISTING_INQUIRY_STATUSES: set[str] = {
+    "submitted", "new", "reviewing", "contacted", "confirmed", "rescheduled",
+    "rejected", "withdrawn", "completed", "closed", "spam", "reported",
+}
 LISTING_PROMOTION_TYPES: set[str] = {
     "top", "featured", "city_home", "category_featured", "urgent_hiring",
     "recommended_rental", "recommended_service",
@@ -828,9 +831,9 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         "document_type", "required_materials", "delivery_time",
         # moving / cleaning
         "property_size", "item_volume", "vehicle_staff",
-        # repair / installation
-        "project_type", "device_brand_model", "onsite_fee", "parts_fee",
-        "warranty_note", "unavailable_scope",
+        # life setup / beauty / family support
+        "setup_type", "cannot_guarantee", "beauty_service", "medical_disclaimer",
+        "service_target",
     },
     "discount": {
         "merchant_name", "discount_info", "valid_until", "usage_rules",
@@ -859,23 +862,53 @@ SERVICE_VERTICAL_BY_CATEGORY: dict[str, str] = {
     "酒店": "lodging",
     "温泉旅馆": "lodging",
     "公寓式酒店": "lodging",
+    "短住公寓": "lodging",
     "酒店民宿": "lodging",
     "景点门票": "attraction_ticket",
     "一日游": "day_tour",
     "本地向导": "day_tour",
+    "体验活动": "day_tour",
+    "包车行程": "day_tour",
     "接送机": "airport_transfer",
+    "机场接送": "airport_transfer",
+    "车站接送": "airport_transfer",
+    "包车": "airport_transfer",
+    "行李协助": "airport_transfer",
+    "材料翻译": "paperwork_translation",
+    "市役所陪同": "paperwork_translation",
+    "银行卡协助": "paperwork_translation",
+    "手机卡协助": "paperwork_translation",
+    "签证材料整理": "paperwork_translation",
     "翻译手续": "paperwork_translation",
     "签证/手续协助": "paperwork_translation",
     "翻译": "paperwork_translation",
     "租房申请协助": "paperwork_translation",
     "认证服务": "paperwork_translation",
+    "退房清洁": "moving_cleaning",
+    "粗大垃圾协助": "moving_cleaning",
+    "行李搬运": "moving_cleaning",
+    "家具家电配送协助": "moving_cleaning",
     "搬家清洁": "moving_cleaning",
     "搬家": "moving_cleaning",
     "清洁": "moving_cleaning",
-    "维修安装": "repair_installation",
-    "美容美发": "beauty_pet_life",
-    "宠物服务": "beauty_pet_life",
-    "生活支持": "beauty_pet_life",
+    "手机卡开通": "life_setup",
+    "网络开通": "life_setup",
+    "水电煤协助": "life_setup",
+    "地址登记协助": "life_setup",
+    "粗大垃圾预约": "life_setup",
+    "生活跑腿": "life_setup",
+    "生活支持": "life_setup",
+    "美容美发": "beauty_health",
+    "美甲": "beauty_health",
+    "按摩": "beauty_health",
+    "皮肤管理": "beauty_health",
+    "体检/牙科预约协助": "beauty_health",
+    "宠物寄养": "pet_family",
+    "遛狗": "pet_family",
+    "临时照看": "pet_family",
+    "儿童用品租赁": "pet_family",
+    "家庭协助": "pet_family",
+    "宠物服务": "pet_family",
 }
 
 SERVICE_VERTICAL_COMMON_ATTRS: set[str] = {"business_name", "service_type", "service_vertical", "certified_provider"}
@@ -917,13 +950,19 @@ SERVICE_VERTICAL_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         "included_items", "not_included", "user_prepare", "surcharge_note",
         "cancellation_rule",
     },
-    "repair_installation": {
-        "project_type", "device_brand_model", "service_area", "onsite_fee",
-        "parts_fee", "warranty_note", "unavailable_scope", "cancellation_rule",
+    "life_setup": {
+        "service_area", "setup_type", "required_materials", "delivery_time",
+        "service_process", "user_prepare", "cannot_guarantee", "price_range",
+        "cancellation_rule",
     },
-    "beauty_pet_life": {
+    "beauty_health": {
         "service_area", "open_hours", "price_range", "availability", "included_items",
-        "not_included", "user_prepare", "cancellation_rule", "license_note",
+        "not_included", "user_prepare", "beauty_service", "duration",
+        "medical_disclaimer", "cancellation_rule", "license_note",
+    },
+    "pet_family": {
+        "service_area", "service_target", "availability", "price_range",
+        "user_prepare", "license_note", "cancellation_rule",
     },
 }
 
@@ -9209,6 +9248,285 @@ def normalize_listing_inquiry_status(value: Any, fallback: str = "new") -> str:
     return raw if raw in LISTING_INQUIRY_STATUSES else fallback
 
 
+LISTING_TAXONOMY_DEFAULTS: dict[str, dict[str, Any]] = {
+    "secondhand": {
+        "categories": ["家具", "家电", "手机数码", "电脑办公", "电子产品", "教材", "书籍教材", "衣物", "生活用品", "母婴儿童", "运动户外", "票券卡券", "搬家出清", "免费送", "求购"],
+        "fields": [
+            ("", "listing_mode", "发布类型", "select", ["sale|出售", "free|免费送", "wanted|求购"], True, "出售 / 免费送 / 求购"),
+            ("", "condition", "新旧程度", "select", ["brand_new|全新", "like_new|几乎全新", "good|良好", "used|有使用痕迹", "fair|可用"], True, "选择物品状态"),
+            ("", "delivery_method", "交易方式", "select", ["meetup|面交", "pickup|自取", "shipping|邮寄", "negotiable|可商量"], True, "新宿站 / 池袋 / 可邮寄"),
+            ("", "brand", "品牌", "text", [], False, "可选：品牌名 / 无品牌"),
+            ("", "model", "型号", "text", [], False, "型号、尺寸、颜色或版本"),
+            ("", "original_price", "原价/参考价", "text", [], False, "例如 28000"),
+            ("", "purchase_time", "购买时间", "text", [], False, "2025 年春 / 使用约 6 个月"),
+            ("", "accessories", "配件/包装", "text", [], False, "原盒、充电器、说明书"),
+            ("", "defect_note", "瑕疵说明", "textarea", [], False, "划痕、缺件、维修史，没有可写无"),
+            ("", "available_time", "可交易时间", "text", [], True, "平日晚上 / 周末下午"),
+            ("", "pickup_note", "取货/邮寄说明", "textarea", [], False, "交易地点、邮寄费用和注意事项"),
+            ("", "price_negotiable", "价格可商量", "checkbox", [], False, ""),
+            ("", "pickup_available", "支持自取/面交", "checkbox", [], False, ""),
+            ("", "shipping_available", "支持邮寄", "checkbox", [], False, ""),
+        ],
+    },
+    "rental": {
+        "categories": ["单人", "合租", "短租", "整租", "家具家电", "近车站"],
+        "fields": [
+            ("", "layout", "户型", "select", ["1R", "1K", "1DK", "1LDK", "2K", "2LDK", "合租"], True, "1K / 合租"),
+            ("", "area_sqm", "面积 m²", "text", [], True, "25"),
+            ("", "nearest_station", "最近车站", "text", [], True, "新宿站 / 青叶通一番町站"),
+            ("", "station_distance_minutes", "车站距离", "text", [], False, "步行 7 分钟"),
+            ("", "move_in_date", "可入住时间", "text", [], True, "即日 / 7 月上旬"),
+            ("", "lease_term", "租期", "text", [], False, "2 年 / 3 个月起"),
+            ("", "deposit", "押金", "text", [], False, "1 个月 / 无"),
+            ("", "key_money", "礼金", "text", [], False, "0 / 1 个月"),
+            ("", "management_fee", "管理费", "text", [], False, "3000"),
+            ("", "short_term_allowed", "可短租", "checkbox", [], False, ""),
+            ("", "share_allowed", "可合租", "checkbox", [], False, ""),
+            ("", "furnished", "家具家电", "checkbox", [], False, ""),
+            ("", "pet_allowed", "可宠物", "checkbox", [], False, ""),
+            ("", "initial_cost_note", "初期费用说明", "textarea", [], False, "押金、礼金、管理费、中介费等"),
+        ],
+    },
+    "job": {
+        "categories": ["兼职", "全职", "时给", "月给", "无经验可", "留学生可", "签证支持", "周末"],
+        "fields": [
+            ("", "company_name", "公司/店铺名称", "text", [], True, "Machi Dining"),
+            ("", "employment_type", "雇佣类型", "select", ["part_time|兼职", "full_time|全职", "dispatch|派遣", "internship|实习", "contract|契约"], True, "兼职 / 全职"),
+            ("", "salary_type", "薪资类型", "select", ["hourly|时给", "monthly|月给", "daily|日给", "annual|年薪"], True, "时给 / 月给"),
+            ("", "japanese_level", "日语要求", "select", ["not_required|不限", "daily|日常会话", "N3", "N2", "N1"], False, "N2 / 日常会话"),
+            ("", "visa_support", "签证支持", "select", ["none|无", "consult|可咨询", "available|有"], True, "签证支持情况"),
+            ("", "working_hours", "工作时间", "text", [], True, "18:00-23:30 / 每周 3 天"),
+            ("", "holidays", "休日休假", "text", [], False, "轮班制 / 周休二日"),
+            ("", "trial_period", "试用期", "text", [], False, "3 个月（待遇不变）"),
+            ("", "benefits", "福利待遇", "text", [], False, "交通费、员工餐、社保"),
+            ("", "transportation_fee", "交通费", "checkbox", [], False, ""),
+            ("", "remote_ok", "可远程", "checkbox", [], False, ""),
+            ("", "no_experience_ok", "无经验可", "checkbox", [], False, ""),
+            ("", "student_ok", "留学生可", "checkbox", [], False, ""),
+            ("", "job_requirements", "应聘条件", "textarea", [], False, "经验、语言、签证、排班等要求"),
+        ],
+    },
+    "hiring": {
+        "categories": ["兼职", "全职", "派遣", "实习", "签证支持"],
+        "fields": [
+            ("", "company_name", "公司/店铺名称", "text", [], True, "Machi Dining"),
+            ("", "employment_type", "雇佣类型", "select", ["part_time|兼职", "full_time|全职", "dispatch|派遣", "internship|实习", "contract|契约"], True, "兼职 / 全职"),
+            ("", "salary_type", "薪资类型", "select", ["hourly|时给", "monthly|月给", "daily|日给", "annual|年薪"], True, "时给 / 月给"),
+            ("", "japanese_level", "日语要求", "select", ["not_required|不限", "daily|日常会话", "N3", "N2", "N1"], False, "N2 / 日常会话"),
+            ("", "visa_support", "签证支持", "select", ["none|无", "consult|可咨询", "available|有"], True, "签证支持情况"),
+            ("", "working_hours", "工作时间", "text", [], True, "18:00-23:30 / 每周 3 天"),
+            ("", "holidays", "休日休假", "text", [], False, "轮班制 / 周休二日"),
+            ("", "trial_period", "试用期", "text", [], False, "3 个月（待遇不变）"),
+            ("", "benefits", "福利待遇", "text", [], False, "交通费、员工餐、社保"),
+            ("", "transportation_fee", "交通费", "checkbox", [], False, ""),
+            ("", "remote_ok", "可远程", "checkbox", [], False, ""),
+            ("", "no_experience_ok", "无经验可", "checkbox", [], False, ""),
+            ("", "student_ok", "留学生可", "checkbox", [], False, ""),
+            ("", "job_requirements", "应聘条件", "textarea", [], False, "经验、语言、签证、排班等要求"),
+        ],
+    },
+    "local_service": {
+        "categories": [
+            "中华料理", "日本料理", "居酒屋", "烧肉火锅", "拉面", "寿司海鲜", "咖啡甜品", "西餐", "韩国料理", "优惠预约",
+            "民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓",
+            "景点门票", "一日游", "本地向导", "体验活动", "包车行程",
+            "机场接送", "车站接送", "包车", "行李协助",
+            "材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "签证材料整理",
+            "搬家", "退房清洁", "粗大垃圾协助", "行李搬运", "家具家电配送协助",
+            "手机卡开通", "网络开通", "水电煤协助", "地址登记协助", "粗大垃圾预约", "生活跑腿",
+            "美容美发", "美甲", "按摩", "皮肤管理", "体检/牙科预约协助",
+            "宠物寄养", "遛狗", "临时照看", "儿童用品租赁", "家庭协助",
+        ],
+        "fields": [
+            ("", "business_name", "商家/服务方名称", "text", [], True, "Machi Local Support"),
+            ("", "service_area", "服务区域", "text", [], True, "东京 23 区 / 线上"),
+            ("", "service_type", "服务类型", "select", [], True, "请选择细分类"),
+            ("", "price_range", "价格说明", "text", [], False, "¥3,000 起 / 预约咨询"),
+            ("", "availability", "可预约时间", "text", [], False, "平日晚间 / 周末需提前 2 天"),
+            ("", "user_prepare", "用户需准备", "textarea", [], False, "证件、人数、地址、照片或预约偏好"),
+            ("", "cancellation_rule", "取消规则", "textarea", [], False, "取消、改期和费用规则"),
+            ("中华料理", "menu", "菜单", "textarea", [], False, "麻婆豆腐 | ¥980 | 微辣"),
+            ("日本料理", "menu", "菜单", "textarea", [], False, "刺身定食 | ¥1,680"),
+            ("餐厅美食", "open_hours", "营业时间", "text", [], False, "11:00-22:00 / 周一休"),
+            ("餐厅美食", "reservation_note", "预约说明", "textarea", [], False, "人数、时段、包间、定金规则"),
+            ("餐厅美食", "packages", "团购套餐", "textarea", [], False, "双人套餐 | ¥3,980 | ¥5,200 | 4菜1汤"),
+            ("居酒屋", "reservation_note", "预约说明", "textarea", [], False, "人数、时段、包间、定金规则"),
+            ("民宿", "room_type", "房型", "text", [], True, "整套民宿 / 双床房"),
+            ("民宿", "max_guests", "可住人数", "text", [], True, "2"),
+            ("民宿", "inventory_note", "房量与日期说明", "textarea", [], False, "可订日期、旺季限制、儿童入住规则"),
+            ("酒店", "check_in_time", "入住时间", "text", [], False, "15:00"),
+            ("酒店", "check_out_time", "退房时间", "text", [], False, "10:00"),
+            ("景点门票", "ticket_type", "票种/行程类型", "text", [], True, "成人票 / 儿童票"),
+            ("景点门票", "included_items", "包含内容", "textarea", [], False, "门票、导览、交通、保险等"),
+            ("一日游", "meeting_point", "集合地点", "text", [], False, "新宿站西口"),
+            ("一日游", "included_items", "包含内容", "textarea", [], False, "门票、向导、车费、保险等"),
+            ("一日游", "not_included", "不包含内容", "textarea", [], False, "餐费、个人消费、额外门票等"),
+            ("机场接送", "airport_route", "机场/路线", "text", [], True, "成田机场 -> 东京 23 区"),
+            ("机场接送", "vehicle_type", "车型", "text", [], False, "轿车 / Alphard / Hiace"),
+            ("机场接送", "luggage_count", "行李数", "text", [], False, "2 个 28 寸 + 2 个登机箱"),
+            ("材料翻译", "document_type", "文件/手续类型", "text", [], True, "签证材料 / 契约翻译"),
+            ("材料翻译", "required_materials", "所需材料", "textarea", [], False, "护照、在留卡、原文件、申请表等"),
+            ("材料翻译", "delivery_time", "交付时间", "text", [], False, "1-3 个工作日 / 加急另询"),
+            ("搬家", "item_volume", "物品量", "textarea", [], False, "床、桌子、纸箱数量等"),
+            ("搬家", "vehicle_staff", "车辆/人员", "text", [], False, "轻型车一台 / 2 名工作人员"),
+            ("手机卡开通", "required_materials", "所需材料", "textarea", [], False, "在留卡、护照、地址等"),
+            ("手机卡开通", "setup_type", "开通事项", "text", [], True, "手机卡 / 网络 / 水电煤"),
+            ("网络开通", "setup_type", "开通事项", "text", [], True, "光回线 / Wi-Fi / 工事预约"),
+            ("美容美发", "beauty_service", "服务项目", "text", [], True, "剪发 / 美甲 / 按摩"),
+            ("美容美发", "duration", "服务时长", "text", [], False, "45 分钟 / 90 分钟"),
+            ("体检/牙科预约协助", "medical_disclaimer", "医疗免责声明", "textarea", [], False, "仅做预约协助，不提供诊断或治疗建议"),
+            ("宠物寄养", "service_target", "服务对象", "text", [], True, "小型犬 / 猫 / 其他宠物"),
+            ("家庭协助", "service_target", "服务对象", "text", [], False, "家庭协助 / 临时照看 / 用品租赁"),
+        ],
+    },
+}
+
+
+def _taxonomy_key(value: Any, fallback: str = "") -> str:
+    raw = str(value or "").strip()
+    return raw or fallback
+
+
+def ensure_listing_taxonomy_defaults(conn: sqlite3.Connection, listing_type: str) -> None:
+    listing_type = normalize_listing_type(listing_type)
+    existing = conn.execute(
+        "SELECT 1 FROM listing_taxonomy_categories WHERE listing_type = ? LIMIT 1",
+        (listing_type,),
+    ).fetchone()
+    if existing:
+        return
+    spec = LISTING_TAXONOMY_DEFAULTS.get(listing_type) or LISTING_TAXONOMY_DEFAULTS["secondhand"]
+    now = now_iso()
+    for idx, label in enumerate(spec.get("categories", [])):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO listing_taxonomy_categories (
+                id, listing_type, category_key, label, sort_order, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), listing_type, label, label, idx * 10, now, now),
+        )
+    for idx, entry in enumerate(spec.get("fields", [])):
+        category_key, field_key, label, field_kind, options, required, placeholder = entry
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO listing_taxonomy_fields (
+                id, listing_type, category_key, field_key, label, field_kind, options_json,
+                required, placeholder, sort_order, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                str(uuid.uuid4()), listing_type, category_key, field_key, label, field_kind,
+                json.dumps(options or [], ensure_ascii=False), 1 if required else 0,
+                placeholder or "", idx * 10, now, now,
+            ),
+        )
+
+
+def serialize_listing_taxonomy_category(row: dict[str, Any]) -> dict[str, Any]:
+    metadata: dict[str, Any] = {}
+    try:
+        parsed = json.loads(row.get("metadata") or "{}")
+        if isinstance(parsed, dict):
+            metadata = parsed
+    except (TypeError, ValueError):
+        metadata = {}
+    return {
+        "id": row.get("id", ""),
+        "listing_type": row.get("listing_type", ""),
+        "listingType": row.get("listing_type", ""),
+        "category_key": row.get("category_key", ""),
+        "categoryKey": row.get("category_key", ""),
+        "label": row.get("label", ""),
+        "label_ja": row.get("label_ja", ""),
+        "labelJa": row.get("label_ja", ""),
+        "label_en": row.get("label_en", ""),
+        "labelEn": row.get("label_en", ""),
+        "section_key": row.get("section_key", ""),
+        "sectionKey": row.get("section_key", ""),
+        "description": row.get("description", ""),
+        "is_active": bool(row.get("is_active", 1)),
+        "isActive": bool(row.get("is_active", 1)),
+        "sort_order": int(row.get("sort_order") or 0),
+        "sortOrder": int(row.get("sort_order") or 0),
+        "metadata": metadata,
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def serialize_listing_taxonomy_field(row: dict[str, Any]) -> dict[str, Any]:
+    options: list[Any] = []
+    metadata: dict[str, Any] = {}
+    try:
+        parsed = json.loads(row.get("options_json") or "[]")
+        if isinstance(parsed, list):
+            options = parsed
+    except (TypeError, ValueError):
+        options = []
+    try:
+        parsed_meta = json.loads(row.get("metadata") or "{}")
+        if isinstance(parsed_meta, dict):
+            metadata = parsed_meta
+    except (TypeError, ValueError):
+        metadata = {}
+    return {
+        "id": row.get("id", ""),
+        "listing_type": row.get("listing_type", ""),
+        "listingType": row.get("listing_type", ""),
+        "category_key": row.get("category_key", ""),
+        "categoryKey": row.get("category_key", ""),
+        "field_key": row.get("field_key", ""),
+        "fieldKey": row.get("field_key", ""),
+        "label": row.get("label", ""),
+        "label_ja": row.get("label_ja", ""),
+        "labelJa": row.get("label_ja", ""),
+        "label_en": row.get("label_en", ""),
+        "labelEn": row.get("label_en", ""),
+        "kind": row.get("field_kind", "text"),
+        "field_kind": row.get("field_kind", "text"),
+        "fieldKind": row.get("field_kind", "text"),
+        "placeholder": row.get("placeholder", ""),
+        "placeholder_ja": row.get("placeholder_ja", ""),
+        "placeholderJa": row.get("placeholder_ja", ""),
+        "placeholder_en": row.get("placeholder_en", ""),
+        "placeholderEn": row.get("placeholder_en", ""),
+        "help_text": row.get("help_text", ""),
+        "helpText": row.get("help_text", ""),
+        "options": options,
+        "required": bool(row.get("required", 0)),
+        "is_active": bool(row.get("is_active", 1)),
+        "isActive": bool(row.get("is_active", 1)),
+        "sort_order": int(row.get("sort_order") or 0),
+        "sortOrder": int(row.get("sort_order") or 0),
+        "metadata": metadata,
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+def listing_taxonomy_payload(conn: sqlite3.Connection, listing_type: str, include_inactive: bool = False) -> dict[str, Any]:
+    listing_type = normalize_listing_type(listing_type)
+    ensure_listing_taxonomy_defaults(conn, listing_type)
+    cat_where = "listing_type = ?" + ("" if include_inactive else " AND is_active = 1")
+    field_where = "listing_type = ?" + ("" if include_inactive else " AND is_active = 1")
+    categories = [
+        serialize_listing_taxonomy_category(dict(r))
+        for r in conn.execute(
+            f"SELECT * FROM listing_taxonomy_categories WHERE {cat_where} ORDER BY sort_order ASC, label ASC",
+            (listing_type,),
+        )
+    ]
+    fields = [
+        serialize_listing_taxonomy_field(dict(r))
+        for r in conn.execute(
+            f"SELECT * FROM listing_taxonomy_fields WHERE {field_where} ORDER BY category_key ASC, sort_order ASC, label ASC",
+            (listing_type,),
+        )
+    ]
+    return {"listing_type": listing_type, "listingType": listing_type, "categories": categories, "fields": fields}
+
+
 def normalize_listing_promotion_type(value: Any, fallback: str = "top") -> str:
     raw = str(value or "").strip().lower()
     aliases = {
@@ -9304,12 +9622,18 @@ def infer_service_vertical(category: Any, attrs: dict[str, Any]) -> str:
         return "lodging"
     if attrs.get("airport_route") or attrs.get("vehicle_type") or attrs.get("flight_info_note"):
         return "airport_transfer"
-    if attrs.get("document_type") or attrs.get("required_materials") or attrs.get("delivery_time") or attrs.get("no_result_guarantee"):
+    if attrs.get("document_type") or attrs.get("no_result_guarantee"):
         return "paperwork_translation"
-    if attrs.get("project_type") or attrs.get("device_brand_model") or attrs.get("warranty_note"):
-        return "repair_installation"
     if attrs.get("property_size") or attrs.get("item_volume") or attrs.get("vehicle_staff"):
         return "moving_cleaning"
+    if attrs.get("setup_type") or attrs.get("cannot_guarantee"):
+        return "life_setup"
+    if attrs.get("beauty_service") or attrs.get("medical_disclaimer"):
+        return "beauty_health"
+    if attrs.get("service_target"):
+        return "pet_family"
+    if attrs.get("required_materials") or attrs.get("delivery_time"):
+        return "paperwork_translation"
     if attrs.get("ticket_type") and attrs.get("meeting_point"):
         return "day_tour" if attrs.get("pickup_service") else "attraction_ticket"
     return ""
@@ -9741,20 +10065,115 @@ def listing_safety_tips(listing_type: str) -> list[str]:
     return base
 
 
-def listing_inquiry_type(listing_type: str) -> str:
+def _clean_listing_token(value: Any) -> str:
+    return str(value or "").strip().lower().replace("／", "/").replace(" ", "")
+
+
+def _listing_attr_dict(row: Any) -> dict[str, Any]:
+    raw = row.get("attributes") if hasattr(row, "get") else None
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def listing_inquiry_type(row_or_type: Any) -> str:
+    if isinstance(row_or_type, str):
+        listing_type = row_or_type
+        category = ""
+        attrs: dict[str, Any] = {}
+    else:
+        listing_type = str(row_or_type.get("type") or "")
+        category = str(row_or_type.get("category") or "")
+        attrs = _listing_attr_dict(row_or_type)
     if listing_type == "secondhand":
-        return "secondhand_consult"
+        return "secondhand_trade_request"
     if listing_type == "rental":
-        return "rental_consult"
+        return "rental_viewing"
     if listing_type in {"job", "hiring"}:
         return "job_apply"
     if listing_type == "local_service":
+        tokens = {
+            _clean_listing_token(category),
+            _clean_listing_token(attrs.get("service_type")),
+            _clean_listing_token(attrs.get("service_vertical")),
+        }
+        if tokens & {"餐厅美食", "居酒屋", "咖啡甜品", "烧肉火锅", "拉面", "寿司海鲜", "西餐", "韩国料理", "优惠预约", "餐饮与到店预约", "food_restaurant", "dining_booking"}:
+            return "restaurant_booking"
+        if tokens & {"民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓", "酒店民宿", "住宿与短住", "lodging"}:
+            return "stay_booking"
+        if tokens & {"景点门票", "一日游", "本地向导", "体验活动", "包车行程", "旅行玩乐与票务", "attraction_ticket", "day_tour", "travel_ticket"}:
+            return "travel_ticket_booking"
+        if tokens & {"机场接送", "车站接送", "包车", "行李协助", "接送机", "接送与交通", "airport_transfer", "transfer"}:
+            return "transfer_booking"
+        if tokens & {"材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "签证材料整理", "翻译手续", "翻译与手续陪同", "paperwork_translation"}:
+            return "paperwork_booking"
+        if tokens & {"搬家", "退房清洁", "粗大垃圾协助", "行李搬运", "家具家电配送协助", "搬家清洁", "搬家清洁与退房协助", "moving_cleaning"}:
+            return "moving_cleaning_booking"
+        if tokens & {"手机卡开通", "网络开通", "水电煤协助", "地址登记协助", "粗大垃圾预约", "生活跑腿", "生活开通与住后支持", "life_setup"}:
+            return "life_setup_booking"
+        if tokens & {"美容美发", "美甲", "按摩", "皮肤管理", "体检/牙科预约协助", "美容健康预约", "beauty_health"}:
+            return "beauty_health_booking"
+        if tokens & {"宠物寄养", "遛狗", "临时照看", "儿童用品租赁", "家庭协助", "宠物与家庭支持", "pet_family"}:
+            return "pet_family_booking"
         return "service_booking"
     if listing_type == "discount":
-        return "discount_consult"
+        return "discount_claim"
     if listing_type == "event":
         return "event_consult"
-    return "general"
+    return "general_consult"
+
+
+def listing_inquiry_action_word(inquiry_type: str) -> str:
+    return {
+        "secondhand_trade_request": "咨询交易",
+        "secondhand_consult": "咨询商品",
+        "rental_viewing": "申请看房",
+        "rental_application": "申请房源",
+        "job_apply": "申请职位",
+        "restaurant_booking": "提交订座",
+        "stay_booking": "预订住宿",
+        "travel_ticket_booking": "预订行程/票务",
+        "transfer_booking": "预约接送",
+        "paperwork_booking": "预约手续协助",
+        "moving_cleaning_booking": "预约搬家清洁",
+        "life_setup_booking": "预约生活开通协助",
+        "beauty_health_booking": "预约美容健康",
+        "pet_family_booking": "预约家庭支持",
+        "service_booking": "预约服务",
+        "discount_claim": "领取/咨询优惠",
+        "event_consult": "报名/咨询活动",
+    }.get(inquiry_type, "提交咨询")
+
+
+def listing_inquiry_success_title(inquiry_type: str) -> str:
+    if inquiry_type in {"job_apply", "rental_application"}:
+        return "已提交申请"
+    if inquiry_type.endswith("_booking") or inquiry_type == "rental_viewing":
+        return "已提交预约"
+    return "已发送咨询"
+
+
+def listing_inquiry_status_message(status: str) -> str:
+    return {
+        "submitted": "已提交",
+        "new": "新提交",
+        "reviewing": "处理中",
+        "contacted": "商家已联系",
+        "confirmed": "已确认",
+        "rescheduled": "待改期/已改期",
+        "rejected": "已拒绝",
+        "withdrawn": "已撤回",
+        "completed": "已完成",
+        "closed": "已关闭",
+        "spam": "已标记骚扰",
+        "reported": "已举报",
+    }.get(status or "", status or "")
 
 
 def listing_price_card_label(row: dict[str, Any]) -> str:
@@ -16204,10 +16623,14 @@ class Handler(BaseHTTPRequestHandler):
 
         # Only serialize on the DB lock for actual writes. SQLite WAL
         # supports concurrent readers and the lock was previously the
-        # main throughput ceiling. The session-last-seen-at update path
-        # was the only "write inside a GET" — it's now throttled and
-        # batched in memory (see _should_flush_last_seen).
-        need_write_lock = method in ("POST", "PATCH", "PUT", "DELETE") or path == "/api/auth/google/callback"
+        # main throughput ceiling. Taxonomy GET endpoints lazily seed
+        # default rows on first use, so they intentionally join the write
+        # path to avoid two first-time visitors racing on SQLite.
+        need_write_lock = (
+            method in ("POST", "PATCH", "PUT", "DELETE")
+            or path == "/api/auth/google/callback"
+            or (method == "GET" and path in {"/api/listing-taxonomy", "/api/admin/listing-taxonomy"})
+        )
         lock_held = False
         response = None
         try:
@@ -16507,6 +16930,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_business_public(conn, unquote(path[len("/api/businesses/"):-len("/public")]))
 
         # structured city listings (marketplace / rentals / jobs / services)
+        if path == "/api/listing-taxonomy" and method == "GET":
+            return self.api_listing_taxonomy(conn, query)
         if path == "/api/listings" and method == "GET":
             return self.api_listings(conn, query)
         if path == "/api/listings" and method == "POST":
@@ -16925,6 +17350,27 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/admin/guide/corrections/") and method == "PATCH":
             correction_id = unquote(path[len("/api/admin/guide/corrections/"):])
             return self.api_admin_guide_update_correction(conn, correction_id)
+
+        # Listing taxonomy — editable categories and publish-form fields for
+        # secondhand, rentals, jobs/hiring and merchant services.
+        if path == "/api/admin/listing-taxonomy" and method == "GET":
+            return self.api_admin_listing_taxonomy(conn, query)
+        if path == "/api/admin/listing-taxonomy/categories" and method == "POST":
+            return self.api_admin_create_taxonomy_category(conn)
+        if path.startswith("/api/admin/listing-taxonomy/categories/"):
+            category_id = unquote(path[len("/api/admin/listing-taxonomy/categories/"):])
+            if method == "PATCH":
+                return self.api_admin_update_taxonomy_category(conn, category_id)
+            if method == "DELETE":
+                return self.api_admin_delete_taxonomy_category(conn, category_id)
+        if path == "/api/admin/listing-taxonomy/fields" and method == "POST":
+            return self.api_admin_create_taxonomy_field(conn)
+        if path.startswith("/api/admin/listing-taxonomy/fields/"):
+            field_id = unquote(path[len("/api/admin/listing-taxonomy/fields/"):])
+            if method == "PATCH":
+                return self.api_admin_update_taxonomy_field(conn, field_id)
+            if method == "DELETE":
+                return self.api_admin_delete_taxonomy_field(conn, field_id)
 
         # blocks & devices
         if path == "/api/blocks" and method == "GET":
@@ -20312,8 +20758,197 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute("UPDATE city_listings SET report_count = report_count + 1, verification_status = 'needs_review', updated_at = ? WHERE id = ?", (now_iso(), listing_id))
         self.send_json({"ok": True})
 
+    def api_listing_taxonomy(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        listing_type = normalize_listing_type(query.get("type") or query.get("listing_type") or "local_service")
+        payload = listing_taxonomy_payload(conn, listing_type, include_inactive=False)
+        self.send_json({"ok": True, **payload, "data": payload})
+
+    def api_admin_listing_taxonomy(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        raw_type = (query.get("type") or query.get("listing_type") or "").strip()
+        types = [normalize_listing_type(raw_type)] if raw_type else ["secondhand", "rental", "job", "hiring", "local_service"]
+        payloads = [listing_taxonomy_payload(conn, t, include_inactive=True) for t in types]
+        if raw_type:
+            self.send_json({"ok": True, **payloads[0], "data": payloads[0]})
+        else:
+            self.send_json({"ok": True, "items": payloads, "data": {"items": payloads}})
+
+    def _taxonomy_options(self, data: dict[str, Any]) -> list[str]:
+        raw = data.get("options")
+        if isinstance(raw, list):
+            return [str(v).strip()[:120] for v in raw if str(v).strip()]
+        raw_text = str(data.get("optionsText") or data.get("options_text") or "").strip()
+        if raw_text:
+            return [line.strip()[:120] for line in raw_text.replace(",", "\n").splitlines() if line.strip()]
+        return []
+
+    def api_admin_create_taxonomy_category(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        listing_type = normalize_listing_type(data.get("listingType") or data.get("listing_type") or data.get("type"))
+        label = _clean_text(data.get("label"), 80)
+        if not label:
+            raise APIError("请填写分类名称", 400, "validation_error")
+        now = now_iso()
+        item_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO listing_taxonomy_categories
+                (id, listing_type, category_key, label, label_ja, label_en, section_key,
+                 description, is_active, sort_order, metadata, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item_id,
+                listing_type,
+                _clean_text(data.get("categoryKey") or data.get("category_key") or label, 80),
+                label,
+                _clean_text(data.get("labelJa") or data.get("label_ja"), 80),
+                _clean_text(data.get("labelEn") or data.get("label_en"), 80),
+                _clean_text(data.get("sectionKey") or data.get("section_key"), 60),
+                _clean_text(data.get("description"), 300),
+                1 if data.get("isActive", data.get("is_active", True)) else 0,
+                int(data.get("sortOrder") or data.get("sort_order") or 0),
+                json.dumps(data.get("metadata") if isinstance(data.get("metadata"), dict) else {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        item = dict(conn.execute("SELECT * FROM listing_taxonomy_categories WHERE id = ?", (item_id,)).fetchone())
+        self.send_json({"ok": True, "category": serialize_listing_taxonomy_category(item)})
+
+    def api_admin_update_taxonomy_category(self, conn: sqlite3.Connection, category_id: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT 1 FROM listing_taxonomy_categories WHERE id = ?", (category_id,)).fetchone():
+            raise APIError("分类不存在", 404, "not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for source, column, cap in [
+            ("label", "label", 80), ("labelJa", "label_ja", 80), ("label_ja", "label_ja", 80),
+            ("labelEn", "label_en", 80), ("label_en", "label_en", 80),
+            ("categoryKey", "category_key", 80), ("category_key", "category_key", 80),
+            ("sectionKey", "section_key", 60), ("section_key", "section_key", 60),
+            ("description", "description", 300),
+        ]:
+            if source in data:
+                updates[column] = _clean_text(data.get(source), cap)
+        if "isActive" in data or "is_active" in data:
+            updates["is_active"] = 1 if data.get("isActive", data.get("is_active")) else 0
+        if "sortOrder" in data or "sort_order" in data:
+            updates["sort_order"] = int(data.get("sortOrder", data.get("sort_order")) or 0)
+        if "metadata" in data and isinstance(data.get("metadata"), dict):
+            updates["metadata"] = json.dumps(data.get("metadata"), ensure_ascii=False)
+        if updates:
+            updates["updated_at"] = now_iso()
+            conn.execute(
+                f"UPDATE listing_taxonomy_categories SET {', '.join(f'{k} = ?' for k in updates)} WHERE id = ?",
+                (*updates.values(), category_id),
+            )
+        item = dict(conn.execute("SELECT * FROM listing_taxonomy_categories WHERE id = ?", (category_id,)).fetchone())
+        self.send_json({"ok": True, "category": serialize_listing_taxonomy_category(item)})
+
+    def api_admin_delete_taxonomy_category(self, conn: sqlite3.Connection, category_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM listing_taxonomy_categories WHERE id = ?", (category_id,)).fetchone()
+        if not row:
+            raise APIError("分类不存在", 404, "not_found")
+        item = dict(row)
+        conn.execute("DELETE FROM listing_taxonomy_fields WHERE listing_type = ? AND category_key = ?", (item["listing_type"], item["category_key"]))
+        conn.execute("DELETE FROM listing_taxonomy_categories WHERE id = ?", (category_id,))
+        self.send_json({"ok": True, "deleted": True})
+
+    def api_admin_create_taxonomy_field(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        listing_type = normalize_listing_type(data.get("listingType") or data.get("listing_type") or data.get("type"))
+        field_key = _clean_text(data.get("fieldKey") or data.get("field_key"), 80)
+        label = _clean_text(data.get("label"), 80)
+        if not field_key or not label:
+            raise APIError("请填写字段 key 和名称", 400, "validation_error")
+        kind = _clean_text(data.get("kind") or data.get("fieldKind") or data.get("field_kind") or "text", 30)
+        if kind not in {"text", "textarea", "select", "checkbox", "date"}:
+            kind = "text"
+        now = now_iso()
+        item_id = str(uuid.uuid4())
+        conn.execute(
+            """
+            INSERT INTO listing_taxonomy_fields
+                (id, listing_type, category_key, field_key, label, label_ja, label_en,
+                 field_kind, placeholder, placeholder_ja, placeholder_en, help_text,
+                 options_json, required, is_active, sort_order, metadata, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                item_id, listing_type,
+                _clean_text(data.get("categoryKey") or data.get("category_key"), 80),
+                field_key, label,
+                _clean_text(data.get("labelJa") or data.get("label_ja"), 80),
+                _clean_text(data.get("labelEn") or data.get("label_en"), 80),
+                kind,
+                _clean_text(data.get("placeholder"), 200),
+                _clean_text(data.get("placeholderJa") or data.get("placeholder_ja"), 200),
+                _clean_text(data.get("placeholderEn") or data.get("placeholder_en"), 200),
+                _clean_text(data.get("helpText") or data.get("help_text"), 300),
+                json.dumps(self._taxonomy_options(data), ensure_ascii=False),
+                1 if data.get("required") else 0,
+                1 if data.get("isActive", data.get("is_active", True)) else 0,
+                int(data.get("sortOrder") or data.get("sort_order") or 0),
+                json.dumps(data.get("metadata") if isinstance(data.get("metadata"), dict) else {}, ensure_ascii=False),
+                now,
+                now,
+            ),
+        )
+        item = dict(conn.execute("SELECT * FROM listing_taxonomy_fields WHERE id = ?", (item_id,)).fetchone())
+        self.send_json({"ok": True, "field": serialize_listing_taxonomy_field(item)})
+
+    def api_admin_update_taxonomy_field(self, conn: sqlite3.Connection, field_id: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT 1 FROM listing_taxonomy_fields WHERE id = ?", (field_id,)).fetchone():
+            raise APIError("字段不存在", 404, "not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for source, column, cap in [
+            ("categoryKey", "category_key", 80), ("category_key", "category_key", 80),
+            ("fieldKey", "field_key", 80), ("field_key", "field_key", 80),
+            ("label", "label", 80), ("labelJa", "label_ja", 80), ("label_ja", "label_ja", 80),
+            ("labelEn", "label_en", 80), ("label_en", "label_en", 80),
+            ("kind", "field_kind", 30), ("fieldKind", "field_kind", 30), ("field_kind", "field_kind", 30),
+            ("placeholder", "placeholder", 200), ("placeholderJa", "placeholder_ja", 200),
+            ("placeholder_ja", "placeholder_ja", 200), ("placeholderEn", "placeholder_en", 200),
+            ("placeholder_en", "placeholder_en", 200), ("helpText", "help_text", 300), ("help_text", "help_text", 300),
+        ]:
+            if source in data:
+                value = _clean_text(data.get(source), cap)
+                if column == "field_kind" and value not in {"text", "textarea", "select", "checkbox", "date"}:
+                    value = "text"
+                updates[column] = value
+        if "options" in data or "optionsText" in data or "options_text" in data:
+            updates["options_json"] = json.dumps(self._taxonomy_options(data), ensure_ascii=False)
+        if "required" in data:
+            updates["required"] = 1 if data.get("required") else 0
+        if "isActive" in data or "is_active" in data:
+            updates["is_active"] = 1 if data.get("isActive", data.get("is_active")) else 0
+        if "sortOrder" in data or "sort_order" in data:
+            updates["sort_order"] = int(data.get("sortOrder", data.get("sort_order")) or 0)
+        if "metadata" in data and isinstance(data.get("metadata"), dict):
+            updates["metadata"] = json.dumps(data.get("metadata"), ensure_ascii=False)
+        if updates:
+            updates["updated_at"] = now_iso()
+            conn.execute(
+                f"UPDATE listing_taxonomy_fields SET {', '.join(f'{k} = ?' for k in updates)} WHERE id = ?",
+                (*updates.values(), field_id),
+            )
+        item = dict(conn.execute("SELECT * FROM listing_taxonomy_fields WHERE id = ?", (field_id,)).fetchone())
+        self.send_json({"ok": True, "field": serialize_listing_taxonomy_field(item)})
+
+    def api_admin_delete_taxonomy_field(self, conn: sqlite3.Connection, field_id: str) -> None:
+        self.require_admin(conn)
+        conn.execute("DELETE FROM listing_taxonomy_fields WHERE id = ?", (field_id,))
+        self.send_json({"ok": True, "deleted": True})
+
     def api_listing_inquiry(self, conn: sqlite3.Connection, listing_id: str) -> None:
         user = self.require_user(conn)
+        user_dict = dict(user)
         row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
         if not row:
             raise APIError("信息不存在", 404, "listing_not_found")
@@ -20327,7 +20962,8 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         message = str(data.get("message") or "").strip()[:1000]
         contact_value = str(data.get("contact_value") or "").strip()[:200]
-        inquiry_kind = listing_inquiry_type(row["type"])
+        row_dict = dict(row)
+        inquiry_kind = listing_inquiry_type(row_dict)
         # Structured intake: the type-specific forms (预约看房 / 申请职位 / 预约服务)
         # post details=[{label,value},…]. We keep it as JSON and echo it into the
         # seeded thread message so the poster sees a real brief, not "在吗".
@@ -20341,18 +20977,38 @@ class Handler(BaseHTTPRequestHandler):
                 value = str(entry.get("value") or "").strip()[:600]
                 if label and value:
                     details.append({"label": label, "value": value})
-        action_word = {
-            "job_apply": "申请",
-            "rental_consult": "预约看房",
-            "service_booking": "预约服务",
-        }.get(inquiry_kind, "咨询")
+        action_word = listing_inquiry_action_word(inquiry_kind)
+        success_title = listing_inquiry_success_title(inquiry_kind)
         title = (row["title"] or "城市信息").strip()
         if not message:
             message = f"我想{action_word}：{title}"
         seller_id = row["seller_user_id"]
         now = now_iso()
         dedupe_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
-        success_message = "已发送联系请求。已为你和发布者开启对话，请勿提前转账、核实身份后再交易。"
+        source_platform = str(data.get("source_platform") or data.get("sourcePlatform") or self.headers.get("X-Client-Platform") or "web").strip()[:40]
+        locale = str(data.get("locale") or data.get("language") or self.headers.get("Accept-Language") or "").strip()[:80]
+        metadata = {
+            "intake_schema_version": 2,
+            "details": details,
+            "applicant_snapshot": {
+                "id": user_dict.get("id", ""),
+                "handle": user_dict.get("handle", ""),
+                "display_name": user_dict.get("display_name", "") or user_dict.get("name", ""),
+            },
+            "listing_snapshot": {
+                "id": row["id"],
+                "type": row["type"],
+                "category": row["category"],
+                "title": title,
+                "price": row["price"],
+                "currency": row["currency"],
+                "city_slug": row["city_slug"],
+            },
+            "source_platform": source_platform,
+            "locale": locale,
+            "success_receipt_title": success_title,
+        }
+        success_message = f"{success_title}。你可以在工作台查看进度，也可以继续私信补充信息。"
         # Idempotency + atomicity (§7/§19): all of a contact's writes — inquiry,
         # thread seed message, seller notification and counters — run inside one
         # BEGIN IMMEDIATE transaction. SQLite serializes writers, so a double
@@ -20364,7 +21020,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             dup = conn.execute(
                 """
-                SELECT id, conversation_id FROM listing_inquiries
+                SELECT id, conversation_id, type, status, metadata FROM listing_inquiries
                  WHERE listing_id = ? AND from_user_id = ? AND created_at >= ?
                  ORDER BY created_at DESC LIMIT 1
                 """,
@@ -20373,11 +21029,33 @@ class Handler(BaseHTTPRequestHandler):
             if dup:
                 conv_id = dup["conversation_id"] or self._conversation_for(conn, user["id"], seller_id)["id"]
                 conn.execute("COMMIT")
+                dup_meta: dict[str, Any] = {}
+                try:
+                    parsed = json.loads(dup["metadata"] or "{}")
+                    if isinstance(parsed, dict):
+                        dup_meta = parsed
+                except (TypeError, ValueError):
+                    dup_meta = {}
                 self.send_json({
                     "ok": True, "message": success_message,
                     "conversation_id": conv_id, "conversationId": conv_id,
-                    "inquiry_id": dup["id"], "deduplicated": True,
-                    "data": {"conversation_id": conv_id, "conversationId": conv_id, "inquiry_id": dup["id"], "deduplicated": True},
+                    "inquiry_id": dup["id"], "inquiryId": dup["id"],
+                    "type": dup["type"] or inquiry_kind,
+                    "status": normalize_listing_inquiry_status(dup["status"], "submitted"),
+                    "details": dup_meta.get("details") if isinstance(dup_meta.get("details"), list) else [],
+                    "metadata": dup_meta,
+                    "success_title": dup_meta.get("success_receipt_title") or success_title,
+                    "successTitle": dup_meta.get("success_receipt_title") or success_title,
+                    "deduplicated": True,
+                    "data": {
+                        "conversation_id": conv_id, "conversationId": conv_id,
+                        "inquiry_id": dup["id"], "inquiryId": dup["id"],
+                        "type": dup["type"] or inquiry_kind,
+                        "status": normalize_listing_inquiry_status(dup["status"], "submitted"),
+                        "details": dup_meta.get("details") if isinstance(dup_meta.get("details"), list) else [],
+                        "metadata": dup_meta,
+                        "deduplicated": True,
+                    },
                 })
                 return
             # A contact opens (or reuses) a real buyer↔seller DM thread instead of
@@ -20393,23 +21071,25 @@ class Handler(BaseHTTPRequestHandler):
                     id, listing_id, sender_user_id, seller_user_id, from_user_id, to_user_id,
                     type, message, contact_value, conversation_id, metadata, status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?)
                 """,
                 (
                     inquiry_id, listing_id, user["id"], seller_id, user["id"], seller_id,
                     inquiry_kind, message, contact_value, conv_id,
-                    json.dumps({"details": details}, ensure_ascii=False), now, now,
+                    json.dumps({**metadata, "conversation_id": conv_id}, ensure_ascii=False), now, now,
                 ),
             )
             conn.execute("UPDATE city_listings SET inquiry_count = inquiry_count + 1, updated_at = ? WHERE id = ?", (now, listing_id))
-            # Seed the thread: "<action>：<title>" + price + form fields + contact + note.
-            seed_parts = [f"{action_word}：{title}"]
+            # Seed the thread with a receipt-like brief. The DM is a continuation
+            # channel; the inquiry record remains the source of truth in 工作台.
+            seed_parts = [f"【Machi {success_title}】", f"{action_word}：{title}", f"状态：{listing_inquiry_status_message('submitted')}"]
             if row["price"] is not None:
                 seed_parts.append(format_price_value(row["price"], row["currency"]))
             seed_parts.extend(f"{d['label']}：{d['value']}" for d in details)
             if contact_value:
                 seed_parts.append(f"联系方式：{contact_value}")
             seed_parts.append(message)
+            seed_parts.append("商家可在工作台的线索与预约中心处理；用户可在我的申请/预约/咨询中查看进度。")
             seed_content = "\n".join(p for p in seed_parts if p)[:1500]
             message_id = str(uuid.uuid4())
             conn.execute(
@@ -20445,7 +21125,25 @@ class Handler(BaseHTTPRequestHandler):
             "conversation_id": conv_id,
             "conversationId": conv_id,
             "inquiry_id": inquiry_id,
-            "data": {"conversation_id": conv_id, "conversationId": conv_id, "inquiry_id": inquiry_id},
+            "inquiryId": inquiry_id,
+            "type": inquiry_kind,
+            "status": "submitted",
+            "details": details,
+            "metadata": {**metadata, "conversation_id": conv_id},
+            "success_title": success_title,
+            "successTitle": success_title,
+            "data": {
+                "conversation_id": conv_id,
+                "conversationId": conv_id,
+                "inquiry_id": inquiry_id,
+                "inquiryId": inquiry_id,
+                "type": inquiry_kind,
+                "status": "submitted",
+                "details": details,
+                "metadata": {**metadata, "conversation_id": conv_id},
+                "success_title": success_title,
+                "successTitle": success_title,
+            },
         })
 
     def api_my_listing_inquiries(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -20763,10 +21461,34 @@ class Handler(BaseHTTPRequestHandler):
         status = normalize_listing_inquiry_status(data.get("status"), item.get("status") or "new")
         if status == "spam" and user["id"] == from_id:
             raise APIError("只有接收方可以标记骚扰", 403, "forbidden")
+        previous_status = normalize_listing_inquiry_status(item.get("status"), "submitted")
+        now = now_iso()
         conn.execute(
             "UPDATE listing_inquiries SET status = ?, updated_at = ? WHERE id = ?",
-            (status, now_iso(), inquiry_id),
+            (status, now, inquiry_id),
         )
+        if status != previous_status and item.get("conversation_id"):
+            listing = conn.execute(
+                "SELECT title FROM city_listings WHERE id = ?",
+                (item.get("listing_id"),),
+            ).fetchone()
+            title = (listing["title"] if listing else "") or "城市信息"
+            content = f"【Machi 进度更新】\n{title}\n状态：{listing_inquiry_status_message(status)}"
+            message_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, sender_id, content, created_at, is_read) VALUES (?, ?, ?, ?, ?, 0)",
+                (message_id, item["conversation_id"], user["id"], content[:1000], now),
+            )
+            conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, item["conversation_id"]))
+            target_user_id = from_id if user["id"] == to_id else to_id
+            if target_user_id:
+                conn.execute(
+                    """
+                    INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, target_conversation_id, content, created_at)
+                    VALUES (?, ?, ?, 'listing_inquiry_status', ?, ?, ?, ?)
+                    """,
+                    (str(uuid.uuid4()), target_user_id, user["id"], item.get("listing_id"), item["conversation_id"], listing_inquiry_status_message(status), now),
+                )
         if status == "spam" and from_id:
             reputation_apply_event(
                 conn,
@@ -20779,6 +21501,9 @@ class Handler(BaseHTTPRequestHandler):
                 reviewed=True,
             )
         fresh = dict(conn.execute("SELECT * FROM listing_inquiries WHERE id = ?", (inquiry_id,)).fetchone())
+        if status != previous_status and item.get("conversation_id"):
+            HUB.publish(from_id, {"type": "message", "conversation_id": item["conversation_id"]})
+            HUB.publish(to_id, {"type": "message", "conversation_id": item["conversation_id"]})
         self.send_json({"inquiry": fetch_listing_inquiries_with_extras(conn, [fresh], user["id"])[0]})
 
     def api_admin_listings(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -21494,7 +22219,7 @@ class Handler(BaseHTTPRequestHandler):
             "listings": business["listing_count"],
             "published": business["published_listing_count"],
             "inquiries": business["inquiry_count"],
-            "new_inquiries": sum(1 for item in recent_inquiries if (item.get("status") or "") == "new"),
+            "new_inquiries": sum(1 for item in recent_inquiries if (item.get("status") or "") in {"submitted", "new"}),
             "favorites": sum(int(item.get("favorite_count") or 0) for item in listing_dicts),
             "views": sum(int(item.get("view_count") or 0) for item in listing_dicts),
         }

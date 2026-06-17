@@ -50,12 +50,11 @@ import {
   Utensils,
   UtensilsCrossed,
   Waves,
-  Wrench,
   X,
 } from "lucide-react";
 import { api, APIError, isAuthRequiredError, isUploadImageFile, isUploadVideoFile, type UploadPurpose } from "@/lib/api";
 import { fallbackVideoPoster, isVideoMedia, mediaDurationLabel, mediaPreviewImageUrl, mediaSourceUrl } from "@/lib/media";
-import { listingTypeRequiresMembership, type KXBusinessProfile, type KXCityListing, type KXCreateListingPayload, type KXListingInquiry, type KXListingMedia, type KXListingType, type KXMedia } from "@/lib/types";
+import { listingTypeRequiresMembership, type KXBusinessProfile, type KXCityListing, type KXCreateListingPayload, type KXListingInquiry, type KXListingMedia, type KXListingTaxonomyCategory, type KXListingTaxonomyField, type KXListingTaxonomyPayload, type KXListingType, type KXMedia } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, PremiumEmptyState, SectionLoading, Skeleton } from "@/components/design/States";
@@ -92,6 +91,15 @@ import {
 
 type ChannelKind = "marketplace" | "rentals" | "jobs" | "services" | "deals";
 type ListingScope = "city" | "country";
+type InquiryReceipt = {
+  inquiryId?: string;
+  conversationId?: string;
+  type: string;
+  status: string;
+  title: string;
+  details: { label: string; value: string }[];
+  message?: string;
+};
 
 const videoFallbackArtworkStyle: React.CSSProperties = {
   background:
@@ -167,11 +175,23 @@ function localizedChannel(kind: ChannelKind, locale: Locale) {
 export const FOOD_CATEGORIES = ["中华料理", "日本料理", "居酒屋", "烧肉火锅", "拉面", "寿司海鲜", "咖啡甜品", "西餐", "韩国料理"] as const;
 /// 餐厅美食分区还包含两个老类目（已有数据继续生效）。
 const FOOD_SECTION_CATEGORIES = ["餐厅美食", ...FOOD_CATEGORIES, "餐饮点评", "优惠预约"];
+const TRAVEL_SECTION_CATEGORIES = ["景点门票", "一日游", "本地向导", "体验活动", "包车行程"] as const;
+const TRANSFER_SECTION_CATEGORIES = ["机场接送", "车站接送", "包车", "行李协助", "接送机"] as const;
+const PAPERWORK_SECTION_CATEGORIES = ["材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "签证材料整理", "翻译手续", "签证/手续协助", "翻译"] as const;
+const MOVING_SECTION_CATEGORIES = ["搬家", "退房清洁", "粗大垃圾协助", "行李搬运", "家具家电配送协助", "搬家清洁", "清洁"] as const;
+const LIFE_SETUP_SECTION_CATEGORIES = ["手机卡开通", "网络开通", "水电煤协助", "地址登记协助", "粗大垃圾预约", "生活跑腿", "生活支持"] as const;
+const BEAUTY_HEALTH_SECTION_CATEGORIES = ["美容美发", "美甲", "按摩", "皮肤管理", "体检/牙科预约协助"] as const;
+const PET_FAMILY_SECTION_CATEGORIES = ["宠物寄养", "遛狗", "临时照看", "儿童用品租赁", "家庭协助", "宠物服务"] as const;
 /// 生活服务分区同时兼容新细分类与旧伞类目，保证发布端和发现端不脱节。
-const LIFE_SECTION_CATEGORIES = ["翻译手续", "签证/手续协助", "翻译", "搬家清洁", "搬家", "清洁", "维修安装", "美容美发", "宠物服务", "生活支持", "租房申请协助", "认证服务"] as const;
+const LIFE_SECTION_CATEGORIES = [
+  ...PAPERWORK_SECTION_CATEGORIES,
+  ...MOVING_SECTION_CATEGORIES,
+  ...LIFE_SETUP_SECTION_CATEGORIES,
+  ...BEAUTY_HEALTH_SECTION_CATEGORIES,
+] as const;
 /// 住宿：归属租房页「民宿·短住」标签；"酒店民宿" 为老类目伞值。
 export const HOMESTAY_CATEGORIES = ["民宿"] as const;
-export const HOTEL_CATEGORIES = ["酒店", "温泉旅馆", "公寓式酒店", "酒店民宿"] as const;
+export const HOTEL_CATEGORIES = ["酒店", "温泉旅馆", "公寓式酒店", "短住公寓", "酒店民宿"] as const;
 export const STAY_CATEGORIES = [...HOMESTAY_CATEGORIES, ...HOTEL_CATEGORIES] as const;
 const STAY_CATEGORY_SET = new Set<string>(STAY_CATEGORIES);
 const FOOD_CATEGORY_SET = new Set<string>(FOOD_SECTION_CATEGORIES);
@@ -181,7 +201,7 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   rental: ["全部", "单人", "合租", "短租", "整租", "家具家电", "近车站"],
   job: ["全部", "兼职", "全职", "时给", "月给", "无经验可", "留学生可", "签证支持", "周末"],
   hiring: ["全部", "兼职", "全职", "派遣", "实习", "签证支持"],
-  local_service: ["全部", ...FOOD_CATEGORIES, "餐饮点评", "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "酒店民宿", "景点门票", "一日游", "接送机", ...LIFE_SECTION_CATEGORIES],
+  local_service: ["全部", ...FOOD_CATEGORIES, "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓", ...TRAVEL_SECTION_CATEGORIES, ...TRANSFER_SECTION_CATEGORIES, ...LIFE_SECTION_CATEGORIES, ...PET_FAMILY_SECTION_CATEGORIES],
   discount: ["全部", "餐饮", "生活", "学习", "搬家", "限时"],
   event: ["全部", "今天", "本周", "周末", "免费"],
 };
@@ -253,12 +273,43 @@ const CATEGORY_LABELS: Record<string, { ja: string; en: string }> = {
   "酒店": { ja: "ホテル", en: "Hotel" },
   "温泉旅馆": { ja: "温泉旅館", en: "Onsen ryokan" },
   "公寓式酒店": { ja: "アパートホテル", en: "Aparthotel" },
+  "短住公寓": { ja: "短期アパート", en: "Short-stay apartment" },
   "景点门票": { ja: "観光チケット", en: "Attraction tickets" },
   "一日游": { ja: "日帰りツアー", en: "Day trips" },
+  "本地向导": { ja: "ローカルガイド", en: "Local guide" },
+  "体验活动": { ja: "体験アクティビティ", en: "Experiences" },
+  "包车行程": { ja: "貸切ツアー", en: "Chartered tour" },
   "接送机": { ja: "空港送迎", en: "Airport transfer" },
+  "机场接送": { ja: "空港送迎", en: "Airport transfer" },
+  "车站接送": { ja: "駅送迎", en: "Station transfer" },
+  "包车": { ja: "貸切車", en: "Private car" },
+  "行李协助": { ja: "荷物サポート", en: "Luggage help" },
   "翻译手续": { ja: "翻訳・手続き", en: "Translation & paperwork" },
+  "材料翻译": { ja: "書類翻訳", en: "Document translation" },
+  "市役所陪同": { ja: "役所同行", en: "City-office accompaniment" },
+  "银行卡协助": { ja: "銀行口座サポート", en: "Bank account help" },
+  "手机卡协助": { ja: "SIMサポート", en: "SIM card help" },
+  "签证材料整理": { ja: "ビザ書類整理", en: "Visa document prep" },
   "搬家清洁": { ja: "引越し・清掃", en: "Moving & cleaning" },
-  "维修安装": { ja: "修理・設置", en: "Repair & installation" },
+  "退房清洁": { ja: "退去清掃", en: "Move-out cleaning" },
+  "粗大垃圾协助": { ja: "粗大ごみサポート", en: "Oversized trash help" },
+  "行李搬运": { ja: "荷物運搬", en: "Luggage moving" },
+  "家具家电配送协助": { ja: "家具家電配送サポート", en: "Furniture delivery help" },
+  "手机卡开通": { ja: "SIM開通", en: "SIM setup" },
+  "网络开通": { ja: "ネット開通", en: "Internet setup" },
+  "水电煤协助": { ja: "ライフライン手続き", en: "Utilities setup" },
+  "地址登记协助": { ja: "住所登録サポート", en: "Address registration help" },
+  "粗大垃圾预约": { ja: "粗大ごみ予約", en: "Oversized trash booking" },
+  "生活跑腿": { ja: "生活代行", en: "Local errands" },
+  "美甲": { ja: "ネイル", en: "Nails" },
+  "按摩": { ja: "マッサージ", en: "Massage" },
+  "皮肤管理": { ja: "肌ケア", en: "Skin care" },
+  "体检/牙科预约协助": { ja: "健診・歯科予約サポート", en: "Checkup/dental booking help" },
+  "宠物寄养": { ja: "ペット預かり", en: "Pet boarding" },
+  "遛狗": { ja: "犬の散歩", en: "Dog walking" },
+  "临时照看": { ja: "一時見守り", en: "Temporary care" },
+  "儿童用品租赁": { ja: "子ども用品レンタル", en: "Kids item rental" },
+  "家庭协助": { ja: "家庭サポート", en: "Family support" },
   "认证服务": { ja: "認定サービス", en: "Verified services" },
   "餐饮": { ja: "飲食", en: "Dining" },
   "生活": { ja: "生活", en: "Living" },
@@ -408,6 +459,76 @@ type AttributeField = {
   placeholder?: string;
   options?: FilterOption[];
 };
+
+const TAXONOMY_LISTING_TYPES = new Set<KXListingType>(["secondhand", "rental", "job", "hiring", "local_service"]);
+
+function taxonomyCategoryKey(item: KXListingTaxonomyCategory): string {
+  return cleanListingText(item.category_key || item.categoryKey || item.label);
+}
+
+function taxonomyFieldKey(item: KXListingTaxonomyField): string {
+  return cleanListingText(item.field_key || item.fieldKey);
+}
+
+function taxonomyFieldCategoryKey(item: KXListingTaxonomyField): string {
+  return cleanListingText(item.category_key || item.categoryKey);
+}
+
+function taxonomyCategories(payload?: KXListingTaxonomyPayload | null): string[] {
+  const values = (payload?.categories || [])
+    .filter((item) => item.is_active !== false && item.isActive !== false)
+    .sort((a, b) => (a.sort_order ?? a.sortOrder ?? 0) - (b.sort_order ?? b.sortOrder ?? 0))
+    .map(taxonomyCategoryKey)
+    .filter(Boolean);
+  return Array.from(new Set(values));
+}
+
+function taxonomyFieldOptions(field: KXListingTaxonomyField, categories: string[]): FilterOption[] {
+  const raw = field.options || [];
+  const options = raw.length ? raw : taxonomyFieldKey(field) === "service_type" ? categories : [];
+  return options.map((item) => {
+    const text = String(item);
+    const [value, ...labelParts] = text.split("|");
+    const label = labelParts.join("|").trim();
+    return option(value.trim(), label || value.trim());
+  });
+}
+
+function taxonomyFieldsFor(
+  type: KXListingType,
+  category: string,
+  attrs: Record<string, unknown>,
+  payload?: KXListingTaxonomyPayload | null,
+): AttributeField[] {
+  const categories = taxonomyCategories(payload);
+  const categoryKey = cleanListingText(category);
+  const fields = (payload?.fields || [])
+    .filter((item) => item.is_active !== false && item.isActive !== false)
+    .filter((item) => {
+      const target = taxonomyFieldCategoryKey(item);
+      return !target || target === categoryKey;
+    })
+    .sort((a, b) => {
+      const cat = taxonomyFieldCategoryKey(a).localeCompare(taxonomyFieldCategoryKey(b), "zh-Hans-CN");
+      if (cat !== 0) return cat;
+      return (a.sort_order ?? a.sortOrder ?? 0) - (b.sort_order ?? b.sortOrder ?? 0);
+    })
+    .map((item) => {
+      const kind = item.kind || item.field_kind || item.fieldKind || "text";
+      const normalizedKind: AttributeField["kind"] = kind === "select" || kind === "checkbox" || kind === "textarea" ? kind : "text";
+      return {
+        key: taxonomyFieldKey(item),
+        label: item.label,
+        required: !!item.required,
+        kind: normalizedKind,
+        placeholder: item.placeholder || "",
+        options: normalizedKind === "select" ? taxonomyFieldOptions(item, categories) : undefined,
+      };
+    })
+    .filter((field) => field.key && field.label);
+  if (fields.length) return fields;
+  return listingFormFields(type, category, attrs);
+}
 
 function getRentalTabFromUrl(): "homes" | "stays" | "hotels" {
   if (typeof window === "undefined") return "homes";
@@ -899,8 +1020,8 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const router = useRouter();
   const [intakeOpen, setIntakeOpen] = useState(false);
+  const [receipt, setReceipt] = useState<InquiryReceipt | null>(null);
   const listing = useQuery({
     queryKey: ["listing", listingId],
     queryFn: () => api.listing(listingId),
@@ -919,11 +1040,19 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
   const contact = useMutation({
     mutationFn: (vars: { message: string; details: { label: string; value: string }[] }) =>
       api.contactListing(listingId, vars.message || "我想了解这条信息。", undefined, vars.details),
-    onSuccess: (res) => {
+    onSuccess: (res, vars) => {
       setIntakeOpen(false);
       pushToast({ kind: "success", message: res.message || "已发送联系请求" });
       const convId = res.conversation_id || res.conversationId;
-      if (convId) router.push(`/messages/${convId}`);
+      setReceipt({
+        inquiryId: res.inquiry_id || res.inquiryId,
+        conversationId: convId,
+        type: res.type || "general_consult",
+        status: res.status || "submitted",
+        title: res.success_title || res.successTitle || inquirySuccessTitle(res.type || listing.data?.type || "general_consult"),
+        details: res.details && res.details.length ? res.details : vars.details,
+        message: res.message,
+      });
     },
     onError: (e) => {
       if (isAuthRequiredError(e)) openAuthPrompt("message");
@@ -1063,6 +1192,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
         onClose={() => setIntakeOpen(false)}
         onSubmit={(msg, details) => contact.mutate({ message: msg, details })}
       />
+      <InquirySuccessSheet item={item} receipt={receipt} onClose={() => setReceipt(null)} />
     </AppShell>
   );
 }
@@ -1111,7 +1241,20 @@ export function CreateListingPage({
   const isEditing = Boolean(editListingId);
   const draftKey = `machi.listingDraft.${type}.${regionCode}`;
   const createLabel = isEditing ? "保存修改" : type === "rental" || type === "job" || type === "hiring" || type === "local_service" ? "提交审核" : "发布";
-  const createFields = useMemo(() => listingFormFields(type, category, attributes), [attributes, category, type]);
+  const taxonomyQuery = useQuery({
+    queryKey: ["listing-taxonomy", type],
+    queryFn: () => api.listingTaxonomy(type),
+    enabled: TAXONOMY_LISTING_TYPES.has(type),
+    staleTime: 5 * 60 * 1000,
+  });
+  const categoryChoices = useMemo(() => {
+    const configured = taxonomyCategories(taxonomyQuery.data);
+    return configured.length ? configured : (CATEGORY_CHIPS[type] || []).filter((chip) => chip !== "全部");
+  }, [taxonomyQuery.data, type]);
+  const createFields = useMemo(
+    () => taxonomyFieldsFor(type, category, attributes, taxonomyQuery.data),
+    [attributes, category, taxonomyQuery.data, type],
+  );
   const serviceVertical = type === "local_service" ? getServiceVertical(category, attributes) : "";
   const imageLimit = listingImageLimit(type);
   const mediaLimit = imageLimit;
@@ -1180,7 +1323,7 @@ export function CreateListingPage({
         return [key, String(value ?? "")];
       }),
     );
-    setAttributes(listing.type === "local_service" ? sanitizeServiceAttributesForCategory(listing.category || "", hydratedAttributes) : hydratedAttributes);
+    setAttributes(hydratedAttributes);
     setMedia((listing.media || []).flatMap((item) => {
       const id = item.uploaded_file_id || item.uploadedFileId;
       if (!id) return [];
@@ -1222,7 +1365,7 @@ export function CreateListingPage({
       setCategory(draftCategory);
       setPrice(draft.price || "");
       setLocation(draft.location || "");
-      setAttributes(type === "local_service" ? sanitizeServiceAttributesForCategory(draftCategory, draft.attributes || {}) : (draft.attributes || {}));
+      setAttributes(draft.attributes || {});
     } catch {
       // local draft corruption should not block publishing
     }
@@ -1248,7 +1391,7 @@ export function CreateListingPage({
     setCategory(cleanCategory);
     clearFieldError(setFieldErrors, "category");
     if (type === "local_service") {
-      setAttributes((current) => sanitizeServiceAttributesForCategory(cleanCategory, current));
+      setAttributes((current) => sanitizeServiceAttributesForCategory(cleanCategory, current, taxonomyFieldsFor(type, cleanCategory, current, taxonomyQuery.data)));
     }
   };
 
@@ -1256,7 +1399,7 @@ export function CreateListingPage({
     const next: Record<string, string> = {};
     if (!title.trim()) next.title = "请填写标题";
     if (!category.trim()) next.category = "请选择或填写分类";
-    if (type === "local_service" && !getServiceVertical(category, attributes)) next.category = "请选择上方标准服务细分类";
+    if (type === "local_service" && !getServiceVertical(category, attributes) && !createFields.length) next.category = "请选择上方标准服务细分类";
     if (!location.trim()) next.location = "请填写展示地点或区域";
     if ((type === "secondhand" || type === "rental" || type === "job" || type === "hiring") && !price.trim()) next.price = type === "rental" ? "请填写月租" : type === "secondhand" ? "请填写价格，免费送可填 0" : "请填写薪资";
     if (price.trim() && Number.isNaN(Number(price))) next.price = "金额只能填写数字";
@@ -1393,7 +1536,7 @@ export function CreateListingPage({
       // 菜单 / 团购套餐:表单里是「一行一项」的文本,提交时解析成结构化数组
       // (后端按 json 属性存储)。
       const finalAttributes: Record<string, unknown> = type === "local_service"
-        ? sanitizeServiceAttributesForCategory(category, attributes)
+        ? sanitizeServiceAttributesForCategory(category, attributes, createFields)
         : { ...attributes };
       if (type === "local_service") {
         if (typeof finalAttributes.menu === "string") finalAttributes.menu = parseMenuLines(finalAttributes.menu);
@@ -1542,7 +1685,7 @@ export function CreateListingPage({
                 </Field>
                 <Field field="category" label="分类" required error={fieldErrors.category}>
                   <div className="flex flex-wrap gap-1.5 pb-1.5">
-                    {(CATEGORY_CHIPS[type] || []).filter((chip) => chip !== "全部").map((chip) => (
+                    {categoryChoices.map((chip) => (
                       <button
                         key={chip}
                         type="button"
@@ -1687,6 +1830,7 @@ export function CreateListingPage({
               <ListingAttributeEditor
                 type={type}
                 category={category}
+                fields={createFields}
                 value={attributes}
                 errors={fieldErrors}
                 onCategorySelect={applyCategory}
@@ -2381,9 +2525,11 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
 // 住宿类目已整体搬去租房页「民宿·短住」，这里不再展示。
 const SERVICE_SECTIONS: { key: string; zh: string; ja: string; en: string; categories: string[] }[] = [
   { key: "all", zh: "全部", ja: "すべて", en: "All", categories: [] },
-  { key: "food", zh: "餐厅美食", ja: "グルメ", en: "Food & Dining", categories: FOOD_SECTION_CATEGORIES },
-  { key: "fun", zh: "景点玩乐", ja: "観光・体験", en: "Attractions & Tours", categories: ["景点门票", "一日游", "接送机"] },
-  { key: "life", zh: "生活服务", ja: "生活サポート", en: "Local Support", categories: [...LIFE_SECTION_CATEGORIES] },
+  { key: "food", zh: "餐饮预约", ja: "グルメ予約", en: "Food & Dining", categories: FOOD_SECTION_CATEGORIES },
+  { key: "stay", zh: "住宿短住", ja: "宿泊", en: "Stays", categories: [...STAY_CATEGORIES] },
+  { key: "travel", zh: "旅行票务", ja: "観光・体験", en: "Travel & Tickets", categories: [...TRAVEL_SECTION_CATEGORIES] },
+  { key: "transfer", zh: "接送交通", ja: "送迎・交通", en: "Transfer", categories: [...TRANSFER_SECTION_CATEGORIES] },
+  { key: "life", zh: "生活支持", ja: "生活サポート", en: "Local Support", categories: [...LIFE_SECTION_CATEGORIES] },
 ];
 
 const SERVICE_CATEGORY_META: Record<string, { Icon: typeof Store; tone: string }> = {
@@ -2403,17 +2549,43 @@ const SERVICE_CATEGORY_META: Record<string, { Icon: typeof Store; tone: string }
   "酒店": { Icon: Hotel, tone: "bg-blue-500/10 text-blue-700" },
   "温泉旅馆": { Icon: Waves, tone: "bg-teal-500/10 text-teal-700" },
   "公寓式酒店": { Icon: Building2, tone: "bg-indigo-500/10 text-indigo-600" },
+  "短住公寓": { Icon: Building2, tone: "bg-indigo-500/10 text-indigo-600" },
   "景点门票": { Icon: Ticket, tone: "bg-violet-500/10 text-violet-600" },
   "一日游": { Icon: Landmark, tone: "bg-emerald-500/10 text-emerald-700" },
+  "本地向导": { Icon: Landmark, tone: "bg-emerald-500/10 text-emerald-700" },
+  "体验活动": { Icon: Sparkles, tone: "bg-violet-500/10 text-violet-600" },
+  "包车行程": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
   "接送机": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
+  "机场接送": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
+  "车站接送": { Icon: Train, tone: "bg-blue-500/10 text-blue-600" },
+  "包车": { Icon: Bus, tone: "bg-blue-500/10 text-blue-600" },
+  "行李协助": { Icon: Bus, tone: "bg-cyan-500/10 text-cyan-700" },
+  "材料翻译": { Icon: Languages, tone: "bg-indigo-500/10 text-indigo-600" },
+  "市役所陪同": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
+  "银行卡协助": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
+  "手机卡协助": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
+  "签证材料整理": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
   "翻译手续": { Icon: Languages, tone: "bg-indigo-500/10 text-indigo-600" },
   "签证/手续协助": { Icon: FileCheck2, tone: "bg-indigo-500/10 text-indigo-600" },
   "翻译": { Icon: Languages, tone: "bg-indigo-500/10 text-indigo-600" },
   "搬家清洁": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
   "搬家": { Icon: Bus, tone: "bg-cyan-500/10 text-cyan-700" },
   "清洁": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
-  "维修安装": { Icon: Wrench, tone: "bg-slate-500/10 text-slate-700" },
+  "退房清洁": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
+  "粗大垃圾协助": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
+  "行李搬运": { Icon: Bus, tone: "bg-cyan-500/10 text-cyan-700" },
+  "家具家电配送协助": { Icon: Bus, tone: "bg-cyan-500/10 text-cyan-700" },
+  "手机卡开通": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
+  "网络开通": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
+  "水电煤协助": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
+  "地址登记协助": { Icon: Home, tone: "bg-emerald-500/10 text-emerald-700" },
+  "粗大垃圾预约": { Icon: Sparkles, tone: "bg-teal-500/10 text-teal-700" },
+  "生活跑腿": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
   "美容美发": { Icon: Sparkles, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
+  "美甲": { Icon: Sparkles, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
+  "按摩": { Icon: Sparkles, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
+  "皮肤管理": { Icon: Sparkles, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
+  "体检/牙科预约协助": { Icon: FileCheck2, tone: "bg-fuchsia-500/10 text-fuchsia-600" },
   "宠物服务": { Icon: Heart, tone: "bg-rose-500/10 text-rose-600" },
   "生活支持": { Icon: Store, tone: "bg-emerald-500/10 text-emerald-700" },
   "租房申请协助": { Icon: Home, tone: "bg-orange-500/10 text-orange-600" },
@@ -3514,6 +3686,69 @@ function intakeConfig(type: string, category?: string): { title: string; noteLab
   return { title: titles[type] || "联系发布者", noteLabel: "留言", fields: [] };
 }
 
+function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; receipt: InquiryReceipt | null; onClose: () => void }) {
+  if (!receipt) return null;
+  const workbenchHref = inquiryWorkbenchHref(receipt.type, item.type);
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/40 p-0 sm:items-center sm:p-4" onClick={onClose}>
+      <section className="w-full max-w-lg rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-emerald-50 text-emerald-700">
+              <CheckCircle2 className="h-5 w-5" />
+            </span>
+            <div className="min-w-0">
+              <h3 className="text-lg font-black text-slate-950">{receipt.title}</h3>
+              <p className="mt-1 line-clamp-2 text-sm font-semibold text-slate-500">{displayListingTitle(item) || item.title}</p>
+            </div>
+          </div>
+          <button type="button" onClick={onClose} aria-label="关闭" className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
+          <div className="rounded-2xl bg-slate-50 p-3">
+            <p className="text-xs font-black text-slate-400">类型</p>
+            <p className="mt-1 font-black text-slate-900">{formatInquiryType(receipt.type)}</p>
+          </div>
+          <div className="rounded-2xl bg-slate-50 p-3">
+            <p className="text-xs font-black text-slate-400">状态</p>
+            <p className="mt-1 font-black text-slate-900">{formatInquiryStatus(receipt.status)}</p>
+          </div>
+        </div>
+        {receipt.details.length ? (
+          <dl className="mt-3 max-h-56 space-y-1 overflow-y-auto rounded-2xl bg-amber-50/70 p-3 text-xs ring-1 ring-amber-100">
+            {receipt.details.map((d, index) => (
+              <div key={`${d.label}-${index}`} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
+                <dt className="font-black text-amber-700">{d.label}</dt>
+                <dd className="break-words font-semibold text-slate-700">{d.value}</dd>
+              </div>
+            ))}
+          </dl>
+        ) : null}
+        <p className="mt-3 text-xs font-semibold leading-5 text-slate-500">
+          记录已进入工作台；私信只是补充沟通入口。请继续避免提前转账，并在确认身份与服务边界后再线下交易。
+        </p>
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
+          <Link href={workbenchHref} className="inline-flex h-11 items-center justify-center rounded-full bg-slate-950 px-4 text-sm font-black text-white" onClick={onClose}>
+            查看记录
+          </Link>
+          {receipt.conversationId ? (
+            <Link href={`/messages/${encodeURIComponent(receipt.conversationId)}`} className="inline-flex h-11 items-center justify-center rounded-full border border-slate-200 px-4 text-sm font-black text-slate-700" onClick={onClose}>
+              继续私信
+            </Link>
+          ) : (
+            <button type="button" disabled className="h-11 rounded-full border border-slate-200 px-4 text-sm font-black text-slate-300">继续私信</button>
+          )}
+          <Link href={detailHref(item)} className="inline-flex h-11 items-center justify-center rounded-full border border-slate-200 px-4 text-sm font-black text-slate-700" onClick={onClose}>
+            返回详情
+          </Link>
+        </div>
+      </section>
+    </div>
+  );
+}
+
 function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCityListing; open: boolean; submitting: boolean; onClose: () => void; onSubmit: (message: string, details: { label: string; value: string }[]) => void }) {
   const config = useMemo(() => intakeConfig(item.type, item.category), [item.type, item.category]);
   const [values, setValues] = useState<Record<string, string>>({});
@@ -3993,6 +4228,7 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
 function ListingAttributeEditor({
   type,
   category,
+  fields: configuredFields,
   value,
   errors = {},
   onCategorySelect,
@@ -4000,12 +4236,13 @@ function ListingAttributeEditor({
 }: {
   type: KXListingType;
   category?: string;
+  fields?: AttributeField[];
   value: Record<string, string>;
   errors?: Record<string, string>;
   onCategorySelect?: (category: string) => void;
   onChange: (next: Record<string, string>) => void;
 }) {
-  const fields = listingFormFields(type, category || "", value);
+  const fields = configuredFields?.length ? configuredFields : listingFormFields(type, category || "", value);
   const set = (key: string, nextValue: string) => {
     if (type === "local_service" && key === "service_type" && onCategorySelect) {
       onCategorySelect(nextValue);
@@ -4212,7 +4449,7 @@ function listingStatusLabel(item: KXCityListing) {
 }
 
 function contactActionLabel(item: KXCityListing) {
-  if (item.type === "secondhand") return "联系卖家";
+  if (item.type === "secondhand") return "咨询卖家 / 预约交易";
   if (item.type === "rental") return "预约看房";
   if (item.type === "job" || item.type === "hiring") return "立即申请";
   if (item.type === "local_service") {
@@ -4221,6 +4458,20 @@ function contactActionLabel(item: KXCityListing) {
     return "预约咨询";
   }
   return "联系发布者";
+}
+
+function inquirySuccessTitle(type: string) {
+  const normalized = cleanListingText(type);
+  if (normalized === "job_apply" || normalized === "rental_application" || normalized === "job" || normalized === "hiring") return "已提交申请";
+  if (normalized.endsWith("_booking") || normalized === "rental_viewing" || normalized === "rental" || normalized === "local_service") return "已提交预约";
+  return "已发送咨询";
+}
+
+function inquiryWorkbenchHref(inquiryType: string, listingType?: string) {
+  const type = cleanListingText(inquiryType);
+  if (type === "job_apply" || listingType === "job" || listingType === "hiring") return "/my/applications";
+  if (type.endsWith("_booking") || type === "rental_viewing" || type === "rental_application" || listingType === "rental" || listingType === "local_service") return "/my/bookings";
+  return "/my/inquiries";
 }
 
 function inquiryTypeLabel(type: string) {
@@ -4262,8 +4513,8 @@ function titlePlaceholder(type: KXListingType) {
 function categoryPlaceholder(type: KXListingType) {
   if (type === "rental") return "单人 / 合租 / 短租";
   if (type === "job" || type === "hiring") return "兼职 / 全职 / 实习";
-  if (type === "local_service") return "日本料理 / 居酒屋 / 民宿 / 景点门票 / 翻译手续";
-  if (type === "discount") return "餐饮 / 学习 / 生活";
+  if (type === "local_service") return "日本料理 / 民宿 / 景点门票 / 机场接送 / 生活开通";
+  if (type === "discount") return "餐饮 / 生活 / 限时";
   return "家具 / 家电 / 电子产品";
 }
 
@@ -4296,8 +4547,9 @@ type ServiceVertical =
   | "airport_transfer"
   | "paperwork_translation"
   | "moving_cleaning"
-  | "repair_installation"
-  | "beauty_pet_life";
+  | "life_setup"
+  | "beauty_health"
+  | "pet_family";
 
 const SERVICE_VERTICAL_BY_CATEGORY: Record<string, ServiceVertical> = {
   "餐厅美食": "food_restaurant",
@@ -4316,23 +4568,53 @@ const SERVICE_VERTICAL_BY_CATEGORY: Record<string, ServiceVertical> = {
   "酒店": "lodging",
   "温泉旅馆": "lodging",
   "公寓式酒店": "lodging",
+  "短住公寓": "lodging",
   "酒店民宿": "lodging",
   "景点门票": "attraction_ticket",
   "一日游": "day_tour",
   "本地向导": "day_tour",
+  "体验活动": "day_tour",
+  "包车行程": "day_tour",
   "接送机": "airport_transfer",
+  "机场接送": "airport_transfer",
+  "车站接送": "airport_transfer",
+  "包车": "airport_transfer",
+  "行李协助": "airport_transfer",
+  "材料翻译": "paperwork_translation",
+  "市役所陪同": "paperwork_translation",
+  "银行卡协助": "paperwork_translation",
+  "手机卡协助": "paperwork_translation",
+  "签证材料整理": "paperwork_translation",
   "翻译手续": "paperwork_translation",
   "签证/手续协助": "paperwork_translation",
   "翻译": "paperwork_translation",
   "租房申请协助": "paperwork_translation",
   "认证服务": "paperwork_translation",
+  "退房清洁": "moving_cleaning",
+  "粗大垃圾协助": "moving_cleaning",
+  "行李搬运": "moving_cleaning",
+  "家具家电配送协助": "moving_cleaning",
   "搬家清洁": "moving_cleaning",
   "搬家": "moving_cleaning",
   "清洁": "moving_cleaning",
-  "维修安装": "repair_installation",
-  "美容美发": "beauty_pet_life",
-  "宠物服务": "beauty_pet_life",
-  "生活支持": "beauty_pet_life",
+  "手机卡开通": "life_setup",
+  "网络开通": "life_setup",
+  "水电煤协助": "life_setup",
+  "地址登记协助": "life_setup",
+  "粗大垃圾预约": "life_setup",
+  "生活跑腿": "life_setup",
+  "生活支持": "life_setup",
+  "美容美发": "beauty_health",
+  "美甲": "beauty_health",
+  "按摩": "beauty_health",
+  "皮肤管理": "beauty_health",
+  "体检/牙科预约协助": "beauty_health",
+  "宠物寄养": "pet_family",
+  "遛狗": "pet_family",
+  "临时照看": "pet_family",
+  "儿童用品租赁": "pet_family",
+  "家庭协助": "pet_family",
+  "宠物服务": "pet_family",
 };
 
 const SERVICE_VERTICALS = new Set<ServiceVertical>(Object.values(SERVICE_VERTICAL_BY_CATEGORY));
@@ -4340,14 +4622,15 @@ const SERVICE_VERTICALS = new Set<ServiceVertical>(Object.values(SERVICE_VERTICA
 const SERVICE_TYPE_OPTIONS: Record<ServiceVertical, string[]> = {
   food_restaurant: ["餐厅美食", ...FOOD_CATEGORIES],
   dining_booking: ["餐饮点评", "优惠预约"],
-  lodging: ["民宿", "酒店", "温泉旅馆", "公寓式酒店", "酒店民宿"],
+  lodging: ["民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓", "酒店民宿"],
   attraction_ticket: ["景点门票"],
-  day_tour: ["一日游", "本地向导"],
-  airport_transfer: ["接送机"],
-  paperwork_translation: ["翻译手续", "签证/手续协助", "翻译", "租房申请协助", "认证服务"],
-  moving_cleaning: ["搬家清洁", "搬家", "清洁"],
-  repair_installation: ["维修安装"],
-  beauty_pet_life: ["美容美发", "宠物服务", "生活支持"],
+  day_tour: ["一日游", "本地向导", "体验活动", "包车行程"],
+  airport_transfer: ["机场接送", "车站接送", "包车", "行李协助", "接送机"],
+  paperwork_translation: ["材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "签证材料整理", "翻译手续", "签证/手续协助", "翻译"],
+  moving_cleaning: ["搬家", "退房清洁", "粗大垃圾协助", "行李搬运", "家具家电配送协助", "搬家清洁", "清洁"],
+  life_setup: ["手机卡开通", "网络开通", "水电煤协助", "地址登记协助", "粗大垃圾预约", "家具家电配送协助", "生活跑腿", "生活支持"],
+  beauty_health: ["美容美发", "美甲", "按摩", "皮肤管理", "体检/牙科预约协助"],
+  pet_family: ["宠物寄养", "遛狗", "临时照看", "儿童用品租赁", "家庭协助", "宠物服务"],
 };
 
 const SERVICE_VERTICAL_LABEL: Record<ServiceVertical, string> = {
@@ -4359,8 +4642,9 @@ const SERVICE_VERTICAL_LABEL: Record<ServiceVertical, string> = {
   airport_transfer: "接送机",
   paperwork_translation: "翻译 / 手续协助",
   moving_cleaning: "搬家 / 清洁",
-  repair_installation: "维修安装",
-  beauty_pet_life: "美容美发 / 宠物 / 生活支持",
+  life_setup: "生活开通 / 住后支持",
+  beauty_health: "美容健康预约",
+  pet_family: "宠物与家庭支持",
 };
 
 function getServiceVertical(category: string, attrs: Record<string, unknown> = {}): ServiceVertical | "" {
@@ -4374,8 +4658,9 @@ function getServiceVertical(category: string, attrs: Record<string, unknown> = {
   if (attrs.room_type || attrs.max_guests || attrs.check_in_time) return "lodging";
   if (attrs.airport_route || attrs.vehicle_type || attrs.flight_info_note) return "airport_transfer";
   if (attrs.document_type || attrs.required_materials || attrs.delivery_time || attrs.no_result_guarantee) return "paperwork_translation";
-  if (attrs.project_type || attrs.device_brand_model || attrs.warranty_note) return "repair_installation";
   if (attrs.property_size || attrs.item_volume || attrs.vehicle_staff) return "moving_cleaning";
+  if (attrs.setup_type || attrs.required_materials || attrs.cannot_guarantee) return "life_setup";
+  if (attrs.beauty_service || attrs.medical_disclaimer) return "beauty_health";
   if (attrs.ticket_type && attrs.meeting_point) return attrs.pickup_service ? "day_tour" : "attraction_ticket";
   return "";
 }
@@ -4494,17 +4779,41 @@ function serviceFieldsForCategory(category: string, attrs: Record<string, unknow
     { key: "surcharge_note", label: "追加费用", kind: "textarea", placeholder: "楼梯、远距离、夜间、停车、高速、材料费等。" },
     { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "前一天可改期 / 当日取消费用。" },
   ];
-  if (vertical === "repair_installation") return [
-    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Repair" },
+  if (vertical === "life_setup") return [
+    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Life Setup" },
     serviceTypeField,
-    { key: "project_type", label: "设备 / 项目类型", required: true, placeholder: "空调安装 / 水管维修 / 家具组装" },
-    { key: "device_brand_model", label: "品牌 / 型号", placeholder: "Panasonic / IKEA / 型号照片可私信" },
-    { key: "service_area", label: "上门区域", required: true, placeholder: "东京 23 区 / 横滨部分区域" },
-    { key: "onsite_fee", label: "上门费", placeholder: "¥3,000 起 / 报价后确认" },
-    { key: "parts_fee", label: "配件费", placeholder: "按实际配件另算 / 含基础螺丝" },
-    { key: "warranty_note", label: "保修说明", kind: "textarea", placeholder: "完工后 7 天 / 30 天内同问题复检等。" },
-    { key: "unavailable_scope", label: "不可服务范围", kind: "textarea", placeholder: "高空作业、燃气、需要持证施工的项目等。" },
-    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "上门前取消、到场后检查费等。" },
+    { key: "service_area", label: "服务区域", required: true, placeholder: "东京 23 区 / 横滨 / 线上协助" },
+    { key: "setup_type", label: "服务类型", required: true, placeholder: "手机卡 / 网络 / 水电煤 / 地址登记" },
+    { key: "required_materials", label: "所需材料", kind: "textarea", placeholder: "在留卡、护照、地址、银行卡、本人到场要求等。" },
+    { key: "delivery_time", label: "预计耗时", placeholder: "当天 / 1-3 个工作日 / 需预约窗口" },
+    { key: "service_process", label: "服务方式", kind: "textarea", placeholder: "线上确认材料、预约窗口、陪同办理或远程协助。" },
+    { key: "user_prepare", label: "用户需准备", kind: "textarea", placeholder: "证件原件、印章、现金、可接电话时间等。" },
+    { key: "cannot_guarantee", label: "不可承诺事项", kind: "textarea", placeholder: "不能保证运营商审核、开户结果、政府窗口受理或第三方时效。" },
+    { key: "price_range", label: "价格说明", placeholder: "预约咨询 / ¥3,000 起 / 按事项报价" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "材料确认后、预约日前后取消与改期规则。" },
+  ];
+  if (vertical === "beauty_health") return [
+    { key: "business_name", label: "商家名称", required: true, placeholder: "Machi Beauty" },
+    serviceTypeField,
+    { key: "service_area", label: "服务区域 / 店铺位置", required: true, placeholder: "新宿 / 原宿 / 线上预约协助" },
+    { key: "beauty_service", label: "服务项目", required: true, placeholder: "剪发 / 美甲 / 按摩 / 体检预约协助" },
+    { key: "availability", label: "可预约时间", placeholder: "平日晚间 / 周末 / 需提前 2 天" },
+    { key: "price_range", label: "价格区间", placeholder: "¥4,000 起 / 按项目报价" },
+    { key: "duration", label: "服务时长", placeholder: "45 分钟 / 90 分钟" },
+    { key: "user_prepare", label: "注意事项", kind: "textarea", placeholder: "迟到规则、过敏史、禁忌提醒、预约前准备。" },
+    { key: "medical_disclaimer", label: "医疗免责声明", kind: "textarea", placeholder: "医疗相关只能做预约协助，不提供诊断、治疗承诺或医疗建议。" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "24 小时内取消、迟到、改期等规则。" },
+  ];
+  if (vertical === "pet_family") return [
+    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Family Support" },
+    serviceTypeField,
+    { key: "service_area", label: "服务区域", required: true, placeholder: "东京 23 区 / 到店 / 上门" },
+    { key: "service_target", label: "服务对象", placeholder: "小型犬 / 猫 / 儿童用品 / 家庭协助" },
+    { key: "availability", label: "可预约时间", placeholder: "平日晚上 / 周末 / 假期" },
+    { key: "price_range", label: "价格说明", placeholder: "按小时 / 按天 / 预约咨询" },
+    { key: "user_prepare", label: "注意事项", kind: "textarea", placeholder: "宠物性格、疫苗、用品、紧急联系人、家庭规则等。" },
+    { key: "license_note", label: "安全/资质说明", kind: "textarea", placeholder: "经验、保险、照看范围、不可服务边界。" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "预约前取消、临时变更、超时费用等。" },
   ];
   return [
     { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Local Support" },
@@ -4521,12 +4830,14 @@ function serviceFieldsForCategory(category: string, attrs: Record<string, unknow
   ];
 }
 
-function sanitizeServiceAttributesForCategory(category: string, current: Record<string, string>): Record<string, string> {
+function sanitizeServiceAttributesForCategory(category: string, current: Record<string, string>, configuredFields: AttributeField[] = []): Record<string, string> {
   const cleanCategory = cleanListingText(category);
   const selection = cleanCategory || cleanListingText(current.service_type);
   const vertical = getServiceVerticalForCategorySelection(selection);
-  if (!vertical) return { service_type: selection, service_vertical: "" };
-  const allowed = new Set(serviceFieldsForCategory(selection, { service_vertical: vertical }).map((field) => field.key));
+  const allowed = new Set(
+    (configuredFields.length ? configuredFields : serviceFieldsForCategory(selection, { service_vertical: vertical }))
+      .map((field) => field.key),
+  );
   allowed.add("service_type");
   allowed.add("service_vertical");
   const next: Record<string, string> = {};
@@ -4534,7 +4845,7 @@ function sanitizeServiceAttributesForCategory(category: string, current: Record<
     if (allowed.has(key) && String(value || "").trim()) next[key] = value;
   });
   next.service_type = selection;
-  next.service_vertical = vertical;
+  next.service_vertical = vertical || cleanListingText(current.service_vertical);
   return next;
 }
 
@@ -4647,7 +4958,7 @@ function filterOptions(type: KXListingType, context: ListingFilterContext = "def
     { key: "visa_support", label: "签证支持", options: [option("available,true", "有"), option("consult", "可咨询"), option("none", "无")] },
   ];
   if (type === "local_service") return [
-    { key: "service_type", label: "服务类型", options: ["餐厅美食", "餐饮点评", "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "景点门票", "一日游", "接送机", "签证/手续协助", "翻译", "搬家清洁", "维修安装", "生活支持", "租房申请协助"].map((item) => option(item)) },
+    { key: "service_type", label: "服务类型", options: ["餐厅美食", "餐饮点评", "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓", "景点门票", "一日游", "本地向导", "机场接送", "车站接送", "包车", "行李协助", "材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "搬家", "退房清洁", "粗大垃圾协助", "手机卡开通", "网络开通", "水电煤协助", "地址登记协助", "美容美发", "美甲", "按摩", "宠物寄养", "家庭协助"].map((item) => option(item)) },
     { key: "booking_required", label: "预约", options: [option("true", "需要预约")] },
     { key: "breakfast_included", label: "含早餐", options: [option("true", "含")] },
     { key: "instant_confirmation", label: "确认方式", options: [option("true", "即时确认")] },
