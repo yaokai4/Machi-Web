@@ -256,6 +256,42 @@ function serviceSectionDescription(key: string): string {
   }[key] || "本地实用服务";
 }
 
+function createGroupLabel(group: CreateCategoryGroup, locale: Locale): string {
+  const labels: Record<string, [string, string, string]> = {
+    home: ["家具家居", "家具・暮らし", "Home"],
+    digital: ["数码办公", "デジタル・オフィス", "Digital"],
+    study: ["学习票券", "学習・チケット", "Study & tickets"],
+    fashion: ["衣物儿童", "衣類・キッズ", "Clothing & kids"],
+    wanted: ["求购", "探しています", "Wanted"],
+    food: ["餐饮预约", "グルメ予約", "Food & dining"],
+    stay: ["住宿短住", "宿泊・短期滞在", "Stays"],
+    travel: ["旅行票务", "観光・チケット", "Travel"],
+    transfer: ["接送交通", "送迎・交通", "Transfer"],
+    life: ["生活支持", "生活サポート", "Local support"],
+    other: ["其他", "その他", "Other"],
+  };
+  const copy = labels[group.key];
+  return copy ? pickText(locale, copy[0], copy[1], copy[2]) : group.label;
+}
+
+function createGroupDescription(group: CreateCategoryGroup, locale: Locale): string {
+  const descriptions: Record<string, [string, string, string]> = {
+    home: ["桌椅床柜、搬家出清、生活用品", "家具・家電・引越し処分", "Furniture, appliances, moving sale"],
+    digital: ["手机、电脑、外设和电子产品", "スマホ・PC・電子機器", "Phones, computers and electronics"],
+    study: ["教材、书籍、考试资料和票券卡券", "教材・本・チケット", "Textbooks, books and tickets"],
+    fashion: ["衣物、母婴、运动户外用品", "衣類・ベビー・アウトドア", "Clothing, kids and outdoors"],
+    wanted: ["找物品、收二手、可商量", "探し物・買取相談", "Looking for items"],
+    food: ["餐厅、咖啡、点评与到店预约", "飲食店・カフェ・来店予約", "Restaurants, cafes and table booking"],
+    stay: ["民宿、酒店、温泉旅馆和短住", "民泊・ホテル・短期滞在", "Homestays, hotels and short stays"],
+    travel: ["景点门票、一日游、本地向导", "観光チケット・日帰りツアー", "Tickets, day trips and guides"],
+    transfer: ["机场/车站接送、包车和行李协助", "空港送迎・貸切・荷物サポート", "Airport transfers, charters and luggage"],
+    life: ["翻译手续、生活开通、搬家清洁", "翻訳・手続き・生活セットアップ", "Paperwork, life setup and cleaning"],
+    other: ["后台新增或自定义分类", "管理画面で追加された分類", "Admin or custom categories"],
+  };
+  const copy = descriptions[group.key];
+  return copy ? pickText(locale, copy[0], copy[1], copy[2]) : group.description;
+}
+
 /// 租房页「民宿·短住」标签下的筛选 chips（全部=整个住宿类目集）。
 const HOMESTAY_CHIPS = ["全部", "民宿"];
 const HOTEL_CHIPS = ["全部", "酒店", "温泉旅馆", "公寓式酒店"];
@@ -1761,12 +1797,12 @@ export function CreateListingPage({
                             data-active={activeCategoryGroup?.key === group.key}
                             className="group min-w-[132px] shrink-0 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-slate-300 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950"
                           >
-                            <span className="block text-sm font-black text-slate-800 group-data-[active=true]:text-white">{group.label}</span>
-                            <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400 group-data-[active=true]:text-white/65">{group.description}</span>
+                            <span className="block text-sm font-black text-slate-800 group-data-[active=true]:text-white">{createGroupLabel(group, locale)}</span>
+                            <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400 group-data-[active=true]:text-white/65">{createGroupDescription(group, locale)}</span>
                           </button>
                         ))}
                       </div>
-                      <p className="text-xs font-bold text-slate-400">先选一级方向，再选择具体二级分类，发布后会按都市圈频道展示。</p>
+                      <p className="text-xs font-bold text-slate-400">{pickText(locale, "先选一级方向，再选择具体二级分类，发布后会按都市圈频道展示。", "先に大分類を選び、次に細分類を選択してください。投稿は都市圏チャンネルに表示されます。", "Choose a primary group first, then a specific category. Listings are shown by metro area.")}</p>
                     </div>
                   ) : null}
                   <div className="flex flex-wrap gap-1.5 pb-1.5">
