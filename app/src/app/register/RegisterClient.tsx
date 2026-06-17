@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -83,12 +83,8 @@ function mapRegisterError(err: unknown, c: (typeof AUTH_COPY)[AuthLocale]): { fi
   return { message: c.registerFailed };
 }
 
-export default function RegisterPage() {
-  return (
-    <Suspense fallback={null}>
-      <RegisterForm />
-    </Suspense>
-  );
+export default function RegisterClient() {
+  return <RegisterForm />;
 }
 
 function safeRedirectPath(raw: string | null) {

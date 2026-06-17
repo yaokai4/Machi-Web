@@ -27,6 +27,8 @@ import { useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import type { KXNotification } from "@/lib/types";
 
+type NotificationsResponse = { items: KXNotification[]; unread_count: number };
+
 const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   like: Heart,
   comment: MessageCircle,
@@ -73,6 +75,14 @@ export default function NotificationsPage() {
 
   const markAll = async () => {
     try {
+      queryClient.setQueriesData<NotificationsResponse>({ queryKey: ["notifications"] }, (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          items: old.items.map((item) => ({ ...item, is_read: true })),
+          unread_count: 0,
+        };
+      });
       await api.markNotificationsRead({ all: true });
       queryClient.invalidateQueries({ queryKey: ["notifications"] });
     } catch (err) {
@@ -91,11 +101,22 @@ export default function NotificationsPage() {
 
   const markIds = async (ids: string[]) => {
     if (ids.length === 0) return;
+    const idSet = new Set(ids);
     try {
+      queryClient.setQueriesData<NotificationsResponse>({ queryKey: ["notifications"] }, (old) => {
+        if (!old) return old;
+        const items = old.items.map((item) => idSet.has(item.id) ? { ...item, is_read: true } : item);
+        return {
+          ...old,
+          items,
+          unread_count: items.filter((item) => !item.is_read).length,
+        };
+      });
       await api.markNotificationsRead({ ids });
       queryClient.invalidateQueries({ queryKey: ["notifications"] });
-    } catch {
-      // silent
+    } catch (err) {
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
+      pushToast({ kind: "error", message: (err as APIError).message });
     }
   };
 
@@ -131,6 +152,8 @@ export default function NotificationsPage() {
             const Icon = ICONS[group.kind] || Bell;
             const moreCount = group.items.length - 1;
             const unread = group.items.some((i) => !i.is_read);
+            const unreadIds = group.items.filter((i) => !i.is_read).map((i) => i.id);
+            const markGroupRead = () => markIds(unreadIds);
             return (
               <li
                 key={group.key}
@@ -138,7 +161,7 @@ export default function NotificationsPage() {
                 onClick={(e) => {
                   // Allow nested links / buttons to take over.
                   if ((e.target as HTMLElement).closest("a, button")) return;
-                  markIds(group.items.filter((i) => !i.is_read).map((i) => i.id));
+                  void markGroupRead();
                   if (main.target_conversation_id) router.push(`/messages/${main.target_conversation_id}`);
                   else if (main.target_post_id) router.push(`/p/${main.target_post_id}`);
                   else if (main.actor) router.push(`/u/${main.actor.handle}`);
@@ -162,7 +185,10 @@ export default function NotificationsPage() {
                         <Link
                           key={i.id}
                           href={`/u/${i.actor.handle}`}
-                          onClick={(e) => e.stopPropagation()}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void markGroupRead();
+                          }}
                           className="ring-2 ring-kx-bg rounded-kx-sm hover:scale-110 transition-transform"
                         >
                           <Avatar user={i.actor} size={28} />
@@ -176,7 +202,10 @@ export default function NotificationsPage() {
                     {main.actor ? (
                       <Link
                         href={`/u/${main.actor.handle}`}
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void markGroupRead();
+                        }}
                         className="font-semibold hover:underline"
                       >
                         {main.actor.display_name}
@@ -189,7 +218,10 @@ export default function NotificationsPage() {
                     {main.target_conversation_id ? (
                       <Link
                         href={`/messages/${main.target_conversation_id}`}
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void markGroupRead();
+                        }}
                         className="kx-link ml-1"
                       >
                         查看对话
@@ -197,7 +229,10 @@ export default function NotificationsPage() {
                     ) : main.target_post_id ? (
                       <Link
                         href={`/p/${main.target_post_id}`}
-                        onClick={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void markGroupRead();
+                        }}
                         className="kx-link ml-1"
                       >
                         查看帖子
@@ -207,16 +242,34 @@ export default function NotificationsPage() {
                   {main.content ? <div className="text-xs text-kx-subtle mt-1 line-clamp-2">{main.content}</div> : null}
                   <div className="text-xs text-kx-muted mt-1">{relativeTime(main.created_at)}</div>
                 </div>
-                <button
-                  className="text-kx-muted hover:text-kx-danger opacity-0 group-hover:opacity-100 transition"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    remove(main.id);
-                  }}
-                  aria-label="删除"
-                >
-                  <Trash2 className="w-4 h-4" />
-                </button>
+                <div className="flex shrink-0 flex-col items-end gap-2">
+                  {unread ? (
+                    <button
+                      className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border border-kx-accent/20 bg-kx-accentSoft px-2.5 text-xs font-bold text-kx-accent transition hover:border-kx-accent/35 hover:bg-kx-accentSoft/80"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        void markGroupRead();
+                      }}
+                      aria-label="标记为已查看"
+                    >
+                      <CheckCheck className="h-3.5 w-3.5" /> 已查看
+                    </button>
+                  ) : (
+                    <span className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full bg-kx-soft px-2.5 text-xs font-bold text-kx-muted">
+                      <CheckCheck className="h-3.5 w-3.5" /> 已查看
+                    </span>
+                  )}
+                  <button
+                    className="text-kx-muted opacity-70 transition hover:text-kx-danger group-hover:opacity-100"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      remove(main.id);
+                    }}
+                    aria-label="删除"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
               </li>
             );
           })}

@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -25,16 +25,8 @@ import { CaptchaBox, EMPTY_CAPTCHA, type CaptchaState } from "@/components/auth/
 import { normalizeHandle, validateLogin } from "@/lib/authValidation";
 import { AUTH_COPY, AUTH_LOCALE_KEY, AUTH_LOCALE_OPTIONS, detectAuthLocale, type AuthLocale } from "@/lib/authLocale";
 
-/// Next.js 15 requires every `useSearchParams()` user to live under a
-/// Suspense boundary, otherwise the dev/prod server bails out with a
-/// 500. The form lives in the inner component; the page just provides
-/// the boundary.
-export default function LoginPage() {
-  return (
-    <Suspense fallback={null}>
-      <LoginForm />
-    </Suspense>
-  );
+export default function LoginClient() {
+  return <LoginForm />;
 }
 
 // Translates backend error codes / status into something the user can

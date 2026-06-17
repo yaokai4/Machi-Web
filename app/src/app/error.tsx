@@ -60,6 +60,27 @@ async function clearCachesAndReload() {
   }
 }
 
+function RecoveringSurface({ staleBundle }: { staleBundle: boolean }) {
+  return (
+    <div className="min-h-dvh flex items-center justify-center px-6">
+      <div className="kx-glass-surface max-w-md w-full p-8 text-center space-y-4 animate-kx-scale-in">
+        <div className="inline-flex w-12 h-12 items-center justify-center rounded-full bg-kx-primary/10 text-kx-primary mb-1">
+          <RefreshCw className="w-6 h-6 animate-spin" />
+        </div>
+        <h1 className="text-xl font-bold text-kx-text">正在恢复页面</h1>
+        <p className="text-sm text-kx-subtle leading-relaxed">
+          {staleBundle
+            ? "检测到版本更新，正在刷新到最新页面。"
+            : "页面刚刚遇到短暂异常，正在自动重试。"}
+        </p>
+        <div className="h-2 overflow-hidden rounded-full bg-kx-soft">
+          <div className="h-full w-1/2 rounded-full bg-kx-primary/70 animate-pulse" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function RouteError({
   error,
   reset,
@@ -69,12 +90,13 @@ export default function RouteError({
 }) {
   const [showDialog, setShowDialog] = useState(false);
   const attempted = useRef(false);
+  const staleBundle = isStaleBundleError(error);
 
   useEffect(() => {
     if (typeof console !== "undefined") {
       console.error("[machi] route error:", error);
     }
-    if (isStaleBundleError(error)) {
+    if (staleBundle) {
       void clearCachesAndReload();
       return;
     }
@@ -101,12 +123,10 @@ export default function RouteError({
       // ignore (privacy mode)
     }
     if (!recovered) setShowDialog(true);
-  }, [error, reset]);
+  }, [error, reset, staleBundle]);
 
   if (!showDialog) {
-    // Render NOTHING — the auto-reset is in flight. This avoids
-    // flashing the "出了点问题" dialog for transient errors.
-    return null;
+    return <RecoveringSurface staleBundle={staleBundle} />;
   }
 
   return (

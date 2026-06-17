@@ -539,18 +539,6 @@ function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPa
           <Plus className="h-6 w-6" strokeWidth={2.2} />
         </button>
       ) : null}
-      {/* White footer base behind the tab bar while the "更多" sheet is open.
-          It lives INSIDE .kx-app-shell (same stacking context as the bar) so
-          the bar's z-index actually lifts above it — the body-level dark
-          backdrop is cut off above this region, so the whole bottom reads as
-          one continuous light surface with the sheet instead of going dark. */}
-      {moreOpen ? (
-        <div
-          className="md:hidden fixed inset-x-0 bottom-0 z-[44] bg-kx-surface"
-          style={{ height: "calc(env(safe-area-inset-bottom) + 5.6rem)" }}
-          aria-hidden="true"
-        />
-      ) : null}
       <nav
         className="kx-mobile-tabbar md:hidden px-2 py-2"
         data-elevated={moreOpen}
@@ -773,15 +761,19 @@ function MobileMoreSheet({
         type="button"
         onClick={onClose}
         aria-label={t("action_cancel")}
-        className="fixed inset-x-0 top-0 z-[80] bg-slate-950/45 opacity-100 transition-opacity duration-200 md:hidden"
-        style={{ bottom: "calc(env(safe-area-inset-bottom) + 5.6rem)" }}
+        className="fixed inset-0 z-[80] bg-slate-950/45 opacity-100 transition-opacity duration-200 md:hidden"
       />
       <section
         role="dialog"
         aria-modal="true"
         aria-labelledby="mobile-more-title"
-        className="fixed inset-x-0 z-[90] max-h-[72dvh] overflow-y-auto overflow-x-hidden overscroll-contain rounded-t-[26px] bg-kx-surface shadow-[0_-8px_60px_-18px_rgba(15,23,42,0.4)] transform-gpu animate-kx-slide-up md:hidden"
-        style={{ bottom: "calc(env(safe-area-inset-bottom) + 5.4rem)", paddingBottom: "0.9rem" }}
+        className="fixed inset-x-0 z-[90] mx-auto overflow-y-auto overflow-x-hidden overscroll-contain rounded-[28px] border border-kx-stroke/70 bg-kx-surface shadow-[0_-8px_60px_-18px_rgba(15,23,42,0.4)] transform-gpu animate-kx-slide-up md:hidden"
+        style={{
+          bottom: "max(1.1rem, calc(env(safe-area-inset-bottom) + 0.35rem))",
+          width: "min(calc(100vw - 1.2rem), 23.5rem)",
+          maxHeight: "min(74dvh, calc(var(--kx-visual-viewport-height, 100dvh) - 7rem))",
+          paddingBottom: "5.15rem",
+        }}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between px-5 pt-4 pb-3">

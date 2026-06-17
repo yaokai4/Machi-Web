@@ -806,7 +806,7 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         "remote_ok", "benefits", "holidays", "trial_period",
     },
     "local_service": {
-        "service_area", "service_type", "price_unit", "business_name",
+        "service_area", "service_type", "service_vertical", "price_unit", "business_name",
         "certified_provider", "availability", "not_included", "service_process",
         "user_prepare", "cancellation_rule", "no_result_guarantee", "related_guides",
         "booking_required", "rating_note", "license_note",
@@ -821,14 +821,109 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         # attractions / day tours / transfers
         "ticket_type", "duration", "meeting_point", "included_items",
         "languages", "pickup_service",
+        # airport transfer
+        "airport_route", "vehicle_type", "passenger_count", "luggage_count",
+        "flight_info_note", "waiting_rule", "surcharge_note",
+        # paperwork / translation
+        "document_type", "required_materials", "delivery_time",
+        # moving / cleaning
+        "property_size", "item_volume", "vehicle_staff",
+        # repair / installation
+        "project_type", "device_brand_model", "onsite_fee", "parts_fee",
+        "warranty_note", "unavailable_scope",
     },
     "discount": {
         "merchant_name", "discount_info", "valid_until", "usage_rules",
-        "business_name",
+        "business_name", "merchant_verified",
     },
     "event": {
         "event_time", "venue", "fee", "capacity", "registration_method",
         "organizer_name",
+    },
+}
+
+SERVICE_VERTICAL_BY_CATEGORY: dict[str, str] = {
+    "餐厅美食": "food_restaurant",
+    "中华料理": "food_restaurant",
+    "日本料理": "food_restaurant",
+    "居酒屋": "food_restaurant",
+    "烧肉火锅": "food_restaurant",
+    "拉面": "food_restaurant",
+    "寿司海鲜": "food_restaurant",
+    "咖啡甜品": "food_restaurant",
+    "西餐": "food_restaurant",
+    "韩国料理": "food_restaurant",
+    "餐饮点评": "dining_booking",
+    "优惠预约": "dining_booking",
+    "民宿": "lodging",
+    "酒店": "lodging",
+    "温泉旅馆": "lodging",
+    "公寓式酒店": "lodging",
+    "酒店民宿": "lodging",
+    "景点门票": "attraction_ticket",
+    "一日游": "day_tour",
+    "本地向导": "day_tour",
+    "接送机": "airport_transfer",
+    "翻译手续": "paperwork_translation",
+    "签证/手续协助": "paperwork_translation",
+    "翻译": "paperwork_translation",
+    "租房申请协助": "paperwork_translation",
+    "认证服务": "paperwork_translation",
+    "搬家清洁": "moving_cleaning",
+    "搬家": "moving_cleaning",
+    "清洁": "moving_cleaning",
+    "维修安装": "repair_installation",
+    "美容美发": "beauty_pet_life",
+    "宠物服务": "beauty_pet_life",
+    "生活支持": "beauty_pet_life",
+}
+
+SERVICE_VERTICAL_COMMON_ATTRS: set[str] = {"business_name", "service_type", "service_vertical", "certified_provider"}
+SERVICE_VERTICAL_ATTRIBUTE_KEYS: dict[str, set[str]] = {
+    "food_restaurant": {
+        "service_area", "open_hours", "price_range", "near_station", "store_phone",
+        "reservation_required", "reservation_note", "menu", "packages", "languages",
+    },
+    "dining_booking": {
+        "service_area", "open_hours", "price_range", "near_station", "store_phone",
+        "availability", "booking_required", "reservation_required", "reservation_note",
+        "service_process", "cancellation_rule", "languages",
+    },
+    "lodging": {
+        "room_type", "max_guests", "price_unit", "check_in_time", "check_out_time",
+        "minimum_stay", "amenities", "inventory_note", "breakfast_included",
+        "instant_confirmation", "cancellation_rule", "license_note",
+    },
+    "attraction_ticket": {
+        "ticket_type", "availability", "duration", "meeting_point", "included_items",
+        "not_included", "user_prepare", "cancellation_rule", "license_note",
+    },
+    "day_tour": {
+        "ticket_type", "availability", "duration", "meeting_point", "included_items",
+        "not_included", "user_prepare", "pickup_service", "cancellation_rule", "license_note",
+    },
+    "airport_transfer": {
+        "airport_route", "service_area", "vehicle_type", "passenger_count",
+        "luggage_count", "flight_info_note", "waiting_rule", "surcharge_note",
+        "cancellation_rule",
+    },
+    "paperwork_translation": {
+        "languages", "document_type", "required_materials", "delivery_time",
+        "service_process", "user_prepare", "no_result_guarantee", "license_note",
+        "cancellation_rule",
+    },
+    "moving_cleaning": {
+        "service_area", "property_size", "item_volume", "vehicle_staff",
+        "included_items", "not_included", "user_prepare", "surcharge_note",
+        "cancellation_rule",
+    },
+    "repair_installation": {
+        "project_type", "device_brand_model", "service_area", "onsite_fee",
+        "parts_fee", "warranty_note", "unavailable_scope", "cancellation_rule",
+    },
+    "beauty_pet_life": {
+        "service_area", "open_hours", "price_range", "availability", "included_items",
+        "not_included", "user_prepare", "cancellation_rule", "license_note",
     },
 }
 
@@ -8795,12 +8890,49 @@ def listing_text_to_value(value: str, value_type: str) -> Any:
     return value
 
 
-def normalize_listing_attributes(listing_type: str, raw: Any) -> dict[str, tuple[str, str]]:
+def infer_service_vertical(category: Any, attrs: dict[str, Any]) -> str:
+    explicit = str(attrs.get("service_vertical") or "").strip()
+    if explicit in SERVICE_VERTICAL_ATTRIBUTE_KEYS:
+        return explicit
+    category_text = str(category or "").strip()
+    if category_text in SERVICE_VERTICAL_BY_CATEGORY:
+        return SERVICE_VERTICAL_BY_CATEGORY[category_text]
+    service_type = str(attrs.get("service_type") or "").strip()
+    if service_type in SERVICE_VERTICAL_BY_CATEGORY:
+        return SERVICE_VERTICAL_BY_CATEGORY[service_type]
+    if attrs.get("menu") or attrs.get("packages"):
+        return "food_restaurant"
+    if attrs.get("room_type") or attrs.get("max_guests") or attrs.get("check_in_time"):
+        return "lodging"
+    if attrs.get("airport_route") or attrs.get("vehicle_type") or attrs.get("flight_info_note"):
+        return "airport_transfer"
+    if attrs.get("document_type") or attrs.get("required_materials") or attrs.get("delivery_time") or attrs.get("no_result_guarantee"):
+        return "paperwork_translation"
+    if attrs.get("project_type") or attrs.get("device_brand_model") or attrs.get("warranty_note"):
+        return "repair_installation"
+    if attrs.get("property_size") or attrs.get("item_volume") or attrs.get("vehicle_staff"):
+        return "moving_cleaning"
+    if attrs.get("ticket_type") and attrs.get("meeting_point"):
+        return "day_tour" if attrs.get("pickup_service") else "attraction_ticket"
+    return ""
+
+
+def normalize_listing_attributes(listing_type: str, raw: Any, category: Any = "") -> dict[str, tuple[str, str]]:
     if not isinstance(raw, dict):
         return {}
+    raw_attrs = dict(raw)
     allowed = LISTING_ATTRIBUTE_KEYS.get(listing_type, set())
+    if listing_type == "local_service":
+        vertical = infer_service_vertical(category, raw_attrs)
+        if vertical:
+            raw_attrs["service_vertical"] = vertical
+            if not str(raw_attrs.get("service_type") or "").strip() and str(category or "").strip():
+                raw_attrs["service_type"] = str(category or "").strip()
+            allowed = SERVICE_VERTICAL_COMMON_ATTRS | SERVICE_VERTICAL_ATTRIBUTE_KEYS.get(vertical, set())
+        else:
+            allowed = SERVICE_VERTICAL_COMMON_ATTRS
     out: dict[str, tuple[str, str]] = {}
-    for key, value in raw.items():
+    for key, value in raw_attrs.items():
         k = str(key or "").strip()
         if not k or (allowed and k not in allowed):
             continue
@@ -18852,7 +18984,7 @@ class Handler(BaseHTTPRequestHandler):
                 str(data.get("business_id") or "") or None, contact_method, published_at, expires_at, created, created,
             ),
         )
-        attrs = normalize_listing_attributes(listing_type, data.get("attributes"))
+        attrs = normalize_listing_attributes(listing_type, data.get("attributes"), category)
         for key, (value, value_type) in attrs.items():
             conn.execute(
                 """
@@ -18988,7 +19120,7 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute(f"UPDATE city_listings SET {cols} WHERE id = ?", [*allowed.values(), listing_id])
         if "attributes" in data:
             listing_type = row["type"]
-            attrs = normalize_listing_attributes(listing_type, data.get("attributes"))
+            attrs = normalize_listing_attributes(listing_type, data.get("attributes"), next_category)
             conn.execute("DELETE FROM listing_attributes WHERE listing_id = ?", (listing_id,))
             for key, (value, value_type) in attrs.items():
                 conn.execute(

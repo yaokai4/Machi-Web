@@ -30,7 +30,7 @@ function MediaGridImpl({ items, onOpen, rounded = true }: MediaGridProps) {
     <>
       <div
         className={clsx(
-          "grid gap-1.5 overflow-hidden animate-kx-fade-in",
+          "grid gap-[2px] overflow-hidden animate-kx-fade-in",
           rounded && "rounded-kx-md border border-kx-stroke/40",
           count === 1 && "grid-cols-1",
           count === 2 && "grid-cols-2",

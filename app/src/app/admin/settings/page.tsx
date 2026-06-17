@@ -20,9 +20,8 @@ import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { useSession, useToasts } from "@/lib/store";
 import { fullDateTime } from "@/lib/format";
-import { marketingCopy, type MarketingLocale } from "@/data/machi-home";
-import { marketingPageLabels, marketingPages, type MarketingPageId } from "@/data/marketing-pages";
-import { flattenMarketingCopyStrings, scopeMarketingCopyOverrides } from "@/lib/marketingCopyOverrides";
+import type { MarketingLocale } from "@/data/machi-home";
+import { marketingPageLabels, type MarketingPageId } from "@/data/marketing-pages";
 import { SocialBrandIcon, type SocialBrand } from "@/components/marketing/SocialBrandIcon";
 
 type SitePageKey = MarketingPageId | "home";
@@ -66,14 +65,12 @@ export default function AdminSettingsPage() {
         <ServerMetricsCard />
         <SiteBrandSettingsCard />
         <SocialLinksCard />
-        <MasterCopyEditorCard />
         <MediaLibraryCard />
         <MarketingCoverageCard />
         <ContentModerationCard />
         <RightRailCard />
         <ExploreRankingSettingsCard />
         <DiscoverEntrancesCard />
-        <QuickCopyCard />
       </main>
     </AppShell>
   );
@@ -325,141 +322,6 @@ function SocialLinksCard() {
             <p className="mt-1 text-[11px] leading-4 text-kx-muted">{field.helper}</p>
           </Field>
         ))}
-      </div>
-    </section>
-  );
-}
-
-function MasterCopyEditorCard() {
-  const queryClient = useQueryClient();
-  const pushToast = useToasts((s) => s.push);
-  const [pageKey, setPageKey] = useState<SitePageKey>("home");
-  const [locale, setLocale] = useState<MarketingLocale>("zh");
-  const [search, setSearch] = useState("");
-  const [draft, setDraft] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
-  const overridesQuery = useQuery({
-    queryKey: ["admin-marketing-copy-overrides", locale],
-    queryFn: () => api.adminMarketingCopyOverrides(locale),
-  });
-  const prefix = pageKey === "home" ? "home." : `pages.${pageKey}.`;
-  const defaults = useMemo(() => {
-    const source = pageKey === "home"
-      ? marketingCopy[locale]
-      : marketingPages[pageKey][locale] ?? marketingPages[pageKey].zh;
-    return flattenMarketingCopyStrings(source);
-  }, [locale, pageKey]);
-  const scopedOverrides = useMemo(
-    () => scopeMarketingCopyOverrides(overridesQuery.data?.overrides, prefix),
-    [overridesQuery.data?.overrides, prefix],
-  );
-  const rows = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    return Object.entries(defaults)
-      .filter(([path, value]) => {
-        if (!needle) return true;
-        return path.toLowerCase().includes(needle) || value.toLowerCase().includes(needle) || (draft[path] || "").toLowerCase().includes(needle);
-      })
-      .sort(([a], [b]) => a.localeCompare(b, "en"));
-  }, [defaults, draft, search]);
-
-  useEffect(() => {
-    const next: Record<string, string> = {};
-    for (const [path, value] of Object.entries(defaults)) {
-      next[path] = scopedOverrides[path] ?? value;
-    }
-    setDraft(next);
-  }, [defaults, scopedOverrides]);
-
-  const save = async () => {
-    setBusy(true);
-    try {
-      const values: Record<string, string> = {};
-      for (const [path, defaultValue] of Object.entries(defaults)) {
-        const current = (draft[path] ?? "").trim();
-        values[`${prefix}${path}`] = current === defaultValue.trim() ? "" : current;
-      }
-      await api.adminUpdateMarketingCopyOverrides(locale, values);
-      await queryClient.invalidateQueries({ queryKey: ["admin-marketing-copy-overrides", locale] });
-      await queryClient.invalidateQueries({ queryKey: ["marketing-copy-overrides", locale] });
-      pushToast({ kind: "success", message: "官网主文案已保存，前台会读取最新覆盖内容" });
-    } catch (e) {
-      pushToast({ kind: "error", message: (e as APIError).message });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const resetVisible = () => {
-    setDraft((prev) => {
-      const next = { ...prev };
-      for (const [path, value] of rows) next[path] = value;
-      return next;
-    });
-    pushToast({ kind: "success", message: "已把当前筛选结果恢复为代码默认文案，保存后生效" });
-  };
-
-  if (overridesQuery.isError) return <ErrorState title="官网主文案加载失败" onRetry={() => overridesQuery.refetch()} />;
-
-  return (
-    <section className="kx-card">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="inline-flex items-center gap-2 text-base font-bold"><Globe className="h-4 w-4 text-kx-accent" />官网主文案总编辑</h2>
-          <p className="mt-1 text-xs text-kx-muted">读取代码里的当前三语官网文案，并在原内容上逐字段修改。保存的是覆盖值，删除覆盖即可回到默认文案。</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <button type="button" className="kx-button-ghost h-9 px-3 text-xs" onClick={resetVisible}>恢复当前筛选默认</button>
-          <button type="button" className="kx-button-primary h-9 px-3 text-xs" onClick={save} disabled={busy || overridesQuery.isLoading}>
-            <Save className="h-3.5 w-3.5" /> {busy ? "保存中…" : "保存主文案"}
-          </button>
-        </div>
-      </div>
-
-      <div className="mt-3 grid gap-2 md:grid-cols-[minmax(0,1fr)_11rem_11rem]">
-        <input className="kx-input h-10" placeholder="搜索字段名或当前文案…" value={search} onChange={(event) => setSearch(event.target.value)} />
-        <select className="kx-input h-10" value={pageKey} onChange={(event) => setPageKey(event.target.value as SitePageKey)}>
-          {PAGE_OPTIONS.map((page) => <option key={page.value} value={page.value}>{page.label}</option>)}
-        </select>
-        <select className="kx-input h-10" value={locale} onChange={(event) => setLocale(event.target.value as MarketingLocale)}>
-          {LOCALES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-        </select>
-      </div>
-
-      {overridesQuery.isLoading ? <InlineLoading /> : null}
-      <div className="mt-3 max-h-[720px] space-y-2 overflow-y-auto pr-1">
-        {rows.map(([path, defaultValue]) => {
-          const value = draft[path] ?? defaultValue;
-          const isOverridden = scopedOverrides[path] !== undefined && value.trim() !== defaultValue.trim();
-          const isLong = value.length > 72 || defaultValue.length > 72 || value.includes("\n") || defaultValue.includes("\n");
-          return (
-            <div key={path} className="rounded-kx-md border border-kx-stroke/60 bg-kx-soft/30 p-3">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div>
-                  <div className="text-xs font-black text-kx-text">{copyFieldLabel(path)}</div>
-                  <div className="mt-0.5 font-mono text-[11px] text-kx-muted">{prefix}{path}</div>
-                </div>
-                <span className={`rounded-full px-2 py-0.5 text-[11px] font-black ${isOverridden ? "bg-kx-accentSoft text-kx-accent" : "bg-kx-card text-kx-muted"}`}>
-                  {isOverridden ? "已覆盖" : "默认"}
-                </span>
-              </div>
-              {isLong ? (
-                <textarea
-                  className="kx-textarea mt-2 min-h-24"
-                  value={value}
-                  onChange={(event) => setDraft((prev) => ({ ...prev, [path]: event.target.value }))}
-                />
-              ) : (
-                <input
-                  className="kx-input mt-2 h-10"
-                  value={value}
-                  onChange={(event) => setDraft((prev) => ({ ...prev, [path]: event.target.value }))}
-                />
-              )}
-            </div>
-          );
-        })}
-        {!rows.length ? <div className="rounded-kx-md bg-kx-soft p-6 text-center text-sm font-semibold text-kx-muted">没有匹配的文案字段。</div> : null}
       </div>
     </section>
   );
@@ -984,73 +846,6 @@ function ExploreRankingSettingsCard() {
       </div>
     </section>
   );
-}
-
-function QuickCopyCard() {
-  const queryClient = useQueryClient();
-  const pushToast = useToasts((s) => s.push);
-  const [form, setForm] = useState({
-    page_key: "home" as SitePageKey,
-    locale: "zh",
-    title: "",
-    body: "",
-    status: "published" as "draft" | "published",
-    sort_order: 10,
-  });
-  const [busy, setBusy] = useState(false);
-
-  const save = async () => {
-    if (!form.title.trim()) {
-      pushToast({ kind: "error", message: "标题不能为空" });
-      return;
-    }
-    setBusy(true);
-    try {
-      await api.adminCreateMarketingCopy(form);
-      await queryClient.invalidateQueries({ queryKey: ["admin-marketing-copy"] });
-      pushToast({ kind: "success", message: "官网文案已发布" });
-      setForm({ ...form, title: "", body: "" });
-    } catch (e) {
-      pushToast({ kind: "error", message: (e as APIError).message });
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="kx-card">
-      <h2 className="inline-flex items-center gap-2 text-base font-bold"><Plus className="h-4 w-4 text-kx-accent" />快速发布官网补充文案</h2>
-      <p className="mt-1 text-xs text-kx-muted">适合临时公告、城市开放计划、商家认证说明和合作入口提示；长文建议回到总览编辑器细修。</p>
-      <div className="mt-3 grid gap-2 sm:grid-cols-4">
-        <select className="kx-input" value={form.page_key} onChange={(e) => setForm({ ...form, page_key: e.target.value as SitePageKey })}>
-          {PAGE_OPTIONS.map((page) => <option key={page.value} value={page.value}>{page.label}</option>)}
-        </select>
-        <select className="kx-input" value={form.locale} onChange={(e) => setForm({ ...form, locale: e.target.value })}>
-          {LOCALES.map((locale) => <option key={locale.value} value={locale.value}>{locale.label}</option>)}
-        </select>
-        <select className="kx-input" value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value as "draft" | "published" })}>
-          <option value="published">发布</option>
-          <option value="draft">草稿</option>
-        </select>
-        <input className="kx-input" type="number" value={form.sort_order} onChange={(e) => setForm({ ...form, sort_order: Number(e.target.value || 0) })} />
-      </div>
-      <input className="kx-input mt-2" placeholder="标题，例如：商家认证申请需要提交的资料" value={form.title} onChange={(e) => setForm({ ...form, title: e.target.value })} />
-      <textarea className="kx-textarea mt-2 min-h-32" placeholder="正文：写清楚适用对象、提交材料、审核状态、展示位置和下一步操作。" value={form.body} onChange={(e) => setForm({ ...form, body: e.target.value })} />
-      <button className="kx-button-primary mt-3" onClick={save} disabled={busy}>{busy ? "保存中…" : "保存文案"}</button>
-    </section>
-  );
-}
-
-function copyFieldLabel(path: string): string {
-  return path
-    .replace(/^nav\.items\.(\d+)\.0$/, "导航文字 $1")
-    .replace(/^nav\.items\.(\d+)\.1$/, "导航链接 $1")
-    .replace(/^hero\./, "首页首屏 / ")
-    .replace(/^founder\./, "创始人 / ")
-    .replace(/^footer\./, "页脚 / ")
-    .replace(/^blocks\.(\d+)\./, "页面区块 $1 / ")
-    .replace(/^items\.(\d+)\./, "项目 $1 / ")
-    .replaceAll(".", " / ");
 }
 
 function Info({ label, value }: { label: string; value: string }) {

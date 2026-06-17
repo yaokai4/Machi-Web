@@ -40,8 +40,9 @@ import {
   Eye,
   EyeOff,
 } from "lucide-react";
-import { api, APIError, type MarketingCopyBlock } from "@/lib/api";
+import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
+import { MasterCopyEditorCard } from "@/components/admin/MasterCopyEditorCard";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { ConfirmDialog, Dialog } from "@/components/design/Dialog";
@@ -51,7 +52,6 @@ import { useSession, useToasts } from "@/lib/store";
 import { fullDateTime, relativeTime, compactNumber } from "@/lib/format";
 import { useDebounce } from "@/lib/hooks";
 import { CONTENT_TYPE_LABELS, CONTENT_TYPES, showVerifiedBadge, type ContentType } from "@/lib/types";
-import { marketingPageLabels, type MarketingPageId } from "@/data/marketing-pages";
 
 type Tab = "overview" | "users" | "posts" | "reports" | "feedback" | "visitors" | "seed" | "site";
 
@@ -1099,195 +1099,10 @@ function zhGeoParts(v: { country: string; region: string; city: string }) {
   ].filter(Boolean);
 }
 
-type SitePageKey = MarketingPageId | "home";
-
-const SITE_PAGE_OPTIONS: Array<{ value: SitePageKey; label: string }> = [
-  { value: "home", label: "首页" },
-  ...(Object.entries(marketingPageLabels) as Array<[MarketingPageId, string]>).map(([value, label]) => ({ value, label })),
-];
-
-const SITE_LOCALE_OPTIONS = [
-  { value: "zh", label: "中文" },
-  { value: "en", label: "English" },
-  { value: "ja", label: "日本語" },
-] as const;
-
 function SiteCopyPanel() {
-  const queryClient = useQueryClient();
-  const pushToast = useToasts((s) => s.push);
-  const list = useQuery({ queryKey: ["admin-marketing-copy"], queryFn: () => api.adminMarketingCopy() });
-  const [editingId, setEditingId] = useState<string | null>(null);
-  const [pendingDelete, setPendingDelete] = useState<string | null>(null);
-  const [form, setForm] = useState({
-    page_key: "home" as SitePageKey,
-    locale: "zh",
-    status: "published" as "draft" | "published",
-    sort_order: 0,
-    title: "",
-    body: "",
-  });
-
-  const reset = () => {
-    setEditingId(null);
-    setForm({ page_key: "home", locale: "zh", status: "published", sort_order: 0, title: "", body: "" });
-  };
-
-  const edit = (item: MarketingCopyBlock) => {
-    setEditingId(item.id);
-    setForm({
-      page_key: item.page_key as SitePageKey,
-      locale: item.locale,
-      status: item.status,
-      sort_order: item.sort_order,
-      title: item.title,
-      body: item.body,
-    });
-  };
-
-  const save = async () => {
-    try {
-      if (editingId) {
-        await api.adminUpdateMarketingCopy(editingId, form);
-      } else {
-        await api.adminCreateMarketingCopy(form);
-      }
-      await queryClient.invalidateQueries({ queryKey: ["admin-marketing-copy"] });
-      await queryClient.invalidateQueries({ queryKey: ["marketing-copy"] });
-      pushToast({ kind: "success", message: editingId ? "官网文案已更新" : "官网文案已创建" });
-      reset();
-    } catch (e) {
-      pushToast({ kind: "error", message: (e as APIError).message });
-    }
-  };
-
-  const remove = async () => {
-    if (!pendingDelete) return;
-    try {
-      await api.adminDeleteMarketingCopy(pendingDelete);
-      await queryClient.invalidateQueries({ queryKey: ["admin-marketing-copy"] });
-      await queryClient.invalidateQueries({ queryKey: ["marketing-copy"] });
-      setPendingDelete(null);
-      if (editingId === pendingDelete) reset();
-      pushToast({ kind: "success", message: "官网文案已删除" });
-    } catch (e) {
-      pushToast({ kind: "error", message: (e as APIError).message });
-    }
-  };
-
-  const items = list.data || [];
-
   return (
-    <div className="grid gap-3 lg:grid-cols-[minmax(0,420px)_1fr]">
-      <section className="kx-card">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-base font-bold">官网文案编辑</h2>
-            <p className="mt-1 text-xs text-kx-muted">维护首页和子页面的公开补充文案，适合公告、合作说明、城市开放计划和运营口径更新。</p>
-          </div>
-          <button className="kx-button-ghost h-8 px-3 text-xs" onClick={reset}>新建</button>
-        </div>
-
-        <div className="mt-4 grid gap-3">
-          <label className="grid gap-1 text-xs font-semibold text-kx-muted">
-            页面
-            <select
-              className="kx-input h-10"
-              value={form.page_key}
-              onChange={(e) => setForm((f) => ({ ...f, page_key: e.target.value as SitePageKey }))}
-            >
-              {SITE_PAGE_OPTIONS.map((option) => (
-                <option key={option.value} value={option.value}>{option.label}</option>
-              ))}
-            </select>
-          </label>
-
-          <div className="grid grid-cols-3 gap-2">
-            <label className="grid gap-1 text-xs font-semibold text-kx-muted">
-              语言
-              <select className="kx-input h-10" value={form.locale} onChange={(e) => setForm((f) => ({ ...f, locale: e.target.value }))}>
-                {SITE_LOCALE_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="grid gap-1 text-xs font-semibold text-kx-muted">
-              状态
-              <select className="kx-input h-10" value={form.status} onChange={(e) => setForm((f) => ({ ...f, status: e.target.value as "draft" | "published" }))}>
-                <option value="published">published</option>
-                <option value="draft">draft</option>
-              </select>
-            </label>
-            <label className="grid gap-1 text-xs font-semibold text-kx-muted">
-              排序
-              <input className="kx-input h-10" type="number" min={0} value={form.sort_order} onChange={(e) => setForm((f) => ({ ...f, sort_order: Number(e.target.value) || 0 }))} />
-            </label>
-          </div>
-
-          <label className="grid gap-1 text-xs font-semibold text-kx-muted">
-            标题
-            <input className="kx-input h-10" value={form.title} onChange={(e) => setForm((f) => ({ ...f, title: e.target.value }))} placeholder="例如：东京商家认证开放申请" />
-          </label>
-
-          <label className="grid gap-1 text-xs font-semibold text-kx-muted">
-            正文
-            <textarea
-              className="kx-input min-h-[180px] resize-y py-3"
-              value={form.body}
-              onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
-              placeholder="写清楚面向谁、开放什么、需要提交哪些信息、用户或合作方下一步该做什么。"
-            />
-          </label>
-
-          <div className="flex gap-2">
-            <button className="kx-button-primary h-10 flex-1" onClick={save}>
-              {editingId ? "保存修改" : "发布文案"}
-            </button>
-            {editingId ? <button className="kx-button-ghost h-10 px-4" onClick={reset}>取消</button> : null}
-          </div>
-        </div>
-      </section>
-
-      <section className="space-y-2">
-        {list.isError ? <ErrorState onRetry={() => list.refetch()} /> : !list.data ? <InlineLoading /> : null}
-        {items.map((item) => (
-          <article key={item.id} className="kx-card">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-1.5 text-xs">
-                  <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 font-semibold text-kx-accent">
-                    {SITE_PAGE_OPTIONS.find((p) => p.value === item.page_key)?.label || item.page_key}
-                  </span>
-                  <span className="rounded-full bg-kx-soft px-2 py-0.5 font-semibold text-kx-muted">{item.locale}</span>
-                  <span className={clsx("rounded-full px-2 py-0.5 font-semibold", item.status === "published" ? "bg-emerald-500/10 text-emerald-700" : "bg-amber-500/10 text-amber-700")}>
-                    {item.status}
-                  </span>
-                  <span className="text-kx-muted">排序 {item.sort_order}</span>
-                </div>
-                <h3 className="mt-2 text-sm font-bold text-kx-text">{item.title}</h3>
-                <p className="mt-1 line-clamp-3 whitespace-pre-wrap text-sm leading-6 text-kx-subtle">{item.body}</p>
-                <p className="mt-2 text-xs text-kx-muted">更新于 {fullDateTime(item.updated_at)}</p>
-              </div>
-              <div className="flex shrink-0 gap-2">
-                <button className="kx-button-ghost h-8 px-3 text-xs" onClick={() => edit(item)}>编辑</button>
-                <button className="kx-button-ghost h-8 px-3 text-xs text-kx-danger" onClick={() => setPendingDelete(item.id)}>
-                  <Trash2 className="h-3.5 w-3.5" /> 删除
-                </button>
-              </div>
-            </div>
-          </article>
-        ))}
-        {list.data && items.length === 0 ? <div className="kx-card py-10 text-center text-kx-subtle">暂无官网补充文案，可以先为首页或商家合作页创建一条。</div> : null}
-      </section>
-
-      <ConfirmDialog
-        open={!!pendingDelete}
-        title="删除这条官网文案？"
-        description="删除后对应官网页面将不再展示这条内容。"
-        destructive
-        confirmLabel="删除"
-        onConfirm={remove}
-        onCancel={() => setPendingDelete(null)}
-      />
+    <div className="space-y-3">
+      <MasterCopyEditorCard />
     </div>
   );
 }

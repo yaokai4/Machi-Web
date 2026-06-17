@@ -166,7 +166,7 @@ function localizedChannel(kind: ChannelKind, locale: Locale) {
 /// 餐厅美食：菜系类目（local_service 下）。
 export const FOOD_CATEGORIES = ["中华料理", "日本料理", "居酒屋", "烧肉火锅", "拉面", "寿司海鲜", "咖啡甜品", "西餐", "韩国料理"] as const;
 /// 餐厅美食分区还包含两个老类目（已有数据继续生效）。
-const FOOD_SECTION_CATEGORIES = [...FOOD_CATEGORIES, "餐饮点评", "优惠预约"];
+const FOOD_SECTION_CATEGORIES = ["餐厅美食", ...FOOD_CATEGORIES, "餐饮点评", "优惠预约"];
 /// 生活服务分区同时兼容新细分类与旧伞类目，保证发布端和发现端不脱节。
 const LIFE_SECTION_CATEGORIES = ["翻译手续", "签证/手续协助", "翻译", "搬家清洁", "搬家", "清洁", "维修安装", "美容美发", "宠物服务", "生活支持", "租房申请协助", "认证服务"] as const;
 /// 住宿：归属租房页「民宿·短住」标签；"酒店民宿" 为老类目伞值。
@@ -1111,7 +1111,8 @@ export function CreateListingPage({
   const isEditing = Boolean(editListingId);
   const draftKey = `machi.listingDraft.${type}.${regionCode}`;
   const createLabel = isEditing ? "保存修改" : type === "rental" || type === "job" || type === "hiring" || type === "local_service" ? "提交审核" : "发布";
-  const createFields = useMemo(() => listingFormFields(type), [type]);
+  const createFields = useMemo(() => listingFormFields(type, category, attributes), [attributes, category, type]);
+  const serviceVertical = type === "local_service" ? getServiceVertical(category, attributes) : "";
   const imageLimit = listingImageLimit(type);
   const mediaLimit = imageLimit;
   const membershipRequired = listingTypeRequiresMembership(type);
@@ -1233,10 +1234,27 @@ export function CreateListingPage({
     pushToast({ kind: "success", message: "草稿已保存" });
   };
 
+  const applyType = (nextType: KXListingType) => {
+    setType(nextType);
+    setCategory("");
+    setAttributes({});
+    setFieldErrors({});
+  };
+
+  const applyCategory = (nextCategory: string) => {
+    const cleanCategory = cleanListingText(nextCategory);
+    setCategory(cleanCategory);
+    clearFieldError(setFieldErrors, "category");
+    if (type === "local_service") {
+      setAttributes((current) => sanitizeServiceAttributesForCategory(cleanCategory, current));
+    }
+  };
+
   const validate = () => {
     const next: Record<string, string> = {};
     if (!title.trim()) next.title = "请填写标题";
     if (!category.trim()) next.category = "请选择或填写分类";
+    if (type === "local_service" && !getServiceVertical(category, attributes)) next.category = "请选择上方标准服务细分类";
     if (!location.trim()) next.location = "请填写展示地点或区域";
     if ((type === "secondhand" || type === "rental" || type === "job" || type === "hiring") && !price.trim()) next.price = type === "rental" ? "请填写月租" : type === "secondhand" ? "请填写价格，免费送可填 0" : "请填写薪资";
     if (price.trim() && Number.isNaN(Number(price))) next.price = "金额只能填写数字";
@@ -1245,6 +1263,12 @@ export function CreateListingPage({
     });
     if (!description.trim()) next.description = "请补充描述，说明条件、范围和风险信息";
     setFieldErrors(next);
+    const firstError = Object.keys(next)[0];
+    if (firstError && typeof document !== "undefined") {
+      window.requestAnimationFrame(() => {
+        document.querySelector<HTMLElement>(`[data-field="${firstError}"]`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
     return Object.keys(next).length === 0;
   };
 
@@ -1366,10 +1390,12 @@ export function CreateListingPage({
       const mediaIds = media.map((item) => item.id);
       // 菜单 / 团购套餐:表单里是「一行一项」的文本,提交时解析成结构化数组
       // (后端按 json 属性存储)。
-      const finalAttributes: Record<string, unknown> = { ...attributes };
+      const finalAttributes: Record<string, unknown> = type === "local_service"
+        ? sanitizeServiceAttributesForCategory(category, attributes)
+        : { ...attributes };
       if (type === "local_service") {
-        if (typeof attributes.menu === "string") finalAttributes.menu = parseMenuLines(attributes.menu);
-        if (typeof attributes.packages === "string") finalAttributes.packages = parsePackageLines(attributes.packages);
+        if (typeof finalAttributes.menu === "string") finalAttributes.menu = parseMenuLines(finalAttributes.menu);
+        if (typeof finalAttributes.packages === "string") finalAttributes.packages = parsePackageLines(finalAttributes.packages);
       }
       const payload: KXCreateListingPayload = {
         type,
@@ -1409,7 +1435,7 @@ export function CreateListingPage({
   });
 
   return (
-    <AppShell requireAuth={false} right={null} wide>
+    <AppShell requireAuth right={null} wide>
       <main className="px-3 py-4 sm:px-4">
         <section className="rounded-[30px] border border-slate-200/70 bg-white/90 p-5 shadow-[0_18px_58px_-40px_rgba(15,23,42,0.52)] backdrop-blur">
           <div className="flex items-center gap-3">
@@ -1424,7 +1450,7 @@ export function CreateListingPage({
               <p className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">选择发布类型</p>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-6">
               {(["secondhand", "rental", "job", "hiring", "local_service", "discount"] as KXListingType[]).map((value) => (
-                <button key={value} type="button" disabled={isEditing} onClick={() => { setType(value); setFieldErrors({}); }} data-active={type === value} className="h-12 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-600 transition hover:-translate-y-px hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-45 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white data-[active=true]:opacity-100">
+                <button key={value} type="button" disabled={isEditing} onClick={() => applyType(value)} data-active={type === value} className="h-12 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-600 transition hover:-translate-y-px hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-45 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white data-[active=true]:opacity-100">
                   {listingTypeLabel(value)}
                 </button>
               ))}
@@ -1512,13 +1538,13 @@ export function CreateListingPage({
                     ) : null}
                   </div>
                 </Field>
-                <Field label="分类" required error={fieldErrors.category}>
+                <Field field="category" label="分类" required error={fieldErrors.category}>
                   <div className="flex flex-wrap gap-1.5 pb-1.5">
                     {(CATEGORY_CHIPS[type] || []).filter((chip) => chip !== "全部").map((chip) => (
                       <button
                         key={chip}
                         type="button"
-                        onClick={() => { setCategory(chip); clearFieldError(setFieldErrors, "category"); }}
+                        onClick={() => applyCategory(chip)}
                         data-active={category === chip}
                         className="h-8 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white hover:border-blue-300 hover:text-blue-700"
                       >
@@ -1526,15 +1552,18 @@ export function CreateListingPage({
                       </button>
                     ))}
                   </div>
-                  <input value={category} onChange={(e) => { setCategory(e.target.value); clearFieldError(setFieldErrors, "category"); }} className="kx-input h-11" placeholder={categoryPlaceholder(type)} />
+                  <input value={category} onChange={(e) => applyCategory(e.target.value)} className="kx-input h-11" placeholder={categoryPlaceholder(type)} />
+                  {type === "local_service" && serviceVertical ? (
+                    <p className="mt-1.5 text-xs font-bold text-slate-500">已切换为 {SERVICE_VERTICAL_LABEL[serviceVertical]} 表单</p>
+                  ) : null}
                 </Field>
-                <Field label={type === "job" || type === "hiring" ? "职位标题" : type === "local_service" ? "服务标题" : type === "discount" ? "优惠标题" : "标题"} required error={fieldErrors.title}>
+                <Field field="title" label={type === "job" || type === "hiring" ? "职位标题" : type === "local_service" ? "服务标题" : type === "discount" ? "优惠标题" : "标题"} required error={fieldErrors.title}>
                   <input value={title} onChange={(e) => { setTitle(e.target.value); clearFieldError(setFieldErrors, "title"); }} className="kx-input h-11" placeholder={titlePlaceholder(type)} />
                 </Field>
-                <Field label={priceFieldLabel(type)} required={type !== "discount"} error={fieldErrors.price}>
+                <Field field="price" label={priceFieldLabel(type)} required={type !== "discount"} error={fieldErrors.price}>
                   <input value={price} onChange={(e) => { setPrice(e.target.value.replace(/[^\d.]/g, "")); clearFieldError(setFieldErrors, "price"); }} className="kx-input h-11" placeholder={pricePlaceholder(type)} inputMode="decimal" />
                 </Field>
-                <Field label="展示地点 / 区域" required error={fieldErrors.location}>
+                <Field field="location" label="展示地点 / 区域" required error={fieldErrors.location}>
                   <input value={location} onChange={(e) => { setLocation(e.target.value); clearFieldError(setFieldErrors, "location"); }} className="kx-input h-11" placeholder="新宿站附近 / 丰岛区 / 仙台站西口" />
                 </Field>
               </div>
@@ -1653,10 +1682,17 @@ export function CreateListingPage({
 
             <section className="rounded-[24px] border border-slate-200/70 bg-slate-50/70 p-4">
               <p className="mb-3 text-sm font-black text-slate-950">{listingTypeLabel(type)}字段</p>
-              <ListingAttributeEditor type={type} value={attributes} errors={fieldErrors} onChange={(next) => { setAttributes(next); setFieldErrors((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key in next ? String(next[key] || "").trim() === "" : true))); }} />
+              <ListingAttributeEditor
+                type={type}
+                category={category}
+                value={attributes}
+                errors={fieldErrors}
+                onCategorySelect={applyCategory}
+                onChange={(next) => { setAttributes(next); setFieldErrors((current) => Object.fromEntries(Object.entries(current).filter(([key]) => key in next ? String(next[key] || "").trim() === "" : true))); }}
+              />
             </section>
 
-            <Field label="描述" required error={fieldErrors.description}>
+            <Field field="description" label="描述" required error={fieldErrors.description}>
               <textarea value={description} onChange={(e) => { setDescription(e.target.value); clearFieldError(setFieldErrors, "description"); }} className="kx-input min-h-32 p-3" placeholder="补充状态、交易方式、入住条件、工作内容、服务范围、预约规则、旅行/景点说明或安全提示。" />
             </Field>
             <SafetyNotice type={type} />
@@ -2504,6 +2540,7 @@ function packagesToLines(raw: unknown): string {
 /// (local_service) 展示;无数据时不渲染。
 function MerchantMenuPackages({ item }: { item: KXCityListing }) {
   if (item.type !== "local_service") return null;
+  if (getServiceVertical(item.category || "", item.attributes || {}) !== "food_restaurant") return null;
   const packages = listingAttrArray<ListingPackage>(item, "packages").filter((p) => (p?.title || "").trim());
   const menu = listingAttrArray<MenuDish>(item, "menu").filter((d) => (d?.name || "").trim());
   const reservationRequired = listingAttrFlag(item, "reservation_required");
@@ -3953,21 +3990,38 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
 
 function ListingAttributeEditor({
   type,
+  category,
   value,
   errors = {},
+  onCategorySelect,
   onChange,
 }: {
   type: KXListingType;
+  category?: string;
   value: Record<string, string>;
   errors?: Record<string, string>;
+  onCategorySelect?: (category: string) => void;
   onChange: (next: Record<string, string>) => void;
 }) {
-  const fields = listingFormFields(type);
-  const set = (key: string, nextValue: string) => onChange({ ...value, [key]: nextValue });
+  const fields = listingFormFields(type, category || "", value);
+  const set = (key: string, nextValue: string) => {
+    if (type === "local_service" && key === "service_type" && onCategorySelect) {
+      onCategorySelect(nextValue);
+      return;
+    }
+    onChange({ ...value, [key]: nextValue });
+  };
+  if (type === "local_service" && !fields.length) {
+    return (
+      <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm font-semibold text-slate-500">
+        请先在基础信息里选择一个标准服务细分类。选择后这里只显示该行业需要填写的字段。
+      </div>
+    );
+  }
   return (
     <div className="grid gap-3 sm:grid-cols-2">
       {fields.map((field) => (
-        <Field key={field.key} label={field.label} required={field.required} error={errors[field.key]}>
+        <Field key={field.key} field={field.key} label={field.label} required={field.required} error={errors[field.key]}>
           {field.kind === "checkbox" ? (
             <button
               type="button"
@@ -3994,9 +4048,9 @@ function ListingAttributeEditor({
   );
 }
 
-function Field({ label, children, required, error }: { label: string; children: React.ReactNode; required?: boolean; error?: string }) {
+function Field({ field, label, children, required, error }: { field?: string; label: string; children: React.ReactNode; required?: boolean; error?: string }) {
   return (
-    <label className="block">
+    <label className="block" data-field={field}>
       <span className="mb-1.5 flex items-center gap-1 text-xs font-black text-slate-500">
         {label}
         {required ? <span className="text-rose-500">*</span> : null}
@@ -4190,6 +4244,7 @@ function listingBackHref(item: KXCityListing) {
 function defaultPriceType(type: KXListingType) {
   if (type === "rental" || type === "hiring") return "monthly";
   if (type === "job") return "hourly";
+  if (type === "local_service") return "starting_from";
   if (type === "discount") return "discount";
   return "fixed";
 }
@@ -4230,6 +4285,251 @@ function option(value: string, label: string = value): FilterOption {
   return { value, label };
 }
 
+type ServiceVertical =
+  | "food_restaurant"
+  | "dining_booking"
+  | "lodging"
+  | "attraction_ticket"
+  | "day_tour"
+  | "airport_transfer"
+  | "paperwork_translation"
+  | "moving_cleaning"
+  | "repair_installation"
+  | "beauty_pet_life";
+
+const SERVICE_VERTICAL_BY_CATEGORY: Record<string, ServiceVertical> = {
+  "餐厅美食": "food_restaurant",
+  "中华料理": "food_restaurant",
+  "日本料理": "food_restaurant",
+  "居酒屋": "food_restaurant",
+  "烧肉火锅": "food_restaurant",
+  "拉面": "food_restaurant",
+  "寿司海鲜": "food_restaurant",
+  "咖啡甜品": "food_restaurant",
+  "西餐": "food_restaurant",
+  "韩国料理": "food_restaurant",
+  "餐饮点评": "dining_booking",
+  "优惠预约": "dining_booking",
+  "民宿": "lodging",
+  "酒店": "lodging",
+  "温泉旅馆": "lodging",
+  "公寓式酒店": "lodging",
+  "酒店民宿": "lodging",
+  "景点门票": "attraction_ticket",
+  "一日游": "day_tour",
+  "本地向导": "day_tour",
+  "接送机": "airport_transfer",
+  "翻译手续": "paperwork_translation",
+  "签证/手续协助": "paperwork_translation",
+  "翻译": "paperwork_translation",
+  "租房申请协助": "paperwork_translation",
+  "认证服务": "paperwork_translation",
+  "搬家清洁": "moving_cleaning",
+  "搬家": "moving_cleaning",
+  "清洁": "moving_cleaning",
+  "维修安装": "repair_installation",
+  "美容美发": "beauty_pet_life",
+  "宠物服务": "beauty_pet_life",
+  "生活支持": "beauty_pet_life",
+};
+
+const SERVICE_VERTICALS = new Set<ServiceVertical>(Object.values(SERVICE_VERTICAL_BY_CATEGORY));
+
+const SERVICE_TYPE_OPTIONS: Record<ServiceVertical, string[]> = {
+  food_restaurant: ["餐厅美食", ...FOOD_CATEGORIES],
+  dining_booking: ["餐饮点评", "优惠预约"],
+  lodging: ["民宿", "酒店", "温泉旅馆", "公寓式酒店", "酒店民宿"],
+  attraction_ticket: ["景点门票"],
+  day_tour: ["一日游", "本地向导"],
+  airport_transfer: ["接送机"],
+  paperwork_translation: ["翻译手续", "签证/手续协助", "翻译", "租房申请协助", "认证服务"],
+  moving_cleaning: ["搬家清洁", "搬家", "清洁"],
+  repair_installation: ["维修安装"],
+  beauty_pet_life: ["美容美发", "宠物服务", "生活支持"],
+};
+
+const SERVICE_VERTICAL_LABEL: Record<ServiceVertical, string> = {
+  food_restaurant: "餐厅美食",
+  dining_booking: "餐饮点评 / 优惠预约",
+  lodging: "民宿 / 酒店",
+  attraction_ticket: "景点门票",
+  day_tour: "一日游 / 本地向导",
+  airport_transfer: "接送机",
+  paperwork_translation: "翻译 / 手续协助",
+  moving_cleaning: "搬家 / 清洁",
+  repair_installation: "维修安装",
+  beauty_pet_life: "美容美发 / 宠物 / 生活支持",
+};
+
+function getServiceVertical(category: string, attrs: Record<string, unknown> = {}): ServiceVertical | "" {
+  const explicit = cleanListingText(attrs.service_vertical);
+  if (SERVICE_VERTICALS.has(explicit as ServiceVertical)) return explicit as ServiceVertical;
+  const categoryKey = cleanListingText(category);
+  if (SERVICE_VERTICAL_BY_CATEGORY[categoryKey]) return SERVICE_VERTICAL_BY_CATEGORY[categoryKey];
+  const serviceType = cleanListingText(attrs.service_type);
+  if (SERVICE_VERTICAL_BY_CATEGORY[serviceType]) return SERVICE_VERTICAL_BY_CATEGORY[serviceType];
+  if (attrs.menu || attrs.packages) return "food_restaurant";
+  if (attrs.room_type || attrs.max_guests || attrs.check_in_time) return "lodging";
+  if (attrs.airport_route || attrs.vehicle_type || attrs.flight_info_note) return "airport_transfer";
+  if (attrs.document_type || attrs.required_materials || attrs.delivery_time || attrs.no_result_guarantee) return "paperwork_translation";
+  if (attrs.project_type || attrs.device_brand_model || attrs.warranty_note) return "repair_installation";
+  if (attrs.property_size || attrs.item_volume || attrs.vehicle_staff) return "moving_cleaning";
+  if (attrs.ticket_type && attrs.meeting_point) return attrs.pickup_service ? "day_tour" : "attraction_ticket";
+  return "";
+}
+
+function serviceFieldsForCategory(category: string, attrs: Record<string, unknown> = {}): AttributeField[] {
+  const vertical = getServiceVertical(category, attrs);
+  if (!vertical) return [];
+  const serviceTypeField: AttributeField = {
+    key: "service_type",
+    label: "细分类 / 服务类型",
+    required: true,
+    kind: "select",
+    options: SERVICE_TYPE_OPTIONS[vertical].map((item) => option(item)),
+  };
+  if (vertical === "food_restaurant") return [
+    { key: "business_name", label: "商家名称", required: true, placeholder: "Machi Dining" },
+    serviceTypeField,
+    { key: "service_area", label: "服务范围", required: true, placeholder: "新宿 / 池袋 / 东京 23 区" },
+    { key: "open_hours", label: "营业时间", placeholder: "11:00-22:00 / 周一休" },
+    { key: "price_range", label: "人均 / 价格区间", placeholder: "人均 ¥2,500-3,500" },
+    { key: "near_station", label: "最近车站", placeholder: "新宿站东口徒步 3 分钟" },
+    { key: "store_phone", label: "到店电话", placeholder: "03-1234-5678" },
+    { key: "reservation_required", label: "仅限预约制", kind: "checkbox" },
+    { key: "reservation_note", label: "预约说明", kind: "textarea", placeholder: "如何预约、可预约时段、几人起订、是否需要定金。" },
+    { key: "menu", label: "菜单（每行一道：菜名 | 价格 | 备注）", kind: "textarea", placeholder: "麻婆豆腐 | ¥980\n口水鸡 | ¥1,080 | 微辣" },
+    { key: "packages", label: "团购套餐（每行一个：套餐名 | 现价 | 原价 | 包含；先展示，暂不支持线上购买）", kind: "textarea", placeholder: "双人套餐 | ¥3,980 | ¥5,200 | 4菜1汤+2饮料" },
+    { key: "languages", label: "服务语言", placeholder: "中文 / 日本語 / English" },
+    { key: "certified_provider", label: "认证商家", kind: "checkbox" },
+  ];
+  if (vertical === "dining_booking") return [
+    { key: "business_name", label: "商家 / 服务方名称", required: true, placeholder: "Machi Table Booking" },
+    serviceTypeField,
+    { key: "service_area", label: "服务范围", required: true, placeholder: "东京 23 区 / 线上咨询" },
+    { key: "open_hours", label: "营业时间", placeholder: "11:00-22:00 / 周一休" },
+    { key: "price_range", label: "价位 / 服务费", placeholder: "预约咨询 / 人均 ¥3,000 起" },
+    { key: "near_station", label: "最近车站", placeholder: "高田马场站步行 4 分钟" },
+    { key: "store_phone", label: "到店电话", placeholder: "03-1234-5678" },
+    { key: "availability", label: "可预约时间", placeholder: "平日晚餐 / 周末需提前 2 天" },
+    { key: "booking_required", label: "需要预约", kind: "checkbox" },
+    { key: "reservation_note", label: "预约 / 点评说明", kind: "textarea", placeholder: "说明如何预约、到店要求、点评或优惠使用方式。" },
+    { key: "service_process", label: "服务流程", kind: "textarea", placeholder: "提交需求、确认时间、到店/体验、反馈。" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "说明取消、改期和费用规则。" },
+    { key: "languages", label: "服务语言", placeholder: "中文 / 日本語 / English" },
+    { key: "certified_provider", label: "认证商家/服务商", kind: "checkbox" },
+  ];
+  if (vertical === "lodging") return [
+    { key: "business_name", label: "商家 / 住宿方名称", required: true, placeholder: "Yanaka Garden Stay" },
+    serviceTypeField,
+    { key: "room_type", label: "房型", required: true, placeholder: "双床房 / 大床房 / 整套民宿" },
+    { key: "max_guests", label: "可住人数", required: true, placeholder: "2" },
+    { key: "price_unit", label: "每晚 / 起步价格说明", placeholder: "每晚 / 每间 / 预约咨询" },
+    { key: "check_in_time", label: "入住时间", placeholder: "15:00" },
+    { key: "check_out_time", label: "退房时间", placeholder: "10:00" },
+    { key: "minimum_stay", label: "最少入住晚数", placeholder: "1 晚 / 2 晚起" },
+    { key: "amenities", label: "设施服务", placeholder: "Wi-Fi、厨房、洗衣机、停车场、温泉、行李寄存" },
+    { key: "inventory_note", label: "房量与日期说明", kind: "textarea", placeholder: "说明可订日期、剩余房量、旺季限制和儿童入住规则。" },
+    { key: "breakfast_included", label: "含早餐", kind: "checkbox" },
+    { key: "instant_confirmation", label: "即时确认", kind: "checkbox" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "说明免费取消期限、不可退规则和改期方式。" },
+    { key: "license_note", label: "资质/许可说明", kind: "textarea", placeholder: "说明旅馆业许可、住宅宿泊备案或合作方。" },
+  ];
+  if (vertical === "attraction_ticket" || vertical === "day_tour") return [
+    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Travel" },
+    serviceTypeField,
+    { key: "ticket_type", label: "票种 / 行程类型", required: true, placeholder: vertical === "day_tour" ? "包车 / 拼团 / 私人向导" : "成人票 / 儿童票 / 亲子套票" },
+    { key: "availability", label: "日期 / 有效期", required: true, placeholder: "指定日期 / 2026-08-31 前有效" },
+    { key: "duration", label: "时长", placeholder: vertical === "day_tour" ? "一日（约 8 小时）" : "约 2-3 小时" },
+    { key: "meeting_point", label: "集合地点", placeholder: "新宿站西口 / 景点入口 / 酒店接送" },
+    { key: "included_items", label: "包含内容", kind: "textarea", placeholder: "门票、向导、车费、保险等。" },
+    { key: "not_included", label: "不包含内容", kind: "textarea", placeholder: "餐费、个人消费、额外门票等。" },
+    { key: "user_prepare", label: "用户需准备", kind: "textarea", placeholder: "证件、儿童年龄、人数、日期、集合时间等。" },
+    ...(vertical === "day_tour" ? [{ key: "pickup_service", label: "含酒店接送", kind: "checkbox" as const }] : []),
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "票务/行程请写清不可退、改期和天气规则。" },
+    { key: "license_note", label: "资质/许可说明", kind: "textarea", placeholder: "旅行、票务、用车或合作方资质说明。" },
+  ];
+  if (vertical === "airport_transfer") return [
+    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Airport Transfer" },
+    serviceTypeField,
+    { key: "airport_route", label: "机场 / 路线", required: true, placeholder: "成田机场 -> 东京 23 区 / 羽田接机" },
+    { key: "service_area", label: "服务范围", required: true, placeholder: "成田 / 羽田 / 东京 / 箱根" },
+    { key: "vehicle_type", label: "车型", placeholder: "普通轿车 / Alphard / 10 人座" },
+    { key: "passenger_count", label: "人数", placeholder: "1-4 人 / 5-8 人" },
+    { key: "luggage_count", label: "行李数", placeholder: "2 个 28 寸 + 2 个登机箱" },
+    { key: "flight_info_note", label: "航班号说明", kind: "textarea", placeholder: "说明是否需要航班号、延误跟踪、儿童座椅等。" },
+    { key: "waiting_rule", label: "等待规则", kind: "textarea", placeholder: "免费等待时长、超时费用、无人出现处理。" },
+    { key: "surcharge_note", label: "夜间 / 追加费用", kind: "textarea", placeholder: "深夜、远距离、儿童座椅、高速费等。" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "出发前多久可取消或改期。" },
+  ];
+  if (vertical === "paperwork_translation") return [
+    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Paperwork Support" },
+    serviceTypeField,
+    { key: "languages", label: "服务语言", required: true, placeholder: "中文 / 日本語 / English" },
+    { key: "document_type", label: "文件 / 手续类型", required: true, placeholder: "签证材料 / 住民票 / 契约翻译 / 租房申请" },
+    { key: "required_materials", label: "所需材料", kind: "textarea", placeholder: "护照、在留卡、地址、文件照片、申请表等。" },
+    { key: "delivery_time", label: "交付时间", placeholder: "1-3 个工作日 / 加急另询" },
+    { key: "service_process", label: "服务流程", kind: "textarea", placeholder: "提交材料、确认报价、翻译/协助、交付/陪同。" },
+    { key: "user_prepare", label: "用户需准备", kind: "textarea", placeholder: "证件、原件照片、地址、委托书等。" },
+    { key: "no_result_guarantee", label: "结果说明", kind: "textarea", placeholder: "不得承诺签证、房源、录取、工作或收益结果。" },
+    { key: "license_note", label: "资质/许可说明", kind: "textarea", placeholder: "行政书士、翻译、合作方或非法律代理说明。" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "材料确认前后取消、加急费用等。" },
+  ];
+  if (vertical === "moving_cleaning") return [
+    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Move / Clean" },
+    serviceTypeField,
+    { key: "service_area", label: "服务范围", required: true, placeholder: "东京 / 埼玉 / 千叶" },
+    { key: "property_size", label: "房型 / 面积", placeholder: "1K / 25㎡ / 2LDK" },
+    { key: "item_volume", label: "物品量", kind: "textarea", placeholder: "床、桌子、冰箱、洗衣机、纸箱数量等。" },
+    { key: "vehicle_staff", label: "车辆 / 人员", placeholder: "轻型车一台 / 2 名工作人员" },
+    { key: "included_items", label: "包含内容", kind: "textarea", placeholder: "搬运、基础清洁、工具、交通等。" },
+    { key: "not_included", label: "不包含内容", kind: "textarea", placeholder: "钢琴、大型保险柜、危险品、特殊垃圾处理等。" },
+    { key: "user_prepare", label: "用户需准备", kind: "textarea", placeholder: "提前封箱、确认电梯、停车位置、贵重物品自管。" },
+    { key: "surcharge_note", label: "追加费用", kind: "textarea", placeholder: "楼梯、远距离、夜间、停车、高速、材料费等。" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "前一天可改期 / 当日取消费用。" },
+  ];
+  if (vertical === "repair_installation") return [
+    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Repair" },
+    serviceTypeField,
+    { key: "project_type", label: "设备 / 项目类型", required: true, placeholder: "空调安装 / 水管维修 / 家具组装" },
+    { key: "device_brand_model", label: "品牌 / 型号", placeholder: "Panasonic / IKEA / 型号照片可私信" },
+    { key: "service_area", label: "上门区域", required: true, placeholder: "东京 23 区 / 横滨部分区域" },
+    { key: "onsite_fee", label: "上门费", placeholder: "¥3,000 起 / 报价后确认" },
+    { key: "parts_fee", label: "配件费", placeholder: "按实际配件另算 / 含基础螺丝" },
+    { key: "warranty_note", label: "保修说明", kind: "textarea", placeholder: "完工后 7 天 / 30 天内同问题复检等。" },
+    { key: "unavailable_scope", label: "不可服务范围", kind: "textarea", placeholder: "高空作业、燃气、需要持证施工的项目等。" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "上门前取消、到场后检查费等。" },
+  ];
+  return [
+    { key: "business_name", label: "服务方名称", required: true, placeholder: "Machi Local Support" },
+    serviceTypeField,
+    { key: "service_area", label: "服务范围", required: true, placeholder: "原宿店 / 中野区 / 上门服务区域" },
+    { key: "open_hours", label: "营业时间", placeholder: "11:00-20:00 / 周三休" },
+    { key: "price_range", label: "价格区间", placeholder: "剪发 ¥4,000 起 / 45 分钟 ¥3,000" },
+    { key: "availability", label: "可预约时间", placeholder: "平日晚上 / 周末需预约" },
+    { key: "included_items", label: "包含内容", kind: "textarea", placeholder: "服务项目、时长、基础材料等。" },
+    { key: "not_included", label: "不包含内容", kind: "textarea", placeholder: "额外材料费、远距离交通费、特殊处理等。" },
+    { key: "user_prepare", label: "用户需准备", kind: "textarea", placeholder: "宠物信息、发质需求、地址、照片等。" },
+    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "24 小时内取消、迟到、改期等规则。" },
+    { key: "license_note", label: "资质/许可说明", kind: "textarea", placeholder: "美容、宠物照护等请说明资格或经验。" },
+  ];
+}
+
+function sanitizeServiceAttributesForCategory(category: string, current: Record<string, string>): Record<string, string> {
+  const vertical = getServiceVertical(category, current);
+  if (!vertical) return { service_type: cleanListingText(category), service_vertical: "" };
+  const allowed = new Set(serviceFieldsForCategory(category, current).map((field) => field.key));
+  allowed.add("service_type");
+  allowed.add("service_vertical");
+  const next: Record<string, string> = {};
+  Object.entries(current).forEach(([key, value]) => {
+    if (allowed.has(key) && String(value || "").trim()) next[key] = value;
+  });
+  next.service_type = cleanListingText(category);
+  next.service_vertical = vertical;
+  return next;
+}
+
 function clearFieldError(setter: React.Dispatch<React.SetStateAction<Record<string, string>>>, key: string) {
   setter((current) => {
     if (!current[key]) return current;
@@ -4239,7 +4539,7 @@ function clearFieldError(setter: React.Dispatch<React.SetStateAction<Record<stri
   });
 }
 
-function listingFormFields(type: KXListingType): AttributeField[] {
+function listingFormFields(type: KXListingType, category = "", attrs: Record<string, unknown> = {}): AttributeField[] {
   if (type === "rental") return [
     { key: "layout", label: "户型", required: true, kind: "select", options: ["1R", "1K", "1DK", "1LDK", "2K", "2LDK", "合租"].map((item) => option(item)) },
     { key: "area_sqm", label: "面积 m²", required: true, placeholder: "25" },
@@ -4275,46 +4575,7 @@ function listingFormFields(type: KXListingType): AttributeField[] {
     { key: "weekend_available", label: "周末", kind: "checkbox" },
     { key: "job_requirements", label: "应聘条件", kind: "textarea", placeholder: "说明经验、语言、签证、排班等要求。" },
   ];
-  if (type === "local_service") return [
-    { key: "business_name", label: "商家 / 服务方名称", required: true, placeholder: "Machi Travel & Local Support" },
-    { key: "service_type", label: "服务类型", required: true, kind: "select", options: ["餐厅美食", "餐饮点评", "优惠预约", "民宿", "酒店", "温泉旅馆", "公寓式酒店", "景点门票", "一日游", "接送机", "签证/手续协助", "翻译", "搬家清洁", "维修安装", "生活支持", "租房申请协助"].map((item) => option(item)) },
-    { key: "service_area", label: "服务范围", required: true, placeholder: "东京 23 区 / 成田机场 / 富士山周边" },
-    { key: "open_hours", label: "营业时间", placeholder: "11:00-22:00 / 前台 24 小时" },
-    { key: "price_range", label: "价格区间 / 人均", placeholder: "¥3,000-5,000 / 人均 ¥1,200" },
-    { key: "price_unit", label: "价格单位", placeholder: "每小时 / 每次 / 每晚 / 预约咨询" },
-    { key: "near_station", label: "最近车站", placeholder: "新宿站东口徒步 3 分钟" },
-    { key: "availability", label: "可预约时间", placeholder: "平日晚上 / 周末" },
-    { key: "booking_required", label: "需要预约", kind: "checkbox" },
-    { key: "reservation_required", label: "仅限预约制", kind: "checkbox" },
-    { key: "reservation_note", label: "预约说明", kind: "textarea", placeholder: "如何预约、可预约时段、几人起订、是否需要定金等。" },
-    { key: "menu", label: "菜单（每行一道：菜名 | 价格 | 备注）", kind: "textarea", placeholder: "麻婆豆腐 | ¥980\n口水鸡 | ¥1,080 | 微辣\n招牌炒饭 | ¥880" },
-    { key: "packages", label: "团购套餐（每行一个：套餐名 | 现价 | 原价 | 包含；先展示，暂不支持线上购买）", kind: "textarea", placeholder: "双人精选套餐 | ¥3,980 | ¥5,200 | 4 菜 1 汤 + 2 杯饮料\n单人午市套餐 | ¥1,280 | | 主菜 + 小菜 + 饮料" },
-    { key: "certified_provider", label: "认证商家/服务商", kind: "checkbox" },
-    { key: "languages", label: "服务语言", placeholder: "中文 / 日本語 / English" },
-    { key: "rating_note", label: "评分/口碑说明", placeholder: "公开评分 4.6 / 老客推荐 / 平台新店" },
-    // —— 旅行住宿（酒店民宿）——
-    { key: "room_type", label: "房型（住宿类）", placeholder: "双床房 / 大床房 / 整套民宿" },
-    { key: "max_guests", label: "可住人数（住宿类）", placeholder: "2" },
-    { key: "check_in_time", label: "入住时间（住宿类）", placeholder: "15:00" },
-    { key: "check_out_time", label: "退房时间（住宿类）", placeholder: "10:00" },
-    { key: "minimum_stay", label: "最少入住晚数（住宿类）", placeholder: "1 晚 / 2 晚起" },
-    { key: "amenities", label: "设施服务（住宿类）", placeholder: "Wi-Fi、厨房、洗衣机、停车场、温泉、行李寄存" },
-    { key: "inventory_note", label: "房量与日期说明（住宿类）", kind: "textarea", placeholder: "说明可订日期、剩余房量、旺季限制和儿童入住规则。" },
-    { key: "breakfast_included", label: "含早餐（住宿类）", kind: "checkbox" },
-    { key: "instant_confirmation", label: "即时确认（住宿类）", kind: "checkbox" },
-    // —— 景点票务 / 一日游 / 接送机 ——
-    { key: "ticket_type", label: "票种（景点/行程类）", placeholder: "成人票 / 亲子套票 / 包车" },
-    { key: "duration", label: "时长（行程类）", placeholder: "3 小时 / 一日（约 8 小时）" },
-    { key: "meeting_point", label: "集合地点（行程类）", placeholder: "新宿站西口 / 酒店接送" },
-    { key: "included_items", label: "包含内容（行程类）", placeholder: "门票 + 向导 + 车费" },
-    { key: "pickup_service", label: "含酒店接送（行程类）", kind: "checkbox" },
-    { key: "service_process", label: "服务流程", kind: "textarea", placeholder: "说明咨询、预约、确认、到店/出行/执行、反馈流程。" },
-    { key: "not_included", label: "不包含内容", kind: "textarea", placeholder: "清楚说明不包含的门票、餐费、交通费、材料费或额外项目。" },
-    { key: "user_prepare", label: "用户需准备", kind: "textarea", placeholder: "证件、材料、地址、航班号、人数、日期、照片等。" },
-    { key: "cancellation_rule", label: "取消规则", kind: "textarea", placeholder: "说明取消、改期和费用规则。" },
-    { key: "license_note", label: "资质/许可说明", kind: "textarea", placeholder: "涉及旅行、住宿、票务、医疗、法律等需说明许可或合作方。" },
-    { key: "no_result_guarantee", label: "结果说明", kind: "textarea", placeholder: "不得承诺签证、房源、录取、工作、中奖或收益结果。" },
-  ];
+  if (type === "local_service") return serviceFieldsForCategory(category, attrs);
   if (type === "discount") return [
     { key: "merchant_name", label: "商家名称", required: true, placeholder: "Machi Coffee" },
     { key: "discount_info", label: "优惠内容", required: true, kind: "textarea", placeholder: "学生证出示 10% off / 套餐优惠 / 限时福利。" },

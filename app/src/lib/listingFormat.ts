@@ -343,6 +343,74 @@ export function compactListingFields(item: KXCityListing): string[] {
   return fields.filter((field) => !!clean(field));
 }
 
+type ServiceVertical =
+  | "food_restaurant"
+  | "dining_booking"
+  | "lodging"
+  | "attraction_ticket"
+  | "day_tour"
+  | "airport_transfer"
+  | "paperwork_translation"
+  | "moving_cleaning"
+  | "repair_installation"
+  | "beauty_pet_life";
+
+const SERVICE_VERTICAL_BY_CATEGORY: Record<string, ServiceVertical> = {
+  "餐厅美食": "food_restaurant",
+  "中华料理": "food_restaurant",
+  "日本料理": "food_restaurant",
+  "居酒屋": "food_restaurant",
+  "烧肉火锅": "food_restaurant",
+  "拉面": "food_restaurant",
+  "寿司海鲜": "food_restaurant",
+  "咖啡甜品": "food_restaurant",
+  "西餐": "food_restaurant",
+  "韩国料理": "food_restaurant",
+  "餐饮点评": "dining_booking",
+  "优惠预约": "dining_booking",
+  "民宿": "lodging",
+  "酒店": "lodging",
+  "温泉旅馆": "lodging",
+  "公寓式酒店": "lodging",
+  "酒店民宿": "lodging",
+  "景点门票": "attraction_ticket",
+  "一日游": "day_tour",
+  "本地向导": "day_tour",
+  "接送机": "airport_transfer",
+  "翻译手续": "paperwork_translation",
+  "签证/手续协助": "paperwork_translation",
+  "翻译": "paperwork_translation",
+  "租房申请协助": "paperwork_translation",
+  "认证服务": "paperwork_translation",
+  "搬家清洁": "moving_cleaning",
+  "搬家": "moving_cleaning",
+  "清洁": "moving_cleaning",
+  "维修安装": "repair_installation",
+  "美容美发": "beauty_pet_life",
+  "宠物服务": "beauty_pet_life",
+  "生活支持": "beauty_pet_life",
+};
+
+const SERVICE_VERTICALS = new Set<ServiceVertical>(Object.values(SERVICE_VERTICAL_BY_CATEGORY));
+
+function serviceVerticalForListing(item: KXCityListing): ServiceVertical | "" {
+  const attrs = item.attributes || {};
+  const explicit = cleanListingText(attrs.service_vertical);
+  if (SERVICE_VERTICALS.has(explicit as ServiceVertical)) return explicit as ServiceVertical;
+  const category = cleanListingText(item.category);
+  if (SERVICE_VERTICAL_BY_CATEGORY[category]) return SERVICE_VERTICAL_BY_CATEGORY[category];
+  const serviceType = cleanListingText(attrs.service_type);
+  if (SERVICE_VERTICAL_BY_CATEGORY[serviceType]) return SERVICE_VERTICAL_BY_CATEGORY[serviceType];
+  if (attrs.menu || attrs.packages) return "food_restaurant";
+  if (attrs.room_type || attrs.max_guests || attrs.check_in_time) return "lodging";
+  if (attrs.airport_route || attrs.vehicle_type || attrs.flight_info_note) return "airport_transfer";
+  if (attrs.document_type || attrs.required_materials || attrs.delivery_time || attrs.no_result_guarantee) return "paperwork_translation";
+  if (attrs.project_type || attrs.device_brand_model || attrs.warranty_note) return "repair_installation";
+  if (attrs.property_size || attrs.item_volume || attrs.vehicle_staff) return "moving_cleaning";
+  if (attrs.ticket_type && attrs.meeting_point) return attrs.pickup_service ? "day_tour" : "attraction_ticket";
+  return "";
+}
+
 // Detail-row titles, keyed by the canonical zh string used when building
 // the rows below. Values localize the LABEL only — attribute values go
 // through their own locale-aware formatters.
@@ -378,15 +446,54 @@ const DETAIL_FIELD_LABELS: Record<string, LabelSet> = {
   "无经验可": { ja: "未経験OK", en: "No experience OK" },
   "留学生可": { ja: "留学生OK", en: "Students OK" },
   "服务类型": { ja: "サービス種別", en: "Service type" },
+  "服务方": { ja: "提供者", en: "Provider" },
   "可服务城市": { ja: "対応エリア", en: "Service area" },
+  "服务范围": { ja: "対応範囲", en: "Service scope" },
+  "营业时间": { ja: "営業時間", en: "Opening hours" },
+  "价格区间": { ja: "価格帯", en: "Price range" },
   "价格单位": { ja: "料金単位", en: "Price unit" },
+  "服务语言": { ja: "対応言語", en: "Languages" },
   "可预约时间": { ja: "予約可能時間", en: "Availability" },
+  "房型": { ja: "客室タイプ", en: "Room type" },
+  "可住人数": { ja: "定員", en: "Guests" },
+  "退房时间": { ja: "チェックアウト", en: "Check-out" },
+  "最少入住": { ja: "最低宿泊数", en: "Minimum stay" },
+  "设施服务": { ja: "設備・サービス", en: "Amenities" },
+  "房量与日期": { ja: "空室・日程", en: "Availability notes" },
+  "含早餐": { ja: "朝食付き", en: "Breakfast included" },
+  "即时确认": { ja: "即時確定", en: "Instant confirmation" },
+  "票种": { ja: "チケット種別", en: "Ticket type" },
+  "行程时长": { ja: "所要時間", en: "Duration" },
+  "集合地点": { ja: "集合場所", en: "Meeting point" },
+  "包含内容": { ja: "含まれるもの", en: "Included" },
+  "含酒店接送": { ja: "ホテル送迎", en: "Hotel pickup" },
   "不包含内容": { ja: "含まれないもの", en: "Not included" },
   "服务流程": { ja: "サービスの流れ", en: "Process" },
   "用户需准备": { ja: "ご準備いただくもの", en: "You prepare" },
   "取消规则": { ja: "キャンセル規定", en: "Cancellation" },
+  "资质/许可说明": { ja: "資格・許認可", en: "License note" },
   "不保证结果说明": { ja: "結果保証について", en: "No-guarantee note" },
   "相关攻略/资料": { ja: "関連ガイド", en: "Related guides" },
+  "机场/路线": { ja: "空港・ルート", en: "Airport/route" },
+  "车型": { ja: "車種", en: "Vehicle" },
+  "人数": { ja: "人数", en: "Passengers" },
+  "行李数": { ja: "荷物数", en: "Luggage" },
+  "航班号说明": { ja: "便名について", en: "Flight info" },
+  "等待规则": { ja: "待機ルール", en: "Waiting rule" },
+  "夜间/追加费用": { ja: "追加料金", en: "Surcharges" },
+  "文件/手续类型": { ja: "書類・手続き種別", en: "Document/paperwork type" },
+  "所需材料": { ja: "必要書類", en: "Required materials" },
+  "交付时间": { ja: "納期", en: "Delivery time" },
+  "房型/面积": { ja: "間取り・面積", en: "Room/size" },
+  "物品量": { ja: "荷物量", en: "Item volume" },
+  "车辆/人员": { ja: "車両・人数", en: "Vehicle/staff" },
+  "项目类型": { ja: "作業種別", en: "Project type" },
+  "品牌/型号": { ja: "ブランド・型番", en: "Brand/model" },
+  "上门区域": { ja: "訪問エリア", en: "Service area" },
+  "上门费": { ja: "出張費", en: "Call-out fee" },
+  "配件费": { ja: "部品代", en: "Parts fee" },
+  "保修说明": { ja: "保証", en: "Warranty" },
+  "不可服务范围": { ja: "対応不可範囲", en: "Unavailable scope" },
   "商家": { ja: "店舗", en: "Merchant" },
   "优惠内容": { ja: "特典内容", en: "Deal" },
   "有效期": { ja: "有効期限", en: "Valid until" },
@@ -452,36 +559,127 @@ export function listingDetailFields(item: KXCityListing, locale: ListingLocale =
           ["留学生可", yesNo("student_ok")],
         ]
       : item.type === "local_service"
-        ? [
-            ["服务类型", attr("service_type")],
-            ["可服务城市", attr("service_area")],
-            ["营业时间", attr("open_hours")],
-            ["价格区间", attr("price_range")],
-            ["价格单位", attr("price_unit")],
-            ["最近车站", attr("near_station")],
-            ["可预约时间", attr("availability")],
-            ["服务语言", attr("languages")],
-            ["房型", attr("room_type")],
-            ["可住人数", attr("max_guests")],
-            ["入住时间", attr("check_in_time")],
-            ["退房时间", attr("check_out_time")],
-            ["最少入住", attr("minimum_stay")],
-            ["设施服务", attr("amenities")],
-            ["房量与日期", attr("inventory_note")],
-            ["含早餐", formatBoolean(item.attributes?.["breakfast_included"], locale)],
-            ["即时确认", formatBoolean(item.attributes?.["instant_confirmation"], locale)],
-            ["票种", attr("ticket_type")],
-            ["行程时长", attr("duration")],
-            ["集合地点", attr("meeting_point")],
-            ["包含内容", attr("included_items")],
-            ["含酒店接送", formatBoolean(item.attributes?.["pickup_service"], locale)],
-            ["不包含内容", attr("not_included")],
-            ["服务流程", attr("service_process")],
-            ["用户需准备", attr("user_prepare")],
-            ["取消规则", attr("cancellation_rule")],
-            ["不保证结果说明", attr("no_result_guarantee")],
-            ["相关攻略/资料", attr("related_guides")],
-          ]
+        ? (() => {
+            const vertical = serviceVerticalForListing(item);
+            const common: Array<[string, string]> = [
+              ["服务方", attr("business_name")],
+              ["服务类型", attr("service_type") || category],
+            ];
+            if (vertical === "food_restaurant") return [
+              ...common,
+              ["服务范围", attr("service_area") || location],
+              ["营业时间", attr("open_hours")],
+              ["价格区间", attr("price_range")],
+              ["最近车站", attr("near_station")],
+              ["服务语言", attr("languages")],
+              ["取消规则", attr("cancellation_rule")],
+            ];
+            if (vertical === "dining_booking") return [
+              ...common,
+              ["服务范围", attr("service_area") || location],
+              ["营业时间", attr("open_hours")],
+              ["价格区间", attr("price_range")],
+              ["最近车站", attr("near_station")],
+              ["可预约时间", attr("availability")],
+              ["服务流程", attr("service_process")],
+              ["取消规则", attr("cancellation_rule")],
+            ];
+            if (vertical === "lodging") return [
+              ...common,
+              ["房型", attr("room_type")],
+              ["可住人数", attr("max_guests")],
+              ["价格单位", attr("price_unit")],
+              ["入住时间", attr("check_in_time")],
+              ["退房时间", attr("check_out_time")],
+              ["最少入住", attr("minimum_stay")],
+              ["设施服务", attr("amenities")],
+              ["房量与日期", attr("inventory_note")],
+              ["含早餐", formatBoolean(item.attributes?.["breakfast_included"], locale)],
+              ["即时确认", formatBoolean(item.attributes?.["instant_confirmation"], locale)],
+              ["取消规则", attr("cancellation_rule")],
+              ["资质/许可说明", attr("license_note")],
+            ];
+            if (vertical === "attraction_ticket" || vertical === "day_tour") return [
+              ...common,
+              ["票种", attr("ticket_type")],
+              ["可预约时间", attr("availability")],
+              ["行程时长", attr("duration")],
+              ["集合地点", attr("meeting_point")],
+              ["包含内容", attr("included_items")],
+              ["含酒店接送", vertical === "day_tour" ? formatBoolean(item.attributes?.["pickup_service"], locale) : ""],
+              ["不包含内容", attr("not_included")],
+              ["用户需准备", attr("user_prepare")],
+              ["取消规则", attr("cancellation_rule")],
+              ["资质/许可说明", attr("license_note")],
+            ];
+            if (vertical === "airport_transfer") return [
+              ...common,
+              ["机场/路线", attr("airport_route")],
+              ["服务范围", attr("service_area") || location],
+              ["车型", attr("vehicle_type")],
+              ["人数", attr("passenger_count")],
+              ["行李数", attr("luggage_count")],
+              ["航班号说明", attr("flight_info_note")],
+              ["等待规则", attr("waiting_rule")],
+              ["夜间/追加费用", attr("surcharge_note")],
+              ["取消规则", attr("cancellation_rule")],
+            ];
+            if (vertical === "paperwork_translation") return [
+              ...common,
+              ["服务语言", attr("languages")],
+              ["文件/手续类型", attr("document_type")],
+              ["所需材料", attr("required_materials")],
+              ["交付时间", attr("delivery_time")],
+              ["服务流程", attr("service_process")],
+              ["用户需准备", attr("user_prepare")],
+              ["不保证结果说明", attr("no_result_guarantee")],
+              ["资质/许可说明", attr("license_note")],
+              ["取消规则", attr("cancellation_rule")],
+            ];
+            if (vertical === "moving_cleaning") return [
+              ...common,
+              ["服务范围", attr("service_area") || location],
+              ["房型/面积", attr("property_size")],
+              ["物品量", attr("item_volume")],
+              ["车辆/人员", attr("vehicle_staff")],
+              ["包含内容", attr("included_items")],
+              ["不包含内容", attr("not_included")],
+              ["用户需准备", attr("user_prepare")],
+              ["夜间/追加费用", attr("surcharge_note")],
+              ["取消规则", attr("cancellation_rule")],
+            ];
+            if (vertical === "repair_installation") return [
+              ...common,
+              ["项目类型", attr("project_type")],
+              ["品牌/型号", attr("device_brand_model")],
+              ["上门区域", attr("service_area") || location],
+              ["上门费", attr("onsite_fee")],
+              ["配件费", attr("parts_fee")],
+              ["保修说明", attr("warranty_note")],
+              ["不可服务范围", attr("unavailable_scope")],
+              ["取消规则", attr("cancellation_rule")],
+            ];
+            if (vertical === "beauty_pet_life") return [
+              ...common,
+              ["服务范围", attr("service_area") || location],
+              ["营业时间", attr("open_hours")],
+              ["价格区间", attr("price_range")],
+              ["可预约时间", attr("availability")],
+              ["包含内容", attr("included_items")],
+              ["不包含内容", attr("not_included")],
+              ["用户需准备", attr("user_prepare")],
+              ["取消规则", attr("cancellation_rule")],
+              ["资质/许可说明", attr("license_note")],
+            ];
+            return [
+              ...common,
+              ["服务范围", attr("service_area") || location],
+              ["价格单位", attr("price_unit")],
+              ["可预约时间", attr("availability")],
+              ["服务流程", attr("service_process")],
+              ["取消规则", attr("cancellation_rule")],
+            ];
+          })()
         : item.type === "discount"
           ? [
               ["商家", attr("merchant_name")],
