@@ -1016,6 +1016,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
 }
 
 export function ListingDetailPage({ listingId }: { listingId: string }) {
+  const { locale } = useI18n();
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
@@ -1181,7 +1182,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
             onClick={openIntake}
             className="kx-living-detail-primary h-12 w-full rounded-full text-sm font-black text-white transition active:scale-[0.99]"
           >
-            {contactActionLabel(item)}
+            {contactActionLabel(item, locale)}
           </button>
         )}
       </div>
@@ -3561,7 +3562,8 @@ function OrderCard({ item }: { item: Record<string, unknown> }) {
 }
 
 function DetailContactCard({ item, onContact, isOwner = false }: { item: KXCityListing; onContact: () => void; isOwner?: boolean }) {
-  const label = contactActionLabel(item);
+  const { locale } = useI18n();
+  const label = contactActionLabel(item, locale);
   const location = cleanListingText(item.location_text) || cityLabel(item.city_slug);
   return (
     <div className="space-y-3">
@@ -3591,29 +3593,51 @@ function DetailContactCard({ item, onContact, isOwner = false }: { item: KXCityL
 
 type IntakeField = { key: string; label: string; kind?: "text" | "date" | "textarea" | "select"; options?: string[]; placeholder?: string; required?: boolean };
 
-function intakeConfig(type: string, category?: string): { title: string; noteLabel: string; fields: IntakeField[] } {
+function intakeConfig(type: string, category?: string, locale: Locale = "zh-Hans"): { title: string; noteLabel: string; optionalPlaceholder: string; fields: IntakeField[] } {
+  const text = (zh: string, ja: string, en: string) => pickText(locale, zh, ja, en);
+  const options = (items: Array<[string, string, string]>) => items.map(([zh, ja, en]) => text(zh, ja, en));
   if (type === "rental") {
     return {
-      title: "预约看房",
-      noteLabel: "备注",
+      title: text("申请看房 / 咨询房源", "内見予約 / 物件相談", "Request viewing / ask about rental"),
+      noteLabel: text("备注", "備考", "Note"),
+      optionalPlaceholder: text("补充入住条件、希望联系时间或其他说明（选填）", "入居条件や連絡しやすい時間など（任意）", "Add move-in conditions, contact time, or other notes (optional)"),
       fields: [
-        { key: "date", label: "希望看房日期", kind: "date", required: true },
-        { key: "time", label: "希望时段", kind: "select", options: ["上午", "下午", "晚上", "周末"], required: true },
-        { key: "situation", label: "当前情况", kind: "select", options: ["在日本", "海外", "学生", "在职"] },
-        { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
+        { key: "date", label: text("希望看房日期", "希望内見日", "Preferred viewing date"), kind: "date", required: true },
+        { key: "time", label: text("希望时段", "希望時間帯", "Preferred time"), kind: "select", options: options([["上午", "午前", "Morning"], ["下午", "午後", "Afternoon"], ["晚上", "夜", "Evening"], ["周末", "週末", "Weekend"]]), required: true },
+        { key: "situation", label: text("当前情况", "現在の状況", "Current situation"), kind: "select", options: options([["在日本", "日本在住", "In Japan"], ["海外", "海外在住", "Overseas"], ["学生", "学生", "Student"], ["在职", "就業中", "Working"]]) },
+        { key: "move_in", label: text("入住时间", "入居希望時期", "Move-in timing"), placeholder: text("例如 7 月初 / 随时 / 签证下来后", "例：7月上旬 / すぐ / ビザ取得後", "e.g. early July / anytime / after visa") },
+        { key: "people", label: text("人数", "入居人数", "People"), kind: "select", options: options([["1 人", "1名", "1 person"], ["2 人", "2名", "2 people"], ["3 人", "3名", "3 people"], ["4 人及以上", "4名以上", "4+ people"]]) },
+        { key: "budget", label: text("预算", "予算", "Budget"), placeholder: text("例如 ¥80,000/月以内", "例：月8万円以内", "e.g. under ¥80,000/month") },
+        { key: "contact", label: text("联系方式", "連絡先", "Contact"), placeholder: "WeChat / LINE / Tel", required: true },
       ],
     };
   }
   if (type === "job" || type === "hiring") {
     return {
-      title: "申请职位",
-      noteLabel: "自我介绍",
+      title: text("立即应聘", "応募する", "Apply now"),
+      noteLabel: text("自我介绍", "自己紹介", "Self introduction"),
+      optionalPlaceholder: text("写清经验、可工作时间、语言能力和为什么适合这个职位。", "経験、勤務可能時間、語学力、応募理由を書いてください。", "Share experience, availability, language level, and why you fit."),
       fields: [
-        { key: "name", label: "姓名", required: true },
-        { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
-        { key: "visa", label: "签证状态", kind: "select", options: ["留学", "工作签证", "永住", "家族滞在", "其他"] },
-        { key: "jp", label: "日语水平", kind: "select", options: ["N1", "N2", "N3", "日常会话", "暂不会"] },
-        { key: "availability", label: "可工作时间", placeholder: "平日晚上 / 周末" },
+        { key: "name", label: text("姓名", "氏名", "Name"), required: true },
+        { key: "contact", label: text("联系方式", "連絡先", "Contact"), placeholder: "WeChat / LINE / Tel", required: true },
+        { key: "visa", label: text("签证状态", "在留資格", "Visa status"), kind: "select", options: options([["留学", "留学", "Student"], ["工作签证", "就労ビザ", "Work visa"], ["永住", "永住", "Permanent resident"], ["家族滞在", "家族滞在", "Dependent"], ["其他", "その他", "Other"]]) },
+        { key: "jp", label: text("日语水平", "日本語レベル", "Japanese level"), kind: "select", options: ["N1", "N2", "N3", text("日常会话", "日常会話", "Daily conversation"), text("暂不会", "まだ話せない", "Not yet")] },
+        { key: "availability", label: text("可工作时间", "勤務可能時間", "Availability"), placeholder: text("平日晚上 / 周末", "平日夜 / 週末", "Weekday evenings / weekends") },
+        { key: "start_date", label: text("最快入职时间", "最短開始日", "Earliest start"), placeholder: text("例如 立即 / 7 月以后", "例：すぐ / 7月以降", "e.g. immediately / after July") },
+      ],
+    };
+  }
+  if (type === "secondhand") {
+    return {
+      title: text("咨询卖家 / 预约交易", "出品者に相談 / 取引予約", "Ask seller / request trade"),
+      noteLabel: text("补充留言", "追加メッセージ", "Additional message"),
+      optionalPlaceholder: text("补充想确认的细节，例如瑕疵、配件、可否议价。", "傷、付属品、値下げ可否など確認したい点を書いてください。", "Add questions about defects, accessories, or negotiation."),
+      fields: [
+        { key: "intent", label: text("咨询意向", "相談内容", "Intent"), kind: "select", options: options([["想购买", "購入したい", "Want to buy"], ["想看实物", "実物を見たい", "Want to inspect"], ["想议价", "価格相談", "Negotiate price"], ["只咨询", "質問のみ", "Question only"]]), required: true },
+        { key: "place", label: text("希望交易地点", "希望受け渡し場所", "Preferred meetup"), placeholder: text("例如 新宿站 / 池袋 / 可邮寄", "例：新宿駅 / 池袋 / 配送可", "e.g. Shinjuku Station / Ikebukuro / shipping") },
+        { key: "time", label: text("可交易时间", "取引可能時間", "Available time"), placeholder: text("平日晚上 / 周末下午", "平日夜 / 週末午後", "Weekday evenings / weekend afternoons") },
+        { key: "method", label: text("交易方式", "取引方法", "Trade method"), kind: "select", options: options([["面交", "手渡し", "Meetup"], ["自取", "引き取り", "Pickup"], ["邮寄", "配送", "Shipping"], ["可商量", "応相談", "Flexible"]]) },
+        { key: "contact", label: text("联系方式", "連絡先", "Contact"), placeholder: "WeChat / LINE / Tel", required: true },
       ],
     };
   }
@@ -3621,72 +3645,82 @@ function intakeConfig(type: string, category?: string): { title: string; noteLab
     // 结构化预订：按服务类目给出真正可用的字段
     if (STAY_CATEGORY_SET.has(category || "")) {
       return {
-        title: "预订住宿",
-        noteLabel: "特殊需求",
+        title: text("预订住宿", "宿泊を予約", "Book stay"),
+        noteLabel: text("特殊需求", "特別リクエスト", "Special requests"),
+        optionalPlaceholder: text("例如儿童、行李、晚到、无烟房等。", "子ども、荷物、遅い到着、禁煙希望など。", "Children, luggage, late arrival, non-smoking, etc."),
         fields: [
-          { key: "check_in", label: "入住日期", kind: "date", required: true },
-          { key: "check_out", label: "退房日期", kind: "date", required: true },
-          { key: "guests", label: "入住人数", kind: "select", options: ["1 人", "2 人", "3 人", "4 人", "5 人及以上"], required: true },
-          { key: "rooms", label: "房间数", kind: "select", options: ["1 间", "2 间", "3 间及以上"] },
-          { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
+          { key: "check_in", label: text("入住日期", "チェックイン", "Check-in"), kind: "date", required: true },
+          { key: "check_out", label: text("退房日期", "チェックアウト", "Check-out"), kind: "date", required: true },
+          { key: "guests", label: text("入住人数", "人数", "Guests"), kind: "select", options: options([["1 人", "1名", "1 guest"], ["2 人", "2名", "2 guests"], ["3 人", "3名", "3 guests"], ["4 人", "4名", "4 guests"], ["5 人及以上", "5名以上", "5+ guests"]]), required: true },
+          { key: "rooms", label: text("房间数", "部屋数", "Rooms"), kind: "select", options: options([["1 间", "1室", "1 room"], ["2 间", "2室", "2 rooms"], ["3 间及以上", "3室以上", "3+ rooms"]]) },
+          { key: "contact", label: text("联系方式", "連絡先", "Contact"), placeholder: "WeChat / LINE / Tel", required: true },
         ],
       };
     }
     if (FOOD_CATEGORY_SET.has(category || "")) {
       // 餐饮在线订座
       return {
-        title: "在线订座",
-        noteLabel: "备注（忌口 / 包间 / 儿童座椅等）",
+        title: text("在线订座", "席を予約", "Reserve table"),
+        noteLabel: text("备注（忌口 / 包间 / 儿童座椅等）", "備考（アレルギー / 個室 / 子ども椅子など）", "Notes (allergy / private room / child seat)"),
+        optionalPlaceholder: text("补充忌口、纪念日、包间等需求（选填）", "アレルギー、記念日、個室希望など（任意）", "Allergies, anniversary, private room, etc. (optional)"),
         fields: [
-          { key: "date", label: "用餐日期", kind: "date", required: true },
-          { key: "time", label: "到店时间", kind: "select", options: ["午市 11:00-14:00", "下午 14:00-17:00", "晚市 17:00-20:00", "晚市 20:00 之后"], required: true },
-          { key: "party", label: "用餐人数", kind: "select", options: ["1-2 人", "3-4 人", "5-8 人", "8 人以上"], required: true },
-          { key: "name", label: "预订姓名", placeholder: "到店报姓名即可", required: true },
-          { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
+          { key: "date", label: text("用餐日期", "来店日", "Dining date"), kind: "date", required: true },
+          { key: "time", label: text("到店时间", "来店時間", "Arrival time"), kind: "select", options: options([["午市 11:00-14:00", "ランチ 11:00-14:00", "Lunch 11:00-14:00"], ["下午 14:00-17:00", "午後 14:00-17:00", "Afternoon 14:00-17:00"], ["晚市 17:00-20:00", "ディナー 17:00-20:00", "Dinner 17:00-20:00"], ["晚市 20:00 之后", "20:00以降", "After 20:00"]]), required: true },
+          { key: "party", label: text("用餐人数", "人数", "Party size"), kind: "select", options: options([["1-2 人", "1-2名", "1-2 people"], ["3-4 人", "3-4名", "3-4 people"], ["5-8 人", "5-8名", "5-8 people"], ["8 人以上", "8名以上", "8+ people"]]), required: true },
+          { key: "name", label: text("预订姓名", "予約名", "Booking name"), placeholder: text("到店报姓名即可", "来店時に伝える名前", "Name to use at arrival"), required: true },
+          { key: "contact", label: text("联系方式", "連絡先", "Contact"), placeholder: "WeChat / LINE / Tel", required: true },
         ],
       };
     }
-    if (category === "景点门票" || category === "一日游") {
+    if (TRAVEL_SECTION_CATEGORIES.includes(category as (typeof TRAVEL_SECTION_CATEGORIES)[number])) {
       return {
-        title: category === "一日游" ? "预订行程" : "预订门票",
-        noteLabel: "补充说明",
+        title: category === "一日游" ? text("预订行程", "ツアーを予約", "Book tour") : text("预订门票/体验", "チケット・体験を予約", "Book ticket/experience"),
+        noteLabel: text("补充说明", "補足", "Notes"),
+        optionalPlaceholder: text("补充集合地点、语言、同行人情况等。", "集合場所、言語、同行者情報など。", "Meeting point, language, companions, etc."),
         fields: [
-          { key: "date", label: "出行日期", kind: "date", required: true },
-          { key: "tickets", label: "人数 / 票数", kind: "select", options: ["1", "2", "3", "4", "5 及以上"], required: true },
-          { key: "language", label: "希望语言", kind: "select", options: ["中文", "日本語", "English", "无要求"] },
-          { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
+          { key: "date", label: text("出行日期", "利用日", "Travel date"), kind: "date", required: true },
+          { key: "tickets", label: text("人数 / 票数", "人数 / 枚数", "People / tickets"), kind: "select", options: options([["1", "1", "1"], ["2", "2", "2"], ["3", "3", "3"], ["4", "4", "4"], ["5 及以上", "5以上", "5+"]]), required: true },
+          { key: "language", label: text("希望语言", "希望言語", "Preferred language"), kind: "select", options: ["中文", "日本語", "English", text("无要求", "指定なし", "No preference")] },
+          { key: "contact", label: text("联系方式", "連絡先", "Contact"), placeholder: "WeChat / LINE / Tel", required: true },
         ],
       };
     }
-    if (category === "接送机") {
+    if (TRANSFER_SECTION_CATEGORIES.includes(category as (typeof TRANSFER_SECTION_CATEGORIES)[number])) {
       return {
-        title: "预约接送机",
-        noteLabel: "补充说明",
+        title: text("预约接送/交通", "送迎・交通を予約", "Book transfer/transport"),
+        noteLabel: text("补充说明", "補足", "Notes"),
+        optionalPlaceholder: text("补充儿童座椅、航站楼、等待规则等。", "チャイルドシート、ターミナル、待機条件など。", "Child seat, terminal, waiting rules, etc."),
         fields: [
-          { key: "date", label: "用车日期", kind: "date", required: true },
-          { key: "flight", label: "航班号", placeholder: "例如 NH878 / CA181" },
-          { key: "passengers", label: "人数", kind: "select", options: ["1", "2", "3", "4", "5 及以上"], required: true },
-          { key: "luggage", label: "行李数", kind: "select", options: ["1-2 件", "3-4 件", "5 件及以上"] },
-          { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
+          { key: "date", label: text("用车日期", "利用日", "Ride date"), kind: "date", required: true },
+          { key: "flight", label: text("航班号/路线", "便名 / ルート", "Flight / route"), placeholder: "NH878 / CA181 / Shinjuku -> Narita" },
+          { key: "passengers", label: text("人数", "人数", "Passengers"), kind: "select", options: ["1", "2", "3", "4", text("5 及以上", "5以上", "5+")], required: true },
+          { key: "luggage", label: text("行李数", "荷物数", "Luggage"), kind: "select", options: options([["1-2 件", "1-2個", "1-2 pieces"], ["3-4 件", "3-4個", "3-4 pieces"], ["5 件及以上", "5個以上", "5+ pieces"]]) },
+          { key: "contact", label: text("联系方式", "連絡先", "Contact"), placeholder: "WeChat / LINE / Tel", required: true },
         ],
       };
     }
     return {
-      title: "预约服务",
-      noteLabel: "具体需求",
+      title: text("预约服务", "サービスを予約", "Book service"),
+      noteLabel: text("具体需求", "具体的な依頼内容", "Request details"),
+      optionalPlaceholder: text("写清服务范围、日期、材料和不能承诺的事项。", "範囲、日時、必要書類、保証できない事項を書いてください。", "Describe scope, date, materials, and non-guaranteed items."),
       fields: [
-        { key: "city", label: "服务城市", required: true },
-        { key: "date", label: "希望日期", kind: "date" },
-        { key: "time", label: "希望时段", kind: "select", options: ["上午", "下午", "晚上", "周末"] },
-        { key: "contact", label: "联系方式", placeholder: "微信 / LINE / 电话", required: true },
+        { key: "city", label: text("服务城市", "対応都市", "Service city"), required: true },
+        { key: "date", label: text("希望日期", "希望日", "Preferred date"), kind: "date" },
+        { key: "time", label: text("希望时段", "希望時間帯", "Preferred time"), kind: "select", options: options([["上午", "午前", "Morning"], ["下午", "午後", "Afternoon"], ["晚上", "夜", "Evening"], ["周末", "週末", "Weekend"]]) },
+        { key: "contact", label: text("联系方式", "連絡先", "Contact"), placeholder: "WeChat / LINE / Tel", required: true },
       ],
     };
   }
-  const titles: Record<string, string> = { secondhand: "联系卖家", discount: "联系商家", event: "报名 / 咨询" };
-  return { title: titles[type] || "联系发布者", noteLabel: "留言", fields: [] };
+  const titles: Record<string, string> = {
+    discount: text("联系商家", "店舗に相談", "Contact merchant"),
+    event: text("报名 / 咨询", "申込 / 相談", "Join / inquire"),
+  };
+  return { title: titles[type] || text("联系发布者", "投稿者に連絡", "Contact poster"), noteLabel: text("留言", "メッセージ", "Message"), optionalPlaceholder: text("补充说明（选填）", "補足（任意）", "Additional details (optional)"), fields: [] };
 }
 
 function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; receipt: InquiryReceipt | null; onClose: () => void }) {
+  const { locale } = useI18n();
+  const listingLocale = appLocaleToMarketingLocale(locale);
   if (!receipt) return null;
   const workbenchHref = inquiryWorkbenchHref(receipt.type, item.type);
   return (
@@ -3702,18 +3736,18 @@ function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; 
               <p className="mt-1 line-clamp-2 text-sm font-semibold text-slate-500">{displayListingTitle(item) || item.title}</p>
             </div>
           </div>
-          <button type="button" onClick={onClose} aria-label="关闭" className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600">
+          <button type="button" onClick={onClose} aria-label={pickText(locale, "关闭", "閉じる", "Close")} className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600">
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
           <div className="rounded-2xl bg-slate-50 p-3">
-            <p className="text-xs font-black text-slate-400">类型</p>
-            <p className="mt-1 font-black text-slate-900">{formatInquiryType(receipt.type)}</p>
+            <p className="text-xs font-black text-slate-400">{pickText(locale, "类型", "種類", "Type")}</p>
+            <p className="mt-1 font-black text-slate-900">{formatInquiryType(receipt.type, listingLocale)}</p>
           </div>
           <div className="rounded-2xl bg-slate-50 p-3">
-            <p className="text-xs font-black text-slate-400">状态</p>
-            <p className="mt-1 font-black text-slate-900">{formatInquiryStatus(receipt.status)}</p>
+            <p className="text-xs font-black text-slate-400">{pickText(locale, "状态", "ステータス", "Status")}</p>
+            <p className="mt-1 font-black text-slate-900">{formatInquiryStatus(receipt.status, listingLocale)}</p>
           </div>
         </div>
         {receipt.details.length ? (
@@ -3727,21 +3761,26 @@ function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; 
           </dl>
         ) : null}
         <p className="mt-3 text-xs font-semibold leading-5 text-slate-500">
-          记录已进入工作台；私信只是补充沟通入口。请继续避免提前转账，并在确认身份与服务边界后再线下交易。
+          {pickText(
+            locale,
+            "记录已进入工作台；私信只是补充沟通入口。请继续避免提前转账，并在确认身份与服务边界后再线下交易。",
+            "記録はワークベンチに保存されました。メッセージは補足連絡用です。本人確認とサービス範囲を確認するまで前払いは避けてください。",
+            "The record is saved to your workbench; messages are only for follow-up. Avoid paying in advance until identity and service scope are confirmed.",
+          )}
         </p>
         <div className="mt-4 grid gap-2 sm:grid-cols-3">
           <Link href={workbenchHref} className="inline-flex h-11 items-center justify-center rounded-full bg-slate-950 px-4 text-sm font-black text-white" onClick={onClose}>
-            查看记录
+            {pickText(locale, "查看记录", "記録を見る", "View record")}
           </Link>
           {receipt.conversationId ? (
             <Link href={`/messages/${encodeURIComponent(receipt.conversationId)}`} className="inline-flex h-11 items-center justify-center rounded-full border border-slate-200 px-4 text-sm font-black text-slate-700" onClick={onClose}>
-              继续私信
+              {pickText(locale, "继续私信", "メッセージを続ける", "Continue message")}
             </Link>
           ) : (
-            <button type="button" disabled className="h-11 rounded-full border border-slate-200 px-4 text-sm font-black text-slate-300">继续私信</button>
+            <button type="button" disabled className="h-11 rounded-full border border-slate-200 px-4 text-sm font-black text-slate-300">{pickText(locale, "继续私信", "メッセージを続ける", "Continue message")}</button>
           )}
           <Link href={detailHref(item)} className="inline-flex h-11 items-center justify-center rounded-full border border-slate-200 px-4 text-sm font-black text-slate-700" onClick={onClose}>
-            返回详情
+            {pickText(locale, "返回详情", "詳細へ戻る", "Back to detail")}
           </Link>
         </div>
       </section>
@@ -3750,7 +3789,8 @@ function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; 
 }
 
 function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCityListing; open: boolean; submitting: boolean; onClose: () => void; onSubmit: (message: string, details: { label: string; value: string }[]) => void }) {
-  const config = useMemo(() => intakeConfig(item.type, item.category), [item.type, item.category]);
+  const { locale } = useI18n();
+  const config = useMemo(() => intakeConfig(item.type, item.category, locale), [item.type, item.category, locale]);
   const [values, setValues] = useState<Record<string, string>>({});
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -3760,7 +3800,10 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
   if (!open) return null;
   const submit = () => {
     for (const f of config.fields) {
-      if (f.required && !(values[f.key] || "").trim()) { setError(`请填写「${f.label}」`); return; }
+      if (f.required && !(values[f.key] || "").trim()) {
+        setError(pickText(locale, `请填写「${f.label}」`, `「${f.label}」を入力してください`, `Please fill in "${f.label}"`));
+        return;
+      }
     }
     const details = config.fields
       .map((f) => ({ label: f.label, value: (values[f.key] || "").trim() }))
@@ -3772,7 +3815,7 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
       <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-black text-slate-950">{config.title}</h3>
-          <button type="button" onClick={onClose} aria-label="关闭" className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600"><X className="h-4 w-4" /></button>
+          <button type="button" onClick={onClose} aria-label={pickText(locale, "关闭", "閉じる", "Close")} className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600"><X className="h-4 w-4" /></button>
         </div>
         <p className="mt-1 line-clamp-1 text-sm font-semibold text-slate-500">{displayListingTitle(item) || item.title}</p>
         <div className="mt-4 space-y-3">
@@ -3781,7 +3824,7 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
               <span className="text-xs font-black text-slate-600">{f.label}{f.required ? <span className="text-rose-500"> *</span> : null}</span>
               {f.kind === "select" ? (
                 <select value={values[f.key] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} className="kx-input mt-1 h-11 w-full px-3 text-sm">
-                  <option value="">请选择</option>
+                  <option value="">{pickText(locale, "请选择", "選択してください", "Select")}</option>
                   {(f.options || []).map((o) => <option key={o} value={o}>{o}</option>)}
                 </select>
               ) : f.kind === "textarea" ? (
@@ -3793,14 +3836,16 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
           ))}
           <label className="block">
             <span className="text-xs font-black text-slate-600">{config.noteLabel}</span>
-            <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder="补充说明（选填）" className="kx-input mt-1 min-h-20 w-full p-3 text-sm" />
+            <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder={config.optionalPlaceholder} className="kx-input mt-1 min-h-20 w-full p-3 text-sm" />
           </label>
         </div>
         {error ? <p className="mt-3 text-sm font-bold text-rose-600">{error}</p> : null}
-        <p className="mt-3 text-xs font-semibold text-amber-700">提交后会与发布者开启对话。Machi 不代收交易款、押金、保证金或第三方服务款，请勿提前转账。</p>
+        <p className="mt-3 text-xs font-semibold text-amber-700">
+          {pickText(locale, "提交后会生成正式记录，私信只用于后续补充沟通。Machi 不代收交易款、押金、保证金或第三方服务款，请勿提前转账。", "送信後は正式な記録が作成され、メッセージは補足連絡用です。Machi は代金・保証金・第三者サービス費を預かりません。前払いは避けてください。", "Submitting creates an official record; messages are only for follow-up. Machi does not hold trade payments, deposits, guarantees, or third-party service fees. Avoid paying in advance.")}
+        </p>
         <button type="button" disabled={submitting} onClick={submit} className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-slate-950 text-sm font-black text-white disabled:opacity-60">
           <Send className="h-4 w-4" />
-          {submitting ? "提交中…" : config.title}
+          {submitting ? pickText(locale, "提交中…", "送信中…", "Submitting…") : config.title}
         </button>
       </div>
     </div>
@@ -4448,16 +4493,16 @@ function listingStatusLabel(item: KXCityListing) {
   return formatListingStatus(item.status, item.type);
 }
 
-function contactActionLabel(item: KXCityListing) {
-  if (item.type === "secondhand") return "咨询卖家 / 预约交易";
-  if (item.type === "rental") return "预约看房";
-  if (item.type === "job" || item.type === "hiring") return "立即申请";
+function contactActionLabel(item: KXCityListing, locale: Locale = "zh-Hans") {
+  if (item.type === "secondhand") return pickText(locale, "咨询卖家 / 预约交易", "出品者に相談 / 取引予約", "Ask seller / arrange pickup");
+  if (item.type === "rental") return pickText(locale, "预约看房", "内見を予約", "Request viewing");
+  if (item.type === "job" || item.type === "hiring") return pickText(locale, "立即申请", "応募する", "Apply now");
   if (item.type === "local_service") {
-    if (STAY_CATEGORY_SET.has(item.category || "")) return "预订住宿";
-    if (FOOD_CATEGORY_SET.has(item.category || "")) return "在线订座";
-    return "预约咨询";
+    if (STAY_CATEGORY_SET.has(item.category || "")) return pickText(locale, "预订住宿", "宿泊を予約", "Book stay");
+    if (FOOD_CATEGORY_SET.has(item.category || "")) return pickText(locale, "在线订座", "席を予約", "Reserve table");
+    return pickText(locale, "预约咨询", "予約相談", "Request booking");
   }
-  return "联系发布者";
+  return pickText(locale, "联系发布者", "投稿者に連絡", "Contact poster");
 }
 
 function inquirySuccessTitle(type: string) {

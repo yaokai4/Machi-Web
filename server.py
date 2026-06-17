@@ -668,16 +668,14 @@ APPLE_IAP_KEY_ID = _env("APPLE_IAP_KEY_ID", "")
 APPLE_IAP_PRIVATE_KEY = _env("APPLE_IAP_PRIVATE_KEY", "")
 APPLE_IAP_ENVIRONMENT = _env("APPLE_IAP_ENVIRONMENT", "Sandbox")
 
-# Stripe (overseas / card payments via hosted Checkout). Only the SECRET
-# key + webhook signing secret are needed server-side (hosted Checkout
-# handles the card UI). The price is charged in STRIPE_CURRENCY at
-# STRIPE_PRICE_CENTS minor units — the overseas price, independent of the
-# domestic CNY plan. Webhook verification is plain HMAC-SHA256 (stdlib),
-# so Stripe needs no extra packages.
+# Stripe (card / wallet payments via hosted Checkout). Only the SECRET key
+# + webhook signing secret are needed server-side (hosted Checkout handles
+# payment UI). Membership is a one-time purchase, not a Stripe subscription:
+# the amount and currency always come from membership_plans, same as Guide
+# products, so admin pricing is the single source of truth.
 STRIPE_SECRET_KEY = _env("STRIPE_SECRET_KEY", "")
 STRIPE_WEBHOOK_SECRET = _env("STRIPE_WEBHOOK_SECRET", "")
-STRIPE_PRICE_CENTS = int(_env("STRIPE_PRICE_CENTS", "199"))  # Stripe minor units (usd→cents, jpy→yen)
-STRIPE_CURRENCY = _env("STRIPE_CURRENCY", "usd").lower()
+STRIPE_CURRENCY = _env("STRIPE_CURRENCY", "usd").lower()  # legacy fallback only
 # Currencies Stripe treats as zero-decimal: the "minor unit" IS the whole
 # unit (¥500 → unit_amount=500, not 50000). Our plans/products store
 # amount_cents as value×100, so amounts in these currencies must be
@@ -3753,7 +3751,7 @@ def _membership_plan_seed_rows() -> list[dict[str, Any]]:
             "name_zh": "Machi 认证会员",
             "name_en": "Machi Verified",
             "name_ja": "Machi 認証メンバー",
-            "subtitle": "按月订阅，随时管理",
+            "subtitle": "按月购买，到期前可再次续购",
             "description": "蓝色认证标识、高信任内容发布、会员资料与服务优惠。",
             "billing_period": "monthly",
             "interval_count": 1,
@@ -3780,7 +3778,7 @@ def _membership_plan_seed_rows() -> list[dict[str, Any]]:
             "name_en": "Machi Verified Yearly",
             "name_ja": "Machi 認証メンバー 年額",
             "subtitle": "包年更划算，适合长期使用",
-            "description": "包年订阅，同步获得 Machi 认证会员全部权益。",
+            "description": "一次购买一年，同步获得 Machi 认证会员全部权益。",
             "billing_period": "yearly",
             "interval_count": 1,
             "price": 98.0,
@@ -11058,7 +11056,7 @@ def activate_or_extend_membership(conn: sqlite3.Connection, user_id: str, plan_k
 
 def cancel_membership(conn: sqlite3.Connection, user_id: str, immediate: bool = False,
                       source: str = "admin") -> dict[str, Any]:
-    """Cancel renewal (default: keep access until period end) or revoke
+    """Stop access at the current period end (default) or revoke
     immediately. Already-published content is never deleted."""
     row = _current_membership_row(conn, user_id)
     if not row:
@@ -11144,20 +11142,9 @@ def _stripe_minor_units(amount_cents: int, currency: str) -> int:
 
 def _order_charge_for_provider(plan: dict[str, Any], provider: str) -> tuple[int, str]:
     """The amount + currency to charge, chosen server-side per provider.
-    A client-supplied amount is never used.
-
-    Stripe charges the overseas price (STRIPE_PRICE_CENTS in
-    STRIPE_CURRENCY minor units) when configured — a JP/US Stripe account
-    can't present CNY, so reusing the plan's CNY price would fail every
-    checkout. The order row stores Stripe minor units directly so the
-    webhook/confirm `amount_total` comparison stays exact. Falls back to
-    the plan price (converted to minor units) when no override is set."""
-    if provider == "stripe":
-        if STRIPE_PRICE_CENTS > 0:
-            return STRIPE_PRICE_CENTS, STRIPE_CURRENCY.upper()
-        currency = normalize_currency(plan.get("currency") or MEMBERSHIP_CURRENCY)
-        amount = int(plan.get("amount_cents") or round(plan_price_value(plan) * 100))
-        return _stripe_minor_units(amount, currency), currency
+    A client-supplied amount is never used. Orders store the app's normal
+    value×100 amount for every provider; provider-specific minor-unit
+    conversion happens only at the edge when creating/verifying a charge."""
     amount = int(plan.get("amount_cents") or round(plan_price_value(plan) * 100))
     return amount, normalize_currency(plan.get("currency") or MEMBERSHIP_CURRENCY)
 
@@ -11169,9 +11156,7 @@ def create_payment_order(conn: sqlite3.Connection, user_id: str, plan_key: str,
         raise APIError("会员计划不存在", 404, "plan_not_found")
     amount_cents, currency = _order_charge_for_provider(plan, provider)
     provider_price_id = ""
-    if provider == "stripe":
-        provider_price_id = str(plan.get("stripe_price_id") or "")
-    elif provider == "apple_iap":
+    if provider == "apple_iap":
         provider_price_id = str(plan.get("apple_product_id") or plan.get("ios_iap_product_id") or "")
     order_no = generate_order_no()
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=PAYMENT_ORDER_TTL_SEC)).isoformat()
@@ -11204,13 +11189,10 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
     order = dict(row)
     if expected_provider and order.get("payment_provider") != expected_provider:
         raise APIError("订单支付方式不匹配", 400, "provider_mismatch")
-    # When the order was created against a Stripe Price id, the amount
-    # authority is that Price object (admin-managed in the dashboard) —
-    # our local snapshot may legitimately differ, and the webhook payload
-    # is already signature-verified. Strict equality applies only when WE
-    # set the amount via price_data.
-    price_id_authority = bool(order.get("provider_price_id")) and order.get("payment_provider") == "stripe"
-    if paid_amount_cents is not None and not price_id_authority and int(paid_amount_cents) != int(order["amount_cents"]):
+    expected_paid_amount = int(order["amount_cents"])
+    if order.get("payment_provider") == "stripe":
+        expected_paid_amount = _stripe_minor_units(expected_paid_amount, order.get("currency") or MEMBERSHIP_CURRENCY)
+    if paid_amount_cents is not None and int(paid_amount_cents) != expected_paid_amount:
         # Amount tampering — never settle. The charge is defined by the plan.
         raise APIError("支付金额与订单不一致", 400, "amount_mismatch")
     if order["status"] == "paid":
@@ -11335,10 +11317,10 @@ def available_payment_providers() -> list[str]:
 
 
 def build_stripe_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dict[str, Any]:
-    """Create a Stripe hosted Checkout Session (subscription) and
-    return its redirect URL. Stripe-hosted page handles all card UI / PCI.
-    Membership opens later from the verified `checkout.session.completed`
-    webhook — never from the success redirect."""
+    """Create a Stripe hosted Checkout Session (one-time payment) and
+    return its redirect URL. Stripe-hosted page handles payment UI / PCI.
+    Membership opens later from a server-verified Checkout Session/webhook,
+    never from a client-only success redirect."""
     plan = get_plan(conn, order.get("plan_key") or "")
     if STRIPE_SECRET_KEY:
         return {"pay_url": _stripe_checkout_url(order, plan)}
@@ -11356,30 +11338,20 @@ def _stripe_checkout_url(order: dict[str, Any], plan: dict[str, Any] | None = No
     from urllib.request import Request, urlopen
     sep = "&" if "?" in STRIPE_SUCCESS_URL else "?"
     success_url = f"{STRIPE_SUCCESS_URL}{sep}stripe_session={{CHECKOUT_SESSION_ID}}"
-    billing = (plan or {}).get("billing_period") or (plan or {}).get("billing_cycle") or "monthly"
-    stripe_interval = "year" if billing == "yearly" else "month"
     plan_name = (plan or {}).get("name") or (plan or {}).get("name_zh") or "Machi Verified"
-    stripe_price_id = str((plan or {}).get("stripe_price_id") or order.get("provider_price_id") or "").strip()
     fields = {
-        "mode": "subscription",
+        "mode": "payment",
         "success_url": success_url,
         "cancel_url": STRIPE_CANCEL_URL,
         "client_reference_id": order["order_no"],
         "metadata[order_no]": order["order_no"],
         "metadata[plan_key]": order.get("plan_key") or "",
-        "subscription_data[metadata][order_no]": order["order_no"],
-        "subscription_data[metadata][plan_key]": order.get("plan_key") or "",
+        "metadata[kind]": "membership_purchase",
         "line_items[0][quantity]": "1",
+        "line_items[0][price_data][currency]": str(order["currency"]).lower(),
+        "line_items[0][price_data][unit_amount]": str(_stripe_minor_units(int(order["amount_cents"]), order["currency"])),
+        "line_items[0][price_data][product_data][name]": str(plan_name),
     }
-    if stripe_price_id:
-        fields["line_items[0][price]"] = stripe_price_id
-    else:
-        fields.update({
-            "line_items[0][price_data][currency]": order["currency"].lower(),
-            "line_items[0][price_data][unit_amount]": str(int(order["amount_cents"])),
-            "line_items[0][price_data][recurring][interval]": stripe_interval,
-            "line_items[0][price_data][product_data][name]": str(plan_name),
-        })
     data = urlencode(fields).encode("utf-8")
     req = Request("https://api.stripe.com/v1/checkout/sessions", data=data, method="POST")
     req.add_header("Authorization", "Bearer " + STRIPE_SECRET_KEY)
@@ -11869,11 +11841,33 @@ def _email_money(amount_cents: int, currency: str) -> str:
     return f"{currency.upper()} {amount_cents / 100:.2f}"
 
 
+def _payment_email_user(conn: sqlite3.Connection, user_id: str) -> tuple[sqlite3.Row | None, str]:
+    try:
+        user = conn.execute(
+            "SELECT email, display_name, app_language, content_language_preference, "
+            "preferred_content_languages FROM users WHERE id = ? AND deleted_at IS NULL",
+            (user_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        user = conn.execute(
+            "SELECT email, display_name FROM users WHERE id = ? AND deleted_at IS NULL",
+            (user_id,),
+        ).fetchone()
+    if not user:
+        return None, "zh"
+    locale_raw = ""
+    keys = user.keys()
+    for key in ("app_language", "content_language_preference", "preferred_content_languages"):
+        if key in keys and str(user[key] or "").strip():
+            locale_raw = str(user[key] or "")
+            break
+    return user, _email_locale(locale_raw)
+
+
 def queue_membership_payment_email(conn: sqlite3.Connection, order: dict[str, Any]) -> None:
-    user = conn.execute("SELECT email, display_name, language FROM users WHERE id = ? AND deleted_at IS NULL", (order["user_id"],)).fetchone()
+    user, locale = _payment_email_user(conn, order["user_id"])
     if not user or not is_valid_email(user["email"] or ""):
         return
-    locale = _email_locale(user["language"] if "language" in user.keys() else "")
     name = user["display_name"] or "Machi user"
     amount = _email_money(int(order.get("amount_cents") or 0), order.get("currency") or "jpy")
     if locale == "ja":
@@ -11889,11 +11883,10 @@ def queue_membership_payment_email(conn: sqlite3.Connection, order: dict[str, An
 
 
 def queue_guide_payment_email(conn: sqlite3.Connection, order: dict[str, Any]) -> None:
-    user = conn.execute("SELECT email, display_name, language FROM users WHERE id = ? AND deleted_at IS NULL", (order["user_id"],)).fetchone()
+    user, locale = _payment_email_user(conn, order["user_id"])
     if not user or not is_valid_email(user["email"] or ""):
         return
     product = conn.execute("SELECT title, title_en, title_ja FROM guide_products WHERE id = ?", (order["product_id"],)).fetchone()
-    locale = _email_locale(user["language"] if "language" in user.keys() else "")
     name = user["display_name"] or "Machi user"
     if product:
         title = product["title_ja"] if locale == "ja" and product["title_ja"] else product["title_en"] if locale == "en" and product["title_en"] else product["title"]
@@ -17790,7 +17783,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(out)
 
     def api_membership_create_checkout(self, conn: sqlite3.Connection) -> None:
-        """Stripe-only Web membership subscription checkout.
+        """Stripe-only Web membership one-time purchase checkout.
         Request: {plan_key}. Response: {checkout_url}. iOS must not use this
         endpoint for membership; it verifies Apple IAP via /apple/verify."""
         user = self.require_user(conn)

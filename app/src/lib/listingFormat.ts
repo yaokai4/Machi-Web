@@ -756,49 +756,49 @@ export function listingDetailFields(item: KXCityListing, locale: ListingLocale =
     .map(([label, value]) => [labelFrom(DETAIL_FIELD_LABELS, label, locale, label), value]);
 }
 
-export function formatInquiryType(type?: string | null): string {
-  const labels: Record<string, string> = {
-    secondhand_consult: "商品咨询",
-    secondhand_trade_request: "交易咨询",
-    rental_consult: "房源咨询",
-    rental_viewing: "看房预约",
-    rental_application: "租房申请",
-    job_apply: "职位申请",
-    service_booking: "服务预约",
-    restaurant_booking: "餐饮订座",
-    stay_booking: "住宿预订",
-    travel_ticket_booking: "旅行票务",
-    transfer_booking: "接送预约",
-    paperwork_booking: "手续协助",
-    moving_cleaning_booking: "搬家清洁",
-    life_setup_booking: "生活开通",
-    beauty_health_booking: "美容健康",
-    pet_family_booking: "宠物家庭",
-    discount_consult: "优惠咨询",
-    discount_claim: "优惠咨询",
-    event_consult: "活动咨询",
-    general_consult: "城市咨询",
+export function formatInquiryType(type?: string | null, locale: ListingLocale = "zh"): string {
+  const labels: Record<string, LabelSet> = {
+    secondhand_consult: { zh: "商品咨询", ja: "商品相談", en: "Item inquiry" },
+    secondhand_trade_request: { zh: "交易咨询", ja: "取引相談", en: "Trade request" },
+    rental_consult: { zh: "房源咨询", ja: "物件相談", en: "Rental inquiry" },
+    rental_viewing: { zh: "看房预约", ja: "内見予約", en: "Viewing request" },
+    rental_application: { zh: "租房申请", ja: "賃貸申込", en: "Rental application" },
+    job_apply: { zh: "职位申请", ja: "求人応募", en: "Job application" },
+    service_booking: { zh: "服务预约", ja: "サービス予約", en: "Service booking" },
+    restaurant_booking: { zh: "餐饮订座", ja: "飲食予約", en: "Restaurant booking" },
+    stay_booking: { zh: "住宿预订", ja: "宿泊予約", en: "Stay booking" },
+    travel_ticket_booking: { zh: "旅行票务", ja: "旅行・チケット", en: "Travel/ticket booking" },
+    transfer_booking: { zh: "接送预约", ja: "送迎予約", en: "Transfer booking" },
+    paperwork_booking: { zh: "手续协助", ja: "手続きサポート", en: "Paperwork support" },
+    moving_cleaning_booking: { zh: "搬家清洁", ja: "引越し・清掃", en: "Moving/cleaning" },
+    life_setup_booking: { zh: "生活开通", ja: "生活セットアップ", en: "Life setup" },
+    beauty_health_booking: { zh: "美容健康", ja: "美容・健康予約", en: "Beauty/health" },
+    pet_family_booking: { zh: "宠物家庭", ja: "ペット・家庭サポート", en: "Pet/family support" },
+    discount_consult: { zh: "优惠咨询", ja: "特典相談", en: "Deal inquiry" },
+    discount_claim: { zh: "优惠咨询", ja: "特典相談", en: "Deal inquiry" },
+    event_consult: { zh: "活动咨询", ja: "イベント相談", en: "Event inquiry" },
+    general_consult: { zh: "城市咨询", ja: "街の相談", en: "General inquiry" },
   };
-  return labels[normalizedKey(type)] || "城市咨询";
+  return labelFrom(labels, type, locale, labels.general_consult[locale] || labels.general_consult.zh);
 }
 
-export function formatInquiryStatus(status?: string | null): string {
-  const labels: Record<string, string> = {
-    submitted: "已提交",
-    new: "新提交",
-    reviewing: "处理中",
-    contacted: "已联系",
-    replied: "已回复",
-    confirmed: "已确认",
-    rescheduled: "待改期",
-    rejected: "已拒绝",
-    withdrawn: "已撤回",
-    completed: "已完成",
-    closed: "已关闭",
-    spam: "骚扰",
-    reported: "已举报",
+export function formatInquiryStatus(status?: string | null, locale: ListingLocale = "zh"): string {
+  const labels: Record<string, LabelSet> = {
+    submitted: { zh: "已提交", ja: "送信済み", en: "Submitted" },
+    new: { zh: "新提交", ja: "新規", en: "New" },
+    reviewing: { zh: "处理中", ja: "対応中", en: "In review" },
+    contacted: { zh: "已联系", ja: "連絡済み", en: "Contacted" },
+    replied: { zh: "已回复", ja: "返信済み", en: "Replied" },
+    confirmed: { zh: "已确认", ja: "確定済み", en: "Confirmed" },
+    rescheduled: { zh: "待改期", ja: "日程調整中", en: "Rescheduling" },
+    rejected: { zh: "已拒绝", ja: "お断り済み", en: "Rejected" },
+    withdrawn: { zh: "已撤回", ja: "取り下げ済み", en: "Withdrawn" },
+    completed: { zh: "已完成", ja: "完了", en: "Completed" },
+    closed: { zh: "已关闭", ja: "終了", en: "Closed" },
+    spam: { zh: "骚扰", ja: "スパム", en: "Spam" },
+    reported: { zh: "已举报", ja: "通報済み", en: "Reported" },
   };
-  return labels[normalizedKey(status)] || FALLBACK.zh;
+  return labelFrom(labels, status, locale, FALLBACK[locale]);
 }
 
 export function formatAdminRecordValue(key: string, value: unknown): string {

@@ -105,7 +105,7 @@ function PlansCard() {
       <div className="mb-3 flex items-center justify-between gap-2">
         <div>
           <h2 className="text-base font-bold">会员套餐</h2>
-          <p className="mt-1 text-xs text-kx-muted">价格、Stripe / IAP ID 与上下架状态会同步影响会员页。</p>
+          <p className="mt-1 text-xs text-kx-muted">Web 会员按这里的金额与货币创建一次性支付；iOS 仍使用 IAP Product ID。</p>
         </div>
         <button className="kx-button-ghost h-8 px-3 text-xs" onClick={() => q.refetch()}><RefreshCw className="h-4 w-4" />刷新</button>
       </div>
@@ -123,7 +123,6 @@ function PlanEditor({ plan, onSave }: { plan: KXMembershipPlan; onSave: (patch: 
     name: plan.name || plan.name_zh || "",
     amount: String(plan.amount ?? plan.price ?? 0),
     currency: plan.currency || "CNY",
-    stripePriceId: plan.stripePriceId || "",
     iosIapProductId: plan.iosIapProductId || "",
     isActive: Boolean((plan as unknown as { isActive?: boolean }).isActive ?? true),
   });
@@ -140,18 +139,17 @@ function PlanEditor({ plan, onSave }: { plan: KXMembershipPlan; onSave: (patch: 
           上架
         </label>
       </div>
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
         <input className="kx-input" value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
         <input className="kx-input" value={draft.amount} onChange={(e) => setDraft({ ...draft, amount: e.target.value })} />
         <input className="kx-input" value={draft.currency} onChange={(e) => setDraft({ ...draft, currency: e.target.value })} />
-        <input className="kx-input font-mono text-xs" placeholder="Stripe Price ID" value={draft.stripePriceId} onChange={(e) => setDraft({ ...draft, stripePriceId: e.target.value })} />
         <input className="kx-input font-mono text-xs" placeholder="IAP Product ID" value={draft.iosIapProductId} onChange={(e) => setDraft({ ...draft, iosIapProductId: e.target.value })} />
       </div>
+      <p className="mt-2 text-xs text-kx-muted">Stripe Web 支付会按套餐金额即时生成一次性 Checkout，不再读取 Stripe Price ID 或订阅价格。</p>
       <button className="kx-button-primary mt-3 h-9 px-4" onClick={() => onSave({
         name: draft.name,
         amount: Number(draft.amount || 0),
         currency: draft.currency,
-        stripePriceId: draft.stripePriceId,
         iosIapProductId: draft.iosIapProductId,
         isActive: draft.isActive,
       })}>保存套餐</button>

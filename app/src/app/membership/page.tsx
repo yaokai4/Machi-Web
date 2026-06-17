@@ -1,8 +1,8 @@
 "use client";
 
 // Machi Verified membership page (Web). Shows backend-configured plans + benefits,
-// then runs the WeChat / Alipay purchase flow:
-//   create-order -> show QR (WeChat) or redirect (Alipay) -> poll
+// then runs the one-time purchase flow:
+//   create-order -> show QR (WeChat) or redirect (Alipay/Stripe) -> poll/confirm
 //   order-status -> on "paid" refresh the membership.
 // The amount is computed server-side; this page never sends a price.
 // No existing styles are changed — it reuses the kx-* design tokens.
@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, Check, CreditCard, Loader2, ShieldAlert } from "lucide-react";
+import { BadgeCheck, Check, CheckCircle2, CreditCard, Loader2, ShieldAlert } from "lucide-react";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { VerifiedBadge } from "@/components/design/Avatar";
@@ -58,6 +58,12 @@ const FALLBACK_PLANS: KXMembershipPlan[] = [{
   isRecommended: true,
 }];
 
+type ReturnReceipt = {
+  status: "checking" | "success" | "pending" | "error";
+  orderNo?: string;
+  currentPeriodEnd?: string;
+};
+
 export default function MembershipPage() {
   const user = useSession((s) => s.user);
   const setUser = useSession((s) => s.setUser);
@@ -79,6 +85,7 @@ export default function MembershipPage() {
   const [order, setOrder] = useState<KXCreateOrderResult | null>(null);
   const [creating, setCreating] = useState<PaymentProvider | null>(null);
   const [selectedPlanKey, setSelectedPlanKey] = useState<string>("");
+  const [returnReceipt, setReturnReceipt] = useState<ReturnReceipt | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const pollStartedAtRef = useRef(0);
 
@@ -165,10 +172,31 @@ export default function MembershipPage() {
         /* non-fatal */
       }
     };
+    const clearReturnParams = () => {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("stripe_session");
+      url.searchParams.delete("paid");
+      window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    };
     if (stripeSession) {
-      api.confirmStripe(stripeSession).then(refresh).catch(() => { refresh(); });
+      setReturnReceipt({ status: "checking" });
+      api.confirmStripe(stripeSession)
+        .then(async (result) => {
+          await refresh();
+          setReturnReceipt({
+            status: result.membershipActive ? "success" : "pending",
+            orderNo: result.orderNo,
+            currentPeriodEnd: result.currentPeriodEnd,
+          });
+          clearReturnParams();
+        })
+        .catch(async () => {
+          await refresh();
+          setReturnReceipt({ status: "error" });
+          clearReturnParams();
+        });
     } else if (params.get("paid") === "1") {
-      refresh();
+      refresh().finally(clearReturnParams);
     }
   }, [user, queryClient, setUser]);
 
@@ -284,6 +312,8 @@ export default function MembershipPage() {
                 ) : null}
               </section>
             ) : null}
+
+            {returnReceipt ? <MembershipReturnReceipt receipt={returnReceipt} /> : null}
 
             {/* Member-only content stats */}
             {isActive && insightsQuery.data?.totals ? (
@@ -527,6 +557,45 @@ function BankCardPaymentOption({ label }: { label: string }) {
       <CreditCard className="h-4 w-4 text-kx-accent" />
       {label}
     </span>
+  );
+}
+
+function MembershipReturnReceipt({ receipt }: { receipt: ReturnReceipt }) {
+  const { t } = useI18n();
+  const isSuccess = receipt.status === "success";
+  const isChecking = receipt.status === "checking";
+  const title = isChecking ? t("mem_return_checking") : isSuccess ? t("mem_return_success_title") : receipt.status === "pending" ? t("mem_return_pending_title") : t("mem_return_error_title");
+  const subtitle = isChecking ? t("mem_return_checking_body") : isSuccess ? t("mem_return_success_body") : receipt.status === "pending" ? t("mem_return_pending_body") : t("mem_return_error_body");
+  return (
+    <section className="kx-card border-kx-accent/20 bg-kx-accentSoft/45">
+      <div className="flex items-start gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white text-kx-accent shadow-sm">
+          {isChecking ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle2 className="h-5 w-5" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 className="font-black text-kx-text">{title}</h2>
+          <p className="mt-1 text-sm text-kx-subtle">{subtitle}</p>
+          <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+            {receipt.orderNo ? (
+              <div className="rounded-kx-md bg-white/70 p-3">
+                <dt className="text-xs font-bold text-kx-muted">{t("mem_return_order_no")}</dt>
+                <dd className="mt-1 break-all font-black text-kx-text">{receipt.orderNo}</dd>
+              </div>
+            ) : null}
+            {receipt.currentPeriodEnd ? (
+              <div className="rounded-kx-md bg-white/70 p-3">
+                <dt className="text-xs font-bold text-kx-muted">{t("mem_active_until")}</dt>
+                <dd className="mt-1 font-black text-kx-text">{new Date(receipt.currentPeriodEnd).toLocaleDateString()}</dd>
+              </div>
+            ) : null}
+          </dl>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Link href="/membership/orders" className="kx-button-ghost h-9 justify-center bg-white/75">{t("mem_orders")}</Link>
+            <Link href="/membership/benefits" className="kx-button-ghost h-9 justify-center bg-white/75">{t("mem_benefits_detail")}</Link>
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 

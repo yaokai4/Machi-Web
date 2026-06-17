@@ -127,7 +127,6 @@ export default function AdminPricingPage() {
           price: Number(patch.price ?? row.price),
           currency: patch.currency ?? row.currency,
           priceLabel: patch.priceLabel ?? row.priceLabel,
-          stripePriceId: patch.stripePriceId ?? row.stripePriceId,
           iosIapProductId: patch.iosIapProductId ?? row.iosIapProductId,
           appleProductId: patch.iosIapProductId ?? row.iosIapProductId,
         });
@@ -187,7 +186,7 @@ export default function AdminPricingPage() {
               <ArrowLeft className="h-3.5 w-3.5" /> 管理后台
             </Link>
             <h1 className="text-2xl font-black text-kx-text">价格管理</h1>
-            <p className="mt-1 text-sm text-kx-muted">统一维护商品、服务、会员套餐价格与支付平台 ID。</p>
+            <p className="mt-1 text-sm text-kx-muted">统一维护商品、服务与会员套餐价格；Web 会员按金额/货币创建一次性支付。</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <Link href="/admin/guide/products/new" className="inline-flex h-9 items-center gap-1.5 rounded-md bg-kx-accent px-3 text-sm font-semibold text-white hover:brightness-110">
@@ -387,12 +386,13 @@ export default function AdminPricingPage() {
                       />
                     </label>
                     <label>
-                      <span className={labelClass}>Stripe Price ID</span>
+                      <span className={labelClass}>{row.type === "membership_plan" ? "Stripe Checkout" : "Stripe Price ID"}</span>
                       <input
-                        className={clsx(inputClass, "font-mono text-xs")}
+                        disabled={row.type === "membership_plan"}
+                        className={clsx(inputClass, "font-mono text-xs", row.type === "membership_plan" && "opacity-45")}
                         value={String(fieldValue(row, draft, "stripePriceId") || "")}
                         onChange={(event) => update(row, "stripePriceId", event.target.value)}
-                        placeholder="price_..."
+                        placeholder={row.type === "membership_plan" ? "一次性支付按金额/货币生成" : "price_..."}
                       />
                     </label>
                     <label className="md:col-span-2 xl:col-span-2">

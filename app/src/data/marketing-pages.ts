@@ -619,31 +619,31 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     ] }] },
   },
   "membership-terms": {
-    zh: { eyebrow: "会员条款", title: "Machi 认证会员条款", intro: "本条款说明 Machi 认证会员、月付和包年、权益、会员资料、折扣、自动续费、取消和退款规则。", blocks: [{ title: "会员与权益", variant: "legal", items: [
+    zh: { eyebrow: "会员条款", title: "Machi 认证会员条款", intro: "本条款说明 Machi 认证会员、按月购买和包年购买、权益、会员资料、折扣、到期续购和退款规则。", blocks: [{ title: "会员与权益", variant: "legal", items: [
       { title: "会员说明", body: "Machi 认证会员是面向城市生活、Guide 资料、会员专属内容和部分优惠的付费权益，不等同于身份担保或结果承诺。" },
       { title: "月付、包年与地区价格", body: "会员可能提供月付和包年。价格、货币、税费和可用支付方式可能因地区、平台和促销变化。" },
       { title: "会员专属资料与折扣", body: "会员可查看指定资料、模板、清单或会员专属内容，并可能获得部分服务或数字资料折扣。" },
       { title: "服务类不免费", body: "人工咨询、翻译、接机、手续协助、申请辅导等服务类项目不默认包含在会员免费权益中，除非订单页明确说明。" },
       { title: "支付用途边界", body: "Machi 支付只用于平台服务费、数字资料、认证推广、广告、会员和明确说明的自营或预约服务。" },
-    ] }, { title: "订阅、取消与退款", variant: "legal", items: [
-      { title: "自动续费", body: "如会员通过 App Store、Google Play 或 Web 支付订阅，可能按对应平台规则自动续费。" },
-      { title: "取消订阅", body: "App Store / Google Play 订阅需在对应平台管理；Web 支付可按订单页或客服指引取消。取消后通常不影响已支付周期内权益。" },
+    ] }, { title: "购买、续购与退款", variant: "legal", items: [
+      { title: "非自动续费", body: "Web 会员按一次性购买处理：购买一个月即开通一个月，购买一年即开通一年，不会创建 Stripe 订阅或自动扣款。" },
+      { title: "到期续购", body: "会员到期前后可以再次购买；成功支付后会在现有有效期基础上延长对应周期。已支付周期内权益通常不受影响。" },
       { title: "退款规则", body: "App Store / Google Play 退款由平台处理；Web 支付退款按订单状态、使用情况、当地法律和退款政策判断。" },
       { title: "权益变更与联系", body: "Machi 可调整会员权益、资料范围、折扣和价格，并会以合理方式说明。问题请联系 hi@machicity.com。" },
     ] }] },
-    en: { eyebrow: "Membership Terms", title: "Machi Verified Membership Terms", intro: "These terms explain Machi verified memberships, monthly and annual billing, benefits, member resources, discounts, auto-renewal, cancellation and refunds.", blocks: [{ title: "Membership and benefits", variant: "legal", items: [
+    en: { eyebrow: "Membership Terms", title: "Machi Verified Membership Terms", intro: "These terms explain Machi verified memberships, monthly and annual purchases, benefits, member resources, discounts, renewal by purchase and refunds.", blocks: [{ title: "Membership and benefits", variant: "legal", items: [
       { title: "Membership description", body: "Machi verified membership is a paid benefit for city life, Guide resources, member-only content and selected discounts. It is not an identity guarantee or outcome promise." },
       { title: "Monthly, annual and regional pricing", body: "Membership may be offered monthly or annually. Prices, currencies, taxes and payment methods may vary by region, platform and promotion." },
       { title: "Member resources and discounts", body: "Members may access selected resources, templates, checklists or member-only content, and may receive discounts on some services or digital resources." },
       { title: "Services are not free by default", body: "Human consultation, translation, pickup, procedure support and application coaching are not included for free unless the order page says so." },
       { title: "Payment use boundary", body: "Payments on Machi are only for platform services, digital resources, verified promotions, advertising, memberships and clearly described service bookings." },
-    ] }, { title: "Subscription, cancellation and refunds", variant: "legal", items: [
-      { title: "Auto-renewal", body: "Subscriptions through App Store, Google Play or Web payment may renew automatically under the relevant platform rules." },
-      { title: "Cancellation", body: "App Store / Google Play subscriptions must be managed on those platforms. Web subscriptions follow order-page or support instructions. Cancellation usually does not remove access already paid for." },
+    ] }, { title: "Purchase, renewal and refunds", variant: "legal", items: [
+      { title: "No automatic renewal on Web", body: "Web membership is processed as a one-time purchase: one month grants one month, one year grants one year. Machi does not create a Stripe subscription or automatic recurring charge for Web membership." },
+      { title: "Renewal by purchase", body: "Members may purchase again before or after expiry. A successful payment extends the current valid period by the purchased duration." },
       { title: "Refunds", body: "App Store / Google Play refunds are handled by those platforms. Web refunds depend on order status, usage, local law and the Refund Policy." },
       { title: "Benefit changes and contact", body: "Machi may adjust membership benefits, resource scope, discounts and prices with reasonable notice. Contact hi@machicity.com." },
     ] }] },
-    ja: { eyebrow: "会員規約", title: "Machi 認証会員規約", intro: "本規約は、Machi 認証会員、月額・年額、特典、会員資料、割引、自動更新、解約、返金について説明します。", blocks: [{ title: "会員と特典", variant: "legal", items: [
+    ja: { eyebrow: "会員規約", title: "Machi 認証会員規約", intro: "本規約は、Machi 認証会員、月ごと・年ごとの購入、特典、会員資料、割引、追加購入による延長、返金について説明します。", blocks: [{ title: "会員と特典", variant: "legal", items: [
       { title: "会員の説明", body: "Machi 認証会員は、街での暮らし、Guide 資料、会員限定コンテンツ、一部割引のための有料特典であり、身元や結果を保証するものではありません。" },
       { title: "月額、年額、地域別価格", body: "会員は月額または年額で提供される場合があります。価格、通貨、税、支払い方法は、地域、利用するプラットフォーム、プロモーションによって変わります。" },
       { title: "会員資料と割引", body: "会員は指定資料、テンプレート、チェックリスト、限定コンテンツを閲覧でき、一部サービスやデジタル資料の割引を受ける場合があります。" },
@@ -692,8 +692,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     ] }] },
   },
   "refund-policy": {
-    zh: { eyebrow: "退款政策", title: "退款和取消规则", intro: "本政策说明会员、数字资料、服务预约、App Store / Google Play 订阅和 Web 支付的退款处理方式。", blocks: [{ title: "平台与支付方式", variant: "legal", items: [
-      { title: "App Store / Google Play", body: "通过 Apple 或 Google 购买的订阅和应用内购，退款由对应平台按其规则处理。" },
+    zh: { eyebrow: "退款政策", title: "退款和取消规则", intro: "本政策说明会员、数字资料、服务预约、App Store / Google Play 应用内购买和 Web 支付的退款处理方式。", blocks: [{ title: "平台与支付方式", variant: "legal", items: [
+      { title: "App Store / Google Play", body: "通过 Apple 或 Google 购买的应用内项目，退款由对应平台按其规则处理。" },
       { title: "Web 支付", body: "通过 Web、Stripe 或其他网页支付的订单，Machi 会按订单状态、使用情况、服务进度和当地法律判断。" },
       { title: "数字资料", body: "可下载、已解锁或已访问的数字资料通常不支持无理由退款，除非法律要求或资料存在重大问题。" },
     ] }, { title: "服务预约", variant: "legal", items: [
@@ -701,8 +701,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "部分退款", body: "服务已开始、已投入人工或已产生第三方成本时，可能只支持部分退款或不退款。" },
       { title: "申请方式", body: "请提供订单号、账号邮箱、原因和必要截图，发送至 hi@machicity.com。" },
     ] }] },
-    en: { eyebrow: "Refund Policy", title: "Refund and cancellation rules", intro: "This policy explains refund handling for memberships, digital resources, service bookings, App Store / Google Play subscriptions and Web payments.", blocks: [{ title: "Platforms and payment methods", variant: "legal", items: [
-      { title: "App Store / Google Play", body: "Refunds for subscriptions and in-app purchases made through Apple or Google are handled by those platforms under their rules." },
+    en: { eyebrow: "Refund Policy", title: "Refund and cancellation rules", intro: "This policy explains refund handling for memberships, digital resources, service bookings, App Store / Google Play in-app purchases and Web payments.", blocks: [{ title: "Platforms and payment methods", variant: "legal", items: [
+      { title: "App Store / Google Play", body: "Refunds for in-app purchases made through Apple or Google are handled by those platforms under their rules." },
       { title: "Web payments", body: "For Web, Stripe or other web checkout orders, Machi reviews order status, usage, service progress and local law." },
       { title: "Digital resources", body: "Downloaded, unlocked or accessed digital resources are usually not refundable without cause unless required by law or there is a material issue." },
     ] }, { title: "Service bookings", variant: "legal", items: [
@@ -771,7 +771,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "取消、退货和退款", variant: "legal", items: [
         { title: "客户要求的取消或退款", body: "未开始的服务预约可按订单页或退款政策申请取消、改期或退款。已下载、已解锁或已访问的数字资料通常不支持无理由退款，除非法律要求或资料存在重大问题。" },
         { title: "有缺陷的商品或服务", body: "如数字资料无法访问、文件明显损坏、订单权益未开通或服务与订单说明明显不符，请联系 hi@machicity.com。Machi 会核实后提供修复、重新交付、等值替代、部分退款或退款。" },
-        { title: "持续订阅合同", body: "会员订阅可按 App Store、Google Play、Stripe 或 Web 订单页规则取消。取消后通常不影响已支付周期内权益，自动续费是否继续以对应平台状态为准。" },
+        { title: "会员购买与有效期", body: "Web 会员为一次性购买，不创建 Stripe 订阅或自动续费。购买成功后按订单周期开通或延长会员，有效期以会员页和订单记录为准。" },
         { title: "支付用途边界", body: "Machi 支付只用于平台服务费、数字资料、认证推广、广告、会员和明确说明的自营或预约服务。" },
       ] },
       { title: "可选披露", variant: "legal", items: [
@@ -799,7 +799,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Cancellation, Returns and Refunds", variant: "legal", items: [
         { title: "Customer-requested cancellation or refund", body: "Service bookings that have not started may be cancelled, rescheduled or refunded under the order page and Refund Policy. Downloaded, unlocked or accessed digital resources are usually not refundable without cause unless required by law or there is a material issue." },
         { title: "Defective goods or services", body: "If a digital resource cannot be accessed, a file is materially damaged, order benefits do not activate or a service materially differs from the order description, contact hi@machicity.com. Machi will review and may provide repair, re-delivery, equivalent replacement, partial refund or refund." },
-        { title: "Ongoing subscription contracts", body: "Membership subscriptions can be cancelled according to App Store, Google Play, Stripe or Web order-page rules. Cancellation usually does not remove access already paid for; renewal status follows the relevant platform." },
+        { title: "Membership purchases and validity", body: "Web membership is a one-time purchase and does not create a Stripe subscription or automatic renewal. After successful payment, membership is activated or extended for the purchased period; the membership page and order history show the current validity." },
         { title: "Payment use boundary", body: "Payments on Machi are only for platform services, digital resources, verified promotions, advertising, memberships and clearly described service bookings." },
       ] },
       { title: "Optional Disclosures", variant: "legal", items: [
