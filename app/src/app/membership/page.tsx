@@ -605,8 +605,8 @@ const PAYMENT_LOGOS = [
   { name: "Visa", src: "/payment-logos/visa.svg", width: 62 },
   { name: "Mastercard", src: "/payment-logos/mastercard.svg", width: 70 },
   { name: "American Express", src: "/payment-logos/amex.svg", width: 72 },
-  { name: "JCB", src: "/payment-logos/jcb.svg", width: 66 },
-  { name: "Alipay", src: "/payment-logos/alipay.svg", width: 98 },
+  { name: "JCB", src: "/payment-logos/jcb.svg", width: 42, className: "h-8 sm:h-8" },
+  { name: "Alipay", src: "/payment-logos/alipay.svg", width: 104 },
 ] as const;
 
 function SupportedPaymentLogos() {
@@ -630,7 +630,7 @@ function SupportedPaymentLogos() {
               height={24}
               unoptimized
               loading="lazy"
-              className="h-5 w-auto object-contain transition-all duration-300 ease-out hover:scale-[1.02] sm:h-6"
+              className={`${"className" in logo ? logo.className : "h-5 sm:h-6"} w-auto object-contain transition-all duration-300 ease-out hover:scale-[1.02]`}
             />
           </span>
         ))}
