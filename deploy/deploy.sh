@@ -198,7 +198,7 @@ echo "    [远端] 准备 release 目录: $RELEASE"
 sudo rm -rf "$RELEASE"
 sudo mkdir -p "$RELEASE"
 sudo tar -xzf "$TARBALL" -C "$RELEASE"
-test -d "$RELEASE/web/app"
+sudo test -d "$RELEASE/web/app"
 
 echo "    [远端] 强力清除解压出来的所有 Mac 隐藏乱码文件"
 sudo find "$RELEASE" -name "._*" -delete
