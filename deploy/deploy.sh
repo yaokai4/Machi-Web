@@ -220,7 +220,7 @@ sudo -u kaix "$RELEASE/.venv/bin/python" -m pip install -r "$RELEASE/web/require
 
 if sudo grep -q '^KAIX_DB_BACKEND=postgres' /etc/kaix.env 2>/dev/null; then
   echo "    [远端] PostgreSQL 模式预检"
-  grep -q 'class _PgConn' "$RELEASE/web/server.py"
+  sudo -u kaix grep -q 'class _PgConn' "$RELEASE/web/server.py"
   sudo -u kaix "$RELEASE/.venv/bin/python" -c 'import psycopg2'
 fi
 
