@@ -205,6 +205,7 @@ sudo find "$RELEASE" -name "._*" -delete
 restore_env_for_build
 ensure_runtime_env
 sudo chown -R kaix:kaix "$RELEASE"
+sudo chmod 755 "$RELEASE" "$RELEASE/web" "$RELEASE/web/app"
 
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
