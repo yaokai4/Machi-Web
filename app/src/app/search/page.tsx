@@ -10,8 +10,8 @@ import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { PostCard } from "@/components/feed/PostCard";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
-import { showVerifiedBadge } from "@/lib/types";
+import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
+import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 import { NavTabs } from "@/components/design/NavTabs";
 import { useToasts } from "@/lib/store";
 import { appLocaleToMarketingLocale, useI18n } from "@/lib/i18n";
@@ -157,7 +157,7 @@ function SearchPageInner() {
                         <div className="min-w-0 flex-1">
                           <Link href={`/u/${u.handle}`} className="font-semibold hover:underline truncate flex items-center gap-1">
                             {u.display_name}
-                            {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
+                            {showOfficialBadge(u) ? <OfficialBadge /> : showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                           </Link>
                           <div className="text-kx-muted text-xs">@{u.handle}</div>
                           {u.bio ? <div className="text-sm text-kx-subtle line-clamp-1 mt-0.5">{u.bio}</div> : null}

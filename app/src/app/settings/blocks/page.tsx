@@ -5,8 +5,8 @@ import Link from "next/link";
 import { Shield, ArrowLeft } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
-import { showVerifiedBadge } from "@/lib/types";
+import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
+import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { useToasts } from "@/lib/store";
 
@@ -45,7 +45,7 @@ export default function BlocksPage() {
                 <div className="min-w-0 flex-1">
                   <div className="font-semibold flex items-center gap-1">
                     {u.display_name}
-                    {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
+                    {showOfficialBadge(u) ? <OfficialBadge /> : showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                   </div>
                   <div className="text-kx-muted text-xs">@{u.handle}</div>
                 </div>

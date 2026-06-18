@@ -10,14 +10,14 @@ import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { PostCard } from "@/components/feed/PostCard";
 import { PostSpecificDetailSection } from "@/components/feed/PostSpecificDetail";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
+import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { compactNumber, relativeTime } from "@/lib/format";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { ConfirmDialog } from "@/components/design/Dialog";
 import { useI18n } from "@/lib/i18n";
 import type { KXComment, KXUser } from "@/lib/types";
-import { showVerifiedBadge } from "@/lib/types";
+import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 
 export default function PostDetailPage() {
   const params = useParams<{ id: string }>();
@@ -370,7 +370,7 @@ function CommentItem({
           <Link href={comment.author?.handle ? `/u/${comment.author.handle}` : "#"} className="font-semibold text-sm truncate hover:underline">
             {comment.author?.display_name || "用户"}
           </Link>
-          {showVerifiedBadge(comment.author) ? <VerifiedBadge /> : null}
+          {showOfficialBadge(comment.author) ? <OfficialBadge /> : showVerifiedBadge(comment.author) ? <VerifiedBadge /> : null}
           <span className="text-kx-muted text-xs truncate">@{comment.author?.handle || "machi"} · {relativeTime(comment.created_at)}</span>
         </div>
         <p className="text-sm text-kx-text whitespace-pre-wrap break-words mt-0.5">{comment.content}</p>

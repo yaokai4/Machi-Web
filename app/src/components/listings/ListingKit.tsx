@@ -54,9 +54,9 @@ import {
 } from "lucide-react";
 import { api, APIError, isAuthRequiredError, isUploadImageFile, isUploadVideoFile, type UploadPurpose } from "@/lib/api";
 import { fallbackVideoPoster, isVideoMedia, mediaDurationLabel, mediaPreviewImageUrl, mediaSourceUrl } from "@/lib/media";
-import { listingTypeRequiresMembership, type KXBusinessProfile, type KXCityListing, type KXCreateListingPayload, type KXListingInquiry, type KXListingMedia, type KXListingTaxonomyCategory, type KXListingTaxonomyField, type KXListingTaxonomyPayload, type KXListingType, type KXMedia } from "@/lib/types";
+import { listingTypeRequiresMembership, showOfficialBadge, showVerifiedBadge, type KXBusinessProfile, type KXCityListing, type KXCreateListingPayload, type KXListingInquiry, type KXListingMedia, type KXListingTaxonomyCategory, type KXListingTaxonomyField, type KXListingTaxonomyPayload, type KXListingType, type KXMedia } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
+import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, PremiumEmptyState, SectionLoading, Skeleton } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { CITY_AREA_GROUPS, getCityBySlug, getDefaultCity } from "@/config/cities";
@@ -4192,7 +4192,7 @@ function SellerBox({ item }: { item: KXCityListing }) {
       <div className="flex items-center gap-3">
         {item.seller ? <Avatar user={item.seller} size={42} /> : <span className="grid h-11 w-11 place-items-center rounded-full bg-slate-200 font-black text-slate-600">M</span>}
         <div className="min-w-0">
-          <p className="flex items-center gap-1 font-black text-slate-950">{item.seller?.display_name || "Machi 用户"}{item.seller?.is_verified ? <VerifiedBadge /> : null}</p>
+          <p className="flex items-center gap-1 font-black text-slate-950">{item.seller?.display_name || "Machi 用户"}{showOfficialBadge(item.seller) ? <OfficialBadge /> : showVerifiedBadge(item.seller) ? <VerifiedBadge /> : null}</p>
           <p className="text-xs font-semibold text-slate-500">发布者认证：{verificationLabel(item.verification_status)}</p>
         </div>
       </div>

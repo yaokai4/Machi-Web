@@ -7,11 +7,11 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
+import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import type { KXUser } from "@/lib/types";
-import { showVerifiedBadge } from "@/lib/types";
+import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 
 interface RelationshipListProps {
   handle: string;
@@ -96,7 +96,7 @@ export function RelationshipList({ handle, kind }: RelationshipListProps) {
                 <div className="flex-1 min-w-0">
                   <Link href={`/u/${u.handle}`} className="font-semibold inline-flex items-center gap-1 hover:underline">
                     {u.display_name}
-                    {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
+                    {showOfficialBadge(u) ? <OfficialBadge /> : showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                     {u.is_mutual || (u.follows_viewer && (following[u.id] ?? u.is_following)) ? (
                       <span className="rounded-full bg-kx-accent/10 px-1.5 py-0.5 text-[10px] font-bold text-kx-accent">互相关注</span>
                     ) : u.follows_viewer ? (

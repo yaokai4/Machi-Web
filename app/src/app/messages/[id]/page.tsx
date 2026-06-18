@@ -7,7 +7,7 @@ import { ArrowLeft, Image as ImageIcon, Loader2, MessageCircle, Play, Send, Smil
 import clsx from "clsx";
 import { api, APIError, isUploadImageFile, isUploadVideoFile } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
+import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { MediaGrid } from "@/components/design/MediaGrid";
 import { Lightbox } from "@/components/design/Lightbox";
@@ -16,7 +16,7 @@ import { useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import { fallbackVideoPoster, isVideoMedia, mediaCardAspectRatio, mediaPreviewImageUrl, sameOriginApiUrl } from "@/lib/media";
 import type { KXMedia, KXMessage, KXMessageAttachment, KXUser } from "@/lib/types";
-import { showVerifiedBadge } from "@/lib/types";
+import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 
 const EMOJI_GROUPS = [
   {
@@ -256,7 +256,7 @@ export default function ConversationPage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-1 text-[15px] font-black leading-tight text-kx-text">
                   <span className="truncate">{peer.display_name}</span>
-                  {showVerifiedBadge(peer) ? <VerifiedBadge /> : null}
+                  {showOfficialBadge(peer) ? <OfficialBadge /> : showVerifiedBadge(peer) ? <VerifiedBadge /> : null}
                 </div>
                 <div className="mt-0.5 truncate text-xs font-medium text-kx-muted">@{peer.handle}</div>
               </div>

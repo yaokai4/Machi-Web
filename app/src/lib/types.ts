@@ -19,6 +19,8 @@ export const UserSchema = z.object({
   cover_url: z.string().optional(),
   membership_tier: z.string().optional(),
   is_verified: z.boolean().optional(),
+  is_official: z.boolean().optional(),
+  official_role: z.string().optional(),
   // Machi Verified membership cache (synced from user_memberships on the
   // server). is_verified_member drives the blue badge; the rest power the
   // profile/settings membership panel.
@@ -58,6 +60,12 @@ export const UserSchema = z.object({
   can_unlink_google: z.boolean().optional(),
 });
 export type KXUser = z.infer<typeof UserSchema>;
+
+export function showOfficialBadge(
+  user?: { role?: string; is_official?: boolean } | null,
+): boolean {
+  return !!(user && (user.role === "admin" || user.is_official));
+}
 
 // Whether to show the blue Machi Verified badge next to a user. True for
 // active verified members AND for legacy/admin-verified accounts, so the

@@ -43,7 +43,7 @@ import {
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { MasterCopyEditorCard } from "@/components/admin/MasterCopyEditorCard";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
+import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { ConfirmDialog, Dialog } from "@/components/design/Dialog";
 import type { KXUser } from "@/lib/types";
@@ -51,7 +51,7 @@ import { NavTabs } from "@/components/design/NavTabs";
 import { useSession, useToasts } from "@/lib/store";
 import { fullDateTime, relativeTime, compactNumber } from "@/lib/format";
 import { useDebounce } from "@/lib/hooks";
-import { CONTENT_TYPE_LABELS, CONTENT_TYPES, showVerifiedBadge, type ContentType } from "@/lib/types";
+import { CONTENT_TYPE_LABELS, CONTENT_TYPES, showOfficialBadge, showVerifiedBadge, type ContentType } from "@/lib/types";
 
 type Tab = "overview" | "users" | "posts" | "reports" | "feedback" | "visitors" | "seed" | "site";
 
@@ -327,6 +327,14 @@ function UsersPanel() {
       return true;
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); return false; }
   };
+  const saveOfficial = async (id: string, patch: { is_official: boolean; official_role: string }): Promise<boolean> => {
+    try {
+      await api.adminUpdateUser(id, patch);
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      pushToast({ kind: "success", message: patch.is_official ? "官方标识已更新" : "官方标识已撤回" });
+      return true;
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); return false; }
+  };
   const setUserPassword = async (id: string, password: string): Promise<boolean> => {
     try {
       await api.adminSetUserPassword(id, password);
@@ -375,7 +383,7 @@ function UsersPanel() {
                         <div className="min-w-0">
                           <div className="font-semibold truncate inline-flex items-center gap-1 group-hover:underline">
                             {u.display_name}
-                            {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
+                            {showOfficialBadge(u) ? <OfficialBadge /> : showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                             {u.deleted_at ? <span className="rounded-full bg-kx-danger/10 px-2 py-0.5 text-[11px] font-bold text-kx-danger">已封禁</span> : null}
                           </div>
                           <div className="text-xs text-kx-muted truncate">@{u.handle}</div>
@@ -454,7 +462,7 @@ function UsersPanel() {
                   <div className="min-w-0 flex-1">
                     <Link href={`/u/${u.handle}`} className="font-semibold inline-flex items-center gap-1 hover:underline">
                       {u.display_name}
-                      {showVerifiedBadge(u) ? <VerifiedBadge /> : null}
+                      {showOfficialBadge(u) ? <OfficialBadge /> : showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                       {u.deleted_at ? <span className="rounded-full bg-kx-danger/10 px-2 py-0.5 text-[11px] font-bold text-kx-danger">已封禁</span> : null}
                     </Link>
                     <div className="text-xs text-kx-muted">@{u.handle}</div>
@@ -521,6 +529,7 @@ function UsersPanel() {
         user={manageUser}
         onClose={() => setManageUser(null)}
         onSaveEmail={saveEmail}
+        onSaveOfficial={saveOfficial}
         onSetPassword={setUserPassword}
         onSaveTags={(id, customTags) => update(id, { custom_tags: customTags })}
         onErase={(u) => setPendingErase(u)}
@@ -542,6 +551,7 @@ function UserManageDialog({
   user,
   onClose,
   onSaveEmail,
+  onSaveOfficial,
   onSetPassword,
   onSaveTags,
   onErase,
@@ -549,6 +559,7 @@ function UserManageDialog({
   user: KXUser | null;
   onClose: () => void;
   onSaveEmail: (id: string, email: string) => Promise<boolean>;
+  onSaveOfficial: (id: string, patch: { is_official: boolean; official_role: string }) => Promise<boolean>;
   onSetPassword: (id: string, password: string) => Promise<boolean>;
   onSaveTags: (id: string, tags: string[]) => Promise<void>;
   onErase: (user: KXUser) => void;
@@ -560,18 +571,25 @@ function UserManageDialog({
   const [savingPw, setSavingPw] = useState(false);
   const [tags, setTags] = useState("");
   const [savingTags, setSavingTags] = useState(false);
+  const [official, setOfficial] = useState(false);
+  const [officialRole, setOfficialRole] = useState("");
+  const [savingOfficial, setSavingOfficial] = useState(false);
 
   useEffect(() => {
     setEmail(user?.email || "");
     setPassword("");
     setShowPw(false);
     setTags((user?.custom_tags || []).join("、"));
+    setOfficial(!!(user && (user.role === "admin" || user.is_official)));
+    setOfficialRole(user?.official_role || (user?.role === "admin" ? "admin" : "official"));
   }, [user]);
 
   if (!user) return null;
   const id = user.id;
   const emailDirty = email.trim().toLowerCase() !== (user.email || "").trim().toLowerCase();
   const pwValid = password.length >= 8 && /[A-Za-z]/.test(password) && /\d/.test(password);
+  const effectiveOfficial = user.role === "admin" || !!user.is_official;
+  const officialDirty = official !== effectiveOfficial || officialRole.trim() !== (user.official_role || (user.role === "admin" ? "admin" : "official"));
 
   const handleSaveEmail = async () => {
     setSavingEmail(true);
@@ -583,6 +601,11 @@ function UserManageDialog({
     const ok = await onSetPassword(id, password);
     setSavingPw(false);
     if (ok) setPassword("");
+  };
+  const handleSaveOfficial = async () => {
+    setSavingOfficial(true);
+    await onSaveOfficial(id, { is_official: official, official_role: official ? (officialRole.trim() || "official") : "" });
+    setSavingOfficial(false);
   };
 
   return (
@@ -619,6 +642,43 @@ function UserManageDialog({
             </button>
           </div>
           <p className="text-[11px] text-kx-muted">修改后将标记为已验证；留空可清除该用户邮箱。</p>
+        </div>
+
+        {/* Official badge — production-visible Machi Official label. */}
+        <div className="space-y-2 rounded-kx-lg border border-emerald-500/25 bg-emerald-500/[0.06] p-3">
+          <label className="flex items-center gap-1.5 text-xs font-bold text-emerald-700 dark:text-emerald-300">
+            <ShieldCheck className="h-3.5 w-3.5" /> 官方标识
+          </label>
+          <label className="flex items-center justify-between gap-3 rounded-xl bg-white/70 px-3 py-2 text-sm font-semibold dark:bg-white/5">
+            <span>
+              显示 Machi 官方标签
+              {user.role === "admin" ? <span className="ml-2 text-[11px] text-kx-muted">管理员默认拥有</span> : null}
+            </span>
+            <input
+              type="checkbox"
+              className="h-5 w-5 accent-emerald-600"
+              checked={official}
+              disabled={user.role === "admin"}
+              onChange={(e) => setOfficial(e.target.checked)}
+            />
+          </label>
+          <div className="flex gap-2">
+            <input
+              className="kx-input h-10 flex-1"
+              value={officialRole}
+              onChange={(e) => setOfficialRole(e.target.value)}
+              placeholder="official / support / editorial / admin"
+              disabled={!official}
+            />
+            <button
+              className="kx-button-primary h-10 px-4 text-sm disabled:opacity-50"
+              disabled={savingOfficial || !officialDirty}
+              onClick={handleSaveOfficial}
+            >
+              保存
+            </button>
+          </div>
+          <p className="text-[11px] leading-5 text-kx-muted">官方标识会在生产环境的个人主页、Feed、搜索、私信和 iOS 端显示；仅管理员可颁发。</p>
         </div>
 
         {/* Password */}
@@ -766,7 +826,7 @@ function PostsPanel() {
                 <div className="min-w-0 flex-1">
                   <div className="text-sm font-semibold inline-flex items-center gap-1">
                     {p.author?.display_name || "用户"}
-                    {showVerifiedBadge(p.author) ? <VerifiedBadge /> : null}
+                    {showOfficialBadge(p.author) ? <OfficialBadge /> : showVerifiedBadge(p.author) ? <VerifiedBadge /> : null}
                     <span className="text-xs text-kx-muted ml-1">@{p.author?.handle} · {relativeTime(p.created_at)}</span>
                     {p.deleted_at ? <span className="text-xs text-kx-danger ml-1">[已删除]</span> : null}
                   </div>

@@ -23,12 +23,12 @@ import {
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
+import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { useSession } from "@/lib/store";
 import { compactNumber } from "@/lib/format";
 import { regionDisplayName, regionFromUser } from "@/lib/regions";
 import { useI18n } from "@/lib/i18n";
-import { showVerifiedBadge } from "@/lib/types";
+import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 
 const WORK_ITEMS = [
   { href: "/listings/create", title: "发布城市信息", subtitle: "二手、租房、招聘、商家与服务", icon: BriefcaseBusiness, tone: "text-blue-600 bg-blue-50", badge: "" },
@@ -80,7 +80,7 @@ export default function MyFeaturesPage() {
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
                 <h1 className="truncate text-2xl font-black text-slate-950">我的工作台</h1>
-                {showVerifiedBadge(user) ? <VerifiedBadge /> : null}
+                {showOfficialBadge(user) ? <OfficialBadge /> : showVerifiedBadge(user) ? <VerifiedBadge /> : null}
               </div>
               <p className="mt-1 truncate text-sm font-semibold text-slate-500">@{user?.handle || "machi"}</p>
               <div className="mt-3 flex flex-wrap gap-2 text-xs font-black text-slate-600">

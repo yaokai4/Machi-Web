@@ -7,8 +7,8 @@ import clsx from "clsx";
 import { Calendar, Camera, Edit3, Flag, LayoutDashboard, Loader2, MapPin, MessageSquarePlus, Shield, UserCheck, UserPlus, X } from "lucide-react";
 import { api, APIError, isAuthRequiredError, isUploadImageFile } from "@/lib/api";
 import type { KXPost, KXUser, ProfileSegment, KXComment } from "@/lib/types";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
-import { showVerifiedBadge } from "@/lib/types";
+import { Avatar, OfficialBadge, OfficialPill, VerifiedBadge } from "@/components/design/Avatar";
+import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 import { EmptyState, ErrorState, PostSkeleton } from "@/components/design/States";
 import { PostCard } from "@/components/feed/PostCard";
 import { Dialog, ConfirmDialog } from "@/components/design/Dialog";
@@ -257,7 +257,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
           <div className="mt-3">
             <h1 className="text-xl font-bold inline-flex items-center gap-1.5">
               {user.display_name}
-              {showVerifiedBadge(user) ? <VerifiedBadge /> : null}
+              {showOfficialBadge(user) ? <OfficialBadge /> : showVerifiedBadge(user) ? <VerifiedBadge /> : null}
             </h1>
             <div className="text-kx-muted text-sm">@{user.handle}</div>
             {user.bio ? <p className="mt-2 text-kx-text text-sm whitespace-pre-wrap break-words">{user.bio}</p> : null}
@@ -287,8 +287,9 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                 (/my/features) 是唯一入口,主页只展示身份信息和内容。 */}
             {/* Identity / status badges row. Mirrors iOS ProfileView
                 ProfileRoleBadge strip. */}
-            {(user.role && user.role !== "member") || user.is_merchant || user.merchant_verified || user.creator_badge || profileRegion ? (
+            {showOfficialBadge(user) || (user.role && user.role !== "member") || user.is_merchant || user.merchant_verified || user.creator_badge || profileRegion ? (
               <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
+                {showOfficialBadge(user) ? <OfficialPill /> : null}
                 {user.role && user.role !== "member" ? (
                   <span className="px-2 h-6 inline-flex items-center rounded-full bg-kx-accent/10 text-kx-accent font-bold">
                     {user.role === "creator" ? "创作者" : user.role === "admin" ? "管理员" : user.role}

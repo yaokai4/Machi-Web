@@ -75,3 +75,23 @@ export function VerifiedBadge() {
     </svg>
   );
 }
+
+export function OfficialBadge() {
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" className="inline-block shrink-0 text-emerald-700 dark:text-emerald-300" aria-label="Machi 官方">
+      <path
+        fill="currentColor"
+        d="M12 2.3 4.6 5.1v5.7c0 4.8 3.1 9.2 7.4 10.9 4.3-1.7 7.4-6.1 7.4-10.9V5.1L12 2.3Zm3.9 7.3-4.7 4.7-2.1-2.1 1.2-1.2.9.9 3.5-3.5 1.2 1.2Z"
+      />
+    </svg>
+  );
+}
+
+export function OfficialPill({ label = "Machi 官方" }: { label?: string }) {
+  return (
+    <span className="inline-flex h-6 items-center gap-1.5 rounded-full bg-emerald-500/10 px-2 text-[11px] font-black text-emerald-700 ring-1 ring-emerald-500/20 dark:text-emerald-300">
+      <OfficialBadge />
+      {label}
+    </span>
+  );
+}

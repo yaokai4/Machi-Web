@@ -3528,7 +3528,17 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
     # as a "|"-separated string and surfaced as bordered chips on the profile.
     _ensure_columns(conn, "users", {
         "custom_tags": "TEXT NOT NULL DEFAULT ''",
+        "is_official": "INTEGER NOT NULL DEFAULT 0",
+        "official_role": "TEXT NOT NULL DEFAULT ''",
     })
+    conn.execute(
+        """
+        UPDATE users
+           SET is_official = 1,
+               official_role = CASE WHEN official_role = '' THEN 'admin' ELSE official_role END
+         WHERE role = 'admin'
+        """
+    )
     _ensure_columns(conn, "user_memberships", {
         "billing_period": "TEXT NOT NULL DEFAULT ''",
         "price": "REAL NOT NULL DEFAULT 0",
@@ -8563,7 +8573,10 @@ HUB = EventHub()
 def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
     role = row.get("role", "member") or "member"
     is_verified_member = bool(row.get("is_verified_member", 0))
-    is_official = role in {"admin", "moderator", "creator"} or bool(row.get("is_verified", 0))
+    is_official = role == "admin" or bool(row.get("is_official", 0))
+    official_role = (row.get("official_role", "") or "").strip()
+    if role == "admin" and not official_role:
+        official_role = "admin"
     _auth_provider = row.get("auth_provider", "password") or "password"
     # Safe to unbind Google only when another way in survives: a password
     # account (knows its password) or any account with a verified email (can
@@ -8601,8 +8614,8 @@ def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
         "role": role,
         "isOfficial": is_official,
         "is_official": is_official,
-        "officialRole": role if is_official else "",
-        "official_role": role if is_official else "",
+        "officialRole": official_role if is_official else "",
+        "official_role": official_role if is_official else "",
         "joined_at": row.get("joined_at"),
         "created_at": row.get("created_at"),
         "createdAt": row.get("created_at"),
@@ -12930,6 +12943,10 @@ def ensure_seed_bot_account(conn: sqlite3.Connection, author_type: str, language
     handle, display_name, bio, symbol, color = _SEED_BOT_IDENTITY[(at, lang)]
     row = conn.execute("SELECT id FROM users WHERE handle = ?", (handle,)).fetchone()
     if row:
+        conn.execute(
+            "UPDATE users SET is_official = 1, official_role = CASE WHEN official_role = '' THEN ? ELSE official_role END, updated_at = ? WHERE id = ?",
+            ("editorial" if "editorial" in at else "official", now_iso(), row["id"]),
+        )
         return row["id"]
     user_id = str(uuid.uuid4())
     # Locked, unguessable password hash — these accounts are not meant to log in.
@@ -12938,11 +12955,11 @@ def ensure_seed_bot_account(conn: sqlite3.Connection, author_type: str, language
         """
         INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
                            avatar_symbol, avatar_color, avatar_url, cover_url, membership_tier,
-                           is_verified, role, country, province, city, current_region_code,
+                           is_verified, role, is_official, official_role, country, province, city, current_region_code,
                            recent_region_codes, joined_at, created_at, updated_at)
-        VALUES (?, ?, ?, '', ?, ?, '', ?, ?, '', '', 'free', 1, 'member', '', '', '', '', '', ?, ?, ?)
+        VALUES (?, ?, ?, '', ?, ?, '', ?, ?, '', '', 'free', 1, 'member', 1, ?, '', '', '', '', '', ?, ?, ?)
         """,
-        (user_id, handle, display_name, locked, bio, symbol, color, now_iso(), now_iso(), now_iso()),
+        (user_id, handle, display_name, locked, bio, symbol, color, "editorial" if "editorial" in at else "official", now_iso(), now_iso(), now_iso()),
     )
     conn.execute("INSERT OR IGNORE INTO settings (user_id, updated_at) VALUES (?, ?)", (user_id, now_iso()))
     ACCESS_LOG.info("seeded official content account handle=%s", handle)
@@ -26399,6 +26416,19 @@ class Handler(BaseHTTPRequestHandler):
             if data["role"] != "admin" and target["id"] == admin["id"]:
                 raise APIError("不能修改自己的角色", 400, "invalid_role_change")
             updates.append(("role", data["role"]))
+            if data["role"] == "admin":
+                if "is_official" not in data:
+                    updates.append(("is_official", 1))
+                if "official_role" not in data and not (target["official_role"] or "").strip():
+                    updates.append(("official_role", "admin"))
+        if "is_official" in data:
+            will_be_admin = (data.get("role") or target["role"]) == "admin"
+            if will_be_admin and not data["is_official"]:
+                raise APIError("管理员必须保留官方标识", 400, "invalid_official_change")
+            updates.append(("is_official", 1 if data["is_official"] else 0))
+        if "official_role" in data:
+            official_role = str(data.get("official_role") or "").strip()[:40]
+            updates.append(("official_role", official_role))
         if "membership_tier" in data:
             updates.append(("membership_tier", data["membership_tier"]))
         if "creator_badge" in data:

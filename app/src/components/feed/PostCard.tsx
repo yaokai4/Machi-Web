@@ -23,10 +23,10 @@ import { compactNumber, relativeTime, tokenizeContent } from "@/lib/format";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
 import type { KXPost } from "@/lib/types";
-import { showVerifiedBadge } from "@/lib/types";
+import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 import { makeRegion, regionHeaderLabel, resolveRegion } from "@/lib/regions";
 import { useQueryClient } from "@tanstack/react-query";
-import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
+import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { MediaGrid } from "@/components/design/MediaGrid";
 import { Dialog, ConfirmDialog } from "@/components/design/Dialog";
 import { CONTENT_TYPE_LABELS } from "@/lib/types";
@@ -306,7 +306,7 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
               >
                 {displayAuthor?.display_name || t("unknown_user")}
               </Link>
-              {showVerifiedBadge(displayAuthor) ? <VerifiedBadge /> : null}
+              {showOfficialBadge(displayAuthor) ? <OfficialBadge /> : showVerifiedBadge(displayAuthor) ? <VerifiedBadge /> : null}
             </div>
             <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-kx-muted text-kx-meta">
               <span className="truncate">@{displayAuthor?.handle || "machi"} · {relativeTime(displayPost.created_at)}</span>
@@ -926,7 +926,7 @@ function QuotedPreview({ post }: { post: KXPost }) {
       <div className="flex items-center gap-1.5 min-w-0">
         <Avatar user={author || undefined} size={20} />
         <span className="font-semibold text-sm text-kx-text truncate">{author?.display_name || "未知用户"}</span>
-        {showVerifiedBadge(author) ? <VerifiedBadge /> : null}
+        {showOfficialBadge(author) ? <OfficialBadge /> : showVerifiedBadge(author) ? <VerifiedBadge /> : null}
         <span className="text-kx-muted text-xs truncate">@{author?.handle || "machi"}</span>
       </div>
       <p className="text-sm text-kx-text mt-1 line-clamp-4 whitespace-pre-wrap break-words">{post.content}</p>

@@ -1575,7 +1575,7 @@ export const api = {
     const { items } = await request<{ items: KXUser[] }>("GET", `/api/admin/users?${usp.toString()}`);
     return items;
   },
-  async adminUpdateUser(id: string, patch: { is_verified?: boolean; role?: string; membership_tier?: string; creator_badge?: string; custom_tags?: string[]; is_merchant?: boolean; merchant_verified?: boolean; email?: string }): Promise<KXUser> {
+  async adminUpdateUser(id: string, patch: { is_verified?: boolean; is_official?: boolean; official_role?: string; role?: string; membership_tier?: string; creator_badge?: string; custom_tags?: string[]; is_merchant?: boolean; merchant_verified?: boolean; email?: string }): Promise<KXUser> {
     const { user } = await request<{ user: KXUser }>("PATCH", `/api/admin/users/${encodeURIComponent(id)}`, patch);
     return user;
   },

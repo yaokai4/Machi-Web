@@ -2955,6 +2955,19 @@ MIGRATIONS: list[tuple[int, str, str]] = [
            AND description = '包年订阅，同步获得 Machi 认证会员全部权益。';
         """,
     ),
+    (
+        51,
+        "users: admin-grantable official badge",
+        """
+        -- backend: postgres
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS is_official INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS official_role TEXT NOT NULL DEFAULT '';
+        UPDATE users
+           SET is_official = 1,
+               official_role = CASE WHEN official_role = '' THEN 'admin' ELSE official_role END
+         WHERE role = 'admin';
+        """,
+    ),
 ]
 
 
