@@ -165,20 +165,20 @@ install_systemd_units() {
   echo "    [远端] 安装/刷新 systemd 服务并设置开机自启"
   sudo cp /opt/kaix/web/deploy/kaix-backend.service /etc/systemd/system/kaix-backend.service
   sudo cp /opt/kaix/web/deploy/kaix-web.service /etc/systemd/system/kaix-web.service
-  if [ -f /opt/kaix/web/deploy/kaix-backend-worker@.service ]; then
+  if sudo test -f /opt/kaix/web/deploy/kaix-backend-worker@.service; then
     sudo cp /opt/kaix/web/deploy/kaix-backend-worker@.service /etc/systemd/system/kaix-backend-worker@.service
   fi
-  if [ -f /opt/kaix/web/deploy/pg_backup.sh ]; then
+  if sudo test -f /opt/kaix/web/deploy/pg_backup.sh; then
     sudo cp /opt/kaix/web/deploy/pg_backup.sh /opt/kaix/pg_backup.sh
     sudo chmod 755 /opt/kaix/pg_backup.sh
   fi
-  if [ -f /opt/kaix/web/deploy/verify_pg_backup.sh ]; then
+  if sudo test -f /opt/kaix/web/deploy/verify_pg_backup.sh; then
     sudo chmod 755 /opt/kaix/web/deploy/verify_pg_backup.sh
   fi
-  if [ -f /opt/kaix/web/deploy/machi-pg-backup.service ]; then
+  if sudo test -f /opt/kaix/web/deploy/machi-pg-backup.service; then
     sudo cp /opt/kaix/web/deploy/machi-pg-backup.service /etc/systemd/system/machi-pg-backup.service
   fi
-  if [ -f /opt/kaix/web/deploy/machi-pg-backup.timer ]; then
+  if sudo test -f /opt/kaix/web/deploy/machi-pg-backup.timer; then
     sudo cp /opt/kaix/web/deploy/machi-pg-backup.timer /etc/systemd/system/machi-pg-backup.timer
   fi
   sudo systemctl daemon-reload
