@@ -113,7 +113,7 @@ class BusinessVerificationFlowTests(unittest.TestCase):
             "business_type": "生活服务",
             "country_code": "jp",
             "city_slug": "tokyo",
-            "service_categories": ["翻译手续", "接送机", "酒店"],
+            "service_categories": ["翻译手续", "接送机", "生活跑腿"],
             "service_cities": ["tokyo", "yokohama"],
             "description": "面向同城用户的翻译、接送机、住宿协助和生活支持。",
             "contact_method": "站内信 / 电话",
@@ -121,7 +121,7 @@ class BusinessVerificationFlowTests(unittest.TestCase):
         })
         business_id = draft["business"]["id"]
         self.assertEqual(draft["business"]["verification_status"], "draft")
-        self.assertEqual(draft["business"]["service_categories"], ["翻译手续", "接送机", "酒店"])
+        self.assertEqual(draft["business"]["service_categories"], ["翻译手续", "接送机", "生活跑腿"])
 
         self.attach_document(business_id)
         submitted = self.save_application({
@@ -138,7 +138,7 @@ class BusinessVerificationFlowTests(unittest.TestCase):
             "postal_code": "160-0022",
             "contact_method": "站内信 / 电话",
             "description": "面向同城用户的翻译、接送机、住宿协助和生活支持。",
-            "service_categories": ["翻译手续", "接送机", "酒店"],
+            "service_categories": ["翻译手续", "接送机", "生活跑腿"],
             "service_cities": ["tokyo", "yokohama"],
             "uploadedFileIds": ["doc-registration"],
             "submit": True,

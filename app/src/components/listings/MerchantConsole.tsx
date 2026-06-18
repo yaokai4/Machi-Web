@@ -6,7 +6,6 @@ import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowUpRight,
-  BedDouble,
   CalendarClock,
   CheckCircle2,
   ExternalLink,
@@ -103,10 +102,6 @@ export function MerchantListingsPanel() {
             <Utensils className="h-3.5 w-3.5" />
             发布餐厅
           </Link>
-          <Link href="/listings/create?type=local_service&category=民宿" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 transition hover:border-cyan-300 hover:text-cyan-700">
-            <BedDouble className="h-3.5 w-3.5" />
-            发布住宿
-          </Link>
           <Link href="/listings/create?type=discount" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 transition hover:border-orange-300">
             <Tag className="h-3.5 w-3.5" />
             发布优惠
@@ -124,7 +119,7 @@ export function MerchantListingsPanel() {
         ))}
         {!items.length ? (
           <p className="rounded-2xl bg-slate-50 p-5 text-sm font-semibold text-slate-500">
-            还没有发布服务。从「发布服务」开始，支持餐厅美食（在线订座）、民宿酒店、景点门票、一日游、接送交通、翻译手续、搬家清洁、生活开通等类目。
+            还没有发布服务。从「发布服务」开始，支持餐厅（在线订座）、景点门票、一日游、接送交通、翻译手续、搬家清洁、生活开通等类目。
           </p>
         ) : null}
       </div>

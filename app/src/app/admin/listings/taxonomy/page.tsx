@@ -190,7 +190,13 @@ export default function AdminListingTaxonomyPage() {
                     active={selectedCategory === (category.categoryKey || category.category_key)}
                     onSelect={() => setSelectedCategory(category.categoryKey || category.category_key)}
                     onSave={(patch) => updateCategory.mutate({ id: category.id, patch })}
-                    onDelete={() => deleteCategory.mutate(category.id)}
+                    deleting={deleteCategory.isPending}
+                    onDelete={() => {
+                      const name = category.label || category.categoryKey || category.category_key || "该分类";
+                      if (window.confirm(`确认删除「${name}」？该分类下的字段也会一并删除。`)) {
+                        deleteCategory.mutate(category.id);
+                      }
+                    }}
                   />
                 ))}
               </div>
@@ -221,7 +227,13 @@ export default function AdminListingTaxonomyPage() {
                     key={field.id}
                     field={field}
                     onSave={(patch) => updateField.mutate({ id: field.id, patch })}
-                    onDelete={() => deleteField.mutate(field.id)}
+                    deleting={deleteField.isPending}
+                    onDelete={() => {
+                      const name = field.label || field.fieldKey || field.field_key || "该字段";
+                      if (window.confirm(`确认删除「${name}」字段？`)) {
+                        deleteField.mutate(field.id);
+                      }
+                    }}
                   />
                 ))}
                 {!filteredFields.length ? <p className="rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-500">暂无字段。</p> : null}
@@ -254,11 +266,12 @@ export default function AdminListingTaxonomyPage() {
   );
 }
 
-function CategoryRow({ category, active, onSelect, onSave, onDelete }: {
+function CategoryRow({ category, active, onSelect, onSave, deleting, onDelete }: {
   category: KXListingTaxonomyCategory;
   active: boolean;
   onSelect: () => void;
   onSave: (patch: Partial<KXListingTaxonomyCategory>) => void;
+  deleting?: boolean;
   onDelete: () => void;
 }) {
   const [label, setLabel] = useState(category.label);
@@ -282,7 +295,7 @@ function CategoryRow({ category, active, onSelect, onSave, onDelete }: {
           <button type="button" onClick={() => onSave({ label, categoryKey: key, sortOrder: Number(sort || 0), isActive })} className="inline-flex h-8 flex-1 items-center justify-center gap-1 rounded-full bg-slate-950 text-xs font-black text-white">
             <Save className="h-3.5 w-3.5" /> 保存
           </button>
-          <button type="button" onClick={onDelete} className="grid h-8 w-8 place-items-center rounded-full border border-rose-200 text-rose-600">
+          <button type="button" disabled={deleting} onClick={onDelete} title="删除分类" className="grid h-8 w-8 place-items-center rounded-full border border-rose-200 text-rose-600 disabled:cursor-not-allowed disabled:opacity-45">
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -291,9 +304,10 @@ function CategoryRow({ category, active, onSelect, onSave, onDelete }: {
   );
 }
 
-function FieldRow({ field, onSave, onDelete }: {
+function FieldRow({ field, onSave, deleting, onDelete }: {
   field: KXListingTaxonomyField;
   onSave: (patch: Partial<KXListingTaxonomyField>) => void;
+  deleting?: boolean;
   onDelete: () => void;
 }) {
   const [label, setLabel] = useState(field.label);
@@ -331,7 +345,7 @@ function FieldRow({ field, onSave, onDelete }: {
         })} className="ml-auto inline-flex h-8 items-center gap-1 rounded-full bg-slate-950 px-3 text-xs font-black text-white">
           <Save className="h-3.5 w-3.5" /> 保存
         </button>
-        <button type="button" onClick={onDelete} className="grid h-8 w-8 place-items-center rounded-full border border-rose-200 text-rose-600">
+        <button type="button" disabled={deleting} onClick={onDelete} title="删除字段" className="grid h-8 w-8 place-items-center rounded-full border border-rose-200 text-rose-600 disabled:cursor-not-allowed disabled:opacity-45">
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>

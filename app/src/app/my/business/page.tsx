@@ -40,8 +40,7 @@ const CONSOLE_TABS = [
 type ConsoleTab = (typeof CONSOLE_TABS)[number]["key"];
 
 const BUSINESS_TYPES = [
-  "餐饮预约",
-  "住宿短住",
+  "餐厅",
   "旅行票务",
   "接送交通",
   "翻译手续",
@@ -62,11 +61,6 @@ const SERVICE_CATEGORIES = [
   "西餐",
   "韩国料理",
   "优惠预约",
-  "民宿",
-  "酒店",
-  "温泉旅馆",
-  "公寓式酒店",
-  "短住公寓",
   "景点门票",
   "一日游",
   "本地向导",
@@ -475,7 +469,7 @@ function BusinessHero({ business, status }: { business: KXBusinessProfile | null
             <StatusPill status={status} />
           </div>
           <p className="mt-2 max-w-2xl text-sm font-semibold leading-6 text-slate-600">
-            商家与服务覆盖餐厅美食、在线订座、优惠、民宿酒店、景点票务和本地支持。完成认证后，你可以在城市入口内发布服务、优惠和活动，并从工作台管理订座、住宿预订与线索。
+            商家与服务覆盖餐厅、在线订座、优惠、景点票务、接送交通、翻译手续和本地支持。完成认证后，你可以在城市入口内发布服务、优惠和活动，并从工作台管理订座、预约与线索。
           </p>
         </div>
       </div>

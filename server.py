@@ -7217,15 +7217,15 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
         },
         {
             "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
-            "type": "local_service", "category": "酒店", "title": "新宿三丁目精品酒店 · 大床房含早",
-            "description": "新宿三丁目站直结的精品酒店，含双人自助早餐与行李寄存。前台支持中英文，适合初次到东京的旅客。",
+            "type": "local_service", "category": "民宿", "title": "新宿三丁目城市民宿 · 大床房含早",
+            "description": "新宿三丁目站附近的独立房源，含双人早餐建议与行李寄存说明。房东支持中英文，适合初次到东京的旅客。",
             "price": 13500, "currency": "JPY", "price_type": "per_night", "location_text": "新宿区 · 新宿三丁目",
             "status": "published", "verification_status": "verified",
             "rating": 4.82, "reviews": 309,
             "image_url": "https://images.unsplash.com/photo-1590490360182-c33d57733427?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
-                "business_name": "Machi Hotel 新宿",
-                "room_type": "大床房 22㎡",
+                "business_name": "Machi Stay 新宿",
+                "room_type": "独立大床房 22㎡",
                 "max_guests": 2,
                 "check_in_time": "15:00",
                 "check_out_time": "11:00",
@@ -7315,23 +7315,23 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
         },
         {
             "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
-            "type": "local_service", "category": "公寓式酒店", "title": "代代木家庭公寓酒店 · 带厨房",
-            "description": "带完整厨房和洗烘一体机的家庭房，适合连续入住。步行可到新宿御苑，前台可代收行李。",
+            "type": "local_service", "category": "民宿", "title": "代代木家庭公寓民宿 · 带厨房",
+            "description": "带完整厨房和洗烘一体机的家庭房源，适合连续入住。步行可到新宿御苑，支持入住前行李寄存咨询。",
             "price": 19600, "currency": "JPY", "price_type": "per_night", "location_text": "涩谷区 · 代代木",
             "status": "published", "verification_status": "verified",
             "rating": 4.89, "reviews": 174,
             "image_url": "https://images.unsplash.com/photo-1631049307264-da0ec9d70304?w=1400&q=84&auto=format&fit=crop",
-            "attributes": {"business_name": "Yoyogi Residence Hotel", "room_type": "家庭套房 38㎡", "max_guests": 4, "check_in_time": "15:00", "check_out_time": "11:00", "breakfast_included": False, "near_station": "代代木站 步行4分钟", "amenities": "厨房、洗烘机、浴缸、行李寄存", "minimum_stay": "1晚", "instant_confirmation": True},
+            "attributes": {"business_name": "Yoyogi Family Stay", "room_type": "家庭套房 38㎡", "max_guests": 4, "check_in_time": "15:00", "check_out_time": "11:00", "breakfast_included": False, "near_station": "代代木站 步行4分钟", "amenities": "厨房、洗烘机、浴缸、行李寄存", "minimum_stay": "1晚", "instant_confirmation": True},
         },
         {
             "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
-            "type": "local_service", "category": "温泉旅馆", "title": "箱根山景温泉旅馆 · 一泊二食",
-            "description": "从东京出发约九十分钟，含会席晚餐与和式早餐。可预约私汤时段，提供小田原站接驳说明。",
+            "type": "local_service", "category": "民宿", "title": "箱根山景温泉民宿 · 私汤咨询",
+            "description": "从东京出发约九十分钟的山景民宿，提供和式早餐、私汤时段咨询与小田原站接驳说明。",
             "price": 28600, "currency": "JPY", "price_type": "per_night", "location_text": "神奈川县 · 箱根",
             "status": "published", "verification_status": "verified",
             "rating": 4.95, "reviews": 263,
             "image_url": "https://images.unsplash.com/photo-1492571350019-22de08371fd3?w=1400&q=84&auto=format&fit=crop",
-            "attributes": {"business_name": "箱根 山之音", "room_type": "和室 10叠", "max_guests": 3, "check_in_time": "15:00", "check_out_time": "10:00", "breakfast_included": True, "near_station": "箱根汤本站 巴士15分钟", "amenities": "温泉、私汤、两餐、接驳咨询", "minimum_stay": "1晚", "instant_confirmation": False},
+            "attributes": {"business_name": "箱根 山之音 Stay", "room_type": "和室 10叠", "max_guests": 3, "check_in_time": "15:00", "check_out_time": "10:00", "breakfast_included": True, "near_station": "箱根汤本站 巴士15分钟", "amenities": "温泉、私汤咨询、早餐、接驳咨询", "minimum_stay": "1晚", "instant_confirmation": False},
         },
         {
             "city_slug": "tokyo", "region_code": "jp.tokyo.tokyo", "country_code": "jp",
@@ -9362,7 +9362,6 @@ LISTING_TAXONOMY_DEFAULTS: dict[str, dict[str, Any]] = {
     "local_service": {
         "categories": [
             "中华料理", "日本料理", "居酒屋", "烧肉火锅", "拉面", "寿司海鲜", "咖啡甜品", "西餐", "韩国料理", "优惠预约",
-            "民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓",
             "景点门票", "一日游", "本地向导", "体验活动", "包车行程",
             "机场接送", "车站接送", "包车", "行李协助",
             "材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "签证材料整理",
@@ -9385,11 +9384,6 @@ LISTING_TAXONOMY_DEFAULTS: dict[str, dict[str, Any]] = {
             ("餐厅美食", "reservation_note", "预约说明", "textarea", [], False, "人数、时段、包间、定金规则"),
             ("餐厅美食", "packages", "团购套餐", "textarea", [], False, "双人套餐 | ¥3,980 | ¥5,200 | 4菜1汤"),
             ("居酒屋", "reservation_note", "预约说明", "textarea", [], False, "人数、时段、包间、定金规则"),
-            ("民宿", "room_type", "房型", "text", [], True, "整套民宿 / 双床房"),
-            ("民宿", "max_guests", "可住人数", "text", [], True, "2"),
-            ("民宿", "inventory_note", "房量与日期说明", "textarea", [], False, "可订日期、旺季限制、儿童入住规则"),
-            ("酒店", "check_in_time", "入住时间", "text", [], False, "15:00"),
-            ("酒店", "check_out_time", "退房时间", "text", [], False, "10:00"),
             ("景点门票", "ticket_type", "票种/行程类型", "text", [], True, "成人票 / 儿童票"),
             ("景点门票", "included_items", "包含内容", "textarea", [], False, "门票、导览、交通、保险等"),
             ("一日游", "meeting_point", "集合地点", "text", [], False, "新宿站西口"),
@@ -9423,11 +9417,28 @@ def _taxonomy_key(value: Any, fallback: str = "") -> str:
 
 def ensure_listing_taxonomy_defaults(conn: sqlite3.Connection, listing_type: str) -> None:
     listing_type = normalize_listing_type(listing_type)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS listing_taxonomy_meta (
+            listing_type TEXT PRIMARY KEY,
+            initialized_at TEXT NOT NULL
+        )
+    """)
     existing = conn.execute(
         "SELECT 1 FROM listing_taxonomy_categories WHERE listing_type = ? LIMIT 1",
         (listing_type,),
     ).fetchone()
+    initialized = conn.execute(
+        "SELECT 1 FROM listing_taxonomy_meta WHERE listing_type = ? LIMIT 1",
+        (listing_type,),
+    ).fetchone()
     if existing:
+        if not initialized:
+            conn.execute(
+                "INSERT OR IGNORE INTO listing_taxonomy_meta (listing_type, initialized_at) VALUES (?, ?)",
+                (listing_type, now_iso()),
+            )
+        return
+    if initialized:
         return
     spec = LISTING_TAXONOMY_DEFAULTS.get(listing_type) or LISTING_TAXONOMY_DEFAULTS["secondhand"]
     now = now_iso()
@@ -9455,6 +9466,10 @@ def ensure_listing_taxonomy_defaults(conn: sqlite3.Connection, listing_type: str
                 placeholder or "", idx * 10, now, now,
             ),
         )
+    conn.execute(
+        "INSERT OR IGNORE INTO listing_taxonomy_meta (listing_type, initialized_at) VALUES (?, ?)",
+        (listing_type, now),
+    )
 
 
 def serialize_listing_taxonomy_category(row: dict[str, Any]) -> dict[str, Any]:

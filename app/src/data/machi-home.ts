@@ -389,7 +389,7 @@ export const marketingCopy = {
       { title: "找工作", badge: "职业机会", description: "兼职、全职、实习、远程、内推和求职经验。" },
       { title: "招聘", badge: "本地岗位", description: "本地商家、企业、机构发布招聘和行业社群机会。" },
       { title: "问答", badge: "Q&A", description: "签证、租房、工作、学校、医疗等本地求助。" },
-      { title: "本地服务", badge: "生活所需", description: "餐饮预约、住宿短住、旅行票务、接送交通、翻译手续、搬家清洁和生活开通。" },
+      { title: "本地服务", badge: "生活所需", description: "餐厅预约、旅行票务、接送交通、翻译手续、搬家清洁和生活开通。" },
       { title: "避坑经验", badge: "风险提醒", description: "租房、交易、招聘、活动和线下见面的风险提醒。" },
     ]),
     trendingPosts: [

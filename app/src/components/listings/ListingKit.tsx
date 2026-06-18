@@ -108,9 +108,9 @@ const videoFallbackArtworkStyle: React.CSSProperties = {
 
 const CHANNEL: Record<ChannelKind, { type: KXListingType; title: string; subtitle: string; icon: typeof Home; search: string; createLabel: string }> = {
   marketplace: { type: "secondhand", title: "二手市场", subtitle: "图片、价格、地点、成色和交易方式清晰分离", icon: Tag, search: "搜索家具、家电、手机数码、教材、搬家出清", createLabel: "发布二手" },
-  rentals: { type: "rental", title: "租房 · 住宿", subtitle: "长租、民宿短住与酒店住宿，价格、位置和入住条件一目了然", icon: Home, search: "搜索地区、车站、民宿、酒店、房源关键词", createLabel: "发布房源" },
+  rentals: { type: "rental", title: "租房 · 住宿", subtitle: "长租房源与民宿短住，价格、位置和入住条件一目了然", icon: Home, search: "搜索地区、车站、民宿、房源关键词", createLabel: "发布房源" },
   jobs: { type: "job", title: "工作机会", subtitle: "薪资、地点、日语要求、签证支持和招聘方认证", icon: Briefcase, search: "搜索职位、公司、地点、日语要求", createLabel: "发布职位" },
-  services: { type: "local_service", title: "商家与服务", subtitle: "餐饮预约、住宿短住、旅行票务、接送交通、翻译手续和生活支持", icon: Sparkles, search: "搜索餐饮预约、旅行票务、机场接送、翻译手续、生活服务", createLabel: "发布服务" },
+  services: { type: "local_service", title: "商家与服务", subtitle: "餐厅、旅行票务、接送交通、翻译手续和生活支持", icon: Sparkles, search: "搜索餐厅、旅行票务、机场接送、翻译手续、生活服务", createLabel: "发布服务" },
   deals: { type: "discount", title: "优惠", subtitle: "本地商家优惠、有效期和使用规则", icon: Tag, search: "搜索优惠、折扣、商家、有效期", createLabel: "发布优惠" },
 };
 
@@ -126,8 +126,8 @@ const CHANNEL_TEXT: Record<ChannelKind, Record<"title" | "subtitle" | "search" |
   },
   rentals: {
     title: { ja: "賃貸・宿泊", en: "Homes & Stays" },
-    subtitle: { ja: "長期賃貸・民泊・ホテルを、料金と駅と条件で探せる", en: "Long-term rentals, homestays and hotels — price, location and terms at a glance" },
-    search: { ja: "エリア・駅・民泊・ホテル・物件キーワードを検索", en: "Search area, station, guesthouses, hotels, keywords" },
+    subtitle: { ja: "長期賃貸・民泊を、料金と駅と条件で探せる", en: "Long-term rentals and homestays — price, location and terms at a glance" },
+    search: { ja: "エリア・駅・民泊・物件キーワードを検索", en: "Search area, station, homestays, keywords" },
     createLabel: { ja: "物件を掲載", en: "Post a rental" },
   },
   jobs: {
@@ -138,8 +138,8 @@ const CHANNEL_TEXT: Record<ChannelKind, Record<"title" | "subtitle" | "search" |
   },
   services: {
     title: { ja: "店舗・地域サービス", en: "Businesses & local services" },
-    subtitle: { ja: "飲食予約・宿泊・旅行チケット・送迎・生活サポート", en: "Dining, stays, travel tickets, transfers and local support" },
-    search: { ja: "飲食予約、旅行チケット、空港送迎、翻訳・手続き、生活サポートを検索", en: "Search dining, travel tickets, transfers, paperwork and local support" },
+    subtitle: { ja: "飲食店・旅行チケット・送迎・生活サポート", en: "Restaurants, travel tickets, transfers and local support" },
+    search: { ja: "飲食店、旅行チケット、空港送迎、翻訳・手続き、生活サポートを検索", en: "Search restaurants, travel tickets, transfers, paperwork and local support" },
     createLabel: { ja: "サービスを掲載", en: "Offer a service" },
   },
   deals: {
@@ -174,7 +174,8 @@ function localizedChannel(kind: ChannelKind, locale: Locale) {
 /// 餐厅美食：菜系类目（local_service 下）。
 export const FOOD_CATEGORIES = ["中华料理", "日本料理", "居酒屋", "烧肉火锅", "拉面", "寿司海鲜", "咖啡甜品", "西餐", "韩国料理"] as const;
 const FOOD_SECTION_CATEGORIES = ["餐厅美食", ...FOOD_CATEGORIES, "优惠预约"];
-const LODGING_SECTION_CATEGORIES = ["民宿", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓"] as const;
+const LODGING_SECTION_CATEGORIES = ["民宿"] as const;
+const LEGACY_LODGING_CATEGORIES = ["酒店", "温泉旅馆", "公寓式酒店", "短住公寓", "酒店民宿"] as const;
 const TRAVEL_SECTION_CATEGORIES = ["景点门票", "一日游", "本地向导", "体验活动", "包车行程"] as const;
 const TRANSFER_SECTION_CATEGORIES = ["机场接送", "车站接送", "包车", "行李协助"] as const;
 const PAPERWORK_SECTION_CATEGORIES = ["材料翻译", "市役所陪同", "银行卡协助", "手机卡协助", "租房申请协助", "签证材料整理"] as const;
@@ -189,11 +190,10 @@ const LIFE_SECTION_CATEGORIES = [
   ...LIFE_SETUP_SECTION_CATEGORIES,
   ...BEAUTY_HEALTH_SECTION_CATEGORIES,
 ] as const;
-/// 住宿：归属租房页「民宿·短住」标签；"酒店民宿" 为老类目伞值。
+/// 住宿：归属租房页「民宿·短住」标签；酒店类目仅保留历史数据兼容，不再作为新入口展示。
 export const HOMESTAY_CATEGORIES = ["民宿"] as const;
-export const HOTEL_CATEGORIES = ["酒店", "温泉旅馆", "公寓式酒店", "短住公寓", "酒店民宿"] as const;
-export const STAY_CATEGORIES = [...HOMESTAY_CATEGORIES, ...HOTEL_CATEGORIES] as const;
-const STAY_CATEGORY_SET = new Set<string>(STAY_CATEGORIES);
+export const STAY_CATEGORIES = [...HOMESTAY_CATEGORIES] as const;
+const LEGACY_STAY_CATEGORY_SET = new Set<string>([...HOMESTAY_CATEGORIES, ...LEGACY_LODGING_CATEGORIES]);
 const FOOD_CATEGORY_SET = new Set<string>(FOOD_SECTION_CATEGORIES);
 
 const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
@@ -201,7 +201,7 @@ const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   rental: ["全部", "单人", "合租", "短租", "整租", "家具家电", "近车站"],
   job: ["全部", "兼职", "全职", "时给", "月给", "无经验可", "留学生可", "签证支持", "周末"],
   hiring: ["全部", "兼职", "全职", "派遣", "实习", "签证支持"],
-  local_service: ["全部", ...FOOD_SECTION_CATEGORIES, ...LODGING_SECTION_CATEGORIES, ...TRAVEL_SECTION_CATEGORIES, ...TRANSFER_SECTION_CATEGORIES, ...LIFE_SECTION_CATEGORIES],
+  local_service: ["全部", ...FOOD_SECTION_CATEGORIES, ...TRAVEL_SECTION_CATEGORIES, ...TRANSFER_SECTION_CATEGORIES, ...LIFE_SECTION_CATEGORIES],
   discount: ["全部", "餐饮", "生活", "学习", "搬家", "限时"],
   event: ["全部", "今天", "本周", "周末", "免费"],
 };
@@ -249,7 +249,7 @@ function appendUngroupedCategories(groups: CreateCategoryGroup[], choices: strin
 function serviceSectionDescription(key: string): string {
   return {
     food: "餐厅、咖啡、点评与到店预约",
-    stay: "民宿、酒店、温泉旅馆和短住",
+    stay: "民宿短住",
     travel: "景点门票、一日游、本地向导",
     transfer: "机场/车站接送、包车和行李协助",
     paperwork: "材料翻译、市役所陪同、银行卡/手机卡和租房申请协助",
@@ -266,8 +266,8 @@ function createGroupLabel(group: CreateCategoryGroup, locale: Locale): string {
     study: ["学习票券", "学習・チケット", "Study & tickets"],
     fashion: ["衣物儿童", "衣類・キッズ", "Clothing & kids"],
     wanted: ["求购", "探しています", "Wanted"],
-    food: ["餐饮预约", "グルメ予約", "Food & dining"],
-    stay: ["住宿短住", "宿泊・短期滞在", "Stays"],
+    food: ["餐厅", "飲食店", "Restaurants"],
+    stay: ["民宿短住", "民泊・短期滞在", "Homestays"],
     travel: ["旅行票务", "観光・チケット", "Travel"],
     transfer: ["接送交通", "送迎・交通", "Transfer"],
     paperwork: ["翻译手续", "翻訳・手続き", "Paperwork"],
@@ -288,7 +288,7 @@ function createGroupDescription(group: CreateCategoryGroup, locale: Locale): str
     fashion: ["衣物、母婴、运动户外用品", "衣類・ベビー・アウトドア", "Clothing, kids and outdoors"],
     wanted: ["找物品、收二手、可商量", "探し物・買取相談", "Looking for items"],
     food: ["餐厅、咖啡、点评与到店预约", "飲食店・カフェ・来店予約", "Restaurants, cafes and table booking"],
-    stay: ["民宿、酒店、温泉旅馆和短住", "民泊・ホテル・短期滞在", "Homestays, hotels and short stays"],
+    stay: ["民宿短住", "民泊・短期滞在", "Homestays and short stays"],
     travel: ["景点门票、一日游、本地向导", "観光チケット・日帰りツアー", "Tickets, day trips and guides"],
     transfer: ["机场/车站接送、包车和行李协助", "空港送迎・貸切・荷物サポート", "Airport transfers, charters and luggage"],
     paperwork: ["材料翻译、市役所陪同、银行卡/手机卡和租房申请协助", "書類翻訳・役所同行・銀行/SIM・賃貸申込サポート", "Documents, city office, bank/SIM and rental application help"],
@@ -303,7 +303,6 @@ function createGroupDescription(group: CreateCategoryGroup, locale: Locale): str
 
 /// 租房页「民宿·短住」标签下的筛选 chips（全部=整个住宿类目集）。
 const HOMESTAY_CHIPS = ["全部", "民宿"];
-const HOTEL_CHIPS = ["全部", "酒店", "温泉旅馆", "公寓式酒店", "短住公寓"];
 
 // Display-only translations for the category chips. The zh value is the
 // CANONICAL wire/storage format (listings store and filter by it — see
@@ -414,13 +413,17 @@ const CATEGORY_LABELS: Record<string, { ja: string; en: string }> = {
   "本周": { ja: "今週", en: "This week" },
   "免费": { ja: "無料", en: "Free" },
 };
+const CATEGORY_ZH_DISPLAY_OVERRIDES: Record<string, string> = {
+  "餐饮预约": "餐厅",
+  "餐厅美食": "餐厅",
+};
 
 /// zh stays as-is (canonical); ja/en translate when we know the value;
 /// unknown (user-typed) categories fall back to the raw value.
 export function categoryLabel(value: string, locale: Locale): string {
   if (locale === "ja") return CATEGORY_LABELS[value]?.ja ?? value;
   if (locale === "en") return CATEGORY_LABELS[value]?.en ?? value;
-  return value;
+  return CATEGORY_ZH_DISPLAY_OVERRIDES[value] ?? value;
 }
 
 function listingUploadPurpose(type: KXListingType, isVideo: boolean): UploadPurpose {
@@ -625,10 +628,10 @@ function taxonomyFieldsFor(
   return listingFormFields(type, category, attrs);
 }
 
-function getRentalTabFromUrl(): "homes" | "stays" | "hotels" {
+function getRentalTabFromUrl(): "homes" | "stays" {
   if (typeof window === "undefined") return "homes";
   const tab = new URLSearchParams(window.location.search).get("tab");
-  return tab === "stays" || tab === "hotels" ? tab : "homes";
+  return tab === "stays" || tab === "hotels" ? "stays" : "homes";
 }
 
 export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; kind: ChannelKind }) {
@@ -638,8 +641,8 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
   const [serviceSection, setServiceSection] = useState("all");
-  // 住房频道三分区：长租房源 / 民宿短住 / 酒店住宿。
-  const [rentalTab, setRentalTab] = useState<"homes" | "stays" | "hotels">("homes");
+  // 住房频道双入口：长租房源 / 民宿短住。
+  const [rentalTab, setRentalTab] = useState<"homes" | "stays">("homes");
   const [sort, setSort] = useState("latest");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
@@ -654,10 +657,9 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const { locale } = useI18n();
   const spec = localizedChannel(kind, locale);
   const staysActive = kind === "rentals" && rentalTab === "stays";
-  const hotelsActive = kind === "rentals" && rentalTab === "hotels";
-  const lodgingActive = staysActive || hotelsActive;
+  const lodgingActive = staysActive;
   useEffect(() => {
-    // 服务页的住宿入口可用 ?tab=stays / ?tab=hotels 直达对应分区。
+    // 旧 ?tab=hotels 深链统一归并到民宿短住。
     if (kind !== "rentals" || typeof window === "undefined") return;
     const tab = getRentalTabFromUrl();
     setRentalTab(tab);
@@ -695,12 +697,11 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
             : { city_slug: city.slug };
       const shared = { ...scoped, category, sort, q: query, min_price: filters.min_price, max_price: filters.max_price, attrs: serverAttrs, ...(sellerFilter ? { seller_id: sellerFilter } : {}) };
       if (lodgingActive) {
-        const lodgingCategories = hotelsActive ? HOTEL_CATEGORIES : HOMESTAY_CATEGORIES;
         return api.listings({
           ...shared,
           type: "local_service",
           category: category === "全部" ? "" : category,
-          categories: category === "全部" ? lodgingCategories.join(",") : "",
+          categories: category === "全部" ? HOMESTAY_CATEGORIES.join(",") : "",
           cursor: pageParam || undefined,
         });
       }
@@ -746,8 +747,8 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
     });
   }, [listings.data]);
   const visibleItems = loadedItems.filter((item) => {
-    // 住宿类已整体归入租房页「民宿·短住」，服务页不再展示
-    if (kind === "services" && STAY_CATEGORY_SET.has(item.category || "")) return false;
+    // 住宿类已整体归入租房页「民宿·短住」，服务页不再展示；旧酒店类目也隐藏。
+    if (kind === "services" && LEGACY_STAY_CATEGORY_SET.has(item.category || "")) return false;
     // services 分区在已抓页面上按正式类目集合过滤
     if (kind === "services" && category === "全部" && sectionSpec?.categories.length) {
       return sectionSpec.categories.includes(item.category || "");
@@ -799,7 +800,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                 return;
               }
               const targetType = lodgingActive ? "local_service" : spec.type;
-              const targetCategory = hotelsActive ? "酒店" : staysActive ? "民宿" : "";
+              const targetCategory = staysActive ? "民宿" : "";
               window.location.assign(`/listings/create?type=${targetType}&city=${city.slug}${targetCategory ? `&category=${encodeURIComponent(targetCategory)}` : ""}`);
             }}
             className="kx-listing-primary-action absolute right-0 top-0 sm:static sm:w-auto sm:px-4"
@@ -879,13 +880,12 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
             </div>
           ) : null}
           {kind === "rentals" ? (
-            // 顶部三标签：长租房源 / 民宿短住 / 酒店住宿
+            // 顶部双标签：长租房源 / 民宿短住
             <div className="mb-4 flex justify-center">
               <div className="kx-listing-tabset">
                 {([
                   { key: "homes" as const, Icon: Home, label: pickText(locale, "长租房源", "賃貸物件", "Long-term") },
                   { key: "stays" as const, Icon: BedDouble, label: pickText(locale, "民宿·短住", "民泊・短期滞在", "Stays") },
-                  { key: "hotels" as const, Icon: Building2, label: pickText(locale, "酒店", "ホテル", "Hotels") },
                 ]).map(({ key, Icon, label }) => (
                   <button
                     key={key}
@@ -992,7 +992,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               ) : (
                 <div className="-mx-1 min-w-0 overflow-x-auto px-1">
                   <div className="flex gap-2 pb-0.5">
-                    {(hotelsActive ? HOTEL_CHIPS : staysActive ? HOMESTAY_CHIPS : CATEGORY_CHIPS[spec.type] || ["全部"]).map((chip) => (
+                    {(staysActive ? HOMESTAY_CHIPS : CATEGORY_CHIPS[spec.type] || ["全部"]).map((chip) => (
                       <button
                         key={chip}
                         type="button"
@@ -1041,7 +1041,6 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
             ) : null}
           </section>
 
-          {kind === "services" ? <StaysMovedCard citySlug={city.slug} locale={locale} /> : null}
           {kind === "services" ? <VerifiedMerchantsStrip citySlug={city.slug} locale={locale} /> : null}
 
           {listings.isLoading ? (
@@ -1346,8 +1345,10 @@ export function CreateListingPage({
   });
   const categoryChoices = useMemo(() => {
     const configured = taxonomyCategories(taxonomyQuery.data);
-    return configured.length ? configured : (CATEGORY_CHIPS[type] || []).filter((chip) => chip !== "全部");
-  }, [taxonomyQuery.data, type]);
+    const choices = configured.length ? configured : (CATEGORY_CHIPS[type] || []).filter((chip) => chip !== "全部");
+    if (type !== "local_service") return choices;
+    return choices.filter((item) => !LEGACY_STAY_CATEGORY_SET.has(item) || item === category);
+  }, [category, taxonomyQuery.data, type]);
   const categoryGroups = useMemo(() => createCategoryGroupsFor(type, categoryChoices), [categoryChoices, type]);
   const activeCategoryGroup = categoryGroups.find((group) => group.key === categoryGroup) || categoryGroups[0];
   const visibleCategoryChoices = categoryGroups.length ? activeCategoryGroup?.categories || [] : categoryChoices;
@@ -2655,8 +2656,7 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
 // 与发布页第一阶段正式类目保持一致；旧伞类目只做详情/筛选兼容。
 const SERVICE_SECTIONS: { key: string; zh: string; ja: string; en: string; categories: string[] }[] = [
   { key: "all", zh: "全部", ja: "すべて", en: "All", categories: [] },
-  { key: "food", zh: "餐饮预约", ja: "グルメ予約", en: "Food & Dining", categories: FOOD_SECTION_CATEGORIES },
-  { key: "stay", zh: "住宿短住", ja: "宿泊・短期滞在", en: "Stays", categories: [...LODGING_SECTION_CATEGORIES] },
+  { key: "food", zh: "餐厅", ja: "飲食店", en: "Restaurants", categories: FOOD_SECTION_CATEGORIES },
   { key: "travel", zh: "旅行票务", ja: "観光・体験", en: "Travel & Tickets", categories: [...TRAVEL_SECTION_CATEGORIES] },
   { key: "transfer", zh: "接送交通", ja: "送迎・交通", en: "Transfer", categories: [...TRANSFER_SECTION_CATEGORIES] },
   { key: "paperwork", zh: "翻译手续", ja: "翻訳・手続き", en: "Paperwork", categories: [...PAPERWORK_SECTION_CATEGORIES] },
@@ -3120,28 +3120,6 @@ function StayListingCard({ listing, locale, variant }: { listing: KXCityListing;
   );
 }
 
-/// 服务页 → 租房页「民宿·短住」的迁移指引卡（住宿类目已搬家）。
-function StaysMovedCard({ citySlug, locale }: { citySlug: string; locale: Locale }) {
-  return (
-    <Link
-      href={`/cities/${citySlug}/rentals?tab=stays`}
-      className="mb-4 flex items-center gap-3 rounded-[24px] border border-cyan-200/70 bg-gradient-to-r from-cyan-50 via-sky-50 to-indigo-50 p-3.5 shadow-[0_14px_40px_-34px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:shadow-[0_18px_44px_-30px_rgba(15,23,42,0.5)] sm:p-4"
-    >
-      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-cyan-600/12 text-cyan-700">
-        <BedDouble className="h-5 w-5" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <p className="truncate text-[15px] font-black text-slate-950">{pickText(locale, "找民宿、酒店、温泉旅馆？", "民泊・ホテル・温泉旅館をお探し？", "Looking for stays, hotels or ryokan?")}</p>
-        <p className="truncate text-xs font-semibold text-slate-500">{pickText(locale, "住宿已搬到「租房 · 住宿」的 民宿·短住 标签，按日期、地区和预算筛选", "宿泊は「賃貸・宿泊」の 民泊・短期滞在 タブへ", "Stays now live under Homes & Stays → Stays tab")}</p>
-      </div>
-      <span className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full bg-slate-950 px-3.5 text-xs font-black text-white">
-        {pickText(locale, "去看住宿", "宿泊を見る", "Browse stays")}
-        <ChevronRight className="h-3.5 w-3.5" />
-      </span>
-    </Link>
-  );
-}
-
 /// 职位行卡：薪资高亮 + 条件标签 + 快速申请。
 function JobRowCard({ listing, locale }: { listing: KXCityListing; locale: Locale }) {
   const title = displayListingTitle(listing) || "职位信息";
@@ -3248,7 +3226,7 @@ export function ServiceCard({ listing, locale }: { listing: KXCityListing; local
   const meta = SERVICE_CATEGORY_META[category];
   const priceRange = listingAttr(listing, "price_range");
   const openHours = listingAttr(listing, "open_hours");
-  const isStay = STAY_CATEGORY_SET.has(category);
+  const isStay = LEGACY_STAY_CATEGORY_SET.has(category);
   const isFood = FOOD_CATEGORY_SET.has(category);
   const isTicket = category === "景点门票" || category === "一日游";
   const cta = isStay
@@ -3807,7 +3785,7 @@ function intakeConfig(type: string, category?: string, locale: Locale = "zh-Hans
   }
   if (type === "local_service") {
     // 结构化预订：按服务类目给出真正可用的字段
-    if (STAY_CATEGORY_SET.has(category || "")) {
+    if (LEGACY_STAY_CATEGORY_SET.has(category || "")) {
       return {
         title: text("预订住宿", "宿泊を予約", "Book stay"),
         noteLabel: text("特殊需求", "特別リクエスト", "Special requests"),
@@ -4532,9 +4510,9 @@ function ListingEmptyState({ type, cityName, stays = false }: { type: KXListingT
   if (stays) {
     return (
       <PremiumEmptyState
-        title="这里还没有民宿和酒店"
-        subtitle="认证商家可以发布民宿、酒店、温泉旅馆和公寓式酒店，审核通过后展示给同城旅客。"
-        action={{ label: "发布住宿", href: "/listings/create?type=local_service&category=民宿" }}
+        title="这里还没有民宿"
+        subtitle="认证服务方可以发布民宿短住，审核通过后展示给同城旅客。"
+        action={{ label: "发布民宿", href: "/listings/create?type=local_service&category=民宿" }}
         secondaryAction={{ label: "返回发现", href: "/explore" }}
       />
     );
@@ -4547,7 +4525,7 @@ function ListingEmptyState({ type, cityName, stays = false }: { type: KXListingT
       : type === "job" || type === "hiring"
         ? "稍后查看新的兼职、全职和招聘信息。认证招聘方可以发布职位。"
         : type === "local_service"
-          ? "认证商家和服务方可以发布餐饮预约、住宿短住、旅行票务、接送交通、翻译手续、搬家清洁和生活服务。"
+          ? "认证商家和服务方可以发布餐厅、旅行票务、接送交通、翻译手续、搬家清洁和生活服务。"
           : type === "discount"
             ? "本地商家可以发布折扣、活动和福利信息。"
             : `稍后查看${cityName}新的本地内容。`;
@@ -4662,7 +4640,7 @@ function contactActionLabel(item: KXCityListing, locale: Locale = "zh-Hans") {
   if (item.type === "rental") return pickText(locale, "预约看房", "内見を予約", "Request viewing");
   if (item.type === "job" || item.type === "hiring") return pickText(locale, "立即申请", "応募する", "Apply now");
   if (item.type === "local_service") {
-    if (STAY_CATEGORY_SET.has(item.category || "")) return pickText(locale, "预订住宿", "宿泊を予約", "Book stay");
+    if (LEGACY_STAY_CATEGORY_SET.has(item.category || "")) return pickText(locale, "预订住宿", "宿泊を予約", "Book stay");
     if (FOOD_CATEGORY_SET.has(item.category || "")) return pickText(locale, "在线订座", "席を予約", "Reserve table");
     return pickText(locale, "预约咨询", "予約相談", "Request booking");
   }
@@ -4722,7 +4700,7 @@ function titlePlaceholder(type: KXListingType) {
 function categoryPlaceholder(type: KXListingType) {
   if (type === "rental") return "单人 / 合租 / 短租";
   if (type === "job" || type === "hiring") return "兼职 / 全职 / 实习";
-  if (type === "local_service") return "日本料理 / 民宿 / 景点门票 / 机场接送 / 生活开通";
+  if (type === "local_service") return "日本料理 / 景点门票 / 机场接送 / 生活开通";
   if (type === "discount") return "餐饮 / 生活 / 限时";
   return "家具 / 家电 / 电子产品";
 }
@@ -4844,8 +4822,8 @@ const SERVICE_TYPE_OPTIONS: Record<ServiceVertical, string[]> = {
 
 const SERVICE_VERTICAL_LABEL: Record<ServiceVertical, string> = {
   food_restaurant: "餐厅美食",
-  dining_booking: "餐饮预约优惠",
-  lodging: "住宿短住",
+  dining_booking: "餐厅优惠",
+  lodging: "民宿短住",
   attraction_ticket: "景点门票",
   day_tour: "一日游 / 本地向导",
   airport_transfer: "接送与交通",
@@ -5132,12 +5110,12 @@ function listingFormFields(type: KXListingType, category = "", attrs: Record<str
 function safetyTips(type: KXListingType) {
   if (type === "rental") return ["Machi 只是信息平台，不代收押金、订金或房租。", "地址只展示到区域，具体看房前核实发布者身份。", "高风险房源显示待核验，可举报并由后台下架。"];
   if (type === "job" || type === "hiring") return ["招聘不得收押金、保证金或培训费。", "核实招聘方资质、薪资、工作地点和签证说明。", "禁止成人、灰产或违法兼职。"];
-  if (type === "local_service") return ["商家与服务默认进入审核，认证状态会展示。", "餐饮、住宿、票务、旅行、接送交通和手续协助需写清资质、包含/不包含内容和取消规则。", "暂不开放外卖配送、维修安装、学习咨询；禁止成人服务、高风险线下服务、虚假票务、违规代办和违法服务。", "平台暂不做外卖配送，不代收第三方服务款。"];
+  if (type === "local_service") return ["商家与服务默认进入审核，认证状态会展示。", "餐厅、票务、旅行、接送交通和手续协助需写清资质、包含/不包含内容和取消规则。", "暂不开放外卖配送、维修安装、学习咨询；禁止成人服务、高风险线下服务、虚假票务、违规代办和违法服务。", "平台暂不做外卖配送，不代收第三方服务款。"];
   if (type === "discount") return ["确认优惠有效期、适用门店和使用规则。", "不要向未核验商家提前转账或提供敏感信息。", "遇到虚假折扣、诱导消费或强制捆绑请立即举报。"];
   return ["Machi 不代收二手交易款。", "不要提前转账，交易建议选择公共场所。", "核实对方身份，谨慎提供个人信息。", "遇到可疑内容立即举报。"];
 }
 
-/// lodging = 租房页「民宿·短住 / 酒店」分区（数据为住宿类 local_service），
+/// lodging = 租房页「民宿·短住」分区（数据为住宿类 local_service），
 /// 筛选维度与生活服务完全不同，靠 context 切换。
 export type ListingFilterContext = "default" | "lodging";
 
@@ -5167,7 +5145,7 @@ function filterOptions(type: KXListingType, context: ListingFilterContext = "def
     { key: "visa_support", label: "签证支持", options: [option("available,true", "有"), option("consult", "可咨询"), option("none", "无")] },
   ];
   if (type === "local_service") return [
-    { key: "service_type", label: "服务类型", options: [...FOOD_SECTION_CATEGORIES, ...LODGING_SECTION_CATEGORIES, ...TRAVEL_SECTION_CATEGORIES, ...TRANSFER_SECTION_CATEGORIES, ...LIFE_SECTION_CATEGORIES].map((item) => option(item)) },
+    { key: "service_type", label: "服务类型", options: [...FOOD_SECTION_CATEGORIES, ...TRAVEL_SECTION_CATEGORIES, ...TRANSFER_SECTION_CATEGORIES, ...LIFE_SECTION_CATEGORIES].map((item) => option(item)) },
     { key: "booking_required", label: "预约", options: [option("true", "需要预约")] },
     { key: "breakfast_included", label: "含早餐", options: [option("true", "含")] },
     { key: "instant_confirmation", label: "确认方式", options: [option("true", "即时确认")] },
