@@ -19890,7 +19890,15 @@ class Handler(BaseHTTPRequestHandler):
         posts_map: dict[str, dict[str, Any]] = {}
         if post_ids:
             placeholders = ",".join("?" * len(post_ids))
-            post_rows = list(conn.execute(f"SELECT * FROM posts WHERE id IN ({placeholders})", post_ids))
+            post_rows = list(conn.execute(
+                f"""
+                SELECT * FROM posts p
+                WHERE p.id IN ({placeholders})
+                  AND p.deleted_at IS NULL
+                  AND {_visible_status_sql('p')}
+                """,
+                post_ids,
+            ))
             hydrated = fetch_posts_with_extras(conn, [dict(r) for r in post_rows], viewer_id)
             posts_map = {p["id"]: p for p in hydrated}
         comments = []
@@ -19977,12 +19985,26 @@ class Handler(BaseHTTPRequestHandler):
         user_id = target_row["id"]
         if kind == "followers":
             rows = list(conn.execute(
-                "SELECT u.* FROM follows f JOIN users u ON u.id = f.follower_id WHERE f.following_id = ? ORDER BY f.created_at DESC",
+                """
+                SELECT u.*
+                  FROM follows f
+                  JOIN users u ON u.id = f.follower_id
+                 WHERE f.following_id = ?
+                   AND u.deleted_at IS NULL
+                 ORDER BY f.created_at DESC
+                """,
                 (user_id,),
             ))
         else:
             rows = list(conn.execute(
-                "SELECT u.* FROM follows f JOIN users u ON u.id = f.following_id WHERE f.follower_id = ? ORDER BY f.created_at DESC",
+                """
+                SELECT u.*
+                  FROM follows f
+                  JOIN users u ON u.id = f.following_id
+                 WHERE f.follower_id = ?
+                   AND u.deleted_at IS NULL
+                 ORDER BY f.created_at DESC
+                """,
                 (user_id,),
             ))
         # Viewer-relative state so the list page can render 已关注 / 回关 /
@@ -19997,9 +20019,14 @@ class Handler(BaseHTTPRequestHandler):
             viewer_followers = {r["follower_id"] for r in conn.execute(
                 "SELECT follower_id FROM follows WHERE following_id = ?", (viewer_id,))}
         items = []
+        seen_user_ids: set[str] = set()
         for r in rows:
-            u = serialize_user(dict(r))
-            uid = str(dict(r).get("id") or "")
+            row = dict(r)
+            uid = str(row.get("id") or "")
+            if not uid or uid in seen_user_ids:
+                continue
+            seen_user_ids.add(uid)
+            u = serialize_user(row)
             u["is_following"] = u["isFollowing"] = uid in viewer_following
             u["follows_viewer"] = u["followsViewer"] = uid in viewer_followers
             u["is_mutual"] = u["isMutual"] = (uid in viewer_following) and (uid in viewer_followers)
@@ -24614,7 +24641,7 @@ class Handler(BaseHTTPRequestHandler):
         params.append(limit)
         rows = list(conn.execute(
             f"""
-            SELECT DISTINCT u.*
+            SELECT u.*
               FROM follows mine
               JOIN follows back
                 ON back.follower_id = mine.following_id
@@ -24635,8 +24662,13 @@ class Handler(BaseHTTPRequestHandler):
             params,
         ))
         items = []
+        seen_user_ids: set[str] = set()
         for r in rows:
             user_row = dict(r)
+            uid = str(user_row.get("id") or "")
+            if not uid or uid in seen_user_ids:
+                continue
+            seen_user_ids.add(uid)
             user_row["is_following"] = 1
             items.append(serialize_user(user_row))
         self.send_json({"items": items})
