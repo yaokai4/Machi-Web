@@ -2998,6 +2998,26 @@ MIGRATIONS: list[tuple[int, str, str]] = [
                 OR price_label IN ('¥98 / 年', '¥138 / 年'));
         """,
     ),
+    (
+        53,
+        "social graph: dedupe follows and enforce unique pairs",
+        """
+        -- backend: postgres
+        WITH ranked AS (
+            SELECT id,
+                   ROW_NUMBER() OVER (
+                       PARTITION BY follower_id, following_id
+                       ORDER BY created_at ASC, id ASC
+                   ) AS rn
+              FROM follows
+        )
+        DELETE FROM follows
+         WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_follows_unique_pair
+            ON follows(follower_id, following_id);
+        """,
+    ),
 ]
 
 
