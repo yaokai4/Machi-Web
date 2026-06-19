@@ -19773,6 +19773,15 @@ class Handler(BaseHTTPRequestHandler):
         viewer_id = viewer["user_id"] if viewer else None
         self.send_json({"user": payload, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
+    def _resolve_user_id_or_404(self, conn: sqlite3.Connection, user_id: str) -> str:
+        row = conn.execute(
+            "SELECT id FROM users WHERE (id = ? OR handle = ?) AND deleted_at IS NULL",
+            (user_id, user_id),
+        ).fetchone()
+        if not row:
+            raise APIError("用户不存在", 404, "user_not_found")
+        return str(row["id"])
+
     def api_profile_by_username(self, conn: sqlite3.Connection, username: str) -> None:
         handle = normalize_handle(username)
         if not handle:
@@ -19782,6 +19791,7 @@ class Handler(BaseHTTPRequestHandler):
     def _user_posts_query(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str], *, where: str = "") -> tuple[list[dict[str, Any]], str | None]:
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
+        user_id = self._resolve_user_id_or_404(conn, user_id)
         limit = max(1, min(int(query.get("limit") or 30), 50))
         cursor = cursor_decode(query.get("cursor"))
         cursor_clause = ""
@@ -19816,6 +19826,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_user_reposts(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
+        user_id = self._resolve_user_id_or_404(conn, user_id)
         limit = max(1, min(int(query.get("limit") or 30), 50))
 
         created_rows = list(conn.execute(
@@ -19879,6 +19890,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"items": posts, "next_cursor": None, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
     def api_user_replies(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]) -> None:
+        user_id = self._resolve_user_id_or_404(conn, user_id)
         limit = max(1, min(int(query.get("limit") or 30), 50))
         rows = list(conn.execute(
             "SELECT * FROM comments WHERE author_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ?",
@@ -19917,6 +19929,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_user_likes(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
+        user_id = self._resolve_user_id_or_404(conn, user_id)
         rows = list(conn.execute(
             """
             SELECT p.* FROM interactions i
@@ -19932,6 +19945,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_user_bookmarks(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]) -> None:
         viewer = self.require_user(conn)
+        user_id = self._resolve_user_id_or_404(conn, user_id)
         if viewer["id"] != user_id:
             raise APIError("无权查看", 403, "forbidden")
         rows = list(conn.execute(
