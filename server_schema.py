@@ -226,6 +226,13 @@ CREATE TABLE IF NOT EXISTS drafts (
     content TEXT NOT NULL DEFAULT '',
     media_ids TEXT NOT NULL DEFAULT '',
     tags TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT '',
+    province TEXT NOT NULL DEFAULT '',
+    city TEXT NOT NULL DEFAULT '',
+    region_code TEXT NOT NULL DEFAULT '',
+    content_type TEXT NOT NULL DEFAULT 'dynamic',
+    attributes TEXT NOT NULL DEFAULT '',
+    language TEXT NOT NULL DEFAULT '',
     updated_at TEXT NOT NULL
 );
 
@@ -3016,6 +3023,20 @@ MIGRATIONS: list[tuple[int, str, str]] = [
 
         CREATE UNIQUE INDEX IF NOT EXISTS idx_follows_unique_pair
             ON follows(follower_id, following_id);
+        """,
+    ),
+    (
+        54,
+        "drafts: persist structured publish metadata",
+        """
+        -- backend: postgres
+        ALTER TABLE drafts ADD COLUMN IF NOT EXISTS country TEXT NOT NULL DEFAULT '';
+        ALTER TABLE drafts ADD COLUMN IF NOT EXISTS province TEXT NOT NULL DEFAULT '';
+        ALTER TABLE drafts ADD COLUMN IF NOT EXISTS city TEXT NOT NULL DEFAULT '';
+        ALTER TABLE drafts ADD COLUMN IF NOT EXISTS region_code TEXT NOT NULL DEFAULT '';
+        ALTER TABLE drafts ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'dynamic';
+        ALTER TABLE drafts ADD COLUMN IF NOT EXISTS attributes TEXT NOT NULL DEFAULT '';
+        ALTER TABLE drafts ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT '';
         """,
     ),
 ]

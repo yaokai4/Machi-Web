@@ -58,7 +58,7 @@ API contract (all JSON, all snake_case unless noted):
     GET    /api/topics/:tag
 
     GET    /api/notifications
-    POST   /api/notifications/read    (body {ids:[...] or all:true})
+    POST   /api/notifications/read    (body {ids:[...] or all:true, is_read?:bool})
     DELETE /api/notifications/:id
 
     GET    /api/conversations
@@ -67,7 +67,7 @@ API contract (all JSON, all snake_case unless noted):
     GET    /api/conversations/:id/messages
     POST   /api/conversations/:id/messages
     DELETE /api/messages/:id
-    POST   /api/conversations/:id/read
+    POST   /api/conversations/:id/read (body {is_read?:bool})
 
     POST   /api/media/upload          (multipart)
     GET    /api/media/:id
@@ -3401,6 +3401,7 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "view_count": "INTEGER NOT NULL DEFAULT 0",
         "save_count": "INTEGER NOT NULL DEFAULT 0",
     })
+
     _ensure_columns(conn, "guide_schools", {
         "ward": "TEXT NOT NULL DEFAULT ''",
         "address": "TEXT NOT NULL DEFAULT ''",
@@ -3811,6 +3812,25 @@ def _membership_plan_seed_rows() -> list[dict[str, Any]]:
             "benefits": benefits,
         },
     ]
+
+
+def ensure_draft_schema_extensions(conn: sqlite3.Connection) -> None:
+    """Keep draft persistence aligned with the publish form schema.
+
+    Drafts used to store only content/media/tags. Production clients now
+    restore category, region, typed attributes and language from the server,
+    so old SQLite databases need additive columns before the draft APIs run.
+    PostgreSQL receives the same change through migration 54.
+    """
+    _ensure_columns(conn, "drafts", {
+        "country": "TEXT NOT NULL DEFAULT ''",
+        "province": "TEXT NOT NULL DEFAULT ''",
+        "city": "TEXT NOT NULL DEFAULT ''",
+        "region_code": "TEXT NOT NULL DEFAULT ''",
+        "content_type": "TEXT NOT NULL DEFAULT 'dynamic'",
+        "attributes": "TEXT NOT NULL DEFAULT ''",
+        "language": "TEXT NOT NULL DEFAULT ''",
+    })
 
 
 def ensure_membership_plans(conn: sqlite3.Connection) -> None:
@@ -8428,6 +8448,7 @@ def init_db() -> None:
         run_migrations(conn)
         ensure_reputation_seed(conn)
         ensure_guide_schema_extensions(conn)
+        ensure_draft_schema_extensions(conn)
         ensure_membership_plans(conn)
         ensure_guide_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
@@ -19671,6 +19692,29 @@ class Handler(BaseHTTPRequestHandler):
         for field in ("country", "province", "city"):
             if field in data and data[field] is not None:
                 updates.append((field, str(data[field]).strip().lower()))
+        if "app_language" in data and data["app_language"] is not None:
+            app_language = str(data["app_language"] or "").strip()
+            if app_language == "zh":
+                app_language = "zh-Hans"
+            if app_language and app_language not in {"zh-Hans", "en", "ja"}:
+                raise APIError("无效的界面语言", 400, "invalid_language")
+            updates.append(("app_language", app_language))
+        if "content_language_preference" in data and data["content_language_preference"] is not None:
+            content_language = str(data["content_language_preference"] or "").strip().lower()
+            if content_language not in {"", "follow_app", "zh", "en", "ja", "ko", "fr", "es", "multi"}:
+                raise APIError("无效的内容语言", 400, "invalid_content_language")
+            updates.append(("content_language_preference", content_language))
+        if "preferred_content_languages" in data and data["preferred_content_languages"] is not None:
+            raw_preferred = data["preferred_content_languages"]
+            values = raw_preferred if isinstance(raw_preferred, list) else str(raw_preferred).replace(",", "|").split("|")
+            preferred: list[str] = []
+            for value in values:
+                clean = str(value or "").strip().lower()
+                if clean and clean not in {"zh", "en", "ja", "ko", "fr", "es"}:
+                    raise APIError("无效的备用内容语言", 400, "invalid_content_language")
+                if clean and clean not in preferred:
+                    preferred.append(clean)
+            updates.append(("preferred_content_languages", "|".join(preferred)))
         if "current_region_code" in data:
             country_val  = str(data.get("country",  user.get("country",  ""))).strip().lower()
             province_val = str(data.get("province", user.get("province", ""))).strip().lower()
@@ -19711,7 +19755,10 @@ class Handler(BaseHTTPRequestHandler):
             updated_fields = {f for f, _ in updates}
             if updated_fields.intersection({"display_name", "bio", "avatar_symbol", "avatar_color", "avatar_url", "cover_url"}):
                 reputation_apply_event(conn, user["id"], "profile_completed", target_kind="user", target_id=user["id"])
-            if updated_fields.intersection({"country", "province", "city", "current_region_code", "recent_region_codes"}):
+            if updated_fields.intersection({
+                "country", "province", "city", "current_region_code", "recent_region_codes",
+                "app_language", "content_language_preference", "preferred_content_languages",
+            }):
                 reputation_apply_event(conn, user["id"], "city_language_set", target_kind="user", target_id=user["id"])
         fresh = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
         self.send_json({"user": serialize_user_with_counts(conn, fresh)})
@@ -20001,11 +20048,17 @@ class Handler(BaseHTTPRequestHandler):
             rows = list(conn.execute(
                 """
                 SELECT u.*
-                  FROM follows f
-                  JOIN users u ON u.id = f.follower_id
-                 WHERE f.following_id = ?
-                   AND u.deleted_at IS NULL
-                 ORDER BY f.created_at DESC
+                  FROM users u
+                 WHERE u.deleted_at IS NULL
+                   AND EXISTS (
+                        SELECT 1
+                          FROM follows f
+                         WHERE f.following_id = ?
+                           AND f.follower_id = u.id
+                   )
+                 ORDER BY LOWER(COALESCE(u.display_name, '')) ASC,
+                          LOWER(COALESCE(u.handle, '')) ASC,
+                          u.id ASC
                 """,
                 (user_id,),
             ))
@@ -20013,11 +20066,17 @@ class Handler(BaseHTTPRequestHandler):
             rows = list(conn.execute(
                 """
                 SELECT u.*
-                  FROM follows f
-                  JOIN users u ON u.id = f.following_id
-                 WHERE f.follower_id = ?
-                   AND u.deleted_at IS NULL
-                 ORDER BY f.created_at DESC
+                  FROM users u
+                 WHERE u.deleted_at IS NULL
+                   AND EXISTS (
+                        SELECT 1
+                          FROM follows f
+                         WHERE f.follower_id = ?
+                           AND f.following_id = u.id
+                   )
+                 ORDER BY LOWER(COALESCE(u.display_name, '')) ASC,
+                          LOWER(COALESCE(u.handle, '')) ASC,
+                          u.id ASC
                 """,
                 (user_id,),
             ))
@@ -23621,10 +23680,11 @@ class Handler(BaseHTTPRequestHandler):
             region_code = _resolve_region_code(country, province, city)
         elif not country:
             country, province, city = _parse_region_code(region_code)
+        language = _normalize_language_tag(data.get("language") or user.get("app_language") or "")
         post_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO posts (id, author_id, content, repost_of_id, view_count, status, country, province, city, region_code, content_type, attributes, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?)",
-            (post_id, user["id"], content, repost_of_id, country, province, city, region_code, content_type, attributes, now_iso(), now_iso()),
+            "INSERT INTO posts (id, author_id, content, repost_of_id, view_count, status, country, province, city, region_code, content_type, attributes, language, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (post_id, user["id"], content, repost_of_id, country, province, city, region_code, content_type, attributes, language, now_iso(), now_iso()),
         )
         for tag in extract_tags(content):
             conn.execute("INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (post_id, tag))
@@ -24437,13 +24497,24 @@ class Handler(BaseHTTPRequestHandler):
     def api_mark_notifications(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         data = self.read_json()
+        is_read = 1 if data.get("is_read", True) else 0
         if data.get("all"):
-            conn.execute("UPDATE notifications SET is_read = 1 WHERE user_id = ?", (user["id"],))
+            conn.execute(
+                "UPDATE notifications SET is_read = ? WHERE user_id = ? AND deleted_at IS NULL",
+                (is_read, user["id"]),
+            )
         else:
             ids = data.get("ids") or []
             for nid in ids:
-                conn.execute("UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?", (nid, user["id"]))
-        self.send_json({"ok": True})
+                conn.execute(
+                    "UPDATE notifications SET is_read = ? WHERE id = ? AND user_id = ? AND deleted_at IS NULL",
+                    (is_read, nid, user["id"]),
+                )
+        unread_row = conn.execute(
+            "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND deleted_at IS NULL AND is_read = 0",
+            (user["id"],),
+        ).fetchone()
+        self.send_json({"ok": True, "unread_count": int(unread_row["c"] if unread_row else 0)})
 
     def api_delete_notification(self, conn: sqlite3.Connection, notif_id: str) -> None:
         user = self.require_user(conn)
@@ -24646,7 +24717,7 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             limit = 50
         limit = max(1, min(limit, 100))
-        params: list[Any] = [user["id"], user["id"], user["id"]]
+        params: list[Any] = [user["id"], user["id"], user["id"], user["id"]]
         search_clause = ""
         if q:
             like = f"%{q}%"
@@ -24656,21 +24727,29 @@ class Handler(BaseHTTPRequestHandler):
         rows = list(conn.execute(
             f"""
             SELECT u.*
-              FROM follows mine
-              JOIN follows back
-                ON back.follower_id = mine.following_id
-               AND back.following_id = mine.follower_id
-              JOIN users u
-                ON u.id = mine.following_id
-             WHERE mine.follower_id = ?
-               AND u.deleted_at IS NULL
+              FROM users u
+             WHERE u.deleted_at IS NULL
+               AND EXISTS (
+                    SELECT 1
+                      FROM follows mine
+                     WHERE mine.follower_id = ?
+                       AND mine.following_id = u.id
+               )
+               AND EXISTS (
+                    SELECT 1
+                      FROM follows back
+                     WHERE back.follower_id = u.id
+                       AND back.following_id = ?
+               )
                AND NOT EXISTS (
                     SELECT 1 FROM blocks b
                      WHERE (b.blocker_id = ? AND b.blocked_id = u.id)
                         OR (b.blocker_id = u.id AND b.blocked_id = ?)
                )
                {search_clause}
-             ORDER BY LOWER(u.display_name) ASC, LOWER(u.handle) ASC
+             ORDER BY LOWER(COALESCE(u.display_name, '')) ASC,
+                      LOWER(COALESCE(u.handle, '')) ASC,
+                      u.id ASC
              LIMIT ?
             """,
             params,
@@ -25019,21 +25098,75 @@ class Handler(BaseHTTPRequestHandler):
         row = conn.execute("SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL", (conv_id,)).fetchone()
         if not row or (row["participant_a"] != user["id"] and row["participant_b"] != user["id"]):
             raise APIError("无权操作", 403, "forbidden")
-        conn.execute(
-            "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ?",
-            (conv_id, user["id"]),
-        )
-        conn.execute(
-            """
-            UPDATE notifications
-               SET is_read = 1
-             WHERE user_id = ?
-               AND type = 'message'
-               AND target_conversation_id = ?
-               AND deleted_at IS NULL
-            """,
-            (user["id"], conv_id),
-        )
+        data = self.read_json()
+        is_read = bool(data.get("is_read", True))
+        if is_read:
+            conn.execute(
+                "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ?",
+                (conv_id, user["id"]),
+            )
+            conn.execute(
+                """
+                UPDATE notifications
+                   SET is_read = 1
+                 WHERE user_id = ?
+                   AND type = 'message'
+                   AND target_conversation_id = ?
+                   AND deleted_at IS NULL
+                """,
+                (user["id"], conv_id),
+            )
+        else:
+            latest_inbound = conn.execute(
+                """
+                SELECT *
+                  FROM messages
+                 WHERE conversation_id = ?
+                   AND sender_id != ?
+                   AND deleted_at IS NULL
+                 ORDER BY created_at DESC, id DESC
+                 LIMIT 1
+                """,
+                (conv_id, user["id"]),
+            ).fetchone()
+            if latest_inbound:
+                latest = dict(latest_inbound)
+                now = now_iso()
+                conn.execute("UPDATE messages SET is_read = 0 WHERE id = ?", (latest["id"],))
+                existing = conn.execute(
+                    """
+                    SELECT id
+                      FROM notifications
+                     WHERE user_id = ?
+                       AND type = 'message'
+                       AND target_conversation_id = ?
+                     ORDER BY created_at DESC, id DESC
+                     LIMIT 1
+                    """,
+                    (user["id"], conv_id),
+                ).fetchone()
+                preview = (latest.get("content") or "").strip()[:140] or "[附件]"
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE notifications
+                           SET is_read = 0,
+                               deleted_at = NULL,
+                               actor_id = ?,
+                               content = ?,
+                               created_at = ?
+                         WHERE id = ? AND user_id = ?
+                        """,
+                        (latest["sender_id"], preview, now, existing["id"], user["id"]),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO notifications (id, user_id, actor_id, type, target_conversation_id, content, created_at, is_read)
+                        VALUES (?, ?, ?, 'message', ?, ?, ?, 0)
+                        """,
+                        (str(uuid.uuid4()), user["id"], latest["sender_id"], conv_id, preview, now),
+                    )
         unread_row = conn.execute(
             "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND deleted_at IS NULL AND is_read = 0",
             (user["id"],),
@@ -26306,6 +26439,13 @@ class Handler(BaseHTTPRequestHandler):
                 "content": r["content"],
                 "media_ids": [m for m in (r["media_ids"] or "").split("|") if m],
                 "tags": [t for t in (r["tags"] or "").split("|") if t],
+                "country": r["country"] or "",
+                "province": r["province"] or "",
+                "city": r["city"] or "",
+                "region_code": r["region_code"] or "",
+                "content_type": r["content_type"] or "dynamic",
+                "attributes": decode_post_attributes(r["attributes"]),
+                "language": r["language"] or "",
                 "updated_at": r["updated_at"],
             })
         self.send_json({"items": items})
@@ -26316,16 +26456,53 @@ class Handler(BaseHTTPRequestHandler):
         draft_id = data.get("id") or str(uuid.uuid4())
         media_ids = "|".join(data.get("media_ids") or [])
         tags = "|".join(data.get("tags") or [])
+        content_type = str(data.get("content_type") or "dynamic").strip() or "dynamic"
+        attributes = normalize_post_attributes(content_type, data.get("attributes") or {})
+        country = str(data.get("country") or "").strip().lower()
+        province = str(data.get("province") or "").strip().lower()
+        city = str(data.get("city") or "").strip().lower()
+        region_code = str(data.get("region_code") or "").strip().lower()
+        language = str(data.get("language") or "").strip()
         existing = conn.execute("SELECT id FROM drafts WHERE id = ? AND user_id = ?", (draft_id, user["id"])).fetchone()
         if existing:
             conn.execute(
-                "UPDATE drafts SET content = ?, media_ids = ?, tags = ?, updated_at = ? WHERE id = ?",
-                (data.get("content") or "", media_ids, tags, now_iso(), draft_id),
+                """
+                UPDATE drafts
+                   SET content = ?,
+                       media_ids = ?,
+                       tags = ?,
+                       country = ?,
+                       province = ?,
+                       city = ?,
+                       region_code = ?,
+                       content_type = ?,
+                       attributes = ?,
+                       language = ?,
+                       updated_at = ?
+                 WHERE id = ?
+                """,
+                (
+                    data.get("content") or "", media_ids, tags,
+                    country, province, city, region_code,
+                    content_type, attributes, language,
+                    now_iso(), draft_id,
+                ),
             )
         else:
             conn.execute(
-                "INSERT INTO drafts (id, user_id, content, media_ids, tags, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (draft_id, user["id"], data.get("content") or "", media_ids, tags, now_iso()),
+                """
+                INSERT INTO drafts (
+                    id, user_id, content, media_ids, tags,
+                    country, province, city, region_code,
+                    content_type, attributes, language, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    draft_id, user["id"], data.get("content") or "", media_ids, tags,
+                    country, province, city, region_code,
+                    content_type, attributes, language, now_iso(),
+                ),
             )
         self.send_json({"id": draft_id})
 
