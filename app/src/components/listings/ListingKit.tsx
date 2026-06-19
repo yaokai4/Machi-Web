@@ -1706,7 +1706,7 @@ export function CreateListingPage({
               <p className="text-sm font-semibold text-slate-500">{isEditing ? "修改后的内容会同步到 Web 与 iOS；重要内容变更可能重新进入审核。" : "日常动态留在首页；二手、租房、工作、商家与服务和优惠会进入各自的城市频道。"}</p>
             </div>
           </div>
-          <div className="mt-5 grid gap-5">
+          <div className="mt-5 grid grid-cols-1 gap-5">
             <section>
               <p className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">选择发布类型</p>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-6">
@@ -1741,7 +1741,7 @@ export function CreateListingPage({
 
             <section className="rounded-[24px] border border-slate-200/70 bg-slate-50/70 p-4">
               <p className="mb-3 text-sm font-black text-slate-950">基础信息</p>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Field label="发布地区" required>
                   <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2.5">
                     <div className="flex items-center gap-2">
@@ -1761,7 +1761,7 @@ export function CreateListingPage({
                       </button>
                     </div>
                     {regionEditing ? (
-                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
                         <select
                           value={country}
                           onChange={(e) => {
@@ -4480,7 +4480,7 @@ function ListingAttributeEditor({
 
 function Field({ field, label, children, required, error }: { field?: string; label: string; children: React.ReactNode; required?: boolean; error?: string }) {
   return (
-    <label className="block" data-field={field}>
+    <label className="block min-w-0" data-field={field}>
       <span className="mb-1.5 flex items-center gap-1 text-xs font-black text-slate-500">
         {label}
         {required ? <span className="text-rose-500">*</span> : null}
