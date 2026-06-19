@@ -23846,8 +23846,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_search_history(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
+        # GROUP BY (not DISTINCT) so we can ORDER BY the recency aggregate:
+        # PostgreSQL rejects `SELECT DISTINCT query ... ORDER BY created_at`
+        # because the ORDER BY column isn't in the select list. GROUP BY query
+        # + ORDER BY MAX(created_at) dedupes and keeps most-recent-first, and
+        # is valid on both SQLite and Postgres.
         rows = conn.execute(
-            "SELECT DISTINCT query FROM search_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 20",
+            "SELECT query FROM search_history WHERE user_id = ? GROUP BY query ORDER BY MAX(created_at) DESC LIMIT 20",
             (user["id"],),
         )
         self.send_json({"items": [r["query"] for r in rows]})
