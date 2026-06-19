@@ -10,7 +10,7 @@ const FEED_FILTERS = [
   ["local_info", "本地信息", "local_info"],
 ];
 
-const SERVICE_FILTERS = ["全部", "餐厅美食", "生活服务", "民宿", "酒店", "景点门票", "翻译手续", "搬家清洁", "认证服务"];
+const SERVICE_FILTERS = ["全部", "餐厅", "生活服务", "景点门票", "翻译手续", "搬家清洁", "认证服务"];
 
 function readStoredUser() {
   const user = localStorage.getItem(USER_STORAGE_KEY) || localStorage.getItem(LEGACY_USER_STORAGE_KEY);

@@ -20,6 +20,23 @@ const TYPES = [
 
 const FIELD_KINDS = ["text", "textarea", "select", "checkbox", "date"];
 
+type DeleteResult = { ok?: boolean; deleted?: boolean; status?: string; message?: string };
+
+function categoryKeyOf(category: KXListingTaxonomyCategory): string {
+  return category.categoryKey || category.category_key || "";
+}
+
+function fieldCategoryKeyOf(field: KXListingTaxonomyField): string {
+  return field.categoryKey || field.category_key || "";
+}
+
+function assertDeleted(result: DeleteResult | void, fallback = "删除失败，请刷新后重试。") {
+  if (!result || typeof result !== "object") return;
+  if (result.ok === false || result.deleted === false) {
+    throw new Error(result.message || fallback);
+  }
+}
+
 export default function AdminListingTaxonomyPage() {
   const { user } = useSession();
   const pushToast = useToasts((s) => s.push);
@@ -79,9 +96,22 @@ export default function AdminListingTaxonomyPage() {
   });
 
   const deleteCategory = useMutation({
-    mutationFn: (id: string) => api.adminDeleteTaxonomyCategory(id),
-    onSuccess: () => {
+    mutationFn: async (category: { id: string; key: string }) => {
+      if (!category.id) throw new Error("分类缺少 ID，无法删除。");
+      const result = await api.adminDeleteTaxonomyCategory(category.id);
+      assertDeleted(result, "分类未删除，请确认后端是否允许删除已被使用的分类。");
+      return result;
+    },
+    onSuccess: (_result, category) => {
       setSelectedCategory("");
+      queryClient.setQueryData<KXListingTaxonomyPayload | undefined>(["admin-listing-taxonomy", type], (current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          categories: current.categories.filter((item) => item.id !== category.id),
+          fields: current.fields.filter((item) => fieldCategoryKeyOf(item) !== category.key),
+        };
+      });
       pushToast({ kind: "success", message: "分类已删除" });
       invalidate();
     },
@@ -119,8 +149,20 @@ export default function AdminListingTaxonomyPage() {
   });
 
   const deleteField = useMutation({
-    mutationFn: (id: string) => api.adminDeleteTaxonomyField(id),
-    onSuccess: () => {
+    mutationFn: async (id: string) => {
+      if (!id) throw new Error("字段缺少 ID，无法删除。");
+      const result = await api.adminDeleteTaxonomyField(id);
+      assertDeleted(result, "字段未删除，请确认后端是否允许删除已被使用的字段。");
+      return result;
+    },
+    onSuccess: (_result, id) => {
+      queryClient.setQueryData<KXListingTaxonomyPayload | undefined>(["admin-listing-taxonomy", type], (current) => {
+        if (!current) return current;
+        return {
+          ...current,
+          fields: current.fields.filter((item) => item.id !== id),
+        };
+      });
       pushToast({ kind: "success", message: "字段已删除" });
       invalidate();
     },
@@ -187,14 +229,14 @@ export default function AdminListingTaxonomyPage() {
                   <CategoryRow
                     key={category.id}
                     category={category}
-                    active={selectedCategory === (category.categoryKey || category.category_key)}
-                    onSelect={() => setSelectedCategory(category.categoryKey || category.category_key)}
+                    active={selectedCategory === categoryKeyOf(category)}
+                    onSelect={() => setSelectedCategory(categoryKeyOf(category))}
                     onSave={(patch) => updateCategory.mutate({ id: category.id, patch })}
                     deleting={deleteCategory.isPending}
                     onDelete={() => {
                       const name = category.label || category.categoryKey || category.category_key || "该分类";
                       if (window.confirm(`确认删除「${name}」？该分类下的字段也会一并删除。`)) {
-                        deleteCategory.mutate(category.id);
+                        deleteCategory.mutate({ id: category.id, key: categoryKeyOf(category) });
                       }
                     }}
                   />
