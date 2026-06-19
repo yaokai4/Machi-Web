@@ -2968,6 +2968,36 @@ MIGRATIONS: list[tuple[int, str, str]] = [
          WHERE role = 'admin';
         """,
     ),
+    (
+        52,
+        "membership plans: App Store Connect production IAP ids",
+        """
+        -- backend: postgres
+        UPDATE membership_plans
+           SET price = CASE WHEN price IN (0, 10) THEN 18 ELSE price END,
+               amount_cents = CASE WHEN amount_cents IN (0, 1000) THEN 1800 ELSE amount_cents END,
+               price_label = CASE WHEN price_label IN ('', '¥10 / 月') THEN '¥18 / 月' ELSE price_label END,
+               ios_iap_product_id = CASE WHEN ios_iap_product_id IN ('', 'machi_verified_monthly_cny_10') THEN 'machi_yuedu_18' ELSE ios_iap_product_id END,
+               apple_product_id = CASE WHEN apple_product_id IN ('', 'machi_verified_monthly_cny_10') THEN 'machi_yuedu_18' ELSE apple_product_id END
+         WHERE plan_key = 'machi_verified_monthly'
+           AND (ios_iap_product_id IN ('', 'machi_verified_monthly_cny_10')
+                OR apple_product_id IN ('', 'machi_verified_monthly_cny_10')
+                OR price_label = '¥10 / 月');
+
+        UPDATE membership_plans
+           SET price = CASE WHEN price IN (0, 98, 138) THEN 198 ELSE price END,
+               amount_cents = CASE WHEN amount_cents IN (0, 9800, 13800) THEN 19800 ELSE amount_cents END,
+               price_label = CASE WHEN price_label IN ('', '¥98 / 年', '¥138 / 年') THEN '¥198 / 年' ELSE price_label END,
+               original_price = CASE WHEN original_price IN (0, 120) THEN 216 ELSE original_price END,
+               discount_label = CASE WHEN discount_label IN ('', '约省 2 个月') THEN '约省 1 个月' ELSE discount_label END,
+               ios_iap_product_id = CASE WHEN ios_iap_product_id IN ('', 'machi_verified_yearly_cny_98') THEN 'machi_1niandu_198' ELSE ios_iap_product_id END,
+               apple_product_id = CASE WHEN apple_product_id IN ('', 'machi_verified_yearly_cny_98') THEN 'machi_1niandu_198' ELSE apple_product_id END
+         WHERE plan_key = 'machi_verified_yearly'
+           AND (ios_iap_product_id IN ('', 'machi_verified_yearly_cny_98')
+                OR apple_product_id IN ('', 'machi_verified_yearly_cny_98')
+                OR price_label IN ('¥98 / 年', '¥138 / 年'));
+        """,
+    ),
 ]
 
 

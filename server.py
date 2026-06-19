@@ -608,13 +608,14 @@ MEMBERSHIP_PLAN_YEARLY_KEY = "machi_verified_yearly"
 MEMBERSHIP_LEGACY_PLAN_KEY = "machi_verified_monthly_cny_10"
 MEMBERSHIP_PLAN_KEY = _env("MEMBERSHIP_PLAN_KEY", MEMBERSHIP_PLAN_MONTHLY_KEY)
 # Seed values only. Operators edit membership_plans from admin after boot.
-MEMBERSHIP_PRICE_CNY = int(_env("MEMBERSHIP_PRICE_CNY", "10"))
+MEMBERSHIP_PRICE_CNY = int(_env("MEMBERSHIP_PRICE_CNY", "18"))
 MEMBERSHIP_PRICE_FEN = MEMBERSHIP_PRICE_CNY * 100
 MEMBERSHIP_CURRENCY = "CNY"
 MEMBERSHIP_BILLING_CYCLE = "monthly"
 # Apple App Store product ids for the same plans. iOS buys through IAP.
-APPLE_IAP_PRODUCT_ID = _env("APPLE_IAP_PRODUCT_ID", "machi_verified_monthly_cny_10")
-APPLE_IAP_PRODUCT_ID_YEARLY = _env("APPLE_IAP_PRODUCT_ID_YEARLY", "machi_verified_yearly_cny_98")
+APPLE_IAP_PRODUCT_ID = _env("APPLE_IAP_PRODUCT_ID", "machi_yuedu_18")
+APPLE_IAP_PRODUCT_ID_YEARLY = _env("APPLE_IAP_PRODUCT_ID_YEARLY", "machi_1niandu_198")
+APPLE_IAP_LEGACY_PRODUCT_IDS = {"machi_verified_monthly_cny_10", "machi_verified_yearly_cny_98"}
 
 # Content types that demand an active verified membership to publish.
 # Enforced server-side (see api_create_post); the client only mirrors it
@@ -665,8 +666,10 @@ ALIPAY_RETURN_URL = _env("ALIPAY_RETURN_URL", "")
 APPLE_IAP_BUNDLE_ID = _env("APPLE_IAP_BUNDLE_ID", "")
 APPLE_IAP_ISSUER_ID = _env("APPLE_IAP_ISSUER_ID", "")
 APPLE_IAP_KEY_ID = _env("APPLE_IAP_KEY_ID", "")
-APPLE_IAP_PRIVATE_KEY = _env("APPLE_IAP_PRIVATE_KEY", "")
+APPLE_IAP_PRIVATE_KEY = _read_secret_file(_env("APPLE_IAP_PRIVATE_KEY", ""), _env("APPLE_IAP_PRIVATE_KEY_PATH", ""))
+APPLE_IAP_SHARED_SECRET = _env("APPLE_IAP_SHARED_SECRET", "")
 APPLE_IAP_ENVIRONMENT = _env("APPLE_IAP_ENVIRONMENT", "Sandbox")
+APPLE_APP_STORE_NOTIFICATION_URL = _env("APPLE_APP_STORE_NOTIFICATION_URL", "https://machicity.com/api/payments/webhook/apple")
 
 # Stripe (card / wallet payments via hosted Checkout). Only the SECRET key
 # + webhook signing secret are needed server-side (hosted Checkout handles
@@ -3768,7 +3771,7 @@ def _membership_plan_seed_rows() -> list[dict[str, Any]]:
             "price": float(MEMBERSHIP_PRICE_CNY),
             "amount_cents": int(MEMBERSHIP_PRICE_FEN),
             "currency": MEMBERSHIP_CURRENCY,
-            "price_label": "¥10 / 月",
+            "price_label": "¥18 / 月",
             "original_price": 0,
             "discount_label": "",
             "stripe_product_id": "",
@@ -3791,12 +3794,12 @@ def _membership_plan_seed_rows() -> list[dict[str, Any]]:
             "description": "一次购买一年，同步获得 Machi 认证会员全部权益。",
             "billing_period": "yearly",
             "interval_count": 1,
-            "price": 98.0,
-            "amount_cents": 9800,
+            "price": 198.0,
+            "amount_cents": 19800,
             "currency": "CNY",
-            "price_label": "¥98 / 年",
-            "original_price": 120.0,
-            "discount_label": "约省 2 个月",
+            "price_label": "¥198 / 年",
+            "original_price": 216.0,
+            "discount_label": "约省 1 个月",
             "stripe_product_id": "",
             "stripe_price_id": "",
             "ios_iap_product_id": APPLE_IAP_PRODUCT_ID_YEARLY,
@@ -3895,6 +3898,45 @@ def ensure_membership_plans(conn: sqlite3.Connection) -> None:
             MEMBERSHIP_PLAN_YEARLY_KEY,
             "包年订阅，同步获得 Machi 认证会员全部权益。",
         ),
+    )
+    # App Store Connect production products were created as:
+    #   monthly: machi_yuedu_18
+    #   yearly:  machi_1niandu_198
+    # Only migrate rows still carrying the old seeded values. If an operator
+    # has already changed pricing/IAP IDs in Admin, leave that work intact.
+    conn.execute(
+        """
+        UPDATE membership_plans
+           SET price = CASE WHEN price IN (0, 10) THEN 18 ELSE price END,
+               amount_cents = CASE WHEN amount_cents IN (0, 1000) THEN 1800 ELSE amount_cents END,
+               price_label = CASE WHEN price_label IN ('', '¥10 / 月') THEN '¥18 / 月' ELSE price_label END,
+               ios_iap_product_id = CASE WHEN ios_iap_product_id IN ('', 'machi_verified_monthly_cny_10') THEN ? ELSE ios_iap_product_id END,
+               apple_product_id = CASE WHEN apple_product_id IN ('', 'machi_verified_monthly_cny_10') THEN ? ELSE apple_product_id END,
+               updated_at = ?
+         WHERE plan_key = ?
+           AND (ios_iap_product_id IN ('', 'machi_verified_monthly_cny_10')
+                OR apple_product_id IN ('', 'machi_verified_monthly_cny_10')
+                OR price_label = '¥10 / 月')
+        """,
+        (APPLE_IAP_PRODUCT_ID, APPLE_IAP_PRODUCT_ID, now, MEMBERSHIP_PLAN_MONTHLY_KEY),
+    )
+    conn.execute(
+        """
+        UPDATE membership_plans
+           SET price = CASE WHEN price IN (0, 98, 138) THEN 198 ELSE price END,
+               amount_cents = CASE WHEN amount_cents IN (0, 9800, 13800) THEN 19800 ELSE amount_cents END,
+               price_label = CASE WHEN price_label IN ('', '¥98 / 年', '¥138 / 年') THEN '¥198 / 年' ELSE price_label END,
+               original_price = CASE WHEN original_price IN (0, 120) THEN 216 ELSE original_price END,
+               discount_label = CASE WHEN discount_label IN ('', '约省 2 个月') THEN '约省 1 个月' ELSE discount_label END,
+               ios_iap_product_id = CASE WHEN ios_iap_product_id IN ('', 'machi_verified_yearly_cny_98') THEN ? ELSE ios_iap_product_id END,
+               apple_product_id = CASE WHEN apple_product_id IN ('', 'machi_verified_yearly_cny_98') THEN ? ELSE apple_product_id END,
+               updated_at = ?
+         WHERE plan_key = ?
+           AND (ios_iap_product_id IN ('', 'machi_verified_yearly_cny_98')
+                OR apple_product_id IN ('', 'machi_verified_yearly_cny_98')
+                OR price_label IN ('¥98 / 年', '¥138 / 年'))
+        """,
+        (APPLE_IAP_PRODUCT_ID_YEARLY, APPLE_IAP_PRODUCT_ID_YEARLY, now, MEMBERSHIP_PLAN_YEARLY_KEY),
     )
 
 
@@ -11072,7 +11114,7 @@ def require_verified_membership(conn: sqlite3.Connection, user_id: str, content_
 
 def activate_or_extend_membership(conn: sqlite3.Connection, user_id: str, plan_key: str,
                                   source: str, periods: int = 1) -> dict[str, Any]:
-    """Open a new membership or extend the live one by `periods` months.
+    """Open a new membership or extend the live one by `periods` plan periods.
     Callers own idempotency — this always adds `periods` when invoked."""
     now = datetime.now(timezone.utc)
     periods = max(1, int(periods or 1))
@@ -11101,6 +11143,77 @@ def activate_or_extend_membership(conn: sqlite3.Connection, user_id: str, plan_k
              source, source, now_iso(), now_iso()),
         )
         record_entitlement_event(conn, user_id, membership_id, "membership_started", source, {"plan_key": plan_key})
+    sync_user_membership_cache(conn, user_id)
+    return get_user_membership_status(conn, user_id)
+
+
+def sync_apple_membership_expiry(conn: sqlite3.Connection, user_id: str, plan_key: str,
+                                 expires_at_iso: str, original_transaction_id: str = "",
+                                 product_id: str = "", event_type: str = "apple_sync",
+                                 minimum_until_iso: str = "") -> dict[str, Any]:
+    """Align membership to Apple's authoritative subscription expiry.
+
+    `mark_order_paid` grants by local plan period so Web/Stripe/Alipay/WeChat
+    share one settlement path. Auto-renewable IAP also carries an exact
+    `expiresDate`; use that exact date afterward so restore/notification flows
+    never accidentally over-extend from "now" when replaying an older
+    transaction.
+    """
+    expiry = _aware(parse_iso(expires_at_iso))
+    if not expiry:
+        return get_user_membership_status(conn, user_id)
+    floor = _aware(parse_iso(minimum_until_iso))
+    target = floor if floor and floor > expiry else expiry
+    now = datetime.now(timezone.utc)
+    plan = get_plan(conn, plan_key)
+    row = _current_membership_row(conn, user_id)
+    # For App Store Server Notifications, events can arrive out of order.
+    # Preserve a newer already-synced expiry unless the caller supplied an
+    # explicit pre-settlement floor (client verify uses that to undo the local
+    # plan-period provisional grant and align to Apple's exact expiresDate).
+    if row and not minimum_until_iso:
+        row_end = _aware(parse_iso(row.get("current_period_end")))
+        if row_end and row_end > target:
+            target = row_end
+    status = "active" if target > now else "expired"
+    membership_id = ""
+    if row:
+        membership_id = row["id"]
+        conn.execute(
+            "UPDATE user_memberships SET status = ?, plan_key = ?, current_period_end = ?, expires_at = ?, "
+            "billing_period = ?, price = ?, currency = ?, provider = 'ios_iap', source = 'ios_iap', "
+            "provider_subscription_id = COALESCE(NULLIF(?, ''), provider_subscription_id), "
+            "provider_price_id = COALESCE(NULLIF(?, ''), provider_price_id), "
+            "expired_at = CASE WHEN ? = 'expired' THEN ? ELSE NULL END, updated_at = ? WHERE id = ?",
+            (
+                status, plan_key, target.isoformat(), target.isoformat(),
+                (plan or {}).get("billing_period") or (plan or {}).get("billing_cycle") or "",
+                plan_price_value(plan) if plan else 0, (plan or {}).get("currency") or "",
+                original_transaction_id or "", product_id or "", status, now_iso(), now_iso(), row["id"],
+            ),
+        )
+    else:
+        membership_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO user_memberships (id, user_id, plan_key, status, started_at, current_period_start, "
+            "current_period_end, expires_at, billing_period, price, currency, provider, source, "
+            "provider_subscription_id, provider_price_id, expired_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ios_iap', 'ios_iap', ?, ?, ?, ?, ?)",
+            (
+                membership_id, user_id, plan_key, status, now.isoformat(), now.isoformat(),
+                target.isoformat(), target.isoformat(),
+                (plan or {}).get("billing_period") or (plan or {}).get("billing_cycle") or "",
+                plan_price_value(plan) if plan else 0, (plan or {}).get("currency") or "",
+                original_transaction_id or "", product_id or "",
+                now_iso() if status == "expired" else None, now_iso(), now_iso(),
+            ),
+        )
+    record_entitlement_event(conn, user_id, membership_id, event_type, "ios_iap", {
+        "plan_key": plan_key,
+        "expires_at": target.isoformat(),
+        "original_transaction_id": original_transaction_id,
+        "product_id": product_id,
+    })
     sync_user_membership_cache(conn, user_id)
     return get_user_membership_status(conn, user_id)
 
@@ -11733,23 +11846,54 @@ def verify_alipay_webhook(form: dict[str, str]) -> bool:
         return False
 
 
+def _b64url_decode(segment: str) -> bytes:
+    return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
+
+
+def decode_apple_jws_payload(signed_payload: str, require_signature: bool | None = None) -> tuple[dict[str, Any] | None, bool]:
+    """Decode an Apple-signed JWS payload. When `require_signature` is true,
+    reject if the ES256 signature cannot be verified with the x5c leaf cert.
+    Returns (payload, signature_valid)."""
+    try:
+        header_b64, payload_b64, sig_b64 = signed_payload.split(".")
+    except ValueError:
+        return None, False
+    try:
+        payload = json.loads(_b64url_decode(payload_b64).decode("utf-8"))
+    except Exception:
+        return None, False
+    sig_ok = _verify_apple_jws_signature(header_b64, payload_b64, sig_b64)
+    if require_signature is True and not sig_ok:
+        return None, False
+    return payload, sig_ok
+
+
+def apple_epoch_ms_to_iso(value: Any) -> str:
+    """Apple StoreKit/App Store Server payload timestamps are epoch millis."""
+    if value in (None, ""):
+        return ""
+    try:
+        return datetime.fromtimestamp(int(value) / 1000, timezone.utc).isoformat()
+    except Exception:
+        parsed = _aware(parse_iso(str(value)))
+        return parsed.isoformat() if parsed else ""
+
+
+def apple_payload_expiry_iso(payload: dict[str, Any] | None) -> str:
+    if not payload:
+        return ""
+    return apple_epoch_ms_to_iso(payload.get("expiresDate") or payload.get("expirationDate"))
+
+
 def verify_apple_transaction(signed_transaction: str, product_id: str = "") -> dict[str, Any] | None:
     """Decode (and, when creds allow, verify) a StoreKit2 signed
     transaction JWS. Returns the decoded payload (transactionId,
     productId, expiresDate, …) or None. The JWS x5c chain is verified
     against Apple's CA when `cryptography` is available; in Sandbox/mock
     the decoded payload is trusted after structural checks."""
-    try:
-        header_b64, payload_b64, sig_b64 = signed_transaction.split(".")
-    except ValueError:
-        return None
-
-    def _b64url(segment: str) -> bytes:
-        return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
-
-    try:
-        payload = json.loads(_b64url(payload_b64).decode("utf-8"))
-    except Exception:
+    decoded = decode_apple_jws_payload(signed_transaction, require_signature=False)
+    payload, signature_valid = decoded
+    if not payload:
         return None
 
     # Structural checks every environment must pass.
@@ -11765,10 +11909,9 @@ def verify_apple_transaction(signed_transaction: str, product_id: str = "") -> d
     is_sandbox = not env.startswith("prod")
     # Production transactions MUST have their signature verified against
     # the Apple CA chain. Sandbox/mock may proceed on the decoded payload.
-    if not is_sandbox and not PAYMENT_MOCK_ENABLED:
-        if not _verify_apple_jws_signature(header_b64, payload_b64, sig_b64):
-            ERR_LOG.warning("apple transaction signature rejected")
-            return None
+    if not is_sandbox and not PAYMENT_MOCK_ENABLED and not signature_valid:
+        ERR_LOG.warning("apple transaction signature rejected")
+        return None
     return payload
 
 
@@ -17634,6 +17777,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_payment_webhook_alipay(conn)
         if path == "/api/payments/webhook/stripe" and method == "POST":
             return self.api_payment_webhook_stripe(conn)
+        if path in ("/api/payments/webhook/apple", "/api/payments/apple/notifications") and method == "POST":
+            return self.api_payment_webhook_apple(conn)
         if path == "/api/payments/apple/verify" and method == "POST":
             return self.api_apple_verify(conn)
         # Dev-only mock settlement. The handler itself refuses unless
@@ -18092,6 +18237,125 @@ class Handler(BaseHTTPRequestHandler):
             record_payment_webhook(conn, "stripe", event_type, event_id, "", "", True)
         self.send_json({"received": True})
 
+    def _apple_notification_user_id(self, conn: sqlite3.Connection, transaction: dict[str, Any]) -> str:
+        """Resolve the Machi user for an App Store Server Notification.
+
+        New purchases include StoreKit's appAccountToken (we pass the Machi
+        user UUID from iOS). Older purchases may not, so fall back to the
+        original transaction id recorded during the client-side verify call.
+        """
+        app_account_token = str(transaction.get("appAccountToken") or "").strip()
+        if app_account_token:
+            row = conn.execute(
+                "SELECT id FROM users WHERE lower(id) = lower(?) LIMIT 1",
+                (app_account_token,),
+            ).fetchone()
+            if row:
+                return row["id"]
+        original_id = str(transaction.get("originalTransactionId") or "").strip()
+        if original_id:
+            membership = conn.execute(
+                "SELECT user_id FROM user_memberships WHERE provider_subscription_id = ? "
+                "ORDER BY updated_at DESC LIMIT 1",
+                (original_id,),
+            ).fetchone()
+            if membership:
+                return membership["user_id"]
+            order = conn.execute(
+                "SELECT user_id FROM payment_orders WHERE payment_provider = 'apple_iap' AND provider_user_id = ? "
+                "ORDER BY paid_at DESC, created_at DESC LIMIT 1",
+                (original_id,),
+            ).fetchone()
+            if order:
+                return order["user_id"]
+        return ""
+
+    def api_payment_webhook_apple(self, conn: sqlite3.Connection) -> None:
+        """App Store Server Notifications v2 callback.
+
+        Configure App Store Connect production URL as:
+          https://machicity.com/api/payments/webhook/apple
+
+        The endpoint records every notification, verifies Apple's JWS in
+        production, and syncs the membership expiry from signedTransactionInfo.
+        """
+        data = self.read_json()
+        signed_payload = (data.get("signedPayload") or data.get("signed_payload") or "").strip()
+        if not signed_payload:
+            return self._webhook_fail("apple_iap", "missing signedPayload")
+        notification, signature_valid = decode_apple_jws_payload(signed_payload, require_signature=PRODUCTION)
+        if not notification:
+            record_payment_webhook(conn, "apple_iap", "invalid", secrets.token_hex(12), "",
+                                   signed_payload[:8000], False)
+            return self._webhook_fail("apple_iap", "notification signature/parse failed")
+
+        apple_data = notification.get("data") or {}
+        bundle_id = str(apple_data.get("bundleId") or "").strip()
+        if APPLE_IAP_BUNDLE_ID and bundle_id and bundle_id != APPLE_IAP_BUNDLE_ID:
+            record_payment_webhook(conn, "apple_iap", str(notification.get("notificationType") or "bundle_mismatch"),
+                                   str(notification.get("notificationUUID") or secrets.token_hex(12)), "",
+                                   json.dumps(notification, ensure_ascii=False)[:8000], signature_valid)
+            return self._webhook_fail("apple_iap", "bundle mismatch")
+
+        signed_tx = str(apple_data.get("signedTransactionInfo") or "").strip()
+        transaction = verify_apple_transaction(signed_tx) if signed_tx else None
+        if not transaction:
+            record_payment_webhook(conn, "apple_iap", str(notification.get("notificationType") or "missing_transaction"),
+                                   str(notification.get("notificationUUID") or secrets.token_hex(12)), "",
+                                   json.dumps(notification, ensure_ascii=False)[:8000], signature_valid)
+            return self._webhook_fail("apple_iap", "transaction verify failed")
+
+        notification_type = str(notification.get("notificationType") or "").strip() or "UNKNOWN"
+        subtype = str(notification.get("subtype") or "").strip()
+        event_type = f"{notification_type}:{subtype}" if subtype else notification_type
+        event_id = str(notification.get("notificationUUID") or transaction.get("transactionId") or secrets.token_hex(12))
+        product_id = str(transaction.get("productId") or "").strip()
+        original_id = str(transaction.get("originalTransactionId") or "").strip()
+        first = record_payment_webhook(
+            conn,
+            "apple_iap",
+            event_type,
+            event_id,
+            original_id or str(transaction.get("transactionId") or ""),
+            json.dumps({"notification": notification, "transaction": transaction}, ensure_ascii=False),
+            signature_valid,
+        )
+        if not first:
+            return self.send_json({"received": True, "duplicate": True})
+
+        user_id = self._apple_notification_user_id(conn, transaction)
+        if not user_id:
+            # 2xx so Apple does not retry forever; the raw notification is
+            # audit-logged above and will become resolvable after the user opens
+            # the app and verifies/restores with appAccountToken.
+            ACCESS_LOG.warning("apple_iap notification without resolvable user event=%s original=%s", event_type, original_id)
+            return self.send_json({"received": True, "processed": False, "reason": "user_not_found"})
+
+        plan = get_plan_by_apple_product(conn, product_id) or get_plan(conn, MEMBERSHIP_PLAN_KEY)
+        plan_key = plan["plan_key"] if plan else MEMBERSHIP_PLAN_KEY
+        expires_at = apple_payload_expiry_iso(transaction)
+        revoked = bool(transaction.get("revocationDate"))
+        terminal_types = {"EXPIRED", "GRACE_PERIOD_EXPIRED", "REFUND", "REVOKE"}
+        if revoked or notification_type in {"REFUND", "REVOKE"}:
+            row = _current_membership_row(conn, user_id)
+            if row and ((not original_id) or row.get("provider_subscription_id") in ("", original_id)):
+                cancel_membership(conn, user_id, immediate=True, source="ios_iap")
+            return self.send_json({"received": True, "processed": True, "status": "revoked"})
+        if notification_type in terminal_types and expires_at:
+            expiry = _aware(parse_iso(expires_at))
+            if expiry and expiry <= datetime.now(timezone.utc):
+                sync_apple_membership_expiry(conn, user_id, plan_key, expires_at, original_id, product_id, event_type)
+                return self.send_json({"received": True, "processed": True, "status": "expired"})
+        if expires_at:
+            status = sync_apple_membership_expiry(conn, user_id, plan_key, expires_at, original_id, product_id, event_type)
+            return self.send_json({
+                "received": True,
+                "processed": True,
+                "membershipActive": status["is_active"],
+                "currentPeriodEnd": status["current_period_end"],
+            })
+        return self.send_json({"received": True, "processed": True})
+
     def api_apple_verify(self, conn: sqlite3.Connection) -> None:
         """Verify a StoreKit2 transaction and open/extend membership. The
         iOS client sends the signed transaction; the server is the only
@@ -18112,6 +18376,11 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("交易验证失败", 400, "verification_failed")
         txn_id = txn_id or str(payload.get("transactionId") or "")
         orig_id = orig_id or str(payload.get("originalTransactionId") or "")
+        app_account_token = str(payload.get("appAccountToken") or "").strip()
+        if app_account_token and app_account_token.lower() != user["id"].lower():
+            raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
+        previous_status = get_user_membership_status(conn, user["id"])
+        previous_until = previous_status.get("current_period_end") or ""
         dedup_key = "apple:" + (txn_id or orig_id or signed[:40])
         existing = conn.execute(
             "SELECT status FROM payment_orders WHERE provider_trade_no = ? AND payment_provider = 'apple_iap'",
@@ -18121,7 +18390,11 @@ class Handler(BaseHTTPRequestHandler):
             order = create_payment_order(conn, user["id"], plan_key, "apple_iap", "ios")
             mark_order_paid(conn, order["order_no"], provider_trade_no=dedup_key,
                             provider_user_id=orig_id, expected_provider="apple_iap",
-                            provider_price_id=product_id)
+                            provider_subscription_id=orig_id, provider_price_id=product_id)
+        expires_at = apple_payload_expiry_iso(payload)
+        if expires_at:
+            sync_apple_membership_expiry(conn, user["id"], plan_key, expires_at, orig_id, product_id,
+                                         "apple_client_verify", minimum_until_iso=previous_until)
         status = get_user_membership_status(conn, user["id"])
         self.send_json({
             "membershipActive": status["is_active"],
@@ -24113,7 +24386,11 @@ class Handler(BaseHTTPRequestHandler):
             serialize_notification(dict(r), {"actor": actor_map.get(r["actor_id"])})
             for r in rows
         ]
-        unread = sum(1 for r in rows if not r["is_read"])
+        unread_row = conn.execute(
+            f"SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND deleted_at IS NULL AND is_read = 0{clause}",
+            params,
+        ).fetchone()
+        unread = int(unread_row["c"] if unread_row else 0)
         self.send_json({"items": items, "unread_count": unread})
 
     def api_mark_notifications(self, conn: sqlite3.Connection) -> None:
@@ -24382,9 +24659,39 @@ class Handler(BaseHTTPRequestHandler):
         hidden_col = "hidden_for_a_at" if row["participant_a"] == user["id"] else "hidden_for_b_at"
         if row[hidden_col]:
             raise APIError("会话已隐藏，请重新发起对话", 404, "conversation_hidden")
+        filters = ["conversation_id = ?", "deleted_at IS NULL"]
+        params: list[Any] = [conv_id]
+        q = str(query.get("q") or query.get("query") or "").strip()
+        if q:
+            like = f"%{q}%"
+            filters.append(
+                """
+                (
+                    content LIKE ?
+                    OR id IN (
+                        SELECT a.message_id
+                          FROM message_attachments a
+                          JOIN uploaded_files f ON f.id = a.uploaded_file_id
+                         WHERE a.deleted_at IS NULL
+                           AND f.deleted_at IS NULL
+                           AND (COALESCE(a.file_name, '') LIKE ? OR COALESCE(f.object_key, '') LIKE ?)
+                    )
+                )
+                """
+            )
+            params.extend([like, like, like])
+        day = str(query.get("date") or query.get("day") or "").strip()
+        if day:
+            try:
+                day_start = datetime.fromisoformat(day[:10]).date().isoformat()
+                day_end = (datetime.fromisoformat(day[:10]).date() + timedelta(days=1)).isoformat()
+                filters.append("created_at >= ? AND created_at < ?")
+                params.extend([day_start, day_end])
+            except ValueError:
+                raise APIError("日期格式无效", 400, "invalid_date")
         rows = list(conn.execute(
-            "SELECT * FROM messages WHERE conversation_id = ? AND deleted_at IS NULL ORDER BY created_at",
-            (conv_id,),
+            f"SELECT * FROM messages WHERE {' AND '.join(filters)} ORDER BY created_at",
+            params,
         ))
         message_ids = [r["id"] for r in rows]
         media_by_msg: dict[str, list[dict[str, Any]]] = {}
@@ -24670,7 +24977,22 @@ class Handler(BaseHTTPRequestHandler):
             "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ?",
             (conv_id, user["id"]),
         )
-        self.send_json({"ok": True})
+        conn.execute(
+            """
+            UPDATE notifications
+               SET is_read = 1
+             WHERE user_id = ?
+               AND type = 'message'
+               AND target_conversation_id = ?
+               AND deleted_at IS NULL
+            """,
+            (user["id"], conv_id),
+        )
+        unread_row = conn.execute(
+            "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND deleted_at IS NULL AND is_read = 0",
+            (user["id"],),
+        ).fetchone()
+        self.send_json({"ok": True, "unread_count": int(unread_row["c"] if unread_row else 0)})
 
     # ---- S3 / unified uploads ----
 
