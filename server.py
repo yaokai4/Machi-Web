@@ -17255,6 +17255,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_explore_posts(conn, query, "hot")
         if path == "/api/explore/topics" and method == "GET":
             return self.api_explore_topics(conn, query)
+        if path in {"/api/discover/hot", "/api/explore/hot-board"} and method == "GET":
+            return self.api_discover_hot(conn, query)
         if path == "/api/topics" and method == "GET":
             return self.api_topics(conn)
         if path.startswith("/api/topics/") and method == "GET":
@@ -23510,6 +23512,105 @@ class Handler(BaseHTTPRequestHandler):
                 ranked.extend(fallback[: max(0, limit - len(ranked))])
                 fallback_used = True
         return ranked[:limit], fallback_used, region_scope
+
+    def api_discover_hot(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Structured local trend board (热榜): ranked TOPICS with an explainable
+        reason, scope (city/metro/national) and time window (2h/24h/7d). Server
+        owns the heat (comment>like, repost/bookmark, recency decay, report
+        downweight via _heat_score_sql) so iOS never hand-rolls a ranking.
+        Cached per scope+window so the heavy aggregate runs at most once / 60s."""
+        scope = (query.get("scope") or "city").strip().lower()
+        if scope not in ("city", "metro", "national"):
+            scope = "city"
+        window = (query.get("window") or query.get("time_window") or "24h").strip().lower()
+        hours_map = {"2h": 2, "24h": 24, "7d": 168}
+        if window not in hours_map:
+            window = "24h"
+        hours = hours_map[window]
+        region_code = (query.get("region_code") or "").strip().lower()
+        country = region_code.split(".")[0] if region_code else ""
+
+        scope_clause = ""
+        scope_params: list[Any] = []
+        if scope == "national" and country:
+            scope_clause = "AND p.country = ?"
+            scope_params.append(country)
+        elif scope == "metro" and region_code:
+            codes = metro_circle_region_codes(region_code) or [region_code]
+            scope_clause = "AND p.region_code IN (%s)" % ",".join("?" * len(codes))
+            scope_params.extend(codes)
+        elif region_code:
+            scope_clause = "AND p.region_code = ?"
+            scope_params.append(region_code)
+
+        cache_key = f"discover:hot:{scope}:{window}:{region_code or country or 'all'}"
+        cached = _cache_get(cache_key)
+        if cached is None:
+            now = datetime.now(timezone.utc)
+            cutoff = (now - timedelta(hours=hours)).isoformat()
+            half = (now - timedelta(hours=hours / 2)).isoformat()
+            heat_sql = _heat_score_sql("p")
+            try:
+                rows = list(conn.execute(
+                    f"""
+                    SELECT t.tag AS tag,
+                           COUNT(DISTINCT p.id) AS related,
+                           CAST(SUM({heat_sql}) AS INTEGER) AS heat,
+                           SUM((SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.deleted_at IS NULL)) AS comments,
+                           SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END) AS recent_new
+                      FROM post_tags t
+                      JOIN posts p ON p.id = t.post_id
+                     WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
+                       AND p.created_at >= ?
+                       {scope_clause}
+                     GROUP BY t.tag
+                     ORDER BY heat DESC
+                     LIMIT 20
+                    """,
+                    [half, cutoff] + scope_params,
+                ))
+            except Exception as exc:
+                ERR_LOG.warning("discover hot degraded error=%s", exc)
+                rows = []
+            scope_label = {"city": "本市", "metro": "都市圈", "national": "全国"}[scope]
+            window_label = {"2h": "2 小时内", "24h": "24 小时内", "7d": "7 天内"}[window]
+            items = []
+            for rank, r in enumerate(rows, 1):
+                row = dict(r)
+                tag = row.get("tag") or ""
+                if not tag:
+                    continue
+                related = int(row.get("related") or 0)
+                heat_v = max(0, int(row.get("heat") or 0))
+                comments = int(row.get("comments") or 0)
+                recent_new = int(row.get("recent_new") or 0)
+                older = max(0, related - recent_new)
+                if recent_new >= 2 and recent_new >= older:
+                    reason = f"新发布 {recent_new} 条"
+                elif comments >= max(1, related):
+                    reason = "评论增长快"
+                else:
+                    reason = f"{window_label} {heat_v} 热度"
+                trend = "up" if recent_new > older else ("down" if older > recent_new else "flat")
+                items.append({
+                    "id": f"topic:{tag}",
+                    "kind": "topic",
+                    "title": f"#{tag}",
+                    "subtitle": f"{related} 条相关 · {scope_label}",
+                    "reason": reason,
+                    "scope": scope,
+                    "scopeLabel": scope_label,
+                    "timeWindow": window,
+                    "rank": rank,
+                    "rankDelta": 0,   # honest: real delta needs ranking snapshots
+                    "trend": trend,
+                    "heatScore": heat_v,
+                    "relatedPosts": related,
+                    "route": {"type": "topic", "id": tag},
+                })
+            cached = items
+            _cache_put(cache_key, cached, ttl_seconds=60)
+        self.send_json({"items": cached, "scope": scope, "timeWindow": window})
 
     def api_explore_posts(self, conn: sqlite3.Connection, query: dict[str, str], kind: str) -> None:
         viewer = self.current_session(conn)
