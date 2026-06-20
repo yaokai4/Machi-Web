@@ -2204,15 +2204,25 @@ export function AdminListingsPage({
   const [type, setType] = useState(initialType);
   const [status, setStatus] = useState(initialStatus);
   const [verificationStatus, setVerificationStatus] = useState(initialVerificationStatus);
+  const [q, setQ] = useState("");
+  const [qInput, setQInput] = useState("");
   const listings = useQuery({
-    queryKey: ["admin-listings", type, status, verificationStatus],
-    queryFn: () => api.adminListings({ type, status, verification_status: verificationStatus }),
+    queryKey: ["admin-listings", type, status, verificationStatus, q],
+    queryFn: () => api.adminListings({ q, type, status, verification_status: verificationStatus }),
   });
   const update = useMutation({
     mutationFn: ({ id, patch }: { id: string; patch: Parameters<typeof api.adminUpdateListing>[1] }) => api.adminUpdateListing(id, patch),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-listings"] });
       pushToast({ kind: "success", message: "审核状态已更新" });
+    },
+    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => api.adminDeleteListing(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-listings"] });
+      pushToast({ kind: "success", message: "已删除" });
     },
     onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
   });
@@ -2224,6 +2234,11 @@ export function AdminListingsPage({
           <select value={type} onChange={(e) => setType(e.target.value)} className="kx-input h-10 w-40"><option value="">全部类型</option><option value="secondhand">二手</option><option value="rental">租房</option><option value="job,hiring">工作</option><option value="job">找工作</option><option value="hiring">招聘</option><option value="local_service">商家与服务</option><option value="discount">商家优惠</option><option value="event">活动</option></select>
           <select value={status} onChange={(e) => setStatus(e.target.value)} className="kx-input h-10 w-44"><option value="">全部状态</option><option value="pending_review">待审核</option><option value="published">已发布</option><option value="hidden">已下架</option><option value="rejected">已拒绝</option></select>
           <select value={verificationStatus} onChange={(e) => setVerificationStatus(e.target.value)} className="kx-input h-10 w-44"><option value="">全部核验</option><option value="unverified">未认证</option><option value="pending">待核验</option><option value="verified">已认证</option><option value="needs_review">需复核</option><option value="rejected">核验拒绝</option></select>
+          <form onSubmit={(e) => { e.preventDefault(); setQ(qInput.trim()); }} className="flex items-center gap-2">
+            <input value={qInput} onChange={(e) => setQInput(e.target.value)} placeholder="搜索标题 / 描述 / 地点" className="kx-input h-10 w-56" />
+            <button type="submit" className="h-10 rounded-full bg-slate-900 px-4 text-xs font-black text-white">搜索</button>
+            {q ? <button type="button" onClick={() => { setQ(""); setQInput(""); }} className="h-10 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-600">清除</button> : null}
+          </form>
         </div>
         <div className="mt-4 overflow-hidden rounded-3xl border border-slate-200 bg-white">
           {listings.isLoading ? <div className="p-4"><SectionLoading title="正在加载审核列表" rows={4} /></div> : null}
@@ -2244,6 +2259,7 @@ export function AdminListingsPage({
                 <button onClick={() => update.mutate({ id: item.id, patch: { status: "rejected", verification_status: "rejected" } })} className="h-9 rounded-full bg-rose-600 px-3 text-xs font-black text-white">拒绝</button>
                 <button onClick={() => update.mutate({ id: item.id, patch: { status: "hidden", verification_status: "needs_review" } })} className="h-9 rounded-full bg-slate-900 px-3 text-xs font-black text-white">下架</button>
                 <button onClick={() => update.mutate({ id: item.id, patch: { is_promoted: true, promotion_weight: 30, promotion_type: item.type === "rental" ? "recommended_rental" : item.type === "job" || item.type === "hiring" ? "urgent_hiring" : "featured" } })} className="h-9 rounded-full bg-blue-600 px-3 text-xs font-black text-white">精选</button>
+                <button onClick={() => { if (window.confirm("确定删除这条信息？删除后会立即从 App 中消失（可在数据库恢复）。")) remove.mutate(item.id); }} disabled={remove.isPending} className="h-9 rounded-full bg-rose-700 px-3 text-xs font-black text-white disabled:opacity-50">删除</button>
               </div>
             </div>
           ))}

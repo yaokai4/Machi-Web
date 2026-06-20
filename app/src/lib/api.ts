@@ -1632,6 +1632,9 @@ export const api = {
     const { listing } = await request<{ listing: KXCityListing }>("PATCH", `/api/admin/listings/${encodeURIComponent(id)}`, patch);
     return listing;
   },
+  async adminDeleteListing(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/admin/listings/${encodeURIComponent(id)}`);
+  },
   async adminListingReports(status = "open"): Promise<Array<Record<string, unknown>>> {
     const { items } = await request<{ items: Array<Record<string, unknown>> }>("GET", `/api/admin/listing-reports?status=${encodeURIComponent(status)}`);
     return items;

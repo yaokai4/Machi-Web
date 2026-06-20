@@ -17734,6 +17734,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_listings(conn, query)
         if path.startswith("/api/admin/listings/") and method == "PATCH":
             return self.api_admin_update_listing(conn, unquote(path.split("/")[4]))
+        if path.startswith("/api/admin/listings/") and method == "DELETE":
+            return self.api_admin_delete_listing(conn, unquote(path.split("/")[4]))
         if path == "/api/admin/listing-reports" and method == "GET":
             return self.api_admin_listing_reports(conn, query)
         if path == "/api/admin/businesses" and method == "GET":
@@ -22195,6 +22197,32 @@ class Handler(BaseHTTPRequestHandler):
         )
         fresh = dict(conn.execute("SELECT * FROM city_listings WHERE id = ?", (listing_id,)).fetchone())
         self.send_json({"listing": fetch_listings_with_extras(conn, [fresh], admin["id"])[0]})
+
+    def api_admin_delete_listing(self, conn: sqlite3.Connection, listing_id: str) -> None:
+        """Soft-delete a city listing (secondhand / rental / job / service /
+        merchant). deleted_at is the canonical "gone" marker every listing
+        query filters on, so the row disappears from the app immediately while
+        staying recoverable. Open reports are resolved and the action is
+        audit-logged."""
+        admin = self.require_admin(conn)
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            raise APIError("信息不存在", 404, "listing_not_found")
+        now = now_iso()
+        conn.execute(
+            "UPDATE city_listings SET deleted_at = ?, status = 'closed', updated_at = ? WHERE id = ?",
+            (now, now, listing_id),
+        )
+        conn.execute(
+            "UPDATE listing_reports SET status = 'resolved', resolved_at = ? WHERE listing_id = ? AND status = 'open'",
+            (now, listing_id),
+        )
+        conn.execute(
+            "INSERT INTO listing_admin_logs (id, admin_id, listing_id, action, metadata, created_at) VALUES (?, ?, ?, 'delete', ?, ?)",
+            (str(uuid.uuid4()), admin["id"], listing_id, json.dumps({"type": row["type"]}, ensure_ascii=False), now),
+        )
+        ACCESS_LOG.warning("admin %s deleted listing %s (%s)", admin["handle"], listing_id, row["type"])
+        self.send_json({"ok": True})
 
     def api_admin_listing_reports(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
