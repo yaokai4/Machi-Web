@@ -61,6 +61,12 @@ export function Footer() {
     if (href === "/") return localePrefix;
     return `${localePrefix}${href}`;
   };
+  const activeSocialChannels = socialChannels
+    .map((social) => ({
+      ...social,
+      href: (siteSettings.data?.[social.key] || "").trim(),
+    }))
+    .filter((social) => /^https?:\/\//i.test(social.href));
 
   return (
     <footer className="bg-white/48 px-5 py-12 shadow-[inset_0_1px_0_rgba(255,255,255,0.62)] backdrop-blur sm:px-6 dark:bg-slate-950/42">
@@ -76,36 +82,24 @@ export function Footer() {
           <p className="mt-6 max-w-sm text-sm leading-6 text-slate-600 dark:text-slate-400">
             <BrandPhrase text={copy.footer.description} />
           </p>
-          <ul className="mt-6 flex flex-wrap gap-2" aria-label="Machi social channels">
-            {socialChannels.map((social) => {
-              const href = (siteSettings.data?.[social.key] || "").trim();
-              const active = /^https?:\/\//i.test(href);
-              return (
-              <li key={social.key}>
-                <a
-                  href={active ? href : "#top"}
-                  target={active ? "_blank" : undefined}
-                  rel={active ? "noopener noreferrer" : undefined}
-                  aria-label={active ? social.label : `${social.label} link not configured`}
-                  aria-disabled={!active}
-                  className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-bold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 ${
-                    active
-                      ? "bg-slate-100 text-slate-700 hover:bg-slate-950 hover:text-white dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white dark:hover:text-slate-950"
-                      : "cursor-default bg-slate-100/70 text-slate-400 dark:bg-white/7 dark:text-slate-500"
-                  }`}
-                >
-                  <SocialBrandIcon
-                    brand={social.brand}
-                    className={`h-6 w-6 shrink-0 shadow-sm transition ${
-                      active ? "opacity-100" : "grayscale opacity-45"
-                    }`}
-                  />
-                  <span>{social.label}</span>
-                </a>
-              </li>
-              );
-            })}
-          </ul>
+          {activeSocialChannels.length > 0 ? (
+            <ul className="mt-6 flex flex-wrap gap-2" aria-label="Machi social channels">
+              {activeSocialChannels.map((social) => (
+                <li key={social.key}>
+                  <a
+                    href={social.href}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={social.label}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 transition hover:bg-slate-950 hover:text-white focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:bg-white/10 dark:text-slate-300 dark:hover:bg-white dark:hover:text-slate-950"
+                  >
+                    <SocialBrandIcon brand={social.brand} className="h-6 w-6 shrink-0 opacity-100 shadow-sm transition" />
+                    <span>{social.label}</span>
+                  </a>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
 
         <div className="grid gap-8 sm:grid-cols-3">

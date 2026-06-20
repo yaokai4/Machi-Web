@@ -54,6 +54,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   const user = detailQuery.data || baseUser;
   const profileRegion = regionFromUser(user);
   const profileRegionLabel = profileRegion ? regionDisplayName(profileRegion, locale) : "";
+  const profileLocalRegionLabel = profileRegionLabel.split(" · ").slice(1).join(" · ") || profileRegionLabel;
 
   const [segment, setSegment] = useState<ProfileSegment>("posts");
   const [reportOpen, setReportOpen] = useState(false);
@@ -265,7 +266,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                 <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-kx-accent/15 bg-kx-accent/[0.07] px-2.5 text-[12px] font-bold text-kx-accent shadow-[0_8px_22px_rgba(17,113,104,0.08)] dark:border-kx-accent/25 dark:bg-kx-accent/15">
                   <MapPin className="w-3.5 h-3.5" />
                   <span aria-hidden="true">{profileRegion.country_emoji}</span>
-                  <span>{profileRegionLabel}</span>
+                  <span>{profileLocalRegionLabel}</span>
                 </span>
               ) : null}
               {user.joined_at ? (
@@ -474,7 +475,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
               <span className="mt-1 inline-flex items-center gap-1.5 font-bold text-kx-text">
                 <MapPin className="w-3.5 h-3.5 text-kx-accent" />
                 <span aria-hidden="true">{profileRegion.country_emoji}</span>
-                <span>{profileRegionLabel}</span>
+                <span>{profileLocalRegionLabel}</span>
               </span>
             </div>
           ) : null}

@@ -301,7 +301,7 @@ function SocialLinksCard() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="inline-flex items-center gap-2 text-base font-bold"><Globe className="h-4 w-4 text-kx-accent" />官网底部 SNS 链接</h2>
-          <p className="mt-1 text-xs text-kx-muted">这些链接会显示在官网页脚，包含小红书与抖音。留空时前台会保留图标但显示为未配置状态。</p>
+          <p className="mt-1 text-xs text-kx-muted">这些链接会显示在官网页脚，包含小红书与抖音。留空时前台不会显示对应图标。</p>
         </div>
         <button type="button" className="kx-button-primary h-9 px-3 text-xs" onClick={save} disabled={busy}>
           <Save className="h-3.5 w-3.5" /> {busy ? "保存中…" : "保存 SNS"}

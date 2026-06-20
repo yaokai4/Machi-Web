@@ -564,7 +564,7 @@ UPLOAD_PURPOSES: dict[str, dict[str, Any]] = {
     "business_verification_file": {"kind": "verification_file", "max": 20 * 1024 * 1024, "count": 10, "private": True},
     "message_attachment": {"kind": "disabled", "max": 0, "count": 0},
     "message_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9, "private": True},
-    "message_video": {"kind": "video", "max": 100 * 1024 * 1024, "count": 1, "private": True},
+    "message_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1, "private": True},
     "message_file": {"kind": "message_file", "max": 20 * 1024 * 1024, "count": 1, "private": True, "disabled": not MESSAGE_FILE_UPLOAD_ENABLED},
     "video_thumbnail": {"kind": "image", "max": 5 * 1024 * 1024, "count": 20},
     "video_processed_file": {"kind": "video", "max": 300 * 1024 * 1024, "count": 10},
