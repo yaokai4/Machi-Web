@@ -23561,13 +23561,17 @@ class Handler(BaseHTTPRequestHandler):
                       FROM post_tags t
                       JOIN posts p ON p.id = t.post_id
                      WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
-                       AND p.created_at >= ?
+                       AND (p.created_at >= ?
+                            OR EXISTS (SELECT 1 FROM comments c2
+                                        WHERE c2.post_id = p.id
+                                          AND c2.deleted_at IS NULL
+                                          AND c2.created_at >= ?))
                        {scope_clause}
                      GROUP BY t.tag
                      ORDER BY heat DESC
                      LIMIT 20
                     """,
-                    [half, cutoff] + scope_params,
+                    [half, cutoff, cutoff] + scope_params,
                 ))
             except Exception as exc:
                 ERR_LOG.warning("discover hot degraded error=%s", exc)
