@@ -9002,6 +9002,21 @@ def serialize_message_attachment(row: dict[str, Any]) -> dict[str, Any]:
     message_id = row.get("message_id") or ""
     attachment_id = row.get("id") or ""
     visibility = row.get("visibility") or "thread_members_only"
+    thumbnail_url = (
+        row.get("thumbnail_url")
+        or row.get("thumbnailUrl")
+        or row.get("thumbnail_cdn_url")
+        or row.get("thumbnail_public_url")
+        or row.get("thumb_url")
+        or row.get("thumbUrl")
+        or ""
+    )
+    poster_url = (
+        row.get("poster_url")
+        or row.get("posterUrl")
+        or (thumbnail_url if attachment_type == "video" else "")
+        or ""
+    )
     payload = {
         "id": attachment_id,
         "message_id": message_id,
@@ -9014,12 +9029,12 @@ def serialize_message_attachment(row: dict[str, Any]) -> dict[str, Any]:
         "url": "",
         "cdnUrl": "",
         "publicUrl": "",
-        "thumb_url": "",
-        "thumbUrl": "",
-        "thumbnailUrl": "",
-        "thumbnail_url": "",
-        "posterUrl": "",
-        "poster_url": "",
+        "thumb_url": thumbnail_url,
+        "thumbUrl": thumbnail_url,
+        "thumbnailUrl": thumbnail_url,
+        "thumbnail_url": thumbnail_url,
+        "posterUrl": poster_url,
+        "poster_url": poster_url,
         "needsSignedUrl": True,
         "viewUrlEndpoint": f"/api/messages/{message_id}/attachments/{attachment_id}/view-url",
         "thumbnail_file_id": row.get("thumbnail_file_id") or "",
@@ -24625,6 +24640,7 @@ class Handler(BaseHTTPRequestHandler):
                 SELECT
                   a.id, a.message_id, a.thread_id, a.uploaded_file_id, a.attachment_type,
                   a.thumbnail_file_id,
+                  COALESCE(NULLIF(tf.cdn_url, ''), NULLIF(tf.public_url, '')) AS thumbnail_url,
                   COALESCE(NULLIF(a.duration_seconds, 0), f.duration, 0) AS duration_seconds,
                   a.file_name,
                   COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
@@ -24633,6 +24649,7 @@ class Handler(BaseHTTPRequestHandler):
                   f.file_type, f.width, f.height, f.object_key
                 FROM message_attachments a
                 JOIN uploaded_files f ON f.id = a.uploaded_file_id
+                LEFT JOIN uploaded_files tf ON tf.id = a.thumbnail_file_id AND tf.deleted_at IS NULL
                 WHERE a.message_id IN ({msg_placeholders})
                   AND a.deleted_at IS NULL
                   AND a.status != 'deleted'
@@ -24837,6 +24854,7 @@ class Handler(BaseHTTPRequestHandler):
                 SELECT
                   a.id, a.message_id, a.thread_id, a.uploaded_file_id, a.attachment_type,
                   a.thumbnail_file_id,
+                  COALESCE(NULLIF(tf.cdn_url, ''), NULLIF(tf.public_url, '')) AS thumbnail_url,
                   COALESCE(NULLIF(a.duration_seconds, 0), f.duration, 0) AS duration_seconds,
                   a.file_name,
                   COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
@@ -24845,6 +24863,7 @@ class Handler(BaseHTTPRequestHandler):
                   f.file_type, f.width, f.height, f.object_key
                 FROM message_attachments a
                 JOIN uploaded_files f ON f.id = a.uploaded_file_id
+                LEFT JOIN uploaded_files tf ON tf.id = a.thumbnail_file_id AND tf.deleted_at IS NULL
                 WHERE a.message_id IN ({placeholders})
                   AND a.deleted_at IS NULL
                   AND a.status != 'deleted'
@@ -24919,6 +24938,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise APIError("附件不属于该会话", 403, "attachment_thread_mismatch")
                 purpose = str(upload.get("purpose") or "")
                 attachment_type = "image" if purpose == "message_image" else "video" if purpose == "message_video" else "file"
+                thumbnail_file_id = str(
+                    metadata.get("thumbnail_file_id")
+                    or metadata.get("thumbnailFileId")
+                    or metadata.get("poster_file_id")
+                    or metadata.get("posterFileId")
+                    or ""
+                ).strip()
                 if attachment_type == "image":
                     image_count += 1
                     if image_count > 9:
@@ -24932,6 +24958,22 @@ class Handler(BaseHTTPRequestHandler):
                     if file_count > 1:
                         raise APIError("每条私信最多发送 1 个附件文件", 400, "message_file_limit")
                 upload["_attachment_type"] = attachment_type
+                if attachment_type == "video" and thumbnail_file_id:
+                    thumbnail_ok = conn.execute(
+                        """
+                        SELECT 1 FROM uploaded_files
+                         WHERE id = ?
+                           AND user_id = ?
+                           AND purpose = 'video_thumbnail'
+                           AND status = 'ready'
+                           AND deleted_at IS NULL
+                         LIMIT 1
+                        """,
+                        (thumbnail_file_id, user["id"]),
+                    ).fetchone()
+                    upload["_thumbnail_file_id"] = thumbnail_file_id if thumbnail_ok else ""
+                else:
+                    upload["_thumbnail_file_id"] = ""
                 attachment_rows.append(upload)
                 continue
             if file_id in submitted_media_ids:
@@ -24961,10 +25003,11 @@ class Handler(BaseHTTPRequestHandler):
                     id, message_id, thread_id, uploaded_file_id, attachment_type, thumbnail_file_id,
                     duration_seconds, file_name, file_size, content_type, visibility, status, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, '', ?, ?, ?, ?, 'thread_members_only', 'ready', ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'thread_members_only', 'ready', ?, ?)
                 """,
                 (
                     attachment_id, message_id, conv_id, upload["id"], upload["_attachment_type"],
+                    upload.get("_thumbnail_file_id") or "",
                     float(upload.get("duration") or 0),
                     Path(upload.get("object_key") or "").name,
                     int(upload.get("file_size") or 0),
@@ -25013,6 +25056,7 @@ class Handler(BaseHTTPRequestHandler):
                 SELECT
                   a.id, a.message_id, a.thread_id, a.uploaded_file_id, a.attachment_type,
                   a.thumbnail_file_id,
+                  COALESCE(NULLIF(tf.cdn_url, ''), NULLIF(tf.public_url, '')) AS thumbnail_url,
                   COALESCE(NULLIF(a.duration_seconds, 0), f.duration, 0) AS duration_seconds,
                   a.file_name,
                   COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
@@ -25021,6 +25065,7 @@ class Handler(BaseHTTPRequestHandler):
                   f.file_type, f.width, f.height, f.object_key
                 FROM message_attachments a
                 JOIN uploaded_files f ON f.id = a.uploaded_file_id
+                LEFT JOIN uploaded_files tf ON tf.id = a.thumbnail_file_id AND tf.deleted_at IS NULL
                 WHERE a.message_id = ?
                   AND a.deleted_at IS NULL
                   AND a.status != 'deleted'
@@ -25355,7 +25400,7 @@ class Handler(BaseHTTPRequestHandler):
                 "thumbnail": upload_thumbnail_url(object_key, content_type, purpose) or cdn_url,
             },
         }
-        if UPLOAD_PURPOSES[purpose].get("kind") == "video" and not is_private:
+        if UPLOAD_PURPOSES[purpose].get("kind") == "video":
             thumbnail_file_id = str(
                 raw_metadata.get("thumbnailFileId")
                 or raw_metadata.get("thumbnail_file_id")
@@ -25378,11 +25423,11 @@ class Handler(BaseHTTPRequestHandler):
                 ).fetchone()
                 if not thumbnail_row:
                     raise APIError("视频封面尚未上传完成，请重新选择视频。", 400, "invalid_video_thumbnail")
+                metadata["thumbnail_file_id"] = thumbnail_file_id
+                metadata["poster_file_id"] = thumbnail_file_id
                 thumbnail_media = uploaded_file_as_media(thumbnail_row)
                 thumbnail_url = media_card_image_url(thumbnail_media)
                 if thumbnail_url:
-                    metadata["thumbnail_file_id"] = thumbnail_file_id
-                    metadata["poster_file_id"] = thumbnail_file_id
                     metadata["thumbnail_url"] = thumbnail_url
                     metadata["poster_url"] = thumbnail_url
                     variants = metadata.get("variants") if isinstance(metadata.get("variants"), dict) else {}
