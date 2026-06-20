@@ -159,6 +159,7 @@ def enqueue(
     content: str = "",
     post_id: str | None = None,
     conversation_id: str | None = None,
+    message_id: str | None = None,
 ) -> None:
     """Queue one push. No-op when APNs isn't configured or the queue is
     saturated — push delivery is best-effort by design."""
@@ -174,6 +175,7 @@ def enqueue(
             "content": (content or "").strip(),
             "post_id": post_id or "",
             "conversation_id": conversation_id or "",
+            "message_id": message_id or "",
         })
     except queue.Full:
         pass
@@ -248,6 +250,8 @@ def _deliver(job: dict[str, Any]) -> None:
         payload["postId"] = job["post_id"]
     if job["conversation_id"]:
         payload["conversationId"] = job["conversation_id"]
+    if job.get("message_id"):
+        payload["messageId"] = job["message_id"]
     blob = json.dumps(payload, ensure_ascii=False)
 
     jwt = _provider_jwt()

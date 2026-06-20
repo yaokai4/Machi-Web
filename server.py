@@ -25229,7 +25229,7 @@ class Handler(BaseHTTPRequestHandler):
         # deduped per conversation, but pushes shouldn't be.
         server_apns.enqueue(peer_id, ntype="message", actor_id=user["id"],
                             content=(content.strip()[:140] if content.strip() else "[附件]"),
-                            conversation_id=conv_id)
+                            conversation_id=conv_id, message_id=message_id)
         # Surface the DM in the recipient's notification feed (bell + the
         # clients' system-banner pipeline). At most ONE unread 'message'
         # row per conversation, so a burst of messages can't flood it.
