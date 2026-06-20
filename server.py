@@ -17192,6 +17192,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_member_resource_download_url(conn, resource_id)
         if path.startswith("/api/listing-inquiries/") and method == "PATCH":
             return self.api_update_listing_inquiry(conn, unquote(path.split("/")[3]))
+        if path.startswith("/api/listing-inquiries/") and method == "DELETE":
+            return self.api_delete_listing_inquiry(conn, unquote(path.split("/")[3]))
         if path.startswith("/api/listings/"):
             parts = path[len("/api/listings/"):].split("/")
             listing_id = unquote(parts[0])
@@ -21895,6 +21897,14 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("无权操作该咨询", 403, "forbidden")
         data = self.read_json()
         status = normalize_listing_inquiry_status(data.get("status"), item.get("status") or "new")
+        if user["id"] == from_id and user["id"] != to_id:
+            # The applicant/customer owns only their side of the lifecycle.
+            # Business-side decisions must be made by the listing owner in the
+            # workbench so users cannot confirm/reject their own applications.
+            if status not in {"withdrawn", "closed", "reported"}:
+                raise APIError("只有发布方可以处理该申请/预约", 403, "inquiry_status_owner_required")
+        if user["id"] == to_id and status == "withdrawn":
+            raise APIError("只有提交方可以撤回", 403, "inquiry_withdraw_sender_required")
         if status == "spam" and user["id"] == from_id:
             raise APIError("只有接收方可以标记骚扰", 403, "forbidden")
         previous_status = normalize_listing_inquiry_status(item.get("status"), "submitted")
@@ -21941,6 +21951,61 @@ class Handler(BaseHTTPRequestHandler):
             HUB.publish(from_id, {"type": "message", "conversation_id": item["conversation_id"]})
             HUB.publish(to_id, {"type": "message", "conversation_id": item["conversation_id"]})
         self.send_json({"inquiry": fetch_listing_inquiries_with_extras(conn, [fresh], user["id"])[0]})
+
+    def api_delete_listing_inquiry(self, conn: sqlite3.Connection, inquiry_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM listing_inquiries WHERE id = ?", (inquiry_id,)).fetchone()
+        if not row:
+            raise APIError("咨询不存在", 404, "inquiry_not_found")
+        item = dict(row)
+        from_id = item.get("from_user_id") or item.get("sender_user_id")
+        to_id = item.get("to_user_id") or item.get("seller_user_id")
+        if user["id"] not in {from_id, to_id}:
+            raise APIError("无权操作该咨询", 403, "forbidden")
+        status = "withdrawn" if user["id"] == from_id and user["id"] != to_id else "closed"
+        previous_status = normalize_listing_inquiry_status(item.get("status"), "submitted")
+        now = now_iso()
+        conn.execute(
+            "UPDATE listing_inquiries SET status = ?, updated_at = ? WHERE id = ?",
+            (status, now, inquiry_id),
+        )
+        if status != previous_status and item.get("conversation_id"):
+            listing = conn.execute(
+                "SELECT title FROM city_listings WHERE id = ?",
+                (item.get("listing_id"),),
+            ).fetchone()
+            title = (listing["title"] if listing else "") or "城市信息"
+            content = f"【Machi 进度更新】\n{title}\n状态：{listing_inquiry_status_message(status)}"
+            message_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO messages (id, conversation_id, sender_id, content, created_at, is_read) VALUES (?, ?, ?, ?, ?, 0)",
+                (message_id, item["conversation_id"], user["id"], content[:1000], now),
+            )
+            conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, item["conversation_id"]))
+            target_user_id = from_id if user["id"] == to_id else to_id
+            if target_user_id:
+                conn.execute(
+                    """
+                    INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, target_conversation_id, content, created_at)
+                    VALUES (?, ?, ?, 'listing_inquiry_status', ?, ?, ?, ?)
+                    """,
+                    (str(uuid.uuid4()), target_user_id, user["id"], item.get("listing_id"), item["conversation_id"], listing_inquiry_status_message(status), now),
+                )
+                server_apns.enqueue(
+                    target_user_id,
+                    ntype="listing_inquiry_status",
+                    actor_id=user["id"],
+                    content=listing_inquiry_status_message(status),
+                    conversation_id=item["conversation_id"],
+                )
+        fresh = dict(conn.execute("SELECT * FROM listing_inquiries WHERE id = ?", (inquiry_id,)).fetchone())
+        if status != previous_status and item.get("conversation_id"):
+            HUB.publish(from_id, {"type": "message", "conversation_id": item["conversation_id"]})
+            HUB.publish(to_id, {"type": "message", "conversation_id": item["conversation_id"]})
+            HUB.publish(from_id, {"type": "notification", "kind": "listing_inquiry_status", "conversation_id": item["conversation_id"]})
+            HUB.publish(to_id, {"type": "notification", "kind": "listing_inquiry_status", "conversation_id": item["conversation_id"]})
+        inquiry = fetch_listing_inquiries_with_extras(conn, [fresh], user["id"])[0]
+        self.send_json({"ok": True, "deleted": True, "inquiry": inquiry})
 
     def api_admin_listings(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         admin = self.require_admin(conn)

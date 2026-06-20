@@ -1133,6 +1133,10 @@ export const api = {
     const { inquiry } = await request<{ inquiry: KXListingInquiry }>("PATCH", `/api/listing-inquiries/${encodeURIComponent(id)}`, patch);
     return inquiry;
   },
+  async deleteListingInquiry(id: string): Promise<KXListingInquiry> {
+    const { inquiry } = await request<{ inquiry: KXListingInquiry }>("DELETE", `/api/listing-inquiries/${encodeURIComponent(id)}`);
+    return inquiry;
+  },
   async myServiceAppointments(): Promise<{ items: KXListingInquiry[]; guide_service_requests: Array<Record<string, unknown>> }> {
     return request("GET", `/api/my/service-appointments`);
   },
