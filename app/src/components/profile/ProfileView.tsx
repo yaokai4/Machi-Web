@@ -53,6 +53,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   });
   const user = detailQuery.data || baseUser;
   const profileRegion = regionFromUser(user);
+  const profileRegionLabel = profileRegion ? regionDisplayName(profileRegion, locale) : "";
 
   const [segment, setSegment] = useState<ProfileSegment>("posts");
   const [reportOpen, setReportOpen] = useState(false);
@@ -63,7 +64,6 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   const [draft, setDraft] = useState({
     display_name: user.display_name,
     bio: user.bio || "",
-    location: user.location || "",
     avatar_color: user.avatar_color || "indigo",
     avatar_url: user.avatar_url || "",
     cover_url: user.cover_url || "",
@@ -84,12 +84,11 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
     setDraft({
       display_name: user.display_name,
       bio: user.bio || "",
-      location: user.location || "",
       avatar_color: user.avatar_color || "indigo",
       avatar_url: user.avatar_url || "",
       cover_url: user.cover_url || "",
     });
-  }, [editOpen, user.display_name, user.bio, user.location, user.avatar_color, user.avatar_url, user.cover_url]);
+  }, [editOpen, user.display_name, user.bio, user.avatar_color, user.avatar_url, user.cover_url]);
 
   const segmentQuery = useQuery({
     queryKey: ["profile-segment", user.id, segment],
@@ -262,8 +261,12 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
             <div className="text-kx-muted text-sm">@{user.handle}</div>
             {user.bio ? <p className="mt-2 text-kx-text text-sm whitespace-pre-wrap break-words">{user.bio}</p> : null}
             <div className="mt-2 flex flex-wrap items-center gap-3 text-xs text-kx-subtle">
-              {user.location ? (
-                <span className="inline-flex items-center gap-1"><MapPin className="w-3.5 h-3.5" /> {user.location}</span>
+              {profileRegion ? (
+                <span className="inline-flex h-7 items-center gap-1.5 rounded-full border border-kx-accent/15 bg-kx-accent/[0.07] px-2.5 text-[12px] font-bold text-kx-accent shadow-[0_8px_22px_rgba(17,113,104,0.08)] dark:border-kx-accent/25 dark:bg-kx-accent/15">
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span aria-hidden="true">{profileRegion.country_emoji}</span>
+                  <span>{profileRegionLabel}</span>
+                </span>
               ) : null}
               {user.joined_at ? (
                 <span className="inline-flex items-center gap-1"><Calendar className="w-3.5 h-3.5" /> 加入于 {fullDateTime(user.joined_at).split(" ")[0]}</span>
@@ -287,7 +290,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                 (/my/features) 是唯一入口,主页只展示身份信息和内容。 */}
             {/* Identity / status badges row. Mirrors iOS ProfileView
                 ProfileRoleBadge strip. */}
-            {showOfficialBadge(user) || (user.role && user.role !== "member") || user.is_merchant || user.merchant_verified || user.creator_badge || profileRegion ? (
+            {showOfficialBadge(user) || (user.role && user.role !== "member") || user.is_merchant || user.merchant_verified || user.creator_badge ? (
               <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px]">
                 {showOfficialBadge(user) ? <OfficialPill /> : null}
                 {user.role && user.role !== "member" ? (
@@ -302,9 +305,6 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
                 ) : null}
                 {user.creator_badge ? (
                   <span className="px-2 h-6 inline-flex items-center rounded-full bg-pink-100 text-pink-700 font-bold dark:bg-pink-500/15 dark:text-pink-300">{user.creator_badge}</span>
-                ) : null}
-                {profileRegion ? (
-                  <span className="px-2 h-6 inline-flex items-center rounded-full bg-slate-100 text-slate-700 font-bold dark:bg-white/10 dark:text-slate-200">{profileRegion.country_emoji} {regionDisplayName(profileRegion, locale)}</span>
                 ) : null}
                 {/* Admin-assigned custom tags — bordered chips. */}
                 {(user.custom_tags || []).map((tag) => (
@@ -468,10 +468,16 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
             <span className="text-sm font-semibold">简介</span>
             <textarea className="kx-textarea mt-1 h-24" value={draft.bio} onChange={(e) => setDraft({ ...draft, bio: e.target.value })} />
           </label>
-          <label className="block">
-            <span className="text-sm font-semibold">所在地</span>
-            <input className="kx-input mt-1" value={draft.location} onChange={(e) => setDraft({ ...draft, location: e.target.value })} />
-          </label>
+          {profileRegion ? (
+            <div className="rounded-kx-md border border-kx-line/80 bg-kx-soft/55 px-3 py-2.5 text-sm text-kx-muted">
+              <span className="block text-xs font-bold text-kx-subtle">自动地区</span>
+              <span className="mt-1 inline-flex items-center gap-1.5 font-bold text-kx-text">
+                <MapPin className="w-3.5 h-3.5 text-kx-accent" />
+                <span aria-hidden="true">{profileRegion.country_emoji}</span>
+                <span>{profileRegionLabel}</span>
+              </span>
+            </div>
+          ) : null}
           <div>
             <span className="text-sm font-semibold">头像颜色</span>
             <div className="flex flex-wrap gap-2 mt-2">
