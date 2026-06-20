@@ -17178,6 +17178,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_listings(conn, next_query)
         if path in {"/api/my/saved-listings", "/api/me/saved-listings", "/api/my/favorites", "/api/me/favorites"} and method == "GET":
             return self.api_my_saved_listings(conn, query)
+        if path in {"/api/my/workbench/summary", "/api/me/workbench/summary"} and method == "GET":
+            return self.api_my_workbench_summary(conn)
         if path in {"/api/my/listing-inquiries", "/api/my/inquiries", "/api/me/listing-inquiries", "/api/me/inquiries"} and method == "GET":
             return self.api_my_listing_inquiries(conn, query)
         if path in {"/api/my/applications", "/api/me/applications"} and method == "GET":
@@ -21593,6 +21595,101 @@ class Handler(BaseHTTPRequestHandler):
                 "success_title": success_title,
                 "successTitle": success_title,
             },
+        })
+
+    def api_my_workbench_summary(self, conn: sqlite3.Connection) -> None:
+        """Lightweight authed aggregate for the iOS 工作台 home — one round trip,
+        all counts from real data, 0 (never null) for empty buckets."""
+        user = self.require_user(conn)
+        uid = user["id"]
+        urow = dict(user)
+
+        def _count(sql: str, params: tuple = ()) -> int:
+            try:
+                row = conn.execute(sql, params).fetchone()
+                return int((row[0] if row else 0) or 0)
+            except Exception:
+                return 0
+
+        # Listings by status + total views — single grouped scan.
+        published = pending = offline = views = 0
+        try:
+            for r in conn.execute(
+                "SELECT status, COUNT(*) AS c, COALESCE(SUM(view_count), 0) AS v "
+                "FROM city_listings WHERE seller_user_id = ? AND deleted_at IS NULL GROUP BY status",
+                (uid,),
+            ):
+                row = dict(r)
+                st = row.get("status") or ""
+                c = int(row.get("c") or 0)
+                views += int(row.get("v") or 0)
+                if st in ("published", "reserved"):
+                    published += c
+                elif st == "pending_review":
+                    pending += c
+                elif st != "draft":
+                    offline += c  # closed / expired / hidden / sold / rented / rejected
+        except Exception:
+            pass
+
+        # Inquiries received (to me), bucketed by type + new status — single scan.
+        to_expr = "COALESCE(NULLIF(to_user_id, ''), seller_user_id)"
+        from_expr = "COALESCE(NULLIF(from_user_id, ''), sender_user_id)"
+        application_types = {"job_apply", "rental_application"}
+        received = new_leads = applications = new_applications = bookings = new_bookings = consults = new_consults = 0
+        try:
+            for r in conn.execute(
+                f"SELECT type AS t, status AS s, COUNT(*) AS c FROM listing_inquiries "
+                f"WHERE {to_expr} = ? GROUP BY type, status",
+                (uid,),
+            ):
+                row = dict(r)
+                t = row.get("t") or ""
+                s = row.get("s") or "new"
+                c = int(row.get("c") or 0)
+                is_new = (s == "new")
+                received += c
+                if is_new:
+                    new_leads += c
+                if t in application_types:
+                    applications += c
+                    new_applications += c if is_new else 0
+                elif t.endswith("_booking") or t == "rental_viewing":
+                    bookings += c
+                    new_bookings += c if is_new else 0
+                else:
+                    consults += c
+                    new_consults += c if is_new else 0
+        except Exception:
+            pass
+
+        sent = _count(f"SELECT COUNT(*) FROM listing_inquiries WHERE {from_expr} = ?", (uid,))
+        orders = _count("SELECT COUNT(*) FROM guide_orders WHERE user_id = ?", (uid,))
+        followers = _count("SELECT COUNT(*) FROM follows WHERE following_id = ?", (uid,))
+        following = _count("SELECT COUNT(*) FROM follows WHERE follower_id = ?", (uid,))
+        posts = _count("SELECT COUNT(*) FROM posts WHERE author_id = ? AND deleted_at IS NULL", (uid,))
+
+        self.send_json({
+            "posts": posts,
+            "followers": followers,
+            "following": following,
+            "publishedListings": published,
+            "pendingReview": pending,
+            "offlineListings": offline,
+            "receivedInquiries": received,
+            "newInquiries": new_consults,
+            "sentInquiries": sent,
+            "applications": applications,
+            "newApplications": new_applications,
+            "bookings": bookings,
+            "newBookings": new_bookings,
+            "consults": consults,
+            "newConsults": new_consults,
+            "orders": orders,
+            "views": views,
+            "newLeads": new_leads,
+            "membershipActive": bool(urow.get("is_verified_member", 0)),
+            "merchantVerified": bool(urow.get("merchant_verified", 0)),
         })
 
     def api_my_listing_inquiries(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
