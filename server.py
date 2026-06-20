@@ -26165,20 +26165,84 @@ class Handler(BaseHTTPRequestHandler):
 
             size = download_path.stat().st_size
             filename = Path(d["object_key"]).name.replace('"', "")
-            self.send_response(200)
-            self.send_header("Content-Type", d["content_type"] or "application/octet-stream")
-            self.send_header("Content-Length", str(size))
+            content_type = d["content_type"] or "application/octet-stream"
+            # Images/video/audio are meant to render inline (an <video> tag or
+            # AVPlayer), not be force-downloaded. Other private files keep the
+            # attachment disposition with a filename.
+            is_inline_media = content_type.startswith(("image/", "video/", "audio/"))
+            disposition = "inline" if is_inline_media else f'attachment; filename="{filename}"'
+
+            # Parse a byte-range request. AVPlayer (and HTML <video>) stream
+            # media by issuing Range requests; without 206 support the player
+            # can't seek or progressively play, so message videos showed a
+            # black frame. We always advertise Accept-Ranges and honor a single
+            # range. (GCM ciphertext can't be seeked, so the object is already
+            # fully decrypted to download_path above — we just serve a slice.)
+            range_header = (self.headers.get("Range") or "").strip()
+            start = 0
+            end = size - 1
+            is_range = False
+            unsatisfiable = False
+            if range_header.startswith("bytes=") and size > 0:
+                spec = range_header[len("bytes="):].split(",")[0].strip()
+                first, sep, last = spec.partition("-")
+                if sep:
+                    try:
+                        if first.strip() == "":
+                            # Suffix range: final N bytes.
+                            suffix = int(last)
+                            if suffix > 0:
+                                start = max(0, size - suffix)
+                                end = size - 1
+                                is_range = True
+                        else:
+                            start = int(first)
+                            end = int(last) if last.strip() else size - 1
+                            if start >= size:
+                                unsatisfiable = True
+                            elif start <= end:
+                                end = min(end, size - 1)
+                                is_range = True
+                    except ValueError:
+                        is_range = False
+
+            if unsatisfiable:
+                self.send_response(416)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Accept-Ranges", "bytes")
+                self.send_header("Content-Length", "0")
+                self._set_cors()
+                self._set_security_headers()
+                self.end_headers()
+                return
+
+            length = (end - start + 1) if is_range else size
+            self.send_response(206 if is_range else 200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(length))
+            self.send_header("Accept-Ranges", "bytes")
+            if is_range:
+                self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
             self.send_header("Cache-Control", "private, no-store")
-            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Content-Disposition", disposition)
             self._set_cors()
             self._set_security_headers()
             self.end_headers()
-            with download_path.open("rb") as source:
-                while True:
-                    chunk = source.read(PRIVATE_MEDIA_CHUNK_SIZE)
-                    if not chunk:
-                        break
-                    self.wfile.write(chunk)
+            try:
+                with download_path.open("rb") as source:
+                    if is_range:
+                        source.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        chunk = source.read(min(PRIVATE_MEDIA_CHUNK_SIZE, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                # The player closed the connection after probing a range — a
+                # normal part of seeking, not an error worth surfacing.
+                pass
         finally:
             if remove_after and download_path is not None:
                 try:
