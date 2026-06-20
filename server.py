@@ -9381,7 +9381,7 @@ LISTING_TAXONOMY_DEFAULTS: dict[str, dict[str, Any]] = {
         ],
     },
     "rental": {
-        "categories": ["单人", "合租", "短租", "整租", "家具家电", "近车站"],
+        "categories": ["单人", "合租", "整租", "家具家电", "近车站"],
         "fields": [
             ("", "layout", "户型", "select", ["1R", "1K", "1DK", "1LDK", "2K", "2LDK", "合租"], True, "1K / 合租"),
             ("", "area_sqm", "面积 m²", "text", [], True, "25"),
@@ -9392,7 +9392,6 @@ LISTING_TAXONOMY_DEFAULTS: dict[str, dict[str, Any]] = {
             ("", "deposit", "押金", "text", [], False, "1 个月 / 无"),
             ("", "key_money", "礼金", "text", [], False, "0 / 1 个月"),
             ("", "management_fee", "管理费", "text", [], False, "3000"),
-            ("", "short_term_allowed", "可短租", "checkbox", [], False, ""),
             ("", "share_allowed", "可合租", "checkbox", [], False, ""),
             ("", "furnished", "家具家电", "checkbox", [], False, ""),
             ("", "pet_allowed", "可宠物", "checkbox", [], False, ""),
@@ -9483,6 +9482,16 @@ LISTING_TAXONOMY_DEFAULTS: dict[str, dict[str, Any]] = {
             ("体检/牙科预约协助", "medical_disclaimer", "医疗免责声明", "textarea", [], False, "仅做预约协助，不提供诊断或治疗建议"),
             ("宠物寄养", "service_target", "服务对象", "text", [], True, "小型犬 / 猫 / 其他宠物"),
             ("家庭协助", "service_target", "服务对象", "text", [], False, "家庭协助 / 临时照看 / 用品租赁"),
+        ],
+    },
+    "discount": {
+        "categories": ["餐饮", "生活", "搬家", "购物", "美容", "限时"],
+        "fields": [
+            ("", "merchant_name", "商家名称", "text", [], True, "Machi Coffee"),
+            ("", "discount_info", "优惠内容", "textarea", [], True, "学生证出示 10% off / 套餐优惠 / 限时福利"),
+            ("", "valid_until", "有效期", "text", [], True, "2026-08-31"),
+            ("", "usage_rules", "使用规则", "textarea", [], False, "是否可叠加、是否预约、适用门店和例外情况"),
+            ("", "merchant_verified", "商家认证", "checkbox", [], False, ""),
         ],
     },
 }
@@ -21204,7 +21213,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_admin_listing_taxonomy(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
         raw_type = (query.get("type") or query.get("listing_type") or "").strip()
-        types = [normalize_listing_type(raw_type)] if raw_type else ["secondhand", "rental", "job", "hiring", "local_service"]
+        types = [normalize_listing_type(raw_type)] if raw_type else ["secondhand", "rental", "job", "hiring", "local_service", "discount"]
         payloads = [listing_taxonomy_payload(conn, t, include_inactive=True) for t in types]
         if raw_type:
             self.send_json({"ok": True, **payloads[0], "data": payloads[0]})

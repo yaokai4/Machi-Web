@@ -199,7 +199,7 @@ const FOOD_CATEGORY_SET = new Set<string>([...FOOD_SECTION_CATEGORIES, ...LEGACY
 
 const CATEGORY_CHIPS: Record<KXListingType, string[]> = {
   secondhand: ["全部", "家具", "家电", "手机数码", "电脑办公", "电子产品", "教材", "书籍教材", "衣物", "生活用品", "母婴儿童", "运动户外", "票券卡券", "搬家出清", "免费送", "求购"],
-  rental: ["全部", "单人", "合租", "短租", "整租", "家具家电", "近车站"],
+  rental: ["全部", "单人", "合租", "整租", "家具家电", "近车站"],
   job: ["全部", "兼职", "全职", "时给", "月给", "无经验可", "留学生可", "签证支持", "周末"],
   hiring: ["全部", "兼职", "全职", "派遣", "实习", "签证支持"],
   local_service: ["全部", ...FOOD_SECTION_CATEGORIES, ...TRAVEL_SECTION_CATEGORIES, ...TRANSFER_SECTION_CATEGORIES, ...LIFE_SECTION_CATEGORIES],
@@ -562,7 +562,7 @@ type AttributeField = {
   options?: FilterOption[];
 };
 
-const TAXONOMY_LISTING_TYPES = new Set<KXListingType>(["secondhand", "rental", "job", "hiring", "local_service"]);
+const TAXONOMY_LISTING_TYPES = new Set<KXListingType>(["secondhand", "rental", "job", "hiring", "local_service", "discount"]);
 
 function taxonomyCategoryKey(item: KXListingTaxonomyCategory): string {
   return cleanListingText(item.category_key || item.categoryKey || item.label);
@@ -4702,7 +4702,7 @@ function titlePlaceholder(type: KXListingType) {
 }
 
 function categoryPlaceholder(type: KXListingType) {
-  if (type === "rental") return "单人 / 合租 / 短租";
+  if (type === "rental") return "单人 / 合租 / 整租";
   if (type === "job" || type === "hiring") return "兼职 / 全职 / 实习";
   if (type === "local_service") return "日本料理 / 景点门票 / 机场接送 / 生活开通";
   if (type === "discount") return "餐饮 / 生活 / 限时";
@@ -5062,7 +5062,6 @@ function listingFormFields(type: KXListingType, category = "", attrs: Record<str
     { key: "management_fee", label: "管理费", placeholder: "3000" },
     { key: "move_in_date", label: "入住时间", required: true, placeholder: "2026-07-01 或 即可入住" },
     { key: "lease_term", label: "租期", placeholder: "2 年 / 3 个月起" },
-    { key: "short_term_allowed", label: "可短租", kind: "checkbox" },
     { key: "share_allowed", label: "可合租", kind: "checkbox" },
     { key: "furnished", label: "家具家电", kind: "checkbox" },
     { key: "pet_allowed", label: "可宠物", kind: "checkbox" },

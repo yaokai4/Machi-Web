@@ -100,7 +100,7 @@ export const CHANNEL_GROUPS: Array<{ title: string; items: ChannelGroupItem[] }>
     title: "交易生活",
     items: [
       { label: "二手市场", subtitle: "闲置、求购、搬家出清", channel: "market", Icon: ShoppingBag },
-      { label: "租房", subtitle: "房源库、合租、短租", channel: "housing", Icon: Home },
+      { label: "租房", subtitle: "房源库、合租、整租", channel: "housing", Icon: Home },
       { label: "商家优惠", subtitle: "折扣、福利和本地优惠", channel: "deals", Icon: Tag },
     ],
   },
@@ -141,7 +141,7 @@ export const CHANNEL_GROUPS: Array<{ title: string; items: ChannelGroupItem[] }>
 
 export const CHANNEL_FILTERS: Partial<Record<ChannelKey, string[]>> = {
   market: ["全部", "家具", "家电", "手机数码", "电脑办公", "电子产品", "教材", "书籍教材", "衣物", "生活用品", "母婴儿童", "运动户外", "票券卡券", "搬家出清", "免费送", "求购"],
-  housing: ["全部", "单人", "合租", "短租", "整租", "家具家电"],
+  housing: ["全部", "单人", "合租", "整租", "家具家电"],
   jobs: ["全部", "兼职", "全职", "日语 N3 可", "留学生可", "签证支持"],
   services: ["全部", "餐厅", "日本料理", "优惠预约", "景点门票", "一日游", "本地向导", "机场接送", "车站接送", "包车", "材料翻译", "市役所陪同", "租房申请协助", "搬家", "退房清洁", "手机卡开通", "生活跑腿", "美容美发"],
   groups: ["全部", "Food meetup", "语言交换", "周末活动", "运动小组", "城市散步"],
@@ -310,10 +310,10 @@ const GROUP_ITEM_COPY: Record<string, Record<ChannelLocale, { label: string; sub
     ja: { label: "フリマ", subtitle: "中古品、探し物、引っ越し処分" },
   },
   租房: {
-    "zh-Hans": { label: "租房", subtitle: "房源库、合租、短租" },
-    "zh-Hant": { label: "租房", subtitle: "房源庫、合租、短租" },
-    en: { label: "Housing", subtitle: "Listings, shares, short stays" },
-    ja: { label: "住まい", subtitle: "物件、シェア、短期滞在" },
+    "zh-Hans": { label: "租房", subtitle: "房源库、合租、整租" },
+    "zh-Hant": { label: "租房", subtitle: "房源庫、合租、整租" },
+    en: { label: "Housing", subtitle: "Listings, shares, entire-place rentals" },
+    ja: { label: "住まい", subtitle: "物件、シェア、一棟賃貸" },
   },
   商家优惠: {
     "zh-Hans": { label: "商家优惠", subtitle: "折扣、福利和本地优惠" },
@@ -478,7 +478,7 @@ export function buildNewsHref(citySlug?: string | null): string {
 export function channelSearchPlaceholder(cityName: string, channel?: ChannelKey) {
   switch (channel) {
     case "housing":
-      return `搜索${cityName}租房、车站、学校、合租、短租...`;
+      return `搜索${cityName}租房、车站、学校、合租、整租...`;
     case "jobs":
       return `搜索${cityName}兼职、全职、招聘、内推...`;
     case "market":
