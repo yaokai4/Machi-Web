@@ -23522,10 +23522,10 @@ class Handler(BaseHTTPRequestHandler):
         scope = (query.get("scope") or "city").strip().lower()
         if scope not in ("city", "metro", "national"):
             scope = "city"
-        window = (query.get("window") or query.get("time_window") or "24h").strip().lower()
-        hours_map = {"2h": 2, "24h": 24, "7d": 168}
+        window = (query.get("window") or query.get("time_window") or "7d").strip().lower()
+        hours_map = {"2h": 2, "24h": 24, "3d": 72, "7d": 168}
         if window not in hours_map:
-            window = "24h"
+            window = "7d"
         hours = hours_map[window]
         region_code = (query.get("region_code") or "").strip().lower()
         country = region_code.split(".")[0] if region_code else ""
@@ -23577,7 +23577,7 @@ class Handler(BaseHTTPRequestHandler):
                 ERR_LOG.warning("discover hot degraded error=%s", exc)
                 rows = []
             scope_label = {"city": "本市", "metro": "都市圈", "national": "全国"}[scope]
-            window_label = {"2h": "2 小时内", "24h": "24 小时内", "7d": "7 天内"}[window]
+            window_label = {"2h": "2 小时内", "24h": "24 小时内", "3d": "3 天内", "7d": "7 天内"}[window]
             items = []
             for rank, r in enumerate(rows, 1):
                 row = dict(r)
