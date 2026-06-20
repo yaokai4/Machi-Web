@@ -207,6 +207,7 @@ CREATE TABLE IF NOT EXISTS settings (
     push_comments INTEGER NOT NULL DEFAULT 1,
     push_follows INTEGER NOT NULL DEFAULT 1,
     push_messages INTEGER NOT NULL DEFAULT 1,
+    push_inquiries INTEGER NOT NULL DEFAULT 1,
     privacy_protect INTEGER NOT NULL DEFAULT 0,
     privacy_allow_dm TEXT NOT NULL DEFAULT 'everyone',
     recommend_following INTEGER NOT NULL DEFAULT 1,
@@ -3037,6 +3038,14 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE drafts ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'dynamic';
         ALTER TABLE drafts ADD COLUMN IF NOT EXISTS attributes TEXT NOT NULL DEFAULT '';
         ALTER TABLE drafts ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        55,
+        "settings: per-type push toggle for listing inquiries/applications/bookings",
+        """
+        -- backend: postgres
+        ALTER TABLE settings ADD COLUMN IF NOT EXISTS push_inquiries INTEGER NOT NULL DEFAULT 1;
         """,
     ),
 ]

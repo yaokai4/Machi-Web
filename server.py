@@ -26580,6 +26580,7 @@ class Handler(BaseHTTPRequestHandler):
         data["push_comments"] = bool(data["push_comments"])
         data["push_follows"] = bool(data["push_follows"])
         data["push_messages"] = bool(data["push_messages"])
+        data["push_inquiries"] = bool(data.get("push_inquiries", 1))
         data["privacy_protect"] = bool(data["privacy_protect"])
         data["recommend_following"] = bool(data["recommend_following"])
         data["recommend_topics"] = bool(data["recommend_topics"])
@@ -26598,6 +26599,7 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         allowed = {
             "language", "appearance", "push_likes", "push_comments", "push_follows", "push_messages",
+            "push_inquiries",
             "privacy_protect", "privacy_allow_dm", "recommend_following", "recommend_topics",
         }
         updates: list[tuple[str, Any]] = []

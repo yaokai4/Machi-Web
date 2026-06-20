@@ -127,6 +127,20 @@ _TYPE_COPY = {
 }
 _SYSTEM_TITLE = ("系统通知", "システム通知", "System notification")
 
+# Maps a notification type → the settings push toggle that gates it. Types not
+# listed (system / repost / bookmark / mention) are always delivered. Missing
+# column / settings row defaults to enabled (opt-out, never opt-in by silence).
+_PREF_COLUMN = {
+    "like": "push_likes",
+    "comment": "push_comments",
+    "reply": "push_comments",
+    "follow": "push_follows",
+    "message": "push_messages",
+    "listing_inquiry": "push_inquiries",
+    "listing_review": "push_inquiries",
+    "listing_review_reply": "push_inquiries",
+}
+
 
 def _lang_index(language: str) -> int:
     lang = (language or "").lower()
@@ -186,10 +200,16 @@ def _deliver(job: dict[str, Any]) -> None:
         ]
         if not tokens:
             return
-        lang_row = conn.execute(
-            "SELECT language FROM settings WHERE user_id = ?", (recipient_id,)
+        settings_row = conn.execute(
+            "SELECT * FROM settings WHERE user_id = ?", (recipient_id,)
         ).fetchone()
-        language = (lang_row["language"] if lang_row else "") or ""
+        sdict = dict(settings_row) if settings_row else {}
+        language = (sdict.get("language") or "")
+        # Respect the recipient's per-type push preference (opt-out). Skip the
+        # whole delivery if this category is turned off.
+        pref_col = _PREF_COLUMN.get(job["ntype"])
+        if pref_col is not None and not bool(sdict.get(pref_col, 1)):
+            return
         actor_name = ""
         if job["actor_id"]:
             actor_row = conn.execute(
