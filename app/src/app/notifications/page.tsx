@@ -120,6 +120,24 @@ export default function NotificationsPage() {
     }
   };
 
+  const notificationTargetHref = (main: KXNotification) => {
+    if (main.target_conversation_id) return `/messages/${main.target_conversation_id}`;
+    if (main.target_post_id) return `/p/${main.target_post_id}`;
+    if (main.actor) return `/u/${main.actor.handle}`;
+    return "";
+  };
+
+  const openNotificationTarget = async (main: KXNotification, unreadIds: string[]) => {
+    await markIds(unreadIds);
+    const href = notificationTargetHref(main);
+    if (href) router.push(href);
+  };
+
+  const openActorProfile = async (actor: NonNullable<KXNotification["actor"]>, unreadIds: string[]) => {
+    await markIds(unreadIds);
+    router.push(`/u/${actor.handle}`);
+  };
+
   return (
     <AppShell>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
@@ -153,7 +171,6 @@ export default function NotificationsPage() {
             const moreCount = group.items.length - 1;
             const unread = group.items.some((i) => !i.is_read);
             const unreadIds = group.items.filter((i) => !i.is_read).map((i) => i.id);
-            const markGroupRead = () => markIds(unreadIds);
             return (
               <li
                 key={group.key}
@@ -161,10 +178,7 @@ export default function NotificationsPage() {
                 onClick={(e) => {
                   // Allow nested links / buttons to take over.
                   if ((e.target as HTMLElement).closest("a, button")) return;
-                  void markGroupRead();
-                  if (main.target_conversation_id) router.push(`/messages/${main.target_conversation_id}`);
-                  else if (main.target_post_id) router.push(`/p/${main.target_post_id}`);
-                  else if (main.actor) router.push(`/u/${main.actor.handle}`);
+                  void openNotificationTarget(main, unreadIds);
                 }}
               >
                 <div className="mt-0.5">
@@ -186,8 +200,9 @@ export default function NotificationsPage() {
                           key={i.id}
                           href={`/u/${i.actor.handle}`}
                           onClick={(e) => {
+                            e.preventDefault();
                             e.stopPropagation();
-                            void markGroupRead();
+                            void openActorProfile(i.actor!, unreadIds);
                           }}
                           className="ring-2 ring-kx-bg rounded-kx-sm hover:scale-110 transition-transform"
                         >
@@ -203,8 +218,9 @@ export default function NotificationsPage() {
                       <Link
                         href={`/u/${main.actor.handle}`}
                         onClick={(e) => {
+                          e.preventDefault();
                           e.stopPropagation();
-                          void markGroupRead();
+                          void openActorProfile(main.actor!, unreadIds);
                         }}
                         className="font-semibold hover:underline"
                       >
@@ -219,8 +235,9 @@ export default function NotificationsPage() {
                       <Link
                         href={`/messages/${main.target_conversation_id}`}
                         onClick={(e) => {
+                          e.preventDefault();
                           e.stopPropagation();
-                          void markGroupRead();
+                          void openNotificationTarget(main, unreadIds);
                         }}
                         className="kx-link ml-1"
                       >
@@ -230,8 +247,9 @@ export default function NotificationsPage() {
                       <Link
                         href={`/p/${main.target_post_id}`}
                         onClick={(e) => {
+                          e.preventDefault();
                           e.stopPropagation();
-                          void markGroupRead();
+                          void openNotificationTarget(main, unreadIds);
                         }}
                         className="kx-link ml-1"
                       >
@@ -248,11 +266,11 @@ export default function NotificationsPage() {
                       className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full border border-kx-accent/20 bg-kx-accentSoft px-2.5 text-xs font-bold text-kx-accent transition hover:border-kx-accent/35 hover:bg-kx-accentSoft/80"
                       onClick={(e) => {
                         e.stopPropagation();
-                        void markGroupRead();
+                        void markIds(unreadIds);
                       }}
                       aria-label="标记为已查看"
                     >
-                      <CheckCheck className="h-3.5 w-3.5" /> 已查看
+                      <CheckCheck className="h-3.5 w-3.5" /> 未查看
                     </button>
                   ) : (
                     <span className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full bg-kx-soft px-2.5 text-xs font-bold text-kx-muted">
