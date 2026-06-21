@@ -779,6 +779,33 @@ export interface KXListingInquiry {
   toUser?: KXUser | null;
 }
 
+// Reservation calendar (no money): bookable slots + reservations.
+export interface KXBookingSlot {
+  id: string;
+  listing_id?: string;
+  start_at?: string;
+  end_at?: string;
+  capacity?: number;
+  booked_count?: number;
+  available?: number;
+  is_full?: boolean;
+  note?: string;
+  status?: string;
+  booked_by_me?: boolean;
+}
+
+export interface KXBooking {
+  id: string;
+  slot_id?: string;
+  listing_id?: string;
+  status?: string;
+  note?: string;
+  start_at?: string;
+  end_at?: string;
+  listing_title?: string;
+  listing_type?: string;
+}
+
 export interface KXListingTaxonomyCategory {
   id: string;
   listing_type: string;

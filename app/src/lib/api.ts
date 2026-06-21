@@ -39,6 +39,8 @@ import type {
   KXListingReviewSummary,
   KXCreateListingPayload,
   KXListingInquiry,
+  KXBookingSlot,
+  KXBooking,
   KXListingTaxonomyCategory,
   KXListingTaxonomyField,
   KXListingTaxonomyPayload,
@@ -1105,6 +1107,34 @@ export const api = {
       { message, contact_value: contactValue || "", details: details || [] },
       { headers: { "Idempotency-Key": idempotencyKey("listing-inquiry") } },
     );
+  },
+  // ---- reservation calendar (no money) ----
+  async listingSlots(id: string): Promise<{ items: KXBookingSlot[]; is_owner?: boolean }> {
+    return request("GET", `/api/listings/${encodeURIComponent(id)}/slots`);
+  },
+  async bookSlot(listingId: string, slotId: string, note?: string): Promise<{ ok: boolean; booking?: KXBooking }> {
+    return request(
+      "POST",
+      `/api/listings/${encodeURIComponent(listingId)}/slots/${encodeURIComponent(slotId)}/book`,
+      { note: note || "" },
+      { headers: { "Idempotency-Key": idempotencyKey("booking") } },
+    );
+  },
+  async createListingSlots(
+    listingId: string,
+    slots: { start_at: string; end_at?: string; capacity?: number; note?: string }[],
+  ): Promise<{ ok: boolean; items: KXBookingSlot[] }> {
+    return request("POST", `/api/listings/${encodeURIComponent(listingId)}/slots`, { slots });
+  },
+  async deleteListingSlot(listingId: string, slotId: string): Promise<void> {
+    await request<void>("DELETE", `/api/listings/${encodeURIComponent(listingId)}/slots/${encodeURIComponent(slotId)}`);
+  },
+  async myReservations(): Promise<KXBooking[]> {
+    const { items } = await request<{ items: KXBooking[] }>("GET", `/api/my/reservations`);
+    return items;
+  },
+  async cancelReservation(bookingId: string): Promise<void> {
+    await request<void>("POST", `/api/reservations/${encodeURIComponent(bookingId)}/cancel`);
   },
   async myListings(type: KXListingType = "secondhand"): Promise<KXCityListing[]> {
     const { items } = await request<{ items: KXCityListing[] }>("GET", `/api/my/listings?type=${encodeURIComponent(type)}`);

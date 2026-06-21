@@ -59,6 +59,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, PremiumEmptyState, SectionLoading, Skeleton } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { ListingBookingSection } from "@/components/listings/ListingBookingSection";
 import { CITY_AREA_GROUPS, getCityBySlug, getDefaultCity } from "@/config/cities";
 import {
   REGION_COUNTRIES,
@@ -1235,6 +1236,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
             <AttributeGrid item={item} />
             <div className="mt-5 whitespace-pre-line text-[15px] leading-7 text-[rgb(var(--kx-living-muted))]">{item.description || "发布者暂未填写详细描述。"}</div>
             <MerchantMenuPackages item={item} />
+            <ListingBookingSection listingId={item.id} listingType={item.type} />
             <SellerBox item={item} />
             <ListingReviewsSection listing={item} />
             <SafetyNotice type={item.type} />
