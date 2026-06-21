@@ -14,16 +14,20 @@ import {
   ArrowLeft,
   Building2,
   Briefcase,
+  ClipboardList,
+  FileText,
   GraduationCap,
   Home,
   Languages,
   Package,
   Plane,
+  PlaneLanding,
+  Signpost,
   BookOpen,
   School,
   type LucideIcon,
 } from "lucide-react";
-import type { GuideCategory, GuideEmptyState, GuideProduct, GuideCompany, GuideGoalEntry, GuideResourceEntry, GuideSchool } from "@/lib/guide";
+import type { GuideCategory, GuideEmptyState, GuideProduct, GuideCompany, GuideGoalEntry, GuideResourceEntry, GuideSchool, GuideJourney } from "@/lib/guide";
 import { GUIDE_PRODUCT_TYPE_LABELS, guideCityLabel } from "@/lib/guide";
 import { formatPrice } from "@/lib/format";
 import { regionAccountPatch, resolveRegion } from "@/lib/regions";
@@ -57,6 +61,68 @@ export const CATEGORY_ROUTE: Record<string, string> = {
 export function categoryHref(key: string): string {
   const slug = CATEGORY_ROUTE[key];
   return slug ? `/guide/${slug}` : `/guide`;
+}
+
+const JOURNEY_ICON_MAP: Record<string, LucideIcon> = {
+  arrival: PlaneLanding,
+  plan: ClipboardList,
+  home: Home,
+  plane: Plane,
+  graduation: GraduationCap,
+  briefcase: Briefcase,
+  language: Languages,
+  document: FileText,
+};
+
+export function journeyIconFor(token?: string): LucideIcon {
+  return JOURNEY_ICON_MAP[String(token || "")] || Signpost;
+}
+
+export function journeyHref(key: string): string {
+  return `/guide/journeys/${encodeURIComponent(key)}`;
+}
+
+/** Situation -> action-path entry card. `done` is the local/known completed count. */
+export function JourneyCard({ journey, done = 0 }: { journey: GuideJourney; done?: number }) {
+  const Icon = journeyIconFor(journey.icon);
+  const total = journey.stepCount ?? 0;
+  const pct = total > 0 ? Math.round((Math.min(done, total) / total) * 100) : 0;
+  const color = journey.color || "#147067";
+  return (
+    <Link
+      href={journeyHref(journey.key)}
+      className="kx-guide-category-card group relative overflow-hidden transition-transform duration-200 hover:-translate-y-0.5"
+    >
+      {/* soft per-journey color wash in the top-right corner */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 opacity-70 transition-opacity duration-200 group-hover:opacity-100"
+        style={{ background: `radial-gradient(135% 95% at 100% 0%, ${color}1f, transparent 55%)` }}
+      />
+      <div className="relative flex items-center justify-between">
+        <span
+          className="grid h-11 w-11 place-items-center rounded-2xl text-white transition-transform duration-200 group-hover:scale-105"
+          style={{ background: `linear-gradient(135deg, ${color}, ${color}cc)`, boxShadow: `0 6px 16px ${color}40` }}
+        >
+          <Icon className="h-5 w-5" />
+        </span>
+        {total > 0 ? (
+          <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">
+            {done > 0 ? `${done}/${total}` : `${total} 步`}
+          </span>
+        ) : null}
+      </div>
+      <div className="relative">
+        <h3 className="text-[15px] font-black text-kx-text group-hover:text-kx-accent">{journey.title}</h3>
+        <p className="mt-0.5 line-clamp-2 text-xs leading-5 text-kx-subtle">{journey.subtitle}</p>
+      </div>
+      {total > 0 && done > 0 ? (
+        <div className="relative mt-auto h-1.5 w-full overflow-hidden rounded-full bg-kx-soft" aria-label={`${pct}%`}>
+          <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: color }} />
+        </div>
+      ) : null}
+    </Link>
+  );
 }
 
 /** Current viewer country for the Japan-only gate. Defaults to jp. */

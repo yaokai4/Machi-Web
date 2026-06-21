@@ -3115,6 +3115,78 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_listing_bookings_owner ON listing_bookings(owner_id, created_at);
         """,
     ),
+    (
+        57,
+        "guide journeys: situation -> action path tables + article freshness fields",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS guide_journeys (
+            id TEXT PRIMARY KEY,
+            journey_key TEXT NOT NULL,
+            country TEXT NOT NULL DEFAULT 'jp',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            title TEXT NOT NULL,
+            subtitle TEXT NOT NULL DEFAULT '',
+            audience TEXT NOT NULL DEFAULT '',
+            icon TEXT NOT NULL DEFAULT '',
+            color TEXT NOT NULL DEFAULT '',
+            hero_title TEXT NOT NULL DEFAULT '',
+            hero_subtitle TEXT NOT NULL DEFAULT '',
+            estimated_days INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(journey_key, country, language)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_journeys_scope ON guide_journeys(country, language, status, sort_order);
+        CREATE TABLE IF NOT EXISTS guide_journey_steps (
+            id TEXT PRIMARY KEY,
+            journey_key TEXT NOT NULL,
+            step_key TEXT NOT NULL,
+            country TEXT NOT NULL DEFAULT 'jp',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            action_label TEXT NOT NULL DEFAULT '',
+            action_type TEXT NOT NULL DEFAULT '',
+            action_target TEXT NOT NULL DEFAULT '',
+            category_key TEXT NOT NULL DEFAULT '',
+            article_slugs TEXT NOT NULL DEFAULT '',
+            product_slugs TEXT NOT NULL DEFAULT '',
+            school_filters TEXT NOT NULL DEFAULT '{}',
+            company_filters TEXT NOT NULL DEFAULT '{}',
+            required INTEGER NOT NULL DEFAULT 1,
+            estimated_minutes INTEGER NOT NULL DEFAULT 0,
+            deadline_hint TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(journey_key, step_key, country, language)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_journey_steps_scope ON guide_journey_steps(journey_key, country, status, sort_order);
+        CREATE TABLE IF NOT EXISTS guide_user_progress (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            journey_key TEXT NOT NULL,
+            step_key TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'in_progress',
+            completed_at TEXT,
+            reminder_at TEXT,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, journey_key, step_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_user_progress_user ON guide_user_progress(user_id, journey_key, updated_at);
+        ALTER TABLE guide_articles ADD COLUMN IF NOT EXISTS source_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_articles ADD COLUMN IF NOT EXISTS source_label TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_articles ADD COLUMN IF NOT EXISTS verified_at TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_articles ADD COLUMN IF NOT EXISTS stale_after_days INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
 ]
 
 

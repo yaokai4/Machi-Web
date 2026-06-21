@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Crown, PackageCheck, Search, Sparkles, X } from "lucide-react";
-import { guide, type GuideArticle } from "@/lib/guide";
+import { guide, type GuideSearchResponse } from "@/lib/guide";
 import {
   GuideShell,
   GuideComingSoon,
@@ -16,10 +16,12 @@ import {
   SchoolCard,
   CompanyCard,
   GoalChip,
-  categoryHref,
+  JourneyCard,
+  journeyHref,
   useGuideCountry,
 } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
+import { useSession } from "@/lib/store";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 
 export default function GuideHomeClient() {
@@ -34,9 +36,10 @@ export default function GuideHomeClient() {
     queryFn: () => guide.home(country, language),
     staleTime: 60_000,
   });
+  // Unified search — same endpoint and grouped scopes the iOS app uses.
   const search = useQuery({
-    queryKey: ["guide", "search", country, language, keyword],
-    queryFn: () => guide.articles({ country, language, keyword, pageSize: 12 }),
+    queryKey: ["guide", "usearch", country, language, keyword],
+    queryFn: () => guide.search(keyword, country, language),
     enabled: keyword.trim().length > 0,
     staleTime: 30_000,
   });
@@ -67,7 +70,6 @@ export default function GuideHomeClient() {
   const hero = data.hero;
   const submitSearch = () => setKeyword(draft.trim());
   const searching = keyword.trim().length > 0;
-  const commerceItems = [...data.featuredProducts, ...data.featuredServices];
 
   return (
     <GuideShell right={<GuideRightRail />}>
@@ -128,24 +130,26 @@ export default function GuideHomeClient() {
 
       <div className="space-y-10 px-4 py-7 sm:px-7">
         {searching ? (
-          <section>
-            <GuideSectionTitle title={`${t("guide_search_results_prefix")} "${keyword}"`} subtitle={`${search.data?.total ?? 0} ${t("guide_search_results_suffix")}`} />
-            {search.isLoading ? (
-              <InlineLoading />
-            ) : (search.data?.items.length ?? 0) === 0 ? (
-              <div className="rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-8 text-center text-sm text-kx-muted">
-                {t("guide_search_empty")}
-              </div>
-            ) : (
-              <div className="grid gap-3 sm:grid-cols-2">
-                {search.data!.items.map((a) => (
-                  <ArticleCard key={a.id} article={a} compact />
-                ))}
-              </div>
-            )}
-          </section>
+          <GuideSearchResults keyword={keyword} result={search.data} isLoading={search.isLoading} />
         ) : (
           <>
+            {/* Situation -> action path: the primary entry, above categories */}
+            {data.journeys?.length ? (
+              <section>
+                <GuideSectionTitle
+                  title="你现在想解决什么？"
+                  subtitle="选一个目标，Machi 把手续、资料、经验和服务整理成可执行步骤"
+                  href="/guide/journeys"
+                  hrefLabel="全部路径"
+                />
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                  {data.journeys.map((j) => (
+                    <JourneyCard key={j.key} journey={j} />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
             {/* Core categories */}
             <section>
               <GuideSectionTitle title={t("guide_core_categories")} subtitle={t("guide_core_categories_subtitle")} />
@@ -181,77 +185,10 @@ export default function GuideHomeClient() {
               </section>
             ) : null}
 
-            {/* Featured guides */}
-            {data.featuredArticles.length ? (
-              <section>
-                <GuideSectionTitle title={t("guide_featured")} subtitle={t("guide_featured_subtitle")} />
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {data.featuredArticles.map((a) => (
-                    <ArticleCard key={a.id} article={a} />
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            {/* Per-zone spotlights */}
-            <CategorySpotlight country={country} language={language} categoryKey="career_japan" title={t("guide_career_title")} subtitle={t("guide_career_subtitle")} />
-            <CategorySpotlight country={country} language={language} categoryKey="study_japan" title={t("guide_study_title")} subtitle={t("guide_study_subtitle")} />
-            <CategorySpotlight country={country} language={language} categoryKey="study_abroad_japan" title={t("guide_abroad_title")} subtitle={t("guide_abroad_subtitle")} />
-            <CategorySpotlight country={country} language={language} categoryKey="jlpt" title={t("guide_jlpt_title")} subtitle={t("guide_jlpt_subtitle")} />
-            <CategorySpotlight country={country} language={language} categoryKey="life_japan" title={t("guide_life_title")} subtitle={t("guide_life_subtitle")} />
-
-            {data.featuredSchools?.length ? (
-              <section>
-                <GuideSectionTitle title={t("guide_schools_title")} subtitle={t("guide_schools_subtitle")} href="/guide/schools" />
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {data.featuredSchools.map((school) => (
-                    <SchoolCard key={school.id} school={school} />
-                  ))}
-                </div>
-                {data.schoolDisclaimer ? (
-                  <p className="mt-2 text-[11px] leading-5 text-kx-muted">{data.schoolDisclaimer}</p>
-                ) : null}
-              </section>
-            ) : null}
-
-            {commerceItems.length ? (
-              <section>
-                <GuideSectionTitle title={t("guide_materials_title")} subtitle={t("guide_materials_subtitle")} href="/guide/services" />
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {commerceItems.slice(0, 6).map((p) => (
-                    <ProductCard key={p.id} product={p} />
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            {/* Companies */}
-            {data.companyHighlights.length ? (
-              <section>
-                <GuideSectionTitle title={t("guide_companies_title")} subtitle={t("guide_companies_subtitle")} href="/guide/companies" />
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {data.companyHighlights.map((c) => (
-                    <CompanyCard key={c.id} company={c} />
-                  ))}
-                </div>
-                {data.companyDisclaimer || data.reviewDisclaimer ? (
-                  <p className="mt-2 text-[11px] leading-5 text-kx-muted">{data.companyDisclaimer || data.reviewDisclaimer}</p>
-                ) : null}
-              </section>
-            ) : null}
-
-            {/* Latest */}
-            {data.latestArticles.length ? (
-              <section>
-                <GuideSectionTitle title={t("guide_latest")} />
-                <div className="grid gap-3 sm:grid-cols-2">
-                  {data.latestArticles.map((a) => (
-                    <ArticleCard key={a.id} article={a} compact />
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
+            {/* Trust: keep only FAQ below the entry points — the featured /
+                per-zone / schools / commerce / companies / latest blocks were
+                all duplicate routes into content the categories + journeys +
+                resource library above already cover. */}
             {/* FAQ */}
             {data.faq.length ? (
               <section>
@@ -272,6 +209,151 @@ export default function GuideHomeClient() {
         )}
       </div>
     </GuideShell>
+  );
+}
+
+function GuideSearchResults({
+  keyword,
+  result,
+  isLoading,
+}: {
+  keyword: string;
+  result?: GuideSearchResponse;
+  isLoading: boolean;
+}) {
+  const { t } = useI18n();
+  const title = `${t("guide_search_results_prefix")} "${keyword}"`;
+  if (isLoading) {
+    return (
+      <section>
+        <GuideSectionTitle title={title} />
+        <InlineLoading />
+      </section>
+    );
+  }
+  const groups = result?.groups ?? {};
+  const total =
+    (groups.journeys?.length ?? 0) +
+    (groups.articles?.length ?? 0) +
+    (groups.schools?.length ?? 0) +
+    (groups.companies?.length ?? 0) +
+    (groups.products?.length ?? 0) +
+    (groups.faq?.length ?? 0);
+  if (total === 0) {
+    return (
+      <section>
+        <GuideSectionTitle title={title} subtitle={`0 ${t("guide_search_results_suffix")}`} />
+        <div className="rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-8 text-center text-sm text-kx-muted">
+          {t("guide_search_empty")}
+        </div>
+      </section>
+    );
+  }
+  return (
+    <div className="space-y-8">
+      <GuideSectionTitle title={title} subtitle={`${total} ${t("guide_search_results_suffix")}`} />
+      {groups.journeys?.length ? (
+        <section>
+          <h3 className="mb-2 text-sm font-black text-kx-text">路径</h3>
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            {groups.journeys.map((j) => (
+              <JourneyCard key={j.key} journey={j} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {groups.articles?.length ? (
+        <section>
+          <h3 className="mb-2 text-sm font-black text-kx-text">指南</h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {groups.articles.map((a) => (
+              <ArticleCard key={a.id} article={a} compact />
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {groups.schools?.length ? (
+        <section>
+          <h3 className="mb-2 text-sm font-black text-kx-text">学校</h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {groups.schools.map((s) => (
+              <SchoolCard key={s.id} school={s} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {groups.companies?.length ? (
+        <section>
+          <h3 className="mb-2 text-sm font-black text-kx-text">公司</h3>
+          <div className="grid gap-3 sm:grid-cols-2">
+            {groups.companies.map((c) => (
+              <CompanyCard key={c.id} company={c} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {groups.products?.length ? (
+        <section>
+          <h3 className="mb-2 text-sm font-black text-kx-text">资料 / 服务</h3>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {groups.products.map((p) => (
+              <ProductCard key={p.id} product={p} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {groups.faq?.length ? (
+        <section>
+          <h3 className="mb-2 text-sm font-black text-kx-text">常见问题</h3>
+          <div className="space-y-2">
+            {groups.faq.map((f) => (
+              <details key={f.id} className="kx-guide-faq group p-4">
+                <summary className="cursor-pointer list-none text-sm font-bold text-kx-text marker:hidden">{f.question}</summary>
+                <p className="mt-2 text-sm leading-7 text-kx-subtle">{f.answer}</p>
+              </details>
+            ))}
+          </div>
+        </section>
+      ) : null}
+    </div>
+  );
+}
+
+function GuideProgressRailCard({ country }: { country: string }) {
+  const progress = useQuery({
+    queryKey: ["guide", "progress"],
+    queryFn: () => guide.progress(),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const journeys = useQuery({
+    queryKey: ["guide", "journeys", country],
+    queryFn: () => guide.journeys(country),
+    staleTime: 60_000,
+  });
+  const summary = progress.data?.summary ?? [];
+  if (summary.length === 0) return null;
+  const titleOf = (key: string) => journeys.data?.journeys.find((j) => j.key === key)?.title || key;
+  return (
+    <section className="kx-card">
+      <h3 className="text-base font-black text-kx-text">我的进度</h3>
+      <ul className="mt-3 space-y-3">
+        {summary.map((s) => (
+          <li key={s.journeyKey}>
+            <Link
+              href={journeyHref(s.journeyKey)}
+              className="flex items-center justify-between text-sm font-semibold text-kx-subtle hover:text-kx-accent"
+            >
+              <span className="truncate">{titleOf(s.journeyKey)}</span>
+              <span className="shrink-0 text-xs text-kx-muted">{s.done}/{s.total}</span>
+            </Link>
+            <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-kx-soft">
+              <div className="h-full rounded-full bg-kx-accent" style={{ width: `${s.percent}%` }} />
+            </div>
+          </li>
+        ))}
+      </ul>
+    </section>
   );
 }
 
@@ -332,44 +414,10 @@ function GuideActionHub({ productCount, serviceCount }: { productCount: number; 
   );
 }
 
-function CategorySpotlight({
-  country,
-  language,
-  categoryKey,
-  title,
-  subtitle,
-}: {
-  country: string;
-  language: string;
-  categoryKey: string;
-  title: string;
-  subtitle: string;
-}) {
-  const q = useQuery({
-    queryKey: ["guide", "spotlight", country, language, categoryKey],
-    queryFn: () => guide.articles({ country, language, categoryKey, pageSize: 3 }),
-    staleTime: 60_000,
-  });
-  const items: GuideArticle[] = q.data?.items ?? [];
-  if (!q.isLoading && items.length === 0) return null;
-  return (
-    <section>
-      <GuideSectionTitle title={title} subtitle={subtitle} href={categoryHref(categoryKey)} />
-      {q.isLoading ? (
-        <InlineLoading />
-      ) : (
-        <div className="grid gap-3 sm:grid-cols-3">
-          {items.map((a) => (
-            <ArticleCard key={a.id} article={a} compact />
-          ))}
-        </div>
-      )}
-    </section>
-  );
-}
-
 function GuideRightRail() {
   const { t } = useI18n();
+  const user = useSession((s) => s.user);
+  const country = useGuideCountry();
   const links = [
     { href: "/guide/career-japan", label: t("guide_career_title") },
     { href: "/guide/study-japan", label: t("guide_study_title") },
@@ -383,6 +431,7 @@ function GuideRightRail() {
   ];
   return (
     <div className="space-y-3">
+      {user ? <GuideProgressRailCard country={country} /> : null}
       <section className="kx-card">
         <div className="inline-flex items-center gap-1.5 rounded-full bg-kx-accentSoft px-2.5 py-1 text-xs font-bold text-kx-accent">
           <Sparkles className="h-3.5 w-3.5" /> {t("guide_badge")}

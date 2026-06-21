@@ -40,6 +40,7 @@ type AdminDetail = { status: string; school?: GuideSchool; company?: GuideCompan
 
 export const GUIDE_ADMIN_LINKS = [
   { href: "/admin/guide/articles", label: "指南文章" },
+  { href: "/admin/guide/journeys", label: "行动路径" },
   { href: "/admin/guide/categories", label: "指南分类" },
   { href: "/admin/guide/tags", label: "标签" },
   { href: "/admin/guide/topics", label: "专题" },

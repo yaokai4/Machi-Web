@@ -3311,6 +3311,12 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "seo_description": "TEXT NOT NULL DEFAULT ''",
         "related_article_slugs": "TEXT NOT NULL DEFAULT ''",
         "related_product_slugs": "TEXT NOT NULL DEFAULT ''",
+        # Trust/freshness: where the info came from and when it was last verified,
+        # so the UI can show "更新于 / 来源" and warn when content goes stale.
+        "source_url": "TEXT NOT NULL DEFAULT ''",
+        "source_label": "TEXT NOT NULL DEFAULT ''",
+        "verified_at": "TEXT NOT NULL DEFAULT ''",
+        "stale_after_days": "INTEGER NOT NULL DEFAULT 0",
     })
     _ensure_columns(conn, "guide_tags", {
         "description": "TEXT NOT NULL DEFAULT ''",
@@ -3357,6 +3363,80 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_home_modules_scope ON guide_home_modules(country, language, status, is_active, sort_order)")
+    # --- Guide Journeys: situation -> ordered action path (checklist/timeline) ---
+    # The piece that turns the Guide from a content directory into a "what do I
+    # do next" action center. A journey is a high-level situation (job hunting,
+    # just arrived, renting...); steps are its ordered tasks. Each step links to
+    # existing articles/products/categories by key, so we never duplicate
+    # content. Per-user completion lives in guide_user_progress. Saves reuse the
+    # generic `interactions` table (kind = 'guide_*_save'), no new saved table.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_journeys (
+            id TEXT PRIMARY KEY,
+            journey_key TEXT NOT NULL,
+            country TEXT NOT NULL DEFAULT 'jp',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            title TEXT NOT NULL,
+            subtitle TEXT NOT NULL DEFAULT '',
+            audience TEXT NOT NULL DEFAULT '',
+            icon TEXT NOT NULL DEFAULT '',
+            color TEXT NOT NULL DEFAULT '',
+            hero_title TEXT NOT NULL DEFAULT '',
+            hero_subtitle TEXT NOT NULL DEFAULT '',
+            estimated_days INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(journey_key, country, language)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_journeys_scope ON guide_journeys(country, language, status, sort_order)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_journey_steps (
+            id TEXT PRIMARY KEY,
+            journey_key TEXT NOT NULL,
+            step_key TEXT NOT NULL,
+            country TEXT NOT NULL DEFAULT 'jp',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            body TEXT NOT NULL DEFAULT '',
+            action_label TEXT NOT NULL DEFAULT '',
+            action_type TEXT NOT NULL DEFAULT '',
+            action_target TEXT NOT NULL DEFAULT '',
+            category_key TEXT NOT NULL DEFAULT '',
+            article_slugs TEXT NOT NULL DEFAULT '',
+            product_slugs TEXT NOT NULL DEFAULT '',
+            school_filters TEXT NOT NULL DEFAULT '{}',
+            company_filters TEXT NOT NULL DEFAULT '{}',
+            required INTEGER NOT NULL DEFAULT 1,
+            estimated_minutes INTEGER NOT NULL DEFAULT 0,
+            deadline_hint TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(journey_key, step_key, country, language)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_journey_steps_scope ON guide_journey_steps(journey_key, country, status, sort_order)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_user_progress (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            journey_key TEXT NOT NULL,
+            step_key TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'in_progress',
+            completed_at TEXT,
+            reminder_at TEXT,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, journey_key, step_key)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_user_progress_user ON guide_user_progress(user_id, journey_key, updated_at)")
     _ensure_columns(conn, "guide_companies", {
         "corporate_number": "TEXT NOT NULL DEFAULT ''",
         "company_name_en": "TEXT NOT NULL DEFAULT ''",
@@ -6285,6 +6365,8 @@ def serialize_guide_article(row: sqlite3.Row | dict[str, Any], include_body: boo
         "relatedArticleSlugs": _guide_split_tags(d.get("related_article_slugs")),
         "relatedProductSlugs": _guide_split_tags(d.get("related_product_slugs")),
         "sortOrder": int(d.get("sort_order") or 0),
+        "sourceUrl": d.get("source_url") or "", "sourceLabel": d.get("source_label") or "",
+        "verifiedAt": d.get("verified_at") or "", "staleAfterDays": int(d.get("stale_after_days") or 0),
         "publishedAt": d.get("published_at"), "updatedAt": d.get("updated_at"),
     }
     if include_body:
@@ -6653,6 +6735,208 @@ def serialize_guide_home_module(row: sqlite3.Row | dict[str, Any]) -> dict[str, 
     }
 
 
+# --- Guide Journey system: situation -> ordered action path -------------------
+# Search scopes surfaced to both clients so iOS and Web search the same set.
+GUIDE_SEARCH_SCOPES: list[dict[str, str]] = [
+    {"key": "all", "label": "全部"},
+    {"key": "articles", "label": "指南"},
+    {"key": "schools", "label": "学校"},
+    {"key": "companies", "label": "公司"},
+    {"key": "products", "label": "资料"},
+    {"key": "faq", "label": "问答"},
+    {"key": "journeys", "label": "路径"},
+]
+# Saved items reuse the generic `interactions` table; itemType -> interaction kind.
+GUIDE_SAVE_KINDS: dict[str, str] = {
+    "article": "guide_article_save",
+    "school": "guide_school_save",
+    "company": "guide_company_save",
+    "product": "guide_product_save",
+    "resource": "guide_product_save",
+    "journey": "guide_journey_save",
+    "step": "guide_step_save",
+}
+GUIDE_SAVE_KIND_TO_TYPE: dict[str, str] = {
+    "guide_article_save": "article", "guide_school_save": "school",
+    "guide_company_save": "company", "guide_product_save": "product",
+    "guide_journey_save": "journey", "guide_step_save": "step",
+}
+GUIDE_PROGRESS_STATUSES = {"not_started", "in_progress", "done", "skipped"}
+
+# Each journey maps to existing guide categories so steps pull real articles by
+# categoryKey without duplicating content. job_hunting (日本就职) is the deepest
+# pilot. Bodies stay concise: the long-form lives in linked articles.
+GUIDE_JOURNEY_SEED: list[dict[str, Any]] = [
+    {
+        "key": "arrival", "title": "刚到日本 7 天", "subtitle": "落地后最关键的一周，把手续一次办顺",
+        "audience": "newcomer", "icon": "arrival", "color": "#0EA5E9",
+        "heroTitle": "落地日本第一周", "heroSubtitle": "住民登录、银行卡、手机、国保，按顺序一步步来，别漏。",
+        "estimatedDays": 7, "sortOrder": 1, "categoryKey": "life_japan",
+        "steps": [
+            {"key": "residence", "title": "住民登录（転入届）", "summary": "到所住市区町村役所办理住民登录，拿到住民票，这是后面所有手续的前提。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 90, "deadlineHint": "入住 14 天内", "actionType": "article"},
+            {"key": "mynumber", "title": "My Number 通知确认", "summary": "确认 My Number（个人番号）通知卡寄送地址，开户、入职、保险都会用到。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 20},
+            {"key": "phone", "title": "办手机卡", "summary": "对比大手与格安 SIM，准备在留卡和住址证明，优先能当天开通的方案。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 60},
+            {"key": "bank", "title": "开银行账户", "summary": "选一家对外国人友好、能尽快下卡的银行；部分银行要求居住满 6 个月，注意替代方案。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 60},
+            {"key": "insurance", "title": "国民健康保险 / 年金", "summary": "在役所同窗口办理国保加入，了解保费计算与减免；学生可申请年金缓纳。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 45},
+            {"key": "utilities", "title": "水电气网与生活规则", "summary": "开通水电燃气网络，了解垃圾分类、噪音与邻里规则，避免一开始就踩坑。", "categoryKey": "life_japan", "required": False, "estimatedMinutes": 90},
+        ],
+    },
+    {
+        "key": "prepare", "title": "准备来日本", "subtitle": "出发前把目的、预算和材料理清楚",
+        "audience": "pre_arrival", "icon": "plan", "color": "#6366F1",
+        "heroTitle": "赴日前的准备清单", "heroSubtitle": "先想清楚为什么来、花多少钱、带什么材料、到了先做什么。",
+        "estimatedDays": 60, "sortOrder": 2, "categoryKey": "life_japan",
+        "steps": [
+            {"key": "goal", "title": "确认目的：升学 / 工作 / 语言学校", "summary": "不同目的对应完全不同的签证和时间线，先定方向再准备材料。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 30},
+            {"key": "budget", "title": "预算清单", "summary": "算清学费/房租/初期费用/生活费与应急金，给自己留 3–6 个月缓冲。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 40},
+            {"key": "visa_docs", "title": "签证材料准备", "summary": "按在留资格准备在留资格认定证明书所需材料，注意有效期与翻译公证。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 120},
+            {"key": "housing_pre", "title": "住宿安排", "summary": "先订短租或学校宿舍，到日后再找正式房源，避免人未到先被初期费用拖住。", "categoryKey": "life_japan", "required": False, "estimatedMinutes": 60},
+            {"key": "first_week", "title": "到达后 7 天计划", "summary": "提前把『刚到日本 7 天』清单看一遍，落地后照着做。", "categoryKey": "life_japan", "required": False, "estimatedMinutes": 20, "actionType": "journey", "actionTarget": "arrival"},
+        ],
+    },
+    {
+        "key": "housing", "title": "租房 / 搬家", "subtitle": "看懂初期费用，避开外国人租房的坑",
+        "audience": "renter", "icon": "home", "color": "#F97316",
+        "heroTitle": "在日本租到合适的房子", "heroSubtitle": "预算、区域、初期费用、保证会社、看房、契约、搬家——一条龙走完。",
+        "estimatedDays": 30, "sortOrder": 3, "categoryKey": "life_japan",
+        "steps": [
+            {"key": "budget_rent", "title": "确定预算与区域", "summary": "按通勤时间和月收入的 1/3 反推房租上限，圈定 2–3 个候选区域。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 40},
+            {"key": "initial_cost", "title": "看懂初期费用", "summary": "礼金、敷金、保证料、火灾保险、仲介手续费——初期费用常达月租的 4–6 倍。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 30},
+            {"key": "guarantor", "title": "保证人 / 保证会社", "summary": "外国人多走保证会社审查，准备在留卡、收入证明、紧急联系人。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 45},
+            {"key": "viewing", "title": "看房与申込", "summary": "现场确认朝向、隔音、手机信号、周边；满意就提交入居申込书。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 120},
+            {"key": "contract", "title": "签契约", "summary": "核对重要事项说明书、退去清算与更新料条款，再签字付款。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 90},
+            {"key": "moving", "title": "搬家与水电网", "summary": "预约搬家、办理住址变更、开通水电燃气网络，更新各账户地址。", "categoryKey": "life_japan", "required": False, "estimatedMinutes": 120},
+        ],
+    },
+    {
+        "key": "language_school", "title": "语言学校 / 留学", "subtitle": "择校、费用、签证与升学衔接",
+        "audience": "language_student", "icon": "plane", "color": "#EC4899",
+        "heroTitle": "选对语言学校", "heroSubtitle": "从择校维度到签证流程，再到打工与升学衔接，一次看清。",
+        "estimatedDays": 120, "sortOrder": 4, "categoryKey": "study_abroad_japan",
+        "steps": [
+            {"key": "criteria", "title": "选校维度", "summary": "升学率、师资、地区、是否有升学指导，比单看价格更重要。", "categoryKey": "study_abroad_japan", "required": True, "estimatedMinutes": 40},
+            {"key": "cost_compare", "title": "费用比较", "summary": "对比学费、选考料、教材费与所在地生活成本，做总成本预算。", "categoryKey": "study_abroad_japan", "required": True, "estimatedMinutes": 30},
+            {"key": "intake", "title": "入学时间与名额", "summary": "1/4/7/10 月生名额与截止不同，越早申请越有利。", "categoryKey": "study_abroad_japan", "required": True, "estimatedMinutes": 20},
+            {"key": "documents", "title": "材料准备", "summary": "毕业证明、成绩、经费支付能力证明，注意翻译与公证要求。", "categoryKey": "study_abroad_japan", "required": True, "estimatedMinutes": 120},
+            {"key": "visa_flow", "title": "签证流程", "summary": "学校代申请在留资格认定证明书后，再到使馆办留学签证。", "categoryKey": "study_abroad_japan", "required": True, "estimatedMinutes": 60},
+            {"key": "next_step", "title": "打工与升学衔接", "summary": "了解资格外活动许可（每周 28 小时）与下一步升学/就职路径。", "categoryKey": "study_abroad_japan", "required": False, "estimatedMinutes": 30},
+        ],
+    },
+    {
+        "key": "grad_school", "title": "大学院 / 升学", "subtitle": "研究计划书、联系教授到出愿面试",
+        "audience": "grad_applicant", "icon": "graduation", "color": "#14B8A6",
+        "heroTitle": "考日本大学院", "heroSubtitle": "选校、时间线、语言成绩、研究计划书、联系教授、出愿、面试。",
+        "estimatedDays": 240, "sortOrder": 5, "categoryKey": "study_japan",
+        "steps": [
+            {"key": "school_type", "title": "选择学校与专业", "summary": "确定研究方向，圈定目标大学院与可能的指导教授。", "categoryKey": "study_japan", "required": True, "estimatedMinutes": 60, "actionType": "school"},
+            {"key": "timeline", "title": "时间线规划", "summary": "倒推出愿与考试时间，安排语言成绩、研究计划书和教授联系节奏。", "categoryKey": "study_japan", "required": True, "estimatedMinutes": 40},
+            {"key": "language_score", "title": "JLPT / EJU / 英语成绩", "summary": "确认目标专业要求的日语与英语（托福/雅思）分数并安排考试。", "categoryKey": "study_japan", "required": True, "estimatedMinutes": 30, "actionType": "journey", "actionTarget": "jlpt"},
+            {"key": "research_plan", "title": "研究计划书 / 志望理由书", "summary": "最关键材料：问题意识、先行研究、研究方法与可行性，建议多轮修改。", "categoryKey": "study_japan", "required": True, "estimatedMinutes": 240, "actionType": "product"},
+            {"key": "contact_prof", "title": "联系教授", "summary": "邮件附研究计划书与简历，礼貌、具体、说明为何选这位教授。", "categoryKey": "study_japan", "required": True, "estimatedMinutes": 90},
+            {"key": "application", "title": "出愿材料", "summary": "成绩单、毕业证明、推荐信、计划书，注意各校窗口与截止。", "categoryKey": "study_japan", "required": True, "estimatedMinutes": 120},
+            {"key": "interview", "title": "面试准备", "summary": "围绕研究计划书准备问答，练习用日语清楚说明研究动机与方法。", "categoryKey": "study_japan", "required": False, "estimatedMinutes": 120},
+        ],
+    },
+    {
+        "key": "job_hunting", "title": "日本就职", "subtitle": "从自我分析到内定与签证变更",
+        "audience": "job_seeker", "icon": "briefcase", "color": "#147067",
+        "heroTitle": "在日本找到工作", "heroSubtitle": "就活时间线、履历书与职务经歴书、SPI、公司研究、面试、内定到签证变更——一步步带你走完。",
+        "estimatedDays": 180, "sortOrder": 6, "categoryKey": "career_japan",
+        "steps": [
+            {"key": "timeline", "title": "了解日本求职时间线", "summary": "新卒就活通常提前一年启动；中途采用全年招聘。先定位自己属于哪条线。", "categoryKey": "career_japan", "required": True, "estimatedMinutes": 30},
+            {"key": "self_analysis", "title": "自我分析与定位", "summary": "梳理经历、强项与求める条件，定方向再投递，避免海投低效。", "categoryKey": "career_japan", "required": True, "estimatedMinutes": 90},
+            {"key": "resume", "title": "履历书 / 职务经歴书", "summary": "按日式格式写履历书与职务经歴书，志望动机要对每家公司定制。", "categoryKey": "career_japan", "required": True, "estimatedMinutes": 180, "actionType": "product", "deadlineHint": "投递前完成"},
+            {"key": "spi", "title": "SPI / 适性检查", "summary": "提前刷言語・非言語与性格测试，很多公司一关筛人就靠它。", "categoryKey": "career_japan", "required": False, "estimatedMinutes": 120},
+            {"key": "company_research", "title": "公司研究与投递", "summary": "锁定支持签证、接受外国人的公司，结合岗位来源与真实评价投递。", "categoryKey": "career_japan", "required": True, "estimatedMinutes": 120, "actionType": "company"},
+            {"key": "interview", "title": "面试准备", "summary": "准备自己PR、志望动机、逆质问，演练一次面与最终面常见问题。", "categoryKey": "career_japan", "required": True, "estimatedMinutes": 180, "actionType": "company"},
+            {"key": "naitei", "title": "内定与签证变更", "summary": "拿到内定后办理在留资格变更（如技人国），确认入职前手续与时间。", "categoryKey": "career_japan", "required": True, "estimatedMinutes": 90, "deadlineHint": "入职前 1–2 个月"},
+        ],
+    },
+    {
+        "key": "jlpt", "title": "JLPT / EJU 备考", "subtitle": "定级、周期、教材、模考到报名",
+        "audience": "exam_taker", "icon": "language", "color": "#0EA5E9",
+        "heroTitle": "搞定日语考试", "heroSubtitle": "定目标等级、排备考周期、选教材、模考、报名，再到考后下一步。",
+        "estimatedDays": 90, "sortOrder": 7, "categoryKey": "jlpt",
+        "steps": [
+            {"key": "target", "title": "确定目标等级", "summary": "按升学/就职需要确定 N2/N1 或 EJU 目标分，再倒排计划。", "categoryKey": "jlpt", "required": True, "estimatedMinutes": 20},
+            {"key": "plan", "title": "备考周期规划", "summary": "把词汇、文法、读解、听解拆成每周任务，给自己留模考与复盘时间。", "categoryKey": "jlpt", "required": True, "estimatedMinutes": 40},
+            {"key": "materials", "title": "教材选择", "summary": "选一套主线教材 + 题集，避免贪多；配合错题本复盘。", "categoryKey": "jlpt", "required": True, "estimatedMinutes": 30, "actionType": "product"},
+            {"key": "mock", "title": "模考", "summary": "每 2–3 周做一次限时模考，按真实节奏训练听力与时间分配。", "categoryKey": "jlpt", "required": False, "estimatedMinutes": 180},
+            {"key": "register", "title": "报名", "summary": "JLPT 每年 7/12 月，注意报名窗口与考点名额，提前抢位。", "categoryKey": "jlpt", "required": True, "estimatedMinutes": 30, "deadlineHint": "报名窗口有限"},
+            {"key": "after", "title": "考后下一步", "summary": "根据成绩衔接升学或就职路径，把证书用到申请材料里。", "categoryKey": "jlpt", "required": False, "estimatedMinutes": 20},
+        ],
+    },
+    {
+        "key": "visa", "title": "签证 / 手续", "subtitle": "在留更新、变更与打工限制",
+        "audience": "resident", "icon": "document", "color": "#6366F1",
+        "heroTitle": "管好你的在留资格", "heroSubtitle": "在留期限、更新与变更材料、打工限制、资格外活动与常见风险。",
+        "estimatedDays": 30, "sortOrder": 8, "categoryKey": "life_japan",
+        "steps": [
+            {"key": "check_period", "title": "确认在留期限", "summary": "在到期前 3 个月开始准备更新，别拖到最后一周。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 15, "deadlineHint": "到期前 3 个月"},
+            {"key": "renew_docs", "title": "更新 / 变更材料", "summary": "按在留资格准备申请书、在职/在学证明、纳税与收入材料。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 120},
+            {"key": "part_time", "title": "打工限制", "summary": "留学生每周 28 小时上限，长假期可放宽，超时影响续签。", "categoryKey": "life_japan", "required": False, "estimatedMinutes": 20},
+            {"key": "extra_activity", "title": "资格外活动许可", "summary": "留学生打工前需申请资格外活动许可，确认范围与时长。", "categoryKey": "life_japan", "required": False, "estimatedMinutes": 30},
+            {"key": "risks", "title": "常见风险与官方确认", "summary": "了解超时打工、未申报住址变更等常见风险；最终以入管官方信息为准。", "categoryKey": "life_japan", "required": True, "estimatedMinutes": 20},
+        ],
+    },
+]
+
+
+def serialize_guide_journey(row: sqlite3.Row | dict[str, Any], step_count: int | None = None) -> dict[str, Any]:
+    d = dict(row)
+    out = {
+        "id": d.get("id"), "key": d.get("journey_key") or "",
+        "country": d.get("country") or "jp", "language": d.get("language") or "zh-CN",
+        "title": d.get("title") or "", "subtitle": d.get("subtitle") or "",
+        "audience": d.get("audience") or "", "icon": d.get("icon") or "",
+        "color": d.get("color") or "", "heroTitle": d.get("hero_title") or "",
+        "heroSubtitle": d.get("hero_subtitle") or "",
+        "estimatedDays": int(d.get("estimated_days") or 0),
+        "sortOrder": int(d.get("sort_order") or 0),
+        "status": d.get("status") or "published",
+        "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+    }
+    if step_count is not None:
+        out["stepCount"] = int(step_count)
+    return out
+
+
+def serialize_guide_journey_step(row: sqlite3.Row | dict[str, Any], include_body: bool = False,
+                                 related: dict[str, Any] | None = None) -> dict[str, Any]:
+    d = dict(row)
+    out = {
+        "id": d.get("id"), "journeyKey": d.get("journey_key") or "",
+        "stepKey": d.get("step_key") or "", "title": d.get("title") or "",
+        "summary": d.get("summary") or "",
+        "actionLabel": d.get("action_label") or "", "actionType": d.get("action_type") or "",
+        "actionTarget": d.get("action_target") or "",
+        "categoryKey": d.get("category_key") or "",
+        "articleSlugs": _guide_split_tags(d.get("article_slugs")),
+        "productSlugs": _guide_split_tags(d.get("product_slugs")),
+        "required": bool(d.get("required", 1)),
+        "estimatedMinutes": int(d.get("estimated_minutes") or 0),
+        "deadlineHint": d.get("deadline_hint") or "",
+        "sortOrder": int(d.get("sort_order") or 0),
+        "status": d.get("status") or "published",
+    }
+    if include_body:
+        out["body"] = d.get("body") or ""
+    if related is not None:
+        out["relatedArticles"] = related.get("articles", [])
+        out["relatedProducts"] = related.get("products", [])
+    return out
+
+
+def serialize_guide_progress(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"), "journeyKey": d.get("journey_key") or "",
+        "stepKey": d.get("step_key") or "", "status": d.get("status") or "in_progress",
+        "completedAt": d.get("completed_at"), "reminderAt": d.get("reminder_at"),
+        "notes": d.get("notes") or "", "updatedAt": d.get("updated_at"),
+    }
+
+
 def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
     """Idempotently seed the Guide taxonomy + starter editorial content.
 
@@ -6967,6 +7251,55 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
              int(comp.get("is_featured", 0)), now, now),
         )
         result["companies"] += 1
+
+    # --- journeys + steps (situation -> ordered action path) ---
+    result["journeys"] = 0
+    result["journeySteps"] = 0
+    for journey in GUIDE_JOURNEY_SEED:
+        jkey = journey["key"]
+        exists = conn.execute(
+            "SELECT id FROM guide_journeys WHERE journey_key = ? AND country = ? AND language = 'zh-CN'",
+            (jkey, country),
+        ).fetchone()
+        if not exists:
+            conn.execute(
+                "INSERT INTO guide_journeys (id, journey_key, country, language, title, subtitle, audience, icon, color, "
+                "hero_title, hero_subtitle, estimated_days, sort_order, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)",
+                (
+                    str(uuid.uuid4()), jkey, country, journey["title"], journey.get("subtitle", ""),
+                    journey.get("audience", ""), journey.get("icon", ""), journey.get("color", ""),
+                    journey.get("heroTitle", ""), journey.get("heroSubtitle", ""),
+                    _guide_int(journey.get("estimatedDays"), 0), _guide_int(journey.get("sortOrder"), 0), now, now,
+                ),
+            )
+            result["journeys"] += 1
+        step_order = 0
+        for step in journey.get("steps", []):
+            step_order += 1
+            step_exists = conn.execute(
+                "SELECT id FROM guide_journey_steps WHERE journey_key = ? AND step_key = ? AND country = ? AND language = 'zh-CN'",
+                (jkey, step["key"], country),
+            ).fetchone()
+            if step_exists:
+                continue
+            conn.execute(
+                "INSERT INTO guide_journey_steps (id, journey_key, step_key, country, language, title, summary, body, "
+                "action_label, action_type, action_target, category_key, article_slugs, product_slugs, school_filters, "
+                "company_filters, required, estimated_minutes, deadline_hint, sort_order, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)",
+                (
+                    str(uuid.uuid4()), jkey, step["key"], country, step["title"], step.get("summary", ""),
+                    step.get("body", ""), step.get("actionLabel", ""), step.get("actionType", ""),
+                    step.get("actionTarget", ""), step.get("categoryKey", journey.get("categoryKey", "")),
+                    _guide_csv(step.get("articleSlugs", [])), _guide_csv(step.get("productSlugs", [])),
+                    json.dumps(step.get("schoolFilters") or {}, ensure_ascii=False),
+                    json.dumps(step.get("companyFilters") or {}, ensure_ascii=False),
+                    1 if step.get("required", True) else 0, _guide_int(step.get("estimatedMinutes"), 0),
+                    step.get("deadlineHint", ""), step_order, now, now,
+                ),
+            )
+            result["journeySteps"] += 1
 
     return result
 
@@ -14038,6 +14371,7 @@ class Handler(BaseHTTPRequestHandler):
         categories = self._guide_categories_payload(conn, country, language) if module_on("categories") else []
         resource_entries = [localize_guide_resource(r, language) for r in GUIDE_RESOURCE_ENTRIES] if module_on("resources") else []
         goal_entries = [localize_guide_goal(g, language) for g in GUIDE_GOAL_SEED] if module_on("goals") else []
+        journeys = self._guide_journeys_payload(conn, country, language) if module_on("journeys") else []
         payload = {
             "status": "ok", "country": country, "language": language,
             "hero": hero,
@@ -14046,6 +14380,8 @@ class Handler(BaseHTTPRequestHandler):
             "resourceEntries": resource_entries,
             "goals": {"title": _guide_localized_ui("goalTitle", language, GUIDE_GOAL_TITLE), "entries": goal_entries},
             "goalEntries": goal_entries,
+            "journeys": journeys,
+            "universalSearchScopes": GUIDE_SEARCH_SCOPES,
             "featuredArticles": featured_articles,
             "featuredProducts": featured_products,
             "featuredServices": featured_services,
@@ -14066,6 +14402,250 @@ class Handler(BaseHTTPRequestHandler):
         if not self._guide_is_open(country):
             return self.send_json(self._guide_coming_soon_payload(country, language, categories=[]))
         self.send_json({"status": "ok", "country": country, "categories": self._guide_categories_payload(conn, country, language)})
+
+    # --- Guide Journeys -----------------------------------------------------
+    def _guide_journeys_payload(self, conn: sqlite3.Connection, country: str, language: str) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT * FROM guide_journeys WHERE country = ? AND language = 'zh-CN' AND status = 'published' ORDER BY sort_order",
+            (country,),
+        ).fetchall()
+        journeys: list[dict[str, Any]] = []
+        for row in rows:
+            count = conn.execute(
+                "SELECT COUNT(*) AS c FROM guide_journey_steps WHERE journey_key = ? AND country = ? AND status = 'published'",
+                (row["journey_key"], country),
+            ).fetchone()["c"]
+            journeys.append(serialize_guide_journey(row, step_count=int(count)))
+        return journeys
+
+    def api_guide_journeys(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, language, journeys=[]))
+        cache_key = f"guide_journeys:{country}"
+        cached = _cache_get(cache_key)
+        if cached is None:
+            cached = {"status": "ok", "country": country, "language": language,
+                      "journeys": self._guide_journeys_payload(conn, country, language)}
+            _cache_put(cache_key, cached, GUIDE_HOME_CACHE_TTL)
+        self.send_json(cached)
+
+    def _guide_step_related(self, conn: sqlite3.Connection, step: sqlite3.Row | dict[str, Any],
+                            country: str, language: str) -> dict[str, Any]:
+        # Resolve each step's recommended content from existing tables. Explicit
+        # slugs win; otherwise fall back to top articles in the step category.
+        # Wrapped so a column/query mismatch can never 500 the whole journey.
+        d = dict(step)
+        articles: list[dict[str, Any]] = []
+        products: list[dict[str, Any]] = []
+        try:
+            slugs = _guide_split_tags(d.get("article_slugs"))
+            if slugs:
+                placeholders = ",".join("?" * len(slugs))
+                rows = conn.execute(
+                    f"SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND slug IN ({placeholders})",
+                    (country, *slugs),
+                ).fetchall()
+                articles = [localize_guide_article_payload(serialize_guide_article(r), language) for r in rows]
+            elif d.get("category_key"):
+                rows = conn.execute(
+                    "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND category_key = ? "
+                    "ORDER BY is_featured DESC, published_at DESC LIMIT 3",
+                    (country, d.get("category_key")),
+                ).fetchall()
+                articles = [localize_guide_article_payload(serialize_guide_article(r), language) for r in rows]
+        except Exception:
+            articles = []
+        try:
+            pslugs = _guide_split_tags(d.get("product_slugs"))
+            if pslugs:
+                placeholders = ",".join("?" * len(pslugs))
+                rows = conn.execute(
+                    f"SELECT * FROM guide_products WHERE country = ? AND status IN ('published','coming_soon') AND slug IN ({placeholders})",
+                    (country, *pslugs),
+                ).fetchall()
+                products = [localize_guide_product_payload(serialize_guide_product(r), language) for r in rows]
+        except Exception:
+            products = []
+        return {"articles": articles, "products": products}
+
+    def api_guide_journey_detail(self, conn: sqlite3.Connection, key: str, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
+        if not self._guide_is_open(country):
+            return self.send_json(self._guide_coming_soon_payload(country, language, journey=None, steps=[]))
+        row = conn.execute(
+            "SELECT * FROM guide_journeys WHERE journey_key = ? AND country = ? AND language = 'zh-CN' AND status = 'published'",
+            (key, country),
+        ).fetchone()
+        if not row:
+            return self.send_error_json("journey not found", 404, "not_found")
+        step_rows = conn.execute(
+            "SELECT * FROM guide_journey_steps WHERE journey_key = ? AND country = ? AND status = 'published' ORDER BY sort_order",
+            (key, country),
+        ).fetchall()
+        steps = [serialize_guide_journey_step(s, include_body=True, related=self._guide_step_related(conn, s, country, language)) for s in step_rows]
+        # Optional per-viewer progress so a logged-in client renders completion
+        # in one round trip; guests just get an empty map.
+        progress: dict[str, Any] = {}
+        viewer = self.current_session(conn)
+        if viewer:
+            for p in conn.execute(
+                "SELECT step_key, status, completed_at FROM guide_user_progress WHERE user_id = ? AND journey_key = ?",
+                (viewer["user_id"], key),
+            ).fetchall():
+                progress[p["step_key"] or "__journey__"] = {"status": p["status"], "completedAt": p["completed_at"]}
+        self.send_json({
+            "status": "ok", "country": country, "language": language,
+            "journey": serialize_guide_journey(row, step_count=len(steps)),
+            "steps": steps, "progress": progress,
+            "disclaimer": _guide_localized_ui("reviewDisclaimer", language, GUIDE_REVIEW_DISCLAIMER),
+        })
+
+    # --- Unified Guide search (articles + schools + companies + products + faq + journeys) ---
+    def api_guide_search(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
+        keyword = (query.get("q") or query.get("keyword") or "").strip()
+        scope = (query.get("scope") or "all").strip() or "all"
+        if not self._guide_is_open(country) or not keyword:
+            return self.send_json({"status": "ok", "country": country, "query": keyword,
+                                   "scopes": GUIDE_SEARCH_SCOPES, "groups": {}})
+        like = f"%{keyword}%"
+        want = lambda s: scope in ("all", s)
+        groups: dict[str, list[dict[str, Any]]] = {}
+
+        def _safe(fn):
+            try:
+                return fn()
+            except Exception:
+                return []
+
+        if want("articles"):
+            groups["articles"] = _safe(lambda: [
+                localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
+                    "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND (title LIKE ? OR summary LIKE ?) "
+                    "ORDER BY is_featured DESC, published_at DESC LIMIT 10", (country, like, like)).fetchall()])
+        if want("schools"):
+            groups["schools"] = _safe(lambda: [
+                localize_guide_school_payload(serialize_guide_school(r), language) for r in conn.execute(
+                    "SELECT * FROM guide_schools WHERE country = ? AND status = 'published' AND (name LIKE ? OR name_jp LIKE ? OR name_en LIKE ?) "
+                    "ORDER BY is_featured DESC, data_quality_score DESC LIMIT 8", (country, like, like, like)).fetchall()])
+        if want("companies"):
+            groups["companies"] = _safe(lambda: [
+                localize_guide_company_payload(serialize_guide_company(r), language) for r in conn.execute(
+                    "SELECT * FROM guide_companies WHERE country = ? AND status = 'published' AND name LIKE ? "
+                    "ORDER BY is_featured DESC, data_quality_score DESC LIMIT 8", (country, like)).fetchall()])
+        if want("products"):
+            groups["products"] = _safe(lambda: [
+                localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
+                    "SELECT * FROM guide_products WHERE country = ? AND status IN ('published','coming_soon') AND title LIKE ? "
+                    "ORDER BY is_coming_soon ASC, sort_order LIMIT 8", (country, like)).fetchall()])
+        if want("faq"):
+            groups["faq"] = _safe(lambda: [
+                serialize_guide_faq(r) for r in conn.execute(
+                    "SELECT * FROM guide_faq WHERE country = ? AND status = 'published' AND (question LIKE ? OR answer LIKE ?) "
+                    "ORDER BY sort_order LIMIT 8", (country, like, like)).fetchall()])
+        if want("journeys"):
+            groups["journeys"] = _safe(lambda: [
+                serialize_guide_journey(r) for r in conn.execute(
+                    "SELECT * FROM guide_journeys WHERE country = ? AND language = 'zh-CN' AND status = 'published' AND (title LIKE ? OR subtitle LIKE ?) "
+                    "ORDER BY sort_order LIMIT 8", (country, like, like)).fetchall()])
+        self.send_json({"status": "ok", "country": country, "query": keyword,
+                        "scopes": GUIDE_SEARCH_SCOPES, "groups": groups})
+
+    # --- Per-user Guide progress (login required) ---------------------------
+    def _guide_progress_summary(self, conn: sqlite3.Connection, user_id: str,
+                                items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        done_by_journey: dict[str, int] = {}
+        for it in items:
+            if it.get("status") == "done" and it.get("stepKey"):
+                done_by_journey[it["journeyKey"]] = done_by_journey.get(it["journeyKey"], 0) + 1
+        summaries: list[dict[str, Any]] = []
+        for jkey, done in done_by_journey.items():
+            total = conn.execute(
+                "SELECT COUNT(*) AS c FROM guide_journey_steps WHERE journey_key = ? AND status = 'published'",
+                (jkey,),
+            ).fetchone()["c"]
+            total = int(total)
+            summaries.append({"journeyKey": jkey, "done": done, "total": total,
+                              "percent": int(round(done * 100 / total)) if total else 0})
+        return summaries
+
+    def api_guide_progress(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        rows = conn.execute(
+            "SELECT * FROM guide_user_progress WHERE user_id = ? ORDER BY updated_at DESC", (user["id"],)
+        ).fetchall()
+        items = [serialize_guide_progress(r) for r in rows]
+        self.send_json({"status": "ok", "items": items,
+                        "summary": self._guide_progress_summary(conn, user["id"], items)})
+
+    def api_guide_progress_update(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        journey_key = str(body.get("journeyKey") or "").strip()
+        step_key = str(body.get("stepKey") or "").strip()
+        status = str(body.get("status") or "in_progress").strip()
+        if not journey_key:
+            return self.send_error_json("journeyKey required", 400, "invalid_body")
+        if status not in GUIDE_PROGRESS_STATUSES:
+            return self.send_error_json("invalid status", 400, "invalid_body")
+        now = now_iso()
+        completed_at = now if status == "done" else None
+        reminder_at = str(body.get("reminderAt") or "").strip() or None
+        notes = str(body.get("notes") or "")[:2000]
+        existing = conn.execute(
+            "SELECT id FROM guide_user_progress WHERE user_id = ? AND journey_key = ? AND step_key = ?",
+            (user["id"], journey_key, step_key),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE guide_user_progress SET status = ?, completed_at = ?, "
+                "reminder_at = COALESCE(?, reminder_at), notes = ?, updated_at = ? WHERE id = ?",
+                (status, completed_at, reminder_at, notes, now, existing["id"]),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO guide_user_progress (id, user_id, journey_key, step_key, status, completed_at, reminder_at, notes, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), user["id"], journey_key, step_key, status, completed_at, reminder_at, notes, now, now),
+            )
+        rows = conn.execute(
+            "SELECT * FROM guide_user_progress WHERE user_id = ? ORDER BY updated_at DESC", (user["id"],)
+        ).fetchall()
+        items = [serialize_guide_progress(r) for r in rows]
+        self.send_json({"status": "ok", "items": items,
+                        "summary": self._guide_progress_summary(conn, user["id"], items)})
+
+    # --- Generic Guide saves (reuse the `interactions` table) ---------------
+    def api_guide_saved(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        rows = conn.execute(
+            "SELECT target_id, kind, created_at FROM interactions WHERE user_id = ? AND kind LIKE 'guide_%_save' ORDER BY created_at DESC",
+            (user["id"],),
+        ).fetchall()
+        items = [{"itemId": r["target_id"], "itemType": GUIDE_SAVE_KIND_TO_TYPE.get(r["kind"], "article"),
+                  "createdAt": r["created_at"]} for r in rows]
+        self.send_json({"status": "ok", "items": items})
+
+    def api_guide_save_item(self, conn: sqlite3.Connection, on: bool) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        item_type = str(body.get("itemType") or "").strip()
+        item_id = str(body.get("itemId") or "").strip()
+        kind = GUIDE_SAVE_KINDS.get(item_type)
+        if not kind or not item_id:
+            return self.send_error_json("itemType and itemId required", 400, "invalid_body")
+        if on:
+            conn.execute(
+                "INSERT OR IGNORE INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), item_id, user["id"], kind, now_iso()),
+            )
+        else:
+            conn.execute("DELETE FROM interactions WHERE target_id = ? AND user_id = ? AND kind = ?", (item_id, user["id"], kind))
+        self.send_json({"status": "ok", "saved": on, "itemType": item_type, "itemId": item_id})
 
     def api_guide_schools(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
@@ -14915,6 +15495,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _guide_clear_public_cache(self) -> None:
         _cache_invalidate("guide_home:")
+        _cache_invalidate("guide_journeys:")
 
     def api_admin_guide_overview(self, conn: sqlite3.Connection) -> None:
         self.require_admin(conn)
@@ -15233,6 +15814,170 @@ class Handler(BaseHTTPRequestHandler):
         if not row:
             raise APIError("专题不存在", 404, "guide_topic_not_found")
         self._guide_apply_update(conn, "guide_topics", row["id"], {"status": "archived"})
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok"})
+
+    # --- admin: journeys + steps (situation -> action path authoring) ---
+    def api_admin_guide_journeys(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        country = _normalize_country_code(query.get("country") or "jp")
+        rows = conn.execute(
+            "SELECT * FROM guide_journeys WHERE country = ? AND language = 'zh-CN' ORDER BY sort_order, updated_at DESC",
+            (country,),
+        ).fetchall()
+        items = []
+        for r in rows:
+            count = conn.execute(
+                "SELECT COUNT(*) AS c FROM guide_journey_steps WHERE journey_key = ? AND country = ?",
+                (r["journey_key"], country),
+            ).fetchone()["c"]
+            items.append(serialize_guide_journey(r, step_count=int(count)))
+        self.send_json({"status": "ok", "items": items, "total": len(items)})
+
+    def api_admin_guide_create_journey(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        title = _clean_text(data.get("title"), 160)
+        if not title:
+            raise APIError("路径标题不能为空", 400, "empty_journey_title")
+        country = _normalize_country_code(data.get("country") or "jp")
+        key = self._guide_slugify(data.get("key") or title, fallback=str(uuid.uuid4())[:8])
+        if conn.execute(
+            "SELECT id FROM guide_journeys WHERE journey_key = ? AND country = ? AND language = 'zh-CN'", (key, country)
+        ).fetchone():
+            raise APIError("该路径 key 已存在", 409, "journey_key_exists")
+        now = now_iso()
+        row_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_journeys (id, journey_key, country, language, title, subtitle, audience, icon, color, "
+            "hero_title, hero_subtitle, estimated_days, sort_order, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row_id, key, country, title, _clean_text(data.get("subtitle"), 300), _clean_text(data.get("audience"), 80),
+                _clean_text(data.get("icon"), 40), _clean_text(data.get("color"), 20), _clean_text(data.get("heroTitle"), 200),
+                _clean_text(data.get("heroSubtitle"), 400), _guide_int(data.get("estimatedDays"), 0),
+                _guide_int(data.get("sortOrder"), 0), _clean_text(data.get("status") or "published", 40), now, now,
+            ),
+        )
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row_id, "key": key}, 201)
+
+    def api_admin_guide_update_journey(self, conn: sqlite3.Connection, raw_key: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute(
+            "SELECT id FROM guide_journeys WHERE (journey_key = ? OR id = ?) AND language = 'zh-CN' LIMIT 1", (raw_key, raw_key)
+        ).fetchone()
+        if not row:
+            raise APIError("路径不存在", 404, "guide_journey_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for key, col, maxlen in (
+            ("title", "title", 160), ("subtitle", "subtitle", 300), ("audience", "audience", 80),
+            ("icon", "icon", 40), ("color", "color", 20), ("heroTitle", "hero_title", 200),
+            ("heroSubtitle", "hero_subtitle", 400), ("status", "status", 40),
+        ):
+            if key in data:
+                updates[col] = _clean_text(data.get(key), maxlen)
+        if "estimatedDays" in data:
+            updates["estimated_days"] = _guide_int(data.get("estimatedDays"), 0)
+        if "sortOrder" in data:
+            updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
+        self._guide_apply_update(conn, "guide_journeys", row["id"], updates)
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row["id"]})
+
+    def api_admin_guide_delete_journey(self, conn: sqlite3.Connection, raw_key: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute(
+            "SELECT id FROM guide_journeys WHERE (journey_key = ? OR id = ?) AND language = 'zh-CN' LIMIT 1", (raw_key, raw_key)
+        ).fetchone()
+        if not row:
+            raise APIError("路径不存在", 404, "guide_journey_not_found")
+        self._guide_apply_update(conn, "guide_journeys", row["id"], {"status": "archived"})
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok"})
+
+    def api_admin_guide_journey_steps(self, conn: sqlite3.Connection, journey_key: str, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        country = _normalize_country_code(query.get("country") or "jp")
+        rows = conn.execute(
+            "SELECT * FROM guide_journey_steps WHERE journey_key = ? AND country = ? AND language = 'zh-CN' ORDER BY sort_order",
+            (journey_key, country),
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_journey_step(r, include_body=True) for r in rows], "total": len(rows)})
+
+    def api_admin_guide_create_step(self, conn: sqlite3.Connection, journey_key: str) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        title = _clean_text(data.get("title"), 200)
+        if not title:
+            raise APIError("步骤标题不能为空", 400, "empty_step_title")
+        country = _normalize_country_code(data.get("country") or "jp")
+        step_key = self._guide_slugify(data.get("stepKey") or title, fallback=str(uuid.uuid4())[:8])
+        if conn.execute(
+            "SELECT id FROM guide_journey_steps WHERE journey_key = ? AND step_key = ? AND country = ? AND language = 'zh-CN'",
+            (journey_key, step_key, country),
+        ).fetchone():
+            raise APIError("该步骤 key 已存在", 409, "step_key_exists")
+        order = data.get("sortOrder")
+        if order is None:
+            order = int(conn.execute(
+                "SELECT COALESCE(MAX(sort_order), 0) AS m FROM guide_journey_steps WHERE journey_key = ? AND country = ?",
+                (journey_key, country),
+            ).fetchone()["m"]) + 1
+        now = now_iso()
+        row_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_journey_steps (id, journey_key, step_key, country, language, title, summary, body, action_label, "
+            "action_type, action_target, category_key, article_slugs, product_slugs, school_filters, company_filters, required, "
+            "estimated_minutes, deadline_hint, sort_order, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?, ?, ?, ?, ?, '{}', '{}', ?, ?, ?, ?, ?, ?, ?)",
+            (
+                row_id, journey_key, step_key, country, title, _clean_text(data.get("summary"), 600),
+                _clean_text(data.get("body"), 4000), _clean_text(data.get("actionLabel"), 80),
+                _clean_text(data.get("actionType"), 40), _clean_text(data.get("actionTarget"), 120),
+                _clean_text(data.get("categoryKey"), 80), _guide_csv(data.get("articleSlugs")), _guide_csv(data.get("productSlugs")),
+                0 if data.get("required") is False else 1, _guide_int(data.get("estimatedMinutes"), 0),
+                _clean_text(data.get("deadlineHint"), 120), _guide_int(order, 0),
+                _clean_text(data.get("status") or "published", 40), now, now,
+            ),
+        )
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row_id, "stepKey": step_key}, 201)
+
+    def api_admin_guide_update_step(self, conn: sqlite3.Connection, step_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_journey_steps WHERE id = ? LIMIT 1", (step_id,)).fetchone()
+        if not row:
+            raise APIError("步骤不存在", 404, "guide_step_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for key, col, maxlen in (
+            ("title", "title", 200), ("summary", "summary", 600), ("body", "body", 4000),
+            ("actionLabel", "action_label", 80), ("actionType", "action_type", 40), ("actionTarget", "action_target", 120),
+            ("categoryKey", "category_key", 80), ("deadlineHint", "deadline_hint", 120), ("status", "status", 40),
+        ):
+            if key in data:
+                updates[col] = _clean_text(data.get(key), maxlen)
+        for key, col in (("articleSlugs", "article_slugs"), ("productSlugs", "product_slugs")):
+            if key in data:
+                updates[col] = _guide_csv(data.get(key))
+        if "required" in data:
+            updates["required"] = 0 if data.get("required") is False else 1
+        if "estimatedMinutes" in data:
+            updates["estimated_minutes"] = _guide_int(data.get("estimatedMinutes"), 0)
+        if "sortOrder" in data:
+            updates["sort_order"] = _guide_int(data.get("sortOrder"), 0)
+        self._guide_apply_update(conn, "guide_journey_steps", row["id"], updates)
+        self._guide_clear_public_cache()
+        self.send_json({"status": "ok", "id": row["id"]})
+
+    def api_admin_guide_delete_step(self, conn: sqlite3.Connection, step_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT id FROM guide_journey_steps WHERE id = ? LIMIT 1", (step_id,)).fetchone()
+        if not row:
+            raise APIError("步骤不存在", 404, "guide_step_not_found")
+        conn.execute("DELETE FROM guide_journey_steps WHERE id = ?", (row["id"],))
         self._guide_clear_public_cache()
         self.send_json({"status": "ok"})
 
@@ -17438,6 +18183,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_home(conn, query)
         if path == "/api/guide/categories" and method == "GET":
             return self.api_guide_categories(conn, query)
+        if path == "/api/guide/journeys" and method == "GET":
+            return self.api_guide_journeys(conn, query)
+        if path.startswith("/api/guide/journeys/") and method == "GET":
+            return self.api_guide_journey_detail(conn, unquote(path[len("/api/guide/journeys/"):]).strip("/"), query)
+        if path == "/api/guide/search" and method == "GET":
+            return self.api_guide_search(conn, query)
+        if path == "/api/guide/progress" and method == "GET":
+            return self.api_guide_progress(conn, query)
+        if path == "/api/guide/progress" and method == "PATCH":
+            return self.api_guide_progress_update(conn)
+        if path == "/api/guide/saved" and method == "GET":
+            return self.api_guide_saved(conn, query)
+        if path == "/api/guide/saved" and method == "POST":
+            return self.api_guide_save_item(conn, True)
+        if path == "/api/guide/saved" and method == "DELETE":
+            return self.api_guide_save_item(conn, False)
         if path == "/api/guide/member-resources" and method == "GET":
             return self.api_guide_member_resources(conn, query)
         if path == "/api/guide/schools" and method == "GET":
@@ -17548,6 +18309,29 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_admin_guide_update_tag(conn, tag_id)
             if method == "DELETE":
                 return self.api_admin_guide_delete_tag(conn, tag_id)
+        if path == "/api/admin/guide/journeys" and method == "GET":
+            return self.api_admin_guide_journeys(conn, query)
+        if path == "/api/admin/guide/journeys" and method == "POST":
+            return self.api_admin_guide_create_journey(conn)
+        if path.startswith("/api/admin/guide/journeys/"):
+            rest = unquote(path[len("/api/admin/guide/journeys/"):])
+            if rest.endswith("/steps"):
+                journey_key = rest[: -len("/steps")]
+                if method == "GET":
+                    return self.api_admin_guide_journey_steps(conn, journey_key, query)
+                if method == "POST":
+                    return self.api_admin_guide_create_step(conn, journey_key)
+            else:
+                if method == "PATCH":
+                    return self.api_admin_guide_update_journey(conn, rest)
+                if method == "DELETE":
+                    return self.api_admin_guide_delete_journey(conn, rest)
+        if path.startswith("/api/admin/guide/journey-steps/"):
+            step_id = unquote(path[len("/api/admin/guide/journey-steps/"):])
+            if method == "PATCH":
+                return self.api_admin_guide_update_step(conn, step_id)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_step(conn, step_id)
         if path == "/api/admin/guide/topics" and method == "GET":
             return self.api_admin_guide_topics(conn, query)
         if path == "/api/admin/guide/topics" and method == "POST":
@@ -22847,6 +23631,12 @@ class Handler(BaseHTTPRequestHandler):
         existing = self._business_row_for_user(conn, user["id"])
         business_id = (existing or {}).get("id") or str(uuid.uuid4())
         submit = bool(data.get("submit"))
+        # Once verified, the merchant's identity is the public record of record.
+        # Lock self-service edits so an approved profile can't silently desync;
+        # changes must go through platform support (admin). The other consoles
+        # (services / leads / reviews) stay fully editable.
+        if existing and (existing.get("verification_status") or "") == "verified":
+            raise APIError("商家已通过认证，认证资料已锁定。如需修改主体信息或更新材料，请联系平台客服。", 409, "business_verified_locked")
 
         def clean_list(value: Any) -> list[str]:
             if isinstance(value, str):
@@ -23033,6 +23823,8 @@ class Handler(BaseHTTPRequestHandler):
         business = self._business_row_for_user(conn, user["id"])
         if not business:
             raise APIError("请先保存商家申请", 404, "business_not_found")
+        if (business.get("verification_status") or "") == "verified":
+            raise APIError("商家已通过认证，认证材料已锁定。如需变更，请联系平台客服。", 409, "business_verified_locked")
         row = conn.execute(
             """
             SELECT d.*, f.user_id AS file_user_id
@@ -23604,7 +24396,12 @@ class Handler(BaseHTTPRequestHandler):
         allowed = {"draft", "pending", "needs_review", "verified", "rejected", "suspended"}
         if status not in allowed:
             raise APIError("商家审核状态不合法", 400, "invalid_business_status")
-        note = _clean_text(data.get("review_note") or data.get("note") or current.get("review_note"), 2000)
+        incoming_note = _clean_text(data.get("review_note") or data.get("note"), 2000)
+        # Reject / 补材料 must carry a reason — the merchant needs to know what
+        # to fix, otherwise the status change is a dead end for them.
+        if status in {"rejected", "needs_review"} and not incoming_note:
+            raise APIError("拒绝或要求补材料时，请填写给商家的说明。", 400, "review_note_required")
+        note = incoming_note or _clean_text(current.get("review_note"), 2000)
         now = now_iso()
         conn.execute(
             """

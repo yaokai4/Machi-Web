@@ -502,6 +502,7 @@ export interface GuideHomeResponse {
   companyHighlights: GuideCompany[];
   latestArticles: GuideArticle[];
   faq: GuideFaq[];
+  journeys?: GuideJourney[];
   homeModules?: GuideHomeModule[];
   reviewDisclaimer?: string;
   schoolDisclaimer?: string;
@@ -518,6 +519,120 @@ export interface GuidePaged<T> {
   emptyState?: GuideEmptyState;
   disclaimer?: string;
   featured?: T[];
+}
+
+// --- Guide Journeys: situation -> ordered action path ---
+export interface GuideJourney {
+  id: string;
+  key: string;
+  country?: string;
+  language?: string;
+  title: string;
+  subtitle: string;
+  audience: string;
+  icon: string;
+  color: string;
+  heroTitle: string;
+  heroSubtitle: string;
+  estimatedDays: number;
+  sortOrder: number;
+  status: string;
+  stepCount?: number;
+}
+
+export interface GuideJourneyStep {
+  id: string;
+  journeyKey: string;
+  stepKey: string;
+  title: string;
+  summary: string;
+  body?: string;
+  actionLabel: string;
+  actionType: string;
+  actionTarget: string;
+  categoryKey: string;
+  articleSlugs: string[];
+  productSlugs: string[];
+  required: boolean;
+  estimatedMinutes: number;
+  deadlineHint: string;
+  sortOrder: number;
+  status: string;
+  relatedArticles?: GuideArticle[];
+  relatedProducts?: GuideProduct[];
+}
+
+export interface GuideStepProgressState {
+  status: string;
+  completedAt?: string | null;
+}
+
+export interface GuideJourneysResponse {
+  status: GuideStatus;
+  country: string;
+  language?: string;
+  journeys: GuideJourney[];
+}
+
+export interface GuideJourneyDetailResponse {
+  status: GuideStatus;
+  country: string;
+  language?: string;
+  journey: GuideJourney;
+  steps: GuideJourneyStep[];
+  progress?: Record<string, GuideStepProgressState>;
+  disclaimer?: string;
+}
+
+export interface GuideProgress {
+  id: string;
+  journeyKey: string;
+  stepKey: string;
+  status: string;
+  completedAt?: string | null;
+  reminderAt?: string | null;
+  notes?: string;
+  updatedAt?: string;
+}
+
+export interface GuideProgressSummary {
+  journeyKey: string;
+  done: number;
+  total: number;
+  percent: number;
+}
+
+export interface GuideProgressResponse {
+  status: string;
+  items: GuideProgress[];
+  summary: GuideProgressSummary[];
+}
+
+export interface GuideSearchScope {
+  key: string;
+  label: string;
+}
+
+export interface GuideSearchGroups {
+  articles?: GuideArticle[];
+  schools?: GuideSchool[];
+  companies?: GuideCompany[];
+  products?: GuideProduct[];
+  faq?: GuideFaq[];
+  journeys?: GuideJourney[];
+}
+
+export interface GuideSearchResponse {
+  status: string;
+  query: string;
+  scopes: GuideSearchScope[];
+  groups: GuideSearchGroups;
+}
+
+export interface GuideSavedItem {
+  itemId: string;
+  itemType: string;
+  createdAt?: string;
 }
 
 const GUIDE_TIMEOUT_MS = 12_000;
@@ -654,6 +769,20 @@ export const guide = {
   categories: (country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; country: string; categories: GuideCategory[] }>(
       "GET", `/api/guide/categories${qs({ country, language })}`),
+  journeys: (country = "jp", language = "zh-CN") =>
+    greq<GuideJourneysResponse>("GET", `/api/guide/journeys${qs({ country, language })}`),
+  journey: (key: string, country = "jp", language = "zh-CN") =>
+    greq<GuideJourneyDetailResponse>(
+      "GET", `/api/guide/journeys/${encodeURIComponent(key)}${qs({ country, language })}`),
+  search: (keyword: string, country = "jp", language = "zh-CN", scope = "all") =>
+    greq<GuideSearchResponse>("GET", `/api/guide/search${qs({ q: keyword, country, language, scope })}`),
+  progress: () => greq<GuideProgressResponse>("GET", "/api/guide/progress"),
+  updateProgress: (body: { journeyKey: string; stepKey: string; status: string; reminderAt?: string; notes?: string }) =>
+    greq<GuideProgressResponse>("PATCH", "/api/guide/progress", body),
+  savedItems: () => greq<{ status: string; items: GuideSavedItem[] }>("GET", "/api/guide/saved"),
+  setSaved: (itemType: string, itemId: string, on: boolean) =>
+    greq<{ status: string; saved: boolean; itemType: string; itemId: string }>(
+      on ? "POST" : "DELETE", "/api/guide/saved", { itemType, itemId }),
   articles: (p: GuideListParams = {}) =>
     greq<GuidePaged<GuideArticle>>("GET", `/api/guide/articles${qs({ ...p })}`),
   article: (idOrSlug: string, country = "jp", language = "zh-CN") =>
@@ -788,6 +917,24 @@ export const adminGuide = {
     greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/topics/${encodeURIComponent(idOrSlug)}`, body),
   deleteTopic: (idOrSlug: string) =>
     greq<{ status: string }>("DELETE", `/api/admin/guide/topics/${encodeURIComponent(idOrSlug)}`),
+  journeys: (country = "jp") =>
+    greq<{ status: string; items: GuideJourney[]; total: number }>("GET", `/api/admin/guide/journeys${qs({ country })}`),
+  createJourney: (body: Record<string, unknown>) =>
+    greq<{ status: string; id: string; key: string }>("POST", "/api/admin/guide/journeys", body),
+  updateJourney: (key: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/journeys/${encodeURIComponent(key)}`, body),
+  deleteJourney: (key: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/journeys/${encodeURIComponent(key)}`),
+  journeySteps: (key: string, country = "jp") =>
+    greq<{ status: string; items: GuideJourneyStep[]; total: number }>(
+      "GET", `/api/admin/guide/journeys/${encodeURIComponent(key)}/steps${qs({ country })}`),
+  createStep: (key: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string; stepKey: string }>(
+      "POST", `/api/admin/guide/journeys/${encodeURIComponent(key)}/steps`, body),
+  updateStep: (stepId: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/journey-steps/${encodeURIComponent(stepId)}`, body),
+  deleteStep: (stepId: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/journey-steps/${encodeURIComponent(stepId)}`),
   faq: (p: { categoryKey?: string; status?: string } = {}) =>
     greq<{ status: string; items: GuideFaq[]; total: number }>("GET", `/api/admin/guide/faq${qs(p)}`),
   faqItem: (id: string) =>
