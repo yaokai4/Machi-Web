@@ -37,6 +37,7 @@ const WORK_ITEMS = [
   { href: "/my/inquiries", title: "我的咨询", subtitle: "交易、房源和服务沟通", icon: MessageSquare, tone: "text-cyan-600 bg-cyan-50", badge: "leads" },
   { href: "/my/applications", title: "我的申请", subtitle: "招聘报名与进度", icon: ListChecks, tone: "text-violet-600 bg-violet-50", badge: "" },
   { href: "/my/bookings", title: "我的预约", subtitle: "本地服务、住宿和行程预订", icon: CalendarClock, tone: "text-orange-600 bg-orange-50", badge: "" },
+  { href: "/my/reservations", title: "时段预约", subtitle: "看房、到店与服务的预约时段", icon: CalendarClock, tone: "text-teal-600 bg-teal-50", badge: "" },
   { href: "/my/business", title: "商家服务后台", subtitle: "认证申请、服务管理、线索和点评", icon: Store, tone: "text-teal-700 bg-teal-50", badge: "merchant" },
   { href: "/my/orders", title: "我的订单", subtitle: "会员、Guide 和服务订单", icon: CreditCard, tone: "text-pink-600 bg-pink-50", badge: "" },
   { href: "/membership", title: "Machi 会员", subtitle: "认证标识与高信任发布权限", icon: BadgeCheck, tone: "text-blue-700 bg-blue-50", badge: "membership" },

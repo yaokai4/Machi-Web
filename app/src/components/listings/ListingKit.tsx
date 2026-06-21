@@ -2513,11 +2513,14 @@ function AdminBusinessCard({
           placeholder="审核意见：通过说明、需补充材料、拒绝原因等"
         />
         <div className="mt-3 grid grid-cols-2 gap-2">
-          <AdminBusinessAction disabled={pending} tone="approve" onClick={() => onReview("verified", note)} label="通过认证" />
-          <AdminBusinessAction disabled={pending} tone="review" onClick={() => onReview("needs_review", note || "请补充主体资质、许可证或更清晰的证明材料。")} label="补材料" />
-          <AdminBusinessAction disabled={pending} tone="reject" onClick={() => onReview("rejected", note || "资料不完整或暂不符合认证要求。")} label="拒绝" />
-          <AdminBusinessAction disabled={pending} tone="pause" onClick={() => onReview("suspended", note || "商家服务已暂停展示，请联系后台复核。")} label="暂停" />
+          <AdminBusinessAction disabled={pending} tone="approve" onClick={() => onReview("verified", note.trim())} label="通过认证" />
+          <AdminBusinessAction disabled={pending || !note.trim()} tone="review" onClick={() => onReview("needs_review", note.trim())} label="补材料" />
+          <AdminBusinessAction disabled={pending || !note.trim()} tone="reject" onClick={() => onReview("rejected", note.trim())} label="拒绝" />
+          <AdminBusinessAction disabled={pending} tone="pause" onClick={() => onReview("suspended", note.trim() || "商家服务已暂停展示，请联系后台复核。")} label="暂停" />
         </div>
+        {!note.trim() ? (
+          <p className="mt-2 text-[11px] font-semibold text-slate-400">拒绝 / 补材料 前请在上方填写给商家的具体说明。</p>
+        ) : null}
       </aside>
     </article>
   );

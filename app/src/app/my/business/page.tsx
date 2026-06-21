@@ -116,6 +116,80 @@ function blankForm() {
 
 type BusinessFormState = ReturnType<typeof blankForm>;
 
+/** Locked, read-only view of an approved merchant profile (no editing). */
+function VerifiedApplication({
+  form,
+  documents,
+}: {
+  form: BusinessFormState;
+  documents: Array<{ id?: string; documentId?: string; documentType?: string }>;
+}) {
+  const rows: Array<[string, string]> = [
+    ["商家/品牌名称", form.business_name],
+    ["商家类型", form.business_type],
+    ["主体全称", form.legal_name],
+    ["负责人姓名", form.representative_name],
+    ["登记号 / 许可编号", form.registration_number],
+    ["服务城市", `${form.country_code} / ${form.city_slug}`],
+    ["电话或 WhatsApp/Line", form.phone],
+    ["联系邮箱", form.email],
+    ["官网 / 社媒", form.website],
+    ["经营地址", form.address],
+    ["公开联系方式", form.contact_method],
+  ];
+  return (
+    <div className="mt-5 space-y-5">
+      <div className="flex items-start gap-3 rounded-[22px] border border-emerald-200 bg-emerald-50/70 p-4">
+        <BadgeCheck className="h-6 w-6 shrink-0 text-emerald-600" />
+        <div>
+          <p className="text-sm font-black text-emerald-800">已通过认证</p>
+          <p className="mt-1 text-xs font-semibold text-emerald-700">
+            你的商家已在 Web 与 iOS 显示为认证商家。主体资料已锁定；如需修改主体信息或更新认证材料，请联系平台客服。
+          </p>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        {rows.map(([k, v]) => (
+          <div key={k} className="rounded-2xl bg-slate-50 px-4 py-3 ring-1 ring-slate-200/70">
+            <p className="text-[11px] font-bold text-slate-400">{k}</p>
+            <p className="mt-0.5 text-sm font-black text-slate-800">{v || "—"}</p>
+          </div>
+        ))}
+      </div>
+      {form.service_categories.length ? (
+        <div>
+          <p className="mb-2 text-[11px] font-bold text-slate-400">服务分类</p>
+          <div className="flex flex-wrap gap-2">
+            {form.service_categories.map((c) => (
+              <span key={c} className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-700">{c}</span>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      {form.description ? (
+        <div className="rounded-2xl bg-slate-50 px-4 py-3 ring-1 ring-slate-200/70">
+          <p className="text-[11px] font-bold text-slate-400">服务介绍</p>
+          <p className="mt-1 whitespace-pre-wrap text-sm font-semibold text-slate-700">{form.description}</p>
+        </div>
+      ) : null}
+      {documents.length ? (
+        <div>
+          <p className="mb-2 text-[11px] font-bold text-slate-400">认证材料（已锁定）</p>
+          <div className="grid gap-2">
+            {documents.map((doc) => (
+              <div key={doc.documentId || doc.id} className="flex items-center gap-3 rounded-2xl bg-white px-3 py-2 ring-1 ring-slate-200/70">
+                <FileCheck2 className="h-5 w-5 text-emerald-600" />
+                <p className="min-w-0 flex-1 truncate text-sm font-black text-slate-800">{doc.documentType || "认证材料"}</p>
+                <span className="rounded-full bg-emerald-50 px-2 py-1 text-[11px] font-black text-emerald-700">已加密</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 export default function MyBusinessPage() {
   const user = useSession((s) => s.user);
   const setUser = useSession((s) => s.setUser);
@@ -288,6 +362,10 @@ export default function MyBusinessPage() {
               <StatusPill status={status} />
             </div>
 
+            {status === "verified" ? (
+              <VerifiedApplication form={form} documents={business?.documents || []} />
+            ) : (
+              <>
             <div className="mt-5 grid gap-4 sm:grid-cols-2">
               <Field label="商家/品牌名称" required>
                 <input value={form.business_name} onChange={(e) => setFormValue(setForm, "business_name", e.target.value)} className="kx-input h-11" placeholder="Machi Coffee / 东京接送服务" />
@@ -427,6 +505,8 @@ export default function MyBusinessPage() {
                 提交认证审核
               </button>
             </div>
+              </>
+            )}
           </section>
         </section>
 
