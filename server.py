@@ -3833,6 +3833,32 @@ def ensure_draft_schema_extensions(conn: sqlite3.Connection) -> None:
     })
 
 
+def ensure_booking_schema(conn: sqlite3.Connection) -> None:
+    """Reservation-calendar tables (slots + bookings) for existing SQLite DBs.
+    Fresh DBs get these from SCHEMA, PostgreSQL from migration 56; existing
+    SQLite needs an explicit create because executescript(SCHEMA) doesn't add
+    tables appended after the DB was first built. Idempotent, no money."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS listing_booking_slots (
+            id TEXT PRIMARY KEY, listing_id TEXT NOT NULL, owner_id TEXT NOT NULL,
+            start_at TEXT NOT NULL, end_at TEXT NOT NULL DEFAULT '', capacity INTEGER NOT NULL DEFAULT 1,
+            booked_count INTEGER NOT NULL DEFAULT 0, note TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open', created_at TEXT NOT NULL, deleted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_booking_slots_listing ON listing_booking_slots(listing_id, start_at);
+        CREATE TABLE IF NOT EXISTS listing_bookings (
+            id TEXT PRIMARY KEY, slot_id TEXT NOT NULL, listing_id TEXT NOT NULL, user_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'confirmed', note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_bookings_user ON listing_bookings(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_bookings_slot ON listing_bookings(slot_id);
+        CREATE INDEX IF NOT EXISTS idx_listing_bookings_owner ON listing_bookings(owner_id, created_at);
+        """
+    )
+
+
 def ensure_membership_plans(conn: sqlite3.Connection) -> None:
     """Seed editable monthly/yearly plans without overwriting admin changes."""
     now = now_iso()
@@ -8449,6 +8475,7 @@ def init_db() -> None:
         ensure_reputation_seed(conn)
         ensure_guide_schema_extensions(conn)
         ensure_draft_schema_extensions(conn)
+        ensure_booking_schema(conn)
         ensure_membership_plans(conn)
         ensure_guide_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
@@ -9103,6 +9130,44 @@ def serialize_conversation(row: dict[str, Any], extras: dict[str, Any] | None = 
         "unread_count": int(extras.get("unread_count") or 0),
         "updated_at": row["updated_at"],
     }
+
+
+def serialize_booking_slot(row: dict[str, Any], *, booked_by_me: bool = False) -> dict[str, Any]:
+    cap = int(row.get("capacity") or 1)
+    booked = int(row.get("booked_count") or 0)
+    full = booked >= cap
+    return {
+        "id": row["id"],
+        "listing_id": row.get("listing_id", ""), "listingId": row.get("listing_id", ""),
+        "start_at": row.get("start_at", ""), "startAt": row.get("start_at", ""),
+        "end_at": row.get("end_at", ""), "endAt": row.get("end_at", ""),
+        "capacity": cap, "booked_count": booked, "bookedCount": booked,
+        "available": max(0, cap - booked), "is_full": full, "isFull": full,
+        "note": row.get("note", ""), "status": row.get("status", "open"),
+        "booked_by_me": bool(booked_by_me), "bookedByMe": bool(booked_by_me),
+    }
+
+
+def serialize_booking(row: dict[str, Any], *, slot: dict[str, Any] | None = None,
+                      booker: dict[str, Any] | None = None,
+                      listing_title: str | None = None, listing_type: str | None = None) -> dict[str, Any]:
+    slot = slot or {}
+    out = {
+        "id": row["id"],
+        "slot_id": row.get("slot_id", ""), "slotId": row.get("slot_id", ""),
+        "listing_id": row.get("listing_id", ""), "listingId": row.get("listing_id", ""),
+        "status": row.get("status", "confirmed"), "note": row.get("note", ""),
+        "start_at": slot.get("start_at", ""), "startAt": slot.get("start_at", ""),
+        "end_at": slot.get("end_at", ""), "endAt": slot.get("end_at", ""),
+        "created_at": row.get("created_at", ""), "createdAt": row.get("created_at", ""),
+    }
+    if listing_title is not None:
+        out["listing_title"] = out["listingTitle"] = listing_title
+    if listing_type is not None:
+        out["listing_type"] = out["listingType"] = listing_type
+    if booker is not None:
+        out["booker"] = booker
+    return out
 
 
 def serialize_email_campaign(row: dict[str, Any]) -> dict[str, Any]:
@@ -17237,6 +17302,31 @@ class Handler(BaseHTTPRequestHandler):
                     return self.api_delete_listing_review(conn, listing_id, review_id)
                 if review_id and review_tail == ["reply"] and method == "POST":
                     return self.api_reply_listing_review(conn, listing_id, review_id)
+            # reservation calendar (no money)
+            if rest == "slots" and method == "GET":
+                return self.api_listing_slots(conn, listing_id, query)
+            if rest == "slots" and method == "POST":
+                return self.api_create_listing_slots(conn, listing_id)
+            if rest == "reservations" and method == "GET":
+                return self.api_listing_reservations(conn, listing_id, query)
+            if rest.startswith("slots/"):
+                slot_parts = rest.split("/")
+                slot_id = unquote(slot_parts[1]) if len(slot_parts) > 1 else ""
+                slot_tail = slot_parts[2:]
+                if slot_id and not slot_tail and method == "DELETE":
+                    return self.api_delete_listing_slot(conn, listing_id, slot_id)
+                if slot_id and slot_tail == ["book"] and method == "POST":
+                    return self.api_book_listing_slot(conn, listing_id, slot_id)
+
+        # reservations (customer side)
+        if path == "/api/my/reservations" and method == "GET":
+            return self.api_my_reservations(conn, query)
+        if path.startswith("/api/reservations/"):
+            res_parts = path[len("/api/reservations/"):].split("/")
+            res_id = unquote(res_parts[0])
+            res_tail = res_parts[1:]
+            if res_id and res_tail == ["cancel"] and method == "POST":
+                return self.api_cancel_reservation(conn, res_id)
 
         # search
         if path == "/api/search" and method == "GET":
@@ -21832,6 +21922,179 @@ class Handler(BaseHTTPRequestHandler):
                 "guide_service_requests": [dict(r) for r in guide_rows],
             },
         })
+
+    # ── Reservation calendar (no money): bookable time slots + reservations ──
+    def _booking_listing_or_404(self, conn: sqlite3.Connection, listing_id: str) -> dict[str, Any]:
+        row = conn.execute(
+            "SELECT id, seller_user_id, title, type FROM city_listings WHERE id = ? AND deleted_at IS NULL",
+            (listing_id,),
+        ).fetchone()
+        if not row:
+            raise APIError("内容不存在或已删除", 404, "listing_not_found")
+        return dict(row)
+
+    def api_listing_slots(self, conn: sqlite3.Connection, listing_id: str, query: dict[str, str]) -> None:
+        listing = self._booking_listing_or_404(conn, listing_id)
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        rows = [dict(r) for r in conn.execute(
+            """
+            SELECT * FROM listing_booking_slots
+             WHERE listing_id = ? AND deleted_at IS NULL AND status = 'open' AND start_at >= ?
+             ORDER BY start_at ASC LIMIT 200
+            """,
+            (listing_id, now_iso()),
+        )]
+        mine: set[str] = set()
+        if viewer_id and rows:
+            placeholders = ",".join("?" * len(rows))
+            mine = {r["slot_id"] for r in conn.execute(
+                f"SELECT slot_id FROM listing_bookings WHERE user_id = ? AND status = 'confirmed' AND slot_id IN ({placeholders})",
+                [viewer_id, *[s["id"] for s in rows]],
+            )}
+        self.send_json({
+            "items": [serialize_booking_slot(s, booked_by_me=s["id"] in mine) for s in rows],
+            "listing_id": listing_id,
+            "is_owner": bool(viewer_id and viewer_id == listing["seller_user_id"]),
+        })
+
+    def api_create_listing_slots(self, conn: sqlite3.Connection, listing_id: str) -> None:
+        user = self.require_user(conn)
+        listing = self._booking_listing_or_404(conn, listing_id)
+        if listing["seller_user_id"] != user["id"]:
+            raise APIError("只有发布者可以管理预约时段", 403, "not_owner")
+        data = self.read_json()
+        raw = data.get("slots")
+        items = raw if isinstance(raw, list) else [data]
+        now = now_iso()
+        created = 0
+        for item in items[:60]:
+            if not isinstance(item, dict):
+                continue
+            start_at = _clean_text(item.get("start_at") or item.get("startAt"), 40)
+            if not start_at:
+                continue
+            end_at = _clean_text(item.get("end_at") or item.get("endAt"), 40)
+            note = _clean_text(item.get("note"), 200)
+            try:
+                cap = max(1, min(int(item.get("capacity") or 1), 999))
+            except (TypeError, ValueError):
+                cap = 1
+            conn.execute(
+                """INSERT INTO listing_booking_slots
+                   (id, listing_id, owner_id, start_at, end_at, capacity, booked_count, note, status, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 0, ?, 'open', ?)""",
+                (str(uuid.uuid4()), listing_id, user["id"], start_at, end_at, cap, note, now),
+            )
+            created += 1
+        rows = [dict(r) for r in conn.execute(
+            "SELECT * FROM listing_booking_slots WHERE listing_id = ? AND deleted_at IS NULL AND status = 'open' ORDER BY start_at ASC",
+            (listing_id,),
+        )]
+        self.send_json({"ok": True, "created": created, "items": [serialize_booking_slot(s) for s in rows]})
+
+    def api_delete_listing_slot(self, conn: sqlite3.Connection, listing_id: str, slot_id: str) -> None:
+        user = self.require_user(conn)
+        listing = self._booking_listing_or_404(conn, listing_id)
+        if listing["seller_user_id"] != user["id"]:
+            raise APIError("只有发布者可以管理预约时段", 403, "not_owner")
+        now = now_iso()
+        conn.execute("UPDATE listing_booking_slots SET deleted_at = ?, status = 'closed' WHERE id = ? AND listing_id = ?", (now, slot_id, listing_id))
+        # Cancel any outstanding reservations on the removed slot + notify them.
+        for r in conn.execute("SELECT user_id FROM listing_bookings WHERE slot_id = ? AND status = 'confirmed'", (slot_id,)):
+            uid = r["user_id"]
+            if uid and uid != user["id"]:
+                HUB.publish(uid, {"type": "notification", "kind": "booking_cancelled"})
+                server_apns.enqueue(uid, ntype="system", actor_id=user["id"], content=f"「{listing.get('title') or '预约'}」的一个时段已被取消")
+        conn.execute("UPDATE listing_bookings SET status = 'cancelled', updated_at = ? WHERE slot_id = ? AND status = 'confirmed'", (now, slot_id))
+        self.send_json({"ok": True})
+
+    def api_book_listing_slot(self, conn: sqlite3.Connection, listing_id: str, slot_id: str) -> None:
+        user = self.require_user(conn)
+        listing = self._booking_listing_or_404(conn, listing_id)
+        if listing["seller_user_id"] == user["id"]:
+            raise APIError("不能预约自己发布的内容", 400, "own_listing")
+        slot_row = conn.execute(
+            "SELECT * FROM listing_booking_slots WHERE id = ? AND listing_id = ? AND deleted_at IS NULL",
+            (slot_id, listing_id),
+        ).fetchone()
+        if not slot_row:
+            raise APIError("该时段不存在", 404, "slot_not_found")
+        slot = dict(slot_row)
+        if slot["status"] != "open":
+            raise APIError("该时段已关闭", 400, "slot_closed")
+        if conn.execute("SELECT 1 FROM listing_bookings WHERE slot_id = ? AND user_id = ? AND status = 'confirmed'", (slot_id, user["id"])).fetchone():
+            raise APIError("你已预约该时段", 400, "already_booked")
+        if int(slot["booked_count"]) >= int(slot["capacity"]):
+            raise APIError("该时段已约满", 400, "slot_full")
+        note = _clean_text(self.read_json().get("note"), 200)
+        now = now_iso()
+        booking_id = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO listing_bookings (id, slot_id, listing_id, user_id, owner_id, status, note, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)""",
+            (booking_id, slot_id, listing_id, user["id"], listing["seller_user_id"], note, now, now),
+        )
+        conn.execute("UPDATE listing_booking_slots SET booked_count = booked_count + 1 WHERE id = ?", (slot_id,))
+        owner_id = listing["seller_user_id"]
+        if owner_id and owner_id != user["id"]:
+            HUB.publish(owner_id, {"type": "notification", "kind": "booking"})
+            server_apns.enqueue(owner_id, ntype="system", actor_id=user["id"], content=f"有人预约了「{listing.get('title') or '你的发布'}」")
+        booking = dict(conn.execute("SELECT * FROM listing_bookings WHERE id = ?", (booking_id,)).fetchone())
+        self.send_json({"ok": True, "booking": serialize_booking(booking, slot=slot)})
+
+    def api_cancel_reservation(self, conn: sqlite3.Connection, booking_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM listing_bookings WHERE id = ?", (booking_id,)).fetchone()
+        if not row:
+            raise APIError("预约不存在", 404, "booking_not_found")
+        booking = dict(row)
+        if user["id"] not in (booking["user_id"], booking["owner_id"]):
+            raise APIError("无权操作此预约", 403, "forbidden")
+        if booking["status"] == "confirmed":
+            now = now_iso()
+            conn.execute("UPDATE listing_bookings SET status = 'cancelled', updated_at = ? WHERE id = ?", (now, booking_id))
+            conn.execute("UPDATE listing_booking_slots SET booked_count = MAX(0, booked_count - 1) WHERE id = ?", (booking["slot_id"],))
+            other = booking["owner_id"] if user["id"] == booking["user_id"] else booking["user_id"]
+            if other and other != user["id"]:
+                HUB.publish(other, {"type": "notification", "kind": "booking_cancelled"})
+                server_apns.enqueue(other, ntype="system", actor_id=user["id"], content="一个预约已被取消")
+        self.send_json({"ok": True})
+
+    def api_my_reservations(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        rows = [dict(r) for r in conn.execute(
+            """
+            SELECT b.*, s.start_at, s.end_at, l.title AS listing_title, l.type AS listing_type
+              FROM listing_bookings b
+              JOIN listing_booking_slots s ON s.id = b.slot_id
+              JOIN city_listings l ON l.id = b.listing_id
+             WHERE b.user_id = ?
+             ORDER BY s.start_at DESC LIMIT 100
+            """,
+            (user["id"],),
+        )]
+        self.send_json({"items": [
+            serialize_booking(r, slot=r, listing_title=r.get("listing_title"), listing_type=r.get("listing_type"))
+            for r in rows
+        ]})
+
+    def api_listing_reservations(self, conn: sqlite3.Connection, listing_id: str, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        listing = self._booking_listing_or_404(conn, listing_id)
+        if listing["seller_user_id"] != user["id"]:
+            raise APIError("只有发布者可以查看预约", 403, "not_owner")
+        rows = [dict(r) for r in conn.execute(
+            """
+            SELECT b.*, s.start_at, s.end_at FROM listing_bookings b
+              JOIN listing_booking_slots s ON s.id = b.slot_id
+             WHERE b.listing_id = ? AND b.status = 'confirmed'
+             ORDER BY s.start_at ASC LIMIT 200
+            """,
+            (listing_id,),
+        )]
+        users_map = fetch_users_by_ids(conn, [r["user_id"] for r in rows]) if rows else {}
+        self.send_json({"items": [serialize_booking(r, slot=r, booker=users_map.get(r["user_id"])) for r in rows]})
 
     def api_my_orders(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         user = self.require_user(conn)

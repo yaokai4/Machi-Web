@@ -2096,6 +2096,38 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         );
         CREATE INDEX IF NOT EXISTS idx_listing_favorites_user ON listing_favorites(user_id, created_at);
 
+        -- Reservation calendar (no money): merchants/landlords publish bookable
+        -- time slots on a listing (看房 / 餐厅订座 / 服务预约); users reserve a slot.
+        CREATE TABLE IF NOT EXISTS listing_booking_slots (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            start_at TEXT NOT NULL,
+            end_at TEXT NOT NULL DEFAULT '',
+            capacity INTEGER NOT NULL DEFAULT 1,
+            booked_count INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_booking_slots_listing ON listing_booking_slots(listing_id, start_at);
+
+        CREATE TABLE IF NOT EXISTS listing_bookings (
+            id TEXT PRIMARY KEY,
+            slot_id TEXT NOT NULL,
+            listing_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'confirmed',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_bookings_user ON listing_bookings(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_bookings_slot ON listing_bookings(slot_id);
+        CREATE INDEX IF NOT EXISTS idx_listing_bookings_owner ON listing_bookings(owner_id, created_at);
+
         CREATE TABLE IF NOT EXISTS listing_reports (
             id TEXT PRIMARY KEY,
             listing_id TEXT NOT NULL,
@@ -3046,6 +3078,41 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         """
         -- backend: postgres
         ALTER TABLE settings ADD COLUMN IF NOT EXISTS push_inquiries INTEGER NOT NULL DEFAULT 1;
+        """,
+    ),
+    (
+        56,
+        "reservation calendar: booking slots + bookings (no money)",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS listing_booking_slots (
+            id TEXT PRIMARY KEY,
+            listing_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            start_at TEXT NOT NULL,
+            end_at TEXT NOT NULL DEFAULT '',
+            capacity INTEGER NOT NULL DEFAULT 1,
+            booked_count INTEGER NOT NULL DEFAULT 0,
+            note TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            created_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_booking_slots_listing ON listing_booking_slots(listing_id, start_at);
+        CREATE TABLE IF NOT EXISTS listing_bookings (
+            id TEXT PRIMARY KEY,
+            slot_id TEXT NOT NULL,
+            listing_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'confirmed',
+            note TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_listing_bookings_user ON listing_bookings(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_listing_bookings_slot ON listing_bookings(slot_id);
+        CREATE INDEX IF NOT EXISTS idx_listing_bookings_owner ON listing_bookings(owner_id, created_at);
         """,
     ),
 ]
