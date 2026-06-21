@@ -19840,16 +19840,38 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT 1 FROM blocks WHERE blocker_id = ? AND blocked_id = ?",
                 (viewer["user_id"], target["id"]),
             ).fetchone())
+        viewer_id = viewer["user_id"] if viewer else None
+        # Mutual = we follow them AND they follow us back (drives 私信 affordance).
+        is_mutual = False
+        if viewer and is_following:
+            is_mutual = bool(conn.execute(
+                "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?",
+                (target["id"], viewer["user_id"]),
+            ).fetchone())
         payload = serialize_user(target)
         payload.update(counts)
         listing_counts = user_listing_counts(conn, target["id"])
+        # Recent posts preview so the profile first screen can paint header +
+        # counts + a few posts in this single call (tabs still page lazily).
+        preview_rows = [dict(r) for r in conn.execute(
+            """
+            SELECT * FROM posts
+             WHERE author_id = ? AND deleted_at IS NULL AND status IN ('published', 'active')
+             ORDER BY created_at DESC LIMIT 6
+            """,
+            (target["id"],),
+        )]
+        posts_preview = fetch_posts_with_extras(conn, preview_rows, viewer_id)
         payload.update({
             "is_following": is_following,
             "is_blocked": is_blocked,
+            "is_mutual": is_mutual,
+            "isMutual": is_mutual,
             "listing_counts": listing_counts,
             "listingCounts": listing_counts,
+            "posts_preview": posts_preview,
+            "postsPreview": posts_preview,
         })
-        viewer_id = viewer["user_id"] if viewer else None
         self.send_json({"user": payload, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
     def _resolve_user_id_or_404(self, conn: sqlite3.Connection, user_id: str) -> str:
