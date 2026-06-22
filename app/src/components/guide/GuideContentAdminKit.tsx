@@ -27,7 +27,7 @@ import {
 } from "@/lib/guide";
 import { useToasts } from "@/lib/store";
 
-type ContentKind = "categories" | "tags" | "topics" | "faq" | "home-modules" | "journeys";
+type ContentKind = "categories" | "tags" | "topics" | "faq" | "home-modules" | "journeys" | "product-relations" | "plan-templates";
 type ContentRow = Record<string, unknown> & { id?: string; key?: string; slug?: string; moduleKey?: string; title?: string; name?: string; question?: string; status?: string; isActive?: boolean };
 
 type FieldConfig = {
@@ -61,7 +61,7 @@ function listText(value: unknown): string {
 }
 
 function rowTitle(row: ContentRow): string {
-  return String(row.title || row.name || row.question || row.moduleKey || row.key || row.slug || row.id || "未命名");
+  return String(row.title || row.name || row.question || row.moduleKey || row.productTitle || row.key || row.slug || row.id || "未命名");
 }
 
 function rowIdentifier(row: ContentRow): string {
@@ -156,6 +156,8 @@ const COLLECTION_META: Record<ContentKind, { title: string; subtitle: string; ic
   journeys: { title: "行动路径管理", subtitle: "维护「你现在想解决什么」的处境路径（步骤通过 API 维护）。", icon: Signpost },
   faq: { title: "Guide FAQ 管理", subtitle: "维护指南首页和分类页常见问题。", icon: HelpCircle },
   "home-modules": { title: "Guide 首页模块", subtitle: "控制首页模块开关、标题、文案和 JSON 配置。", icon: Home },
+  "product-relations": { title: "任务↔资料/服务关联", subtitle: "把商城资料/服务挂到具体计划类型、Todo 类型、路径或步骤，决定 Todo 旁边推荐什么。", icon: Layers3 },
+  "plan-templates": { title: "计划模板（倒排步骤）", subtitle: "维护出愿/新卒/转职/JLPT 等计划的 T-减步骤、耗时与推荐资料；编辑后新建的计划即按此生成。", icon: Signpost },
 };
 
 function emptyForm(kind: ContentKind): Record<string, string | boolean> {
@@ -173,6 +175,12 @@ function emptyForm(kind: ContentKind): Record<string, string | boolean> {
   }
   if (kind === "journeys") {
     return { title: "", key: "", subtitle: "", audience: "", icon: "plan", color: "#147067", heroTitle: "", heroSubtitle: "", estimatedDays: "0", sortOrder: "0", status: "published" };
+  }
+  if (kind === "product-relations") {
+    return { productSlug: "", productId: "", planType: "", todoType: "", journeyKey: "", stepKey: "", priority: "0" };
+  }
+  if (kind === "plan-templates") {
+    return { templateKey: "school", title: "", summary: "", todoType: "guide_step", offsetDays: "30", productSlugs: "", serviceSlugs: "", sortOrder: "0", status: "published" };
   }
   return { moduleKey: "", title: "", subtitle: "", status: "published", contentJson: "{\n  \n}", sortOrder: "0", language: "zh-CN", isActive: true };
 }
@@ -195,8 +203,8 @@ function formFromRow(kind: ContentKind, row: ContentRow): Record<string, string 
 function payloadFromForm(kind: ContentKind, form: Record<string, string | boolean>): Record<string, unknown> {
   const payload: Record<string, unknown> = { country: "jp" };
   Object.entries(form).forEach(([key, value]) => {
-    if (key === "sortOrder") payload[key] = Number(value || 0);
-    else if (["tags", "articleSlugs", "productSlugs"].includes(key)) payload[key] = cleanList(String(value || ""));
+    if (["sortOrder", "offsetDays", "priority"].includes(key)) payload[key] = Number(value || 0);
+    else if (kind === "topics" && ["tags", "articleSlugs", "productSlugs"].includes(key)) payload[key] = cleanList(String(value || ""));
     else payload[key] = value;
   });
   if (kind === "home-modules") {
@@ -284,6 +292,35 @@ function fieldsFor(kind: ContentKind, categories: GuideCategory[]): FieldConfig[
       { key: "status", label: "状态", type: "select", options: STATUS_OPTIONS },
     ];
   }
+  if (kind === "product-relations") {
+    return [
+      { key: "productSlug", label: "产品 slug（资料/服务）", placeholder: "research-plan-template-pack" },
+      { key: "productId", label: "或产品 ID（二选一）" },
+      { key: "todoType", label: "Todo 类型", placeholder: "research_plan / company_es / exam_study ..." },
+      { key: "planType", label: "计划类型（可选）", placeholder: "life / guide ..." },
+      { key: "journeyKey", label: "路径 key（可选）", placeholder: "grad_school / arrival ..." },
+      { key: "stepKey", label: "步骤 key（可选）" },
+      { key: "priority", label: "优先级（大在前）" },
+    ];
+  }
+  if (kind === "plan-templates") {
+    return [
+      { key: "templateKey", label: "模板", type: "select", options: [
+        { value: "school", label: "学校出愿 (school)" },
+        { value: "company:shinsotsu", label: "新卒就活 (company:shinsotsu)" },
+        { value: "company:tenshoku", label: "社会人转职 (company:tenshoku)" },
+        { value: "jlpt", label: "JLPT 考试 (jlpt)" },
+      ] },
+      { key: "offsetDays", label: "截止前 N 天 (T-N)", placeholder: "90" },
+      { key: "title", label: "步骤标题", required: true },
+      { key: "summary", label: "步骤说明", type: "textarea", rows: 3 },
+      { key: "todoType", label: "Todo 类型", placeholder: "research_plan / company_es / exam_study ..." },
+      { key: "productSlugs", label: "推荐资料 slug（逗号分隔）", type: "textarea", rows: 2 },
+      { key: "serviceSlugs", label: "推荐服务 slug（逗号分隔）", type: "textarea", rows: 2 },
+      { key: "sortOrder", label: "排序" },
+      { key: "status", label: "状态", type: "select", options: STATUS_OPTIONS },
+    ];
+  }
   return [
     { key: "moduleKey", label: "模块 key", required: true },
     { key: "title", label: "模块标题" },
@@ -317,6 +354,14 @@ async function listCollection(kind: ContentKind): Promise<{ items: ContentRow[];
     const res = await adminGuide.journeys();
     return { items: res.items as unknown as ContentRow[], total: res.total };
   }
+  if (kind === "product-relations") {
+    const res = await adminGuide.productRelations();
+    return { items: res.items as unknown as ContentRow[], total: res.total };
+  }
+  if (kind === "plan-templates") {
+    const res = await adminGuide.planTemplates();
+    return { items: res.items as unknown as ContentRow[], total: res.total };
+  }
   const res = await adminGuide.homeModules();
   return { items: res.items as unknown as ContentRow[], total: res.total };
 }
@@ -327,6 +372,8 @@ async function saveCollection(kind: ContentKind, id: string | null, payload: Rec
   if (kind === "topics") return id ? adminGuide.updateTopic(id, payload) : adminGuide.createTopic(payload);
   if (kind === "faq") return id ? adminGuide.updateFaq(id, payload) : adminGuide.createFaq(payload);
   if (kind === "journeys") return id ? adminGuide.updateJourney(id, payload) : adminGuide.createJourney(payload);
+  if (kind === "product-relations") return id ? adminGuide.updateProductRelation(id, payload) : adminGuide.createProductRelation(payload);
+  if (kind === "plan-templates") return id ? adminGuide.updatePlanTemplate(id, payload) : adminGuide.createPlanTemplate(payload);
   return id ? adminGuide.updateHomeModule(id, payload) : adminGuide.createHomeModule(payload);
 }
 
@@ -336,6 +383,8 @@ async function deleteCollection(kind: ContentKind, id: string) {
   if (kind === "topics") return adminGuide.deleteTopic(id);
   if (kind === "faq") return adminGuide.deleteFaq(id);
   if (kind === "journeys") return adminGuide.deleteJourney(id);
+  if (kind === "product-relations") return adminGuide.deleteProductRelation(id);
+  if (kind === "plan-templates") return adminGuide.deletePlanTemplate(id);
   return adminGuide.deleteHomeModule(id);
 }
 

@@ -3624,6 +3624,28 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_product_relations_scope ON guide_product_relations(plan_type, todo_type, journey_key, step_key, priority)")
+    # Admin-editable application/study plan templates (the reverse-countdown
+    # milestone ladders). Seeded from the code constants; once present, the
+    # application generator reads from here so 运营 can edit T-minus steps without
+    # a code change. template_key = e.g. 'school' / 'company:shinsotsu' /
+    # 'company:tenshoku' / 'jlpt'.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_plan_templates (
+            id TEXT PRIMARY KEY,
+            template_key TEXT NOT NULL,
+            offset_days INTEGER NOT NULL DEFAULT 0,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            todo_type TEXT NOT NULL DEFAULT 'guide_step',
+            product_slugs TEXT NOT NULL DEFAULT '',
+            service_slugs TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_plan_templates_key ON guide_plan_templates(template_key, status, offset_days)")
     _ensure_columns(conn, "guide_companies", {
         "corporate_number": "TEXT NOT NULL DEFAULT ''",
         "company_name_en": "TEXT NOT NULL DEFAULT ''",
@@ -7397,15 +7419,65 @@ _GUIDE_JLPT_MILESTONES: list[tuple[int, str, str, str, str, str]] = [
 _GUIDE_COMPANY_MILESTONES = _GUIDE_COMPANY_SHINSOTSU_MILESTONES  # back-compat default
 
 
-def _guide_application_milestones(app_type: str, career_track: str = "") -> list[tuple[int, str, str, str, str, str]]:
+def _guide_template_key(app_type: str, career_track: str = "") -> str:
     if app_type == "school":
-        return _GUIDE_SCHOOL_MILESTONES
-    if app_type == "jlpt" or app_type == "exam":
-        return _GUIDE_JLPT_MILESTONES
-    # company: split fresh-grad vs mid-career
+        return "school"
+    if app_type in ("jlpt", "exam"):
+        return "jlpt"
     if (career_track or "").strip().lower() in {"tenshoku", "mid_career", "midcareer", "社会人"}:
-        return _GUIDE_COMPANY_TENSHOKU_MILESTONES
-    return _GUIDE_COMPANY_SHINSOTSU_MILESTONES
+        return "company:tenshoku"
+    return "company:shinsotsu"
+
+
+# Code-constant defaults — also the seed source for the admin-editable
+# guide_plan_templates table.
+_GUIDE_TEMPLATE_DEFAULTS: dict[str, list[tuple[int, str, str, str, str, str]]] = {
+    "school": _GUIDE_SCHOOL_MILESTONES,
+    "company:shinsotsu": _GUIDE_COMPANY_SHINSOTSU_MILESTONES,
+    "company:tenshoku": _GUIDE_COMPANY_TENSHOKU_MILESTONES,
+    "jlpt": _GUIDE_JLPT_MILESTONES,
+}
+
+
+def _guide_application_milestones(conn: sqlite3.Connection | None, app_type: str, career_track: str = "") -> list[tuple[int, str, str, str, str, str]]:
+    """Milestone ladder for an application/study plan. Prefers the admin-editable
+    guide_plan_templates rows; falls back to the code-constant defaults when the
+    table has no published rows for that template (e.g. before seeding)."""
+    key = _guide_template_key(app_type, career_track)
+    if conn is not None:
+        try:
+            rows = conn.execute(
+                "SELECT offset_days, title, summary, todo_type, product_slugs, service_slugs "
+                "FROM guide_plan_templates WHERE template_key = ? AND status = 'published' ORDER BY sort_order, offset_days DESC",
+                (key,),
+            ).fetchall()
+            if rows:
+                return [(int(r["offset_days"]), r["title"], r["summary"], r["todo_type"], r["product_slugs"], r["service_slugs"]) for r in rows]
+        except Exception:
+            pass
+    return _GUIDE_TEMPLATE_DEFAULTS.get(key, _GUIDE_COMPANY_SHINSOTSU_MILESTONES)
+
+
+def _guide_seed_plan_templates(conn: sqlite3.Connection) -> int:
+    """Idempotently seed guide_plan_templates from the code defaults — only for
+    template_keys that have no rows yet, so admin edits are never overwritten."""
+    seeded = 0
+    now = now_iso()
+    for key, rows in _GUIDE_TEMPLATE_DEFAULTS.items():
+        try:
+            existing = conn.execute("SELECT COUNT(*) AS c FROM guide_plan_templates WHERE template_key = ?", (key,)).fetchone()
+            if existing and int(existing["c"]) > 0:
+                continue
+            for idx, (offset, title, summary, todo_type, products, services) in enumerate(rows):
+                conn.execute(
+                    "INSERT INTO guide_plan_templates (id, template_key, offset_days, title, summary, todo_type, product_slugs, service_slugs, sort_order, status, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)",
+                    (str(uuid.uuid4()), key, int(offset), title, summary, todo_type, products, services, idx, now, now),
+                )
+                seeded += 1
+        except Exception:
+            continue
+    return seeded
 
 
 def _guide_next_monthly_due(day: int) -> str | None:
@@ -7788,6 +7860,7 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
             )
             result["journeySteps"] += 1
 
+    result["planTemplates"] = _guide_seed_plan_templates(conn)
     return result
 
 
@@ -15945,7 +16018,7 @@ class Handler(BaseHTTPRequestHandler):
             # Back-plan the run-up: emit the full reverse-countdown ladder so the
             # user gets a week-by-week prep plan, not just a single due date.
             today_iso = now_iso()[:10]
-            for offset, m_title, m_summary, m_type, m_products, m_services in _guide_application_milestones(app_type, career_track):
+            for offset, m_title, m_summary, m_type, m_products, m_services in _guide_application_milestones(conn, app_type, career_track):
                 planned = _guide_date_minus(deadline, offset)
                 if not planned:
                     continue
@@ -17566,6 +17639,128 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("路径不存在", 404, "guide_journey_not_found")
         self._guide_apply_update(conn, "guide_journeys", row["id"], {"status": "archived"})
         self._guide_clear_public_cache()
+        self.send_json({"status": "ok"})
+
+    # ---- Admin: product↔task relations (Todo↔商城 fusion curation) ----
+    def api_admin_guide_product_relations(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        clauses, params = [], []
+        for col, key in (("plan_type", "planType"), ("todo_type", "todoType"), ("journey_key", "journeyKey"), ("step_key", "stepKey")):
+            v = (query.get(key) or "").strip()
+            if v:
+                clauses.append(f"r.{col} = ?"); params.append(v)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            f"SELECT r.*, p.title AS product_title, p.slug AS product_slug, p.is_service AS is_service "
+            f"FROM guide_product_relations r LEFT JOIN guide_products p ON p.id = r.product_id {where} "
+            f"ORDER BY r.plan_type, r.todo_type, r.priority DESC, r.created_at DESC LIMIT 500",
+            tuple(params),
+        ).fetchall()
+        items = [{
+            "id": r["id"], "productId": r["product_id"], "productTitle": r["product_title"] or "(已删除产品)",
+            "productSlug": r["product_slug"] or "", "isService": bool(r["is_service"] or 0),
+            "planType": r["plan_type"], "todoType": r["todo_type"], "journeyKey": r["journey_key"],
+            "stepKey": r["step_key"], "priority": int(r["priority"] or 0), "createdAt": r["created_at"],
+        } for r in rows]
+        self.send_json({"status": "ok", "items": items, "total": len(items)})
+
+    def api_admin_guide_create_product_relation(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        product_id = _clean_text(data.get("productId"), 80)
+        if not product_id:
+            # allow specifying by slug
+            slug = _clean_text(data.get("productSlug"), 160)
+            if slug:
+                prow = conn.execute("SELECT id FROM guide_products WHERE slug = ? LIMIT 1", (slug,)).fetchone()
+                product_id = prow["id"] if prow else ""
+        if not product_id:
+            raise APIError("请提供有效的产品", 400, "product_required")
+        rid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_product_relations (id, product_id, plan_type, todo_type, journey_key, step_key, priority, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (rid, product_id, _clean_text(data.get("planType"), 60), _clean_text(data.get("todoType"), 60),
+             _clean_text(data.get("journeyKey"), 80), _clean_text(data.get("stepKey"), 80), _guide_int(data.get("priority"), 0), now_iso()),
+        )
+        self.send_json({"status": "ok", "id": rid}, 201)
+
+    def api_admin_guide_update_product_relation(self, conn: sqlite3.Connection, rid: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT id FROM guide_product_relations WHERE id = ?", (rid,)).fetchone():
+            raise APIError("关联不存在", 404, "relation_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for key, col, maxlen in (("planType", "plan_type", 60), ("todoType", "todo_type", 60), ("journeyKey", "journey_key", 80), ("stepKey", "step_key", 80)):
+            if key in data:
+                updates[col] = _clean_text(data.get(key), maxlen)
+        if "priority" in data:
+            updates["priority"] = _guide_int(data.get("priority"), 0)
+        if updates:
+            self._guide_apply_update(conn, "guide_product_relations", rid, updates)
+        self.send_json({"status": "ok", "id": rid})
+
+    def api_admin_guide_delete_product_relation(self, conn: sqlite3.Connection, rid: str) -> None:
+        self.require_admin(conn)
+        conn.execute("DELETE FROM guide_product_relations WHERE id = ?", (rid,))
+        self.send_json({"status": "ok"})
+
+    # ---- Admin: plan templates (milestone ladders) ----
+    def api_admin_guide_plan_templates(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        key = (query.get("templateKey") or "").strip()
+        if key:
+            rows = conn.execute("SELECT * FROM guide_plan_templates WHERE template_key = ? ORDER BY sort_order, offset_days DESC", (key,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM guide_plan_templates ORDER BY template_key, sort_order, offset_days DESC LIMIT 800").fetchall()
+        def ser(r: sqlite3.Row) -> dict[str, Any]:
+            return {"id": r["id"], "templateKey": r["template_key"], "offsetDays": int(r["offset_days"] or 0),
+                    "title": r["title"], "summary": r["summary"], "todoType": r["todo_type"],
+                    "productSlugs": r["product_slugs"], "serviceSlugs": r["service_slugs"],
+                    "sortOrder": int(r["sort_order"] or 0), "status": r["status"]}
+        # also surface the available template keys for the admin selector
+        keys = [r["template_key"] for r in conn.execute("SELECT DISTINCT template_key FROM guide_plan_templates ORDER BY template_key").fetchall()]
+        self.send_json({"status": "ok", "items": [ser(r) for r in rows], "templateKeys": keys, "total": len(rows)})
+
+    def api_admin_guide_create_plan_template(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        template_key = _clean_text(data.get("templateKey"), 60)
+        title = _clean_text(data.get("title"), 200)
+        if not template_key or not title:
+            raise APIError("templateKey 与 title 不能为空", 400, "invalid_template")
+        rid = str(uuid.uuid4()); now = now_iso()
+        conn.execute(
+            "INSERT INTO guide_plan_templates (id, template_key, offset_days, title, summary, todo_type, product_slugs, service_slugs, sort_order, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (rid, template_key, _guide_int(data.get("offsetDays"), 0), title, _clean_text(data.get("summary"), 1000),
+             _clean_text(data.get("todoType") or "guide_step", 60), _clean_text(data.get("productSlugs"), 500),
+             _clean_text(data.get("serviceSlugs"), 500), _guide_int(data.get("sortOrder"), 0),
+             _clean_text(data.get("status") or "published", 40), now, now),
+        )
+        self.send_json({"status": "ok", "id": rid}, 201)
+
+    def api_admin_guide_update_plan_template(self, conn: sqlite3.Connection, rid: str) -> None:
+        self.require_admin(conn)
+        if not conn.execute("SELECT id FROM guide_plan_templates WHERE id = ?", (rid,)).fetchone():
+            raise APIError("模板步骤不存在", 404, "template_not_found")
+        data = self.read_json()
+        updates: dict[str, Any] = {}
+        for key, col, maxlen in (("title", "title", 200), ("summary", "summary", 1000), ("todoType", "todo_type", 60),
+                                 ("productSlugs", "product_slugs", 500), ("serviceSlugs", "service_slugs", 500),
+                                 ("templateKey", "template_key", 60), ("status", "status", 40)):
+            if key in data:
+                updates[col] = _clean_text(data.get(key), maxlen)
+        for key, col in (("offsetDays", "offset_days"), ("sortOrder", "sort_order")):
+            if key in data:
+                updates[col] = _guide_int(data.get(key), 0)
+        if updates:
+            self._guide_apply_update(conn, "guide_plan_templates", rid, updates)
+        self.send_json({"status": "ok", "id": rid})
+
+    def api_admin_guide_delete_plan_template(self, conn: sqlite3.Connection, rid: str) -> None:
+        self.require_admin(conn)
+        conn.execute("DELETE FROM guide_plan_templates WHERE id = ?", (rid,))
         self.send_json({"status": "ok"})
 
     def api_admin_guide_journey_steps(self, conn: sqlite3.Connection, journey_key: str, query: dict[str, str]) -> None:
@@ -20065,6 +20260,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_admin_guide_update_step(conn, step_id)
             if method == "DELETE":
                 return self.api_admin_guide_delete_step(conn, step_id)
+        if path == "/api/admin/guide/product-relations" and method == "GET":
+            return self.api_admin_guide_product_relations(conn, query)
+        if path == "/api/admin/guide/product-relations" and method == "POST":
+            return self.api_admin_guide_create_product_relation(conn)
+        if path.startswith("/api/admin/guide/product-relations/"):
+            rid = unquote(path[len("/api/admin/guide/product-relations/"):])
+            if method == "PATCH":
+                return self.api_admin_guide_update_product_relation(conn, rid)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_product_relation(conn, rid)
+        if path == "/api/admin/guide/plan-templates" and method == "GET":
+            return self.api_admin_guide_plan_templates(conn, query)
+        if path == "/api/admin/guide/plan-templates" and method == "POST":
+            return self.api_admin_guide_create_plan_template(conn)
+        if path.startswith("/api/admin/guide/plan-templates/"):
+            rid = unquote(path[len("/api/admin/guide/plan-templates/"):])
+            if method == "PATCH":
+                return self.api_admin_guide_update_plan_template(conn, rid)
+            if method == "DELETE":
+                return self.api_admin_guide_delete_plan_template(conn, rid)
         if path == "/api/admin/guide/topics" and method == "GET":
             return self.api_admin_guide_topics(conn, query)
         if path == "/api/admin/guide/topics" and method == "POST":

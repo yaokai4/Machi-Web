@@ -3347,6 +3347,28 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE guide_user_progress ADD COLUMN IF NOT EXISTS calendar_note TEXT NOT NULL DEFAULT '';
         """,
     ),
+    (
+        60,
+        "guide os: admin-editable plan templates (milestone ladders)",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS guide_plan_templates (
+            id TEXT PRIMARY KEY,
+            template_key TEXT NOT NULL,
+            offset_days INTEGER NOT NULL DEFAULT 0,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            todo_type TEXT NOT NULL DEFAULT 'guide_step',
+            product_slugs TEXT NOT NULL DEFAULT '',
+            service_slugs TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_plan_templates_key ON guide_plan_templates(template_key, status, offset_days);
+        """,
+    ),
 ]
 
 

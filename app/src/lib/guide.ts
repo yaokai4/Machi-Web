@@ -1130,6 +1130,22 @@ export const adminGuide = {
     greq<{ status: string; items: GuideJourney[]; total: number }>("GET", `/api/admin/guide/journeys${qs({ country })}`),
   createJourney: (body: Record<string, unknown>) =>
     greq<{ status: string; id: string; key: string }>("POST", "/api/admin/guide/journeys", body),
+  productRelations: () =>
+    greq<{ status: string; items: Record<string, unknown>[]; total: number }>("GET", "/api/admin/guide/product-relations"),
+  createProductRelation: (body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("POST", "/api/admin/guide/product-relations", body),
+  updateProductRelation: (id: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/product-relations/${encodeURIComponent(id)}`, body),
+  deleteProductRelation: (id: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/product-relations/${encodeURIComponent(id)}`),
+  planTemplates: () =>
+    greq<{ status: string; items: Record<string, unknown>[]; templateKeys: string[]; total: number }>("GET", "/api/admin/guide/plan-templates"),
+  createPlanTemplate: (body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("POST", "/api/admin/guide/plan-templates", body),
+  updatePlanTemplate: (id: string, body: Record<string, unknown>) =>
+    greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/plan-templates/${encodeURIComponent(id)}`, body),
+  deletePlanTemplate: (id: string) =>
+    greq<{ status: string }>("DELETE", `/api/admin/guide/plan-templates/${encodeURIComponent(id)}`),
   updateJourney: (key: string, body: Record<string, unknown>) =>
     greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/journeys/${encodeURIComponent(key)}`, body),
   deleteJourney: (key: string) =>
