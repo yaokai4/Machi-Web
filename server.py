@@ -13645,6 +13645,81 @@ def start_retention_janitor() -> None:
     threading.Thread(target=_loop, name="retention-janitor", daemon=True).start()
 
 
+KAIX_GUIDE_REMINDER_INTERVAL_SEC = max(120, int(_env("KAIX_GUIDE_REMINDER_INTERVAL_SEC", "600")))
+_GUIDE_REMINDER_STARTED = False
+
+
+def run_guide_reminder_dispatch() -> int:
+    """One pass of guide reminders: push an APNs alert for every Guide todo whose
+    reminder_at has come due (房租到期 / 出愿截止 / 面试 / 考试报名…) and hasn't been
+    sent yet. The guide_reminders row (UNIQUE per user+todo) is the sent-ledger,
+    so a reminder never fires twice. Only fires reminders from the last 7 days to
+    avoid resurrecting ancient ones after a deploy. Best-effort per row."""
+    now = now_iso()
+    floor = _guide_date_minus(now[:10], 7) or ""
+    sent = 0
+    with DB_LOCK:
+        conn = db()
+        try:
+            rows = conn.execute(
+                "SELECT t.id, t.user_id, t.title, t.due_at, t.plan_id, t.todo_type FROM guide_todos t "
+                "WHERE t.reminder_at <> '' AND t.reminder_at <= ? AND t.reminder_at >= ? "
+                "AND t.status NOT IN ('done','skipped') "
+                "AND NOT EXISTS (SELECT 1 FROM guide_reminders r WHERE r.todo_id = t.id AND r.status = 'sent') "
+                "ORDER BY t.reminder_at LIMIT 300",
+                (now, floor),
+            ).fetchall()
+            for r in rows:
+                d = dict(r)
+                title = (d.get("title") or "Guide 提醒").strip()
+                content = f"⏰ {title}"
+                if d.get("due_at"):
+                    content += f"（{d['due_at'][:10]} 截止）"
+                try:
+                    server_apns.enqueue(d["user_id"], ntype="system", content=content)
+                    HUB.publish(d["user_id"], {"type": "notification", "kind": "guide_reminder", "todoId": d["id"]})
+                except Exception:
+                    pass
+                existing = conn.execute(
+                    "SELECT id FROM guide_reminders WHERE user_id = ? AND todo_id = ?", (d["user_id"], d["id"])
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        "UPDATE guide_reminders SET status = 'sent', title = ?, reminder_at = ?, updated_at = ? WHERE id = ?",
+                        (title, now, now, existing["id"]),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO guide_reminders (id, user_id, todo_id, plan_id, title, reminder_at, channel, status, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, 'app', 'sent', ?, ?)",
+                        (str(uuid.uuid4()), d["user_id"], d["id"], d.get("plan_id") or "", title, now, now, now),
+                    )
+                sent += 1
+        finally:
+            conn.close()
+    return sent
+
+
+def start_guide_reminder_dispatcher() -> None:
+    global _GUIDE_REMINDER_STARTED
+    if _GUIDE_REMINDER_STARTED:
+        return
+    _GUIDE_REMINDER_STARTED = True
+
+    def _loop() -> None:
+        time.sleep(120)
+        while True:
+            try:
+                n = run_guide_reminder_dispatch()
+                if n:
+                    ACCESS_LOG.info("guide reminders dispatched: %d", n)
+            except Exception:
+                ERR_LOG.exception("guide reminder dispatch failed")
+            time.sleep(KAIX_GUIDE_REMINDER_INTERVAL_SEC)
+
+    threading.Thread(target=_loop, name="guide-reminders", daemon=True).start()
+
+
 # ---------------------------------------------------------------------------
 # site settings + server metrics
 # ---------------------------------------------------------------------------
@@ -14917,7 +14992,10 @@ class Handler(BaseHTTPRequestHandler):
                     # (the arrival journey's visible duplication). Wraps around
                     # when the category has fewer articles than steps × 3.
                     try:
-                        offset = (int(d.get("sort_order") or 0) * 3) % len(rows)
+                        # Stride 2 (not 3) so 6 steps over ~12 category articles
+                        # yield distinct 3-article windows for every step instead
+                        # of the first four — minimises cross-step repetition.
+                        offset = (int(d.get("sort_order") or 0) * 2) % len(rows)
                     except (TypeError, ValueError):
                         offset = 0
                     seen: set[str] = set()
@@ -30604,8 +30682,9 @@ def run() -> None:
     # so single-instance deploys are unaffected.
     if _env("KAIX_ENABLE_SCHEDULERS", "1") == "1":
         start_retention_janitor()
+        start_guide_reminder_dispatcher()
     else:
-        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor disabled on this worker")
+        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor + guide reminders disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")
     port = int(_env("KAIX_PORT", "8787"))
     server = MachiHTTPServer((host, port), Handler)
