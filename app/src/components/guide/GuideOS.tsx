@@ -197,29 +197,13 @@ export function GuideMaterialServiceRail({
   ] as const;
   if (recommended.length) {
     return (
-      <div className="space-y-3">
-        {recommended.map((item) => {
-          const Icon = item.isService ? Sparkles : FileText;
-          return (
-            <Link key={item.id} href={`/guide/products/${item.slug}`} className="kx-card flex items-start gap-3 p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/30">
-              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
-                <Icon className="h-4 w-4" />
-              </span>
-              <span className="min-w-0">
-                <span className="block text-sm font-black text-kx-text">{item.title}</span>
-                <span className="mt-0.5 block text-xs leading-5 text-kx-muted">{item.subtitle || item.deliveryMethod || item.ctaLabel}</span>
-                <span className="mt-2 inline-flex rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-accent">
-                  {item.isService ? "推荐服务" : "推荐资料"} · {item.ctaLabel || item.priceLabel || "查看详情"}
-                </span>
-              </span>
-            </Link>
-          );
-        })}
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+        {recommended.map((item) => <GuideRecommendationCard key={item.id} item={item} />)}
       </div>
     );
   }
   return (
-    <div className="space-y-3">
+    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
       {fallback.map(([title, body, Icon, href]) => (
         <Link key={title} href={href} className="kx-card flex items-start gap-3 p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/30">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
@@ -233,6 +217,144 @@ export function GuideMaterialServiceRail({
       ))}
     </div>
   );
+}
+
+// A single recommended material / service card — the "tool to finish this task"
+// surface that embeds the mall into todos and rails (spec §七/§十四).
+export function GuideRecommendationCard({ item }: { item: GuideProduct }) {
+  const Icon = item.isService ? Sparkles : FileText;
+  return (
+    <Link href={`/guide/products/${item.slug}`} className="kx-card flex items-start gap-3 p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/30">
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
+        <Icon className="h-4 w-4" />
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-black text-kx-text">{item.title}</span>
+        <span className="mt-0.5 block text-xs leading-5 text-kx-muted">{item.subtitle || item.deliveryMethod || item.ctaLabel}</span>
+        <span className="mt-2 inline-flex rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-accent">
+          {item.isService ? "推荐服务" : "推荐资料"} · {item.ctaLabel || item.priceLabel || "查看详情"}
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+// Date-grouped calendar list (今天/明天/未来…/未安排) shared by the calendar
+// page and any plan view that wants an inline schedule (spec §十四).
+export function GuideCalendarPanel({ todos }: { todos: GuideTodo[] }) {
+  const groups = todos.reduce<Record<string, GuideTodo[]>>((acc, todo) => {
+    const key = (todo.plannedDate || todo.dueAt || todo.reminderAt || "未安排").slice(0, 10);
+    (acc[key] ||= []).push(todo);
+    return acc;
+  }, {});
+  const dateKeys = Object.keys(groups).sort((a, b) => (a === "未安排" ? 1 : b === "未安排" ? -1 : a.localeCompare(b)));
+  if (!dateKeys.length) {
+    return <EmptyPanel title="日历还没有任务" body="开始一个计划，或添加学校/公司截止日期和生活账单。" />;
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const tomorrowDate = new Date();
+  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrow = tomorrowDate.toISOString().slice(0, 10);
+  const labelDate = (d: string) => (d === "未安排" ? d : d === today ? "今天" : d === tomorrow ? "明天" : d);
+  const datedKeys = dateKeys.filter((d) => d !== "未安排");
+  const countdowns = datedKeys
+    .map((date) => ({ date, days: daysUntil(date), todos: groups[date] }))
+    .filter((item) => item.days >= 0)
+    .sort((a, b) => a.days - b.days)
+    .slice(0, 4);
+  return (
+    <div className="space-y-6">
+      <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+        <MonthGrid groups={groups} />
+        <div className="kx-card p-4">
+          <h2 className="text-lg font-black text-kx-text">最近倒数</h2>
+          <div className="mt-3 space-y-2">
+            {countdowns.length ? countdowns.map((item) => (
+              <Link key={item.date} href="#calendar-list" className="flex items-center justify-between gap-3 rounded-kx-md border border-kx-stroke/50 bg-kx-card/70 px-3 py-2">
+                <span className="min-w-0">
+                  <span className="block text-sm font-black text-kx-text">{labelDate(item.date)}</span>
+                  <span className="block truncate text-xs text-kx-muted">{item.todos[0]?.title || `${item.todos.length} 项任务`}</span>
+                </span>
+                <span className={(item.days <= 3 ? "bg-amber-400/15 text-amber-700" : "bg-kx-accentSoft text-kx-accent") + " shrink-0 rounded-full px-2.5 py-1 text-xs font-black"}>
+                  {item.days === 0 ? "今天" : `${item.days} 天`}
+                </span>
+              </Link>
+            )) : <p className="text-sm text-kx-muted">暂无可倒数的未来日期。</p>}
+          </div>
+        </div>
+      </section>
+
+      <div id="calendar-list" className="scroll-mt-20" />
+      {dateKeys.map((date) => (
+        <section key={date}>
+          <div className="mb-3 flex items-center gap-2">
+            <span className="grid h-8 w-8 place-items-center rounded-full bg-kx-accentSoft text-kx-accent">
+              <CalendarDays className="h-4 w-4" />
+            </span>
+            <div>
+              <h2 className="text-lg font-black text-kx-text">{labelDate(date)}</h2>
+              <p className="text-xs text-kx-muted">{groups[date].length} 项任务</p>
+            </div>
+          </div>
+          <div className="grid gap-3 lg:grid-cols-2">
+            {groups[date].map((todo) => <GuideTodoCard key={todo.id} todo={todo} compact />)}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function MonthGrid({ groups }: { groups: Record<string, GuideTodo[]> }) {
+  const now = new Date();
+  const year = now.getFullYear();
+  const month = now.getMonth();
+  const first = new Date(year, month, 1);
+  const last = new Date(year, month + 1, 0);
+  const cells: Array<{ key: string; label: string; muted?: boolean; iso?: string; count?: number; urgent?: boolean }> = [];
+  const startOffset = first.getDay();
+  for (let i = 0; i < startOffset; i += 1) {
+    cells.push({ key: `blank-${i}`, label: "", muted: true });
+  }
+  for (let day = 1; day <= last.getDate(); day += 1) {
+    const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const items = groups[iso] || [];
+    cells.push({ key: iso, label: String(day), iso, count: items.length, urgent: items.some((t) => t.priority === "high" || t.dueAt) });
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  return (
+    <div className="kx-card p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <h2 className="text-lg font-black text-kx-text">{year} 年 {month + 1} 月</h2>
+        <span className="rounded-full bg-kx-soft px-2.5 py-1 text-xs font-bold text-kx-muted">Guide 日历</span>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-bold text-kx-muted">
+        {["日", "一", "二", "三", "四", "五", "六"].map((d) => <span key={d}>{d}</span>)}
+      </div>
+      <div className="mt-2 grid grid-cols-7 gap-1">
+        {cells.map((cell) => (
+          <div
+            key={cell.key}
+            className={
+              "relative flex aspect-square items-start justify-start rounded-kx-sm border p-1.5 text-xs font-black " +
+              (cell.iso === today ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : cell.count ? "border-kx-accent/25 bg-kx-card text-kx-text" : "border-transparent bg-kx-soft/45 text-kx-muted")
+            }
+          >
+            {cell.label}
+            {cell.count ? (
+              <span className={(cell.urgent ? "bg-amber-500" : "bg-kx-accent") + " absolute bottom-1 left-1/2 h-1.5 w-1.5 -translate-x-1/2 rounded-full"} />
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function daysUntil(date: string) {
+  const start = new Date(new Date().toISOString().slice(0, 10)).getTime();
+  const end = new Date(date).getTime();
+  return Math.ceil((end - start) / 86_400_000);
 }
 
 export function EmptyPanel({ title, body }: { title: string; body: string }) {

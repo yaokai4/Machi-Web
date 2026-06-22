@@ -5,7 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { CalendarDays } from "lucide-react";
 import { guide, type GuideTodo } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
-import { EmptyPanel, GuideTodoCard } from "@/components/guide/GuideOS";
+import { GuideCalendarPanel } from "@/components/guide/GuideOS";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession } from "@/lib/store";
 
@@ -39,8 +39,7 @@ export default function GuideCalendarPage() {
     );
   }
 
-  const todos = q.data?.items.map((item) => item.todo).filter(Boolean) as GuideTodo[] | undefined;
-  const groups = groupTodos(todos || []);
+  const todos = (q.data?.items.map((item) => item.todo).filter(Boolean) as GuideTodo[] | undefined) || [];
   return (
     <GuideShell back={{ href: "/guide", label: "日本指南" }}>
       <div className="space-y-7 px-4 py-7 sm:px-7">
@@ -54,51 +53,14 @@ export default function GuideCalendarPage() {
           <InlineLoading />
         ) : q.isError ? (
           <ErrorState title="日历加载失败" subtitle="请稍后重试。" onRetry={() => q.refetch()} />
-        ) : Object.keys(groups).length ? (
-          <div className="space-y-6">
-            {Object.entries(groups).map(([date, items]) => (
-              <section key={date}>
-                <div className="mb-3 flex items-center gap-2">
-                  <span className="grid h-8 w-8 place-items-center rounded-full bg-kx-accentSoft text-kx-accent">
-                    <CalendarDays className="h-4 w-4" />
-                  </span>
-                  <div>
-                    <h2 className="text-lg font-black text-kx-text">{labelDate(date)}</h2>
-                    <p className="text-xs text-kx-muted">{items.length} 项任务</p>
-                  </div>
-                </div>
-                <div className="grid gap-3 lg:grid-cols-2">
-                  {items.map((todo) => <GuideTodoCard key={todo.id} todo={todo} compact />)}
-                </div>
-              </section>
-            ))}
-          </div>
         ) : (
-          <EmptyPanel title="日历还没有任务" body="开始一个计划，或添加学校/公司截止日期和生活账单。" />
+          <GuideCalendarPanel todos={todos} />
         )}
       </div>
     </GuideShell>
   );
 }
 
-function groupTodos(todos: GuideTodo[]) {
-  return todos.reduce<Record<string, GuideTodo[]>>((acc, todo) => {
-    const key = (todo.plannedDate || todo.dueAt || todo.reminderAt || "未安排").slice(0, 10);
-    (acc[key] ||= []).push(todo);
-    return acc;
-  }, {});
-}
-
 function isoDate(date: Date) {
   return date.toISOString().slice(0, 10);
-}
-
-function labelDate(date: string) {
-  if (date === "未安排") return date;
-  const today = isoDate(new Date());
-  const tomorrow = new Date();
-  tomorrow.setDate(tomorrow.getDate() + 1);
-  if (date === today) return "今天";
-  if (date === isoDate(tomorrow)) return "明天";
-  return date;
 }

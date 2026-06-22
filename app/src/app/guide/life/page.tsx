@@ -17,6 +17,9 @@ const lifeTypes = [
   ["water", "水费"],
   ["internet", "网络费"],
   ["phone", "手机费"],
+  ["tuition", "学费"],
+  ["transport", "交通定期"],
+  ["credit_card", "信用卡"],
   ["insurance", "国民健康保险"],
   ["pension", "年金"],
   ["tax", "住民税"],
@@ -76,7 +79,7 @@ export default function GuideLifePage() {
           <section className="kx-guide-hero p-6">
             <WalletCards className="h-8 w-8 text-kx-accent" />
             <h1 className="mt-3 text-3xl font-black text-kx-text">登录后管理生活日程</h1>
-            <p className="mt-2 text-sm leading-7 text-kx-subtle">房租、水电网络、手机费、签证更新和保险年金都会同步到 Guide 日历。</p>
+            <p className="mt-2 text-sm leading-7 text-kx-subtle">房租、学费、水电网络、手机费、签证更新和保险年金都会同步到 Guide 日历。</p>
             <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-primary mt-5 h-10 px-4">登录后继续</button>
           </section>
         </div>
@@ -90,7 +93,7 @@ export default function GuideLifePage() {
         <header className="kx-guide-hero p-6">
           <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Life Plan</p>
           <h1 className="mt-2 text-3xl font-black text-kx-text">日本生活日程管家</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">管理房租、水电网络、手机费、保险、年金、住民税、签证和房屋契约更新。</p>
+          <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">管理房租、学费、水电网络、手机费、保险、年金、住民税、签证和房屋契约更新。</p>
         </header>
 
         <section className="grid gap-5 lg:grid-cols-[360px_minmax(0,1fr)]">
