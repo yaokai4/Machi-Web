@@ -1184,6 +1184,8 @@ export const adminGuide = {
     greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/plan-templates/${encodeURIComponent(id)}`, body),
   deletePlanTemplate: (id: string) =>
     greq<{ status: string }>("DELETE", `/api/admin/guide/plan-templates/${encodeURIComponent(id)}`),
+  resetPlanTemplates: (templateKey = "") =>
+    greq<{ status: string; templateKey: string; seeded: number }>("POST", `/api/admin/guide/plan-templates/reset${templateKey ? `?templateKey=${encodeURIComponent(templateKey)}` : ""}`),
   updateJourney: (key: string, body: Record<string, unknown>) =>
     greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/journeys/${encodeURIComponent(key)}`, body),
   deleteJourney: (key: string) =>

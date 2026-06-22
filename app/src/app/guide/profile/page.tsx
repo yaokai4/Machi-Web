@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { IdCard, Save } from "lucide-react";
+import { CalendarClock, IdCard, LocateFixed, Save, ShieldCheck } from "lucide-react";
 import { guide, type GuideProfile } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
@@ -18,6 +18,7 @@ export default function GuideProfilePage() {
   const queryClient = useQueryClient();
   const q = useQuery({ queryKey: ["guide", "profile", user?.id || "guest"], queryFn: () => guide.profile(), enabled: Boolean(user) });
   const [form, setForm] = useState<Partial<GuideProfile>>({});
+  const [locating, setLocating] = useState(false);
   useEffect(() => {
     if (q.data?.profile) setForm(q.data.profile);
   }, [q.data?.profile]);
@@ -30,6 +31,39 @@ export default function GuideProfilePage() {
     },
     onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "保存失败" }),
   });
+  const identity = form.identityType || "";
+  const isSchool = /语言学校|大学生|大学院|升学|准备赴日|刚到日本/.test(identity);
+  const isCareer = /新卒|转职|社会人/.test(identity);
+  const isResident = Boolean(form.isInJapan) || /在日|社会人|大学生|语言学校|家族/.test(identity);
+  const locate = () => {
+    if (typeof navigator === "undefined" || !navigator.geolocation) {
+      pushToast({ kind: "error", message: "当前浏览器不支持定位。" });
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        let label = `${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+        try {
+          const res = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${lat}&lon=${lon}&accept-language=zh-CN`);
+          const json = await res.json();
+          const address = json?.address || {};
+          label = address.city || address.town || address.village || address.state || label;
+        } catch {
+          // Keep the coordinate fallback; city can be edited manually.
+        }
+        setForm((f) => ({ ...f, city: label, isInJapan: true }));
+        setLocating(false);
+      },
+      () => {
+        setLocating(false);
+        pushToast({ kind: "error", message: "定位失败，可以手动填写城市。" });
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 300_000 },
+    );
+  };
 
   if (!user) {
     return (
@@ -67,13 +101,23 @@ export default function GuideProfilePage() {
               </div>
             </div>
             <div className="grid gap-4 sm:grid-cols-2">
-              <Field label="城市" value={form.city || ""} onChange={(v) => setForm((f) => ({ ...f, city: v }))} placeholder="东京 / 大阪 / 福冈" />
+              <div>
+                <Field label="城市" value={form.city || ""} onChange={(v) => setForm((f) => ({ ...f, city: v }))} placeholder="东京 / 大阪 / 福冈" />
+                <button type="button" onClick={locate} disabled={locating} className="mt-2 inline-flex items-center gap-1.5 rounded-full bg-kx-accentSoft px-3 py-1.5 text-xs font-bold text-kx-accent disabled:opacity-60">
+                  <LocateFixed className="h-3.5 w-3.5" /> {locating ? "获取中" : "使用当前位置"}
+                </button>
+              </div>
               <Field label="签证状态" value={form.visaStatus || ""} onChange={(v) => setForm((f) => ({ ...f, visaStatus: v }))} placeholder="留学 / 技人国 / 家族滞在" />
+              {isResident ? <Field label="在留期限" type="date" value={form.visaExpiresAt || ""} onChange={(v) => setForm((f) => ({ ...f, visaExpiresAt: v }))} /> : null}
               <Select label="当前日语" value={form.japaneseLevel || ""} options={levels} onChange={(v) => setForm((f) => ({ ...f, japaneseLevel: v }))} />
               <Select label="目标日语" value={form.targetJapaneseLevel || form.targetLevel || ""} options={levels} onChange={(v) => setForm((f) => ({ ...f, targetJapaneseLevel: v }))} />
-              <Field label="目标入学期" value={form.targetEntryTerm || ""} onChange={(v) => setForm((f) => ({ ...f, targetEntryTerm: v }))} placeholder="2027 年 4 月" />
-              <Field label="目标行业" value={form.targetIndustry || ""} onChange={(v) => setForm((f) => ({ ...f, targetIndustry: v }))} placeholder="IT / 商社 / 设计 / 研究" />
+              {isSchool ? <Field label="毕业 / 修了预计" type="date" value={form.graduationDate || ""} onChange={(v) => setForm((f) => ({ ...f, graduationDate: v }))} /> : null}
+              {isSchool ? <Field label="目标入学期" value={form.targetEntryTerm || ""} onChange={(v) => setForm((f) => ({ ...f, targetEntryTerm: v }))} placeholder="2027 年 4 月" /> : null}
+              {isSchool ? <Field label="目标学校类型" value={form.targetSchoolType || ""} onChange={(v) => setForm((f) => ({ ...f, targetSchoolType: v }))} placeholder="大学院 / 学部 / 专门 / 语言学校" /> : null}
+              {isCareer ? <Field label="目标入社期" value={form.targetEntryTerm || ""} onChange={(v) => setForm((f) => ({ ...f, targetEntryTerm: v }))} placeholder="2027 年 4 月 / 随时" /> : null}
+              {(isCareer || isSchool) ? <Field label="目标行业 / 研究方向" value={form.targetIndustry || ""} onChange={(v) => setForm((f) => ({ ...f, targetIndustry: v }))} placeholder="IT / 商社 / 设计 / 研究" /> : null}
             </div>
+            <PermanentResidencyHint profile={form} />
             <div className="flex flex-wrap gap-2">
               <Toggle label="需要资料" checked={Boolean(form.needsMaterials)} onChange={(v) => setForm((f) => ({ ...f, needsMaterials: v }))} />
               <Toggle label="需要服务/咨询" checked={Boolean(form.needsServices)} onChange={(v) => setForm((f) => ({ ...f, needsServices: v }))} />
@@ -89,11 +133,41 @@ export default function GuideProfilePage() {
   );
 }
 
-function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+function PermanentResidencyHint({ profile }: { profile: Partial<GuideProfile> }) {
+  const expiryDays = profile.visaExpiresAt ? daysUntil(profile.visaExpiresAt) : null;
+  return (
+    <div className="rounded-kx-lg border border-kx-accent/20 bg-kx-accentSoft/35 p-4">
+      <div className="flex items-start gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-kx-md bg-kx-card text-kx-accent">
+          <ShieldCheck className="h-5 w-5" />
+        </span>
+        <div className="min-w-0">
+          <h3 className="text-sm font-black text-kx-text">长期在日与永住准备</h3>
+          <p className="mt-1 text-xs leading-6 text-kx-muted">
+            Guide 会优先帮你保存城市、在留资格、在留期限、毕业/入社时间和日语目标。未来做永住/高度人才/签证更新判断时，通常需要回看居住年数、纳税年金、收入稳定性、在留期限和材料连续性；具体条件以出入国在留管理厅最新公告为准。
+          </p>
+          {expiryDays !== null ? (
+            <p className={(expiryDays <= 120 ? "text-amber-700" : "text-kx-accent") + " mt-2 inline-flex items-center gap-1 rounded-full bg-kx-card px-2.5 py-1 text-xs font-bold"}>
+              <CalendarClock className="h-3.5 w-3.5" /> 在留期限倒数 {expiryDays < 0 ? "已过期" : `${expiryDays} 天`}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function daysUntil(value: string) {
+  const today = new Date(new Date().toISOString().slice(0, 10)).getTime();
+  const target = new Date(value).getTime();
+  return Math.ceil((target - today) / 86_400_000);
+}
+
+function Field({ label, value, onChange, placeholder, type = "text" }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string }) {
   return (
     <label className="block">
       <span className="text-sm font-black text-kx-text">{label}</span>
-      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="mt-2 h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent" />
+      <input type={type} value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="mt-2 h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent" />
     </label>
   );
 }

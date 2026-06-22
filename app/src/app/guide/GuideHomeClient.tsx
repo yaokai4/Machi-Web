@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { Crown, PackageCheck, Search, Sparkles, X } from "lucide-react";
+import { CalendarDays, ClipboardList, Crown, FileText, IdCard, PackageCheck, Search, Sparkles, WalletCards, X } from "lucide-react";
 import { guide, type GuideSearchResponse } from "@/lib/guide";
 import {
   GuideShell,
@@ -17,7 +17,6 @@ import {
   CompanyCard,
   GoalChip,
   JourneyCard,
-  journeyHref,
   useGuideCountry,
 } from "@/components/guide/GuideKit";
 import {
@@ -87,7 +86,7 @@ export default function GuideHomeClient() {
   const searching = keyword.trim().length > 0;
 
   return (
-    <GuideShell right={<GuideRightRail />}>
+    <GuideShell>
       {/* Hero */}
       <header className="kx-guide-hero px-4 pb-6 pt-7 sm:px-7 sm:pt-9">
         <div className="inline-flex items-center gap-1.5 text-[11px] font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">
@@ -149,19 +148,20 @@ export default function GuideHomeClient() {
         ) : (
           <>
             <GuidePlanSummary data={activePlan.data} />
+            <GuideOSQuickActions />
 
-            <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
-              <div className="space-y-6">
-                <GuideTodayTodos todos={activePlan.data?.todayTodos || []} />
-                <GuideUpcomingDeadlines todos={activePlan.data?.upcomingTodos || activePlan.data?.openTodos || []} />
-              </div>
-              <div className="space-y-3">
-                <GuideIdentityCard profile={activePlan.data?.profile} />
-                <GuideMaterialServiceRail
-                  products={activePlan.data?.recommendedProducts ?? []}
-                  services={activePlan.data?.recommendedServices ?? []}
-                />
-              </div>
+            <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+              <GuideTodayTodos todos={activePlan.data?.todayTodos || []} />
+              <GuideIdentityCard profile={activePlan.data?.profile} />
+              <GuideUpcomingDeadlines todos={activePlan.data?.upcomingTodos || activePlan.data?.openTodos || []} />
+            </section>
+
+            <section>
+              <GuideSectionTitle title="完成任务的工具" subtitle="按你的 Todo、身份和目标推荐资料/服务，不再把商城和任务割裂开" href="/guide/services" hrefLabel="全部资料服务" />
+              <GuideMaterialServiceRail
+                products={activePlan.data?.recommendedProducts ?? []}
+                services={activePlan.data?.recommendedServices ?? []}
+              />
             </section>
 
             {/* Situation -> action path: the primary entry, above categories */}
@@ -240,6 +240,33 @@ export default function GuideHomeClient() {
         )}
       </div>
     </GuideShell>
+  );
+}
+
+function GuideOSQuickActions() {
+  const actions = [
+    { href: "/guide/plan", title: "我的计划", body: "今日任务和下一步", icon: ClipboardList },
+    { href: "/guide/calendar", title: "日历倒数", body: "截止日、面试、账单", icon: CalendarDays },
+    { href: "/guide/profile", title: "身份路径", body: "位置、在留、目标", icon: IdCard },
+    { href: "/guide/life", title: "生活缴费", body: "房租、学费、水电网络", icon: WalletCards },
+    { href: "/guide/applications", title: "出愿 / ES", body: "升学、就职、转职", icon: FileText },
+    { href: "/guide/services", title: "资料服务", body: "模板、辅导、代办", icon: PackageCheck },
+  ];
+  return (
+    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+      {actions.map((action) => {
+        const Icon = action.icon;
+        return (
+          <Link key={action.href} href={action.href} className="group rounded-kx-lg border border-kx-stroke/45 bg-kx-card/90 p-4 shadow-[0_18px_48px_-36px_rgba(15,23,42,0.42)] transition hover:-translate-y-0.5 hover:border-kx-accent/35">
+            <span className="grid h-10 w-10 place-items-center rounded-kx-md bg-kx-accentSoft text-kx-accent">
+              <Icon className="h-5 w-5" />
+            </span>
+            <span className="mt-3 block text-sm font-black text-kx-text group-hover:text-kx-accent">{action.title}</span>
+            <span className="mt-0.5 block text-xs leading-5 text-kx-muted">{action.body}</span>
+          </Link>
+        );
+      })}
+    </section>
   );
 }
 
@@ -350,44 +377,6 @@ function GuideSearchResults({
   );
 }
 
-function GuideProgressRailCard({ country }: { country: string }) {
-  const progress = useQuery({
-    queryKey: ["guide", "progress"],
-    queryFn: () => guide.progress(),
-    staleTime: 30_000,
-    retry: false,
-  });
-  const journeys = useQuery({
-    queryKey: ["guide", "journeys", country],
-    queryFn: () => guide.journeys(country),
-    staleTime: 60_000,
-  });
-  const summary = progress.data?.summary ?? [];
-  if (summary.length === 0) return null;
-  const titleOf = (key: string) => journeys.data?.journeys.find((j) => j.key === key)?.title || key;
-  return (
-    <section className="kx-card">
-      <h3 className="text-base font-black text-kx-text">我的进度</h3>
-      <ul className="mt-3 space-y-3">
-        {summary.map((s) => (
-          <li key={s.journeyKey}>
-            <Link
-              href={journeyHref(s.journeyKey)}
-              className="flex items-center justify-between text-sm font-semibold text-kx-subtle hover:text-kx-accent"
-            >
-              <span className="truncate">{titleOf(s.journeyKey)}</span>
-              <span className="shrink-0 text-xs text-kx-muted">{s.done}/{s.total}</span>
-            </Link>
-            <div className="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-kx-soft">
-              <div className="h-full rounded-full bg-kx-accent" style={{ width: `${s.percent}%` }} />
-            </div>
-          </li>
-        ))}
-      </ul>
-    </section>
-  );
-}
-
 function GuideActionHub({ productCount, serviceCount }: { productCount: number; serviceCount: number }) {
   const { t } = useI18n();
   const cards = [
@@ -442,44 +431,5 @@ function GuideActionHub({ productCount, serviceCount }: { productCount: number; 
         })}
       </div>
     </section>
-  );
-}
-
-function GuideRightRail() {
-  const { t } = useI18n();
-  const user = useSession((s) => s.user);
-  const country = useGuideCountry();
-  const links = [
-    { href: "/guide/career-japan", label: t("guide_career_title") },
-    { href: "/guide/study-japan", label: t("guide_study_title") },
-    { href: "/guide/study-abroad-japan", label: t("guide_abroad_title") },
-    { href: "/guide/jlpt", label: t("guide_jlpt_title") },
-    { href: "/guide/life-japan", label: t("guide_life_title") },
-    { href: "/guide/member-resources", label: t("guide_member_resources_title") },
-    { href: "/guide/services", label: t("guide_materials_title") },
-    { href: "/guide/schools", label: t("guide_schools_title") },
-    { href: "/guide/companies", label: t("guide_companies_title") },
-  ];
-  return (
-    <div className="space-y-3">
-      {user ? <GuideProgressRailCard country={country} /> : null}
-      <section className="kx-card">
-        <div className="inline-flex items-center gap-1.5 rounded-full bg-kx-accentSoft px-2.5 py-1 text-xs font-bold text-kx-accent">
-          <Sparkles className="h-3.5 w-3.5" /> {t("guide_badge")}
-        </div>
-        <h3 className="mt-3 text-base font-black text-kx-text">{t("guide_right_title")}</h3>
-        <p className="mt-1 text-sm leading-6 text-kx-subtle">
-          {t("guide_right_body")}
-        </p>
-      </section>
-      <section className="kx-card">
-        <h3 className="kx-section-title mb-2 px-0">{t("guide_quick_links")}</h3>
-        <ul className="space-y-1.5 text-sm font-semibold">
-          {links.map((link) => (
-            <li key={link.href}><Link href={link.href} className="text-kx-subtle hover:text-kx-accent">· {link.label}</Link></li>
-          ))}
-        </ul>
-      </section>
-    </div>
   );
 }

@@ -437,6 +437,15 @@ export function GuideCollectionAdminPage({ kind }: { kind: ContentKind }) {
     onError: (error) => pushToast({ kind: "error", message: errorMessage(error) }),
   });
 
+  const resetTemplates = useMutation({
+    mutationFn: () => adminGuide.resetPlanTemplates(""),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["admin-guide", kind] });
+      pushToast({ kind: "success", message: "已重置为代码默认模板" });
+    },
+    onError: (error) => pushToast({ kind: "error", message: errorMessage(error) }),
+  });
+
   return (
     <GuideAdminShell title={meta.title} subtitle={meta.subtitle}>
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
@@ -457,6 +466,16 @@ export function GuideCollectionAdminPage({ kind }: { kind: ContentKind }) {
             >
               <Plus className="h-4 w-4" /> 新建
             </button>
+            {kind === "plan-templates" ? (
+              <button
+                type="button"
+                className="kx-button-secondary h-10"
+                disabled={resetTemplates.isPending}
+                onClick={() => { if (window.confirm("将所有计划模板重置为代码默认（会覆盖你对模板步骤的修改），确定？")) resetTemplates.mutate(); }}
+              >
+                {resetTemplates.isPending ? "重置中…" : "重置为默认"}
+              </button>
+            ) : null}
           </div>
           {list.isLoading ? (
             <InlineLoading />

@@ -7487,6 +7487,17 @@ _GUIDE_MULTI_TIER_TODO_TYPES: set[str] = {
 }
 
 
+def _guide_funnel_log(event: str, user_id: str = "", **extra: Any) -> None:
+    """Lightweight Guide funnel analytics (spec P2): one structured ACCESS_LOG
+    line per conversion step (journeys_viewed → plan_started → todo_completed →
+    study_plan_created) so the funnel is grep-able without a new table."""
+    try:
+        parts = " ".join(f"{k}={v}" for k, v in extra.items() if v not in (None, ""))
+        ACCESS_LOG.info("guide_funnel event=%s user=%s %s", event, (user_id or "guest")[:12], parts)
+    except Exception:
+        pass
+
+
 def _guide_reminder_tier_dates(due_at: str, reminder_at: str | None, multi_tier: bool) -> list[str]:
     """All reminder dates for a todo (sorted, de-duped). High-value todos get a
     T-7/T-3/T-1 ladder off the due date; everything else just `reminder_at`."""
@@ -7939,6 +7950,15 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
                 (jkey, step["key"], country),
             ).fetchone()
             if step_exists:
+                # Step already seeded — refresh only the curated article_slugs
+                # (spec P2: step-precise reading) so re-seed pushes the editorial
+                # links to existing rows without clobbering other admin edits.
+                seed_article_slugs = _guide_csv(step.get("articleSlugs", []))
+                if seed_article_slugs:
+                    conn.execute(
+                        "UPDATE guide_journey_steps SET article_slugs = ?, updated_at = ? WHERE id = ?",
+                        (seed_article_slugs, now, step_exists["id"]),
+                    )
                 continue
             conn.execute(
                 "INSERT INTO guide_journey_steps (id, journey_key, step_key, country, language, title, summary, body, "
@@ -15195,6 +15215,7 @@ class Handler(BaseHTTPRequestHandler):
             cached = {"status": "ok", "country": country, "language": language,
                       "journeys": self._guide_journeys_payload(conn, country, language)}
             _cache_put(cache_key, cached, GUIDE_HOME_CACHE_TTL)
+        _guide_funnel_log("journeys_viewed", country=country)
         self.send_json(cached)
 
     def _guide_step_related(self, conn: sqlite3.Connection, step: sqlite3.Row | dict[str, Any],
@@ -16005,6 +16026,7 @@ class Handler(BaseHTTPRequestHandler):
         if journey_key:
             self._guide_create_journey_todos(conn, user["id"], plan_id, journey_key, target_date)
         self._guide_update_plan_progress(conn, plan_id)
+        _guide_funnel_log("plan_started", user_id=user["id"], journeyKey=journey_key or "", planType=plan_type)
         row = conn.execute("SELECT * FROM guide_plans WHERE id = ?", (plan_id,)).fetchone()
         self.send_json({"status": "ok", "plan": self._guide_plan_payload(conn, row),
                         "todos": [serialize_guide_todo(r) for r in self._guide_todos_for_query(conn, user["id"], {"planId": plan_id, "limit": "100"})]})
@@ -16123,6 +16145,7 @@ class Handler(BaseHTTPRequestHandler):
             exam_date, products="", services="", priority="high", reminder=(exam - timedelta(days=1)).isoformat())
 
         self._guide_update_plan_progress(conn, plan_id)
+        _guide_funnel_log("study_plan_created", user_id=user["id"], planType="study")
         plan_row = conn.execute("SELECT * FROM guide_plans WHERE id = ?", (plan_id,)).fetchone()
         self.send_json({"status": "ok", "plan": self._guide_plan_payload(conn, plan_row),
                         "todos": [serialize_guide_todo(r) for r in self._guide_todos_for_query(conn, user["id"], {"planId": plan_id, "limit": "100"})]})
@@ -16265,6 +16288,7 @@ class Handler(BaseHTTPRequestHandler):
         todo = conn.execute("SELECT * FROM guide_todos WHERE id = ?", (todo_id,)).fetchone()
         self._guide_sync_todo_to_progress(conn, todo)
         if complete or (not complete and str(body.get("status") or "") == "done"):
+            _guide_funnel_log("todo_completed", user_id=user["id"], todoType=todo["todo_type"] if todo else "")
             self._guide_set_reminder_status(conn, user_id=user["id"], todo_id=todo_id, status="completed")
         elif "reminderAt" in body:
             if todo["reminder_at"]:
@@ -18098,6 +18122,20 @@ class Handler(BaseHTTPRequestHandler):
         self.require_admin(conn)
         conn.execute("DELETE FROM guide_plan_templates WHERE id = ?", (rid,))
         self.send_json({"status": "ok"})
+
+    def api_admin_guide_reset_plan_template(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Reset one template (or all) back to the code-constant defaults: drop
+        the existing rows for that template_key, then re-seed from code."""
+        self.require_admin(conn)
+        key = (query.get("templateKey") or "").strip()
+        if key:
+            if key not in _GUIDE_TEMPLATE_DEFAULTS:
+                raise APIError("未知模板 key", 400, "unknown_template")
+            conn.execute("DELETE FROM guide_plan_templates WHERE template_key = ?", (key,))
+        else:
+            conn.execute("DELETE FROM guide_plan_templates")
+        seeded = _guide_seed_plan_templates(conn)
+        self.send_json({"status": "ok", "templateKey": key or "all", "seeded": seeded})
 
     def api_admin_guide_journey_steps(self, conn: sqlite3.Connection, journey_key: str, query: dict[str, str]) -> None:
         self.require_admin(conn)
@@ -20614,6 +20652,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_guide_plan_templates(conn, query)
         if path == "/api/admin/guide/plan-templates" and method == "POST":
             return self.api_admin_guide_create_plan_template(conn)
+        if path == "/api/admin/guide/plan-templates/reset" and method == "POST":
+            return self.api_admin_guide_reset_plan_template(conn, query)
         if path.startswith("/api/admin/guide/plan-templates/"):
             rid = unquote(path[len("/api/admin/guide/plan-templates/"):])
             if method == "PATCH":
