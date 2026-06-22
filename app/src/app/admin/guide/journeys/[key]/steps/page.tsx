@@ -1,10 +1,11 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import clsx from "clsx";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, ChevronDown, ChevronUp, Plus, Save, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronUp, GripVertical, Plus, Save, Trash2 } from "lucide-react";
 import { adminGuide, type GuideJourneyStep } from "@/lib/guide";
 import { GuideAdminShell } from "@/components/guide/GuideAdminKit";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
@@ -82,6 +83,8 @@ export default function GuideJourneyStepsAdminPage() {
   const pushToast = useToasts((s) => s.push);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<StepForm>(EMPTY);
+  const [dragIndex, setDragIndex] = useState<number | null>(null);
+  const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
 
   const steps = useQuery({
     queryKey: ["admin-guide", "journey-steps", journeyKey],
@@ -144,6 +147,29 @@ export default function GuideJourneyStepsAdminPage() {
     }
   };
 
+  // Drag-and-drop reorder: persist by normalising sortOrder to 0..n across the
+  // new order, only PATCHing the steps whose position actually changed.
+  const reorder = useMutation({
+    mutationFn: async (next: GuideJourneyStep[]) => {
+      await Promise.all(
+        next.map((s, i) => ((s.sortOrder || 0) !== i ? adminGuide.updateStep(s.id, { sortOrder: i }) : Promise.resolve())),
+      );
+    },
+    onSuccess: () => invalidate(),
+    onError: (error) => pushToast({ kind: "error", message: errorMessage(error) }),
+  });
+
+  const handleDrop = (target: number) => {
+    const from = dragIndex;
+    setDragIndex(null);
+    setDragOverIndex(null);
+    if (from === null || from === target) return;
+    const next = [...ordered];
+    const [moved] = next.splice(from, 1);
+    next.splice(target, 0, moved);
+    reorder.mutate(next);
+  };
+
   const startNew = () => {
     setEditingId(null);
     setForm({ ...EMPTY, sortOrder: String((ordered[ordered.length - 1]?.sortOrder || 0) + 1) });
@@ -177,7 +203,26 @@ export default function GuideJourneyStepsAdminPage() {
           ) : (
             <div className="overflow-hidden rounded-kx-md border border-kx-stroke/60">
               {ordered.map((step, index) => (
-                <div key={step.id} className="flex flex-wrap items-center gap-3 border-b border-kx-stroke/60 px-3 py-3 last:border-b-0">
+                <div
+                  key={step.id}
+                  onDragOver={(e) => { e.preventDefault(); if (dragOverIndex !== index) setDragOverIndex(index); }}
+                  onDrop={() => handleDrop(index)}
+                  className={clsx(
+                    "flex flex-wrap items-center gap-3 border-b border-kx-stroke/60 px-3 py-3 last:border-b-0 transition-colors",
+                    dragIndex === index && "opacity-50",
+                    dragOverIndex === index && dragIndex !== index && "bg-kx-accent/10",
+                  )}
+                >
+                  <div
+                    draggable
+                    onDragStart={() => setDragIndex(index)}
+                    onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
+                    className="cursor-grab text-kx-muted hover:text-kx-accent active:cursor-grabbing"
+                    title="拖拽排序"
+                    aria-label="拖拽排序"
+                  >
+                    <GripVertical className="h-4 w-4" />
+                  </div>
                   <div className="flex flex-col">
                     <button type="button" disabled={index === 0 || swap.isPending} onClick={() => move(index, -1)} className="text-kx-muted hover:text-kx-accent disabled:opacity-30">
                       <ChevronUp className="h-4 w-4" />
