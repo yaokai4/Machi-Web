@@ -32,7 +32,12 @@ export default function GuideLifePage() {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ type: "rent", title: "房租", provider: "", amount: "", dueDay: "27", reminderDaysBefore: "3", paymentMethod: "", notes: "" });
+  const [form, setForm] = useState({ type: "rent", title: "房租", provider: "", amount: "", dueDay: "27", reminderDaysBefore: "3", recurrence: "monthly", paymentMethod: "", notes: "" });
+  const presets = useQuery({
+    queryKey: ["guide", "life-presets"],
+    queryFn: () => guide.lifePresets(),
+    staleTime: 1000 * 60 * 30,
+  });
   const todos = useQuery({
     queryKey: ["guide", "todos", "life", user?.id || "guest"],
     queryFn: () => guide.todos({ type: "life_payment", status: "open", limit: 60 }),
@@ -58,7 +63,7 @@ export default function GuideLifePage() {
       reminderDaysBefore: Number(form.reminderDaysBefore || 3),
       paymentMethod: form.paymentMethod,
       notes: form.notes,
-      recurrence: "monthly",
+      recurrence: form.recurrence,
     }),
     onSuccess: () => {
       invalidateAll();
@@ -105,11 +110,24 @@ export default function GuideLifePage() {
             <label className="block">
               <span className="text-sm font-black text-kx-text">类型</span>
               <select value={form.type} onChange={(e) => {
-                const label = lifeTypes.find(([k]) => k === e.target.value)?.[1] || "";
-                setForm((f) => ({ ...f, type: e.target.value, title: label }));
+                const p = presets.data?.items.find((x) => x.type === e.target.value);
+                const label = p?.label || lifeTypes.find(([k]) => k === e.target.value)?.[1] || "";
+                // Selecting a preset pre-fills its smart defaults (recurrence +
+                // 提前提醒天数) so the user doesn't have to know them (spec P1).
+                setForm((f) => ({
+                  ...f,
+                  type: e.target.value,
+                  title: label,
+                  recurrence: p?.recurrence || f.recurrence,
+                  reminderDaysBefore: p ? String(p.reminderDaysBefore) : f.reminderDaysBefore,
+                }));
               }} className="mt-2 h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent">
-                {lifeTypes.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+                {(presets.data?.items.length
+                  ? presets.data.items.map((p) => [p.type, p.label] as const)
+                  : lifeTypes
+                ).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
               </select>
+              {form.recurrence ? <span className="mt-1 block text-[11px] font-semibold text-kx-muted">默认周期：{recurrenceLabel(form.recurrence)} · 提前 {form.reminderDaysBefore} 天提醒</span> : null}
             </label>
             <Field label="标题" value={form.title} onChange={(v) => setForm((f) => ({ ...f, title: v }))} />
             <Field label="服务商 / 备注" value={form.provider} onChange={(v) => setForm((f) => ({ ...f, provider: v }))} placeholder="ahamo / 东京电力 / 房东" />
@@ -191,6 +209,10 @@ function LifeItemCard({ item, onDelete, deleting }: { item: GuideLifeItem; onDel
       </button>
     </div>
   );
+}
+
+function recurrenceLabel(r: string): string {
+  return { monthly: "每月", quarterly: "每季", yearly: "每年", once: "一次性", weekly: "每周" }[r] || r;
 }
 
 function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {

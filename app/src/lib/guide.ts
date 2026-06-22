@@ -779,6 +779,17 @@ export interface GuideActivePlanResponse {
   suggestedJourneys?: GuideSuggestedJourney[];
   defaultJourneyKey?: string;
   recommendedNextActions?: GuideNextAction[];
+  // Retention signals (spec P1)
+  retention?: { weekDone: number; streakDays: number };
+}
+
+export interface GuideLifePreset {
+  type: string;
+  label: string;
+  icon: string;
+  recurrence: string;
+  reminderDaysBefore: number;
+  kind: "payment" | "contract" | "visa" | "procedure" | string;
 }
 
 export interface GuideSearchScope {
@@ -1003,6 +1014,8 @@ export const guide = {
     greq<{ status: string; application: GuideApplication }>("PATCH", `/api/guide/applications/${encodeURIComponent(id)}`, body),
   deleteApplication: (id: string) =>
     greq<{ status: string; deleted: string }>("DELETE", `/api/guide/applications/${encodeURIComponent(id)}`),
+  lifePresets: (language = "zh-CN") =>
+    greq<{ status: string; items: GuideLifePreset[] }>("GET", `/api/guide/life-presets${qs({ language })}`),
   lifeItems: () =>
     greq<{ status: string; items: GuideLifeItem[]; total: number }>("GET", "/api/guide/life-items"),
   createLifeItem: (body: Partial<GuideLifeItem>) =>

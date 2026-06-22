@@ -25,10 +25,12 @@ import {
   Signpost,
   BookOpen,
   School,
+  AlertTriangle,
+  ShieldCheck,
   type LucideIcon,
 } from "lucide-react";
 import type { GuideCategory, GuideEmptyState, GuideProduct, GuideCompany, GuideGoalEntry, GuideResourceEntry, GuideSchool, GuideJourney } from "@/lib/guide";
-import { GUIDE_PRODUCT_TYPE_LABELS, guideCityLabel } from "@/lib/guide";
+import { GUIDE_PRODUCT_TYPE_LABELS, guideCityLabel, isGuideArticleStale } from "@/lib/guide";
 import { formatPrice } from "@/lib/format";
 import { regionAccountPatch, resolveRegion } from "@/lib/regions";
 import { useI18n, type Locale } from "@/lib/i18n";
@@ -303,7 +305,31 @@ export function ResourceEntryCard({ entry }: { entry: GuideResourceEntry }) {
   );
 }
 
-export function ArticleCard({ article, compact = false }: { article: { slug: string; title: string; summary: string; tags: string[]; authorName: string; isFeatured?: boolean }; compact?: boolean }) {
+// Spec P1: one shared freshness badge for ALL content cards (article / school /
+// company / product). Shows "更新于 YYYY/MM/DD"; flags "需复核" when past the
+// staleAfterDays window so policy/procedure info that may have changed is
+// visibly marked. Renders nothing when there's no freshness data.
+export type GuideFreshnessLike = { verifiedAt?: string | null; staleAfterDays?: number; sourceLabel?: string | null; updatedAt?: string | null };
+
+export function GuideFreshnessBadge({ data, className }: { data?: GuideFreshnessLike | null; className?: string }) {
+  // Prefer the editorial verifiedAt (with stale-window logic); fall back to the
+  // row's updatedAt so school/company/product cards still show "更新于".
+  const stamp = data?.verifiedAt || data?.updatedAt;
+  if (!stamp) return null;
+  const d = new Date(stamp);
+  if (Number.isNaN(d.getTime())) return null;
+  const stale = Boolean(data?.verifiedAt) && isGuideArticleStale(data || {});
+  const dateText = `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getDate()).padStart(2, "0")}`;
+  return (
+    <span className={"inline-flex items-center gap-1 text-[11px] font-semibold " + (stale ? "text-amber-600 dark:text-amber-400" : "text-kx-muted") + (className ? " " + className : "")}>
+      {stale ? <AlertTriangle className="h-3 w-3" /> : <ShieldCheck className="h-3 w-3" />}
+      {stale ? "需复核" : `更新于 ${dateText}`}
+      {data?.sourceLabel ? <span className="text-kx-muted/80">· {data.sourceLabel}</span> : null}
+    </span>
+  );
+}
+
+export function ArticleCard({ article, compact = false }: { article: { slug: string; title: string; summary: string; tags: string[]; authorName: string; isFeatured?: boolean } & GuideFreshnessLike; compact?: boolean }) {
   const { t } = useI18n();
   return (
     <Link
@@ -321,15 +347,14 @@ export function ArticleCard({ article, compact = false }: { article: { slug: str
         {article.title}
       </h3>
       <p className="mt-1.5 line-clamp-2 text-sm leading-6 text-kx-subtle">{article.summary}</p>
-      {article.tags?.length ? (
-        <div className="mt-2.5 flex flex-wrap gap-1.5">
-          {article.tags.slice(0, 3).map((t) => (
-            <span key={t} className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">
-              {t}
-            </span>
-          ))}
-        </div>
-      ) : null}
+      <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+        {article.tags?.slice(0, 3).map((t) => (
+          <span key={t} className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] text-kx-muted">
+            {t}
+          </span>
+        ))}
+        <GuideFreshnessBadge data={article} className="ml-auto" />
+      </div>
     </Link>
   );
 }
@@ -365,6 +390,7 @@ export function ProductCard({ product }: { product: GuideProduct }) {
       <h3 className="line-clamp-2 text-[15px] font-black leading-snug text-kx-text group-hover:text-kx-accent">{product.title}</h3>
       {product.subtitle ? <p className="mt-1 line-clamp-2 text-xs leading-5 text-kx-subtle">{product.subtitle}</p> : null}
       {product.targetAudience ? <p className="mt-2 text-[11px] text-kx-muted">{t("guide_audience_prefix")}{product.targetAudience}</p> : null}
+      <div className="mt-auto pt-2"><GuideFreshnessBadge data={product as GuideFreshnessLike} /></div>
     </Link>
   );
 }
@@ -418,7 +444,7 @@ export function SchoolCard({ school }: { school: GuideSchool }) {
       </div>
       <div className="mt-3 flex items-center justify-between text-[11px] text-kx-muted">
         <span>{school.prefecture || guideCityLabel(school.city)} · {guideCityLabel(school.city)}</span>
-        <span>{school.verificationStatus === "needs_review" ? t("guide_school_editor") : t("guide_school_verified")}</span>
+        <GuideFreshnessBadge data={school as GuideFreshnessLike} />
       </div>
     </Link>
   );
@@ -456,6 +482,7 @@ export function CompanyCard({ company }: { company: GuideCompany }) {
         <span className={company.reviewCount > 0 ? "text-kx-accent" : ""}>
           {company.reviewCount > 0 ? `${company.reviewCount} ${t("guide_reviews_suffix")}` : t("guide_no_reviews")}
         </span>
+        <GuideFreshnessBadge data={company as GuideFreshnessLike} className="ml-auto" />
       </div>
     </Link>
   );

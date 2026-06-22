@@ -101,6 +101,8 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
   }
   const total = plan.todoTotal ?? 0;
   const done = plan.todoDone ?? 0;
+  const weekDone = data?.retention?.weekDone ?? 0;
+  const streak = data?.retention?.streakDays ?? 0;
   return (
     <section className="kx-guide-hero p-5 sm:p-6">
       <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
@@ -108,6 +110,12 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
           <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">继续你的日本计划</p>
           <h2 className="mt-2 text-2xl font-black tracking-[-0.02em] text-kx-text">{plan.title}</h2>
           <p className="mt-1 text-sm leading-6 text-kx-subtle">{plan.subtitle || "把关键事项按日期一步步完成。"}</p>
+          {(weekDone > 0 || streak > 0) ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <span className="inline-flex items-center gap-1 rounded-full bg-kx-accentSoft px-2.5 py-1 text-xs font-black text-kx-accent">🔥 本周已完成 {weekDone}</span>
+              {streak > 0 ? <span className="inline-flex items-center gap-1 rounded-full bg-kx-soft px-2.5 py-1 text-xs font-bold text-kx-text">连续打卡 {streak} 天</span> : null}
+            </div>
+          ) : null}
           <div className="mt-4 max-w-xl">
             <div className="mb-1 flex items-center justify-between text-xs font-bold">
               <span className="text-kx-accent">已完成 {done}/{total}</span>

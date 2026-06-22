@@ -6,6 +6,7 @@ import { CalendarDays } from "lucide-react";
 import { guide, type GuideTodo } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { GuideCalendarPanel } from "@/components/guide/GuideOS";
+import { GuideCalendarMonth } from "@/components/guide/GuideCalendarMonth";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession } from "@/lib/store";
 
@@ -54,7 +55,11 @@ export default function GuideCalendarPage() {
         ) : q.isError ? (
           <ErrorState title="日历加载失败" subtitle="请稍后重试。" onRetry={() => q.refetch()} />
         ) : (
-          <GuideCalendarPanel todos={todos} />
+          <>
+            {/* Desktop: month grid + day detail; mobile: grouped list (spec P2). */}
+            <div className="hidden lg:block"><GuideCalendarMonth todos={todos} /></div>
+            <div className="lg:hidden"><GuideCalendarPanel todos={todos} /></div>
+          </>
         )}
       </div>
     </GuideShell>
