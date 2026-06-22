@@ -7589,6 +7589,59 @@ def _guide_seed_plan_templates(conn: sqlite3.Connection) -> int:
     return seeded
 
 
+# Journey -> recommended product/service slugs. guide_product_relations is the
+# table api_guide_recommendations reads; without a seed it is empty, so the
+# "tools to finish this" rail on every journey/step is blank. This gives the
+# engine sensible defaults out of the box (admins can still edit/extend via the
+# product-relations admin page; the seed never overwrites existing rows).
+_GUIDE_PRODUCT_RELATION_DEFAULTS: dict[str, list[str]] = {
+    "arrival": ["first-week-procedures-pack", "bank-account-document-checklist", "mobile-plan-comparison",
+                "national-health-insurance-checklist", "arrival-one-day-support", "city-hall-procedure-support",
+                "bank-account-support", "mobile-sim-support"],
+    "prepare": ["coe-material-guide", "first-week-procedures-pack", "renting-initial-cost-worksheet",
+                "japan-airport-pickup", "japan-life-consultation"],
+    "housing": ["renting-initial-cost-worksheet", "lease-contract-check-list", "housing-application-support",
+                "delivery-utility-call", "japanese-phone-call-proxy"],
+    "language_school": ["language-school-selection-guide", "language-school-doc-checklist",
+                        "language-school-application-consult"],
+    "grad_school": ["graduate-school-application-full-pack", "research-plan-template-pack",
+                    "professor-email-template-pack", "graduate-school-interview-100",
+                    "research-plan-review-service", "graduate-school-consultation"],
+    "job_hunting": ["rirekisho-template-pack", "self-pr-motivation-template", "interview-100-questions",
+                    "foreigner-company-selection-checklist", "rirekisho-review-service",
+                    "japan-job-mock-interview", "es-motivation-revision"],
+    "jlpt": ["jlpt-n2-20-year-trend-analysis", "jlpt-n1-20-year-trend-analysis", "jlpt-n5-n1-roadmap",
+             "jlpt-n2-original-mock-20", "jlpt-n1-original-mock-20"],
+    "visa": ["work-visa-change-checklist", "coe-material-guide", "japanese-document-translation"],
+}
+
+
+def _guide_seed_product_relations(conn: sqlite3.Connection) -> int:
+    """Idempotently seed guide_product_relations by journey from the code map —
+    only for journey_keys with no rows yet, so admin curation is never lost.
+    Slugs without a matching published product are skipped silently."""
+    seeded = 0
+    now = now_iso()
+    for jkey, slugs in _GUIDE_PRODUCT_RELATION_DEFAULTS.items():
+        try:
+            existing = conn.execute("SELECT COUNT(*) AS c FROM guide_product_relations WHERE journey_key = ?", (jkey,)).fetchone()
+            if existing and int(existing["c"]) > 0:
+                continue
+            for idx, slug in enumerate(slugs):
+                prow = conn.execute("SELECT id FROM guide_products WHERE slug = ? LIMIT 1", (slug,)).fetchone()
+                if not prow:
+                    continue
+                conn.execute(
+                    "INSERT INTO guide_product_relations (id, product_id, plan_type, todo_type, journey_key, step_key, priority, created_at) "
+                    "VALUES (?, ?, '', '', ?, '', ?, ?)",
+                    (str(uuid.uuid4()), prow["id"], jkey, len(slugs) - idx, now),
+                )
+                seeded += 1
+        except Exception:
+            continue
+    return seeded
+
+
 def _guide_next_monthly_due(day: int) -> str | None:
     if day <= 0:
         return None
@@ -7979,6 +8032,7 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
             result["journeySteps"] += 1
 
     result["planTemplates"] = _guide_seed_plan_templates(conn)
+    result["productRelations"] = _guide_seed_product_relations(conn)
     return result
 
 
@@ -15321,6 +15375,31 @@ class Handler(BaseHTTPRequestHandler):
                     related_ids.append(r["product_id"])
         except Exception:
             related_ids = []
+
+        # Fallback: guide_product_relations is admin-curated and often empty, so a
+        # journey/step query would otherwise return nothing. Derive the slugs from
+        # the journey's own steps (which are seeded with product_slugs) so the
+        # "tools to finish this" rail is never empty for a real journey/step.
+        if not product_slugs and not related_ids and journey_key:
+            try:
+                if step_key:
+                    srows = conn.execute(
+                        "SELECT product_slugs FROM guide_journey_steps WHERE journey_key = ? AND step_key = ? AND country = ? AND status = 'published'",
+                        (journey_key, step_key, country),
+                    ).fetchall()
+                else:
+                    srows = conn.execute(
+                        "SELECT product_slugs FROM guide_journey_steps WHERE journey_key = ? AND country = ? AND status = 'published' ORDER BY sort_order LIMIT 12",
+                        (journey_key, country),
+                    ).fetchall()
+                derived: list[str] = []
+                for sr in srows:
+                    for sl in _guide_split_tags(sr["product_slugs"]):
+                        if sl and sl not in derived:
+                            derived.append(sl)
+                product_slugs = derived[:18]
+            except Exception:
+                pass
 
         materials: list[dict[str, Any]] = []
         services: list[dict[str, Any]] = []
