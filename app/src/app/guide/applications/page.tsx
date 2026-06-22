@@ -100,13 +100,14 @@ export default function GuideApplicationsPage() {
               <Field label={form.type === "school" ? "研究科 / 专攻" : "岗位 / 职种"} value={form.type === "school" ? form.department : form.position} onChange={(v) => setForm((f) => ({ ...f, [form.type === "school" ? "department" : "position"]: v }))} />
             ) : null}
             <Field label={form.type === "school" ? "出愿截止" : form.type === "jlpt" ? "考试日期" : "ES 截止"} value={form.deadline} onChange={(v) => setForm((f) => ({ ...f, deadline: v }))} placeholder="2026-09-10" />
+            <p className="-mt-1 text-xs leading-5 text-kx-muted">填写{form.type === "jlpt" ? "考试日期" : "截止日期"}后，Machi 会自动生成 T-90 → T-0 的倒排准备计划（套磁 / ES / 模考…）和提醒。</p>
             {form.type !== "jlpt" ? (
               <>
                 <Field label="面试时间" value={form.interviewAt} onChange={(v) => setForm((f) => ({ ...f, interviewAt: v }))} placeholder="2026-10-05 14:00" />
                 <Field label="结果发表 / Offer 日期" value={form.resultAt} onChange={(v) => setForm((f) => ({ ...f, resultAt: v }))} placeholder="2026-11-01" />
               </>
             ) : null}
-            <button type="submit" disabled={create.isPending} className="kx-button-primary h-11 w-full disabled:opacity-60">
+            <button type="submit" disabled={create.isPending || !form.name.trim() || !form.deadline.trim()} className="kx-button-primary h-11 w-full disabled:opacity-60">
               <Plus className="h-4 w-4" /> 生成 Todo
             </button>
           </form>
