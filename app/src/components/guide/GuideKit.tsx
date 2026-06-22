@@ -148,10 +148,10 @@ export function GuideShell({
   back?: { href: string; label: string };
 }) {
   return (
-    <AppShell requireAuth={false} right={right}>
+    <AppShell requireAuth={false} wide right={right ?? null}>
       <div className="kx-guide-page min-h-full">
         {back ? (
-          <div className="px-4 pt-3">
+          <div className="px-4 pt-3 sm:px-6">
             <Link
               href={back.href}
               className="inline-flex items-center gap-1.5 text-sm font-semibold text-kx-muted hover:text-kx-accent"
@@ -160,7 +160,9 @@ export function GuideShell({
             </Link>
           </div>
         ) : null}
-        {children}
+        {/* Guide drops the social right-rail and uses the full content width; an
+            inner max-width keeps long-form readable while letting grids breathe. */}
+        <div className="mx-auto w-full max-w-6xl">{children}</div>
       </div>
     </AppShell>
   );
