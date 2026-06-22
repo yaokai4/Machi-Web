@@ -869,25 +869,39 @@ body::before {
   .kx-guide-page {
     min-height: 100%;
     background:
-      linear-gradient(180deg, rgb(247 243 235) 0%, rgb(var(--kx-living-bg)) 34rem, rgb(var(--kx-living-surface)) 100%);
+      radial-gradient(120% 60% at 88% -6%, rgb(var(--kx-living-accent) / 0.07), transparent 60%),
+      radial-gradient(90% 50% at 6% 0%, rgb(var(--kx-living-warm) / 0.06), transparent 55%),
+      linear-gradient(180deg, rgb(248 244 237) 0%, rgb(var(--kx-living-bg)) 34rem, rgb(var(--kx-living-surface)) 100%);
   }
 
   :root.dark .kx-guide-page,
   [data-theme="dark"] .kx-guide-page {
-    background: linear-gradient(180deg, rgb(30 29 27), rgb(var(--kx-living-bg)) 34rem);
+    background:
+      radial-gradient(120% 60% at 88% -6%, rgb(var(--kx-living-accent) / 0.10), transparent 60%),
+      linear-gradient(180deg, rgb(30 29 27), rgb(var(--kx-living-bg)) 34rem);
   }
 
   .kx-guide-hero {
     position: relative;
     overflow: hidden;
-    border-bottom: 1px solid rgb(var(--kx-stroke) / 0.18);
+    border-radius: 1.85rem;
+    border: 1px solid rgb(255 255 255 / 0.55);
     background:
-      linear-gradient(115deg, rgb(247 241 230 / 0.96), rgb(252 249 243 / 0.94));
+      radial-gradient(130% 130% at 90% -20%, rgb(var(--kx-living-accent) / 0.16), transparent 52%),
+      radial-gradient(120% 120% at 0% 120%, rgb(var(--kx-living-warm) / 0.12), transparent 48%),
+      linear-gradient(125deg, rgb(248 242 232 / 0.97), rgb(253 250 245 / 0.96));
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.7),
+      0 26px 60px -42px rgb(var(--kx-living-accent) / 0.45);
   }
 
   :root.dark .kx-guide-hero,
   [data-theme="dark"] .kx-guide-hero {
-    background: linear-gradient(115deg, rgb(35 33 29), rgb(27 30 28));
+    border-color: rgb(255 255 255 / 0.06);
+    background:
+      radial-gradient(130% 130% at 90% -20%, rgb(var(--kx-living-accent) / 0.18), transparent 54%),
+      linear-gradient(125deg, rgb(35 33 29), rgb(27 30 28));
+    box-shadow: 0 26px 60px -42px rgb(0 0 0 / 0.6);
   }
 
   .kx-guide-door {
@@ -911,33 +925,47 @@ body::before {
 
   .kx-guide-search {
     display: flex;
-    min-height: 3.35rem;
+    min-height: 3.5rem;
     max-width: 46rem;
     align-items: center;
     gap: 0.65rem;
-    border: 1px solid rgb(var(--kx-stroke) / 0.34);
-    border-radius: 1.1rem;
-    padding: 0.35rem 0.4rem 0.35rem 1rem;
-    background: rgb(var(--kx-living-surface) / 0.96);
-    box-shadow: 0 16px 42px -32px rgb(var(--kx-shadow) / 0.46);
+    border: 1px solid rgb(255 255 255 / 0.6);
+    border-radius: 1.5rem;
+    padding: 0.4rem 0.45rem 0.4rem 1.1rem;
+    background:
+      linear-gradient(180deg, rgb(var(--kx-living-surface)), rgb(var(--kx-living-surface) / 0.92));
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.7),
+      0 18px 44px -30px rgb(var(--kx-living-accent) / 0.4);
+    transition: border-color 200ms ease, box-shadow 200ms ease;
   }
 
   .kx-guide-search:focus-within {
-    border-color: rgb(var(--kx-living-accent) / 0.48);
-    box-shadow: 0 0 0 3px rgb(var(--kx-living-accent) / 0.09);
+    border-color: rgb(var(--kx-living-accent) / 0.5);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.7),
+      0 0 0 4px rgb(var(--kx-living-accent) / 0.1),
+      0 18px 44px -28px rgb(var(--kx-living-accent) / 0.5);
   }
 
   .kx-guide-search-button {
     display: inline-flex;
-    min-height: 2.55rem;
+    min-height: 2.7rem;
     align-items: center;
     justify-content: center;
-    border-radius: 0.8rem;
-    padding: 0 1rem;
+    border-radius: 1.15rem;
+    padding: 0 1.15rem;
     color: white;
-    background: rgb(var(--kx-living-accent));
+    background: linear-gradient(135deg, rgb(34 140 126), rgb(var(--kx-living-accent)) 55%, rgb(14 86 78));
+    box-shadow: 0 10px 22px -12px rgb(var(--kx-living-accent) / 0.7);
     font-size: 0.78rem;
     font-weight: 850;
+    transition: transform 160ms ease, box-shadow 160ms ease;
+  }
+
+  .kx-guide-search-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 14px 28px -12px rgb(var(--kx-living-accent) / 0.8);
   }
 
   .kx-guide-category-card,
@@ -947,11 +975,33 @@ body::before {
   .kx-guide-directory-card,
   .kx-guide-action-card,
   .kx-guide-faq {
-    border: 1px solid rgb(var(--kx-stroke) / 0.18);
-    border-radius: 1.2rem;
-    background: rgb(var(--kx-living-surface) / 0.92);
-    box-shadow: 0 16px 42px -36px rgb(var(--kx-shadow) / 0.42);
-    transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease, background 200ms ease;
+    border: 1px solid rgb(255 255 255 / 0.55);
+    border-radius: 1.5rem;
+    background:
+      linear-gradient(180deg, rgb(var(--kx-living-surface)), rgb(var(--kx-living-surface) / 0.94));
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.6),
+      0 2px 4px -2px rgb(var(--kx-shadow) / 0.06),
+      0 18px 44px -34px rgb(var(--kx-shadow) / 0.32);
+    transition: transform 220ms cubic-bezier(0.2, 0.7, 0.3, 1), border-color 220ms ease, box-shadow 220ms ease, background 220ms ease;
+  }
+
+  :root.dark .kx-guide-category-card,
+  :root.dark .kx-guide-resource-card,
+  :root.dark .kx-guide-article-card,
+  :root.dark .kx-guide-product-card,
+  :root.dark .kx-guide-directory-card,
+  :root.dark .kx-guide-action-card,
+  :root.dark .kx-guide-faq,
+  [data-theme="dark"] .kx-guide-category-card,
+  [data-theme="dark"] .kx-guide-resource-card,
+  [data-theme="dark"] .kx-guide-article-card,
+  [data-theme="dark"] .kx-guide-product-card,
+  [data-theme="dark"] .kx-guide-directory-card,
+  [data-theme="dark"] .kx-guide-action-card,
+  [data-theme="dark"] .kx-guide-faq {
+    border-color: rgb(255 255 255 / 0.06);
+    background: linear-gradient(180deg, rgb(var(--kx-living-surface)), rgb(var(--kx-living-surface) / 0.9));
   }
 
   .kx-guide-category-card {
@@ -976,14 +1026,49 @@ body::before {
   .kx-guide-category-card:hover,
   .kx-guide-resource-card:hover,
   .kx-guide-action-card:hover {
-    transform: translateY(-2px);
-    border-color: rgb(var(--kx-living-accent) / 0.32);
-    background: rgb(var(--kx-living-surface));
-    box-shadow: 0 24px 54px -38px rgb(var(--kx-shadow) / 0.56);
+    transform: translateY(-4px);
+    border-color: rgb(var(--kx-living-accent) / 0.4);
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.6),
+      0 28px 60px -34px rgb(var(--kx-living-accent) / 0.4);
   }
 
-  .kx-guide-action-card:first-child {
-    background: rgb(245 241 250);
+  /* Guide-scoped refinements: only inside .kx-guide-page, so /home (SNS feed)
+     and the discover page are untouched. Rounder cards + warmer, accent-tinted
+     depth for a more premium "精致" feel. */
+  .kx-guide-page .kx-card {
+    border-radius: 1.5rem;
+  }
+
+  .kx-guide-page .kx-card:not(.kx-guide-hero) {
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.5),
+      0 2px 4px -2px rgb(var(--kx-shadow) / 0.05),
+      0 16px 40px -32px rgb(var(--kx-living-accent) / 0.28);
+    transition: transform 220ms cubic-bezier(0.2, 0.7, 0.3, 1), box-shadow 220ms ease, border-color 220ms ease;
+  }
+
+  /* Category / topic pills below the search — softer, rounder, accent on hover. */
+  .kx-guide-page .kx-guide-pill {
+    border-radius: 999px;
+    border: 1px solid rgb(var(--kx-stroke) / 0.28);
+    background: rgb(var(--kx-living-surface) / 0.7);
+    transition: color 160ms ease, border-color 160ms ease, background 160ms ease, transform 160ms ease;
+  }
+
+  .kx-guide-page .kx-guide-pill:hover {
+    transform: translateY(-1px);
+    color: rgb(var(--kx-living-accent));
+    border-color: rgb(var(--kx-living-accent) / 0.4);
+    background: rgb(var(--kx-living-accent-soft));
+  }
+
+  /* Icon "chip" inside action/quick cards — gradient fill + soft accent glow. */
+  .kx-guide-page .kx-guide-icon-chip {
+    background: linear-gradient(150deg, rgb(var(--kx-living-accent) / 0.18), rgb(var(--kx-living-accent) / 0.08));
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.5),
+      0 8px 18px -12px rgb(var(--kx-living-accent) / 0.5);
   }
 
   .kx-guide-action-card:last-child {

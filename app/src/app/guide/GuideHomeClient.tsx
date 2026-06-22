@@ -134,7 +134,7 @@ export default function GuideHomeClient() {
                 setDraft(tag);
                 setKeyword(tag);
               }}
-              className="rounded-full border border-kx-stroke/35 bg-white/55 px-3 py-1 text-xs font-semibold text-kx-subtle transition hover:border-kx-accent/35 hover:text-kx-accent dark:bg-white/5"
+              className="kx-guide-pill px-3.5 py-1.5 text-xs font-semibold text-kx-subtle"
             >
               {tag}
             </button>
@@ -257,8 +257,8 @@ function GuideOSQuickActions() {
       {actions.map((action) => {
         const Icon = action.icon;
         return (
-          <Link key={action.href} href={action.href} className="group rounded-kx-lg border border-kx-stroke/45 bg-kx-card/90 p-4 shadow-[0_18px_48px_-36px_rgba(15,23,42,0.42)] transition hover:-translate-y-0.5 hover:border-kx-accent/35">
-            <span className="grid h-10 w-10 place-items-center rounded-kx-md bg-kx-accentSoft text-kx-accent">
+          <Link key={action.href} href={action.href} className="kx-guide-action-card group p-4">
+            <span className="kx-guide-icon-chip grid h-11 w-11 place-items-center rounded-2xl text-kx-accent transition group-hover:scale-105">
               <Icon className="h-5 w-5" />
             </span>
             <span className="mt-3 block text-sm font-black text-kx-text group-hover:text-kx-accent">{action.title}</span>
