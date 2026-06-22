@@ -7479,6 +7479,64 @@ GUIDE_IDENTITY_DEFAULT_JOURNEY: dict[str, str] = {
     "student": "job_hunting", "worker": "visa", "career_change": "job_hunting",
 }
 
+# High-value deadlines get a T-7/T-3/T-1 reminder ladder; everything else a
+# single alert (spec P1 multi-tier reminders).
+_GUIDE_MULTI_TIER_TODO_TYPES: set[str] = {
+    "school_application", "company_es", "school_interview", "company_interview",
+    "application_result", "exam_registration", "visa_deadline",
+}
+
+
+def _guide_reminder_tier_dates(due_at: str, reminder_at: str | None, multi_tier: bool) -> list[str]:
+    """All reminder dates for a todo (sorted, de-duped). High-value todos get a
+    T-7/T-3/T-1 ladder off the due date; everything else just `reminder_at`."""
+    dates: list[str] = []
+    if multi_tier and due_at:
+        for tier in (7, 3, 1):
+            d = _guide_date_minus(due_at, tier)
+            if d:
+                dates.append(d)
+    if reminder_at:
+        dates.append(reminder_at)
+    return sorted({d for d in dates if d})
+
+# Life-bill presets (spec P1): each type carries a default recurrence + how many
+# days ahead to remind, so the editor pre-fills smart defaults. (type, zh, ja,
+# en, icon, recurrence, reminderDaysBefore, kind). kind: payment | contract |
+# visa | procedure. monthly bills default to a 3-day heads-up; annual/visa
+# items to a longer one.
+GUIDE_LIFE_ITEM_PRESETS: list[dict[str, Any]] = [
+    {"type": "rent", "zh": "房租", "ja": "家賃", "en": "Rent", "icon": "house.fill", "recurrence": "monthly", "reminderDaysBefore": 3, "kind": "payment"},
+    {"type": "electricity", "zh": "电费", "ja": "電気代", "en": "Electricity", "icon": "bolt.fill", "recurrence": "monthly", "reminderDaysBefore": 3, "kind": "payment"},
+    {"type": "water", "zh": "水费", "ja": "水道代", "en": "Water", "icon": "drop.fill", "recurrence": "monthly", "reminderDaysBefore": 3, "kind": "payment"},
+    {"type": "gas", "zh": "燃气费", "ja": "ガス代", "en": "Gas", "icon": "flame.fill", "recurrence": "monthly", "reminderDaysBefore": 3, "kind": "payment"},
+    {"type": "internet", "zh": "网络费", "ja": "ネット代", "en": "Internet", "icon": "wifi", "recurrence": "monthly", "reminderDaysBefore": 3, "kind": "payment"},
+    {"type": "phone", "zh": "手机费", "ja": "携帯代", "en": "Mobile", "icon": "iphone", "recurrence": "monthly", "reminderDaysBefore": 3, "kind": "payment"},
+    {"type": "credit_card", "zh": "信用卡还款", "ja": "クレカ引落", "en": "Credit card", "icon": "creditcard.fill", "recurrence": "monthly", "reminderDaysBefore": 3, "kind": "payment"},
+    {"type": "kokumin_hoken", "zh": "国民健康保险", "ja": "国民健康保険", "en": "National health insurance", "icon": "cross.case.fill", "recurrence": "monthly", "reminderDaysBefore": 5, "kind": "payment"},
+    {"type": "nenkin", "zh": "年金", "ja": "年金", "en": "Pension", "icon": "yensign.circle.fill", "recurrence": "monthly", "reminderDaysBefore": 5, "kind": "payment"},
+    {"type": "juminzei", "zh": "住民税", "ja": "住民税", "en": "Resident tax", "icon": "building.columns.fill", "recurrence": "quarterly", "reminderDaysBefore": 7, "kind": "payment"},
+    {"type": "fire_insurance", "zh": "火灾保险", "ja": "火災保険", "en": "Fire insurance", "icon": "flame.circle.fill", "recurrence": "yearly", "reminderDaysBefore": 14, "kind": "contract"},
+    {"type": "housing_contract", "zh": "房屋契约更新", "ja": "賃貸契約更新", "en": "Lease renewal", "icon": "doc.text.fill", "recurrence": "yearly", "reminderDaysBefore": 30, "kind": "contract"},
+    {"type": "internet_contract", "zh": "网络合约更新", "ja": "ネット契約更新", "en": "Internet contract", "icon": "wifi.router.fill", "recurrence": "yearly", "reminderDaysBefore": 14, "kind": "contract"},
+    {"type": "phone_plan", "zh": "手机套餐更新", "ja": "携帯プラン見直し", "en": "Mobile plan", "icon": "antenna.radiowaves.left.and.right", "recurrence": "yearly", "reminderDaysBefore": 14, "kind": "contract"},
+    {"type": "zairyu_card", "zh": "在留卡到期", "ja": "在留カード期限", "en": "Residence card expiry", "icon": "person.text.rectangle.fill", "recurrence": "once", "reminderDaysBefore": 60, "kind": "visa"},
+    {"type": "visa_renewal", "zh": "签证更新", "ja": "ビザ更新", "en": "Visa renewal", "icon": "airplane.circle.fill", "recurrence": "once", "reminderDaysBefore": 60, "kind": "visa"},
+    {"type": "address_change", "zh": "地址变更", "ja": "住所変更", "en": "Address change", "icon": "mappin.and.ellipse", "recurrence": "once", "reminderDaysBefore": 3, "kind": "procedure"},
+    {"type": "moving_notice", "zh": "搬家退租通知", "ja": "退去通知", "en": "Move-out notice", "icon": "shippingbox.fill", "recurrence": "once", "reminderDaysBefore": 30, "kind": "procedure"},
+    {"type": "oversized_trash", "zh": "粗大垃圾预约", "ja": "粗大ごみ予約", "en": "Bulky trash booking", "icon": "trash.fill", "recurrence": "once", "reminderDaysBefore": 3, "kind": "procedure"},
+    {"type": "yakusho", "zh": "役所手续", "ja": "役所手続き", "en": "City-hall procedure", "icon": "building.2.fill", "recurrence": "once", "reminderDaysBefore": 3, "kind": "procedure"},
+]
+_GUIDE_LIFE_PRESET_BY_TYPE = {p["type"]: p for p in GUIDE_LIFE_ITEM_PRESETS}
+
+
+def _guide_life_preset_label(preset: dict, language: str) -> str:
+    if language.startswith("ja"):
+        return preset.get("ja") or preset.get("zh") or preset["type"]
+    if language.startswith("en"):
+        return preset.get("en") or preset.get("zh") or preset["type"]
+    return preset.get("zh") or preset["type"]
+
 
 def _guide_identity_journey_order(identity_type: str, available_keys: list[str]) -> list[str]:
     """Order available journey keys by the user's identity; unmapped journeys
@@ -13814,38 +13872,62 @@ def run_guide_reminder_dispatch() -> int:
     with DB_LOCK:
         conn = db()
         try:
+            # Driven by guide_reminders rows (one per T-7/T-3/T-1 tier), joined to
+            # the todo for its live title/status/due date. status='active' is the
+            # not-yet-sent flag, so a tier never fires twice.
             rows = conn.execute(
-                "SELECT t.id, t.user_id, t.title, t.due_at, t.plan_id, t.todo_type FROM guide_todos t "
-                "WHERE t.reminder_at <> '' AND t.reminder_at <= ? AND t.reminder_at >= ? "
+                "SELECT r.id AS reminder_id, r.user_id, r.plan_id, r.reminder_at, "
+                "t.id AS todo_id, t.title, t.due_at, t.todo_type "
+                "FROM guide_reminders r JOIN guide_todos t ON t.id = r.todo_id "
+                "WHERE r.status = 'active' AND r.reminder_at <> '' AND r.reminder_at <= ? AND r.reminder_at >= ? "
                 "AND t.status NOT IN ('done','skipped') "
-                "AND NOT EXISTS (SELECT 1 FROM guide_reminders r WHERE r.todo_id = t.id AND r.status = 'sent') "
-                "ORDER BY t.reminder_at LIMIT 300",
+                "ORDER BY r.reminder_at LIMIT 300",
                 (now, floor),
             ).fetchall()
             for r in rows:
                 d = dict(r)
                 title = (d.get("title") or "Guide 提醒").strip()
-                content = f"⏰ {title}"
-                if d.get("due_at"):
-                    content += f"（{d['due_at'][:10]} 截止）"
+                due = (d.get("due_at") or "")[:10]
+                days_left = None
+                if due:
+                    try:
+                        days_left = (datetime.fromisoformat(due) - datetime.fromisoformat(now[:10])).days
+                    except ValueError:
+                        days_left = None
+                tier = ""
+                if days_left is not None and days_left >= 0:
+                    tier = f"还有 {days_left} 天 · " if days_left > 0 else "今天截止 · "
+                content = f"⏰ {tier}{title}"
+                if due and days_left is None:
+                    content += f"（{due} 截止）"
                 try:
                     server_apns.enqueue(d["user_id"], ntype="system", content=content)
-                    HUB.publish(d["user_id"], {"type": "notification", "kind": "guide_reminder", "todoId": d["id"]})
+                    HUB.publish(d["user_id"], {"type": "notification", "kind": "guide_reminder", "todoId": d["todo_id"]})
                 except Exception:
                     pass
-                existing = conn.execute(
-                    "SELECT id FROM guide_reminders WHERE user_id = ? AND todo_id = ?", (d["user_id"], d["id"])
-                ).fetchone()
-                if existing:
+                # In-app notification center entry (spec P1).
+                try:
                     conn.execute(
-                        "UPDATE guide_reminders SET status = 'sent', title = ?, reminder_at = ?, updated_at = ? WHERE id = ?",
-                        (title, now, now, existing["id"]),
+                        "INSERT INTO notifications (id, user_id, actor_id, type, content, created_at) "
+                        "VALUES (?, ?, ?, 'system', ?, ?)",
+                        (str(uuid.uuid4()), d["user_id"], d["user_id"], content, now),
+                    )
+                except Exception:
+                    pass
+                # Roll the single reminder row forward to the next tier (T-7 → T-3
+                # → T-1); when no later tier remains, mark it sent. (spec P1)
+                tiers = _guide_reminder_tier_dates(
+                    due, None, (d.get("todo_type") or "") in _GUIDE_MULTI_TIER_TODO_TYPES)
+                later = [t for t in tiers if t > (d.get("reminder_at") or "")]
+                if later:
+                    conn.execute(
+                        "UPDATE guide_reminders SET reminder_at = ?, status = 'active', updated_at = ? WHERE id = ?",
+                        (later[0], now, d["reminder_id"]),
                     )
                 else:
                     conn.execute(
-                        "INSERT INTO guide_reminders (id, user_id, todo_id, plan_id, title, reminder_at, channel, status, created_at, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?, ?, 'app', 'sent', ?, ?)",
-                        (str(uuid.uuid4()), d["user_id"], d["id"], d.get("plan_id") or "", title, now, now, now),
+                        "UPDATE guide_reminders SET status = 'sent', updated_at = ? WHERE id = ?",
+                        (now, d["reminder_id"]),
                     )
                 sent += 1
         finally:
@@ -15688,13 +15770,45 @@ class Handler(BaseHTTPRequestHandler):
             ),
         )
         if reminder_at:
-            self._guide_upsert_reminder(conn, user_id=user_id, todo_id=todo_id, plan_id=plan_id,
-                                        title=title[:200], reminder_at=reminder_at, status="active")
+            self._guide_schedule_reminders(conn, user_id=user_id, todo_id=todo_id, plan_id=plan_id,
+                                           title=title[:200], reminder_at=reminder_at, due_at=due_at or "",
+                                           multi_tier=todo_type in _GUIDE_MULTI_TIER_TODO_TYPES)
         return todo_id
+
+    def _guide_schedule_reminders(self, conn: sqlite3.Connection, *, user_id: str, todo_id: str,
+                                  plan_id: str = "", title: str = "", reminder_at: str | None = None,
+                                  due_at: str = "", multi_tier: bool = False) -> None:
+        """Schedule reminders for a todo. The single guide_reminders row (UNIQUE
+        per user+todo) holds the *next* upcoming tier; the dispatcher rolls it
+        forward to T-3 then T-1 after each fire, so high-value deadlines get a
+        T-7/T-3/T-1 ladder without breaking the unique constraint. (spec P1)"""
+        if not user_id or not todo_id:
+            return
+        today = now_iso()[:10]
+        tiers = _guide_reminder_tier_dates(due_at, reminder_at, multi_tier)
+        if not tiers:
+            self._guide_set_reminder_status(conn, user_id=user_id, todo_id=todo_id, status="cancelled")
+            return
+        # First not-yet-passed tier (else the last one, so a late add still pings).
+        future = [d for d in tiers if d >= today]
+        first = future[0] if future else tiers[-1]
+        self._guide_upsert_reminder(conn, user_id=user_id, todo_id=todo_id, plan_id=plan_id,
+                                    title=title, reminder_at=first, status="active")
+
+    def _guide_set_reminder_status(self, conn: sqlite3.Connection, *, user_id: str, todo_id: str, status: str) -> None:
+        """Bulk-update every reminder for a todo (e.g. all → 'completed' when the
+        todo is done, 'cancelled' when its date is cleared)."""
+        if not user_id or not todo_id:
+            return
+        conn.execute(
+            "UPDATE guide_reminders SET status = ?, updated_at = ? WHERE user_id = ? AND todo_id = ? AND status = 'active'",
+            (status[:40] or "active", now_iso(), user_id, todo_id),
+        )
 
     def _guide_upsert_reminder(self, conn: sqlite3.Connection, *, user_id: str, todo_id: str,
                                plan_id: str = "", title: str = "", reminder_at: str | None = None,
                                status: str = "active") -> None:
+        # Back-compat single-row helper (kept for any legacy callers).
         if not user_id or not todo_id:
             return
         now = now_iso()
@@ -15767,6 +15881,7 @@ class Handler(BaseHTTPRequestHandler):
             "status": "ok",
             "profile": serialize_guide_profile(profile),
             "plan": self._guide_plan_payload(conn, row),
+            "retention": self._guide_retention(conn, user["id"]),
             "todayTodos": [serialize_guide_todo(r) for r in self._guide_todos_for_query(conn, user["id"], {"from": today, "to": today, "limit": "8"})],
             "upcomingTodos": [serialize_guide_todo(r) for r in self._guide_todos_for_query(conn, user["id"], {"from": today, "to": upcoming_to, "limit": "12"})],
             "openTodos": [serialize_guide_todo(r) for r in todos],
@@ -15776,6 +15891,36 @@ class Handler(BaseHTTPRequestHandler):
             "recommendedNextActions": next_actions,
             **recommendations,
         })
+
+    def _guide_retention(self, conn: sqlite3.Connection, user_id: str) -> dict:
+        """Lightweight retention signals (spec P1): how many todos were completed
+        in the last 7 days, and the current consecutive-day completion streak."""
+        today = _guide_today_date().date()
+        week_floor = (today - timedelta(days=6)).isoformat()
+        try:
+            week_done = int(conn.execute(
+                "SELECT COUNT(*) AS c FROM guide_todos WHERE user_id = ? AND status = 'done' "
+                "AND completed_at IS NOT NULL AND substr(completed_at,1,10) >= ?",
+                (user_id, week_floor),
+            ).fetchone()["c"])
+            rows = conn.execute(
+                "SELECT DISTINCT substr(completed_at,1,10) AS d FROM guide_todos "
+                "WHERE user_id = ? AND status = 'done' AND completed_at IS NOT NULL "
+                "ORDER BY d DESC LIMIT 90",
+                (user_id,),
+            ).fetchall()
+        except Exception:
+            return {"weekDone": 0, "streakDays": 0}
+        done_days = {r["d"] for r in rows if r["d"]}
+        streak = 0
+        cursor = today
+        # Streak counts back from today; a completion today or yesterday keeps it alive.
+        if today.isoformat() not in done_days and (today - timedelta(days=1)).isoformat() in done_days:
+            cursor = today - timedelta(days=1)
+        while cursor.isoformat() in done_days:
+            streak += 1
+            cursor = cursor - timedelta(days=1)
+        return {"weekDone": week_done, "streakDays": streak}
 
     def _guide_personalization(self, conn: sqlite3.Connection, profile: sqlite3.Row | dict | None,
                                todo_rows: list, language: str) -> tuple[str, list[dict], str, list[dict]]:
@@ -16120,16 +16265,16 @@ class Handler(BaseHTTPRequestHandler):
         todo = conn.execute("SELECT * FROM guide_todos WHERE id = ?", (todo_id,)).fetchone()
         self._guide_sync_todo_to_progress(conn, todo)
         if complete or (not complete and str(body.get("status") or "") == "done"):
-            self._guide_upsert_reminder(
-                conn, user_id=user["id"], todo_id=todo_id, plan_id=todo["plan_id"] or "",
-                title=todo["title"] or "", reminder_at=todo["reminder_at"], status="completed",
-            )
+            self._guide_set_reminder_status(conn, user_id=user["id"], todo_id=todo_id, status="completed")
         elif "reminderAt" in body:
-            self._guide_upsert_reminder(
-                conn, user_id=user["id"], todo_id=todo_id, plan_id=todo["plan_id"] or "",
-                title=todo["title"] or "", reminder_at=todo["reminder_at"],
-                status="active" if todo["reminder_at"] else "cancelled",
-            )
+            if todo["reminder_at"]:
+                self._guide_schedule_reminders(
+                    conn, user_id=user["id"], todo_id=todo_id, plan_id=todo["plan_id"] or "",
+                    title=todo["title"] or "", reminder_at=todo["reminder_at"], due_at=todo["due_at"] or "",
+                    multi_tier=(todo["todo_type"] or "") in _GUIDE_MULTI_TIER_TODO_TYPES,
+                )
+            else:
+                self._guide_set_reminder_status(conn, user_id=user["id"], todo_id=todo_id, status="cancelled")
         self.send_json({"status": "ok", "todo": serialize_guide_todo(todo)})
 
     def api_guide_calendar(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -16289,6 +16434,15 @@ class Handler(BaseHTTPRequestHandler):
             self._guide_update_plan_progress(conn, plan_id)
         self.send_json({"status": "ok", "deleted": app_id})
 
+    def api_guide_life_presets(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Public catalog of life-bill presets with smart defaults (spec P1)."""
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
+        items = [{
+            "type": p["type"], "label": _guide_life_preset_label(p, language), "icon": p["icon"],
+            "recurrence": p["recurrence"], "reminderDaysBefore": p["reminderDaysBefore"], "kind": p["kind"],
+        } for p in GUIDE_LIFE_ITEM_PRESETS]
+        self.send_json({"status": "ok", "items": items})
+
     def api_guide_life_item_create(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         body = self.read_json()
@@ -16296,10 +16450,14 @@ class Handler(BaseHTTPRequestHandler):
         item_type = str(body.get("type") or "").strip()[:80]
         if not title or not item_type:
             return self.send_error_json("title and type required", 400, "invalid_body")
+        # Apply preset smart-defaults for known types when the client omits them.
+        preset = _GUIDE_LIFE_PRESET_BY_TYPE.get(item_type)
         due_day = _guide_int(body.get("dueDay"), 0, lo=0, hi=31)
         due_at = _guide_date_value(body.get("dueAt")) or _guide_next_monthly_due(due_day)
-        reminder_days = _guide_int(body.get("reminderDaysBefore"), 3, lo=0, hi=365)
+        default_reminder = (preset or {}).get("reminderDaysBefore", 3)
+        reminder_days = _guide_int(body.get("reminderDaysBefore"), default_reminder, lo=0, hi=365)
         reminder_at = _guide_date_minus(due_at, reminder_days)
+        recurrence = str(body.get("recurrence") or (preset or {}).get("recurrence") or "monthly").strip()[:40]
         now = now_iso()
         item_id = str(uuid.uuid4())
         conn.execute(
@@ -16309,7 +16467,7 @@ class Handler(BaseHTTPRequestHandler):
                 item_id, user["id"], item_type, title, str(body.get("provider") or "").strip()[:160],
                 _guide_int(body.get("amount"), 0, lo=0), str(body.get("currency") or "JPY").strip()[:12] or "JPY",
                 str(body.get("paymentMethod") or "").strip()[:120], due_day, due_at,
-                str(body.get("recurrence") or "monthly").strip()[:40], reminder_days,
+                recurrence, reminder_days,
                 str(body.get("notes") or "").strip()[:2000], now, now,
             ),
         )
@@ -20287,6 +20445,8 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/guide/applications/") and method == "DELETE":
             app_id = unquote(path[len("/api/guide/applications/"):]).strip("/")
             return self.api_guide_application_delete(conn, app_id)
+        if path == "/api/guide/life-presets" and method == "GET":
+            return self.api_guide_life_presets(conn, query)
         if path == "/api/guide/life-items" and method == "GET":
             return self.api_guide_life_items_list(conn, query)
         if path == "/api/guide/life-items" and method == "POST":
