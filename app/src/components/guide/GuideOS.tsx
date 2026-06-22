@@ -2,9 +2,11 @@
 
 import Link from "next/link";
 import type React from "react";
+import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
+  CalendarClock,
   CalendarDays,
   CheckCircle2,
   Circle,
@@ -12,6 +14,7 @@ import {
   FileText,
   GraduationCap,
   IdCard,
+  Repeat,
   Sparkles,
   WalletCards,
 } from "lucide-react";
@@ -139,19 +142,34 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
   );
 }
 
+function isoShift(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; compact?: boolean }) {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
+  const [showReschedule, setShowReschedule] = useState(false);
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["guide", "active-plan"] });
+    queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
+    queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+  };
   const complete = useMutation({
     mutationFn: () => guide.completeTodo(todo.id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["guide", "active-plan"] });
-      queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
-      queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
-    },
+    onSuccess: invalidate,
     onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "任务更新失败" }),
   });
+  // Spec P2 planning depth: reschedule a todo's planned date inline (改期).
+  const reschedule = useMutation({
+    mutationFn: (date: string) => guide.updateTodo(todo.id, { plannedDate: date }),
+    onSuccess: () => { invalidate(); setShowReschedule(false); pushToast({ kind: "success", message: "已改期" }); },
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "改期失败" }),
+  });
   const done = todo.status === "done";
+  const recurring = todo.recurrence === "daily" ? "每日循环" : todo.recurrence === "weekly" ? "每周循环" : "";
   return (
     <article className="kx-card p-4">
       <div className="flex items-start gap-3">
@@ -167,11 +185,27 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <TodoTag icon={<CalendarDays className="h-3 w-3" />} text={todo.plannedDate || todo.dueAt || "待安排"} tone={isOverdue(todo) ? "warn" : "muted"} />
+            {recurring ? <TodoTag icon={<Repeat className="h-3 w-3" />} text={recurring} /> : null}
             {todo.reminderAt ? <TodoTag icon={<Bell className="h-3 w-3" />} text="已提醒" /> : null}
             {todo.estimatedMinutes ? <TodoTag icon={<Clock3 className="h-3 w-3" />} text={`${todo.estimatedMinutes} 分钟`} /> : null}
           </div>
           <h3 className={"mt-2 text-[15px] font-black leading-snug " + (done ? "text-kx-muted line-through" : "text-kx-text")}>{todo.title}</h3>
           {!compact && todo.summary ? <p className="mt-1 text-sm leading-6 text-kx-subtle">{todo.summary}</p> : null}
+          {!done ? (
+            showReschedule ? (
+              <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
+                <button type="button" onClick={() => reschedule.mutate(isoShift(0))} disabled={reschedule.isPending} className="rounded-full bg-kx-soft px-2.5 py-1 text-[11px] font-bold text-kx-text hover:bg-kx-accentSoft hover:text-kx-accent">今天</button>
+                <button type="button" onClick={() => reschedule.mutate(isoShift(1))} disabled={reschedule.isPending} className="rounded-full bg-kx-soft px-2.5 py-1 text-[11px] font-bold text-kx-text hover:bg-kx-accentSoft hover:text-kx-accent">明天</button>
+                <button type="button" onClick={() => reschedule.mutate(isoShift(7))} disabled={reschedule.isPending} className="rounded-full bg-kx-soft px-2.5 py-1 text-[11px] font-bold text-kx-text hover:bg-kx-accentSoft hover:text-kx-accent">+7 天</button>
+                <input type="date" onChange={(e) => e.target.value && reschedule.mutate(e.target.value)} className="h-7 rounded-full border border-kx-stroke/60 bg-kx-card px-2 text-[11px] font-semibold outline-none focus:border-kx-accent" />
+                <button type="button" onClick={() => setShowReschedule(false)} className="text-[11px] font-semibold text-kx-muted">取消</button>
+              </div>
+            ) : (
+              <button type="button" onClick={() => setShowReschedule(true)} className="mt-2.5 inline-flex items-center gap-1 text-[11px] font-bold text-kx-muted hover:text-kx-accent">
+                <CalendarClock className="h-3 w-3" /> 改期
+              </button>
+            )
+          ) : null}
           {!compact && (todo.relatedProductSlugs.length || todo.relatedServiceSlugs.length) ? (
             <div className="mt-3 rounded-2xl bg-kx-accentSoft px-3 py-2 text-xs font-semibold text-kx-accent">
               完成这个任务有相关资料/服务可用

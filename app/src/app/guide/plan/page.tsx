@@ -4,7 +4,7 @@ import Link from "next/link";
 import type React from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays, ListChecks, PlusCircle } from "lucide-react";
-import { guide } from "@/lib/guide";
+import { guide, type GuideTodo } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { EmptyPanel, GuidePlanSummary, GuideTodoCard } from "@/components/guide/GuideOS";
 import { InlineLoading, ErrorState } from "@/components/design/States";
@@ -55,14 +55,25 @@ export default function GuidePlanPage() {
           <div className="mb-3 flex items-end justify-between">
             <div>
               <h2 className="text-xl font-black text-kx-text">全部未完成 Todo</h2>
-              <p className="mt-0.5 text-xs text-kx-muted">来自出愿、ES、面试、日语、签证和生活账单。</p>
+              <p className="mt-0.5 text-xs text-kx-muted">来自出愿、ES、面试、日语、签证和生活账单 · 可逐项完成或改期。</p>
             </div>
           </div>
           {todos.isLoading ? (
             <InlineLoading />
           ) : todos.data?.items.length ? (
-            <div className="space-y-3">
-              {todos.data.items.map((todo) => <GuideTodoCard key={todo.id} todo={todo} />)}
+            <div className="space-y-6">
+              {groupTodosByWhen(todos.data.items).map(([label, items, warn]) =>
+                items.length ? (
+                  <div key={label}>
+                    <h3 className={"mb-2 text-sm font-black " + (warn ? "text-rose-500" : "text-kx-text")}>
+                      {label} <span className="font-bold text-kx-muted">· {items.length}</span>
+                    </h3>
+                    <div className="space-y-3">
+                      {items.map((todo) => <GuideTodoCard key={todo.id} todo={todo} />)}
+                    </div>
+                  </div>
+                ) : null
+              )}
             </div>
           ) : (
             <EmptyPanel title="还没有 Todo" body="从一个行动路径开始，或添加生活账单、学校/公司截止日期。" />
@@ -71,6 +82,34 @@ export default function GuidePlanPage() {
       </div>
     </GuideShell>
   );
+}
+
+// Spec P2 planning depth: bucket open todos into 逾期 / 今天 / 未来 7 天 / 以后
+// so the user sees what's urgent first. Each tuple is [label, items, isWarn].
+function groupTodosByWhen(items: GuideTodo[]): [string, GuideTodo[], boolean][] {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const iso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const todayStr = iso(today);
+  const weekEnd = new Date(today);
+  weekEnd.setDate(weekEnd.getDate() + 7);
+  const weekStr = iso(weekEnd);
+  const overdue: GuideTodo[] = [], todayList: GuideTodo[] = [], soon: GuideTodo[] = [], later: GuideTodo[] = [];
+  for (const t of items) {
+    const when = (t.plannedDate || t.dueAt || "").slice(0, 10);
+    if (!when) later.push(t);
+    else if (when < todayStr) overdue.push(t);
+    else if (when === todayStr) todayList.push(t);
+    else if (when <= weekStr) soon.push(t);
+    else later.push(t);
+  }
+  const byDate = (a: GuideTodo, b: GuideTodo) => ((a.plannedDate || a.dueAt || "z") < (b.plannedDate || b.dueAt || "z") ? -1 : 1);
+  return [
+    ["逾期", overdue.sort(byDate), true],
+    ["今天", todayList.sort(byDate), false],
+    ["未来 7 天", soon.sort(byDate), false],
+    ["以后 / 待安排", later.sort(byDate), false],
+  ];
 }
 
 function PlanLink({ href, icon, title, body }: { href: string; icon: React.ReactNode; title: string; body: string }) {
