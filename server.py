@@ -15825,6 +15825,45 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute(f"UPDATE guide_applications SET {', '.join(updates)} WHERE id = ?", tuple(params))
         self.send_json({"status": "ok", "application": serialize_guide_application(conn.execute("SELECT * FROM guide_applications WHERE id = ?", (app_id,)).fetchone())})
 
+    def _guide_delete_todos_for_source(self, conn: sqlite3.Connection, user_id: str, source_type: str, source_id: str) -> set[str]:
+        """Remove every auto-generated todo for a source (application / life item)
+        and its reminders. The calendar is DERIVED from todos, so deleting the
+        todos also clears the calendar — no separate calendar cleanup needed.
+        Returns the affected plan ids so the caller can recompute progress."""
+        rows = conn.execute(
+            "SELECT id, plan_id FROM guide_todos WHERE user_id = ? AND source_type = ? AND source_id = ?",
+            (user_id, source_type, source_id),
+        ).fetchall()
+        plan_ids = {(r["plan_id"] or "") for r in rows if (r["plan_id"] or "")}
+        todo_ids = [r["id"] for r in rows]
+        for tid in todo_ids:
+            conn.execute("DELETE FROM guide_reminders WHERE user_id = ? AND todo_id = ?", (user_id, tid))
+        conn.execute(
+            "DELETE FROM guide_todos WHERE user_id = ? AND source_type = ? AND source_id = ?",
+            (user_id, source_type, source_id),
+        )
+        return plan_ids
+
+    def api_guide_applications_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        rows = conn.execute(
+            "SELECT * FROM guide_applications WHERE user_id = ? ORDER BY "
+            "CASE WHEN deadline IS NULL OR deadline = '' THEN 1 ELSE 0 END, deadline ASC, updated_at DESC",
+            (user["id"],),
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_application(r) for r in rows], "total": len(rows)})
+
+    def api_guide_application_delete(self, conn: sqlite3.Connection, app_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM guide_applications WHERE id = ? AND user_id = ?", (app_id, user["id"])).fetchone()
+        if not row:
+            return self.send_error_json("application not found", 404, "not_found")
+        plan_ids = self._guide_delete_todos_for_source(conn, user["id"], "application", app_id)
+        conn.execute("DELETE FROM guide_applications WHERE id = ? AND user_id = ?", (app_id, user["id"]))
+        for plan_id in plan_ids:
+            self._guide_update_plan_progress(conn, plan_id)
+        self.send_json({"status": "ok", "deleted": app_id})
+
     def api_guide_life_item_create(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         body = self.read_json()
@@ -15886,6 +15925,26 @@ class Handler(BaseHTTPRequestHandler):
             params.append(item_id)
             conn.execute(f"UPDATE guide_life_items SET {', '.join(updates)} WHERE id = ?", tuple(params))
         self.send_json({"status": "ok", "item": serialize_guide_life_item(conn.execute("SELECT * FROM guide_life_items WHERE id = ?", (item_id,)).fetchone())})
+
+    def api_guide_life_items_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        rows = conn.execute(
+            "SELECT * FROM guide_life_items WHERE user_id = ? ORDER BY active DESC, "
+            "CASE WHEN due_at IS NULL OR due_at = '' THEN 1 ELSE 0 END, due_at ASC, updated_at DESC",
+            (user["id"],),
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_life_item(r) for r in rows], "total": len(rows)})
+
+    def api_guide_life_item_delete(self, conn: sqlite3.Connection, item_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM guide_life_items WHERE id = ? AND user_id = ?", (item_id, user["id"])).fetchone()
+        if not row:
+            return self.send_error_json("life item not found", 404, "not_found")
+        plan_ids = self._guide_delete_todos_for_source(conn, user["id"], "life_item", item_id)
+        conn.execute("DELETE FROM guide_life_items WHERE id = ? AND user_id = ?", (item_id, user["id"]))
+        for plan_id in plan_ids:
+            self._guide_update_plan_progress(conn, plan_id)
+        self.send_json({"status": "ok", "deleted": item_id})
 
     # --- Generic Guide saves (reuse the `interactions` table) ---------------
     def api_guide_saved(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -19669,16 +19728,26 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_guide_todo_update(conn, todo_id)
         if path == "/api/guide/calendar" and method == "GET":
             return self.api_guide_calendar(conn, query)
+        if path == "/api/guide/applications" and method == "GET":
+            return self.api_guide_applications_list(conn, query)
         if path == "/api/guide/applications" and method == "POST":
             return self.api_guide_application_create(conn)
         if path.startswith("/api/guide/applications/") and method == "PATCH":
             app_id = unquote(path[len("/api/guide/applications/"):]).strip("/")
             return self.api_guide_application_update(conn, app_id)
+        if path.startswith("/api/guide/applications/") and method == "DELETE":
+            app_id = unquote(path[len("/api/guide/applications/"):]).strip("/")
+            return self.api_guide_application_delete(conn, app_id)
+        if path == "/api/guide/life-items" and method == "GET":
+            return self.api_guide_life_items_list(conn, query)
         if path == "/api/guide/life-items" and method == "POST":
             return self.api_guide_life_item_create(conn)
         if path.startswith("/api/guide/life-items/") and method == "PATCH":
             item_id = unquote(path[len("/api/guide/life-items/"):]).strip("/")
             return self.api_guide_life_item_update(conn, item_id)
+        if path.startswith("/api/guide/life-items/") and method == "DELETE":
+            item_id = unquote(path[len("/api/guide/life-items/"):]).strip("/")
+            return self.api_guide_life_item_delete(conn, item_id)
         if path == "/api/guide/recommendations" and method == "GET":
             return self.api_guide_recommendations(conn, query)
         if path == "/api/guide/saved" and method == "GET":

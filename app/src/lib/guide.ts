@@ -969,14 +969,22 @@ export const guide = {
     greq<{ status: string; todo: GuideTodo }>("POST", `/api/guide/todos/${encodeURIComponent(id)}/reminder`, { reminderAt }),
   calendar: (p: { from?: string; to?: string; limit?: number } = {}) =>
     greq<{ status: string; items: GuideCalendarItem[]; total: number }>("GET", `/api/guide/calendar${qs(p)}`),
+  applications: () =>
+    greq<{ status: string; items: GuideApplication[]; total: number }>("GET", "/api/guide/applications"),
   createApplication: (body: Partial<GuideApplication>) =>
     greq<{ status: string; application: GuideApplication }>("POST", "/api/guide/applications", body),
   updateApplication: (id: string, body: Partial<GuideApplication>) =>
     greq<{ status: string; application: GuideApplication }>("PATCH", `/api/guide/applications/${encodeURIComponent(id)}`, body),
+  deleteApplication: (id: string) =>
+    greq<{ status: string; deleted: string }>("DELETE", `/api/guide/applications/${encodeURIComponent(id)}`),
+  lifeItems: () =>
+    greq<{ status: string; items: GuideLifeItem[]; total: number }>("GET", "/api/guide/life-items"),
   createLifeItem: (body: Partial<GuideLifeItem>) =>
     greq<{ status: string; item: GuideLifeItem }>("POST", "/api/guide/life-items", body),
   updateLifeItem: (id: string, body: Partial<GuideLifeItem>) =>
     greq<{ status: string; item: GuideLifeItem }>("PATCH", `/api/guide/life-items/${encodeURIComponent(id)}`, body),
+  deleteLifeItem: (id: string) =>
+    greq<{ status: string; deleted: string }>("DELETE", `/api/guide/life-items/${encodeURIComponent(id)}`),
   savedItems: () => greq<{ status: string; items: GuideSavedItem[] }>("GET", "/api/guide/saved"),
   setSaved: (itemType: string, itemId: string, on: boolean) =>
     greq<{ status: string; saved: boolean; itemType: string; itemId: string }>(

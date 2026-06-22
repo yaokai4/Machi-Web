@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Home, Plus, WalletCards } from "lucide-react";
+import { CalendarClock, Home, Plus, Trash2, WalletCards } from "lucide-react";
 import { guide } from "@/lib/guide";
+import type { GuideLifeItem } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { EmptyPanel, GuideTodoCard } from "@/components/guide/GuideOS";
 import { InlineLoading } from "@/components/design/States";
@@ -34,6 +35,16 @@ export default function GuideLifePage() {
     queryFn: () => guide.todos({ type: "life_payment", status: "open", limit: 60 }),
     enabled: Boolean(user),
   });
+  const items = useQuery({
+    queryKey: ["guide", "life-items", user?.id || "guest"],
+    queryFn: () => guide.lifeItems(),
+    enabled: Boolean(user),
+  });
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({ queryKey: ["guide", "life-items"] });
+    queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
+    queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+  };
   const create = useMutation({
     mutationFn: () => guide.createLifeItem({
       type: form.type,
@@ -47,11 +58,15 @@ export default function GuideLifePage() {
       recurrence: "monthly",
     }),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
-      queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+      invalidateAll();
       pushToast({ kind: "success", message: "生活事项已添加" });
     },
     onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "添加失败" }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => guide.deleteLifeItem(id),
+    onSuccess: () => { invalidateAll(); pushToast({ kind: "success", message: "已删除该生活事项及其待办" }); },
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "删除失败" }),
   });
 
   if (!user) {
@@ -106,19 +121,72 @@ export default function GuideLifePage() {
             </button>
           </form>
 
-          <section>
-            <h2 className="mb-3 text-xl font-black text-kx-text">生活待办</h2>
-            {todos.isLoading ? <InlineLoading /> : todos.data?.items.length ? (
-              <div className="space-y-3">
-                {todos.data.items.map((todo) => <GuideTodoCard key={todo.id} todo={todo} />)}
-              </div>
-            ) : (
-              <EmptyPanel title="还没有生活待办" body="添加房租、手机费、网络费、签证到期等事项后，会自动生成 Todo 和日历提醒。" />
-            )}
-          </section>
+          <div className="space-y-7">
+            {items.data?.items.length ? (
+              <section>
+                <h2 className="mb-3 text-xl font-black text-kx-text">我的生活事项</h2>
+                <div className="space-y-3">
+                  {items.data.items.map((item) => (
+                    <LifeItemCard key={item.id} item={item} onDelete={() => remove.mutate(item.id)} deleting={remove.isPending && remove.variables === item.id} />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            <section>
+              <h2 className="mb-3 text-xl font-black text-kx-text">生活待办</h2>
+              {todos.isLoading ? <InlineLoading /> : todos.data?.items.length ? (
+                <div className="space-y-3">
+                  {todos.data.items.map((todo) => <GuideTodoCard key={todo.id} todo={todo} />)}
+                </div>
+              ) : (
+                <EmptyPanel title="还没有生活待办" body="添加房租、手机费、网络费、签证到期等事项后，会自动生成 Todo 和日历提醒。" />
+              )}
+            </section>
+          </div>
         </section>
       </div>
     </GuideShell>
+  );
+}
+
+// A saved life item with its amount + due day and a delete affordance. Deleting
+// removes the item AND its generated payment todos + reminders.
+function LifeItemCard({ item, onDelete, deleting }: { item: GuideLifeItem; onDelete: () => void; deleting: boolean }) {
+  const amount = item.amount ? `${item.currency || "JPY"} ${item.amount.toLocaleString()}` : "";
+  const due = item.dueDay ? `每月 ${item.dueDay} 号` : (item.dueAt || "");
+  return (
+    <div className="kx-card flex items-start gap-3 p-4">
+      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
+        <WalletCards className="h-5 w-5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-sm font-black text-kx-text">{item.title}</p>
+          {amount ? <span className="shrink-0 rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">{amount}</span> : null}
+        </div>
+        {item.provider ? <p className="mt-0.5 truncate text-xs text-kx-muted">{item.provider}</p> : null}
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {due ? (
+            <span className="inline-flex items-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-2 py-0.5 text-[11px] font-semibold text-kx-subtle">
+              <CalendarClock className="h-3 w-3" /> {due}
+            </span>
+          ) : null}
+          {item.paymentMethod ? (
+            <span className="rounded-full border border-kx-stroke/60 bg-kx-card px-2 py-0.5 text-[11px] font-semibold text-kx-subtle">{item.paymentMethod}</span>
+          ) : null}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onDelete}
+        disabled={deleting}
+        aria-label="删除生活事项"
+        className="shrink-0 rounded-xl p-2 text-kx-muted transition hover:bg-rose-500/10 hover:text-rose-500 disabled:opacity-50"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
   );
 }
 

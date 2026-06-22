@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Briefcase, GraduationCap, Plus } from "lucide-react";
+import { Briefcase, CalendarClock, GraduationCap, Plus, Trash2 } from "lucide-react";
 import { guide } from "@/lib/guide";
-import type { GuideSchool, GuideCompany } from "@/lib/guide";
+import type { GuideApplication, GuideSchool, GuideCompany } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { EmptyPanel, GuideTodoCard } from "@/components/guide/GuideOS";
 import { InlineLoading } from "@/components/design/States";
@@ -22,15 +22,29 @@ export default function GuideApplicationsPage() {
     enabled: Boolean(user),
     select: (data) => ({ ...data, items: data.items.filter((t) => ["school_application", "school_interview", "company_es", "company_interview", "application_result"].includes(t.todoType)) }),
   });
+  const applications = useQuery({
+    queryKey: ["guide", "applications", user?.id || "guest"],
+    queryFn: () => guide.applications(),
+    enabled: Boolean(user),
+  });
+  const invalidateAll = () => {
+    queryClient.invalidateQueries({ queryKey: ["guide", "applications"] });
+    queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
+    queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+  };
   const create = useMutation({
     mutationFn: () => guide.createApplication(form),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
-      queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+      invalidateAll();
       pushToast({ kind: "success", message: "申请日程已添加" });
       setForm((f) => ({ ...f, name: "", department: "", position: "", deadline: "", interviewAt: "", resultAt: "", notes: "" }));
     },
     onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "添加失败" }),
+  });
+  const remove = useMutation({
+    mutationFn: (id: string) => guide.deleteApplication(id),
+    onSuccess: () => { invalidateAll(); pushToast({ kind: "success", message: "已删除该申请及其待办" }); },
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "删除失败" }),
   });
 
   if (!user) {
@@ -77,16 +91,29 @@ export default function GuideApplicationsPage() {
             </button>
           </form>
 
-          <section>
-            <h2 className="mb-3 text-xl font-black text-kx-text">申请待办</h2>
-            {todos.isLoading ? <InlineLoading /> : todos.data?.items.length ? (
-              <div className="space-y-3">
-                {todos.data.items.map((todo) => <GuideTodoCard key={todo.id} todo={todo} />)}
-              </div>
-            ) : (
-              <EmptyPanel title="还没有申请待办" body="添加大学出愿、公司 ES 或面试时间后，Machi 会自动生成倒排 Todo 和提醒。" />
-            )}
-          </section>
+          <div className="space-y-7">
+            {applications.data?.items.length ? (
+              <section>
+                <h2 className="mb-3 text-xl font-black text-kx-text">我的申请</h2>
+                <div className="space-y-3">
+                  {applications.data.items.map((app) => (
+                    <ApplicationCard key={app.id} app={app} onDelete={() => remove.mutate(app.id)} deleting={remove.isPending && remove.variables === app.id} />
+                  ))}
+                </div>
+              </section>
+            ) : null}
+
+            <section>
+              <h2 className="mb-3 text-xl font-black text-kx-text">申请待办</h2>
+              {todos.isLoading ? <InlineLoading /> : todos.data?.items.length ? (
+                <div className="space-y-3">
+                  {todos.data.items.map((todo) => <GuideTodoCard key={todo.id} todo={todo} />)}
+                </div>
+              ) : (
+                <EmptyPanel title="还没有申请待办" body="添加大学出愿、公司 ES 或面试时间后，Machi 会自动生成倒排 Todo 和提醒。" />
+              )}
+            </section>
+          </div>
         </section>
       </div>
     </GuideShell>
@@ -137,6 +164,48 @@ function LibraryPickerField({ type, value, onChange }: { type: string; value: st
         </div>
       ) : null}
     </label>
+  );
+}
+
+// A saved application with its key dates and a delete affordance. Deleting
+// removes the application AND its generated reverse-countdown todos + reminders.
+function ApplicationCard({ app, onDelete, deleting }: { app: GuideApplication; onDelete: () => void; deleting: boolean }) {
+  const isSchool = app.type === "school";
+  const chips: { label: string; value: string }[] = [];
+  if (app.deadline) chips.push({ label: isSchool ? "出愿截止" : "ES 截止", value: app.deadline });
+  if (app.interviewAt) chips.push({ label: "面试", value: app.interviewAt });
+  if (app.resultAt) chips.push({ label: "结果", value: app.resultAt });
+  return (
+    <div className="kx-card flex items-start gap-3 p-4">
+      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
+        {isSchool ? <GraduationCap className="h-5 w-5" /> : <Briefcase className="h-5 w-5" />}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-sm font-black text-kx-text">{app.name}</p>
+          <span className="shrink-0 rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">{isSchool ? "升学" : "就职/转职"}</span>
+        </div>
+        {(app.department || app.position) ? <p className="mt-0.5 truncate text-xs text-kx-muted">{app.department || app.position}</p> : null}
+        {chips.length ? (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {chips.map((c) => (
+              <span key={c.label} className="inline-flex items-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-2 py-0.5 text-[11px] font-semibold text-kx-subtle">
+                <CalendarClock className="h-3 w-3" /> {c.label} · {c.value}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        onClick={onDelete}
+        disabled={deleting}
+        aria-label="删除申请"
+        className="shrink-0 rounded-xl p-2 text-kx-muted transition hover:bg-rose-500/10 hover:text-rose-500 disabled:opacity-50"
+      >
+        <Trash2 className="h-4 w-4" />
+      </button>
+    </div>
   );
 }
 
