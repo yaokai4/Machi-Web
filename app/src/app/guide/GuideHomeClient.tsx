@@ -9,7 +9,7 @@ import {
   GuideShell,
   GuideComingSoon,
   GuideSectionTitle,
-  CategoryCard,
+  CategoryPill,
   ResourceEntryCard,
   ArticleCard,
   ProductCard,
@@ -164,7 +164,9 @@ export default function GuideHomeClient() {
               />
             </section>
 
-            {/* Situation -> action path: the primary entry, above categories */}
+            {/* Situation -> action path is the single primary entry. Core
+                categories overlapped with these journeys, so they're merged in
+                below as a compact "browse by topic" row instead of a 2nd grid. */}
             {data.journeys?.length ? (
               <section>
                 <GuideSectionTitle
@@ -178,18 +180,16 @@ export default function GuideHomeClient() {
                     <JourneyCard key={j.key} journey={j} />
                   ))}
                 </div>
+                {data.categories?.length ? (
+                  <div className="mt-4 flex flex-wrap items-center gap-2">
+                    <span className="mr-1 text-xs font-bold text-kx-muted">或按主题浏览资料库：</span>
+                    {data.categories.map((c) => (
+                      <CategoryPill key={c.key} category={c} />
+                    ))}
+                  </div>
+                ) : null}
               </section>
             ) : null}
-
-            {/* Core categories */}
-            <section>
-              <GuideSectionTitle title={t("guide_core_categories")} subtitle={t("guide_core_categories_subtitle")} />
-              <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
-                {data.categories.map((c) => (
-                  <CategoryCard key={c.key} category={c} />
-                ))}
-              </div>
-            </section>
 
             <GuideActionHub productCount={data.featuredProducts.length} serviceCount={data.featuredServices.length} />
 

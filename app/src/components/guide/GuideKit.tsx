@@ -285,6 +285,27 @@ export function CategoryCard({ category }: { category: GuideCategory }) {
   );
 }
 
+// Compact "browse by topic" pill — the journeys above are the primary,
+// action-oriented entry; categories overlap with them, so instead of a second
+// full card grid we surface them as a slim chip row under the journeys.
+export function CategoryPill({ category }: { category: GuideCategory }) {
+  const Icon = categoryIconFor(category.icon);
+  return (
+    <Link
+      href={categoryHref(category.key)}
+      className="group inline-flex items-center gap-2 rounded-full border border-kx-stroke/50 bg-kx-card px-3.5 py-2 text-sm font-bold text-kx-subtle transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:text-kx-accent"
+    >
+      <span
+        className="grid h-6 w-6 place-items-center rounded-lg text-white transition-transform duration-200 group-hover:scale-110"
+        style={{ backgroundColor: category.color || "#2563EB" }}
+      >
+        <Icon className="h-3.5 w-3.5" />
+      </span>
+      {category.title}
+    </Link>
+  );
+}
+
 export function ResourceEntryCard({ entry }: { entry: GuideResourceEntry }) {
   const Icon = categoryIconFor(entry.icon);
   const { t } = useI18n();
