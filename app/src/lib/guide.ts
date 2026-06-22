@@ -701,7 +701,8 @@ export interface GuideApplication {
   id: string;
   userId: string;
   planId: string;
-  type: "school" | "company" | string;
+  type: "school" | "company" | "jlpt" | string;
+  careerTrack?: string;
   name: string;
   department: string;
   position: string;
@@ -1283,4 +1284,14 @@ export const GUIDE_CITY_LABELS: Record<string, string> = {
 export function guideCityLabel(city?: string | null): string {
   const k = String(city || "").trim().toLowerCase();
   return GUIDE_CITY_LABELS[k] ?? (city || "日本全国");
+}
+
+/** Whether a guide article is past its self-declared freshness window
+ * (verifiedAt + staleAfterDays). Used to flag "需复核" on content cards so
+ * policy/procedure info that may have changed is visibly marked. */
+export function isGuideArticleStale(a: { verifiedAt?: string | null; staleAfterDays?: number }): boolean {
+  if (!a.verifiedAt || !a.staleAfterDays || a.staleAfterDays <= 0) return false;
+  const t = new Date(a.verifiedAt).getTime();
+  if (Number.isNaN(t)) return false;
+  return Date.now() > t + a.staleAfterDays * 86400000;
 }

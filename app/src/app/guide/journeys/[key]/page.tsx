@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarPlus, CheckCircle2, Circle, Clock3, FileText, Package, ShieldCheck, Signpost } from "lucide-react";
-import { guide, type GuideJourneyStep } from "@/lib/guide";
+import { guide, isGuideArticleStale, type GuideJourneyStep } from "@/lib/guide";
 import { GuideShell, GuideComingSoon, journeyIconFor, useGuideCountry } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
@@ -242,16 +242,25 @@ function StepRow({
 
           {step.relatedArticles?.length ? (
             <div className="mt-3 space-y-1.5">
-              {step.relatedArticles.slice(0, 3).map((a) => (
-                <Link
-                  key={a.id}
-                  href={`/guide/articles/${a.slug}`}
-                  className="flex items-center gap-2 rounded-xl bg-kx-soft px-3 py-2 text-xs font-semibold text-kx-text hover:text-kx-accent"
-                >
-                  <FileText className="h-3.5 w-3.5 shrink-0 text-kx-accent" />
-                  <span className="truncate">{a.title}</span>
-                </Link>
-              ))}
+              {step.relatedArticles.slice(0, 3).map((a) => {
+                const stamp = (a.verifiedAt || a.publishedAt || a.updatedAt || "").slice(0, 10);
+                const stale = isGuideArticleStale(a);
+                return (
+                  <Link
+                    key={a.id}
+                    href={`/guide/articles/${a.slug}`}
+                    className="flex items-center gap-2 rounded-xl bg-kx-soft px-3 py-2 text-xs font-semibold text-kx-text hover:text-kx-accent"
+                  >
+                    <FileText className="h-3.5 w-3.5 shrink-0 text-kx-accent" />
+                    <span className="truncate">{a.title}</span>
+                    {stamp ? (
+                      <span className={"ml-auto shrink-0 text-[10px] font-medium " + (stale ? "text-amber-600" : "text-kx-subtle")}>
+                        {stale ? "需复核 · " : "更新于 "}{stamp}
+                      </span>
+                    ) : null}
+                  </Link>
+                );
+              })}
             </div>
           ) : null}
 

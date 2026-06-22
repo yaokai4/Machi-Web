@@ -7348,24 +7348,64 @@ _GUIDE_SCHOOL_MILESTONES: list[tuple[int, str, str, str, str, str]] = [
     (7, "出愿前最终确认", "确认网申表单、缴费、邮寄方式与截止时间(JST)。", "document_prepare",
      "application-documents-checklist", ""),
 ]
-_GUIDE_COMPANY_MILESTONES: list[tuple[int, str, str, str, str, str]] = [
-    (30, "企业研究", "研究事业、岗位、求める人物像，整理自我分析与志望动机。", "career_document",
-     "", ""),
-    (21, "ES / 职务经歴书 草稿", "完成 ES 与履历/职务经歴书初稿，量化成果与强项。", "company_es",
-     "self-pr-motivation-template,shokumukeirekisho-template-pack", ""),
-    (14, "ES 修改打磨", "打磨自己 PR 与志望动机，请人复盘语气与逻辑。", "company_es",
-     "self-pr-motivation-template", "es-motivation-revision,shokumukeirekisho-review-service"),
-    (10, "SPI / Web 测试准备", "刷 SPI / 玉手箱 / 性格测试，安排考点或在宅测试。", "exam_study",
-     "", ""),
-    (7, "面试问题准备", "准备自我介绍、强项弱项与高频面试问题的回答。", "company_interview",
+# 新卒就活 (fresh-graduate) — long, highly-sequenced Japanese 就活 timeline.
+_GUIDE_COMPANY_SHINSOTSU_MILESTONES: list[tuple[int, str, str, str, str, str]] = [
+    (120, "自我分析 + 行业研究", "梳理强项/价值观与志望行业，确定大致目标企业群。", "career_document", "", ""),
+    (90, "企业研究 + OB/OG 访谈", "研究事业内容、求める人物像，约 OB/OG 访谈收集一手信息。", "career_document", "", ""),
+    (60, "说明会 / 实习(インターン)", "参加说明会与暑期/短期实习，积累与企业的接点。", "career_document", "", ""),
+    (45, "ES / 履历书 草稿", "完成 ES、自己PR、志望动机与履历书初稿，量化经历。", "company_es",
+     "self-pr-motivation-template", ""),
+    (30, "ES 修改 + SPI 准备", "打磨 ES 语气与逻辑，同时开始刷 SPI / 玉手箱 / 性格测试。", "company_es",
+     "self-pr-motivation-template", "es-motivation-revision"),
+    (21, "SPI / Web 测试", "完成 Web 测试或安排考点，确认各企业测试形式。", "exam_study", "", ""),
+    (14, "一次面试准备", "准备自我介绍、Gakuchika、强弱项与高频问题。", "company_interview",
      "interview-100-questions", "japan-job-mock-interview"),
-    (5, "逆質問准备", "准备 5-8 条逆質問，体现对企业与岗位的理解。", "company_interview",
+    (10, "二次面试 + 逆質問", "准备逆質問与更深的事业理解，复盘一面表现。", "company_interview",
      "interview-100-questions", ""),
+    (5, "最终面试准备", "准备役员面常见提问、入社意愿与职业规划。", "company_interview",
+     "interview-100-questions", "japan-job-mock-interview"),
+    (1, "内定 / 在留资格变更确认", "确认内定承诺、入社时间，毕业后办理在留资格变更。", "career_document", "", ""),
 ]
+# 社会人转职 (mid-career) — résumé-driven, rolling-deadline flow.
+_GUIDE_COMPANY_TENSHOKU_MILESTONES: list[tuple[int, str, str, str, str, str]] = [
+    (45, "职业棚卸 + 市场调研", "盘点技能与成果，调研目标行业薪资与求人趋势。", "career_document", "", ""),
+    (35, "履历书 + 职务经歴书", "完成履历书与职务经歴书，用数字写清职责与成果。", "career_document",
+     "shokumukeirekisho-template-pack", "shokumukeirekisho-review-service"),
+    (28, "求人筛选 + 应募", "筛选 agent/求人，定制志望动机后投递。", "career_document",
+     "self-pr-motivation-template", ""),
+    (21, "カジュアル面谈准备", "准备转职理由、想做的事与提问，建立与企业的对话。", "company_interview",
+     "interview-100-questions", ""),
+    (14, "技术 / 一次面试", "准备职务相关深问、案例与作品集(如适用)。", "company_interview",
+     "interview-100-questions", "japan-job-mock-interview"),
+    (7, "最终面试 + 条件确认", "准备役员面与年收/条件交涉要点。", "company_interview",
+     "interview-100-questions", ""),
+    (2, "Offer / 退职交接 / 入社 + 签证", "确认 Offer，安排退职交接与入社手续，办理在留资格变更。", "career_document", "", ""),
+]
+# JLPT / 考试 — anchored to the exam date, daily/weekly study cadence.
+_GUIDE_JLPT_MILESTONES: list[tuple[int, str, str, str, str, str]] = [
+    (90, "选教材 + 制定学习计划", "确定目标级别教材，按每周词汇/语法/听力/阅读排计划。", "exam_study", "", ""),
+    (75, "词汇集中突破", "按计划完成核心词汇第一轮，建立每日词汇打卡。", "exam_study", "", ""),
+    (60, "语法系统过一遍", "系统过一遍目标级别语法点，整理易混语法。", "exam_study", "", ""),
+    (45, "第一次全真模考", "做一套真题模考，定位词汇/语法/听力/阅读弱项。", "exam_study", "", ""),
+    (30, "错题复盘 + 听力强化", "复盘模考错题，加强听力与长文阅读速度。", "exam_study", "", ""),
+    (21, "第二次模考", "再做一套模考，对照分数确认提分点。", "exam_study", "", ""),
+    (14, "真题冲刺", "限时刷真题，训练答题节奏与涂卡时间。", "exam_study", "", ""),
+    (7, "报名确认 + 准考证 + 考点", "确认已报名、打印准考证、确认考点与交通。", "exam_registration", "", ""),
+    (3, "考前最终复习 + 物品准备", "过一遍易错点，准备准考证、证件、铅笔与手表。", "exam_study", "", ""),
+    (1, "考试当天提醒", "提前出发，带齐证件，按时入场。", "exam_study", "", ""),
+]
+_GUIDE_COMPANY_MILESTONES = _GUIDE_COMPANY_SHINSOTSU_MILESTONES  # back-compat default
 
 
-def _guide_application_milestones(app_type: str) -> list[tuple[int, str, str, str, str, str]]:
-    return _GUIDE_SCHOOL_MILESTONES if app_type == "school" else _GUIDE_COMPANY_MILESTONES
+def _guide_application_milestones(app_type: str, career_track: str = "") -> list[tuple[int, str, str, str, str, str]]:
+    if app_type == "school":
+        return _GUIDE_SCHOOL_MILESTONES
+    if app_type == "jlpt" or app_type == "exam":
+        return _GUIDE_JLPT_MILESTONES
+    # company: split fresh-grad vs mid-career
+    if (career_track or "").strip().lower() in {"tenshoku", "mid_career", "midcareer", "社会人"}:
+        return _GUIDE_COMPANY_TENSHOKU_MILESTONES
+    return _GUIDE_COMPANY_SHINSOTSU_MILESTONES
 
 
 def _guide_next_monthly_due(day: int) -> str | None:
@@ -15866,6 +15906,7 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         body = self.read_json()
         app_type = str(body.get("type") or "school").strip()[:40]
+        career_track = str(body.get("careerTrack") or body.get("career_track") or "").strip()[:40]
         name = str(body.get("name") or "").strip()[:200]
         if not name:
             return self.send_error_json("name required", 400, "invalid_body")
@@ -15884,26 +15925,27 @@ class Handler(BaseHTTPRequestHandler):
                 deadline, interview_at, result_at, str(body.get("notes") or "").strip()[:2000], now, now,
             ),
         )
-        todo_type = "school_application" if app_type == "school" else "company_es"
+        is_jlpt = app_type in ("jlpt", "exam")
+        todo_type = "school_application" if app_type == "school" else ("exam_registration" if is_jlpt else "company_es")
+        deadline_label = "出愿截止" if app_type == "school" else ("考试日" if is_jlpt else "ES 截止")
         if deadline:
-            deadline_product_slugs = (
-                "research-plan-template-pack,application-documents-checklist,professor-email-template-pack"
-                if app_type == "school"
-                else "rirekisho-template-pack,self-pr-motivation-template,shokumukeirekisho-template-pack"
-            )
-            deadline_service_slugs = (
-                "research-plan-review-service,graduate-school-consultation,research-plan-revision"
-                if app_type == "school"
-                else "rirekisho-review-service,shokumukeirekisho-review-service,es-motivation-revision"
-            )
+            if app_type == "school":
+                deadline_product_slugs = "research-plan-template-pack,application-documents-checklist,professor-email-template-pack"
+                deadline_service_slugs = "research-plan-review-service,graduate-school-consultation,research-plan-revision"
+            elif is_jlpt:
+                deadline_product_slugs = ""
+                deadline_service_slugs = ""
+            else:
+                deadline_product_slugs = "rirekisho-template-pack,self-pr-motivation-template,shokumukeirekisho-template-pack"
+                deadline_service_slugs = "rirekisho-review-service,shokumukeirekisho-review-service,es-motivation-revision"
             self._guide_todo_insert(conn, user_id=user["id"], plan_id=plan_id, source_type="application", source_id=app_id,
-                                    title=f"{name} {'出愿截止' if app_type == 'school' else 'ES 截止'}", summary=name,
+                                    title=f"{name} {deadline_label}", summary=name,
                                     todo_type=todo_type, due_at=deadline, reminder_at=_guide_date_minus(deadline, 7), priority="high",
                                     product_slugs=deadline_product_slugs, service_slugs=deadline_service_slugs)
             # Back-plan the run-up: emit the full reverse-countdown ladder so the
             # user gets a week-by-week prep plan, not just a single due date.
             today_iso = now_iso()[:10]
-            for offset, m_title, m_summary, m_type, m_products, m_services in _guide_application_milestones(app_type):
+            for offset, m_title, m_summary, m_type, m_products, m_services in _guide_application_milestones(app_type, career_track):
                 planned = _guide_date_minus(deadline, offset)
                 if not planned:
                     continue

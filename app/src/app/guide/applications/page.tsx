@@ -15,7 +15,7 @@ export default function GuideApplicationsPage() {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ type: "school", name: "", department: "", position: "", deadline: "", interviewAt: "", resultAt: "", notes: "" });
+  const [form, setForm] = useState({ type: "school", careerTrack: "", name: "", department: "", position: "", deadline: "", interviewAt: "", resultAt: "", notes: "" });
   const todos = useQuery({
     queryKey: ["guide", "todos", "applications", user?.id || "guest"],
     queryFn: () => guide.todos({ status: "open", limit: 80 }),
@@ -78,14 +78,34 @@ export default function GuideApplicationsPage() {
               <h2 className="text-lg font-black text-kx-text">添加申请</h2>
             </div>
             <div className="grid grid-cols-2 gap-2">
-              <button type="button" onClick={() => setForm((f) => ({ ...f, type: "school" }))} className={(form.type === "school" ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : "border-kx-stroke/60 bg-kx-card text-kx-subtle") + " rounded-2xl border px-3 py-2 text-sm font-black"}>学校出愿</button>
-              <button type="button" onClick={() => setForm((f) => ({ ...f, type: "company" }))} className={(form.type === "company" ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : "border-kx-stroke/60 bg-kx-card text-kx-subtle") + " rounded-2xl border px-3 py-2 text-sm font-black"}>公司 ES/面试</button>
+              {([
+                { key: "school", track: "", label: "学校出愿" },
+                { key: "company", track: "shinsotsu", label: "新卒就活" },
+                { key: "company", track: "tenshoku", label: "社会人转职" },
+                { key: "jlpt", track: "", label: "JLPT 考试" },
+              ] as const).map((opt) => {
+                const active = form.type === opt.key && (form.careerTrack || "") === opt.track;
+                return (
+                  <button key={opt.label} type="button" onClick={() => setForm((f) => ({ ...f, type: opt.key, careerTrack: opt.track }))}
+                    className={(active ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : "border-kx-stroke/60 bg-kx-card text-kx-subtle") + " rounded-2xl border px-3 py-2 text-sm font-black"}>
+                    {opt.label}
+                  </button>
+                );
+              })}
             </div>
-            <LibraryPickerField type={form.type} value={form.name} onChange={(v) => setForm((f) => ({ ...f, name: v }))} />
-            <Field label={form.type === "school" ? "研究科 / 专攻" : "岗位 / 职种"} value={form.type === "school" ? form.department : form.position} onChange={(v) => setForm((f) => ({ ...f, [form.type === "school" ? "department" : "position"]: v }))} />
-            <Field label={form.type === "school" ? "出愿截止" : "ES 截止"} value={form.deadline} onChange={(v) => setForm((f) => ({ ...f, deadline: v }))} placeholder="2026-09-10" />
-            <Field label="面试时间" value={form.interviewAt} onChange={(v) => setForm((f) => ({ ...f, interviewAt: v }))} placeholder="2026-10-05 14:00" />
-            <Field label="结果发表 / Offer 日期" value={form.resultAt} onChange={(v) => setForm((f) => ({ ...f, resultAt: v }))} placeholder="2026-11-01" />
+            {form.type === "jlpt"
+              ? <Field label="考试 / 级别" value={form.name} onChange={(v) => setForm((f) => ({ ...f, name: v }))} placeholder="JLPT N2" />
+              : <LibraryPickerField type={form.type} value={form.name} onChange={(v) => setForm((f) => ({ ...f, name: v }))} />}
+            {form.type !== "jlpt" ? (
+              <Field label={form.type === "school" ? "研究科 / 专攻" : "岗位 / 职种"} value={form.type === "school" ? form.department : form.position} onChange={(v) => setForm((f) => ({ ...f, [form.type === "school" ? "department" : "position"]: v }))} />
+            ) : null}
+            <Field label={form.type === "school" ? "出愿截止" : form.type === "jlpt" ? "考试日期" : "ES 截止"} value={form.deadline} onChange={(v) => setForm((f) => ({ ...f, deadline: v }))} placeholder="2026-09-10" />
+            {form.type !== "jlpt" ? (
+              <>
+                <Field label="面试时间" value={form.interviewAt} onChange={(v) => setForm((f) => ({ ...f, interviewAt: v }))} placeholder="2026-10-05 14:00" />
+                <Field label="结果发表 / Offer 日期" value={form.resultAt} onChange={(v) => setForm((f) => ({ ...f, resultAt: v }))} placeholder="2026-11-01" />
+              </>
+            ) : null}
             <button type="submit" disabled={create.isPending} className="kx-button-primary h-11 w-full disabled:opacity-60">
               <Plus className="h-4 w-4" /> 生成 Todo
             </button>
