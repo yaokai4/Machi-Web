@@ -3281,8 +3281,28 @@ def run_migrations(conn: sqlite3.Connection) -> None:
             raise
 
 
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    if KAIX_DB_BACKEND == "postgres":
+        rows = conn.execute(
+            "SELECT column_name AS name FROM information_schema.columns WHERE table_name = ?",
+            (table,),
+        ).fetchall()
+    else:
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    columns: set[str] = set()
+    for row in rows:
+        try:
+            data = dict(row)
+        except Exception:
+            continue
+        name = data.get("name")
+        if name:
+            columns.add(str(name))
+    return columns
+
+
 def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str]) -> None:
-    existing = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    existing = _table_columns(conn, table)
     for name, ddl in columns.items():
         if name not in existing:
             try:
@@ -15032,17 +15052,25 @@ class Handler(BaseHTTPRequestHandler):
         progress: dict[str, Any] = {}
         viewer = self.current_session(conn)
         if viewer:
+            progress_cols = _table_columns(conn, "guide_user_progress")
+            select_cols = ["step_key", "status", "completed_at", "reminder_at"]
+            for col in ("planned_date", "due_at", "priority", "notify_enabled", "calendar_note"):
+                if col in progress_cols:
+                    select_cols.append(col)
             for p in conn.execute(
-                "SELECT step_key, status, completed_at, reminder_at, planned_date, due_at, priority, notify_enabled, calendar_note "
-                "FROM guide_user_progress WHERE user_id = ? AND journey_key = ?",
+                f"SELECT {', '.join(select_cols)} FROM guide_user_progress WHERE user_id = ? AND journey_key = ?",
                 (viewer["user_id"], key),
             ).fetchall():
-                progress[p["step_key"] or "__journey__"] = {
-                    "status": p["status"], "completedAt": p["completed_at"],
-                    "reminderAt": p["reminder_at"], "plannedDate": p["planned_date"],
-                    "dueAt": p["due_at"], "priority": p["priority"] or "normal",
-                    "notifyEnabled": bool(p["notify_enabled"] or 0),
-                    "calendarNote": p["calendar_note"] or "",
+                d = dict(p)
+                progress[d.get("step_key") or "__journey__"] = {
+                    "status": d.get("status") or "in_progress",
+                    "completedAt": d.get("completed_at"),
+                    "reminderAt": d.get("reminder_at"),
+                    "plannedDate": d.get("planned_date"),
+                    "dueAt": d.get("due_at"),
+                    "priority": d.get("priority") or "normal",
+                    "notifyEnabled": bool(d.get("notify_enabled") or 0),
+                    "calendarNote": d.get("calendar_note") or "",
                 }
         active_plan_id = ""
         if viewer:
@@ -15160,26 +15188,44 @@ class Handler(BaseHTTPRequestHandler):
         notify_enabled = 1 if _guide_bool_value(body.get("notifyEnabled") or body.get("notify_enabled")) else 0
         calendar_note = str(body.get("calendarNote") or body.get("calendar_note") or "").strip()[:1000]
         notes = str(body.get("notes") or "")[:2000]
+        progress_cols = _table_columns(conn, "guide_user_progress")
+        supports_planning_fields = all(
+            col in progress_cols for col in ("planned_date", "due_at", "priority", "notify_enabled", "calendar_note")
+        )
         existing = conn.execute(
             "SELECT id FROM guide_user_progress WHERE user_id = ? AND journey_key = ? AND step_key = ?",
             (user["id"], journey_key, step_key),
         ).fetchone()
         if existing:
-            conn.execute(
-                "UPDATE guide_user_progress SET status = ?, completed_at = ?, "
-                "reminder_at = COALESCE(?, reminder_at), planned_date = COALESCE(?, planned_date), "
-                "due_at = COALESCE(?, due_at), priority = ?, notify_enabled = ?, calendar_note = ?, "
-                "notes = ?, updated_at = ? WHERE id = ?",
-                (status, completed_at, reminder_at, planned_date, due_at, priority, notify_enabled, calendar_note, notes, now, existing["id"]),
-            )
+            if supports_planning_fields:
+                conn.execute(
+                    "UPDATE guide_user_progress SET status = ?, completed_at = ?, "
+                    "reminder_at = COALESCE(?, reminder_at), planned_date = COALESCE(?, planned_date), "
+                    "due_at = COALESCE(?, due_at), priority = ?, notify_enabled = ?, calendar_note = ?, "
+                    "notes = ?, updated_at = ? WHERE id = ?",
+                    (status, completed_at, reminder_at, planned_date, due_at, priority, notify_enabled, calendar_note, notes, now, existing["id"]),
+                )
+            else:
+                conn.execute(
+                    "UPDATE guide_user_progress SET status = ?, completed_at = ?, "
+                    "reminder_at = COALESCE(?, reminder_at), notes = ?, updated_at = ? WHERE id = ?",
+                    (status, completed_at, reminder_at, notes, now, existing["id"]),
+                )
         else:
-            conn.execute(
-                "INSERT INTO guide_user_progress (id, user_id, journey_key, step_key, status, completed_at, reminder_at, "
-                "planned_date, due_at, priority, notify_enabled, calendar_note, notes, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), user["id"], journey_key, step_key, status, completed_at, reminder_at,
-                 planned_date, due_at, priority, notify_enabled, calendar_note, notes, now, now),
-            )
+            if supports_planning_fields:
+                conn.execute(
+                    "INSERT INTO guide_user_progress (id, user_id, journey_key, step_key, status, completed_at, reminder_at, "
+                    "planned_date, due_at, priority, notify_enabled, calendar_note, notes, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), user["id"], journey_key, step_key, status, completed_at, reminder_at,
+                     planned_date, due_at, priority, notify_enabled, calendar_note, notes, now, now),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO guide_user_progress (id, user_id, journey_key, step_key, status, completed_at, reminder_at, notes, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), user["id"], journey_key, step_key, status, completed_at, reminder_at, notes, now, now),
+                )
         # Keep the plan todo (if any) in lockstep so there is one unified progress.
         self._guide_sync_progress_to_todo(conn, user["id"], journey_key, step_key, status, now)
         rows = conn.execute(
@@ -15625,12 +15671,20 @@ class Handler(BaseHTTPRequestHandler):
                     (status, completed_at, now, existing["id"]),
                 )
             else:
-                conn.execute(
-                    "INSERT INTO guide_user_progress (id, user_id, journey_key, step_key, status, completed_at, "
-                    "reminder_at, planned_date, due_at, priority, notify_enabled, calendar_note, notes, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'normal', 0, '', '', ?, ?)",
-                    (str(uuid.uuid4()), d["user_id"], jk, sk, status, completed_at, now, now),
-                )
+                progress_cols = _table_columns(conn, "guide_user_progress")
+                if all(col in progress_cols for col in ("planned_date", "due_at", "priority", "notify_enabled", "calendar_note")):
+                    conn.execute(
+                        "INSERT INTO guide_user_progress (id, user_id, journey_key, step_key, status, completed_at, "
+                        "reminder_at, planned_date, due_at, priority, notify_enabled, calendar_note, notes, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL, 'normal', 0, '', '', ?, ?)",
+                        (str(uuid.uuid4()), d["user_id"], jk, sk, status, completed_at, now, now),
+                    )
+                else:
+                    conn.execute(
+                        "INSERT INTO guide_user_progress (id, user_id, journey_key, step_key, status, completed_at, reminder_at, notes, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?, ?, NULL, '', ?, ?)",
+                        (str(uuid.uuid4()), d["user_id"], jk, sk, status, completed_at, now, now),
+                    )
         except Exception:
             pass
 

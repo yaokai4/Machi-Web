@@ -3335,6 +3335,18 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_guide_product_relations_scope ON guide_product_relations(plan_type, todo_type, journey_key, step_key, priority);
         """,
     ),
+    (
+        59,
+        "guide progress: add planning fields for journey detail compatibility",
+        """
+        -- backend: postgres
+        ALTER TABLE guide_user_progress ADD COLUMN IF NOT EXISTS planned_date TEXT;
+        ALTER TABLE guide_user_progress ADD COLUMN IF NOT EXISTS due_at TEXT;
+        ALTER TABLE guide_user_progress ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal';
+        ALTER TABLE guide_user_progress ADD COLUMN IF NOT EXISTS notify_enabled INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE guide_user_progress ADD COLUMN IF NOT EXISTS calendar_note TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 ]
 
 
