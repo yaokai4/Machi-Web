@@ -671,6 +671,7 @@ export interface GuideTodo {
   completedAt?: string | null;
   estimatedMinutes: number;
   notes: string;
+  recurrence?: string;
   relatedArticleSlugs: string[];
   relatedProductSlugs: string[];
   relatedServiceSlugs: string[];
@@ -747,6 +748,23 @@ export interface GuideCalendarItem {
   todo?: GuideTodo | null;
 }
 
+export interface GuideSuggestedJourney {
+  key: string;
+  title: string;
+  subtitle: string;
+  icon: string;
+  color: string;
+}
+
+export interface GuideNextAction {
+  kind: "todo" | "journey" | string;
+  title: string;
+  subtitle?: string;
+  todoId?: string;
+  todoType?: string;
+  journeyKey?: string;
+}
+
 export interface GuideActivePlanResponse {
   status: string;
   profile?: GuideProfile | null;
@@ -756,6 +774,11 @@ export interface GuideActivePlanResponse {
   openTodos: GuideTodo[];
   recommendedProducts?: GuideProduct[];
   recommendedServices?: GuideProduct[];
+  // Identity-driven personalization (spec P0.1)
+  identityType?: string;
+  suggestedJourneys?: GuideSuggestedJourney[];
+  defaultJourneyKey?: string;
+  recommendedNextActions?: GuideNextAction[];
 }
 
 export interface GuideSearchScope {
@@ -954,6 +977,8 @@ export const guide = {
   plans: () => greq<{ status: string; items: GuidePlan[] }>("GET", "/api/guide/plans"),
   activePlan: (language = "zh-CN") =>
     greq<GuideActivePlanResponse>("GET", `/api/guide/plans/active${qs({ language })}`),
+  studyPlan: (body: { targetLevel: string; examDate: string; dailyMinutes: number }) =>
+    greq<{ status: string; plan: GuidePlan; todos: GuideTodo[] }>("POST", "/api/guide/study-plan", body),
   startPlan: (body: { journeyKey?: string; sourceJourneyKey?: string; planType?: string; title?: string; subtitle?: string; targetDate?: string }) =>
     greq<{ status: string; plan: GuidePlan; todos: GuideTodo[] }>("POST", "/api/guide/plans/start", body),
   updatePlan: (id: string, body: Partial<GuidePlan>) =>

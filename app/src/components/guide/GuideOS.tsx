@@ -63,14 +63,38 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
     );
   }
   if (!plan) {
+    // Identity-driven: a logged-in user with a saved identity sees journeys
+    // ordered for them (spec P0.1). No identity yet → generic order.
+    const suggested = (data?.suggestedJourneys || []).slice(0, 6);
     return (
       <section className="kx-guide-hero p-5 sm:p-6">
         <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Start Here</p>
         <h2 className="mt-2 text-2xl font-black tracking-[-0.02em] text-kx-text">你现在想完成哪件日本大事？</h2>
-        <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">选择一个行动路径，Machi 会生成 Todo、截止日期、提醒、资料和服务推荐。</p>
+        <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">
+          {data?.identityType ? "根据你的身份，Machi 已经把最相关的路径排在前面。" : "选择一个行动路径，Machi 会生成 Todo、截止日期、提醒、资料和服务推荐。"}
+        </p>
+        {suggested.length ? (
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {suggested.map((j, i) => (
+              <Link
+                key={j.key}
+                href={`/guide/journeys/${j.key}`}
+                className={"kx-card flex items-center gap-3 p-3 transition hover:-translate-y-0.5 hover:border-kx-accent/30" + (i === 0 ? " ring-1 ring-kx-accent/40" : "")}
+              >
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-white" style={{ backgroundColor: j.color || "var(--kx-accent)" }}>
+                  <Sparkles className="h-4 w-4" />
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-sm font-black text-kx-text">{j.title}{i === 0 ? <span className="ml-1.5 text-[11px] font-bold text-kx-accent">为你推荐</span> : null}</span>
+                  <span className="block truncate text-xs text-kx-muted">{j.subtitle}</span>
+                </span>
+              </Link>
+            ))}
+          </div>
+        ) : null}
         <div className="mt-4 flex flex-wrap gap-2">
-          <Link href="/guide/journeys" className="kx-button-primary h-10 px-4">选择计划</Link>
-          <Link href="/guide/profile" className="kx-button-secondary h-10 px-4">设置身份</Link>
+          <Link href="/guide/journeys" className="kx-button-primary h-10 px-4">{suggested.length ? "查看全部路径" : "选择计划"}</Link>
+          <Link href="/guide/profile" className="kx-button-secondary h-10 px-4">{data?.identityType ? "调整身份" : "设置身份"}</Link>
         </div>
       </section>
     );

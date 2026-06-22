@@ -3252,6 +3252,7 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             related_article_slugs TEXT NOT NULL DEFAULT '',
             related_product_slugs TEXT NOT NULL DEFAULT '',
             related_service_slugs TEXT NOT NULL DEFAULT '',
+            recurrence TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );

@@ -3538,6 +3538,9 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_todos_user_date ON guide_todos(user_id, status, due_at, planned_date)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_todos_plan ON guide_todos(plan_id, status, updated_at)")
+    # Recurrence cadence for habit-style study tasks (每日词汇 / 每周语法 /
+    # 周末模考). Additive; '' = a one-off todo. (spec P0.2)
+    _ensure_columns(conn, "guide_todos", {"recurrence": "TEXT NOT NULL DEFAULT ''"})
     conn.execute("""
         CREATE TABLE IF NOT EXISTS guide_reminders (
             id TEXT PRIMARY KEY,
@@ -7223,6 +7226,7 @@ def serialize_guide_todo(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "completedAt": d.get("completed_at"),
         "estimatedMinutes": int(d.get("estimated_minutes") or 0),
         "notes": d.get("notes") or "",
+        "recurrence": d.get("recurrence") or "",
         "relatedArticleSlugs": _guide_split_tags(d.get("related_article_slugs")),
         "relatedProductSlugs": _guide_split_tags(d.get("related_product_slugs")),
         "relatedServiceSlugs": _guide_split_tags(d.get("related_service_slugs")),
@@ -7456,6 +7460,42 @@ def _guide_application_milestones(conn: sqlite3.Connection | None, app_type: str
         except Exception:
             pass
     return _GUIDE_TEMPLATE_DEFAULTS.get(key, _GUIDE_COMPANY_SHINSOTSU_MILESTONES)
+
+
+# --- Identity-driven personalization (spec P0) ----------------------------
+# A user's identityType reshuffles which journeys surface first on the Guide
+# dashboard and which one "生成我的计划" defaults to. Keys must exist in
+# GUIDE_JOURNEY_SEED. Unknown identity falls back to GUIDE_DEFAULT_JOURNEY_ORDER.
+GUIDE_IDENTITY_JOURNEY_ORDER: dict[str, list[str]] = {
+    "applicant":               ["grad_school", "language_school", "prepare", "jlpt", "visa", "arrival", "housing", "job_hunting"],
+    "language_school_student": ["grad_school", "jlpt", "visa", "language_school", "housing", "arrival", "job_hunting", "prepare"],
+    "student":                 ["job_hunting", "jlpt", "grad_school", "visa", "housing", "arrival", "language_school", "prepare"],
+    "worker":                  ["visa", "job_hunting", "housing", "jlpt", "arrival", "grad_school", "language_school", "prepare"],
+    "career_change":           ["job_hunting", "visa", "housing", "jlpt", "arrival", "grad_school", "language_school", "prepare"],
+}
+GUIDE_DEFAULT_JOURNEY_ORDER: list[str] = ["arrival", "prepare", "housing", "language_school", "grad_school", "job_hunting", "jlpt", "visa"]
+GUIDE_IDENTITY_DEFAULT_JOURNEY: dict[str, str] = {
+    "applicant": "grad_school", "language_school_student": "grad_school",
+    "student": "job_hunting", "worker": "visa", "career_change": "job_hunting",
+}
+
+
+def _guide_identity_journey_order(identity_type: str, available_keys: list[str]) -> list[str]:
+    """Order available journey keys by the user's identity; unmapped journeys
+    fall back to the default order, then any remaining keys preserve their order."""
+    pref = GUIDE_IDENTITY_JOURNEY_ORDER.get((identity_type or "").strip()) or GUIDE_DEFAULT_JOURNEY_ORDER
+    avail = set(available_keys)
+    ordered = [k for k in pref if k in avail]
+    ordered += [k for k in available_keys if k not in ordered]
+    return ordered
+
+
+def _guide_identity_default_journey(identity_type: str, available_keys: list[str]) -> str:
+    pick = GUIDE_IDENTITY_DEFAULT_JOURNEY.get((identity_type or "").strip())
+    if pick and pick in available_keys:
+        return pick
+    ordered = _guide_identity_journey_order(identity_type, available_keys)
+    return ordered[0] if ordered else "arrival"
 
 
 def _guide_seed_plan_templates(conn: sqlite3.Connection) -> int:
@@ -15633,18 +15673,18 @@ class Handler(BaseHTTPRequestHandler):
                            summary: str = "", todo_type: str = "guide_step", priority: str = "normal",
                            planned_date: str | None = None, due_at: str | None = None, reminder_at: str | None = None,
                            estimated_minutes: int = 0, notes: str = "", article_slugs: str = "",
-                           product_slugs: str = "", service_slugs: str = "") -> str:
+                           product_slugs: str = "", service_slugs: str = "", recurrence: str = "") -> str:
         now = now_iso()
         todo_id = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO guide_todos (id, user_id, plan_id, source_type, source_id, journey_key, step_key, title, summary, "
             "todo_type, status, priority, planned_date, due_at, reminder_at, estimated_minutes, notes, "
-            "related_article_slugs, related_product_slugs, related_service_slugs, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_started', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "related_article_slugs, related_product_slugs, related_service_slugs, recurrence, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'not_started', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 todo_id, user_id, plan_id, source_type, source_id, journey_key, step_key, title[:200], summary[:1000],
                 todo_type, priority[:40], planned_date, due_at, reminder_at, int(estimated_minutes or 0), notes[:2000],
-                article_slugs, product_slugs, service_slugs, now, now,
+                article_slugs, product_slugs, service_slugs, recurrence[:20], now, now,
             ),
         )
         if reminder_at:
@@ -15722,6 +15762,7 @@ class Handler(BaseHTTPRequestHandler):
         recommendations = self._guide_os_recommendation_payload(conn, profile=profile, todo_rows=todos, language=language)
         today = datetime.now(timezone.utc).date().isoformat()
         upcoming_to = _guide_date_add(7)
+        identity, suggested_journeys, default_journey, next_actions = self._guide_personalization(conn, profile, todos, language)
         self.send_json({
             "status": "ok",
             "profile": serialize_guide_profile(profile),
@@ -15729,13 +15770,67 @@ class Handler(BaseHTTPRequestHandler):
             "todayTodos": [serialize_guide_todo(r) for r in self._guide_todos_for_query(conn, user["id"], {"from": today, "to": today, "limit": "8"})],
             "upcomingTodos": [serialize_guide_todo(r) for r in self._guide_todos_for_query(conn, user["id"], {"from": today, "to": upcoming_to, "limit": "12"})],
             "openTodos": [serialize_guide_todo(r) for r in todos],
+            "identityType": identity,
+            "suggestedJourneys": suggested_journeys,
+            "defaultJourneyKey": default_journey,
+            "recommendedNextActions": next_actions,
             **recommendations,
         })
+
+    def _guide_personalization(self, conn: sqlite3.Connection, profile: sqlite3.Row | dict | None,
+                               todo_rows: list, language: str) -> tuple[str, list[dict], str, list[dict]]:
+        """Identity → ordered journeys + a default journey + next-action cards.
+        Drives the spec's 'different identities see a different home'."""
+        identity = ""
+        if profile is not None:
+            try:
+                identity = (profile["identity_type"] or "").strip()
+            except Exception:
+                identity = (dict(profile).get("identity_type") or "").strip() if profile else ""
+        try:
+            jrows = conn.execute(
+                "SELECT journey_key, title, subtitle, icon, color FROM guide_journeys "
+                "WHERE country = 'jp' AND status = 'published'",
+            ).fetchall()
+        except Exception:
+            jrows = []
+        jmap = {r["journey_key"]: r for r in jrows}
+        ordered = _guide_identity_journey_order(identity, list(jmap.keys()))
+        suggested = [{
+            "key": k, "title": jmap[k]["title"], "subtitle": jmap[k]["subtitle"],
+            "icon": jmap[k]["icon"], "color": jmap[k]["color"],
+        } for k in ordered if k in jmap]
+        default_journey = _guide_identity_default_journey(identity, list(jmap.keys()))
+        next_actions: list[dict] = []
+        if todo_rows:
+            t0 = serialize_guide_todo(todo_rows[0])
+            next_actions.append({"kind": "todo", "title": t0["title"], "todoId": t0["id"], "todoType": t0.get("todoType", "")})
+        for s in suggested[:3]:
+            next_actions.append({"kind": "journey", "journeyKey": s["key"], "title": s["title"], "subtitle": s["subtitle"]})
+        return identity, suggested, default_journey, next_actions
 
     def api_guide_plan_start(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         body = self.read_json()
         journey_key = str(body.get("journeyKey") or body.get("sourceJourneyKey") or "").strip()
+        # Spec P0: "生成我的计划" with no explicit journey picks the default for
+        # the user's identity (e.g. 社会人转职 → job_hunting / 在留).
+        if not journey_key:
+            profile = self._guide_user_profile_row(conn, user["id"])
+            identity = ""
+            if profile is not None:
+                try:
+                    identity = (profile["identity_type"] or "").strip()
+                except Exception:
+                    identity = ""
+            if identity:
+                try:
+                    keys = [r["journey_key"] for r in conn.execute(
+                        "SELECT journey_key FROM guide_journeys WHERE country = 'jp' AND status = 'published'").fetchall()]
+                    if keys:
+                        journey_key = _guide_identity_default_journey(identity, keys)
+                except Exception:
+                    pass
         plan_type = str(body.get("planType") or "").strip() or ("life" if journey_key in {"arrival", "housing", "visa"} else "guide")
         target_date = _guide_date_value(body.get("targetDate") or body.get("target_date"))
         if journey_key:
@@ -15803,6 +15898,89 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute("UPDATE guide_todos SET status = 'not_started', completed_at = NULL, updated_at = ? WHERE plan_id = ? AND user_id = ?", (now, plan_id, user["id"]))
         self._guide_update_plan_progress(conn, plan_id)
         self.send_json({"status": "ok", "plan": self._guide_plan_payload(conn, conn.execute("SELECT * FROM guide_plans WHERE id = ?", (plan_id,)).fetchone())})
+
+    def api_guide_study_plan(self, conn: sqlite3.Connection) -> None:
+        """Spec P0.2: a JLPT/日语 study plan built from study HABITS, not just a
+        timeline. Input: targetLevel + examDate + dailyMinutes → recurring todos
+        (每日词汇 / 每周语法 / 周末模考+错题复盘) plus registration & sprint
+        milestones. Capped at ~15 todos so we never spawn hundreds."""
+        user = self.require_user(conn)
+        body = self.read_json()
+        level = str(body.get("targetLevel") or body.get("level") or "N3").strip().upper()[:8] or "N3"
+        exam_date = _guide_date_value(body.get("examDate") or body.get("exam_date"))
+        daily = _guide_int(body.get("dailyMinutes"), 45, lo=10, hi=600)
+        if not exam_date:
+            return self.send_error_json("examDate required", 400, "invalid_body")
+        try:
+            exam = datetime.fromisoformat(exam_date[:10]).date()
+        except ValueError:
+            return self.send_error_json("invalid examDate", 400, "invalid_body")
+        today = _guide_today_date().date()
+        now = now_iso()
+        # Reuse an existing active JLPT/study plan for this level if present.
+        title = f"JLPT {level} 备考计划"
+        existing = conn.execute(
+            "SELECT * FROM guide_plans WHERE user_id = ? AND status = 'active' AND plan_type = 'study' AND title = ? LIMIT 1",
+            (user["id"], title),
+        ).fetchone()
+        if existing:
+            plan_id = existing["id"]
+            conn.execute("UPDATE guide_plans SET target_date = ?, updated_at = ? WHERE id = ?", (exam_date, now, plan_id))
+            # Clear previously generated study todos so a re-run is idempotent.
+            self._guide_delete_todos_for_source(conn, user["id"], "study_plan", plan_id)
+        else:
+            plan_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO guide_plans (id, user_id, plan_type, title, subtitle, status, target_date, started_at, "
+                "progress_percent, current_todo_id, source_journey_key, created_at, updated_at) "
+                "VALUES (?, ?, 'study', ?, ?, 'active', ?, ?, 0, '', 'jlpt', ?, ?)",
+                (plan_id, user["id"], title, f"每天 {daily} 分钟 · 考试 {exam_date}", exam_date, now, now, now),
+            )
+        vocab_products = "jlpt-vocabulary-pack,jlpt-grammar-summary"
+        mock_products = "jlpt-mock-exam-set,jlpt-grammar-summary"
+        study_services = "jlpt-study-plan-service,jlpt-weakness-review-service"
+        # Cap at 5 weeks of recurring tasks so the total stays in the spec's
+        # 8-15 range (1 daily + 5*2 weekly + ≤3 milestones = ≤14).
+        weeks = max(1, min(5, (exam - today).days // 7))
+        next_monday = today + timedelta(days=((7 - today.weekday()) % 7) or 7)
+
+        def add(title_, summary_, todo_type, planned, recurrence="", products="", services="", priority="normal", reminder=None):
+            self._guide_todo_insert(
+                conn, user_id=user["id"], plan_id=plan_id, source_type="study_plan", source_id=plan_id,
+                journey_key="jlpt", title=title_, summary=summary_, todo_type=todo_type,
+                planned_date=planned, due_at=planned, reminder_at=reminder, priority=priority,
+                estimated_minutes=daily, recurrence=recurrence, product_slugs=products, service_slugs=services,
+            )
+
+        # Daily vocabulary habit (one recurring anchor todo).
+        add(f"每日词汇打卡（{level}，{daily} 分/天）", "每天背新词 + 复习昨天的词，养成习惯。", "exam_study",
+            (today + timedelta(days=1)).isoformat(), recurrence="daily", products=vocab_products, services=study_services, priority="high",
+            reminder=(today + timedelta(days=1)).isoformat())
+        # Per-week grammar + weekend mock (recurring weekly).
+        for w in range(weeks):
+            wk_mon = next_monday + timedelta(days=7 * w)
+            add(f"第{w + 1}周·语法总结（{level}）", "整理本周语法点，做对应练习。", "exam_study",
+                wk_mon.isoformat(), recurrence="weekly", products=vocab_products, services=study_services)
+            wk_sat = wk_mon + timedelta(days=5)
+            add(f"第{w + 1}周·周末模考 + 错题复盘", "限时做一套模考，复盘错题与薄弱项。", "exam_study",
+                wk_sat.isoformat(), recurrence="weekly", products=mock_products, services=study_services, priority="high",
+                reminder=wk_sat.isoformat())
+        # Milestones.
+        reg_deadline = (exam - timedelta(days=60))
+        if reg_deadline > today:
+            add("JLPT 报名截止提醒", "在官网完成报名缴费，名额有限尽早报。", "exam_registration",
+                reg_deadline.isoformat(), products="", services="", priority="high", reminder=reg_deadline.isoformat())
+        sprint = exam - timedelta(days=30)
+        if sprint > today:
+            add(f"考前 30 天冲刺（{level}）", "进入冲刺：高频词、真题套卷、限时训练。", "exam_study",
+                sprint.isoformat(), products=mock_products, services=study_services, priority="high", reminder=sprint.isoformat())
+        add(f"JLPT {level} 考试当天", "带好准考证与证件，提前到场。", "exam_registration",
+            exam_date, products="", services="", priority="high", reminder=(exam - timedelta(days=1)).isoformat())
+
+        self._guide_update_plan_progress(conn, plan_id)
+        plan_row = conn.execute("SELECT * FROM guide_plans WHERE id = ?", (plan_id,)).fetchone()
+        self.send_json({"status": "ok", "plan": self._guide_plan_payload(conn, plan_row),
+                        "todos": [serialize_guide_todo(r) for r in self._guide_todos_for_query(conn, user["id"], {"planId": plan_id, "limit": "100"})]})
 
     def _guide_todos_for_query(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]):
         where = ["user_id = ?"]
@@ -20073,6 +20251,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_active_plan(conn, query)
         if path == "/api/guide/plans/start" and method == "POST":
             return self.api_guide_plan_start(conn)
+        if path == "/api/guide/study-plan" and method == "POST":
+            return self.api_guide_study_plan(conn)
         if path.startswith("/api/guide/plans/"):
             rest = unquote(path[len("/api/guide/plans/"):]).strip("/")
             parts = rest.split("/")
