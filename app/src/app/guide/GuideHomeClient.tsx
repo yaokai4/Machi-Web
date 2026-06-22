@@ -20,6 +20,13 @@ import {
   journeyHref,
   useGuideCountry,
 } from "@/components/guide/GuideKit";
+import {
+  GuideIdentityCard,
+  GuideMaterialServiceRail,
+  GuidePlanSummary,
+  GuideTodayTodos,
+  GuideUpcomingDeadlines,
+} from "@/components/guide/GuideOS";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useSession } from "@/lib/store";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
@@ -30,6 +37,7 @@ export default function GuideHomeClient() {
   const language = appLocaleToGuideLanguage(locale);
   const [keyword, setKeyword] = useState("");
   const [draft, setDraft] = useState("");
+  const user = useSession((s) => s.user);
 
   const home = useQuery({
     queryKey: ["guide", "home", country, language],
@@ -42,6 +50,13 @@ export default function GuideHomeClient() {
     queryFn: () => guide.search(keyword, country, language),
     enabled: keyword.trim().length > 0,
     staleTime: 30_000,
+  });
+  const activePlan = useQuery({
+    queryKey: ["guide", "active-plan", user?.id || "guest", language],
+    queryFn: () => guide.activePlan(language),
+    enabled: Boolean(user),
+    staleTime: 30_000,
+    retry: false,
   });
 
   if (home.isLoading) {
@@ -133,6 +148,22 @@ export default function GuideHomeClient() {
           <GuideSearchResults keyword={keyword} result={search.data} isLoading={search.isLoading} />
         ) : (
           <>
+            <GuidePlanSummary data={activePlan.data} />
+
+            <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_280px]">
+              <div className="space-y-6">
+                <GuideTodayTodos todos={activePlan.data?.todayTodos || []} />
+                <GuideUpcomingDeadlines todos={activePlan.data?.upcomingTodos || activePlan.data?.openTodos || []} />
+              </div>
+              <div className="space-y-3">
+                <GuideIdentityCard profile={activePlan.data?.profile} />
+                <GuideMaterialServiceRail
+                  products={activePlan.data?.recommendedProducts ?? []}
+                  services={activePlan.data?.recommendedServices ?? []}
+                />
+              </div>
+            </section>
+
             {/* Situation -> action path: the primary entry, above categories */}
             {data.journeys?.length ? (
               <section>

@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { Clock3, Eye } from "lucide-react";
-import { guide } from "@/lib/guide";
+import { Clock3, ExternalLink, Eye, ShieldCheck } from "lucide-react";
+import { guide, type GuideArticle } from "@/lib/guide";
 import { GuideShell, GuideComingSoon, ArticleCard, categoryHref, useGuideCountry } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { relativeTime } from "@/lib/format";
@@ -84,6 +84,7 @@ export default function GuideArticlePage() {
             ))}
           </div>
         ) : null}
+        <ArticleTrustPanel article={a} locale={locale} />
 
         <div className="mt-5 space-y-4 border-t border-kx-stroke/40 pt-5">
           {paragraphs.map((p, i) => (
@@ -109,6 +110,42 @@ export default function GuideArticlePage() {
         ) : null}
       </article>
     </GuideShell>
+  );
+}
+
+function compactDate(value?: string | null) {
+  if (!value) return "";
+  return String(value).slice(0, 10);
+}
+
+function ArticleTrustPanel({ article, locale }: { article: GuideArticle; locale: string }) {
+  const updated = compactDate(article.updatedAt || article.publishedAt);
+  const verified = compactDate(article.verifiedAt);
+  const staleDays = Number(article.staleAfterDays || 0);
+  const sourceLabel = article.sourceLabel || (locale === "en" ? "Editorial source" : locale === "ja" ? "編集部確認" : "编辑部整理");
+  return (
+    <div className="mt-4 rounded-kx-lg border border-kx-stroke/50 bg-kx-card/80 p-3 text-xs leading-5 text-kx-muted">
+      <div className="flex flex-wrap items-center gap-2 font-semibold">
+        <span className="inline-flex items-center gap-1 text-kx-accent">
+          <ShieldCheck className="h-3.5 w-3.5" />
+          {locale === "en" ? "Trust info" : locale === "ja" ? "信頼情報" : "可信信息"}
+        </span>
+        {updated ? <span>{locale === "en" ? "Updated" : locale === "ja" ? "更新" : "更新"} {updated}</span> : null}
+        {verified ? <span>{locale === "en" ? "Verified" : locale === "ja" ? "確認" : "核验"} {verified}</span> : null}
+        {staleDays > 0 ? <span>{locale === "en" ? `Review every ${staleDays} days` : locale === "ja" ? `${staleDays}日ごとに再確認` : `${staleDays} 天后需复核`}</span> : null}
+      </div>
+      <div className="mt-1 flex flex-wrap items-center gap-2">
+        {article.sourceUrl ? (
+          <a href={article.sourceUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 font-bold text-kx-accent hover:underline">
+            {sourceLabel}
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        ) : (
+          <span>{sourceLabel}</span>
+        )}
+        <span>{locale === "en" ? "Policies and official procedures may change; confirm with official notices before acting." : locale === "ja" ? "制度や公式手続きは変更される場合があります。行動前に公式案内も確認してください。" : "政策和官方手续可能变化，行动前请以官方最新公告为准。"}</span>
+      </div>
+    </div>
   );
 }
 

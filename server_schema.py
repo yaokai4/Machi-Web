@@ -3187,6 +3187,154 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE guide_articles ADD COLUMN IF NOT EXISTS stale_after_days INTEGER NOT NULL DEFAULT 0;
         """,
     ),
+    (
+        58,
+        "guide os: identity profile + plans + todos + reminders + applications + life items + calendar + product relations",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS guide_user_profiles (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL UNIQUE,
+            identity_type TEXT NOT NULL DEFAULT '',
+            country TEXT NOT NULL DEFAULT 'jp',
+            city TEXT NOT NULL DEFAULT '',
+            is_in_japan INTEGER NOT NULL DEFAULT 0,
+            visa_status TEXT NOT NULL DEFAULT '',
+            visa_expires_at TEXT,
+            japanese_level TEXT NOT NULL DEFAULT '',
+            target_japanese_level TEXT NOT NULL DEFAULT '',
+            graduation_date TEXT,
+            target_entry_term TEXT NOT NULL DEFAULT '',
+            target_industry TEXT NOT NULL DEFAULT '',
+            target_school_type TEXT NOT NULL DEFAULT '',
+            weekly_available_minutes INTEGER NOT NULL DEFAULT 0,
+            needs_materials INTEGER NOT NULL DEFAULT 0,
+            needs_services INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_user_profiles_user ON guide_user_profiles(user_id);
+        CREATE TABLE IF NOT EXISTS guide_plans (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            plan_type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            subtitle TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            target_date TEXT,
+            started_at TEXT,
+            progress_percent INTEGER NOT NULL DEFAULT 0,
+            current_todo_id TEXT NOT NULL DEFAULT '',
+            source_journey_key TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_plans_user ON guide_plans(user_id, status, updated_at);
+        CREATE TABLE IF NOT EXISTS guide_todos (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            plan_id TEXT NOT NULL DEFAULT '',
+            source_type TEXT NOT NULL DEFAULT '',
+            source_id TEXT NOT NULL DEFAULT '',
+            journey_key TEXT NOT NULL DEFAULT '',
+            step_key TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            todo_type TEXT NOT NULL DEFAULT 'guide_step',
+            status TEXT NOT NULL DEFAULT 'not_started',
+            priority TEXT NOT NULL DEFAULT 'normal',
+            planned_date TEXT,
+            due_at TEXT,
+            reminder_at TEXT,
+            completed_at TEXT,
+            estimated_minutes INTEGER NOT NULL DEFAULT 0,
+            notes TEXT NOT NULL DEFAULT '',
+            related_article_slugs TEXT NOT NULL DEFAULT '',
+            related_product_slugs TEXT NOT NULL DEFAULT '',
+            related_service_slugs TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_todos_user_date ON guide_todos(user_id, status, due_at, planned_date);
+        CREATE INDEX IF NOT EXISTS idx_guide_todos_plan ON guide_todos(plan_id, status, updated_at);
+        CREATE TABLE IF NOT EXISTS guide_reminders (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            todo_id TEXT NOT NULL DEFAULT '',
+            plan_id TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            reminder_at TEXT,
+            channel TEXT NOT NULL DEFAULT 'app',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, todo_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_reminders_user_time ON guide_reminders(user_id, status, reminder_at);
+        CREATE TABLE IF NOT EXISTS guide_applications (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            plan_id TEXT NOT NULL DEFAULT '',
+            type TEXT NOT NULL DEFAULT 'school',
+            name TEXT NOT NULL,
+            department TEXT NOT NULL DEFAULT '',
+            position TEXT NOT NULL DEFAULT '',
+            deadline TEXT,
+            interview_at TEXT,
+            result_at TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_applications_user ON guide_applications(user_id, status, deadline);
+        CREATE TABLE IF NOT EXISTS guide_life_items (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            amount INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            payment_method TEXT NOT NULL DEFAULT '',
+            due_day INTEGER NOT NULL DEFAULT 0,
+            due_at TEXT,
+            recurrence TEXT NOT NULL DEFAULT 'monthly',
+            reminder_days_before INTEGER NOT NULL DEFAULT 3,
+            notes TEXT NOT NULL DEFAULT '',
+            active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_life_items_user ON guide_life_items(user_id, active, due_at);
+        CREATE TABLE IF NOT EXISTS guide_calendar_items (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            todo_id TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            date TEXT,
+            start_at TEXT,
+            end_at TEXT,
+            type TEXT NOT NULL DEFAULT 'todo',
+            status TEXT NOT NULL DEFAULT 'active',
+            plan_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_calendar_items_user_date ON guide_calendar_items(user_id, date, start_at);
+        CREATE TABLE IF NOT EXISTS guide_product_relations (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL,
+            plan_type TEXT NOT NULL DEFAULT '',
+            todo_type TEXT NOT NULL DEFAULT '',
+            journey_key TEXT NOT NULL DEFAULT '',
+            step_key TEXT NOT NULL DEFAULT '',
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_product_relations_scope ON guide_product_relations(plan_type, todo_type, journey_key, step_key, priority);
+        """,
+    ),
 ]
 
 

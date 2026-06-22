@@ -46,6 +46,7 @@ export const GUIDE_ADMIN_LINKS = [
   { href: "/admin/guide/topics", label: "专题" },
   { href: "/admin/guide/faq", label: "FAQ" },
   { href: "/admin/guide/home-modules", label: "首页模块" },
+  { href: "/admin/guide/os", label: "Guide OS" },
   { href: "/admin/pricing", label: "价格管理" },
   { href: "/admin/guide/products", label: "商城商品" },
   { href: "/admin/guide/member-resources", label: "会员资料" },

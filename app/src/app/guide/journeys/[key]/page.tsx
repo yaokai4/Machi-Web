@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CheckCircle2, Circle, Clock3, FileText, Package, Signpost } from "lucide-react";
+import { CalendarPlus, CheckCircle2, Circle, Clock3, FileText, Package, ShieldCheck, Signpost } from "lucide-react";
 import { guide, type GuideJourneyStep } from "@/lib/guide";
 import { GuideShell, GuideComingSoon, journeyIconFor, useGuideCountry } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
@@ -38,6 +38,15 @@ export default function GuideJourneyDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["guide", "progress"] });
     },
     onError: () => pushToast({ kind: "error", message: "进度未能保存，请稍后再试。" }),
+  });
+  const startPlan = useMutation({
+    mutationFn: () => guide.startPlan({ journeyKey: key, planType: data?.journey.audience || "guide" }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["guide", "active-plan"] });
+      queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
+      pushToast({ kind: "success", message: "计划已生成，Todo 已加入日历。" });
+    },
+    onError: () => pushToast({ kind: "error", message: "计划生成失败，请稍后再试。" }),
   });
 
   const data = q.data;
@@ -86,6 +95,16 @@ export default function GuideJourneyDetailPage() {
               done={done}
               total={total}
               pct={pct}
+              updatedAt={data.updatedAt || data.journey.updatedAt}
+              loggedIn={Boolean(user)}
+              pendingStart={startPlan.isPending}
+              onStart={() => {
+                if (!user) {
+                  openAuthPrompt("generic");
+                  return;
+                }
+                startPlan.mutate();
+              }}
             />
             <div className="mt-6 space-y-3">
               {steps.map((step, index) => (
@@ -118,6 +137,10 @@ function JourneyHero({
   done,
   total,
   pct,
+  updatedAt,
+  loggedIn,
+  pendingStart,
+  onStart,
 }: {
   icon: string;
   color: string;
@@ -127,6 +150,10 @@ function JourneyHero({
   done: number;
   total: number;
   pct: number;
+  updatedAt?: string | null;
+  loggedIn: boolean;
+  pendingStart: boolean;
+  onStart: () => void;
 }) {
   const Icon = journeyIconFor(icon);
   return (
@@ -141,6 +168,14 @@ function JourneyHero({
         </div>
       </div>
       {subtitle ? <p className="mt-3 text-sm leading-6 text-kx-subtle">{subtitle}</p> : null}
+      <div className="mt-3 flex flex-wrap items-center gap-2 rounded-kx-md border border-kx-stroke/50 bg-kx-card/70 px-3 py-2 text-[11px] font-semibold leading-5 text-kx-muted">
+        <span className="inline-flex items-center gap-1 text-kx-accent">
+          <ShieldCheck className="h-3.5 w-3.5" />
+          可信路径
+        </span>
+        {updatedAt ? <span>更新 {compactDate(updatedAt)}</span> : null}
+        <span>政策、出愿和官方手续可能变化，执行前请确认最新公告。</span>
+      </div>
       {total > 0 ? (
         <div className="mt-4">
           <div className="mb-1 flex items-center justify-between text-xs font-bold">
@@ -152,8 +187,18 @@ function JourneyHero({
           </div>
         </div>
       ) : null}
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button type="button" onClick={onStart} disabled={pendingStart} className="kx-button-primary h-10 px-4 disabled:opacity-60">
+          <CalendarPlus className="h-4 w-4" /> {loggedIn ? "生成 Todo 计划" : "登录后生成计划"}
+        </button>
+        <Link href="/guide/plan" className="kx-button-secondary h-10 px-4">查看我的计划</Link>
+      </div>
     </header>
   );
+}
+
+function compactDate(value?: string | null) {
+  return value ? String(value).slice(0, 10) : "";
 }
 
 function StepRow({
