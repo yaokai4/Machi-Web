@@ -263,6 +263,14 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
     stepsMut.mutate([...steps, { id: crypto.randomUUID(), text, done: false }]);
     setNewStep("");
   };
+  // Notion-style free-form note attached to the task.
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [noteDraft, setNoteDraft] = useState(todo.notes || "");
+  const notesMut = useMutation({
+    mutationFn: (notes: string) => guide.updateTodo(todo.id, { notes }),
+    onSuccess: () => { invalidate(); setNoteOpen(false); },
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "备注保存失败" }),
+  });
   const done = todo.status === "done";
   const recurring = todo.recurrence === "daily" ? "每日循环" : todo.recurrence === "weekly" ? "每周循环" : "";
   return (
@@ -336,6 +344,34 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
                 <CalendarClock className="h-3 w-3" /> 改期
               </button>
             )
+          ) : null}
+          {!compact ? (
+            noteOpen ? (
+              <div className="mt-2.5">
+                <textarea
+                  value={noteDraft}
+                  onChange={(e) => setNoteDraft(e.target.value)}
+                  rows={2}
+                  autoFocus
+                  placeholder="写点备注…（链接、地址、号码、注意事项）"
+                  className="w-full rounded-xl border border-kx-stroke/60 bg-kx-card px-3 py-2 text-sm leading-6 outline-none focus:border-kx-accent"
+                />
+                <div className="mt-1.5 flex items-center gap-2">
+                  <button type="button" onClick={() => notesMut.mutate(noteDraft.trim())} disabled={notesMut.isPending} className="rounded-full bg-kx-accent px-3 py-1 text-[11px] font-bold text-white disabled:opacity-60">保存</button>
+                  <button type="button" onClick={() => { setNoteDraft(todo.notes || ""); setNoteOpen(false); }} className="text-[11px] font-semibold text-kx-muted">取消</button>
+                </div>
+              </div>
+            ) : todo.notes ? (
+              <button type="button" onClick={() => setNoteOpen(true)} className="mt-2 block w-full whitespace-pre-wrap rounded-xl bg-kx-soft/60 px-3 py-2 text-left text-sm leading-6 text-kx-subtle transition hover:bg-kx-soft">
+                {todo.notes}
+              </button>
+            ) : (
+              <button type="button" onClick={() => setNoteOpen(true)} className="mt-2 inline-flex items-center gap-1 text-[11px] font-bold text-kx-muted hover:text-kx-accent">
+                <FileText className="h-3 w-3" /> 备注
+              </button>
+            )
+          ) : todo.notes ? (
+            <p className="mt-1.5 line-clamp-2 rounded-lg bg-kx-soft/60 px-2.5 py-1.5 text-xs leading-5 text-kx-subtle">{todo.notes}</p>
           ) : null}
           {!compact && (todo.relatedProductSlugs.length || todo.relatedServiceSlugs.length) ? (
             <div className="mt-3 rounded-2xl bg-kx-accentSoft px-3 py-2 text-xs font-semibold text-kx-accent">
