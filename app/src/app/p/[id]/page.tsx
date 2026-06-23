@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, MessageCircle, Trash2, Send, Flag } from "lucide-react";
+import { ArrowLeft, MessageCircle, Trash2, Send, Flag, Heart } from "lucide-react";
 import clsx from "clsx";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
@@ -38,12 +38,14 @@ export default function PostDetailPage() {
     queryKey: ["post", id],
     queryFn: () => api.post(id),
     enabled: !!id,
+    retry: false,
   });
 
   const commentsQuery = useQuery({
     queryKey: ["comments", id, sort],
     queryFn: () => api.comments(id, sort),
     enabled: !!id,
+    retry: false,
   });
   const commentThreads = useMemo(() => buildCommentThreads(commentsQuery.data || []), [commentsQuery.data]);
 
@@ -373,21 +375,29 @@ function CommentItem({
           {showOfficialBadge(comment.author) ? <OfficialBadge /> : showVerifiedBadge(comment.author) ? <VerifiedBadge /> : null}
           <span className="text-kx-muted text-xs truncate">@{comment.author?.handle || "machi"} · {relativeTime(comment.created_at)}</span>
         </div>
-        <p className="text-sm text-kx-text whitespace-pre-wrap break-words mt-0.5">{comment.content}</p>
-        <div className="flex flex-wrap items-center gap-1 mt-1.5 text-xs">
-          <button className="kx-metric h-7" onClick={() => onLike(comment)} data-active={comment.liked ? "like" : undefined}>
-            ♥ {compactNumber(comment.like_count)}
+        <p className="text-sm text-kx-text whitespace-pre-wrap break-words mt-1">{comment.content}</p>
+        <div className="flex items-center gap-5 mt-2 text-xs font-medium">
+          <button
+            className="inline-flex items-center gap-1.5 py-1 text-kx-muted transition-colors hover:text-rose-500"
+            onClick={() => onLike(comment)}
+            aria-pressed={comment.liked}
+          >
+            <Heart className={clsx("h-[15px] w-[15px] transition-transform duration-150", comment.liked ? "fill-rose-500 text-rose-500 scale-110" : "")} />
+            <span className={comment.liked ? "font-semibold text-rose-500" : ""}>{compactNumber(comment.like_count)}</span>
           </button>
-          <button className="kx-metric h-7" onClick={() => onReply(comment, rootId)}>
-            {t("action_reply")}
+          <button
+            className="inline-flex items-center gap-1.5 py-1 text-kx-muted transition-colors hover:text-kx-accent"
+            onClick={() => onReply(comment, rootId)}
+          >
+            <MessageCircle className="h-[15px] w-[15px]" /> {t("action_reply")}
           </button>
           {canDelete ? (
-            <button className="kx-metric h-7 text-kx-danger" onClick={() => onDelete(comment.id)}>
-              <Trash2 className="w-3.5 h-3.5" /> {t("action_delete")}
+            <button className="ml-auto inline-flex items-center gap-1.5 py-1 text-kx-muted transition-colors hover:text-kx-danger" onClick={() => onDelete(comment.id)}>
+              <Trash2 className="h-3.5 w-3.5" /> {t("action_delete")}
             </button>
           ) : (
-            <button className="kx-metric h-7" onClick={() => onReport(comment)}>
-              <Flag className="w-3.5 h-3.5" /> {t("action_report")}
+            <button className="ml-auto inline-flex items-center gap-1.5 py-1 text-kx-muted transition-colors hover:text-kx-text" onClick={() => onReport(comment)}>
+              <Flag className="h-3.5 w-3.5" /> {t("action_report")}
             </button>
           )}
         </div>

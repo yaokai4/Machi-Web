@@ -84,11 +84,20 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
   const displayRegion = resolveRegion(displayPost.region_code) || makeRegion(displayPost.country, displayPost.province, displayPost.city);
   const repostHeader = post.repost_of_id ? (
     <div className="flex items-center gap-1.5 text-kx-meta font-semibold text-kx-subtle pl-1">
-      <Repeat2 className="w-3.5 h-3.5" />
-      <span>
-        {post.author?.display_name || t("unknown_user")}{" "}
-        {isQuote ? t("post_quoted") : t("post_reposted")}
-      </span>
+      <Repeat2 className="w-3.5 h-3.5 shrink-0" />
+      {post.author ? (
+        <Link
+          href={`/u/${post.author.handle}`}
+          onClick={(e) => e.stopPropagation()}
+          className="flex min-w-0 items-center gap-1.5 transition-colors hover:text-kx-accent"
+        >
+          <Avatar user={post.author} size={18} />
+          <span className="truncate font-bold text-kx-text">{post.author.display_name || t("unknown_user")}</span>
+        </Link>
+      ) : (
+        <span className="font-bold">{t("unknown_user")}</span>
+      )}
+      <span className="shrink-0">{isQuote ? t("post_quoted") : t("post_reposted")}</span>
     </div>
   ) : null;
 
