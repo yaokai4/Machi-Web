@@ -652,10 +652,17 @@ export interface GuideProfile {
   updatedAt?: string;
 }
 
+export interface GuideTodoStep {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
 export interface GuideTodo {
   id: string;
   userId: string;
   planId: string;
+  steps?: GuideTodoStep[];
   sourceType: string;
   sourceId: string;
   journeyKey: string;
@@ -998,6 +1005,8 @@ export const guide = {
     greq<{ status: string; plan: GuidePlan }>("POST", `/api/guide/plans/${encodeURIComponent(id)}/reset`),
   todos: (p: { status?: string; from?: string; to?: string; planId?: string; type?: string; limit?: number } = {}) =>
     greq<{ status: string; items: GuideTodo[]; total: number }>("GET", `/api/guide/todos${qs(p)}`),
+  createTodo: (body: { content?: string; title?: string; summary?: string; todoType?: string; priority?: string; plannedDate?: string; dueAt?: string; reminderAt?: string; planId?: string }) =>
+    greq<{ status: string; todo: GuideTodo }>("POST", "/api/guide/todos", body),
   updateTodo: (id: string, body: Partial<GuideTodo>) =>
     greq<{ status: string; todo: GuideTodo }>("PATCH", `/api/guide/todos/${encodeURIComponent(id)}`, body),
   completeTodo: (id: string) =>

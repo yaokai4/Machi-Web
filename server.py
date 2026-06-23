@@ -3550,6 +3550,7 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "related_product_slugs": "TEXT NOT NULL DEFAULT ''",
         "related_service_slugs": "TEXT NOT NULL DEFAULT ''",
         "recurrence": "TEXT NOT NULL DEFAULT ''",
+        "steps": "TEXT NOT NULL DEFAULT '[]'",
     })
     conn.execute("""
         CREATE TABLE IF NOT EXISTS guide_reminders (
@@ -7215,10 +7216,37 @@ def serialize_guide_plan(row: sqlite3.Row | dict[str, Any], summary: dict[str, A
     return out
 
 
+def _guide_parse_steps(raw: Any) -> list[dict[str, Any]]:
+    """Parse a todo's stored subtask checklist into a clean [{id,text,done}]
+    list. Tolerates None / bad JSON (returns []). Caps at 50 steps, text 200."""
+    if not raw:
+        return []
+    try:
+        data = raw if isinstance(raw, list) else json.loads(raw)
+    except Exception:
+        return []
+    out: list[dict[str, Any]] = []
+    for item in data if isinstance(data, list) else []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()[:200]
+        if not text:
+            continue
+        out.append({"id": str(item.get("id") or uuid.uuid4()), "text": text, "done": bool(item.get("done"))})
+        if len(out) >= 50:
+            break
+    return out
+
+
+def _guide_steps_to_json(value: Any) -> str:
+    return json.dumps(_guide_parse_steps(value), ensure_ascii=False)
+
+
 def serialize_guide_todo(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     d = dict(row)
     return {
         "id": d.get("id"),
+        "steps": _guide_parse_steps(d.get("steps")),
         "userId": d.get("user_id") or "",
         "planId": d.get("plan_id") or "",
         "sourceType": d.get("source_type") or "",
@@ -16560,6 +16588,9 @@ class Handler(BaseHTTPRequestHandler):
                 if api_key in body:
                     updates.append(f"{col} = ?")
                     params.append(_guide_date_value(body.get(api_key)))
+            if "steps" in body and not reminder_only:
+                updates.append("steps = ?")
+                params.append(_guide_steps_to_json(body.get("steps")))
         if "status" in body and not complete and str(body.get("status") or "") == "done":
             updates.append("completed_at = ?")
             params.append(now_iso())

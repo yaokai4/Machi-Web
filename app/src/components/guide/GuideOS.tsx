@@ -12,13 +12,13 @@ import {
   Circle,
   Clock3,
   FileText,
-  GraduationCap,
   IdCard,
+  Plus,
   Repeat,
   Sparkles,
-  WalletCards,
+  X,
 } from "lucide-react";
-import { guide, type GuideActivePlanResponse, type GuideProduct, type GuideProfile, type GuideTodo } from "@/lib/guide";
+import { guide, type GuideActivePlanResponse, type GuideProduct, type GuideProfile, type GuideTodo, type GuideTodoStep } from "@/lib/guide";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 
 export function GuideIdentityCard({ profile }: { profile?: GuideProfile | null }) {
@@ -48,15 +48,15 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
   const plan = data?.plan;
   if (!user) {
     return (
-      <section className="kx-guide-hero p-5 sm:p-6">
+      <section className="kx-guide-plan-panel p-4">
         <div className="flex items-start gap-3">
-          <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-kx-accent text-white">
-            <Sparkles className="h-5 w-5" />
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-kx-accent text-white">
+            <Sparkles className="h-4 w-4" />
           </span>
           <div className="min-w-0 flex-1">
             <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Machi Guide OS</p>
-            <h2 className="mt-2 text-2xl font-black tracking-[-0.02em] text-kx-text">把日本大事变成你的计划</h2>
-            <p className="mt-2 text-sm leading-7 text-kx-subtle">登录后可以保存出愿、ES、面试、JLPT、签证、房租和水电网络手机费的 Todo 与提醒。</p>
+            <h2 className="mt-1.5 text-lg font-black tracking-[-0.01em] text-kx-text">把日本大事变成计划</h2>
+            <p className="mt-1 text-sm leading-6 text-kx-subtle">登录后保存出愿、ES、面试、JLPT、签证和生活账单提醒。</p>
             <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-primary mt-4 h-10 px-4">
               登录后开始计划
             </button>
@@ -70,11 +70,11 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
     // ordered for them (spec P0.1). No identity yet → generic order.
     const suggested = (data?.suggestedJourneys || []).slice(0, 6);
     return (
-      <section className="kx-guide-hero p-5 sm:p-6">
+      <section className="kx-guide-plan-panel p-4">
         <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Start Here</p>
-        <h2 className="mt-2 text-2xl font-black tracking-[-0.02em] text-kx-text">你现在想完成哪件日本大事？</h2>
+        <h2 className="mt-1.5 text-lg font-black tracking-[-0.01em] text-kx-text">还没有进行中的计划</h2>
         <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">
-          {data?.identityType ? "根据你的身份，Machi 已经把最相关的路径排在前面。" : "选择一个行动路径，Machi 会生成 Todo、截止日期、提醒、资料和服务推荐。"}
+          {data?.identityType ? "根据你的身份，最相关的路径已经排在前面。" : "从主题或行动路径开始，生成 Todo、截止日期和提醒。"}
         </p>
         {suggested.length ? (
           <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -107,11 +107,11 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
   const weekDone = data?.retention?.weekDone ?? 0;
   const streak = data?.retention?.streakDays ?? 0;
   return (
-    <section className="kx-guide-hero p-5 sm:p-6">
-      <div className="flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+    <section className="kx-guide-plan-panel p-4">
+      <div className="flex flex-col gap-4">
         <div className="min-w-0">
           <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">继续你的日本计划</p>
-          <h2 className="mt-2 text-2xl font-black tracking-[-0.02em] text-kx-text">{plan.title}</h2>
+          <h2 className="mt-1.5 text-lg font-black tracking-[-0.01em] text-kx-text">{plan.title}</h2>
           <p className="mt-1 text-sm leading-6 text-kx-subtle">{plan.subtitle || "把关键事项按日期一步步完成。"}</p>
           {(weekDone > 0 || streak > 0) ? (
             <div className="mt-3 flex flex-wrap gap-2">
@@ -129,7 +129,7 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
             </div>
           </div>
         </div>
-        <div className="shrink-0 rounded-2xl border border-kx-stroke/50 bg-white/70 p-4 dark:bg-white/5 lg:w-72">
+        <div className="rounded-2xl border border-kx-stroke/50 bg-white/70 p-4 dark:bg-white/5">
           <p className="text-xs font-bold text-kx-muted">下一步</p>
           <p className="mt-1 text-base font-black text-kx-text">{plan.nextTodo?.title || "所有任务都完成了"}</p>
           <div className="mt-3 flex gap-2">
@@ -146,6 +146,84 @@ function isoShift(days: number): string {
   const d = new Date();
   d.setDate(d.getDate() + days);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+export function GuideQuickAddTodo({ defaultDate, compact = false }: { defaultDate?: string; compact?: boolean }) {
+  const user = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const [text, setText] = useState("");
+  const [date, setDate] = useState(defaultDate || "");
+  const invalidate = () => {
+    queryClient.invalidateQueries({ queryKey: ["guide", "active-plan"] });
+    queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
+    queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+  };
+  const create = useMutation({
+    mutationFn: () => guide.createTodo({ content: text.trim(), plannedDate: date || undefined }),
+    onSuccess: () => {
+      setText("");
+      invalidate();
+      pushToast({ kind: "success", message: "Todo 已添加" });
+    },
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "添加 Todo 失败" }),
+  });
+  const submit = (event?: React.FormEvent) => {
+    event?.preventDefault();
+    if (!user) {
+      openAuthPrompt("generic");
+      return;
+    }
+    if (!text.trim() || create.isPending) return;
+    create.mutate();
+  };
+  const chips = [
+    ["今天", isoShift(0)],
+    ["明天", isoShift(1)],
+    ["+7 天", isoShift(7)],
+  ] as const;
+  return (
+    <form onSubmit={submit} className={"kx-card p-3 " + (compact ? "" : "sm:p-4")}>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="flex min-w-0 flex-1 items-center gap-2 rounded-2xl border border-kx-stroke/60 bg-kx-card px-3">
+          <Plus className="h-4 w-4 shrink-0 text-kx-accent" />
+          <input
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="直接输入 Todo：明天提交 ES / 7月25日前交房租"
+            className="h-11 min-w-0 flex-1 bg-transparent text-sm font-semibold text-kx-text outline-none placeholder:text-kx-muted"
+          />
+        </div>
+        <button type="submit" disabled={!text.trim() || create.isPending} className="kx-button-primary h-11 px-4 disabled:opacity-50">
+          {create.isPending ? "添加中" : "添加"}
+        </button>
+      </div>
+      <div className="mt-2 flex flex-wrap items-center gap-1.5">
+        {chips.map(([label, value]) => (
+          <button
+            key={label}
+            type="button"
+            onClick={() => setDate(value)}
+            className={(date === value ? "bg-kx-accent text-white" : "bg-kx-soft text-kx-muted hover:text-kx-accent") + " rounded-full px-2.5 py-1 text-[11px] font-bold"}
+          >
+            {label}
+          </button>
+        ))}
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="h-7 rounded-full border border-kx-stroke/60 bg-kx-card px-2 text-[11px] font-semibold text-kx-muted outline-none focus:border-kx-accent"
+        />
+        {date ? (
+          <button type="button" onClick={() => setDate("")} className="px-1.5 text-[11px] font-semibold text-kx-muted hover:text-kx-accent">
+            不设日期
+          </button>
+        ) : null}
+      </div>
+    </form>
+  );
 }
 
 export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; compact?: boolean }) {
@@ -168,6 +246,23 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
     onSuccess: () => { invalidate(); setShowReschedule(false); pushToast({ kind: "success", message: "已改期" }); },
     onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "改期失败" }),
   });
+  // Microsoft To Do / Notion-style subtask checklist on each todo.
+  const [newStep, setNewStep] = useState("");
+  const steps = todo.steps ?? [];
+  const stepDoneCount = steps.filter((s) => s.done).length;
+  const stepsMut = useMutation({
+    mutationFn: (next: GuideTodoStep[]) => guide.updateTodo(todo.id, { steps: next }),
+    onSuccess: invalidate,
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "子任务更新失败" }),
+  });
+  const toggleStep = (id: string) => stepsMut.mutate(steps.map((s) => (s.id === id ? { ...s, done: !s.done } : s)));
+  const removeStep = (id: string) => stepsMut.mutate(steps.filter((s) => s.id !== id));
+  const addStep = () => {
+    const text = newStep.trim();
+    if (!text) return;
+    stepsMut.mutate([...steps, { id: crypto.randomUUID(), text, done: false }]);
+    setNewStep("");
+  };
   const done = todo.status === "done";
   const recurring = todo.recurrence === "daily" ? "每日循环" : todo.recurrence === "weekly" ? "每周循环" : "";
   return (
@@ -191,6 +286,42 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
           </div>
           <h3 className={"mt-2 text-[15px] font-black leading-snug " + (done ? "text-kx-muted line-through" : "text-kx-text")}>{todo.title}</h3>
           {!compact && todo.summary ? <p className="mt-1 text-sm leading-6 text-kx-subtle">{todo.summary}</p> : null}
+          {steps.length > 0 || (!compact && !done) ? (
+            <div className="mt-2.5 space-y-1.5">
+              {steps.length > 0 ? (
+                <div className="flex items-center gap-2">
+                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-kx-soft">
+                    <div className="h-full rounded-full bg-kx-accent transition-all duration-300" style={{ width: `${(stepDoneCount / steps.length) * 100}%` }} />
+                  </div>
+                  <span className="shrink-0 text-[11px] font-bold text-kx-muted">{stepDoneCount}/{steps.length}</span>
+                </div>
+              ) : null}
+              {steps.map((s) => (
+                <div key={s.id} className="group flex items-center gap-2">
+                  <button type="button" onClick={() => toggleStep(s.id)} disabled={stepsMut.isPending} className="shrink-0" aria-label={s.done ? "取消完成" : "完成步骤"}>
+                    {s.done ? <CheckCircle2 className="h-[18px] w-[18px] text-kx-accent" /> : <Circle className="h-[18px] w-[18px] text-kx-muted" />}
+                  </button>
+                  <span className={"flex-1 text-sm leading-6 " + (s.done ? "text-kx-muted line-through" : "text-kx-text")}>{s.text}</span>
+                  <button type="button" onClick={() => removeStep(s.id)} className="shrink-0 text-kx-muted opacity-0 transition hover:text-kx-danger group-hover:opacity-100" aria-label="删除步骤">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              ))}
+              {!compact && !done ? (
+                <div className="flex items-center gap-1.5 pt-0.5">
+                  <Plus className="h-3.5 w-3.5 shrink-0 text-kx-muted" />
+                  <input
+                    value={newStep}
+                    onChange={(e) => setNewStep(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addStep(); } }}
+                    onBlur={addStep}
+                    placeholder="添加步骤…"
+                    className="flex-1 bg-transparent text-sm leading-6 outline-none placeholder:text-kx-muted"
+                  />
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           {!done ? (
             showReschedule ? (
               <div className="mt-2.5 flex flex-wrap items-center gap-1.5">
@@ -257,9 +388,7 @@ export function GuideMaterialServiceRail({
 }) {
   const recommended = [...products, ...services].slice(0, 5);
   const fallback = [
-    ["研究计划书模板", "大学院出愿、教授联系、面试准备", GraduationCap, "/guide/services"],
-    ["ES / 职务经歴书修改", "新卒就活和社会人转职都能用", FileText, "/guide/services"],
-    ["生活手续清单", "房租、水电网络、手机、签证更新", WalletCards, "/guide/services"],
+    ["先选择主题或生成计划", "资料和服务会根据你的 Todo、身份和目标自动浮现", Sparkles, "/guide/journeys"],
   ] as const;
   if (recommended.length) {
     return (
@@ -271,13 +400,14 @@ export function GuideMaterialServiceRail({
   return (
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
       {fallback.map(([title, body, Icon, href]) => (
-        <Link key={title} href={href} className="kx-card flex items-start gap-3 p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/30">
+        <Link key={title} href={href} className="kx-guide-context-empty flex items-start gap-3 p-4 transition hover:border-kx-accent/30">
           <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
             <Icon className="h-4 w-4" />
           </span>
           <span className="min-w-0">
             <span className="block text-sm font-black text-kx-text">{title}</span>
             <span className="mt-0.5 block text-xs leading-5 text-kx-muted">{body}</span>
+            <span className="mt-3 inline-flex rounded-full bg-kx-accent px-3 py-1.5 text-xs font-bold text-white">查看行动路径</span>
           </span>
         </Link>
       ))}

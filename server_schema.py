@@ -3253,6 +3253,7 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             related_product_slugs TEXT NOT NULL DEFAULT '',
             related_service_slugs TEXT NOT NULL DEFAULT '',
             recurrence TEXT NOT NULL DEFAULT '',
+            steps TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         );
@@ -3368,6 +3369,22 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             updated_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_guide_plan_templates_key ON guide_plan_templates(template_key, status, offset_days);
+        """,
+    ),
+    (
+        61,
+        "guide os: add recurrence to existing todo tables",
+        """
+        -- backend: postgres
+        ALTER TABLE guide_todos ADD COLUMN IF NOT EXISTS recurrence TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        62,
+        "guide os: add subtask steps (checklist) to todos",
+        """
+        -- backend: postgres
+        ALTER TABLE guide_todos ADD COLUMN IF NOT EXISTS steps TEXT NOT NULL DEFAULT '[]';
         """,
     ),
 ]
