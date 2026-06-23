@@ -314,7 +314,7 @@ function discoverShortcutCopy(locale: ReturnType<typeof useI18n>["locale"]) {
   switch (locale) {
     case "en":
       return {
-        title: "City Entrances",
+        title: "Life Features",
         subtitle: "Marketplace, housing, jobs, and local services each have their own lane. Pick a city and jump straight into the section you need.",
         more: "More Channels",
         openMoreAria: "Open more channels",
@@ -325,7 +325,7 @@ function discoverShortcutCopy(locale: ReturnType<typeof useI18n>["locale"]) {
       };
     case "ja":
       return {
-        title: "街の入口",
+        title: "生活機能",
         subtitle: "フリマ、住まい、仕事、ローカルサービスを用途別に整理。街を選ぶだけで必要な場所へすぐ移動できます。",
         more: "さらに表示",
         openMoreAria: "さらにチャンネルを開く",
@@ -336,9 +336,9 @@ function discoverShortcutCopy(locale: ReturnType<typeof useI18n>["locale"]) {
       };
     case "zh-Hant":
       return {
-        title: "城市入口",
+        title: "生活功能入口",
         subtitle: "二手、租房、找工作、本地服務，每件事都有自己的入口。選好城市，直接進到你現在需要的板塊。",
-        more: "更多頻道",
+        more: "更多功能",
         openMoreAria: "打開更多頻道",
         closeMoreAria: "關閉更多頻道",
         allChannels: "全部頻道",
@@ -347,11 +347,11 @@ function discoverShortcutCopy(locale: ReturnType<typeof useI18n>["locale"]) {
       };
     default:
       return {
-        title: "城市入口",
+        title: "生活功能入口",
         subtitle: "二手、租房、找工作、本地服务，每件事都有自己的入口。选好城市，直接进到你现在需要的板块。",
-        more: "更多频道",
-        openMoreAria: "打开更多频道",
-        closeMoreAria: "关闭更多频道",
+        more: "更多功能",
+        openMoreAria: "打开更多功能",
+        closeMoreAria: "关闭更多功能",
         allChannels: "全部频道",
         allChannelsSubtitle: "按使用场景分组，投票、长文、匿名提问只作为发布工具。",
         viewChannel: (label: string) => `查看${label}`,
