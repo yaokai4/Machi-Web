@@ -15707,7 +15707,37 @@ class Handler(BaseHTTPRequestHandler):
                     values["weekly_available_minutes"], values["needs_materials"], values["needs_services"], now, now,
                 ),
             )
+        self._guide_sync_profile_derived(conn, user["id"], values["visa_expires_at"], values["graduation_date"])
         self.send_json({"status": "ok", "profile": serialize_guide_profile(self._guide_user_profile_row(conn, user["id"]))})
+
+    def _guide_sync_profile_derived(self, conn: sqlite3.Connection, user_id: str,
+                                    visa_expires_at: str | None, graduation_date: str | None) -> None:
+        """Auto-derive deadline todos straight from the identity profile, so
+        saving identity visibly produces something (the spec's value loop).
+        Idempotent: clears prior derived rows, then re-creates from the current
+        dates. The calendar + APNs reminders pick these up via due_at."""
+        try:
+            conn.execute(
+                "DELETE FROM guide_todos WHERE user_id = ? AND source_type = 'profile' AND source_id IN ('visa', 'graduation')",
+                (user_id,),
+            )
+            if visa_expires_at:
+                self._guide_todo_insert(
+                    conn, user_id=user_id, source_type="profile", source_id="visa",
+                    title="在留资格更新 / 在留卡期限", summary="在到期前预约入管、备齐材料办理在留更新，避免逾期。",
+                    todo_type="visa_renewal", due_at=visa_expires_at,
+                    reminder_at=_guide_date_minus(visa_expires_at, 60), priority="high",
+                    product_slugs="work-visa-change-checklist", service_slugs="japanese-document-translation",
+                )
+            if graduation_date:
+                self._guide_todo_insert(
+                    conn, user_id=user_id, source_type="profile", source_id="graduation",
+                    title="毕业 / 入社时间线", summary="按毕业时间反推就活或升学的关键节点，提前准备材料。",
+                    todo_type="career_timeline", due_at=graduation_date,
+                    reminder_at=_guide_date_minus(graduation_date, 90), priority="normal",
+                )
+        except Exception:
+            pass
 
     def _guide_plan_summary(self, conn: sqlite3.Connection, plan_id: str) -> dict[str, Any]:
         rows = conn.execute("SELECT status FROM guide_todos WHERE plan_id = ?", (plan_id,)).fetchall()
@@ -16050,10 +16080,20 @@ class Handler(BaseHTTPRequestHandler):
         } for k in ordered if k in jmap]
         default_journey = _guide_identity_default_journey(identity, list(jmap.keys()))
         next_actions: list[dict] = []
-        if todo_rows:
+        # Most urgent due todos first (overdue / soonest), so "下一步" leads with
+        # real deadlines (在留到期、出愿截止…) instead of only journey suggestions.
+        dated = [serialize_guide_todo(r) for r in todo_rows]
+        dated = [t for t in dated if t.get("dueAt")]
+        dated.sort(key=lambda t: t["dueAt"])
+        for t in dated[:2]:
+            next_actions.append({
+                "kind": "todo", "title": t["title"], "todoId": t["id"],
+                "todoType": t.get("todoType", ""), "dueAt": t.get("dueAt"),
+            })
+        if not next_actions and todo_rows:
             t0 = serialize_guide_todo(todo_rows[0])
             next_actions.append({"kind": "todo", "title": t0["title"], "todoId": t0["id"], "todoType": t0.get("todoType", "")})
-        for s in suggested[:3]:
+        for s in suggested[: max(0, 4 - len(next_actions))]:
             next_actions.append({"kind": "journey", "journeyKey": s["key"], "title": s["title"], "subtitle": s["subtitle"]})
         return identity, suggested, default_journey, next_actions
 
