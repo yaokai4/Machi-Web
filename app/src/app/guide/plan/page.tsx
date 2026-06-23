@@ -3,7 +3,7 @@
 import Link from "next/link";
 import type React from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarDays, ListChecks, PlusCircle } from "lucide-react";
+import { CalendarDays, ListChecks, PlusCircle, FileText } from "lucide-react";
 import { guide, type GuideTodo } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { EmptyPanel, GuidePlanSummary, GuideTodoCard } from "@/components/guide/GuideOS";
@@ -45,10 +45,11 @@ export default function GuidePlanPage() {
       <div className="space-y-8 px-4 py-7 sm:px-7">
         {active.isLoading ? <InlineLoading /> : active.isError ? <ErrorState title="计划加载失败" subtitle="请稍后重试。" onRetry={() => active.refetch()} /> : <GuidePlanSummary data={active.data} />}
 
-        <section className="grid gap-3 sm:grid-cols-3">
+        <section className="grid gap-3 sm:grid-cols-2">
           <PlanLink href="/guide/journeys" icon={<PlusCircle className="h-5 w-5" />} title="开始新计划" body="刚到日本、大学院、就职、转职、JLPT、签证" />
           <PlanLink href="/guide/calendar" icon={<CalendarDays className="h-5 w-5" />} title="计划日历" body="查看今天、本周、本月和逾期任务" />
           <PlanLink href="/guide/life" icon={<ListChecks className="h-5 w-5" />} title="生活日程" body="房租、水电网络、手机、保险和签证" />
+          <PlanLink href="/guide/applications" icon={<FileText className="h-5 w-5" />} title="出愿 / ES / 面试" body="学校出愿、新卒、转职、JLPT 倒排计划" />
         </section>
 
         <section>
