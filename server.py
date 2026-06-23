@@ -15640,7 +15640,10 @@ class Handler(BaseHTTPRequestHandler):
                     (str(uuid.uuid4()), user["id"], journey_key, step_key, status, completed_at, reminder_at, notes, now, now),
                 )
         # Keep the plan todo (if any) in lockstep so there is one unified progress.
-        self._guide_sync_progress_to_todo(conn, user["id"], journey_key, step_key, status, now)
+        self._guide_sync_progress_to_todo(
+            conn, user["id"], journey_key, step_key, status, now,
+            planned_date=planned_date, due_at=due_at, reminder_at=reminder_at, priority=priority,
+        )
         rows = conn.execute(
             "SELECT * FROM guide_user_progress WHERE user_id = ? ORDER BY updated_at DESC", (user["id"],)
         ).fetchall()
@@ -15712,7 +15715,7 @@ class Handler(BaseHTTPRequestHandler):
         done = sum(1 for r in rows if (r["status"] or "") == "done")
         percent = int(round(done * 100 / total)) if total else 0
         next_row = conn.execute(
-            "SELECT * FROM guide_todos WHERE plan_id = ? AND status <> 'done' "
+            "SELECT * FROM guide_todos WHERE plan_id = ? AND status NOT IN ('done','skipped') "
             "ORDER BY COALESCE(planned_date, due_at, updated_at), created_at LIMIT 1",
             (plan_id,),
         ).fetchone()
@@ -16234,7 +16237,7 @@ class Handler(BaseHTTPRequestHandler):
         params: list[Any] = [user_id]
         status = (query.get("status") or "").strip()
         if status == "open":
-            where.append("status <> 'done'")
+            where.append("status NOT IN ('done','skipped')")
         elif status:
             where.append("status = ?")
             params.append(status)
@@ -16305,9 +16308,13 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def _guide_sync_progress_to_todo(self, conn: sqlite3.Connection, user_id: str,
-                                     journey_key: str, step_key: str, status: str, now: str) -> None:
+                                     journey_key: str, step_key: str, status: str, now: str,
+                                     planned_date: str | None = None, due_at: str | None = None,
+                                     reminder_at: str | None = None, priority: str | None = None) -> None:
         """Reverse of the above: ticking a step on the journey detail completes
-        the matching plan todo (and re-derives plan progress) when one exists."""
+        the matching plan todo (and re-derives plan progress) when one exists.
+        When a journey step is scheduled from the detail page, mirror dates too
+        so the Todo calendar becomes the real operational surface."""
         try:
             if not journey_key or not step_key:
                 return
@@ -16317,12 +16324,65 @@ class Handler(BaseHTTPRequestHandler):
                 (user_id, journey_key, step_key),
             ).fetchone()
             if not trow:
-                return
+                if not (planned_date or due_at or reminder_at or status == "done"):
+                    return
+                step = conn.execute(
+                    "SELECT * FROM guide_journey_steps WHERE journey_key = ? AND step_key = ? "
+                    "AND country = 'jp' AND status = 'published' ORDER BY sort_order LIMIT 1",
+                    (journey_key, step_key),
+                ).fetchone()
+                if not step:
+                    return
+                todo_id = self._guide_todo_insert(
+                    conn,
+                    user_id=user_id,
+                    plan_id="",
+                    source_type="journey_step",
+                    source_id=step["id"],
+                    journey_key=journey_key,
+                    step_key=step_key,
+                    title=step["title"] or "Guide Todo",
+                    summary=step["summary"] or "",
+                    todo_type="guide_step",
+                    priority=priority or "normal",
+                    planned_date=planned_date,
+                    due_at=due_at,
+                    reminder_at=reminder_at,
+                    estimated_minutes=int(step["estimated_minutes"] or 0),
+                    article_slugs=step["article_slugs"] or "",
+                    product_slugs=step["product_slugs"] or "",
+                )
+                trow = {"id": todo_id, "plan_id": ""}
             completed_at = now if status == "done" else None
-            conn.execute(
-                "UPDATE guide_todos SET status = ?, completed_at = ?, updated_at = ? WHERE id = ?",
-                (status, completed_at, now, trow["id"]),
-            )
+            updates = ["status = ?", "completed_at = ?"]
+            params: list[Any] = [status, completed_at]
+            if planned_date is not None:
+                updates.append("planned_date = ?")
+                params.append(planned_date)
+            if due_at is not None:
+                updates.append("due_at = ?")
+                params.append(due_at)
+            if reminder_at is not None:
+                updates.append("reminder_at = ?")
+                params.append(reminder_at)
+            if priority:
+                updates.append("priority = ?")
+                params.append(priority[:40])
+            updates.append("updated_at = ?")
+            params.extend([now, trow["id"]])
+            conn.execute(f"UPDATE guide_todos SET {', '.join(updates)} WHERE id = ?", tuple(params))
+            todo = conn.execute("SELECT * FROM guide_todos WHERE id = ?", (trow["id"],)).fetchone()
+            if status == "done":
+                self._guide_set_reminder_status(conn, user_id=user_id, todo_id=trow["id"], status="completed")
+            elif todo and (reminder_at is not None or due_at is not None):
+                if todo["reminder_at"]:
+                    self._guide_schedule_reminders(
+                        conn, user_id=user_id, todo_id=trow["id"], plan_id=todo["plan_id"] or "",
+                        title=todo["title"] or "", reminder_at=todo["reminder_at"], due_at=todo["due_at"] or "",
+                        multi_tier=(todo["todo_type"] or "") in _GUIDE_MULTI_TIER_TODO_TYPES,
+                    )
+                else:
+                    self._guide_set_reminder_status(conn, user_id=user_id, todo_id=trow["id"], status="cancelled")
             if trow["plan_id"]:
                 self._guide_update_plan_progress(conn, trow["plan_id"])
         except Exception:
@@ -17588,18 +17648,18 @@ class Handler(BaseHTTPRequestHandler):
             "plansStarted30d": int(conn.execute("SELECT COUNT(*) AS c FROM guide_plans WHERE started_at >= ? OR created_at >= ?", (thirty_days_ago, thirty_days_ago)).fetchone()["c"]),
             "totalTodos": total_todos,
             "doneTodos": done_todos,
-            "openTodos": int(conn.execute("SELECT COUNT(*) AS c FROM guide_todos WHERE status <> 'done'").fetchone()["c"]),
+            "openTodos": int(conn.execute("SELECT COUNT(*) AS c FROM guide_todos WHERE status NOT IN ('done','skipped')").fetchone()["c"]),
             "todoCompletionRate": int(round(done_todos * 100 / total_todos)) if total_todos else 0,
             "completedTodos7d": int(conn.execute(
                 "SELECT COUNT(*) AS c FROM guide_todos WHERE status = 'done' AND completed_at >= ?",
                 (seven_days_ago,),
             ).fetchone()["c"]),
             "overdueTodos": int(conn.execute(
-                "SELECT COUNT(*) AS c FROM guide_todos WHERE status <> 'done' AND COALESCE(due_at, planned_date, reminder_at) < ?",
+                "SELECT COUNT(*) AS c FROM guide_todos WHERE status NOT IN ('done','skipped') AND COALESCE(due_at, planned_date, reminder_at) < ?",
                 (today,),
             ).fetchone()["c"]),
             "dueIn7Days": int(conn.execute(
-                "SELECT COUNT(*) AS c FROM guide_todos WHERE status <> 'done' AND COALESCE(planned_date, due_at, reminder_at) BETWEEN ? AND ?",
+                "SELECT COUNT(*) AS c FROM guide_todos WHERE status NOT IN ('done','skipped') AND COALESCE(planned_date, due_at, reminder_at) BETWEEN ? AND ?",
                 (today, soon),
             ).fetchone()["c"]),
             "applications": int(conn.execute("SELECT COUNT(*) AS c FROM guide_applications WHERE status <> 'archived'").fetchone()["c"]),
@@ -17682,7 +17742,7 @@ class Handler(BaseHTTPRequestHandler):
             SELECT t.*, u.handle AS user_handle, u.display_name AS user_display_name, u.email AS user_email
               FROM guide_todos t
               LEFT JOIN users u ON u.id = t.user_id
-             WHERE t.status <> 'done'
+             WHERE t.status NOT IN ('done','skipped')
              ORDER BY COALESCE(t.planned_date, t.due_at, t.reminder_at, t.updated_at), t.created_at
              LIMIT ?
             """,
@@ -22213,6 +22273,23 @@ class Handler(BaseHTTPRequestHandler):
         self._set_session_cookie(token)
         self.send_json({"token": token, "user": serialize_user_with_counts(conn, user_row)})
 
+    def _resolve_login_user(self, conn: sqlite3.Connection, raw: str) -> sqlite3.Row | None:
+        """Look up a login target by handle OR email. An identifier containing
+        '@' that is a valid email is matched on lower(email); otherwise on the
+        normalized handle. Returns the row or None — callers must keep error
+        messages identical so neither field becomes an existence oracle."""
+        raw = (raw or "").strip()
+        if "@" in raw and is_valid_email(raw):
+            return conn.execute(
+                "SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (raw.lower(),)
+            ).fetchone()
+        handle = normalize_handle(raw)
+        if not handle:
+            return None
+        return conn.execute(
+            "SELECT * FROM users WHERE handle = ? AND deleted_at IS NULL", (handle,)
+        ).fetchone()
+
     def api_login(self, conn: sqlite3.Connection) -> None:
         # Single-step password login. Kept for existing clients (e.g. the
         # iOS app). When KAIX_LOGIN_REQUIRE_CODE is enabled, this endpoint is
@@ -22221,17 +22298,19 @@ class Handler(BaseHTTPRequestHandler):
         if LOGIN_REQUIRE_CODE:
             raise APIError("请使用验证码登录", 403, "login_code_required")
         data = self.read_json()
-        handle = normalize_handle(data.get("handle") or data.get("username") or "")
+        raw_identifier = (data.get("handle") or data.get("username") or "").strip()
+        # Failure key: normalized handle, or the lowercased email for email logins.
+        fail_key = raw_identifier.lower() if "@" in raw_identifier else normalize_handle(raw_identifier)
         # Captcha first: bots must solve an image before they get to probe
         # the password oracle at all. In adaptive mode this only bites
-        # after repeated failures from this IP / against this handle.
-        self._enforce_captcha(conn, data, "login", handle=handle)
+        # after repeated failures from this IP / against this identifier.
+        self._enforce_captcha(conn, data, "login", handle=fail_key)
         password = data.get("password") or ""
-        row = conn.execute("SELECT * FROM users WHERE handle = ? AND deleted_at IS NULL", (handle,)).fetchone()
+        row = self._resolve_login_user(conn, raw_identifier)
         if not row or not verify_password(password, row["password_hash"]):
-            record_login_failure(self._client_ip(), handle)
-            raise APIError("用户名或密码不正确", 401, "invalid_credentials")
-        clear_login_failures(self._client_ip(), handle)
+            record_login_failure(self._client_ip(), fail_key)
+            raise APIError("用户名/邮箱或密码不正确", 401, "invalid_credentials")
+        clear_login_failures(self._client_ip(), fail_key)
         token = self._create_session(conn, row["id"])
         self._set_session_cookie(token)
         self.send_json({"token": token, "user": serialize_user_with_counts(conn, dict(row))})
@@ -22845,20 +22924,21 @@ class Handler(BaseHTTPRequestHandler):
         code. Accounts with no email on file fall back to a direct session
         (unless KAIX_LOGIN_REQUIRE_CODE forces a code)."""
         data = self.read_json()
-        identifier = normalize_handle(data.get("handle") or data.get("username") or "")
-        self._enforce_captcha(conn, data, "login", handle=identifier)
+        raw_identifier = (data.get("handle") or data.get("username") or "").strip()
+        fail_key = raw_identifier.lower() if "@" in raw_identifier else normalize_handle(raw_identifier)
+        self._enforce_captcha(conn, data, "login", handle=fail_key)
         email_in = (data.get("email") or "").strip()
         password = data.get("password") or ""
         locale = self._norm_locale(data.get("locale"))
-        row = None
-        if identifier:
-            row = conn.execute("SELECT * FROM users WHERE handle = ? AND deleted_at IS NULL", (identifier,)).fetchone()
+        # The single identifier field may hold a handle or an email; resolve it.
+        row = self._resolve_login_user(conn, raw_identifier)
+        # Legacy clients that send a separate explicit email field still work.
         if not row and email_in:
             row = conn.execute("SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email_in.lower(),)).fetchone()
         if not row or not verify_password(password, row["password_hash"]):
-            record_login_failure(self._client_ip(), identifier)
-            raise APIError("用户名或密码不正确", 401, "invalid_credentials")
-        clear_login_failures(self._client_ip(), identifier)
+            record_login_failure(self._client_ip(), fail_key)
+            raise APIError("用户名/邮箱或密码不正确", 401, "invalid_credentials")
+        clear_login_failures(self._client_ip(), fail_key)
         user_email = (row["email"] or "").strip()
         if not is_valid_email(user_email):
             if LOGIN_REQUIRE_CODE:
@@ -25810,7 +25890,7 @@ class Handler(BaseHTTPRequestHandler):
                         f"你好{greet}：\n\n"
                         f"你在 Machi 发布的「{listing_title}」{status_label}。\n"
                         f"原因：{reason_text}\n\n"
-                        f"你可以在 App 或网页端的「我的城市发布」里按要求修改后重新提交，"
+                        f"你可以在 App 或网页端的「我的发布」里按要求修改后重新提交，"
                         f"通过审核即可重新上架。如有疑问，可联系平台客服。\n\n"
                         f"— Machi 团队"
                     ),

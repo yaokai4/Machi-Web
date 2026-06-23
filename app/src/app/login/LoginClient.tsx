@@ -319,7 +319,7 @@ function LoginForm() {
               </div>
             ) : null}
 
-            <FieldShell label={c.username} htmlFor="login-handle" error={fieldError("handle")}>
+            <FieldShell label={c.loginIdentifier} htmlFor="login-handle" error={fieldError("handle")}>
               <input
                 id="login-handle"
                 className="kx-input"
