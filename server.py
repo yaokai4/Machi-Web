@@ -3306,13 +3306,17 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
     for name, ddl in columns.items():
         if name not in existing:
             try:
-                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
-            except sqlite3.OperationalError as exc:
+                if KAIX_DB_BACKEND == "postgres":
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {name} {ddl}")
+                else:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+            except Exception as exc:
                 # When several backend processes boot at once (horizontal
                 # scaling), another worker may have added the column between
                 # our PRAGMA read and this ALTER. "duplicate column name" is
                 # benign and means the migration already happened.
-                if "duplicate column" not in str(exc).lower():
+                message = str(exc).lower()
+                if "duplicate column" not in message and "already exists" not in message:
                     raise
 
 
@@ -3532,6 +3536,7 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
             related_article_slugs TEXT NOT NULL DEFAULT '',
             related_product_slugs TEXT NOT NULL DEFAULT '',
             related_service_slugs TEXT NOT NULL DEFAULT '',
+            recurrence TEXT NOT NULL DEFAULT '',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -3540,7 +3545,12 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_todos_plan ON guide_todos(plan_id, status, updated_at)")
     # Recurrence cadence for habit-style study tasks (每日词汇 / 每周语法 /
     # 周末模考). Additive; '' = a one-off todo. (spec P0.2)
-    _ensure_columns(conn, "guide_todos", {"recurrence": "TEXT NOT NULL DEFAULT ''"})
+    _ensure_columns(conn, "guide_todos", {
+        "related_article_slugs": "TEXT NOT NULL DEFAULT ''",
+        "related_product_slugs": "TEXT NOT NULL DEFAULT ''",
+        "related_service_slugs": "TEXT NOT NULL DEFAULT ''",
+        "recurrence": "TEXT NOT NULL DEFAULT ''",
+    })
     conn.execute("""
         CREATE TABLE IF NOT EXISTS guide_reminders (
             id TEXT PRIMARY KEY,
@@ -7348,6 +7358,49 @@ def _guide_date_minus(raw: Any, days: int) -> str | None:
     except ValueError:
         return None
     return (parsed - timedelta(days=max(0, days))).date().isoformat()
+
+
+def _guide_quick_todo_date_from_text(text: str) -> str | None:
+    """Best-effort date extraction for one-line todo entry.
+
+    This is intentionally conservative: it recognizes common "今天 / 明天 /
+    下周 / 7/25 / 2026-07-25" style input, then stores the normalized date on
+    the server. It is a helper, not a natural-language parser.
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    today = _guide_today_date().date()
+    lowered = raw.lower()
+    keyword_offsets = (
+        (("今天", "今日", "today"), 0),
+        (("明天", "明日", "tomorrow"), 1),
+        (("后天", "後天"), 2),
+        (("下周", "来週", "next week"), 7),
+    )
+    for keys, offset in keyword_offsets:
+        if any(k in lowered or k in raw for k in keys):
+            return (today + timedelta(days=offset)).isoformat()
+    if "周末" in raw or "週末" in raw or "weekend" in lowered:
+        days = (5 - today.weekday()) % 7
+        return (today + timedelta(days=days or 7)).isoformat()
+
+    explicit = re.search(r"(20\d{2})[./\-年](\d{1,2})[./\-月](\d{1,2})", raw)
+    if explicit:
+        try:
+            return datetime(int(explicit.group(1)), int(explicit.group(2)), int(explicit.group(3))).date().isoformat()
+        except ValueError:
+            return None
+    md = re.search(r"(?<!\d)(\d{1,2})[./\-月](\d{1,2})(?:日)?(?!\d)", raw)
+    if md:
+        try:
+            candidate = datetime(today.year, int(md.group(1)), int(md.group(2))).date()
+            if candidate < today:
+                candidate = datetime(today.year + 1, int(md.group(1)), int(md.group(2))).date()
+            return candidate.isoformat()
+        except ValueError:
+            return None
+    return None
 
 
 # Reverse-countdown ("T-minus") preparation ladders. Adding a school or company
@@ -15891,6 +15944,12 @@ class Handler(BaseHTTPRequestHandler):
                            product_slugs: str = "", service_slugs: str = "", recurrence: str = "") -> str:
         now = now_iso()
         todo_id = str(uuid.uuid4())
+        _ensure_columns(conn, "guide_todos", {
+            "related_article_slugs": "TEXT NOT NULL DEFAULT ''",
+            "related_product_slugs": "TEXT NOT NULL DEFAULT ''",
+            "related_service_slugs": "TEXT NOT NULL DEFAULT ''",
+            "recurrence": "TEXT NOT NULL DEFAULT ''",
+        })
         conn.execute(
             "INSERT INTO guide_todos (id, user_id, plan_id, source_type, source_id, journey_key, step_key, title, summary, "
             "todo_type, status, priority, planned_date, due_at, reminder_at, estimated_minutes, notes, "
@@ -16306,6 +16365,56 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         rows = self._guide_todos_for_query(conn, user["id"], query)
         self.send_json({"status": "ok", "items": [serialize_guide_todo(r) for r in rows], "total": len(rows)})
+
+    def api_guide_todo_create(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        raw = str(body.get("content") or body.get("text") or body.get("title") or "").strip()
+        if not raw:
+            return self.send_error_json("todo content required", 400, "invalid_body")
+        title = str(body.get("title") or raw).strip()[:200]
+        summary = str(body.get("summary") or "").strip()[:1000]
+        notes = str(body.get("notes") or "").strip()[:2000]
+        plan_id = str(body.get("planId") or body.get("plan_id") or "").strip()
+        todo_type = str(body.get("todoType") or body.get("todo_type") or "manual").strip()[:60] or "manual"
+        priority = str(body.get("priority") or "").strip()[:40]
+        planned_date = _guide_date_value(body.get("plannedDate") or body.get("planned_date"))
+        due_at = _guide_date_value(body.get("dueAt") or body.get("due_at"))
+        reminder_at = _guide_date_value(body.get("reminderAt") or body.get("reminder_at"))
+        inferred_date = _guide_quick_todo_date_from_text(" ".join([raw, summary, notes]))
+        deadline_like = any(k in raw for k in ("截止", "到期", "缴费", "付款", "还款", "面试", "考试")) or any(
+            k in raw.lower() for k in ("deadline", "due", "interview", "exam", "payment")
+        )
+        if inferred_date and not planned_date and not due_at:
+            if deadline_like:
+                due_at = inferred_date
+            else:
+                planned_date = inferred_date
+        if not priority:
+            priority = "high" if due_at or deadline_like else "normal"
+        if due_at and not reminder_at:
+            reminder_at = _guide_date_minus(due_at, 1)
+        todo_id = self._guide_todo_insert(
+            conn,
+            user_id=user["id"],
+            plan_id=plan_id,
+            source_type="manual",
+            source_id="",
+            title=title,
+            summary=summary,
+            todo_type=todo_type,
+            priority=priority,
+            planned_date=planned_date,
+            due_at=due_at,
+            reminder_at=reminder_at,
+            estimated_minutes=_guide_int(body.get("estimatedMinutes") or body.get("estimated_minutes"), 0, lo=0, hi=1440),
+            notes=notes,
+            recurrence=str(body.get("recurrence") or "").strip()[:20],
+        )
+        if plan_id:
+            self._guide_update_plan_progress(conn, plan_id)
+        row = conn.execute("SELECT * FROM guide_todos WHERE id = ?", (todo_id,)).fetchone()
+        self.send_json({"status": "ok", "todo": serialize_guide_todo(row)})
 
     def _guide_sync_todo_to_progress(self, conn: sqlite3.Connection, todo_row: Any) -> None:
         """Mirror a journey-step todo's status into guide_user_progress so the
@@ -20639,6 +20748,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_guide_plan_update(conn, plan_id)
         if path == "/api/guide/todos" and method == "GET":
             return self.api_guide_todos(conn, query)
+        if path == "/api/guide/todos" and method == "POST":
+            return self.api_guide_todo_create(conn)
         if path.startswith("/api/guide/todos/"):
             rest = unquote(path[len("/api/guide/todos/"):]).strip("/")
             parts = rest.split("/")
@@ -27276,7 +27387,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 ERR_LOG.warning("discover hot degraded error=%s", exc)
                 rows = []
-            scope_label = {"city": "本市", "metro": "都市圈", "national": "全国"}[scope]
+            scope_label = {"city": "本市", "metro": "都市圈", "prefecture": "都道府县", "national": "全国"}.get(scope, "本地")
             window_label = {"2h": "2 小时内", "24h": "24 小时内", "3d": "3 天内", "7d": "7 天内"}[window]
             items = []
             for rank, r in enumerate(rows, 1):
