@@ -27171,7 +27171,7 @@ class Handler(BaseHTTPRequestHandler):
         downweight via _heat_score_sql) so iOS never hand-rolls a ranking.
         Cached per scope+window so the heavy aggregate runs at most once / 60s."""
         scope = (query.get("scope") or "city").strip().lower()
-        if scope not in ("city", "metro", "national"):
+        if scope not in ("city", "metro", "prefecture", "national"):
             scope = "city"
         window = (query.get("window") or query.get("time_window") or "7d").strip().lower()
         hours_map = {"2h": 2, "24h": 24, "3d": 72, "7d": 168}
@@ -27190,6 +27190,15 @@ class Handler(BaseHTTPRequestHandler):
             codes = metro_circle_region_codes(region_code) or [region_code]
             scope_clause = "AND p.region_code IN (%s)" % ",".join("?" * len(codes))
             scope_params.extend(codes)
+        elif scope == "prefecture" and region_code:
+            # 都道府県 board: filter by province (the prefecture), all cities in it.
+            parts = region_code.split(".")
+            if len(parts) >= 2 and parts[1]:
+                scope_clause = "AND p.country = ? AND p.province = ?"
+                scope_params.extend([parts[0], parts[1]])
+            else:
+                scope_clause = "AND p.region_code = ?"
+                scope_params.append(region_code)
         elif region_code:
             scope_clause = "AND p.region_code = ?"
             scope_params.append(region_code)
