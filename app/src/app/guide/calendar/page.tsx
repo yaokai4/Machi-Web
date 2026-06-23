@@ -1,12 +1,13 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { CalendarDays } from "lucide-react";
 import { guide, type GuideTodo } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
-import { GuideCalendarPanel } from "@/components/guide/GuideOS";
+import { GuideQuickAddTodo } from "@/components/guide/GuideOS";
 import { GuideCalendarMonth } from "@/components/guide/GuideCalendarMonth";
+import { GuideCalendarWeek, GuideCalendarAgenda } from "@/components/guide/GuideCalendarWeek";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession } from "@/lib/store";
 
@@ -41,6 +42,14 @@ export default function GuideCalendarPage() {
   }
 
   const todos = (q.data?.items.map((item) => item.todo).filter(Boolean) as GuideTodo[] | undefined) || [];
+  return <CalendarBody todos={todos} loading={q.isLoading} error={q.isError} onRetry={() => q.refetch()} />;
+}
+
+type CalView = "month" | "week" | "agenda";
+const VIEW_LABELS: Record<CalView, string> = { month: "月", week: "周", agenda: "日程" };
+
+function CalendarBody({ todos, loading, error, onRetry }: { todos: GuideTodo[]; loading: boolean; error: boolean; onRetry: () => void }) {
+  const [view, setView] = useState<CalView>("month");
   return (
     <GuideShell back={{ href: "/guide", label: "日本指南" }}>
       <div className="space-y-7 px-4 py-7 sm:px-7">
@@ -50,16 +59,35 @@ export default function GuideCalendarPage() {
           <p className="mt-2 text-sm leading-7 text-kx-subtle">统一管理生活账单、签证、大学出愿、公司 ES、面试和日语学习任务。</p>
         </header>
 
-        {q.isLoading ? (
+        <div className="flex items-center justify-between gap-3">
+          <div className="inline-flex rounded-full border border-kx-stroke/60 bg-kx-card p-1">
+            {(Object.keys(VIEW_LABELS) as CalView[]).map((v) => (
+              <button
+                key={v}
+                type="button"
+                onClick={() => setView(v)}
+                className={"rounded-full px-4 py-1.5 text-sm font-bold transition " + (view === v ? "bg-kx-accent text-white" : "text-kx-muted hover:text-kx-accent")}
+              >
+                {VIEW_LABELS[v]}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="lg:hidden">
+          <GuideQuickAddTodo defaultDate={isoDate(new Date())} />
+        </div>
+
+        {loading ? (
           <InlineLoading />
-        ) : q.isError ? (
-          <ErrorState title="日历加载失败" subtitle="请稍后重试。" onRetry={() => q.refetch()} />
+        ) : error ? (
+          <ErrorState title="日历加载失败" subtitle="请稍后重试。" onRetry={onRetry} />
+        ) : view === "month" ? (
+          <GuideCalendarMonth todos={todos} />
+        ) : view === "week" ? (
+          <GuideCalendarWeek todos={todos} />
         ) : (
-          <>
-            {/* Desktop: month grid + day detail; mobile: grouped list (spec P2). */}
-            <div className="hidden lg:block"><GuideCalendarMonth todos={todos} /></div>
-            <div className="lg:hidden"><GuideCalendarPanel todos={todos} /></div>
-          </>
+          <GuideCalendarAgenda todos={todos} />
         )}
       </div>
     </GuideShell>
