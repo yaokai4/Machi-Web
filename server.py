@@ -27385,6 +27385,108 @@ class Handler(BaseHTTPRequestHandler):
             "can_interact": bool(viewer_id),
         })
 
+    def _recommend_interest_profile(self, conn: sqlite3.Connection, viewer_id: str) -> dict[str, Any]:
+        """Build a lightweight interest profile from the viewer's last-90-day
+        engagement: which content_types, topics and authors they like / bookmark
+        / repost / comment on. Returns normalized weight maps + the set of posts
+        they've already engaged with (so we don't re-surface them). All best
+        effort — any failure yields an empty profile and the caller falls back to
+        plain recency. This is a ranking signal, never an access control."""
+        since = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
+        types: dict[str, float] = {}
+        topics: dict[str, float] = {}
+        authors: dict[str, float] = {}
+        seen: set[str] = set()
+        def _absorb(content_type: str, topic_slugs: str, author_id: str, weight: float) -> None:
+            if content_type:
+                types[content_type] = types.get(content_type, 0.0) + weight
+            for slug in (topic_slugs or "").split(","):
+                slug = slug.strip()
+                if slug:
+                    topics[slug] = topics.get(slug, 0.0) + weight
+            if author_id:
+                authors[author_id] = authors.get(author_id, 0.0) + weight
+        try:
+            for r in conn.execute(
+                """SELECT p.id AS pid, p.content_type AS ct, p.author_id AS aid, i.kind AS kind
+                   FROM interactions i JOIN posts p ON p.id = i.target_id
+                   WHERE i.user_id = ? AND i.created_at >= ? AND p.deleted_at IS NULL""",
+                (viewer_id, since),
+            ):
+                d = dict(r)
+                seen.add(d["pid"])
+                # bookmarks/reposts signal stronger intent than a like.
+                w = {"bookmark": 3.0, "repost": 2.5, "like": 1.0}.get(d.get("kind") or "", 1.0)
+                _absorb(d.get("ct") or "", "", d.get("aid") or "", w)
+            for r in conn.execute(
+                """SELECT p.id AS pid, p.content_type AS ct, p.author_id AS aid
+                   FROM comments c JOIN posts p ON p.id = c.post_id
+                   WHERE c.author_id = ? AND c.created_at >= ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL""",
+                (viewer_id, since),
+            ):
+                d = dict(r)
+                seen.add(d["pid"])
+                _absorb(d.get("ct") or "", "", d.get("aid") or "", 2.0)
+        except Exception:
+            return {"types": {}, "topics": {}, "authors": {}, "seen": set(), "active": False}
+
+        def _norm(m: dict[str, float]) -> dict[str, float]:
+            top = max(m.values()) if m else 0.0
+            return {k: v / top for k, v in m.items()} if top > 0 else {}
+        return {
+            "types": _norm(types),
+            "topics": _norm(topics),
+            "authors": _norm(authors),
+            "seen": seen,
+            "active": bool(types or topics or authors),
+        }
+
+    def _recommend_rank(self, rows: list[dict[str, Any]], profile: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+        """Re-rank a recency-ordered candidate pool by interest match while
+        keeping freshness and diversity. Pure function over the pool — does not
+        hit the DB. Weights are deliberately gentle so a brand-new post still
+        surfaces and the feed never collapses onto one author/type."""
+        types = profile.get("types") or {}
+        topics = profile.get("topics") or {}
+        authors = profile.get("authors") or {}
+        seen = profile.get("seen") or set()
+        n = len(rows)
+        scored: list[tuple[float, int, dict[str, Any]]] = []
+        for idx, row in enumerate(rows):
+            # Freshness: linear by position in the recency-sorted pool (1.0 newest).
+            freshness = 1.0 - (idx / n) if n > 1 else 1.0
+            interest = 0.0
+            ct = row.get("content_type") or ""
+            if ct and ct in types:
+                interest += 1.6 * types[ct]
+            slugs = [s.strip() for s in (row.get("topic_slugs") or "").split(",") if s.strip()]
+            if slugs:
+                interest += 1.4 * (sum(topics.get(s, 0.0) for s in slugs) / len(slugs))
+            aid = row.get("author_id") or ""
+            if aid and aid in authors:
+                interest += 1.2 * authors[aid]
+            score = 2.0 * freshness + interest
+            if row.get("id") in seen:
+                score -= 1.0  # already engaged: down-weight, don't exclude
+            scored.append((score, idx, row))
+        scored.sort(key=lambda t: (-t[0], t[1]))
+        # Diversity pass: avoid three in a row from the same author.
+        out: list[dict[str, Any]] = []
+        recent_authors: list[str] = []
+        deferred: list[dict[str, Any]] = []
+        for _, _, row in scored:
+            aid = row.get("author_id") or ""
+            if aid and recent_authors[-2:].count(aid) >= 2:
+                deferred.append(row)
+                continue
+            out.append(row)
+            recent_authors.append(aid)
+            if len(out) >= limit:
+                break
+        if len(out) < limit:
+            out.extend(deferred[: limit - len(out)])
+        return out[:limit]
+
     def api_feed(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
@@ -27554,6 +27656,39 @@ class Handler(BaseHTTPRequestHandler):
         if cursor:
             cursor_clause = " AND (p.created_at, p.id) < (?, ?)"
             cursor_params.extend([cursor[0], cursor[1]])
+
+        # Personalized recommend: on the FIRST page for a logged-in viewer, pull a
+        # larger recency pool and re-rank it by the viewer's interest profile.
+        # Page 2+ continues by plain recency below the pool (cursor on the pool's
+        # oldest row) so there are no duplicates and pagination stays simple. Any
+        # cold-start / empty-profile case falls straight through to recency.
+        personalize = (
+            mode in ("recommend", "plaza")
+            and viewer_id is not None
+            and cursor is None
+        )
+        if personalize:
+            pool_size = min(max(limit * 5, 60), 200)
+            pool_sql = base + region_clause + type_clause + blocked_clause + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?"
+            pool_params = [*base_params, *region_params, *type_params, *blocked_params, pool_size + 1]
+            pool_rows = [dict(r) for r in conn.execute(pool_sql, pool_params)]
+            profile = self._recommend_interest_profile(conn, viewer_id)
+            if profile.get("active") and len(pool_rows) > limit:
+                has_more = len(pool_rows) > pool_size
+                pool = pool_rows[:pool_size]
+                ranked = self._recommend_rank(pool, profile, limit)
+                next_cursor = None
+                if has_more or len(pool) > limit:
+                    # Resume below the recency pool to avoid re-showing pool posts.
+                    tail = pool[-1]
+                    next_cursor = cursor_encode(tail["created_at"], tail["id"])
+                posts = fetch_posts_with_extras(conn, ranked, viewer_id)
+                self.send_json({
+                    "items": posts, "next_cursor": next_cursor, "mode": mode,
+                    "personalized": True, "viewer": viewer_payload,
+                    "canInteract": can_interact, "can_interact": can_interact,
+                })
+                return
 
         sql = base + region_clause + type_clause + blocked_clause + cursor_clause + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?"
         params = [*base_params, *region_params, *type_params, *blocked_params, *cursor_params]
