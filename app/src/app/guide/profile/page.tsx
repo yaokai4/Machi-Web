@@ -86,7 +86,7 @@ export default function GuideProfilePage() {
         <header className="kx-guide-hero p-6">
           <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Guide Profile</p>
           <h1 className="mt-2 text-3xl font-black text-kx-text">设置你的日本身份</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">Machi 会按你的身份生成更合适的 Todo、日历提醒、资料和服务推荐。</p>
+          <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">填好身份和在留 / 毕业时间，Machi 会自动生成<span className="font-bold text-kx-text">在留更新倒计时、就活 / 升学时间线</span>和你的专属 Todo、日历提醒与资料推荐。</p>
         </header>
         {q.isLoading ? <InlineLoading /> : q.isError ? <ErrorState title="身份加载失败" subtitle="请稍后重试。" onRetry={() => q.refetch()} /> : (
           <section className="kx-card space-y-5 p-5">
