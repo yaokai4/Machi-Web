@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarDays, ClipboardList, Crown, FileText, IdCard, PackageCheck, Search, Sparkles, WalletCards, X } from "lucide-react";
+import { CalendarDays, ClipboardList, FileText, IdCard, PackageCheck, Search, Sparkles, WalletCards, X } from "lucide-react";
 import { guide, type GuideSearchResponse } from "@/lib/guide";
 import {
   GuideShell,
@@ -20,7 +20,6 @@ import {
   useGuideCountry,
 } from "@/components/guide/GuideKit";
 import {
-  GuideIdentityCard,
   GuideMaterialServiceRail,
   GuidePlanSummary,
   GuideTodayTodos,
@@ -147,21 +146,21 @@ export default function GuideHomeClient() {
           <GuideSearchResults keyword={keyword} result={search.data} isLoading={search.isLoading} />
         ) : (
           <>
-            <GuidePlanSummary data={activePlan.data} />
-            <GuideOSQuickActions />
-
-            <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
-              <GuideTodayTodos todos={activePlan.data?.todayTodos || []} />
-              <GuideIdentityCard profile={activePlan.data?.profile} />
-              <GuideUpcomingDeadlines todos={activePlan.data?.upcomingTodos || activePlan.data?.openTodos || []} />
-            </section>
-
             <section>
-              <GuideSectionTitle title="完成任务的工具" subtitle="按你的 Todo、身份和目标推荐资料/服务，不再把商城和任务割裂开" href="/guide/services" hrefLabel="全部资料服务" />
-              <GuideMaterialServiceRail
-                products={activePlan.data?.recommendedProducts ?? []}
-                services={activePlan.data?.recommendedServices ?? []}
+              <GuideSectionTitle
+                title="今日计划 / Todo / 日历"
+                subtitle="回到 Guide 时先看今天该做什么、下一步是什么、哪些截止日不能错过"
               />
+              <div className="grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)] xl:items-start">
+                <aside className="space-y-3">
+                  <GuidePlanSummary data={activePlan.data} />
+                  <GuideOSQuickActions />
+                </aside>
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <GuideTodayTodos todos={activePlan.data?.todayTodos || []} />
+                  <GuideUpcomingDeadlines todos={activePlan.data?.upcomingTodos || activePlan.data?.openTodos || []} />
+                </div>
+              </div>
             </section>
 
             {/* Situation -> action path is the single primary entry. Core
@@ -170,15 +169,24 @@ export default function GuideHomeClient() {
             {data.journeys?.length ? (
               <section>
                 <GuideSectionTitle
-                  title="你现在想解决什么？"
-                  subtitle="选一个目标，Machi 把手续、资料、经验和服务整理成可执行步骤"
+                  title="行动模板"
+                  subtitle="保留流程，但重点是生成 Todo、安排日历和推进下一步"
                   href="/guide/journeys"
                   hrefLabel="全部路径"
                 />
                 <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-                  {data.journeys.map((j) => (
-                    <JourneyCard key={j.key} journey={j} />
-                  ))}
+                  {[...data.journeys]
+                    .sort((a, b) => {
+                      // Reorder by the viewer's identity-suggested journeys so the
+                      // most relevant paths lead; unknown keys fall to the end.
+                      const order = activePlan.data?.suggestedJourneys?.map((s) => s.key) ?? [];
+                      const ia = order.indexOf(a.key);
+                      const ib = order.indexOf(b.key);
+                      return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
+                    })
+                    .map((j) => (
+                      <JourneyCard key={j.key} journey={j} />
+                    ))}
                 </div>
                 {data.categories?.length ? (
                   <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -191,7 +199,13 @@ export default function GuideHomeClient() {
               </section>
             ) : null}
 
-            <GuideActionHub productCount={data.featuredProducts.length} serviceCount={data.featuredServices.length} />
+            <section>
+              <GuideSectionTitle title="当前目标相关资料 / 服务" subtitle="资料和服务只作为完成 Todo 的辅助，不再和功能入口重复" href="/guide/services" hrefLabel="资料服务" />
+              <GuideMaterialServiceRail
+                products={activePlan.data?.recommendedProducts ?? []}
+                services={activePlan.data?.recommendedServices ?? []}
+              />
+            </section>
 
             {data.resourceEntries?.length ? (
               <section>
@@ -245,28 +259,33 @@ export default function GuideHomeClient() {
 
 function GuideOSQuickActions() {
   const actions = [
-    { href: "/guide/plan", title: "我的计划", body: "今日任务和下一步", icon: ClipboardList },
-    { href: "/guide/calendar", title: "日历倒数", body: "截止日、面试、账单", icon: CalendarDays },
-    { href: "/guide/profile", title: "身份路径", body: "位置、在留、目标", icon: IdCard },
-    { href: "/guide/life", title: "生活缴费", body: "房租、学费、水电网络", icon: WalletCards },
-    { href: "/guide/applications", title: "出愿 / ES", body: "升学、就职、转职", icon: FileText },
-    { href: "/guide/services", title: "资料服务", body: "模板、辅导、代办", icon: PackageCheck },
+    { href: "/guide/plan", title: "计划", icon: ClipboardList },
+    { href: "/guide/calendar", title: "日历", icon: CalendarDays },
+    { href: "/guide/profile", title: "身份", icon: IdCard },
+    { href: "/guide/life", title: "生活", icon: WalletCards },
+    { href: "/guide/applications", title: "出愿/ES", icon: FileText },
+    { href: "/guide/services", title: "资料", icon: PackageCheck },
   ];
   return (
-    <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+    <nav className="kx-guide-tool-panel p-3" aria-label="Guide OS 工具">
+      <div className="mb-2 flex items-center justify-between px-1">
+        <p className="text-xs font-black uppercase tracking-[0.12em] text-kx-muted">Guide OS</p>
+        <span className="text-[11px] font-semibold text-kx-muted">计划工具</span>
+      </div>
+      <div className="grid grid-cols-3 gap-1.5">
       {actions.map((action) => {
         const Icon = action.icon;
         return (
-          <Link key={action.href} href={action.href} className="kx-guide-action-card group p-4">
-            <span className="kx-guide-icon-chip grid h-11 w-11 place-items-center rounded-2xl text-kx-accent transition group-hover:scale-105">
-              <Icon className="h-5 w-5" />
+          <Link key={action.href} href={action.href} className="kx-guide-tool-button group">
+            <span className="grid h-8 w-8 place-items-center rounded-xl bg-kx-accentSoft text-kx-accent transition group-hover:scale-105">
+              <Icon className="h-4 w-4" />
             </span>
-            <span className="mt-3 block text-sm font-black text-kx-text group-hover:text-kx-accent">{action.title}</span>
-            <span className="mt-0.5 block text-xs leading-5 text-kx-muted">{action.body}</span>
+            <span className="text-[12px] font-black text-kx-text group-hover:text-kx-accent">{action.title}</span>
           </Link>
         );
       })}
-    </section>
+      </div>
+    </nav>
   );
 }
 
@@ -374,62 +393,5 @@ function GuideSearchResults({
         </section>
       ) : null}
     </div>
-  );
-}
-
-function GuideActionHub({ productCount, serviceCount }: { productCount: number; serviceCount: number }) {
-  const { t } = useI18n();
-  const cards = [
-    {
-      href: "/guide/member-resources",
-      icon: Crown,
-      title: t("guide_member_resources_title"),
-      body: t("guide_member_resources_card_body"),
-      cta: t("guide_member_resources_cta"),
-      stat: t("guide_member_resources_cta"),
-    },
-    {
-      href: "/guide/services",
-      icon: PackageCheck,
-      title: t("guide_materials_title"),
-      body: t("guide_materials_subtitle"),
-      cta: t("guide_enter_library"),
-      stat: `${productCount + serviceCount} ${t("guide_action_hub_items")}`,
-    },
-  ];
-  return (
-    <section>
-      <GuideSectionTitle title={t("guide_action_hub_title")} subtitle={t("guide_action_hub_subtitle")} />
-      <div className="grid gap-3 sm:grid-cols-2">
-        {cards.map((card) => {
-          const Icon = card.icon;
-          return (
-            <Link
-              key={card.href}
-              href={card.href}
-              className="kx-guide-action-card group p-4"
-            >
-              <div className="flex items-start gap-3">
-                <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
-                  <Icon className="h-5 w-5" />
-                </span>
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-start justify-between gap-3">
-                    <h3 className="text-base font-black text-kx-text group-hover:text-kx-accent">{card.title}</h3>
-                    <span className="shrink-0 rounded-full bg-kx-soft px-2.5 py-1 text-[11px] font-bold text-kx-muted">
-                      {card.stat}
-                    </span>
-                  </div>
-                  <p className="mt-1 line-clamp-3 text-sm leading-6 text-kx-subtle">{card.body}</p>
-                  <span className="mt-3 inline-flex rounded-full bg-kx-accent px-3 py-1.5 text-xs font-bold text-white">
-                    {card.cta}
-                  </span>
-                </div>
-              </div>
-            </Link>
-          );
-        })}
-      </div>
-    </section>
   );
 }
