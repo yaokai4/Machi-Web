@@ -8,12 +8,21 @@ import {
   IdCard,
   PackageCheck,
   ShieldCheck,
+  Wallet,
   WalletCards,
 } from "lucide-react";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { useAuthPrompt, useSession } from "@/lib/store";
 
 const MANAGE_GROUPS = [
+  {
+    id: "finance",
+    href: "/guide/finance",
+    title: "收支记账",
+    body: "记一笔收入/支出、看本月结余、设分类预算、掌握每月固定成本。不连银行，只记你填的数。",
+    icon: Wallet,
+    tone: "bg-emerald-500/10 text-emerald-600",
+  },
   {
     id: "life",
     href: "/guide/life",

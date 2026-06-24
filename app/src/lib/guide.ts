@@ -773,6 +773,49 @@ export interface GuideLifeItem {
   updatedAt?: string;
 }
 
+export interface GuideTransaction {
+  id: string;
+  userId: string;
+  kind: "income" | "expense";
+  amount: number;
+  currency: string;
+  category: string;
+  account: string;
+  occurredOn: string;
+  note: string;
+  source: string;
+  sourceId: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface GuideFinanceCategory {
+  code: string;
+  zh: string;
+  ja: string;
+  en: string;
+  icon: string;
+}
+
+export interface GuideBudget {
+  category: string;
+  monthlyLimit: number;
+  currency: string;
+}
+
+export interface GuideFinanceSummary {
+  status: string;
+  month: string;
+  currency: string;
+  income: number;
+  expense: number;
+  net: number;
+  byCategory: { category: string; amount: number }[];
+  budgets: { category: string; limit: number; spent: number }[];
+  fixedMonthly: number;
+  lastMonthExpense: number;
+}
+
 export interface GuideLifePayment {
   id: string;
   lifeItemId: string;
@@ -1117,6 +1160,22 @@ export const guide = {
     greq<{ status: string; deleted: string }>("DELETE", `/api/guide/applications/${encodeURIComponent(id)}`),
   lifePresets: (language = "zh-CN") =>
     greq<{ status: string; items: GuideLifePreset[] }>("GET", `/api/guide/life-presets${qs({ language })}`),
+  financeCategories: () =>
+    greq<{ status: string; expense: GuideFinanceCategory[]; income: GuideFinanceCategory[] }>("GET", "/api/guide/finance/categories"),
+  financeSummary: (month?: string) =>
+    greq<GuideFinanceSummary>("GET", `/api/guide/finance/summary${qs(month ? { month } : {})}`),
+  transactions: (p: { month?: string; kind?: string; category?: string; limit?: number } = {}) =>
+    greq<{ status: string; items: GuideTransaction[]; total: number }>("GET", `/api/guide/transactions${qs(p)}`),
+  createTransaction: (body: Partial<GuideTransaction>) =>
+    greq<{ status: string; transaction: GuideTransaction }>("POST", "/api/guide/transactions", body),
+  updateTransaction: (id: string, body: Partial<GuideTransaction>) =>
+    greq<{ status: string; transaction: GuideTransaction }>("PATCH", `/api/guide/transactions/${encodeURIComponent(id)}`, body),
+  deleteTransaction: (id: string) =>
+    greq<{ status: string; deleted: string }>("DELETE", `/api/guide/transactions/${encodeURIComponent(id)}`),
+  budgets: () =>
+    greq<{ status: string; items: GuideBudget[] }>("GET", "/api/guide/budgets"),
+  setBudget: (category: string, monthlyLimit: number) =>
+    greq<{ status: string; items: GuideBudget[] }>("POST", "/api/guide/budgets", { category, monthlyLimit }),
   lifeItems: () =>
     greq<{ status: string; items: GuideLifeItem[]; total: number }>("GET", "/api/guide/life-items"),
   createLifeItem: (body: Partial<GuideLifeItem>) =>
