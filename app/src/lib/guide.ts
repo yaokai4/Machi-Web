@@ -803,6 +803,18 @@ export interface GuideBudget {
   currency: string;
 }
 
+export interface GuideDigest {
+  status: string;
+  month: string;
+  finance: { income: number; expense: number; net: number; fixedMonthly: number; hasData: boolean };
+  upcomingBills: { id: string; title: string; amount: number; dueOn: string; daysLeft: number }[];
+  contractWindows: { id: string; title: string; cancelFrom: string; cancelTo: string; daysLeft: number; open: boolean; monthlyCost: number }[];
+  documentExpiries: { id: string; title: string; expiresOn: string; daysLeft: number }[];
+  budgetAlerts: { category: string; limit: number; spent: number; over: boolean }[];
+  openTodos: number;
+  hasSetup: boolean;
+}
+
 export interface GuideFinanceTrendPoint {
   month: string;
   income: number;
@@ -1171,6 +1183,10 @@ export const guide = {
     greq<{ status: string; expense: GuideFinanceCategory[]; income: GuideFinanceCategory[] }>("GET", "/api/guide/finance/categories"),
   financeSummary: (month?: string) =>
     greq<GuideFinanceSummary>("GET", `/api/guide/finance/summary${qs(month ? { month } : {})}`),
+  digest: (days = 14) =>
+    greq<GuideDigest>("GET", `/api/guide/digest${qs({ days })}`),
+  quickSetup: (profile: string) =>
+    greq<{ status: string; created: number; profile: string }>("POST", "/api/guide/quick-setup", { profile }),
   financeTrend: (months = 6, month?: string) =>
     greq<{ status: string; months: GuideFinanceTrendPoint[] }>("GET", `/api/guide/finance/trend${qs({ months, ...(month ? { month } : {}) })}`),
   postFixedCosts: (month?: string) =>

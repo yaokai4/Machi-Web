@@ -2,22 +2,26 @@
 
 import Link from "next/link";
 import type { ReactNode } from "react";
-import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Bell,
+  CalendarClock,
   CalendarDays,
   ClipboardCheck,
   FilePlus2,
   FolderKanban,
+  IdCard,
   ListChecks,
   Plus,
+  Receipt,
   Route,
   Sparkles,
+  Wallet,
   WalletCards,
   type LucideIcon,
 } from "lucide-react";
-import { guide, type GuideActivePlanResponse, type GuideHomeResponse, type GuideJourney, type GuideTodo } from "@/lib/guide";
+import { guide, type GuideActivePlanResponse, type GuideDigest, type GuideHomeResponse, type GuideJourney, type GuideTodo } from "@/lib/guide";
 import {
   CategoryCard,
   GuideShell,
@@ -27,7 +31,7 @@ import {
 } from "@/components/guide/GuideKit";
 import { EmptyPanel, GuideQuickAddTodo, GuideTodoCard } from "@/components/guide/GuideOS";
 import { ErrorState } from "@/components/design/States";
-import { useAuthPrompt, useSession } from "@/lib/store";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 
 type QuickAction = {
@@ -79,6 +83,13 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
   const activePlan = useQuery({
     queryKey: ["guide", "active-plan", user?.id || "guest", language],
     queryFn: () => guide.activePlan(language),
+    enabled: Boolean(user),
+    staleTime: 30_000,
+    retry: false,
+  });
+  const digest = useQuery({
+    queryKey: ["guide", "digest", user?.id || "guest"],
+    queryFn: () => guide.digest(14),
     enabled: Boolean(user),
     staleTime: 30_000,
     retry: false,
@@ -157,6 +168,9 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
             个人计划暂时加载失败，今日页仍可继续使用。请稍后重试或刷新。
           </div>
         ) : null}
+
+        {!sampleMode && digest.data && !digest.data.hasSetup ? <GuideQuickSetupCard /> : null}
+        {!sampleMode && digest.data && digest.data.hasSetup ? <GuideDigestCard data={digest.data} /> : null}
 
         <section className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
           <TodayFocusSection todos={focusTodos} sampleMode={sampleMode} />
@@ -441,4 +455,83 @@ function orderJourneys(journeys: GuideJourney[], data?: GuideActivePlanResponse)
 
 function isoDate(d: Date) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
+const yen = (n: number) => "¥" + (n || 0).toLocaleString("en-US");
+const dleftLabel = (n: number) => (n <= 0 ? "今天" : `${n} 天后`);
+
+// 本月要点 — the digest card that unifies bills, contract windows, document
+// expiries, budget alerts and the month's balance into one glance on Guide home.
+function GuideDigestCard({ data }: { data: GuideDigest }) {
+  const rows: { icon: LucideIcon; tone: string; text: ReactNode; href: string }[] = [];
+  for (const b of data.upcomingBills) rows.push({ icon: Receipt, tone: "text-orange-600", href: "/guide/life", text: <><b>{b.title}</b>{b.amount > 0 ? ` ${yen(b.amount)}` : ""} · <span className="text-kx-muted">{dleftLabel(b.daysLeft)}扣款</span></> });
+  for (const w of data.contractWindows) rows.push({ icon: CalendarClock, tone: "text-kx-accent", href: "/guide/contracts", text: <><b>{w.title}</b> · <span className={w.open ? "font-bold text-kx-accent" : "text-kx-muted"}>{w.open ? "现在可解约" : `${dleftLabel(w.daysLeft)}进入解约窗口`}</span></> });
+  for (const a of data.budgetAlerts) rows.push({ icon: Wallet, tone: a.over ? "text-rose-500" : "text-amber-600", href: "/guide/finance", text: <><b>{a.category}</b> 预算{a.over ? "已超" : "接近上限"} · <span className={a.over ? "font-bold text-rose-500" : "text-kx-muted"}>{yen(a.spent)} / {yen(a.limit)}</span></> });
+  for (const d of data.documentExpiries) rows.push({ icon: IdCard, tone: d.daysLeft < 0 ? "text-rose-500" : "text-cyan-600", href: "/guide/documents", text: <><b>{d.title}</b> · <span className="text-kx-muted">{d.daysLeft < 0 ? "已过期" : `${dleftLabel(d.daysLeft)}到期`}</span></> });
+
+  return (
+    <section className="rounded-[1.75rem] border border-kx-stroke/40 bg-kx-card/80 p-5 shadow-[0_18px_50px_-44px_rgba(20,112,103,0.4)] sm:p-6">
+      <div className="flex items-center justify-between">
+        <h2 className="flex items-center gap-2 text-lg font-black text-kx-text"><Sparkles className="h-4 w-4 text-kx-accent" /> 本月要点</h2>
+        <Link href="/guide/finance" className="text-xs font-bold text-kx-accent">收支详情 →</Link>
+      </div>
+      <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+        <DigestStat label="本月收入" value={yen(data.finance.income)} />
+        <DigestStat label="本月支出" value={yen(data.finance.expense)} tone={data.finance.expense > data.finance.income && data.finance.income > 0 ? "rose" : undefined} />
+        <DigestStat label="结余" value={yen(data.finance.net)} tone={data.finance.net < 0 ? "rose" : "accent"} />
+      </div>
+      {rows.length ? (
+        <ul className="mt-4 space-y-1.5">
+          {rows.slice(0, 6).map((r, i) => (
+            <li key={i}>
+              <Link href={r.href} className="flex items-center gap-2.5 rounded-xl px-2.5 py-2 text-sm font-semibold text-kx-text transition hover:bg-kx-soft/60">
+                <r.icon className={`h-4 w-4 shrink-0 ${r.tone}`} />
+                <span className="min-w-0 flex-1 truncate">{r.text}</span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-4 rounded-xl bg-kx-soft/50 px-3 py-3 text-sm font-semibold text-kx-muted">近期没有要扣款的账单、解约窗口或到期证件。继续保持 👍</p>
+      )}
+    </section>
+  );
+}
+
+function DigestStat({ label, value, tone }: { label: string; value: string; tone?: "rose" | "accent" }) {
+  return (
+    <div className="rounded-2xl bg-kx-soft/50 px-2 py-3">
+      <div className="text-[11px] font-bold text-kx-muted">{label}</div>
+      <div className={`mt-0.5 text-base font-black ${tone === "rose" ? "text-rose-500" : tone === "accent" ? "text-kx-accent" : "text-kx-text"}`}>{value}</div>
+    </div>
+  );
+}
+
+// 30-second cold start — pick a situation, seed a budget template.
+function GuideQuickSetupCard() {
+  const qc = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const [done, setDone] = useState(false);
+  const setup = useMutation({
+    mutationFn: (profile: string) => guide.quickSetup(profile),
+    onSuccess: (r) => {
+      setDone(true);
+      qc.invalidateQueries({ queryKey: ["guide", "digest"] });
+      pushToast({ kind: "success", message: r.created > 0 ? `已为你设好 ${r.created} 项预算模板` : "预算已就绪" });
+    },
+    onError: (e) => pushToast({ kind: "error", message: e instanceof Error ? e.message : "设置失败" }),
+  });
+  if (done) return null;
+  return (
+    <section className="rounded-[1.75rem] border border-kx-accent/25 bg-kx-accentSoft/40 p-5 sm:p-6">
+      <h2 className="flex items-center gap-2 text-lg font-black text-kx-text"><Wallet className="h-4 w-4 text-kx-accent" /> 30 秒搭好你的生活管理</h2>
+      <p className="mt-1.5 text-sm font-semibold leading-6 text-kx-subtle">选一个最接近你的身份，我们先帮你设好一份月度预算模板，记账时自动对照。之后在「收支记账」「生活缴费」里填上你的真实数字即可。</p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {([["student", "我是学生"], ["worker", "我在工作"], ["general", "其他"]] as const).map(([p, label]) => (
+          <button key={p} type="button" onClick={() => setup.mutate(p)} disabled={setup.isPending}
+            className="kx-button-primary h-10 px-4 disabled:opacity-60">{label}</button>
+        ))}
+      </div>
+    </section>
+  );
 }
