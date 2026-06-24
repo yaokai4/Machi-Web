@@ -63,6 +63,14 @@ export default function GuideFinancePage() {
     onError: (e) => pushToast({ kind: "error", message: e instanceof Error ? e.message : "删除失败" }),
   });
 
+  const [budgetCat, setBudgetCat] = useState("rent");
+  const [budgetLimit, setBudgetLimit] = useState("");
+  const saveBudget = useMutation({
+    mutationFn: () => guide.setBudget(budgetCat, Number(budgetLimit || 0)),
+    onSuccess: () => { invalidate(); setBudgetLimit(""); pushToast({ kind: "success", message: "预算已更新" }); },
+    onError: (e) => pushToast({ kind: "error", message: e instanceof Error ? e.message : "保存失败" }),
+  });
+
   if (!user) {
     return (
       <GuideShell back={{ href: "/guide/manage", label: "管理" }}>
@@ -171,6 +179,26 @@ export default function GuideFinancePage() {
                 </div>
               </section>
             ) : null}
+
+            {/* Budget editor */}
+            <section>
+              <h2 className="mb-3 text-xl font-black text-kx-text">分类预算</h2>
+              <div className="kx-card flex flex-wrap items-end gap-3 p-4">
+                <label className="flex-1 min-w-[120px]">
+                  <span className="text-xs font-bold text-kx-muted">分类</span>
+                  <select value={budgetCat} onChange={(e) => setBudgetCat(e.target.value)}
+                    className="mt-1 h-10 w-full rounded-xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent">
+                    {(cats.data?.expense ?? []).map((c) => <option key={c.code} value={c.code}>{c.zh}</option>)}
+                  </select>
+                </label>
+                <label className="flex-1 min-w-[120px]">
+                  <span className="text-xs font-bold text-kx-muted">每月上限 JPY（0 = 取消）</span>
+                  <input value={budgetLimit} onChange={(e) => setBudgetLimit(e.target.value.replace(/[^0-9]/g, ""))} inputMode="numeric" placeholder="0"
+                    className="mt-1 h-10 w-full rounded-xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-bold outline-none focus:border-kx-accent" />
+                </label>
+                <button type="button" onClick={() => saveBudget.mutate()} disabled={saveBudget.isPending} className="kx-button-primary h-10 px-4 disabled:opacity-60">保存</button>
+              </div>
+            </section>
 
             {/* Transactions */}
             <section>
