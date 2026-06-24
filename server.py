@@ -7576,6 +7576,15 @@ GUIDE_FINANCE_CATEGORIES: dict[str, list[tuple[str, str, str, str, str]]] = {
 }
 
 
+# Cold-start budget templates (monthly JPY) by situation — sensible Japan-life
+# defaults the user can tune. Used by /api/guide/quick-setup.
+GUIDE_BUDGET_TEMPLATES: dict[str, dict[str, int]] = {
+    "student": {"rent": 60000, "utilities": 10000, "telecom": 5000, "groceries": 30000, "dining": 15000, "transport": 8000, "entertainment": 8000},
+    "worker": {"rent": 90000, "utilities": 15000, "telecom": 8000, "groceries": 40000, "dining": 30000, "transport": 12000, "entertainment": 20000},
+    "general": {"rent": 80000, "utilities": 13000, "telecom": 7000, "groceries": 35000, "dining": 20000, "transport": 10000, "entertainment": 12000},
+}
+
+
 def _guide_finance_categories_payload() -> dict[str, Any]:
     def rows(kind: str) -> list[dict[str, str]]:
         return [{"code": c, "zh": zh, "ja": ja, "en": en, "icon": icon}
@@ -17703,7 +17712,40 @@ class Handler(BaseHTTPRequestHandler):
             ),
         )
         row = conn.execute("SELECT * FROM guide_transactions WHERE id = ?", (tid,)).fetchone()
+        if kind == "expense":
+            self._guide_check_budget_alert(conn, user["id"], str(body.get("category") or "other").strip()[:60] or "other", occurred_on, amount)
         self.send_json({"status": "ok", "transaction": serialize_guide_transaction(row)})
+
+    def _guide_check_budget_alert(self, conn: sqlite3.Connection, user_id: str, category: str, occurred_on: str, amount: int) -> None:
+        """If this expense pushed a category from at-or-under its monthly budget to
+        over, fire a one-time alert (in-app + APNs). Only the crossing transaction
+        notifies — later overspending in the same month stays quiet."""
+        try:
+            b = conn.execute("SELECT monthly_limit FROM guide_budgets WHERE user_id = ? AND category = ?", (user_id, category)).fetchone()
+            if not b or int(b["monthly_limit"] or 0) <= 0:
+                return
+            limit = int(b["monthly_limit"])
+            start = (occurred_on or "")[:7] + "-01"
+            sy, sm = (int(x) for x in start.split("-")[:2])
+            nm, ny = (sm + 1, sy) if sm < 12 else (1, sy + 1)
+            end = datetime(ny, nm, 1).date().isoformat()
+            spent_after = int((conn.execute(
+                "SELECT COALESCE(SUM(amount),0) AS s FROM guide_transactions WHERE user_id = ? AND kind = 'expense' AND category = ? AND occurred_on >= ? AND occurred_on < ?",
+                (user_id, category, start, end),
+            ).fetchone())["s"] or 0)
+            if spent_after > limit >= (spent_after - amount):  # crossed the line on this entry
+                label = next((zh for (c, zh, *_rest) in GUIDE_FINANCE_CATEGORIES["expense"] if c == category), category)
+                content = f"💸 「{label}」本月已超预算：{spent_after:,} / {limit:,}"
+                conn.execute(
+                    "INSERT INTO notifications (id, user_id, actor_id, type, content, created_at) VALUES (?, ?, ?, 'system', ?, ?)",
+                    (str(uuid.uuid4()), user_id, user_id, content, now_iso()),
+                )
+                try:
+                    server_apns.enqueue(user_id, ntype="system", content=content)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
     def api_guide_transactions_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         user = self.require_user(conn)
@@ -17922,6 +17964,129 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         self.send_json({"status": "ok", "posted": posted})
+
+    @staticmethod
+    def _guide_next_due_iso(today: datetime, due_day: int) -> str:
+        dd = max(1, min(28, due_day or 1))
+        y, m = today.year, today.month
+        cand = datetime(y, m, dd, tzinfo=timezone.utc)
+        if cand.date() < today.date():
+            m += 1
+            if m > 12:
+                m = 1; y += 1
+            cand = datetime(y, m, dd, tzinfo=timezone.utc)
+        return cand.date().isoformat()
+
+    def api_guide_digest(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """本月要点 — one glanceable roll-up that unifies bills, contract
+        cancellation windows, document expiries, budget status and the month's
+        finance snapshot. Drives the Guide home digest card."""
+        user = self.require_user(conn)
+        days = _guide_int(query.get("days"), 14, lo=1, hi=60)
+        today = _guide_today_date()
+        today_iso = today.date().isoformat()
+        horizon = (today + timedelta(days=days)).date().isoformat()
+        start, end = self._guide_month_bounds("")
+
+        def total(kind: str) -> int:
+            r = conn.execute(
+                "SELECT COALESCE(SUM(amount),0) AS s FROM guide_transactions WHERE user_id = ? AND kind = ? AND occurred_on >= ? AND occurred_on < ?",
+                (user["id"], kind, start, end),
+            ).fetchone()
+            return int(r["s"] or 0)
+        income, expense = total("income"), total("expense")
+
+        bills: list[dict[str, Any]] = []
+        for r in conn.execute("SELECT id, title, amount, due_day FROM guide_life_items WHERE user_id = ? AND active = 1", (user["id"],)):
+            if int(r["due_day"] or 0) < 1:
+                continue
+            due = self._guide_next_due_iso(today, int(r["due_day"]))
+            dleft = (datetime.fromisoformat(due).date() - today.date()).days
+            if 0 <= dleft <= days:
+                bills.append({"id": r["id"], "title": r["title"], "amount": int(r["amount"] or 0), "dueOn": due, "daysLeft": dleft})
+        bills.sort(key=lambda b: b["daysLeft"])
+
+        windows: list[dict[str, Any]] = []
+        for r in conn.execute(
+            "SELECT id, title, cancellation_window_start, cancellation_window_end, monthly_cost FROM guide_contracts WHERE user_id = ? AND status = 'active'",
+            (user["id"],),
+        ):
+            ws = (r["cancellation_window_start"] or "")[:10]
+            we = (r["cancellation_window_end"] or "")[:10]
+            if not ws and not we:
+                continue
+            if we and we < today_iso:
+                continue  # window already closed
+            open_now = (not ws) or ws <= today_iso
+            if ws and ws > horizon:
+                continue  # opens too far out
+            dleft = 0 if open_now else (datetime.fromisoformat(ws).date() - today.date()).days
+            windows.append({"id": r["id"], "title": r["title"], "cancelFrom": ws, "cancelTo": we, "daysLeft": dleft, "open": open_now, "monthlyCost": int(r["monthly_cost"] or 0)})
+        windows.sort(key=lambda w: w["daysLeft"])
+
+        docs: list[dict[str, Any]] = []
+        for r in conn.execute(
+            "SELECT id, title, expires_at, reminder_days_before FROM guide_documents WHERE user_id = ? AND status = 'active' AND expires_at IS NOT NULL AND expires_at <> ''",
+            (user["id"],),
+        ):
+            ex = (r["expires_at"] or "")[:10]
+            try:
+                dleft = (datetime.fromisoformat(ex).date() - today.date()).days
+            except ValueError:
+                continue
+            if dleft <= int(r["reminder_days_before"] or 60):
+                docs.append({"id": r["id"], "title": r["title"], "expiresOn": ex, "daysLeft": dleft})
+        docs.sort(key=lambda d: d["daysLeft"])
+
+        by_cat = {r["category"]: int(r["s"] or 0) for r in conn.execute(
+            "SELECT category, SUM(amount) AS s FROM guide_transactions WHERE user_id = ? AND kind = 'expense' AND occurred_on >= ? AND occurred_on < ? GROUP BY category",
+            (user["id"], start, end),
+        )}
+        alerts: list[dict[str, Any]] = []
+        for r in conn.execute("SELECT category, monthly_limit FROM guide_budgets WHERE user_id = ? AND monthly_limit > 0", (user["id"],)):
+            limit = int(r["monthly_limit"] or 0)
+            spent = by_cat.get(r["category"], 0)
+            if limit > 0 and spent >= limit * 0.8:
+                alerts.append({"category": r["category"], "limit": limit, "spent": spent, "over": spent > limit})
+        alerts.sort(key=lambda a: -(a["spent"] / max(1, a["limit"])))
+
+        oc = conn.execute("SELECT COUNT(*) AS c FROM guide_todos WHERE user_id = ? AND status NOT IN ('done','skipped')", (user["id"],)).fetchone()
+        has_setup = bool(
+            conn.execute("SELECT 1 FROM guide_budgets WHERE user_id = ? LIMIT 1", (user["id"],)).fetchone()
+            or conn.execute("SELECT 1 FROM guide_life_items WHERE user_id = ? LIMIT 1", (user["id"],)).fetchone()
+            or income or expense
+        )
+        self.send_json({
+            "status": "ok",
+            "month": start[:7],
+            "finance": {"income": income, "expense": expense, "net": income - expense, "fixedMonthly": self._guide_fixed_monthly_cost(conn, user["id"]), "hasData": bool(income or expense)},
+            "upcomingBills": bills[:6],
+            "contractWindows": windows[:6],
+            "documentExpiries": docs[:6],
+            "budgetAlerts": alerts[:6],
+            "openTodos": int(oc["c"] or 0),
+            "hasSetup": has_setup,
+        })
+
+    def api_guide_quick_setup(self, conn: sqlite3.Connection) -> None:
+        """30-second cold start: seed a sensible monthly budget template for the
+        user's situation so the finance dashboard is useful from day one. Only
+        fills categories the user hasn't set — never overwrites."""
+        user = self.require_user(conn)
+        body = self.read_json()
+        profile = str(body.get("profile") or "general").strip().lower()
+        tpl = GUIDE_BUDGET_TEMPLATES.get(profile, GUIDE_BUDGET_TEMPLATES["general"])
+        now = now_iso()
+        created = 0
+        for cat, limit in tpl.items():
+            if conn.execute("SELECT 1 FROM guide_budgets WHERE user_id = ? AND category = ?", (user["id"], cat)).fetchone():
+                continue
+            conn.execute(
+                "INSERT INTO guide_budgets (id, user_id, category, monthly_limit, currency, created_at, updated_at) VALUES (?, ?, ?, ?, 'JPY', ?, ?)",
+                (str(uuid.uuid4()), user["id"], cat, int(limit), now, now),
+            )
+            created += 1
+        self.send_json({"status": "ok", "created": created, "profile": profile})
 
     def _guide_replace_contract_todo(self, conn: sqlite3.Connection, user_id: str, contract: sqlite3.Row | dict[str, Any]) -> None:
         d = dict(contract)
@@ -22182,6 +22347,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_finance_trend(conn, query)
         if path == "/api/guide/finance/post-fixed" and method == "POST":
             return self.api_guide_finance_post_fixed(conn)
+        if path == "/api/guide/digest" and method == "GET":
+            return self.api_guide_digest(conn, query)
+        if path == "/api/guide/quick-setup" and method == "POST":
+            return self.api_guide_quick_setup(conn)
         if path == "/api/guide/transactions" and method == "GET":
             return self.api_guide_transactions_list(conn, query)
         if path == "/api/guide/transactions" and method == "POST":
