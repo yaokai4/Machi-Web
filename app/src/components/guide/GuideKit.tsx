@@ -5,7 +5,7 @@
 // scoped warm-gray background only inside /guide — no global/frozen CSS touched.
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSession, useToasts, useAuthPrompt } from "@/lib/store";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
@@ -81,7 +81,7 @@ export function journeyIconFor(token?: string): LucideIcon {
 }
 
 export function journeyHref(key: string): string {
-  return `/guide/journeys/${encodeURIComponent(key)}`;
+  return `/guide/goals/${encodeURIComponent(key)}`;
 }
 
 /** Situation -> action-path entry card. `done` is the local/known completed count. */
@@ -150,6 +150,7 @@ export function GuideShell({
   return (
     <AppShell requireAuth={false} wide right={right ?? null}>
       <div className="kx-guide-page min-h-full">
+        <GuideOfflineBanner />
         {back ? (
           <div className="px-4 pt-3 sm:px-6">
             <Link
@@ -165,6 +166,49 @@ export function GuideShell({
         <div className="mx-auto w-full max-w-6xl">{children}</div>
       </div>
     </AppShell>
+  );
+}
+
+function GuideOfflineBanner() {
+  const [offline, setOffline] = useState(false);
+  const [restored, setRestored] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof navigator === "undefined") return;
+    const sync = () => {
+      const isOffline = !navigator.onLine;
+      setOffline(isOffline);
+      if (!isOffline) {
+        setRestored(true);
+        window.setTimeout(() => setRestored(false), 3600);
+      }
+    };
+    sync();
+    window.addEventListener("online", sync);
+    window.addEventListener("offline", sync);
+    return () => {
+      window.removeEventListener("online", sync);
+      window.removeEventListener("offline", sync);
+    };
+  }, []);
+
+  if (!offline && !restored) return null;
+
+  return (
+    <div className="mx-auto w-full max-w-6xl px-4 pt-3 sm:px-6" role="status" aria-live="polite">
+      <div
+        className={[
+          "rounded-2xl border px-4 py-3 text-sm font-semibold shadow-sm",
+          offline
+            ? "border-amber-400/35 bg-amber-400/12 text-amber-800 dark:text-amber-200"
+            : "border-emerald-400/25 bg-emerald-400/12 text-emerald-800 dark:text-emerald-200",
+        ].join(" ")}
+      >
+        {offline
+          ? "当前离线。Guide 的核心计划、Todo、日历和申请以服务器数据为准，联网后请重试或刷新同步。"
+          : "网络已恢复。Guide 会继续从服务器同步最新状态。"}
+      </div>
+    </div>
   );
 }
 

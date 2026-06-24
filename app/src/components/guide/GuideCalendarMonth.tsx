@@ -1,9 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { GuideTodo } from "@/lib/guide";
-import { GuideTodoCard } from "@/components/guide/GuideOS";
+import { guide, type GuideCalendarItem, type GuideTodo } from "@/lib/guide";
+import { GuideCalendarEventCard } from "@/components/guide/GuideCalendarEventCard";
+import { GuideQuickAddTodo, GuideTodoCard } from "@/components/guide/GuideOS";
+import { useToasts } from "@/lib/store";
 
 // Spec P2 desktop calendar: left month grid (dots on days with tasks) + right
 // panel showing the selected day's todos. Mobile keeps the grouped list
@@ -13,7 +16,26 @@ function iso(d: Date): string {
 }
 const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 
-export function GuideCalendarMonth({ todos }: { todos: GuideTodo[] }) {
+export function GuideCalendarMonth({ todos, events }: { todos: GuideTodo[]; events: GuideCalendarItem[] }) {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((state) => state.push);
+  const move = useMutation({
+    mutationFn: ({ id, date }: { id: string; date: string }) => guide.updateTodo(id, { plannedDate: date }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
+      pushToast({ kind: "success", message: "已移动到新日期" });
+    },
+    onError: () => pushToast({ kind: "error", message: "日期调整失败，请重试" }),
+  });
+  const moveEvent = useMutation({
+    mutationFn: ({ id, date }: { id: string; date: string }) => guide.updateCalendarEvent(id, { date, startAt: date }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+      pushToast({ kind: "success", message: "日程已移动到新日期" });
+    },
+    onError: () => pushToast({ kind: "error", message: "日程调整失败，请重试" }),
+  });
   const todayIso = iso(new Date());
   const byDate = useMemo(() => {
     const map: Record<string, GuideTodo[]> = {};
@@ -23,6 +45,14 @@ export function GuideCalendarMonth({ todos }: { todos: GuideTodo[] }) {
     }
     return map;
   }, [todos]);
+  const eventsByDate = useMemo(() => {
+    const map: Record<string, GuideCalendarItem[]> = {};
+    for (const event of events) {
+      const key = (event.date || event.startAt || "").slice(0, 10);
+      if (key) (map[key] ||= []).push(event);
+    }
+    return map;
+  }, [events]);
 
   const [cursor, setCursor] = useState(() => new Date());
   const [selected, setSelected] = useState(todayIso);
@@ -38,6 +68,7 @@ export function GuideCalendarMonth({ todos }: { todos: GuideTodo[] }) {
   }
   const monthLabel = `${cursor.getFullYear()}年 ${cursor.getMonth() + 1}月`;
   const dayTodos = byDate[selected] || [];
+  const dayEvents = eventsByDate[selected] || [];
 
   return (
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
@@ -57,7 +88,7 @@ export function GuideCalendarMonth({ todos }: { todos: GuideTodo[] }) {
           {cells.map((d) => {
             const key = iso(d);
             const inMonth = d.getMonth() === cursor.getMonth();
-            const count = byDate[key]?.length || 0;
+            const count = (byDate[key]?.length || 0) + (eventsByDate[key]?.length || 0);
             const isToday = key === todayIso;
             const isSel = key === selected;
             return (
@@ -65,6 +96,15 @@ export function GuideCalendarMonth({ todos }: { todos: GuideTodo[] }) {
                 key={key}
                 type="button"
                 onClick={() => setSelected(key)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const todoId = event.dataTransfer.getData("text/guide-todo");
+                  const calendarEventId = event.dataTransfer.getData("text/guide-event");
+                  if (todoId) move.mutate({ id: todoId, date: key });
+                  if (calendarEventId) moveEvent.mutate({ id: calendarEventId, date: key });
+                  setSelected(key);
+                }}
                 className={[
                   "relative grid aspect-square place-items-center rounded-xl text-sm font-bold transition",
                   inMonth ? "text-kx-text" : "text-kx-muted/40",
@@ -82,13 +122,46 @@ export function GuideCalendarMonth({ todos }: { todos: GuideTodo[] }) {
       </div>
 
       <div className="min-w-0">
-        <h3 className="mb-3 text-base font-black text-kx-text">{labelDate(selected)} · {dayTodos.length} 项</h3>
-        {dayTodos.length ? (
+        <div className="mb-3 flex items-end justify-between gap-3">
+          <div>
+            <h3 className="text-base font-black text-kx-text">{labelDate(selected)} · {dayTodos.length + dayEvents.length} 项</h3>
+            <p className="mt-0.5 text-xs text-kx-muted">Todo 与独立日程在同一天统一查看，也可以拖到其他日期。</p>
+          </div>
+        </div>
+        <div className="mb-3">
+          <GuideQuickAddTodo key={selected} defaultDate={selected} compact />
+        </div>
+        {dayTodos.length || dayEvents.length ? (
           <div className="space-y-3">
-            {dayTodos.map((t) => <GuideTodoCard key={t.id} todo={t} compact />)}
+            {dayEvents.map((event) => (
+              <div
+                key={event.id}
+                draggable
+                onDragStart={(dragEvent) => {
+                  dragEvent.dataTransfer.effectAllowed = "move";
+                  dragEvent.dataTransfer.setData("text/guide-event", event.id);
+                }}
+                className="cursor-grab active:cursor-grabbing"
+              >
+                <GuideCalendarEventCard event={event} compact />
+              </div>
+            ))}
+            {dayTodos.map((t) => (
+              <div
+                key={t.id}
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/guide-todo", t.id);
+                }}
+                className="cursor-grab active:cursor-grabbing"
+              >
+                <GuideTodoCard todo={t} compact />
+              </div>
+            ))}
           </div>
         ) : (
-          <p className="rounded-2xl border border-dashed border-kx-stroke/60 bg-kx-card/60 p-5 text-sm text-kx-muted">这一天没有任务。</p>
+          <p className="rounded-2xl border border-dashed border-kx-stroke/60 bg-kx-card/60 p-5 text-sm text-kx-muted">这一天还没有 Todo 或日程。</p>
         )}
       </div>
     </div>

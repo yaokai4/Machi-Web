@@ -2,11 +2,12 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarClock, Home, Plus, Trash2, WalletCards } from "lucide-react";
+import { CalendarClock, CheckCircle2, ChevronDown, History, Home, Plus, Trash2, WalletCards } from "lucide-react";
 import { guide } from "@/lib/guide";
 import type { GuideLifeItem } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { EmptyPanel, GuideTodoCard } from "@/components/guide/GuideOS";
+import { GuideAttachmentManager } from "@/components/guide/GuideAttachmentManager";
 import { InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 
@@ -79,7 +80,7 @@ export default function GuideLifePage() {
 
   if (!user) {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+      <GuideShell back={{ href: "/guide", label: "今日" }}>
         <div className="px-4 py-8 sm:px-7">
           <section className="kx-guide-hero p-6">
             <WalletCards className="h-8 w-8 text-kx-accent" />
@@ -93,11 +94,11 @@ export default function GuideLifePage() {
   }
 
   return (
-    <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+    <GuideShell back={{ href: "/guide", label: "今日" }}>
       <div className="space-y-7 px-4 py-7 sm:px-7">
         <header className="kx-guide-hero p-6">
           <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Life Plan</p>
-          <h1 className="mt-2 text-3xl font-black text-kx-text">日本生活日程管家</h1>
+          <h1 className="mt-2 text-3xl font-black text-kx-text">生活缴费与合同提醒</h1>
           <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">管理房租、学费、水电网络、手机费、保险、年金、住民税、签证和房屋契约更新。</p>
         </header>
 
@@ -174,45 +175,111 @@ export default function GuideLifePage() {
 // A saved life item with its amount + due day and a delete affordance. Deleting
 // removes the item AND its generated payment todos + reminders.
 function LifeItemCard({ item, onDelete, deleting }: { item: GuideLifeItem; onDelete: () => void; deleting: boolean }) {
+  const [open, setOpen] = useState(false);
+  const [paidAt, setPaidAt] = useState(() => new Date().toISOString().slice(0, 10));
+  const [amountInput, setAmountInput] = useState(String(item.amount || ""));
+  const [method, setMethod] = useState(item.paymentMethod || "");
+  const [notes, setNotes] = useState("");
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((state) => state.push);
+  const history = useQuery({
+    queryKey: ["guide", "life-payments", item.id],
+    queryFn: () => guide.lifePayments(item.id),
+    enabled: open,
+  });
+  const pay = useMutation({
+    mutationFn: () => guide.createLifePayment(item.id, {
+      amount: Number(amountInput || item.amount || 0),
+      currency: item.currency,
+      paymentMethod: method,
+      paidAt,
+      notes,
+    }),
+    onSuccess: (response) => {
+      queryClient.invalidateQueries({ queryKey: ["guide", "life-payments", item.id] });
+      queryClient.invalidateQueries({ queryKey: ["guide", "life-items"] });
+      queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
+      queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+      setNotes("");
+      pushToast({ kind: "success", message: response.nextDueAt ? `已记录支付，下一期 ${response.nextDueAt}` : "已记录支付" });
+    },
+    onError: (error) => pushToast({ kind: "error", message: error instanceof Error ? error.message : "支付记录保存失败" }),
+  });
   const amount = item.amount ? `${item.currency || "JPY"} ${item.amount.toLocaleString()}` : "";
   const due = item.dueDay ? `每月 ${item.dueDay} 号` : (item.dueAt || "");
   return (
-    <div className="kx-card flex items-start gap-3 p-4">
-      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
-        <WalletCards className="h-5 w-5" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <p className="truncate text-sm font-black text-kx-text">{item.title}</p>
-          {amount ? <span className="shrink-0 rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">{amount}</span> : null}
-        </div>
-        {item.provider ? <p className="mt-0.5 truncate text-xs text-kx-muted">{item.provider}</p> : null}
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {due ? (
-            <span className="inline-flex items-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-2 py-0.5 text-[11px] font-semibold text-kx-subtle">
-              <CalendarClock className="h-3 w-3" /> {due}
-            </span>
-          ) : null}
-          {item.paymentMethod ? (
-            <span className="rounded-full border border-kx-stroke/60 bg-kx-card px-2 py-0.5 text-[11px] font-semibold text-kx-subtle">{item.paymentMethod}</span>
-          ) : null}
-        </div>
+    <div className="kx-card p-4">
+      <div className="flex items-start gap-3">
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
+          <WalletCards className="h-5 w-5" />
+        </span>
+        <button type="button" onClick={() => setOpen((value) => !value)} className="min-w-0 flex-1 text-left" aria-expanded={open}>
+          <div className="flex items-center gap-2">
+            <p className="truncate text-sm font-black text-kx-text">{item.title}</p>
+            {amount ? <span className="shrink-0 rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">{amount}</span> : null}
+          </div>
+          {item.provider ? <p className="mt-0.5 truncate text-xs text-kx-muted">{item.provider}</p> : null}
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {due ? (
+              <span className="inline-flex items-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-2 py-0.5 text-[11px] font-semibold text-kx-subtle">
+                <CalendarClock className="h-3 w-3" /> {due}
+              </span>
+            ) : null}
+            {item.paymentMethod ? (
+              <span className="rounded-full border border-kx-stroke/60 bg-kx-card px-2 py-0.5 text-[11px] font-semibold text-kx-subtle">{item.paymentMethod}</span>
+            ) : null}
+          </div>
+        </button>
+        <button type="button" onClick={() => setOpen((value) => !value)} className="grid min-h-11 min-w-11 place-items-center rounded-xl text-kx-muted hover:bg-kx-soft" aria-label={open ? "收起支付详情" : "展开支付详情"}>
+          <ChevronDown className={"h-4 w-4 transition " + (open ? "rotate-180" : "")} />
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm(`删除「${item.title}」及其待办和支付历史？`)) onDelete();
+          }}
+          disabled={deleting}
+          aria-label="删除生活事项"
+          className="grid min-h-11 min-w-11 place-items-center rounded-xl text-kx-muted transition hover:bg-rose-500/10 hover:text-rose-500 disabled:opacity-50"
+        >
+          <Trash2 className="h-4 w-4" />
+        </button>
       </div>
-      <button
-        type="button"
-        onClick={onDelete}
-        disabled={deleting}
-        aria-label="删除生活事项"
-        className="shrink-0 rounded-xl p-2 text-kx-muted transition hover:bg-rose-500/10 hover:text-rose-500 disabled:opacity-50"
-      >
-        <Trash2 className="h-4 w-4" />
-      </button>
+      {open ? (
+        <div className="mt-4 border-t border-kx-stroke/60 pt-4">
+          <div className="grid gap-3 sm:grid-cols-4">
+            <label className="grid gap-1 text-xs font-bold text-kx-muted">支付日期<input type="date" value={paidAt} onChange={(event) => setPaidAt(event.target.value)} className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text" /></label>
+            <label className="grid gap-1 text-xs font-bold text-kx-muted">金额<input inputMode="numeric" value={amountInput} onChange={(event) => setAmountInput(event.target.value)} className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text" /></label>
+            <label className="grid gap-1 text-xs font-bold text-kx-muted">支付方式<input value={method} onChange={(event) => setMethod(event.target.value)} className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text" /></label>
+            <button type="button" onClick={() => pay.mutate()} disabled={pay.isPending || !paidAt} className="kx-button-primary min-h-11 self-end px-4 disabled:opacity-60">
+              <CheckCircle2 className="h-4 w-4" /> {pay.isPending ? "保存中" : "标记已支付"}
+            </button>
+          </div>
+          <label className="mt-3 grid gap-1 text-xs font-bold text-kx-muted">备注<input value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="例如：口座振替成功" className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text" /></label>
+          <div className="mt-4">
+            <GuideAttachmentManager entityType="guide_life_item" entityId={item.id} title="缴费附件" compact />
+          </div>
+          <div className="mt-4">
+            <h4 className="flex items-center gap-2 text-sm font-black text-kx-text"><History className="h-4 w-4 text-kx-accent" />支付历史</h4>
+            {history.isLoading ? <p className="mt-2 text-xs text-kx-muted">加载中…</p> : history.data?.items.length ? (
+              <div className="mt-2 divide-y divide-kx-stroke/50">
+                {history.data.items.map((payment) => (
+                  <div key={payment.id} className="flex items-center justify-between gap-3 py-2 text-xs">
+                    <span className="font-semibold text-kx-text">{payment.paidAt.slice(0, 10)} · {payment.paymentMethod || "未注明方式"}</span>
+                    <span className="font-black text-kx-accent">{payment.currency} {payment.amount.toLocaleString()}</span>
+                  </div>
+                ))}
+              </div>
+            ) : <p className="mt-2 text-xs text-kx-muted">还没有支付记录。</p>}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
 
 function recurrenceLabel(r: string): string {
-  return { monthly: "每月", quarterly: "每季", yearly: "每年", once: "一次性", weekly: "每周" }[r] || r;
+  return { monthly: "每月", quarterly: "每季", semester: "每学期", yearly: "每年", once: "一次性", weekly: "每周" }[r] || r;
 }
 
 function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {

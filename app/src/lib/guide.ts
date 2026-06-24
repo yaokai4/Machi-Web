@@ -5,7 +5,7 @@
 // shared token + base URL + error type from ./api. Web and iOS consume the
 // SAME endpoints and the SAME category keys — the taxonomy is server-driven.
 
-import { apiBase, readToken, APIError } from "./api";
+import { apiBase, readToken, APIError, type UploadedFile } from "./api";
 
 export type GuideStatus = "ok" | "coming_soon";
 
@@ -90,6 +90,13 @@ export interface GuideArticle {
   sourceLabel?: string;
   verifiedAt?: string;
   staleAfterDays?: number;
+  saved?: boolean;
+  progressPercent?: number;
+  readingProgress?: {
+    progressPercent: number;
+    completedAt?: string | null;
+    lastReadAt?: string | null;
+  };
   publishedAt: string | null;
   updatedAt: string | null;
 }
@@ -679,6 +686,8 @@ export interface GuideTodo {
   estimatedMinutes: number;
   notes: string;
   recurrence?: string;
+  listName?: string;
+  tags?: string[];
   relatedArticleSlugs: string[];
   relatedProductSlugs: string[];
   relatedServiceSlugs: string[];
@@ -710,7 +719,7 @@ export interface GuideApplication {
   userId: string;
   planId: string;
   type: "school" | "company" | "jlpt" | string;
-  careerTrack?: string;
+  careerTrack: string;
   name: string;
   department: string;
   position: string;
@@ -718,9 +727,30 @@ export interface GuideApplication {
   interviewAt?: string | null;
   resultAt?: string | null;
   status: string;
+  stage: string;
+  websiteUrl: string;
+  interviewLocation: string;
+  meetingUrl: string;
+  contactName: string;
+  contactEmail: string;
+  priority: string;
+  favorite: boolean;
+  tags: string[];
+  archivedAt?: string | null;
+  stages: GuideApplicationStage[];
+  stageNote?: string;
   notes: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface GuideApplicationStage {
+  id: string;
+  applicationId: string;
+  stage: string;
+  note: string;
+  occurredAt?: string | null;
+  createdAt?: string | null;
 }
 
 export interface GuideLifeItem {
@@ -742,6 +772,52 @@ export interface GuideLifeItem {
   updatedAt?: string;
 }
 
+export interface GuideLifePayment {
+  id: string;
+  lifeItemId: string;
+  amount: number;
+  currency: string;
+  paymentMethod: string;
+  paidAt: string;
+  notes: string;
+  createdAt?: string;
+}
+
+export interface GuideContract {
+  id: string;
+  userId: string;
+  category: string;
+  title: string;
+  provider: string;
+  startDate?: string | null;
+  endDate?: string | null;
+  cancellationWindowStart?: string | null;
+  cancellationWindowEnd?: string | null;
+  autoRenew: boolean;
+  monthlyCost: number;
+  yearlyCost: number;
+  currency: string;
+  reminderDaysBefore: number;
+  contactInfo: string;
+  notes: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface GuideDocumentReminder {
+  id: string;
+  userId: string;
+  category: string;
+  title: string;
+  expiresAt?: string | null;
+  reminderDaysBefore: number;
+  notes: string;
+  status: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface GuideCalendarItem {
   id: string;
   todoId: string;
@@ -752,6 +828,10 @@ export interface GuideCalendarItem {
   type: string;
   status: string;
   planId: string;
+  notes?: string;
+  recurrence?: string;
+  reminderAt?: string | null;
+  allDay?: boolean;
   todo?: GuideTodo | null;
 }
 
@@ -770,6 +850,7 @@ export interface GuideNextAction {
   todoId?: string;
   todoType?: string;
   journeyKey?: string;
+  dueAt?: string;
 }
 
 export interface GuideActivePlanResponse {
@@ -991,7 +1072,7 @@ export const guide = {
     greq<GuideProgressResponse>("PATCH", "/api/guide/progress", body),
   profile: () => greq<{ status: string; profile: GuideProfile | null }>("GET", "/api/guide/profile"),
   updateProfile: (body: Partial<GuideProfile>) =>
-    greq<{ status: string; profile: GuideProfile | null }>("PATCH", "/api/guide/profile", body),
+    greq<{ status: string; profile: GuideProfile | null; generatedTodoCount?: number }>("PATCH", "/api/guide/profile", body),
   plans: () => greq<{ status: string; items: GuidePlan[] }>("GET", "/api/guide/plans"),
   activePlan: (language = "zh-CN") =>
     greq<GuideActivePlanResponse>("GET", `/api/guide/plans/active${qs({ language })}`),
@@ -1003,20 +1084,30 @@ export const guide = {
     greq<{ status: string; plan: GuidePlan }>("PATCH", `/api/guide/plans/${encodeURIComponent(id)}`, body),
   resetPlan: (id: string) =>
     greq<{ status: string; plan: GuidePlan }>("POST", `/api/guide/plans/${encodeURIComponent(id)}/reset`),
-  todos: (p: { status?: string; from?: string; to?: string; planId?: string; type?: string; limit?: number } = {}) =>
+  todos: (p: { status?: string; from?: string; to?: string; planId?: string; type?: string; listName?: string; tag?: string; limit?: number } = {}) =>
     greq<{ status: string; items: GuideTodo[]; total: number }>("GET", `/api/guide/todos${qs(p)}`),
-  createTodo: (body: { content?: string; title?: string; summary?: string; todoType?: string; priority?: string; plannedDate?: string; dueAt?: string; reminderAt?: string; planId?: string }) =>
+  createTodo: (body: { content?: string; title?: string; summary?: string; notes?: string; todoType?: string; priority?: string; plannedDate?: string; dueAt?: string; reminderAt?: string; recurrence?: string; planId?: string; listName?: string; tags?: string[] }) =>
     greq<{ status: string; todo: GuideTodo }>("POST", "/api/guide/todos", body),
   updateTodo: (id: string, body: Partial<GuideTodo>) =>
     greq<{ status: string; todo: GuideTodo }>("PATCH", `/api/guide/todos/${encodeURIComponent(id)}`, body),
+  deleteTodo: (id: string) =>
+    greq<{ status: string; deletedId: string }>("DELETE", `/api/guide/todos/${encodeURIComponent(id)}`),
   completeTodo: (id: string) =>
     greq<{ status: string; todo: GuideTodo }>("POST", `/api/guide/todos/${encodeURIComponent(id)}/complete`),
   setTodoReminder: (id: string, reminderAt: string) =>
     greq<{ status: string; todo: GuideTodo }>("POST", `/api/guide/todos/${encodeURIComponent(id)}/reminder`, { reminderAt }),
   calendar: (p: { from?: string; to?: string; limit?: number } = {}) =>
     greq<{ status: string; items: GuideCalendarItem[]; total: number }>("GET", `/api/guide/calendar${qs(p)}`),
-  applications: () =>
-    greq<{ status: string; items: GuideApplication[]; total: number }>("GET", "/api/guide/applications"),
+  createCalendarEvent: (body: Partial<GuideCalendarItem>) =>
+    greq<{ status: string; event: GuideCalendarItem }>("POST", "/api/guide/calendar/events", body),
+  updateCalendarEvent: (id: string, body: Partial<GuideCalendarItem>) =>
+    greq<{ status: string; event: GuideCalendarItem }>("PATCH", `/api/guide/calendar/events/${encodeURIComponent(id)}`, body),
+  deleteCalendarEvent: (id: string) =>
+    greq<{ status: string; deleted: string }>("DELETE", `/api/guide/calendar/events/${encodeURIComponent(id)}`),
+  applications: (p: { status?: string; stage?: string; type?: string; priority?: string; q?: string } = {}) =>
+    greq<{ status: string; items: GuideApplication[]; total: number }>("GET", `/api/guide/applications${qs(p)}`),
+  application: (id: string) =>
+    greq<{ status: string; application: GuideApplication; todos: GuideTodo[] }>("GET", `/api/guide/applications/${encodeURIComponent(id)}`),
   createApplication: (body: Partial<GuideApplication>) =>
     greq<{ status: string; application: GuideApplication }>("POST", "/api/guide/applications", body),
   updateApplication: (id: string, body: Partial<GuideApplication>) =>
@@ -1033,6 +1124,29 @@ export const guide = {
     greq<{ status: string; item: GuideLifeItem }>("PATCH", `/api/guide/life-items/${encodeURIComponent(id)}`, body),
   deleteLifeItem: (id: string) =>
     greq<{ status: string; deleted: string }>("DELETE", `/api/guide/life-items/${encodeURIComponent(id)}`),
+  lifePayments: (id: string) =>
+    greq<{ status: string; items: GuideLifePayment[]; total: number }>("GET", `/api/guide/life-items/${encodeURIComponent(id)}/payments`),
+  createLifePayment: (id: string, body: Partial<GuideLifePayment>) =>
+    greq<{ status: string; payment: GuideLifePayment; item: GuideLifeItem; nextDueAt?: string | null }>(
+      "POST", `/api/guide/life-items/${encodeURIComponent(id)}/payments`, body),
+  contracts: () =>
+    greq<{ status: string; items: GuideContract[]; total: number }>("GET", "/api/guide/contracts"),
+  createContract: (body: Partial<GuideContract>) =>
+    greq<{ status: string; contract: GuideContract }>("POST", "/api/guide/contracts", body),
+  updateContract: (id: string, body: Partial<GuideContract>) =>
+    greq<{ status: string; contract: GuideContract }>("PATCH", `/api/guide/contracts/${encodeURIComponent(id)}`, body),
+  deleteContract: (id: string) =>
+    greq<{ status: string; deleted: string }>("DELETE", `/api/guide/contracts/${encodeURIComponent(id)}`),
+  documents: () =>
+    greq<{ status: string; items: GuideDocumentReminder[]; total: number }>("GET", "/api/guide/documents"),
+  createDocument: (body: Partial<GuideDocumentReminder>) =>
+    greq<{ status: string; document: GuideDocumentReminder }>("POST", "/api/guide/documents", body),
+  updateDocument: (id: string, body: Partial<GuideDocumentReminder>) =>
+    greq<{ status: string; document: GuideDocumentReminder }>("PATCH", `/api/guide/documents/${encodeURIComponent(id)}`, body),
+  deleteDocument: (id: string) =>
+    greq<{ status: string; deleted: string }>("DELETE", `/api/guide/documents/${encodeURIComponent(id)}`),
+  attachments: (p: { entityType: string; entityId: string }) =>
+    greq<{ status: string; items: UploadedFile[]; total: number }>("GET", `/api/guide/attachments${qs(p)}`),
   savedItems: () => greq<{ status: string; items: GuideSavedItem[] }>("GET", "/api/guide/saved"),
   setSaved: (itemType: string, itemId: string, on: boolean) =>
     greq<{ status: string; saved: boolean; itemType: string; itemId: string }>(
@@ -1042,6 +1156,13 @@ export const guide = {
   article: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; article: GuideArticle; related: GuideArticle[] }>(
       "GET", `/api/guide/articles/${encodeURIComponent(idOrSlug)}${qs({ country, language })}`),
+  updateArticleProgress: (idOrSlug: string, body: { progressPercent: number; country?: string }) =>
+    greq<{
+      status: string;
+      articleId: string;
+      slug: string;
+      progress: { progressPercent: number; completedAt?: string | null; lastReadAt?: string | null };
+    }>("PATCH", `/api/guide/articles/${encodeURIComponent(idOrSlug)}/progress`, body),
   products: (p: GuideListParams = {}) =>
     greq<GuidePaged<GuideProduct>>("GET", `/api/guide/products${qs({ ...p })}`),
   memberResources: (p: GuideListParams = {}) =>

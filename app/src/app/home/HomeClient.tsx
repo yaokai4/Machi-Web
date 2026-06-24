@@ -23,12 +23,9 @@ import { Avatar } from "@/components/design/Avatar";
 import { regionAccountPatch, regionFromUser, regionHeaderLabel, regionShortLabel, type RegionInfo } from "@/lib/regions";
 import clsx from "clsx";
 
-type HotScope = "city" | "country" | "all";
-
 export default function HomeClient() {
   const router = useRouter();
   const [mode, setMode] = useState<FeedMode>("recommend");
-  const [hotScope, setHotScope] = useState<HotScope>("city");
   const [regionPickerOpen, setRegionPickerOpen] = useState(false);
   const [searchDraft, setSearchDraft] = useState("");
   const [scrolled, setScrolled] = useState(false);
@@ -56,14 +53,9 @@ export default function HomeClient() {
   const copy = homeCopy(locale);
   const MODES: { value: FeedMode; label: string }[] = [
     { value: "recommend", label: t("tab_recommend") },
+    { value: "hot", label: t("tab_hot") },
     { value: "local", label: t("tab_local") },
     { value: "following", label: t("tab_following") },
-    { value: "hot", label: t("tab_hot") },
-  ];
-  const HOT_SCOPES: { value: HotScope; label: string }[] = [
-    { value: "city", label: copy.hotCity },
-    { value: "country", label: copy.hotCountry },
-    { value: "all", label: copy.hotAll },
   ];
   // Memo'd so the feed query's useMemo deps don't see a fresh object
   // reference on every render — without this the feed re-derives the
@@ -80,25 +72,19 @@ export default function HomeClient() {
         : {},
     [userCountry, userProvince, userCity, userRegionCode],
   );
-  // For the hot tab the user picks the scope explicitly (city /
-  // country / all). For the local tab we always filter by region.
-  // Other modes default to country so the feed is at least continent-
-  // aware without being all-world.
+  // Hot follows the selected city in the top region chip, matching iOS.
+  // This removes the duplicated city/country/all row under 热榜.
   const feedRegionOpts = useMemo(() => {
     if (mode === "local") return regionOpts;
-    if (mode === "hot") {
-      if (hotScope === "city") return { region_code: regionOpts.region_code, country: regionOpts.country };
-      if (hotScope === "country") return { country: regionOpts.country };
-      return {} as typeof regionOpts;
-    }
+    if (mode === "hot") return { region_code: regionOpts.region_code, country: regionOpts.country };
     return { country: regionOpts.country };
-  }, [mode, hotScope, regionOpts]);
+  }, [mode, regionOpts]);
 
   const feed = useInfiniteQuery<Paginated<KXPost> & { mode: FeedMode }>({
     queryKey: [
       "feed",
       mode,
-      mode === "hot" ? hotScope : "",
+      mode === "hot" ? (regionOpts.region_code || regionOpts.city || regionOpts.country || "") : "",
       mode === "local" ? (regionOpts.region_code || regionOpts.city || "") : (regionOpts.country || ""),
     ],
     initialPageParam: undefined as string | undefined,
@@ -235,20 +221,6 @@ export default function HomeClient() {
             </button>
           ))}
         </div>
-        {mode === "hot" ? (
-          <div className="flex items-center gap-1 self-start">
-            {HOT_SCOPES.map((s) => (
-              <button
-                key={s.value}
-                className="kx-tab px-2.5 h-7 text-xs"
-                data-active={hotScope === s.value}
-                onClick={() => startTransition(() => setHotScope(s.value))}
-              >
-                {s.label}
-              </button>
-            ))}
-          </div>
-        ) : null}
       </div>
 
       <div className="px-3 sm:px-4 py-3 space-y-3">
@@ -314,9 +286,6 @@ function homeCopy(locale: Locale) {
   switch (locale) {
     case "en":
       return {
-        hotCity: "City",
-        hotCountry: "Country",
-        hotAll: "All",
         switchRegion: "Switch region",
         search: "Search",
         searchPlaceholder: "Search housing, language exchange, jobs, events, and local questions...",
@@ -329,9 +298,6 @@ function homeCopy(locale: Locale) {
       };
     case "ja":
       return {
-        hotCity: "街",
-        hotCountry: "国",
-        hotAll: "全体",
         switchRegion: "地域を切り替え",
         search: "検索",
         searchPlaceholder: "住まい、言語交換、仕事、イベント、地域の質問を検索...",
@@ -344,9 +310,6 @@ function homeCopy(locale: Locale) {
       };
     case "zh-Hant":
       return {
-        hotCity: "城市",
-        hotCountry: "國家",
-        hotAll: "全站",
         switchRegion: "切換地區",
         search: "搜尋",
         searchPlaceholder: "搜尋租房、語言交換、工作、活動、本地問題...",
@@ -359,9 +322,6 @@ function homeCopy(locale: Locale) {
       };
     default:
       return {
-        hotCity: "城市",
-        hotCountry: "国家",
-        hotAll: "全站",
         switchRegion: "切换地区",
         search: "搜索",
         searchPlaceholder: "搜索租房、语言交换、工作、活动、本地问题...",

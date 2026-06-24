@@ -1,9 +1,12 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronLeft, ChevronRight } from "lucide-react";
-import type { GuideTodo } from "@/lib/guide";
+import { guide, type GuideCalendarItem, type GuideTodo } from "@/lib/guide";
 import { GuideTodoCard } from "@/components/guide/GuideOS";
+import { GuideCalendarEventCard } from "@/components/guide/GuideCalendarEventCard";
+import { useToasts } from "@/lib/store";
 
 // Google Calendar-style week board + an agenda list, complementing the month
 // grid (GuideCalendarMonth). Guide todos are date-granular (no time-of-day), so
@@ -22,6 +25,15 @@ function groupByDate(todos: GuideTodo[]): Record<string, GuideTodo[]> {
   return map;
 }
 
+function groupEventsByDate(events: GuideCalendarItem[]): Record<string, GuideCalendarItem[]> {
+  const map: Record<string, GuideCalendarItem[]> = {};
+  for (const event of events) {
+    const key = (event.date || event.startAt || "").slice(0, 10);
+    if (key) (map[key] ||= []).push(event);
+  }
+  return map;
+}
+
 function labelDate(date: string): string {
   const today = iso(new Date());
   const tmr = new Date();
@@ -32,8 +44,28 @@ function labelDate(date: string): string {
   return `${d.getMonth() + 1}月${d.getDate()}日 周${WEEKDAYS[d.getDay()]}`;
 }
 
-export function GuideCalendarWeek({ todos }: { todos: GuideTodo[] }) {
+export function GuideCalendarWeek({ todos, events }: { todos: GuideTodo[]; events: GuideCalendarItem[] }) {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((state) => state.push);
+  const move = useMutation({
+    mutationFn: ({ id, date }: { id: string; date: string }) => guide.updateTodo(id, { plannedDate: date }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+      queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
+      pushToast({ kind: "success", message: "已移动到新日期" });
+    },
+    onError: () => pushToast({ kind: "error", message: "日期调整失败，请重试" }),
+  });
+  const moveEvent = useMutation({
+    mutationFn: ({ id, date }: { id: string; date: string }) => guide.updateCalendarEvent(id, { date, startAt: date }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+      pushToast({ kind: "success", message: "日程已移动到新日期" });
+    },
+    onError: () => pushToast({ kind: "error", message: "日程调整失败，请重试" }),
+  });
   const byDate = useMemo(() => groupByDate(todos), [todos]);
+  const eventsByDate = useMemo(() => groupEventsByDate(events), [events]);
   const todayIso = iso(new Date());
   const [cursor, setCursor] = useState(() => new Date());
 
@@ -68,18 +100,49 @@ export function GuideCalendarWeek({ todos }: { todos: GuideTodo[] }) {
           {days.map((d) => {
             const key = iso(d);
             const list = byDate[key] || [];
+            const dayEvents = eventsByDate[key] || [];
             const isToday = key === todayIso;
             return (
-              <div key={key} className="min-w-0">
+              <div
+                key={key}
+                className="min-w-0 rounded-xl"
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const todoId = event.dataTransfer.getData("text/guide-todo");
+                  const calendarEventId = event.dataTransfer.getData("text/guide-event");
+                  if (todoId) move.mutate({ id: todoId, date: key });
+                  if (calendarEventId) moveEvent.mutate({ id: calendarEventId, date: key });
+                }}
+              >
                 <div className={"mb-2 rounded-xl px-1 py-1.5 text-center " + (isToday ? "bg-kx-accent text-white" : "text-kx-text")}>
                   <div className="text-[11px] font-bold opacity-80">周{WEEKDAYS[d.getDay()]}</div>
                   <div className="text-sm font-black">{d.getDate()}</div>
                 </div>
                 <div className="min-h-[60px] space-y-1.5">
+                  {dayEvents.map((calendarEvent) => (
+                    <div
+                      key={calendarEvent.id}
+                      title={calendarEvent.title}
+                      draggable
+                      onDragStart={(dragEvent) => {
+                        dragEvent.dataTransfer.effectAllowed = "move";
+                        dragEvent.dataTransfer.setData("text/guide-event", calendarEvent.id);
+                      }}
+                      className="truncate rounded-lg border-l-2 border-violet-500 bg-violet-500/10 px-2 py-1.5 text-[11px] font-semibold leading-tight text-kx-text"
+                    >
+                      {calendarEvent.allDay ? "全天 · " : ""}{calendarEvent.title}
+                    </div>
+                  ))}
                   {list.map((t) => (
                     <div
                       key={t.id}
                       title={t.title}
+                      draggable
+                      onDragStart={(event) => {
+                        event.dataTransfer.effectAllowed = "move";
+                        event.dataTransfer.setData("text/guide-todo", t.id);
+                      }}
                       className={"truncate rounded-lg border-l-2 px-2 py-1.5 text-[11px] font-semibold leading-tight " + (t.status === "done" ? "border-kx-muted bg-kx-soft/60 text-kx-muted line-through" : "border-kx-accent bg-kx-accentSoft text-kx-text")}
                     >
                       {t.title}
@@ -95,30 +158,44 @@ export function GuideCalendarWeek({ todos }: { todos: GuideTodo[] }) {
   );
 }
 
-export function GuideCalendarAgenda({ todos }: { todos: GuideTodo[] }) {
+export function GuideCalendarAgenda({ todos, events }: { todos: GuideTodo[]; events: GuideCalendarItem[] }) {
   const byDate = useMemo(() => groupByDate(todos), [todos]);
+  const eventsByDate = useMemo(() => groupEventsByDate(events), [events]);
   const todayIso = iso(new Date());
   const overdue = useMemo(
     () => Object.keys(byDate).filter((d) => d < todayIso).sort().flatMap((d) => byDate[d]),
     [byDate, todayIso],
   );
-  const upcoming = useMemo(() => Object.keys(byDate).filter((d) => d >= todayIso).sort(), [byDate, todayIso]);
+  const overdueEvents = useMemo(
+    () => Object.keys(eventsByDate).filter((d) => d < todayIso).sort().flatMap((d) => eventsByDate[d]),
+    [eventsByDate, todayIso],
+  );
+  const upcoming = useMemo(
+    () => Array.from(new Set([...Object.keys(byDate), ...Object.keys(eventsByDate)])).filter((d) => d >= todayIso).sort(),
+    [byDate, eventsByDate, todayIso],
+  );
 
-  if (!overdue.length && !upcoming.length) {
+  if (!overdue.length && !overdueEvents.length && !upcoming.length) {
     return <p className="rounded-2xl border border-dashed border-kx-stroke/60 bg-kx-card/60 p-6 text-sm text-kx-muted">接下来没有安排。开始一个计划或添加生活账单后，任务会按日期出现在这里。</p>;
   }
   return (
     <div className="space-y-6">
-      {overdue.length ? (
+      {overdue.length || overdueEvents.length ? (
         <section>
-          <h3 className="mb-2 text-sm font-black text-rose-500">逾期 <span className="font-bold text-rose-400/80">· {overdue.length}</span></h3>
-          <div className="space-y-3">{overdue.map((t) => <GuideTodoCard key={t.id} todo={t} compact />)}</div>
+          <h3 className="mb-2 text-sm font-black text-rose-500">逾期 <span className="font-bold text-rose-400/80">· {overdue.length + overdueEvents.length}</span></h3>
+          <div className="space-y-3">
+            {overdueEvents.map((event) => <GuideCalendarEventCard key={event.id} event={event} compact />)}
+            {overdue.map((t) => <GuideTodoCard key={t.id} todo={t} compact />)}
+          </div>
         </section>
       ) : null}
       {upcoming.map((d) => (
         <section key={d}>
-          <h3 className="mb-2 text-sm font-black text-kx-text">{labelDate(d)} <span className="font-bold text-kx-muted">· {byDate[d].length}</span></h3>
-          <div className="space-y-3">{byDate[d].map((t) => <GuideTodoCard key={t.id} todo={t} compact />)}</div>
+          <h3 className="mb-2 text-sm font-black text-kx-text">{labelDate(d)} <span className="font-bold text-kx-muted">· {(byDate[d]?.length || 0) + (eventsByDate[d]?.length || 0)}</span></h3>
+          <div className="space-y-3">
+            {(eventsByDate[d] || []).map((event) => <GuideCalendarEventCard key={event.id} event={event} compact />)}
+            {(byDate[d] || []).map((t) => <GuideTodoCard key={t.id} todo={t} compact />)}
+          </div>
         </section>
       ))}
     </div>

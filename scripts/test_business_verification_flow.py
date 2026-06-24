@@ -2,8 +2,8 @@
 """Regression coverage for the real merchant application and review flow.
 
 Runs the production handler methods against a throwaway SQLite database:
-draft -> document upload attachment -> submit -> admin review -> public
-directory/profile visibility.
+    draft -> document upload attachment -> submit -> admin review -> public
+    directory/profile visibility -> verified profile lock.
 """
 
 from __future__ import annotations
@@ -202,11 +202,17 @@ class BusinessVerificationFlowTests(unittest.TestCase):
         self.assertEqual(public_profile["business"]["id"], business_id)
         self.assertEqual([item["id"] for item in public_profile["listings"]], [listing_id])
 
-        deleted, _ = self.call(self.owner_id, "api_delete_business_document", document_id)
-        self.assertEqual(deleted["business"]["verification_status"], "needs_review")
-        self.assertEqual(deleted["business"]["document_count"], 0)
+        with self.assertRaises(server.APIError) as locked:
+            self.call(self.owner_id, "api_delete_business_document", document_id)
+        self.assertEqual(locked.exception.status, 409)
+        self.assertEqual(locked.exception.code, "business_verified_locked")
+        business = self.conn.execute(
+            "SELECT verification_status FROM business_profiles WHERE id = ?",
+            (business_id,),
+        ).fetchone()
+        self.assertEqual(business["verification_status"], "verified")
         owner = self.conn.execute("SELECT is_merchant, merchant_verified FROM users WHERE id = ?", (self.owner_id,)).fetchone()
-        self.assertEqual((owner["is_merchant"], owner["merchant_verified"]), (1, 0))
+        self.assertEqual((owner["is_merchant"], owner["merchant_verified"]), (1, 1))
 
     def test_submit_requires_at_least_one_private_document(self) -> None:
         with self.assertRaises(server.APIError) as ctx:

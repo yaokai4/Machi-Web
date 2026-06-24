@@ -98,6 +98,7 @@ import csv
 import email.utils
 import hashlib
 import functools
+import calendar as pycalendar
 import hmac
 import html
 import io
@@ -559,6 +560,7 @@ UPLOAD_PURPOSES: dict[str, dict[str, Any]] = {
     "guide_product_preview": {"kind": "image", "max": 10 * 1024 * 1024, "count": 10, "admin": True},
     "guide_product_file": {"kind": "pdf", "max": 50 * 1024 * 1024, "count": 20, "admin": True, "private": True},
     "member_resource_file": {"kind": "pdf", "max": 50 * 1024 * 1024, "count": 20, "admin": True, "private": True},
+    "guide_attachment": {"kind": "verification_file", "max": 20 * 1024 * 1024, "count": 20, "private": True},
     "business_logo": {"kind": "image", "max": 5 * 1024 * 1024, "count": 1},
     "business_cover": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1},
     "business_verification_file": {"kind": "verification_file", "max": 20 * 1024 * 1024, "count": 10, "private": True},
@@ -1279,6 +1281,44 @@ def normalize_content_type(value: str | None) -> str:
     return candidate if candidate in CONTENT_TYPES else "dynamic"
 
 
+def infer_content_type_from_content(content: str, raw_attributes: Any = None) -> str:
+    """Best-effort fallback for quick posts.
+
+    Users often just type "周六新宿约饭有人吗" or "租房避坑提醒" without
+    choosing a post type. Keep the composer lightweight, but still route strong
+    signals into the right channel. Explicit content_type always wins; this is
+    only used for implicit dynamic posts.
+    """
+    bits = [str(content or "")]
+    if isinstance(raw_attributes, dict):
+        bits.extend(str(v or "") for v in raw_attributes.values())
+    text = " ".join(bits).strip().lower()
+    if not text:
+        return ""
+    warning_keys = ("避坑", "被骗", "诈骗", "骗子", "黑心", "危险", "踩雷", "注意", "小心", "warning", "scam")
+    meetup_keys = ("约饭", "饭局", "约局", "搭子", "麻将", "剧本杀", "桌游", "citywalk", "语言交换", "一起", "有人去", "meetup")
+    dining_keys = ("探店", "餐厅", "咖啡", "拉面", "居酒屋", "吃饭", "美食", "brunch", "dining")
+    event_keys = ("活动", "展览", "演唱会", "音乐节", "市集", "运动", "羽毛球", "足球", "摄影", "event")
+    guide_keys = ("攻略", "指南", "教程", "经验", "流程", "清单", "怎么申请", "如何办理", "guide")
+    news_keys = ("停电", "停水", "地震", "台风", "交通", "通知", "公告", "新闻", "快讯")
+    question_keys = ("?", "？", "请问", "求问", "想问", "有没有人知道", "怎么", "如何", "可以吗", "能不能")
+    if any(k in text for k in warning_keys):
+        return "warning"
+    if any(k in text for k in meetup_keys):
+        return "meetup"
+    if any(k in text for k in dining_keys):
+        return "dining"
+    if any(k in text for k in event_keys):
+        return "event"
+    if any(k in text for k in guide_keys):
+        return "guide"
+    if any(k in text for k in news_keys):
+        return "local_info"
+    if any(k in text for k in question_keys):
+        return "question"
+    return ""
+
+
 def normalize_post_attributes(content_type: str, raw: Any) -> str:
     """Validate `raw` against the per-type schema and return a JSON
     string ready to store in `posts.attributes`. Drops unknown keys,
@@ -1903,9 +1943,22 @@ def normalize_upload_purpose(value: Any) -> str:
 
 def normalize_upload_entity_type(value: Any) -> str:
     raw = str(value or "").strip().lower()
-    aliases = {"city_listing": "listing", "city_listings": "listing", "product": "guide_product", "article": "guide_article"}
+    aliases = {
+        "city_listing": "listing",
+        "city_listings": "listing",
+        "product": "guide_product",
+        "article": "guide_article",
+        "guide_todo": "guide_task",
+        "guide_plan": "guide_goal",
+    }
     raw = aliases.get(raw, raw)
-    return raw if raw in {"", "user", "post", "listing", "article", "experience", "question", "group", "message", "guide_article", "guide_product", "member_resource", "business", "video"} else ""
+    allowed = {
+        "", "user", "post", "listing", "article", "experience", "question", "group", "message",
+        "guide_article", "guide_product", "member_resource", "business", "video",
+        "guide_task", "guide_application", "guide_life_item", "guide_contract", "guide_document",
+        "guide_goal", "guide_calendar_event",
+    }
+    return raw if raw in allowed else ""
 
 
 def upload_object_key(user_id: str, purpose: str, entity_type: str, entity_id: str, content_type: str, *, thread_id: str = "", group_id: str = "") -> str:
@@ -1973,6 +2026,9 @@ def upload_object_key(user_id: str, purpose: str, entity_type: str, entity_id: s
     if purpose == "member_resource_file":
         resource_id = clean_entity_id or "general"
         return f"member/resources/{resource_id}/files/{uuid.uuid4().hex}.pdf"
+    if purpose == "guide_attachment" and entity_type.startswith("guide_") and clean_entity_id:
+        folder = re.sub(r"[^a-z0-9_-]", "", entity_type.replace("guide_", "")) or "item"
+        return f"guide/user-attachments/{user_id}/{folder}/{clean_entity_id}/{name}"
     if purpose == "business_logo" and entity_type == "business" and clean_entity_id:
         return f"businesses/{clean_entity_id}/logos/{name}"
     if purpose == "business_cover" and entity_type == "business" and clean_entity_id:
@@ -2003,6 +2059,13 @@ def serialize_uploaded_file(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]
     public_url = "" if is_private else (d.get("cdn_url") or d.get("public_url") or upload_public_url(d.get("object_key") or "", purpose))
     metadata = _upload_metadata(d.get("metadata"))
     metadata.pop("upload_token", None)
+    file_name = str(
+        metadata.get("fileName")
+        or metadata.get("file_name")
+        or metadata.get("originalFileName")
+        or metadata.get("original_file_name")
+        or Path(d.get("object_key") or "").name
+    )
     media = normalize_media_dto(d)
     thumb = media.get("thumbnailUrl") or ""
     payload = {
@@ -2017,6 +2080,8 @@ def serialize_uploaded_file(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]
         "thumbnailUrl": "" if is_private else thumb,
         "contentType": d.get("content_type") or "",
         "fileSize": int(d.get("file_size") or 0),
+        "fileName": file_name,
+        "originalFileName": file_name,
         "fileType": d.get("file_type") or "other",
         "purpose": d.get("purpose") or "",
         "entityType": d.get("entity_type") or "",
@@ -3342,6 +3407,21 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "verified_at": "TEXT NOT NULL DEFAULT ''",
         "stale_after_days": "INTEGER NOT NULL DEFAULT 0",
     })
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_article_progress (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            article_id TEXT NOT NULL,
+            slug TEXT NOT NULL DEFAULT '',
+            progress_percent INTEGER NOT NULL DEFAULT 0,
+            completed_at TEXT,
+            last_read_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, article_id)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_article_progress_user ON guide_article_progress(user_id, updated_at)")
     _ensure_columns(conn, "guide_tags", {
         "description": "TEXT NOT NULL DEFAULT ''",
         "is_active": "INTEGER NOT NULL DEFAULT 1",
@@ -3587,6 +3667,31 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_applications_user ON guide_applications(user_id, status, deadline)")
+    _ensure_columns(conn, "guide_applications", {
+        "career_track": "TEXT NOT NULL DEFAULT ''",
+        "stage": "TEXT NOT NULL DEFAULT 'saved'",
+        "website_url": "TEXT NOT NULL DEFAULT ''",
+        "interview_location": "TEXT NOT NULL DEFAULT ''",
+        "meeting_url": "TEXT NOT NULL DEFAULT ''",
+        "contact_name": "TEXT NOT NULL DEFAULT ''",
+        "contact_email": "TEXT NOT NULL DEFAULT ''",
+        "priority": "TEXT NOT NULL DEFAULT 'normal'",
+        "favorite": "INTEGER NOT NULL DEFAULT 0",
+        "tags": "TEXT NOT NULL DEFAULT ''",
+        "archived_at": "TEXT",
+    })
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_application_stages (
+            id TEXT PRIMARY KEY,
+            application_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_application_stages_app ON guide_application_stages(application_id, occurred_at, created_at)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS guide_life_items (
             id TEXT PRIMARY KEY,
@@ -3609,6 +3714,59 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_life_items_user ON guide_life_items(user_id, active, due_at)")
     conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_life_payments (
+            id TEXT PRIMARY KEY,
+            life_item_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            amount INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            payment_method TEXT NOT NULL DEFAULT '',
+            paid_at TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_life_payments_item ON guide_life_payments(life_item_id, paid_at)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_contracts (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'other',
+            title TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            start_date TEXT,
+            end_date TEXT,
+            cancellation_window_start TEXT,
+            cancellation_window_end TEXT,
+            auto_renew INTEGER NOT NULL DEFAULT 0,
+            monthly_cost INTEGER NOT NULL DEFAULT 0,
+            yearly_cost INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            reminder_days_before INTEGER NOT NULL DEFAULT 30,
+            contact_info TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_contracts_user_date ON guide_contracts(user_id, status, end_date, cancellation_window_start)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_documents (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'other',
+            title TEXT NOT NULL,
+            expires_at TEXT,
+            reminder_days_before INTEGER NOT NULL DEFAULT 60,
+            notes TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_documents_user_date ON guide_documents(user_id, status, expires_at)")
+    conn.execute("""
         CREATE TABLE IF NOT EXISTS guide_calendar_items (
             id TEXT PRIMARY KEY,
             user_id TEXT NOT NULL,
@@ -3625,6 +3783,12 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_calendar_items_user_date ON guide_calendar_items(user_id, date, start_at)")
+    _ensure_columns(conn, "guide_calendar_items", {
+        "notes": "TEXT NOT NULL DEFAULT ''",
+        "recurrence": "TEXT NOT NULL DEFAULT ''",
+        "reminder_at": "TEXT",
+        "all_day": "INTEGER NOT NULL DEFAULT 1",
+    })
     conn.execute("""
         CREATE TABLE IF NOT EXISTS guide_product_relations (
             id TEXT PRIMARY KEY,
@@ -6597,6 +6761,17 @@ def serialize_guide_article(row: sqlite3.Row | dict[str, Any], include_body: boo
     return out
 
 
+def serialize_guide_article_progress(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {"progressPercent": 0, "completedAt": None, "lastReadAt": None}
+    d = dict(row)
+    return {
+        "progressPercent": int(d.get("progress_percent") or 0),
+        "completedAt": d.get("completed_at"),
+        "lastReadAt": d.get("last_read_at"),
+    }
+
+
 SUPPORTED_PRICE_CURRENCIES = {"CNY", "JPY", "USD", "CAD", "EUR", "GBP", "HKD", "TWD", "KRW", "SGD", "AUD"}
 
 
@@ -7265,6 +7440,8 @@ def serialize_guide_todo(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
         "estimatedMinutes": int(d.get("estimated_minutes") or 0),
         "notes": d.get("notes") or "",
         "recurrence": d.get("recurrence") or "",
+        "listName": d.get("list_name") or "",
+        "tags": _guide_split_tags(d.get("tags")),
         "relatedArticleSlugs": _guide_split_tags(d.get("related_article_slugs")),
         "relatedProductSlugs": _guide_split_tags(d.get("related_product_slugs")),
         "relatedServiceSlugs": _guide_split_tags(d.get("related_service_slugs")),
@@ -7289,13 +7466,14 @@ def serialize_guide_reminder(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any
     }
 
 
-def serialize_guide_application(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+def serialize_guide_application(row: sqlite3.Row | dict[str, Any], stages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     d = dict(row)
     return {
         "id": d.get("id"),
         "userId": d.get("user_id") or "",
         "planId": d.get("plan_id") or "",
         "type": d.get("type") or "school",
+        "careerTrack": d.get("career_track") or "",
         "name": d.get("name") or "",
         "department": d.get("department") or "",
         "position": d.get("position") or "",
@@ -7303,9 +7481,32 @@ def serialize_guide_application(row: sqlite3.Row | dict[str, Any]) -> dict[str, 
         "interviewAt": d.get("interview_at"),
         "resultAt": d.get("result_at"),
         "status": d.get("status") or "active",
+        "stage": d.get("stage") or "saved",
+        "websiteUrl": d.get("website_url") or "",
+        "interviewLocation": d.get("interview_location") or "",
+        "meetingUrl": d.get("meeting_url") or "",
+        "contactName": d.get("contact_name") or "",
+        "contactEmail": d.get("contact_email") or "",
+        "priority": d.get("priority") or "normal",
+        "favorite": bool(d.get("favorite", 0)),
+        "tags": _guide_split_tags(d.get("tags")),
+        "archivedAt": d.get("archived_at"),
+        "stages": stages or [],
         "notes": d.get("notes") or "",
         "createdAt": d.get("created_at"),
         "updatedAt": d.get("updated_at"),
+    }
+
+
+def serialize_guide_application_stage(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id") or "",
+        "applicationId": d.get("application_id") or "",
+        "stage": d.get("stage") or "saved",
+        "note": d.get("note") or "",
+        "occurredAt": d.get("occurred_at"),
+        "createdAt": d.get("created_at"),
     }
 
 
@@ -7331,6 +7532,61 @@ def serialize_guide_life_item(row: sqlite3.Row | dict[str, Any]) -> dict[str, An
     }
 
 
+def serialize_guide_life_payment(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id") or "",
+        "lifeItemId": d.get("life_item_id") or "",
+        "amount": int(d.get("amount") or 0),
+        "currency": d.get("currency") or "JPY",
+        "paymentMethod": d.get("payment_method") or "",
+        "paidAt": d.get("paid_at") or "",
+        "notes": d.get("notes") or "",
+        "createdAt": d.get("created_at"),
+    }
+
+
+def serialize_guide_contract(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"),
+        "userId": d.get("user_id") or "",
+        "category": d.get("category") or "other",
+        "title": d.get("title") or "",
+        "provider": d.get("provider") or "",
+        "startDate": d.get("start_date"),
+        "endDate": d.get("end_date"),
+        "cancellationWindowStart": d.get("cancellation_window_start"),
+        "cancellationWindowEnd": d.get("cancellation_window_end"),
+        "autoRenew": bool(d.get("auto_renew", 0)),
+        "monthlyCost": int(d.get("monthly_cost") or 0),
+        "yearlyCost": int(d.get("yearly_cost") or 0),
+        "currency": d.get("currency") or "JPY",
+        "reminderDaysBefore": int(d.get("reminder_days_before") or 0),
+        "contactInfo": d.get("contact_info") or "",
+        "notes": d.get("notes") or "",
+        "status": d.get("status") or "active",
+        "createdAt": d.get("created_at"),
+        "updatedAt": d.get("updated_at"),
+    }
+
+
+def serialize_guide_document(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"),
+        "userId": d.get("user_id") or "",
+        "category": d.get("category") or "other",
+        "title": d.get("title") or "",
+        "expiresAt": d.get("expires_at"),
+        "reminderDaysBefore": int(d.get("reminder_days_before") or 0),
+        "notes": d.get("notes") or "",
+        "status": d.get("status") or "active",
+        "createdAt": d.get("created_at"),
+        "updatedAt": d.get("updated_at"),
+    }
+
+
 def serialize_guide_calendar_item(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     d = dict(row)
     return {
@@ -7344,6 +7600,10 @@ def serialize_guide_calendar_item(row: sqlite3.Row | dict[str, Any]) -> dict[str
         "type": d.get("type") or d.get("todo_type") or "todo",
         "status": d.get("status") or "active",
         "planId": d.get("plan_id") or "",
+        "notes": d.get("notes") or "",
+        "recurrence": d.get("recurrence") or "",
+        "reminderAt": d.get("reminder_at"),
+        "allDay": bool(d.get("all_day", 1)),
         "todo": serialize_guide_todo(d) if "todo_type" in d else None,
         "createdAt": d.get("created_at"),
         "updatedAt": d.get("updated_at"),
@@ -7608,6 +7868,9 @@ GUIDE_LIFE_ITEM_PRESETS: list[dict[str, Any]] = [
     {"type": "kokumin_hoken", "zh": "国民健康保险", "ja": "国民健康保険", "en": "National health insurance", "icon": "cross.case.fill", "recurrence": "monthly", "reminderDaysBefore": 5, "kind": "payment"},
     {"type": "nenkin", "zh": "年金", "ja": "年金", "en": "Pension", "icon": "yensign.circle.fill", "recurrence": "monthly", "reminderDaysBefore": 5, "kind": "payment"},
     {"type": "juminzei", "zh": "住民税", "ja": "住民税", "en": "Resident tax", "icon": "building.columns.fill", "recurrence": "quarterly", "reminderDaysBefore": 7, "kind": "payment"},
+    {"type": "tuition", "zh": "学费", "ja": "学費", "en": "Tuition", "icon": "graduationcap.fill", "recurrence": "semester", "reminderDaysBefore": 14, "kind": "payment"},
+    {"type": "insurance", "zh": "保险", "ja": "保険", "en": "Insurance", "icon": "shield.fill", "recurrence": "monthly", "reminderDaysBefore": 7, "kind": "payment"},
+    {"type": "subscription", "zh": "订阅服务", "ja": "サブスク", "en": "Subscription", "icon": "repeat.circle.fill", "recurrence": "monthly", "reminderDaysBefore": 3, "kind": "payment"},
     {"type": "fire_insurance", "zh": "火灾保险", "ja": "火災保険", "en": "Fire insurance", "icon": "flame.circle.fill", "recurrence": "yearly", "reminderDaysBefore": 14, "kind": "contract"},
     {"type": "housing_contract", "zh": "房屋契约更新", "ja": "賃貸契約更新", "en": "Lease renewal", "icon": "doc.text.fill", "recurrence": "yearly", "reminderDaysBefore": 30, "kind": "contract"},
     {"type": "internet_contract", "zh": "网络合约更新", "ja": "ネット契約更新", "en": "Internet contract", "icon": "wifi.router.fill", "recurrence": "yearly", "reminderDaysBefore": 14, "kind": "contract"},
@@ -15788,15 +16051,20 @@ class Handler(BaseHTTPRequestHandler):
                     values["weekly_available_minutes"], values["needs_materials"], values["needs_services"], now, now,
                 ),
             )
-        self._guide_sync_profile_derived(conn, user["id"], values["visa_expires_at"], values["graduation_date"])
-        self.send_json({"status": "ok", "profile": serialize_guide_profile(self._guide_user_profile_row(conn, user["id"]))})
+        generated_count = self._guide_sync_profile_derived(conn, user["id"], values["visa_expires_at"], values["graduation_date"])
+        self.send_json({
+            "status": "ok",
+            "profile": serialize_guide_profile(self._guide_user_profile_row(conn, user["id"])),
+            "generatedTodoCount": generated_count,
+        })
 
     def _guide_sync_profile_derived(self, conn: sqlite3.Connection, user_id: str,
-                                    visa_expires_at: str | None, graduation_date: str | None) -> None:
+                                    visa_expires_at: str | None, graduation_date: str | None) -> int:
         """Auto-derive deadline todos straight from the identity profile, so
         saving identity visibly produces something (the spec's value loop).
         Idempotent: clears prior derived rows, then re-creates from the current
         dates. The calendar + APNs reminders pick these up via due_at."""
+        generated = 0
         try:
             conn.execute(
                 "DELETE FROM guide_todos WHERE user_id = ? AND source_type = 'profile' AND source_id IN ('visa', 'graduation')",
@@ -15810,6 +16078,7 @@ class Handler(BaseHTTPRequestHandler):
                     reminder_at=_guide_date_minus(visa_expires_at, 60), priority="high",
                     product_slugs="work-visa-change-checklist", service_slugs="japanese-document-translation",
                 )
+                generated += 1
             if graduation_date:
                 self._guide_todo_insert(
                     conn, user_id=user_id, source_type="profile", source_id="graduation",
@@ -15817,8 +16086,10 @@ class Handler(BaseHTTPRequestHandler):
                     todo_type="career_timeline", due_at=graduation_date,
                     reminder_at=_guide_date_minus(graduation_date, 90), priority="normal",
                 )
+                generated += 1
         except Exception:
-            pass
+            return 0
+        return generated
 
     def _guide_plan_summary(self, conn: sqlite3.Connection, plan_id: str) -> dict[str, Any]:
         rows = conn.execute("SELECT status FROM guide_todos WHERE plan_id = ?", (plan_id,)).fetchall()
@@ -15851,6 +16122,38 @@ class Handler(BaseHTTPRequestHandler):
         if not plan_row:
             return None
         return serialize_guide_plan(plan_row, self._guide_plan_summary(conn, dict(plan_row)["id"]))
+
+    def _guide_ensure_todo_columns(self, conn: sqlite3.Connection) -> None:
+        """Self-heal older production Guide todo tables before hot-path reads/writes.
+
+        The boot migration normally handles this, but Guide endpoints should not
+        500 if a production snapshot has a skipped migration record or an older
+        table created before planned dates / recurrence / steps existed.
+        """
+        _ensure_columns(conn, "guide_todos", {
+            "plan_id": "TEXT NOT NULL DEFAULT ''",
+            "source_type": "TEXT NOT NULL DEFAULT ''",
+            "source_id": "TEXT NOT NULL DEFAULT ''",
+            "journey_key": "TEXT NOT NULL DEFAULT ''",
+            "step_key": "TEXT NOT NULL DEFAULT ''",
+            "summary": "TEXT NOT NULL DEFAULT ''",
+            "todo_type": "TEXT NOT NULL DEFAULT 'guide_step'",
+            "status": "TEXT NOT NULL DEFAULT 'not_started'",
+            "priority": "TEXT NOT NULL DEFAULT 'normal'",
+            "planned_date": "TEXT",
+            "due_at": "TEXT",
+            "reminder_at": "TEXT",
+            "completed_at": "TEXT",
+            "estimated_minutes": "INTEGER NOT NULL DEFAULT 0",
+            "notes": "TEXT NOT NULL DEFAULT ''",
+            "related_article_slugs": "TEXT NOT NULL DEFAULT ''",
+            "related_product_slugs": "TEXT NOT NULL DEFAULT ''",
+            "related_service_slugs": "TEXT NOT NULL DEFAULT ''",
+            "recurrence": "TEXT NOT NULL DEFAULT ''",
+            "steps": "TEXT NOT NULL DEFAULT '[]'",
+            "list_name": "TEXT NOT NULL DEFAULT ''",
+            "tags": "TEXT NOT NULL DEFAULT ''",
+        })
 
     def _guide_os_recommendation_payload(
         self,
@@ -15972,12 +16275,7 @@ class Handler(BaseHTTPRequestHandler):
                            product_slugs: str = "", service_slugs: str = "", recurrence: str = "") -> str:
         now = now_iso()
         todo_id = str(uuid.uuid4())
-        _ensure_columns(conn, "guide_todos", {
-            "related_article_slugs": "TEXT NOT NULL DEFAULT ''",
-            "related_product_slugs": "TEXT NOT NULL DEFAULT ''",
-            "related_service_slugs": "TEXT NOT NULL DEFAULT ''",
-            "recurrence": "TEXT NOT NULL DEFAULT ''",
-        })
+        self._guide_ensure_todo_columns(conn)
         conn.execute(
             "INSERT INTO guide_todos (id, user_id, plan_id, source_type, source_id, journey_key, step_key, title, summary, "
             "todo_type, status, priority, planned_date, due_at, reminder_at, estimated_minutes, notes, "
@@ -16190,7 +16488,8 @@ class Handler(BaseHTTPRequestHandler):
         journey_key = str(body.get("journeyKey") or body.get("sourceJourneyKey") or "").strip()
         # Spec P0: "生成我的计划" with no explicit journey picks the default for
         # the user's identity (e.g. 社会人转职 → job_hunting / 在留).
-        if not journey_key:
+        explicit_custom = str(body.get("planType") or "").strip() == "custom" or bool(str(body.get("title") or "").strip())
+        if not journey_key and not explicit_custom:
             profile = self._guide_user_profile_row(conn, user["id"])
             identity = ""
             if profile is not None:
@@ -16360,6 +16659,7 @@ class Handler(BaseHTTPRequestHandler):
                         "todos": [serialize_guide_todo(r) for r in self._guide_todos_for_query(conn, user["id"], {"planId": plan_id, "limit": "100"})]})
 
     def _guide_todos_for_query(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]):
+        self._guide_ensure_todo_columns(conn)
         where = ["user_id = ?"]
         params: list[Any] = [user_id]
         status = (query.get("status") or "").strip()
@@ -16376,6 +16676,14 @@ class Handler(BaseHTTPRequestHandler):
         if todo_type:
             where.append("todo_type = ?")
             params.append(todo_type)
+        list_name = (query.get("listName") or "").strip()
+        if list_name:
+            where.append("list_name = ?")
+            params.append(list_name)
+        tag = (query.get("tag") or "").strip()
+        if tag:
+            where.append("(',' || tags || ',') LIKE ?")
+            params.append(f"%,{tag},%")
         date_from = _guide_date_value(query.get("from"))
         date_to = _guide_date_value(query.get("to"))
         if date_from:
@@ -16438,6 +16746,14 @@ class Handler(BaseHTTPRequestHandler):
             estimated_minutes=_guide_int(body.get("estimatedMinutes") or body.get("estimated_minutes"), 0, lo=0, hi=1440),
             notes=notes,
             recurrence=str(body.get("recurrence") or "").strip()[:20],
+        )
+        conn.execute(
+            "UPDATE guide_todos SET list_name = ?, tags = ? WHERE id = ?",
+            (
+                str(body.get("listName") or "").strip()[:100],
+                ",".join(_guide_split_tags(body.get("tags")))[:1000],
+                todo_id,
+            ),
         )
         if plan_id:
             self._guide_update_plan_progress(conn, plan_id)
@@ -16568,6 +16884,7 @@ class Handler(BaseHTTPRequestHandler):
     def api_guide_todo_update(self, conn: sqlite3.Connection, todo_id: str, complete: bool = False, reminder_only: bool = False) -> None:
         user = self.require_user(conn)
         body = self.read_json()
+        self._guide_ensure_todo_columns(conn)
         row = conn.execute("SELECT * FROM guide_todos WHERE id = ? AND user_id = ?", (todo_id, user["id"])).fetchone()
         if not row:
             return self.send_error_json("todo not found", 404, "not_found")
@@ -16579,7 +16896,8 @@ class Handler(BaseHTTPRequestHandler):
         else:
             for api_key, col, max_len in (
                 ("title", "title", 200), ("summary", "summary", 1000), ("status", "status", 40),
-                ("priority", "priority", 40), ("notes", "notes", 2000),
+                ("priority", "priority", 40), ("notes", "notes", 2000), ("recurrence", "recurrence", 20),
+                ("listName", "list_name", 100),
             ):
                 if api_key in body and not reminder_only:
                     updates.append(f"{col} = ?")
@@ -16591,6 +16909,9 @@ class Handler(BaseHTTPRequestHandler):
             if "steps" in body and not reminder_only:
                 updates.append("steps = ?")
                 params.append(_guide_steps_to_json(body.get("steps")))
+            if "tags" in body and not reminder_only:
+                updates.append("tags = ?")
+                params.append(",".join(_guide_split_tags(body.get("tags")))[:1000])
         if "status" in body and not complete and str(body.get("status") or "") == "done":
             updates.append("completed_at = ?")
             params.append(now_iso())
@@ -16620,6 +16941,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._guide_set_reminder_status(conn, user_id=user["id"], todo_id=todo_id, status="cancelled")
         self.send_json({"status": "ok", "todo": serialize_guide_todo(todo)})
 
+    def api_guide_todo_delete(self, conn: sqlite3.Connection, todo_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute(
+            "SELECT * FROM guide_todos WHERE id = ? AND user_id = ?",
+            (todo_id, user["id"]),
+        ).fetchone()
+        if not row:
+            return self.send_error_json("todo not found", 404, "not_found")
+        conn.execute(
+            "UPDATE guide_reminders SET status = 'cancelled', updated_at = ? "
+            "WHERE user_id = ? AND todo_id = ?",
+            (now_iso(), user["id"], todo_id),
+        )
+        conn.execute("DELETE FROM guide_calendar_items WHERE user_id = ? AND todo_id = ?", (user["id"], todo_id))
+        conn.execute("DELETE FROM guide_todos WHERE id = ? AND user_id = ?", (todo_id, user["id"]))
+        if row["plan_id"]:
+            self._guide_update_plan_progress(conn, row["plan_id"])
+        self.send_json({"status": "ok", "deletedId": todo_id})
+
     def api_guide_calendar(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         user = self.require_user(conn)
         rows = self._guide_todos_for_query(conn, user["id"], {"from": query.get("from", ""), "to": query.get("to", ""), "limit": query.get("limit", "200")})
@@ -16639,7 +16979,172 @@ class Handler(BaseHTTPRequestHandler):
                 "planId": todo.get("planId") or "",
                 "todo": todo,
             })
+        where = ["user_id = ?", "(todo_id = '' OR todo_id IS NULL)", "status != 'deleted'"]
+        params: list[Any] = [user["id"]]
+        if query.get("from"):
+            where.append("date >= ?")
+            params.append(_guide_date_value(query.get("from")))
+        if query.get("to"):
+            where.append("date <= ?")
+            params.append(_guide_date_value(query.get("to")))
+        event_rows = conn.execute(
+            "SELECT * FROM guide_calendar_items WHERE " + " AND ".join(where) + " ORDER BY date, start_at LIMIT ?",
+            tuple(params + [_guide_int(query.get("limit"), 200, lo=1, hi=1000)]),
+        ).fetchall()
+        items.extend(serialize_guide_calendar_item(row) for row in event_rows)
+        items.sort(key=lambda item: (str(item.get("date") or ""), str(item.get("startAt") or ""), str(item.get("title") or "")))
         self.send_json({"status": "ok", "items": items, "total": len(items)})
+
+    def api_guide_calendar_event_create(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        title = str(body.get("title") or "").strip()[:200]
+        date_value = _guide_date_value(body.get("date") or body.get("startAt"))
+        if not title or not date_value:
+            return self.send_error_json("title and date required", 400, "invalid_body")
+        now = now_iso()
+        item_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_calendar_items (id, user_id, todo_id, title, date, start_at, end_at, type, status, plan_id, "
+            "notes, recurrence, reminder_at, all_day, created_at, updated_at) "
+            "VALUES (?, ?, '', ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
+            (
+                item_id, user["id"], title, date_value,
+                str(body.get("startAt") or date_value).strip()[:40],
+                str(body.get("endAt") or "").strip()[:40] or None,
+                str(body.get("type") or "event").strip()[:40] or "event",
+                str(body.get("planId") or "").strip()[:80],
+                str(body.get("notes") or "").strip()[:4000],
+                str(body.get("recurrence") or "").strip()[:40],
+                _guide_date_value(body.get("reminderAt")),
+                1 if _guide_bool_value(body.get("allDay"), True) else 0,
+                now, now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM guide_calendar_items WHERE id = ?", (item_id,)).fetchone()
+        self.send_json({"status": "ok", "event": serialize_guide_calendar_item(row)})
+
+    def api_guide_calendar_event_update(self, conn: sqlite3.Connection, item_id: str) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        row = conn.execute(
+            "SELECT * FROM guide_calendar_items WHERE id = ? AND user_id = ? AND (todo_id = '' OR todo_id IS NULL)",
+            (item_id, user["id"]),
+        ).fetchone()
+        if not row:
+            return self.send_error_json("calendar event not found", 404, "not_found")
+        updates: list[str] = []
+        params: list[Any] = []
+        for api_key, col, limit in (
+            ("title", "title", 200), ("startAt", "start_at", 40), ("endAt", "end_at", 40),
+            ("type", "type", 40), ("status", "status", 40), ("planId", "plan_id", 80),
+            ("notes", "notes", 4000), ("recurrence", "recurrence", 40),
+        ):
+            if api_key in body:
+                updates.append(f"{col} = ?")
+                params.append(str(body.get(api_key) or "").strip()[:limit] or None)
+        if "date" in body:
+            updates.append("date = ?")
+            params.append(_guide_date_value(body.get("date")))
+        if "reminderAt" in body:
+            updates.append("reminder_at = ?")
+            params.append(_guide_date_value(body.get("reminderAt")))
+        if "allDay" in body:
+            updates.append("all_day = ?")
+            params.append(1 if _guide_bool_value(body.get("allDay"), True) else 0)
+        if updates:
+            updates.append("updated_at = ?")
+            params.extend([now_iso(), item_id])
+            conn.execute(f"UPDATE guide_calendar_items SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        updated = conn.execute("SELECT * FROM guide_calendar_items WHERE id = ?", (item_id,)).fetchone()
+        self.send_json({"status": "ok", "event": serialize_guide_calendar_item(updated)})
+
+    def api_guide_calendar_event_delete(self, conn: sqlite3.Connection, item_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute(
+            "SELECT id FROM guide_calendar_items WHERE id = ? AND user_id = ? AND (todo_id = '' OR todo_id IS NULL)",
+            (item_id, user["id"]),
+        ).fetchone()
+        if not row:
+            return self.send_error_json("calendar event not found", 404, "not_found")
+        conn.execute("DELETE FROM guide_calendar_items WHERE id = ? AND user_id = ?", (item_id, user["id"]))
+        self.send_json({"status": "ok", "deleted": item_id})
+
+    def _guide_application_stages(self, conn: sqlite3.Connection, app_id: str) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            "SELECT * FROM guide_application_stages WHERE application_id = ? ORDER BY occurred_at ASC, created_at ASC",
+            (app_id,),
+        ).fetchall()
+        return [serialize_guide_application_stage(r) for r in rows]
+
+    def _guide_record_application_stage(
+        self, conn: sqlite3.Connection, user_id: str, app_id: str, stage: str, note: str = "", occurred_at: str | None = None
+    ) -> None:
+        clean_stage = stage.strip()[:60] or "saved"
+        now = now_iso()
+        conn.execute(
+            "INSERT INTO guide_application_stages (id, application_id, user_id, stage, note, occurred_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), app_id, user_id, clean_stage, note.strip()[:1000], occurred_at or now, now),
+        )
+
+    def _guide_generate_application_todos(self, conn: sqlite3.Connection, user_id: str, app: sqlite3.Row | dict[str, Any]) -> None:
+        d = dict(app)
+        app_id = str(d.get("id") or "")
+        plan_id = str(d.get("plan_id") or "")
+        app_type = str(d.get("type") or "school")
+        career_track = str(d.get("career_track") or "")
+        name = str(d.get("name") or "")
+        deadline = _guide_date_value(d.get("deadline"))
+        interview_at = _guide_date_value(d.get("interview_at"))
+        result_at = _guide_date_value(d.get("result_at"))
+        old_plan_ids = self._guide_delete_todos_for_source(conn, user_id, "application", app_id)
+        is_jlpt = app_type in ("jlpt", "exam")
+        todo_type = "school_application" if app_type == "school" else ("exam_registration" if is_jlpt else "company_es")
+        deadline_label = "出愿截止" if app_type == "school" else ("考试日" if is_jlpt else "ES 截止")
+        if deadline:
+            if app_type == "school":
+                products = "research-plan-template-pack,application-documents-checklist,professor-email-template-pack"
+                services = "research-plan-review-service,graduate-school-consultation,research-plan-revision"
+            elif is_jlpt:
+                products = services = ""
+            else:
+                products = "rirekisho-template-pack,self-pr-motivation-template,shokumukeirekisho-template-pack"
+                services = "rirekisho-review-service,shokumukeirekisho-review-service,es-motivation-revision"
+            self._guide_todo_insert(
+                conn, user_id=user_id, plan_id=plan_id, source_type="application", source_id=app_id,
+                title=f"{name} {deadline_label}", summary=name, todo_type=todo_type, due_at=deadline,
+                reminder_at=_guide_date_minus(deadline, 7), priority="high", product_slugs=products, service_slugs=services,
+            )
+            today_iso = now_iso()[:10]
+            for offset, m_title, m_summary, m_type, m_products, m_services in _guide_application_milestones(conn, app_type, career_track):
+                planned = _guide_date_minus(deadline, offset)
+                if not planned:
+                    continue
+                self._guide_todo_insert(
+                    conn, user_id=user_id, plan_id=plan_id, source_type="application", source_id=app_id,
+                    title=f"{name} · T-{offset} {m_title}", summary=m_summary, todo_type=m_type,
+                    planned_date=planned, due_at=planned, reminder_at=planned if planned >= today_iso else None,
+                    priority="high" if offset <= 14 else "normal", product_slugs=m_products, service_slugs=m_services,
+                )
+        if interview_at:
+            products = "graduate-school-interview-100,interview-100-questions" if app_type == "school" else "interview-100-questions,self-pr-motivation-template"
+            services = "graduate-school-consultation,research-plan-review-service" if app_type == "school" else "japan-job-mock-interview,es-motivation-revision"
+            self._guide_todo_insert(
+                conn, user_id=user_id, plan_id=plan_id, source_type="application", source_id=app_id,
+                title=f"{name} 面试", summary="准备面试问题、逆質問和复盘记录。",
+                todo_type="school_interview" if app_type == "school" else "company_interview",
+                due_at=interview_at, reminder_at=_guide_date_minus(interview_at, 2), priority="high",
+                product_slugs=products, service_slugs=services,
+            )
+        if result_at:
+            self._guide_todo_insert(
+                conn, user_id=user_id, plan_id=plan_id, source_type="application", source_id=app_id,
+                title=f"{name} 结果确认", summary="确认结果并决定下一步。",
+                todo_type="application_result", due_at=result_at, reminder_at=_guide_date_minus(result_at, 1), priority="normal",
+            )
+        for affected_plan in old_plan_ids | ({plan_id} if plan_id else set()):
+            self._guide_update_plan_progress(conn, affected_plan)
 
     def api_guide_application_create(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -16651,69 +17156,26 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error_json("name required", 400, "invalid_body")
         now = now_iso()
         app_id = str(uuid.uuid4())
-        plan_id = str(body.get("planId") or "").strip()
-        deadline = _guide_date_value(body.get("deadline"))
-        interview_at = _guide_date_value(body.get("interviewAt"))
-        result_at = _guide_date_value(body.get("resultAt"))
+        stage = str(body.get("stage") or "saved").strip()[:60] or "saved"
         conn.execute(
-            "INSERT INTO guide_applications (id, user_id, plan_id, type, name, department, position, deadline, interview_at, result_at, status, notes, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)",
+            "INSERT INTO guide_applications (id, user_id, plan_id, type, career_track, name, department, position, deadline, interview_at, result_at, "
+            "status, stage, website_url, interview_location, meeting_url, contact_name, contact_email, priority, favorite, tags, notes, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                app_id, user["id"], plan_id, app_type, name,
+                app_id, user["id"], str(body.get("planId") or "").strip(), app_type, career_track, name,
                 str(body.get("department") or "").strip()[:160], str(body.get("position") or "").strip()[:160],
-                deadline, interview_at, result_at, str(body.get("notes") or "").strip()[:2000], now, now,
+                _guide_date_value(body.get("deadline")), _guide_date_value(body.get("interviewAt")), _guide_date_value(body.get("resultAt")),
+                stage, str(body.get("websiteUrl") or "").strip()[:1000], str(body.get("interviewLocation") or "").strip()[:500],
+                str(body.get("meetingUrl") or "").strip()[:1000], str(body.get("contactName") or "").strip()[:160],
+                str(body.get("contactEmail") or "").strip()[:320], str(body.get("priority") or "normal").strip()[:40],
+                1 if _guide_bool_value(body.get("favorite")) else 0, ",".join(_guide_split_tags(body.get("tags")))[:1000],
+                str(body.get("notes") or "").strip()[:4000], now, now,
             ),
         )
-        is_jlpt = app_type in ("jlpt", "exam")
-        todo_type = "school_application" if app_type == "school" else ("exam_registration" if is_jlpt else "company_es")
-        deadline_label = "出愿截止" if app_type == "school" else ("考试日" if is_jlpt else "ES 截止")
-        if deadline:
-            if app_type == "school":
-                deadline_product_slugs = "research-plan-template-pack,application-documents-checklist,professor-email-template-pack"
-                deadline_service_slugs = "research-plan-review-service,graduate-school-consultation,research-plan-revision"
-            elif is_jlpt:
-                deadline_product_slugs = ""
-                deadline_service_slugs = ""
-            else:
-                deadline_product_slugs = "rirekisho-template-pack,self-pr-motivation-template,shokumukeirekisho-template-pack"
-                deadline_service_slugs = "rirekisho-review-service,shokumukeirekisho-review-service,es-motivation-revision"
-            self._guide_todo_insert(conn, user_id=user["id"], plan_id=plan_id, source_type="application", source_id=app_id,
-                                    title=f"{name} {deadline_label}", summary=name,
-                                    todo_type=todo_type, due_at=deadline, reminder_at=_guide_date_minus(deadline, 7), priority="high",
-                                    product_slugs=deadline_product_slugs, service_slugs=deadline_service_slugs)
-            # Back-plan the run-up: emit the full reverse-countdown ladder so the
-            # user gets a week-by-week prep plan, not just a single due date.
-            today_iso = now_iso()[:10]
-            for offset, m_title, m_summary, m_type, m_products, m_services in _guide_application_milestones(conn, app_type, career_track):
-                planned = _guide_date_minus(deadline, offset)
-                if not planned:
-                    continue
-                # Only attach a reminder to milestones that haven't already passed;
-                # past prep steps still appear (as overdue) but don't fire stale alerts.
-                m_reminder = planned if planned >= today_iso else None
-                self._guide_todo_insert(
-                    conn, user_id=user["id"], plan_id=plan_id, source_type="application", source_id=app_id,
-                    title=f"{name} · T-{offset} {m_title}", summary=m_summary, todo_type=m_type,
-                    planned_date=planned, due_at=planned, reminder_at=m_reminder,
-                    priority="high" if offset <= 14 else "normal",
-                    product_slugs=m_products, service_slugs=m_services,
-                )
-        if interview_at:
-            interview_product_slugs = "graduate-school-interview-100,interview-100-questions" if app_type == "school" else "interview-100-questions,self-pr-motivation-template"
-            interview_service_slugs = "graduate-school-consultation,research-plan-review-service" if app_type == "school" else "japan-job-mock-interview,es-motivation-revision"
-            self._guide_todo_insert(conn, user_id=user["id"], plan_id=plan_id, source_type="application", source_id=app_id,
-                                    title=f"{name} 面试", summary="准备面试问题、逆質問和复盘记录。",
-                                    todo_type="school_interview" if app_type == "school" else "company_interview",
-                                    due_at=interview_at, reminder_at=_guide_date_minus(interview_at, 2), priority="high",
-                                    product_slugs=interview_product_slugs, service_slugs=interview_service_slugs)
-        if result_at:
-            self._guide_todo_insert(conn, user_id=user["id"], plan_id=plan_id, source_type="application", source_id=app_id,
-                                    title=f"{name} 结果确认", summary="确认结果并决定下一步。",
-                                    todo_type="application_result", due_at=result_at, reminder_at=_guide_date_minus(result_at, 1), priority="normal")
-        if plan_id:
-            self._guide_update_plan_progress(conn, plan_id)
         app = conn.execute("SELECT * FROM guide_applications WHERE id = ?", (app_id,)).fetchone()
-        self.send_json({"status": "ok", "application": serialize_guide_application(app)})
+        self._guide_record_application_stage(conn, user["id"], app_id, stage, "创建申请")
+        self._guide_generate_application_todos(conn, user["id"], app)
+        self.send_json({"status": "ok", "application": serialize_guide_application(app, self._guide_application_stages(conn, app_id))})
 
     def api_guide_application_update(self, conn: sqlite3.Connection, app_id: str) -> None:
         user = self.require_user(conn)
@@ -16723,7 +17185,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error_json("application not found", 404, "not_found")
         updates: list[str] = []
         params: list[Any] = []
-        for api_key, col, max_len in (("name", "name", 200), ("department", "department", 160), ("position", "position", 160), ("status", "status", 40), ("notes", "notes", 2000)):
+        old_stage = str(row["stage"] or "saved")
+        for api_key, col, max_len in (
+            ("type", "type", 40), ("careerTrack", "career_track", 40), ("name", "name", 200),
+            ("department", "department", 160), ("position", "position", 160), ("status", "status", 40),
+            ("stage", "stage", 60), ("websiteUrl", "website_url", 1000),
+            ("interviewLocation", "interview_location", 500), ("meetingUrl", "meeting_url", 1000),
+            ("contactName", "contact_name", 160), ("contactEmail", "contact_email", 320),
+            ("priority", "priority", 40), ("notes", "notes", 4000),
+        ):
             if api_key in body:
                 updates.append(f"{col} = ?")
                 params.append(str(body.get(api_key) or "").strip()[:max_len])
@@ -16731,12 +17201,27 @@ class Handler(BaseHTTPRequestHandler):
             if api_key in body:
                 updates.append(f"{col} = ?")
                 params.append(_guide_date_value(body.get(api_key)))
+        if "favorite" in body:
+            updates.append("favorite = ?")
+            params.append(1 if _guide_bool_value(body.get("favorite")) else 0)
+        if "tags" in body:
+            updates.append("tags = ?")
+            params.append(",".join(_guide_split_tags(body.get("tags")))[:1000])
+        if "status" in body and str(body.get("status") or "") == "archived":
+            updates.append("archived_at = ?")
+            params.append(now_iso())
         if updates:
             updates.append("updated_at = ?")
             params.append(now_iso())
             params.append(app_id)
             conn.execute(f"UPDATE guide_applications SET {', '.join(updates)} WHERE id = ?", tuple(params))
-        self.send_json({"status": "ok", "application": serialize_guide_application(conn.execute("SELECT * FROM guide_applications WHERE id = ?", (app_id,)).fetchone())})
+        updated = conn.execute("SELECT * FROM guide_applications WHERE id = ?", (app_id,)).fetchone()
+        new_stage = str(updated["stage"] or "saved")
+        if new_stage != old_stage:
+            self._guide_record_application_stage(conn, user["id"], app_id, new_stage, str(body.get("stageNote") or "").strip())
+        if any(key in body for key in ("type", "careerTrack", "name", "deadline", "interviewAt", "resultAt")):
+            self._guide_generate_application_todos(conn, user["id"], updated)
+        self.send_json({"status": "ok", "application": serialize_guide_application(updated, self._guide_application_stages(conn, app_id))})
 
     def _guide_delete_todos_for_source(self, conn: sqlite3.Connection, user_id: str, source_type: str, source_id: str) -> set[str]:
         """Remove every auto-generated todo for a source (application / life item)
@@ -16759,12 +17244,41 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_guide_applications_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         user = self.require_user(conn)
+        where = ["user_id = ?"]
+        params: list[Any] = [user["id"]]
+        for key, col in (("status", "status"), ("stage", "stage"), ("type", "type"), ("priority", "priority")):
+            value = str(query.get(key) or "").strip()
+            if value:
+                where.append(f"{col} = ?")
+                params.append(value)
+        keyword = str(query.get("q") or "").strip()
+        if keyword:
+            where.append("(name LIKE ? OR department LIKE ? OR position LIKE ? OR tags LIKE ?)")
+            like = f"%{keyword}%"
+            params.extend([like, like, like, like])
         rows = conn.execute(
-            "SELECT * FROM guide_applications WHERE user_id = ? ORDER BY "
+            "SELECT * FROM guide_applications WHERE " + " AND ".join(where) + " ORDER BY favorite DESC, "
             "CASE WHEN deadline IS NULL OR deadline = '' THEN 1 ELSE 0 END, deadline ASC, updated_at DESC",
-            (user["id"],),
+            tuple(params),
         ).fetchall()
-        self.send_json({"status": "ok", "items": [serialize_guide_application(r) for r in rows], "total": len(rows)})
+        self.send_json({
+            "status": "ok",
+            "items": [serialize_guide_application(r, self._guide_application_stages(conn, r["id"])) for r in rows],
+            "total": len(rows),
+        })
+
+    def api_guide_application_detail(self, conn: sqlite3.Connection, app_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT * FROM guide_applications WHERE id = ? AND user_id = ?", (app_id, user["id"])).fetchone()
+        if not row:
+            return self.send_error_json("application not found", 404, "not_found")
+        todos = self._guide_todos_for_query(conn, user["id"], {"type": "", "limit": "200"})
+        related = [serialize_guide_todo(t) for t in todos if (t["source_type"] or "") == "application" and (t["source_id"] or "") == app_id]
+        self.send_json({
+            "status": "ok",
+            "application": serialize_guide_application(row, self._guide_application_stages(conn, app_id)),
+            "todos": related,
+        })
 
     def api_guide_application_delete(self, conn: sqlite3.Connection, app_id: str) -> None:
         user = self.require_user(conn)
@@ -16772,6 +17286,7 @@ class Handler(BaseHTTPRequestHandler):
         if not row:
             return self.send_error_json("application not found", 404, "not_found")
         plan_ids = self._guide_delete_todos_for_source(conn, user["id"], "application", app_id)
+        conn.execute("DELETE FROM guide_application_stages WHERE application_id = ? AND user_id = ?", (app_id, user["id"]))
         conn.execute("DELETE FROM guide_applications WHERE id = ? AND user_id = ?", (app_id, user["id"]))
         for plan_id in plan_ids:
             self._guide_update_plan_progress(conn, plan_id)
@@ -16861,16 +17376,334 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchall()
         self.send_json({"status": "ok", "items": [serialize_guide_life_item(r) for r in rows], "total": len(rows)})
 
+    def _guide_next_life_due(self, raw: str | None, recurrence: str, due_day: int) -> str | None:
+        current_raw = _guide_date_value(raw)
+        if not current_raw:
+            return _guide_next_monthly_due(due_day)
+        try:
+            current = datetime.fromisoformat(current_raw[:10]).date()
+        except ValueError:
+            return current_raw
+        months = {"monthly": 1, "quarterly": 3, "semester": 6, "yearly": 12}.get(recurrence)
+        if months:
+            total = current.year * 12 + current.month - 1 + months
+            year, month_zero = divmod(total, 12)
+            month = month_zero + 1
+            preferred_day = due_day or current.day
+            day = min(preferred_day, pycalendar.monthrange(year, month)[1])
+            return f"{year:04d}-{month:02d}-{day:02d}"
+        if recurrence == "weekly":
+            return (current + timedelta(days=7)).isoformat()
+        return None
+
+    def api_guide_life_payments_list(self, conn: sqlite3.Connection, item_id: str) -> None:
+        user = self.require_user(conn)
+        item = conn.execute(
+            "SELECT id FROM guide_life_items WHERE id = ? AND user_id = ?",
+            (item_id, user["id"]),
+        ).fetchone()
+        if not item:
+            return self.send_error_json("life item not found", 404, "not_found")
+        rows = conn.execute(
+            "SELECT * FROM guide_life_payments WHERE life_item_id = ? AND user_id = ? "
+            "ORDER BY paid_at DESC, created_at DESC LIMIT 120",
+            (item_id, user["id"]),
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_life_payment(row) for row in rows], "total": len(rows)})
+
+    def api_guide_life_payment_create(self, conn: sqlite3.Connection, item_id: str) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        item = conn.execute(
+            "SELECT * FROM guide_life_items WHERE id = ? AND user_id = ?",
+            (item_id, user["id"]),
+        ).fetchone()
+        if not item:
+            return self.send_error_json("life item not found", 404, "not_found")
+        now = now_iso()
+        paid_at = _guide_date_value(body.get("paidAt")) or now[:10]
+        payment_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_life_payments (id, life_item_id, user_id, amount, currency, payment_method, paid_at, notes, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                payment_id, item_id, user["id"],
+                _guide_int(body.get("amount"), int(item["amount"] or 0), lo=0),
+                str(body.get("currency") or item["currency"] or "JPY").strip()[:12],
+                str(body.get("paymentMethod") or item["payment_method"] or "").strip()[:120],
+                paid_at, str(body.get("notes") or "").strip()[:2000], now,
+            ),
+        )
+        open_todos = conn.execute(
+            "SELECT id FROM guide_todos WHERE user_id = ? AND source_type = 'life_item' AND source_id = ? "
+            "AND status NOT IN ('done','skipped','archived')",
+            (user["id"], item_id),
+        ).fetchall()
+        conn.execute(
+            "UPDATE guide_todos SET status = 'done', completed_at = ?, updated_at = ? "
+            "WHERE user_id = ? AND source_type = 'life_item' AND source_id = ? "
+            "AND status NOT IN ('done','skipped','archived')",
+            (now, now, user["id"], item_id),
+        )
+        for todo_row in open_todos:
+            self._guide_set_reminder_status(conn, user_id=user["id"], todo_id=todo_row["id"], status="completed")
+        recurrence = str(item["recurrence"] or "monthly")
+        next_due = self._guide_next_life_due(item["due_at"], recurrence, int(item["due_day"] or 0))
+        if next_due and bool(item["active"]):
+            conn.execute("UPDATE guide_life_items SET due_at = ?, updated_at = ? WHERE id = ?", (next_due, now, item_id))
+            reminder_at = _guide_date_minus(next_due, int(item["reminder_days_before"] or 0))
+            self._guide_todo_insert(
+                conn, user_id=user["id"], source_type="life_item", source_id=item_id,
+                title=f"{item['title']} 到期/付款", summary=str(item["provider"] or "")[:300],
+                todo_type="life_payment", due_at=next_due, reminder_at=reminder_at, priority="normal",
+            )
+        payment = conn.execute("SELECT * FROM guide_life_payments WHERE id = ?", (payment_id,)).fetchone()
+        updated_item = conn.execute("SELECT * FROM guide_life_items WHERE id = ?", (item_id,)).fetchone()
+        self.send_json({
+            "status": "ok",
+            "payment": serialize_guide_life_payment(payment),
+            "item": serialize_guide_life_item(updated_item),
+            "nextDueAt": next_due,
+        })
+
     def api_guide_life_item_delete(self, conn: sqlite3.Connection, item_id: str) -> None:
         user = self.require_user(conn)
         row = conn.execute("SELECT * FROM guide_life_items WHERE id = ? AND user_id = ?", (item_id, user["id"])).fetchone()
         if not row:
             return self.send_error_json("life item not found", 404, "not_found")
         plan_ids = self._guide_delete_todos_for_source(conn, user["id"], "life_item", item_id)
+        conn.execute("DELETE FROM guide_life_payments WHERE life_item_id = ? AND user_id = ?", (item_id, user["id"]))
         conn.execute("DELETE FROM guide_life_items WHERE id = ? AND user_id = ?", (item_id, user["id"]))
         for plan_id in plan_ids:
             self._guide_update_plan_progress(conn, plan_id)
         self.send_json({"status": "ok", "deleted": item_id})
+
+    def _guide_replace_contract_todo(self, conn: sqlite3.Connection, user_id: str, contract: sqlite3.Row | dict[str, Any]) -> None:
+        d = dict(contract)
+        contract_id = str(d.get("id") or "")
+        self._guide_delete_todos_for_source(conn, user_id, "contract", contract_id)
+        if str(d.get("status") or "active") != "active":
+            return
+        due_at = _guide_date_value(d.get("cancellation_window_start")) or _guide_date_value(d.get("end_date"))
+        if not due_at:
+            return
+        reminder_days = _guide_int(d.get("reminder_days_before"), 30, lo=0, hi=3650)
+        self._guide_todo_insert(
+            conn,
+            user_id=user_id,
+            source_type="contract",
+            source_id=contract_id,
+            title=f"{str(d.get('title') or '合同').strip()} 续约/解约确认",
+            summary=str(d.get("provider") or "").strip()[:300],
+            todo_type="contract_deadline",
+            due_at=due_at,
+            reminder_at=_guide_date_minus(due_at, reminder_days),
+            priority="high" if reminder_days >= 30 else "normal",
+        )
+
+    def api_guide_contracts_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        status = str(query.get("status") or "").strip()
+        where = "user_id = ?"
+        params: list[Any] = [user["id"]]
+        if status:
+            where += " AND status = ?"
+            params.append(status)
+        rows = conn.execute(
+            f"SELECT * FROM guide_contracts WHERE {where} ORDER BY status = 'active' DESC, "
+            "CASE WHEN COALESCE(cancellation_window_start, end_date, '') = '' THEN 1 ELSE 0 END, "
+            "COALESCE(cancellation_window_start, end_date) ASC, updated_at DESC",
+            tuple(params),
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_contract(r) for r in rows], "total": len(rows)})
+
+    def api_guide_contract_create(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        title = str(body.get("title") or "").strip()[:200]
+        if not title:
+            return self.send_error_json("title required", 400, "invalid_body")
+        now = now_iso()
+        item_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_contracts (id, user_id, category, title, provider, start_date, end_date, "
+            "cancellation_window_start, cancellation_window_end, auto_renew, monthly_cost, yearly_cost, currency, "
+            "reminder_days_before, contact_info, notes, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+            (
+                item_id, user["id"], str(body.get("category") or "other").strip()[:80], title,
+                str(body.get("provider") or "").strip()[:160], _guide_date_value(body.get("startDate")),
+                _guide_date_value(body.get("endDate")), _guide_date_value(body.get("cancellationWindowStart")),
+                _guide_date_value(body.get("cancellationWindowEnd")), 1 if _guide_bool_value(body.get("autoRenew")) else 0,
+                _guide_int(body.get("monthlyCost"), 0, lo=0), _guide_int(body.get("yearlyCost"), 0, lo=0),
+                str(body.get("currency") or "JPY").strip()[:12] or "JPY",
+                _guide_int(body.get("reminderDaysBefore"), 30, lo=0, hi=3650),
+                str(body.get("contactInfo") or "").strip()[:1000], str(body.get("notes") or "").strip()[:4000],
+                now, now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM guide_contracts WHERE id = ?", (item_id,)).fetchone()
+        self._guide_replace_contract_todo(conn, user["id"], row)
+        self.send_json({"status": "ok", "contract": serialize_guide_contract(row)})
+
+    def api_guide_contract_update(self, conn: sqlite3.Connection, item_id: str) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        row = conn.execute("SELECT * FROM guide_contracts WHERE id = ? AND user_id = ?", (item_id, user["id"])).fetchone()
+        if not row:
+            return self.send_error_json("contract not found", 404, "not_found")
+        updates: list[str] = []
+        params: list[Any] = []
+        text_fields = (
+            ("category", "category", 80), ("title", "title", 200), ("provider", "provider", 160),
+            ("currency", "currency", 12), ("contactInfo", "contact_info", 1000),
+            ("notes", "notes", 4000), ("status", "status", 40),
+        )
+        for api_key, col, limit in text_fields:
+            if api_key in body:
+                updates.append(f"{col} = ?")
+                params.append(str(body.get(api_key) or "").strip()[:limit])
+        for api_key, col in (
+            ("startDate", "start_date"), ("endDate", "end_date"),
+            ("cancellationWindowStart", "cancellation_window_start"),
+            ("cancellationWindowEnd", "cancellation_window_end"),
+        ):
+            if api_key in body:
+                updates.append(f"{col} = ?")
+                params.append(_guide_date_value(body.get(api_key)))
+        for api_key, col, default in (
+            ("monthlyCost", "monthly_cost", 0), ("yearlyCost", "yearly_cost", 0),
+            ("reminderDaysBefore", "reminder_days_before", 30),
+        ):
+            if api_key in body:
+                updates.append(f"{col} = ?")
+                params.append(_guide_int(body.get(api_key), default, lo=0, hi=3650 if api_key == "reminderDaysBefore" else None))
+        if "autoRenew" in body:
+            updates.append("auto_renew = ?")
+            params.append(1 if _guide_bool_value(body.get("autoRenew")) else 0)
+        if updates:
+            updates.append("updated_at = ?")
+            params.extend([now_iso(), item_id])
+            conn.execute(f"UPDATE guide_contracts SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        updated = conn.execute("SELECT * FROM guide_contracts WHERE id = ?", (item_id,)).fetchone()
+        self._guide_replace_contract_todo(conn, user["id"], updated)
+        self.send_json({"status": "ok", "contract": serialize_guide_contract(updated)})
+
+    def api_guide_contract_delete(self, conn: sqlite3.Connection, item_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT id FROM guide_contracts WHERE id = ? AND user_id = ?", (item_id, user["id"])).fetchone()
+        if not row:
+            return self.send_error_json("contract not found", 404, "not_found")
+        self._guide_delete_todos_for_source(conn, user["id"], "contract", item_id)
+        conn.execute("DELETE FROM guide_contracts WHERE id = ? AND user_id = ?", (item_id, user["id"]))
+        self.send_json({"status": "ok", "deleted": item_id})
+
+    def _guide_replace_document_todo(self, conn: sqlite3.Connection, user_id: str, document: sqlite3.Row | dict[str, Any]) -> None:
+        d = dict(document)
+        item_id = str(d.get("id") or "")
+        self._guide_delete_todos_for_source(conn, user_id, "document", item_id)
+        due_at = _guide_date_value(d.get("expires_at"))
+        if str(d.get("status") or "active") != "active" or not due_at:
+            return
+        reminder_days = _guide_int(d.get("reminder_days_before"), 60, lo=0, hi=3650)
+        self._guide_todo_insert(
+            conn,
+            user_id=user_id,
+            source_type="document",
+            source_id=item_id,
+            title=f"{str(d.get('title') or '证件').strip()} 到期",
+            summary="只保存到期日期，不保存证件号码或证件图片。",
+            todo_type="document_expiry",
+            due_at=due_at,
+            reminder_at=_guide_date_minus(due_at, reminder_days),
+            priority="high",
+        )
+
+    def api_guide_documents_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        rows = conn.execute(
+            "SELECT * FROM guide_documents WHERE user_id = ? ORDER BY status = 'active' DESC, "
+            "CASE WHEN expires_at IS NULL OR expires_at = '' THEN 1 ELSE 0 END, expires_at ASC, updated_at DESC",
+            (user["id"],),
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_document(r) for r in rows], "total": len(rows)})
+
+    def api_guide_document_create(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        title = str(body.get("title") or "").strip()[:200]
+        if not title:
+            return self.send_error_json("title required", 400, "invalid_body")
+        now = now_iso()
+        item_id = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_documents (id, user_id, category, title, expires_at, reminder_days_before, notes, status, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)",
+            (
+                item_id, user["id"], str(body.get("category") or "other").strip()[:80], title,
+                _guide_date_value(body.get("expiresAt")), _guide_int(body.get("reminderDaysBefore"), 60, lo=0, hi=3650),
+                str(body.get("notes") or "").strip()[:4000], now, now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM guide_documents WHERE id = ?", (item_id,)).fetchone()
+        self._guide_replace_document_todo(conn, user["id"], row)
+        self.send_json({"status": "ok", "document": serialize_guide_document(row)})
+
+    def api_guide_document_update(self, conn: sqlite3.Connection, item_id: str) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        row = conn.execute("SELECT * FROM guide_documents WHERE id = ? AND user_id = ?", (item_id, user["id"])).fetchone()
+        if not row:
+            return self.send_error_json("document not found", 404, "not_found")
+        updates: list[str] = []
+        params: list[Any] = []
+        for api_key, col, limit in (("category", "category", 80), ("title", "title", 200), ("notes", "notes", 4000), ("status", "status", 40)):
+            if api_key in body:
+                updates.append(f"{col} = ?")
+                params.append(str(body.get(api_key) or "").strip()[:limit])
+        if "expiresAt" in body:
+            updates.append("expires_at = ?")
+            params.append(_guide_date_value(body.get("expiresAt")))
+        if "reminderDaysBefore" in body:
+            updates.append("reminder_days_before = ?")
+            params.append(_guide_int(body.get("reminderDaysBefore"), 60, lo=0, hi=3650))
+        if updates:
+            updates.append("updated_at = ?")
+            params.extend([now_iso(), item_id])
+            conn.execute(f"UPDATE guide_documents SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        updated = conn.execute("SELECT * FROM guide_documents WHERE id = ?", (item_id,)).fetchone()
+        self._guide_replace_document_todo(conn, user["id"], updated)
+        self.send_json({"status": "ok", "document": serialize_guide_document(updated)})
+
+    def api_guide_document_delete(self, conn: sqlite3.Connection, item_id: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT id FROM guide_documents WHERE id = ? AND user_id = ?", (item_id, user["id"])).fetchone()
+        if not row:
+            return self.send_error_json("document not found", 404, "not_found")
+        self._guide_delete_todos_for_source(conn, user["id"], "document", item_id)
+        conn.execute("DELETE FROM guide_documents WHERE id = ? AND user_id = ?", (item_id, user["id"]))
+        self.send_json({"status": "ok", "deleted": item_id})
+
+    def api_guide_attachments(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        entity_type = normalize_upload_entity_type(query.get("entityType") or query.get("entity_type"))
+        entity_id = str(query.get("entityId") or query.get("entity_id") or "").strip()
+        self._assert_guide_attachment_entity_owner(conn, user["id"], entity_type, entity_id)
+        rows = conn.execute(
+            """
+            SELECT * FROM uploaded_files
+             WHERE user_id = ?
+               AND purpose = 'guide_attachment'
+               AND entity_type = ?
+               AND entity_id = ?
+               AND status IN ('uploaded','processing','ready')
+               AND deleted_at IS NULL
+             ORDER BY created_at DESC
+            """,
+            (user["id"], entity_type, entity_id),
+        ).fetchall()
+        items = [serialize_uploaded_file(r) for r in rows]
+        self.send_json({"status": "ok", "items": items, "total": len(items)})
 
     # --- Generic Guide saves (reuse the `interactions` table) ---------------
     def api_guide_saved(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -17119,7 +17952,73 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT * FROM guide_articles WHERE status = 'published' AND id <> ? AND country = ? AND category_key = ? "
             "ORDER BY published_at DESC LIMIT 4",
             (row["id"], row["country"], row["category_key"])).fetchall()]
-        self.send_json({"status": "ok", "article": localize_guide_article_payload(serialize_guide_article(fresh, include_body=True), language, include_body=True), "related": related})
+        article = localize_guide_article_payload(serialize_guide_article(fresh, include_body=True), language, include_body=True)
+        article["saved"] = False
+        article["progressPercent"] = 0
+        article["readingProgress"] = serialize_guide_article_progress(None)
+        session = self.current_session(conn)
+        if session:
+            saved = conn.execute(
+                "SELECT 1 FROM interactions WHERE user_id = ? AND kind = 'guide_article_save' AND target_id IN (?, ?) LIMIT 1",
+                (session["user_id"], row["id"], row["slug"]),
+            ).fetchone()
+            progress = conn.execute(
+                "SELECT * FROM guide_article_progress WHERE user_id = ? AND article_id = ? LIMIT 1",
+                (session["user_id"], row["id"]),
+            ).fetchone()
+            progress_payload = serialize_guide_article_progress(progress)
+            article["saved"] = bool(saved)
+            article["progressPercent"] = int(progress_payload["progressPercent"] or 0)
+            article["readingProgress"] = progress_payload
+        self.send_json({"status": "ok", "article": article, "related": related})
+
+    def api_guide_article_progress_update(self, conn: sqlite3.Connection, id_or_slug: str, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        country = (body.get("country") or self._guide_country(query)).strip().lower()
+        row = conn.execute(
+            "SELECT * FROM guide_articles WHERE (id = ? OR slug = ?) AND country = ? AND status = 'published' LIMIT 1",
+            (id_or_slug, id_or_slug, country),
+        ).fetchone()
+        if not row:
+            raise APIError("指南内容不存在", 404, "guide_article_not_found")
+        raw_progress = body.get("progressPercent", body.get("progress_percent", 0))
+        try:
+            incoming = int(round(float(raw_progress or 0)))
+        except (TypeError, ValueError):
+            incoming = 0
+        incoming = max(0, min(100, incoming))
+        now = now_iso()
+        existing = conn.execute(
+            "SELECT * FROM guide_article_progress WHERE user_id = ? AND article_id = ? LIMIT 1",
+            (user["id"], row["id"]),
+        ).fetchone()
+        completed_at = now if incoming >= 95 else None
+        if existing:
+            next_progress = max(int(existing["progress_percent"] or 0), incoming)
+            next_completed_at = existing["completed_at"] or (now if next_progress >= 95 else None)
+            conn.execute(
+                """
+                UPDATE guide_article_progress
+                   SET slug = ?, progress_percent = ?, completed_at = ?, last_read_at = ?, updated_at = ?
+                 WHERE id = ?
+                """,
+                (row["slug"], next_progress, next_completed_at, now, now, existing["id"]),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO guide_article_progress
+                    (id, user_id, article_id, slug, progress_percent, completed_at, last_read_at, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), user["id"], row["id"], row["slug"], incoming, completed_at, now, now, now),
+            )
+        progress = conn.execute(
+            "SELECT * FROM guide_article_progress WHERE user_id = ? AND article_id = ? LIMIT 1",
+            (user["id"], row["id"]),
+        ).fetchone()
+        self.send_json({"status": "ok", "articleId": row["id"], "slug": row["slug"], "progress": serialize_guide_article_progress(progress)})
 
     def api_guide_products(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
@@ -20792,12 +21691,25 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_guide_todo_update(conn, todo_id, reminder_only=True)
             if not tail and method == "PATCH":
                 return self.api_guide_todo_update(conn, todo_id)
+            if not tail and method == "DELETE":
+                return self.api_guide_todo_delete(conn, todo_id)
         if path == "/api/guide/calendar" and method == "GET":
             return self.api_guide_calendar(conn, query)
+        if path == "/api/guide/calendar/events" and method == "POST":
+            return self.api_guide_calendar_event_create(conn)
+        if path.startswith("/api/guide/calendar/events/"):
+            event_id = unquote(path[len("/api/guide/calendar/events/"):]).strip("/")
+            if method == "PATCH":
+                return self.api_guide_calendar_event_update(conn, event_id)
+            if method == "DELETE":
+                return self.api_guide_calendar_event_delete(conn, event_id)
         if path == "/api/guide/applications" and method == "GET":
             return self.api_guide_applications_list(conn, query)
         if path == "/api/guide/applications" and method == "POST":
             return self.api_guide_application_create(conn)
+        if path.startswith("/api/guide/applications/") and method == "GET":
+            app_id = unquote(path[len("/api/guide/applications/"):]).strip("/")
+            return self.api_guide_application_detail(conn, app_id)
         if path.startswith("/api/guide/applications/") and method == "PATCH":
             app_id = unquote(path[len("/api/guide/applications/"):]).strip("/")
             return self.api_guide_application_update(conn, app_id)
@@ -20810,12 +21722,40 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_life_items_list(conn, query)
         if path == "/api/guide/life-items" and method == "POST":
             return self.api_guide_life_item_create(conn)
+        if path.startswith("/api/guide/life-items/") and path.endswith("/payments"):
+            item_id = unquote(path[len("/api/guide/life-items/"):-len("/payments")]).strip("/")
+            if method == "GET":
+                return self.api_guide_life_payments_list(conn, item_id)
+            if method == "POST":
+                return self.api_guide_life_payment_create(conn, item_id)
         if path.startswith("/api/guide/life-items/") and method == "PATCH":
             item_id = unquote(path[len("/api/guide/life-items/"):]).strip("/")
             return self.api_guide_life_item_update(conn, item_id)
         if path.startswith("/api/guide/life-items/") and method == "DELETE":
             item_id = unquote(path[len("/api/guide/life-items/"):]).strip("/")
             return self.api_guide_life_item_delete(conn, item_id)
+        if path == "/api/guide/contracts" and method == "GET":
+            return self.api_guide_contracts_list(conn, query)
+        if path == "/api/guide/contracts" and method == "POST":
+            return self.api_guide_contract_create(conn)
+        if path.startswith("/api/guide/contracts/") and method == "PATCH":
+            item_id = unquote(path[len("/api/guide/contracts/"):]).strip("/")
+            return self.api_guide_contract_update(conn, item_id)
+        if path.startswith("/api/guide/contracts/") and method == "DELETE":
+            item_id = unquote(path[len("/api/guide/contracts/"):]).strip("/")
+            return self.api_guide_contract_delete(conn, item_id)
+        if path == "/api/guide/documents" and method == "GET":
+            return self.api_guide_documents_list(conn, query)
+        if path == "/api/guide/documents" and method == "POST":
+            return self.api_guide_document_create(conn)
+        if path.startswith("/api/guide/documents/") and method == "PATCH":
+            item_id = unquote(path[len("/api/guide/documents/"):]).strip("/")
+            return self.api_guide_document_update(conn, item_id)
+        if path.startswith("/api/guide/documents/") and method == "DELETE":
+            item_id = unquote(path[len("/api/guide/documents/"):]).strip("/")
+            return self.api_guide_document_delete(conn, item_id)
+        if path == "/api/guide/attachments" and method == "GET":
+            return self.api_guide_attachments(conn, query)
         if path == "/api/guide/recommendations" and method == "GET":
             return self.api_guide_recommendations(conn, query)
         if path == "/api/guide/saved" and method == "GET":
@@ -20844,6 +21784,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_guide_school_detail(conn, school_id, query)
         if path == "/api/guide/articles" and method == "GET":
             return self.api_guide_articles(conn, query)
+        if path.startswith("/api/guide/articles/") and path.endswith("/progress") and method in {"POST", "PATCH"}:
+            slug = unquote(path[len("/api/guide/articles/"):-len("/progress")]).strip("/")
+            return self.api_guide_article_progress_update(conn, slug, query)
         if path.startswith("/api/guide/articles/") and method == "GET":
             return self.api_guide_article_detail(conn, unquote(path[len("/api/guide/articles/"):]), query)
         if path == "/api/guide/products" and method == "GET":
@@ -27910,7 +28853,10 @@ class Handler(BaseHTTPRequestHandler):
         # server-side so a client can't push junk into untyped JSON
         # storage. Typed posts may be form-first and have very short
         # body text, so attributes count as content for emptiness.
-        content_type = normalize_content_type(data.get("content_type"))
+        raw_content_type = data.get("content_type")
+        content_type = normalize_content_type(raw_content_type)
+        if content_type == "dynamic" and not str(raw_content_type or "").strip():
+            content_type = infer_content_type_from_content(content, data.get("attributes")) or content_type
         # Machi Verified gate. High-trust types (招聘/租房/找室友/本地服务/
         # 商家/优惠/内推) require an active membership. Enforced here for
         # EVERY client — the apps only mirror it for UX; a raw API call
@@ -29535,6 +30481,9 @@ class Handler(BaseHTTPRequestHandler):
         if int(rep.get("risk_score") or 0) >= 80:
             record_upload_audit(conn, user["id"], "presign_denied", status="failed", reason="high_risk_user", metadata={"purpose": purpose})
             raise APIError("账号风险过高，暂不能上传文件", 403, "upload_restricted")
+        if purpose == "guide_attachment":
+            self._assert_guide_attachment_entity_owner(conn, user["id"], entity_type, entity_id)
+            return
         if entity_type == "post" and entity_id:
             row = conn.execute("SELECT author_id FROM posts WHERE id = ? AND deleted_at IS NULL", (entity_id,)).fetchone()
             if not row or row["author_id"] != user["id"]:
@@ -29549,6 +30498,25 @@ class Handler(BaseHTTPRequestHandler):
                 raise APIError("无权给该商家上传文件", 403, "forbidden")
         elif entity_type in {"guide_article", "guide_product"} and entity_id and user.get("role") != "admin":
             raise APIError("Guide 文件只能由管理员上传", 403, "admin_required")
+
+    def _assert_guide_attachment_entity_owner(self, conn: sqlite3.Connection, user_id: str, entity_type: str, entity_id: str) -> None:
+        if not entity_type or not entity_id:
+            raise APIError("请先保存 Guide 项目，再上传附件", 400, "guide_entity_required")
+        table_by_type = {
+            "guide_task": "guide_todos",
+            "guide_application": "guide_applications",
+            "guide_life_item": "guide_life_items",
+            "guide_contract": "guide_contracts",
+            "guide_document": "guide_documents",
+            "guide_goal": "guide_plans",
+            "guide_calendar_event": "guide_calendar_items",
+        }
+        table = table_by_type.get(entity_type)
+        if not table:
+            raise APIError("Guide 附件类型不合法", 400, "invalid_guide_attachment_entity")
+        row = conn.execute(f"SELECT user_id FROM {table} WHERE id = ?", (entity_id,)).fetchone()
+        if not row or row["user_id"] != user_id:
+            raise APIError("无权给该 Guide 项目上传附件", 403, "forbidden")
 
     def _check_upload_quota(
         self,
@@ -29668,6 +30636,8 @@ class Handler(BaseHTTPRequestHandler):
         bucket = AWS_S3_BUCKET if s3_available else "local-dev"
         metadata = {
             "source": "s3-encrypted-pending" if is_private and s3_available else ("s3" if s3_available else "local"),
+            "fileName": file_name[:240],
+            "originalFileName": file_name[:240],
             "thumbnail_url": upload_thumbnail_url(object_key, content_type, purpose),
             "thread_id": thread_id,
             "group_id": group_id,

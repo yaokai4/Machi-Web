@@ -64,7 +64,7 @@ export const PRIMARY_CHANNELS: ChannelConfig[] = [
   channel({ key: "jobs", label: "工作", subtitle: "兼职、全职、招聘和内推", Icon: Briefcase, tone: "violet", contentTypes: ["job_seek", "job_post", "referral"], legacySlugs: ["job", "recruiting", "recruit", "referral", "hiring"] }),
   channel({ key: "services", label: "商家与服务", subtitle: "餐厅、旅行票务和生活服务", Icon: Store, tone: "orange", contentTypes: ["service", "merchant"], legacySlugs: ["service", "merchant", "business", "businesses", "local-service", "local_services"] }),
   channel({ key: "deals", label: "商家优惠", subtitle: "折扣福利、本地商家活动", Icon: Tag, tone: "rose", contentTypes: ["coupon"], legacySlugs: ["coupon", "discount", "discounts"] }),
-  channel({ key: "groups", label: "活动小组", subtitle: "Food meetup、语言交换、本地小组", Icon: Users, tone: "fuchsia", contentTypes: ["meetup", "dining", "event"], legacySlugs: ["food", "dining", "events", "event", "meetup"] }),
+  channel({ key: "groups", label: "约局 / 活动", subtitle: "约饭、语言交换、桌游和本地活动", Icon: Users, tone: "fuchsia", contentTypes: ["meetup", "dining", "event"], legacySlugs: ["food", "dining", "events", "event", "meetup"] }),
   channel({ key: "qa", label: "问答互助", subtitle: "问答、匿名提问和生活求助", Icon: HelpCircle, tone: "blue", contentTypes: ["question", "anonymous"], legacySlugs: ["question", "treehole", "anonymous"] }),
 ];
 
@@ -115,7 +115,7 @@ export const CHANNEL_GROUPS: Array<{ title: string; items: ChannelGroupItem[] }>
   {
     title: "本地连接",
     items: [
-      { label: "活动小组", subtitle: "公开城市活动和本地小组", channel: "groups", Icon: Users },
+      { label: "约局 / 活动", subtitle: "约饭、桌游、语言交换和公开活动", channel: "groups", Icon: Users },
       { label: "语言交换", subtitle: "公开语言学习活动", channel: "groups", Icon: MessageSquareText },
       { label: "Food meetup", subtitle: "餐厅、咖啡和小型饭局", channel: "groups", Icon: Utensils },
       { label: "本地小组", subtitle: "运动、周末活动、城市散步", channel: "groups", Icon: CalendarDays },
@@ -144,7 +144,7 @@ export const CHANNEL_FILTERS: Partial<Record<ChannelKey, string[]>> = {
   housing: ["全部", "单人", "合租", "整租", "家具家电"],
   jobs: ["全部", "兼职", "全职", "日语 N3 可", "留学生可", "签证支持"],
   services: ["全部", "餐厅", "日本料理", "优惠预约", "景点门票", "一日游", "本地向导", "机场接送", "车站接送", "包车", "材料翻译", "市役所陪同", "租房申请协助", "搬家", "退房清洁", "手机卡开通", "生活跑腿", "美容美发"],
-  groups: ["全部", "Food meetup", "语言交换", "周末活动", "运动小组", "城市散步"],
+  groups: ["全部", "约饭", "语言交换", "周末活动", "运动搭子", "城市散步"],
   guide: ["全部", "交通", "生活", "手续", "省钱", "避坑"],
   news: ["全部", "本地", "交通", "天气", "公告"],
   deals: ["全部", "餐饮", "教育", "生活服务", "限时优惠"],
@@ -243,8 +243,8 @@ const CHANNEL_COPY: Record<ChannelKey, Record<ChannelLocale, { title: string; su
     ja: { title: "お得情報", subtitle: "割引、特典、地域店舗のキャンペーン" },
   },
   groups: {
-    "zh-Hans": { title: "活动小组", subtitle: "Food meetup、语言交换、本地小组" },
-    "zh-Hant": { title: "活動小組", subtitle: "Food meetup、語言交換、本地小組" },
+    "zh-Hans": { title: "约局 / 活动", subtitle: "约饭、语言交换、桌游和本地活动" },
+    "zh-Hant": { title: "約局 / 活動", subtitle: "約飯、語言交換、桌遊和本地活動" },
     en: { title: "Groups & Events", subtitle: "Food meetups, language exchange, and local groups" },
     ja: { title: "イベント・グループ", subtitle: "食事会、言語交換、地域グループ" },
   },
@@ -339,9 +339,9 @@ const GROUP_ITEM_COPY: Record<string, Record<ChannelLocale, { label: string; sub
     en: { label: "Referrals", subtitle: "Company referrals and member-only leads" },
     ja: { label: "紹介", subtitle: "企業紹介と会員向け情報" },
   },
-  活动小组: {
-    "zh-Hans": { label: "活动小组", subtitle: "公开城市活动和本地小组" },
-    "zh-Hant": { label: "活動小組", subtitle: "公開城市活動和本地小組" },
+  "约局 / 活动": {
+    "zh-Hans": { label: "约局 / 活动", subtitle: "约饭、桌游、语言交换和公开活动" },
+    "zh-Hant": { label: "約局 / 活動", subtitle: "約飯、桌遊、語言交換和公開活動" },
     en: { label: "Groups & Events", subtitle: "Public events and local groups" },
     ja: { label: "イベント・グループ", subtitle: "公開イベントと地域グループ" },
   },

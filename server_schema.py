@@ -544,6 +544,20 @@ CREATE TABLE IF NOT EXISTS guide_articles (
 CREATE INDEX IF NOT EXISTS idx_guide_articles_scope ON guide_articles(country, status, category_key, sub_category_key, published_at);
 CREATE INDEX IF NOT EXISTS idx_guide_articles_featured ON guide_articles(country, status, is_featured, published_at);
 
+CREATE TABLE IF NOT EXISTS guide_article_progress (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    article_id TEXT NOT NULL,
+    slug TEXT NOT NULL DEFAULT '',
+    progress_percent INTEGER NOT NULL DEFAULT 0,
+    completed_at TEXT,
+    last_read_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, article_id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_article_progress_user ON guide_article_progress(user_id, updated_at);
+
 CREATE TABLE IF NOT EXISTS guide_products (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
@@ -3385,6 +3399,139 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         """
         -- backend: postgres
         ALTER TABLE guide_todos ADD COLUMN IF NOT EXISTS steps TEXT NOT NULL DEFAULT '[]';
+        """,
+    ),
+    (
+        63,
+        "guide os: first-class contracts and document expiry reminders",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS guide_contracts (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'other',
+            title TEXT NOT NULL,
+            provider TEXT NOT NULL DEFAULT '',
+            start_date TEXT,
+            end_date TEXT,
+            cancellation_window_start TEXT,
+            cancellation_window_end TEXT,
+            auto_renew INTEGER NOT NULL DEFAULT 0,
+            monthly_cost INTEGER NOT NULL DEFAULT 0,
+            yearly_cost INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            reminder_days_before INTEGER NOT NULL DEFAULT 30,
+            contact_info TEXT NOT NULL DEFAULT '',
+            notes TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_contracts_user_date
+            ON guide_contracts(user_id, status, end_date, cancellation_window_start);
+        CREATE TABLE IF NOT EXISTS guide_documents (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL DEFAULT 'other',
+            title TEXT NOT NULL,
+            expires_at TEXT,
+            reminder_days_before INTEGER NOT NULL DEFAULT 60,
+            notes TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_documents_user_date
+            ON guide_documents(user_id, status, expires_at);
+        """,
+    ),
+    (
+        64,
+        "guide os: application pipeline, stage history, links and contact fields",
+        """
+        -- backend: postgres
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS career_track TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS stage TEXT NOT NULL DEFAULT 'saved';
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS website_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS interview_location TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS meeting_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS contact_name TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS contact_email TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal';
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS favorite INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_applications ADD COLUMN IF NOT EXISTS archived_at TEXT;
+        CREATE TABLE IF NOT EXISTS guide_application_stages (
+            id TEXT PRIMARY KEY,
+            application_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            stage TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            occurred_at TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_application_stages_app
+            ON guide_application_stages(application_id, occurred_at, created_at);
+        """,
+    ),
+    (
+        65,
+        "guide os: life payment history and recurring payment closure",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS guide_life_payments (
+            id TEXT PRIMARY KEY,
+            life_item_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            amount INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            payment_method TEXT NOT NULL DEFAULT '',
+            paid_at TEXT NOT NULL,
+            notes TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_life_payments_item
+            ON guide_life_payments(life_item_id, paid_at);
+        """,
+    ),
+    (
+        66,
+        "guide os: todo custom lists and tags",
+        """
+        -- backend: postgres
+        ALTER TABLE guide_todos ADD COLUMN IF NOT EXISTS list_name TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_todos ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        67,
+        "guide os: first-class calendar events",
+        """
+        -- backend: postgres
+        ALTER TABLE guide_calendar_items ADD COLUMN IF NOT EXISTS notes TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_calendar_items ADD COLUMN IF NOT EXISTS recurrence TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_calendar_items ADD COLUMN IF NOT EXISTS reminder_at TEXT;
+        ALTER TABLE guide_calendar_items ADD COLUMN IF NOT EXISTS all_day INTEGER NOT NULL DEFAULT 1;
+        """,
+    ),
+    (
+        68,
+        "guide os: article reading progress",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS guide_article_progress (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            article_id TEXT NOT NULL,
+            slug TEXT NOT NULL DEFAULT '',
+            progress_percent INTEGER NOT NULL DEFAULT 0,
+            completed_at TEXT,
+            last_read_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, article_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_article_progress_user ON guide_article_progress(user_id, updated_at);
         """,
     ),
 ]

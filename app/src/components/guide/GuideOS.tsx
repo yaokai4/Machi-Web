@@ -5,24 +5,28 @@ import type React from "react";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  Archive,
   Bell,
   CalendarClock,
   CalendarDays,
   CheckCircle2,
   Circle,
   Clock3,
+  Copy,
   FileText,
   IdCard,
   Plus,
   Repeat,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
-import { guide, type GuideActivePlanResponse, type GuideProduct, type GuideProfile, type GuideTodo, type GuideTodoStep } from "@/lib/guide";
+import { guide, type GuideActivePlanResponse, type GuideNextAction, type GuideProduct, type GuideProfile, type GuideTodo, type GuideTodoStep } from "@/lib/guide";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { GuideAttachmentManager } from "@/components/guide/GuideAttachmentManager";
 
 export function GuideIdentityCard({ profile }: { profile?: GuideProfile | null }) {
-  const label = profile?.identityType || "还未设置身份";
+  const label = profile?.identityType || "还未设置提醒偏好";
   const meta = [profile?.city, profile?.visaStatus, profile?.japaneseLevel].filter(Boolean).join(" · ");
   return (
     <Link href="/guide/profile" className="kx-card block overflow-hidden p-5 transition hover:-translate-y-0.5 hover:border-kx-accent/30">
@@ -31,10 +35,10 @@ export function GuideIdentityCard({ profile }: { profile?: GuideProfile | null }
           <IdCard className="h-5 w-5" />
         </span>
         <div className="min-w-0">
-          <p className="text-xs font-black uppercase tracking-[0.12em] text-kx-muted">Guide Profile</p>
+          <p className="text-xs font-black uppercase tracking-[0.12em] text-kx-muted">Reminder Settings</p>
           <h3 className="mt-1 text-lg font-black text-kx-text">{label}</h3>
           <p className="mt-1 text-sm leading-6 text-kx-subtle">
-            {meta || "设置身份后，Machi 会按你的阶段推荐升学、就职、日语、签证和生活计划。"}
+            {meta || "只填写希望被提醒的日期和目标偏好，Machi 会生成 Todo、倒数日和日历提醒。"}
           </p>
         </div>
       </div>
@@ -71,17 +75,17 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
     const suggested = (data?.suggestedJourneys || []).slice(0, 6);
     return (
       <section className="kx-guide-plan-panel p-4">
-        <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Start Here</p>
-        <h2 className="mt-1.5 text-lg font-black tracking-[-0.01em] text-kx-text">还没有进行中的计划</h2>
+        <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Goals</p>
+        <h2 className="mt-1.5 text-lg font-black tracking-[-0.01em] text-kx-text">还没有进行中的目标</h2>
         <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">
-          {data?.identityType ? "根据你的身份，最相关的路径已经排在前面。" : "从主题或行动路径开始，生成 Todo、截止日期和提醒。"}
+          {data?.identityType ? "根据你的提醒设置，最相关的目标已经排在前面。" : "从目标路径开始，生成 Todo、截止日期和提醒。"}
         </p>
         {suggested.length ? (
           <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {suggested.map((j, i) => (
               <Link
                 key={j.key}
-                href={`/guide/journeys/${j.key}`}
+                href={`/guide/goals/${j.key}`}
                 className={"kx-card flex items-center gap-3 p-3 transition hover:-translate-y-0.5 hover:border-kx-accent/30" + (i === 0 ? " ring-1 ring-kx-accent/40" : "")}
               >
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-white" style={{ backgroundColor: j.color || "var(--kx-accent)" }}>
@@ -96,8 +100,8 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
           </div>
         ) : null}
         <div className="mt-4 flex flex-wrap gap-2">
-          <Link href="/guide/journeys" className="kx-button-primary h-10 px-4">{suggested.length ? "查看全部路径" : "选择计划"}</Link>
-          <Link href="/guide/profile" className="kx-button-secondary h-10 px-4">{data?.identityType ? "调整身份" : "设置身份"}</Link>
+          <Link href="/guide/goals" className="kx-button-primary h-10 px-4">{suggested.length ? "查看全部路径" : "选择目标"}</Link>
+          <Link href="/guide/profile" className="kx-button-secondary h-10 px-4">{data?.identityType ? "调整提醒" : "提醒设置"}</Link>
         </div>
       </section>
     );
@@ -133,10 +137,52 @@ export function GuidePlanSummary({ data }: { data?: GuideActivePlanResponse }) {
           <p className="text-xs font-bold text-kx-muted">下一步</p>
           <p className="mt-1 text-base font-black text-kx-text">{plan.nextTodo?.title || "所有任务都完成了"}</p>
           <div className="mt-3 flex gap-2">
-            <Link href="/guide/plan" className="kx-button-primary h-9 px-3 text-sm">查看计划</Link>
+            <Link href="/guide/tasks" className="kx-button-primary h-9 px-3 text-sm">进入待办</Link>
             <Link href="/guide/calendar" className="kx-button-secondary h-9 px-3 text-sm">日历</Link>
           </div>
         </div>
+      </div>
+    </section>
+  );
+}
+
+export function GuideNextActions({ actions = [] }: { actions?: GuideNextAction[] }) {
+  const items = actions.slice(0, 4);
+  if (!items.length) return null;
+  return (
+    <section className="kx-card p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div>
+          <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Next</p>
+          <h2 className="mt-1 text-lg font-black text-kx-text">为你推荐的下一步</h2>
+        </div>
+        <Link href="/guide/tasks" className="text-xs font-bold text-kx-accent">全部 Todo</Link>
+      </div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {items.map((action, index) => {
+          const isTodo = action.kind === "todo";
+          const href = isTodo ? "/guide/tasks" : action.journeyKey ? `/guide/goals/${action.journeyKey}` : "/guide/goals";
+          return (
+            <Link
+              key={`${action.kind}-${action.todoId || action.journeyKey || action.title}`}
+              href={href}
+              className={
+                "group flex items-start gap-3 rounded-kx-lg border p-3 transition hover:-translate-y-0.5 hover:border-kx-accent/40 " +
+                (index === 0 ? "border-kx-accent/30 bg-kx-accentSoft/45" : "border-kx-stroke/55 bg-kx-card/70")
+              }
+            >
+              <span className={"grid h-10 w-10 shrink-0 place-items-center rounded-2xl " + (isTodo ? "bg-amber-400/15 text-amber-600" : "bg-kx-accentSoft text-kx-accent")}>
+                {isTodo ? <CalendarClock className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-sm font-black leading-5 text-kx-text group-hover:text-kx-accent">{action.title}</span>
+                <span className="mt-0.5 block text-xs leading-5 text-kx-muted">
+                  {isTodo ? (action.dueAt ? `截止 ${action.dueAt.slice(0, 10)}` : "来自你的 Todo，优先处理") : (action.subtitle || "生成 Todo 与日历计划")}
+                </span>
+              </span>
+            </Link>
+          );
+        })}
       </div>
     </section>
   );
@@ -148,7 +194,7 @@ function isoShift(days: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 }
 
-export function GuideQuickAddTodo({ defaultDate, compact = false }: { defaultDate?: string; compact?: boolean }) {
+export function GuideQuickAddTodo({ defaultDate, compact = false, planId }: { defaultDate?: string; compact?: boolean; planId?: string }) {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const queryClient = useQueryClient();
@@ -161,7 +207,7 @@ export function GuideQuickAddTodo({ defaultDate, compact = false }: { defaultDat
     queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
   };
   const create = useMutation({
-    mutationFn: () => guide.createTodo({ content: text.trim(), plannedDate: date || undefined }),
+    mutationFn: () => guide.createTodo({ content: text.trim(), plannedDate: date || undefined, planId }),
     onSuccess: () => {
       setText("");
       invalidate();
@@ -230,6 +276,16 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
   const [showReschedule, setShowReschedule] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [detailTitle, setDetailTitle] = useState(todo.title);
+  const [detailSummary, setDetailSummary] = useState(todo.summary || "");
+  const [detailNotes, setDetailNotes] = useState(todo.notes || "");
+  const [detailPriority, setDetailPriority] = useState(todo.priority || "normal");
+  const [detailPlanned, setDetailPlanned] = useState((todo.plannedDate || "").slice(0, 10));
+  const [detailDue, setDetailDue] = useState((todo.dueAt || "").slice(0, 10));
+  const [detailRecurrence, setDetailRecurrence] = useState(todo.recurrence || "");
+  const [detailListName, setDetailListName] = useState(todo.listName || "");
+  const [detailTags, setDetailTags] = useState((todo.tags || []).join(", "));
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["guide", "active-plan"] });
     queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
@@ -271,10 +327,95 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
     onSuccess: () => { invalidate(); setNoteOpen(false); },
     onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "备注保存失败" }),
   });
+  const saveDetail = useMutation({
+    mutationFn: () => guide.updateTodo(todo.id, {
+      title: detailTitle.trim(),
+      summary: detailSummary.trim(),
+      notes: detailNotes.trim(),
+      priority: detailPriority,
+      plannedDate: detailPlanned,
+      dueAt: detailDue,
+      recurrence: detailRecurrence,
+      listName: detailListName.trim(),
+      tags: detailTags.split(/[,，]/).map((tag) => tag.trim()).filter(Boolean),
+    }),
+    onSuccess: () => {
+      invalidate();
+      setDetailOpen(false);
+      pushToast({ kind: "success", message: "Todo 已更新" });
+    },
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "Todo 更新失败" }),
+  });
+  const duplicate = useMutation({
+    mutationFn: () => guide.createTodo({
+      content: `${todo.title}（副本）`,
+      summary: todo.summary,
+      notes: todo.notes,
+      todoType: todo.todoType,
+      priority: todo.priority,
+      plannedDate: todo.plannedDate || undefined,
+      dueAt: todo.dueAt || undefined,
+      recurrence: todo.recurrence || undefined,
+      listName: todo.listName || undefined,
+      tags: todo.tags || undefined,
+      planId: todo.planId || undefined,
+    }),
+    onSuccess: () => {
+      invalidate();
+      setDetailOpen(false);
+      pushToast({ kind: "success", message: "已复制 Todo" });
+    },
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "复制失败" }),
+  });
+  const archive = useMutation({
+    mutationFn: () => guide.updateTodo(todo.id, { status: "archived" }),
+    onSuccess: () => {
+      invalidate();
+      setDetailOpen(false);
+      pushToast({ kind: "success", message: "Todo 已归档" });
+    },
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "归档失败" }),
+  });
+  const remove = useMutation({
+    mutationFn: () => guide.deleteTodo(todo.id),
+    onSuccess: () => {
+      invalidate();
+      setDetailOpen(false);
+      pushToast({ kind: "success", message: "Todo 已删除" });
+    },
+    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "删除失败" }),
+  });
+  const openDetail = () => {
+    setDetailTitle(todo.title);
+    setDetailSummary(todo.summary || "");
+    setDetailNotes(todo.notes || "");
+    setDetailPriority(todo.priority || "normal");
+    setDetailPlanned((todo.plannedDate || "").slice(0, 10));
+    setDetailDue((todo.dueAt || "").slice(0, 10));
+    setDetailRecurrence(todo.recurrence || "");
+    setDetailListName(todo.listName || "");
+    setDetailTags((todo.tags || []).join(", "));
+    setDetailOpen(true);
+  };
   const done = todo.status === "done";
   const recurring = todo.recurrence === "daily" ? "每日循环" : todo.recurrence === "weekly" ? "每周循环" : "";
   return (
-    <article className="kx-card p-4">
+    <>
+    <article
+      className="kx-card cursor-pointer p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/60"
+      tabIndex={0}
+      aria-label={`打开 Todo 详情：${todo.title}`}
+      onClick={(event) => {
+        if ((event.target as HTMLElement).closest("button,input,textarea,a,select")) return;
+        openDetail();
+      }}
+      onKeyDown={(event) => {
+        if ((event.key === "Enter" || event.key === " ") && event.target === event.currentTarget) {
+          event.preventDefault();
+          openDetail();
+        }
+      }}
+    >
       <div className="flex items-start gap-3">
         <button
           type="button"
@@ -381,13 +522,92 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
         </div>
       </div>
     </article>
+    {detailOpen ? (
+      <div className="fixed inset-0 z-[80] grid place-items-end bg-black/30 p-0 sm:place-items-center sm:p-5" role="presentation" onMouseDown={(event) => {
+        if (event.target === event.currentTarget) setDetailOpen(false);
+      }}>
+        <section role="dialog" aria-modal="true" aria-labelledby={`todo-detail-${todo.id}`} className="max-h-[92dvh] w-full overflow-y-auto rounded-t-[24px] bg-kx-card p-5 shadow-2xl sm:max-w-2xl sm:rounded-[24px] sm:p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-black uppercase tracking-[0.12em] text-kx-muted">Todo Detail</p>
+              <h2 id={`todo-detail-${todo.id}`} className="mt-1 text-xl font-black text-kx-text">Todo 详情</h2>
+            </div>
+            <button type="button" onClick={() => setDetailOpen(false)} className="grid min-h-11 min-w-11 place-items-center rounded-full text-kx-muted hover:bg-kx-soft" aria-label="关闭">
+              <X className="h-5 w-5" />
+            </button>
+          </div>
+          <div className="mt-5 grid gap-4">
+            <label className="grid gap-1.5 text-xs font-bold text-kx-muted">
+              标题
+              <input value={detailTitle} onChange={(e) => setDetailTitle(e.target.value)} className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm font-semibold text-kx-text outline-none focus:border-kx-accent" />
+            </label>
+            <label className="grid gap-1.5 text-xs font-bold text-kx-muted">
+              说明
+              <textarea value={detailSummary} onChange={(e) => setDetailSummary(e.target.value)} rows={2} className="rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 py-2 text-sm text-kx-text outline-none focus:border-kx-accent" />
+            </label>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="grid gap-1.5 text-xs font-bold text-kx-muted">
+                计划日期
+                <input type="date" value={detailPlanned} onChange={(e) => setDetailPlanned(e.target.value)} className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text outline-none focus:border-kx-accent" />
+              </label>
+              <label className="grid gap-1.5 text-xs font-bold text-kx-muted">
+                截止日期
+                <input type="date" value={detailDue} onChange={(e) => setDetailDue(e.target.value)} className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text outline-none focus:border-kx-accent" />
+              </label>
+              <label className="grid gap-1.5 text-xs font-bold text-kx-muted">
+                优先级
+                <select value={detailPriority} onChange={(e) => setDetailPriority(e.target.value)} className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text outline-none focus:border-kx-accent">
+                  <option value="high">高</option><option value="normal">普通</option><option value="low">低</option>
+                </select>
+              </label>
+              <label className="grid gap-1.5 text-xs font-bold text-kx-muted">
+                重复
+                <select value={detailRecurrence} onChange={(e) => setDetailRecurrence(e.target.value)} className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text outline-none focus:border-kx-accent">
+                  <option value="">不重复</option><option value="daily">每天</option><option value="weekly">每周</option><option value="monthly">每月</option>
+                </select>
+              </label>
+            </div>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="grid gap-1.5 text-xs font-bold text-kx-muted">
+                自定义清单
+                <input value={detailListName} onChange={(e) => setDetailListName(e.target.value)} placeholder="例如：工作 / 日本生活" className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text outline-none focus:border-kx-accent" />
+              </label>
+              <label className="grid gap-1.5 text-xs font-bold text-kx-muted">
+                标签
+                <input value={detailTags} onChange={(e) => setDetailTags(e.target.value)} placeholder="用逗号分隔，例如：重要, 电话" className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text outline-none focus:border-kx-accent" />
+              </label>
+            </div>
+            <label className="grid gap-1.5 text-xs font-bold text-kx-muted">
+              备注
+              <textarea value={detailNotes} onChange={(e) => setDetailNotes(e.target.value)} rows={4} className="rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 py-2 text-sm text-kx-text outline-none focus:border-kx-accent" />
+            </label>
+            <GuideAttachmentManager entityType="guide_task" entityId={todo.id} compact title="任务附件" />
+            {todo.sourceType ? (
+              <div className="rounded-xl bg-kx-soft px-3 py-2 text-xs font-semibold text-kx-muted">来源：{todo.sourceType.replaceAll("_", " ")}{todo.journeyKey ? ` · ${todo.journeyKey}` : ""}</div>
+            ) : null}
+          </div>
+          <div className="mt-5 flex flex-wrap gap-2 border-t border-kx-stroke/60 pt-4">
+            <button type="button" onClick={() => saveDetail.mutate()} disabled={saveDetail.isPending || !detailTitle.trim()} className="kx-button-primary min-h-11 px-5 disabled:opacity-60">
+              {saveDetail.isPending ? "保存中" : "保存"}
+            </button>
+            {!done ? <button type="button" onClick={() => complete.mutate()} className="min-h-11 rounded-xl bg-kx-accentSoft px-4 text-sm font-bold text-kx-accent">标记完成</button> : null}
+            <button type="button" onClick={() => duplicate.mutate()} disabled={duplicate.isPending} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-kx-soft px-4 text-sm font-bold text-kx-text"><Copy className="h-4 w-4" />复制</button>
+            <button type="button" onClick={() => archive.mutate()} disabled={archive.isPending} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-kx-soft px-4 text-sm font-bold text-kx-text"><Archive className="h-4 w-4" />归档</button>
+            <button type="button" onClick={() => {
+              if (window.confirm("删除这个 Todo？删除后无法恢复。")) remove.mutate();
+            }} disabled={remove.isPending} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-rose-50 px-4 text-sm font-bold text-rose-600"><Trash2 className="h-4 w-4" />删除</button>
+          </div>
+        </section>
+      </div>
+    ) : null}
+    </>
   );
 }
 
 export function GuideTodayTodos({ todos }: { todos: GuideTodo[] }) {
   return (
     <section>
-      <SectionHeader icon={<CheckCircle2 className="h-4 w-4" />} title="今日待办" href="/guide/plan" />
+      <SectionHeader icon={<CheckCircle2 className="h-4 w-4" />} title="今日待办" href="/guide/tasks" />
       {todos.length ? (
         <div className="space-y-3">
           {todos.slice(0, 3).map((todo) => <GuideTodoCard key={todo.id} todo={todo} compact />)}
@@ -424,7 +644,7 @@ export function GuideMaterialServiceRail({
 }) {
   const recommended = [...products, ...services].slice(0, 5);
   const fallback = [
-    ["先选择主题或生成计划", "资料和服务会根据你的 Todo、身份和目标自动浮现", Sparkles, "/guide/journeys"],
+    ["先选择目标或添加 Todo", "资料和服务会根据你的 Todo、日期和目标自动浮现", Sparkles, "/guide/goals"],
   ] as const;
   if (recommended.length) {
     return (

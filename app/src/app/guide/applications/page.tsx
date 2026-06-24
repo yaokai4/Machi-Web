@@ -1,240 +1,352 @@
 "use client";
 
-import { useState } from "react";
+import Link from "next/link";
+import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Briefcase, CalendarClock, GraduationCap, Plus, Trash2 } from "lucide-react";
-import { guide } from "@/lib/guide";
-import type { GuideApplication, GuideSchool, GuideCompany } from "@/lib/guide";
+import {
+  BriefcaseBusiness,
+  CalendarClock,
+  Columns3,
+  GraduationCap,
+  List,
+  History,
+  Plus,
+  Search,
+  Star,
+  Trash2,
+} from "lucide-react";
+import { guide, type GuideApplication, type GuideCompany, type GuideSchool } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
-import { EmptyPanel, GuideTodoCard } from "@/components/guide/GuideOS";
-import { InlineLoading } from "@/components/design/States";
+import { EmptyPanel } from "@/components/guide/GuideOS";
+import { ErrorState, InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+
+type AppView = "board" | "list" | "timeline";
+
+const STAGES = [
+  ["saved", "收藏"],
+  ["preparing", "准备资料"],
+  ["submitted", "已投递"],
+  ["es", "ES"],
+  ["web_test", "Web Test"],
+  ["interview_1", "一面"],
+  ["interview_2", "二面"],
+  ["final", "最终面"],
+  ["offer", "Offer"],
+  ["rejected", "拒绝"],
+  ["withdrawn", "放弃"],
+] as const;
+
+const TYPES = [
+  ["school", "", "学校 / 大学 / 大学院"],
+  ["vocational", "", "专门学校"],
+  ["language_school", "", "语言学校"],
+  ["company", "shinsotsu", "新卒就职"],
+  ["company", "tenshoku", "社会人转职"],
+  ["internship", "", "实习"],
+  ["scholarship", "", "奖学金"],
+  ["visa", "", "签证申请"],
+  ["jlpt", "", "JLPT / 考试"],
+  ["other", "", "其他申请"],
+] as const;
+
+const emptyForm = {
+  type: "company",
+  careerTrack: "shinsotsu",
+  name: "",
+  department: "",
+  position: "",
+  deadline: "",
+  interviewAt: "",
+  resultAt: "",
+  stage: "saved",
+  priority: "normal",
+  favorite: false,
+  websiteUrl: "",
+  interviewLocation: "",
+  meetingUrl: "",
+  contactName: "",
+  contactEmail: "",
+  tags: "",
+  notes: "",
+};
 
 export default function GuideApplicationsPage() {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ type: "school", careerTrack: "", name: "", department: "", position: "", deadline: "", interviewAt: "", resultAt: "", notes: "" });
-  const todos = useQuery({
-    queryKey: ["guide", "todos", "applications", user?.id || "guest"],
-    queryFn: () => guide.todos({ status: "open", limit: 80 }),
-    enabled: Boolean(user),
-    select: (data) => ({ ...data, items: data.items.filter((t) => ["school_application", "school_interview", "company_es", "company_interview", "application_result"].includes(t.todoType)) }),
-  });
+  const [view, setView] = useState<AppView>("board");
+  const [stageFilter, setStageFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [priorityFilter, setPriorityFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [showCreate, setShowCreate] = useState(false);
+  const [form, setForm] = useState(emptyForm);
+
   const applications = useQuery({
-    queryKey: ["guide", "applications", user?.id || "guest"],
-    queryFn: () => guide.applications(),
+    queryKey: ["guide", "applications", user?.id || "guest", stageFilter, typeFilter, priorityFilter, search],
+    queryFn: () => guide.applications({
+      stage: stageFilter || undefined,
+      type: typeFilter || undefined,
+      priority: priorityFilter || undefined,
+      q: search.trim() || undefined,
+    }),
     enabled: Boolean(user),
   });
-  const invalidateAll = () => {
+  const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: ["guide", "applications"] });
     queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
     queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+    queryClient.invalidateQueries({ queryKey: ["guide", "active-plan"] });
   };
   const create = useMutation({
-    mutationFn: () => guide.createApplication(form),
+    mutationFn: () => guide.createApplication({
+      ...form,
+      tags: form.tags.split(/[,，]/).map((item) => item.trim()).filter(Boolean),
+    }),
     onSuccess: () => {
-      invalidateAll();
-      pushToast({ kind: "success", message: "申请日程已添加" });
-      setForm((f) => ({ ...f, name: "", department: "", position: "", deadline: "", interviewAt: "", resultAt: "", notes: "" }));
+      invalidate();
+      setForm(emptyForm);
+      setShowCreate(false);
+      pushToast({ kind: "success", message: "申请已添加，相关截止日已同步到 Todo 和日历" });
     },
-    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "添加失败" }),
+    onError: (error) => pushToast({ kind: "error", message: error instanceof Error ? error.message : "添加失败" }),
+  });
+  const update = useMutation({
+    mutationFn: ({ id, patch }: { id: string; patch: Partial<GuideApplication> & { stageNote?: string } }) => guide.updateApplication(id, patch),
+    onSuccess: () => { invalidate(); pushToast({ kind: "success", message: "申请已更新" }); },
+    onError: (error) => pushToast({ kind: "error", message: error instanceof Error ? error.message : "更新失败" }),
   });
   const remove = useMutation({
     mutationFn: (id: string) => guide.deleteApplication(id),
-    onSuccess: () => { invalidateAll(); pushToast({ kind: "success", message: "已删除该申请及其待办" }); },
-    onError: (err) => pushToast({ kind: "error", message: err instanceof Error ? err.message : "删除失败" }),
+    onSuccess: () => { invalidate(); pushToast({ kind: "success", message: "申请及关联 Todo 已删除" }); },
   });
 
   if (!user) {
     return (
-      <GuideShell back={{ href: "/guide", label: "日本指南" }}>
+      <GuideShell back={{ href: "/guide/manage", label: "管理" }}>
         <div className="px-4 py-8 sm:px-7">
           <section className="kx-guide-hero p-6">
-            <GraduationCap className="h-8 w-8 text-kx-accent" />
-            <h1 className="mt-3 text-3xl font-black text-kx-text">登录后管理出愿、ES 和面试</h1>
-            <p className="mt-2 text-sm leading-7 text-kx-subtle">大学出愿、公司 ES、面试时间和结果发表会自动进入 Guide Todo 与日历。</p>
-            <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-primary mt-5 h-10 px-4">登录后继续</button>
+            <BriefcaseBusiness className="h-8 w-8 text-kx-accent" />
+            <h1 className="mt-3 text-3xl font-black text-kx-text">申请管理</h1>
+            <p className="mt-2 max-w-xl text-sm leading-7 text-kx-subtle">用看板管理大学、大学院、新卒、转职、实习、奖学金、签证与考试申请。</p>
+            <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-primary mt-5 min-h-11 px-4">登录后继续</button>
           </section>
         </div>
       </GuideShell>
     );
   }
 
+  const items = applications.data?.items || [];
   return (
-    <GuideShell back={{ href: "/guide", label: "日本指南" }}>
-      <div className="space-y-7 px-4 py-7 sm:px-7">
-        <header className="kx-guide-hero p-6">
-          <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Applications</p>
-          <h1 className="mt-2 text-3xl font-black text-kx-text">出愿 / ES / 面试管理</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">大学、大学院、语言学校、公司新卒和社会人转职都可以统一管理截止日期。</p>
+    <GuideShell back={{ href: "/guide/manage", label: "管理" }}>
+      <main className="space-y-6 px-4 py-7 sm:px-7">
+        <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Applications</p>
+            <h1 className="mt-2 text-3xl font-black text-kx-text">申请管理</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-7 text-kx-subtle">几十家公司或学校也能按阶段、截止日和优先级清晰推进。</p>
+          </div>
+          <button type="button" onClick={() => setShowCreate((value) => !value)} className="kx-button-primary min-h-11 px-5">
+            <Plus className="h-4 w-4" /> 新建申请
+          </button>
         </header>
 
-        <section className="grid gap-5 lg:grid-cols-[380px_minmax(0,1fr)]">
-          <form className="kx-card space-y-4 p-5" onSubmit={(e) => { e.preventDefault(); create.mutate(); }}>
-            <div className="flex items-center gap-2">
-              {form.type === "school" ? <GraduationCap className="h-5 w-5 text-kx-accent" /> : <Briefcase className="h-5 w-5 text-kx-accent" />}
-              <h2 className="text-lg font-black text-kx-text">添加申请</h2>
-            </div>
-            <div className="grid grid-cols-2 gap-2">
-              {([
-                { key: "school", track: "", label: "学校出愿" },
-                { key: "company", track: "shinsotsu", label: "新卒就活" },
-                { key: "company", track: "tenshoku", label: "社会人转职" },
-                { key: "jlpt", track: "", label: "JLPT 考试" },
-              ] as const).map((opt) => {
-                const active = form.type === opt.key && (form.careerTrack || "") === opt.track;
-                return (
-                  <button key={opt.label} type="button" onClick={() => setForm((f) => ({ ...f, type: opt.key, careerTrack: opt.track }))}
-                    className={(active ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : "border-kx-stroke/60 bg-kx-card text-kx-subtle") + " rounded-2xl border px-3 py-2 text-sm font-black"}>
-                    {opt.label}
-                  </button>
-                );
-              })}
-            </div>
-            {form.type === "jlpt"
-              ? <Field label="考试 / 级别" value={form.name} onChange={(v) => setForm((f) => ({ ...f, name: v }))} placeholder="JLPT N2" />
-              : <LibraryPickerField type={form.type} value={form.name} onChange={(v) => setForm((f) => ({ ...f, name: v }))} />}
-            {form.type !== "jlpt" ? (
-              <Field label={form.type === "school" ? "研究科 / 专攻" : "岗位 / 职种"} value={form.type === "school" ? form.department : form.position} onChange={(v) => setForm((f) => ({ ...f, [form.type === "school" ? "department" : "position"]: v }))} />
-            ) : null}
-            <Field label={form.type === "school" ? "出愿截止" : form.type === "jlpt" ? "考试日期" : "ES 截止"} value={form.deadline} onChange={(v) => setForm((f) => ({ ...f, deadline: v }))} placeholder="2026-09-10" />
-            <p className="-mt-1 text-xs leading-5 text-kx-muted">填写{form.type === "jlpt" ? "考试日期" : "截止日期"}后，Machi 会自动生成 T-90 → T-0 的倒排准备计划（套磁 / ES / 模考…）和提醒。</p>
-            {form.type !== "jlpt" ? (
-              <>
-                <Field label="面试时间" value={form.interviewAt} onChange={(v) => setForm((f) => ({ ...f, interviewAt: v }))} placeholder="2026-10-05 14:00" />
-                <Field label="结果发表 / Offer 日期" value={form.resultAt} onChange={(v) => setForm((f) => ({ ...f, resultAt: v }))} placeholder="2026-11-01" />
-              </>
-            ) : null}
-            <button type="submit" disabled={create.isPending || !form.name.trim() || !form.deadline.trim()} className="kx-button-primary h-11 w-full disabled:opacity-60">
-              <Plus className="h-4 w-4" /> 生成 Todo
-            </button>
-          </form>
+        {showCreate ? <ApplicationCreateForm form={form} setForm={setForm} onSubmit={() => create.mutate()} saving={create.isPending} /> : null}
 
-          <div className="space-y-7">
-            {applications.data?.items.length ? (
-              <section>
-                <h2 className="mb-3 text-xl font-black text-kx-text">我的申请</h2>
-                <div className="space-y-3">
-                  {applications.data.items.map((app) => (
-                    <ApplicationCard key={app.id} app={app} onDelete={() => remove.mutate(app.id)} deleting={remove.isPending && remove.variables === app.id} />
-                  ))}
-                </div>
-              </section>
-            ) : null}
-
-            <section>
-              <h2 className="mb-3 text-xl font-black text-kx-text">申请待办</h2>
-              {todos.isLoading ? <InlineLoading /> : todos.data?.items.length ? (
-                <div className="space-y-3">
-                  {todos.data.items.map((todo) => <GuideTodoCard key={todo.id} todo={todo} />)}
-                </div>
-              ) : (
-                <EmptyPanel title="还没有申请待办" body="添加大学出愿、公司 ES 或面试时间后，Machi 会自动生成倒排 Todo 和提醒。" />
-              )}
-            </section>
+        <section className="space-y-3">
+          <div className="flex flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+            <div className="inline-flex w-fit rounded-2xl border border-kx-stroke/60 bg-kx-card p-1">
+              <ViewButton active={view === "board"} onClick={() => setView("board")} icon={<Columns3 className="h-4 w-4" />} label="看板" />
+              <ViewButton active={view === "list"} onClick={() => setView("list")} icon={<List className="h-4 w-4" />} label="列表" />
+              <ViewButton active={view === "timeline"} onClick={() => setView("timeline")} icon={<History className="h-4 w-4" />} label="时间线" />
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <FilterSelect label="全部阶段" value={stageFilter} onChange={setStageFilter} options={STAGES} />
+              <FilterSelect label="全部类型" value={typeFilter} onChange={setTypeFilter} options={[
+                ["school", "学校"],
+                ["company", "公司"],
+                ["internship", "实习"],
+                ["scholarship", "奖学金"],
+                ["visa", "签证"],
+                ["jlpt", "考试"],
+              ]} />
+              <FilterSelect label="全部优先级" value={priorityFilter} onChange={setPriorityFilter} options={[["high", "高"], ["normal", "普通"], ["low", "低"]]} />
+              <label className="flex min-h-11 min-w-0 items-center gap-2 rounded-2xl border border-kx-stroke/60 bg-kx-card px-3">
+                <Search className="h-4 w-4 text-kx-muted" />
+                <span className="sr-only">搜索申请</span>
+                <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="公司、学校、岗位、标签" className="w-52 bg-transparent text-sm font-semibold outline-none placeholder:text-kx-muted" />
+              </label>
+            </div>
           </div>
+
+          {applications.isLoading ? <InlineLoading /> : applications.isError ? (
+            <ErrorState title="申请加载失败" subtitle="请检查网络后重试。" onRetry={() => applications.refetch()} />
+          ) : !items.length ? (
+            <EmptyPanel title="还没有申请" body="点击“新建申请”，截止日、面试和结果日期会自动进入 Todo 与日历。" />
+          ) : view === "board" ? (
+            <ApplicationBoard items={items} onStage={(id, stage) => update.mutate({ id, patch: { stage, stageNote: "从申请看板更新" } })} onDelete={(item) => confirmDelete(item, remove.mutate)} />
+          ) : view === "timeline" ? (
+            <ApplicationTimeline items={items} />
+          ) : (
+            <ApplicationList items={items} onStage={(id, stage) => update.mutate({ id, patch: { stage, stageNote: "从申请列表更新" } })} onFavorite={(item) => update.mutate({ id: item.id, patch: { favorite: !item.favorite } })} onDelete={(item) => confirmDelete(item, remove.mutate)} />
+          )}
         </section>
-      </div>
+      </main>
     </GuideShell>
   );
 }
 
-// Name field that supports BOTH free typing and picking from the school /
-// company library — type ≥2 chars and matches from the库 appear as suggestions;
-// "库里没有？直接输入名称即可" keeps manual entry first-class.
-function LibraryPickerField({ type, value, onChange }: { type: string; value: string; onChange: (v: string) => void }) {
-  const [open, setOpen] = useState(false);
-  const scope = type === "school" ? "schools" : "companies";
-  const q = useQuery({
-    queryKey: ["guide", "app-library", scope, value.trim()],
-    queryFn: () => guide.search(value.trim(), "jp", "zh-CN", scope),
-    enabled: open && value.trim().length >= 2,
-  });
-  const results = (type === "school" ? q.data?.groups.schools : q.data?.groups.companies) || [];
-  const label = type === "school" ? "学校 / 研究科名称" : "公司名称";
+function ApplicationCreateForm({ form, setForm, onSubmit, saving }: { form: typeof emptyForm; setForm: React.Dispatch<React.SetStateAction<typeof emptyForm>>; onSubmit: () => void; saving: boolean }) {
+  const isSchool = ["school", "vocational", "language_school"].includes(form.type);
+  const isExam = form.type === "jlpt";
   return (
-    <label className="relative block">
-      <span className="text-sm font-black text-kx-text">{label}</span>
-      <input
-        value={value}
-        onChange={(e) => { onChange(e.target.value); setOpen(true); }}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setTimeout(() => setOpen(false), 150)}
-        placeholder={type === "school" ? "输入或从学校库选择，如 东京大学大学院" : "输入或从公司库选择，如 Mercari"}
-        className="mt-2 h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent"
-      />
-      {open && value.trim().length >= 2 && results.length > 0 ? (
-        <div className="absolute z-20 mt-1 max-h-60 w-full overflow-auto rounded-2xl border border-kx-stroke/60 bg-kx-card shadow-lg">
-          {results.slice(0, 6).map((r) => {
-            const nm = type === "school" ? (r as GuideSchool).schoolName : (r as GuideCompany).companyName;
-            const sub = type === "school" ? (r as GuideSchool).prefecture : (r as GuideCompany).industry;
-            return (
-              <button
-                key={(r as GuideSchool | GuideCompany).id}
-                type="button"
-                onMouseDown={(e) => { e.preventDefault(); onChange(nm); setOpen(false); }}
-                className="block w-full px-3 py-2 text-left text-sm font-semibold text-kx-text hover:bg-kx-accentSoft"
-              >
-                {nm}{sub ? <span className="ml-2 text-xs font-medium text-kx-subtle">{sub}</span> : null}
-              </button>
-            );
-          })}
-          <div className="px-3 py-1.5 text-[11px] text-kx-subtle">库里没有？直接输入名称即可</div>
-        </div>
-      ) : null}
-    </label>
+    <form className="rounded-3xl border border-kx-stroke/50 bg-kx-card/80 p-5 shadow-sm" onSubmit={(event) => { event.preventDefault(); onSubmit(); }}>
+      <div className="grid gap-4 lg:grid-cols-3">
+        <label className="block">
+          <FieldLabel>申请类型</FieldLabel>
+          <select value={`${form.type}:${form.careerTrack}`} onChange={(event) => {
+            const [type, careerTrack = ""] = event.target.value.split(":");
+            setForm((f) => ({ ...f, type, careerTrack }));
+          }} className="mt-2 min-h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent">
+            {TYPES.map(([type, track, label]) => <option key={`${type}:${track}`} value={`${type}:${track}`}>{label}</option>)}
+          </select>
+        </label>
+        <div className="lg:col-span-2"><LibraryPickerField type={isSchool ? "school" : "company"} value={form.name} onChange={(value) => setForm((f) => ({ ...f, name: value }))} disabled={isExam || ["visa", "scholarship", "other"].includes(form.type)} /></div>
+        <TextField label={isSchool ? "学部 / 研究科 / 专攻" : "职位 / 项目"} value={isSchool ? form.department : form.position} onChange={(value) => setForm((f) => ({ ...f, [isSchool ? "department" : "position"]: value }))} />
+        <TextField label="截止日期" type="date" value={form.deadline} onChange={(value) => setForm((f) => ({ ...f, deadline: value }))} />
+        <TextField label="面试时间" type="datetime-local" value={form.interviewAt} onChange={(value) => setForm((f) => ({ ...f, interviewAt: value }))} />
+        <TextField label="结果 / Offer 日期" type="date" value={form.resultAt} onChange={(value) => setForm((f) => ({ ...f, resultAt: value }))} />
+        <TextField label="官网链接" value={form.websiteUrl} onChange={(value) => setForm((f) => ({ ...f, websiteUrl: value }))} />
+        <TextField label="面试地点" value={form.interviewLocation} onChange={(value) => setForm((f) => ({ ...f, interviewLocation: value }))} />
+        <TextField label="Zoom / Meet 链接" value={form.meetingUrl} onChange={(value) => setForm((f) => ({ ...f, meetingUrl: value }))} />
+        <TextField label="联系人" value={form.contactName} onChange={(value) => setForm((f) => ({ ...f, contactName: value }))} />
+        <TextField label="联系邮箱" value={form.contactEmail} onChange={(value) => setForm((f) => ({ ...f, contactEmail: value }))} />
+        <TextField label="标签（逗号分隔）" value={form.tags} onChange={(value) => setForm((f) => ({ ...f, tags: value }))} />
+        <label className="block"><FieldLabel>当前阶段</FieldLabel><select value={form.stage} onChange={(event) => setForm((f) => ({ ...f, stage: event.target.value }))} className="mt-2 min-h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold">{STAGES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select></label>
+        <label className="block"><FieldLabel>优先级</FieldLabel><select value={form.priority} onChange={(event) => setForm((f) => ({ ...f, priority: event.target.value }))} className="mt-2 min-h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold"><option value="high">高</option><option value="normal">普通</option><option value="low">低</option></select></label>
+        <label className="flex min-h-11 items-center justify-between self-end rounded-2xl border border-kx-stroke/60 bg-kx-card px-3"><span className="text-sm font-black text-kx-text">收藏 / 重点关注</span><input type="checkbox" checked={form.favorite} onChange={(event) => setForm((f) => ({ ...f, favorite: event.target.checked }))} className="h-5 w-5 accent-kx-accent" /></label>
+        <label className="block lg:col-span-3"><FieldLabel>备注</FieldLabel><textarea rows={3} value={form.notes} onChange={(event) => setForm((f) => ({ ...f, notes: event.target.value }))} className="mt-2 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 py-2 text-sm font-semibold outline-none focus:border-kx-accent" /></label>
+      </div>
+      <div className="mt-4 flex justify-end">
+        <button type="submit" disabled={!form.name.trim() || saving} className="kx-button-primary min-h-11 px-5 disabled:opacity-50"><Plus className="h-4 w-4" /> {saving ? "保存中" : "保存并生成计划"}</button>
+      </div>
+    </form>
   );
 }
 
-// A saved application with its key dates and a delete affordance. Deleting
-// removes the application AND its generated reverse-countdown todos + reminders.
-function ApplicationCard({ app, onDelete, deleting }: { app: GuideApplication; onDelete: () => void; deleting: boolean }) {
-  const isSchool = app.type === "school";
-  const chips: { label: string; value: string }[] = [];
-  if (app.deadline) chips.push({ label: isSchool ? "出愿截止" : "ES 截止", value: app.deadline });
-  if (app.interviewAt) chips.push({ label: "面试", value: app.interviewAt });
-  if (app.resultAt) chips.push({ label: "结果", value: app.resultAt });
+function ApplicationBoard({ items, onStage, onDelete }: { items: GuideApplication[]; onStage: (id: string, stage: string) => void; onDelete: (item: GuideApplication) => void }) {
+  const visibleStages = STAGES.filter(([key]) => items.some((item) => item.stage === key) || ["saved", "preparing", "submitted", "interview_1", "offer"].includes(key));
   return (
-    <div className="kx-card flex items-start gap-3 p-4">
-      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">
-        {isSchool ? <GraduationCap className="h-5 w-5" /> : <Briefcase className="h-5 w-5" />}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <p className="truncate text-sm font-black text-kx-text">{app.name}</p>
-          <span className="shrink-0 rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">{isSchool ? "升学" : "就职/转职"}</span>
-        </div>
-        {(app.department || app.position) ? <p className="mt-0.5 truncate text-xs text-kx-muted">{app.department || app.position}</p> : null}
-        {chips.length ? (
-          <div className="mt-2 flex flex-wrap gap-1.5">
-            {chips.map((c) => (
-              <span key={c.label} className="inline-flex items-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-2 py-0.5 text-[11px] font-semibold text-kx-subtle">
-                <CalendarClock className="h-3 w-3" /> {c.label} · {c.value}
-              </span>
-            ))}
-          </div>
-        ) : null}
+    <div className="overflow-x-auto pb-2">
+      <div className="flex min-w-max gap-3">
+        {visibleStages.map(([stage, label]) => {
+          const stageItems = items.filter((item) => item.stage === stage);
+          return (
+            <section key={stage} className="w-[285px] shrink-0 rounded-2xl bg-kx-soft/55 p-3">
+              <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-black text-kx-text">{label}</h2><span className="rounded-full bg-kx-card px-2 py-0.5 text-xs font-bold text-kx-muted">{stageItems.length}</span></div>
+              <div className="space-y-2">
+                {stageItems.map((item) => <ApplicationCard key={item.id} item={item} compact onStage={onStage} onDelete={onDelete} />)}
+                {!stageItems.length ? <p className="rounded-xl border border-dashed border-kx-stroke/60 px-3 py-5 text-center text-xs text-kx-muted">暂无申请</p> : null}
+              </div>
+            </section>
+          );
+        })}
       </div>
-      <button
-        type="button"
-        onClick={onDelete}
-        disabled={deleting}
-        aria-label="删除申请"
-        className="shrink-0 rounded-xl p-2 text-kx-muted transition hover:bg-rose-500/10 hover:text-rose-500 disabled:opacity-50"
-      >
-        <Trash2 className="h-4 w-4" />
-      </button>
     </div>
   );
 }
 
-function Field({ label, value, onChange, placeholder }: { label: string; value: string; onChange: (v: string) => void; placeholder?: string }) {
+function ApplicationList({ items, onStage, onFavorite, onDelete }: { items: GuideApplication[]; onStage: (id: string, stage: string) => void; onFavorite: (item: GuideApplication) => void; onDelete: (item: GuideApplication) => void }) {
+  return <div className="space-y-3">{items.map((item) => <ApplicationCard key={item.id} item={item} onStage={onStage} onFavorite={onFavorite} onDelete={onDelete} />)}</div>;
+}
+
+function ApplicationTimeline({ items }: { items: GuideApplication[] }) {
+  const entries = useMemo(() => items.flatMap((item) => [
+    item.deadline ? { date: item.deadline, label: "截止", item } : null,
+    item.interviewAt ? { date: item.interviewAt, label: "面试", item } : null,
+    item.resultAt ? { date: item.resultAt, label: "结果", item } : null,
+  ].filter(Boolean) as { date: string; label: string; item: GuideApplication }[]).sort((a, b) => a.date.localeCompare(b.date)), [items]);
+  return entries.length ? <div className="space-y-3">{entries.map((entry, index) => (
+    <Link key={`${entry.item.id}-${entry.label}-${index}`} href={`/guide/applications/${entry.item.id}`} className="kx-card flex min-h-16 items-center gap-3 p-4 transition hover:border-kx-accent/35">
+      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent"><CalendarClock className="h-5 w-5" /></span>
+      <span className="min-w-0 flex-1"><span className="block text-xs font-bold text-kx-muted">{entry.date} · {entry.label}</span><span className="mt-0.5 block truncate text-sm font-black text-kx-text">{entry.item.name}</span></span>
+      <span className="rounded-full bg-kx-soft px-2 py-1 text-[11px] font-bold text-kx-muted">{stageLabel(entry.item.stage)}</span>
+    </Link>
+  ))}</div> : <EmptyPanel title="还没有时间线事项" body="为申请填写截止、面试或结果日期后会出现在这里。" />;
+}
+
+function ApplicationCard({ item, compact = false, onStage, onFavorite, onDelete }: { item: GuideApplication; compact?: boolean; onStage: (id: string, stage: string) => void; onFavorite?: (item: GuideApplication) => void; onDelete: (item: GuideApplication) => void }) {
   return (
-    <label className="block">
-      <span className="text-sm font-black text-kx-text">{label}</span>
-      <input value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} className="mt-2 h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent" />
+    <article className="kx-card p-4">
+      <div className="flex items-start gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-kx-accentSoft text-kx-accent">{item.type === "school" ? <GraduationCap className="h-5 w-5" /> : <BriefcaseBusiness className="h-5 w-5" />}</span>
+        <div className="min-w-0 flex-1">
+          <Link href={`/guide/applications/${item.id}`} className="block text-sm font-black text-kx-text hover:text-kx-accent">{item.name}</Link>
+          <p className="mt-0.5 truncate text-xs text-kx-muted">{item.department || item.position || typeLabel(item)}</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {item.deadline ? <Badge>{item.deadline.slice(0, 10)} 截止</Badge> : null}
+            {item.interviewAt ? <Badge>{item.interviewAt.slice(0, 16).replace("T", " ")} 面试</Badge> : null}
+            {item.priority === "high" ? <Badge warn>高优先级</Badge> : null}
+          </div>
+          <select value={item.stage} onChange={(event) => onStage(item.id, event.target.value)} aria-label={`更新 ${item.name} 的阶段`} className="mt-3 min-h-11 w-full rounded-xl border border-kx-stroke/60 bg-kx-card px-2 text-xs font-bold text-kx-subtle">{STAGES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select>
+          {!compact && item.stages.length ? <p className="mt-2 text-[11px] text-kx-muted">阶段记录 {item.stages.length} 条 · 最近更新 {item.updatedAt?.slice(0, 10)}</p> : null}
+        </div>
+        <div className="flex flex-col">
+          {onFavorite ? <button type="button" aria-label={item.favorite ? "取消收藏" : "收藏申请"} onClick={() => onFavorite(item)} className={`grid h-11 w-11 place-items-center rounded-xl ${item.favorite ? "text-amber-500" : "text-kx-muted hover:text-amber-500"}`}><Star className="h-4 w-4" fill={item.favorite ? "currentColor" : "none"} /></button> : null}
+          <button type="button" aria-label="删除申请" onClick={() => onDelete(item)} className="grid h-11 w-11 place-items-center rounded-xl text-kx-muted hover:bg-rose-500/10 hover:text-rose-500"><Trash2 className="h-4 w-4" /></button>
+        </div>
+      </div>
+    </article>
+  );
+}
+
+function LibraryPickerField({ type, value, onChange, disabled }: { type: "school" | "company"; value: string; onChange: (value: string) => void; disabled: boolean }) {
+  const [open, setOpen] = useState(false);
+  const scope = type === "school" ? "schools" : "companies";
+  const q = useQuery({ queryKey: ["guide", "app-library", scope, value.trim()], queryFn: () => guide.search(value.trim(), "jp", "zh-CN", scope), enabled: !disabled && open && value.trim().length >= 2 });
+  const results = (type === "school" ? q.data?.groups.schools : q.data?.groups.companies) || [];
+  return (
+    <label className="relative block">
+      <FieldLabel>{disabled ? "申请名称" : type === "school" ? "学校 / 研究科名称" : "公司名称"}</FieldLabel>
+      <input value={value} onChange={(event) => { onChange(event.target.value); setOpen(true); }} onFocus={() => setOpen(true)} onBlur={() => setTimeout(() => setOpen(false), 150)} placeholder="直接输入，或从资料库选择" className="mt-2 min-h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent" />
+      {open && results.length ? <div className="absolute z-30 mt-1 max-h-60 w-full overflow-auto rounded-2xl border border-kx-stroke/60 bg-kx-card shadow-lg">{results.slice(0, 6).map((result) => {
+        const name = type === "school" ? (result as GuideSchool).schoolName : (result as GuideCompany).companyName;
+        return <button key={result.id} type="button" onMouseDown={(event) => { event.preventDefault(); onChange(name); setOpen(false); }} className="block min-h-11 w-full px-3 py-2 text-left text-sm font-semibold hover:bg-kx-accentSoft">{name}</button>;
+      })}</div> : null}
     </label>
   );
+}
+
+function TextField({ label, value, onChange, type = "text" }: { label: string; value: string; onChange: (value: string) => void; type?: string }) {
+  return <label className="block"><FieldLabel>{label}</FieldLabel><input type={type} value={value} onChange={(event) => onChange(event.target.value)} className="mt-2 min-h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent" /></label>;
+}
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return <span className="text-sm font-black text-kx-text">{children}</span>;
+}
+
+function ViewButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
+  return <button type="button" onClick={onClick} className={`inline-flex min-h-11 items-center gap-1.5 rounded-xl px-4 text-sm font-black ${active ? "bg-kx-accent text-white" : "text-kx-muted hover:bg-kx-soft"}`}>{icon}{label}</button>;
+}
+
+function FilterSelect({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: readonly (readonly [string, string])[] }) {
+  return <select value={value} aria-label={label} onChange={(event) => onChange(event.target.value)} className="min-h-11 rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-bold text-kx-subtle"><option value="">{label}</option>{options.map(([key, title]) => <option key={key} value={key}>{title}</option>)}</select>;
+}
+
+function Badge({ children, warn = false }: { children: React.ReactNode; warn?: boolean }) {
+  return <span className={`rounded-full px-2 py-1 text-[11px] font-bold ${warn ? "bg-amber-400/15 text-amber-700 dark:text-amber-300" : "bg-kx-soft text-kx-muted"}`}>{children}</span>;
+}
+
+function stageLabel(stage: string) {
+  return STAGES.find(([key]) => key === stage)?.[1] || stage;
+}
+
+function typeLabel(item: GuideApplication) {
+  return TYPES.find(([type, track]) => type === item.type && (!track || track === item.careerTrack))?.[2] || "申请";
+}
+
+function confirmDelete(item: GuideApplication, remove: (id: string) => void) {
+  if (window.confirm(`确定删除“${item.name}”以及关联的 Todo、日历提醒和阶段记录吗？此操作无法撤销。`)) remove(item.id);
 }

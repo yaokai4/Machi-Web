@@ -38,8 +38,8 @@ export default function GuideJourneysPage() {
     <GuideShell back={{ href: "/guide", label: copy.back }}>
       <div className="px-4 py-7 sm:px-7">
         <GuideSectionTitle
-          title="你现在想解决什么？"
-          subtitle="选一个目标，Machi 把手续、资料、经验、学校和服务整理成可执行步骤"
+          title="路径目标"
+          subtitle="目标不是阅读列表，而是生成 Todo、截止日期、日历提醒和需要的资料。"
         />
         {q.isLoading ? (
           <InlineLoading />

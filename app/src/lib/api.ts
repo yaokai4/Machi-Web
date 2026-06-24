@@ -278,6 +278,7 @@ export type UploadPurpose =
   | "guide_product_preview"
   | "guide_product_file"
   | "member_resource_file"
+  | "guide_attachment"
   | "business_logo"
   | "business_cover"
   | "business_verification_file"
@@ -299,6 +300,8 @@ export type UploadedFile = {
   thumbnailUrl: string;
   contentType: string;
   fileSize: number;
+  fileName?: string;
+  originalFileName?: string;
   fileType: "image" | "pdf" | "video" | "document" | "other" | string;
   purpose: UploadPurpose | string;
   entityType: string;

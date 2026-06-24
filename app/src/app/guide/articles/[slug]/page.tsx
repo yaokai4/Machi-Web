@@ -2,14 +2,15 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
-import { Clock3, ExternalLink, Eye, ShieldCheck } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Bookmark, CheckCircle2, Clock3, ExternalLink, Eye, Loader2, Share2, ShieldCheck } from "lucide-react";
 import { guide, type GuideArticle } from "@/lib/guide";
 import { GuideShell, GuideComingSoon, ArticleCard, categoryHref, useGuideCountry } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { relativeTime } from "@/lib/format";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 import { guideUi } from "@/lib/guide-ui";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 
 export default function GuideArticlePage() {
   const params = useParams();
@@ -18,11 +19,34 @@ export default function GuideArticlePage() {
   const { locale } = useI18n();
   const language = appLocaleToGuideLanguage(locale);
   const copy = guideUi(locale);
+  const user = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
+  const pushToast = useToasts((s) => s.push);
+  const queryClient = useQueryClient();
   const q = useQuery({
     queryKey: ["guide", "article", country, language, slug],
     queryFn: () => guide.article(slug, country, language),
     enabled: country === "jp" && slug.length > 0,
     staleTime: 60_000,
+  });
+  const articleQueryKey = ["guide", "article", country, language, slug];
+  const saveMutation = useMutation({
+    mutationFn: ({ article, saved }: { article: GuideArticle; saved: boolean }) =>
+      guide.setSaved("article", article.id, saved),
+    onSuccess: (_, vars) => {
+      queryClient.invalidateQueries({ queryKey: articleQueryKey });
+      queryClient.invalidateQueries({ queryKey: ["guide", "saved"] });
+      pushToast({ kind: "success", message: vars.saved ? "已收藏到资料库" : "已取消收藏" });
+    },
+    onError: (error) => pushToast({ kind: "error", message: error instanceof Error ? error.message : "操作失败，请重试" }),
+  });
+  const progressMutation = useMutation({
+    mutationFn: (article: GuideArticle) => guide.updateArticleProgress(article.slug, { country, progressPercent: 100 }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: articleQueryKey });
+      pushToast({ kind: "success", message: "已标记读完" });
+    },
+    onError: (error) => pushToast({ kind: "error", message: error instanceof Error ? error.message : "保存阅读进度失败" }),
   });
 
   if (country !== "jp") {
@@ -84,6 +108,31 @@ export default function GuideArticlePage() {
             ))}
           </div>
         ) : null}
+        <ArticleActionBar
+          article={a}
+          locale={locale}
+          isSignedIn={Boolean(user)}
+          onNeedLogin={() => openAuthPrompt("bookmark")}
+          onSave={() => saveMutation.mutate({ article: a, saved: !a.saved })}
+          onMarkRead={() => progressMutation.mutate(a)}
+          onShare={async () => {
+            try {
+              const url = typeof window !== "undefined" ? window.location.href : "";
+              const nav = typeof window !== "undefined" ? window.navigator : undefined;
+              const share = (nav as (Navigator & { share?: (data: ShareData) => Promise<void> }) | undefined)?.share;
+              if (share) {
+                await share.call(nav, { title: a.title, text: a.summary, url });
+              } else if (nav?.clipboard && url) {
+                await nav.clipboard.writeText(url);
+                pushToast({ kind: "success", message: "链接已复制" });
+              }
+            } catch {
+              // Native share can be cancelled by the user; no toast needed.
+            }
+          }}
+          saving={saveMutation.isPending}
+          marking={progressMutation.isPending}
+        />
         <ArticleTrustPanel article={a} locale={locale} />
 
         <div className="mt-5 space-y-4 border-t border-kx-stroke/40 pt-5">
@@ -110,6 +159,74 @@ export default function GuideArticlePage() {
         ) : null}
       </article>
     </GuideShell>
+  );
+}
+
+function ArticleActionBar({
+  article,
+  locale,
+  isSignedIn,
+  saving,
+  marking,
+  onNeedLogin,
+  onSave,
+  onShare,
+  onMarkRead,
+}: {
+  article: GuideArticle;
+  locale: string;
+  isSignedIn: boolean;
+  saving: boolean;
+  marking: boolean;
+  onNeedLogin: () => void;
+  onSave: () => void;
+  onShare: () => void;
+  onMarkRead: () => void;
+}) {
+  const progress = Math.max(0, Math.min(100, article.progressPercent || article.readingProgress?.progressPercent || 0));
+  const saveLabel = article.saved
+    ? locale === "en" ? "Saved" : locale === "ja" ? "保存済み" : "已收藏"
+    : locale === "en" ? "Save" : locale === "ja" ? "保存" : "收藏";
+  const readLabel = progress >= 95
+    ? locale === "en" ? "Finished" : locale === "ja" ? "読了" : "已读完"
+    : locale === "en" ? "Mark as read" : locale === "ja" ? "読了にする" : "标记读完";
+  return (
+    <div className="mt-4 rounded-kx-lg border border-kx-stroke/50 bg-white/70 p-3 shadow-sm backdrop-blur">
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          type="button"
+          onClick={() => (isSignedIn ? onSave() : onNeedLogin())}
+          disabled={saving}
+          className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-kx-stroke bg-white px-4 text-sm font-black text-kx-text transition hover:-translate-y-0.5 hover:border-kx-accent/40 disabled:opacity-60"
+        >
+          {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Bookmark className={`h-4 w-4 ${article.saved ? "fill-kx-accent text-kx-accent" : ""}`} />}
+          {saveLabel}
+        </button>
+        <button
+          type="button"
+          onClick={onShare}
+          className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-kx-stroke bg-white px-4 text-sm font-black text-kx-text transition hover:-translate-y-0.5 hover:border-kx-accent/40"
+        >
+          <Share2 className="h-4 w-4" />
+          {locale === "en" ? "Share" : locale === "ja" ? "共有" : "分享"}
+        </button>
+        <button
+          type="button"
+          onClick={() => (isSignedIn ? onMarkRead() : onNeedLogin())}
+          disabled={marking || progress >= 95}
+          className="inline-flex min-h-11 items-center gap-2 rounded-2xl bg-kx-accent px-4 text-sm font-black text-white transition hover:-translate-y-0.5 disabled:opacity-70"
+        >
+          {marking ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
+          {readLabel}
+        </button>
+      </div>
+      <div className="mt-3 flex items-center gap-3 text-xs font-bold text-kx-muted">
+        <div className="h-2 flex-1 overflow-hidden rounded-full bg-kx-soft">
+          <div className="h-full rounded-full bg-kx-accent transition-all" style={{ width: `${progress}%` }} />
+        </div>
+        <span>{progress}%</span>
+      </div>
+    </div>
   );
 }
 

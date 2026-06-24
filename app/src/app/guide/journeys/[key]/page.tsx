@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import type { ReactNode } from "react";
 import { useParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { CalendarPlus, CheckCircle2, Circle, Clock3, FileText, Package, ShieldCheck, Signpost } from "lucide-react";
@@ -9,7 +10,6 @@ import { GuideShell, GuideComingSoon, journeyIconFor, useGuideCountry } from "@/
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
-import { guideUi } from "@/lib/guide-ui";
 
 export default function GuideJourneyDetailPage() {
   const params = useParams();
@@ -17,7 +17,6 @@ export default function GuideJourneyDetailPage() {
   const country = useGuideCountry();
   const { locale } = useI18n();
   const language = appLocaleToGuideLanguage(locale);
-  const copy = guideUi(locale);
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
@@ -38,6 +37,24 @@ export default function GuideJourneyDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["guide", "progress"] });
     },
     onError: () => pushToast({ kind: "error", message: "进度未能保存，请稍后再试。" }),
+  });
+  const scheduleStep = useMutation({
+    mutationFn: (vars: { stepKey: string; date: string }) =>
+      guide.updateProgress({
+        journeyKey: key,
+        stepKey: vars.stepKey,
+        status: q.data?.progress?.[vars.stepKey]?.status || "in_progress",
+        plannedDate: vars.date,
+        dueAt: vars.date,
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["guide", "journey", country, language, key] });
+      queryClient.invalidateQueries({ queryKey: ["guide", "active-plan"] });
+      queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
+      queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
+      pushToast({ kind: "success", message: "已安排到 Guide 日历。" });
+    },
+    onError: () => pushToast({ kind: "error", message: "安排失败，请稍后再试。" }),
   });
   const startPlan = useMutation({
     mutationFn: () => guide.startPlan({ journeyKey: key, planType: data?.journey.audience || "guide" }),
@@ -64,17 +81,24 @@ export default function GuideJourneyDetailPage() {
     const isDone = progress[step.stepKey]?.status === "done";
     toggle.mutate({ stepKey: step.stepKey, done: !isDone });
   };
+  const onSchedule = (step: GuideJourneyStep, date: string) => {
+    if (!user) {
+      openAuthPrompt("generic");
+      return;
+    }
+    scheduleStep.mutate({ stepKey: step.stepKey, date });
+  };
 
   if (country !== "jp") {
     return (
-      <GuideShell back={{ href: "/guide/journeys", label: copy.back }}>
+      <GuideShell back={{ href: "/guide/goals", label: "路径" }}>
         <GuideComingSoon />
       </GuideShell>
     );
   }
 
   return (
-    <GuideShell back={{ href: "/guide/journeys", label: copy.back }}>
+    <GuideShell back={{ href: "/guide/goals", label: "路径" }}>
       <div className="px-4 py-7 sm:px-7">
         {q.isLoading ? (
           <InlineLoading />
@@ -113,8 +137,10 @@ export default function GuideJourneyDetailPage() {
                   step={step}
                   index={index + 1}
                   isDone={progress[step.stepKey]?.status === "done"}
-                  pending={toggle.isPending}
+                  scheduledDate={progress[step.stepKey]?.plannedDate || progress[step.stepKey]?.dueAt}
+                  pending={toggle.isPending || scheduleStep.isPending}
                   onToggle={() => onToggle(step)}
+                  onSchedule={(date) => onSchedule(step, date)}
                 />
               ))}
             </div>
@@ -201,18 +227,28 @@ function compactDate(value?: string | null) {
   return value ? String(value).slice(0, 10) : "";
 }
 
+function isoShift(days: number): string {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+
 function StepRow({
   step,
   index,
   isDone,
+  scheduledDate,
   pending,
   onToggle,
+  onSchedule,
 }: {
   step: GuideJourneyStep;
   index: number;
   isDone: boolean;
+  scheduledDate?: string | null;
   pending: boolean;
   onToggle: () => void;
+  onSchedule: (date: string) => void;
 }) {
   return (
     <section className="kx-card">
@@ -230,9 +266,8 @@ function StepRow({
           <div className="flex flex-wrap items-center gap-1.5">
             <span className="text-[11px] font-black text-kx-accent">第 {index} 步</span>
             {!step.required ? <Tag text="可选" /> : null}
-            {step.estimatedMinutes > 0 ? (
-              <Tag text={`约 ${step.estimatedMinutes} 分钟`} icon={<Clock3 className="h-3 w-3" />} />
-            ) : null}
+            {step.estimatedMinutes > 0 ? <Tag text={`建议预留 ${Math.min(step.estimatedMinutes, 30)} 分`} icon={<Clock3 className="h-3 w-3" />} /> : null}
+            {scheduledDate ? <Tag text={`已安排 ${String(scheduledDate).slice(0, 10)}`} /> : null}
             {step.deadlineHint ? <Tag text={step.deadlineHint} tone="warn" /> : null}
           </div>
           <h3 className={"mt-1 text-[15px] font-black " + (isDone ? "text-kx-muted line-through" : "text-kx-text")}>
@@ -279,9 +314,30 @@ function StepRow({
             </div>
           ) : null}
 
+          {!isDone ? (
+            <div className="mt-3 flex flex-wrap items-center gap-1.5">
+              <span className="mr-1 text-[11px] font-bold text-kx-muted">安排到日历</span>
+              {[
+                ["今天", 0],
+                ["明天", 1],
+                ["+7 天", 7],
+              ].map(([label, days]) => (
+                <button
+                  key={String(label)}
+                  type="button"
+                  disabled={pending}
+                  onClick={() => onSchedule(isoShift(Number(days)))}
+                  className="rounded-full border border-kx-stroke/60 bg-kx-card px-2.5 py-1 text-[11px] font-black text-kx-subtle transition hover:border-kx-accent/40 hover:bg-kx-accentSoft hover:text-kx-accent disabled:opacity-50"
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+
           {step.actionType === "journey" && step.actionTarget ? (
             <Link
-              href={`/guide/journeys/${encodeURIComponent(step.actionTarget)}`}
+              href={`/guide/goals/${encodeURIComponent(step.actionTarget)}`}
               className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-kx-accent hover:underline"
             >
               <Signpost className="h-3.5 w-3.5" /> 查看该路径
@@ -293,7 +349,7 @@ function StepRow({
   );
 }
 
-function Tag({ text, icon, tone = "muted" }: { text: string; icon?: React.ReactNode; tone?: "muted" | "warn" }) {
+function Tag({ text, icon, tone = "muted" }: { text: string; icon?: ReactNode; tone?: "muted" | "warn" }) {
   const cls =
     tone === "warn"
       ? "bg-amber-400/15 text-amber-600 dark:text-amber-400"

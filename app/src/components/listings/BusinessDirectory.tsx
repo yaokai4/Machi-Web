@@ -200,6 +200,9 @@ export function BusinessPublicPage({ businessId }: { businessId: string }) {
   }
   const { business, listings, reviews } = profile.data;
   const ratingCount = Number(business.rating_count || 0);
+  const serviceCategories = business.service_categories || [];
+  const primaryType = business.business_type || serviceCategories[0] || "本地商家";
+  const publishedCount = Number(business.published_listing_count || 0);
   const hours = business.opening_hours || {};
   const hoursText = Object.entries(hours)
     .map(([day, value]) => `${day} ${value}`)
@@ -219,71 +222,80 @@ export function BusinessPublicPage({ businessId }: { businessId: string }) {
       </header>
       <main className="px-3 py-4 sm:px-4">
         <div className="mx-auto min-w-0 max-w-6xl space-y-4">
-          <section className="overflow-hidden rounded-[28px] border border-slate-200/70 bg-white shadow-[0_14px_42px_rgba(15,23,42,0.06)]">
-            <div className="relative h-36 bg-[radial-gradient(circle_at_18%_8%,rgba(16,185,129,0.2),transparent_42%),linear-gradient(135deg,#ecfdf5,#f0fdfa_55%,#eff6ff)] sm:h-44">
-              {business.cover_url ? <Image src={business.cover_url} alt={business.business_name} fill sizes="100vw" className="object-cover" unoptimized /> : null}
-            </div>
-            <div className="p-5">
-              <div className="-mt-14 flex flex-wrap items-end gap-4 sm:-mt-16">
-                <span className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-[24px] bg-white text-emerald-700 shadow-[0_16px_36px_-20px_rgba(15,23,42,0.6)] ring-4 ring-white sm:h-24 sm:w-24">
-                  {business.logo_url ? (
-                    <Image src={business.logo_url} alt={business.business_name} width={96} height={96} className="h-full w-full object-cover" unoptimized />
-                  ) : (
-                    <Store className="h-9 w-9" />
-                  )}
-                </span>
-                <div className="min-w-0 flex-1 pb-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 className="text-2xl font-black text-slate-950">{business.business_name}</h2>
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-black text-emerald-700 ring-1 ring-emerald-200">
-                      <BadgeCheck className="h-3.5 w-3.5" />
-                      已认证
-                    </span>
-                  </div>
-                  <div className="mt-1.5 flex flex-wrap items-center gap-3">
-                    {ratingCount > 0 ? (
-                      <RatingStars value={Number(business.rating_avg || 0)} count={ratingCount} size="md" />
+          <section className="rounded-[24px] border border-slate-200/70 bg-white p-4 shadow-[0_14px_42px_rgba(15,23,42,0.06)] sm:p-5">
+            <div className={business.cover_url ? "grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,340px)] lg:items-stretch" : "min-w-0"}>
+              <div className="min-w-0">
+                <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start">
+                  <span className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-[22px] bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100 sm:h-24 sm:w-24">
+                    {business.logo_url ? (
+                      <Image src={business.logo_url} alt={business.business_name} width={96} height={96} className="h-full w-full object-cover" unoptimized />
                     ) : (
-                      <span className="text-sm font-bold text-slate-400">暂无点评</span>
+                      <Store className="h-9 w-9" />
                     )}
-                    <span className="text-sm font-bold text-slate-500">{business.published_listing_count || 0} 个在线服务</span>
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="min-w-0 break-words text-2xl font-black leading-tight text-slate-950 sm:text-3xl">{business.business_name}</h2>
+                      <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-black text-emerald-700 ring-1 ring-emerald-200">
+                        <BadgeCheck className="h-3.5 w-3.5" />
+                        已认证
+                      </span>
+                    </div>
+                    <p className="mt-1 text-sm font-bold text-slate-500">{primaryType}</p>
+                    <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                      {ratingCount > 0 ? (
+                        <RatingStars value={Number(business.rating_avg || 0)} count={ratingCount} size="md" />
+                      ) : (
+                        <span className="text-sm font-bold text-slate-400">暂无点评</span>
+                      )}
+                      <span className="text-sm font-bold text-slate-500">{publishedCount} 个在线服务</span>
+                    </div>
                   </div>
                 </div>
-              </div>
-              {business.description ? <p className="mt-4 max-w-3xl whitespace-pre-line text-sm leading-7 text-slate-600">{business.description}</p> : null}
-              <div className="mt-4 flex flex-wrap gap-1.5">
-                {(business.service_categories || []).map((item) => (
-                  <span key={item} className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-black text-emerald-700 ring-1 ring-emerald-100">{item}</span>
-                ))}
-              </div>
-              <dl className="mt-4 grid gap-2 sm:grid-cols-2">
-                {business.address ? <InfoRow icon={MapPin} label="地址" value={business.address} /> : null}
-                {hoursText ? <InfoRow icon={Clock} label="营业时间" value={hoursText} /> : null}
-                {business.contact_method ? <InfoRow icon={Phone} label="联系方式" value={business.contact_method} /> : null}
-                {business.website ? (
-                  <a href={business.website} target="_blank" rel="noopener noreferrer" className="flex items-start gap-2.5 rounded-2xl bg-slate-50 p-3 transition hover:bg-blue-50/70">
-                    <Globe className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
-                    <span className="min-w-0">
-                      <span className="block text-xs font-bold text-slate-400">官网 / 社媒</span>
-                      <span className="mt-0.5 flex items-center gap-1 truncate text-sm font-black text-blue-600">{business.website}<ExternalLink className="h-3 w-3 shrink-0" /></span>
-                    </span>
-                  </a>
+                {business.description ? <p className="mt-4 max-w-3xl whitespace-pre-line break-words text-sm leading-7 text-slate-600">{business.description}</p> : null}
+                {serviceCategories.length ? (
+                  <div className="mt-4 flex flex-wrap gap-1.5">
+                    {serviceCategories.map((item) => (
+                      <span key={item} className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-black text-emerald-700 ring-1 ring-emerald-100">{item}</span>
+                    ))}
+                  </div>
                 ) : null}
-              </dl>
-              {business.owner ? (
-                <div className="mt-4 flex items-center gap-3 rounded-2xl border border-slate-200/70 bg-slate-50/60 p-3">
+              </div>
+              {business.cover_url ? (
+                <div className="relative min-h-44 overflow-hidden rounded-[22px] bg-slate-100 sm:min-h-56 lg:min-h-full">
+                  <Image src={business.cover_url} alt={business.business_name} fill sizes="(max-width: 1024px) 100vw, 340px" className="object-cover" unoptimized />
+                </div>
+              ) : null}
+            </div>
+            <dl className="mt-4 grid gap-2 sm:grid-cols-2">
+              {business.address ? <InfoRow icon={MapPin} label="地址" value={business.address} /> : null}
+              {hoursText ? <InfoRow icon={Clock} label="营业时间" value={hoursText} /> : null}
+              {business.contact_method ? <InfoRow icon={Phone} label="联系方式" value={business.contact_method} /> : null}
+              {business.website ? (
+                <a href={business.website} target="_blank" rel="noopener noreferrer" className="flex items-start gap-2.5 rounded-2xl bg-slate-50 p-3 transition hover:bg-blue-50/70">
+                  <Globe className="mt-0.5 h-4 w-4 shrink-0 text-blue-600" />
+                  <span className="min-w-0">
+                    <span className="block text-xs font-bold text-slate-400">官网 / 社媒</span>
+                    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-sm font-black text-blue-600"><span className="min-w-0 break-all">{business.website}</span><ExternalLink className="h-3 w-3 shrink-0" /></span>
+                  </span>
+                </a>
+              ) : null}
+            </dl>
+            {business.owner ? (
+              <div className="mt-4 flex flex-col gap-3 rounded-2xl border border-slate-200/70 bg-slate-50/60 p-3 sm:flex-row sm:items-center">
+                <div className="flex min-w-0 flex-1 items-center gap-3">
                   <Avatar user={business.owner} size={40} />
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-black text-slate-900">{business.owner.display_name || business.owner.handle}</p>
                     <p className="text-xs font-bold text-slate-400">商家负责人 · 站内可私信</p>
                   </div>
-                  <Link href={`/u/${business.owner.handle}`} className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full bg-slate-950 px-3.5 text-xs font-black text-white">
-                    <MessageSquare className="h-3.5 w-3.5" />
-                    联系商家
-                  </Link>
                 </div>
-              ) : null}
-            </div>
+                <Link href={`/u/${business.owner.handle}`} className="inline-flex h-9 w-full shrink-0 items-center justify-center gap-1.5 rounded-full bg-slate-950 px-3.5 text-xs font-black text-white sm:w-auto">
+                  <MessageSquare className="h-3.5 w-3.5" />
+                  联系商家
+                </Link>
+              </div>
+            ) : null}
           </section>
 
           <section>
@@ -338,7 +350,7 @@ function InfoRow({ icon: Icon, label, value }: { icon: typeof MapPin; label: str
       <Icon className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
       <span className="min-w-0">
         <span className="block text-xs font-bold text-slate-400">{label}</span>
-        <span className="mt-0.5 block text-sm font-black text-slate-800">{value}</span>
+        <span className="mt-0.5 block break-words text-sm font-black text-slate-800">{value}</span>
       </span>
     </div>
   );

@@ -964,36 +964,24 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               </p>
               </div>
               {kind === "services" ? (
-                <>
-                  <div className="-mx-1 min-w-0 overflow-x-auto px-1">
-                    <div className="flex gap-2 pb-0.5">
-                      {SERVICE_SECTIONS.map((section) => (
-                        <button
-                          key={section.key}
-                          type="button"
-                          onClick={() => {
-                            setServiceSection(section.key);
-                            setCategory("全部");
-                          }}
-                          data-active={serviceSection === section.key && category === "全部"}
-                          className="kx-category-chip"
-                        >
-                          {pickText(locale, section.zh, section.ja, section.en)}
-                        </button>
-                      ))}
-                    </div>
+                <div className="-mx-1 min-w-0 overflow-x-auto px-1">
+                  <div className="flex gap-2 pb-0.5">
+                    {SERVICE_SECTIONS.map((section) => (
+                      <button
+                        key={section.key}
+                        type="button"
+                        onClick={() => {
+                          setServiceSection(section.key);
+                          setCategory("全部");
+                        }}
+                        data-active={serviceSection === section.key && category === "全部"}
+                        className="kx-category-chip"
+                      >
+                        {pickText(locale, section.zh, section.ja, section.en)}
+                      </button>
+                    ))}
                   </div>
-                  {/* 「全部」只展示三个一级分区，避免几十个类目图标霸屏；
-                      选中具体分区后才展开该区的细分类目网格（渐进式披露）。 */}
-                  {serviceSection !== "all" ? (
-                    <ServiceCategoryIconGrid
-                      active={category}
-                      section={serviceSection}
-                      locale={locale}
-                      onSelect={(value) => setCategory((current) => (current === value ? "全部" : value))}
-                    />
-                  ) : null}
-                </>
+                </div>
               ) : (
                 <div className="-mx-1 min-w-0 overflow-x-auto px-1">
                   <div className="flex gap-2 pb-0.5">
@@ -2749,48 +2737,6 @@ const SERVICE_CATEGORY_META: Record<string, { Icon: typeof Store; tone: string }
   "租房申请协助": { Icon: Home, tone: "bg-orange-500/10 text-orange-600" },
   "认证服务": { Icon: BadgeCheck, tone: "bg-emerald-500/10 text-emerald-700" },
 };
-
-function ServiceCategoryIconGrid({
-  active,
-  section,
-  locale,
-  onSelect,
-}: {
-  active: string;
-  section: string;
-  locale: Locale;
-  onSelect: (category: string) => void;
-}) {
-  const sectionSpec = SERVICE_SECTIONS.find((item) => item.key === section);
-  // 「全部」回退到各分区类目的并集（住宿类目已搬去租房页，不在其中）。
-  const categories = sectionSpec?.categories.length
-    ? sectionSpec.categories
-    : SERVICE_SECTIONS.flatMap((item) => item.categories);
-  return (
-    <div className="grid grid-cols-5 gap-1.5 sm:grid-cols-10">
-      {categories.map((category) => {
-        const meta = SERVICE_CATEGORY_META[category] || { Icon: Store, tone: "bg-slate-100 text-slate-600" };
-        const isActive = active === category;
-        return (
-          <button
-            key={category}
-            type="button"
-            onClick={() => onSelect(category)}
-            data-active={isActive}
-            className="group flex flex-col items-center gap-1.5 rounded-2xl px-1 py-2 transition hover:bg-orange-50/80 data-[active=true]:bg-orange-50"
-          >
-            <span className={`grid h-11 w-11 place-items-center rounded-2xl transition group-hover:scale-105 ${isActive ? "bg-orange-500 text-white shadow-[0_10px_22px_-12px_rgba(249,115,22,0.9)]" : meta.tone}`}>
-              <meta.Icon className="h-5 w-5" />
-            </span>
-            <span className={`w-full truncate text-center text-[11px] font-black ${isActive ? "text-orange-600" : "text-slate-600"}`}>
-              {categoryLabel(category, locale)}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
-}
 
 export function RatingStars({ value, count, size = "sm", showValue = true }: { value: number; count?: number; size?: "sm" | "md"; showValue?: boolean }) {
   const stars = Math.max(0, Math.min(5, value || 0));
