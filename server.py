@@ -17578,13 +17578,18 @@ class Handler(BaseHTTPRequestHandler):
         if not due_at:
             return
         reminder_days = _guide_int(d.get("reminder_days_before"), 30, lo=0, hi=3650)
+        window_end = _guide_date_value(d.get("cancellation_window_end"))
+        if _guide_date_value(d.get("cancellation_window_start")):
+            summary = f"已进入可解约窗口：不续约请在 {window_end or '窗口截止前'} 前办理解约；要续约则确认新条款与费用。"
+        else:
+            summary = str(d.get("provider") or "").strip()[:300] or "确认这份合同是续约还是解约。"
         self._guide_todo_insert(
             conn,
             user_id=user_id,
             source_type="contract",
             source_id=contract_id,
             title=f"{str(d.get('title') or '合同').strip()} 续约/解约确认",
-            summary=str(d.get("provider") or "").strip()[:300],
+            summary=summary,
             todo_type="contract_deadline",
             due_at=due_at,
             reminder_at=_guide_date_minus(due_at, reminder_days),
