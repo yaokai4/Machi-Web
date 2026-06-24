@@ -17839,6 +17839,90 @@ class Handler(BaseHTTPRequestHandler):
             "lastMonthExpense": total("expense", prev_start, start),
         })
 
+    def api_guide_finance_trend(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        months = _guide_int(query.get("months"), 6, lo=1, hi=24)
+        anchor = (query.get("month") or "").strip()
+        start, _ = self._guide_month_bounds(anchor)
+        y, m = (int(x) for x in start.split("-")[:2])
+        out: list[dict[str, Any]] = []
+        for _ in range(months):
+            ms = datetime(y, m, 1).date().isoformat()
+            nm = m + 1
+            ny = y + (1 if nm > 12 else 0)
+            me = datetime(ny, nm - 12 if nm > 12 else nm, 1).date().isoformat()
+            row = conn.execute(
+                "SELECT kind, COALESCE(SUM(amount),0) AS s FROM guide_transactions WHERE user_id = ? AND occurred_on >= ? AND occurred_on < ? GROUP BY kind",
+                (user["id"], ms, me),
+            ).fetchall()
+            by = {r["kind"]: int(r["s"] or 0) for r in row}
+            inc, exp = by.get("income", 0), by.get("expense", 0)
+            out.append({"month": ms[:7], "income": inc, "expense": exp, "net": inc - exp})
+            m -= 1
+            if m < 1:
+                m = 12; y -= 1
+        out.reverse()
+        self.send_json({"status": "ok", "months": out})
+
+    @staticmethod
+    def _guide_finance_category_for(kind: str, key: str) -> str:
+        key = (key or "").lower()
+        table = {
+            "rent": "rent", "housing": "rent",
+            "water": "utilities", "electricity": "utilities", "gas": "utilities", "utility": "utilities",
+            "internet": "telecom", "phone": "telecom", "mobile": "telecom",
+            "insurance": "insurance", "pension": "pension",
+            "residence_tax": "tax", "tax": "tax",
+            "tuition": "education", "school": "education",
+            "subscription": "subscription",
+        }
+        return table.get(key, "subscription" if kind == "contract" else "other")
+
+    def api_guide_finance_post_fixed(self, conn: sqlite3.Connection) -> None:
+        """One-tap: post this month's committed fixed costs (active life bills +
+        contracts) into the ledger as expense transactions. Idempotent per source
+        item per month, so tapping twice never double-posts."""
+        user = self.require_user(conn)
+        body = self.read_json()
+        start, end = self._guide_month_bounds(str(body.get("month") or ""))
+        now = now_iso()
+        posted = 0
+
+        def already(source: str, sid: str) -> bool:
+            r = conn.execute(
+                "SELECT 1 FROM guide_transactions WHERE user_id = ? AND source = ? AND source_id = ? AND occurred_on >= ? AND occurred_on < ? LIMIT 1",
+                (user["id"], source, sid, start, end),
+            ).fetchone()
+            return r is not None
+
+        def insert(amount: int, category: str, source: str, sid: str, day: int) -> None:
+            nonlocal posted
+            if amount <= 0 or already(source, sid):
+                return
+            sy, sm = (int(x) for x in start.split("-")[:2])
+            try:
+                occ = datetime(sy, sm, max(1, min(28, day or 1))).date().isoformat()
+            except Exception:
+                occ = start
+            conn.execute(
+                "INSERT INTO guide_transactions (id, user_id, kind, amount, currency, category, account, occurred_on, note, source, source_id, created_at, updated_at) "
+                "VALUES (?, ?, 'expense', ?, 'JPY', ?, '', ?, '固定费', ?, ?, ?, ?)",
+                (str(uuid.uuid4()), user["id"], amount, category, occ, source, sid, now, now),
+            )
+            posted += 1
+
+        try:
+            for r in conn.execute("SELECT id, type, amount, recurrence, due_day FROM guide_life_items WHERE user_id = ? AND active = 1", (user["id"],)):
+                amt = int(r["amount"] or 0)
+                if (r["recurrence"] or "monthly") == "yearly":
+                    continue  # yearly bills aren't a monthly fixed cost
+                insert(amt, self._guide_finance_category_for("bill", r["type"]), "bill", r["id"], int(r["due_day"] or 1))
+            for r in conn.execute("SELECT id, category, monthly_cost FROM guide_contracts WHERE user_id = ? AND status = 'active'", (user["id"],)):
+                insert(int(r["monthly_cost"] or 0), self._guide_finance_category_for("contract", r["category"]), "contract", r["id"], 1)
+        except Exception:
+            pass
+        self.send_json({"status": "ok", "posted": posted})
+
     def _guide_replace_contract_todo(self, conn: sqlite3.Connection, user_id: str, contract: sqlite3.Row | dict[str, Any]) -> None:
         d = dict(contract)
         contract_id = str(d.get("id") or "")
@@ -22094,6 +22178,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_finance_categories(conn, query)
         if path == "/api/guide/finance/summary" and method == "GET":
             return self.api_guide_finance_summary(conn, query)
+        if path == "/api/guide/finance/trend" and method == "GET":
+            return self.api_guide_finance_trend(conn, query)
+        if path == "/api/guide/finance/post-fixed" and method == "POST":
+            return self.api_guide_finance_post_fixed(conn)
         if path == "/api/guide/transactions" and method == "GET":
             return self.api_guide_transactions_list(conn, query)
         if path == "/api/guide/transactions" and method == "POST":
