@@ -3791,6 +3791,39 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "reminder_at": "TEXT",
         "all_day": "INTEGER NOT NULL DEFAULT 1",
     })
+    # Finance: manual income/expense ledger + per-category monthly budgets.
+    # Privacy-first — only amounts/categories the user types, never bank links.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_transactions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'expense',
+            amount INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            category TEXT NOT NULL DEFAULT 'other',
+            account TEXT NOT NULL DEFAULT '',
+            occurred_on TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'manual',
+            source_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_transactions_user ON guide_transactions(user_id, occurred_on, kind)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS guide_budgets (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            monthly_limit INTEGER NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, category)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_budgets_user ON guide_budgets(user_id, category)")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS guide_product_relations (
             id TEXT PRIMARY KEY,
@@ -7509,6 +7542,63 @@ def serialize_guide_application_stage(row: sqlite3.Row | dict[str, Any]) -> dict
         "note": d.get("note") or "",
         "occurredAt": d.get("occurred_at"),
         "createdAt": d.get("created_at"),
+    }
+
+
+# Finance category catalog (code, zh, ja, en, icon) — Japan-life oriented.
+GUIDE_FINANCE_CATEGORIES: dict[str, list[tuple[str, str, str, str, str]]] = {
+    "expense": [
+        ("rent", "房租", "家賃", "Rent", "house.fill"),
+        ("utilities", "水电煤", "光熱費", "Utilities", "bolt.fill"),
+        ("telecom", "通信", "通信", "Telecom", "antenna.radiowaves.left.and.right"),
+        ("groceries", "食材", "食料品", "Groceries", "cart.fill"),
+        ("dining", "外食", "外食", "Dining", "fork.knife"),
+        ("transport", "交通", "交通", "Transport", "tram.fill"),
+        ("insurance", "保险", "保険", "Insurance", "cross.case.fill"),
+        ("pension", "年金", "年金", "Pension", "building.columns.fill"),
+        ("tax", "税金", "税金", "Tax", "doc.text.fill"),
+        ("education", "学费/教育", "学費・教育", "Education", "graduationcap.fill"),
+        ("medical", "医疗", "医療", "Medical", "stethoscope"),
+        ("entertainment", "娱乐", "娯楽", "Fun", "gamecontroller.fill"),
+        ("shopping", "购物", "買い物", "Shopping", "bag.fill"),
+        ("subscription", "订阅", "サブスク", "Subscriptions", "repeat"),
+        ("savings", "储蓄", "貯蓄", "Savings", "banknote.fill"),
+        ("other", "其他", "その他", "Other", "ellipsis.circle.fill"),
+    ],
+    "income": [
+        ("salary", "工资", "給与", "Salary", "yensign.circle.fill"),
+        ("parttime", "打工", "アルバイト", "Part-time", "clock.fill"),
+        ("scholarship", "奖学金", "奨学金", "Scholarship", "graduationcap.fill"),
+        ("remittance", "汇款", "送金", "Remittance", "arrow.down.circle.fill"),
+        ("refund", "退税/返金", "返金", "Refund", "arrow.uturn.left.circle.fill"),
+        ("income_other", "其他收入", "その他収入", "Other", "plus.circle.fill"),
+    ],
+}
+
+
+def _guide_finance_categories_payload() -> dict[str, Any]:
+    def rows(kind: str) -> list[dict[str, str]]:
+        return [{"code": c, "zh": zh, "ja": ja, "en": en, "icon": icon}
+                for (c, zh, ja, en, icon) in GUIDE_FINANCE_CATEGORIES[kind]]
+    return {"expense": rows("expense"), "income": rows("income")}
+
+
+def serialize_guide_transaction(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    return {
+        "id": d.get("id"),
+        "userId": d.get("user_id") or "",
+        "kind": d.get("kind") or "expense",
+        "amount": int(d.get("amount") or 0),
+        "currency": d.get("currency") or "JPY",
+        "category": d.get("category") or "other",
+        "account": d.get("account") or "",
+        "occurredOn": d.get("occurred_on"),
+        "note": d.get("note") or "",
+        "source": d.get("source") or "manual",
+        "sourceId": d.get("source_id") or "",
+        "createdAt": d.get("created_at"),
+        "updatedAt": d.get("updated_at"),
     }
 
 
@@ -17571,6 +17661,184 @@ class Handler(BaseHTTPRequestHandler):
             self._guide_update_plan_progress(conn, plan_id)
         self.send_json({"status": "ok", "deleted": item_id})
 
+    # ===== Finance: manual income/expense ledger + budgets + summary =====
+
+    def api_guide_finance_categories(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.send_json({"status": "ok", **_guide_finance_categories_payload()})
+
+    def _guide_month_bounds(self, month: str) -> tuple[str, str]:
+        """Return (first_day, first_day_of_next_month) ISO for a YYYY-MM (or
+        today's month if blank/invalid), for half-open [start, end) range scans."""
+        try:
+            y, m = (int(x) for x in month.split("-")[:2])
+            start = datetime(y, m, 1)
+        except Exception:
+            now = _guide_today_date()
+            start = datetime(now.year, now.month, 1)
+        nm = start.month + 1
+        ny = start.year + (1 if nm > 12 else 0)
+        nm = nm - 12 if nm > 12 else nm
+        return start.date().isoformat(), datetime(ny, nm, 1).date().isoformat()
+
+    def api_guide_transaction_create(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        kind = "income" if str(body.get("kind") or "expense").strip().lower() == "income" else "expense"
+        amount = _guide_int(body.get("amount"), 0, lo=0)
+        if amount <= 0:
+            return self.send_error_json("amount required", 400, "invalid_body")
+        occurred_on = _guide_date_value(body.get("occurredOn") or body.get("occurred_on")) or _guide_today_date().date().isoformat()
+        now = now_iso()
+        tid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO guide_transactions (id, user_id, kind, amount, currency, category, account, occurred_on, note, source, source_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                tid, user["id"], kind, amount, str(body.get("currency") or "JPY").strip()[:12] or "JPY",
+                str(body.get("category") or "other").strip()[:60] or "other",
+                str(body.get("account") or "").strip()[:60], occurred_on,
+                str(body.get("note") or "").strip()[:500],
+                str(body.get("source") or "manual").strip()[:40] or "manual",
+                str(body.get("sourceId") or body.get("source_id") or "").strip()[:80], now, now,
+            ),
+        )
+        row = conn.execute("SELECT * FROM guide_transactions WHERE id = ?", (tid,)).fetchone()
+        self.send_json({"status": "ok", "transaction": serialize_guide_transaction(row)})
+
+    def api_guide_transactions_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        where = ["user_id = ?"]
+        params: list[Any] = [user["id"]]
+        month = (query.get("month") or "").strip()
+        if month:
+            start, end = self._guide_month_bounds(month)
+            where.append("occurred_on >= ? AND occurred_on < ?")
+            params.extend([start, end])
+        if query.get("kind") in ("income", "expense"):
+            where.append("kind = ?")
+            params.append(query["kind"])
+        if query.get("category"):
+            where.append("category = ?")
+            params.append(str(query["category"])[:60])
+        limit = _guide_int(query.get("limit"), 100, lo=1, hi=500)
+        rows = conn.execute(
+            f"SELECT * FROM guide_transactions WHERE {' AND '.join(where)} ORDER BY occurred_on DESC, created_at DESC LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [serialize_guide_transaction(r) for r in rows], "total": len(rows)})
+
+    def api_guide_transaction_update(self, conn: sqlite3.Connection, tx_id: str) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        row = conn.execute("SELECT * FROM guide_transactions WHERE id = ? AND user_id = ?", (tx_id, user["id"])).fetchone()
+        if not row:
+            return self.send_error_json("transaction not found", 404, "not_found")
+        updates: list[str] = []
+        params: list[Any] = []
+        if "kind" in body:
+            updates.append("kind = ?"); params.append("income" if str(body.get("kind")).lower() == "income" else "expense")
+        if "amount" in body:
+            updates.append("amount = ?"); params.append(_guide_int(body.get("amount"), 0, lo=0))
+        for api_key, col, ln in (("category", "category", 60), ("account", "account", 60), ("note", "note", 500), ("currency", "currency", 12)):
+            if api_key in body:
+                updates.append(f"{col} = ?"); params.append(str(body.get(api_key) or "").strip()[:ln])
+        if "occurredOn" in body or "occurred_on" in body:
+            updates.append("occurred_on = ?"); params.append(_guide_date_value(body.get("occurredOn") or body.get("occurred_on")))
+        if updates:
+            updates.append("updated_at = ?"); params.append(now_iso()); params.append(tx_id)
+            conn.execute(f"UPDATE guide_transactions SET {', '.join(updates)} WHERE id = ?", tuple(params))
+        self.send_json({"status": "ok", "transaction": serialize_guide_transaction(conn.execute("SELECT * FROM guide_transactions WHERE id = ?", (tx_id,)).fetchone())})
+
+    def api_guide_transaction_delete(self, conn: sqlite3.Connection, tx_id: str) -> None:
+        user = self.require_user(conn)
+        conn.execute("DELETE FROM guide_transactions WHERE id = ? AND user_id = ?", (tx_id, user["id"]))
+        self.send_json({"status": "ok", "deleted": tx_id})
+
+    def api_guide_budgets_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        rows = conn.execute("SELECT * FROM guide_budgets WHERE user_id = ?", (user["id"],)).fetchall()
+        self.send_json({"status": "ok", "items": [
+            {"category": r["category"], "monthlyLimit": int(r["monthly_limit"] or 0), "currency": r["currency"] or "JPY"} for r in rows
+        ]})
+
+    def api_guide_budget_set(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        category = str(body.get("category") or "").strip()[:60]
+        if not category:
+            return self.send_error_json("category required", 400, "invalid_body")
+        limit = _guide_int(body.get("monthlyLimit") or body.get("monthly_limit"), 0, lo=0)
+        now = now_iso()
+        existing = conn.execute("SELECT id FROM guide_budgets WHERE user_id = ? AND category = ?", (user["id"], category)).fetchone()
+        if limit <= 0:
+            conn.execute("DELETE FROM guide_budgets WHERE user_id = ? AND category = ?", (user["id"], category))
+        elif existing:
+            conn.execute("UPDATE guide_budgets SET monthly_limit = ?, updated_at = ? WHERE id = ?", (limit, now, existing["id"]))
+        else:
+            conn.execute(
+                "INSERT INTO guide_budgets (id, user_id, category, monthly_limit, currency, created_at, updated_at) VALUES (?, ?, ?, ?, 'JPY', ?, ?)",
+                (str(uuid.uuid4()), user["id"], category, limit, now, now),
+            )
+        self.api_guide_budgets_list(conn, {})
+
+    def _guide_fixed_monthly_cost(self, conn: sqlite3.Connection, user_id: str) -> int:
+        """Committed recurring monthly cost from active life bills + contracts —
+        yearly amounts amortised to /12. Drives "你每月固定支出约 ¥X"."""
+        total = 0
+        try:
+            for r in conn.execute("SELECT amount, recurrence FROM guide_life_items WHERE user_id = ? AND active = 1", (user_id,)):
+                amt = int(r["amount"] or 0)
+                total += amt // 12 if (r["recurrence"] or "") == "yearly" else amt
+            for r in conn.execute("SELECT monthly_cost, yearly_cost FROM guide_contracts WHERE user_id = ? AND status = 'active'", (user_id,)):
+                total += int(r["monthly_cost"] or 0) + (int(r["yearly_cost"] or 0) // 12)
+        except Exception:
+            pass
+        return total
+
+    def api_guide_finance_summary(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        month = (query.get("month") or "").strip()
+        start, end = self._guide_month_bounds(month)
+        # previous month for the trend
+        py, pm = (int(x) for x in start.split("-")[:2])
+        pm -= 1
+        if pm < 1:
+            pm = 12; py -= 1
+        prev_start = datetime(py, pm, 1).date().isoformat()
+
+        def total(kind: str, s: str, e: str) -> int:
+            r = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) AS s FROM guide_transactions WHERE user_id = ? AND kind = ? AND occurred_on >= ? AND occurred_on < ?",
+                (user["id"], kind, s, e),
+            ).fetchone()
+            return int(r["s"] or 0)
+        income = total("income", start, end)
+        expense = total("expense", start, end)
+        by_cat = [
+            {"category": r["category"], "amount": int(r["s"] or 0)}
+            for r in conn.execute(
+                "SELECT category, SUM(amount) AS s FROM guide_transactions WHERE user_id = ? AND kind = 'expense' AND occurred_on >= ? AND occurred_on < ? GROUP BY category ORDER BY s DESC",
+                (user["id"], start, end),
+            )
+        ]
+        spent_by_cat = {c["category"]: c["amount"] for c in by_cat}
+        budgets = [
+            {"category": r["category"], "limit": int(r["monthly_limit"] or 0), "spent": spent_by_cat.get(r["category"], 0)}
+            for r in conn.execute("SELECT category, monthly_limit FROM guide_budgets WHERE user_id = ? AND monthly_limit > 0", (user["id"],))
+        ]
+        self.send_json({
+            "status": "ok",
+            "month": start[:7],
+            "currency": "JPY",
+            "income": income,
+            "expense": expense,
+            "net": income - expense,
+            "byCategory": by_cat,
+            "budgets": budgets,
+            "fixedMonthly": self._guide_fixed_monthly_cost(conn, user["id"]),
+            "lastMonthExpense": total("expense", prev_start, start),
+        })
+
     def _guide_replace_contract_todo(self, conn: sqlite3.Connection, user_id: str, contract: sqlite3.Row | dict[str, Any]) -> None:
         d = dict(contract)
         contract_id = str(d.get("id") or "")
@@ -21822,6 +22090,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_application_delete(conn, app_id)
         if path == "/api/guide/life-presets" and method == "GET":
             return self.api_guide_life_presets(conn, query)
+        if path == "/api/guide/finance/categories" and method == "GET":
+            return self.api_guide_finance_categories(conn, query)
+        if path == "/api/guide/finance/summary" and method == "GET":
+            return self.api_guide_finance_summary(conn, query)
+        if path == "/api/guide/transactions" and method == "GET":
+            return self.api_guide_transactions_list(conn, query)
+        if path == "/api/guide/transactions" and method == "POST":
+            return self.api_guide_transaction_create(conn)
+        if path.startswith("/api/guide/transactions/") and method == "PATCH":
+            return self.api_guide_transaction_update(conn, unquote(path[len("/api/guide/transactions/"):]).strip("/"))
+        if path.startswith("/api/guide/transactions/") and method == "DELETE":
+            return self.api_guide_transaction_delete(conn, unquote(path[len("/api/guide/transactions/"):]).strip("/"))
+        if path == "/api/guide/budgets" and method == "GET":
+            return self.api_guide_budgets_list(conn, query)
+        if path == "/api/guide/budgets" and method == "POST":
+            return self.api_guide_budget_set(conn)
         if path == "/api/guide/life-items" and method == "GET":
             return self.api_guide_life_items_list(conn, query)
         if path == "/api/guide/life-items" and method == "POST":

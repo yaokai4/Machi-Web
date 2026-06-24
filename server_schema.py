@@ -3543,6 +3543,47 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE guide_life_items ADD COLUMN IF NOT EXISTS auto_debit INTEGER NOT NULL DEFAULT 0;
         """,
     ),
+    (
+        70,
+        "guide finance: manual income/expense ledger",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS guide_transactions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'expense',
+            amount BIGINT NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            category TEXT NOT NULL DEFAULT 'other',
+            account TEXT NOT NULL DEFAULT '',
+            occurred_on TEXT NOT NULL,
+            note TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'manual',
+            source_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_transactions_user ON guide_transactions(user_id, occurred_on, kind);
+        """,
+    ),
+    (
+        71,
+        "guide finance: per-category monthly budgets",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS guide_budgets (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            category TEXT NOT NULL,
+            monthly_limit BIGINT NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'JPY',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, category)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_budgets_user ON guide_budgets(user_id, category);
+        """,
+    ),
 ]
 
 
