@@ -803,6 +803,13 @@ export interface GuideBudget {
   currency: string;
 }
 
+export interface GuideFinanceTrendPoint {
+  month: string;
+  income: number;
+  expense: number;
+  net: number;
+}
+
 export interface GuideFinanceSummary {
   status: string;
   month: string;
@@ -1164,6 +1171,10 @@ export const guide = {
     greq<{ status: string; expense: GuideFinanceCategory[]; income: GuideFinanceCategory[] }>("GET", "/api/guide/finance/categories"),
   financeSummary: (month?: string) =>
     greq<GuideFinanceSummary>("GET", `/api/guide/finance/summary${qs(month ? { month } : {})}`),
+  financeTrend: (months = 6, month?: string) =>
+    greq<{ status: string; months: GuideFinanceTrendPoint[] }>("GET", `/api/guide/finance/trend${qs({ months, ...(month ? { month } : {}) })}`),
+  postFixedCosts: (month?: string) =>
+    greq<{ status: string; posted: number }>("POST", "/api/guide/finance/post-fixed", month ? { month } : {}),
   transactions: (p: { month?: string; kind?: string; category?: string; limit?: number } = {}) =>
     greq<{ status: string; items: GuideTransaction[]; total: number }>("GET", `/api/guide/transactions${qs(p)}`),
   createTransaction: (body: Partial<GuideTransaction>) =>
