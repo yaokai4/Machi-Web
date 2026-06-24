@@ -175,20 +175,25 @@ function GuideOfflineBanner() {
 
   useEffect(() => {
     if (typeof window === "undefined" || typeof navigator === "undefined") return;
-    const sync = () => {
-      const isOffline = !navigator.onLine;
-      setOffline(isOffline);
-      if (!isOffline) {
-        setRestored(true);
-        window.setTimeout(() => setRestored(false), 3600);
-      }
+    setOffline(!navigator.onLine);
+    let restoredTimer: number | undefined;
+    const onOffline = () => {
+      if (restoredTimer) window.clearTimeout(restoredTimer);
+      setRestored(false);
+      setOffline(true);
     };
-    sync();
-    window.addEventListener("online", sync);
-    window.addEventListener("offline", sync);
+    const onOnline = () => {
+      setOffline(false);
+      setRestored(true);
+      if (restoredTimer) window.clearTimeout(restoredTimer);
+      restoredTimer = window.setTimeout(() => setRestored(false), 3600);
+    };
+    window.addEventListener("online", onOnline);
+    window.addEventListener("offline", onOffline);
     return () => {
-      window.removeEventListener("online", sync);
-      window.removeEventListener("offline", sync);
+      if (restoredTimer) window.clearTimeout(restoredTimer);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("offline", onOffline);
     };
   }, []);
 

@@ -262,9 +262,9 @@ The full task book remains larger than the first milestone. The authoritative st
 | Duplicate homepage resources/tools | Removed | Resources are no longer a homepage rail |
 | Server-first Guide state | Implemented | Core Todo, profile, plan, application and life state use production APIs |
 | Todo search / all tasks | Implemented | Web and iOS task centers include search and all-task filtering |
-| Full Todo detail | Implemented for core use | Notes, steps, reminders, reschedule, whole-card detail, and Guide attachments are in place; draft recovery remains a later refinement |
+| Full Todo detail | Implemented | Notes, steps, reminders, reschedule, whole-card detail, Guide attachments, duplicate/archive/delete, and iOS edit-draft recovery are in place |
 | Calendar month/week/agenda | Implemented | Both Web and iOS render the three views |
-| Calendar drag/drop and first-class events | Implemented for Web, core implemented for iOS | Web month/week views support drag-to-reschedule tasks and first-class events. iOS supports month/week/agenda, quick add, editing dates, recurrence, notes, and deletion; native drag gestures remain a later interaction refinement |
+| Calendar drag/drop and first-class events | Implemented | Web and iOS month/week views support drag-to-reschedule tasks and first-class events. Both clients support month/week/agenda, quick add, editing dates, recurrence, notes, and deletion |
 | Bills | Implemented for core use | `guide_life_items` handles recurring reminders, payment history, paid state, and attachments |
 | Contracts | Implemented | `guide_contracts` is first-class with Web/iOS list, create, edit, delete, reminders, notes, and attachments |
 | Documents | Implemented | `guide_documents` is first-class for passport/residence card/My Number/driver license/insurance reminders and attachments |
@@ -275,7 +275,7 @@ The full task book remains larger than the first milestone. The authoritative st
 | Accessibility / full hit areas | Implemented for core Guide controls | Web cards/buttons have whole-area links/buttons and focus states; iOS Guide cards/rows use full-card Button/NavigationLink patterns and calendar controls were normalized to 44pt touch targets. A full manual VoiceOver pass remains recommended before App Store release |
 | Android | Deferred | Explicit product decision for this milestone |
 
-The remaining non-deferred work is now mostly release QA depth: manual VoiceOver walkthroughs, large-account performance sweeps, and additional content localization. The product-critical Guide OS flow is implemented and verified for Web + iOS.
+The remaining non-deferred work is release operations rather than missing product functionality: ongoing content localization, editorial freshness, and large-account monitoring continue as normal operational work. The product-critical Guide OS flow is implemented and verified for Web + iOS.
 
 ## Final Round Record 2026-06-24
 
@@ -338,3 +338,22 @@ This stabilization pass closed the remaining production and interaction concerns
   - `/api/guide/life-presets`
   - `/api/guide/articles?country=jp&pageSize=1`
 - Production backend log check after deploy showed Guide requests returning 200 and no `Traceback`, `UndefinedColumn`, or Guide 500 entries.
+
+## Action + Knowledge Balance Record 2026-06-24
+
+The final product structure keeps action first without removing the existing Guide knowledge business:
+
+- Web and iOS Guide Today now place the six server-driven knowledge areas below Today, Calendar, Tasks, Manage, and Goals:
+  - 日本升学
+  - 日本就职
+  - 留学申请
+  - 日语考级
+  - 日本生活
+  - 资料与服务
+- The Japan school database and foreigner-friendly company database appear as a separate second-level library section below the six areas.
+- iOS uses a fixed two-column layout, and Web uses two columns on mobile and three on desktop.
+- Category names, counts, colors, article totals, product totals, and library links continue to come from `/api/guide/home`; clients do not maintain a duplicate catalog.
+- All category and library tiles are whole-card controls. Simulator interaction confirmed that tapping the full 日本升学 tile opens the category detail.
+- iOS offline fallback now includes 资料与服务, so the sixth area does not disappear during a temporary network outage.
+- iOS Todo detail restores unsaved in-session edits and offers a clear-draft action.
+- iOS Calendar now accepts drag-and-drop moves in month and week views for both Todo-derived items and first-class events; Todo rescheduling refreshes the current calendar immediately.

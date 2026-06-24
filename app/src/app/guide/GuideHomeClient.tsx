@@ -18,7 +18,13 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { guide, type GuideActivePlanResponse, type GuideHomeResponse, type GuideJourney, type GuideTodo } from "@/lib/guide";
-import { GuideShell, GuideComingSoon, useGuideCountry } from "@/components/guide/GuideKit";
+import {
+  CategoryCard,
+  GuideShell,
+  GuideComingSoon,
+  ResourceEntryCard,
+  useGuideCountry,
+} from "@/components/guide/GuideKit";
 import { EmptyPanel, GuideQuickAddTodo, GuideTodoCard } from "@/components/guide/GuideOS";
 import { ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession } from "@/lib/store";
@@ -47,6 +53,15 @@ const MODULES = [
   { href: "/guide/goals", label: "路径", icon: Route },
 ];
 
+const SUPPORT_CATEGORY_KEYS = [
+  "study_japan",
+  "career_japan",
+  "study_abroad_japan",
+  "jlpt",
+  "life_japan",
+  "guide_services",
+];
+
 export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHomeResponse }) {
   const country = useGuideCountry();
   const { locale } = useI18n();
@@ -73,6 +88,12 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
     () => orderJourneys(home.data?.journeys || [], activePlan.data),
     [home.data?.journeys, activePlan.data],
   );
+  const supportCategories = useMemo(() => {
+    const categories = (home.data?.categories || []).filter((category) => !category.parentKey);
+    return SUPPORT_CATEGORY_KEYS
+      .map((key) => categories.find((category) => category.key === key))
+      .filter((category): category is NonNullable<typeof category> => Boolean(category));
+  }, [home.data?.categories]);
 
   if (home.isLoading) {
     return (
@@ -169,6 +190,32 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
           <SectionHeading title="我的进行中目标" subtitle="路径只保留为目标系统；真正推进靠 Todo 和日历。" href="/guide/goals" />
           <ActiveGoals data={activePlan.data} journeys={sortedJourneys} sampleMode={sampleMode} />
         </section>
+
+        <section className="border-t border-kx-stroke/35 pt-8">
+          <SectionHeading
+            title="六大指南与资料"
+            subtitle="上面推进 Todo、日历和截止日；需要查方法、学校、就职信息或购买服务时，从这里进入。"
+          />
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
+            {supportCategories.map((category) => (
+              <CategoryCard key={category.key} category={category} />
+            ))}
+          </div>
+        </section>
+
+        {(home.data.resourceEntries || []).length ? (
+          <section>
+            <SectionHeading
+              title="学校与公司资料库"
+              subtitle="查询大学、大学院、专门学校、语言学校，以及适合外国人就职的日本公司。"
+            />
+            <div className="grid gap-3 md:grid-cols-2">
+              {(home.data.resourceEntries || []).map((entry) => (
+                <ResourceEntryCard key={entry.key} entry={entry} />
+              ))}
+            </div>
+          </section>
+        ) : null}
       </main>
     </GuideShell>
   );
