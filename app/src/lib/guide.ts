@@ -762,6 +762,7 @@ export interface GuideLifeItem {
   amount: number;
   currency: string;
   paymentMethod: string;
+  autoDebit?: boolean;
   dueDay: number;
   dueAt?: string | null;
   recurrence: string;

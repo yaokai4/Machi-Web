@@ -3702,6 +3702,7 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
             amount INTEGER NOT NULL DEFAULT 0,
             currency TEXT NOT NULL DEFAULT 'JPY',
             payment_method TEXT NOT NULL DEFAULT '',
+            auto_debit INTEGER NOT NULL DEFAULT 0,
             due_day INTEGER NOT NULL DEFAULT 0,
             due_at TEXT,
             recurrence TEXT NOT NULL DEFAULT 'monthly',
@@ -3713,6 +3714,7 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_life_items_user ON guide_life_items(user_id, active, due_at)")
+    _ensure_columns(conn, "guide_life_items", {"auto_debit": "INTEGER NOT NULL DEFAULT 0"})
     conn.execute("""
         CREATE TABLE IF NOT EXISTS guide_life_payments (
             id TEXT PRIMARY KEY,
@@ -7521,6 +7523,7 @@ def serialize_guide_life_item(row: sqlite3.Row | dict[str, Any]) -> dict[str, An
         "amount": int(d.get("amount") or 0),
         "currency": d.get("currency") or "JPY",
         "paymentMethod": d.get("payment_method") or "",
+        "autoDebit": bool(d.get("auto_debit") or 0),
         "dueDay": int(d.get("due_day") or 0),
         "dueAt": d.get("due_at"),
         "recurrence": d.get("recurrence") or "monthly",
@@ -7540,6 +7543,7 @@ def serialize_guide_life_payment(row: sqlite3.Row | dict[str, Any]) -> dict[str,
         "amount": int(d.get("amount") or 0),
         "currency": d.get("currency") or "JPY",
         "paymentMethod": d.get("payment_method") or "",
+        "autoDebit": bool(d.get("auto_debit") or 0),
         "paidAt": d.get("paid_at") or "",
         "notes": d.get("notes") or "",
         "createdAt": d.get("created_at"),
@@ -17388,23 +17392,34 @@ class Handler(BaseHTTPRequestHandler):
         reminder_days = _guide_int(body.get("reminderDaysBefore"), default_reminder, lo=0, hi=365)
         reminder_at = _guide_date_minus(due_at, reminder_days)
         recurrence = str(body.get("recurrence") or (preset or {}).get("recurrence") or "monthly").strip()[:40]
+        payment_method = str(body.get("paymentMethod") or "").strip()[:120]
+        auto_debit = 1 if _guide_bool_value(body.get("autoDebit") or body.get("auto_debit")) else 0
         now = now_iso()
         item_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO guide_life_items (id, user_id, type, title, provider, amount, currency, payment_method, due_day, due_at, recurrence, reminder_days_before, notes, active, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            "INSERT INTO guide_life_items (id, user_id, type, title, provider, amount, currency, payment_method, auto_debit, due_day, due_at, recurrence, reminder_days_before, notes, active, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
             (
                 item_id, user["id"], item_type, title, str(body.get("provider") or "").strip()[:160],
                 _guide_int(body.get("amount"), 0, lo=0), str(body.get("currency") or "JPY").strip()[:12] or "JPY",
-                str(body.get("paymentMethod") or "").strip()[:120], due_day, due_at,
+                payment_method, auto_debit, due_day, due_at,
                 recurrence, reminder_days,
                 str(body.get("notes") or "").strip()[:2000], now, now,
             ),
         )
         if due_at:
+            # Auto-debit (口座振替 / 信用卡) only needs a balance check; manual
+            # methods (便利店 / 收信件 / 银行转账) need a "go pay before due" nudge.
+            todo_title = f"{title} {'扣款日 · 确认余额' if auto_debit else '缴费截止'}"
+            todo_summary = (
+                "自动扣款，确认账户 / 信用卡余额充足，避免扣款失败。"
+                if auto_debit else
+                "记得在截止前完成缴费（便利店 / 银行 / 邮局），避免逾期。"
+            )
             self._guide_todo_insert(conn, user_id=user["id"], source_type="life_item", source_id=item_id,
-                                    title=f"{title} 到期/付款", summary=str(body.get("provider") or "").strip()[:300],
-                                    todo_type="life_payment", due_at=due_at, reminder_at=reminder_at, priority="normal",
+                                    title=todo_title, summary=todo_summary,
+                                    todo_type="life_payment", due_at=due_at, reminder_at=reminder_at,
+                                    priority="normal" if auto_debit else "high",
                                     product_slugs="bank-account-document-checklist,mobile-plan-comparison,work-visa-change-checklist",
                                     service_slugs="japan-life-consultation,japanese-phone-call-proxy,delivery-utility-call")
         item = conn.execute("SELECT * FROM guide_life_items WHERE id = ?", (item_id,)).fetchone()
@@ -17432,6 +17447,9 @@ class Handler(BaseHTTPRequestHandler):
         if "active" in body:
             updates.append("active = ?")
             params.append(1 if _guide_bool_value(body.get("active"), True) else 0)
+        if "autoDebit" in body or "auto_debit" in body:
+            updates.append("auto_debit = ?")
+            params.append(1 if _guide_bool_value(body.get("autoDebit") or body.get("auto_debit")) else 0)
         if updates:
             updates.append("updated_at = ?")
             params.append(now_iso())

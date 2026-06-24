@@ -3313,6 +3313,7 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             amount INTEGER NOT NULL DEFAULT 0,
             currency TEXT NOT NULL DEFAULT 'JPY',
             payment_method TEXT NOT NULL DEFAULT '',
+            auto_debit INTEGER NOT NULL DEFAULT 0,
             due_day INTEGER NOT NULL DEFAULT 0,
             due_at TEXT,
             recurrence TEXT NOT NULL DEFAULT 'monthly',
@@ -3532,6 +3533,14 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             UNIQUE(user_id, article_id)
         );
         CREATE INDEX IF NOT EXISTS idx_guide_article_progress_user ON guide_article_progress(user_id, updated_at);
+        """,
+    ),
+    (
+        69,
+        "guide os: add auto_debit to life items",
+        """
+        -- backend: postgres
+        ALTER TABLE guide_life_items ADD COLUMN IF NOT EXISTS auto_debit INTEGER NOT NULL DEFAULT 0;
         """,
     ),
 ]

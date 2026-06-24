@@ -33,7 +33,7 @@ export default function GuideLifePage() {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const [form, setForm] = useState({ type: "rent", title: "房租", provider: "", amount: "", dueDay: "27", reminderDaysBefore: "3", recurrence: "monthly", paymentMethod: "", notes: "" });
+  const [form, setForm] = useState({ type: "rent", title: "房租", provider: "", amount: "", dueDay: "27", reminderDaysBefore: "3", recurrence: "monthly", paymentMethod: "auto_transfer", autoDebit: true, notes: "" });
   const presets = useQuery({
     queryKey: ["guide", "life-presets"],
     queryFn: () => guide.lifePresets(),
@@ -63,6 +63,7 @@ export default function GuideLifePage() {
       dueDay: Number(form.dueDay || 0),
       reminderDaysBefore: Number(form.reminderDaysBefore || 3),
       paymentMethod: form.paymentMethod,
+      autoDebit: form.autoDebit,
       notes: form.notes,
       recurrence: form.recurrence,
     }),
@@ -137,7 +138,28 @@ export default function GuideLifePage() {
               <Field label="每月几号" value={form.dueDay} onChange={(v) => setForm((f) => ({ ...f, dueDay: v }))} placeholder="27" />
             </div>
             <Field label="提前几天提醒" value={form.reminderDaysBefore} onChange={(v) => setForm((f) => ({ ...f, reminderDaysBefore: v }))} placeholder="3" />
-            <Field label="支付方式" value={form.paymentMethod} onChange={(v) => setForm((f) => ({ ...f, paymentMethod: v }))} placeholder="银行转账 / 信用卡 / 口座振替" />
+            <label className="block">
+              <span className="text-sm font-black text-kx-text">缴费方式</span>
+              <select
+                value={form.paymentMethod}
+                onChange={(e) => {
+                  const v = e.target.value;
+                  setForm((f) => ({ ...f, paymentMethod: v, autoDebit: v === "auto_transfer" || v === "credit_card" }));
+                }}
+                className="mt-2 h-11 w-full rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-semibold outline-none focus:border-kx-accent"
+              >
+                <option value="auto_transfer">口座振替</option>
+                <option value="credit_card">信用卡</option>
+                <option value="konbini">便利店</option>
+                <option value="bank_transfer">银行转账</option>
+                <option value="invoice">收信件缴费</option>
+                <option value="other">其他</option>
+              </select>
+            </label>
+            <label className="flex items-center justify-between gap-3 rounded-2xl bg-kx-soft/50 px-3.5 py-2.5">
+              <span className="text-sm font-bold text-kx-text">自动扣款<span className="ml-1 font-semibold text-kx-muted">（只提醒核对余额）</span></span>
+              <input type="checkbox" checked={form.autoDebit} onChange={(e) => setForm((f) => ({ ...f, autoDebit: e.target.checked }))} className="h-5 w-5 accent-kx-accent" />
+            </label>
             <button type="submit" disabled={create.isPending} className="kx-button-primary h-11 w-full disabled:opacity-60">
               <Plus className="h-4 w-4" /> 添加到日历
             </button>
