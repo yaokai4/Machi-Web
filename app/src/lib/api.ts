@@ -973,6 +973,10 @@ export const api = {
     const { post } = await request<{ post: KXPost }>(on ? "POST" : "DELETE", `/api/posts/${encodeURIComponent(id)}/bookmark`);
     return post;
   },
+  async toggleMeetupJoin(id: string, on: boolean): Promise<KXPost> {
+    const { post } = await request<{ post: KXPost }>(on ? "POST" : "DELETE", `/api/posts/${encodeURIComponent(id)}/join`);
+    return post;
+  },
   async toggleRepost(id: string, on: boolean): Promise<KXPost> {
     const { post } = await request<{ post: KXPost }>(on ? "POST" : "DELETE", `/api/posts/${encodeURIComponent(id)}/repost`);
     return post;

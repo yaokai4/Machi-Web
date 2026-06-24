@@ -374,6 +374,8 @@ export interface KXPost {
   liked: boolean;
   bookmarked: boolean;
   reposted: boolean;
+  meetupGoing?: number;
+  meetupJoined?: boolean;
   tags: string[];
   media: KXMedia[];
   author?: KXUser | null;

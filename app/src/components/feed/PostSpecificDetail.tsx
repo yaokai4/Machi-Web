@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { MessageSquare, ShieldAlert } from "lucide-react";
+import { MessageSquare, ShieldAlert, Users, Check } from "lucide-react";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { CONTENT_TYPE_LABELS, type ContentType, type KXPost } from "@/lib/types";
@@ -18,6 +18,32 @@ export function PostSpecificDetailSection({ post }: { post: KXPost }) {
   const pushToast = useToasts((s) => s.push);
   const router = useRouter();
   const [openingDm, setOpeningDm] = useState(false);
+
+  // 約局 RSVP (meetup / dining / event): join with people_limit capacity.
+  const isMeetup = MEETUP_RSVP_TYPES.has(post.content_type ?? "dynamic");
+  const capacity = Number(post.attributes?.people_limit ?? post.attributes?.capacity ?? 0) || 0;
+  const [joined, setJoined] = useState(Boolean(post.meetupJoined));
+  const [going, setGoing] = useState(post.meetupGoing ?? 0);
+  const [joining, setJoining] = useState(false);
+  const isOwner = me?.id === post.author_id;
+  const full = capacity > 0 && going >= capacity && !joined;
+
+  const toggleJoin = async () => {
+    if (!me) { openAuthPrompt("generic"); return; }
+    if (isOwner) { pushToast({ kind: "info", message: "这是你发起的局" }); return; }
+    setJoining(true);
+    try {
+      const updated = await api.toggleMeetupJoin(post.id, !joined);
+      setJoined(Boolean(updated.meetupJoined));
+      setGoing(updated.meetupGoing ?? 0);
+      pushToast({ kind: "success", message: joined ? "已退出" : "报名成功，已通知发起人" });
+    } catch (err) {
+      if (isAuthRequiredError(err)) { openAuthPrompt("generic"); return; }
+      pushToast({ kind: "error", message: (err as APIError).message });
+    } finally {
+      setJoining(false);
+    }
+  };
 
   const openDm = async () => {
     if (!me) {
@@ -82,6 +108,29 @@ export function PostSpecificDetailSection({ post }: { post: KXPost }) {
           </div>
         ))}
       </dl>
+      {isMeetup ? (
+        <div className="mt-3 flex items-center justify-between gap-3 rounded-2xl bg-kx-accentSoft/60 px-3.5 py-2.5">
+          <div className="inline-flex items-center gap-1.5 text-sm font-bold text-kx-text">
+            <Users className="h-4 w-4 text-kx-accent" />
+            {going}{capacity > 0 ? ` / ${capacity}` : ""} 人已报名
+          </div>
+          {isOwner ? (
+            <span className="text-xs font-bold text-kx-muted">你发起的局</span>
+          ) : (
+            <button
+              type="button"
+              onClick={toggleJoin}
+              disabled={joining || (full && !joined)}
+              className={
+                "inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-sm font-bold transition disabled:opacity-60 " +
+                (joined ? "bg-kx-soft text-kx-text hover:bg-kx-stroke/40" : "bg-kx-accent text-white hover:opacity-95")
+              }
+            >
+              {joined ? <><Check className="h-4 w-4" /> 已报名</> : full ? "名额已满" : "报名参加"}
+            </button>
+          )}
+        </div>
+      ) : null}
       {showContact ? (
         <div className="mt-3 flex gap-2">
           <button
@@ -107,6 +156,8 @@ export function PostSpecificDetailSection({ post }: { post: KXPost }) {
     </section>
   );
 }
+
+const MEETUP_RSVP_TYPES: Set<ContentType> = new Set(["meetup", "dining", "event"]);
 
 const SHOW_CONTACT_BAR: Set<ContentType> = new Set([
   "secondhand",

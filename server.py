@@ -10326,6 +10326,10 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         "bookmarked": bool(extras.get("bookmarked")),
         "saved": bool(extras.get("bookmarked")),
         "isSaved": bool(extras.get("bookmarked")),
+        "meetupGoing": int(extras.get("meetup_going") or 0),
+        "meetup_going": int(extras.get("meetup_going") or 0),
+        "meetupJoined": bool(extras.get("meetup_joined")),
+        "meetup_joined": bool(extras.get("meetup_joined")),
         "reposted": bool(extras.get("reposted")),
         "isReposted": bool(extras.get("reposted")),
         "canEdit": can_manage,
@@ -10635,6 +10639,10 @@ def hydrate_post_extras(conn: sqlite3.Connection, post_ids: list[str], current_u
         f"SELECT target_id, COUNT(*) AS c FROM interactions WHERE kind='bookmark' AND target_id IN ({placeholders}) GROUP BY target_id",
         post_ids,
     )}
+    meetup_joins = {row["target_id"]: row["c"] for row in conn.execute(
+        f"SELECT target_id, COUNT(*) AS c FROM interactions WHERE kind='meetup_join' AND target_id IN ({placeholders}) GROUP BY target_id",
+        post_ids,
+    )}
     comments = {row["post_id"]: row["c"] for row in conn.execute(
         f"SELECT post_id, COUNT(*) AS c FROM comments WHERE deleted_at IS NULL AND post_id IN ({placeholders}) GROUP BY post_id",
         post_ids,
@@ -10643,6 +10651,7 @@ def hydrate_post_extras(conn: sqlite3.Connection, post_ids: list[str], current_u
     user_likes: set[str] = set()
     user_reposts: set[str] = set()
     user_bookmarks: set[str] = set()
+    user_joins: set[str] = set()
     if current_user_id:
         for row in conn.execute(
             f"SELECT target_id, kind FROM interactions WHERE user_id=? AND target_id IN ({placeholders})",
@@ -10654,6 +10663,8 @@ def hydrate_post_extras(conn: sqlite3.Connection, post_ids: list[str], current_u
                 user_reposts.add(row["target_id"])
             elif row["kind"] == "bookmark":
                 user_bookmarks.add(row["target_id"])
+            elif row["kind"] == "meetup_join":
+                user_joins.add(row["target_id"])
 
     tags_by_post: dict[str, list[str]] = {pid: [] for pid in post_ids}
     for row in conn.execute(
@@ -10753,6 +10764,8 @@ def hydrate_post_extras(conn: sqlite3.Connection, post_ids: list[str], current_u
             "liked": pid in user_likes,
             "reposted": pid in user_reposts,
             "bookmarked": pid in user_bookmarks,
+            "meetup_going": meetup_joins.get(pid, 0),
+            "meetup_joined": pid in user_joins,
             "can_interact": bool(current_user_id),
             "viewer": {"id": current_user_id} if current_user_id else None,
             "tags": tags_by_post.get(pid, []),
@@ -21413,6 +21426,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_post_interaction(conn, post_id, "bookmark", True)
             if rest == "save" and method == "DELETE":
                 return self.api_post_interaction(conn, post_id, "bookmark", False)
+            if rest == "join" and method == "POST":
+                return self.api_meetup_join(conn, post_id, True)
+            if rest == "join" and method == "DELETE":
+                return self.api_meetup_join(conn, post_id, False)
+            if rest == "participants" and method == "GET":
+                return self.api_meetup_participants(conn, post_id)
             if rest == "repost" and method == "POST":
                 return self.api_repost(conn, post_id, True)
             if rest == "repost" and method == "DELETE":
@@ -29164,6 +29183,57 @@ class Handler(BaseHTTPRequestHandler):
         fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
         posts = fetch_posts_with_extras(conn, [fresh], user["id"])
         self.send_json({"post": posts[0]})
+
+    def api_meetup_join(self, conn: sqlite3.Connection, post_id: str, on: bool) -> None:
+        """RSVP to a 約局 (meetup / dining / event). Reuses the interactions table
+        (kind='meetup_join'); enforces the post's people_limit capacity. Returns
+        the refreshed post so the client gets the new going count + joined state."""
+        user = self.require_user(conn)
+        post = conn.execute("SELECT * FROM posts WHERE id = ? AND deleted_at IS NULL", (post_id,)).fetchone()
+        if not post:
+            raise APIError("帖子不存在", 404, "post_not_found")
+        if (post["content_type"] or "") not in ("meetup", "dining", "event"):
+            raise APIError("这条内容不支持报名", 400, "not_a_meetup")
+        existing = conn.execute(
+            "SELECT id FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'meetup_join'",
+            (post_id, user["id"]),
+        ).fetchone()
+        if on and not existing:
+            attrs = decode_post_attributes(post["attributes"])
+            try:
+                limit = int(attrs.get("people_limit") or attrs.get("capacity") or 0)
+            except (TypeError, ValueError):
+                limit = 0
+            going = conn.execute(
+                "SELECT COUNT(*) AS c FROM interactions WHERE target_id = ? AND kind = 'meetup_join'",
+                (post_id,),
+            ).fetchone()["c"]
+            if limit > 0 and int(going) >= limit:
+                raise APIError("名额已满", 409, "meetup_full")
+            conn.execute(
+                "INSERT INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, 'meetup_join', ?)",
+                (str(uuid.uuid4()), post_id, user["id"], now_iso()),
+            )
+        elif not on and existing:
+            conn.execute("DELETE FROM interactions WHERE id = ?", (existing["id"],))
+        fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
+        posts = fetch_posts_with_extras(conn, [fresh], user["id"])
+        self.send_json({"post": posts[0]})
+
+    def api_meetup_participants(self, conn: sqlite3.Connection, post_id: str) -> None:
+        """The going-list for a 約局 — who's joined, for the host + attendees."""
+        viewer = self.current_session(conn)
+        rows = conn.execute(
+            "SELECT user_id FROM interactions WHERE target_id = ? AND kind = 'meetup_join' ORDER BY created_at",
+            (post_id,),
+        ).fetchall()
+        ids = [r["user_id"] for r in rows]
+        users = []
+        if ids:
+            ph = ",".join("?" * len(ids))
+            umap = {u["id"]: u for u in conn.execute(f"SELECT * FROM users WHERE id IN ({ph})", ids)}
+            users = [serialize_user(dict(umap[i])) for i in ids if i in umap]
+        self.send_json({"participants": users, "count": len(users)})
 
     def api_repost(self, conn: sqlite3.Connection, post_id: str, on: bool) -> None:
         user = self.require_user(conn)
