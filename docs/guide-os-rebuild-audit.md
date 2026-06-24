@@ -357,3 +357,4 @@ The final product structure keeps action first without removing the existing Gui
 - iOS offline fallback now includes 资料与服务, so the sixth area does not disappear during a temporary network outage.
 - iOS Todo detail restores unsaved in-session edits and offers a clear-draft action.
 - iOS Calendar now accepts drag-and-drop moves in month and week views for both Todo-derived items and first-class events; Todo rescheduling refreshes the current calendar immediately.
+- Web `/guide` now has a server-rendered guest fallback. Even if the backend fetch is briefly unavailable during SSR, the returned HTML contains Today, sample actions, all six knowledge areas, school/company libraries, and login/register actions instead of a skeleton-only document.
