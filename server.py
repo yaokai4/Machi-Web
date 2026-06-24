@@ -16881,6 +16881,62 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
 
+    def _guide_spawn_recurrence(self, conn: sqlite3.Connection, row: Any) -> None:
+        """Completing a daily/weekly/monthly recurring todo spawns its next
+        occurrence (advanced by the interval, fresh status, no carried subtasks),
+        idempotently. Keeps habit todos alive instead of vanishing on completion.
+        Capped at +400 days so it can never run away."""
+        try:
+            d = dict(row)
+            rec = (d.get("recurrence") or "").strip().lower()
+            if rec not in ("daily", "weekly", "monthly"):
+                return
+            base = (d.get("planned_date") or d.get("due_at") or "")[:10]
+            if not base:
+                return
+            base_dt = datetime.strptime(base, "%Y-%m-%d").date()
+            if rec == "daily":
+                nxt = base_dt + timedelta(days=1)
+            elif rec == "weekly":
+                nxt = base_dt + timedelta(days=7)
+            else:
+                month = base_dt.month + 1
+                year = base_dt.year + (1 if month > 12 else 0)
+                month = month - 12 if month > 12 else month
+                nxt = datetime(year, month, min(base_dt.day, 28)).date()
+            if (nxt - _guide_today_date().date()).days > 400:
+                return
+            next_iso = nxt.isoformat()
+            dup = conn.execute(
+                "SELECT 1 FROM guide_todos WHERE user_id = ? AND title = ? "
+                "AND substr(COALESCE(planned_date, due_at, ''), 1, 10) = ? AND status != 'done' LIMIT 1",
+                (d.get("user_id"), d.get("title"), next_iso),
+            ).fetchone()
+            if dup:
+                return
+            reminder = None
+            if d.get("reminder_at"):
+                try:
+                    lead = (base_dt - datetime.strptime(str(d["reminder_at"])[:10], "%Y-%m-%d").date()).days
+                    reminder = _guide_date_minus(next_iso, lead)
+                except Exception:
+                    reminder = None
+            self._guide_todo_insert(
+                conn, user_id=d.get("user_id"), plan_id=d.get("plan_id") or "",
+                source_type=d.get("source_type") or "", source_id=d.get("source_id") or "",
+                journey_key=d.get("journey_key") or "", step_key=d.get("step_key") or "",
+                title=d.get("title") or "", summary=d.get("summary") or "",
+                todo_type=d.get("todo_type") or "guide_step", priority=d.get("priority") or "normal",
+                planned_date=next_iso, due_at=next_iso, reminder_at=reminder,
+                estimated_minutes=int(d.get("estimated_minutes") or 0), notes=d.get("notes") or "",
+                article_slugs=d.get("related_article_slugs") or "",
+                product_slugs=d.get("related_product_slugs") or "",
+                service_slugs=d.get("related_service_slugs") or "",
+                recurrence=rec,
+            )
+        except Exception:
+            pass
+
     def api_guide_todo_update(self, conn: sqlite3.Connection, todo_id: str, complete: bool = False, reminder_only: bool = False) -> None:
         user = self.require_user(conn)
         body = self.read_json()
@@ -16930,6 +16986,9 @@ class Handler(BaseHTTPRequestHandler):
         if complete or (not complete and str(body.get("status") or "") == "done"):
             _guide_funnel_log("todo_completed", user_id=user["id"], todoType=todo["todo_type"] if todo else "")
             self._guide_set_reminder_status(conn, user_id=user["id"], todo_id=todo_id, status="completed")
+            # Daily/weekly/monthly habits: completing one spawns the next
+            # occurrence so it reappears instead of vanishing for good.
+            self._guide_spawn_recurrence(conn, todo)
         elif "reminderAt" in body:
             if todo["reminder_at"]:
                 self._guide_schedule_reminders(
