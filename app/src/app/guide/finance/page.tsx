@@ -243,7 +243,8 @@ export default function GuideFinancePage() {
             {s && s.byCategory.length ? (
               <section>
                 <h2 className="mb-3 text-xl font-black text-kx-text">本月分类支出</h2>
-                <div className="space-y-2.5">
+                <CategoryDonut data={s.byCategory} total={s.expense} catLabel={catLabel} money={money} />
+                <div className="mt-4 space-y-2.5">
                   {s.byCategory.map((c) => {
                     const b = s.budgets.find((x) => x.category === c.category);
                     const pct = b && b.limit > 0 ? Math.min(100, Math.round((c.amount / b.limit) * 100)) : 0;
@@ -312,6 +313,42 @@ export default function GuideFinancePage() {
         </section>
       </main>
     </GuideShell>
+  );
+}
+
+const CAT_COLORS = ["#147067", "#e8893b", "#5b8def", "#d9534f", "#9b59b6", "#3aa17e", "#e0b020", "#7a8aa0", "#c45c8a"];
+
+function CategoryDonut({ data, total, catLabel, money }: { data: { category: string; amount: number }[]; total: number; catLabel: Record<string, string>; money: (n: number) => string }) {
+  if (total <= 0) return null;
+  const top = data.slice(0, 8);
+  const rest = data.slice(8).reduce((sum, d) => sum + d.amount, 0);
+  const segs = rest > 0 ? [...top, { category: "__other", amount: rest }] : top;
+  let acc = 0;
+  const stops = segs.map((d, i) => {
+    const from = (acc / total) * 360;
+    acc += d.amount;
+    const to = (acc / total) * 360;
+    return `${CAT_COLORS[i % CAT_COLORS.length]} ${from}deg ${to}deg`;
+  });
+  return (
+    <div className="kx-card flex flex-col items-center gap-4 p-4 sm:flex-row sm:items-center">
+      <div className="relative shrink-0" style={{ width: 132, height: 132 }}>
+        <div className="h-full w-full rounded-full" style={{ background: `conic-gradient(${stops.join(",")})` }} />
+        <div className="absolute inset-[18%] flex flex-col items-center justify-center rounded-full bg-kx-card">
+          <span className="text-[10px] font-bold text-kx-muted">本月支出</span>
+          <span className="text-sm font-black text-kx-text">{money(total)}</span>
+        </div>
+      </div>
+      <div className="grid w-full grid-cols-2 gap-x-4 gap-y-1.5">
+        {segs.map((d, i) => (
+          <div key={d.category} className="flex items-center gap-1.5 text-xs font-semibold">
+            <i className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm" style={{ background: CAT_COLORS[i % CAT_COLORS.length] }} />
+            <span className="truncate text-kx-text">{d.category === "__other" ? "其他" : catLabel[d.category] || d.category}</span>
+            <span className="ml-auto shrink-0 text-kx-muted">{Math.round((d.amount / total) * 100)}%</span>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
