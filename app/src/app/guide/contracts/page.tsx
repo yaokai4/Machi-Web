@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Archive, CalendarClock, FileSignature, Pencil, Plus, Trash2 } from "lucide-react";
+import { Archive, CalendarClock, FileSignature, Lock, Pencil, Plus, Trash2 } from "lucide-react";
 import { guide, type GuideContract } from "@/lib/guide";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { EmptyPanel } from "@/components/guide/GuideOS";
@@ -102,6 +102,9 @@ export default function GuideContractsPage() {
         <section className="grid gap-6 xl:grid-cols-[390px_minmax(0,1fr)]">
           <form className="kx-card space-y-4 p-5" onSubmit={(event) => { event.preventDefault(); save.mutate(); }}>
             <h2 className="text-lg font-black text-kx-text">{editingId ? "编辑合同" : "添加合同"}</h2>
+            <p className="flex items-center gap-1.5 rounded-xl bg-kx-accentSoft/60 px-3 py-2 text-xs font-semibold text-kx-subtle">
+              <Lock className="h-3.5 w-3.5 text-kx-accent" /> 只记关键信息，不收合同原件 · 你的隐私由你掌握
+            </p>
             <SelectField label="合同类型" value={form.category} onChange={(value) => setForm((f) => ({ ...f, category: value }))} options={categories} />
             <TextField label="合同名称" value={form.title} onChange={(value) => setForm((f) => ({ ...f, title: value }))} placeholder="东京公寓租赁合同" />
             <TextField label="机构 / 对方" value={form.provider} onChange={(value) => setForm((f) => ({ ...f, provider: value }))} placeholder="管理会社 / 运营商 / 公司" />
