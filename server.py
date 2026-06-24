@@ -16906,7 +16906,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             d = dict(row)
             rec = (d.get("recurrence") or "").strip().lower()
-            if rec not in ("daily", "weekly", "monthly"):
+            if rec not in ("daily", "weekly", "monthly", "yearly"):
                 return
             base = (d.get("planned_date") or d.get("due_at") or "")[:10]
             if not base:
@@ -16916,6 +16916,8 @@ class Handler(BaseHTTPRequestHandler):
                 nxt = base_dt + timedelta(days=1)
             elif rec == "weekly":
                 nxt = base_dt + timedelta(days=7)
+            elif rec == "yearly":
+                nxt = datetime(base_dt.year + 1, base_dt.month, min(base_dt.day, 28)).date()
             else:
                 month = base_dt.month + 1
                 year = base_dt.year + (1 if month > 12 else 0)
@@ -17420,6 +17422,7 @@ class Handler(BaseHTTPRequestHandler):
                                     title=todo_title, summary=todo_summary,
                                     todo_type="life_payment", due_at=due_at, reminder_at=reminder_at,
                                     priority="normal" if auto_debit else "high",
+                                    recurrence=recurrence if recurrence in ("monthly", "yearly", "weekly") else "",
                                     product_slugs="bank-account-document-checklist,mobile-plan-comparison,work-visa-change-checklist",
                                     service_slugs="japan-life-consultation,japanese-phone-call-proxy,delivery-utility-call")
         item = conn.execute("SELECT * FROM guide_life_items WHERE id = ?", (item_id,)).fetchone()
