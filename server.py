@@ -3067,6 +3067,10 @@ def _pg_xlate(sql: str, has_params: bool) -> str:
 # when saturated instead of queueing unboundedly.
 KAIX_PG_POOL_MAX = max(1, int(_env("KAIX_PG_POOL_MAX", "20")))
 KAIX_PG_POOL_ACQUIRE_TIMEOUT_SEC = float(_env("KAIX_PG_POOL_ACQUIRE_TIMEOUT_SEC", "5"))
+# Bound any single query so a runaway statement frees its thread + pool slot
+# instead of pinning them forever (the real "request timeout" for a DB-bound
+# request). 0 disables. Generous default — only kills genuinely stuck queries.
+KAIX_PG_STATEMENT_TIMEOUT_MS = max(0, int(_env("KAIX_PG_STATEMENT_TIMEOUT_MS", "15000")))
 
 
 class _PgPool:
@@ -3076,12 +3080,22 @@ class _PgPool:
         self._lock = threading.Lock()
         self._idle: list[Any] = []
         self._sem = threading.BoundedSemaphore(maxconn)
+        self._maxconn = maxconn
+        self._in_use = 0      # gauge: connections currently checked out
+        self._peak = 0        # high-water mark since boot (saturation signal)
+        self._busy_rejects = 0  # times we shed load with 503
 
     def acquire(self) -> Any:
         import psycopg2
         if not self._sem.acquire(timeout=self._acquire_timeout):
             # Saturated: shed load instead of stacking blocked threads.
+            with self._lock:
+                self._busy_rejects += 1
             raise APIError("服务器繁忙，请稍后再试", 503, "server_busy")
+        with self._lock:
+            self._in_use += 1
+            if self._in_use > self._peak:
+                self._peak = self._in_use
         try:
             while True:
                 with self._lock:
@@ -3096,10 +3110,24 @@ class _PgPool:
                     pass
             raw = psycopg2.connect(self._dsn or "dbname=machi_dev")
             raw.autocommit = True  # mirror sqlite isolation_level=None
+            if KAIX_PG_STATEMENT_TIMEOUT_MS > 0:
+                try:
+                    cur = raw.cursor()
+                    cur.execute("SET statement_timeout = %s", (KAIX_PG_STATEMENT_TIMEOUT_MS,))
+                    cur.close()
+                except Exception:
+                    pass
             return raw
         except BaseException:
+            with self._lock:
+                self._in_use -= 1
             self._sem.release()
             raise
+
+    def stats(self) -> dict[str, int]:
+        with self._lock:
+            return {"in_use": self._in_use, "peak": self._peak, "idle": len(self._idle),
+                    "max": self._maxconn, "busy_rejects": self._busy_rejects}
 
     @staticmethod
     def _ping(raw: Any) -> bool:
@@ -3138,6 +3166,8 @@ class _PgPool:
             with self._lock:
                 self._idle.append(raw)
         finally:
+            with self._lock:
+                self._in_use -= 1
             self._sem.release()
 
 
@@ -3152,6 +3182,26 @@ def _pg_pool() -> _PgPool:
             if _PG_POOL is None:
                 _PG_POOL = _PgPool(KAIX_PG_DSN, KAIX_PG_POOL_MAX, KAIX_PG_POOL_ACQUIRE_TIMEOUT_SEC)
     return _PG_POOL
+
+
+# Requests slower than this get a WARN line (with pool stats) so slow endpoints
+# surface in the logs without an external APM. 0 disables.
+KAIX_SLOW_REQUEST_MS = max(0, int(_env("KAIX_SLOW_REQUEST_MS", "1500")))
+
+
+def _pg_pool_stats() -> dict[str, int] | None:
+    """Pool gauge for health/metrics; None on SQLite (no pool)."""
+    if KAIX_DB_BACKEND != "postgres" or _PG_POOL is None:
+        return None
+    try:
+        return _PG_POOL.stats()
+    except Exception:
+        return None
+
+
+def _pg_pool_stat_suffix() -> str:
+    s = _pg_pool_stats()
+    return f" pool={s['in_use']}/{s['max']}" if s else ""
 
 
 class _PgConn:
@@ -21765,7 +21815,11 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 with db() as conn:
                     conn.execute("SELECT 1").fetchone()
-                self.send_json({"ready": True, "database": KAIX_DB_BACKEND})
+                payload = {"ready": True, "database": KAIX_DB_BACKEND}
+                pstats = _pg_pool_stats()
+                if pstats is not None:
+                    payload["pgPool"] = pstats
+                self.send_json(payload)
                 ACCESS_LOG.info('%s "GET %s" 200 ip=%s', self._request_id, path, ip)
             except Exception as exc:
                 self.send_error_json(f"db: {exc}", 503, "not_ready")
@@ -21859,6 +21913,12 @@ class Handler(BaseHTTPRequestHandler):
                 '%s "%s %s" %d ip=%s ms=%.1f',
                 self._request_id, method, path, status_code, ip, duration_ms,
             )
+            # Surface slow endpoints (with pool saturation) without an APM.
+            if KAIX_SLOW_REQUEST_MS and duration_ms >= KAIX_SLOW_REQUEST_MS:
+                ERR_LOG.warning(
+                    'SLOW %s "%s %s" %d ms=%.0f ip=%s%s',
+                    self._request_id, method, path, status_code, duration_ms, ip, _pg_pool_stat_suffix(),
+                )
             # Best-effort visitor analytics. We pass ONLY coarse access
             # metadata — never the Authorization header, cookies, request
             # body, query string, or any secret. `path` here is already the
