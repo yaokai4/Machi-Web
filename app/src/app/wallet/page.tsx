@@ -52,7 +52,7 @@ export default function WalletPage() {
       .then(async (res) => {
         await refresh();
         if (res.status === "fulfilled") {
-          pushToast({ kind: "success", message: `已到账 ${res.grantedPoints ?? 0} 点` });
+          pushToast({ kind: "success", message: `已到账 ${res.grantedPoints ?? 0} 币` });
         }
       })
       .catch(() => {
@@ -97,12 +97,12 @@ export default function WalletPage() {
       <div className="mx-auto w-full max-w-2xl space-y-4 px-4 py-6">
         <header className="flex items-center gap-2">
           <Coins className="h-6 w-6 text-kx-accent" />
-          <h1 className="text-xl font-semibold text-kx-text">Machi 点数钱包</h1>
+          <h1 className="text-xl font-semibold text-kx-text">Machi 币钱包</h1>
         </header>
 
         {!user ? (
           <section className="kx-card text-center space-y-3">
-            <p className="text-kx-subtle">登录后查看你的 Machi 点数余额与充值。</p>
+            <p className="text-kx-subtle">登录后查看你的 Machi 币余额与充值。</p>
             <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-primary mx-auto justify-center">
               登录 / 注册
             </button>
@@ -128,7 +128,7 @@ export default function WalletPage() {
             <section className="kx-card space-y-3">
               <div className="flex items-center gap-2">
                 <Sparkles className="h-5 w-5 text-kx-accent" />
-                <h2 className="font-semibold text-kx-text">充值点数</h2>
+                <h2 className="font-semibold text-kx-text">充值 Machi 币</h2>
               </div>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 {packs.map((pack) => (
@@ -205,7 +205,7 @@ function ledgerLabel(entryType: string): string {
     case "admin_adjustment":
       return "客服调整";
     case "membership_bonus":
-      return "会员赠点";
+      return "会员赠币";
     default:
       return entryType;
   }

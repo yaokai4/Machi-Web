@@ -4237,7 +4237,7 @@ def default_membership_benefits() -> list[dict[str, Any]]:
         ("life_checklist", "日本生活清单会员可看", "查看入境、租房、手续等生活清单。", "list.bullet.clipboard"),
         ("service_priority", "服务预约优先处理", "人工服务预约优先进入处理队列。", "person.wave.2"),
         ("service_discount", "指定服务会员优惠", "指定服务支持会员折扣价。", "tag"),
-        ("member_points_price", "会员点数价", "用 Machi 点数购买资料时享更低会员价。", "circle.hexagongrid.fill"),
+        ("member_points_price", "Machi 币会员价", "用 Machi 币购买资料时享更低会员价。", "circle.hexagongrid.fill"),
         ("purchase_center", "已购资料统一管理", "集中管理已购资料与会员可看内容。", "tray.full"),
     ]
     return [
@@ -4328,9 +4328,9 @@ MEMBERSHIP_BENEFIT_I18N: dict[str, dict[str, tuple[str, str]]] = {
         "ja": ("対象サービスのメンバー割引", "対象サービスをメンバー割引で利用できます。"),
     },
     "member_points_price": {
-        "zh": ("会员点数价", "用 Machi 点数购买资料时享更低会员价。"),
-        "en": ("Member points pricing", "Pay fewer Machi Points on materials as a member."),
-        "ja": ("メンバーポイント価格", "資料購入時に Machi ポイントのメンバー価格が適用されます。"),
+        "zh": ("Machi 币会员价", "用 Machi 币购买资料时享更低会员价。"),
+        "en": ("Member coin pricing", "Pay fewer Machi Coins on materials as a member."),
+        "ja": ("メンバーコイン価格", "資料購入時に Machi コインのメンバー価格が適用されます。"),
     },
     "purchase_center": {
         "zh": ("已购资料统一管理", "集中管理已购资料与会员可看内容。"),
@@ -6996,8 +6996,8 @@ def serialize_guide_product(row: sqlite3.Row | dict[str, Any], *, include_privat
         "wallet_price_points": int(d.get("wallet_price_points") or 0),
         "memberWalletPricePoints": int(d.get("member_wallet_price_points") or 0),
         "member_wallet_price_points": int(d.get("member_wallet_price_points") or 0),
-        "pointsPriceLabel": (f"{int(d.get('wallet_price_points') or 0):,} 点" if int(d.get("wallet_price_points") or 0) > 0 else ""),
-        "memberPointsPriceLabel": (f"会员 {int(d.get('member_wallet_price_points') or 0):,} 点" if int(d.get("member_wallet_price_points") or 0) > 0 else ""),
+        "pointsPriceLabel": (f"{int(d.get('wallet_price_points') or 0):,} 币" if int(d.get("wallet_price_points") or 0) > 0 else ""),
+        "memberPointsPriceLabel": (f"会员 {int(d.get('member_wallet_price_points') or 0):,} 币" if int(d.get("member_wallet_price_points") or 0) > 0 else ""),
         "walletEligible": bool(d.get("wallet_eligible")), "wallet_eligible": bool(d.get("wallet_eligible")),
         "appStoreEligible": bool(d.get("app_store_eligible", 1)),
         "googlePlayEligible": bool(d.get("google_play_eligible", 1)),
@@ -13190,11 +13190,11 @@ def record_payment_webhook(conn: sqlite3.Connection, provider: str, event_type: 
 #     transition) so a webhook + a client confirm can't double-credit.
 # ---------------------------------------------------------------------------
 
-WALLET_POINTS_NAME = "Machi Points"
-WALLET_POINTS_NAME_ZH = "Machi 点数"
-WALLET_POINTS_UNIT = "点"
+WALLET_POINTS_NAME = "Machi Coins"
+WALLET_POINTS_NAME_ZH = "Machi 币"
+WALLET_POINTS_UNIT = "币"
 WALLET_DISCLAIMER = (
-    "Machi 点数仅可用于 Machi 内的数字资料、模板与平台服务，"
+    "Machi 币仅可用于 Machi 内的数字资料、模板与平台服务，"
     "不可提现、不可转让、不可兑换现金，且不会过期。"
 )
 
@@ -13203,15 +13203,15 @@ WALLET_DISCLAIMER = (
 # up 1:1 with App Store Connect / Play Console product ids.
 # (pack_key, title, subtitle, points, bonus_points, amount_cents, currency)
 WALLET_TOPUP_SEED: list[tuple[str, str, str, int, int, int, str]] = [
-    ("machi_points_600", "600 Machi 点数", "小资料 / 模板", 600, 0, 600, "CNY"),
-    ("machi_points_1800", "1800 Machi 点数", "常用资料包 · 多送 100", 1800, 100, 1800, "CNY"),
-    ("machi_points_3000", "3000 Machi 点数", "组合包 · 多送 200", 3000, 200, 2800, "CNY"),
-    ("machi_points_6800", "6800 Machi 点数", "深度资料 · 多送 600", 6800, 600, 6800, "CNY"),
-    ("machi_points_9800", "9800 Machi 点数", "多次购买 · 多送 1000", 9800, 1000, 9800, "CNY"),
-    ("machi_points_12800", "12800 Machi 点数", "学习季囤点 · 多送 1600", 12800, 1600, 12800, "CNY"),
-    ("machi_points_19800", "19800 Machi 点数", "重度使用 · 多送 3000", 19800, 3000, 19800, "CNY"),
-    ("machi_points_32800", "32800 Machi 点数", "超值大包 · 多送 5800", 32800, 5800, 29800, "CNY"),
-    ("machi_points_64800", "64800 Machi 点数", "顶配大包 · 多送 13000", 64800, 13000, 59800, "CNY"),
+    ("machi_points_600", "600 Machi 币", "小资料 / 模板", 600, 0, 600, "CNY"),
+    ("machi_points_1800", "1800 Machi 币", "常用资料包 · 多送 100", 1800, 100, 1800, "CNY"),
+    ("machi_points_3000", "3000 Machi 币", "组合包 · 多送 200", 3000, 200, 2800, "CNY"),
+    ("machi_points_6800", "6800 Machi 币", "深度资料 · 多送 600", 6800, 600, 6800, "CNY"),
+    ("machi_points_9800", "9800 Machi 币", "多次购买 · 多送 1000", 9800, 1000, 9800, "CNY"),
+    ("machi_points_12800", "12800 Machi 币", "学习季囤币 · 多送 1600", 12800, 1600, 12800, "CNY"),
+    ("machi_points_19800", "19800 Machi 币", "重度使用 · 多送 3000", 19800, 3000, 19800, "CNY"),
+    ("machi_points_32800", "32800 Machi 币", "超值大包 · 多送 5800", 32800, 5800, 29800, "CNY"),
+    ("machi_points_64800", "64800 Machi 币", "顶配大包 · 多送 13000", 64800, 13000, 59800, "CNY"),
 ]
 
 

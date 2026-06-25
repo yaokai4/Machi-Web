@@ -111,7 +111,7 @@ export default function GuideProductPage() {
     if (!user) return openAuthPrompt("generic");
     const ctx = p.pointsContext;
     if (ctx && !ctx.sufficient) {
-      pushToast({ kind: "info", message: locale === "en" ? "Not enough points — top up first." : locale === "ja" ? "ポイントが不足しています。チャージしてください。" : "点数不足，请先充值。" });
+      pushToast({ kind: "info", message: locale === "en" ? "Not enough Machi Coins — top up first." : locale === "ja" ? "Machi コインが不足しています。チャージしてください。" : "Machi 币不足，请先充值。" });
       router.push("/wallet");
       return;
     }
@@ -119,13 +119,13 @@ export default function GuideProductPage() {
     try {
       const r = await guide.purchase(p.slug, { paymentMethod: "wallet" });
       if (r.status === "fulfilled") {
-        pushToast({ kind: "success", message: r.message || (locale === "en" ? "Purchased with points." : locale === "ja" ? "ポイントで購入しました。" : "已用点数购买。") });
+        pushToast({ kind: "success", message: r.message || (locale === "en" ? "Purchased with Machi Coins." : locale === "ja" ? "Machi コインで購入しました。" : "已用 Machi 币购买。") });
         q.refetch();
       }
     } catch (err) {
       const code = (err as { code?: string })?.code;
       if (code === "INSUFFICIENT_POINTS") {
-        pushToast({ kind: "info", message: locale === "en" ? "Not enough points — top up first." : locale === "ja" ? "ポイントが不足しています。チャージしてください。" : "点数不足，请先充值。" });
+        pushToast({ kind: "info", message: locale === "en" ? "Not enough Machi Coins — top up first." : locale === "ja" ? "Machi コインが不足しています。チャージしてください。" : "Machi 币不足，请先充值。" });
         router.push("/wallet");
       } else {
         pushToast({ kind: "error", message: locale === "en" ? "Action failed. Please try again later." : locale === "ja" ? "操作に失敗しました。" : "操作失败，请稍后再试。" });
@@ -196,7 +196,7 @@ export default function GuideProductPage() {
                 {p.canBuyWithPoints ? (
                   <button type="button" onClick={onBuyWithPoints} disabled={busy} className="kx-button-ghost inline-flex h-10 items-center gap-1.5 px-4 disabled:opacity-60">
                     <Coins className="h-4 w-4 text-amber-500" />
-                    {(p.pointsContext?.requiredPoints ?? p.walletPricePoints ?? 0).toLocaleString()} {locale === "en" ? "pts" : "点"}
+                    {(p.pointsContext?.requiredPoints ?? p.walletPricePoints ?? 0).toLocaleString()} {locale === "en" ? "coins" : "币"}
                   </button>
                 ) : null}
               </div>
@@ -205,10 +205,10 @@ export default function GuideProductPage() {
           {p.canBuyWithPoints && p.pointsContext && !p.pointsContext.sufficient ? (
             <p className="mt-2 text-xs text-kx-muted">
               {locale === "en"
-                ? `Your balance: ${p.pointsContext.currentBalance.toLocaleString()} pts — top up to buy with points.`
+                ? `Your balance: ${p.pointsContext.currentBalance.toLocaleString()} coins — top up to buy with Machi Coins.`
                 : locale === "ja"
-                  ? `残高：${p.pointsContext.currentBalance.toLocaleString()} 点 — ポイント購入にはチャージが必要です。`
-                  : `当前余额 ${p.pointsContext.currentBalance.toLocaleString()} 点，充值后可用点数购买。`}
+                  ? `残高：${p.pointsContext.currentBalance.toLocaleString()} コイン — Machi コインの購入にはチャージが必要です。`
+                  : `当前余额 ${p.pointsContext.currentBalance.toLocaleString()} 币，充值后可用 Machi 币购买。`}
             </p>
           ) : null}
 

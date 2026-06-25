@@ -30,7 +30,7 @@ export default function WalletLedgerPage() {
           <Link href="/wallet" className="text-kx-subtle hover:text-kx-text">
             <ArrowLeft className="h-5 w-5" />
           </Link>
-          <h1 className="text-xl font-semibold text-kx-text">点数记录</h1>
+          <h1 className="text-xl font-semibold text-kx-text">Machi 币记录</h1>
         </header>
 
         {!user ? (
@@ -111,7 +111,7 @@ function ledgerLabel(entryType: string): string {
     case "admin_adjustment":
       return "客服调整";
     case "membership_bonus":
-      return "会员赠点";
+      return "会员赠币";
     default:
       return entryType;
   }

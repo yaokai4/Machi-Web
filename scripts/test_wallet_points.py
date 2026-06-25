@@ -74,7 +74,7 @@ class WalletFoundationTests(unittest.TestCase):
         snap = server.get_wallet_snapshot(self.conn, uid)
         self.assertEqual(snap["balancePoints"], 0)
         self.assertEqual(snap["status"], "active")
-        self.assertEqual(snap["pointsName"], "Machi Points")
+        self.assertEqual(snap["pointsName"], "Machi Coins")
         self.assertIn("不可提现", snap["disclaimer"])
         # idempotent: a second ensure does not create a duplicate account
         server.ensure_wallet_account(self.conn, uid)
@@ -194,7 +194,7 @@ class WalletFoundationTests(unittest.TestCase):
         self.assertTrue(s["walletEligible"])
         self.assertEqual(s["walletPricePoints"], 480)
         self.assertEqual(s["memberWalletPricePoints"], 380)
-        self.assertEqual(s["pointsPriceLabel"], "480 点")
+        self.assertEqual(s["pointsPriceLabel"], "480 币")
         self.assertTrue(s["canBuyWithPoints"])
         self.assertEqual(s["platformPolicy"], "digital_iap_required")
         self.assertEqual(s["fulfillmentType"], "digital_unlock")

@@ -35,7 +35,7 @@ export default function AdminWalletPage() {
           <ArrowLeft className="h-4 w-4" /> 管理后台
         </Link>
         <h1 className="mt-1 inline-flex items-center gap-2 text-lg font-black">
-          <Coins className="h-5 w-5 text-amber-500" /> 点数钱包
+          <Coins className="h-5 w-5 text-amber-500" /> Machi 币钱包
         </h1>
       </header>
       <main className="space-y-3 px-3 py-3 sm:px-4">
@@ -67,10 +67,10 @@ function OverviewCard() {
       ) : (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <Metric label="账户数" value={d.accounts.toLocaleString()} />
-          <Metric label="流通点数" value={d.outstandingPoints.toLocaleString()} />
-          <Metric label="累计充值点数" value={d.lifetimePurchasedPoints.toLocaleString()} />
-          <Metric label="累计消费点数" value={d.lifetimeSpentPoints.toLocaleString()} />
-          <Metric label="累计赠送点数" value={d.lifetimeBonusPoints.toLocaleString()} />
+          <Metric label="流通 Machi 币" value={d.outstandingPoints.toLocaleString()} />
+          <Metric label="累计充值" value={d.lifetimePurchasedPoints.toLocaleString()} />
+          <Metric label="累计消费" value={d.lifetimeSpentPoints.toLocaleString()} />
+          <Metric label="累计赠送" value={d.lifetimeBonusPoints.toLocaleString()} />
           <Metric label="已付充值订单" value={d.paidTopupOrders.toLocaleString()} />
           <Metric label="充值总额(分)" value={d.grossTopupCents.toLocaleString()} />
         </div>
@@ -99,7 +99,7 @@ function AdjustCard() {
   const submit = async () => {
     const d = parseInt(delta, 10);
     if (!userId.trim() || !reason.trim() || !Number.isFinite(d) || d === 0) {
-      pushToast({ kind: "error", message: "用户ID、非零点数和原因均必填" });
+      pushToast({ kind: "error", message: "用户ID、非零币值和原因均必填" });
       return;
     }
     setBusy(true);
@@ -121,7 +121,7 @@ function AdjustCard() {
     <Card title="人工调整（写入账本）">
       <div className="grid gap-2 sm:grid-cols-3">
         <input className={inp} placeholder="用户 ID" value={userId} onChange={(e) => setUserId(e.target.value)} />
-        <input className={inp} placeholder="点数增减（可为负）" value={delta} onChange={(e) => setDelta(e.target.value)} inputMode="numeric" />
+        <input className={inp} placeholder="Machi 币增减（可为负）" value={delta} onChange={(e) => setDelta(e.target.value)} inputMode="numeric" />
         <input className={inp} placeholder="原因（必填）" value={reason} onChange={(e) => setReason(e.target.value)} />
       </div>
       <button type="button" onClick={submit} disabled={busy} className="kx-button-primary mt-3 h-10 px-5 disabled:opacity-60">
@@ -211,7 +211,7 @@ function PacksCard() {
     }
   };
   return (
-    <Card title="点数包">
+    <Card title="充值包">
       {q.isLoading ? (
         <InlineLoading />
       ) : (
@@ -220,7 +220,7 @@ function PacksCard() {
             <thead>
               <tr className="text-left text-xs text-kx-muted">
                 <th className="px-2 py-1">packKey</th>
-                <th className="px-2 py-1">点数</th>
+                <th className="px-2 py-1">Machi 币</th>
                 <th className="px-2 py-1">赠送</th>
                 <th className="px-2 py-1">价格</th>
                 <th className="px-2 py-1">状态</th>
