@@ -13176,6 +13176,89 @@ def wechat_code2session(code: str) -> dict[str, Any]:
     }
 
 
+# --- WeChat content security (内容安全) for mini-program-submitted UGC ---
+# Required for a UGC mini-program to pass review. We cache a single
+# access_token (~2h TTL) and call wxa/msg_sec_check v2 (synchronous, text).
+# Image check (media_check_async) is asynchronous via message-push callback;
+# we expose a hook but leave the callback wiring to deployment (needs the
+# message-push URL + token configured in mp.weixin.qq.com).
+_WECHAT_TOKEN_LOCK = threading.Lock()
+_WECHAT_TOKEN_CACHE: dict[str, Any] = {"token": "", "expires_at": 0.0}
+
+
+def _wechat_access_token() -> str:
+    """Fetch + cache the mini-program access_token. Returns '' if unconfigured."""
+    if not wechat_miniapp_configured():
+        return ""
+    now = time.time()
+    with _WECHAT_TOKEN_LOCK:
+        if _WECHAT_TOKEN_CACHE["token"] and _WECHAT_TOKEN_CACHE["expires_at"] > now + 60:
+            return str(_WECHAT_TOKEN_CACHE["token"])
+    params = urllib.parse.urlencode({
+        "grant_type": "client_credential",
+        "appid": WECHAT_MINIAPP_APPID,
+        "secret": WECHAT_MINIAPP_SECRET,
+    })
+    try:
+        req = urllib.request.Request(f"https://api.weixin.qq.com/cgi-bin/token?{params}", method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception:
+        ERR_LOG.warning("wechat access_token fetch failed")
+        return ""
+    token = str(data.get("access_token") or "")
+    if token:
+        with _WECHAT_TOKEN_LOCK:
+            _WECHAT_TOKEN_CACHE["token"] = token
+            _WECHAT_TOKEN_CACHE["expires_at"] = now + float(data.get("expires_in") or 7200)
+    return token
+
+
+def wechat_text_sec_check(text: str, openid: str) -> bool:
+    """Return True if the text is safe (or check unavailable/unconfigured —
+    fail-open so the existing human moderation remains the backstop and a
+    WeChat outage never blocks all posting). Returns False only on an explicit
+    risky verdict (label != 100 / suggest == 'risky')."""
+    text = (text or "").strip()
+    if not text or not openid:
+        return True
+    token = _wechat_access_token()
+    if not token:
+        return True
+    body = json.dumps({
+        "version": 2,
+        "scene": 2,  # 2 = 评论/发帖类
+        "openid": openid,
+        "content": text[:2500],
+    }, ensure_ascii=False).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            f"https://api.weixin.qq.com/wxa/msg_sec_check?access_token={token}",
+            data=body, method="POST", headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception:
+        ERR_LOG.warning("wechat msg_sec_check unavailable")
+        return True
+    errcode = int(data.get("errcode") or 0)
+    if errcode != 0:
+        # 87014 = risky content detected
+        if errcode == 87014:
+            return False
+        return True  # other errors (token/quota) — don't hard-block
+    result = data.get("result") or {}
+    return str(result.get("suggest") or "pass") != "risky"
+
+
+def wechat_user_openid(conn: sqlite3.Connection, user_id: str) -> str:
+    row = conn.execute(
+        "SELECT openid FROM miniapp_openid_bindings WHERE user_id = ? AND platform = 'wechat' ORDER BY last_login_at DESC LIMIT 1",
+        (user_id,),
+    ).fetchone()
+    return str(row["openid"]) if row else ""
+
+
 def build_wechat_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dict[str, Any]:
     """Return the params a Web client needs to pay an order via WeChat
     (Native = a QR code). When merchant creds are present the real v3
@@ -26310,6 +26393,14 @@ class Handler(BaseHTTPRequestHandler):
         if forbidden:
             reputation_apply_event(conn, user["id"], "prohibited_service" if listing_type == "local_service" else "spam_ad", target_kind="listing", reason=forbidden, reviewed=True)
             raise APIError(forbidden, 400, "prohibited_listing")
+
+        # WeChat content security for mini-program submissions. Only runs for
+        # users with a WeChat openid binding (i.e. mini-program origin) and when
+        # the mini-program credentials are configured; otherwise it's a no-op and
+        # the existing human moderation queue remains the backstop.
+        mp_openid = wechat_user_openid(conn, user["id"])
+        if mp_openid and not wechat_text_sec_check(f"{title}\n{description}\n{category}", mp_openid):
+            raise APIError("内容未通过安全检测，请修改后重试", 400, "content_risky")
 
         requires_reputation_review, reputation_review_reason = reputation_validate_listing_publish(conn, user, listing_type)
         requested_status = normalize_listing_status(data.get("status"), "published")
