@@ -4237,6 +4237,7 @@ def default_membership_benefits() -> list[dict[str, Any]]:
         ("life_checklist", "日本生活清单会员可看", "查看入境、租房、手续等生活清单。", "list.bullet.clipboard"),
         ("service_priority", "服务预约优先处理", "人工服务预约优先进入处理队列。", "person.wave.2"),
         ("service_discount", "指定服务会员优惠", "指定服务支持会员折扣价。", "tag"),
+        ("member_points_price", "会员点数价", "用 Machi 点数购买资料时享更低会员价。", "circle.hexagongrid.fill"),
         ("purchase_center", "已购资料统一管理", "集中管理已购资料与会员可看内容。", "tray.full"),
     ]
     return [
@@ -4325,6 +4326,11 @@ MEMBERSHIP_BENEFIT_I18N: dict[str, dict[str, tuple[str, str]]] = {
         "zh": ("指定服务会员优惠", "指定服务支持会员折扣价。"),
         "en": ("Selected service discounts", "Selected services can be booked with member discounts."),
         "ja": ("対象サービスのメンバー割引", "対象サービスをメンバー割引で利用できます。"),
+    },
+    "member_points_price": {
+        "zh": ("会员点数价", "用 Machi 点数购买资料时享更低会员价。"),
+        "en": ("Member points pricing", "Pay fewer Machi Points on materials as a member."),
+        "ja": ("メンバーポイント価格", "資料購入時に Machi ポイントのメンバー価格が適用されます。"),
     },
     "purchase_center": {
         "zh": ("已购资料统一管理", "集中管理已购资料与会员可看内容。"),
