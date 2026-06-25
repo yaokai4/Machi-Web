@@ -85,34 +85,38 @@ class WalletFoundationTests(unittest.TestCase):
     def test_topup_packs_seeded(self):
         packs = server.list_topup_products(self.conn)
         keys = {p["pack_key"] for p in packs}
-        self.assertEqual(keys, {"machi_points_600", "machi_points_1500", "machi_points_3200", "machi_points_6800"})
-        pack = server.get_topup_product(self.conn, "machi_points_1500")
-        self.assertEqual(pack["points"], 1500)
-        self.assertEqual(pack["bonus_points"], 80)
+        self.assertEqual(keys, {
+            "machi_points_600", "machi_points_1800", "machi_points_3000", "machi_points_6800",
+            "machi_points_9800", "machi_points_12800", "machi_points_19800", "machi_points_32800",
+            "machi_points_64800",
+        })
+        pack = server.get_topup_product(self.conn, "machi_points_1800")
+        self.assertEqual(pack["points"], 1800)
+        self.assertEqual(pack["bonus_points"], 100)
         serialized = server.serialize_wallet_topup_product(pack)
-        self.assertEqual(serialized["totalPoints"], 1580)
-        self.assertEqual(serialized["priceLabel"], "¥15")  # amount_cents 1500 -> ¥15
+        self.assertEqual(serialized["totalPoints"], 1900)
+        self.assertEqual(serialized["priceLabel"], "¥18")  # amount_cents 1800 -> ¥18
 
     # 4. wallet_credit_topup is idempotent — same order never double-credits
     def test_credit_topup_idempotent(self):
         uid = _make_user(self.conn)
-        pack = server.get_topup_product(self.conn, "machi_points_1500")
+        pack = server.get_topup_product(self.conn, "machi_points_1800")
         order = server.create_wallet_topup_order(self.conn, uid, pack, "stripe", "web")
         r1 = server.wallet_credit_topup(self.conn, order["order_no"], provider_trade_no="pi_abc")
         self.assertTrue(r1["applied"])
-        self.assertEqual(r1["grantedPoints"], 1580)
-        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 1580)
+        self.assertEqual(r1["grantedPoints"], 1900)
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 1900)
         # replay
         r2 = server.wallet_credit_topup(self.conn, order["order_no"], provider_trade_no="pi_abc")
         self.assertFalse(r2["applied"])
         self.assertTrue(r2["duplicate"])
-        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 1580)
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 1900)
         # ledger has exactly two rows (topup + bonus), one balance line each
         rows = self.conn.execute(
             "SELECT entry_type, points_delta FROM wallet_ledger_entries WHERE user_id = ? ORDER BY entry_type", (uid,)
         ).fetchall()
         kinds = sorted((dict(r)["entry_type"], dict(r)["points_delta"]) for r in rows)
-        self.assertEqual(kinds, [("bonus", 80), ("topup", 1500)])
+        self.assertEqual(kinds, [("bonus", 100), ("topup", 1800)])
 
     # 4b. ledger idempotency_key blocks a duplicate post
     def test_ledger_idempotency_key(self):

@@ -13204,9 +13204,14 @@ WALLET_DISCLAIMER = (
 # (pack_key, title, subtitle, points, bonus_points, amount_cents, currency)
 WALLET_TOPUP_SEED: list[tuple[str, str, str, int, int, int, str]] = [
     ("machi_points_600", "600 Machi 点数", "小资料 / 模板", 600, 0, 600, "CNY"),
-    ("machi_points_1500", "1500 Machi 点数", "常用资料包 · 多送 80", 1500, 80, 1500, "CNY"),
-    ("machi_points_3200", "3200 Machi 点数", "组合包 / 异步服务 · 多送 260", 3200, 260, 3000, "CNY"),
-    ("machi_points_6800", "6800 Machi 点数", "深度资料 / 多次购买 · 多送 800", 6800, 800, 6000, "CNY"),
+    ("machi_points_1800", "1800 Machi 点数", "常用资料包 · 多送 100", 1800, 100, 1800, "CNY"),
+    ("machi_points_3000", "3000 Machi 点数", "组合包 · 多送 200", 3000, 200, 3000, "CNY"),
+    ("machi_points_6800", "6800 Machi 点数", "深度资料 · 多送 600", 6800, 600, 6800, "CNY"),
+    ("machi_points_9800", "9800 Machi 点数", "多次购买 · 多送 1000", 9800, 1000, 9800, "CNY"),
+    ("machi_points_12800", "12800 Machi 点数", "学习季囤点 · 多送 1600", 12800, 1600, 12800, "CNY"),
+    ("machi_points_19800", "19800 Machi 点数", "重度使用 · 多送 3000", 19800, 3000, 19800, "CNY"),
+    ("machi_points_32800", "32800 Machi 点数", "超值大包 · 多送 5800", 32800, 5800, 32800, "CNY"),
+    ("machi_points_64800", "64800 Machi 点数", "顶配大包 · 多送 13000", 64800, 13000, 64800, "CNY"),
 ]
 
 
