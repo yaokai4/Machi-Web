@@ -2,120 +2,93 @@
 
 import Link from "next/link";
 import clsx from "clsx";
+import { siApple, siGoogleplay } from "simple-icons";
 import { useMarketingI18n } from "./MarketingI18n";
 
 type StoreKind = "app-store" | "google-play";
 
-const STORE_BADGE_STYLE = { width: 170, height: 56 };
-const STORE_BADGE_CLASS = "block h-14 w-[170px] shrink-0 select-none rounded-[13px]";
-const STORE_BADGE_CLIP_CLASS = "relative block h-14 w-[170px] shrink-0 overflow-hidden rounded-[13px]";
-const STORE_BADGE_IMG_CLASS = "absolute select-none";
+// We render the store badges as crisp vector type + logo instead of the
+// baked-in PNG marketing badges. That keeps them razor-sharp at any size,
+// lets the wording follow the site's own typography, and gives us the
+// glossy black "App Store grade" treatment that reads as premium on the
+// warm landing palette. Wording mirrors the official localized badges.
+const STORE_COPY: Record<"zh" | "en" | "ja", Record<StoreKind, { top: string; name: string }>> = {
+  zh: {
+    "app-store": { top: "下载于", name: "App Store" },
+    "google-play": { top: "立即前往", name: "Google Play" },
+  },
+  en: {
+    "app-store": { top: "Download on the", name: "App Store" },
+    "google-play": { top: "GET IT ON", name: "Google Play" },
+  },
+  ja: {
+    "app-store": { top: "ダウンロード", name: "App Store" },
+    "google-play": { top: "入手する", name: "Google Play" },
+  },
+};
 
 const availabilityCopy = {
-  zh: "即将上架",
+  zh: "即将上线",
   en: "Coming soon",
   ja: "近日公開",
 };
 
-// Official Apple Media Services badge URLs — Apple regenerates these
-// per-locale so we get the correct "Download on the App Store" wording
-// in the user's language. `size=250x83` is the recommended marketing
-// size; we scale it down with CSS while keeping the asset crisp on
-// retina.
-const APP_STORE_BADGE: Record<"zh" | "en" | "ja", string> = {
-  zh: "https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/zh-cn?size=250x83",
-  en: "https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/en-us?size=250x83",
-  ja: "https://tools.applemediaservices.com/api/badges/download-on-the-app-store/black/ja-jp?size=250x83",
-};
-
-// Official Google Play badge URLs. Google uses underscores in locale
-// codes and serves PNG natively at retina sizes already.
-const GOOGLE_PLAY_BADGE: Record<"zh" | "en" | "ja", string> = {
-  zh: "https://play.google.com/intl/en_us/badges/static/images/badges/zh-cn_badge_web_generic.png",
-  en: "https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png",
-  ja: "https://play.google.com/intl/en_us/badges/static/images/badges/ja_badge_web_generic.png",
-};
-
-function appStoreSrc(locale: "zh" | "en" | "ja") {
-  return APP_STORE_BADGE[locale] || APP_STORE_BADGE.en;
-}
-function googlePlaySrc(locale: "zh" | "en" | "ja") {
-  return GOOGLE_PLAY_BADGE[locale] || GOOGLE_PLAY_BADGE.en;
-}
-
-/// Just the official Apple App Store black badge — no wrapper card.
-/// Eagerly loaded so it appears in the first paint and never flashes
-/// behind a white fallback box.
-function AppStoreBadge({ locale, className }: { locale: "zh" | "en" | "ja"; className?: string }) {
+function AppleGlyph() {
   return (
-    /* eslint-disable-next-line @next/next/no-img-element */
-    <img
-      src={appStoreSrc(locale)}
-      alt="Download on the App Store"
-      width={250}
-      height={83}
-      loading="eager"
-      decoding="async"
-      referrerPolicy="no-referrer"
-      style={STORE_BADGE_STYLE}
-      className={clsx(STORE_BADGE_CLASS, "object-fill", className)}
-    />
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="h-[26px] w-[26px] shrink-0">
+      <path d={siApple.path} fill="#ffffff" />
+    </svg>
   );
 }
 
-function GooglePlayBadge({ locale, className }: { locale: "zh" | "en" | "ja"; className?: string }) {
+function GooglePlayGlyph() {
   return (
-    <span style={STORE_BADGE_STYLE} className={clsx(STORE_BADGE_CLIP_CLASS, className)}>
-      {/* Google's official PNG includes transparent padding. Scale and clip it
-          inside the same fixed frame as App Store so the visible badge bodies
-          are the same size. */}
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        src={googlePlaySrc(locale)}
-        alt="Get it on Google Play"
-        width={646}
-        height={250}
-        loading="eager"
-        decoding="async"
-        referrerPolicy="no-referrer"
-        className={clsx(
-          STORE_BADGE_IMG_CLASS,
-          "left-1/2 top-1/2 h-[72px] w-[186px] -translate-x-1/2 -translate-y-1/2 object-fill",
-        )}
-      />
-    </span>
+    <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="h-[23px] w-[23px] shrink-0">
+      <defs>
+        <linearGradient id="mc-gplay-grad" x1="3" y1="2" x2="22" y2="22" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#00D2FF" />
+          <stop offset="0.4" stopColor="#00E08A" />
+          <stop offset="0.72" stopColor="#FFC700" />
+          <stop offset="1" stopColor="#FF4B5C" />
+        </linearGradient>
+      </defs>
+      <path d={siGoogleplay.path} fill="url(#mc-gplay-grad)" />
+    </svg>
   );
 }
 
+// Backwards-compatible glyph-only exports (kept so any future surface can
+// reuse the marks without the full badge chrome).
 export function AppStoreIcon({ className }: { className?: string }) {
-  const { locale } = useMarketingI18n();
-  return <AppStoreBadge locale={locale} className={className} />;
+  return <span className={className}><AppleGlyph /></span>;
 }
-
 export function GooglePlayIcon({ className }: { className?: string }) {
-  const { locale } = useMarketingI18n();
-  return <GooglePlayBadge locale={locale} className={className} />;
+  return <span className={className}><GooglePlayGlyph /></span>;
 }
 
-/// Minimal CTA — just the official badge, with an optional "即将上架"
-/// caption above it. No outer pill, no duplicated "App Store" text.
+/// Premium glossy store badge — a single, consistent dark capsule for both
+/// stores with the real Apple / Google Play mark, a two-line label, an
+/// optional availability caption, and a soft hover lift.
 export function StoreButton({
   kind,
   caption,
   href = "#download",
-  dark = false,
+  showCaption = true,
   className,
 }: {
   kind: StoreKind;
-  /** Kept in API for back-compat — the badge already says the store name. */
+  /** Kept in the API for back-compat — the badge already names the store. */
   label?: string;
   caption?: string;
   href?: string;
+  /** Set false to drop the small "Coming soon" eyebrow. */
+  showCaption?: boolean;
   dark?: boolean;
   className?: string;
 }) {
   const { locale } = useMarketingI18n();
-  const eyebrow = caption || availabilityCopy[locale];
+  const words = STORE_COPY[locale]?.[kind] ?? STORE_COPY.en[kind];
+  const eyebrow = caption ?? availabilityCopy[locale];
   const aria = kind === "app-store" ? "Download on the App Store" : "Get it on Google Play";
 
   return (
@@ -123,33 +96,46 @@ export function StoreButton({
       href={href}
       aria-label={aria}
       className={clsx(
-        "group inline-flex flex-col items-start gap-1.5",
-        "transition duration-200 ease-out hover:-translate-y-0.5 active:scale-[0.985]",
-        "focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-indigo-500",
+        "group inline-flex flex-col items-center gap-2 focus-visible:outline-none",
         className,
       )}
     >
+      {showCaption && eyebrow ? (
+        <span className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 dark:text-slate-500">
+          {eyebrow}
+        </span>
+      ) : null}
       <span
         className={clsx(
-          "text-[11px] font-black uppercase tracking-wide",
-          dark ? "text-white/60" : "text-slate-500 dark:text-slate-400",
+          "relative inline-flex h-[58px] w-[200px] items-center gap-3.5 overflow-hidden rounded-[16px] px-[18px]",
+          "bg-[linear-gradient(180deg,#2a2a30_0%,#08080a_100%)] text-white",
+          "ring-1 ring-white/[0.14]",
+          "shadow-[0_14px_34px_-16px_rgba(0,0,0,0.7),inset_0_1px_0_rgba(255,255,255,0.16)]",
+          "transition-[transform,box-shadow] duration-300 ease-out",
+          "group-hover:-translate-y-0.5 group-hover:shadow-[0_24px_50px_-18px_rgba(0,0,0,0.8),inset_0_1px_0_rgba(255,255,255,0.22)]",
+          "group-active:translate-y-0 group-active:scale-[0.99]",
+          "group-focus-visible:ring-2 group-focus-visible:ring-offset-2 group-focus-visible:ring-orange-400 group-focus-visible:ring-offset-transparent",
         )}
       >
-        {eyebrow}
-      </span>
-      <span
-        className={clsx(
-          "block shrink-0 transition-shadow duration-200",
-          dark
-            ? "drop-shadow-[0_12px_30px_rgba(0,0,0,0.35)] group-hover:drop-shadow-[0_16px_36px_rgba(0,0,0,0.44)]"
-            : "drop-shadow-[0_8px_22px_rgba(15,23,42,0.18)] group-hover:drop-shadow-[0_12px_28px_rgba(15,23,42,0.28)]",
-        )}
-      >
-        {kind === "app-store" ? (
-          <AppStoreBadge locale={locale} />
-        ) : (
-          <GooglePlayBadge locale={locale} />
-        )}
+        {/* top sheen */}
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 h-1/2 bg-gradient-to-b from-white/[0.13] to-transparent"
+        />
+        {/* warm hover glow tying the neutral badge into the brand palette */}
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute -inset-px rounded-[16px] bg-[radial-gradient(120%_120%_at_15%_0%,rgba(255,118,87,0.22),transparent_55%)] opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+        />
+        <span className="relative flex shrink-0 items-center justify-center">
+          {kind === "app-store" ? <AppleGlyph /> : <GooglePlayGlyph />}
+        </span>
+        <span className="relative flex min-w-0 flex-col items-start leading-none">
+          <span className="text-[10.5px] font-medium tracking-[0.02em] text-white/65">{words.top}</span>
+          <span className="mt-[3px] whitespace-nowrap text-[19px] font-semibold tracking-[-0.01em] text-white">
+            {words.name}
+          </span>
+        </span>
       </span>
     </Link>
   );

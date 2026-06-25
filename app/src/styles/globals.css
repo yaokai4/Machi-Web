@@ -1709,6 +1709,16 @@ body::before {
   letter-spacing: 0;
   scroll-behavior: smooth;
   padding-top: var(--mc-header-offset);
+  /* Apple-grade type: prefer SF Pro / system on Apple devices so the
+     marketing site carries the crisp, optically-tuned feel of an Apple
+     product page, falling back to Inter and the CJK families elsewhere.
+     Scoped to .machi-site so the in-app product UI is untouched. */
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text",
+    "Inter", system-ui, "Segoe UI", "PingFang SC", "Hiragino Sans", "Hiragino Kaku Gothic ProN",
+    "Noto Sans SC", "Noto Sans JP", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
   /* Aurora city-air mesh.
      - A generous coral pool top-left (the Machi ember) and an indigo
        pool top-right form a warm→cool horizon behind the hero.
@@ -1935,19 +1945,20 @@ body::before {
 :root.dark .mc-eyebrow { color: rgb(253 186 166); }
 
 .mc-section-title {
-  font-size: clamp(1.85rem, 3.4vw, 2.75rem);
-  font-weight: 900;
-  line-height: 1.1;
-  letter-spacing: -0.01em;
+  font-size: clamp(1.95rem, 3.6vw, 3rem);
+  font-weight: 700;
+  line-height: 1.07;
+  letter-spacing: -0.022em;
   color: rgb(15 23 42);
 }
 :root.dark .mc-section-title { color: rgb(248 250 252); }
 
 .mc-section-lead {
   margin-top: 1.25rem;
-  font-size: 1.0625rem;
-  line-height: 1.7;
-  color: rgb(71 85 105);
+  font-size: 1.125rem;
+  line-height: 1.65;
+  letter-spacing: -0.005em;
+  color: rgb(75 85 99);
   max-width: 42rem;
 }
 :root.dark .mc-section-lead { color: rgb(148 163 184); }
