@@ -22,6 +22,7 @@ import {
   ShieldCheck,
   Sun,
   Moon,
+  Wallet,
   GraduationCap,
   UserPlus,
   User as UserIcon,
@@ -59,13 +60,14 @@ const NAV_ITEMS = [
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
   { href: "/guide", labelKey: "nav_guide" as I18nKey, icon: GraduationCap, key: "guide", badgeKey: undefined },
   { href: "/membership", labelKey: "mem_title" as I18nKey, icon: BadgeCheck, key: "membership", badgeKey: undefined },
+  { href: "/wallet", labelKey: "nav_wallet" as I18nKey, icon: Wallet, key: "wallet", badgeKey: undefined },
   { href: "/my/features", labelKey: "nav_workbench" as I18nKey, icon: LayoutDashboard, key: "features", badgeKey: undefined },
   { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
   { href: "/messages", labelKey: "nav_messages" as I18nKey, icon: Mail, key: "messages", badgeKey: "messages" as const },
   { href: "/settings", labelKey: "nav_settings" as I18nKey, icon: Settings, key: "settings", badgeKey: undefined },
 ];
 
-const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings", "features"]);
+const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings", "features", "wallet"]);
 
 function currentPathForRedirect(pathname: string | null) {
   return pathname || "/home";
@@ -734,6 +736,7 @@ function MobileMoreSheet({
     ? [
         { href: "/me", label: t("nav_profile"), icon: UserIcon },
         { href: "/membership/exclusive", label: t("mem_exclusive"), icon: BadgeCheck },
+        { href: "/wallet", label: t("nav_wallet"), icon: Wallet },
         { href: "/bookmarks", label: t("action_bookmark"), icon: Bookmark },
         { href: "/notifications", label: t("nav_notifications"), icon: Bell, badge: unreadNotif },
         { href: "/settings", label: t("nav_settings"), icon: Settings },

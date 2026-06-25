@@ -122,6 +122,12 @@ export default function WalletPage() {
                   <Loader2 className="h-4 w-4 animate-spin" /> 正在确认到账…
                 </div>
               )}
+              <Link
+                href="/guide"
+                className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-kx-accent hover:underline"
+              >
+                用 Machi 币购买学习资料 →
+              </Link>
             </section>
 
             {/* Top-up packs */}

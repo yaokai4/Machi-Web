@@ -199,17 +199,17 @@ const PRODUCT_FIELDS: Array<{ section: string; fields: FieldDef[] }> = [
     { key: "iosIapProductId", label: "iOS IAP product id", type: "text" },
     { key: "appleProductId", label: "Apple product id", type: "text" },
   ] },
-  { section: "点数购买（Machi Points）", fields: [
-    { key: "walletEligible", label: "允许用点数购买", type: "bool" },
-    { key: "walletPricePoints", label: "点数价格（整数）", type: "number" },
-    { key: "memberWalletPricePoints", label: "会员点数价（整数，0=同上）", type: "number" },
+  { section: "Machi 币购买", fields: [
+    { key: "walletEligible", label: "允许用 Machi 币购买", type: "bool" },
+    { key: "walletPricePoints", label: "Machi 币价格（整数）", type: "number" },
+    { key: "memberWalletPricePoints", label: "会员 Machi 币价（整数，0=同上）", type: "number" },
     { key: "platformPolicy", label: "平台支付策略", type: "select", options: ["digital_iap_required", "web_stripe_allowed", "external_service_allowed", "booking_only"] },
     { key: "fulfillmentType", label: "交付类型", type: "select", options: ["digital_unlock", "file_download", "service_request", "async_review", "offline_booking", "listing_boost", "ai_quota"] },
     { key: "entitlementType", label: "权益类型（默认 guide_product）", type: "text" },
     { key: "appStoreEligible", label: "iOS 可售（App Store IAP）", type: "bool" },
     { key: "googlePlayEligible", label: "Android 可售（Play Billing）", type: "bool" },
     { key: "externalPaymentAllowed", label: "允许外部支付", type: "bool" },
-    { key: "pointsPurchaseLimit", label: "点数购买上限（0=不限）", type: "number" },
+    { key: "pointsPurchaseLimit", label: "Machi 币购买上限（0=不限）", type: "number" },
   ] },
 ];
 
