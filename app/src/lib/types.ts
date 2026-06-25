@@ -129,6 +129,78 @@ export interface KXMembershipMe {
   user: KXUser;
 }
 
+// ---- Machi Points wallet ----
+// Points are internal scrip: bought with money, spent only on Machi digital
+// goods. Never cash — no withdrawal/transfer/expiry.
+export interface KXWallet {
+  balancePoints: number;
+  status: string;
+  lifetimePurchasedPoints?: number;
+  lifetimeBonusPoints?: number;
+  lifetimeSpentPoints?: number;
+  pointsName: string;
+  pointsNameZh?: string;
+  displayBalance: string;
+  disclaimer: string;
+}
+
+export interface KXWalletLedgerEntry {
+  id: string;
+  entryType: string;
+  pointsDelta: number;
+  balanceAfter: number;
+  sourceType: string;
+  sourceOrderId?: string;
+  productId?: string;
+  createdAt: string;
+  displayDelta: string;
+}
+
+export interface KXWalletTopupProduct {
+  id: string;
+  packKey: string;
+  title: string;
+  subtitle: string;
+  points: number;
+  bonusPoints: number;
+  totalPoints: number;
+  amountCents: number;
+  currency: string;
+  priceLabel: string;
+  displayPoints: string;
+  appleProductId: string;
+  iosIapProductId: string;
+  googleProductId: string;
+  huaweiProductId: string;
+  sortOrder: number;
+  isActive: boolean;
+  purchasable: boolean;
+  disabledReason: string;
+}
+
+export interface KXWalletTopupOrder {
+  id: string;
+  orderNo: string;
+  packKey: string;
+  status: string;
+  points: number;
+  bonusPoints: number;
+  totalPoints: number;
+  amountCents: number;
+  currency: string;
+  paymentProvider: string;
+  createdAt?: string;
+  paidAt?: string | null;
+}
+
+export interface KXWalletMe {
+  wallet: KXWallet;
+  topupProducts: KXWalletTopupProduct[];
+  recentEntries: KXWalletLedgerEntry[];
+  pointsName: string;
+  disclaimer: string;
+}
+
 export type PaymentProvider = "wechat_pay" | "alipay" | "stripe";
 
 export interface KXCreateOrderResult {

@@ -30,6 +30,9 @@ import type {
   KXOrderStatus,
   KXMembershipStatus,
   KXMembershipInsights,
+  KXWallet,
+  KXWalletMe,
+  KXWalletLedgerEntry,
   PaymentProvider,
   KXCityListing,
   KXBusinessDashboard,
@@ -1857,6 +1860,21 @@ export const api = {
   // Dev-only: settle a mock order (server refuses outside dev mock mode).
   async mockConfirmOrder(orderNo: string): Promise<KXOrderStatus & { mock: boolean }> {
     return request("POST", `/api/payments/mock/confirm?order_no=${encodeURIComponent(orderNo)}`);
+  },
+
+  // ---- Machi Points wallet ----
+  async walletMe(platform = "web"): Promise<KXWalletMe> {
+    return request("GET", `/api/wallet/me?platform=${encodeURIComponent(platform)}`);
+  },
+  async walletLedger(page = 1, pageSize = 20): Promise<{ wallet: KXWallet; entries: KXWalletLedgerEntry[]; page: number; pageSize: number; hasMore: boolean }> {
+    return request("GET", `/api/wallet/ledger?page=${page}&pageSize=${pageSize}`);
+  },
+  // Web-only: start a Stripe Checkout for a points top-up. iOS/Android use IAP.
+  async walletTopupStripeCheckout(packKey: string, returnUrl?: string): Promise<{ status: string; checkoutUrl: string; orderNo: string; points: number; bonusPoints: number; totalPoints: number; amountCents: number; currency: string }> {
+    return request("POST", `/api/wallet/topups/stripe-checkout`, { packKey, returnUrl });
+  },
+  async walletTopupStripeConfirm(sessionId: string): Promise<{ status: string; orderNo?: string; wallet: KXWallet; grantedPoints?: number }> {
+    return request("POST", `/api/wallet/topups/stripe-confirm`, { sessionId });
   },
 
   // ---- admin: membership management ----

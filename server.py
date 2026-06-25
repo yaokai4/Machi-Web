@@ -13848,6 +13848,44 @@ def guide_stripe_checkout_url(order_no: str, amount_cents: int, currency: str, p
         raise APIError("Stripe 下单失败", 502, "provider_error")
 
 
+WALLET_STRIPE_SUCCESS_URL = _env("WALLET_STRIPE_SUCCESS_URL", "https://machicity.com/wallet?topup=1")
+WALLET_STRIPE_CANCEL_URL = _env("WALLET_STRIPE_CANCEL_URL", "https://machicity.com/wallet")
+
+
+def wallet_stripe_checkout_url(order_no: str, amount_cents: int, currency: str, pack_title: str,
+                               success_url: str, cancel_url: str) -> tuple[str, str]:
+    """Create a one-time Stripe Checkout Session for a Machi Points top-up and
+    return (checkout_url, session_id). metadata.kind='wallet_topup' lets the
+    shared webhook route the settlement to wallet_credit_topup. The amount is
+    server-side only — the client never sends a price."""
+    from urllib.parse import urlencode
+    from urllib.request import Request, urlopen
+    sep = "&" if "?" in success_url else "?"
+    fields = {
+        "mode": "payment",
+        "success_url": f"{success_url}{sep}wallet_session={{CHECKOUT_SESSION_ID}}",
+        "cancel_url": cancel_url,
+        "client_reference_id": order_no,
+        "metadata[order_no]": order_no,
+        "metadata[kind]": "wallet_topup",
+        "line_items[0][quantity]": "1",
+        "line_items[0][price_data][currency]": (currency or "cny").lower(),
+        "line_items[0][price_data][unit_amount]": str(_stripe_minor_units(int(amount_cents), currency or "cny")),
+        "line_items[0][price_data][product_data][name]": (pack_title or "Machi Points")[:120],
+    }
+    data = urlencode(fields).encode("utf-8")
+    req = Request("https://api.stripe.com/v1/checkout/sessions", data=data, method="POST")
+    req.add_header("Authorization", "Bearer " + STRIPE_SECRET_KEY)
+    req.add_header("Content-Type", "application/x-www-form-urlencoded")
+    try:
+        with urlopen(req, timeout=10) as resp:
+            session = json.loads(resp.read().decode("utf-8"))
+        return session["url"], str(session.get("id") or "")
+    except Exception as exc:
+        ERR_LOG.warning("wallet stripe checkout create failed: %s", type(exc).__name__)
+        raise APIError("Stripe 下单失败", 502, "provider_error")
+
+
 def settle_guide_order(conn: sqlite3.Connection, order_no: str, payment_intent: str = "", amount_cents: int = 0) -> bool:
     """Idempotently mark a Guide product order paid+fulfilled. For a service
     product, also create a linked paid service_request so the back office has a
@@ -23551,6 +23589,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_wallet_ledger(conn, query)
         if path == "/api/wallet/topup-products" and method == "GET":
             return self.api_wallet_topup_products(conn, query)
+        if path == "/api/wallet/topups/stripe-checkout" and method == "POST":
+            return self.api_wallet_topup_stripe_checkout(conn)
+        if path == "/api/wallet/topups/stripe-confirm" and method == "POST":
+            return self.api_wallet_topup_stripe_confirm(conn)
 
         # membership + payments
         if path == "/api/membership/me" and method == "GET":
@@ -23981,8 +24023,12 @@ class Handler(BaseHTTPRequestHandler):
             subscription_id = str(obj.get("subscription") or "")
             first = record_payment_webhook(conn, "stripe", event_type, event_id, order_no,
                                            json.dumps(event, ensure_ascii=False), True)
+            kind = str((obj.get("metadata") or {}).get("kind") or "")
             if first and order_no and str(obj.get("payment_status") or "") == "paid":
-                if order_no.startswith("GP"):
+                if kind == "wallet_topup" or order_no.startswith("WT"):
+                    # Machi Points top-up — credit points exactly once.
+                    wallet_credit_topup(conn, order_no, provider_trade_no=payment_intent, source_type="stripe")
+                elif order_no.startswith("GP"):
                     # Machi Guide product order (digital resource / paid service).
                     settle_guide_order(conn, order_no, payment_intent, amount_total)
                 else:
@@ -24294,6 +24340,55 @@ class Handler(BaseHTTPRequestHandler):
             "pointsName": WALLET_POINTS_NAME,
             "disclaimer": WALLET_DISCLAIMER,
         })
+
+    def api_wallet_topup_stripe_checkout(self, conn: sqlite3.Connection) -> None:
+        """Web-only: start a Stripe Checkout for a Machi Points top-up. Creates a
+        pending WT order (amount from the pack server-side) and returns the
+        hosted checkout URL. iOS/Android must NOT call this — they use IAP."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        pack_key = str(data.get("packKey") or data.get("pack_key") or "").strip()
+        pack = get_topup_product(conn, pack_key)
+        if not pack:
+            raise APIError("点数包不存在", 404, "topup_pack_not_found")
+        if not stripe_configured():
+            raise APIError("在线支付尚未开放", 503, "provider_unconfigured")
+        order = create_wallet_topup_order(conn, user["id"], pack, "stripe", "web")
+        success = _guide_safe_return_url(data.get("returnUrl") or data.get("successUrl")) or WALLET_STRIPE_SUCCESS_URL
+        cancel = _guide_safe_return_url(data.get("cancelUrl")) or WALLET_STRIPE_CANCEL_URL
+        url, session_id = wallet_stripe_checkout_url(
+            order["order_no"], int(order["amount_cents"] or 0), order["currency"] or "CNY",
+            pack["title"], success, cancel)
+        conn.execute("UPDATE wallet_topup_orders SET checkout_session_id = ?, updated_at = ? WHERE id = ?",
+                     (session_id, now_iso(), order["id"]))
+        self.send_json({
+            "status": "ok", "checkoutUrl": url, "orderNo": order["order_no"],
+            "points": int(order["points"] or 0), "bonusPoints": int(order["bonus_points"] or 0),
+            "totalPoints": int(order["total_points"] or 0),
+            "amountCents": int(order["amount_cents"] or 0), "currency": order["currency"] or "CNY",
+        })
+
+    def api_wallet_topup_stripe_confirm(self, conn: sqlite3.Connection) -> None:
+        """Confirm a points top-up on the success redirect (server-to-server
+        session fetch). Idempotent; the webhook is the primary settle path."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        session_id = str(data.get("sessionId") or data.get("session_id") or data.get("wallet_session") or "").strip()
+        if not session_id:
+            raise APIError("缺少会话信息", 400, "missing_session")
+        session = stripe_retrieve_session(session_id)
+        if not session:
+            return self.send_json({"status": "pending", "wallet": get_wallet_snapshot(conn, user["id"])})
+        order_no = str(session.get("client_reference_id") or (session.get("metadata") or {}).get("order_no") or "")
+        if order_no.startswith("WT") and str(session.get("payment_status") or "") == "paid":
+            result = wallet_credit_topup(conn, order_no, provider_trade_no=str(session.get("payment_intent") or ""),
+                                         source_type="stripe")
+            return self.send_json({
+                "status": "fulfilled", "orderNo": order_no,
+                "wallet": result.get("wallet") or get_wallet_snapshot(conn, user["id"]),
+                "grantedPoints": result.get("grantedPoints", 0),
+            })
+        self.send_json({"status": "pending", "orderNo": order_no, "wallet": get_wallet_snapshot(conn, user["id"])})
 
     def api_mock_confirm(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         """Dev-only: settle a pending order without a real provider. Hard
