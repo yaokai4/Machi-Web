@@ -31,11 +31,14 @@ User=kaix
 Group=kaix
 WorkingDirectory=/opt/kaix/web
 EnvironmentFile=/etc/kaix.env
-# Per-instance overrides (win over the EnvironmentFile): unique port, and
-# scheduler disabled so only the primary crawls.
-Environment=KAIX_PORT=%i
+# Per-instance overrides: unique port, and scheduler disabled so only the
+# primary crawls. NOTE: /etc/kaix.env pins KAIX_PORT=8787, and that
+# EnvironmentFile value was overriding the `Environment=KAIX_PORT=%i` below, so
+# every worker tried to bind 8787 → "Address already in use". Setting the port
+# directly in ExecStart's own env via `/usr/bin/env` is immune to that
+# precedence and is what actually makes the port unique per instance.
 Environment=KAIX_ENABLE_SCHEDULERS=0
-ExecStart=/opt/kaix/.venv/bin/python -u /opt/kaix/web/server.py
+ExecStart=/usr/bin/env KAIX_PORT=%i /opt/kaix/.venv/bin/python -u /opt/kaix/web/server.py
 Restart=always
 RestartSec=3
 KillSignal=SIGTERM
