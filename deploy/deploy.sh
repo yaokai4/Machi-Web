@@ -299,6 +299,17 @@ sleep 2
 sudo systemctl restart kaix-web.service
 sleep 3
 
+# Extra backend workers (kaix-backend-worker@PORT) run the same code as the
+# primary; if any are enabled, restart them too or they'd keep serving the
+# PREVIOUS release behind nginx (silent version skew across load-balanced
+# workers). No-op when none are enabled.
+WORKERS=$(systemctl list-units --type=service --state=active --no-legend 'kaix-backend-worker@*' 2>/dev/null | awk '{print $1}')
+if [ -n "$WORKERS" ]; then
+  echo "    [远端] 重启额外 backend worker: $WORKERS"
+  for w in $WORKERS; do sudo systemctl restart "$w" || true; done
+  sleep 3
+fi
+
 echo "    [远端] 健康检查"
 sudo systemctl is-active kaix-backend.service kaix-web.service
 
