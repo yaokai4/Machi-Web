@@ -1133,6 +1133,43 @@ export interface GuideAdminOSResponse {
   lifeItems: GuideAdminOSRow<GuideLifeItem>[];
 }
 
+export interface GuideLibraryMaterial extends GuideProduct {
+  entitlementSource: "own" | "member";
+  grantedAt: string;
+  hasFile: boolean;
+}
+export interface GuideLibraryService {
+  id: string;
+  productId: string;
+  productSlug: string;
+  productTitle: string;
+  serviceType: string;
+  status: string;
+  adminNote: string;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface GuideLibraryOrder {
+  kind: "purchase" | "topup";
+  orderNo: string;
+  title: string;
+  productSlug: string;
+  status: string;
+  provider: string;
+  paymentMethod: string;
+  amount: number;
+  currency: string;
+  pricePoints: number;
+  createdAt: string;
+}
+export interface GuideMyLibrary {
+  status: string;
+  isMember: boolean;
+  materials: GuideLibraryMaterial[];
+  services: GuideLibraryService[];
+  orders: GuideLibraryOrder[];
+}
+
 export const guide = {
   home: (country = "jp", language = "zh-CN") =>
     greq<GuideHomeResponse>("GET", `/api/guide/home${qs({ country, language })}`),
@@ -1274,6 +1311,8 @@ export const guide = {
   product: (idOrSlug: string, country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; product: GuideProduct }>(
       "GET", `/api/guide/products/${encodeURIComponent(idOrSlug)}${qs({ country, language })}`),
+  myLibrary: (language = "zh-CN") =>
+    greq<GuideMyLibrary>("GET", `/api/guide/my-library${qs({ language })}`),
   schools: (p: GuideListParams = {}) =>
     greq<GuidePaged<GuideSchool>>("GET", `/api/guide/schools${qs({ ...p })}`),
   school: (idOrSlug: string, country = "jp", language = "zh-CN") =>

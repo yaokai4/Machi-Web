@@ -8,15 +8,24 @@
 
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Coins, Loader2, ShieldCheck, Sparkles } from "lucide-react";
-import { api } from "@/lib/api";
+import { AlertTriangle, Coins, Loader2, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import type { KXWalletTopupProduct } from "@/lib/types";
 
+// A safe in-app return target carried across the Stripe round trip, so a topup
+// started from a product page lands the user back on that product.
+function safeReturnTo(value: string | null): string | null {
+  if (!value) return null;
+  return value.startsWith("/") && !value.startsWith("//") ? value : null;
+}
+
 export default function WalletPage() {
   const user = useSession((s) => s.user);
+  const router = useRouter();
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
@@ -27,6 +36,7 @@ export default function WalletPage() {
     queryKey: ["wallet-me", user?.id],
     queryFn: () => api.walletMe("web"),
     enabled: !!user,
+    retry: false,
   });
 
   const refresh = useCallback(async () => {
@@ -39,11 +49,13 @@ export default function WalletPage() {
     const params = new URLSearchParams(window.location.search);
     const session = params.get("wallet_session") || params.get("stripe_session");
     if (!session) return;
+    const returnTo = safeReturnTo(params.get("returnTo"));
     const clearParams = () => {
       const url = new URL(window.location.href);
       url.searchParams.delete("wallet_session");
       url.searchParams.delete("stripe_session");
       url.searchParams.delete("topup");
+      url.searchParams.delete("returnTo");
       window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     };
     setConfirming(true);
@@ -53,6 +65,12 @@ export default function WalletPage() {
         await refresh();
         if (res.status === "fulfilled") {
           pushToast({ kind: "success", message: `已到账 ${res.grantedPoints ?? 0} 币` });
+          // Round-trip back to the product the topup was started from.
+          if (returnTo) {
+            clearParams();
+            router.replace(returnTo);
+            return;
+          }
         }
       })
       .catch(() => {
@@ -62,7 +80,7 @@ export default function WalletPage() {
         setConfirming(false);
         clearParams();
       });
-  }, [user, refresh, pushToast]);
+  }, [user, refresh, pushToast, router]);
 
   const onTopup = useCallback(
     async (pack: KXWalletTopupProduct) => {
@@ -73,7 +91,13 @@ export default function WalletPage() {
       if (!pack.purchasable) return;
       setBuying(pack.packKey);
       try {
-        const res = await api.walletTopupStripeCheckout(pack.packKey, `${window.location.origin}/wallet?topup=1`);
+        // Preserve any returnTo so the post-topup confirm can send the user back.
+        const here = new URL(window.location.href);
+        const returnTo = safeReturnTo(here.searchParams.get("returnTo"));
+        const success = new URL(`${window.location.origin}/wallet`);
+        success.searchParams.set("topup", "1");
+        if (returnTo) success.searchParams.set("returnTo", returnTo);
+        const res = await api.walletTopupStripeCheckout(pack.packKey, success.toString());
         if (res.checkoutUrl) {
           window.location.href = res.checkoutUrl;
           return;
@@ -91,6 +115,11 @@ export default function WalletPage() {
   const packs = walletQuery.data?.topupProducts ?? [];
   const entries = walletQuery.data?.recentEntries ?? [];
   const disclaimer = walletQuery.data?.disclaimer ?? wallet?.disclaimer ?? "";
+  // A 404 on /api/wallet/me means the backend predates the wallet (version
+  // mismatch) — show "not available", not a generic error. Any other failure is
+  // a transient error the user can retry.
+  const walletError = walletQuery.error as APIError | undefined;
+  const walletUnsupported = walletError?.status === 404;
 
   return (
     <AppShell>
@@ -105,6 +134,24 @@ export default function WalletPage() {
             <p className="text-kx-subtle">登录后查看你的 Machi 币余额与充值。</p>
             <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-primary mx-auto justify-center">
               登录 / 注册
+            </button>
+          </section>
+        ) : walletUnsupported ? (
+          <section className="kx-card space-y-3 text-center">
+            <AlertTriangle className="mx-auto h-8 w-8 text-kx-subtle" />
+            <p className="text-kx-text">当前版本暂未开放 Machi 币钱包。</p>
+            <p className="text-sm text-kx-subtle">请稍后再试，或更新到最新版本。</p>
+            <button type="button" onClick={() => walletQuery.refetch()} className="kx-button-ghost mx-auto justify-center">
+              <RefreshCw className="h-4 w-4" /> 重试
+            </button>
+          </section>
+        ) : walletQuery.isError ? (
+          <section className="kx-card space-y-3 text-center">
+            <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
+            <p className="text-kx-text">钱包加载失败</p>
+            <p className="text-sm text-kx-subtle">网络或服务暂时不可用，请重试。</p>
+            <button type="button" onClick={() => walletQuery.refetch()} className="kx-button-primary mx-auto justify-center">
+              <RefreshCw className="h-4 w-4" /> 重试
             </button>
           </section>
         ) : (
@@ -122,12 +169,14 @@ export default function WalletPage() {
                   <Loader2 className="h-4 w-4 animate-spin" /> 正在确认到账…
                 </div>
               )}
-              <Link
-                href="/guide"
-                className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-kx-accent hover:underline"
-              >
-                用 Machi 币购买学习资料 →
-              </Link>
+              <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
+                <Link href="/guide" className="inline-flex items-center gap-1 text-sm font-medium text-kx-accent hover:underline">
+                  用 Machi 币购买学习资料 →
+                </Link>
+                <Link href="/guide/my-library" className="inline-flex items-center gap-1 text-sm font-medium text-kx-accent hover:underline">
+                  我的资料库 →
+                </Link>
+              </div>
             </section>
 
             {/* Top-up packs */}
@@ -136,28 +185,38 @@ export default function WalletPage() {
                 <Sparkles className="h-5 w-5 text-kx-accent" />
                 <h2 className="font-semibold text-kx-text">充值 Machi 币</h2>
               </div>
-              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                {packs.map((pack) => (
-                  <button
-                    key={pack.packKey}
-                    type="button"
-                    disabled={!pack.purchasable || buying !== null}
-                    onClick={() => onTopup(pack)}
-                    className="flex flex-col items-start rounded-xl border border-kx-stroke/60 bg-kx-card p-4 text-left transition hover:border-kx-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <div className="text-lg font-semibold text-kx-text">{pack.displayPoints}</div>
-                    {pack.subtitle && <div className="text-xs text-kx-subtle">{pack.subtitle}</div>}
-                    <div className="mt-2 flex w-full items-center justify-between">
-                      <span className="text-base font-medium text-kx-accent">{pack.priceLabel}</span>
-                      {buying === pack.packKey ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-kx-subtle" />
-                      ) : (
-                        <span className="text-xs text-kx-subtle">{pack.purchasable ? "Stripe 充值" : "暂不可用"}</span>
-                      )}
-                    </div>
-                  </button>
-                ))}
-              </div>
+              {walletQuery.isLoading ? (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {[0, 1, 2, 3].map((i) => (
+                    <div key={i} className="kx-skeleton h-24 rounded-xl" />
+                  ))}
+                </div>
+              ) : packs.length === 0 ? (
+                <p className="text-sm text-kx-subtle">暂无可充值套餐，请稍后再试。</p>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {packs.map((pack) => (
+                    <button
+                      key={pack.packKey}
+                      type="button"
+                      disabled={!pack.purchasable || buying !== null}
+                      onClick={() => onTopup(pack)}
+                      className="flex flex-col items-start rounded-xl border border-kx-stroke/60 bg-kx-card p-4 text-left transition hover:border-kx-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      <div className="text-lg font-semibold text-kx-text">{pack.displayPoints}</div>
+                      {pack.subtitle && <div className="text-xs text-kx-subtle">{pack.subtitle}</div>}
+                      <div className="mt-2 flex w-full items-center justify-between">
+                        <span className="text-base font-medium text-kx-accent">{pack.priceLabel}</span>
+                        {buying === pack.packKey ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-kx-subtle" />
+                        ) : (
+                          <span className="text-xs text-kx-subtle">{pack.purchasable ? "Stripe 充值" : "暂不可用"}</span>
+                        )}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
             </section>
 
             {/* Disclaimer */}

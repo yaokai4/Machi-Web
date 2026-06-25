@@ -3,7 +3,9 @@
 - verify_stripe_webhook: valid v1, multiple-v1 rotation, expired timestamp,
   bad signature, malformed header.
 - _stripe_minor_units: zero-decimal currency conversion.
-- _order_charge_for_provider: stripe override + zero-decimal plan fallback.
+- _order_charge_for_provider: server-side price is the single source of truth —
+  the plan's own amount/currency is charged for every provider, a client-supplied
+  price is never used, and there is NO global env override that re-prices plans.
 
 Run: python3 scripts/test_stripe_hardening.py
 """
@@ -17,8 +19,6 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ.setdefault("KAIX_DB_PATH", "/tmp/kaix_stripe_test.db")
 os.environ.setdefault("STRIPE_WEBHOOK_SECRET", "whsec_testsecret")
-os.environ.setdefault("STRIPE_PRICE_CENTS", "199")
-os.environ.setdefault("STRIPE_CURRENCY", "usd")
 
 import server  # noqa: E402
 
@@ -61,21 +61,29 @@ def test_minor_units():
 
 
 def test_charge_for_provider():
+    # Server-side price is the single source of truth. Every provider charges the
+    # plan's own amount/currency; there is no global env override that silently
+    # re-prices all plans, and a client-supplied price is never consulted.
     plan = {"amount_cents": 2990, "currency": "CNY"}
-    amount, currency = server._order_charge_for_provider(plan, "stripe")
-    assert (amount, currency) == (199, "USD"), f"stripe override expected, got {(amount, currency)}"
+    for provider in ("stripe", "wechat_pay", "alipay", "apple_iap", "google_play"):
+        amount, currency = server._order_charge_for_provider(plan, provider)
+        assert (amount, currency) == (2990, "CNY"), \
+            f"{provider} must charge the plan price, got {(amount, currency)}"
 
-    amount, currency = server._order_charge_for_provider(plan, "wechat_pay")
-    assert (amount, currency) == (2990, "CNY"), "non-stripe keeps plan price"
+    # The order amount is always stored as value×100, identical for every
+    # provider. Provider-specific minor-unit conversion (zero-decimal currencies)
+    # happens only at the Stripe edge via _stripe_minor_units, not in the order.
+    amount, currency = server._order_charge_for_provider({"amount_cents": 98000, "currency": "JPY"}, "stripe")
+    assert (amount, currency) == (98000, "JPY"), f"order keeps value×100, got {(amount, currency)}"
+    assert server._stripe_minor_units(amount, currency) == 980, \
+        "JPY is zero-decimal: 98000 (value×100) → 980 minor units at the Stripe edge"
 
-    # Fallback path (no override): JPY plan converts to yen minor units.
-    saved = server.STRIPE_PRICE_CENTS
-    server.STRIPE_PRICE_CENTS = 0
-    try:
-        amount, currency = server._order_charge_for_provider({"amount_cents": 98000, "currency": "JPY"}, "stripe")
-        assert (amount, currency) == (980, "JPY"), f"zero-decimal fallback, got {(amount, currency)}"
-    finally:
-        server.STRIPE_PRICE_CENTS = saved
+    # A bogus client-supplied price field on the dict is ignored — only
+    # amount_cents/currency are read (the dict always originates from get_plan,
+    # never the request body).
+    spoofed = {"amount_cents": 2990, "currency": "CNY", "price": 1, "amount": 1}
+    amount, currency = server._order_charge_for_provider(spoofed, "stripe")
+    assert (amount, currency) == (2990, "CNY"), "client-supplied price must be ignored"
 
 
 if __name__ == "__main__":

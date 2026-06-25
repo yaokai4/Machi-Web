@@ -32,6 +32,7 @@ import type {
   KXMembershipInsights,
   KXWallet,
   KXWalletMe,
+  KXClientConfig,
   KXWalletLedgerEntry,
   PaymentProvider,
   KXCityListing,
@@ -1863,6 +1864,12 @@ export const api = {
   },
 
   // ---- Machi Points wallet ----
+  // Capability handshake. Read on demand to gate wallet/commerce UI: a backend
+  // without this route (404) means "this version has no wallet" — don't render
+  // a topup card that would 404 on /api/wallet/me.
+  async clientConfig(): Promise<KXClientConfig> {
+    return request("GET", `/api/meta/client-config`);
+  },
   async walletMe(platform = "web"): Promise<KXWalletMe> {
     return request("GET", `/api/wallet/me?platform=${encodeURIComponent(platform)}`);
   },
@@ -1878,7 +1885,17 @@ export const api = {
   },
 
   // ---- admin: Machi Points wallet ----
-  async adminWalletOverview(): Promise<{ accounts: number; outstandingPoints: number; lifetimePurchasedPoints: number; lifetimeBonusPoints: number; lifetimeSpentPoints: number; paidTopupOrders: number; grossTopupCents: number }> {
+  async adminWalletOverview(): Promise<{
+    accounts: number; outstandingPoints: number; platformLiabilityPoints: number;
+    lifetimePurchasedPoints: number; lifetimeBonusPoints: number; lifetimeSpentPoints: number;
+    paidTopupOrders: number; grossTopupCents: number; pendingTopupOrders: number;
+    refundedTopupOrders: number; refundedTopupCents: number; restrictedAccounts: number;
+    topupConversionRate: number;
+    providerBreakdown: Array<{ provider: string; paidOrders: number; grossCents: number }>;
+    failedWebhookCount: number;
+    failedWebhooks: Array<{ provider: string; eventType: string; eventId: string; orderNo: string; createdAt: string }>;
+    funnel: { guideOrdersCreated: number; guideOrdersFulfilled: number; guidePointsOrders: number; topupInitiated: number; topupPaid: number };
+  }> {
     return request("GET", `/api/admin/wallet/overview`);
   },
   async adminWalletUsers(opts: { q?: string; status?: string; limit?: number } = {}): Promise<Array<{ userId: string; handle: string; displayName: string; email: string; balancePoints: number; lifetimePurchasedPoints: number; lifetimeSpentPoints: number; status: string; updatedAt: string }>> {

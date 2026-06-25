@@ -26,7 +26,11 @@ const safeLocalStorage: StateStorage = {
 
 interface SessionState {
   user: KXUser | null;
-  status: "idle" | "loading" | "authed" | "unauthed";
+  // "degraded" = the session probe failed for a NON-auth reason (429/5xx/network).
+  // We don't know if the user is logged in, so we must not treat them as logged
+  // out (which would bounce protected routes to /login). Distinct from "unauthed",
+  // which is only ever set on an explicit 401/403.
+  status: "idle" | "loading" | "authed" | "unauthed" | "degraded";
   setUser: (user: KXUser | null) => void;
   setStatus: (status: SessionState["status"]) => void;
 }

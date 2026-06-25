@@ -201,6 +201,40 @@ export interface KXWalletMe {
   disclaimer: string;
 }
 
+// Capability handshake from GET /api/meta/client-config. An older backend that
+// lacks this route returns 404; the client treats that as "wallet unsupported".
+export interface KXClientConfig {
+  apiVersion: number;
+  serverVersion: string;
+  buildSha: string;
+  environment: string;
+  features: {
+    wallet: boolean;
+    guideCommerce: boolean;
+    membership: boolean;
+    points: boolean;
+  };
+  paymentProviders: {
+    web: string[];
+    ios: string[];
+    androidGlobal: string[];
+    androidChina: string[];
+  };
+  providersConfigured: {
+    stripe: boolean;
+    appleIap: boolean;
+    googlePlay: boolean;
+  };
+  wallet: {
+    pointsName: string;
+    pointsNameZh: string;
+    pointsUnit: string;
+    disclaimer: string;
+  };
+  walletDisclaimer: string;
+  minClientVersion: { ios: string; android: string };
+}
+
 export type PaymentProvider = "wechat_pay" | "alipay" | "stripe";
 
 export interface KXCreateOrderResult {

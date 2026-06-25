@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import { BadgeCheck, CheckCircle2, Coins, Download, FileText, Lock, ShieldCheck, Wrench } from "lucide-react";
@@ -26,6 +27,16 @@ export default function GuideProductPage() {
   const pushToast = useToasts((s) => s.push);
   const router = useRouter();
   const [busy, setBusy] = useState(false);
+  const tt = (zh: string, en: string, ja: string) => (locale === "en" ? en : locale === "ja" ? ja : zh);
+
+  // Send the user to top up, remembering this product so the wallet round-trips
+  // them back here after a successful topup (see wallet page returnTo handling).
+  const goTopUp = () => {
+    const here = typeof window !== "undefined"
+      ? `${window.location.pathname}${window.location.search}`
+      : `/guide/products/${slug}`;
+    router.push(`/wallet?returnTo=${encodeURIComponent(here)}`);
+  };
 
   const q = useQuery({
     queryKey: ["guide", "product", country, language, slug, user?.id || "anon"],
@@ -111,8 +122,8 @@ export default function GuideProductPage() {
     if (!user) return openAuthPrompt("generic");
     const ctx = p.pointsContext;
     if (ctx && !ctx.sufficient) {
-      pushToast({ kind: "info", message: locale === "en" ? "Not enough Machi Coins — top up first." : locale === "ja" ? "Machi コインが不足しています。チャージしてください。" : "Machi 币不足，请先充值。" });
-      router.push("/wallet");
+      pushToast({ kind: "info", message: tt("Machi 币不足，请先充值。", "Not enough Machi Coins — top up first.", "Machi コインが不足しています。チャージしてください。") });
+      goTopUp();
       return;
     }
     setBusy(true);
@@ -125,8 +136,8 @@ export default function GuideProductPage() {
     } catch (err) {
       const code = (err as { code?: string })?.code;
       if (code === "INSUFFICIENT_POINTS") {
-        pushToast({ kind: "info", message: locale === "en" ? "Not enough Machi Coins — top up first." : locale === "ja" ? "Machi コインが不足しています。チャージしてください。" : "Machi 币不足，请先充值。" });
-        router.push("/wallet");
+        pushToast({ kind: "info", message: tt("Machi 币不足，请先充值。", "Not enough Machi Coins — top up first.", "Machi コインが不足しています。チャージしてください。") });
+        goTopUp();
       } else {
         pushToast({ kind: "error", message: locale === "en" ? "Action failed. Please try again later." : locale === "ja" ? "操作に失敗しました。" : "操作失败，请稍后再试。" });
       }
@@ -147,6 +158,28 @@ export default function GuideProductPage() {
       setBusy(false);
     }
   };
+
+  // The purchase note must describe how THIS product is actually bought — a
+  // points/free/member product should not claim "checkout through Stripe".
+  const purchaseNote = p.isService
+    ? tt(
+        "服务类按预约处理，价格由服务器决定，不进入会员免费权益（会员可享折扣或优先处理）。",
+        "Services are handled by booking with server-set prices, and aren't included as free member resources (member discounts or priority may apply).",
+        "個別サービスは予約制で価格はサーバー側で管理され、メンバー無料対象には含まれません（割引や優先対応の対象になる場合があります）。",
+      )
+    : (() => {
+        const ways: string[] = [];
+        if (p.isMemberIncluded) ways.push(tt("会员可直接解锁", "membership", "メンバー特典"));
+        if (p.canBuyWithPoints) ways.push(tt("Machi 币", "Machi Coins", "Machi コイン"));
+        if (!p.isFree) ways.push(tt("Stripe 安全结账", "secure Stripe checkout", "Stripe 決済"));
+        if (p.isFree && !p.isMemberIncluded) ways.push(tt("登录后免费查看", "free after sign-in", "ログイン後無料"));
+        const waysText = ways.length ? ways.join(" / ") : tt("即将开放", "coming soon", "近日公開");
+        return tt(
+          `此数字资料可通过 ${waysText} 获取，价格由服务器决定；一经解锁请勿外传。`,
+          `This digital resource is available via ${waysText}; prices are set by the server and content must not be redistributed after unlock.`,
+          `このデジタル資料は ${waysText} で入手できます。価格はサーバー側で管理され、解放後の再配布は禁止です。`,
+        );
+      })();
 
   return (
     <GuideShell back={{ href: "/guide/services", label: copy.services.title }}>
@@ -204,11 +237,19 @@ export default function GuideProductPage() {
           </div>
           {p.canBuyWithPoints && p.pointsContext && !p.pointsContext.sufficient ? (
             <p className="mt-2 text-xs text-kx-muted">
-              {locale === "en"
-                ? `Your balance: ${p.pointsContext.currentBalance.toLocaleString()} coins — top up to buy with Machi Coins.`
-                : locale === "ja"
-                  ? `残高：${p.pointsContext.currentBalance.toLocaleString()} コイン — Machi コインの購入にはチャージが必要です。`
-                  : `当前余额 ${p.pointsContext.currentBalance.toLocaleString()} 币，充值后可用 Machi 币购买。`}
+              {(() => {
+                const bal = p.pointsContext.currentBalance;
+                const need = p.pointsContext.requiredPoints ?? p.walletPricePoints ?? 0;
+                const deficit = Math.max(0, need - bal);
+                return tt(
+                  `当前余额 ${bal.toLocaleString()} 币，还差 ${deficit.toLocaleString()} 币。`,
+                  `Your balance: ${bal.toLocaleString()} coins — ${deficit.toLocaleString()} short.`,
+                  `残高：${bal.toLocaleString()} コイン — ${deficit.toLocaleString()} コイン不足。`,
+                );
+              })()}{" "}
+              <button type="button" onClick={goTopUp} className="font-semibold text-kx-accent hover:underline">
+                {tt("去充值", "Top up", "チャージ")}
+              </button>
             </p>
           ) : null}
 
@@ -246,6 +287,9 @@ export default function GuideProductPage() {
                 <Download className="h-4 w-4" /> {locale === "en" ? "Download" : locale === "ja" ? "ダウンロード" : "下载"}{p.fileName ? `（${p.fileName}）` : ""}
               </button>
             ) : null}
+            <Link href="/guide/my-library" className="mt-3 block text-sm font-semibold text-kx-accent hover:underline">
+              {tt("在「我的资料库」查看全部已购 →", "See all in My library →", "「マイライブラリ」で全て見る →")}
+            </Link>
           </section>
         ) : null}
 
@@ -258,7 +302,7 @@ export default function GuideProductPage() {
 
         <div className="mt-3 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 text-xs leading-6 text-kx-muted">
           <p className="mb-1 inline-flex items-center gap-1.5 font-bold text-kx-subtle"><ShieldCheck className="h-3.5 w-3.5 text-kx-accent" /> {locale === "en" ? "Purchase and service notes" : locale === "ja" ? "購入・サービスに関する説明" : "购买与服务说明"}</p>
-          {locale === "en" ? "Paid web content is checked out securely through Stripe, with prices decided by the server. Digital resources must not be redistributed after unlock; services are handled by booking and are not included as free member resources, though member discounts or priority may apply." : locale === "ja" ? "Web の有料コンテンツは Stripe で安全に決済され、価格はサーバー側で管理されます。デジタル資料は解放後の再配布を禁止します。個別サービスは予約制で、メンバー無料対象には含まれません（割引や優先対応の対象になる場合があります）。" : "Web 端付费内容通过 Stripe 安全结账，价格由服务器决定。数字资料一经解锁不外传；服务类按预约处理，不进入会员免费权益（会员可享折扣或优先处理）。"}
+          {purchaseNote}
           {p.notes ? <span className="mt-1 block">{p.notes}</span> : null}
         </div>
       </div>

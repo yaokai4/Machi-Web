@@ -418,7 +418,15 @@ ALLOWED_ORIGINS = {o.strip() for o in _origins_raw.split(",") if o.strip()}
 # of "tens of thousands of real users" sharing a few dozen NATs at peak.
 RATE_LIMITS = {
     # group           -> (capacity, refill_per_minute)
-    "auth":   (10, 5),       # /api/auth/* — brute-force guard
+    "auth":   (10, 5),       # /api/auth/login|register|reset — brute-force guard
+    # Session probe (GET /api/auth/me) fires on nearly every page load, tab, and
+    # focus-refresh. It MUST NOT share the brute-force bucket, or a normal
+    # multi-tab user / QA sweep / prefetch self-429s and gets bounced to login.
+    "auth_session": (240, 240),
+    # Captcha image fetch and OAuth redirect kickoff are read-shaped and happen
+    # before any credential is submitted — give them roomy buckets of their own.
+    "auth_captcha": (60, 60),
+    "oauth_start":  (40, 40),
     "email":  (5, 2),        # /api/auth/*/send-code — code-spam guard
     # Carrier NAT means many real mobile users can share one apparent IP.
     # Keep auth/payment tight, but let normal writes breathe so a city event
@@ -2668,6 +2676,14 @@ def _rate_group_for(path: str, method: str) -> str:
     # spray verification emails or probe which addresses exist.
     if path in ("/api/auth/email/send-code", "/api/auth/send-verification-code", "/api/auth/forgot-password", "/api/auth/login/start"):
         return "email"
+    # Session probe is lenient (read-shaped, hit on every navigation); its
+    # mutations (PATCH profile / DELETE account) fall through to the strict bucket.
+    if path == "/api/auth/me" and method == "GET":
+        return "auth_session"
+    if path == "/api/auth/captcha":
+        return "auth_captcha"
+    if path.startswith("/api/auth/google/start") or path.startswith("/api/auth/google/url"):
+        return "oauth_start"
     if path.startswith("/api/auth/"):
         return "auth"
     # Payment order creation + provider verification. Webhooks are
@@ -13198,6 +13214,65 @@ WALLET_DISCLAIMER = (
     "不可提现、不可转让、不可兑换现金，且不会过期。"
 )
 
+# Client capability handshake. Clients read /api/meta/client-config on launch to
+# decide what to show. The single most important signal is simply that this
+# endpoint EXISTS and returns features.wallet=true — an older backend (no wallet
+# routes) returns 404 here, so the client knows not to render a topup card that
+# would 404 on /api/wallet/me. Bump CLIENT_CONFIG_API_VERSION when the
+# client-visible contract changes.
+CLIENT_CONFIG_API_VERSION = 1
+SERVER_BUILD_SHA = _env("KAIX_BUILD_SHA", "") or _env("RENDER_GIT_COMMIT", "") or "dev"
+# Minimum client versions the server still supports. Empty = no floor enforced.
+MIN_CLIENT_VERSION_IOS = _env("MIN_CLIENT_VERSION_IOS", "")
+MIN_CLIENT_VERSION_ANDROID = _env("MIN_CLIENT_VERSION_ANDROID", "")
+
+
+def client_config_payload() -> dict[str, Any]:
+    """Capability/feature handshake, computed from real server config so a
+    client never offers a payment path the backend can't actually settle.
+    Public, unauthenticated, no DB — safe to hit on every cold launch."""
+    stripe_ready = bool(STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET)
+    apple_ready = bool(APPLE_IAP_SHARED_SECRET or APPLE_IAP_PRIVATE_KEY)
+    google_ready = google_play_configured()
+    return {
+        "apiVersion": CLIENT_CONFIG_API_VERSION,
+        "serverVersion": SERVER_BUILD_SHA,
+        "buildSha": SERVER_BUILD_SHA,
+        "environment": "production" if PRODUCTION else "development",
+        "features": {
+            "wallet": True,
+            "guideCommerce": True,
+            "membership": True,
+            "points": True,
+        },
+        # Which providers are usable *and configured* per platform. "machi_points"
+        # means "spend the in-app wallet" and is always available once funded.
+        "paymentProviders": {
+            "web": (["stripe"] if stripe_ready else []) + ["machi_points"],
+            "ios": ["apple_iap", "machi_points"],
+            "androidGlobal": (["google_play"] if google_ready else []) + ["machi_points"],
+            # China/OEM channels have no compliant in-app topup yet.
+            "androidChina": [],
+        },
+        "providersConfigured": {
+            "stripe": stripe_ready,
+            "appleIap": apple_ready,
+            "googlePlay": google_ready,
+        },
+        "wallet": {
+            "pointsName": WALLET_POINTS_NAME,
+            "pointsNameZh": WALLET_POINTS_NAME_ZH,
+            "pointsUnit": WALLET_POINTS_UNIT,
+            "disclaimer": WALLET_DISCLAIMER,
+        },
+        "walletDisclaimer": WALLET_DISCLAIMER,
+        "minClientVersion": {
+            "ios": MIN_CLIENT_VERSION_IOS,
+            "android": MIN_CLIENT_VERSION_ANDROID,
+        },
+        "ts": now_iso(),
+    }
+
 # Default top-up packs. amount_cents is in minor units (分/cents). Apple, iOS
 # and Google product ids default to the pack_key so StoreKit / Play SKUs line
 # up 1:1 with App Store Connect / Play Console product ids.
@@ -19653,6 +19728,105 @@ class Handler(BaseHTTPRequestHandler):
             product["canBuyWithPoints"] = bool(base_points_eligible and int(row["wallet_price_points"] or 0) > 0)
         self.send_json({"status": "ok", "product": product})
 
+    def api_guide_my_library(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Unified purchase-after view: owned + member-unlocked materials, the
+        user's service requests, and a merged order history (guide purchases +
+        wallet top-ups). Read-only aggregation over existing tables. No paid
+        content leaks here — each material links to its product page, which is
+        what gates the actual download."""
+        user = self.require_user(conn)
+        uid = user["id"]
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
+        is_member = has_active_membership(conn, uid)
+
+        # Explicitly entitled products (a fulfilled order or an active entitlement).
+        product_sources: dict[str, str] = {}   # product_id -> "own" | "member"
+        granted_at: dict[str, str] = {}
+        for r in conn.execute(
+            "SELECT product_id, MAX(COALESCE(fulfilled_at, paid_at, created_at)) AS at "
+            "FROM guide_orders WHERE user_id = ? AND status IN ('paid','fulfilled') GROUP BY product_id",
+            (uid,)):
+            product_sources[r["product_id"]] = "own"
+            granted_at[r["product_id"]] = r["at"] or ""
+        for r in conn.execute(
+            "SELECT resource_id, granted_at FROM user_entitlements WHERE user_id = ? AND status = 'active'",
+            (uid,)):
+            pid = r["resource_id"]
+            if pid and pid not in product_sources:
+                product_sources[pid] = "own"
+                granted_at.setdefault(pid, r["granted_at"] or "")
+
+        materials: list[dict[str, Any]] = []
+        if product_sources:
+            ph = ",".join("?" * len(product_sources))
+            for row in conn.execute(
+                f"SELECT * FROM guide_products WHERE id IN ({ph})", tuple(product_sources.keys())):
+                d = dict(row)
+                item = localize_guide_product_payload(serialize_guide_product(d), language)
+                item["entitlementSource"] = product_sources.get(d["id"], "own")
+                item["grantedAt"] = granted_at.get(d["id"], "")
+                item["hasFile"] = bool(d.get("file_url"))
+                materials.append(item)
+        # Member-unlocked digital resources the user hasn't separately bought.
+        if is_member:
+            for row in conn.execute(
+                "SELECT * FROM guide_products WHERE is_member_included = 1 AND is_service = 0 "
+                "AND status = 'published' ORDER BY sort_order, created_at DESC LIMIT 100"):
+                d = dict(row)
+                if d["id"] in product_sources:
+                    continue
+                item = localize_guide_product_payload(serialize_guide_product(d), language)
+                item["entitlementSource"] = "member"
+                item["grantedAt"] = ""
+                item["hasFile"] = bool(d.get("file_url"))
+                materials.append(item)
+
+        services: list[dict[str, Any]] = []
+        for r in conn.execute(
+            "SELECT s.*, p.title AS product_title, p.slug AS product_slug "
+            "FROM guide_service_requests s LEFT JOIN guide_products p ON p.id = s.product_id "
+            "WHERE s.user_id = ? ORDER BY s.created_at DESC LIMIT 100", (uid,)):
+            d = dict(r)
+            services.append({
+                "id": d["id"], "productId": d.get("product_id") or "",
+                "productSlug": d.get("product_slug") or "", "productTitle": d.get("product_title") or "",
+                "serviceType": d.get("service_type") or "", "status": d.get("status") or "pending",
+                "adminNote": d.get("admin_note") or "", "createdAt": d.get("created_at") or "",
+                "updatedAt": d.get("updated_at") or "",
+            })
+
+        orders: list[dict[str, Any]] = []
+        for r in conn.execute(
+            "SELECT o.*, p.title AS product_title, p.slug AS product_slug "
+            "FROM guide_orders o LEFT JOIN guide_products p ON p.id = o.product_id "
+            "WHERE o.user_id = ? ORDER BY o.created_at DESC LIMIT 100", (uid,)):
+            d = dict(r)
+            orders.append({
+                "kind": "purchase", "orderNo": d.get("order_no") or "",
+                "title": d.get("product_title") or "", "productSlug": d.get("product_slug") or "",
+                "status": d.get("status") or "", "provider": d.get("payment_provider") or "",
+                "paymentMethod": d.get("payment_method") or "", "amount": int(d.get("price") or 0),
+                "currency": normalize_currency(d.get("currency") or "CNY"),
+                "pricePoints": int(d.get("price_points") or 0), "createdAt": d.get("created_at") or "",
+            })
+        for r in conn.execute(
+            "SELECT * FROM wallet_topup_orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", (uid,)):
+            d = dict(r)
+            orders.append({
+                "kind": "topup", "orderNo": d.get("order_no") or "",
+                "title": f"{int(d.get('total_points') or 0):,} Machi 币", "productSlug": "",
+                "status": d.get("status") or "", "provider": d.get("payment_provider") or "",
+                "paymentMethod": d.get("payment_provider") or "", "amount": int(d.get("amount_cents") or 0),
+                "currency": normalize_currency(d.get("currency") or "CNY"),
+                "pricePoints": int(d.get("total_points") or 0), "createdAt": d.get("created_at") or "",
+            })
+        orders.sort(key=lambda o: o.get("createdAt") or "", reverse=True)
+
+        self.send_json({
+            "status": "ok", "isMember": is_member,
+            "materials": materials, "services": services, "orders": orders[:100],
+        })
+
     def api_guide_member_resources(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
         language = (query.get("language") or "zh-CN").strip() or "zh-CN"
@@ -22699,6 +22873,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_error_json(f"db: {exc}", 503, "not_ready")
                 ACCESS_LOG.warning('%s "GET %s" 503 ip=%s err=%s', self._request_id, path, ip, exc)
             return
+        # Capability handshake — public, no auth, no DB. Clients hit this on
+        # launch to gate wallet/commerce UI against the actual backend version.
+        if path == "/api/meta/client-config" and method == "GET":
+            self.send_json(client_config_payload())
+            ACCESS_LOG.info('%s "GET %s" 200 ip=%s', self._request_id, path, ip)
+            return
         if path in ("/api/generated/listing-card.png", "/api/generated/listing-card.svg") and method == "GET":
             self.api_generated_listing_card(query, image_format="svg" if path.endswith(".svg") else "png")
             ACCESS_LOG.info('%s "GET %s" 200 ip=%s', self._request_id, path, ip)
@@ -23420,6 +23600,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_article_progress_update(conn, slug, query)
         if path.startswith("/api/guide/articles/") and method == "GET":
             return self.api_guide_article_detail(conn, unquote(path[len("/api/guide/articles/"):]), query)
+        if path == "/api/guide/my-library" and method == "GET":
+            return self.api_guide_my_library(conn, query)
         if path == "/api/guide/products" and method == "GET":
             return self.api_guide_products(conn, query)
         if path.startswith("/api/guide/products/"):
@@ -24805,14 +24987,69 @@ class Handler(BaseHTTPRequestHandler):
         topups = dict(conn.execute(
             "SELECT COUNT(*) AS paid_orders, COALESCE(SUM(amount_cents),0) AS gross_cents "
             "FROM wallet_topup_orders WHERE status IN ('paid','fulfilled')").fetchone())
+        # Order pipeline (for conversion) + refunds/chargebacks.
+        pipeline = dict(conn.execute(
+            "SELECT COUNT(*) AS total_orders, "
+            "SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_orders, "
+            "SUM(CASE WHEN status='refunded' OR refunded_at IS NOT NULL THEN 1 ELSE 0 END) AS refunded_orders, "
+            "COALESCE(SUM(CASE WHEN status='refunded' OR refunded_at IS NOT NULL THEN amount_cents ELSE 0 END),0) AS refunded_cents "
+            "FROM wallet_topup_orders").fetchone())
+        restricted = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM wallet_accounts WHERE status = 'restricted'").fetchone()["c"])
+        total_orders = int(pipeline["total_orders"] or 0)
+        paid_orders = int(topups["paid_orders"] or 0)
+        # Revenue by provider (paid only).
+        provider_rows = conn.execute(
+            "SELECT payment_provider AS provider, COUNT(*) AS orders, COALESCE(SUM(amount_cents),0) AS cents "
+            "FROM wallet_topup_orders WHERE status IN ('paid','fulfilled') GROUP BY payment_provider "
+            "ORDER BY cents DESC").fetchall()
+        provider_breakdown = [
+            {"provider": (r["provider"] or "unknown"), "paidOrders": int(r["orders"]),
+             "grossCents": int(r["cents"])}
+            for r in provider_rows
+        ]
+        # Provider verification-failure audit (bad-signature / rejected callbacks).
+        failed_total = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM payment_webhooks WHERE signature_valid = 0").fetchone()["c"])
+        failed_rows = conn.execute(
+            "SELECT provider, event_type, event_id, order_no, created_at FROM payment_webhooks "
+            "WHERE signature_valid = 0 ORDER BY created_at DESC LIMIT 20").fetchall()
+        failed_webhooks = [
+            {"provider": r["provider"], "eventType": r["event_type"], "eventId": r["event_id"],
+             "orderNo": r["order_no"], "createdAt": r["created_at"]}
+            for r in failed_rows
+        ]
+        # Guide commerce funnel (real order-state data, not fabricated impressions).
+        guide_orders = int(conn.execute("SELECT COUNT(*) AS c FROM guide_orders").fetchone()["c"])
+        guide_fulfilled = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_orders WHERE status IN ('paid','fulfilled')").fetchone()["c"])
+        guide_points_orders = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_orders WHERE payment_provider = 'wallet'").fetchone()["c"])
         self.send_json({
             "accounts": int(totals["accounts"]),
+            # outstandingPoints == platform liability (unconsumed prepaid points).
             "outstandingPoints": int(totals["outstanding"]),
+            "platformLiabilityPoints": int(totals["outstanding"]),
             "lifetimePurchasedPoints": int(totals["purchased"]),
             "lifetimeBonusPoints": int(totals["bonus"]),
             "lifetimeSpentPoints": int(totals["spent"]),
-            "paidTopupOrders": int(topups["paid_orders"]),
+            "paidTopupOrders": paid_orders,
             "grossTopupCents": int(topups["gross_cents"]),
+            "pendingTopupOrders": int(pipeline["pending_orders"] or 0),
+            "refundedTopupOrders": int(pipeline["refunded_orders"] or 0),
+            "refundedTopupCents": int(pipeline["refunded_cents"] or 0),
+            "restrictedAccounts": restricted,
+            "topupConversionRate": int(round(paid_orders * 100 / total_orders)) if total_orders else 0,
+            "providerBreakdown": provider_breakdown,
+            "failedWebhookCount": failed_total,
+            "failedWebhooks": failed_webhooks,
+            "funnel": {
+                "guideOrdersCreated": guide_orders,
+                "guideOrdersFulfilled": guide_fulfilled,
+                "guidePointsOrders": guide_points_orders,
+                "topupInitiated": total_orders,
+                "topupPaid": paid_orders,
+            },
         })
 
     def api_admin_wallet_users(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:

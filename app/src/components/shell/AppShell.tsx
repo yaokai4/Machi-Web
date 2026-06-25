@@ -23,6 +23,7 @@ import {
   Sun,
   Moon,
   Wallet,
+  Library,
   GraduationCap,
   UserPlus,
   User as UserIcon,
@@ -61,13 +62,14 @@ const NAV_ITEMS = [
   { href: "/guide", labelKey: "nav_guide" as I18nKey, icon: GraduationCap, key: "guide", badgeKey: undefined },
   { href: "/membership", labelKey: "mem_title" as I18nKey, icon: BadgeCheck, key: "membership", badgeKey: undefined },
   { href: "/wallet", labelKey: "nav_wallet" as I18nKey, icon: Wallet, key: "wallet", badgeKey: undefined },
+  { href: "/guide/my-library", labelKey: "nav_library" as I18nKey, icon: Library, key: "library", badgeKey: undefined },
   { href: "/my/features", labelKey: "nav_workbench" as I18nKey, icon: LayoutDashboard, key: "features", badgeKey: undefined },
   { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
   { href: "/messages", labelKey: "nav_messages" as I18nKey, icon: Mail, key: "messages", badgeKey: "messages" as const },
   { href: "/settings", labelKey: "nav_settings" as I18nKey, icon: Settings, key: "settings", badgeKey: undefined },
 ];
 
-const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings", "features", "wallet"]);
+const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings", "features", "wallet", "library"]);
 
 function currentPathForRedirect(pathname: string | null) {
   return pathname || "/home";
@@ -136,7 +138,11 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
   useGlobalShortcuts();
 
   const waitingForAuth = status === "loading" || status === "idle";
-  if (requireAuth && (waitingForAuth || status === "unauthed")) {
+  // A degraded probe (429/5xx/network) before we know who the user is: keep
+  // waiting + retrying rather than redirecting to login or flashing protected
+  // content. Once a probe succeeds the user is known and content renders.
+  const sessionUnknown = waitingForAuth || (status === "degraded" && !user);
+  if (requireAuth && (sessionUnknown || status === "unauthed")) {
     return (
       <div className="min-h-dvh flex items-center justify-center text-kx-muted">
         <span className="kx-skeleton w-32 h-4" />
