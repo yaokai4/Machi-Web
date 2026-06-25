@@ -2676,6 +2676,8 @@ def _rate_group_for(path: str, method: str) -> str:
     if (path.startswith("/api/payments/") and not path.startswith("/api/payments/webhook/")) \
             and method in ("POST", "PATCH", "PUT", "DELETE"):
         return "payment"
+    if path.startswith("/api/wallet/topups/") and method in ("POST", "PATCH", "PUT", "DELETE"):
+        return "payment"
     if path.startswith("/api/search"):
         return "search"
     if path.startswith("/api/uploads/local/"):
@@ -4066,6 +4068,18 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "cancellation_policy": "TEXT NOT NULL DEFAULT ''",
         "related_article_slugs": "TEXT NOT NULL DEFAULT ''",
         "topic_slugs": "TEXT NOT NULL DEFAULT ''",
+        # Machi Points purchasing. Points prices/eligibility are read server-side
+        # only; platform_policy/fulfillment_type drive each client's purchase CTA.
+        "wallet_price_points": "INTEGER NOT NULL DEFAULT 0",
+        "member_wallet_price_points": "INTEGER NOT NULL DEFAULT 0",
+        "wallet_eligible": "INTEGER NOT NULL DEFAULT 0",
+        "app_store_eligible": "INTEGER NOT NULL DEFAULT 1",
+        "google_play_eligible": "INTEGER NOT NULL DEFAULT 1",
+        "external_payment_allowed": "INTEGER NOT NULL DEFAULT 0",
+        "fulfillment_type": "TEXT NOT NULL DEFAULT 'digital_unlock'",
+        "entitlement_type": "TEXT NOT NULL DEFAULT 'guide_product'",
+        "platform_policy": "TEXT NOT NULL DEFAULT 'digital_iap_required'",
+        "points_purchase_limit": "INTEGER NOT NULL DEFAULT 0",
     })
     _ensure_columns(conn, "membership_plans", {
         "name": "TEXT NOT NULL DEFAULT ''",
@@ -4124,6 +4138,11 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "fulfilled_at": "TEXT",
         "stripe_checkout_session_id": "TEXT NOT NULL DEFAULT ''",
         "stripe_payment_intent_id": "TEXT NOT NULL DEFAULT ''",
+        # Machi Points purchase support on a guide order.
+        "price_points": "INTEGER NOT NULL DEFAULT 0",
+        "wallet_ledger_entry_id": "TEXT NOT NULL DEFAULT ''",
+        "entitlement_id": "TEXT NOT NULL DEFAULT ''",
+        "provider_trade_no": "TEXT NOT NULL DEFAULT ''",
     })
     _ensure_columns(conn, "guide_service_requests", {
         "contact_value": "TEXT NOT NULL DEFAULT ''",
@@ -10046,6 +10065,7 @@ def init_db() -> None:
         ensure_draft_schema_extensions(conn)
         ensure_booking_schema(conn)
         ensure_membership_plans(conn)
+        ensure_wallet_schema(conn)
         ensure_guide_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
@@ -13123,6 +13143,427 @@ def record_payment_webhook(conn: sqlite3.Connection, provider: str, event_type: 
          (raw or "")[:8000], 1 if signature_valid else 0, now_iso(), now_iso()),
     )
     return True
+
+
+# ---------------------------------------------------------------------------
+# Machi Points wallet — internal points scrip (NOT cash).
+#
+# Hard product rules (mirror Apple's IAP guidance, last reviewed 2026-06):
+#   * Points are bought with real money (Stripe on Web, App Store IAP on iOS,
+#     Google Play Billing on Android global) and spent ONLY on Machi's own
+#     digital goods/services.
+#   * Points NEVER expire — IAP-purchased "currency" must not expire.
+#   * No withdrawal, no transfer, no cash conversion.
+#   * Every credit/debit is an immutable ledger row; the balance is just the
+#     running sum and can be rebuilt from the ledger. Each provider settlement
+#     is idempotent on a stable key (and gated on a pending→paid order-state
+#     transition) so a webhook + a client confirm can't double-credit.
+# ---------------------------------------------------------------------------
+
+WALLET_POINTS_NAME = "Machi Points"
+WALLET_POINTS_NAME_ZH = "Machi 点数"
+WALLET_POINTS_UNIT = "点"
+WALLET_DISCLAIMER = (
+    "Machi 点数仅可用于 Machi 内的数字资料、模板与平台服务，"
+    "不可提现、不可转让、不可兑换现金，且不会过期。"
+)
+
+# Default top-up packs. amount_cents is in minor units (分/cents). Apple, iOS
+# and Google product ids default to the pack_key so StoreKit / Play SKUs line
+# up 1:1 with App Store Connect / Play Console product ids.
+# (pack_key, title, subtitle, points, bonus_points, amount_cents, currency)
+WALLET_TOPUP_SEED: list[tuple[str, str, str, int, int, int, str]] = [
+    ("machi_points_600", "600 Machi 点数", "小资料 / 模板", 600, 0, 600, "CNY"),
+    ("machi_points_1500", "1500 Machi 点数", "常用资料包 · 多送 80", 1500, 80, 1500, "CNY"),
+    ("machi_points_3200", "3200 Machi 点数", "组合包 / 异步服务 · 多送 260", 3200, 260, 3000, "CNY"),
+    ("machi_points_6800", "6800 Machi 点数", "深度资料 / 多次购买 · 多送 800", 6800, 800, 6000, "CNY"),
+]
+
+
+def _wallet_topup_order_no() -> str:
+    """Wallet top-up order number. The 'WT' prefix lets the shared Stripe
+    webhook route the settlement to wallet_topup_orders (vs membership /
+    guide_orders)."""
+    return "WT" + now_iso()[:10].replace("-", "") + uuid.uuid4().hex[:8].upper()
+
+
+def _wallet_order_no() -> str:
+    """Order number for a points-paid guide purchase. 'GW' = guide wallet; it
+    never reaches a payment provider (the order is born fulfilled)."""
+    return "GW" + now_iso()[:10].replace("-", "") + uuid.uuid4().hex[:8].upper()
+
+
+def _points_display(points: int) -> str:
+    return f"{int(points or 0):,} {WALLET_POINTS_UNIT}"
+
+
+def ensure_wallet_account(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+    """Return the user's wallet, creating a zero-balance account on first use."""
+    row = conn.execute("SELECT * FROM wallet_accounts WHERE user_id = ?", (user_id,)).fetchone()
+    if row:
+        return dict(row)
+    now = now_iso()
+    try:
+        conn.execute(
+            "INSERT INTO wallet_accounts (id, user_id, balance_points, lifetime_purchased_points, "
+            "lifetime_bonus_points, lifetime_spent_points, status, created_at, updated_at) "
+            "VALUES (?, ?, 0, 0, 0, 0, 'active', ?, ?)",
+            (str(uuid.uuid4()), user_id, now, now),
+        )
+    except sqlite3.IntegrityError:
+        # Concurrent create won the user_id UNIQUE race — fall through to re-read.
+        pass
+    return dict(conn.execute("SELECT * FROM wallet_accounts WHERE user_id = ?", (user_id,)).fetchone())
+
+
+def serialize_wallet_account(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    bal = int(d.get("balance_points") or 0)
+    return {
+        "balancePoints": bal, "balance_points": bal,
+        "status": d.get("status") or "active",
+        "lifetimePurchasedPoints": int(d.get("lifetime_purchased_points") or 0),
+        "lifetimeBonusPoints": int(d.get("lifetime_bonus_points") or 0),
+        "lifetimeSpentPoints": int(d.get("lifetime_spent_points") or 0),
+        "pointsName": WALLET_POINTS_NAME,
+        "pointsNameZh": WALLET_POINTS_NAME_ZH,
+        "displayBalance": _points_display(bal),
+        "disclaimer": WALLET_DISCLAIMER,
+    }
+
+
+def get_wallet_snapshot(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+    return serialize_wallet_account(ensure_wallet_account(conn, user_id))
+
+
+def serialize_wallet_ledger_entry(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    delta = int(d.get("points_delta") or 0)
+    return {
+        "id": d.get("id"),
+        "entryType": d.get("entry_type") or "", "entry_type": d.get("entry_type") or "",
+        "pointsDelta": delta, "points_delta": delta,
+        "balanceAfter": int(d.get("balance_after") or 0), "balance_after": int(d.get("balance_after") or 0),
+        "sourceType": d.get("source_type") or "", "source_type": d.get("source_type") or "",
+        "sourceOrderId": d.get("source_order_id") or "",
+        "productId": d.get("product_id") or "",
+        "createdAt": d.get("created_at"), "created_at": d.get("created_at"),
+        "displayDelta": ("+" if delta >= 0 else "−") + f"{abs(delta):,}",
+    }
+
+
+def serialize_wallet_topup_product(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    points = int(d.get("points") or 0)
+    bonus = int(d.get("bonus_points") or 0)
+    amount = int(d.get("amount_cents") or 0)
+    currency = normalize_currency(d.get("currency") or "CNY")
+    return {
+        "id": d.get("id"), "packKey": d.get("pack_key"), "pack_key": d.get("pack_key"),
+        "title": d.get("title") or "", "subtitle": d.get("subtitle") or "",
+        "points": points, "bonusPoints": bonus, "bonus_points": bonus,
+        "totalPoints": points + bonus, "total_points": points + bonus,
+        "amountCents": amount, "amount_cents": amount, "currency": currency,
+        "priceLabel": format_price_value(amount / 100.0, currency),
+        "displayPoints": _points_display(points + bonus),
+        "appleProductId": d.get("apple_product_id") or d.get("ios_iap_product_id") or "",
+        "iosIapProductId": d.get("ios_iap_product_id") or d.get("apple_product_id") or "",
+        "googleProductId": d.get("google_product_id") or "",
+        "huaweiProductId": d.get("huawei_product_id") or "",
+        "sortOrder": int(d.get("sort_order") or 0),
+        "isActive": bool(d.get("is_active", 1)),
+    }
+
+
+def serialize_wallet_topup_order(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    points = int(d.get("points") or 0)
+    bonus = int(d.get("bonus_points") or 0)
+    return {
+        "id": d.get("id"), "orderNo": d.get("order_no"), "order_no": d.get("order_no"),
+        "packKey": d.get("pack_key"), "status": d.get("status") or "pending",
+        "points": points, "bonusPoints": bonus, "totalPoints": int(d.get("total_points") or (points + bonus)),
+        "amountCents": int(d.get("amount_cents") or 0), "currency": d.get("currency") or "CNY",
+        "paymentProvider": d.get("payment_provider") or "",
+        "createdAt": d.get("created_at"), "paidAt": d.get("paid_at"),
+    }
+
+
+def get_topup_product(conn: sqlite3.Connection, pack_key: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM wallet_topup_products WHERE pack_key = ? AND is_active = 1", (pack_key,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_topup_products(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM wallet_topup_products WHERE is_active = 1 ORDER BY sort_order, amount_cents"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def wallet_post_ledger(conn: sqlite3.Connection, user_id: str, entry_type: str, points_delta: int, *,
+                       source_type: str = "", source_order_id: str = "", source_transaction_id: str = "",
+                       idempotency_key: str = "", product_id: str = "", metadata: dict | None = None,
+                       created_by: str = "") -> dict[str, Any]:
+    """Apply ONE balance movement and append its immutable audit row.
+
+    points_delta > 0 credits, < 0 debits, 0 is a no-op audit note. Returns a
+    result dict: {entry, wallet, applied, duplicate, insufficient}. Idempotent
+    on (user_id, idempotency_key) — a repeat returns the prior row untouched.
+    A debit is a single conditional UPDATE (never goes below zero, safe across
+    processes); the rowcount tells us whether it landed."""
+    account = ensure_wallet_account(conn, user_id)
+    points_delta = int(points_delta)
+    if idempotency_key:
+        existing = conn.execute(
+            "SELECT * FROM wallet_ledger_entries WHERE user_id = ? AND idempotency_key = ? LIMIT 1",
+            (user_id, idempotency_key),
+        ).fetchone()
+        if existing:
+            return {"entry": serialize_wallet_ledger_entry(existing),
+                    "wallet": get_wallet_snapshot(conn, user_id),
+                    "applied": False, "duplicate": True, "insufficient": False}
+    now = now_iso()
+    if points_delta < 0:
+        spend = -points_delta
+        cur = conn.execute(
+            "UPDATE wallet_accounts SET balance_points = balance_points - ?, "
+            "lifetime_spent_points = lifetime_spent_points + ?, updated_at = ? "
+            "WHERE user_id = ? AND status = 'active' AND balance_points >= ?",
+            (spend, spend, now, user_id, spend),
+        )
+        if cur.rowcount != 1:
+            return {"entry": None, "wallet": get_wallet_snapshot(conn, user_id),
+                    "applied": False, "duplicate": False, "insufficient": True}
+    elif points_delta > 0:
+        purchased_inc = points_delta if entry_type == "topup" else 0
+        bonus_inc = points_delta if entry_type in ("bonus", "membership_bonus") else 0
+        conn.execute(
+            "UPDATE wallet_accounts SET balance_points = balance_points + ?, "
+            "lifetime_purchased_points = lifetime_purchased_points + ?, "
+            "lifetime_bonus_points = lifetime_bonus_points + ?, updated_at = ? WHERE user_id = ?",
+            (points_delta, purchased_inc, bonus_inc, now, user_id),
+        )
+    balance_after = int(dict(conn.execute(
+        "SELECT balance_points FROM wallet_accounts WHERE user_id = ?", (user_id,)).fetchone()).get("balance_points") or 0)
+    entry_id = str(uuid.uuid4())
+    conn.execute(
+        "INSERT INTO wallet_ledger_entries (id, user_id, account_id, entry_type, points_delta, balance_after, "
+        "source_type, source_order_id, source_transaction_id, idempotency_key, product_id, metadata_json, "
+        "created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (entry_id, user_id, account["id"], entry_type, points_delta, balance_after,
+         source_type or "", source_order_id or "", source_transaction_id or "", idempotency_key or "",
+         product_id or "", json.dumps(metadata or {}, ensure_ascii=False), now, created_by or ""),
+    )
+    entry = conn.execute("SELECT * FROM wallet_ledger_entries WHERE id = ?", (entry_id,)).fetchone()
+    return {"entry": serialize_wallet_ledger_entry(entry),
+            "wallet": get_wallet_snapshot(conn, user_id),
+            "applied": True, "duplicate": False, "insufficient": False}
+
+
+def create_wallet_topup_order(conn: sqlite3.Connection, user_id: str, pack: dict[str, Any], provider: str,
+                              client_type: str = "", provider_product_id: str = "") -> dict[str, Any]:
+    """Create a pending top-up order. Amount + points always come from the pack
+    row server-side — the client never sends a price or a points amount."""
+    points = int(pack.get("points") or 0)
+    bonus = int(pack.get("bonus_points") or 0)
+    now = now_iso()
+    order_id = str(uuid.uuid4())
+    order_no = _wallet_topup_order_no()
+    conn.execute(
+        "INSERT INTO wallet_topup_orders (id, order_no, user_id, pack_key, points, bonus_points, total_points, "
+        "amount_cents, currency, status, payment_provider, provider_product_id, client_type, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+        (order_id, order_no, user_id, pack.get("pack_key"), points, bonus, points + bonus,
+         int(pack.get("amount_cents") or 0), pack.get("currency") or "CNY", provider,
+         provider_product_id or "", client_type or "", now, now),
+    )
+    return dict(conn.execute("SELECT * FROM wallet_topup_orders WHERE id = ?", (order_id,)).fetchone())
+
+
+def wallet_credit_topup(conn: sqlite3.Connection, order_no: str, *, provider_trade_no: str = "",
+                        provider_user_id: str = "", source_type: str = "") -> dict[str, Any]:
+    """Settle a top-up order and credit its points EXACTLY ONCE. The grant is
+    gated on winning the pending→paid transition (rowcount==1), so a webhook
+    and a client-side confirm racing on the same order never double-credit."""
+    row = conn.execute("SELECT * FROM wallet_topup_orders WHERE order_no = ?", (order_no,)).fetchone()
+    if not row:
+        return {"applied": False, "duplicate": False, "reason": "order_not_found", "order": None, "wallet": None}
+    order = dict(row)
+    if order["status"] in ("paid", "fulfilled"):
+        return {"applied": False, "duplicate": True, "order": serialize_wallet_topup_order(order),
+                "wallet": get_wallet_snapshot(conn, order["user_id"]),
+                "grantedPoints": int(order["total_points"] or 0)}
+    if order["status"] != "pending":
+        return {"applied": False, "duplicate": False, "reason": "order_not_payable",
+                "order": serialize_wallet_topup_order(order),
+                "wallet": get_wallet_snapshot(conn, order["user_id"])}
+    now = now_iso()
+    cur = conn.execute(
+        "UPDATE wallet_topup_orders SET status = 'paid', "
+        "provider_trade_no = COALESCE(NULLIF(?, ''), provider_trade_no), "
+        "provider_user_id = COALESCE(NULLIF(?, ''), provider_user_id), "
+        "paid_at = ?, fulfilled_at = ?, updated_at = ? WHERE order_no = ? AND status = 'pending'",
+        (provider_trade_no or "", provider_user_id or "", now, now, now, order_no),
+    )
+    if cur.rowcount != 1:
+        fresh = dict(conn.execute("SELECT * FROM wallet_topup_orders WHERE order_no = ?", (order_no,)).fetchone())
+        return {"applied": False, "duplicate": True, "order": serialize_wallet_topup_order(fresh),
+                "wallet": get_wallet_snapshot(conn, order["user_id"]),
+                "grantedPoints": int(order["total_points"] or 0)}
+    src = source_type or order["payment_provider"] or "topup"
+    idem = f"topup:{order_no}"
+    wallet_post_ledger(conn, order["user_id"], "topup", int(order["points"] or 0), source_type=src,
+                       source_order_id=order_no, source_transaction_id=provider_trade_no or "",
+                       idempotency_key=idem, metadata={"packKey": order["pack_key"]})
+    bonus = int(order["bonus_points"] or 0)
+    if bonus > 0:
+        wallet_post_ledger(conn, order["user_id"], "bonus", bonus, source_type=src,
+                           source_order_id=order_no, idempotency_key=idem + ":bonus",
+                           metadata={"packKey": order["pack_key"]})
+    fresh = dict(conn.execute("SELECT * FROM wallet_topup_orders WHERE order_no = ?", (order_no,)).fetchone())
+    return {"applied": True, "duplicate": False, "order": serialize_wallet_topup_order(fresh),
+            "wallet": get_wallet_snapshot(conn, order["user_id"]),
+            "grantedPoints": int(order["total_points"] or 0)}
+
+
+# ---- generic entitlements (own a guide product / file / member resource …) ----
+
+def user_has_entitlement(conn: sqlite3.Connection, user_id: str, resource_type: str, resource_id: str) -> bool:
+    return conn.execute(
+        "SELECT 1 FROM user_entitlements WHERE user_id = ? AND resource_type = ? AND resource_id = ? "
+        "AND status = 'active' LIMIT 1",
+        (user_id, resource_type, resource_id),
+    ).fetchone() is not None
+
+
+def grant_user_entitlement(conn: sqlite3.Connection, user_id: str, resource_type: str, resource_id: str, *,
+                           entitlement_type: str = "own", source_type: str = "", source_order_id: str = "",
+                           source_ledger_id: str = "", metadata: dict | None = None) -> dict[str, Any]:
+    existing = conn.execute(
+        "SELECT * FROM user_entitlements WHERE user_id = ? AND resource_type = ? AND resource_id = ? "
+        "AND entitlement_type = ? AND status = 'active' LIMIT 1",
+        (user_id, resource_type, resource_id, entitlement_type),
+    ).fetchone()
+    if existing:
+        return dict(existing)
+    now = now_iso()
+    ent_id = str(uuid.uuid4())
+    try:
+        conn.execute(
+            "INSERT INTO user_entitlements (id, user_id, resource_type, resource_id, entitlement_type, status, "
+            "source_type, source_order_id, source_ledger_id, granted_at, metadata_json, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)",
+            (ent_id, user_id, resource_type, resource_id, entitlement_type, source_type or "",
+             source_order_id or "", source_ledger_id or "", now,
+             json.dumps(metadata or {}, ensure_ascii=False), now, now),
+        )
+    except sqlite3.IntegrityError:
+        # Concurrent grant won the unique-active race — return the live row.
+        row = conn.execute(
+            "SELECT * FROM user_entitlements WHERE user_id = ? AND resource_type = ? AND resource_id = ? "
+            "AND entitlement_type = ? AND status = 'active' LIMIT 1",
+            (user_id, resource_type, resource_id, entitlement_type),
+        ).fetchone()
+        return dict(row) if row else {}
+    return dict(conn.execute("SELECT * FROM user_entitlements WHERE id = ?", (ent_id,)).fetchone())
+
+
+def revoke_user_entitlement(conn: sqlite3.Connection, user_id: str, resource_type: str, resource_id: str, *,
+                            entitlement_type: str = "own", reason: str = "") -> None:
+    now = now_iso()
+    conn.execute(
+        "UPDATE user_entitlements SET status = 'revoked', revoked_at = ?, "
+        "metadata_json = ?, updated_at = ? "
+        "WHERE user_id = ? AND resource_type = ? AND resource_id = ? AND entitlement_type = ? AND status = 'active'",
+        (now, json.dumps({"reason": reason}, ensure_ascii=False), now,
+         user_id, resource_type, resource_id, entitlement_type),
+    )
+
+
+def compute_product_points_price(conn: sqlite3.Connection, user_id: str, product_row: dict[str, Any]) -> int:
+    """The points price for THIS user (member price when they hold an active
+    membership and a member points price is set). Always server-side."""
+    d = dict(product_row)
+    base = int(d.get("wallet_price_points") or 0)
+    member = int(d.get("member_wallet_price_points") or 0)
+    if member > 0 and has_active_membership(conn, user_id):
+        return member
+    return base
+
+
+def _guide_product_resource_type(product_row: dict[str, Any]) -> str:
+    return str(dict(product_row).get("entitlement_type") or "guide_product")
+
+
+def wallet_debit_for_product(conn: sqlite3.Connection, user_id: str, product_row: dict[str, Any], *,
+                             idempotency_key: str = "") -> dict[str, Any]:
+    """Spend Machi Points on a guide product: debit the wallet, create a
+    fulfilled guide_order, grant the entitlement. Returns a status dict with
+    one of: already_owned / insufficient / fulfilled. The debit is atomic and
+    never overdraws; if the entitlement can't be granted afterward the points
+    are returned via a refund_credit so the user is never charged for nothing."""
+    d = dict(product_row)
+    resource_type = _guide_product_resource_type(d)
+    resource_id = str(d.get("id"))
+    price = compute_product_points_price(conn, user_id, d)
+
+    if user_has_entitlement(conn, user_id, resource_type, resource_id):
+        snap = get_wallet_snapshot(conn, user_id)
+        return {"status": "already_owned", "wallet": snap, "order": None, "entitlement": None,
+                "requiredPoints": price, "currentBalance": snap["balancePoints"]}
+
+    ledger_entry_id = ""
+    if price > 0:
+        spend_key = idempotency_key or f"spend:{user_id}:{resource_id}:{uuid.uuid4().hex[:10]}"
+        result = wallet_post_ledger(conn, user_id, "spend", -price, source_type="wallet_purchase",
+                                    product_id=resource_id, idempotency_key=spend_key,
+                                    metadata={"productTitle": d.get("title")})
+        if result.get("insufficient"):
+            snap = result["wallet"]
+            return {"status": "insufficient", "wallet": snap, "order": None, "entitlement": None,
+                    "requiredPoints": price, "currentBalance": snap["balancePoints"]}
+        ledger_entry_id = (result.get("entry") or {}).get("id") or ""
+
+    now = now_iso()
+    order_id = str(uuid.uuid4())
+    order_no = _wallet_order_no()
+    currency = d.get("currency") or "CNY"
+    conn.execute(
+        "INSERT INTO guide_orders (id, user_id, product_id, order_no, price, currency, status, payment_provider, "
+        "payment_method, price_points, wallet_ledger_entry_id, created_at, paid_at, fulfilled_at) "
+        "VALUES (?, ?, ?, ?, 0, ?, 'fulfilled', 'wallet', 'wallet_points', ?, ?, ?, ?, ?)",
+        (order_id, user_id, resource_id, order_no, currency, price, ledger_entry_id, now, now, now),
+    )
+    ent = grant_user_entitlement(conn, user_id, resource_type, resource_id, source_type="wallet_order",
+                                 source_order_id=order_id, source_ledger_id=ledger_entry_id,
+                                 metadata={"orderNo": order_no, "pricePoints": price})
+    conn.execute("UPDATE guide_orders SET entitlement_id = ? WHERE id = ?", (ent.get("id") or "", order_id))
+    conn.execute("UPDATE guide_products SET purchase_count = purchase_count + 1 WHERE id = ?", (resource_id,))
+    order_row = dict(conn.execute("SELECT * FROM guide_orders WHERE id = ?", (order_id,)).fetchone())
+    snap = get_wallet_snapshot(conn, user_id)
+    return {"status": "fulfilled", "wallet": snap, "order": order_row, "orderId": order_id,
+            "orderNo": order_no, "entitlement": ent, "ledgerEntryId": ledger_entry_id,
+            "requiredPoints": price, "currentBalance": snap["balancePoints"]}
+
+
+def ensure_wallet_schema(conn: sqlite3.Connection) -> None:
+    """Idempotently seed the default Machi Points top-up packs. The tables
+    themselves come from SCHEMA (fresh SQLite, run every boot) and migration 73
+    (PostgreSQL); this only inserts the packs that don't exist yet."""
+    now = now_iso()
+    for idx, (pack_key, title, subtitle, points, bonus, amount_cents, currency) in enumerate(WALLET_TOPUP_SEED):
+        if conn.execute("SELECT 1 FROM wallet_topup_products WHERE pack_key = ?", (pack_key,)).fetchone():
+            continue
+        conn.execute(
+            "INSERT INTO wallet_topup_products (id, pack_key, title, subtitle, points, bonus_points, amount_cents, "
+            "currency, apple_product_id, ios_iap_product_id, google_product_id, sort_order, is_active, created_at, "
+            "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            (str(uuid.uuid4()), pack_key, title, subtitle, points, bonus, amount_cents, currency,
+             pack_key, pack_key, pack_key, idx, now, now),
+        )
 
 
 # ---- provider client params (what the client needs to start paying) ----
@@ -23103,6 +23544,14 @@ class Handler(BaseHTTPRequestHandler):
             if method == "POST" and action == "clear":
                 return self.api_admin_seed_clear(conn, batch_id)
 
+        # Machi Points wallet
+        if path == "/api/wallet/me" and method == "GET":
+            return self.api_wallet_me(conn, query)
+        if path == "/api/wallet/ledger" and method == "GET":
+            return self.api_wallet_ledger(conn, query)
+        if path == "/api/wallet/topup-products" and method == "GET":
+            return self.api_wallet_topup_products(conn, query)
+
         # membership + payments
         if path == "/api/membership/me" and method == "GET":
             return self.api_membership_me(conn)
@@ -23764,6 +24213,86 @@ class Handler(BaseHTTPRequestHandler):
             "planKey": status["plan_key"] or plan_key,
             "expires_at": status["current_period_end"],
             "expiresAt": status["current_period_end"],
+        })
+
+    # ---- Machi Points wallet ----
+
+    def _wallet_topup_availability(self, pack: dict[str, Any], platform: str, store: str) -> tuple[bool, str]:
+        """Per-client purchasability of a top-up pack. iOS/Android can only buy
+        what has the matching store product id; Web buys via Stripe. Returns
+        (purchasable, disabled_reason)."""
+        platform = (platform or "web").lower()
+        store = (store or "").lower()
+        if platform == "ios":
+            ok = bool(pack.get("apple_product_id") or pack.get("ios_iap_product_id"))
+            return (ok, "" if ok else "ios_product_unconfigured")
+        if platform == "android":
+            if store in ("global", "google", "googleplay", "play", ""):
+                ok = bool(pack.get("google_product_id"))
+                return (ok, "" if ok else "google_product_unconfigured")
+            if store in ("huawei",):
+                ok = bool(pack.get("huawei_product_id"))
+                return (ok, "" if ok else "channel_not_available")
+            # china / xiaomi / oppo / vivo … — no in-app billing wired yet.
+            return (False, "channel_not_available")
+        # web
+        ok = stripe_configured()
+        return (ok, "" if ok else "stripe_unconfigured")
+
+    def _wallet_topup_products_payload(self, conn: sqlite3.Connection, platform: str, store: str) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = []
+        for pack in list_topup_products(conn):
+            serialized = serialize_wallet_topup_product(pack)
+            purchasable, reason = self._wallet_topup_availability(pack, platform, store)
+            serialized["purchasable"] = purchasable
+            serialized["disabledReason"] = reason
+            out.append(serialized)
+        return out
+
+    def api_wallet_me(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Wallet overview: balance + buyable top-up packs + recent ledger.
+        Auto-creates a zero-balance account on first read."""
+        user = self.require_user(conn)
+        platform = (query.get("platform") or "web").strip().lower()
+        store = (query.get("store") or "").strip().lower()
+        wallet = get_wallet_snapshot(conn, user["id"])
+        recent = conn.execute(
+            "SELECT * FROM wallet_ledger_entries WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT 10",
+            (user["id"],),
+        ).fetchall()
+        self.send_json({
+            "wallet": wallet,
+            "topupProducts": self._wallet_topup_products_payload(conn, platform, store),
+            "recentEntries": [serialize_wallet_ledger_entry(r) for r in recent],
+            "pointsName": WALLET_POINTS_NAME,
+            "disclaimer": WALLET_DISCLAIMER,
+        })
+
+    def api_wallet_ledger(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        page = max(1, int(query.get("page") or 1))
+        page_size = max(1, min(int(query.get("pageSize") or query.get("page_size") or 20), 100))
+        offset = (page - 1) * page_size
+        rows = conn.execute(
+            "SELECT * FROM wallet_ledger_entries WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            (user["id"], page_size + 1, offset),
+        ).fetchall()
+        has_more = len(rows) > page_size
+        rows = rows[:page_size]
+        self.send_json({
+            "wallet": get_wallet_snapshot(conn, user["id"]),
+            "entries": [serialize_wallet_ledger_entry(r) for r in rows],
+            "page": page, "pageSize": page_size, "hasMore": has_more,
+        })
+
+    def api_wallet_topup_products(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_user(conn)
+        platform = (query.get("platform") or "web").strip().lower()
+        store = (query.get("store") or "").strip().lower()
+        self.send_json({
+            "topupProducts": self._wallet_topup_products_payload(conn, platform, store),
+            "pointsName": WALLET_POINTS_NAME,
+            "disclaimer": WALLET_DISCLAIMER,
         })
 
     def api_mock_confirm(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:

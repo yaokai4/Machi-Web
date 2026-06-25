@@ -35,6 +35,7 @@ def main() -> int:
 
     with server.db() as conn:
         server.run_migrations(conn)
+        server.ensure_wallet_schema(conn)
         seed_result = server.ensure_guide_seed(conn)
         row = conn.execute("SELECT MAX(version) AS version FROM schema_migrations").fetchone()
     print(f"OK postgres migrations={int(row['version'] or 0)} guide_seed={seed_result}")

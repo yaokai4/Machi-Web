@@ -637,6 +637,19 @@ CREATE TABLE IF NOT EXISTS guide_products (
     is_featured INTEGER NOT NULL DEFAULT 0,
     refund_policy TEXT NOT NULL DEFAULT '',
     notes TEXT NOT NULL DEFAULT '',
+    -- Machi Points purchasing. Prices are server-side only; clients never send
+    -- a points amount. wallet_eligible gates whether points can buy this item;
+    -- platform_policy / fulfillment_type drive which CTA each client shows.
+    wallet_price_points INTEGER NOT NULL DEFAULT 0,
+    member_wallet_price_points INTEGER NOT NULL DEFAULT 0,
+    wallet_eligible INTEGER NOT NULL DEFAULT 0,
+    app_store_eligible INTEGER NOT NULL DEFAULT 1,
+    google_play_eligible INTEGER NOT NULL DEFAULT 1,
+    external_payment_allowed INTEGER NOT NULL DEFAULT 0,
+    fulfillment_type TEXT NOT NULL DEFAULT 'digital_unlock',
+    entitlement_type TEXT NOT NULL DEFAULT 'guide_product',
+    platform_policy TEXT NOT NULL DEFAULT 'digital_iap_required',
+    points_purchase_limit INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     published_at TEXT,
@@ -668,6 +681,10 @@ CREATE TABLE IF NOT EXISTS guide_orders (
     payment_provider TEXT NOT NULL DEFAULT '',
     payment_order_id TEXT NOT NULL DEFAULT '',
     payment_method TEXT NOT NULL DEFAULT '',
+    price_points INTEGER NOT NULL DEFAULT 0,
+    wallet_ledger_entry_id TEXT NOT NULL DEFAULT '',
+    entitlement_id TEXT NOT NULL DEFAULT '',
+    provider_trade_no TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL,
     paid_at TEXT,
     cancelled_at TEXT,
@@ -1103,6 +1120,122 @@ CREATE TABLE IF NOT EXISTS device_push_tokens (
     last_seen_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_device_push_tokens_user ON device_push_tokens(user_id);
+
+-- Machi Points wallet. A points balance is internal scrip: it can be bought
+-- (Stripe / Apple IAP / Google Play), spent on digital guide products, and
+-- refunded back, but it is NEVER cash — no withdrawal, no transfer, no fiat
+-- conversion. balance_points is the live balance; the ledger is the audit of
+-- every movement and the source of truth a balance can be rebuilt from.
+CREATE TABLE IF NOT EXISTS wallet_accounts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT UNIQUE NOT NULL,
+    balance_points INTEGER NOT NULL DEFAULT 0,
+    lifetime_purchased_points INTEGER NOT NULL DEFAULT 0,
+    lifetime_bonus_points INTEGER NOT NULL DEFAULT 0,
+    lifetime_spent_points INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+
+CREATE TABLE IF NOT EXISTS wallet_ledger_entries (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    entry_type TEXT NOT NULL,
+    points_delta INTEGER NOT NULL,
+    balance_after INTEGER NOT NULL,
+    source_type TEXT NOT NULL DEFAULT '',
+    source_order_id TEXT NOT NULL DEFAULT '',
+    source_transaction_id TEXT NOT NULL DEFAULT '',
+    idempotency_key TEXT NOT NULL DEFAULT '',
+    product_id TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    created_by TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_idem ON wallet_ledger_entries(user_id, idempotency_key) WHERE idempotency_key <> '';
+CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user ON wallet_ledger_entries(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_wallet_ledger_source ON wallet_ledger_entries(source_type, source_transaction_id);
+CREATE INDEX IF NOT EXISTS idx_wallet_ledger_product ON wallet_ledger_entries(product_id, created_at);
+
+CREATE TABLE IF NOT EXISTS wallet_topup_products (
+    id TEXT PRIMARY KEY,
+    pack_key TEXT UNIQUE NOT NULL,
+    title TEXT NOT NULL,
+    subtitle TEXT NOT NULL DEFAULT '',
+    points INTEGER NOT NULL,
+    bonus_points INTEGER NOT NULL DEFAULT 0,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'CNY',
+    stripe_price_id TEXT NOT NULL DEFAULT '',
+    apple_product_id TEXT NOT NULL DEFAULT '',
+    ios_iap_product_id TEXT NOT NULL DEFAULT '',
+    google_product_id TEXT NOT NULL DEFAULT '',
+    huawei_product_id TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wallet_topup_orders (
+    id TEXT PRIMARY KEY,
+    order_no TEXT UNIQUE NOT NULL,
+    user_id TEXT NOT NULL,
+    pack_key TEXT NOT NULL,
+    points INTEGER NOT NULL,
+    bonus_points INTEGER NOT NULL DEFAULT 0,
+    total_points INTEGER NOT NULL,
+    amount_cents INTEGER NOT NULL DEFAULT 0,
+    currency TEXT NOT NULL DEFAULT 'CNY',
+    status TEXT NOT NULL DEFAULT 'pending',
+    payment_provider TEXT NOT NULL DEFAULT '',
+    provider_trade_no TEXT NOT NULL DEFAULT '',
+    provider_user_id TEXT NOT NULL DEFAULT '',
+    provider_product_id TEXT NOT NULL DEFAULT '',
+    checkout_session_id TEXT NOT NULL DEFAULT '',
+    client_type TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    paid_at TEXT,
+    fulfilled_at TEXT,
+    refunded_at TEXT,
+    closed_at TEXT,
+    expires_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+CREATE INDEX IF NOT EXISTS idx_wallet_topup_orders_user ON wallet_topup_orders(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_wallet_topup_orders_status ON wallet_topup_orders(status, created_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_topup_orders_trade ON wallet_topup_orders(payment_provider, provider_trade_no) WHERE provider_trade_no <> '';
+
+-- Generic post-purchase grants. A user "owns" a resource (a guide product /
+-- file / member resource / boost / quota) via an active entitlement row, no
+-- matter how it was acquired (points spend, Stripe, IAP, membership, admin).
+-- download-url / detail views read this table so all paths share one check.
+CREATE TABLE IF NOT EXISTS user_entitlements (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    entitlement_type TEXT NOT NULL DEFAULT 'own',
+    status TEXT NOT NULL DEFAULT 'active',
+    source_type TEXT NOT NULL DEFAULT '',
+    source_order_id TEXT NOT NULL DEFAULT '',
+    source_ledger_id TEXT NOT NULL DEFAULT '',
+    granted_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL DEFAULT '',
+    revoked_at TEXT NOT NULL DEFAULT '',
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_user_entitlements_active ON user_entitlements(user_id, resource_type, resource_id, entitlement_type) WHERE status = 'active';
+CREATE INDEX IF NOT EXISTS idx_user_entitlements_user ON user_entitlements(user_id, status, resource_type);
+CREATE INDEX IF NOT EXISTS idx_user_entitlements_resource ON user_entitlements(resource_type, resource_id);
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -3621,6 +3754,137 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         );
         CREATE INDEX IF NOT EXISTS idx_miniapp_bindings_user ON miniapp_openid_bindings(user_id);
         CREATE INDEX IF NOT EXISTS idx_miniapp_bindings_unionid ON miniapp_openid_bindings(unionid);
+        """,
+    ),
+    # Machi Points wallet + generic entitlements. New tables mirror the SCHEMA
+    # block above (fresh SQLite gets them from SCHEMA); this PG-only migration
+    # creates them on the live PostgreSQL DB and grows guide_products /
+    # guide_orders with the points-purchase columns. SQLite picks up the same
+    # columns via _ensure_columns at boot. Purely additive; safe defaults.
+    (
+        73,
+        "wallet: points accounts/ledger/topup packs+orders, user entitlements, guide points pricing",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS wallet_accounts (
+            id TEXT PRIMARY KEY,
+            user_id TEXT UNIQUE NOT NULL,
+            balance_points BIGINT NOT NULL DEFAULT 0,
+            lifetime_purchased_points BIGINT NOT NULL DEFAULT 0,
+            lifetime_bonus_points BIGINT NOT NULL DEFAULT 0,
+            lifetime_spent_points BIGINT NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS wallet_ledger_entries (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            account_id TEXT NOT NULL,
+            entry_type TEXT NOT NULL,
+            points_delta BIGINT NOT NULL,
+            balance_after BIGINT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT '',
+            source_order_id TEXT NOT NULL DEFAULT '',
+            source_transaction_id TEXT NOT NULL DEFAULT '',
+            idempotency_key TEXT NOT NULL DEFAULT '',
+            product_id TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL DEFAULT ''
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_ledger_idem ON wallet_ledger_entries(user_id, idempotency_key) WHERE idempotency_key <> '';
+        CREATE INDEX IF NOT EXISTS idx_wallet_ledger_user ON wallet_ledger_entries(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_wallet_ledger_source ON wallet_ledger_entries(source_type, source_transaction_id);
+        CREATE INDEX IF NOT EXISTS idx_wallet_ledger_product ON wallet_ledger_entries(product_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS wallet_topup_products (
+            id TEXT PRIMARY KEY,
+            pack_key TEXT UNIQUE NOT NULL,
+            title TEXT NOT NULL,
+            subtitle TEXT NOT NULL DEFAULT '',
+            points BIGINT NOT NULL,
+            bonus_points BIGINT NOT NULL DEFAULT 0,
+            amount_cents BIGINT NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'CNY',
+            stripe_price_id TEXT NOT NULL DEFAULT '',
+            apple_product_id TEXT NOT NULL DEFAULT '',
+            ios_iap_product_id TEXT NOT NULL DEFAULT '',
+            google_product_id TEXT NOT NULL DEFAULT '',
+            huawei_product_id TEXT NOT NULL DEFAULT '',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS wallet_topup_orders (
+            id TEXT PRIMARY KEY,
+            order_no TEXT UNIQUE NOT NULL,
+            user_id TEXT NOT NULL,
+            pack_key TEXT NOT NULL,
+            points BIGINT NOT NULL,
+            bonus_points BIGINT NOT NULL DEFAULT 0,
+            total_points BIGINT NOT NULL,
+            amount_cents BIGINT NOT NULL DEFAULT 0,
+            currency TEXT NOT NULL DEFAULT 'CNY',
+            status TEXT NOT NULL DEFAULT 'pending',
+            payment_provider TEXT NOT NULL DEFAULT '',
+            provider_trade_no TEXT NOT NULL DEFAULT '',
+            provider_user_id TEXT NOT NULL DEFAULT '',
+            provider_product_id TEXT NOT NULL DEFAULT '',
+            checkout_session_id TEXT NOT NULL DEFAULT '',
+            client_type TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            paid_at TEXT,
+            fulfilled_at TEXT,
+            refunded_at TEXT,
+            closed_at TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_wallet_topup_orders_user ON wallet_topup_orders(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_wallet_topup_orders_status ON wallet_topup_orders(status, created_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_topup_orders_trade ON wallet_topup_orders(payment_provider, provider_trade_no) WHERE provider_trade_no <> '';
+
+        CREATE TABLE IF NOT EXISTS user_entitlements (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_id TEXT NOT NULL,
+            entitlement_type TEXT NOT NULL DEFAULT 'own',
+            status TEXT NOT NULL DEFAULT 'active',
+            source_type TEXT NOT NULL DEFAULT '',
+            source_order_id TEXT NOT NULL DEFAULT '',
+            source_ledger_id TEXT NOT NULL DEFAULT '',
+            granted_at TEXT NOT NULL,
+            expires_at TEXT NOT NULL DEFAULT '',
+            revoked_at TEXT NOT NULL DEFAULT '',
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_user_entitlements_active ON user_entitlements(user_id, resource_type, resource_id, entitlement_type) WHERE status = 'active';
+        CREATE INDEX IF NOT EXISTS idx_user_entitlements_user ON user_entitlements(user_id, status, resource_type);
+        CREATE INDEX IF NOT EXISTS idx_user_entitlements_resource ON user_entitlements(resource_type, resource_id);
+
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS wallet_price_points BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS member_wallet_price_points BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS wallet_eligible INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS app_store_eligible INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS google_play_eligible INTEGER NOT NULL DEFAULT 1;
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS external_payment_allowed INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS fulfillment_type TEXT NOT NULL DEFAULT 'digital_unlock';
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS entitlement_type TEXT NOT NULL DEFAULT 'guide_product';
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS platform_policy TEXT NOT NULL DEFAULT 'digital_iap_required';
+        ALTER TABLE guide_products ADD COLUMN IF NOT EXISTS points_purchase_limit INTEGER NOT NULL DEFAULT 0;
+
+        ALTER TABLE guide_orders ADD COLUMN IF NOT EXISTS price_points BIGINT NOT NULL DEFAULT 0;
+        ALTER TABLE guide_orders ADD COLUMN IF NOT EXISTS wallet_ledger_entry_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_orders ADD COLUMN IF NOT EXISTS entitlement_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_orders ADD COLUMN IF NOT EXISTS provider_trade_no TEXT NOT NULL DEFAULT '';
         """,
     ),
 ]
