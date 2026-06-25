@@ -6985,6 +6985,30 @@ def serialize_guide_product(row: sqlite3.Row | dict[str, Any], *, include_privat
         "canView": False,
         "canPurchase": can_purchase,
         "ctaLabel": cta_label,
+        # Machi Points purchasing (prices server-side only).
+        "walletPricePoints": int(d.get("wallet_price_points") or 0),
+        "wallet_price_points": int(d.get("wallet_price_points") or 0),
+        "memberWalletPricePoints": int(d.get("member_wallet_price_points") or 0),
+        "member_wallet_price_points": int(d.get("member_wallet_price_points") or 0),
+        "pointsPriceLabel": (f"{int(d.get('wallet_price_points') or 0):,} 点" if int(d.get("wallet_price_points") or 0) > 0 else ""),
+        "memberPointsPriceLabel": (f"会员 {int(d.get('member_wallet_price_points') or 0):,} 点" if int(d.get("member_wallet_price_points") or 0) > 0 else ""),
+        "walletEligible": bool(d.get("wallet_eligible")), "wallet_eligible": bool(d.get("wallet_eligible")),
+        "appStoreEligible": bool(d.get("app_store_eligible", 1)),
+        "googlePlayEligible": bool(d.get("google_play_eligible", 1)),
+        "externalPaymentAllowed": bool(d.get("external_payment_allowed")),
+        "fulfillmentType": d.get("fulfillment_type") or "digital_unlock", "fulfillment_type": d.get("fulfillment_type") or "digital_unlock",
+        "entitlementType": d.get("entitlement_type") or "guide_product", "entitlement_type": d.get("entitlement_type") or "guide_product",
+        "platformPolicy": d.get("platform_policy") or "digital_iap_required", "platform_policy": d.get("platform_policy") or "digital_iap_required",
+        "pointsPurchaseLimit": int(d.get("points_purchase_limit") or 0),
+        # Base eligibility (no user context); the detail endpoint refines this
+        # with ownership + membership + live balance.
+        "canBuyWithPoints": bool(
+            d.get("wallet_eligible")
+            and int(d.get("wallet_price_points") or 0) > 0
+            and not bool(d.get("is_coming_soon"))
+            and not bool(d.get("is_price_hidden"))
+            and not bool(d.get("is_appointment_only"))
+        ),
         "purchaseCount": int(d.get("purchase_count") or 0), "rating": float(d.get("rating") or 0),
         "sortOrder": int(d.get("sort_order") or 0), "isFeatured": bool(d.get("is_featured")),
         "refundPolicy": d.get("refund_policy") or "", "notes": d.get("notes") or "",
@@ -13429,6 +13453,70 @@ def wallet_credit_topup(conn: sqlite3.Connection, order_no: str, *, provider_tra
             "grantedPoints": int(order["total_points"] or 0)}
 
 
+def wallet_refund_topup(conn: sqlite3.Connection, order_no: str, *, reason: str = "", entry_type: str = "chargeback_debit") -> dict[str, Any]:
+    """Reverse a settled top-up (Stripe refund / chargeback). Claws back the
+    granted points. If the user already spent some, we never force the live
+    balance negative — we debit what's left and put the wallet into 'restricted'
+    with the residual debt recorded in metadata for manual follow-up."""
+    row = conn.execute("SELECT * FROM wallet_topup_orders WHERE order_no = ?", (order_no,)).fetchone()
+    if not row:
+        return {"applied": False, "reason": "order_not_found"}
+    order = dict(row)
+    if order["status"] in ("refunded", "chargeback"):
+        return {"applied": False, "duplicate": True}
+    user_id = order["user_id"]
+    granted = int(order["total_points"] or 0)
+    now = now_iso()
+    new_status = "chargeback" if entry_type == "chargeback_debit" else "refunded"
+    cur = conn.execute(
+        "UPDATE wallet_topup_orders SET status = ?, refunded_at = ?, updated_at = ? "
+        "WHERE order_no = ? AND status IN ('paid','fulfilled')",
+        (new_status, now, now, order_no))
+    if cur.rowcount != 1:
+        return {"applied": False, "duplicate": True}
+    balance = int(dict(conn.execute("SELECT balance_points FROM wallet_accounts WHERE user_id = ?", (user_id,)).fetchone() or {"balance_points": 0}).get("balance_points") or 0)
+    debit = min(balance, granted)
+    if debit > 0:
+        wallet_post_ledger(conn, user_id, entry_type, -debit, source_type="refund", source_order_id=order_no,
+                           idempotency_key=f"refund:{order_no}", metadata={"reason": reason, "granted": granted})
+    debt = granted - debit
+    if debt > 0:
+        # Restrict the wallet until the residual debt is resolved; no negative balance.
+        conn.execute("UPDATE wallet_accounts SET status = 'restricted', updated_at = ? WHERE user_id = ?", (now, user_id))
+        wallet_post_ledger(conn, user_id, "reversal", 0, source_type="refund", source_order_id=order_no,
+                           idempotency_key=f"refund-debt:{order_no}",
+                           metadata={"reason": reason, "debtPoints": debt, "note": "wallet restricted pending resolution"})
+    return {"applied": True, "clawedBack": debit, "debtPoints": debt, "wallet": get_wallet_snapshot(conn, user_id)}
+
+
+def refund_guide_points_order(conn: sqlite3.Connection, order_id_or_no: str, *, reason: str = "") -> dict[str, Any]:
+    """Refund a points-paid guide purchase: revoke the entitlement and credit
+    the points back. Idempotent on the order's refunded state."""
+    row = conn.execute(
+        "SELECT * FROM guide_orders WHERE (id = ? OR order_no = ?) AND payment_provider = 'wallet'",
+        (order_id_or_no, order_id_or_no)).fetchone()
+    if not row:
+        return {"applied": False, "reason": "order_not_found"}
+    order = dict(row)
+    if order["status"] == "refunded":
+        return {"applied": False, "duplicate": True}
+    now = now_iso()
+    cur = conn.execute(
+        "UPDATE guide_orders SET status = 'refunded', refunded_at = ?, fulfilled_at = fulfilled_at WHERE id = ? AND status != 'refunded'",
+        (now, order["id"]))
+    if cur.rowcount != 1:
+        return {"applied": False, "duplicate": True}
+    prod = conn.execute("SELECT * FROM guide_products WHERE id = ?", (order["product_id"],)).fetchone()
+    resource_type = _guide_product_resource_type(dict(prod)) if prod else "guide_product"
+    revoke_user_entitlement(conn, order["user_id"], resource_type, order["product_id"], reason=reason or "refund")
+    points = int(order["price_points"] or 0)
+    if points > 0:
+        wallet_post_ledger(conn, order["user_id"], "refund_credit", points, source_type="refund",
+                           source_order_id=order["id"], product_id=order["product_id"],
+                           idempotency_key=f"guide-refund:{order['id']}", metadata={"reason": reason})
+    return {"applied": True, "refundedPoints": points, "wallet": get_wallet_snapshot(conn, order["user_id"])}
+
+
 # ---- generic entitlements (own a guide product / file / member resource …) ----
 
 def user_has_entitlement(conn: sqlite3.Connection, user_id: str, resource_type: str, resource_id: str) -> bool:
@@ -19354,6 +19442,9 @@ class Handler(BaseHTTPRequestHandler):
             owned = conn.execute(
                 "SELECT 1 FROM guide_orders WHERE user_id = ? AND product_id = ? AND status IN ('paid','fulfilled') LIMIT 1",
                 (uid, row["id"])).fetchone() is not None
+            # A points purchase grants a generic entitlement; honor it too.
+            if not owned and user_has_entitlement(conn, uid, _guide_product_resource_type(dict(row)), row["id"]):
+                owned = True
             if bool(row["is_member_included"]) and not bool(row["is_service"]):
                 member_unlocked = has_active_membership(conn, uid)
         if owned or member_unlocked:
@@ -19388,6 +19479,29 @@ class Handler(BaseHTTPRequestHandler):
         product["iosIapProductId"] = row["ios_iap_product_id"] or ""
         product["appleProductId"] = row["apple_product_id"] or ""
         product["stripeAvailable"] = bool(stripe_configured() or PAYMENT_MOCK_ENABLED)
+        # Machi Points context for the current user: the effective points price
+        # (member price when active), live balance, and whether they can buy now.
+        base_points_eligible = bool(
+            row["wallet_eligible"]
+            and not bool(row["is_coming_soon"])
+            and not bool(row["is_price_hidden"])
+            and not bool(row["is_appointment_only"])
+        )
+        if session:
+            required_points = compute_product_points_price(conn, session["user_id"], dict(row))
+            balance = get_wallet_snapshot(conn, session["user_id"])["balancePoints"]
+            product["pointsContext"] = {
+                "eligible": base_points_eligible and required_points > 0,
+                "requiredPoints": required_points,
+                "currentBalance": balance,
+                "sufficient": balance >= required_points,
+                "owned": owned,
+            }
+            product["canBuyWithPoints"] = bool(
+                base_points_eligible and required_points > 0 and not owned and not product["canView"]
+            )
+        else:
+            product["canBuyWithPoints"] = bool(base_points_eligible and int(row["wallet_price_points"] or 0) > 0)
         self.send_json({"status": "ok", "product": product})
 
     def api_guide_member_resources(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -19802,9 +19916,9 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT * FROM guide_products WHERE id = ? OR slug = ? LIMIT 1", (product_id, product_id)).fetchone()
         if not row:
             raise APIError("资料/服务不存在", 404, "guide_product_not_found")
-        # Payment is not wired yet. Free items create a fulfilled order so the
-        # user can access them; paid items return coming_soon (Web → Stripe/微信/支付宝,
-        # iOS → Apple IAP, to be added later — never an external pay button on iOS).
+        data = self.read_json()
+        payment_method = str(data.get("paymentMethod") or data.get("payment_method") or "").strip().lower()
+        # Free items create a fulfilled order so the user can access them.
         if bool(row["is_free"]):
             now = now_iso()
             order_id = str(uuid.uuid4())
@@ -19818,10 +19932,38 @@ class Handler(BaseHTTPRequestHandler):
         # Member-included digital resource: an active member already has access.
         if bool(row["is_member_included"]) and not bool(row["is_service"]) and has_active_membership(conn, user["id"]):
             return self.send_json({"status": "member_unlocked", "message": "会员已可直接查看该资料。"})
-        if bool(row["is_coming_soon"]) or row["status"] == "coming_soon":
+        if bool(row["is_coming_soon"]) or row["status"] != "published":
             return self.send_json({"status": "coming_soon", "message": "购买功能即将开放，敬请期待。"})
-        # Paid item ready to buy. Web → /api/payments/stripe/guide-checkout (price read
-        # server-side). Services with a quote-only price_label use the booking form.
+
+        # ---- Machi Points purchase path ----
+        if payment_method == "wallet":
+            if not bool(row["wallet_eligible"]):
+                raise APIError("该资料暂不支持点数购买。", 400, "wallet_not_eligible")
+            policy = str(row["platform_policy"] or "")
+            if bool(row["is_service"]) or policy in ("booking_only", "external_service_allowed") or bool(row["is_appointment_only"]) or bool(row["is_price_hidden"]):
+                raise APIError("该服务请使用预约咨询提交。", 400, "use_booking")
+            idem = str(data.get("idempotencyKey") or data.get("idempotency_key") or "").strip()
+            result = wallet_debit_for_product(conn, user["id"], dict(row), idempotency_key=idem)
+            if result["status"] == "insufficient":
+                return self.send_json({
+                    "code": "INSUFFICIENT_POINTS",
+                    "message": "点数不足，请先充值。",
+                    "currentBalance": result["currentBalance"],
+                    "requiredPoints": result["requiredPoints"],
+                    "recommendedTopups": self._wallet_topup_products_payload(conn, "web", ""),
+                    "wallet": result["wallet"],
+                }, 402)
+            if result["status"] == "already_owned":
+                return self.send_json({"status": "fulfilled", "message": "你已拥有该资料。",
+                                       "wallet": result["wallet"], "alreadyOwned": True})
+            return self.send_json({
+                "status": "fulfilled", "orderId": result.get("orderId"), "orderNo": result.get("orderNo"),
+                "wallet": result["wallet"], "entitlement": {"id": (result.get("entitlement") or {}).get("id", "")},
+                "message": "购买成功，已进入我的资料。",
+            }, 201)
+
+        # Paid item ready to buy via a money provider. Web → Stripe guide-checkout
+        # (price read server-side); services with a quote-only price use booking.
         self.send_json({"status": "checkout", "message": "请通过结账完成购买。",
                         "productId": row["id"], "slug": row["slug"]})
 
@@ -21504,6 +21646,17 @@ class Handler(BaseHTTPRequestHandler):
             "stripe_price_id": _clean_text(data.get("stripePriceId"), 120),
             "ios_iap_product_id": _clean_text(data.get("iosIapProductId"), 120),
             "apple_product_id": _clean_text(data.get("appleProductId"), 120),
+            # Machi Points purchasing.
+            "wallet_eligible": 1 if data.get("walletEligible") else 0,
+            "wallet_price_points": _guide_int(data.get("walletPricePoints"), 0, lo=0),
+            "member_wallet_price_points": _guide_int(data.get("memberWalletPricePoints"), 0, lo=0),
+            "app_store_eligible": 0 if data.get("appStoreEligible") is False else 1,
+            "google_play_eligible": 0 if data.get("googlePlayEligible") is False else 1,
+            "external_payment_allowed": 1 if data.get("externalPaymentAllowed") else 0,
+            "fulfillment_type": _clean_text(data.get("fulfillmentType"), 40) or "digital_unlock",
+            "entitlement_type": _clean_text(data.get("entitlementType"), 40) or "guide_product",
+            "platform_policy": _clean_text(data.get("platformPolicy"), 40) or "digital_iap_required",
+            "points_purchase_limit": _guide_int(data.get("pointsPurchaseLimit"), 0, lo=0),
             "created_at": now,
             "updated_at": now,
             "published_at": now if status == "published" else None,
@@ -21559,6 +21712,8 @@ class Handler(BaseHTTPRequestHandler):
             "stripeProductId": "stripe_product_id", "stripePriceId": "stripe_price_id",
             "iosIapProductId": "ios_iap_product_id", "appleProductId": "apple_product_id",
             "cancellationPolicy": "cancellation_policy",
+            "fulfillmentType": "fulfillment_type", "entitlementType": "entitlement_type",
+            "platformPolicy": "platform_policy",
         }
         updates: dict[str, Any] = {}
         for k, col in field_map.items():
@@ -21571,9 +21726,17 @@ class Handler(BaseHTTPRequestHandler):
                        ("isMemberIncluded", "is_member_included"), ("isMemberDiscount", "is_member_discount"),
                        ("isFeatured", "is_featured"), ("isPriceHidden", "is_price_hidden"),
                        ("isAppointmentOnly", "is_appointment_only"), ("taxIncluded", "tax_included"),
-                       ("depositRequired", "deposit_required")):
+                       ("depositRequired", "deposit_required"), ("walletEligible", "wallet_eligible"),
+                       ("appStoreEligible", "app_store_eligible"), ("googlePlayEligible", "google_play_eligible"),
+                       ("externalPaymentAllowed", "external_payment_allowed")):
             if k in data:
                 updates[col] = 1 if data[k] else 0
+        if "walletPricePoints" in data:
+            updates["wallet_price_points"] = _guide_int(data.get("walletPricePoints"), 0, lo=0)
+        if "memberWalletPricePoints" in data:
+            updates["member_wallet_price_points"] = _guide_int(data.get("memberWalletPricePoints"), 0, lo=0)
+        if "pointsPurchaseLimit" in data:
+            updates["points_purchase_limit"] = _guide_int(data.get("pointsPurchaseLimit"), 0, lo=0)
         if "price" in data:
             updates["price"] = _guide_int(data.get("price"), 0, lo=0)
         if "originalPrice" in data:
@@ -23637,6 +23800,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_mock_confirm(conn, query)
 
         # admin: membership management
+        # admin: Machi Points wallet
+        if path == "/api/admin/wallet/overview" and method == "GET":
+            return self.api_admin_wallet_overview(conn)
+        if path == "/api/admin/wallet/users" and method == "GET":
+            return self.api_admin_wallet_users(conn, query)
+        if path.startswith("/api/admin/wallet/users/") and path.endswith("/ledger") and method == "GET":
+            uid = unquote(path[len("/api/admin/wallet/users/"):-len("/ledger")])
+            return self.api_admin_wallet_user_ledger(conn, uid, query)
+        if path == "/api/admin/wallet/adjust" and method == "POST":
+            return self.api_admin_wallet_adjust(conn)
+        if path == "/api/admin/wallet/topup-products" and method == "GET":
+            return self.api_admin_wallet_topup_products(conn, query)
+        if path == "/api/admin/wallet/topup-products" and method == "POST":
+            return self.api_admin_wallet_create_topup_product(conn)
+        if path.startswith("/api/admin/wallet/topup-products/") and method in ("PATCH", "PUT"):
+            return self.api_admin_wallet_update_topup_product(conn, unquote(path[len("/api/admin/wallet/topup-products/"):]))
+
         if path == "/api/admin/memberships" and method == "GET":
             return self.api_admin_memberships(conn, query)
         if path == "/api/admin/membership/plans" and method == "GET":
@@ -24086,6 +24266,20 @@ class Handler(BaseHTTPRequestHandler):
                     conn.execute("UPDATE user_memberships SET status = 'past_due', updated_at = ? WHERE id = ?",
                                  (now_iso(), membership["id"]))
                     sync_user_membership_cache(conn, membership["user_id"])
+        elif event_type in {"charge.refunded", "charge.dispute.created", "charge.dispute.funds_withdrawn"}:
+            # Refund/chargeback. The charge (or dispute) carries the payment
+            # intent we recorded as the WT order's provider_trade_no. Claw back
+            # the granted points (never forcing the balance negative).
+            payment_intent = str(obj.get("payment_intent") or "")
+            first = record_payment_webhook(conn, "stripe", event_type, event_id, payment_intent,
+                                           json.dumps(event, ensure_ascii=False), True)
+            if first and payment_intent:
+                wt = conn.execute(
+                    "SELECT order_no FROM wallet_topup_orders WHERE payment_provider = 'stripe' AND provider_trade_no = ? LIMIT 1",
+                    (payment_intent,)).fetchone()
+                if wt:
+                    entry = "chargeback_debit" if event_type != "charge.refunded" else "refund_debit"
+                    wallet_refund_topup(conn, wt["order_no"], reason=event_type, entry_type=entry)
         else:
             # Record-but-ignore other event types (still 2xx so Stripe stops retrying).
             record_payment_webhook(conn, "stripe", event_type, event_id, "", "", True)
@@ -24389,6 +24583,152 @@ class Handler(BaseHTTPRequestHandler):
                 "grantedPoints": result.get("grantedPoints", 0),
             })
         self.send_json({"status": "pending", "orderNo": order_no, "wallet": get_wallet_snapshot(conn, user["id"])})
+
+    # ---- admin: Machi Points wallet ----
+
+    def api_admin_wallet_overview(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        totals = dict(conn.execute(
+            "SELECT COUNT(*) AS accounts, COALESCE(SUM(balance_points),0) AS outstanding, "
+            "COALESCE(SUM(lifetime_purchased_points),0) AS purchased, "
+            "COALESCE(SUM(lifetime_bonus_points),0) AS bonus, "
+            "COALESCE(SUM(lifetime_spent_points),0) AS spent FROM wallet_accounts").fetchone())
+        topups = dict(conn.execute(
+            "SELECT COUNT(*) AS paid_orders, COALESCE(SUM(amount_cents),0) AS gross_cents "
+            "FROM wallet_topup_orders WHERE status IN ('paid','fulfilled')").fetchone())
+        self.send_json({
+            "accounts": int(totals["accounts"]),
+            "outstandingPoints": int(totals["outstanding"]),
+            "lifetimePurchasedPoints": int(totals["purchased"]),
+            "lifetimeBonusPoints": int(totals["bonus"]),
+            "lifetimeSpentPoints": int(totals["spent"]),
+            "paidTopupOrders": int(topups["paid_orders"]),
+            "grossTopupCents": int(topups["gross_cents"]),
+        })
+
+    def api_admin_wallet_users(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        q = (query.get("q") or "").strip()
+        status = (query.get("status") or "").strip()
+        limit = max(1, min(int(query.get("limit") or 50), 200))
+        clauses = ["1=1"]
+        params: list[Any] = []
+        if status:
+            clauses.append("w.status = ?")
+            params.append(status)
+        if q:
+            like = f"%{q}%"
+            clauses.append("(u.handle LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)")
+            params.extend([like, like, like])
+        rows = conn.execute(
+            f"SELECT w.*, u.handle AS u_handle, u.display_name AS u_display_name, u.email AS u_email "
+            f"FROM wallet_accounts w JOIN users u ON u.id = w.user_id WHERE {' AND '.join(clauses)} "
+            f"ORDER BY w.updated_at DESC LIMIT ?", [*params, limit]).fetchall()
+        items = []
+        for r in rows:
+            d = dict(r)
+            items.append({
+                "userId": d["user_id"], "handle": d.get("u_handle", ""),
+                "displayName": d.get("u_display_name", ""), "email": d.get("u_email", ""),
+                "balancePoints": int(d.get("balance_points") or 0),
+                "lifetimePurchasedPoints": int(d.get("lifetime_purchased_points") or 0),
+                "lifetimeSpentPoints": int(d.get("lifetime_spent_points") or 0),
+                "status": d.get("status") or "active", "updatedAt": d.get("updated_at"),
+            })
+        self.send_json({"items": items})
+
+    def api_admin_wallet_user_ledger(self, conn: sqlite3.Connection, user_id: str, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        limit = max(1, min(int(query.get("limit") or 100), 500))
+        rows = conn.execute(
+            "SELECT * FROM wallet_ledger_entries WHERE user_id = ? ORDER BY created_at DESC, id DESC LIMIT ?",
+            (user_id, limit)).fetchall()
+        self.send_json({
+            "wallet": get_wallet_snapshot(conn, user_id),
+            "entries": [serialize_wallet_ledger_entry(r) for r in rows],
+        })
+
+    def api_admin_wallet_adjust(self, conn: sqlite3.Connection) -> None:
+        """Manual points adjustment. ALWAYS posts a ledger row (never a direct
+        balance edit). Reason is mandatory for the audit trail."""
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        target_user_id = str(data.get("userId") or data.get("user_id") or "").strip()
+        points_delta = int(data.get("pointsDelta") or data.get("points_delta") or 0)
+        reason = str(data.get("reason") or "").strip()
+        if not target_user_id:
+            raise APIError("缺少用户", 400, "missing_user")
+        if not reason:
+            raise APIError("调整必须填写原因", 400, "reason_required")
+        if points_delta == 0:
+            raise APIError("调整点数不能为 0", 400, "zero_delta")
+        if not conn.execute("SELECT 1 FROM users WHERE id = ?", (target_user_id,)).fetchone():
+            raise APIError("用户不存在", 404, "user_not_found")
+        result = wallet_post_ledger(conn, target_user_id, "admin_adjustment", points_delta,
+                                    source_type="admin", idempotency_key="", created_by=admin["handle"],
+                                    metadata={"reason": reason, "by": admin["handle"]})
+        if result.get("insufficient"):
+            raise APIError("用户余额不足以扣减该点数", 400, "insufficient_balance")
+        ACCESS_LOG.info("admin %s adjusted wallet user=%s delta=%s", admin["handle"], target_user_id, points_delta)
+        self.send_json({"status": "ok", "wallet": result["wallet"], "entry": result.get("entry")})
+
+    def api_admin_wallet_topup_products(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        rows = conn.execute("SELECT * FROM wallet_topup_products ORDER BY sort_order, amount_cents").fetchall()
+        self.send_json({"items": [serialize_wallet_topup_product(r) for r in rows]})
+
+    def api_admin_wallet_create_topup_product(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        pack_key = _clean_text(data.get("packKey") or data.get("pack_key"), 80)
+        if not pack_key:
+            raise APIError("缺少 packKey", 400, "missing_pack_key")
+        if conn.execute("SELECT 1 FROM wallet_topup_products WHERE pack_key = ?", (pack_key,)).fetchone():
+            raise APIError("packKey 已存在", 409, "pack_key_exists")
+        now = now_iso()
+        pid = str(uuid.uuid4())
+        conn.execute(
+            "INSERT INTO wallet_topup_products (id, pack_key, title, subtitle, points, bonus_points, amount_cents, "
+            "currency, stripe_price_id, apple_product_id, ios_iap_product_id, google_product_id, huawei_product_id, "
+            "sort_order, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (pid, pack_key, _clean_text(data.get("title"), 120) or pack_key, _clean_text(data.get("subtitle"), 200),
+             _guide_int(data.get("points"), 0, lo=0), _guide_int(data.get("bonusPoints"), 0, lo=0),
+             _guide_int(data.get("amountCents"), 0, lo=0), normalize_currency(data.get("currency") or "CNY"),
+             _clean_text(data.get("stripePriceId"), 120), _clean_text(data.get("appleProductId"), 120) or pack_key,
+             _clean_text(data.get("iosIapProductId"), 120) or pack_key, _clean_text(data.get("googleProductId"), 120) or pack_key,
+             _clean_text(data.get("huaweiProductId"), 120), _guide_int(data.get("sortOrder"), 0),
+             0 if data.get("isActive") is False else 1, now, now))
+        self.send_json({"status": "ok", "id": pid, "packKey": pack_key}, 201)
+
+    def api_admin_wallet_update_topup_product(self, conn: sqlite3.Connection, pack_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM wallet_topup_products WHERE id = ? OR pack_key = ?", (pack_id, pack_id)).fetchone()
+        if not row:
+            raise APIError("点数包不存在", 404, "topup_pack_not_found")
+        data = self.read_json()
+        field_map = {
+            "title": "title", "subtitle": "subtitle", "stripePriceId": "stripe_price_id",
+            "appleProductId": "apple_product_id", "iosIapProductId": "ios_iap_product_id",
+            "googleProductId": "google_product_id", "huaweiProductId": "huawei_product_id",
+        }
+        updates: dict[str, Any] = {}
+        for k, col in field_map.items():
+            if k in data:
+                updates[col] = str(data[k] or "")
+        for k, col in (("points", "points"), ("bonusPoints", "bonus_points"), ("amountCents", "amount_cents"),
+                       ("sortOrder", "sort_order")):
+            if k in data:
+                updates[col] = _guide_int(data.get(k), 0, lo=0 if k != "sortOrder" else None)
+        if "currency" in data:
+            updates["currency"] = normalize_currency(data.get("currency"))
+        if "isActive" in data:
+            updates["is_active"] = 1 if data.get("isActive") else 0
+        if not updates:
+            return self.send_json({"status": "ok", "unchanged": True})
+        updates["updated_at"] = now_iso()
+        cols = ", ".join(f"{c} = ?" for c in updates)
+        conn.execute(f"UPDATE wallet_topup_products SET {cols} WHERE id = ?", [*updates.values(), dict(row)["id"]])
+        self.send_json({"status": "ok"})
 
     def api_mock_confirm(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         """Dev-only: settle a pending order without a real provider. Hard
@@ -32830,6 +33170,9 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT 1 FROM guide_orders WHERE user_id = ? AND product_id = ? AND status IN ('paid','fulfilled') LIMIT 1",
             (user["id"], row["id"]),
         ).fetchone() is not None
+        # A points purchase (or any other path) grants a generic entitlement.
+        if not owned and user_has_entitlement(conn, user["id"], _guide_product_resource_type(dict(row)), row["id"]):
+            owned = True
         member_unlocked = bool(row["is_member_included"]) and not bool(row["is_service"]) and has_active_membership(conn, user["id"])
         if not (owned or member_unlocked or bool(row["is_free"])):
             record_upload_audit(conn, user["id"], "download_denied", status="failed", reason="not_entitled", metadata={"productId": row["id"]})

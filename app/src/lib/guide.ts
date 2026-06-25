@@ -176,6 +176,22 @@ export interface GuideProduct {
   // Admin-only (present in /api/admin/guide/products).
   stripeProductId?: string;
   stripePriceId?: string;
+  // Machi Points purchasing (prices server-side only).
+  walletEligible?: boolean;
+  walletPricePoints?: number;
+  memberWalletPricePoints?: number;
+  pointsPriceLabel?: string;
+  memberPointsPriceLabel?: string;
+  canBuyWithPoints?: boolean;
+  fulfillmentType?: string;
+  entitlementType?: string;
+  platformPolicy?: string;
+  appStoreEligible?: boolean;
+  googlePlayEligible?: boolean;
+  externalPaymentAllowed?: boolean;
+  pointsPurchaseLimit?: number;
+  // Per-viewer points context (product detail only).
+  pointsContext?: { eligible: boolean; requiredPoints: number; currentBalance: number; sufficient: boolean; owned: boolean };
   // Per-viewer entitlement (product detail only).
   access?: { owned: boolean; memberUnlocked: boolean; canAccess: boolean; signedIn: boolean };
 }
@@ -1313,9 +1329,14 @@ export const guide = {
   saveCompany: (idOrSlug: string, on: boolean) =>
     greq<{ status: string; saved: boolean; company: GuideCompany }>(
       on ? "POST" : "DELETE", `/api/guide/companies/${encodeURIComponent(idOrSlug)}/save`, {}),
-  purchase: (idOrSlug: string) =>
-    greq<{ status: string; message: string; orderId?: string }>(
-      "POST", `/api/guide/products/${encodeURIComponent(idOrSlug)}/purchase`, {}),
+  purchase: (idOrSlug: string, body: { paymentMethod?: "wallet"; idempotencyKey?: string } = {}) =>
+    greq<{
+      status: string; message?: string; orderId?: string; orderNo?: string;
+      code?: string; currentBalance?: number; requiredPoints?: number;
+      wallet?: { balancePoints: number; displayBalance: string };
+      recommendedTopups?: Array<{ packKey: string; priceLabel: string; displayPoints: string }>;
+      alreadyOwned?: boolean;
+    }>("POST", `/api/guide/products/${encodeURIComponent(idOrSlug)}/purchase`, body),
   downloadUrl: (idOrSlug: string) =>
     greq<{ ok: boolean; downloadUrl: string; expiresIn: number }>(
       "POST", `/api/guide/products/${encodeURIComponent(idOrSlug)}/download-url`, {}),

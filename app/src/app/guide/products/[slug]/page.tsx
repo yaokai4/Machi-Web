@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { BadgeCheck, CheckCircle2, Download, FileText, Lock, ShieldCheck, Wrench } from "lucide-react";
+import { BadgeCheck, CheckCircle2, Coins, Download, FileText, Lock, ShieldCheck, Wrench } from "lucide-react";
 import { guide, GUIDE_PRODUCT_TYPE_LABELS, type GuideProduct } from "@/lib/guide";
 import { GuideComingSoon, GuideShell, useGuideCountry } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
@@ -24,6 +24,7 @@ export default function GuideProductPage() {
   const copy = guideUi(locale);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
 
   const q = useQuery({
@@ -104,6 +105,36 @@ export default function GuideProductPage() {
     }
   };
 
+  // Buy with Machi Points. If the balance is short, send the user to the
+  // wallet to top up rather than charging. Web also supports Stripe (above).
+  const onBuyWithPoints = async () => {
+    if (!user) return openAuthPrompt("generic");
+    const ctx = p.pointsContext;
+    if (ctx && !ctx.sufficient) {
+      pushToast({ kind: "info", message: locale === "en" ? "Not enough points — top up first." : locale === "ja" ? "ポイントが不足しています。チャージしてください。" : "点数不足，请先充值。" });
+      router.push("/wallet");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await guide.purchase(p.slug, { paymentMethod: "wallet" });
+      if (r.status === "fulfilled") {
+        pushToast({ kind: "success", message: r.message || (locale === "en" ? "Purchased with points." : locale === "ja" ? "ポイントで購入しました。" : "已用点数购买。") });
+        q.refetch();
+      }
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === "INSUFFICIENT_POINTS") {
+        pushToast({ kind: "info", message: locale === "en" ? "Not enough points — top up first." : locale === "ja" ? "ポイントが不足しています。チャージしてください。" : "点数不足，请先充值。" });
+        router.push("/wallet");
+      } else {
+        pushToast({ kind: "error", message: locale === "en" ? "Action failed. Please try again later." : locale === "ja" ? "操作に失敗しました。" : "操作失败，请稍后再试。" });
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onDownload = async () => {
     if (!user) return openAuthPrompt("generic");
     setBusy(true);
@@ -158,11 +189,28 @@ export default function GuideProductPage() {
             ) : p.isService ? null : isComing ? (
               <button type="button" disabled className="kx-button-primary h-10 px-5 opacity-60">{locale === "en" ? "Coming soon" : locale === "ja" ? "近日公開" : "即将开放"}</button>
             ) : (
-              <button type="button" onClick={onBuy} disabled={busy} className="kx-button-primary h-10 px-5 disabled:opacity-60">
-                {p.ctaLabel || (p.isFree ? (user ? (locale === "en" ? "View for free" : locale === "ja" ? "無料で見る" : "免费查看") : (locale === "en" ? "Log in to view" : locale === "ja" ? "ログインして見る" : "登录后查看")) : `${locale === "en" ? "Buy" : locale === "ja" ? "購入" : "购买"} ${priceLabel}`)}
-              </button>
+              <div className="flex flex-wrap items-center gap-2">
+                <button type="button" onClick={onBuy} disabled={busy} className="kx-button-primary h-10 px-5 disabled:opacity-60">
+                  {p.ctaLabel || (p.isFree ? (user ? (locale === "en" ? "View for free" : locale === "ja" ? "無料で見る" : "免费查看") : (locale === "en" ? "Log in to view" : locale === "ja" ? "ログインして見る" : "登录后查看")) : `${locale === "en" ? "Buy" : locale === "ja" ? "購入" : "购买"} ${priceLabel}`)}
+                </button>
+                {p.canBuyWithPoints ? (
+                  <button type="button" onClick={onBuyWithPoints} disabled={busy} className="kx-button-ghost inline-flex h-10 items-center gap-1.5 px-4 disabled:opacity-60">
+                    <Coins className="h-4 w-4 text-amber-500" />
+                    {(p.pointsContext?.requiredPoints ?? p.walletPricePoints ?? 0).toLocaleString()} {locale === "en" ? "pts" : "点"}
+                  </button>
+                ) : null}
+              </div>
             )}
           </div>
+          {p.canBuyWithPoints && p.pointsContext && !p.pointsContext.sufficient ? (
+            <p className="mt-2 text-xs text-kx-muted">
+              {locale === "en"
+                ? `Your balance: ${p.pointsContext.currentBalance.toLocaleString()} pts — top up to buy with points.`
+                : locale === "ja"
+                  ? `残高：${p.pointsContext.currentBalance.toLocaleString()} 点 — ポイント購入にはチャージが必要です。`
+                  : `当前余额 ${p.pointsContext.currentBalance.toLocaleString()} 点，充值后可用点数购买。`}
+            </p>
+          ) : null}
 
           {p.description ? (
             <p className="mt-4 whitespace-pre-line border-t border-kx-stroke/40 pt-4 text-[15px] leading-8 text-kx-text/90">

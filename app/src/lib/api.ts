@@ -1877,6 +1877,32 @@ export const api = {
     return request("POST", `/api/wallet/topups/stripe-confirm`, { sessionId });
   },
 
+  // ---- admin: Machi Points wallet ----
+  async adminWalletOverview(): Promise<{ accounts: number; outstandingPoints: number; lifetimePurchasedPoints: number; lifetimeBonusPoints: number; lifetimeSpentPoints: number; paidTopupOrders: number; grossTopupCents: number }> {
+    return request("GET", `/api/admin/wallet/overview`);
+  },
+  async adminWalletUsers(opts: { q?: string; status?: string; limit?: number } = {}): Promise<Array<{ userId: string; handle: string; displayName: string; email: string; balancePoints: number; lifetimePurchasedPoints: number; lifetimeSpentPoints: number; status: string; updatedAt: string }>> {
+    const params = new URLSearchParams();
+    if (opts.q) params.set("q", opts.q);
+    if (opts.status) params.set("status", opts.status);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const { items } = await request<{ items: Array<{ userId: string; handle: string; displayName: string; email: string; balancePoints: number; lifetimePurchasedPoints: number; lifetimeSpentPoints: number; status: string; updatedAt: string }> }>("GET", `/api/admin/wallet/users?${params.toString()}`);
+    return items;
+  },
+  async adminWalletUserLedger(userId: string): Promise<{ wallet: KXWallet; entries: KXWalletLedgerEntry[] }> {
+    return request("GET", `/api/admin/wallet/users/${encodeURIComponent(userId)}/ledger`);
+  },
+  async adminWalletAdjust(payload: { userId: string; pointsDelta: number; reason: string }): Promise<{ status: string; wallet: KXWallet }> {
+    return request("POST", `/api/admin/wallet/adjust`, payload);
+  },
+  async adminWalletTopupProducts(): Promise<Array<{ id: string; packKey: string; title: string; subtitle: string; points: number; bonusPoints: number; amountCents: number; currency: string; priceLabel: string; isActive: boolean }>> {
+    const { items } = await request<{ items: Array<{ id: string; packKey: string; title: string; subtitle: string; points: number; bonusPoints: number; amountCents: number; currency: string; priceLabel: string; isActive: boolean }> }>("GET", `/api/admin/wallet/topup-products`);
+    return items;
+  },
+  async adminWalletUpdateTopupProduct(id: string, patch: Record<string, unknown>): Promise<{ status: string }> {
+    return request("PATCH", `/api/admin/wallet/topup-products/${encodeURIComponent(id)}`, patch);
+  },
+
   // ---- admin: membership management ----
   async adminMemberships(opts: { status?: string; q?: string; limit?: number } = {}): Promise<AdminMembershipRow[]> {
     const params = new URLSearchParams();

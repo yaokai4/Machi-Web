@@ -183,6 +183,61 @@ class WalletFoundationTests(unittest.TestCase):
         self.assertEqual(res2["status"], "already_owned")
         self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 700)
 
+    # serialize_guide_product exposes the points fields
+    def test_serialize_points_fields(self):
+        prod = _make_product(self.conn, wallet_eligible=1, wallet_price=480, member_price=380)
+        s = server.serialize_guide_product(prod)
+        self.assertTrue(s["walletEligible"])
+        self.assertEqual(s["walletPricePoints"], 480)
+        self.assertEqual(s["memberWalletPricePoints"], 380)
+        self.assertEqual(s["pointsPriceLabel"], "480 点")
+        self.assertTrue(s["canBuyWithPoints"])
+        self.assertEqual(s["platformPolicy"], "digital_iap_required")
+        self.assertEqual(s["fulfillmentType"], "digital_unlock")
+
+    # 10. refund a points purchase → revoke entitlement + credit points back
+    def test_refund_guide_points_order(self):
+        uid = _make_user(self.conn)
+        server.wallet_post_ledger(self.conn, uid, "topup", 1000)
+        prod = _make_product(self.conn, wallet_price=300)
+        res = server.wallet_debit_for_product(self.conn, uid, prod)
+        self.assertEqual(res["status"], "fulfilled")
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 700)
+        refund = server.refund_guide_points_order(self.conn, res["orderId"], reason="test")
+        self.assertTrue(refund["applied"])
+        self.assertEqual(refund["refundedPoints"], 300)
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 1000)
+        self.assertFalse(server.user_has_entitlement(self.conn, uid, "guide_product", prod["id"]))
+        # idempotent
+        again = server.refund_guide_points_order(self.conn, res["orderId"], reason="test")
+        self.assertFalse(again["applied"])
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 1000)
+
+    # 10b. topup chargeback when points already spent → restrict + claw back
+    def test_topup_chargeback_after_spend(self):
+        uid = _make_user(self.conn)
+        pack = server.get_topup_product(self.conn, "machi_points_600")  # 600 pts
+        order = server.create_wallet_topup_order(self.conn, uid, pack, "stripe", "web")
+        server.wallet_credit_topup(self.conn, order["order_no"], provider_trade_no="pi_cb")
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 600)
+        # spend 500
+        prod = _make_product(self.conn, wallet_price=500)
+        server.wallet_debit_for_product(self.conn, uid, prod)
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 100)
+        # chargeback the 600-pt topup: claw back the remaining 100, restrict wallet
+        r = server.wallet_refund_topup(self.conn, order["order_no"], reason="dispute", entry_type="chargeback_debit")
+        self.assertTrue(r["applied"])
+        self.assertEqual(r["clawedBack"], 100)
+        self.assertEqual(r["debtPoints"], 500)
+        snap = server.get_wallet_snapshot(self.conn, uid)
+        self.assertEqual(snap["balancePoints"], 0)  # never negative
+        self.assertEqual(snap["status"], "restricted")
+        # restricted wallet can't spend
+        prod2 = _make_product(self.conn, wallet_price=10)
+        server.wallet_post_ledger(self.conn, uid, "admin_adjustment", 50, source_type="admin")  # status still restricted
+        blocked = server.wallet_post_ledger(self.conn, uid, "spend", -10)
+        self.assertTrue(blocked["insufficient"])  # status != active blocks debit
+
     # 8. insufficient balance → no order, no entitlement, no charge
     def test_purchase_insufficient(self):
         uid = _make_user(self.conn)
