@@ -13399,9 +13399,13 @@ def wallet_post_ledger(conn: sqlite3.Connection, user_id: str, entry_type: str, 
 
 
 def create_wallet_topup_order(conn: sqlite3.Connection, user_id: str, pack: dict[str, Any], provider: str,
-                              client_type: str = "", provider_product_id: str = "") -> dict[str, Any]:
+                              client_type: str = "", provider_product_id: str = "",
+                              provider_trade_no: str = "") -> dict[str, Any]:
     """Create a pending top-up order. Amount + points always come from the pack
-    row server-side — the client never sends a price or a points amount."""
+    row server-side — the client never sends a price or a points amount. For IAP
+    flows pass provider_trade_no (the store transaction id): the UNIQUE
+    (payment_provider, provider_trade_no) index then makes one order per
+    transaction, so a re-verify can't create a second order to double-credit."""
     points = int(pack.get("points") or 0)
     bonus = int(pack.get("bonus_points") or 0)
     now = now_iso()
@@ -13409,13 +13413,62 @@ def create_wallet_topup_order(conn: sqlite3.Connection, user_id: str, pack: dict
     order_no = _wallet_topup_order_no()
     conn.execute(
         "INSERT INTO wallet_topup_orders (id, order_no, user_id, pack_key, points, bonus_points, total_points, "
-        "amount_cents, currency, status, payment_provider, provider_product_id, client_type, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?)",
+        "amount_cents, currency, status, payment_provider, provider_product_id, provider_trade_no, client_type, "
+        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)",
         (order_id, order_no, user_id, pack.get("pack_key"), points, bonus, points + bonus,
          int(pack.get("amount_cents") or 0), pack.get("currency") or "CNY", provider,
-         provider_product_id or "", client_type or "", now, now),
+         provider_product_id or "", provider_trade_no or "", client_type or "", now, now),
     )
     return dict(conn.execute("SELECT * FROM wallet_topup_orders WHERE id = ?", (order_id,)).fetchone())
+
+
+def get_topup_product_by_apple(conn: sqlite3.Connection, product_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM wallet_topup_products WHERE is_active = 1 AND ? <> '' "
+        "AND (apple_product_id = ? OR ios_iap_product_id = ?) LIMIT 1",
+        (product_id, product_id, product_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_topup_product_by_google(conn: sqlite3.Connection, product_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM wallet_topup_products WHERE is_active = 1 AND ? <> '' AND google_product_id = ? LIMIT 1",
+        (product_id, product_id),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def wallet_credit_iap_topup(conn: sqlite3.Connection, user_id: str, pack: dict[str, Any], provider: str,
+                            client_type: str, provider_trade_no: str, provider_product_id: str = "",
+                            provider_user_id: str = "") -> dict[str, Any]:
+    """Credit an IAP (Apple/Google) top-up exactly once, keyed on the store
+    transaction id. Creates the audit order keyed by provider_trade_no (UNIQUE),
+    then settles it via wallet_credit_topup. Safe to call repeatedly for the same
+    transaction (restore / retry) — never double-credits."""
+    existing = conn.execute(
+        "SELECT order_no FROM wallet_topup_orders WHERE payment_provider = ? AND provider_trade_no = ? LIMIT 1",
+        (provider, provider_trade_no),
+    ).fetchone()
+    if existing:
+        order_no = existing["order_no"]
+    else:
+        try:
+            order = create_wallet_topup_order(conn, user_id, pack, provider, client_type,
+                                              provider_product_id=provider_product_id,
+                                              provider_trade_no=provider_trade_no)
+            order_no = order["order_no"]
+        except sqlite3.IntegrityError:
+            # Concurrent verify created the order first — settle that one.
+            row = conn.execute(
+                "SELECT order_no FROM wallet_topup_orders WHERE payment_provider = ? AND provider_trade_no = ? LIMIT 1",
+                (provider, provider_trade_no),
+            ).fetchone()
+            order_no = row["order_no"] if row else ""
+    if not order_no:
+        return {"applied": False, "wallet": get_wallet_snapshot(conn, user_id), "grantedPoints": 0}
+    return wallet_credit_topup(conn, order_no, provider_trade_no=provider_trade_no,
+                               provider_user_id=provider_user_id, source_type=provider)
 
 
 def wallet_credit_topup(conn: sqlite3.Connection, order_no: str, *, provider_trade_no: str = "",
@@ -13639,6 +13692,17 @@ def wallet_debit_for_product(conn: sqlite3.Connection, user_id: str, product_row
     ent = grant_user_entitlement(conn, user_id, resource_type, resource_id, source_type="wallet_order",
                                  source_order_id=order_id, source_ledger_id=ledger_entry_id,
                                  metadata={"orderNo": order_no, "pricePoints": price})
+    # If the returned entitlement was granted by a DIFFERENT order, a concurrent
+    # purchase of the same product won the unique-active race. We already
+    # debited, so refund those points and void this order — never charge twice.
+    if price > 0 and ent and ent.get("source_order_id") and ent.get("source_order_id") != order_id:
+        wallet_post_ledger(conn, user_id, "refund_credit", price, source_type="refund",
+                           source_order_id=order_id, product_id=resource_id,
+                           idempotency_key=f"dup-refund:{order_id}", metadata={"reason": "duplicate_purchase"})
+        conn.execute("UPDATE guide_orders SET status = 'refunded', refunded_at = ? WHERE id = ?", (now, order_id))
+        snap = get_wallet_snapshot(conn, user_id)
+        return {"status": "already_owned", "wallet": snap, "order": None, "entitlement": None,
+                "requiredPoints": price, "currentBalance": snap["balancePoints"]}
     conn.execute("UPDATE guide_orders SET entitlement_id = ? WHERE id = ?", (ent.get("id") or "", order_id))
     conn.execute("UPDATE guide_products SET purchase_count = purchase_count + 1 WHERE id = ?", (resource_id,))
     order_row = dict(conn.execute("SELECT * FROM guide_orders WHERE id = ?", (order_id,)).fetchone())
@@ -14318,6 +14382,77 @@ def verify_apple_transaction(signed_transaction: str, product_id: str = "") -> d
         ERR_LOG.warning("apple transaction signature rejected")
         return None
     return payload
+
+
+# ---- Google Play purchase verification (Android global) --------------------
+# Verifying a Play purchase needs a service account with androidpublisher
+# scope. Until the env is configured, verify returns None so the endpoint
+# answers 503 provider_unconfigured (never a mocked grant in production).
+GOOGLE_PLAY_PACKAGE_NAME = _env("GOOGLE_PLAY_PACKAGE_NAME", "")
+GOOGLE_PLAY_SERVICE_ACCOUNT_JSON = _env("GOOGLE_PLAY_SERVICE_ACCOUNT_JSON", "")
+
+
+def google_play_configured() -> bool:
+    return bool(GOOGLE_PLAY_PACKAGE_NAME and GOOGLE_PLAY_SERVICE_ACCOUNT_JSON)
+
+
+def _google_play_access_token() -> str | None:
+    """Mint an OAuth access token for the androidpublisher API from the
+    service-account JSON via a signed JWT (RS256). Returns None on any failure."""
+    try:
+        sa = json.loads(GOOGLE_PLAY_SERVICE_ACCOUNT_JSON)
+        _load_cryptography()
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import padding
+        now = int(time.time())
+        header = base64.urlsafe_b64encode(json.dumps({"alg": "RS256", "typ": "JWT"}).encode()).rstrip(b"=")
+        claim = base64.urlsafe_b64encode(json.dumps({
+            "iss": sa["client_email"],
+            "scope": "https://www.googleapis.com/auth/androidpublisher",
+            "aud": "https://oauth2.googleapis.com/token",
+            "iat": now, "exp": now + 3600,
+        }).encode()).rstrip(b"=")
+        signing_input = header + b"." + claim
+        key = serialization.load_pem_private_key(sa["private_key"].encode(), password=None)
+        signature = base64.urlsafe_b64encode(
+            key.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())).rstrip(b"=")
+        assertion = (signing_input + b"." + signature).decode()
+        from urllib.parse import urlencode
+        from urllib.request import Request, urlopen
+        data = urlencode({"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer", "assertion": assertion}).encode()
+        req = Request("https://oauth2.googleapis.com/token", data=data, method="POST")
+        with urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode()).get("access_token")
+    except Exception as exc:
+        ERR_LOG.warning("google play token mint failed: %s", type(exc).__name__)
+        return None
+
+
+def verify_google_play_purchase(product_id: str, purchase_token: str, package_name: str = "") -> bool | None:
+    """Verify a Play in-app purchase. Returns True (purchased), False (invalid),
+    or None when Google Play is not configured (→ 503, never a mock grant)."""
+    if not google_play_configured():
+        return None
+    token = _google_play_access_token()
+    if not token:
+        return None
+    pkg = package_name or GOOGLE_PLAY_PACKAGE_NAME
+    if package_name and package_name != GOOGLE_PLAY_PACKAGE_NAME:
+        return False
+    from urllib.parse import quote
+    from urllib.request import Request, urlopen
+    url = (f"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/"
+           f"{quote(pkg, safe='')}/purchases/products/{quote(product_id, safe='')}/tokens/{quote(purchase_token, safe='')}")
+    try:
+        req = Request(url)
+        req.add_header("Authorization", "Bearer " + token)
+        with urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read().decode())
+        # purchaseState: 0 = purchased, 1 = canceled, 2 = pending.
+        return int(body.get("purchaseState", 1)) == 0
+    except Exception as exc:
+        ERR_LOG.warning("google play verify failed: %s", type(exc).__name__)
+        return False
 
 
 def _verify_apple_jws_signature(header_b64: str, payload_b64: str, sig_b64: str) -> bool:
@@ -19498,19 +19633,22 @@ class Handler(BaseHTTPRequestHandler):
             and not bool(row["is_price_hidden"])
             and not bool(row["is_appointment_only"])
         )
-        if session:
+        if session and base_points_eligible:
+            # Only touch the wallet (and the membership lookup) for points-eligible
+            # products — avoids a per-view membership query + wallet-row create on
+            # a GET for the majority of products that aren't points-buyable.
             required_points = compute_product_points_price(conn, session["user_id"], dict(row))
             balance = get_wallet_snapshot(conn, session["user_id"])["balancePoints"]
             product["pointsContext"] = {
-                "eligible": base_points_eligible and required_points > 0,
+                "eligible": required_points > 0,
                 "requiredPoints": required_points,
                 "currentBalance": balance,
                 "sufficient": balance >= required_points,
                 "owned": owned,
             }
-            product["canBuyWithPoints"] = bool(
-                base_points_eligible and required_points > 0 and not owned and not product["canView"]
-            )
+            product["canBuyWithPoints"] = bool(required_points > 0 and not owned and not product["canView"])
+        elif session:
+            product["canBuyWithPoints"] = False
         else:
             product["canBuyWithPoints"] = bool(base_points_eligible and int(row["wallet_price_points"] or 0) > 0)
         self.send_json({"status": "ok", "product": product})
@@ -23767,6 +23905,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_wallet_topup_stripe_checkout(conn)
         if path == "/api/wallet/topups/stripe-confirm" and method == "POST":
             return self.api_wallet_topup_stripe_confirm(conn)
+        if path == "/api/wallet/topups/apple/verify" and method == "POST":
+            return self.api_wallet_topup_apple_verify(conn)
+        if path == "/api/wallet/topups/google/verify" and method == "POST":
+            return self.api_wallet_topup_google_verify(conn)
 
         # membership + payments
         if path == "/api/membership/me" and method == "GET":
@@ -24594,6 +24736,62 @@ class Handler(BaseHTTPRequestHandler):
                 "grantedPoints": result.get("grantedPoints", 0),
             })
         self.send_json({"status": "pending", "orderNo": order_no, "wallet": get_wallet_snapshot(conn, user["id"])})
+
+    def api_wallet_topup_apple_verify(self, conn: sqlite3.Connection) -> None:
+        """Verify a StoreKit2 consumable points top-up and credit points. The
+        server is the only place points are credited; idempotent on the
+        transaction id. NEVER touches the membership verify path."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        signed = str(data.get("signedTransaction") or data.get("signed_transaction") or "").strip()
+        product_id = str(data.get("productId") or data.get("product_id") or "").strip()
+        if not signed or not product_id:
+            raise APIError("缺少交易凭证", 400, "invalid_transaction")
+        pack = get_topup_product_by_apple(conn, product_id)
+        if not pack:
+            raise APIError("点数包不存在", 404, "topup_pack_not_found")
+        payload = verify_apple_transaction(signed, product_id)
+        if not payload:
+            raise APIError("交易验证失败", 400, "verification_failed")
+        txn_id = str(data.get("transactionId") or data.get("transaction_id") or payload.get("transactionId") or "")
+        orig_id = str(data.get("originalTransactionId") or data.get("original_transaction_id") or payload.get("originalTransactionId") or "")
+        app_account_token = str(payload.get("appAccountToken") or "").strip()
+        if app_account_token and app_account_token.lower() != user["id"].lower():
+            raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
+        dedup = "apple:" + (txn_id or orig_id or signed[:40])
+        result = wallet_credit_iap_topup(conn, user["id"], pack, "apple_iap", "ios", dedup,
+                                         provider_product_id=product_id, provider_user_id=orig_id)
+        self.send_json({
+            "wallet": result.get("wallet") or get_wallet_snapshot(conn, user["id"]),
+            "grantedPoints": result.get("grantedPoints", 0),
+        })
+
+    def api_wallet_topup_google_verify(self, conn: sqlite3.Connection) -> None:
+        """Verify a Google Play consumable points top-up and credit points.
+        Returns 503 provider_unconfigured when the Play service account env is
+        absent (never a mocked grant). Idempotent on the purchase token."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        product_id = str(data.get("productId") or data.get("product_id") or "").strip()
+        purchase_token = str(data.get("purchaseToken") or data.get("purchase_token") or "").strip()
+        if not product_id or not purchase_token:
+            raise APIError("缺少购买凭证", 400, "invalid_purchase")
+        pack = get_topup_product_by_google(conn, product_id)
+        if not pack:
+            raise APIError("点数包不存在", 404, "topup_pack_not_found")
+        verified = verify_google_play_purchase(product_id, purchase_token, str(data.get("packageName") or ""))
+        if verified is None:
+            raise APIError("Google Play 验证尚未配置", 503, "provider_unconfigured")
+        if not verified:
+            raise APIError("交易验证失败", 400, "verification_failed")
+        order_id = str(data.get("orderId") or data.get("order_id") or "")
+        dedup = "google:" + (purchase_token[:90] or order_id)
+        result = wallet_credit_iap_topup(conn, user["id"], pack, "google_play", "android", dedup,
+                                         provider_product_id=product_id, provider_user_id=order_id)
+        self.send_json({
+            "wallet": result.get("wallet") or get_wallet_snapshot(conn, user["id"]),
+            "grantedPoints": result.get("grantedPoints", 0),
+        })
 
     # ---- admin: Machi Points wallet ----
 

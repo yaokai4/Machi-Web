@@ -242,6 +242,31 @@ class WalletFoundationTests(unittest.TestCase):
         blocked = server.wallet_post_ledger(self.conn, uid, "spend", -10)
         self.assertTrue(blocked["insufficient"])  # status != active blocks debit
 
+    # 5. Apple IAP top-up credits once and is idempotent on the transaction id
+    def test_apple_iap_topup_idempotent(self):
+        uid = _make_user(self.conn)
+        pack = server.get_topup_product_by_apple(self.conn, "machi_points_1800")
+        self.assertIsNotNone(pack)  # seed sets apple_product_id = pack_key
+        dedup = "apple:txn-12345"
+        r1 = server.wallet_credit_iap_topup(self.conn, uid, pack, "apple_iap", "ios", dedup)
+        self.assertTrue(r1["applied"])
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 1900)
+        # re-verify same transaction (restore / retry) — no double credit
+        r2 = server.wallet_credit_iap_topup(self.conn, uid, pack, "apple_iap", "ios", dedup)
+        self.assertFalse(r2["applied"])
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 1900)
+        # exactly one WT order for this transaction
+        n = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM wallet_topup_orders WHERE payment_provider='apple_iap' AND provider_trade_no=?",
+            (dedup,)).fetchone()
+        self.assertEqual(dict(n)["c"], 1)
+
+    # 6. Google verify returns provider_unconfigured (None) without credentials
+    def test_google_unconfigured(self):
+        self.assertFalse(server.google_play_configured())
+        self.assertIsNone(server.verify_google_play_purchase("machi_points_600", "tok-abc"))
+        self.assertIsNotNone(server.get_topup_product_by_google(self.conn, "machi_points_600"))
+
     # 8. insufficient balance → no order, no entitlement, no charge
     def test_purchase_insufficient(self):
         uid = _make_user(self.conn)
