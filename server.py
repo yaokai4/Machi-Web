@@ -658,6 +658,13 @@ WECHAT_PAY_SERIAL_NO = _env("WECHAT_PAY_SERIAL_NO", "")
 WECHAT_PAY_PRIVATE_KEY = _read_secret_file(_env("WECHAT_PAY_PRIVATE_KEY", ""), _env("WECHAT_PAY_PRIVATE_KEY_PATH", ""))
 WECHAT_PAY_NOTIFY_URL = _env("WECHAT_PAY_NOTIFY_URL", "")
 
+# --- WeChat Mini Program login (sns/jscode2session). Separate credentials
+# from WeChat Pay; the secret stays server-side only and is never returned to
+# the client. When unset, the login endpoint reports a clear 503 so the
+# mini-program can show "登录暂未开放" instead of failing opaquely. ---
+WECHAT_MINIAPP_APPID = _env("WECHAT_MINIAPP_APPID", "")
+WECHAT_MINIAPP_SECRET = _env("WECHAT_MINIAPP_SECRET", "")
+
 ALIPAY_APP_ID = _env("ALIPAY_APP_ID", "")
 ALIPAY_PRIVATE_KEY = _read_secret_file(_env("ALIPAY_PRIVATE_KEY", ""), _env("ALIPAY_PRIVATE_KEY_PATH", ""))
 ALIPAY_PUBLIC_KEY = _read_secret_file(_env("ALIPAY_PUBLIC_KEY", ""), _env("ALIPAY_PUBLIC_KEY_PATH", ""))
@@ -13076,6 +13083,49 @@ def _mock_pay_url(order_no: str) -> str:
     return f"/api/payments/mock/confirm?order_no={order_no}"
 
 
+def wechat_miniapp_configured() -> bool:
+    return bool(WECHAT_MINIAPP_APPID and WECHAT_MINIAPP_SECRET)
+
+
+def wechat_code2session(code: str) -> dict[str, Any]:
+    """Exchange a wx.login() code for {openid, unionid, session_key} via the
+    WeChat sns/jscode2session endpoint. Server-side only — the appsecret never
+    leaves the backend. Raises APIError on any failure with a stable code so
+    the mini-program can branch on it. The session_key is returned to the
+    caller for the duration of the request but is never persisted or logged."""
+    if not wechat_miniapp_configured():
+        raise APIError("微信登录尚未开放", 503, "wechat_login_unconfigured")
+    code = (code or "").strip()
+    if not code:
+        raise APIError("缺少微信登录凭证", 400, "wechat_code_missing")
+    params = urllib.parse.urlencode({
+        "appid": WECHAT_MINIAPP_APPID,
+        "secret": WECHAT_MINIAPP_SECRET,
+        "js_code": code,
+        "grant_type": "authorization_code",
+    })
+    url = f"https://api.weixin.qq.com/sns/jscode2session?{params}"
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            payload = json.loads(resp.read().decode("utf-8") or "{}")
+    except urllib.error.URLError:
+        raise APIError("无法连接微信登录服务，请稍后重试", 503, "wechat_login_unavailable")
+    except (ValueError, TimeoutError):
+        raise APIError("微信登录服务响应异常，请稍后重试", 502, "wechat_login_bad_response")
+    errcode = int(payload.get("errcode") or 0)
+    if errcode != 0 or not payload.get("openid"):
+        # Do NOT surface WeChat's raw errmsg to clients (may leak internals);
+        # log the code server-side only.
+        ERR_LOG.warning("wechat code2session failed errcode=%s", errcode)
+        raise APIError("微信登录失败，请重新进入小程序", 401, "wechat_login_rejected")
+    return {
+        "openid": str(payload.get("openid") or ""),
+        "unionid": str(payload.get("unionid") or ""),
+        "session_key": str(payload.get("session_key") or ""),
+    }
+
+
 def build_wechat_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dict[str, Any]:
     """Return the params a Web client needs to pay an order via WeChat
     (Native = a QR code). When merchant creds are present the real v3
@@ -21850,6 +21900,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_login(conn)
         if path == "/api/auth/apple" and method == "POST":
             return self.api_apple_native(conn)
+        if path in ("/api/miniapp/wechat/login", "/api/miniapp/v1/wechat/login") and method == "POST":
+            return self.api_miniapp_wechat_login(conn)
         if path == "/api/auth/apple/link" and method == "POST":
             return self.api_apple_link(conn)
         if path == "/api/auth/apple/unlink" and method == "POST":
@@ -24258,6 +24310,98 @@ class Handler(BaseHTTPRequestHandler):
         )
         conn.execute("INSERT INTO settings (user_id, language, updated_at) VALUES (?, '', ?)", (user_id, now_iso()))
         return dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    def _upsert_wechat_user(
+        self,
+        conn: sqlite3.Connection,
+        openid: str,
+        unionid: str,
+        nickname: str,
+        avatar_url: str,
+    ) -> dict[str, Any]:
+        """Find-or-create the Machi account behind a verified WeChat identity.
+        Mirrors `_upsert_apple_user`: match by openid binding, else by unionid
+        binding (so the same person on the Web/App side links up when a unionid
+        is available), else create a fresh account. openid is the stable key —
+        we persist it in miniapp_openid_bindings, never the session_key."""
+        openid = (openid or "").strip()
+        unionid = (unionid or "").strip()
+        if not openid:
+            raise APIError("微信账号缺少唯一标识", 400, "wechat_profile_invalid")
+        nickname = ((nickname or "").strip() or "微信用户")[:60]
+        avatar_url = (avatar_url or "").strip()[:500]
+
+        binding = conn.execute(
+            "SELECT * FROM miniapp_openid_bindings WHERE platform = 'wechat' AND openid = ?",
+            (openid,),
+        ).fetchone()
+        if not binding and unionid:
+            binding = conn.execute(
+                "SELECT * FROM miniapp_openid_bindings WHERE platform = 'wechat' AND unionid = ? AND unionid != ''",
+                (unionid,),
+            ).fetchone()
+        if binding:
+            user = conn.execute(
+                "SELECT * FROM users WHERE id = ? AND deleted_at IS NULL", (binding["user_id"],)
+            ).fetchone()
+            if user:
+                conn.execute(
+                    "UPDATE miniapp_openid_bindings SET unionid = ?, openid = ?, last_login_at = ?, updated_at = ? WHERE id = ?",
+                    (unionid or binding["unionid"], openid, now_iso(), now_iso(), binding["id"]),
+                )
+                return dict(user)
+            # Orphaned binding (user was deleted) — drop it and fall through to recreate.
+            conn.execute("DELETE FROM miniapp_openid_bindings WHERE id = ?", (binding["id"],))
+
+        user_id = str(uuid.uuid4())
+        handle = self._unique_google_handle(conn, "", nickname)
+        country, province, city, region_code, city_label = ("jp", "tokyo", "tokyo", "jp.tokyo.tokyo", "东京")
+        conn.execute(
+            """
+            INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
+                               avatar_symbol, avatar_color, avatar_url, cover_url, membership_tier,
+                               is_verified, role, country, province, city, current_region_code,
+                               recent_region_codes, auth_provider, email_verified,
+                               joined_at, created_at, updated_at)
+            VALUES (?, ?, ?, '', ?, '', ?, 'person.fill', 'green', ?, '', 'free', 0, 'member',
+                    ?, ?, ?, ?, ?, 'wechat', 0, ?, ?, ?)
+            """,
+            (
+                user_id, handle, nickname, hash_password(secrets.token_urlsafe(32)),
+                city_label, avatar_url, country, province, city, region_code, region_code,
+                now_iso(), now_iso(), now_iso(),
+            ),
+        )
+        conn.execute("INSERT INTO settings (user_id, language, updated_at) VALUES (?, '', ?)", (user_id, now_iso()))
+        conn.execute(
+            """
+            INSERT INTO miniapp_openid_bindings (id, platform, openid, unionid, user_id, created_at, updated_at, last_login_at)
+            VALUES (?, 'wechat', ?, ?, ?, ?, ?, ?)
+            """,
+            (str(uuid.uuid4()), openid, unionid, user_id, now_iso(), now_iso(), now_iso()),
+        )
+        return dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
+
+    def api_miniapp_wechat_login(self, conn: sqlite3.Connection) -> None:
+        """WeChat Mini Program login. Body: {code, nickname?, avatarUrl?}.
+        The code (from wx.login on the client) is exchanged server-side for a
+        stable openid via sns/jscode2session, then we find-or-create the Machi
+        account and issue the SAME bearer session as every other login path, so
+        the mini-program shares accounts and data with Web/iOS/Android."""
+        data = self.read_json()
+        code = str(data.get("code") or data.get("js_code") or "").strip()
+        nickname = str(data.get("nickname") or data.get("nickName") or "")
+        avatar_url = str(data.get("avatarUrl") or data.get("avatar_url") or "")
+        # The network call to WeChat must not hold the global DB lock.
+        with _DBLockReleased():
+            session = wechat_code2session(code)
+        user = self._upsert_wechat_user(
+            conn, session["openid"], session.get("unionid", ""), nickname, avatar_url
+        )
+        token = self._create_session(conn, user["id"])
+        ACCESS_LOG.info("wechat mini-program sign-in user %s (%s)", user["handle"], user["id"])
+        # No session cookie here: mini-program clients use the bearer token.
+        self.send_json({"token": token, "user": serialize_user_with_counts(conn, user)})
 
     def _upsert_apple_user(self, conn: sqlite3.Connection, sub: str, email: str, name: str) -> dict[str, Any]:
         """Find-or-create the Machi account behind a verified Apple identity.

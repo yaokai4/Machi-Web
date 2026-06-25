@@ -37,6 +37,25 @@ CREATE TABLE IF NOT EXISTS sessions (
     FOREIGN KEY(user_id) REFERENCES users(id)
 );
 
+-- WeChat Mini Program identity bindings. Maps a WeChat openid/unionid to a
+-- Machi user so the mini-program shares the same accounts/data as Web/iOS/
+-- Android. We never store the WeChat session_key (sensitive); only the stable
+-- openid/unionid keys are persisted.
+CREATE TABLE IF NOT EXISTS miniapp_openid_bindings (
+    id TEXT PRIMARY KEY,
+    platform TEXT NOT NULL DEFAULT 'wechat',
+    openid TEXT NOT NULL,
+    unionid TEXT NOT NULL DEFAULT '',
+    user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    last_login_at TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY(user_id) REFERENCES users(id),
+    UNIQUE(platform, openid)
+);
+CREATE INDEX IF NOT EXISTS idx_miniapp_bindings_user ON miniapp_openid_bindings(user_id);
+CREATE INDEX IF NOT EXISTS idx_miniapp_bindings_unionid ON miniapp_openid_bindings(unionid);
+
 CREATE TABLE IF NOT EXISTS posts (
     id TEXT PRIMARY KEY,
     author_id TEXT NOT NULL,
@@ -3582,6 +3601,26 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             UNIQUE(user_id, category)
         );
         CREATE INDEX IF NOT EXISTS idx_guide_budgets_user ON guide_budgets(user_id, category);
+        """,
+    ),
+    (
+        72,
+        "miniapp: wechat openid -> machi user bindings",
+        """
+        -- backend: postgres
+        CREATE TABLE IF NOT EXISTS miniapp_openid_bindings (
+            id TEXT PRIMARY KEY,
+            platform TEXT NOT NULL DEFAULT 'wechat',
+            openid TEXT NOT NULL,
+            unionid TEXT NOT NULL DEFAULT '',
+            user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            last_login_at TEXT NOT NULL DEFAULT '',
+            UNIQUE(platform, openid)
+        );
+        CREATE INDEX IF NOT EXISTS idx_miniapp_bindings_user ON miniapp_openid_bindings(user_id);
+        CREATE INDEX IF NOT EXISTS idx_miniapp_bindings_unionid ON miniapp_openid_bindings(unionid);
         """,
     ),
 ]
