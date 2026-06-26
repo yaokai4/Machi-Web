@@ -44,7 +44,17 @@ class ListingMediaContractTests(unittest.TestCase):
             "instant_confirmation": True,
         }
         normalized = server.normalize_listing_attributes("local_service", raw)
-        self.assertEqual(set(normalized), set(raw))
+        # The real guarantee: no lodging attribute is dropped by normalization.
+        self.assertTrue(
+            set(raw).issubset(set(normalized)),
+            f"lodging attributes were dropped: {set(raw) - set(normalized)}",
+        )
+        # local_service normalization additionally DERIVES a `service_vertical`
+        # tag (here: "lodging") used for vertical-specific attribute filtering.
+        # That derived key is the only addition; assert it explicitly so the
+        # contract stays honest instead of loosened.
+        self.assertEqual(set(normalized) - set(raw), {"service_vertical"})
+        self.assertEqual(normalized["service_vertical"], ("lodging", "string"))
         self.assertEqual(normalized["max_guests"], ("2", "int"))
 
     def test_listing_update_replaces_attributes_and_media(self) -> None:

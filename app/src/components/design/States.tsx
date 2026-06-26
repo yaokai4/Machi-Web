@@ -44,7 +44,7 @@ export function EmptyState({
 }) {
   return (
     <div className={clsx("flex flex-col items-center justify-center text-center text-kx-subtle", compact ? "px-5 py-9" : "px-6 py-14")}>
-      <div className="relative grid h-14 w-14 place-items-center rounded-2xl border border-kx-stroke/45 bg-white shadow-[0_14px_36px_-24px_rgba(15,23,42,0.42)]">
+      <div className="relative grid h-14 w-14 place-items-center rounded-2xl border border-kx-stroke/45 bg-kx-card shadow-[0_14px_36px_-24px_rgb(var(--kx-shadow)/0.42)]">
         <span className="absolute inset-1 rounded-[18px] bg-kx-accentSoft/70" />
         <Icon className="relative h-6 w-6 text-kx-accent" />
       </div>
@@ -56,7 +56,7 @@ export function EmptyState({
             action.href ? (
               <a
                 href={action.href}
-                className="inline-flex h-10 items-center gap-2 rounded-full bg-kx-accent px-4 text-sm font-black text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.72)] transition hover:-translate-y-px active:translate-y-0"
+                className="inline-flex h-10 items-center gap-2 rounded-full bg-kx-accent px-4 text-sm font-black text-white shadow-[0_14px_30px_-18px_rgb(var(--kx-accent)/0.6)] transition hover:-translate-y-px active:translate-y-0"
               >
                 {action.label}
                 <ArrowRight className="h-4 w-4" />
@@ -65,7 +65,7 @@ export function EmptyState({
               <button
                 type="button"
                 onClick={action.onClick}
-                className="inline-flex h-10 items-center gap-2 rounded-full bg-kx-accent px-4 text-sm font-black text-white shadow-[0_14px_30px_-18px_rgba(37,99,235,0.72)] transition hover:-translate-y-px active:translate-y-0"
+                className="inline-flex h-10 items-center gap-2 rounded-full bg-kx-accent px-4 text-sm font-black text-white shadow-[0_14px_30px_-18px_rgb(var(--kx-accent)/0.6)] transition hover:-translate-y-px active:translate-y-0"
               >
                 {action.label}
                 <ArrowRight className="h-4 w-4" />
@@ -76,7 +76,7 @@ export function EmptyState({
             secondaryAction.href ? (
               <a
                 href={secondaryAction.href}
-                className="inline-flex h-10 items-center rounded-full border border-kx-stroke/60 bg-white px-4 text-sm font-black text-kx-subtle transition hover:border-kx-accent/35 hover:text-kx-accent"
+                className="inline-flex h-10 items-center rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-sm font-black text-kx-subtle transition hover:border-kx-accent/35 hover:text-kx-accent"
               >
                 {secondaryAction.label}
               </a>
@@ -84,7 +84,7 @@ export function EmptyState({
               <button
                 type="button"
                 onClick={secondaryAction.onClick}
-                className="inline-flex h-10 items-center rounded-full border border-kx-stroke/60 bg-white px-4 text-sm font-black text-kx-subtle transition hover:border-kx-accent/35 hover:text-kx-accent"
+                className="inline-flex h-10 items-center rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-sm font-black text-kx-subtle transition hover:border-kx-accent/35 hover:text-kx-accent"
               >
                 {secondaryAction.label}
               </button>
@@ -98,7 +98,7 @@ export function EmptyState({
 
 export function PremiumEmptyState(props: Parameters<typeof EmptyState>[0]) {
   return (
-    <div className="rounded-[28px] border border-kx-stroke/35 bg-white/82 shadow-[0_18px_54px_-38px_rgba(15,23,42,0.45)] backdrop-blur">
+    <div className="rounded-[28px] border border-kx-stroke/35 bg-kx-card/82 shadow-[0_18px_54px_-38px_rgb(var(--kx-shadow)/0.45)] backdrop-blur">
       <EmptyState {...props} />
     </div>
   );
@@ -112,7 +112,7 @@ export function SectionLoading({
   rows?: number;
 }) {
   return (
-    <div className="rounded-[28px] border border-kx-stroke/35 bg-white/82 p-4 shadow-[0_18px_54px_-42px_rgba(15,23,42,0.42)]">
+    <div className="rounded-[28px] border border-kx-stroke/35 bg-kx-card/82 p-4 shadow-[0_18px_54px_-42px_rgb(var(--kx-shadow)/0.42)]">
       <div className="mb-4 flex items-center gap-3">
         <Skeleton className="h-10 w-10 rounded-2xl" />
         <div className="min-w-0 flex-1 space-y-2">

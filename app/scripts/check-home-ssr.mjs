@@ -2,7 +2,23 @@ import { execFileSync, spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { setTimeout as delay } from "node:timers/promises";
 
-const target = process.env.HOME_URL || "http://127.0.0.1:3004/home";
+// Target resolution (most specific wins):
+//   HOME_URL   — full URL to the /home page
+//   BASE_URL   — origin; /home is appended
+//   PORT       — local port; http://127.0.0.1:$PORT/home
+//   (default)  — http://127.0.0.1:3000/home (Next dev/start default)
+// The old default of :3004 pointed at a port nothing normally listens on, so a
+// plain `npm run test:home:ssr` failed with an opaque "fetch failed". We now
+// default to the real dev port and, when the server is local and down, try to
+// boot `next start` ourselves (see startLocalNext).
+function resolveTarget() {
+  if (process.env.HOME_URL) return process.env.HOME_URL;
+  if (process.env.BASE_URL) return `${process.env.BASE_URL.replace(/\/$/, "")}/home`;
+  if (process.env.PORT) return `http://127.0.0.1:${process.env.PORT}/home`;
+  return "http://127.0.0.1:3000/home";
+}
+
+const target = resolveTarget();
 const acceptLanguage = "zh-CN,zh;q=0.9,en;q=0.8,ja;q=0.7";
 let autoServer = null;
 
@@ -117,12 +133,35 @@ try {
 
   if (failures.length || forbiddenHits.length) {
     console.error(`SSR home check failed for ${target}`);
-    for (const [name] of failures) console.error(`- ${name}`);
+    for (const [name] of failures) console.error(`- missing: ${name}`);
     for (const text of forbiddenHits) console.error(`- forbidden content still present: ${text}`);
+    // If NONE of the brand signals are present the page almost certainly isn't
+    // Machi — flag the likely "wrong service on this port" cause explicitly.
+    const brandPresent = /Machi/i.test(html);
+    if (!brandPresent) {
+      console.error(
+        `- 该地址没有任何 Machi 品牌标识，疑似打到了占用 ${target} 端口的其它项目。` +
+          ` 用 BASE_URL=http://127.0.0.1:<machi端口> npm run test:home:ssr 指定正确服务。`
+      );
+    }
+    autoServer?.kill("SIGTERM");
     process.exit(1);
   }
 
   console.log(`SSR home check passed for ${target}`);
+} catch (err) {
+  // Surface the real URL + reason instead of a bare "fetch failed". If the
+  // server simply isn't up, say so and how to point at the right one.
+  const code = err?.cause?.code || err?.code;
+  console.error(`SSR home check could not run against ${target}`);
+  console.error(`- ${err?.message || err}`);
+  if (code === "ECONNREFUSED") {
+    console.error(
+      `- 没有服务在监听该地址。先启动 Next（npm run start / npx next dev），` +
+        ` 或用 BASE_URL=http://127.0.0.1:<端口> npm run test:home:ssr 指定已运行的服务。`
+    );
+  }
+  process.exitCode = 1;
 } finally {
   autoServer?.kill("SIGTERM");
 }

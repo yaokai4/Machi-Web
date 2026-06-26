@@ -1,7 +1,32 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 
-const origin = process.env.MACHI_WEB_ORIGIN || "http://localhost:3000";
+// ---------------------------------------------------------------------------
+// Origin / API-base resolution.
+//
+// The old doctor hard-defaulted to http://localhost:3000. On a dev box where
+// another project owns :3000 that silently probed the WRONG service and gave a
+// confidently-wrong verdict (good→bad or bad→good). We now:
+//   1. accept BASE_URL / PORT / MACHI_WEB_ORIGIN to point at the right server;
+//   2. resolve the backend health URL from NEXT_PUBLIC_API_BASE / API_BASE;
+//   3. *verify the page is actually Machi* before trusting any check, and
+//   4. report the real URL + status (and a "wrong service?" hint) on failure.
+// ---------------------------------------------------------------------------
+
+function resolveOrigin() {
+  if (process.env.BASE_URL) return process.env.BASE_URL.replace(/\/$/, "");
+  if (process.env.MACHI_WEB_ORIGIN) return process.env.MACHI_WEB_ORIGIN.replace(/\/$/, "");
+  if (process.env.PORT) return `http://127.0.0.1:${process.env.PORT}`;
+  return "http://localhost:3000";
+}
+
+function resolveApiBase() {
+  const raw = process.env.NEXT_PUBLIC_API_BASE || process.env.API_BASE || "http://127.0.0.1:8787";
+  return raw.replace(/\/$/, "");
+}
+
+const origin = resolveOrigin();
+const apiBase = resolveApiBase();
 
 function absoluteUrl(path) {
   return path.startsWith("http") ? path : `${origin}${path}`;
@@ -58,42 +83,82 @@ function chunkLinks(html) {
   return unique(Array.from(html.matchAll(/src="([^"]*\/_next\/static\/chunks\/[^"]+\.js)"/g)).map((match) => match[1])).slice(0, 8);
 }
 
+// Identity guard: the home HTML must look like Machi. We accept any of a few
+// resilient signals (brand in <title>, the localized tagline, or a Next build
+// served from a Machi route) so a single copy edit doesn't break the check,
+// but a totally different project (e.g. another app squatting on :3000) fails
+// loudly instead of being mis-diagnosed.
+function looksLikeMachi(html) {
+  if (!html) return false;
+  const signals = [
+    /<title>[^<]*Machi/i,
+    /Machi · /,
+    /在每一座城市/,
+    /__NEXT_DATA__/,
+    /\/_next\/static\//,
+  ];
+  return signals.some((re) => re.test(html));
+}
+
 const failures = [];
 const warnings = [];
+
+console.log(`Machi Web doctor: origin=${origin} apiBase=${apiBase}`);
 
 const home = await request("/");
 if (home.skipped) {
   warnings.push(`首页运行时诊断被当前环境的 localhost 权限限制跳过: ${home.error?.cause?.code || home.error?.message}`);
 } else if (!home.ok) {
-  failures.push(`首页请求失败: ${home.status || home.error?.message}`);
+  failures.push(`首页请求失败: ${home.url} -> ${home.status || home.error?.message}`);
+} else if (!looksLikeMachi(home.body)) {
+  failures.push(
+    `首页 (${home.url}) 返回了 ${home.status}，但内容不像 Machi —— 很可能打到了占用该端口的其它项目。` +
+      ` 用 BASE_URL=http://127.0.0.1:<machi端口> npm run doctor 指定正确的 Machi 服务。`
+  );
 } else {
   const stylesheets = cssLinks(home.body);
   const chunks = chunkLinks(home.body);
 
   if (!stylesheets.length) {
-    failures.push("首页 HTML 没有引用任何 Next CSS 文件。");
+    failures.push(`首页 HTML (${home.url}) 没有引用任何 Next CSS 文件。`);
   }
 
   for (const href of stylesheets) {
     const css = await request(href, "HEAD");
     if (!css.ok) {
-      failures.push(`CSS 静态文件不可访问: ${href} -> ${css.status || css.error?.message}`);
+      failures.push(`CSS 静态文件不可访问: ${css.url} -> ${css.status || css.error?.message}`);
     }
   }
 
   for (const src of chunks) {
     const chunk = await request(src, "HEAD");
     if (!chunk.ok) {
-      failures.push(`JS 静态 chunk 不可访问: ${src} -> ${chunk.status || chunk.error?.message}`);
+      failures.push(`JS 静态 chunk 不可访问: ${chunk.url} -> ${chunk.status || chunk.error?.message}`);
     }
   }
 }
 
-const health = await request("/healthz", "HEAD");
+// Backend health: the canonical endpoint is the Python backend's /api/health
+// (returns {"ok": true, ...}). We hit it via the resolved API base instead of
+// a frontend /healthz that may not exist.
+const healthUrl = `${apiBase}/api/health`;
+const health = await request(healthUrl, "GET");
 if (health.skipped) {
-  warnings.push(`/healthz 运行时诊断被当前环境的 localhost 权限限制跳过: ${health.error?.cause?.code || health.error?.message}`);
+  warnings.push(`${healthUrl} 运行时诊断被当前环境的 localhost 权限限制跳过: ${health.error?.cause?.code || health.error?.message}`);
 } else if (!health.ok) {
-  warnings.push(`/healthz 不可用: ${health.status || health.error?.message}。通常表示 Python 后端 127.0.0.1:8787 没启动。`);
+  warnings.push(`后端健康检查不可用: ${healthUrl} -> ${health.status || health.error?.message}。通常表示 Python 后端没启动。`);
+} else {
+  let parsed = null;
+  try {
+    parsed = JSON.parse(health.body || "{}");
+  } catch {
+    /* non-JSON body — surface as a warning below */
+  }
+  if (!parsed || parsed.ok !== true) {
+    warnings.push(`后端健康检查返回了非预期内容: ${healthUrl} -> ${health.status} ${health.body?.slice(0, 120)}`);
+  } else if (parsed.database) {
+    console.log(`后端健康: ok (database=${parsed.database})`);
+  }
 }
 
 if (failures.length) {
@@ -104,8 +169,8 @@ if (failures.length) {
     for (const item of warnings) console.error(`- ${item}`);
   }
   console.error("\n修复裸 HTML / CSS 404 的标准动作:");
-  console.error("1. 停止当前 3000 上的旧 Next 进程。");
-  console.error("2. 在 web/app 里重新执行 npm run build && npm run start。");
+  console.error(`1. 确认 BASE_URL/PORT 指向的是 Machi（当前 origin=${origin}）。`);
+  console.error("2. 停止占用该端口的旧进程，在 web/app 里重新执行 npm run build && npm run start。");
   console.error("3. 同时启动后端: cd ../.. && python3 -u web/server.py。");
   process.exit(1);
 }

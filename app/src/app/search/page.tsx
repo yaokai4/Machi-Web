@@ -4,11 +4,11 @@ import { Suspense, useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Flame, History, Hash, Search as SearchIcon, X, Trash2, TrendingUp } from "lucide-react";
+import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
+import { Flame, History, Hash, Search as SearchIcon, X, Trash2, TrendingUp, Loader2 } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
-import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
+import { EmptyState, ErrorState, InlineLoading, PostSkeleton } from "@/components/design/States";
 import { PostCard } from "@/components/feed/PostCard";
 import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
@@ -78,7 +78,16 @@ function SearchPageInner() {
     queryKey: ["search", submitted, kind],
     queryFn: () => api.search(submitted, kind),
     enabled: !!submitted,
+    // Keep the previous results on screen while a new query/tab is fetching so
+    // the page doesn't fade to a blank "is it broken?" state between keystrokes
+    // and tab switches. `isFetching` + `isPlaceholderData` drive a subtle
+    // in-place loading hint instead of a full-page swap.
+    placeholderData: keepPreviousData,
   });
+  // First-ever search for the current submit (no cached/previous data yet).
+  const searchFirstLoad = search.isLoading && !search.data;
+  // Refetching while stale results are still shown (query/tab changed).
+  const searchRefreshing = search.isFetching && search.isPlaceholderData;
 
   const history = useQuery({
     queryKey: ["search-history"],
@@ -109,6 +118,8 @@ function SearchPageInner() {
           <div className="kx-glass-capsule flex h-12 flex-1 items-center gap-2.5 px-3.5">
             <SearchIcon className="h-5 w-5 shrink-0 text-kx-accent" />
             <input
+              type="search"
+              aria-label={t("nav_search")}
               className="min-w-0 flex-1 bg-transparent text-[16px] font-semibold text-kx-text placeholder:text-kx-muted focus:outline-none"
               placeholder={t("search_placeholder")}
               value={query}
@@ -141,12 +152,28 @@ function SearchPageInner() {
             />
           </div>
 
-          {search.isError ? (
+          {search.isError && !search.data ? (
             <ErrorState onRetry={() => search.refetch()} />
+          ) : searchFirstLoad ? (
+            <div className="px-3 sm:px-4 py-3 space-y-3" aria-busy="true" aria-live="polite">
+              <span className="sr-only">{t("search_searching")}</span>
+              <PostSkeleton />
+              <PostSkeleton />
+              <PostSkeleton />
+            </div>
           ) : !search.data ? (
             <InlineLoading />
           ) : (
-            <div className="px-3 sm:px-4 py-3 space-y-3">
+            <div
+              className={`px-3 sm:px-4 py-3 space-y-3 transition-opacity ${searchRefreshing ? "opacity-60" : "opacity-100"}`}
+              aria-busy={searchRefreshing}
+              aria-live="polite"
+            >
+              {searchRefreshing ? (
+                <div className="flex items-center justify-center gap-2 py-1 text-xs font-semibold text-kx-muted" role="status">
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("search_searching")}
+                </div>
+              ) : null}
               {(kind === "all" || kind === "user") && search.data!.users.length > 0 ? (
                 <section className="kx-card p-0 overflow-hidden">
                   <h3 className="kx-section-title px-4 pt-3">{t("search_users")}</h3>

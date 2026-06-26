@@ -99,6 +99,7 @@ body {
   font-family: var(--kx-font, "Inter"), Inter, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", "Noto Sans SC", "Noto Sans JP", "PingFang SC", "Hiragino Sans", sans-serif;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
@@ -156,6 +157,22 @@ body::before {
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* Accessible, on-brand keyboard focus ring. Only shows for keyboard/AT focus
+   (`:focus-visible`), never on mouse click, so it adds a premium, deliberate
+   feel for keyboard users without cluttering pointer interaction. `:where()`
+   keeps specificity at 0 so any component can still opt into its own ring.
+   The outline follows each element's border-radius, so pills/cards stay round. */
+:where(a, button, [role="button"], [role="tab"], [role="link"], input, select, textarea, summary, [tabindex]:not([tabindex="-1"])):focus-visible {
+  outline: 2px solid rgb(var(--kx-accent));
+  outline-offset: 2px;
+  border-radius: inherit;
+}
+/* Inputs already paint their own focus ring (kx-input/kx-textarea): avoid a
+   double outline by letting their ring stand. */
+:where(input, textarea, select):focus-visible {
+  outline-offset: 1px;
 }
 
 /* Smooth per-route content transition. Applied to AppShell's content wrapper

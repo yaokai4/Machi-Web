@@ -201,6 +201,7 @@ const ZH_HANS = {
   msg_input_placeholder: "输入消息，⌘/Ctrl + Enter 发送",
   // search / explore
   search_placeholder: "搜索帖子、用户、话题",
+  search_searching: "正在搜索…",
   search_history: "搜索历史",
   search_clear: "清空",
   search_empty_title: "没有找到相关结果",
@@ -625,6 +626,7 @@ const EN: Partial<Dict> = {
   msg_start_chat: "Be the first to say something.",
   msg_input_placeholder: "Message, ⌘/Ctrl + Enter to send",
   search_placeholder: "Search posts, users, topics",
+  search_searching: "Searching…",
   search_history: "Recent searches",
   search_clear: "Clear",
   search_empty_title: "No results",
@@ -889,6 +891,7 @@ const JA: Partial<Dict> = {
   composer_draft_saved: "下書きを保存しました",
   composer_drop_to_upload: "画像または動画をドロップしてアップロード",
   search_placeholder: "投稿・ユーザー・トピックを検索",
+  search_searching: "検索中…",
   search_history: "検索履歴",
   search_clear: "クリア",
   search_empty_title: "該当する結果がありません",
