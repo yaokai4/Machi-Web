@@ -60,7 +60,6 @@ const NAV_ITEMS = [
   { href: "/home", labelKey: "nav_home" as I18nKey, icon: Home, key: "home", badgeKey: undefined as undefined | "notifications" | "messages" },
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
   { href: "/guide", labelKey: "nav_guide" as I18nKey, icon: GraduationCap, key: "guide", badgeKey: undefined },
-  { href: "/membership", labelKey: "mem_title" as I18nKey, icon: BadgeCheck, key: "membership", badgeKey: undefined },
   { href: "/wallet", labelKey: "nav_wallet" as I18nKey, icon: Wallet, key: "wallet", badgeKey: undefined },
   { href: "/guide/my-library", labelKey: "nav_library" as I18nKey, icon: Library, key: "library", badgeKey: undefined },
   { href: "/my/features", labelKey: "nav_workbench" as I18nKey, icon: LayoutDashboard, key: "features", badgeKey: undefined },
@@ -316,6 +315,19 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
           {appearance === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           <span className="hidden lg:inline">{appearance === "dark" ? t("settings_appearance_light") : t("settings_appearance_dark")}</span>
         </button>
+        <Link
+          href="/membership"
+          data-active={pathname?.startsWith("/membership")}
+          className={clsx(
+            "flex items-center gap-2 px-3 py-2 rounded-full text-sm transition",
+            pathname?.startsWith("/membership")
+              ? "font-semibold text-kx-accent bg-kx-accentSoft"
+              : "font-medium text-kx-subtle hover:text-kx-accent hover:bg-kx-soft",
+          )}
+        >
+          <BadgeCheck className="w-4 h-4" />
+          <span className="hidden lg:inline">{t("mem_title")}</span>
+        </Link>
         {user ? (
           <div
             className={clsx(
