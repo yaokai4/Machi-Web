@@ -155,6 +155,8 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
 
         {/* Content first: a first-time or guest user immediately sees what
             Guide is *for* before the personal action surface below. */}
+        {/* The two content blocks stay together — 六大指南 and 学校公司资料库 are
+            one "what can I do here" cluster; the personal action surface follows. */}
         <section>
           <SectionHeading
             title="六大指南与资料"
@@ -166,6 +168,20 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
             ))}
           </div>
         </section>
+
+        {(home.data.resourceEntries || []).length ? (
+          <section>
+            <SectionHeading
+              title="学校与公司资料库"
+              subtitle="查询大学、大学院、专门学校、语言学校，以及适合外国人就职的日本公司。"
+            />
+            <div className="grid gap-3 md:grid-cols-2">
+              {(home.data.resourceEntries || []).map((entry) => (
+                <ResourceEntryCard key={entry.key} entry={entry} />
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <section className="grid gap-4 border-t border-kx-stroke/35 pt-8 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
           <TodayFocusSection todos={focusTodos} sampleMode={sampleMode} />
@@ -179,20 +195,6 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
           <section>
             <SectionHeading title="进行中目标" subtitle="继续推进；完成后会自动从这里消失。" href="/guide/tasks" />
             <ActiveGoals data={activePlan.data} />
-          </section>
-        ) : null}
-
-        {(home.data.resourceEntries || []).length ? (
-          <section>
-            <SectionHeading
-              title="学校与公司资料库"
-              subtitle="查询大学、大学院、专门学校、语言学校，以及适合外国人就职的日本公司。"
-            />
-            <div className="grid gap-3 md:grid-cols-2">
-              {(home.data.resourceEntries || []).map((entry) => (
-                <ResourceEntryCard key={entry.key} entry={entry} />
-              ))}
-            </div>
           </section>
         ) : null}
       </main>
