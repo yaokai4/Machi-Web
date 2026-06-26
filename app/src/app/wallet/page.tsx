@@ -10,7 +10,7 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, Coins, Loader2, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Coins, Loader2, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
@@ -31,6 +31,11 @@ export default function WalletPage() {
   const queryClient = useQueryClient();
   const [buying, setBuying] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  // Prominent on-page receipt shown after returning from Stripe Checkout, so a
+  // successful top-up has a clear success screen (not just a transient toast).
+  const [topupReceipt, setTopupReceipt] = useState<
+    { status: "checking" | "success" | "pending" | "error"; points?: number; orderNo?: string } | null
+  >(null);
 
   const walletQuery = useQuery({
     queryKey: ["wallet-me", user?.id],
@@ -59,22 +64,31 @@ export default function WalletPage() {
       window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
     };
     setConfirming(true);
+    setTopupReceipt({ status: "checking" });
     api
       .walletTopupStripeConfirm(session)
       .then(async (res) => {
         await refresh();
         if (res.status === "fulfilled") {
-          pushToast({ kind: "success", message: `已到账 ${res.grantedPoints ?? 0} 币` });
+          const granted = res.grantedPoints ?? 0;
+          pushToast({ kind: "success", message: `已到账 ${granted} 币` });
           // Round-trip back to the product the topup was started from.
           if (returnTo) {
+            setTopupReceipt(null);
             clearParams();
             router.replace(returnTo);
             return;
           }
+          setTopupReceipt({ status: "success", points: granted, orderNo: res.orderNo });
+        } else {
+          // Paid but not yet credited (webhook in flight) — tell the user it's
+          // processing rather than leaving them unsure.
+          setTopupReceipt({ status: "pending", orderNo: res.orderNo });
         }
       })
       .catch(() => {
-        /* non-fatal; webhook will settle */
+        // Non-fatal; the webhook will still settle. Surface a soft status.
+        setTopupReceipt({ status: "pending" });
       })
       .finally(() => {
         setConfirming(false);
@@ -128,6 +142,10 @@ export default function WalletPage() {
           <Coins className="h-6 w-6 text-kx-accent" />
           <h1 className="text-xl font-semibold text-kx-text">Machi 币钱包</h1>
         </header>
+
+        {topupReceipt ? (
+          <WalletReturnReceipt receipt={topupReceipt} onDismiss={() => setTopupReceipt(null)} />
+        ) : null}
 
         {!user ? (
           <section className="kx-card text-center space-y-3">
@@ -274,4 +292,61 @@ function ledgerLabel(entryType: string): string {
     default:
       return entryType;
   }
+}
+
+// Post-checkout success/processing receipt for Machi 币 top-ups. Uses kx-* tokens
+// only (dark-mode safe) and mirrors the membership receipt so the two payment
+// flows feel consistent. Shown on return from Stripe Checkout.
+function WalletReturnReceipt({
+  receipt,
+  onDismiss,
+}: {
+  receipt: { status: "checking" | "success" | "pending" | "error"; points?: number; orderNo?: string };
+  onDismiss: () => void;
+}) {
+  const isChecking = receipt.status === "checking";
+  const isSuccess = receipt.status === "success";
+  const title = isChecking
+    ? "正在确认充值…"
+    : isSuccess
+      ? "充值成功"
+      : receipt.status === "pending"
+        ? "支付已收到，到账处理中"
+        : "确认失败";
+  const subtitle = isChecking
+    ? "正在和支付服务核对你的订单，请稍候。"
+    : isSuccess
+      ? `Machi 币已到账，可立即用于购买资料与服务。`
+      : receipt.status === "pending"
+        ? "支付已完成，点数会在稍后自动到账，无需重复支付。"
+        : "暂时无法确认这笔充值，如果已扣款，点数会在稍后自动到账。";
+  return (
+    <section className="kx-card border-kx-accent/20 bg-kx-accentSoft/45">
+      <div className="flex items-start gap-3">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-kx-card text-kx-accent shadow-sm">
+          {isChecking ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle2 className="h-5 w-5" />}
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-start justify-between gap-2">
+            <h2 className="font-black text-kx-text">{title}</h2>
+            {!isChecking ? (
+              <button type="button" onClick={onDismiss} className="text-xs font-bold text-kx-muted hover:text-kx-text">
+                关闭
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-1 text-sm text-kx-subtle">{subtitle}</p>
+          {isSuccess && typeof receipt.points === "number" ? (
+            <div className="mt-3 inline-flex items-center gap-2 rounded-kx-md bg-kx-card/70 px-3 py-2">
+              <Coins className="h-4 w-4 text-kx-accent" />
+              <span className="font-black text-kx-text">+{receipt.points.toLocaleString()} 币</span>
+            </div>
+          ) : null}
+          {receipt.orderNo ? (
+            <div className="mt-2 text-xs text-kx-muted">订单号：<span className="break-all font-bold text-kx-subtle">{receipt.orderNo}</span></div>
+          ) : null}
+        </div>
+      </div>
+    </section>
+  );
 }

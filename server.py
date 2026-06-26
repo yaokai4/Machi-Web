@@ -716,7 +716,12 @@ STRIPE_CANCEL_URL = _env("STRIPE_CANCEL_URL", "https://machicity.com/membership"
 # in production.
 PAYMENT_MOCK_ENABLED = (_env("PAYMENT_MOCK_ENABLED", "0") == "1") and not PRODUCTION
 # How long an unpaid order stays payable.
-PAYMENT_ORDER_TTL_SEC = int(_env("PAYMENT_ORDER_TTL_SEC", "900"))
+# Unpaid orders are auto-closed after this window so they don't linger in the
+# user's order list. 20 min by default (long enough to finish a Stripe Checkout,
+# short enough that an abandoned cart clears quickly). A genuine payment that
+# lands after the order is closed still settles — see mark_order_paid /
+# settle_topup, which tolerate the 'closed' state (real money always wins).
+PAYMENT_ORDER_TTL_SEC = int(_env("PAYMENT_ORDER_TTL_SEC", "1200"))
 
 
 # ---------------------------------------------------------------------------
@@ -13128,13 +13133,17 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
         raise APIError("支付金额与订单不一致", 400, "amount_mismatch")
     if order["status"] == "paid":
         return order  # idempotent
-    if order["status"] != "pending":
+    # 'closed' = auto-expired-but-unpaid (the 20-min janitor). A genuine payment
+    # can still arrive after that (the Stripe session outlives our order TTL), so
+    # accept closed→paid too — real money always wins. Only truly terminal states
+    # (refunded, etc.) are rejected.
+    if order["status"] not in ("pending", "closed"):
         raise APIError("订单状态不允许支付", 409, "order_not_payable")
     cur = conn.execute(
         "UPDATE payment_orders SET status = 'paid', provider_trade_no = ?, provider_user_id = ?, "
         "provider_subscription_id = COALESCE(NULLIF(?, ''), provider_subscription_id), "
         "provider_price_id = COALESCE(NULLIF(?, ''), provider_price_id), paid_at = ?, updated_at = ? "
-        "WHERE order_no = ? AND status = 'pending'",
+        "WHERE order_no = ? AND status IN ('pending', 'closed')",
         (provider_trade_no or "", provider_user_id or "", provider_subscription_id or "",
          provider_price_id or "", now_iso(), now_iso(), order_no),
     )
@@ -13559,7 +13568,9 @@ def wallet_credit_topup(conn: sqlite3.Connection, order_no: str, *, provider_tra
         return {"applied": False, "duplicate": True, "order": serialize_wallet_topup_order(order),
                 "wallet": get_wallet_snapshot(conn, order["user_id"]),
                 "grantedPoints": int(order["total_points"] or 0)}
-    if order["status"] != "pending":
+    # 'closed' = auto-expired-but-unpaid (20-min janitor). A real top-up payment
+    # that lands afterwards must still credit, so accept closed→paid as well.
+    if order["status"] not in ("pending", "closed"):
         return {"applied": False, "duplicate": False, "reason": "order_not_payable",
                 "order": serialize_wallet_topup_order(order),
                 "wallet": get_wallet_snapshot(conn, order["user_id"])}
@@ -13568,7 +13579,7 @@ def wallet_credit_topup(conn: sqlite3.Connection, order_no: str, *, provider_tra
         "UPDATE wallet_topup_orders SET status = 'paid', "
         "provider_trade_no = COALESCE(NULLIF(?, ''), provider_trade_no), "
         "provider_user_id = COALESCE(NULLIF(?, ''), provider_user_id), "
-        "paid_at = ?, fulfilled_at = ?, updated_at = ? WHERE order_no = ? AND status = 'pending'",
+        "paid_at = ?, fulfilled_at = ?, updated_at = ? WHERE order_no = ? AND status IN ('pending', 'closed')",
         (provider_trade_no or "", provider_user_id or "", now, now, now, order_no),
     )
     if cur.rowcount != 1:
@@ -15316,9 +15327,44 @@ KAIX_JANITOR_INTERVAL_SEC = max(300, int(_env("KAIX_JANITOR_INTERVAL_SEC", str(6
 _JANITOR_STARTED = False
 
 
+def close_expired_unpaid_orders(conn: sqlite3.Connection) -> int:
+    """Auto-close abandoned unpaid orders across all three order tables so they
+    don't linger in a user's order list. A genuine payment that arrives after an
+    order is closed still settles (mark_order_paid / settle_topup tolerate the
+    closed state; settle_guide_order ignores non-terminal states) — real money
+    always wins. Returns the number of orders closed."""
+    now = now_iso()
+    created_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=PAYMENT_ORDER_TTL_SEC)).isoformat()
+    closed = 0
+    # Membership orders carry an explicit expires_at (mirror the existing lazy
+    # close in api_order_status, just done proactively here).
+    cur = conn.execute(
+        "UPDATE payment_orders SET status = 'closed', closed_at = ?, updated_at = ? "
+        "WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at <> '' AND expires_at < ?",
+        (now, now, now),
+    )
+    closed += cur.rowcount or 0
+    # Wallet top-up orders have no expires_at column — fall back to created_at + TTL.
+    cur = conn.execute(
+        "UPDATE wallet_topup_orders SET status = 'closed', updated_at = ? "
+        "WHERE status = 'pending' AND created_at < ?",
+        (now, created_cutoff),
+    )
+    closed += cur.rowcount or 0
+    # Guide product orders: reuse the existing cancelled state + cancelled_at
+    # column (guide_orders has no updated_at column).
+    cur = conn.execute(
+        "UPDATE guide_orders SET status = 'cancelled', cancelled_at = ? "
+        "WHERE status = 'pending' AND created_at < ?",
+        (now, created_cutoff),
+    )
+    closed += cur.rowcount or 0
+    return closed
+
+
 def run_retention_sweep() -> dict[str, int]:
     """One pass of the retention sweeps. Returns per-table delete counts."""
-    counts = {"visitor_logs": 0, "sessions": 0, "idempotency_keys": 0}
+    counts = {"visitor_logs": 0, "sessions": 0, "idempotency_keys": 0, "expired_orders": 0}
     with DB_LOCK:
         conn = db()
         try:
@@ -15331,6 +15377,7 @@ def run_retention_sweep() -> dict[str, int]:
                 (idem_cutoff,),
             )
             counts["idempotency_keys"] = cur.rowcount if cur.rowcount is not None else 0
+            counts["expired_orders"] = close_expired_unpaid_orders(conn)
         finally:
             conn.close()
     return counts
@@ -15351,8 +15398,9 @@ def start_retention_janitor() -> None:
                 counts = run_retention_sweep()
                 if any(counts.values()):
                     ACCESS_LOG.info(
-                        "retention sweep: visitor_logs=%d sessions=%d idempotency_keys=%d",
+                        "retention sweep: visitor_logs=%d sessions=%d idempotency_keys=%d expired_orders=%d",
                         counts["visitor_logs"], counts["sessions"], counts["idempotency_keys"],
+                        counts.get("expired_orders", 0),
                     )
             except Exception:
                 ERR_LOG.exception("retention sweep failed")
@@ -15936,7 +15984,16 @@ class Handler(BaseHTTPRequestHandler):
             "Path=/",
             f"Max-Age={SESSION_TTL_DAYS * 86400}",
             "HttpOnly",
-            "SameSite=Strict",
+            # Lax, not Strict. With Strict the cookie is withheld on the
+            # cross-site top-level navigation BACK from an external payment
+            # provider (Stripe Checkout). That made returning from Stripe —
+            # whether via the browser back button OR the success_url redirect —
+            # land logged-out: the session probe 401'd and bounced to /login,
+            # and the success-confirm never ran (so the order stayed pending and
+            # no receipt showed). Lax still blocks cookies on cross-site POST /
+            # subresource requests (the CSRF surface) but allows them on the
+            # top-level GET navigation that returns the user to Machi.
+            "SameSite=Lax",
         ]
         if PRODUCTION:
             attributes.append("Secure")
@@ -15948,7 +16005,7 @@ class Handler(BaseHTTPRequestHandler):
             "Path=/",
             "Max-Age=0",
             "HttpOnly",
-            "SameSite=Strict",
+            "SameSite=Lax",
         ]
         if PRODUCTION:
             attributes.append("Secure")
@@ -19799,7 +19856,7 @@ class Handler(BaseHTTPRequestHandler):
         for r in conn.execute(
             "SELECT o.*, p.title AS product_title, p.slug AS product_slug "
             "FROM guide_orders o LEFT JOIN guide_products p ON p.id = o.product_id "
-            "WHERE o.user_id = ? ORDER BY o.created_at DESC LIMIT 100", (uid,)):
+            "WHERE o.user_id = ? AND o.status <> 'cancelled' ORDER BY o.created_at DESC LIMIT 100", (uid,)):
             d = dict(r)
             orders.append({
                 "kind": "purchase", "orderNo": d.get("order_no") or "",
@@ -19810,7 +19867,7 @@ class Handler(BaseHTTPRequestHandler):
                 "pricePoints": int(d.get("price_points") or 0), "createdAt": d.get("created_at") or "",
             })
         for r in conn.execute(
-            "SELECT * FROM wallet_topup_orders WHERE user_id = ? ORDER BY created_at DESC LIMIT 100", (uid,)):
+            "SELECT * FROM wallet_topup_orders WHERE user_id = ? AND status <> 'closed' ORDER BY created_at DESC LIMIT 100", (uid,)):
             d = dict(r)
             orders.append({
                 "kind": "topup", "orderNo": d.get("order_no") or "",
@@ -24248,8 +24305,10 @@ class Handler(BaseHTTPRequestHandler):
     def api_membership_orders(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         user = self.require_user(conn)
         limit = max(1, min(int(query.get("limit") or 30), 100))
+        # Hide auto-closed abandoned orders — the user asked that unpaid orders
+        # not linger. Pending (still completable), paid, and refunded stay.
         rows = conn.execute(
-            "SELECT * FROM payment_orders WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+            "SELECT * FROM payment_orders WHERE user_id = ? AND status <> 'closed' ORDER BY created_at DESC LIMIT ?",
             (user["id"], limit),
         ).fetchall()
         self.send_json({"items": [serialize_order(dict(r)) for r in rows]})

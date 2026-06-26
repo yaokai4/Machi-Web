@@ -56,7 +56,14 @@ class AuthCookieTests(unittest.TestCase):
         cookie = value._pending_session_cookie
         self.assertIn("machi_session=abc", cookie)
         self.assertIn("HttpOnly", cookie)
-        self.assertIn("SameSite=Strict", cookie)
+        # SameSite=Lax (not Strict): Strict dropped the cookie on the cross-site
+        # return from Stripe Checkout, logging the user out / hiding the success
+        # receipt. Lax still withholds the cookie on cross-site POST/subresource
+        # requests (the CSRF surface) but sends it on the top-level GET return,
+        # which is what we need. Must NOT be SameSite=None.
+        self.assertIn("SameSite=Lax", cookie)
+        self.assertNotIn("SameSite=None", cookie)
+        self.assertNotIn("SameSite=Strict", cookie)
         self.assertIn("Secure", cookie)
         self.assertIn("Path=/", cookie)
 
