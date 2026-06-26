@@ -7,6 +7,7 @@ import {
   FileArchive,
   IdCard,
   PackageCheck,
+  Route,
   ShieldCheck,
   Wallet,
   WalletCards,
@@ -15,6 +16,14 @@ import { GuideShell } from "@/components/guide/GuideKit";
 import { useAuthPrompt, useSession } from "@/lib/store";
 
 const MANAGE_GROUPS = [
+  {
+    id: "goals",
+    href: "/guide/goals",
+    title: "目标 / 路径",
+    body: "可选模板：就职、升学、JLPT、租房等。套用后会生成一组可删的待办，想要才用。",
+    icon: Route,
+    tone: "bg-blue-500/10 text-blue-600",
+  },
   {
     id: "finance",
     href: "/guide/finance",

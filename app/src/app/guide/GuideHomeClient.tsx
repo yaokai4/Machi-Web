@@ -9,19 +9,14 @@ import {
   CalendarClock,
   CalendarDays,
   ClipboardCheck,
-  FilePlus2,
   FolderKanban,
   IdCard,
-  ListChecks,
-  Plus,
   Receipt,
-  Route,
   Sparkles,
   Wallet,
-  WalletCards,
   type LucideIcon,
 } from "lucide-react";
-import { guide, type GuideActivePlanResponse, type GuideDigest, type GuideHomeResponse, type GuideJourney, type GuideTodo } from "@/lib/guide";
+import { guide, type GuideActivePlanResponse, type GuideDigest, type GuideHomeResponse, type GuideTodo } from "@/lib/guide";
 import {
   CategoryCard,
   GuideShell,
@@ -34,27 +29,13 @@ import { ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 
-type QuickAction = {
-  href: string;
-  title: string;
-  body: string;
-  icon: LucideIcon;
-  tone: string;
-};
-
-const QUICK_ACTIONS: QuickAction[] = [
-  { href: "#quick-todo", title: "新建待办", body: "直接输入一句话", icon: Plus, tone: "text-kx-accent bg-kx-accentSoft" },
-  { href: "/guide/calendar", title: "新建日程", body: "安排日期和提醒", icon: CalendarDays, tone: "text-indigo-600 bg-indigo-500/10" },
-  { href: "/guide/manage#life", title: "添加缴费/合同", body: "房租、水电、合约", icon: WalletCards, tone: "text-orange-600 bg-orange-500/10" },
-  { href: "/guide/manage#applications", title: "添加申请", body: "学校、ES、面试", icon: FilePlus2, tone: "text-rose-600 bg-rose-500/10" },
-];
-
+// Just the distinct destinations. 待办 is reached via the header's
+// "查看全部待办" button (one entry), and 路径 is now an optional template inside
+// 管理 — so the nav no longer duplicates those.
 const MODULES = [
   { href: "/guide", label: "今日", icon: ClipboardCheck, active: true },
   { href: "/guide/calendar", label: "日历", icon: CalendarDays },
-  { href: "/guide/tasks", label: "待办", icon: ListChecks },
   { href: "/guide/manage", label: "管理", icon: FolderKanban },
-  { href: "/guide/goals", label: "路径", icon: Route },
 ];
 
 const SUPPORT_CATEGORY_KEYS = [
@@ -95,10 +76,6 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
     retry: false,
   });
 
-  const sortedJourneys = useMemo(
-    () => orderJourneys(home.data?.journeys || [], activePlan.data),
-    [home.data?.journeys, activePlan.data],
-  );
   const supportCategories = useMemo(() => {
     const categories = (home.data?.categories || []).filter((category) => !category.parentKey);
     return SUPPORT_CATEGORY_KEYS
@@ -134,6 +111,10 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
   const upcomingTodos = activePlan.data?.upcomingTodos || activePlan.data?.openTodos || [];
   const focusTodos = pickTodayFocus(todayTodos, activePlan.data?.openTodos || []);
   const sampleMode = !user;
+  // Only surface the goal card for a genuinely in-progress plan (<100%); a
+  // finished or absent plan no longer occupies the home — that was the stale
+  // "刚到日本 7 天 100%" card.
+  const inProgressPlan = Boolean(activePlan.data?.plan && (activePlan.data.plan.progressPercent ?? 0) < 100);
 
   return (
     <GuideShell>
@@ -147,7 +128,7 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
               <h1 className="mt-3 text-3xl font-black leading-tight tracking-[-0.02em] text-kx-text sm:text-4xl">今日</h1>
               <p className="mt-2 max-w-2xl text-sm font-semibold leading-7 text-kx-subtle">把今天最重要的事情完成。</p>
               <p className="mt-1 max-w-2xl text-xs leading-6 text-kx-muted">
-                Todo、日历、账单、合同、申请和路径都统一到一套行动系统里；资料只在你需要完成任务时出现。
+                上面是六大指南与资料；下面把今天要做的事、待办、日历和截止日放在一处。
               </p>
             </div>
             {sampleMode ? (
@@ -172,43 +153,12 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
         {!sampleMode && digest.data && !digest.data.hasSetup ? <GuideQuickSetupCard /> : null}
         {!sampleMode && digest.data && digest.data.hasSetup ? <GuideDigestCard data={digest.data} /> : null}
 
-        <section className="grid gap-4 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
-          <TodayFocusSection todos={focusTodos} sampleMode={sampleMode} />
-          <UpcomingSection todos={upcomingTodos} sampleMode={sampleMode} />
-        </section>
-
-        <section id="quick-todo" className="scroll-mt-24">
-          <SectionHeading title="快速添加" subtitle="3 次点击以内新增待办、日程、缴费/合同或申请。" />
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_420px]">
-            <GuideQuickAddTodo />
-            <div className="grid grid-cols-2 gap-3">
-              {QUICK_ACTIONS.map((action) => {
-                const Icon = action.icon;
-                return (
-                  <Link key={action.title} href={action.href} className="kx-card group flex min-h-[112px] flex-col justify-between p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/35">
-                    <span className={`grid h-10 w-10 place-items-center rounded-2xl ${action.tone}`}>
-                      <Icon className="h-5 w-5" />
-                    </span>
-                    <span>
-                      <span className="block text-sm font-black text-kx-text group-hover:text-kx-accent">{action.title}</span>
-                      <span className="mt-0.5 block text-xs leading-5 text-kx-muted">{action.body}</span>
-                    </span>
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        </section>
-
+        {/* Content first: a first-time or guest user immediately sees what
+            Guide is *for* before the personal action surface below. */}
         <section>
-          <SectionHeading title="我的进行中目标" subtitle="路径只保留为目标系统；真正推进靠 Todo 和日历。" href="/guide/goals" />
-          <ActiveGoals data={activePlan.data} journeys={sortedJourneys} sampleMode={sampleMode} />
-        </section>
-
-        <section className="border-t border-kx-stroke/35 pt-8">
           <SectionHeading
             title="六大指南与资料"
-            subtitle="上面推进 Todo、日历和截止日；需要查方法、学校、就职信息或购买服务时，从这里进入。"
+            subtitle="查方法、学校、就职信息，或购买资料与服务，从这里进入。"
           />
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
             {supportCategories.map((category) => (
@@ -216,6 +166,21 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
             ))}
           </div>
         </section>
+
+        <section className="grid gap-4 border-t border-kx-stroke/35 pt-8 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
+          <TodayFocusSection todos={focusTodos} sampleMode={sampleMode} />
+          <UpcomingSection todos={upcomingTodos} sampleMode={sampleMode} />
+        </section>
+
+        {/* The single place to add a task; the full list is the header button. */}
+        <GuideQuickAddTodo />
+
+        {inProgressPlan ? (
+          <section>
+            <SectionHeading title="进行中目标" subtitle="继续推进；完成后会自动从这里消失。" href="/guide/tasks" />
+            <ActiveGoals data={activePlan.data} />
+          </section>
+        ) : null}
 
         {(home.data.resourceEntries || []).length ? (
           <section>
@@ -237,7 +202,7 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
 
 function GuideModuleNav() {
   return (
-    <nav className="mt-5 grid grid-cols-5 gap-1 rounded-2xl border border-kx-stroke/45 bg-kx-soft/60 p-1" aria-label="Guide modules">
+    <nav className="mt-5 grid grid-cols-3 gap-1 rounded-2xl border border-kx-stroke/45 bg-kx-soft/60 p-1" aria-label="Guide modules">
       {MODULES.map((item) => {
         const Icon = item.icon;
         return (
@@ -301,69 +266,36 @@ function UpcomingSection({ todos, sampleMode }: { todos: GuideTodo[]; sampleMode
   );
 }
 
-function ActiveGoals({
-  data,
-  journeys,
-  sampleMode,
-}: {
-  data?: GuideActivePlanResponse;
-  journeys: GuideJourney[];
-  sampleMode: boolean;
-}) {
+// Shown only when the parent has a genuinely in-progress plan (<100%). One
+// "继续这个目标" link to the task list + a calendar shortcut — no duplicated
+// 进入待办 button, and finished plans never reach here.
+function ActiveGoals({ data }: { data?: GuideActivePlanResponse }) {
   const activePlan = data?.plan;
-  const cards = journeys.slice(0, 3);
-  if (sampleMode) {
-    return (
-      <div className="grid gap-3 md:grid-cols-3">
-        {["JLPT N1", "2027 新卒就职", "在留资格更新"].map((title) => (
-          <Link key={title} href="/guide/goals" className="kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/35">
-            <p className="text-sm font-black text-kx-text">{title}</p>
-            <p className="mt-1 text-xs leading-5 text-kx-muted">登录后生成关键任务、截止日期和提醒。</p>
-          </Link>
-        ))}
-      </div>
-    );
-  }
-  if (activePlan) {
-    return (
-      <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
-        <Link href="/guide/tasks" className="kx-card p-5 transition hover:-translate-y-0.5 hover:border-kx-accent/35">
-          <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">进行中</p>
-          <h3 className="mt-2 text-xl font-black text-kx-text">{activePlan.title}</h3>
-          <p className="mt-1 text-sm leading-6 text-kx-muted">{activePlan.subtitle || "把关键事项按日期一步步完成。"}</p>
-          <div className="mt-4">
-            <div className="mb-1 flex items-center justify-between text-xs font-bold">
-              <span className="text-kx-accent">已完成 {activePlan.todoDone ?? 0}/{activePlan.todoTotal ?? 0}</span>
-              <span className="text-kx-muted">{activePlan.progressPercent}%</span>
-            </div>
-            <div className="h-2 overflow-hidden rounded-full bg-kx-soft">
-              <div className="h-full rounded-full bg-kx-accent" style={{ width: `${activePlan.progressPercent}%` }} />
-            </div>
+  if (!activePlan) return null;
+  return (
+    <div className="grid gap-3 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,0.8fr)]">
+      <Link href="/guide/tasks" className="kx-card p-5 transition hover:-translate-y-0.5 hover:border-kx-accent/35">
+        <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">进行中</p>
+        <h3 className="mt-2 text-xl font-black text-kx-text">{activePlan.title}</h3>
+        <p className="mt-1 text-sm leading-6 text-kx-muted">{activePlan.subtitle || "把关键事项按日期一步步完成。"}</p>
+        <div className="mt-4">
+          <div className="mb-1 flex items-center justify-between text-xs font-bold">
+            <span className="text-kx-accent">已完成 {activePlan.todoDone ?? 0}/{activePlan.todoTotal ?? 0}</span>
+            <span className="text-kx-muted">{activePlan.progressPercent}%</span>
           </div>
-        </Link>
-        <div className="kx-card p-5">
-          <p className="text-xs font-bold text-kx-muted">下一步</p>
-          <p className="mt-1 text-base font-black text-kx-text">{activePlan.nextTodo?.title || "所有任务都完成了"}</p>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Link href="/guide/tasks" className="kx-button-primary h-10 px-4 text-sm">进入待办</Link>
-            <Link href="/guide/calendar" className="kx-button-secondary h-10 px-4 text-sm">看日历</Link>
+          <div className="h-2 overflow-hidden rounded-full bg-kx-soft">
+            <div className="h-full rounded-full bg-kx-accent" style={{ width: `${activePlan.progressPercent}%` }} />
           </div>
         </div>
+      </Link>
+      <div className="kx-card p-5">
+        <p className="text-xs font-bold text-kx-muted">下一步</p>
+        <p className="mt-1 text-base font-black text-kx-text">{activePlan.nextTodo?.title || "继续推进下一步"}</p>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Link href="/guide/tasks" className="kx-button-primary h-10 px-4 text-sm">继续这个目标</Link>
+          <Link href="/guide/calendar" className="kx-button-secondary h-10 px-4 text-sm">看日历</Link>
+        </div>
       </div>
-    );
-  }
-  if (!cards.length) {
-    return <EmptyPanel title="还没有目标模板" body="你仍然可以先添加 Todo、日程、缴费或申请。" />;
-  }
-  return (
-    <div className="grid gap-3 md:grid-cols-3">
-      {cards.map((j, index) => (
-        <Link key={j.key} href={`/guide/goals/${encodeURIComponent(j.key)}`} className="kx-card p-4 transition hover:-translate-y-0.5 hover:border-kx-accent/35">
-          <span className="rounded-full bg-kx-accentSoft px-2 py-1 text-[11px] font-black text-kx-accent">{index === 0 ? "推荐目标" : `${j.stepCount || 0} 步`}</span>
-          <h3 className="mt-3 text-base font-black text-kx-text">{j.title}</h3>
-          <p className="mt-1 line-clamp-2 text-xs leading-5 text-kx-muted">{j.subtitle}</p>
-        </Link>
-      ))}
     </div>
   );
 }
@@ -412,7 +344,7 @@ function TodaySkeleton() {
         <div className="h-3 w-32 animate-pulse rounded-full bg-kx-soft" />
         <div className="mt-4 h-9 w-40 animate-pulse rounded-full bg-kx-soft" />
         <div className="mt-3 h-4 w-full max-w-xl animate-pulse rounded-full bg-kx-soft" />
-        <div className="mt-5 grid grid-cols-5 gap-1 rounded-2xl bg-kx-soft/60 p-1">
+        <div className="mt-5 grid grid-cols-3 gap-1 rounded-2xl bg-kx-soft/60 p-1">
           {MODULES.map((m) => <div key={m.href} className="h-11 animate-pulse rounded-xl bg-kx-card/70" />)}
         </div>
       </div>
@@ -442,15 +374,6 @@ function sortByUrgency(todos: GuideTodo[]) {
       if (a.priority !== b.priority) return a.priority === "high" ? -1 : b.priority === "high" ? 1 : 0;
       return ad.localeCompare(bd);
     });
-}
-
-function orderJourneys(journeys: GuideJourney[], data?: GuideActivePlanResponse) {
-  const order = data?.suggestedJourneys?.map((s) => s.key) ?? [];
-  return [...journeys].sort((a, b) => {
-    const ia = order.indexOf(a.key);
-    const ib = order.indexOf(b.key);
-    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib);
-  });
 }
 
 function isoDate(d: Date) {

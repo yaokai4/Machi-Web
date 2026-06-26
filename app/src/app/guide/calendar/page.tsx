@@ -55,7 +55,15 @@ const VIEW_LABELS: Record<CalView, string> = { month: "月", week: "周", agenda
 function CalendarBody({ todos, events, loading, error, onRetry }: { todos: GuideTodo[]; events: GuideCalendarItem[]; loading: boolean; error: boolean; onRetry: () => void }) {
   const [view, setView] = useState<CalView>("month");
   const [scope, setScope] = useState<CalScope>("all");
-  const visibleTodos = useMemo(() => filterCalendarTodos(todos, scope), [todos, scope]);
+  // Auto-generated journey-template steps (todoType === "guide_step") used to
+  // flood the calendar with items the user never typed. Hidden by default.
+  const [showJourneySteps, setShowJourneySteps] = useState(false);
+  const hasJourneySteps = useMemo(() => todos.some((t) => t.todoType === "guide_step"), [todos]);
+  const baseTodos = useMemo(
+    () => (showJourneySteps ? todos : todos.filter((t) => t.todoType !== "guide_step")),
+    [todos, showJourneySteps],
+  );
+  const visibleTodos = useMemo(() => filterCalendarTodos(baseTodos, scope), [baseTodos, scope]);
   const visibleEvents = useMemo(() => filterCalendarEvents(events, scope), [events, scope]);
   return (
     <GuideShell back={{ href: "/guide", label: "今日" }}>
@@ -99,6 +107,16 @@ function CalendarBody({ todos, events, loading, error, onRetry }: { todos: Guide
             </button>
           ))}
         </div>
+
+        {hasJourneySteps ? (
+          <button
+            type="button"
+            onClick={() => setShowJourneySteps((v) => !v)}
+            className="inline-flex min-h-11 items-center gap-2 self-start rounded-full bg-kx-soft px-4 text-xs font-bold text-kx-muted transition hover:text-kx-accent"
+          >
+            {showJourneySteps ? "正在显示路径自动生成的步骤 · 点击隐藏" : "已隐藏路径自动生成的步骤 · 点击显示"}
+          </button>
+        ) : null}
 
         <div className="lg:hidden">
           <GuideQuickAddTodo defaultDate={isoDate(new Date())} />
