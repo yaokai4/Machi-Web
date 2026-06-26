@@ -11,6 +11,7 @@ import {
   ClipboardCheck,
   FolderKanban,
   IdCard,
+  Library,
   Receipt,
   Sparkles,
   Wallet,
@@ -36,6 +37,7 @@ const MODULES = [
   { href: "/guide", label: "今日", icon: ClipboardCheck, active: true },
   { href: "/guide/calendar", label: "日历", icon: CalendarDays },
   { href: "/guide/manage", label: "管理", icon: FolderKanban },
+  { href: "/guide/my-library", label: "资料库", icon: Library },
 ];
 
 const SUPPORT_CATEGORY_KEYS = [
@@ -204,7 +206,7 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
 
 function GuideModuleNav() {
   return (
-    <nav className="mt-5 grid grid-cols-3 gap-1 rounded-2xl border border-kx-stroke/45 bg-kx-soft/60 p-1" aria-label="Guide modules">
+    <nav className="mt-5 grid grid-cols-4 gap-1 rounded-2xl border border-kx-stroke/45 bg-kx-soft/60 p-1" aria-label="Guide modules">
       {MODULES.map((item) => {
         const Icon = item.icon;
         return (

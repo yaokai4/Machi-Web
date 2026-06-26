@@ -23,7 +23,6 @@ import {
   Sun,
   Moon,
   Wallet,
-  Library,
   GraduationCap,
   UserPlus,
   User as UserIcon,
@@ -61,14 +60,13 @@ const NAV_ITEMS = [
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
   { href: "/guide", labelKey: "nav_guide" as I18nKey, icon: GraduationCap, key: "guide", badgeKey: undefined },
   { href: "/wallet", labelKey: "nav_wallet" as I18nKey, icon: Wallet, key: "wallet", badgeKey: undefined },
-  { href: "/guide/my-library", labelKey: "nav_library" as I18nKey, icon: Library, key: "library", badgeKey: undefined },
   { href: "/my/features", labelKey: "nav_workbench" as I18nKey, icon: LayoutDashboard, key: "features", badgeKey: undefined },
   { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
   { href: "/messages", labelKey: "nav_messages" as I18nKey, icon: Mail, key: "messages", badgeKey: "messages" as const },
   { href: "/settings", labelKey: "nav_settings" as I18nKey, icon: Settings, key: "settings", badgeKey: undefined },
 ];
 
-const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings", "features", "wallet", "library"]);
+const AUTH_REQUIRED_NAV = new Set(["notifications", "messages", "settings", "features", "wallet"]);
 
 function currentPathForRedirect(pathname: string | null) {
   return pathname || "/home";
@@ -319,10 +317,10 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
           href="/membership"
           data-active={pathname?.startsWith("/membership")}
           className={clsx(
-            "flex items-center gap-2 px-3 py-2 rounded-full text-sm transition",
+            "kx-sidebar-nav-item relative flex items-center gap-2 px-3 py-2 rounded-full text-sm transition",
             pathname?.startsWith("/membership")
-              ? "font-semibold text-kx-accent bg-kx-accentSoft"
-              : "font-medium text-kx-subtle hover:text-kx-accent hover:bg-kx-soft",
+              ? "font-semibold text-kx-accent"
+              : "font-medium text-kx-subtle hover:text-kx-accent hover:font-semibold",
           )}
         >
           <BadgeCheck className="w-4 h-4" />
@@ -332,7 +330,7 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
           <div
             className={clsx(
               "flex items-center gap-2 rounded-full p-1.5 transition",
-              pathname?.startsWith("/me") ? "bg-kx-accentSoft" : "hover:bg-kx-soft",
+              pathname === "/me" || pathname?.startsWith("/me/") ? "bg-kx-soft" : "hover:bg-kx-soft",
             )}
           >
             <Link
