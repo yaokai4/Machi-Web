@@ -155,6 +155,34 @@ CREATE TABLE IF NOT EXISTS reports (
     target_id TEXT NOT NULL,
     reason TEXT NOT NULL,
     note TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'open',
+    action TEXT NOT NULL DEFAULT '',
+    resolved_by TEXT NOT NULL DEFAULT '',
+    resolved_note TEXT NOT NULL DEFAULT '',
+    resolved_at TEXT
+);
+
+-- UGC moderation audit trail (App Store 1.2 / legal): every takedown,
+-- restore, dismissal and auto-hide is recorded with who/why so report
+-- handling is accountable instead of a fire-and-forget row delete.
+CREATE TABLE IF NOT EXISTS content_moderation_actions (
+    id TEXT PRIMARY KEY,
+    moderator_id TEXT NOT NULL DEFAULT '',
+    target_kind TEXT NOT NULL,
+    target_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '',
+    report_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+
+-- Known-bad media fingerprints (e.g. CSAM PhotoDNA-style SHA-256 hashes the
+-- operator imports). An upload whose content hash matches is rejected outright.
+CREATE TABLE IF NOT EXISTS blocked_media_hashes (
+    sha256 TEXT PRIMARY KEY,
+    reason TEXT NOT NULL DEFAULT '',
+    created_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL
 );
 
@@ -3947,6 +3975,103 @@ MIGRATIONS: list[tuple[int, str, str]] = [
            AND a.provider_trade_no = b.provider_trade_no;
         CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_orders_provider_trade
             ON payment_orders(payment_provider, provider_trade_no) WHERE provider_trade_no <> '';
+        """,
+    ),
+    # UGC moderation (App Store 1.2 / legal): give the generic `reports` table a
+    # real close-loop (status/action/resolver/audit) instead of a fire-and-forget
+    # row delete, plus a moderation audit trail and a known-bad media-hash blocklist.
+    # Postgres-scoped (production); fresh SQLite gets these from SCHEMA and existing
+    # SQLite dev DBs from ensure_moderation_schema().
+    (
+        78,
+        "ugc moderation: reports close-loop + moderation audit + blocked media hashes (postgres)",
+        """
+        -- backend: postgres
+        ALTER TABLE reports ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'open';
+        ALTER TABLE reports ADD COLUMN IF NOT EXISTS action TEXT NOT NULL DEFAULT '';
+        ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_by TEXT NOT NULL DEFAULT '';
+        ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_note TEXT NOT NULL DEFAULT '';
+        ALTER TABLE reports ADD COLUMN IF NOT EXISTS resolved_at TEXT;
+        CREATE TABLE IF NOT EXISTS content_moderation_actions (
+            id TEXT PRIMARY KEY,
+            moderator_id TEXT NOT NULL DEFAULT '',
+            target_kind TEXT NOT NULL,
+            target_id TEXT NOT NULL,
+            action TEXT NOT NULL,
+            reason TEXT NOT NULL DEFAULT '',
+            report_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS blocked_media_hashes (
+            sha256 TEXT PRIMARY KEY,
+            reason TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_content_mod_actions_target
+            ON content_moderation_actions(target_kind, target_id, created_at);
+        """,
+    ),
+    # ---- City-life OS (product upgrade) — see server_lifehub.py ----
+    (
+        79,
+        "user_life_profiles (onboarding city-life profile)",
+        """
+        CREATE TABLE IF NOT EXISTS user_life_profiles (
+            user_id TEXT PRIMARY KEY,
+            life_stage TEXT NOT NULL DEFAULT '',
+            primary_intent TEXT NOT NULL DEFAULT '',
+            secondary_intents TEXT NOT NULL DEFAULT '[]',
+            onboarding_completed_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
+    (
+        80,
+        "local_action_events (north-star: Weekly Solved Local Actions)",
+        """
+        CREATE TABLE IF NOT EXISTS local_action_events (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            target_kind TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_local_action_user ON local_action_events(user_id, created_at);
+        """,
+    ),
+    (
+        81,
+        "comments.is_accepted (Q&A best answer)",
+        """
+        ALTER TABLE comments ADD COLUMN is_accepted INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
+    # UGC-5: graduated enforcement (timed mute/suspend) + user appeals.
+    (
+        82,
+        "users mute columns + appeals queue (UGC-5)",
+        """
+        ALTER TABLE users ADD COLUMN muted_until TEXT NOT NULL DEFAULT '';
+        ALTER TABLE users ADD COLUMN mute_reason TEXT NOT NULL DEFAULT '';
+        CREATE TABLE IF NOT EXISTS appeals (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            target_kind TEXT NOT NULL DEFAULT '',
+            target_id TEXT NOT NULL DEFAULT '',
+            message TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'open',
+            resolution TEXT NOT NULL DEFAULT '',
+            handled_by TEXT NOT NULL DEFAULT '',
+            resolved_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_appeals_status ON appeals(status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_appeals_user ON appeals(user_id, created_at);
         """,
     ),
 ]

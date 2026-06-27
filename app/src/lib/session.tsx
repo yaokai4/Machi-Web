@@ -38,11 +38,19 @@ export function SessionBootstrap({ children }: { children: React.ReactNode }) {
     const probe = (attempt: number) => {
       setStatus("loading");
       api
-        .me()
-        .then((user) => {
+        .session()
+        .then(({ authenticated, user }) => {
           if (cancelled) return;
-          setUser(user);
-          void loadSettings();
+          if (authenticated && user) {
+            setUser(user);
+            void loadSettings();
+            return;
+          }
+          // Confirmed guest (or an expired/invalid token): clear any stale token
+          // and surface as unauthed. This path returns HTTP 200, so an anonymous
+          // visitor never produces a 401 in the browser console.
+          writeToken(null);
+          setUser(null);
         })
         .catch((err) => {
           if (cancelled) return;

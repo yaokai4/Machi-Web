@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, MessageCircle, Trash2, Send, Flag, Heart } from "lucide-react";
+import { ArrowLeft, MessageCircle, Trash2, Send, Flag, Heart, CheckCircle2 } from "lucide-react";
 import clsx from "clsx";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
@@ -117,6 +117,38 @@ export default function PostDetailPage() {
     }
   };
 
+  const acceptAnswer = async (c: KXComment) => {
+    if (!user) {
+      openAuthPrompt("generic");
+      return;
+    }
+    const next = !c.is_accepted;
+    // One accepted answer per question: flip this one and clear any other.
+    queryClient.setQueryData<KXComment[]>(["comments", id, sort], (old) =>
+      (old || []).map((x) => {
+        if (x.id === c.id) return { ...x, is_accepted: next };
+        if (next && x.is_accepted) return { ...x, is_accepted: false };
+        return x;
+      }),
+    );
+    try {
+      await api.acceptAnswer(c.id, next);
+      pushToast({ kind: "success", message: next ? t("answer_accepted_toast") : t("answer_unaccepted_toast") });
+    } catch (err) {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt("generic");
+        commentsQuery.refetch();
+        return;
+      }
+      pushToast({ kind: "error", message: (err as APIError).message });
+      commentsQuery.refetch();
+    }
+  };
+
+  const isQuestion = postQuery.data?.content_type === "question";
+  const isQuestionAuthor = isQuestion && !!user && user.id === postQuery.data?.author_id;
+  const resolved = isQuestion && (commentsQuery.data || []).some((c) => c.is_accepted);
+
   return (
     <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 grid grid-cols-[2.25rem_1fr_2.25rem] items-center gap-2">
@@ -149,6 +181,19 @@ export default function PostDetailPage() {
               <h2 className="kx-section-title px-0 inline-flex items-center gap-1.5">
                 <MessageCircle className="w-4 h-4" /> {t("comments")} {compactNumber(postQuery.data.comment_count)}
               </h2>
+              {isQuestion ? (
+                <span
+                  className={clsx(
+                    "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ring-1",
+                    resolved
+                      ? "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-400/20"
+                      : "bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-500/10 dark:text-sky-200 dark:ring-sky-400/20",
+                  )}
+                >
+                  {resolved ? <CheckCircle2 className="h-3.5 w-3.5" /> : null}
+                  {resolved ? t("qa_resolved") : t("qa_open")}
+                </span>
+              ) : null}
               <div className="ml-auto flex items-center gap-1 rounded-full bg-kx-soft p-1 text-xs ring-1 ring-kx-stroke/60">
                 <button className={clsx("kx-tab h-7 px-3 text-xs")} data-active={sort === "top"} onClick={() => setSort("top")}>{t("comment_sort_top")}</button>
                 <button className={clsx("kx-tab h-7 px-3 text-xs")} data-active={sort === "new"} onClick={() => setSort("new")}>{t("comment_sort_new")}</button>
@@ -201,12 +246,22 @@ export default function PostDetailPage() {
               <ul className="space-y-3">
                 {commentThreads.map(({ root, replies }) => {
                   return (
-                    <li key={root.id} className="rounded-kx-md border border-kx-stroke/45 bg-kx-card/70 p-3">
+                    <li
+                      key={root.id}
+                      className={clsx(
+                        "rounded-kx-md border p-3",
+                        root.is_accepted
+                          ? "border-emerald-300/70 bg-emerald-50/50 dark:border-emerald-400/25 dark:bg-emerald-500/5"
+                          : "border-kx-stroke/45 bg-kx-card/70",
+                      )}
+                    >
                       <CommentItem
                         comment={root}
                         rootId={root.id}
                         currentUser={user}
                         postAuthorId={postQuery.data!.author_id}
+                        canAccept={isQuestionAuthor}
+                        onAccept={acceptAnswer}
                         onLike={toggleCommentLike}
                         onReply={(comment, rootId) =>
                           user
@@ -338,7 +393,10 @@ function buildCommentThreads(comments: KXComment[]): CommentThread[] {
     .map((thread) => ({
       ...thread,
       replies: [...thread.replies].sort((a, b) => a.created_at.localeCompare(b.created_at)),
-    }));
+    }))
+    // Pin the accepted best answer to the top (Array.sort is stable, so the
+    // rest keep their server order).
+    .sort((a, b) => Number(b.root.is_accepted ?? false) - Number(a.root.is_accepted ?? false));
 }
 
 function CommentItem({
@@ -346,6 +404,8 @@ function CommentItem({
   rootId,
   currentUser,
   postAuthorId,
+  canAccept = false,
+  onAccept,
   onLike,
   onReply,
   onDelete,
@@ -356,6 +416,8 @@ function CommentItem({
   rootId: string;
   currentUser: KXUser | null;
   postAuthorId: string;
+  canAccept?: boolean;
+  onAccept?: (comment: KXComment) => void;
   onLike: (comment: KXComment) => void;
   onReply: (comment: KXComment, rootId: string) => void;
   onDelete: (id: string) => void;
@@ -373,6 +435,11 @@ function CommentItem({
             {comment.author?.display_name || "用户"}
           </Link>
           {showOfficialBadge(comment.author) ? <OfficialBadge /> : showVerifiedBadge(comment.author) ? <VerifiedBadge /> : null}
+          {comment.is_accepted ? (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full bg-emerald-50 px-1.5 py-0.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-200 dark:bg-emerald-500/10 dark:text-emerald-200 dark:ring-emerald-400/20">
+              <CheckCircle2 className="h-3 w-3" /> {t("answer_accepted_badge")}
+            </span>
+          ) : null}
           <span className="text-kx-muted text-xs truncate">@{comment.author?.handle || "machi"} · {relativeTime(comment.created_at)}</span>
         </div>
         <p className="text-sm text-kx-text whitespace-pre-wrap break-words mt-1">{comment.content}</p>
@@ -391,6 +458,18 @@ function CommentItem({
           >
             <MessageCircle className="h-[15px] w-[15px]" /> {t("action_reply")}
           </button>
+          {canAccept ? (
+            <button
+              className={clsx(
+                "inline-flex items-center gap-1.5 py-1 transition-colors",
+                comment.is_accepted ? "font-semibold text-emerald-600" : "text-kx-muted hover:text-emerald-600",
+              )}
+              onClick={() => onAccept?.(comment)}
+              aria-pressed={comment.is_accepted}
+            >
+              <CheckCircle2 className="h-[15px] w-[15px]" /> {comment.is_accepted ? t("answer_unaccept") : t("answer_accept")}
+            </button>
+          ) : null}
           {canDelete ? (
             <button className="ml-auto inline-flex items-center gap-1.5 py-1 text-kx-muted transition-colors hover:text-kx-danger" onClick={() => onDelete(comment.id)}>
               <Trash2 className="h-3.5 w-3.5" /> {t("action_delete")}

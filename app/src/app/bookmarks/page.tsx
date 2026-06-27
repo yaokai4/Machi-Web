@@ -27,7 +27,7 @@ export default function BookmarksPage() {
         ) : query.isError ? (
           <ErrorState onRetry={() => query.refetch()} />
         ) : !query.data?.items.length ? (
-          <EmptyState title="还没有收藏" subtitle="在 Feed 中点击书签图标即可收藏帖子。" icon={BookmarkIcon} />
+          <EmptyState title="还没有收藏" subtitle="在 Feed 中点击书签图标即可收藏帖子。" icon={BookmarkIcon} action={{ label: "去逛逛", href: "/home" }} />
         ) : (
           query.data.items.map((p) => <PostCard key={p.id} post={p} />)
         )}

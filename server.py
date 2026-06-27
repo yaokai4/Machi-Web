@@ -116,6 +116,7 @@ import ssl
 import tempfile
 import threading
 import time
+import unicodedata
 import urllib.request
 import urllib.error
 import urllib.robotparser
@@ -136,6 +137,19 @@ import xml.etree.ElementTree as ET
 import seed_content_library as seedlib
 from server_schema import MIGRATIONS, SCHEMA
 import server_apns
+import server_shared_state as shared_state
+import server_lifehub as lifehub
+from server_serializers import (
+    serialize_guide_category, serialize_guide_article_progress, serialize_guide_company_position, serialize_guide_company_review,
+    serialize_guide_faq, serialize_guide_tag, serialize_guide_home_module, serialize_guide_journey,
+    serialize_guide_progress, serialize_guide_profile, serialize_guide_plan, serialize_guide_reminder,
+    serialize_guide_application_stage, serialize_guide_transaction, serialize_guide_life_item, serialize_guide_life_payment,
+    serialize_guide_contract, serialize_guide_document, serialize_reputation_event, serialize_badge,
+    serialize_user, serialize_comment, serialize_message_attachment, serialize_notification,
+    serialize_message, serialize_conversation, serialize_booking_slot, serialize_booking,
+    serialize_email_campaign, serialize_listing_taxonomy_category, serialize_listing_taxonomy_field, serialize_listing_review,
+    serialize_wallet_ledger_entry, serialize_wallet_topup_order,
+)
 from server_regions import (
     POPULAR_CITIES,
     REGION_COUNTRIES,
@@ -274,6 +288,11 @@ if CAPTCHA_LOGIN_MODE not in ("0", "1", "adaptive"):
     CAPTCHA_LOGIN_MODE = "1"
 CAPTCHA_LOGIN_FAIL_THRESHOLD = max(1, int(_env("KAIX_CAPTCHA_LOGIN_FAIL_THRESHOLD", "3")))
 CAPTCHA_LOGIN_FAIL_WINDOW_SEC = max(60, int(_env("KAIX_CAPTCHA_LOGIN_FAIL_WINDOW_SEC", "900")))
+# Hard lockout (in addition to adaptive captcha): after this many failures for
+# the same account/IP inside the window, refuse login outright to blunt
+# distributed credential stuffing. 0 disables.
+LOGIN_LOCKOUT_THRESHOLD = max(0, int(_env("KAIX_LOGIN_LOCKOUT_THRESHOLD", "12")))
+LOGIN_LOCKOUT_WINDOW_SEC = max(60, int(_env("KAIX_LOGIN_LOCKOUT_WINDOW_SEC", "900")))
 CAPTCHA_TTL_SEC = int(_env("KAIX_CAPTCHA_TTL_SEC", "300"))                  # 5 minutes
 CAPTCHA_LENGTH = max(4, min(int(_env("KAIX_CAPTCHA_LENGTH", "4")), 8))
 
@@ -396,6 +415,13 @@ SMTP_USE_TLS = _env("KAIX_SMTP_USE_TLS", "1") == "1"
 RESEND_API_KEY = _env("KAIX_RESEND_API_KEY", "")
 _dev_outbox_env = _env("KAIX_DEV_OUTBOX_DIR", "").strip()
 DEV_OUTBOX_DIR = Path(_dev_outbox_env).expanduser() if _dev_outbox_env else ROOT / "dev_outbox"
+# Test/CI capture. When KAIX_EMAIL_TEST_MODE=outbox (or KAIX_EMAIL_OUTBOX_PATH is
+# set), send_email() short-circuits the real SMTP/Resend transport and appends a
+# structured JSONL record to the outbox instead — so tests assert delivery
+# without a live mail account and without sending real mail. The outbox is a
+# local, git-ignored artifact (same trust level as the dev console_file outbox).
+EMAIL_TEST_MODE = (_env("KAIX_EMAIL_TEST_MODE", "") or "").strip().lower()
+EMAIL_OUTBOX_PATH = (_env("KAIX_EMAIL_OUTBOX_PATH", "") or "").strip()
 
 # Visitor analytics.
 VISITOR_LOG_ENABLED = _env("KAIX_VISITOR_LOG_ENABLED", "1") == "1"
@@ -459,6 +485,11 @@ RATE_LIMITS = {
     "upload": (20000, 20000),
     "upload_stream": (6000, 6000),
     "payment": (20, 10),     # order creation / verify — tight money path
+    # UGC-6: per-account velocity for the cheapest harassment vectors, keyed by
+    # user id (like report) so comment-flood / follow-spam can't ride the roomy
+    # generic "write" bucket.
+    "comment": (60, 40),
+    "follow":  (60, 30),
 }
 HTTP_REQUEST_QUEUE_SIZE = max(
     64,
@@ -680,6 +711,11 @@ WECHAT_PAY_SERIAL_NO = _env("WECHAT_PAY_SERIAL_NO", "")
 # Accept the merchant private key either inline (WECHAT_PAY_PRIVATE_KEY) or
 # as a file path (WECHAT_PAY_PRIVATE_KEY_PATH, e.g. apiclient_key.pem).
 WECHAT_PAY_PRIVATE_KEY = _read_secret_file(_env("WECHAT_PAY_PRIVATE_KEY", ""), _env("WECHAT_PAY_PRIVATE_KEY_PATH", ""))
+# MS-2: WeChat's PLATFORM public key/cert, used to verify the inbound
+# Wechatpay-Signature on webhooks (distinct from the merchant private key above).
+# Inline PEM or a file path. Unset => decrypt-only (legacy) with a warning.
+WECHAT_PAY_PLATFORM_PUBLIC_KEY = _read_secret_file(
+    _env("WECHAT_PAY_PLATFORM_PUBLIC_KEY", ""), _env("WECHAT_PAY_PLATFORM_CERT_PATH", ""))
 WECHAT_PAY_NOTIFY_URL = _env("WECHAT_PAY_NOTIFY_URL", "")
 
 # --- WeChat Mini Program login (sns/jscode2session). Separate credentials
@@ -744,6 +780,11 @@ STRIPE_CANCEL_URL = _env("STRIPE_CANCEL_URL", "https://machicity.com/membership"
 # A successful "mock paid" can only happen when this is on AND we are not
 # in production.
 PAYMENT_MOCK_ENABLED = (_env("PAYMENT_MOCK_ENABLED", "0") == "1") and not PRODUCTION
+# iOS-first launch: the App Store build sells digital goods via Apple IAP only,
+# and the web client's China card rails (WeChat Pay / Alipay) are gated OFF by
+# default until merchant config + inbound platform-signature verification (MS-2)
+# are in place. Set KAIX_ENABLE_CN_WEB_PAY=1 to re-enable for the China web client.
+ENABLE_CN_WEB_PAY = _env("KAIX_ENABLE_CN_WEB_PAY", "0").strip().lower() in ("1", "true", "yes", "on")
 # How long an unpaid order stays payable.
 # Unpaid orders are auto-closed after this window so they don't linger in the
 # user's order list. 20 min by default (long enough to finish a Stripe Checkout,
@@ -824,10 +865,14 @@ INQUIRY_RESERVATION_LISTING_TYPES: tuple[str, ...] = ("rental", "local_service")
 INQUIRY_APPLICATION_LISTING_TYPES: tuple[str, ...] = ("job", "hiring")
 BUSINESS_CONSOLE_LISTING_TYPES: tuple[str, ...] = ("local_service", "discount", "event", "hiring")
 LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT = max(0, int(_env("LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT", "3") or 3))
-# Cold-start liquidity: a NEW account may publish this many listings of each
-# membership-gated type for FREE (lifetime) before the membership paywall
-# applies — so the marketplace can fill up before monetization kicks in.
-LISTING_FREE_FIRST_PER_TYPE = max(0, int(_env("LISTING_FREE_FIRST_PER_TYPE", "1") or 1))
+# Membership gate defaults to STRICT (0): high-trust channels (rental / job /
+# hiring / local_service / discount) require an active Machi membership before
+# publishing — this keeps moderation & fraud risk contained and matches the
+# in-app paywall copy on iOS and Web. Cold-start liquidity is an explicit,
+# city-by-city opt-in: set LISTING_FREE_FIRST_PER_TYPE>0 to let a NEW account
+# publish that many listings of each gated type for FREE (lifetime) before the
+# paywall. When opted in, surface the "first N free, then membership" copy.
+LISTING_FREE_FIRST_PER_TYPE = max(0, int(_env("LISTING_FREE_FIRST_PER_TYPE", "0") or 0))
 LISTING_MEMBERSHIP_QUOTA_GROUPS: dict[str, set[str]] = {
     "rental": {"rental"},
     "job": {"job", "hiring"},
@@ -2686,36 +2731,20 @@ def _cached_media_size_bytes() -> int:
 
 
 # ---------------------------------------------------------------------------
-# rate limiter — process-local token bucket per (ip, group).
-# Memory bounded by `_RL_GC_THRESHOLD`; old buckets are evicted lazily.
+# rate limiter — token bucket per (ip, group), via server_shared_state so the
+# buckets are shared across worker processes/hosts when KAIX_REDIS_URL is set
+# (in-process and memory-bounded otherwise). See rate_check below.
 # ---------------------------------------------------------------------------
-
-_RL_LOCK = threading.Lock()
-_RL_STATE: dict[tuple[str, str], tuple[float, float]] = {}
-_RL_GC_THRESHOLD = 5000
 
 
 def rate_check(ip: str, group: str) -> bool:
-    """Returns True if the request may proceed, False if it should be 429'd."""
+    """Returns True if the request may proceed, False if it should be 429'd.
+
+    Delegates to the shared token-bucket limiter so per-IP limits hold ACROSS
+    worker processes / hosts when KAIX_REDIS_URL is set (otherwise it's the same
+    in-process bucket as before, so single-process behaviour is unchanged)."""
     capacity, per_minute = RATE_LIMITS.get(group, (200, 200))
-    refill_per_sec = per_minute / 60.0
-    key = (ip or "anon", group)
-    now = time.monotonic()
-    with _RL_LOCK:
-        # cheap, occasional GC so the dict can't grow unbounded under abuse
-        if len(_RL_STATE) > _RL_GC_THRESHOLD:
-            cutoff = now - 600
-            for k, (_, last) in list(_RL_STATE.items()):
-                if last < cutoff:
-                    _RL_STATE.pop(k, None)
-        tokens, last = _RL_STATE.get(key, (float(capacity), now))
-        elapsed = max(0.0, now - last)
-        tokens = min(float(capacity), tokens + elapsed * refill_per_sec)
-        if tokens < 1.0:
-            _RL_STATE[key] = (tokens, now)
-            return False
-        _RL_STATE[key] = (tokens - 1.0, now)
-        return True
+    return shared_state.get_rate_limiter().allow(f"{ip or 'anon'}:{group}", capacity, per_minute)
 
 
 def _rate_group_for(path: str, method: str) -> str:
@@ -3505,6 +3534,125 @@ def _ensure_columns(conn: sqlite3.Connection, table: str, columns: dict[str, str
                 message = str(exc).lower()
                 if "duplicate column" not in message and "already exists" not in message:
                     raise
+
+
+def ensure_moderation_schema(conn: sqlite3.Connection) -> None:
+    """Idempotently upgrade existing DBs to the UGC-moderation schema (App Store
+    1.2 / legal): the reports close-loop columns plus the moderation audit trail
+    and blocked-media-hash tables. Fresh DBs already have these from SCHEMA; this
+    covers existing SQLite dev DBs (the Postgres path is migration 78)."""
+    _ensure_columns(conn, "reports", {
+        "status": "TEXT NOT NULL DEFAULT 'open'",
+        "action": "TEXT NOT NULL DEFAULT ''",
+        "resolved_by": "TEXT NOT NULL DEFAULT ''",
+        "resolved_note": "TEXT NOT NULL DEFAULT ''",
+        "resolved_at": "TEXT",
+    })
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS content_moderation_actions ("
+        "id TEXT PRIMARY KEY, moderator_id TEXT NOT NULL DEFAULT '', target_kind TEXT NOT NULL, "
+        "target_id TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', "
+        "report_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"
+    )
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS blocked_media_hashes ("
+        "sha256 TEXT PRIMARY KEY, reason TEXT NOT NULL DEFAULT '', "
+        "created_by TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at)")
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_content_mod_actions_target "
+        "ON content_moderation_actions(target_kind, target_id, created_at)"
+    )
+
+
+# A post flagged by this many DISTINCT reporters is auto-hidden (status ->
+# 'under_review') pending human review, so community-flagged objectionable
+# content drops out of public surfaces immediately (App Store 1.2). 0 disables it.
+REPORT_AUTOHIDE_THRESHOLD = max(0, int(_env("KAIX_REPORT_AUTOHIDE_THRESHOLD", "3") or 3))
+
+# Operator-imported known-bad media fingerprints (e.g. CSAM SHA-256 hashes),
+# comma/space separated lowercase hex. Merged with the blocked_media_hashes table.
+_BLOCKED_MEDIA_HASHES_ENV = frozenset(
+    h.strip().lower() for h in re.split(r"[,\s]+", _env("KAIX_BLOCKED_MEDIA_SHA256", "")) if h.strip()
+)
+
+_MODERATION_HIDDEN_POST_STATUS = "under_review"
+_MODERATION_REMOVED_POST_STATUS = "removed"
+
+
+def media_hash_blocked(conn: sqlite3.Connection, sha256_hex: str) -> bool:
+    """True if this content hash is on the known-bad blocklist (env or DB) — used
+    to reject CSAM / known-illegal media at upload before it is ever stored."""
+    h = (sha256_hex or "").strip().lower()
+    if not h:
+        return False
+    if h in _BLOCKED_MEDIA_HASHES_ENV:
+        return True
+    try:
+        return conn.execute(
+            "SELECT 1 FROM blocked_media_hashes WHERE sha256 = ? LIMIT 1", (h,)
+        ).fetchone() is not None
+    except Exception:
+        return False
+
+
+def record_moderation_action(conn: sqlite3.Connection, moderator_id: str, target_kind: str,
+                             target_id: str, action: str, reason: str = "", report_id: str = "") -> None:
+    """Append an immutable moderation audit row (who hid/removed/restored what & why)."""
+    conn.execute(
+        "INSERT INTO content_moderation_actions "
+        "(id, moderator_id, target_kind, target_id, action, reason, report_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), moderator_id or "", target_kind, target_id, action,
+         reason or "", report_id or "", now_iso()),
+    )
+
+
+def set_content_hidden(conn: sqlite3.Connection, target_kind: str, target_id: str,
+                       *, removed: bool = False) -> None:
+    """Drop a reported piece of content from public surfaces. Posts use `status`
+    (the public feed only shows 'published'/'active', so 'under_review'/'removed'
+    fall out); comments use `deleted_at`. Other kinds are handled by their own
+    flows and are a no-op here."""
+    now = now_iso()
+    if target_kind == "post":
+        status = _MODERATION_REMOVED_POST_STATUS if removed else _MODERATION_HIDDEN_POST_STATUS
+        conn.execute("UPDATE posts SET status = ?, updated_at = ? WHERE id = ?", (status, now, target_id))
+        invalidate_public_ranking_caches()
+    elif target_kind == "comment":
+        conn.execute("UPDATE comments SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ?", (now, target_id))
+
+
+def restore_auto_hidden_content(conn: sqlite3.Connection, target_kind: str, target_id: str) -> None:
+    """Re-publish content that was AUTO-hidden by reports when a moderator
+    dismisses the report. Deliberately only un-hides the 'under_review' state —
+    never resurrects content an admin explicitly removed."""
+    if target_kind == "post":
+        conn.execute(
+            "UPDATE posts SET status = 'published', updated_at = ? WHERE id = ? AND status = ?",
+            (now_iso(), target_id, _MODERATION_HIDDEN_POST_STATUS),
+        )
+        invalidate_public_ranking_caches()
+
+
+def maybe_autohide_post(conn: sqlite3.Connection, post_id: str) -> bool:
+    """Auto-hide a still-visible post once DISTINCT reports reach the threshold,
+    pending human review — the proactive 'filter objectionable content' control."""
+    if REPORT_AUTOHIDE_THRESHOLD <= 0:
+        return False
+    row = conn.execute("SELECT status, report_count FROM posts WHERE id = ?", (post_id,)).fetchone()
+    if not row:
+        return False
+    r = dict(row)
+    if int(r.get("report_count") or 0) < REPORT_AUTOHIDE_THRESHOLD:
+        return False
+    if r.get("status") not in ("published", "active"):
+        return False  # already hidden / removed
+    set_content_hidden(conn, "post", post_id, removed=False)
+    record_moderation_action(conn, "", "post", post_id, "auto_hide",
+                             reason=f"reached {REPORT_AUTOHIDE_THRESHOLD} distinct reports")
+    return True
 
 
 def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
@@ -4654,6 +4802,9 @@ GUIDE_EMPTY_STATE = {
 GUIDE_SCHOOL_DISCLAIMER = "学校信息由 Machi 编辑部根据公开资料和人工整理维护，可能存在更新延迟。申请前请以学校官网、招生简章和官方说明为准。"
 GUIDE_COMPANY_DISCLAIMER = "公司信息和评论由 Machi 编辑部整理及用户提交，仅供参考。求职前请以公司官网、招聘页面和正式说明为准。请勿发布隐私、机密或未经证实的严重指控。"
 GUIDE_REVIEW_DISCLAIMER = "评论内容来自用户个人经验，仅供参考。请勿发布个人隐私、商业机密或未经证实的严重指控。"
+# G2: journeys give procedural visa/在留/报税/社保 guidance — they need a tailored
+# legal/immigration disclaimer, NOT the unrelated user-review one.
+GUIDE_JOURNEY_DISCLAIMER = "本指南由 Machi 编辑部整理，仅供参考，不构成法律、移民、税务或医疗建议。签证、在留资格、报税、社保等手续可能随政策调整，请以入管局、税务署、市区町村等官方最新公告为准；重要或复杂情形请咨询行政书士、税理士等有资质的专业人士。"
 
 def _normalize_language_tag(raw: Any) -> str:
     value = str(raw or "zh-CN").strip()
@@ -6519,22 +6670,6 @@ for _company in [
     _append_guide_company_seed(*_company)
 
 
-def serialize_guide_category(row: sqlite3.Row | dict[str, Any], children: list[dict[str, Any]] | None = None) -> dict[str, Any]:
-    d = dict(row)
-    out = {
-        "id": d.get("id"), "key": d.get("key"), "parentKey": d.get("parent_key") or "",
-        "title": d.get("title"), "subtitle": d.get("subtitle") or "",
-        "description": d.get("description") or "", "icon": d.get("icon") or "",
-        "color": d.get("color") or "", "country": d.get("country") or "jp",
-        "language": d.get("language") or "zh-CN",
-        "seoTitle": d.get("seo_title") or "",
-        "seoDescription": d.get("seo_description") or "",
-        "sortOrder": int(d.get("sort_order") or 0),
-        "isActive": bool(d.get("is_active", 1)),
-    }
-    if children is not None:
-        out["subCategories"] = children
-    return out
 
 
 def _guide_lang_key(language: Any) -> str:
@@ -6941,15 +7076,6 @@ def serialize_guide_article(row: sqlite3.Row | dict[str, Any], include_body: boo
     return out
 
 
-def serialize_guide_article_progress(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any]:
-    if not row:
-        return {"progressPercent": 0, "completedAt": None, "lastReadAt": None}
-    d = dict(row)
-    return {
-        "progressPercent": int(d.get("progress_percent") or 0),
-        "completedAt": d.get("completed_at"),
-        "lastReadAt": d.get("last_read_at"),
-    }
 
 
 SUPPORTED_PRICE_CURRENCIES = {"CNY", "JPY", "USD", "CAD", "EUR", "GBP", "HKD", "TWD", "KRW", "SGD", "AUD"}
@@ -7178,21 +7304,6 @@ def serialize_guide_school_admission(row: sqlite3.Row | dict[str, Any]) -> dict[
     }
 
 
-def serialize_guide_company_position(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id"), "companyId": d.get("company_id"), "positionTitle": d.get("position_title"),
-        "positionTitleJp": d.get("position_title_jp") or "", "positionCategory": d.get("position_category") or "other",
-        "employmentType": d.get("employment_type") or "", "city": d.get("city") or "",
-        "remoteType": d.get("remote_type") or "", "salaryMin": int(d.get("salary_min") or 0),
-        "salaryMax": int(d.get("salary_max") or 0), "currency": d.get("currency") or "JPY",
-        "requiredJapaneseLevel": d.get("japanese_level_required") or "unknown",
-        "requiredEnglishLevel": d.get("english_level_required") or "unknown",
-        "visaSupport": d.get("visa_support") or "unknown", "description": d.get("description") or "",
-        "requirements": d.get("requirements") or "", "sourceUrl": d.get("source_url") or "",
-        "verificationStatus": d.get("verification_status") or "needs_review",
-        "status": d.get("status") or "published", "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
-    }
 
 
 def serialize_guide_company(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -7251,21 +7362,6 @@ def serialize_guide_company(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]
     }
 
 
-def serialize_guide_company_review(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    anonymous = bool(d.get("anonymous"))
-    return {
-        "id": d.get("id"), "companyId": d.get("company_id"),
-        "anonymous": anonymous, "position": d.get("position") or "",
-        "employmentType": d.get("employment_type") or "", "workPeriod": d.get("work_period") or "",
-        "pros": d.get("pros") or "",
-        "cons": d.get("cons") or "", "overtimeLevel": d.get("overtime_level") or "",
-        "foreignerSupport": d.get("foreigner_support") or "", "visaSupport": d.get("visa_support") or "",
-        "salaryBenefits": d.get("salary_benefits") or "", "careerGrowth": d.get("career_growth") or "",
-        "workLifeBalance": d.get("work_life_balance") or "",
-        "recommendationScore": float(d.get("recommendation_score") or 0),
-        "status": d.get("status") or "", "createdAt": d.get("created_at"),
-    }
 
 
 def serialize_guide_interview_review(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -7283,26 +7379,8 @@ def serialize_guide_interview_review(row: sqlite3.Row | dict[str, Any]) -> dict[
     }
 
 
-def serialize_guide_faq(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id"), "question": d.get("question"), "answer": d.get("answer") or "",
-        "categoryKey": d.get("category_key") or "", "country": d.get("country") or "jp",
-        "language": d.get("language") or "zh-CN", "sortOrder": int(d.get("sort_order") or 0),
-        "status": d.get("status") or "published", "createdAt": d.get("created_at"),
-        "updatedAt": d.get("updated_at"),
-    }
 
 
-def serialize_guide_tag(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id"), "name": d.get("name") or "", "key": d.get("key") or "",
-        "description": d.get("description") or "", "categoryKey": d.get("category_key") or "",
-        "country": d.get("country") or "jp", "language": d.get("language") or "zh-CN",
-        "sortOrder": int(d.get("sort_order") or 0), "isActive": bool(d.get("is_active", 1)),
-        "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
-    }
 
 
 def serialize_guide_topic(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -7319,22 +7397,6 @@ def serialize_guide_topic(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def serialize_guide_home_module(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    content = {}
-    try:
-        content = json.loads(d.get("content_json") or "{}")
-    except (TypeError, json.JSONDecodeError):
-        content = {}
-    return {
-        "id": d.get("id"), "moduleKey": d.get("module_key") or "",
-        "title": d.get("title") or "", "subtitle": d.get("subtitle") or "",
-        "content": content, "contentJson": d.get("content_json") or "{}",
-        "country": d.get("country") or "jp", "language": d.get("language") or "zh-CN",
-        "sortOrder": int(d.get("sort_order") or 0), "isActive": bool(d.get("is_active", 1)),
-        "status": d.get("status") or "published", "createdAt": d.get("created_at"),
-        "updatedAt": d.get("updated_at"),
-    }
 
 
 # --- Guide Journey system: situation -> ordered action path -------------------
@@ -7484,23 +7546,6 @@ GUIDE_JOURNEY_SEED: list[dict[str, Any]] = [
 ]
 
 
-def serialize_guide_journey(row: sqlite3.Row | dict[str, Any], step_count: int | None = None) -> dict[str, Any]:
-    d = dict(row)
-    out = {
-        "id": d.get("id"), "key": d.get("journey_key") or "",
-        "country": d.get("country") or "jp", "language": d.get("language") or "zh-CN",
-        "title": d.get("title") or "", "subtitle": d.get("subtitle") or "",
-        "audience": d.get("audience") or "", "icon": d.get("icon") or "",
-        "color": d.get("color") or "", "heroTitle": d.get("hero_title") or "",
-        "heroSubtitle": d.get("hero_subtitle") or "",
-        "estimatedDays": int(d.get("estimated_days") or 0),
-        "sortOrder": int(d.get("sort_order") or 0),
-        "status": d.get("status") or "published",
-        "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
-    }
-    if step_count is not None:
-        out["stepCount"] = int(step_count)
-    return out
 
 
 def serialize_guide_journey_step(row: sqlite3.Row | dict[str, Any], include_body: bool = False,
@@ -7531,68 +7576,10 @@ def serialize_guide_journey_step(row: sqlite3.Row | dict[str, Any], include_body
     return out
 
 
-def serialize_guide_progress(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id"), "journeyKey": d.get("journey_key") or "",
-        "stepKey": d.get("step_key") or "", "status": d.get("status") or "in_progress",
-        "completedAt": d.get("completed_at"), "reminderAt": d.get("reminder_at"),
-        "plannedDate": d.get("planned_date"), "dueAt": d.get("due_at"),
-        "priority": d.get("priority") or "normal",
-        "notifyEnabled": bool(d.get("notify_enabled") or 0),
-        "calendarNote": d.get("calendar_note") or "",
-        "notes": d.get("notes") or "", "updatedAt": d.get("updated_at"),
-    }
 
 
-def serialize_guide_profile(row: sqlite3.Row | dict[str, Any] | None) -> dict[str, Any] | None:
-    if row is None:
-        return None
-    d = dict(row)
-    return {
-        "id": d.get("id"),
-        "userId": d.get("user_id") or "",
-        "identityType": d.get("identity_type") or "",
-        "country": d.get("country") or "jp",
-        "city": d.get("city") or "",
-        "isInJapan": bool(d.get("is_in_japan") or 0),
-        "visaStatus": d.get("visa_status") or "",
-        "visaExpiresAt": d.get("visa_expires_at"),
-        "japaneseLevel": d.get("japanese_level") or "",
-        "targetJapaneseLevel": d.get("target_japanese_level") or "",
-        "targetLevel": d.get("target_japanese_level") or "",
-        "graduationDate": d.get("graduation_date"),
-        "targetEntryTerm": d.get("target_entry_term") or "",
-        "targetIndustry": d.get("target_industry") or "",
-        "targetSchoolType": d.get("target_school_type") or "",
-        "weeklyAvailableMinutes": int(d.get("weekly_available_minutes") or 0),
-        "needsMaterials": bool(d.get("needs_materials") or 0),
-        "needsServices": bool(d.get("needs_services") or 0),
-        "createdAt": d.get("created_at"),
-        "updatedAt": d.get("updated_at"),
-    }
 
 
-def serialize_guide_plan(row: sqlite3.Row | dict[str, Any], summary: dict[str, Any] | None = None) -> dict[str, Any]:
-    d = dict(row)
-    out = {
-        "id": d.get("id"),
-        "userId": d.get("user_id") or "",
-        "planType": d.get("plan_type") or "",
-        "title": d.get("title") or "",
-        "subtitle": d.get("subtitle") or "",
-        "status": d.get("status") or "active",
-        "targetDate": d.get("target_date"),
-        "startedAt": d.get("started_at"),
-        "progressPercent": int(d.get("progress_percent") or 0),
-        "currentTodoId": d.get("current_todo_id") or "",
-        "sourceJourneyKey": d.get("source_journey_key") or "",
-        "createdAt": d.get("created_at"),
-        "updatedAt": d.get("updated_at"),
-    }
-    if summary:
-        out.update(summary)
-    return out
 
 
 def _guide_parse_steps(raw: Any) -> list[dict[str, Any]]:
@@ -7654,20 +7641,6 @@ def serialize_guide_todo(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def serialize_guide_reminder(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id"),
-        "userId": d.get("user_id") or "",
-        "todoId": d.get("todo_id") or "",
-        "planId": d.get("plan_id") or "",
-        "title": d.get("title") or "",
-        "reminderAt": d.get("reminder_at"),
-        "channel": d.get("channel") or "app",
-        "status": d.get("status") or "active",
-        "createdAt": d.get("created_at"),
-        "updatedAt": d.get("updated_at"),
-    }
 
 
 def serialize_guide_application(row: sqlite3.Row | dict[str, Any], stages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -7702,16 +7675,6 @@ def serialize_guide_application(row: sqlite3.Row | dict[str, Any], stages: list[
     }
 
 
-def serialize_guide_application_stage(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id") or "",
-        "applicationId": d.get("application_id") or "",
-        "stage": d.get("stage") or "saved",
-        "note": d.get("note") or "",
-        "occurredAt": d.get("occurred_at"),
-        "createdAt": d.get("created_at"),
-    }
 
 
 # Finance category catalog (code, zh, ja, en, icon) — Japan-life oriented.
@@ -7761,102 +7724,14 @@ def _guide_finance_categories_payload() -> dict[str, Any]:
     return {"expense": rows("expense"), "income": rows("income")}
 
 
-def serialize_guide_transaction(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id"),
-        "userId": d.get("user_id") or "",
-        "kind": d.get("kind") or "expense",
-        "amount": int(d.get("amount") or 0),
-        "currency": d.get("currency") or "JPY",
-        "category": d.get("category") or "other",
-        "account": d.get("account") or "",
-        "occurredOn": d.get("occurred_on"),
-        "note": d.get("note") or "",
-        "source": d.get("source") or "manual",
-        "sourceId": d.get("source_id") or "",
-        "createdAt": d.get("created_at"),
-        "updatedAt": d.get("updated_at"),
-    }
 
 
-def serialize_guide_life_item(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id"),
-        "userId": d.get("user_id") or "",
-        "type": d.get("type") or "",
-        "title": d.get("title") or "",
-        "provider": d.get("provider") or "",
-        "amount": int(d.get("amount") or 0),
-        "currency": d.get("currency") or "JPY",
-        "paymentMethod": d.get("payment_method") or "",
-        "autoDebit": bool(d.get("auto_debit") or 0),
-        "dueDay": int(d.get("due_day") or 0),
-        "dueAt": d.get("due_at"),
-        "recurrence": d.get("recurrence") or "monthly",
-        "reminderDaysBefore": int(d.get("reminder_days_before") or 0),
-        "notes": d.get("notes") or "",
-        "active": bool(d.get("active", 1)),
-        "createdAt": d.get("created_at"),
-        "updatedAt": d.get("updated_at"),
-    }
 
 
-def serialize_guide_life_payment(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id") or "",
-        "lifeItemId": d.get("life_item_id") or "",
-        "amount": int(d.get("amount") or 0),
-        "currency": d.get("currency") or "JPY",
-        "paymentMethod": d.get("payment_method") or "",
-        "autoDebit": bool(d.get("auto_debit") or 0),
-        "paidAt": d.get("paid_at") or "",
-        "notes": d.get("notes") or "",
-        "createdAt": d.get("created_at"),
-    }
 
 
-def serialize_guide_contract(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id"),
-        "userId": d.get("user_id") or "",
-        "category": d.get("category") or "other",
-        "title": d.get("title") or "",
-        "provider": d.get("provider") or "",
-        "startDate": d.get("start_date"),
-        "endDate": d.get("end_date"),
-        "cancellationWindowStart": d.get("cancellation_window_start"),
-        "cancellationWindowEnd": d.get("cancellation_window_end"),
-        "autoRenew": bool(d.get("auto_renew", 0)),
-        "monthlyCost": int(d.get("monthly_cost") or 0),
-        "yearlyCost": int(d.get("yearly_cost") or 0),
-        "currency": d.get("currency") or "JPY",
-        "reminderDaysBefore": int(d.get("reminder_days_before") or 0),
-        "contactInfo": d.get("contact_info") or "",
-        "notes": d.get("notes") or "",
-        "status": d.get("status") or "active",
-        "createdAt": d.get("created_at"),
-        "updatedAt": d.get("updated_at"),
-    }
 
 
-def serialize_guide_document(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    return {
-        "id": d.get("id"),
-        "userId": d.get("user_id") or "",
-        "category": d.get("category") or "other",
-        "title": d.get("title") or "",
-        "expiresAt": d.get("expires_at"),
-        "reminderDaysBefore": int(d.get("reminder_days_before") or 0),
-        "notes": d.get("notes") or "",
-        "status": d.get("status") or "active",
-        "createdAt": d.get("created_at"),
-        "updatedAt": d.get("updated_at"),
-    }
 
 
 def serialize_guide_calendar_item(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -9910,41 +9785,8 @@ def reputation_rule_for_listing_approval(listing_type: str) -> str:
     return "listing_secondhand_published"
 
 
-def serialize_reputation_event(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    metadata = d.get("metadata") or "{}"
-    if isinstance(metadata, str):
-        try:
-            metadata = json.loads(metadata or "{}")
-        except Exception:
-            metadata = {}
-    d["metadata"] = metadata
-    return d
 
 
-def serialize_badge(row: sqlite3.Row | dict[str, Any], user_badge: dict[str, Any] | None = None) -> dict[str, Any]:
-    d = dict(row)
-    payload = {
-        "id": d.get("id", ""),
-        "key": d.get("key", ""),
-        "name_zh": d.get("name_zh", ""),
-        "name_en": d.get("name_en", ""),
-        "name_ja": d.get("name_ja", ""),
-        "name": d.get("name_zh", ""),
-        "category": d.get("category", ""),
-        "rarity": d.get("rarity", "common"),
-        "description_zh": d.get("description_zh", ""),
-        "is_official": bool(d.get("is_official", 0)),
-        "is_active": bool(d.get("is_active", 1)),
-    }
-    if user_badge:
-        payload.update({
-            "user_badge_id": user_badge.get("id", ""),
-            "is_displayed": bool(user_badge.get("is_displayed", 1)),
-            "granted_at": user_badge.get("created_at"),
-            "reason": user_badge.get("reason", ""),
-        })
-    return payload
 
 
 def serialize_reputation_profile(
@@ -10155,6 +9997,17 @@ def record_admin_action(conn: sqlite3.Connection, admin_id: str, action: str, *,
 
 
 def init_db() -> None:
+    if (PRODUCTION and KAIX_DB_BACKEND != "postgres"
+            and _env("KAIX_ALLOW_SQLITE_IN_PRODUCTION", "0") != "1"):
+        # Fail loudly instead of silently degrading: on SQLite every write
+        # serialises through one process-wide lock, which collapses throughput
+        # under load. Production must run PostgreSQL. Set
+        # KAIX_ALLOW_SQLITE_IN_PRODUCTION=1 only for a deliberate single-node
+        # deployment (or tests that boot prod-mode on SQLite).
+        raise RuntimeError(
+            "Refusing to start in production on the SQLite backend — set "
+            "KAIX_DB_BACKEND=postgres (or KAIX_ALLOW_SQLITE_IN_PRODUCTION=1 to override)."
+        )
     if KAIX_DB_BACKEND == "postgres":
         # On Postgres the schema + data are migrated out-of-band by
         # scripts/migrate_sqlite_to_postgres.py — don't run SQLite DDL/seed here.
@@ -10170,6 +10023,7 @@ def init_db() -> None:
         ensure_booking_schema(conn)
         ensure_membership_plans(conn)
         ensure_wallet_schema(conn)
+        ensure_moderation_schema(conn)
         ensure_guide_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
@@ -10331,6 +10185,14 @@ class EventHub:
                 self.subscribers.pop(user_id, None)
 
     def publish(self, user_id: str, event: dict[str, Any]) -> None:
+        # Deliver to local SSE subscribers AND fan out to the other worker
+        # processes via the shared event bus (no-op single-process / no redis),
+        # so a subscriber connected to worker B still receives an event a request
+        # produced on worker A.
+        self._publish_local(user_id, event)
+        shared_state.get_event_bus().publish(user_id, event)
+
+    def _publish_local(self, user_id: str, event: dict[str, Any]) -> None:
         with self.lock:
             queues = list(self.subscribers.get(user_id, []))
         payload = ("event: " + event.get("type", "message") + "\n" +
@@ -10353,114 +10215,6 @@ HUB = EventHub()
 # serializers
 
 
-def serialize_user(row: dict[str, Any]) -> dict[str, Any]:
-    role = row.get("role", "member") or "member"
-    is_verified_member = bool(row.get("is_verified_member", 0))
-    is_official = role == "admin" or bool(row.get("is_official", 0))
-    official_role = (row.get("official_role", "") or "").strip()
-    if role == "admin" and not official_role:
-        official_role = "admin"
-    _auth_provider = row.get("auth_provider", "password") or "password"
-    # Safe to unbind Google only when another way in survives: a password
-    # account (knows its password) or any account with a verified email (can
-    # reset). A Google-created account with no email must keep Google.
-    _can_unlink_google = bool(row.get("google_sub", "")) and (
-        _auth_provider == "password" or bool(row.get("email_verified", 0))
-    )
-    # Same safety rule for Apple: only unlinkable when another way in survives —
-    # a password account, a verified email, or a still-linked Google identity.
-    _can_unlink_apple = bool(row.get("apple_sub", "")) and (
-        _auth_provider == "password" or bool(row.get("email_verified", 0)) or bool(row.get("google_sub", ""))
-    )
-    payload = {
-        "id": row["id"],
-        "remote_id": row["id"],
-        "handle": row["handle"],
-        "username": row["handle"],
-        "display_name": row["display_name"],
-        "displayName": row["display_name"],
-        "email": row.get("email", ""),
-        "email_verified": bool(row.get("email_verified", 0)),
-        "emailVerified": bool(row.get("email_verified", 0)),
-        "auth_provider": row.get("auth_provider", "password") or "password",
-        "authProvider": row.get("auth_provider", "password") or "password",
-        "has_google": bool(row.get("google_sub", "")),
-        "hasGoogle": bool(row.get("google_sub", "")),
-        "can_unlink_google": _can_unlink_google,
-        "canUnlinkGoogle": _can_unlink_google,
-        "has_apple": bool(row.get("apple_sub", "")),
-        "hasApple": bool(row.get("apple_sub", "")),
-        "can_unlink_apple": _can_unlink_apple,
-        "canUnlinkApple": _can_unlink_apple,
-        "bio": row.get("bio", ""),
-        "location": row.get("location", ""),
-        "avatar_symbol": row.get("avatar_symbol", "person.fill"),
-        "avatar_color": row.get("avatar_color", "indigo"),
-        "avatar_url": row.get("avatar_url", ""),
-        "avatarUrl": row.get("avatar_url", ""),
-        "cover_url": row.get("cover_url", ""),
-        "dm_privacy": (row.get("dm_privacy") or "everyone"),
-        "dmPrivacy": (row.get("dm_privacy") or "everyone"),
-        "membership_tier": row.get("membership_tier", "free"),
-        "is_verified": bool(row.get("is_verified", 0)),
-        "role": role,
-        "isOfficial": is_official,
-        "is_official": is_official,
-        "officialRole": official_role if is_official else "",
-        "official_role": official_role if is_official else "",
-        "joined_at": row.get("joined_at"),
-        "created_at": row.get("created_at"),
-        "createdAt": row.get("created_at"),
-        "updated_at": row.get("updated_at"),
-        "updatedAt": row.get("updated_at"),
-        # Phase 1: home / current region. Added via MIGRATIONS so the
-        # columns exist on every running install; default-empty values
-        # mean a user that hasn't picked a region yet just sees blanks.
-        "country":             row.get("country", "") or "",
-        "province":            row.get("province", "") or "",
-        "city":                row.get("city", "") or "",
-        "current_region_code": row.get("current_region_code", "") or "",
-        "recent_region_codes": [code for code in (row.get("recent_region_codes", "") or "").split("|") if code],
-        "total_heat":          int(row.get("total_heat") or 0),
-        "creator_badge":       row.get("creator_badge", "") or "",
-        "custom_tags":         [tag for tag in (row.get("custom_tags", "") or "").split("|") if tag.strip()],
-        "customTags":          [tag for tag in (row.get("custom_tags", "") or "").split("|") if tag.strip()],
-        "is_merchant":         bool(row.get("is_merchant", 0)),
-        "merchant_verified":   bool(row.get("merchant_verified", 0)),
-        "profile_view_count":  int(row.get("profile_view_count") or 0),
-        "app_language":        row.get("app_language", "") or "",
-        "content_language_preference": row.get("content_language_preference", "") or "",
-        "preferred_content_languages": row.get("preferred_content_languages", "") or "",
-        # Machi Verified membership cache (authoritative truth lives in
-        # user_memberships; these are kept in sync by
-        # sync_user_membership_cache on every entitlement change and the
-        # expiry sweep). is_verified_member drives the blue badge.
-        "is_verified_member":   is_verified_member,
-        "isVerifiedMember":     is_verified_member,
-        "verified_member_until": row.get("verified_member_until", "") or "",
-        "verifiedMemberUntil":  row.get("verified_member_until", "") or "",
-        "membership_status":    row.get("membership_status", "inactive") or "inactive",
-        "membershipStatus":     row.get("membership_status", "inactive") or "inactive",
-        "membership_plan_key":  row.get("membership_plan_key", "") or "",
-        "membershipPlanKey":    row.get("membership_plan_key", "") or "",
-        "verified_badge_type":  row.get("verified_badge_type", "") or "",
-        "verifiedBadgeType":    row.get("verified_badge_type", "") or "",
-        "isFollowing":          bool(row.get("is_following", 0)) if "is_following" in row else False,
-        "can_message":          True,
-        "canMessage":           True,
-    }
-    # Social counts are only included when the caller actually computed them.
-    # Emitting hard zeros here made every embedded author payload (feed posts,
-    # comments, …) carry follower_count=0, which clients then wrote over the
-    # real cached values — the "关注/粉丝数突然归零" bug. Absent keys let
-    # clients keep their last known value.
-    if "follower_count" in row:
-        payload["follower_count"] = payload["followerCount"] = int(row.get("follower_count") or 0)
-    if "following_count" in row:
-        payload["following_count"] = payload["followingCount"] = int(row.get("following_count") or 0)
-    if "post_count" in row:
-        payload["post_count"] = payload["postCount"] = int(row.get("post_count") or 0)
-    return payload
 
 
 def user_social_counts(conn: sqlite3.Connection, user_id: str) -> dict[str, int]:
@@ -10665,23 +10419,6 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
     return payload
 
 
-def serialize_comment(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
-    extras = extras or {}
-    return {
-        "id": row["id"],
-        "remote_id": row["id"],
-        "post_id": row["post_id"],
-        "author_id": row["author_id"],
-        "content": row["content"],
-        "parent_comment_id": row.get("parent_comment_id"),
-        "reply_to_user_id": row.get("reply_to_user_id"),
-        "created_at": row["created_at"],
-        "updated_at": row["updated_at"],
-        "deleted_at": row.get("deleted_at"),
-        "like_count": int(extras.get("like_count") or 0),
-        "liked": bool(extras.get("liked")),
-        "author": extras.get("author"),
-    }
 
 
 def serialize_media(row: dict[str, Any]) -> dict[str, Any]:
@@ -10730,176 +10467,18 @@ def canonical_post_media_type(media_type: str, mime: str, linked_type: str) -> s
     return normalized_link or normalized_media or "file"
 
 
-def serialize_message_attachment(row: dict[str, Any]) -> dict[str, Any]:
-    attachment_type = row.get("attachment_type") or row.get("file_type") or "file"
-    message_id = row.get("message_id") or ""
-    attachment_id = row.get("id") or ""
-    visibility = row.get("visibility") or "thread_members_only"
-    thumbnail_url = (
-        row.get("thumbnail_url")
-        or row.get("thumbnailUrl")
-        or row.get("thumbnail_cdn_url")
-        or row.get("thumbnail_public_url")
-        or row.get("thumb_url")
-        or row.get("thumbUrl")
-        or ""
-    )
-    poster_url = (
-        row.get("poster_url")
-        or row.get("posterUrl")
-        or (thumbnail_url if attachment_type == "video" else "")
-        or ""
-    )
-    payload = {
-        "id": attachment_id,
-        "message_id": message_id,
-        "thread_id": row.get("thread_id") or "",
-        "uploaded_file_id": row.get("uploaded_file_id") or row.get("file_id") or "",
-        "type": attachment_type,
-        "visibility": visibility,
-        "objectKey": row.get("object_key") or "",
-        "attachment_type": attachment_type,
-        "url": "",
-        "cdnUrl": "",
-        "publicUrl": "",
-        "thumb_url": thumbnail_url,
-        "thumbUrl": thumbnail_url,
-        "thumbnailUrl": thumbnail_url,
-        "thumbnail_url": thumbnail_url,
-        "posterUrl": poster_url,
-        "poster_url": poster_url,
-        "needsSignedUrl": True,
-        "viewUrlEndpoint": f"/api/messages/{message_id}/attachments/{attachment_id}/view-url",
-        "thumbnail_file_id": row.get("thumbnail_file_id") or "",
-        "duration": float(row.get("duration_seconds") or row.get("duration") or 0),
-        "duration_seconds": float(row.get("duration_seconds") or row.get("duration") or 0),
-        "durationSeconds": float(row.get("duration_seconds") or row.get("duration") or 0),
-        "width": int(row.get("width") or 0),
-        "height": int(row.get("height") or 0),
-        "file_name": row.get("file_name") or "",
-        "file_size": int(row.get("file_size") or 0),
-        "fileSize": int(row.get("file_size") or 0),
-        "byte_size": int(row.get("file_size") or 0),
-        "content_type": row.get("content_type") or "",
-        "contentType": row.get("content_type") or "",
-        "mime": row.get("content_type") or "",
-        "status": row.get("status") or "ready",
-        "created_at": row.get("created_at") or "",
-        "createdAt": row.get("created_at") or "",
-    }
-    return payload
 
 
-def serialize_notification(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
-    extras = extras or {}
-    return {
-        "id": row["id"],
-        "type": row["type"],
-        "actor_id": row["actor_id"],
-        "user_id": row["user_id"],
-        "target_post_id": row.get("target_post_id"),
-        "target_comment_id": row.get("target_comment_id"),
-        "target_listing_id": row.get("target_listing_id"),
-        "targetListingId": row.get("target_listing_id"),
-        "target_conversation_id": row.get("target_conversation_id"),
-        "targetConversationId": row.get("target_conversation_id"),
-        "content": row.get("content", ""),
-        "is_read": bool(row.get("is_read", 0)),
-        "created_at": row["created_at"],
-        "actor": extras.get("actor"),
-    }
 
 
-def serialize_message(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
-    extras = extras or {}
-    return {
-        "id": row["id"],
-        "conversation_id": row["conversation_id"],
-        "sender_id": row["sender_id"],
-        "content": row.get("content", ""),
-        "created_at": row["created_at"],
-        "is_read": bool(row.get("is_read", 0)),
-        "media": extras.get("media") or [],
-        "attachments": extras.get("attachments") or [],
-    }
 
 
-def serialize_conversation(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
-    extras = extras or {}
-    return {
-        "id": row["id"],
-        "participant_a": row["participant_a"],
-        "participant_b": row["participant_b"],
-        "participants": [row["participant_a"], row["participant_b"]],
-        "peer": extras.get("peer"),
-        "last_message": extras.get("last_message"),
-        "unread_count": int(extras.get("unread_count") or 0),
-        "updated_at": row["updated_at"],
-    }
 
 
-def serialize_booking_slot(row: dict[str, Any], *, booked_by_me: bool = False) -> dict[str, Any]:
-    cap = int(row.get("capacity") or 1)
-    booked = int(row.get("booked_count") or 0)
-    full = booked >= cap
-    return {
-        "id": row["id"],
-        "listing_id": row.get("listing_id", ""), "listingId": row.get("listing_id", ""),
-        "start_at": row.get("start_at", ""), "startAt": row.get("start_at", ""),
-        "end_at": row.get("end_at", ""), "endAt": row.get("end_at", ""),
-        "capacity": cap, "booked_count": booked, "bookedCount": booked,
-        "available": max(0, cap - booked), "is_full": full, "isFull": full,
-        "note": row.get("note", ""), "status": row.get("status", "open"),
-        "booked_by_me": bool(booked_by_me), "bookedByMe": bool(booked_by_me),
-    }
 
 
-def serialize_booking(row: dict[str, Any], *, slot: dict[str, Any] | None = None,
-                      booker: dict[str, Any] | None = None,
-                      listing_title: str | None = None, listing_type: str | None = None) -> dict[str, Any]:
-    slot = slot or {}
-    out = {
-        "id": row["id"],
-        "slot_id": row.get("slot_id", ""), "slotId": row.get("slot_id", ""),
-        "listing_id": row.get("listing_id", ""), "listingId": row.get("listing_id", ""),
-        "status": row.get("status", "confirmed"), "note": row.get("note", ""),
-        "start_at": slot.get("start_at", ""), "startAt": slot.get("start_at", ""),
-        "end_at": slot.get("end_at", ""), "endAt": slot.get("end_at", ""),
-        "created_at": row.get("created_at", ""), "createdAt": row.get("created_at", ""),
-    }
-    if listing_title is not None:
-        out["listing_title"] = out["listingTitle"] = listing_title
-    if listing_type is not None:
-        out["listing_type"] = out["listingType"] = listing_type
-    if booker is not None:
-        out["booker"] = booker
-    return out
 
 
-def serialize_email_campaign(row: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "admin_id": row.get("admin_id", ""),
-        "adminId": row.get("admin_id", ""),
-        "subject": row.get("subject", ""),
-        "body": row.get("body", ""),
-        "audience": row.get("audience", "all"),
-        "status": row.get("status", "draft"),
-        "recipient_count": int(row.get("recipient_count") or 0),
-        "recipientCount": int(row.get("recipient_count") or 0),
-        "sent_count": int(row.get("sent_count") or 0),
-        "sentCount": int(row.get("sent_count") or 0),
-        "failed_count": int(row.get("failed_count") or 0),
-        "failedCount": int(row.get("failed_count") or 0),
-        "created_at": row.get("created_at", ""),
-        "createdAt": row.get("created_at", ""),
-        "updated_at": row.get("updated_at", ""),
-        "updatedAt": row.get("updated_at", ""),
-        "started_at": row.get("started_at"),
-        "startedAt": row.get("started_at"),
-        "finished_at": row.get("finished_at"),
-        "finishedAt": row.get("finished_at"),
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -11339,86 +10918,8 @@ def ensure_listing_taxonomy_defaults(conn: sqlite3.Connection, listing_type: str
     )
 
 
-def serialize_listing_taxonomy_category(row: dict[str, Any]) -> dict[str, Any]:
-    metadata: dict[str, Any] = {}
-    try:
-        parsed = json.loads(row.get("metadata") or "{}")
-        if isinstance(parsed, dict):
-            metadata = parsed
-    except (TypeError, ValueError):
-        metadata = {}
-    return {
-        "id": row.get("id", ""),
-        "listing_type": row.get("listing_type", ""),
-        "listingType": row.get("listing_type", ""),
-        "category_key": row.get("category_key", ""),
-        "categoryKey": row.get("category_key", ""),
-        "label": row.get("label", ""),
-        "label_ja": row.get("label_ja", ""),
-        "labelJa": row.get("label_ja", ""),
-        "label_en": row.get("label_en", ""),
-        "labelEn": row.get("label_en", ""),
-        "section_key": row.get("section_key", ""),
-        "sectionKey": row.get("section_key", ""),
-        "description": row.get("description", ""),
-        "is_active": bool(row.get("is_active", 1)),
-        "isActive": bool(row.get("is_active", 1)),
-        "sort_order": int(row.get("sort_order") or 0),
-        "sortOrder": int(row.get("sort_order") or 0),
-        "metadata": metadata,
-        "created_at": row.get("created_at"),
-        "updated_at": row.get("updated_at"),
-    }
 
 
-def serialize_listing_taxonomy_field(row: dict[str, Any]) -> dict[str, Any]:
-    options: list[Any] = []
-    metadata: dict[str, Any] = {}
-    try:
-        parsed = json.loads(row.get("options_json") or "[]")
-        if isinstance(parsed, list):
-            options = parsed
-    except (TypeError, ValueError):
-        options = []
-    try:
-        parsed_meta = json.loads(row.get("metadata") or "{}")
-        if isinstance(parsed_meta, dict):
-            metadata = parsed_meta
-    except (TypeError, ValueError):
-        metadata = {}
-    return {
-        "id": row.get("id", ""),
-        "listing_type": row.get("listing_type", ""),
-        "listingType": row.get("listing_type", ""),
-        "category_key": row.get("category_key", ""),
-        "categoryKey": row.get("category_key", ""),
-        "field_key": row.get("field_key", ""),
-        "fieldKey": row.get("field_key", ""),
-        "label": row.get("label", ""),
-        "label_ja": row.get("label_ja", ""),
-        "labelJa": row.get("label_ja", ""),
-        "label_en": row.get("label_en", ""),
-        "labelEn": row.get("label_en", ""),
-        "kind": row.get("field_kind", "text"),
-        "field_kind": row.get("field_kind", "text"),
-        "fieldKind": row.get("field_kind", "text"),
-        "placeholder": row.get("placeholder", ""),
-        "placeholder_ja": row.get("placeholder_ja", ""),
-        "placeholderJa": row.get("placeholder_ja", ""),
-        "placeholder_en": row.get("placeholder_en", ""),
-        "placeholderEn": row.get("placeholder_en", ""),
-        "help_text": row.get("help_text", ""),
-        "helpText": row.get("help_text", ""),
-        "options": options,
-        "required": bool(row.get("required", 0)),
-        "is_active": bool(row.get("is_active", 1)),
-        "isActive": bool(row.get("is_active", 1)),
-        "sort_order": int(row.get("sort_order") or 0),
-        "sortOrder": int(row.get("sort_order") or 0),
-        "metadata": metadata,
-        "created_at": row.get("created_at"),
-        "updated_at": row.get("updated_at"),
-    }
 
 
 def listing_taxonomy_payload(conn: sqlite3.Connection, listing_type: str, include_inactive: bool = False) -> dict[str, Any]:
@@ -12352,37 +11853,6 @@ def listing_review_histogram(conn: sqlite3.Connection, listing_id: str) -> dict[
     return histogram
 
 
-def serialize_listing_review(row: dict[str, Any], author: dict[str, Any] | None = None) -> dict[str, Any]:
-    return {
-        "id": row["id"],
-        "listing_id": row.get("listing_id", "") or "",
-        "listingId": row.get("listing_id", "") or "",
-        "business_id": row.get("business_id", "") or "",
-        "businessId": row.get("business_id", "") or "",
-        "user_id": row.get("user_id", "") or "",
-        "userId": row.get("user_id", "") or "",
-        "rating": int(row.get("rating") or 0),
-        "content": row.get("content", "") or "",
-        "visit_date": row.get("visit_date", "") or "",
-        "visitDate": row.get("visit_date", "") or "",
-        "status": row.get("status", "published") or "published",
-        "owner_reply": row.get("owner_reply", "") or "",
-        "ownerReply": row.get("owner_reply", "") or "",
-        "owner_reply_at": row.get("owner_reply_at"),
-        "ownerReplyAt": row.get("owner_reply_at"),
-        "helpful_count": int(row.get("helpful_count") or 0),
-        "helpfulCount": int(row.get("helpful_count") or 0),
-        "created_at": row.get("created_at"),
-        "createdAt": row.get("created_at"),
-        "updated_at": row.get("updated_at"),
-        "updatedAt": row.get("updated_at"),
-        "author": author,
-        # merchant-console convenience; filled by callers that join listings
-        "listing_title": row.get("listing_title", "") or "",
-        "listingTitle": row.get("listing_title", "") or "",
-        "listing_type": row.get("listing_type", "") or "",
-        "listingType": row.get("listing_type", "") or "",
-    }
 
 
 def fetch_listing_reviews_with_authors(conn: sqlite3.Connection, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -12619,20 +12089,42 @@ def hash_ip(ip: str) -> str:
 _BANNED_WORDS_SEED = [
     "代开发票", "办理证件", "出售银行卡", "枪支弹药", "child porn", "childporn",
 ]
+_POLICY_STRIP_CODEPOINTS = dict.fromkeys(
+    [0x200B, 0x200C, 0x200D, 0x2060, 0xFEFF,
+     0x200E, 0x200F, 0x202A, 0x202B, 0x202C, 0x202D, 0x202E],
+    None,
+)
+
+
+def _policy_fold(text: str) -> str:
+    """Aggressively normalise text for deny-list matching so trivial obfuscation
+    can't slip a banned term past it: NFKC-fold full-width / compatibility forms,
+    drop zero-width + bidi controls, strip combining marks (accents), lowercase,
+    then remove ALL separators/punctuation so spaced-out or punctuated evasions
+    collapse onto the same tight form as the seed term. Never logged."""
+    if not text:
+        return ""
+    t = unicodedata.normalize("NFKC", text).translate(_POLICY_STRIP_CODEPOINTS)
+    t = "".join(ch for ch in unicodedata.normalize("NFKD", t)
+                if not unicodedata.combining(ch))
+    return re.sub(r"[\s\W_]+", "", t.lower(), flags=re.UNICODE)
+
+
 BANNED_WORDS = {
-    w.strip().lower()
-    for w in (_BANNED_WORDS_SEED + _env("KAIX_BANNED_WORDS", "").split(","))
-    if w.strip()
+    folded
+    for raw in (_BANNED_WORDS_SEED + _env("KAIX_BANNED_WORDS", "").split(","))
+    if (folded := _policy_fold(raw))
 }
 
 
 def content_policy_reason(*texts: str) -> str:
     """Return a non-empty violation code if any banned term appears in the
-    concatenated user text (case-insensitive substring), else ''. Cheap and
-    locale-agnostic; never logs the offending text."""
+    concatenated user text, else ''. Both text and the deny-list pass through
+    _policy_fold (NFKC + accent/zero-width strip + separator removal) so
+    full-width/spaced-out/accented/punctuated evasions still match."""
     if not BANNED_WORDS:
         return ""
-    blob = " ".join(t for t in texts if t).lower()
+    blob = _policy_fold(" ".join(t for t in texts if t))
     if not blob:
         return ""
     for term in BANNED_WORDS:
@@ -12978,6 +12470,49 @@ def require_verified_membership(conn: sqlite3.Connection, user_id: str, content_
         raise APIError("发布该类型内容需要开通 Machi 认证会员。", 403, "MEMBERSHIP_REQUIRED")
 
 
+_money_tx_depth = threading.local()
+
+
+def money_atomic(fn):
+    """Run a money-mutating function's writes as ONE all-or-nothing transaction.
+
+    Composite money operations (flip an order pending->paid, THEN append the
+    ledger / grant the entitlement) previously ran on the autocommit connection,
+    so a crash between the steps could leave a 'paid' order with no credit that
+    per-step idempotency then refused to repair on retry — a "charged real money,
+    received nothing, unrecoverable" window. This wraps the whole call in a
+    BEGIN IMMEDIATE / COMMIT (plain BEGIN on Postgres, see _pg_xlate) and ROLLS
+    BACK on any exception.
+
+    Reentrant: only the OUTERMOST decorated call opens/commits the transaction;
+    nested decorated calls (e.g. wallet_credit_topup -> wallet_post_ledger) just
+    join it, so there is no illegal nested BEGIN and the whole composite stays a
+    single atomic unit. All decorated functions run under DB_LOCK (one writer per
+    process), so the BEGIN IMMEDIATE never contends within a process. Functions
+    that internally catch-and-continue on IntegrityError (which would poison a
+    Postgres transaction) are deliberately left undecorated."""
+    @functools.wraps(fn)
+    def wrapper(conn, *args, **kwargs):
+        if getattr(_money_tx_depth, "value", 0) > 0:
+            return fn(conn, *args, **kwargs)  # already inside an outer money_tx
+        _money_tx_depth.value = 1
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            result = fn(conn, *args, **kwargs)
+            conn.execute("COMMIT")
+            return result
+        except BaseException:
+            try:
+                conn.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+        finally:
+            _money_tx_depth.value = 0
+    return wrapper
+
+
+@money_atomic
 def activate_or_extend_membership(conn: sqlite3.Connection, user_id: str, plan_key: str,
                                   source: str, periods: int = 1) -> dict[str, Any]:
     """Open a new membership or extend the live one by `periods` plan periods.
@@ -13209,6 +12744,7 @@ def _order_is_expired(order: dict[str, Any]) -> bool:
     return bool(exp and exp < datetime.now(timezone.utc))
 
 
+@money_atomic
 def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: str = "",
                     provider_user_id: str = "", expected_provider: str | None = None,
                     paid_amount_cents: int | None = None,
@@ -13266,16 +12802,21 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
 
 
 def refund_order(conn: sqlite3.Connection, order_no: str) -> None:
+    """MS-6: refund a membership order — mark refunded, record the event, AND
+    revoke the membership so a refunded user loses access (idempotent)."""
     order = conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone()
     if not order:
         return
     order = dict(order)
+    if order.get("status") == "refunded":
+        return
     conn.execute(
-        "UPDATE payment_orders SET status = 'refunded', refunded_at = ?, updated_at = ? WHERE order_no = ?",
+        "UPDATE payment_orders SET status = 'refunded', refunded_at = ?, updated_at = ? WHERE order_no = ? AND status != 'refunded'",
         (now_iso(), now_iso(), order_no),
     )
     record_entitlement_event(conn, order["user_id"], "", "membership_refunded",
                              order["payment_provider"], {"order_no": order_no})
+    cancel_membership(conn, order["user_id"], immediate=True, source="refund")
 
 
 def record_payment_webhook(conn: sqlite3.Connection, provider: str, event_type: str, event_id: str,
@@ -13453,20 +12994,6 @@ def get_wallet_snapshot(conn: sqlite3.Connection, user_id: str) -> dict[str, Any
     return serialize_wallet_account(ensure_wallet_account(conn, user_id))
 
 
-def serialize_wallet_ledger_entry(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    delta = int(d.get("points_delta") or 0)
-    return {
-        "id": d.get("id"),
-        "entryType": d.get("entry_type") or "", "entry_type": d.get("entry_type") or "",
-        "pointsDelta": delta, "points_delta": delta,
-        "balanceAfter": int(d.get("balance_after") or 0), "balance_after": int(d.get("balance_after") or 0),
-        "sourceType": d.get("source_type") or "", "source_type": d.get("source_type") or "",
-        "sourceOrderId": d.get("source_order_id") or "",
-        "productId": d.get("product_id") or "",
-        "createdAt": d.get("created_at"), "created_at": d.get("created_at"),
-        "displayDelta": ("+" if delta >= 0 else "−") + f"{abs(delta):,}",
-    }
 
 
 def serialize_wallet_topup_product(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
@@ -13492,18 +13019,6 @@ def serialize_wallet_topup_product(row: sqlite3.Row | dict[str, Any]) -> dict[st
     }
 
 
-def serialize_wallet_topup_order(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
-    d = dict(row)
-    points = int(d.get("points") or 0)
-    bonus = int(d.get("bonus_points") or 0)
-    return {
-        "id": d.get("id"), "orderNo": d.get("order_no"), "order_no": d.get("order_no"),
-        "packKey": d.get("pack_key"), "status": d.get("status") or "pending",
-        "points": points, "bonusPoints": bonus, "totalPoints": int(d.get("total_points") or (points + bonus)),
-        "amountCents": int(d.get("amount_cents") or 0), "currency": d.get("currency") or "CNY",
-        "paymentProvider": d.get("payment_provider") or "",
-        "createdAt": d.get("created_at"), "paidAt": d.get("paid_at"),
-    }
 
 
 def get_topup_product(conn: sqlite3.Connection, pack_key: str) -> dict[str, Any] | None:
@@ -13520,6 +13035,7 @@ def list_topup_products(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [dict(r) for r in rows]
 
 
+@money_atomic
 def wallet_post_ledger(conn: sqlite3.Connection, user_id: str, entry_type: str, points_delta: int, *,
                        source_type: str = "", source_order_id: str = "", source_transaction_id: str = "",
                        idempotency_key: str = "", product_id: str = "", metadata: dict | None = None,
@@ -13653,6 +13169,7 @@ def wallet_credit_iap_topup(conn: sqlite3.Connection, user_id: str, pack: dict[s
                                provider_user_id=provider_user_id, source_type=provider)
 
 
+@money_atomic
 def wallet_credit_topup(conn: sqlite3.Connection, order_no: str, *, provider_trade_no: str = "",
                         provider_user_id: str = "", source_type: str = "") -> dict[str, Any]:
     """Settle a top-up order and credit its points EXACTLY ONCE. The grant is
@@ -13701,6 +13218,7 @@ def wallet_credit_topup(conn: sqlite3.Connection, order_no: str, *, provider_tra
             "grantedPoints": int(order["total_points"] or 0)}
 
 
+@money_atomic
 def wallet_refund_topup(conn: sqlite3.Connection, order_no: str, *, reason: str = "", entry_type: str = "chargeback_debit") -> dict[str, Any]:
     """Reverse a settled top-up (Stripe refund / chargeback). Claws back the
     granted points. If the user already spent some, we never force the live
@@ -13737,11 +13255,14 @@ def wallet_refund_topup(conn: sqlite3.Connection, order_no: str, *, reason: str 
     return {"applied": True, "clawedBack": debit, "debtPoints": debt, "wallet": get_wallet_snapshot(conn, user_id)}
 
 
+@money_atomic
 def refund_guide_points_order(conn: sqlite3.Connection, order_id_or_no: str, *, reason: str = "") -> dict[str, Any]:
-    """Refund a points-paid guide purchase: revoke the entitlement and credit
-    the points back. Idempotent on the order's refunded state."""
+    """Refund a guide purchase: revoke the entitlement and (for points-paid
+    orders) credit the points back. Works for any provider — a money-paid
+    (Stripe) order has price_points=0 so only the entitlement is revoked (the
+    money refund is the provider's job). Idempotent on the refunded state."""
     row = conn.execute(
-        "SELECT * FROM guide_orders WHERE (id = ? OR order_no = ?) AND payment_provider = 'wallet'",
+        "SELECT * FROM guide_orders WHERE (id = ? OR order_no = ?)",
         (order_id_or_no, order_id_or_no)).fetchone()
     if not row:
         return {"applied": False, "reason": "order_not_found"}
@@ -14058,6 +13579,8 @@ def build_wechat_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dic
     """Return the params a Web client needs to pay an order via WeChat
     (Native = a QR code). When merchant creds are present the real v3
     Native API is called; otherwise dev mock, else a clear config error."""
+    if not ENABLE_CN_WEB_PAY:
+        raise APIError("当前不支持该支付方式", 503, "provider_unconfigured")
     if WECHAT_PAY_MCH_ID and WECHAT_PAY_APP_ID and WECHAT_PAY_PRIVATE_KEY and WECHAT_PAY_API_V3_KEY:
         code_url = _wechat_native_prepay(order)  # real server-to-server call
         return {"qr_code_url": code_url}
@@ -14069,6 +13592,8 @@ def build_wechat_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dic
 def build_alipay_payment(conn: sqlite3.Connection, order: dict[str, Any]) -> dict[str, Any]:
     """Return the params a Web client needs to pay via Alipay (a signed
     redirect URL to the Alipay gateway — page/wap pay needs no S2S call)."""
+    if not ENABLE_CN_WEB_PAY:
+        raise APIError("当前不支持该支付方式", 503, "provider_unconfigured")
     if ALIPAY_APP_ID and ALIPAY_PRIVATE_KEY:
         return {"pay_url": _alipay_page_pay_url(order)}
     if PAYMENT_MOCK_ENABLED:
@@ -14093,9 +13618,10 @@ def available_payment_providers() -> list[str]:
     its real credentials are present, or if dev mock mode is on. Lets the
     membership page hide WeChat until the 服务号 appid + APIv3 key land."""
     out: list[str] = []
-    if wechat_pay_configured() or PAYMENT_MOCK_ENABLED:
+    # CN card rails are hidden unless explicitly enabled (iOS-first launch).
+    if ENABLE_CN_WEB_PAY and (wechat_pay_configured() or PAYMENT_MOCK_ENABLED):
         out.append("wechat_pay")
-    if alipay_configured() or PAYMENT_MOCK_ENABLED:
+    if ENABLE_CN_WEB_PAY and (alipay_configured() or PAYMENT_MOCK_ENABLED):
         out.append("alipay")
     if stripe_configured() or PAYMENT_MOCK_ENABLED:
         out.append("stripe")
@@ -14240,6 +13766,7 @@ def wallet_stripe_checkout_url(order_no: str, amount_cents: int, currency: str, 
         raise APIError("Stripe 下单失败", 502, "provider_error")
 
 
+@money_atomic
 def settle_guide_order(conn: sqlite3.Connection, order_no: str, payment_intent: str = "", amount_cents: int = 0) -> bool:
     """Idempotently mark a Guide product order paid+fulfilled. For a service
     product, also create a linked paid service_request so the back office has a
@@ -14468,6 +13995,37 @@ def _alipay_page_pay_url(order: dict[str, Any]) -> str:
 
 # ---- webhook verification ----
 
+def _verify_wechat_signature(headers: dict[str, str], raw_body: bytes) -> bool:
+    """MS-2: verify the Wechatpay-Signature header (RSA-PKCS1v15-SHA256 over
+    `timestamp\\nnonce\\nbody\\n`) against the configured platform public key,
+    and reject timestamps outside a ±300s window (replay guard)."""
+    ts = (headers.get("wechatpay-timestamp") or "").strip()
+    nonce = (headers.get("wechatpay-nonce") or "").strip()
+    sig_b64 = (headers.get("wechatpay-signature") or "").strip()
+    if not (ts and nonce and sig_b64):
+        return False
+    try:
+        if abs(int(time.time()) - int(ts)) > 300:
+            return False
+    except (TypeError, ValueError):
+        return False
+    _load_cryptography()
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.x509 import load_pem_x509_certificate
+    message = (ts + "\n" + nonce + "\n" + raw_body.decode("utf-8", "replace") + "\n").encode("utf-8")
+    pem = WECHAT_PAY_PLATFORM_PUBLIC_KEY.encode("utf-8")
+    try:
+        try:
+            pub = load_pem_x509_certificate(pem).public_key()
+        except Exception:
+            pub = serialization.load_pem_public_key(pem)
+        pub.verify(base64.b64decode(sig_b64), message, padding.PKCS1v15(), hashes.SHA256())
+        return True
+    except Exception:
+        return False
+
+
 def verify_wechat_webhook(headers: dict[str, str], raw_body: bytes) -> dict[str, Any] | None:
     """Verify + decrypt a WeChat Pay v3 notification. Returns the decoded
     resource dict (out_trade_no, amount, trade_state, …) or None if the
@@ -14484,6 +14042,15 @@ def verify_wechat_webhook(headers: dict[str, str], raw_body: bytes) -> dict[str,
         return None
     _load_cryptography()
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    # MS-2: verify WeChat's platform RSA signature + replay window BEFORE
+    # decrypting when the platform key is configured. Unconfigured => legacy
+    # decrypt-only with a one-line warning.
+    if WECHAT_PAY_PLATFORM_PUBLIC_KEY:
+        if not _verify_wechat_signature(headers, raw_body):
+            ERR_LOG.warning("wechat webhook rejected: platform signature/timestamp invalid")
+            return None
+    else:
+        ERR_LOG.warning("wechat webhook: WECHAT_PAY_PLATFORM_PUBLIC_KEY unset — decrypt-only")
     try:
         envelope = json.loads(body_text)
         resource = envelope["resource"]
@@ -14663,6 +14230,48 @@ def verify_google_play_purchase(product_id: str, purchase_token: str, package_na
         return False
 
 
+def google_play_consume_purchase(product_id: str, purchase_token: str, package_name: str = "") -> bool:
+    """Consume a verified Play *consumable* purchase (points pack) so Google does
+    NOT auto-refund it after 3 days — and so the user can repurchase the SKU.
+    Call this only AFTER the points have been granted (Google's documented order
+    for consumables: grant first, then consume), so a consume failure can never
+    leave the user "charged but un-credited". Returns True when the purchase is
+    now consumed (or was already consumed/acknowledged — idempotent); False on a
+    transient failure that a retry should re-attempt within the 3-day window."""
+    if not google_play_configured():
+        return False
+    token = _google_play_access_token()
+    if not token:
+        return False
+    pkg = package_name or GOOGLE_PLAY_PACKAGE_NAME
+    if package_name and package_name != GOOGLE_PLAY_PACKAGE_NAME:
+        return False
+    from urllib.parse import quote
+    from urllib.request import Request, urlopen
+    from urllib.error import HTTPError
+    url = (f"https://androidpublisher.googleapis.com/androidpublisher/v3/applications/"
+           f"{quote(pkg, safe='')}/purchases/products/{quote(product_id, safe='')}/tokens/{quote(purchase_token, safe='')}:consume")
+    try:
+        req = Request(url, data=b"", method="POST")
+        req.add_header("Authorization", "Bearer " + token)
+        req.add_header("Content-Length", "0")
+        with urlopen(req, timeout=10) as resp:
+            resp.read()
+        return True
+    except HTTPError as exc:
+        # The purchase already passed verify (purchaseState==0), so a 4xx here is
+        # almost always "already consumed/acknowledged" → idempotently OK. A 5xx /
+        # transient error should be retried, so report it as not-yet-consumed.
+        if 400 <= exc.code < 500:
+            ERR_LOG.warning("google play consume 4xx (treated idempotent): %s", exc.code)
+            return True
+        ERR_LOG.warning("google play consume http %s", exc.code)
+        return False
+    except Exception as exc:
+        ERR_LOG.warning("google play consume failed: %s", type(exc).__name__)
+        return False
+
+
 def _verify_x509_signed_by(child: Any, parent: Any) -> None:
     """Raise unless `child`'s signature verifies against `parent`'s public key.
     Handles both EC (Apple's leaf/intermediate) and RSA issuers."""
@@ -14784,9 +14393,47 @@ def _send_via_resend(to: str, subject: str, body: str) -> bool:
         return 200 <= resp.status < 300
 
 
+def _email_outbox_active() -> bool:
+    """True when send_email should capture to the JSONL outbox instead of using
+    a real transport. Read live so tests can toggle it after import."""
+    return EMAIL_TEST_MODE == "outbox" or bool(EMAIL_OUTBOX_PATH)
+
+
+def _email_outbox_jsonl_path() -> Path:
+    raw = EMAIL_OUTBOX_PATH or str(DEV_OUTBOX_DIR / "email_outbox.jsonl")
+    return Path(raw).expanduser()
+
+
+def _email_outbox_jsonl_append(to: str, subject: str, body: str) -> bool:
+    """Append one message to the structured JSONL test outbox (a local,
+    git-ignored artifact). Only reached when outbox/test mode is active — never
+    on a real send path."""
+    try:
+        path = _email_outbox_jsonl_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "transport": "outbox",
+            "to": to,
+            "from": EMAIL_FROM,
+            "subject": subject,
+            "body": body,
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return True
+    except Exception:
+        ERR_LOG.warning("email outbox write failed")
+        return False
+
+
 def send_email(to: str, subject: str, body: str) -> bool:
     """Send one email. NEVER logs subject or body (they carry the code) —
     only a masked address + the transport name."""
+    if _email_outbox_active():
+        ok = _email_outbox_jsonl_append(to, subject, body)
+        ACCESS_LOG.info("email captured transport=outbox to=%s", mask_email(to))
+        return ok
     transport = EMAIL_TRANSPORT
     try:
         if transport == "smtp" and SMTP_HOST:
@@ -14803,14 +14450,44 @@ def send_email(to: str, subject: str, body: str) -> bool:
     return ok
 
 
+_EMAIL_QUEUE: "queue.Queue[tuple[str, str, str]]" = queue.Queue(maxsize=2000)
+_EMAIL_WORKERS_STARTED = False
+
+
+def _email_worker_loop() -> None:
+    while True:
+        to, subject, body = _EMAIL_QUEUE.get()
+        try:
+            send_email(to, subject, body)
+        except Exception:
+            ERR_LOG.exception("email worker send failed")
+        finally:
+            _EMAIL_QUEUE.task_done()
+
+
+def start_email_workers(n: int = 4) -> None:
+    """Bounded pool of email senders (PERF-07): replaces an unbounded
+    thread-per-email spawn so a notification burst can't explode the thread
+    count. Idempotent."""
+    global _EMAIL_WORKERS_STARTED
+    if _EMAIL_WORKERS_STARTED:
+        return
+    _EMAIL_WORKERS_STARTED = True
+    for i in range(max(1, n)):
+        threading.Thread(target=_email_worker_loop, name=f"machi-email-{i}", daemon=True).start()
+
+
 def send_email_async(to: str, subject: str, body: str) -> None:
     if not is_valid_email(to):
         return
-
-    def _run() -> None:
-        send_email(to, subject, body)
-
-    threading.Thread(target=_run, name="machi-email", daemon=True).start()
+    try:
+        _EMAIL_QUEUE.put_nowait((to, subject, body))
+    except queue.Full:
+        # Never drop a (possibly verification) email: when the pool is saturated
+        # fall back to a one-off thread. This bounds steady-state thread count
+        # without losing mail under a burst.
+        threading.Thread(target=lambda: send_email(to, subject, body),
+                         name="machi-email-overflow", daemon=True).start()
 
 
 def _email_locale(raw: str | None) -> str:
@@ -15152,11 +14829,6 @@ CAPTCHA_CHARS = "23456789ACDEFHJKMNPRTUVWXY"
 # local like the rate limiter (single-process deployment); keys are both
 # the client IP and the attempted handle so a bot rotating handles from
 # one IP and one targeting a single account from many IPs both trip it.
-_LOGIN_FAIL_LOCK = threading.Lock()
-_LOGIN_FAILURES: dict[str, list[float]] = {}
-_LOGIN_FAIL_GC_THRESHOLD = 5000
-
-
 def _login_failure_keys(ip: str, handle: str = "") -> list[str]:
     keys = []
     if ip:
@@ -15167,34 +14839,43 @@ def _login_failure_keys(ip: str, handle: str = "") -> list[str]:
 
 
 def record_login_failure(ip: str, handle: str = "") -> None:
-    now = time.monotonic()
-    cutoff = now - CAPTCHA_LOGIN_FAIL_WINDOW_SEC
-    with _LOGIN_FAIL_LOCK:
-        if len(_LOGIN_FAILURES) > _LOGIN_FAIL_GC_THRESHOLD:
-            for key, stamps in list(_LOGIN_FAILURES.items()):
-                fresh = [s for s in stamps if s >= cutoff]
-                if fresh:
-                    _LOGIN_FAILURES[key] = fresh
-                else:
-                    _LOGIN_FAILURES.pop(key, None)
-        for key in _login_failure_keys(ip, handle):
-            stamps = [s for s in _LOGIN_FAILURES.get(key, []) if s >= cutoff]
-            stamps.append(now)
-            _LOGIN_FAILURES[key] = stamps
+    # Backed by the shared FailureTracker so counts hold across workers/hosts
+    # (in-process by default; redis when KAIX_REDIS_URL is set).
+    tracker = shared_state.get_failure_tracker()
+    ttl = max(CAPTCHA_LOGIN_FAIL_WINDOW_SEC, LOGIN_LOCKOUT_WINDOW_SEC)
+    for key in _login_failure_keys(ip, handle):
+        tracker.record(key, ttl=ttl)
 
 
 def clear_login_failures(ip: str, handle: str = "") -> None:
-    with _LOGIN_FAIL_LOCK:
-        for key in _login_failure_keys(ip, handle):
-            _LOGIN_FAILURES.pop(key, None)
+    tracker = shared_state.get_failure_tracker()
+    for key in _login_failure_keys(ip, handle):
+        tracker.clear(key)
+
+
+def reset_login_failures() -> None:
+    """Clear all tracked login-failure state (used by tests)."""
+    shared_state.get_failure_tracker().clear_all()
+
+
+def login_locked_out(ip: str, handle: str = "") -> bool:
+    """Hard lockout on top of the adaptive captcha: once an account or IP racks
+    up LOGIN_LOCKOUT_THRESHOLD failures inside the window, refuse login outright
+    to blunt distributed credential stuffing. 0 disables."""
+    if LOGIN_LOCKOUT_THRESHOLD <= 0:
+        return False
+    tracker = shared_state.get_failure_tracker()
+    for key in _login_failure_keys(ip, handle):
+        if tracker.count(key, LOGIN_LOCKOUT_WINDOW_SEC) >= LOGIN_LOCKOUT_THRESHOLD:
+            return True
+    return False
 
 
 def login_failures_exceeded(ip: str, handle: str = "") -> bool:
-    cutoff = time.monotonic() - CAPTCHA_LOGIN_FAIL_WINDOW_SEC
-    with _LOGIN_FAIL_LOCK:
-        for key in _login_failure_keys(ip, handle):
-            if len([s for s in _LOGIN_FAILURES.get(key, []) if s >= cutoff]) >= CAPTCHA_LOGIN_FAIL_THRESHOLD:
-                return True
+    tracker = shared_state.get_failure_tracker()
+    for key in _login_failure_keys(ip, handle):
+        if tracker.count(key, CAPTCHA_LOGIN_FAIL_WINDOW_SEC) >= CAPTCHA_LOGIN_FAIL_THRESHOLD:
+            return True
     return False
 
 
@@ -15803,6 +15484,19 @@ def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
         ("UPDATE guide_service_requests SET contact_method = '', contact_value = '', message = '', updated_at = ? WHERE user_id = ?", (now, user_id)),
         ("DELETE FROM device_push_tokens WHERE user_id = ?", (user_id,)),
         ("DELETE FROM drafts WHERE user_id = ?", (user_id,)),
+        # Guide personal-workbench tables hold the MOST sensitive PII a user
+        # entrusts to Machi — personal finances, budgets, contract/visa/job
+        # application details, document-expiry reminders, calendar and todos.
+        # A 5.1.1(v)/GDPR deletion must leave none of it readable. All are
+        # metadata-only (no object-store blobs to GC) and keyed on user_id.
+        ("DELETE FROM guide_transactions WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM guide_budgets WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM guide_contracts WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM guide_applications WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM guide_documents WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM guide_calendar_items WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM guide_todos WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM guide_life_items WHERE user_id = ?", (user_id,)),
     ):
         try:
             conn.execute(stmt, params)
@@ -16306,12 +16000,38 @@ class Handler(BaseHTTPRequestHandler):
     # SQLite writes serialize on DB_LOCK. PostgreSQL uses a database advisory
     # lock scoped to (method, path, key), preserving exactly-once behavior
     # across concurrent requests and multiple backend processes.
+    def _idempotency_caller_tag(self) -> str:
+        """A stable per-caller tag — a hash of the session token (or, for an
+        anonymous caller, the client IP) — used to namespace the idempotency
+        cache. Resolved from the SAME Bearer/cookie token current_session uses,
+        so it is available before the route handler runs (the session user id is
+        not yet resolved at idempotency-lookup time). The raw token is never put
+        in the scope/DB — only its hash — so the cache key can't leak a token."""
+        token = ""
+        auth = self.headers.get("Authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth.split(" ", 1)[1].strip()
+        if not token:
+            try:
+                cookies = SimpleCookie()
+                cookies.load(self.headers.get("Cookie") or "")
+                morsel = cookies.get(SESSION_COOKIE_NAME)
+                token = morsel.value if morsel else ""
+            except Exception:
+                token = ""
+        basis = token or ("ip:" + (self._client_ip() or ""))
+        return hashlib.blake2b(basis.encode("utf-8"), digest_size=16, person=b"machi-idem").hexdigest()
+
     def _idempotency_scope(self, method: str, path: str) -> str | None:
         key = self._idempotency_key()
         if (not key or method not in ("POST", "PATCH", "PUT", "DELETE")
                 or path.startswith("/api/auth/")):
             return None
-        return f"{method} {path}"
+        # Namespace by the calling session so a shared / guessed / collided
+        # Idempotency-Key can NEVER replay one caller's cached response body to a
+        # different caller. Without this the scope was (method, path) only, so two
+        # users sending the same key on the same path cross-leaked responses.
+        return f"{self._idempotency_caller_tag()}\0{method} {path}"
 
     def _idempotency_key(self) -> str:
         key = (self.headers.get("Idempotency-Key") or "").strip()
@@ -16499,6 +16219,18 @@ class Handler(BaseHTTPRequestHandler):
         if (user.get("role") or "member") != "admin":
             raise APIError("admin only", 403, "forbidden")
         return user
+
+    def _enforce_not_muted(self, user: dict[str, Any]) -> None:
+        """UGC-5: block a user's content actions (post/comment/follow) while a
+        timed mute/suspension is in effect. muted_until is an ISO timestamp;
+        empty or past = allowed (ISO strings sort chronologically)."""
+        until = (user.get("muted_until") or "").strip()
+        if until and until > now_iso():
+            reason = (user.get("mute_reason") or "").strip()
+            raise APIError(
+                "你的账号目前被限制发布内容" + (f"：{reason}" if reason else "") + "。如有异议可提交申诉。",
+                403, "account_muted",
+            )
 
     # ---- City Seed Bot (城市内容助手) — admin content operations ----
     #
@@ -17172,7 +16904,7 @@ class Handler(BaseHTTPRequestHandler):
             "steps": steps, "progress": progress,
             "hasPlan": bool(active_plan_id), "planId": active_plan_id,
             "createdAt": row["created_at"], "updatedAt": row["updated_at"],
-            "disclaimer": _guide_localized_ui("reviewDisclaimer", language, GUIDE_REVIEW_DISCLAIMER),
+            "disclaimer": _guide_localized_ui("journeyDisclaimer", language, GUIDE_JOURNEY_DISCLAIMER),
         })
 
     # --- Unified Guide search (articles + schools + companies + products + faq + journeys) ---
@@ -18315,6 +18047,7 @@ class Handler(BaseHTTPRequestHandler):
         self._guide_sync_todo_to_progress(conn, todo)
         if complete or (not complete and str(body.get("status") or "") == "done"):
             _guide_funnel_log("todo_completed", user_id=user["id"], todoType=todo["todo_type"] if todo else "")
+            lifehub.record_local_action(conn, user["id"], "guide_todo_done", target_kind="todo", target_id=todo_id, now=now_iso())
             self._guide_set_reminder_status(conn, user_id=user["id"], todo_id=todo_id, status="completed")
             # Daily/weekly/monthly habits: completing one spawns the next
             # occurrence so it reappears instead of vanishing for good.
@@ -22031,12 +21764,16 @@ class Handler(BaseHTTPRequestHandler):
         status = (data.get("status") or "draft").strip()
         tags = data.get("tags")
         tags_str = ",".join(tags) if isinstance(tags, list) else _clean_text(tags, 300)
+        # G1: write the trust/freshness columns (previously omitted, so every
+        # article shipped with no source + no verified date). Default verified_at
+        # to now (freshly authored = reviewed today), stale interval 180 days.
         conn.execute(
             "INSERT INTO guide_articles (id, title, slug, summary, body, category_key, sub_category_key, content_type, "
             "country, city, language, cover_image, seo_title, seo_description, tags, related_article_slugs, "
-            "related_product_slugs, author_type, author_name, is_featured, is_free, is_paid, status, view_count, "
+            "related_product_slugs, author_type, author_name, is_featured, is_free, is_paid, status, "
+            "source_url, source_label, verified_at, stale_after_days, view_count, "
             "save_count, sort_order, created_at, updated_at, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editorial', ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'editorial', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)",
             (article_id, title, slug, _clean_text(data.get("summary"), 600), str(data.get("body") or ""),
              str(data.get("categoryKey") or "").strip(), str(data.get("subCategoryKey") or "").strip(),
              str(data.get("contentType") or "guide").strip(), _normalize_country_code(data.get("country") or "jp"),
@@ -22046,7 +21783,10 @@ class Handler(BaseHTTPRequestHandler):
              _guide_csv(data.get("relatedArticleSlugs")), _guide_csv(data.get("relatedProductSlugs")),
              _clean_text(data.get("authorName"), 80) or "Machi 日本指南编辑部",
              1 if data.get("isFeatured") else 0, 1 if data.get("isFree", True) else 0, 1 if data.get("isPaid") else 0,
-             status, _guide_int(data.get("sortOrder"), 0), now, now, now if status == "published" else None),
+             status,
+             str(data.get("sourceUrl") or "").strip()[:500], _clean_text(data.get("sourceLabel"), 120),
+             str(data.get("verifiedAt") or "").strip() or now, _guide_int(data.get("staleAfterDays"), 180),
+             _guide_int(data.get("sortOrder"), 0), now, now, now if status == "published" else None),
         )
         self._guide_clear_public_cache()
         self.send_json({"status": "ok", "id": article_id, "slug": slug}, 201)
@@ -22061,11 +21801,15 @@ class Handler(BaseHTTPRequestHandler):
             "subCategoryKey": "sub_category_key", "contentType": "content_type", "coverImage": "cover_image",
             "seoTitle": "seo_title", "seoDescription": "seo_description", "authorName": "author_name",
             "country": "country", "city": "city", "language": "language", "status": "status",
+            # G1: trust/freshness fields editable from admin.
+            "sourceUrl": "source_url", "sourceLabel": "source_label", "verifiedAt": "verified_at",
         }
         updates: dict[str, Any] = {}
         for k, col in field_map.items():
             if k in data:
                 updates[col] = str(data[k] or "")
+        if "staleAfterDays" in data:  # G1: integer column
+            updates["stale_after_days"] = _guide_int(data.get("staleAfterDays"), 0)
         if "slug" in updates:
             updates["slug"] = self._guide_slugify(updates["slug"], fallback=article_id[:10])
         if "country" in updates:
@@ -23286,6 +23030,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_logout(conn)
         if path == "/api/auth/me" and method == "GET":
             return self.api_me(conn)
+        if path == "/api/auth/session" and method == "GET":
+            return self.api_session(conn)
         if path == "/api/auth/me" and method == "PATCH":
             return self.api_update_me(conn)
         if path == "/api/auth/me" and method == "DELETE":
@@ -23425,6 +23171,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_comment_like(conn, comment_id, False)
             if rest == "report" and method == "POST":
                 return self.api_report(conn, "comment", comment_id)
+            if rest == "accept" and method in ("POST", "DELETE"):
+                return self.api_accept_answer(conn, comment_id, method == "POST")
 
         # Machi Reputation
         if path == "/api/reputation/me" and method == "GET":
@@ -24152,6 +23900,16 @@ class Handler(BaseHTTPRequestHandler):
         # blocks & devices
         if path == "/api/blocks" and method == "GET":
             return self.api_blocks(conn)
+        if path == "/api/appeals" and method == "POST":
+            return self.api_create_appeal(conn)
+        if path == "/api/me/life-profile" and method == "GET":
+            return self.api_my_life_profile(conn)
+        if path == "/api/me/life-profile" and method in ("PUT", "PATCH", "POST"):
+            return self.api_update_life_profile(conn)
+        if path == "/api/me/weekly-actions" and method == "GET":
+            return self.api_my_weekly_actions(conn)
+        if path == "/api/me/recommendations" and method == "GET":
+            return self.api_my_recommendations(conn)
         if path == "/api/devices" and method == "GET":
             return self.api_devices(conn)
         # MUST stay above the startswith("/api/devices/") DELETE rule, or
@@ -24237,6 +23995,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_set_user_password(conn, path.split("/")[4])
         if path.startswith("/api/admin/users/") and path.endswith("/erase") and method == "POST":
             return self.api_admin_erase_user(conn, path.split("/")[4])
+        if path.startswith("/api/admin/users/") and path.endswith("/mute") and method in ("POST", "PATCH"):
+            return self.api_admin_mute_user(conn, path.split("/")[4])
+        if path == "/api/admin/appeals" and method == "GET":
+            return self.api_admin_appeals(conn, query)
+        if path.startswith("/api/admin/appeals/") and method == "PATCH":
+            return self.api_admin_resolve_appeal(conn, path.split("/")[4])
         if path.startswith("/api/admin/users/") and method == "PATCH":
             return self.api_admin_update_user(conn, path.split("/")[4])
         if path.startswith("/api/admin/users/") and method == "DELETE":
@@ -24867,12 +24631,26 @@ class Handler(BaseHTTPRequestHandler):
             first = record_payment_webhook(conn, "stripe", event_type, event_id, payment_intent,
                                            json.dumps(event, ensure_ascii=False), True)
             if first and payment_intent:
+                # MS-6: resolve the refunded/disputed charge across ALL three
+                # rails (wallet top-up, membership, guide product) — previously
+                # only wallet top-ups were clawed back, so a refunded membership
+                # or guide purchase silently kept its benefits.
                 wt = conn.execute(
                     "SELECT order_no FROM wallet_topup_orders WHERE payment_provider = 'stripe' AND provider_trade_no = ? LIMIT 1",
+                    (payment_intent,)).fetchone()
+                po = conn.execute(
+                    "SELECT order_no FROM payment_orders WHERE payment_provider = 'stripe' AND provider_trade_no = ? LIMIT 1",
+                    (payment_intent,)).fetchone()
+                gp = conn.execute(
+                    "SELECT order_no FROM guide_orders WHERE payment_provider = 'stripe' AND provider_trade_no = ? LIMIT 1",
                     (payment_intent,)).fetchone()
                 if wt:
                     entry = "chargeback_debit" if event_type != "charge.refunded" else "refund_debit"
                     wallet_refund_topup(conn, wt["order_no"], reason=event_type, entry_type=entry)
+                if po:
+                    refund_order(conn, po["order_no"])          # mark refunded + revoke membership
+                if gp:
+                    refund_guide_points_order(conn, gp["order_no"], reason=event_type)  # revoke entitlement
         else:
             # Record-but-ignore other event types (still 2xx so Stripe stops retrying).
             record_payment_webhook(conn, "stripe", event_type, event_id, "", "", True)
@@ -24978,6 +24756,16 @@ class Handler(BaseHTTPRequestHandler):
         revoked = bool(transaction.get("revocationDate"))
         terminal_types = {"EXPIRED", "GRACE_PERIOD_EXPIRED", "REFUND", "REVOKE"}
         if revoked or notification_type in {"REFUND", "REVOKE"}:
+            # MS-6: a refunded Apple CONSUMABLE points top-up must claw the points
+            # back (previously only membership was handled).
+            tx_id = str(transaction.get("transactionId") or "")
+            wt = conn.execute(
+                "SELECT order_no FROM wallet_topup_orders WHERE payment_provider = 'apple_iap' "
+                "AND provider_trade_no IN (?, ?) AND provider_trade_no <> '' LIMIT 1",
+                (tx_id, original_id)).fetchone()
+            if wt:
+                wallet_refund_topup(conn, wt["order_no"], reason=event_type, entry_type="refund_debit")
+                return self.send_json({"received": True, "processed": True, "status": "points_refunded"})
             row = _current_membership_row(conn, user_id)
             if row and ((not original_id) or row.get("provider_subscription_id") in ("", original_id)):
                 cancel_membership(conn, user_id, immediate=True, source="ios_iap")
@@ -25245,6 +25033,14 @@ class Handler(BaseHTTPRequestHandler):
         dedup = "google:" + (purchase_token[:90] or order_id)
         result = wallet_credit_iap_topup(conn, user["id"], pack, "google_play", "android", dedup,
                                          provider_product_id=product_id, provider_user_id=order_id)
+        # Points are now granted (idempotent on the purchase token). Consume the
+        # purchase so Google does not auto-refund it after 3 days and so the user
+        # can repurchase the same pack. Best-effort + logged: a transient consume
+        # failure must not fail the request (the user is already credited), but it
+        # is logged so it can be retried within the refund window.
+        if not google_play_consume_purchase(product_id, purchase_token, str(data.get("packageName") or "")):
+            ERR_LOG.warning("google play consume pending for token=%s product=%s (points already granted)",
+                            purchase_token[:16], product_id)
         self.send_json({
             "wallet": result.get("wallet") or get_wallet_snapshot(conn, user["id"]),
             "grantedPoints": result.get("grantedPoints", 0),
@@ -25897,6 +25693,11 @@ class Handler(BaseHTTPRequestHandler):
                 role = "admin"
             else:
                 role = "member"
+        elif PRODUCTION:
+            # No bootstrap token in production: never auto-promote the first
+            # registrant to admin (closes the fresh-DB race). Set
+            # KAIX_ADMIN_BOOTSTRAP_TOKEN or grant admin out-of-band.
+            role = "member"
         else:
             role = "admin" if existing_count == 0 else "member"
         user_id = str(uuid.uuid4())
@@ -25955,6 +25756,10 @@ class Handler(BaseHTTPRequestHandler):
         # the password oracle at all. In adaptive mode this only bites
         # after repeated failures from this IP / against this identifier.
         self._enforce_captcha(conn, data, "login", handle=fail_key)
+        # Hard lockout on top of the captcha: too many failures for this account
+        # or IP in the window => refuse outright (blunts distributed stuffing).
+        if login_locked_out(self._client_ip(), fail_key):
+            raise APIError("尝试次数过多，请稍后再试", 429, "too_many_attempts")
         password = data.get("password") or ""
         row = self._resolve_login_user(conn, raw_identifier)
         if not row or not verify_password(password, row["password_hash"]):
@@ -26102,7 +25907,12 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute(f"UPDATE users SET {sets} WHERE id = ?", [*updates.values(), row["id"]])
             return dict(conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone())
 
-        if email:
+        # SECURITY (account-takeover gate): only AUTO-LINK a Google identity to an
+        # existing local account by email when the email is provider-VERIFIED. A
+        # Workspace admin can mint an account with email_verified=false bearing a
+        # victim's address; without this gate that login would seize the victim's
+        # pre-existing account. Unverified -> fall through to a fresh account.
+        if email and email_verified:
             existing = conn.execute("SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email,)).fetchone()
             if existing:
                 conn.execute(
@@ -26892,6 +26702,24 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         self.send_json({"user": serialize_user_with_counts(conn, user)})
 
+    def api_session(self, conn: sqlite3.Connection) -> None:
+        """Guest-friendly auth probe — ALWAYS 200, returns {authenticated, user}.
+
+        The web bootstrap calls this on every page load (including /login), so an
+        anonymous visitor no longer triggers a 401 in the browser console. The
+        hard-gated /api/auth/me (401 for guests) stays as-is for clients that
+        want a strict check; this endpoint only changes the bootstrap signal."""
+        session = self.current_session(conn)
+        user = None
+        if session:
+            row = conn.execute(
+                "SELECT * FROM users WHERE id = ? AND deleted_at IS NULL",
+                (session["user_id"],),
+            ).fetchone()
+            if row:
+                user = serialize_user_with_counts(conn, dict(row))
+        self.send_json({"authenticated": bool(user), "user": user})
+
     def api_update_me(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         data = self.read_json()
@@ -27253,6 +27081,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_follow(self, conn: sqlite3.Connection, target_id: str, on: bool) -> None:
         user = self.require_user(conn)
+        if on:
+            if not rate_check("follow:" + user["id"], "follow"):  # UGC-6
+                raise APIError("操作过于频繁，请稍后再试", 429, "rate_limited")
+            self._enforce_not_muted(user)  # UGC-5
         if target_id == user["id"]:
             raise APIError("不能关注自己", 400, "invalid_target")
         target = conn.execute("SELECT id FROM users WHERE id = ? AND deleted_at IS NULL", (target_id,)).fetchone()
@@ -27375,6 +27207,66 @@ class Handler(BaseHTTPRequestHandler):
         )
         self.send_json({"items": [serialize_user(dict(r)) for r in rows]})
 
+    # ---- City-life OS (onboarding profile · north-star · recommendations) ----
+
+    def api_my_life_profile(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        self.send_json({"profile": lifehub.get_life_profile(conn, user["id"])})
+
+    def api_update_life_profile(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        profile = lifehub.upsert_life_profile(
+            conn, user["id"],
+            life_stage=str(data.get("lifeStage") or data.get("life_stage") or "").strip(),
+            primary_intent=str(data.get("primaryIntent") or data.get("primary_intent") or "").strip(),
+            secondary_intents=data.get("secondaryIntents") or data.get("secondary_intents"),
+            mark_complete=bool(data.get("complete", True)),
+            now=now_iso(),
+        )
+        self.send_json({"profile": profile})
+
+    def api_my_weekly_actions(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        self.send_json(lifehub.weekly_action_summary(conn, user["id"], now=now_iso()))
+
+    def api_my_recommendations(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        profile = lifehub.get_life_profile(conn, user["id"])
+        self.send_json({
+            "profile": profile,
+            "items": lifehub.recommendations_for(conn, user["id"], profile, now=now_iso()),
+        })
+
+    def api_accept_answer(self, conn: sqlite3.Connection, comment_id: str, on: bool) -> None:
+        """Q&A best answer: the QUESTION's author marks one answer accepted
+        (single accepted per question). Credits the answer's author."""
+        user = self.require_user(conn)
+        comment = conn.execute(
+            "SELECT id, post_id, author_id FROM comments WHERE id = ? AND deleted_at IS NULL",
+            (comment_id,)).fetchone()
+        if not comment:
+            raise APIError("评论不存在", 404, "comment_not_found")
+        post = conn.execute(
+            "SELECT id, author_id FROM posts WHERE id = ? AND deleted_at IS NULL",
+            (comment["post_id"],)).fetchone()
+        if not post:
+            raise APIError("帖子不存在", 404, "post_not_found")
+        if post["author_id"] != user["id"]:
+            raise APIError("只有提问者可以采纳答案", 403, "forbidden")
+        if on:
+            conn.execute("UPDATE comments SET is_accepted = 0 WHERE post_id = ?", (post["id"],))
+            conn.execute("UPDATE comments SET is_accepted = 1 WHERE id = ?", (comment_id,))
+            if comment["author_id"] != user["id"]:
+                lifehub.record_local_action(conn, comment["author_id"], "question_answered",
+                                            target_kind="post", target_id=post["id"], now=now_iso())
+                reputation_apply_event(conn, comment["author_id"], "content_bookmarked",
+                                       actor_user_id=user["id"], target_kind="comment", target_id=comment_id,
+                                       metadata={"reason": "answer_accepted"})
+        else:
+            conn.execute("UPDATE comments SET is_accepted = 0 WHERE id = ?", (comment_id,))
+        self.send_json({"ok": True, "accepted": on})
+
     def api_report(self, conn: sqlite3.Connection, kind: str, target_id: str) -> None:
         user = self.require_user(conn)
         # H5: per-account velocity limit so one account (or bot) can't mass-report
@@ -27401,6 +27293,9 @@ class Handler(BaseHTTPRequestHandler):
         if kind == "post":
             conn.execute("UPDATE posts SET report_count = report_count + 1, updated_at = ? WHERE id = ?", (now_iso(), target_id))
             invalidate_public_ranking_caches()
+            # Proactively pull community-flagged content once enough DISTINCT
+            # reporters agree, so objectionable posts disappear pending review.
+            maybe_autohide_post(conn, target_id)
         self.send_json({"ok": True})
 
     def api_reputation_me(self, conn: sqlite3.Connection) -> None:
@@ -28398,6 +28293,7 @@ class Handler(BaseHTTPRequestHandler):
                 (str(uuid.uuid4()), listing_id, user["id"], now_iso()),
             )
             conn.execute("UPDATE city_listings SET favorite_count = favorite_count + 1, updated_at = ? WHERE id = ?", (now_iso(), listing_id))
+            lifehub.record_local_action(conn, user["id"], "listing_favorited", target_kind="listing", target_id=listing_id, now=now_iso())
             reputation_apply_event(conn, user["id"], "first_bookmark", actor_user_id=user["id"], target_kind="listing", target_id=listing_id)
             if row["seller_user_id"] != user["id"]:
                 reputation_apply_event(
@@ -31514,6 +31410,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_create_post(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
+        self._enforce_not_muted(user)  # UGC-5
         data = self.read_json()
         content = (data.get("content") or "").strip()
         enforce_content_policy(content)  # H4: reject banned/scam/illegal text on create
@@ -31985,6 +31882,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_create_comment(self, conn: sqlite3.Connection, post_id: str) -> None:
         user = self.require_user(conn)
+        self._enforce_not_muted(user)  # UGC-5
+        if not rate_check("comment:" + user["id"], "comment"):  # UGC-6
+            raise APIError("评论过于频繁，请稍后再试", 429, "rate_limited")
         data = self.read_json()
         content = (data.get("content") or "").strip()
         if not content:
@@ -33585,6 +33485,21 @@ class Handler(BaseHTTPRequestHandler):
                     Path(temp_name).unlink(missing_ok=True)
                 except OSError:
                     pass
+        # CSAM / known-bad media gate: now that the full content checksum is
+        # known, reject and PURGE the just-stored object if its hash is on the
+        # blocklist, before the upload is ever marked usable.
+        if checksum and media_hash_blocked(conn, checksum):
+            try:
+                if s3_backed:
+                    _s3_delete_object(d["object_key"])
+                else:
+                    local_upload_path(d["object_key"]).unlink(missing_ok=True)
+            except Exception:
+                pass
+            conn.execute("UPDATE uploaded_files SET status = 'failed', updated_at = ? WHERE id = ?", (now_iso(), d["id"]))
+            record_upload_audit(conn, d["user_id"], "put_blocked", file_id=d["id"], upload_id=upload_id, status="failed", reason="media_blocked")
+            ERR_LOG.warning("blocked media upload by hash user=%s upload=%s", d["user_id"], upload_id)
+            raise APIError("该文件无法上传", 422, "media_blocked")
         metadata = json.loads(d.get("metadata") or "{}")
         if encryption:
             metadata["source"] = "s3-encrypted"
@@ -34250,6 +34165,10 @@ class Handler(BaseHTTPRequestHandler):
         mime = declared_mime if declared_mime in ALLOWED_MIME and declared_mime == sniffed else sniffed
         if mime not in ALLOWED_MIME:
             raise APIError("不支持的文件类型", 415, "unsupported_media")
+        sha = hashlib.sha256(raw).hexdigest()
+        if media_hash_blocked(conn, sha):
+            ERR_LOG.warning("blocked media upload by hash user=%s", user["id"])
+            raise APIError("该文件无法上传", 422, "media_blocked")
         ext = EXT_BY_MIME.get(mime, ".bin")
         media_id = "file_" + uuid.uuid4().hex
         object_key = f"legacy/{user['id']}/{media_id}{ext}"
@@ -34276,7 +34195,7 @@ class Handler(BaseHTTPRequestHandler):
             """,
             (
                 media_id, "legacy_" + uuid.uuid4().hex, user["id"], object_key, url, url, mime,
-                len(raw), upload_file_type(mime), hashlib.sha256(raw).hexdigest(),
+                len(raw), upload_file_type(mime), sha,
                 hashlib.md5(raw).hexdigest(), json.dumps(metadata, ensure_ascii=False, sort_keys=True), now, now,
             ),
         )
@@ -34548,17 +34467,37 @@ class Handler(BaseHTTPRequestHandler):
             })
         self.send_json({"items": items})
 
+    # Client draft ids are opaque tokens minted by the app (e.g. "draft-1", a
+    # UUID, or a ULID). Accept the common safe alphabet; anything else is treated
+    # as untrusted and replaced with a server UUID.
+    _DRAFT_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
+
+    def _resolve_draft_id(self, conn: sqlite3.Connection, user_id: str, raw_id: str) -> str:
+        """Choose the row id for a draft save.
+
+        - well-formed id that is free OR already owned by this user -> reuse it
+          (this is what makes the save idempotent: re-saving "draft-1" updates the
+          same row instead of spawning a duplicate);
+        - malformed id, or an id owned by ANOTHER user -> mint a fresh UUID so we
+          never clobber a foreign draft and never collide on the primary key.
+        """
+        if raw_id and self._DRAFT_ID_RE.match(raw_id):
+            row = conn.execute("SELECT user_id FROM drafts WHERE id = ?", (raw_id,)).fetchone()
+            if row is None or str(row["user_id"]) == str(user_id):
+                return raw_id
+        return str(uuid.uuid4())
+
     def api_save_draft(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         data = self.read_json()
         raw_id = str(data.get("id") or "").strip()
-        # Reuse a client-supplied draft id ONLY if it's the caller's own draft;
-        # a stale/foreign id would otherwise fall through to INSERT and PK-collide
-        # on another user's row (a 500 + cross-user信号). Mint a fresh id instead.
-        if raw_id and conn.execute("SELECT 1 FROM drafts WHERE id = ? AND user_id = ?", (raw_id, user["id"])).fetchone():
-            draft_id = raw_id
-        else:
-            draft_id = str(uuid.uuid4())
+        # Idempotent upsert: honour a well-formed client-supplied draft id so the
+        # SAME id round-trips (offline drafts, retried saves and cross-device sync
+        # all converge on a single row). Only mint a fresh UUID when the id is
+        # malformed or already belongs to ANOTHER user — we never overwrite a
+        # foreign row and never PK-collide into a 500. The response always returns
+        # the canonical id so the client can adopt it locally.
+        draft_id = self._resolve_draft_id(conn, user["id"], raw_id)
         media_ids = "|".join(data.get("media_ids") or [])
         tags = "|".join(data.get("tags") or [])
         content_type = str(data.get("content_type") or "dynamic").strip() or "dynamic"
@@ -35190,6 +35129,86 @@ class Handler(BaseHTTPRequestHandler):
         ACCESS_LOG.warning("admin %s erased user %s (%s)", admin["handle"], target["handle"], user_id)
         self.send_json({"ok": True, "erased": True})
 
+    def api_admin_mute_user(self, conn: sqlite3.Connection, user_id: str) -> None:
+        """UGC-5: timed mute/suspension (graduated enforcement between 'nothing'
+        and a permanent ban). minutes>0 mutes, minutes<=0 unmutes."""
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        target = conn.execute("SELECT id, handle FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,)).fetchone()
+        if not target:
+            raise APIError("用户不存在", 404, "user_not_found")
+        if target["id"] == admin["id"]:
+            raise APIError("不能禁言自己", 400, "cannot_mute_self")
+        try:
+            minutes = int(data.get("minutes") or 0)
+        except (TypeError, ValueError):
+            raise APIError("时长不合法", 400, "invalid_minutes")
+        reason = str(data.get("reason") or "")[:200]
+        if minutes <= 0:
+            conn.execute("UPDATE users SET muted_until = '', mute_reason = '', updated_at = ? WHERE id = ?",
+                         (now_iso(), user_id))
+            action, until = "unmute_user", ""
+        else:
+            minutes = min(minutes, 60 * 24 * 365)
+            until = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat()
+            conn.execute("UPDATE users SET muted_until = ?, mute_reason = ?, updated_at = ? WHERE id = ?",
+                         (until, reason, now_iso(), user_id))
+            action = "mute_user"
+        ACCESS_LOG.warning("admin %s %s %s (%s min)", admin["handle"], action, target["handle"], minutes)
+        self.send_json({"ok": True, "muted_until": until})
+
+    def api_create_appeal(self, conn: sqlite3.Connection) -> None:
+        """UGC-5: a user appeals a moderation action (mute / content removal / merchant rejection)."""
+        user = self.require_user(conn)
+        if not rate_check("report:" + user["id"], "report"):
+            raise APIError("提交过于频繁，请稍后再试", 429, "rate_limited")
+        data = self.read_json()
+        message = str(data.get("message") or "").strip()[:2000]
+        if not message:
+            raise APIError("请填写申诉理由", 400, "empty_appeal")
+        target_kind = str(data.get("target_kind") or "")[:40]
+        target_id = str(data.get("target_id") or "")[:64]
+        if conn.execute(
+            "SELECT 1 FROM appeals WHERE user_id = ? AND target_kind = ? AND target_id = ? AND status = 'open' LIMIT 1",
+            (user["id"], target_kind, target_id)).fetchone():
+            self.send_json({"ok": True, "deduped": True})
+            return
+        conn.execute(
+            "INSERT INTO appeals (id, user_id, target_kind, target_id, message, status, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'open', ?)",
+            (str(uuid.uuid4()), user["id"], target_kind, target_id, message, now_iso()))
+        self.send_json({"ok": True})
+
+    def api_admin_appeals(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        limit = max(1, min(int(query.get("limit") or 50), 200))
+        status = (query.get("status") or "open").strip().lower()
+        if status in ("open", "resolved"):
+            rows = list(conn.execute("SELECT * FROM appeals WHERE status = ? ORDER BY created_at DESC LIMIT ?", (status, limit)))
+        else:
+            rows = list(conn.execute("SELECT * FROM appeals ORDER BY created_at DESC LIMIT ?", (limit,)))
+        users = fetch_users_by_ids(conn, list({r["user_id"] for r in rows}))
+        items = [{"id": d["id"], "user": users.get(d["user_id"]), "target_kind": d["target_kind"],
+                  "target_id": d["target_id"], "message": d["message"], "status": d["status"],
+                  "resolution": d["resolution"], "created_at": d["created_at"], "resolved_at": d["resolved_at"]}
+                 for d in (dict(r) for r in rows)]
+        self.send_json({"items": items})
+
+    def api_admin_resolve_appeal(self, conn: sqlite3.Connection, appeal_id: str) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        resolution = str(data.get("resolution") or "")[:500]
+        decision = (data.get("decision") or "reviewed").strip().lower()
+        row = conn.execute("SELECT id, user_id FROM appeals WHERE id = ?", (appeal_id,)).fetchone()
+        if not row:
+            raise APIError("申诉不存在", 404, "appeal_not_found")
+        conn.execute("UPDATE appeals SET status = 'resolved', resolution = ?, handled_by = ?, resolved_at = ? WHERE id = ?",
+                     (f"{decision}: {resolution}".strip(": "), admin["id"], now_iso(), appeal_id))
+        if decision == "granted":
+            conn.execute("UPDATE users SET muted_until = '', mute_reason = '', updated_at = ? WHERE id = ?",
+                         (now_iso(), row["user_id"]))
+        self.send_json({"ok": True})
+
     def api_admin_posts(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
         limit = max(1, min(int(query.get("limit") or 50), 200))
@@ -35329,23 +35348,35 @@ class Handler(BaseHTTPRequestHandler):
     def api_admin_reports(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
         limit = max(1, min(int(query.get("limit") or 50), 200))
-        rows = list(conn.execute(
-            "SELECT * FROM reports ORDER BY created_at DESC LIMIT ?", (limit,),
-        ))
+        # Default to the OPEN queue (what needs action); ?status=all|dismissed|actioned
+        # to review history.
+        status_filter = (query.get("status") or "open").strip().lower()
+        if status_filter and status_filter != "all":
+            rows = list(conn.execute(
+                "SELECT * FROM reports WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                (status_filter, limit),
+            ))
+        else:
+            rows = list(conn.execute(
+                "SELECT * FROM reports ORDER BY created_at DESC LIMIT ?", (limit,),
+            ))
         reporter_ids = list({r["reporter_id"] for r in rows})
         reporters = fetch_users_by_ids(conn, reporter_ids)
         items = []
         for r in rows:
             d = dict(r)
             preview: dict[str, Any] = {}
+            content_status = ""  # current visibility of the reported content
             if d["target_kind"] == "post":
-                p = conn.execute("SELECT content, author_id FROM posts WHERE id = ?", (d["target_id"],)).fetchone()
+                p = conn.execute("SELECT content, author_id, status, report_count FROM posts WHERE id = ?", (d["target_id"],)).fetchone()
                 if p:
-                    preview = {"content": p["content"], "author": fetch_users_by_ids(conn, [p["author_id"]]).get(p["author_id"])}
+                    preview = {"content": p["content"], "author": fetch_users_by_ids(conn, [p["author_id"]]).get(p["author_id"]), "report_count": p["report_count"]}
+                    content_status = p["status"]
             elif d["target_kind"] == "comment":
-                p = conn.execute("SELECT content, author_id FROM comments WHERE id = ?", (d["target_id"],)).fetchone()
+                p = conn.execute("SELECT content, author_id, deleted_at FROM comments WHERE id = ?", (d["target_id"],)).fetchone()
                 if p:
                     preview = {"content": p["content"], "author": fetch_users_by_ids(conn, [p["author_id"]]).get(p["author_id"])}
+                    content_status = "deleted" if p["deleted_at"] else "visible"
             elif d["target_kind"] == "user":
                 u = fetch_users_by_ids(conn, [d["target_id"]]).get(d["target_id"])
                 if u:
@@ -35358,18 +35389,50 @@ class Handler(BaseHTTPRequestHandler):
                 "reason": d["reason"],
                 "note": d["note"],
                 "created_at": d["created_at"],
+                "status": d.get("status") or "open",
+                "action": d.get("action") or "",
+                "resolved_at": d.get("resolved_at"),
+                "content_status": content_status,
                 "preview": preview,
             })
         self.send_json({"items": items})
 
     def api_admin_resolve_report(self, conn: sqlite3.Connection, report_id: str) -> None:
+        """Close out a report with a real action + audit (App Store 1.2). Body
+        {action: dismiss|hide|remove, note?}. 'dismiss' clears the report and
+        re-publishes content that was auto-hidden by reports; 'hide' pulls it
+        pending review; 'remove' takes it down. Resolves ALL open reports on the
+        same target and writes a moderation-audit row. Replaces the old fire-and-
+        forget row delete that never touched the offending content."""
         admin = self.require_admin(conn)
-        row = conn.execute("SELECT id FROM reports WHERE id = ?", (report_id,)).fetchone()
+        row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
         if not row:
             raise APIError("举报不存在", 404, "report_not_found")
-        conn.execute("DELETE FROM reports WHERE id = ?", (report_id,))
-        ACCESS_LOG.info("admin %s dismissed report %s", admin["handle"], report_id)
-        self.send_json({"ok": True})
+        report = dict(row)
+        data = self.read_json()
+        action = (data.get("action") or "dismiss").strip().lower()
+        note = (data.get("note") or "").strip()
+        kind, target_id = report["target_kind"], report["target_id"]
+        if action in ("remove", "takedown"):
+            set_content_hidden(conn, kind, target_id, removed=True)
+            new_status = "actioned"
+        elif action in ("hide", "review"):
+            set_content_hidden(conn, kind, target_id, removed=False)
+            new_status = "actioned"
+        elif action in ("dismiss", "ignore", "restore"):
+            restore_auto_hidden_content(conn, kind, target_id)
+            new_status, action = "dismissed", "dismiss"
+        else:
+            raise APIError("未知的处理动作", 400, "invalid_action")
+        conn.execute(
+            "UPDATE reports SET status = ?, action = ?, resolved_by = ?, resolved_note = ?, resolved_at = ? "
+            "WHERE target_kind = ? AND target_id = ? AND status = 'open'",
+            (new_status, action, admin["id"], note, now_iso(), kind, target_id),
+        )
+        record_moderation_action(conn, admin["id"], kind, target_id, action, reason=note, report_id=report_id)
+        ACCESS_LOG.info("admin %s resolved report %s action=%s target=%s:%s",
+                        admin["handle"], report_id, action, kind, target_id)
+        self.send_json({"ok": True, "action": action, "status": new_status})
 
     def api_admin_feedback(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
@@ -35510,6 +35573,10 @@ def run() -> None:
     server_apns.configure(db, DB_LOCK)
     start_visitor_writer()
     start_thumbnail_worker()
+    start_email_workers()
+    # Cross-worker SSE fan-out (no-op single-process / without KAIX_REDIS_URL).
+    shared_state.get_event_bus().start(HUB._publish_local)
+    ACCESS_LOG.info("shared-state backend=%s worker=%s", shared_state.backend_name(), shared_state.WORKER_ID)
     start_listing_fallback_warmup()
     # Singleton background jobs (time-based, not per-request). When running
     # multiple backend processes behind nginx, only ONE instance should run

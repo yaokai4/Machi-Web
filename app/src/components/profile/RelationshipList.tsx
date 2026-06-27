@@ -84,6 +84,7 @@ export function RelationshipList({ handle, kind }: RelationshipListProps) {
           title={kind === "followers" ? "还没有粉丝" : "还没有关注任何人"}
           subtitle={kind === "followers" ? "发布更多内容会吸引到更多读者。" : "去发现页找些感兴趣的账号吧。"}
           icon={Users}
+          action={kind === "following" ? { label: "去逛逛", href: "/home" } : undefined}
         />
       ) : (
         <ul className="divide-y divide-kx-stroke/30">

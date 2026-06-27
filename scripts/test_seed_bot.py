@@ -22,6 +22,9 @@ from pathlib import Path
 _TMP = Path(tempfile.gettempdir()) / f"seedbot_test_{uuid.uuid4().hex}.db"
 os.environ["KAIX_DB_PATH"] = str(_TMP)
 os.environ["KAIX_ENV"] = "production"
+# This test boots prod-mode on SQLite on purpose (to skip the dev demo seed);
+# allow it past the SQLite-in-production startup guard.
+os.environ["KAIX_ALLOW_SQLITE_IN_PRODUCTION"] = "1"
 os.environ["KAIX_PASSWORD_PEPPER"] = "seedbot-test-pepper-not-for-prod"
 os.environ["KAIX_ADMIN_HANDLE"] = "admin"
 os.environ["KAIX_ADMIN_INITIAL_PASSWORD"] = "Admin12345"

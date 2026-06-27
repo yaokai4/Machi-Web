@@ -11,6 +11,7 @@
     "fresh-build": "npm run build && node scripts/check-build.mjs",
     "check-build": "node scripts/check-build.mjs",
     "doctor": "node scripts/doctor.mjs",
+    "route-scan": "node scripts/route-scan.mjs",
     "lint": "eslint . --max-warnings=0",
     "test:home:ssr": "node scripts/check-home-ssr.mjs",
     "type-check": "rm -rf .next/types tsconfig.tsbuildinfo && tsc --noEmit --incremental false",

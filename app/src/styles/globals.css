@@ -58,6 +58,14 @@
   --mc-shadow-soft: 0 18px 46px -34px rgba(15, 23, 42, 0.42);
   --mc-shadow-card: 0 24px 64px -42px rgba(15, 23, 42, 0.55);
   --mc-shadow-float: 0 32px 90px -52px rgba(79, 70, 229, 0.55);
+
+  /* ---- Mobile bottom-nav geometry (single source of truth) ----
+     The floating compose button derives its bottom offset from these so it is
+     ALWAYS clear of the tab bar + its unread badges, on every viewport and with
+     or without a home-indicator safe area. */
+  --kx-mobile-tabbar-bottom: max(1.1rem, calc(env(safe-area-inset-bottom) + 0.35rem));
+  --kx-mobile-tabbar-height: 4rem;   /* h-12 pill + py-2 wrapper */
+  --kx-mobile-tabbar-gap: 1rem;      /* clearance between FAB and the bar */
 }
 
 :root.dark, [data-theme="dark"] {
@@ -380,7 +388,11 @@ body::before {
   .kx-mobile-floating-compose {
     position: fixed;
     right: max(1rem, calc(env(safe-area-inset-right) + 1rem));
-    bottom: max(5.95rem, calc(env(safe-area-inset-bottom) + 5.25rem));
+    /* Sit a full gap ABOVE the tab bar (bottom offset + bar height + gap), so the
+       button never overlaps the nav items or their unread badges. */
+    bottom: calc(
+      var(--kx-mobile-tabbar-bottom) + var(--kx-mobile-tabbar-height) + var(--kx-mobile-tabbar-gap)
+    );
     z-index: 47;
     display: inline-flex;
     height: 3.25rem;

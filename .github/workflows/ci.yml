@@ -62,6 +62,12 @@ jobs:
           python scripts/test_stripe_hardening.py
           python scripts/test_apple_iap_hardening.py
           python scripts/test_adaptive_captcha.py
+          python scripts/test_wallet_points.py
+          python scripts/test_account_deletion_scrub.py
+          python scripts/test_ugc_moderation.py
+          python scripts/test_content_policy.py
+          python scripts/test_shared_state.py
+          python scripts/test_lifehub.py
 
       - name: Verify SQLite to PostgreSQL migration and runtime
         env:

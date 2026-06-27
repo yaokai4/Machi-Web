@@ -118,6 +118,44 @@ class WalletFoundationTests(unittest.TestCase):
         kinds = sorted((dict(r)["entry_type"], dict(r)["points_delta"]) for r in rows)
         self.assertEqual(kinds, [("bonus", 100), ("topup", 1800)])
 
+    # 4a. crash-atomicity: a failure mid-settlement rolls the WHOLE op back —
+    # the order must NOT be left 'paid' with no points (the unrecoverable
+    # "charged real money, received nothing" window). Without @money_atomic the
+    # order flip autocommits and this test fails (order stuck 'paid', no credit).
+    def test_credit_topup_is_crash_atomic(self):
+        uid = _make_user(self.conn)
+        pack = server.get_topup_product(self.conn, "machi_points_1800")
+        order = server.create_wallet_topup_order(self.conn, uid, pack, "stripe", "web")
+        order_no = order["order_no"]
+        bal0 = server.get_wallet_snapshot(self.conn, uid)["balancePoints"]
+
+        # Inject a crash during the ledger write (after the order is flipped).
+        real_post = server.wallet_post_ledger
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated crash mid-settlement")
+
+        server.wallet_post_ledger = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                server.wallet_credit_topup(self.conn, order_no, provider_trade_no="pi_x", source_type="stripe")
+        finally:
+            server.wallet_post_ledger = real_post
+
+        # Rolled back wholesale: order still payable, no points credited, no ledger rows.
+        status = dict(self.conn.execute(
+            "SELECT status FROM wallet_topup_orders WHERE order_no = ?", (order_no,)).fetchone())["status"]
+        self.assertEqual(status, "pending")
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], bal0)
+        self.assertEqual(self.conn.execute(
+            "SELECT COUNT(*) AS c FROM wallet_ledger_entries WHERE user_id = ?", (uid,)).fetchone()["c"], 0)
+
+        # And a clean retry settles correctly — the failure was fully recoverable.
+        r = server.wallet_credit_topup(self.conn, order_no, provider_trade_no="pi_x", source_type="stripe")
+        self.assertTrue(r["applied"])
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"],
+                         bal0 + int(order["total_points"] or 0))
+
     # 4b. ledger idempotency_key blocks a duplicate post
     def test_ledger_idempotency_key(self):
         uid = _make_user(self.conn)

@@ -522,12 +522,13 @@ export const CommentSchema = z.object({
   liked: z.boolean(),
   author: UserSchema.nullable().optional(),
   post: PostSchema.nullable().optional(),
+  is_accepted: z.boolean().optional(),
 });
 export type KXComment = z.infer<typeof CommentSchema>;
 
 export const NotificationSchema = z.object({
   id: z.string(),
-  type: z.enum(["like", "comment", "reply", "repost", "follow", "mention", "bookmark", "system", "listing_inquiry"]),
+  type: z.enum(["like", "comment", "reply", "repost", "follow", "mention", "bookmark", "system", "listing_inquiry", "listing_inquiry_status", "listing_review", "listing_review_reply", "message", "meetup_join"]),
   actor_id: z.string(),
   user_id: z.string(),
   target_post_id: z.string().nullable().optional(),

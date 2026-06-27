@@ -19,8 +19,7 @@ import server  # noqa: E402
 
 
 def reset():
-    with server._LOGIN_FAIL_LOCK:
-        server._LOGIN_FAILURES.clear()
+    server.reset_login_failures()
 
 
 def test_modes():
@@ -54,9 +53,11 @@ def test_success_clears():
 
 def test_window_expiry():
     reset()
-    old = time.monotonic() - server.CAPTCHA_LOGIN_FAIL_WINDOW_SEC - 5
-    with server._LOGIN_FAIL_LOCK:
-        server._LOGIN_FAILURES["ip:8.8.8.8"] = [old, old, old, old]
+    # Inject stale wall-clock failures into the shared in-process tracker.
+    tracker = server.shared_state.get_failure_tracker()
+    old = time.time() - server.CAPTCHA_LOGIN_FAIL_WINDOW_SEC - 5
+    with tracker._lock:
+        tracker._state["ip:8.8.8.8"] = [old, old, old, old]
     assert not server.login_failures_exceeded("8.8.8.8"), "stale failures outside the window must not count"
 
 

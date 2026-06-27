@@ -616,6 +616,8 @@ function contentTypeStyle(type: string): string {
     case "housing":
     case "roommate":
       return "bg-blue-50 text-blue-700 border-blue-100 dark:bg-blue-500/10 dark:text-blue-200 dark:border-blue-400/20";
+    case "question":
+      return "bg-sky-50 text-sky-700 border-sky-100 dark:bg-sky-500/10 dark:text-sky-200 dark:border-sky-400/20";
     case "job_post":
     case "job_seek":
     case "referral":
@@ -634,6 +636,8 @@ function contentTypeTint(type: string): { bg: string; border: string } {
     case "housing":
     case "roommate":
       return { bg: "bg-blue-50/70 dark:bg-blue-500/5", border: "border-blue-100 dark:border-blue-400/15" };
+    case "question":
+      return { bg: "bg-sky-50/70 dark:bg-sky-500/5", border: "border-sky-100 dark:border-sky-400/15" };
     case "job_post":
     case "job_seek":
     case "referral":

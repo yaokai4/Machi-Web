@@ -14,7 +14,7 @@ import { PostCard } from "@/components/feed/PostCard";
 import { Dialog, ConfirmDialog } from "@/components/design/Dialog";
 import { NavTabs } from "@/components/design/NavTabs";
 import { fullDateTime, compactNumber, relativeTime } from "@/lib/format";
-import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { useAuthPrompt, useCompose, useSession, useToasts } from "@/lib/store";
 import { useRouter } from "next/navigation";
 import { BrandPhrase } from "@/components/marketing/BrandText";
 import { regionDisplayName, regionFromUser } from "@/lib/regions";
@@ -38,6 +38,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
   const router = useRouter();
   const pushToast = useToasts((s) => s.push);
   const me = useSession((s) => s.user);
+  const compose = useCompose((s) => s.open);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const setSessionUser = useSession((s) => s.setUser);
   const queryClient = useQueryClient();
@@ -354,7 +355,28 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
         ) : segmentQuery.isError ? (
           <ErrorState onRetry={() => segmentQuery.refetch()} />
         ) : !segmentQuery.data?.items?.length ? (
-          <EmptyState title="还没有内容" />
+          <EmptyState
+            title={
+              segment === "replies" ? "还没有回复"
+                : segment === "bookmarks" ? "还没有收藏"
+                : segment === "likes" ? "还没有喜欢"
+                : segment === "reposts" ? "还没有转发"
+                : segment === "media" ? "还没有图片或视频"
+                : "还没有动态"
+            }
+            subtitle={
+              isSelf
+                ? (segment === "bookmarks" ? "在 Feed 中点击书签即可收藏喜欢的帖子。" : segment === "posts" ? "发布你的第一条动态，让大家看到你。" : undefined)
+                : undefined
+            }
+            action={
+              isSelf && (segment === "posts" || segment === "media")
+                ? { label: "发布", onClick: () => compose() }
+                : isSelf && segment === "bookmarks"
+                  ? { label: "去逛逛", href: "/home" }
+                  : undefined
+            }
+          />
         ) : segment === "replies" ? (
           (segmentQuery.data.items as KXComment[]).map((c) => (
             <div key={c.id} className="kx-card">

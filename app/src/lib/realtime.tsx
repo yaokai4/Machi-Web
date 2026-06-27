@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { api, readToken } from "./api";
+import { api } from "./api";
 import { useSession, useToasts } from "./store";
 
 /**
@@ -23,8 +23,11 @@ export function useRealtime() {
 
   useEffect(() => {
     if (!user) return;
-    const bearer = readToken();
-    if (!bearer) return;
+    // Auth for the stream is established by `POST /api/events/token`, which
+    // carries the session via the same-origin cookie (or legacy Bearer).
+    // Do NOT gate on readToken() here: web sessions now live in an HttpOnly
+    // cookie, so readToken() is null for cookie-authed (now-default) users —
+    // gating on it silently disabled realtime for the majority of users.
 
     let es: EventSource | null = null;
     let retryTimer: ReturnType<typeof setTimeout> | null = null;

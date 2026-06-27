@@ -95,6 +95,40 @@ class ListingMembershipPublishTests(unittest.TestCase):
 
         self.assertTrue(requires_review)
 
+    @patch("server.reputation_effective_limits", return_value=low_trust_controls())
+    @patch("server.reputation_ensure_user", return_value={"level": 1, "reputation_score": 0, "risk_score": 0})
+    @patch("server.has_active_membership", return_value=False)
+    def test_free_first_optin_allows_first_then_paywalls(self, *_mocks) -> None:
+        # Cold-start opt-in (LISTING_FREE_FIRST_PER_TYPE=1): a non-member may
+        # publish the FIRST gated listing for free, but the second hits the
+        # membership paywall. This guards the env-controlled liquidity escape
+        # hatch so it can't silently regress to "everything free".
+        with patch.object(server, "LISTING_FREE_FIRST_PER_TYPE", 1):
+            requires_review, _ = server.reputation_validate_listing_publish(
+                FakeConnection(monthly_count=0), self.user(), "rental"
+            )
+            self.assertTrue(requires_review)
+
+            with self.assertRaises(server.APIError) as ctx:
+                server.reputation_validate_listing_publish(
+                    FakeConnection(monthly_count=1), self.user(), "rental"
+                )
+            self.assertEqual(ctx.exception.code, "MEMBERSHIP_REQUIRED")
+
+    @patch("server.reputation_effective_limits", return_value=low_trust_controls())
+    @patch("server.reputation_ensure_user", return_value={"level": 1, "reputation_score": 0, "risk_score": 0})
+    @patch("server.has_active_membership", return_value=False)
+    def test_default_strict_blocks_first_gated_listing(self, *_mocks) -> None:
+        # Production default (LISTING_FREE_FIRST_PER_TYPE=0): even the first
+        # gated listing requires membership.
+        with patch.object(server, "LISTING_FREE_FIRST_PER_TYPE", 0):
+            for listing_type in ("rental", "job", "hiring", "local_service", "discount"):
+                with self.assertRaises(server.APIError) as ctx:
+                    server.reputation_validate_listing_publish(
+                        FakeConnection(monthly_count=0), self.user(), listing_type
+                    )
+                self.assertEqual(ctx.exception.code, "MEMBERSHIP_REQUIRED")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

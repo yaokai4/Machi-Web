@@ -42,6 +42,7 @@ import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { useRealtime } from "@/lib/realtime";
 import { useGlobalShortcuts } from "@/lib/keyboard";
 import { ErrorBoundary } from "@/components/design/ErrorBoundary";
+import { AppShellSkeleton, shellVariantForPath } from "@/components/shell/AppShellSkeleton";
 import { useI18n, type I18nKey } from "@/lib/i18n";
 import type { KXUser } from "@/lib/types";
 
@@ -140,11 +141,9 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
   // content. Once a probe succeeds the user is known and content renders.
   const sessionUnknown = waitingForAuth || (status === "degraded" && !user);
   if (requireAuth && (sessionUnknown || status === "unauthed")) {
-    return (
-      <div className="min-h-dvh flex items-center justify-center text-kx-muted">
-        <span className="kx-skeleton w-32 h-4" />
-      </div>
-    );
+    // Keep the full chrome skeleton (not a bare centered bar) so the
+    // route-loading → auth-wait → content hand-off never flashes or shifts.
+    return <AppShellSkeleton variant={shellVariantForPath(pathname)} showRight={showRightSidebar} />;
   }
 
   return (
@@ -514,7 +513,10 @@ function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPa
   const unreadNotif = notif.data?.unread_count ?? 0;
   const unreadMsg = (conv.data || []).reduce((sum, c) => sum + (c.unread_count || 0), 0);
   const listingPublishHref = cityListingPublishHref(pathname);
-  const hideFloatingCompose = pathname?.startsWith("/messages") || isListingWorkspacePath(pathname);
+  const hideFloatingCompose =
+    pathname?.startsWith("/messages") ||
+    isListingWorkspacePath(pathname) ||
+    isComposeSuppressedPath(pathname);
   const openPublish = () => {
     setMoreOpen(false);
     if (!user) {
@@ -544,6 +546,7 @@ function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPa
         <Link
           href={listingPublishHref}
           className="kx-mobile-floating-compose md:hidden"
+          data-testid="compose-floating-button"
           aria-label={t("listing_publish_info")}
           title={t("listing_publish_info")}
         >
@@ -553,6 +556,7 @@ function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPa
         <button
           type="button"
           className="kx-mobile-floating-compose md:hidden"
+          data-testid="compose-floating-button"
           onClick={openPublish}
           aria-label={t("action_compose")}
           title={t("action_compose")}
@@ -563,7 +567,7 @@ function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPa
       <nav
         className="kx-mobile-tabbar md:hidden px-2 py-2"
         data-elevated={moreOpen}
-        style={{ bottom: "max(1.1rem, calc(env(safe-area-inset-bottom) + 0.35rem))" }}
+        style={{ bottom: "var(--kx-mobile-tabbar-bottom)" }}
       >
         <ul className="relative z-[1] flex h-12 items-center justify-between">
           {items.map((item) => {
@@ -683,6 +687,18 @@ function isListingWorkspacePath(pathname?: string | null) {
     pathname.startsWith("/my/saved-listings") ||
     pathname.startsWith("/my/favorites") ||
     /^\/cities\/[^/]+\/(marketplace|rentals|jobs|services|deals|discounts)\/[^/]+/.test(pathname)
+  );
+}
+
+// Non-creation surfaces (settings / wallet / membership) where a floating
+// "compose a post" button is noise — it would also crowd the bottom nav and
+// unread badges on mobile. Hide it there.
+function isComposeSuppressedPath(pathname?: string | null) {
+  if (!pathname) return false;
+  return (
+    pathname.startsWith("/settings") ||
+    pathname.startsWith("/wallet") ||
+    pathname.startsWith("/membership")
   );
 }
 

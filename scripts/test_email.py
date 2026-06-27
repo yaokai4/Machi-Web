@@ -15,14 +15,54 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import server  # noqa: E402
+
+
+def _run_outbox_check(recipient: str, send_verification: bool) -> None:
+    """Mock/CI path: capture the message into a JSONL outbox instead of sending
+    it for real, then assert a record landed. No real mail leaves the process and
+    no code/body is ever printed."""
+    if not server.EMAIL_OUTBOX_PATH:
+        server.EMAIL_OUTBOX_PATH = str(Path(tempfile.gettempdir()) / "machi_email_outbox_test.jsonl")
+    server.EMAIL_TEST_MODE = "outbox"
+    path = server._email_outbox_jsonl_path()
+
+    def _count() -> int:
+        if not path.exists():
+            return 0
+        return sum(1 for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip())
+
+    before = _count()
+    if send_verification:
+        # Generated and captured locally; the value is never surfaced.
+        code = server.generate_numeric_code()
+        ok = server.send_verification_email(recipient, code, purpose="register", locale="zh")
+    else:
+        ok = server.send_email(
+            recipient,
+            "Machi 邮件测试 / Email test",
+            "这是一封来自 Machi 后端的测试邮件。\n"
+            "This is a test email from the Machi backend.\n",
+        )
+
+    after = _count()
+    if not ok or after <= before:
+        print("result: FAILED — outbox capture did not record the message", file=sys.stderr)
+        sys.exit(1)
+
+    records = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+    last = json.loads(records[-1])
+    print(f"transport=outbox -> {server.mask_email(str(last.get('to') or ''))} (captured, no real send)")
+    print(f"result: outbox now holds {after} record(s) at {path}")
 
 
 def main() -> None:
@@ -40,9 +80,15 @@ def main() -> None:
     args = parser.parse_args()
 
     to = (args.to or "").strip()
-    if not server.is_valid_email(to):
-        print("error: provide a valid recipient via --to or KAIX_TEST_EMAIL", file=sys.stderr)
-        sys.exit(2)
+
+    # Mock/outbox mode needs no real recipient. It is used when explicitly
+    # requested (KAIX_EMAIL_TEST_MODE=outbox / KAIX_EMAIL_OUTBOX_PATH) OR when no
+    # valid recipient was supplied — so CI can run `python3 scripts/test_email.py`
+    # with nothing configured and still verify the email path end to end.
+    if server._email_outbox_active() or not server.is_valid_email(to):
+        recipient = to if server.is_valid_email(to) else "outbox-check@machi.test"
+        _run_outbox_check(recipient, args.verification)
+        return
 
     print(f"transport={server.EMAIL_TRANSPORT} -> {server.mask_email(to)} (sending...)")
     if args.verification:

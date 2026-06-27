@@ -147,6 +147,17 @@ const ZH_HANS = {
   comment_delete_desc: "删除后无法恢复。",
   comment_sort_top: "高赞",
   comment_sort_new: "最新",
+  // Q&A best answer
+  answer_accept: "采纳为最佳回答",
+  answer_unaccept: "取消采纳",
+  answer_accepted_badge: "已采纳",
+  answer_accepted_toast: "已采纳为最佳回答",
+  answer_unaccepted_toast: "已取消采纳",
+  qa_resolved: "已解决",
+  qa_open: "待解决",
+  // empty-state CTAs
+  empty_cta_write_first: "写第一条",
+  empty_cta_browse: "去逛逛",
   // profile
   profile_edit: "编辑资料",
   profile_following: "关注",
@@ -576,6 +587,17 @@ const EN: Partial<Dict> = {
   comment_delete_desc: "This cannot be undone.",
   comment_sort_top: "Top",
   comment_sort_new: "Newest",
+  // Q&A best answer
+  answer_accept: "Mark as best answer",
+  answer_unaccept: "Remove acceptance",
+  answer_accepted_badge: "Accepted",
+  answer_accepted_toast: "Marked as best answer",
+  answer_unaccepted_toast: "Acceptance removed",
+  qa_resolved: "Resolved",
+  qa_open: "Open",
+  // empty-state CTAs
+  empty_cta_write_first: "Write your first",
+  empty_cta_browse: "Browse",
   profile_edit: "Edit profile",
   profile_following: "Following",
   profile_followers: "Followers",

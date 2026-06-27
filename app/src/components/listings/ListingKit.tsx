@@ -10,6 +10,8 @@ import {
   AlertTriangle,
   ArrowLeft,
   BadgeCheck,
+  CalendarDays,
+  ShieldAlert,
   Bed,
   BedDouble,
   Beer,
@@ -4156,18 +4158,70 @@ function MiniListingCard({ listing }: { listing: KXCityListing }) {
   );
 }
 
+function publisherJoinLabel(seller: KXCityListing["seller"]): string | null {
+  const iso = seller?.joined_at || seller?.created_at;
+  if (!iso) return null;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return null;
+  return `${d.getFullYear()}年${d.getMonth() + 1}月加入`;
+}
+
+function publisherIsNew(seller: KXCityListing["seller"]): boolean {
+  const iso = seller?.joined_at || seller?.created_at;
+  if (!iso) return false;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return false;
+  return Date.now() - d.getTime() < 14 * 24 * 60 * 60 * 1000;
+}
+
 function SellerBox({ item }: { item: KXCityListing }) {
+  const seller = item.seller;
+  const verified = showOfficialBadge(seller) || showVerifiedBadge(seller) || seller?.merchant_verified || item.verification_status === "verified";
+  const joinLabel = publisherJoinLabel(seller);
+  const heat = seller?.total_heat ?? 0;
+  const isNew = publisherIsNew(seller);
+  const profileHref = seller?.handle ? `/u/${seller.handle}` : undefined;
   return (
     <section className="mt-5 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
       <div className="flex items-center gap-3">
-        {item.seller ? <Avatar user={item.seller} size={42} /> : <span className="grid h-11 w-11 place-items-center rounded-full bg-slate-200 font-black text-slate-600">M</span>}
-        <div className="min-w-0">
-          <p className="flex items-center gap-1 font-black text-slate-950">{item.seller?.display_name || "Machi 用户"}{showOfficialBadge(item.seller) ? <OfficialBadge /> : showVerifiedBadge(item.seller) ? <VerifiedBadge /> : null}</p>
+        {seller ? <Avatar user={seller} size={42} href={profileHref} /> : <span className="grid h-11 w-11 place-items-center rounded-full bg-slate-200 font-black text-slate-600">M</span>}
+        <div className="min-w-0 flex-1">
+          {profileHref ? (
+            <Link href={profileHref} className="flex items-center gap-1 font-black text-slate-950 hover:underline">{seller?.display_name || "Machi 用户"}{showOfficialBadge(seller) ? <OfficialBadge /> : showVerifiedBadge(seller) ? <VerifiedBadge /> : null}</Link>
+          ) : (
+            <p className="flex items-center gap-1 font-black text-slate-950">{seller?.display_name || "Machi 用户"}{showOfficialBadge(seller) ? <OfficialBadge /> : showVerifiedBadge(seller) ? <VerifiedBadge /> : null}</p>
+          )}
           <p className="text-xs font-semibold text-slate-500">发布者认证：{verificationLabel(item.verification_status)}</p>
         </div>
       </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold">
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 ring-1 ${verified ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-slate-100 text-slate-500 ring-slate-200"}`}>
+          <BadgeCheck className="h-3.5 w-3.5" /> {verified ? "已实名认证" : "未认证"}
+        </span>
+        {joinLabel ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-600 ring-1 ring-slate-200">
+            <CalendarDays className="h-3.5 w-3.5" /> {joinLabel}
+          </span>
+        ) : null}
+        {heat > 0 ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-orange-50 px-2 py-1 text-orange-700 ring-1 ring-orange-200">
+            <Flame className="h-3.5 w-3.5" /> 贡献值 {compactCount(heat)}
+          </span>
+        ) : null}
+      </div>
+      {isNew && !verified ? (
+        <p className="mt-2 flex items-center gap-1.5 text-xs font-semibold text-amber-700">
+          <AlertTriangle className="h-3.5 w-3.5 shrink-0" /> 新账号，交易前请多核实身份、当面验货。
+        </p>
+      ) : null}
     </section>
   );
+}
+
+function compactCount(n: number): string {
+  if (n >= 10000) return `${(n / 10000).toFixed(1)}万`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
 }
 
 function AttributeGrid({ item }: { item: KXCityListing }) {
@@ -4186,11 +4240,23 @@ function AttributeGrid({ item }: { item: KXCityListing }) {
   );
 }
 
+const HIGH_RISK_LISTING_TYPES = new Set<string>(["rental", "job", "hiring", "local_service", "discount"]);
+
 function SafetyNotice({ type }: { type: KXListingType }) {
+  const highRisk = HIGH_RISK_LISTING_TYPES.has(type);
+  const box = highRisk ? "border-rose-200 bg-rose-50" : "border-amber-200 bg-amber-50";
+  const head = highRisk ? "text-rose-900" : "text-amber-900";
+  const body = highRisk ? "text-rose-900/80" : "text-amber-900/80";
   return (
-    <section className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 p-4">
-      <h3 className="flex items-center gap-2 text-sm font-black text-amber-900"><AlertTriangle className="h-4 w-4" /> 安全提醒</h3>
-      <ul className="mt-2 space-y-1 text-sm font-semibold leading-6 text-amber-900/80">
+    <section className={`mt-5 rounded-2xl border p-4 ${box}`}>
+      <h3 className={`flex items-center gap-2 text-sm font-black ${head}`}>
+        {highRisk ? <ShieldAlert className="h-4 w-4" /> : <AlertTriangle className="h-4 w-4" />}
+        {highRisk ? "高风险类目 · 谨慎交易" : "安全提醒"}
+      </h3>
+      {highRisk ? (
+        <p className={`mt-1.5 text-sm font-bold ${head}`}>Machi 只是信息平台，不代收任何押金 / 订金 / 货款。任何要求提前转账的都要高度警惕。</p>
+      ) : null}
+      <ul className={`mt-2 space-y-1 text-sm font-semibold leading-6 ${body}`}>
         {safetyTips(type).map((tip) => <li key={tip}>· {tip}</li>)}
       </ul>
     </section>
@@ -5100,12 +5166,16 @@ function listingFormFields(type: KXListingType, category = "", attrs: Record<str
   ];
 }
 
-function safetyTips(type: KXListingType) {
-  if (type === "rental") return ["Machi 只是信息平台，不代收押金、订金或房租。", "地址只展示到区域，具体看房前核实发布者身份。", "高风险房源显示待核验，可举报并由后台下架。"];
-  if (type === "job" || type === "hiring") return ["招聘不得收押金、保证金或培训费。", "核实招聘方资质、薪资、工作地点和签证说明。", "禁止成人、灰产或违法兼职。"];
-  if (type === "local_service") return ["商家与服务默认进入审核，认证状态会展示。", "餐厅、票务、旅行、接送交通和手续协助需写清资质、包含/不包含内容和取消规则。", "暂不开放外卖配送、维修安装、学习咨询；禁止成人服务、高风险线下服务、虚假票务、违规代办和违法服务。", "平台暂不做外卖配送，不代收第三方服务款。"];
-  if (type === "discount") return ["确认优惠有效期、适用门店和使用规则。", "不要向未核验商家提前转账或提供敏感信息。", "遇到虚假折扣、诱导消费或强制捆绑请立即举报。"];
-  return ["Machi 不代收二手交易款。", "不要提前转账，交易建议选择公共场所。", "核实对方身份，谨慎提供个人信息。", "遇到可疑内容立即举报。"];
+const OFF_PLATFORM_TIP = "谨防站外交易：不点陌生链接、不私下加站外好友打款，沟通与交易尽量留在 Machi 内，遇到可疑行为立即举报。";
+
+function safetyTips(type: KXListingType): string[] {
+  let base: string[];
+  if (type === "rental") base = ["Machi 只是信息平台，不代收押金、订金或房租。", "地址只展示到区域，具体看房前核实发布者身份。", "高风险房源显示待核验，可举报并由后台下架。"];
+  else if (type === "job" || type === "hiring") base = ["招聘不得收押金、保证金或培训费。", "核实招聘方资质、薪资、工作地点和签证说明。", "禁止成人、灰产或违法兼职。"];
+  else if (type === "local_service") base = ["商家与服务默认进入审核，认证状态会展示。", "餐厅、票务、旅行、接送交通和手续协助需写清资质、包含/不包含内容和取消规则。", "暂不开放外卖配送、维修安装、学习咨询；禁止成人服务、高风险线下服务、虚假票务、违规代办和违法服务。", "平台暂不做外卖配送，不代收第三方服务款。"];
+  else if (type === "discount") base = ["确认优惠有效期、适用门店和使用规则。", "不要向未核验商家提前转账或提供敏感信息。", "遇到虚假折扣、诱导消费或强制捆绑请立即举报。"];
+  else base = ["Machi 不代收二手交易款。", "不要提前转账，交易建议选择公共场所。", "核实对方身份，谨慎提供个人信息。"];
+  return [...base, OFF_PLATFORM_TIP];
 }
 
 /// lodging = 租房页「民宿」分区（数据为住宿类 local_service），

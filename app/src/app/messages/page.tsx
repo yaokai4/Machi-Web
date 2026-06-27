@@ -70,7 +70,7 @@ export default function MessagesPage() {
       ) : convos.isError ? (
         <ErrorState onRetry={() => convos.refetch()} />
       ) : !convos.data?.length ? (
-        <EmptyState title={t("msg_empty_title")} subtitle={t("msg_empty_subtitle")} icon={Mail} />
+        <EmptyState title={t("msg_empty_title")} subtitle={t("msg_empty_subtitle")} icon={Mail} action={{ label: t("msg_new"), onClick: () => setNewOpen(true) }} />
       ) : (
         <ul className="divide-y divide-kx-stroke/30">
           {convos.data.map((conv) => {

@@ -15,6 +15,10 @@ import {
   Bookmark,
   CheckCheck,
   Trash2,
+  Store,
+  Star,
+  MessageSquare,
+  Users,
 } from "lucide-react";
 import clsx from "clsx";
 import { api, APIError } from "@/lib/api";
@@ -38,6 +42,12 @@ const ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   mention: AtSign,
   bookmark: Bookmark,
   system: Bell,
+  listing_inquiry: Store,
+  listing_inquiry_status: Store,
+  listing_review: Star,
+  listing_review_reply: Star,
+  message: MessageSquare,
+  meetup_join: Users,
 };
 
 export default function NotificationsPage() {
@@ -122,6 +132,7 @@ export default function NotificationsPage() {
 
   const notificationTargetHref = (main: KXNotification) => {
     if (main.target_conversation_id) return `/messages/${main.target_conversation_id}`;
+    if (main.target_listing_id) return `/listings/${main.target_listing_id}`;
     if (main.target_post_id) return `/p/${main.target_post_id}`;
     if (main.actor) return `/u/${main.actor.handle}`;
     return "";
@@ -162,7 +173,7 @@ export default function NotificationsPage() {
       ) : notif.isError ? (
         <ErrorState onRetry={() => notif.refetch()} />
       ) : grouped.length === 0 ? (
-        <EmptyState title={t("notif_empty_title")} subtitle={t("notif_empty_subtitle")} icon={Bell} />
+        <EmptyState title={t("notif_empty_title")} subtitle={t("notif_empty_subtitle")} icon={Bell} action={{ label: t("empty_cta_browse"), href: "/home" }} />
       ) : (
         <ul className="divide-y divide-kx-stroke/30">
           {grouped.map((group) => {
@@ -243,6 +254,18 @@ export default function NotificationsPage() {
                       >
                         查看对话
                       </Link>
+                    ) : main.target_listing_id ? (
+                      <Link
+                        href={`/listings/${main.target_listing_id}`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          void openNotificationTarget(main, unreadIds);
+                        }}
+                        className="kx-link ml-1"
+                      >
+                        查看信息
+                      </Link>
                     ) : main.target_post_id ? (
                       <Link
                         href={`/p/${main.target_post_id}`}
@@ -308,6 +331,11 @@ function NotifVerb({ kind }: { kind: string }) {
     case "mention": return <>提到了你</>;
     case "system": return <>系统通知</>;
     case "listing_inquiry": return <>联系了你发布的城市信息</>;
+    case "listing_inquiry_status": return <>更新了咨询 / 预约状态</>;
+    case "listing_review": return <>点评了你发布的城市信息</>;
+    case "listing_review_reply": return <>回复了你的点评</>;
+    case "message": return <>给你发来一条私信</>;
+    case "meetup_join": return <>报名参加了你的活动</>;
     default: return <>给你发来新通知</>;
   }
 }

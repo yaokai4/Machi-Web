@@ -34,7 +34,7 @@ export default function DraftsPage() {
         ) : q.isError ? (
           <ErrorState onRetry={() => q.refetch()} />
         ) : !q.data?.length ? (
-          <EmptyState title="没有草稿" subtitle="发布前可以保存为草稿，便于稍后继续编辑。" icon={FileText} />
+          <EmptyState title="没有草稿" subtitle="发布前可以保存为草稿，便于稍后继续编辑。" icon={FileText} action={{ label: "写第一条", onClick: () => compose() }} />
         ) : (
           q.data.map((d) => (
             <article key={d.id} className="kx-card flex items-start gap-3">

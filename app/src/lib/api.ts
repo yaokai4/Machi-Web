@@ -837,6 +837,16 @@ export const api = {
     const { user } = await request<{ user: KXUser }>("GET", "/api/auth/me");
     return user;
   },
+  // Q&A best answer: the question author marks one answer accepted.
+  acceptAnswer(commentId: string, on: boolean): Promise<{ ok: boolean; accepted: boolean }> {
+    return request(on ? "POST" : "DELETE", `/api/comments/${encodeURIComponent(commentId)}/accept`);
+  },
+  // Guest-friendly probe used by SessionBootstrap on every page load. Returns
+  // 200 with { authenticated: false } for anonymous visitors instead of 401, so
+  // a guest hitting /login never produces a console error.
+  async session(): Promise<{ authenticated: boolean; user: KXUser | null }> {
+    return request<{ authenticated: boolean; user: KXUser | null }>("GET", "/api/auth/session");
+  },
   async updateMe(patch: Partial<KXUser> & { password?: string }): Promise<KXUser> {
     const { user } = await request<{ user: KXUser }>("PATCH", "/api/auth/me", patch);
     return user;

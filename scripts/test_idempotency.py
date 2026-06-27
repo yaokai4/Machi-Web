@@ -73,18 +73,40 @@ class IdempotencyLogicTests(unittest.TestCase):
         ).fetchall()
 
     def test_miss_then_store_then_hit_replays_same_response(self):
-        h = make_handler({"Idempotency-Key": "k1"})
+        h = make_handler({"Idempotency-Key": "k1", "Authorization": "Bearer tokA"})
         self.assertIsNone(h._idempotency_lookup(self.conn, "POST", "/api/posts"))
         h._idem_capture = (200, b'{"id":"p1"}')
         h._idempotency_store(self.conn, "POST", "/api/posts")
 
-        # A different user/ip with the same key + path replays the first result.
-        h2 = make_handler({"Idempotency-Key": "k1"}, user="u2", ip="9.9.9.9")
+        # The SAME caller (same session token) retrying replays the first result.
+        h2 = make_handler({"Idempotency-Key": "k1", "Authorization": "Bearer tokA"})
         self.assertEqual(
             h2._idempotency_lookup(self.conn, "POST", "/api/posts"),
             (200, b'{"id":"p1"}'),
         )
         self.assertEqual(len(self._rows()), 1)  # no duplicate row
+
+    def test_cross_user_cannot_replay_anothers_response(self):
+        """A different caller sending the SAME Idempotency-Key on the SAME path
+        must NOT receive the first caller's cached response (cross-user leak)."""
+        a = make_handler({"Idempotency-Key": "shared-key", "Authorization": "Bearer tokA"})
+        a._idem_capture = (200, b'{"secret":"A-only"}')
+        a._idempotency_store(self.conn, "POST", "/api/posts")
+
+        # Different bearer token -> different caller namespace -> a clean MISS.
+        b = make_handler({"Idempotency-Key": "shared-key", "Authorization": "Bearer tokB"})
+        self.assertIsNone(b._idempotency_lookup(self.conn, "POST", "/api/posts"))
+
+        # And an anonymous caller from a different IP also gets a miss.
+        c = make_handler({"Idempotency-Key": "shared-key"}, ip="9.9.9.9")
+        self.assertIsNone(c._idempotency_lookup(self.conn, "POST", "/api/posts"))
+
+        # The original caller still replays their own response.
+        a2 = make_handler({"Idempotency-Key": "shared-key", "Authorization": "Bearer tokA"})
+        self.assertEqual(
+            a2._idempotency_lookup(self.conn, "POST", "/api/posts"),
+            (200, b'{"secret":"A-only"}'),
+        )
 
     def test_no_key_is_a_noop(self):
         h = make_handler({})
@@ -112,14 +134,17 @@ class IdempotencyLogicTests(unittest.TestCase):
 
     def test_expired_record_is_a_miss_and_purged(self):
         old = int(time.time()) - 10 * 86400
+        h = make_handler({"Idempotency-Key": "k5"})
+        # Insert under the SAME (caller-namespaced) scope the handler computes,
+        # so the expiry purge can find and delete it.
+        scope = h._idempotency_scope("POST", "/api/posts")
         self.conn.execute(
             "INSERT INTO idempotency_keys "
             "(scope, idem_key, status, response_body, created_epoch, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            ("POST /api/posts", "k5", 200, b'{"id":"old"}', old,
+            (scope, "k5", 200, b'{"id":"old"}', old,
              "2026-01-01T00:00:00+00:00"),
         )
-        h = make_handler({"Idempotency-Key": "k5"})
         self.assertIsNone(h._idempotency_lookup(self.conn, "POST", "/api/posts"))
         self.assertEqual(self._rows(), [])  # purged on read
 
