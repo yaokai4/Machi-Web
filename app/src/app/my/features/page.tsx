@@ -57,14 +57,39 @@ export default function MyFeaturesPage() {
     enabled: !!user,
     staleTime: 60_000,
   });
+  // Enabled for any signed-in user (the endpoint returns business:null for
+  // non-merchants) so the badge can read the *authoritative* business record
+  // instead of trusting possibly-stale denormalized flags on the user object.
   const dashboard = useQuery({
     queryKey: ["business-dashboard"],
     queryFn: () => api.businessDashboard(),
-    enabled: !!user && !!(user.is_merchant || user.merchant_verified),
+    enabled: !!user,
     staleTime: 60_000,
   });
   const newLeadCount = newLeads.data?.length || 0;
   const merchantMetrics = dashboard.data?.metrics;
+
+  // Single source of truth for the merchant card badge. The business record's
+  // verification_status wins when loaded; user flags are only a fallback while
+  // the dashboard query is still in flight. Surfaces the full lifecycle so a
+  // rejected / suspended / in-review account never reads as a flat "未开通".
+  const merchantStatusBadge = ((): string => {
+    const status = dashboard.data?.business?.verification_status;
+    if (status) {
+      switch (status) {
+        case "verified": return "已开通";
+        case "pending":
+        case "needs_review": return "审核中";
+        case "rejected": return "审核失败";
+        case "suspended": return "已暂停";
+        case "draft": return "草稿";
+        default: break;
+      }
+    }
+    if (user?.merchant_verified) return "已开通";
+    if (user?.is_merchant) return "审核中";
+    return "未开通";
+  })();
 
   return (
     <AppShell wide right={null}>
@@ -131,7 +156,7 @@ export default function MyFeaturesPage() {
             const Icon = item.icon;
             const badgeCount = item.badge === "leads" ? newLeadCount : 0;
             const merchantBadge = item.badge === "merchant"
-              ? (user?.merchant_verified ? "已认证" : user?.is_merchant ? "审核中" : "未开通")
+              ? merchantStatusBadge
               : item.badge === "membership" && user?.is_verified_member
                 ? "已开通"
                 : "";
@@ -150,7 +175,15 @@ export default function MyFeaturesPage() {
                     <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-950">
                       {item.title}
                       {merchantBadge ? (
-                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${merchantBadge === "已认证" || merchantBadge === "已开通" ? "bg-emerald-50 text-emerald-700" : merchantBadge === "审核中" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500"}`}>
+                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${
+                          merchantBadge === "已认证" || merchantBadge === "已开通"
+                            ? "bg-emerald-50 text-emerald-700"
+                            : merchantBadge === "审核中" || merchantBadge === "草稿"
+                              ? "bg-amber-50 text-amber-700"
+                              : merchantBadge === "审核失败" || merchantBadge === "已暂停"
+                                ? "bg-rose-50 text-rose-700"
+                                : "bg-slate-100 text-slate-500"
+                        }`}>
                           {merchantBadge}
                         </span>
                       ) : null}

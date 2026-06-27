@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { FieldShell } from "@/components/design/FieldShell";
@@ -22,6 +22,7 @@ export function CaptchaBox({
   idPrefix,
   error,
   refreshSignal = 0,
+  focusSignal = 0,
   onState,
   labels,
   className,
@@ -30,6 +31,7 @@ export function CaptchaBox({
   idPrefix: string;
   error?: string;
   refreshSignal?: number;
+  focusSignal?: number;
   onState: (state: CaptchaState) => void;
   labels: {
     label: string;
@@ -47,6 +49,13 @@ export function CaptchaBox({
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const [nonce, setNonce] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Parent bumps `focusSignal` when a rejected challenge needs re-entry — pull
+  // keyboard focus straight to the input so the user doesn't hunt for it.
+  useEffect(() => {
+    if (focusSignal > 0) inputRef.current?.focus();
+  }, [focusSignal]);
 
   useEffect(() => {
     let cancelled = false;
@@ -86,6 +95,7 @@ export function CaptchaBox({
     <FieldShell label={labels.label} htmlFor={`${idPrefix}-captcha`} error={error} hint={labels.hint} className={className}>
       <div className="flex gap-2">
         <input
+          ref={inputRef}
           id={`${idPrefix}-captcha`}
           className="kx-input min-w-0 flex-1"
           inputMode="text"

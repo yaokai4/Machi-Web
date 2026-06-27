@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
   AlertCircle,
+  CheckCircle2,
   ChevronRight,
   Eye,
   EyeOff,
@@ -119,9 +120,22 @@ function RegisterForm() {
   const [touched, setTouched] = useState<Record<string, boolean>>({});
   const [serverError, setServerError] = useState<{ field?: keyof Errors; message: string } | null>(null);
   const [captcha, setCaptcha] = useState<CaptchaState>(EMPTY_CAPTCHA);
-  // Bumped after each send-code attempt: the server burns the challenge per use.
+  // Bumped only when a challenge is actually rejected — the server burns it on
+  // a failed verify, so a retry needs a fresh image. A *successful* send keeps
+  // the user's input intact (the collapsed "verified" badge below).
   const [captchaRefresh, setCaptchaRefresh] = useState(0);
-  const handleCaptchaState = useCallback((state: CaptchaState) => setCaptcha(state), []);
+  // Bumped to pull keyboard focus back to the captcha after a rejection.
+  const [captchaFocus, setCaptchaFocus] = useState(0);
+  // Once the email code is sent the captcha is spent; show a confirmation badge
+  // instead of re-prompting. A resend (cooldown end) re-arms a fresh challenge.
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  // Secondary note on the captcha row when a non-captcha failure still forced a
+  // refresh (e.g. rate limit) — tells the user the cleared field is expected.
+  const [captchaNote, setCaptchaNote] = useState("");
+  const handleCaptchaState = useCallback((state: CaptchaState) => {
+    setCaptcha(state);
+    if (state.code) setCaptchaNote("");
+  }, []);
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
   const c = AUTH_COPY[locale];
 
@@ -139,10 +153,15 @@ function RegisterForm() {
   }, [status, router, redirect]);
 
   useEffect(() => {
-    if (codeCooldown <= 0) return;
+    if (codeCooldown <= 0) {
+      // Cooldown ended: a resend needs a brand-new challenge (the prior one was
+      // consumed), so drop the "verified" badge to remount a fresh captcha.
+      if (captchaVerified) setCaptchaVerified(false);
+      return;
+    }
     const timer = window.setTimeout(() => setCodeCooldown((v) => Math.max(0, v - 1)), 1000);
     return () => window.clearTimeout(timer);
-  }, [codeCooldown]);
+  }, [codeCooldown, captchaVerified]);
 
   useEffect(() => {
     const value = handle.trim();
@@ -227,13 +246,26 @@ function RegisterForm() {
           ? { captcha_id: captcha.captchaId, captcha_code: captcha.code }
           : undefined,
       );
-      // The challenge is single-use — a resend needs a fresh image.
-      setCaptchaRefresh((v) => v + 1);
+      // Success: the server consumed the captcha and registration won't ask for
+      // it again. Don't wipe the field — collapse it into a "verified" badge.
+      if (captcha.enabled && captcha.captchaId) {
+        setCaptchaVerified(true);
+        setCaptchaNote("");
+      }
       setCodeCooldown(60);
       pushToast({ kind: "success", message: c.codeSent });
     } catch (err) {
-      setServerError(mapRegisterError(err, c));
-      setCaptchaRefresh((v) => v + 1);
+      // The challenge reached the server, which burns it on every verify — so
+      // any verdict needs a fresh image. Refresh, surface the reason, and pull
+      // focus back to the captcha so re-entry is obvious.
+      const mapped = mapRegisterError(err, c);
+      setServerError(mapped);
+      if (captcha.enabled && captcha.captchaId) {
+        setCaptchaRefresh((v) => v + 1);
+        setCaptchaFocus((v) => v + 1);
+        // A non-captcha failure still cleared the field — say so explicitly.
+        setCaptchaNote(mapped.field === "captcha" ? "" : c.captchaRefreshed);
+      }
     } finally {
       setSendingCode(false);
     }
@@ -450,21 +482,32 @@ function RegisterForm() {
               />
             </FieldShell>
 
-            <CaptchaBox
-              scene="register"
-              idPrefix="reg"
-              className="sm:col-span-2"
-              error={fieldError("captcha")}
-              refreshSignal={captchaRefresh}
-              onState={handleCaptchaState}
-              labels={{
-                label: c.captcha,
-                placeholder: c.captchaPlaceholder,
-                hint: c.captchaHint,
-                refresh: c.captchaRefresh,
-                loadFailed: c.captchaLoadFailed,
-              }}
-            />
+            {captchaVerified ? (
+              <div className="sm:col-span-2">
+                <span className="mb-1.5 block text-xs font-bold text-kx-muted">{c.captcha}</span>
+                <div className="flex h-11 items-center gap-2 rounded-kx-lg border border-emerald-500/30 bg-emerald-500/10 px-3 text-sm font-semibold text-emerald-700 dark:text-emerald-300">
+                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                  {c.captchaVerified}
+                </div>
+              </div>
+            ) : (
+              <CaptchaBox
+                scene="register"
+                idPrefix="reg"
+                className="sm:col-span-2"
+                error={fieldError("captcha") || captchaNote || undefined}
+                refreshSignal={captchaRefresh}
+                focusSignal={captchaFocus}
+                onState={handleCaptchaState}
+                labels={{
+                  label: c.captcha,
+                  placeholder: c.captchaPlaceholder,
+                  hint: c.captchaHint,
+                  refresh: c.captchaRefresh,
+                  loadFailed: c.captchaLoadFailed,
+                }}
+              />
+            )}
 
             <FieldShell
               label={c.email}

@@ -111,6 +111,8 @@ export const AUTH_COPY = {
     captchaLoadFailed: "加载失败，点击重试",
     captchaRequired: "请输入图形验证码。",
     invalidCaptcha: "图形验证码不正确，请重试。",
+    captchaVerified: "图形验证已通过",
+    captchaRefreshed: "图形验证码已刷新，请重新输入。",
     registerFootnote: "注册成功后 Web 与 iOS 会共享同一套账号、城市、会员和内容数据。",
     leftLoginItems: [
       ["城市优先", "按当前城市展示新闻、活动、租房、二手和招聘。"],
@@ -205,6 +207,8 @@ export const AUTH_COPY = {
     captchaLoadFailed: "読み込み失敗・タップで再試行",
     captchaRequired: "画像認証コードを入力してください。",
     invalidCaptcha: "画像認証コードが正しくありません。",
+    captchaVerified: "画像認証クリア",
+    captchaRefreshed: "画像認証を更新しました。もう一度入力してください。",
     registerFootnote: "登録後、Web と iOS で同じアカウント、都市、会員情報、コンテンツを利用できます。",
     leftLoginItems: [
       ["都市優先", "現在の都市に合わせてニュース、イベント、住まい、中古、仕事を表示します。"],
@@ -299,6 +303,8 @@ export const AUTH_COPY = {
     captchaLoadFailed: "Failed to load — tap to retry",
     captchaRequired: "Please enter the captcha characters.",
     invalidCaptcha: "The captcha is incorrect. Please try again.",
+    captchaVerified: "Captcha verified",
+    captchaRefreshed: "Captcha refreshed — please re-enter it.",
     registerFootnote: "After sign-up, Web and iOS share the same account, city, membership, and content data.",
     leftLoginItems: [
       ["City-first", "See news, events, housing, secondhand, and jobs for your current city."],

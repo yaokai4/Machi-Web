@@ -82,6 +82,7 @@ function LoginForm() {
   const [captcha, setCaptcha] = useState<CaptchaState>(EMPTY_CAPTCHA);
   // Bumped after every attempt: the server burns the challenge per submission.
   const [captchaRefresh, setCaptchaRefresh] = useState(0);
+  const [captchaFocus, setCaptchaFocus] = useState(0);
   const handleCaptchaState = useCallback((state: CaptchaState) => setCaptcha(state), []);
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
   const c = AUTH_COPY[locale];
@@ -149,8 +150,10 @@ function LoginForm() {
     } catch (err) {
       const mapped = mapLoginError(err, c);
       setServerError(mapped);
-      // Every attempt consumes the challenge server-side — show a fresh one.
+      // Every attempt consumes the challenge server-side — show a fresh one and,
+      // when a captcha is enforced, pull focus back so re-entry is obvious.
       setCaptchaRefresh((v) => v + 1);
+      if (captcha.enabled && captcha.captchaId) setCaptchaFocus((v) => v + 1);
     } finally {
       setLoading(false);
     }
@@ -372,6 +375,7 @@ function LoginForm() {
               idPrefix="login"
               error={serverError?.field === "captcha" ? serverError.message : undefined}
               refreshSignal={captchaRefresh}
+              focusSignal={captchaFocus}
               onState={handleCaptchaState}
               labels={{
                 label: c.captcha,

@@ -2043,9 +2043,18 @@ export function MyListingsPage({ saved = false }: { saved?: boolean }) {
   });
   const update = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => api.updateListing(id, { status }),
-    onSuccess: () => {
+    onSuccess: (_data, variables) => {
       queryClient.invalidateQueries({ queryKey: ["my-listings"] });
-      pushToast({ kind: "success", message: "状态已更新" });
+      // Specific confirmation per action — never a vague "状态已更新".
+      const message = ({
+        published: "已重新上架",
+        hidden: "已下架",
+        reserved: "已标记为预约",
+        sold: "已标记为出售",
+        rented: "已标记为出租",
+        closed: "已标记为关闭",
+      } as Record<string, string>)[variables.status] ?? "状态已更新";
+      pushToast({ kind: "success", message });
     },
     onError: (e) => pushToast({ kind: "error", message: (e as APIError).message }),
   });
