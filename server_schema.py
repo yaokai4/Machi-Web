@@ -3887,6 +3887,68 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE guide_orders ADD COLUMN IF NOT EXISTS provider_trade_no TEXT NOT NULL DEFAULT '';
         """,
     ),
+    # H5: a reporter may only count ONCE per target. De-dup existing rows
+    # (keep the earliest) then add the UNIQUE index, so report_count reflects
+    # DISTINCT reporters and can't be inflated by repeated POSTs to bury content.
+    # Backend-split because SQLite (rowid) and Postgres (ctid) de-dup differently.
+    (
+        74,
+        "reports: dedup + UNIQUE(reporter,kind,target) [H5] (sqlite)",
+        """
+        -- backend: sqlite
+        DELETE FROM reports WHERE rowid NOT IN (
+            SELECT MIN(rowid) FROM reports GROUP BY reporter_id, target_kind, target_id
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(reporter_id, target_kind, target_id);
+        """,
+    ),
+    (
+        75,
+        "reports: dedup + UNIQUE(reporter,kind,target) [H5] (postgres)",
+        """
+        -- backend: postgres
+        DELETE FROM reports a USING reports b
+         WHERE a.ctid > b.ctid
+           AND a.reporter_id = b.reporter_id
+           AND a.target_kind = b.target_kind
+           AND a.target_id = b.target_id;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_reports_unique ON reports(reporter_id, target_kind, target_id);
+        """,
+    ),
+    # Apple/Stripe over-grant race guard: one external transaction
+    # (payment_provider, provider_trade_no) must map to at most ONE order, so
+    # concurrent /apple/verify (double-tap / restore racing a notification) can't
+    # create two paid orders and extend membership twice. Partial index excludes
+    # the many pending orders whose provider_trade_no is still ''. De-dup keeps
+    # the earliest row (the duplicate is an erroneous double-record of the same
+    # external txn, not real distinct money).
+    (
+        76,
+        "payment_orders: UNIQUE(provider, provider_trade_no) over-grant guard (sqlite)",
+        """
+        -- backend: sqlite
+        DELETE FROM payment_orders WHERE provider_trade_no <> '' AND rowid NOT IN (
+            SELECT MIN(rowid) FROM payment_orders WHERE provider_trade_no <> ''
+            GROUP BY payment_provider, provider_trade_no
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_orders_provider_trade
+            ON payment_orders(payment_provider, provider_trade_no) WHERE provider_trade_no <> '';
+        """,
+    ),
+    (
+        77,
+        "payment_orders: UNIQUE(provider, provider_trade_no) over-grant guard (postgres)",
+        """
+        -- backend: postgres
+        DELETE FROM payment_orders a USING payment_orders b
+         WHERE a.ctid > b.ctid
+           AND a.provider_trade_no <> ''
+           AND a.payment_provider = b.payment_provider
+           AND a.provider_trade_no = b.provider_trade_no;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_orders_provider_trade
+            ON payment_orders(payment_provider, provider_trade_no) WHERE provider_trade_no <> '';
+        """,
+    ),
 ]
 
 

@@ -411,8 +411,21 @@ GEOIP_MAXMIND_DB = _env("KAIX_GEOIP_MAXMIND_DB", "")
 # Comma-separated origin allowlist. In production this should be the host(s)
 # that serve the Web client. In dev we fall back to "*" so localhost still
 # works.
-_origins_raw = _env("KAIX_ALLOWED_ORIGINS", "*" if not PRODUCTION else "")
+# In production, default to the canonical site origin instead of "" — an empty
+# allowlist made _set_cors() reflect ANY Origin back (no Allow-Credentials, so
+# not a credential-theft hole, but still over-permissive). Override via env if
+# the Web client is served from a different host.
+_origins_raw = _env(
+    "KAIX_ALLOWED_ORIGINS",
+    "*" if not PRODUCTION else "https://machicity.com,https://www.machicity.com",
+)
 ALLOWED_ORIGINS = {o.strip() for o in _origins_raw.split(",") if o.strip()}
+
+# Number of trusted reverse-proxy hops in front of the app (1 = nginx only,
+# 2 = CloudFront -> nginx). The real client IP is the (hops)-th value from the
+# RIGHT of X-Forwarded-For; the LEFT entries are attacker-prepended and must
+# never be trusted for throttling. 0 = ignore XFF entirely (use the peer).
+KAIX_TRUSTED_PROXY_HOPS = max(0, int(_env("KAIX_TRUSTED_PROXY_HOPS", "1")))
 
 # Rate-limit policy. Token-bucket per IP per group. Tuned for an audience
 # of "tens of thousands of real users" sharing a few dozen NATs at peak.
@@ -435,6 +448,9 @@ RATE_LIMITS = {
     "read":   (300, 300),    # reads
     "search": (40, 40),
     "media":  (20, 20),
+    # H5: per-account report velocity — stops a single account mass-reporting to
+    # suppress content. Keyed by user id (not IP) in api_report.
+    "report": (20, 10),
     # A 9-image post uses presign + local PUT + complete for every item.
     # Keep uploads in their own bucket so a legitimate album does not
     # exhaust the generic media quota before the post can be created. The
@@ -686,6 +702,19 @@ APPLE_IAP_KEY_ID = _env("APPLE_IAP_KEY_ID", "")
 APPLE_IAP_PRIVATE_KEY = _read_secret_file(_env("APPLE_IAP_PRIVATE_KEY", ""), _env("APPLE_IAP_PRIVATE_KEY_PATH", ""))
 APPLE_IAP_SHARED_SECRET = _env("APPLE_IAP_SHARED_SECRET", "")
 APPLE_IAP_ENVIRONMENT = _env("APPLE_IAP_ENVIRONMENT", "Sandbox")
+# Pinned Apple Root CA - G3 SHA-256 (DER) fingerprint(s). The StoreKit2 /
+# App Store Server JWS x5c chain MUST terminate in this root, else an attacker
+# can sign a forged transaction with their own self-issued leaf cert. Override
+# via env (comma-separated) ONLY after confirming with:
+#   openssl x509 -in AppleRootCA-G3.cer -inform der -fingerprint -sha256 -noout
+APPLE_ROOT_CA_SHA256 = {
+    fp.strip().lower().replace(":", "")
+    for fp in _env(
+        "APPLE_ROOT_CA_SHA256",
+        "63343abfb89a6a03ebb57e9b3f5fa7be7c4f5c756f3017b3a8c488c3653e9179",
+    ).split(",")
+    if fp.strip()
+}
 APPLE_APP_STORE_NOTIFICATION_URL = _env("APPLE_APP_STORE_NOTIFICATION_URL", "https://machicity.com/api/payments/webhook/apple")
 
 # Stripe (card / wallet payments via hosted Checkout). Only the SECRET key
@@ -795,6 +824,10 @@ INQUIRY_RESERVATION_LISTING_TYPES: tuple[str, ...] = ("rental", "local_service")
 INQUIRY_APPLICATION_LISTING_TYPES: tuple[str, ...] = ("job", "hiring")
 BUSINESS_CONSOLE_LISTING_TYPES: tuple[str, ...] = ("local_service", "discount", "event", "hiring")
 LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT = max(0, int(_env("LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT", "3") or 3))
+# Cold-start liquidity: a NEW account may publish this many listings of each
+# membership-gated type for FREE (lifetime) before the membership paywall
+# applies — so the marketplace can fill up before monetization kicks in.
+LISTING_FREE_FIRST_PER_TYPE = max(0, int(_env("LISTING_FREE_FIRST_PER_TYPE", "1") or 1))
 LISTING_MEMBERSHIP_QUOTA_GROUPS: dict[str, set[str]] = {
     "rental": {"rental"},
     "job": {"job", "hiring"},
@@ -9806,6 +9839,17 @@ def require_membership_listing_publish(
     if normalized not in LISTING_TYPES_REQUIRING_MEMBERSHIP:
         return
     label = LISTING_MEMBERSHIP_GROUP_LABELS.get(normalized, "该频道")
+    # Cold-start liquidity: let a new account publish its FIRST listing(s) of this
+    # type for free (lifetime) before the paywall — so supply can build before
+    # monetization. Counts only live (non-deleted) listings of this exact type.
+    if LISTING_FREE_FIRST_PER_TYPE > 0 and not has_active_membership(conn, user_id):
+        prior = conn.execute(
+            "SELECT COUNT(*) AS c FROM city_listings WHERE seller_user_id = ? AND type = ? AND status != 'deleted'",
+            (user_id, normalized),
+        ).fetchone()
+        used = int((prior["c"] if prior else 0) or 0)
+        if used < LISTING_FREE_FIRST_PER_TYPE:
+            return  # within the free first-listing allowance
     if not has_active_membership(conn, user_id):
         raise APIError(f"发布{label}信息需要开通 Machi 会员。", 403, "MEMBERSHIP_REQUIRED")
     if not enforce_quota or LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT <= 0:
@@ -12564,6 +12608,47 @@ def hash_ip(ip: str) -> str:
     return hashlib.sha256(b"machi-ip\x1f" + PASSWORD_PEPPER + (ip or "").encode("utf-8")).hexdigest()[:32]
 
 
+# ---- content policy (H4) ---------------------------------------------------
+# A configurable deny-list applied to user-authored text on the create paths
+# (posts, comments, DMs, listings, profile bio). The MECHANISM is the product;
+# the actual word lists are Trust & Safety DATA that varies per locale and is
+# supplied via env (KAIX_BANNED_WORDS, comma-separated, case-insensitive). We
+# ship only a tiny, high-signal seed of scam / illegal-goods solicitation
+# patterns so the gate is live out of the box without embedding slur lists in
+# source. Tune/extend in prod via env without a code change.
+_BANNED_WORDS_SEED = [
+    "代开发票", "办理证件", "出售银行卡", "枪支弹药", "child porn", "childporn",
+]
+BANNED_WORDS = {
+    w.strip().lower()
+    for w in (_BANNED_WORDS_SEED + _env("KAIX_BANNED_WORDS", "").split(","))
+    if w.strip()
+}
+
+
+def content_policy_reason(*texts: str) -> str:
+    """Return a non-empty violation code if any banned term appears in the
+    concatenated user text (case-insensitive substring), else ''. Cheap and
+    locale-agnostic; never logs the offending text."""
+    if not BANNED_WORDS:
+        return ""
+    blob = " ".join(t for t in texts if t).lower()
+    if not blob:
+        return ""
+    for term in BANNED_WORDS:
+        if term and term in blob:
+            return "content_policy_violation"
+    return ""
+
+
+def enforce_content_policy(*texts: str) -> None:
+    """Raise a 400 policy violation if user text trips the deny-list. Applied on
+    create so objectionable content (slurs/scam/illegal, configured via env) is
+    rejected before it is ever stored or served."""
+    if content_policy_reason(*texts):
+        raise APIError("内容包含违规信息，无法发布。如有疑问请联系客服。", 400, "content_policy_violation")
+
+
 # ===========================================================================
 # Machi Verified — membership + payment service layer
 #
@@ -12905,8 +12990,12 @@ def activate_or_extend_membership(conn: sqlite3.Connection, user_id: str, plan_k
         end = _aware(parse_iso(row.get("current_period_end"))) or now
         end = _add_plan_period(end, plan, periods)
         conn.execute(
+            # Clear cancel_at_period_end / canceled_at: a member who was scheduled
+            # to lapse but pays again is now genuinely active — otherwise they'd be
+            # flagged 'canceling' and wrongly expired at period end despite paying.
             "UPDATE user_memberships SET status = 'active', plan_key = ?, current_period_end = ?, "
-            "expires_at = ?, billing_period = ?, price = ?, currency = ?, provider = ?, source = ?, expired_at = NULL, updated_at = ? WHERE id = ?",
+            "expires_at = ?, billing_period = ?, price = ?, currency = ?, provider = ?, source = ?, "
+            "cancel_at_period_end = 0, canceled_at = NULL, expired_at = NULL, updated_at = ? WHERE id = ?",
             (plan_key, end.isoformat(), end.isoformat(), (plan or {}).get("billing_period") or (plan or {}).get("billing_cycle") or "",
              plan_price_value(plan) if plan else 0, (plan or {}).get("currency") or "", source, source, now_iso(), row["id"]),
         )
@@ -13764,7 +13853,14 @@ def wallet_debit_for_product(conn: sqlite3.Connection, user_id: str, product_row
 
     ledger_entry_id = ""
     if price > 0:
-        spend_key = idempotency_key or f"spend:{user_id}:{resource_id}:{uuid.uuid4().hex[:10]}"
+        # ALWAYS namespace the spend key by user + product. Using the raw
+        # client-supplied idempotency_key directly let an attacker reuse one key
+        # across DIFFERENT products: the 2nd debit deduped (no points removed) yet
+        # the 2nd product's entitlement was still granted = free purchase. Scoping
+        # by resource_id keeps genuine same-product retries idempotent while making
+        # cross-product key reuse harmless.
+        client_key = (idempotency_key or "").strip()
+        spend_key = f"spend:{user_id}:{resource_id}:" + (client_key or uuid.uuid4().hex[:10])
         result = wallet_post_ledger(conn, user_id, "spend", -price, source_type="wallet_purchase",
                                     product_id=resource_id, idempotency_key=spend_key,
                                     metadata={"productTitle": d.get("title")})
@@ -14158,10 +14254,26 @@ def settle_guide_order(conn: sqlite3.Connection, order_no: str, payment_intent: 
         ERR_LOG.warning("guide settle amount mismatch order=%s got=%s want=%s", order_no, amount_cents, expected)
         return False
     now = now_iso()
-    conn.execute(
+    # H6: win the state transition atomically. Only the writer whose UPDATE
+    # actually flips pending/closed -> fulfilled (rowcount == 1) is allowed to
+    # grant. The Stripe webhook and the success-redirect confirm routinely fire
+    # near-simultaneously for the same order; the old code's Python status-check
+    # + unconditional UPDATE let BOTH pass and double-fulfilled (double
+    # purchase_count + duplicate paid service_request). This mirrors the proven
+    # compare-and-swap already used by mark_order_paid.
+    # Include 'cancelled' — the guide-order janitor (server.py ~15485) marks an
+    # unpaid order 'cancelled' after the 20-min TTL, but the Stripe session lives
+    # ~24h, so a real payment can still land late. Real money must always win:
+    # the early return above already blocks paid/fulfilled/refunded re-grants, so
+    # accepting pending/closed/cancelled here is safe and idempotent. (Without
+    # 'cancelled' a late legit payment was charged but never fulfilled.)
+    cur = conn.execute(
         "UPDATE guide_orders SET status = 'fulfilled', paid_at = ?, fulfilled_at = ?, "
-        "stripe_payment_intent_id = ?, payment_order_id = COALESCE(NULLIF(payment_order_id, ''), ?) WHERE id = ?",
+        "stripe_payment_intent_id = ?, payment_order_id = COALESCE(NULLIF(payment_order_id, ''), ?) "
+        "WHERE id = ? AND status IN ('pending', 'closed', 'cancelled')",
         (now, now, payment_intent, payment_intent, order["id"]))
+    if cur.rowcount != 1:
+        return False  # another writer already settled this order — do not re-grant
     conn.execute("UPDATE guide_products SET purchase_count = purchase_count + 1 WHERE id = ?", (order["product_id"],))
     prod = conn.execute("SELECT id, product_type, is_service FROM guide_products WHERE id = ?", (order["product_id"],)).fetchone()
     if prod and bool(prod["is_service"]):
@@ -14466,15 +14578,16 @@ def verify_apple_transaction(signed_transaction: str, product_id: str = "") -> d
     if APPLE_IAP_BUNDLE_ID and payload.get("bundleId") and payload["bundleId"] != APPLE_IAP_BUNDLE_ID:
         return None
 
-    # Only true Production transactions require signature verification.
-    # Sandbox + Xcode (local StoreKit testing) proceed on the decoded
-    # payload so dev/QA flows work without the Apple CA chain.
-    env = (payload.get("environment") or APPLE_IAP_ENVIRONMENT).lower()
-    is_sandbox = not env.startswith("prod")
-    # Production transactions MUST have their signature verified against
-    # the Apple CA chain. Sandbox/mock may proceed on the decoded payload.
-    if not is_sandbox and not PAYMENT_MOCK_ENABLED and not signature_valid:
-        ERR_LOG.warning("apple transaction signature rejected")
+    # SECURITY (C1): never derive trust from the client-supplied `environment`
+    # field — an attacker sets environment="Sandbox" to skip verification. Whether
+    # the JWS signature (and full chain-to-Apple-root) is mandatory is decided by
+    # the SERVER's own config ONLY. Unsigned transactions are accepted exclusively
+    # in non-production sandbox/Xcode/mock QA; PRODUCTION ALWAYS requires a valid,
+    # Apple-rooted signature regardless of what the payload claims.
+    server_is_sandbox = APPLE_IAP_ENVIRONMENT.strip().lower().startswith(("sand", "xcode", "local"))
+    allow_unsigned = (not PRODUCTION) and (server_is_sandbox or PAYMENT_MOCK_ENABLED)
+    if not allow_unsigned and not signature_valid:
+        ERR_LOG.warning("apple transaction signature rejected (signature_valid=False)")
         return None
     return payload
 
@@ -14550,10 +14663,45 @@ def verify_google_play_purchase(product_id: str, purchase_token: str, package_na
         return False
 
 
+def _verify_x509_signed_by(child: Any, parent: Any) -> None:
+    """Raise unless `child`'s signature verifies against `parent`'s public key.
+    Handles both EC (Apple's leaf/intermediate) and RSA issuers."""
+    from cryptography.hazmat.primitives.asymmetric import ec, padding
+    pub = parent.public_key()
+    if isinstance(pub, ec.EllipticCurvePublicKey):
+        pub.verify(child.signature, child.tbs_certificate_bytes, ec.ECDSA(child.signature_hash_algorithm))
+    else:
+        pub.verify(child.signature, child.tbs_certificate_bytes, padding.PKCS1v15(), child.signature_hash_algorithm)
+
+
+def _apple_x5c_chain_trusted(certs: list[Any]) -> bool:
+    """Verify x5c is a valid chain leaf → intermediate → Apple Root CA G3.
+    Each cert must be signed by the next; the root must be self-signed AND its
+    DER SHA-256 must match a pinned Apple root (C2: stops attacker-supplied
+    leaf certs from passing as 'signed by Apple')."""
+    if len(certs) < 2 or not APPLE_ROOT_CA_SHA256:
+        return False
+    try:
+        import hashlib as _hashlib
+        from cryptography.hazmat.primitives import serialization
+        now = datetime.now(timezone.utc)
+        for cert in certs:
+            if cert.not_valid_before_utc > now or cert.not_valid_after_utc < now:
+                return False
+        for i in range(len(certs) - 1):
+            _verify_x509_signed_by(certs[i], certs[i + 1])
+        root = certs[-1]
+        _verify_x509_signed_by(root, root)  # root is self-signed
+        fp = _hashlib.sha256(root.public_bytes(serialization.Encoding.DER)).hexdigest().lower()
+        return fp in APPLE_ROOT_CA_SHA256
+    except Exception:
+        return False
+
+
 def _verify_apple_jws_signature(header_b64: str, payload_b64: str, sig_b64: str) -> bool:
-    """Verify the ES256 signature of an Apple JWS using the leaf cert in
-    the x5c header. (Full chain-to-Apple-root validation is left to the
-    deploy's cert pinning; we verify the signature itself here.)"""
+    """Verify the ES256 signature of an Apple JWS. The x5c chain is validated
+    leaf → intermediate → pinned Apple Root CA G3 (see _apple_x5c_chain_trusted),
+    then the JWS body signature is checked with the (now-trusted) leaf key."""
     try:
         _load_cryptography()
         from cryptography import x509
@@ -14564,14 +14712,22 @@ def _verify_apple_jws_signature(header_b64: str, payload_b64: str, sig_b64: str)
             return base64.urlsafe_b64decode(segment + "=" * (-len(segment) % 4))
 
         header = json.loads(_b64url(header_b64).decode("utf-8"))
-        x5c = header.get("x5c") or []
-        if not x5c:
+        # Defense-in-depth: pin the algorithm to ES256 (Apple's). The body verify
+        # below already hardcodes ECDSA-SHA256 against an EC leaf, so an RSA/"none"
+        # header can't actually pass — but rejecting it up front is cleaner.
+        if str(header.get("alg") or "").upper() != "ES256":
             return False
-        leaf = x509.load_der_x509_certificate(base64.b64decode(x5c[0]))
+        x5c = header.get("x5c") or []
+        certs = [x509.load_der_x509_certificate(base64.b64decode(c)) for c in x5c]
+        # C2: the leaf is only trustworthy if its chain terminates in Apple's root.
+        if not _apple_x5c_chain_trusted(certs):
+            return False
+        leaf = certs[0]
         pub = leaf.public_key()
         raw_sig = _b64url(sig_b64)
-        r = int.from_bytes(raw_sig[:32], "big")
-        s = int.from_bytes(raw_sig[32:], "big")
+        half = len(raw_sig) // 2
+        r = int.from_bytes(raw_sig[:half], "big")
+        s = int.from_bytes(raw_sig[half:], "big")
         der_sig = asym_utils.encode_dss_signature(r, s)
         pub.verify(der_sig, f"{header_b64}.{payload_b64}".encode("utf-8"), ec.ECDSA(hashes.SHA256()))
         return True
@@ -15633,6 +15789,25 @@ def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
         "UPDATE comments SET deleted_at = ? WHERE author_id = ? AND deleted_at IS NULL",
         (now, user_id),
     )
+    # Extend the scrub to the REST of the person's PII so a 5.1.1(v)/GDPR
+    # deletion leaves nothing readable about them: DM bodies (still visible to the
+    # other participant), live classified listings with their contact info,
+    # submitted service-request contact details, push tokens (so we never push to
+    # a recycled device), and drafts. Each guarded so a single-table hiccup can't
+    # abort the already-applied user-row scrub.
+    for stmt, params in (
+        ("UPDATE messages SET content = '', deleted_at = COALESCE(deleted_at, ?) WHERE sender_id = ?", (now, user_id)),
+        ("UPDATE city_listings SET status = 'closed', contact_method = '', updated_at = ? WHERE seller_user_id = ?", (now, user_id)),
+        # Buyer-side inquiry PII (the contact info + message the user sent to sellers).
+        ("UPDATE listing_inquiries SET message = '', contact_value = '' WHERE sender_user_id = ?", (user_id,)),
+        ("UPDATE guide_service_requests SET contact_method = '', contact_value = '', message = '', updated_at = ? WHERE user_id = ?", (now, user_id)),
+        ("DELETE FROM device_push_tokens WHERE user_id = ?", (user_id,)),
+        ("DELETE FROM drafts WHERE user_id = ?", (user_id,)),
+    ):
+        try:
+            conn.execute(stmt, params)
+        except Exception:
+            ERR_LOG.warning("anonymize: extended PII scrub statement failed (continuing)")
 
 
 def _settings_int(settings: dict[str, str], key: str, default: int, low: int, high: int) -> int:
@@ -23016,6 +23191,15 @@ class Handler(BaseHTTPRequestHandler):
         except sqlite3.IntegrityError as exc:
             status_code = 409
             self.send_error_json(str(exc), 409, "conflict")
+        except (BrokenPipeError, ConnectionResetError):
+            # The client (or the reverse proxy in front of us) closed the
+            # connection mid-response — common on mobile / flaky networks and
+            # when a user navigates away. Not a server fault: log it as 499
+            # (nginx convention: client closed request) via the access log so
+            # it does NOT hit ERR_LOG / trigger an error-alert email, and don't
+            # try to write an error body to an already-dead socket.
+            status_code = 499
+            ACCESS_LOG.info('%s "%s %s" 499 ip=%s client-disconnect', self._request_id, method, path, ip)
         except Exception as exc:
             status_code = 500
             err_id = self._request_id
@@ -23066,10 +23250,16 @@ class Handler(BaseHTTPRequestHandler):
                 pass
 
     def _client_ip(self) -> str:
-        # Honor X-Forwarded-For when behind a trusted reverse proxy.
+        # X-Forwarded-For hardening: the LEFTMOST entries are client-controllable
+        # (a spoofer prepends fake IPs), so the old `split(",")[0]` let attackers
+        # rotate their apparent IP and defeat login/captcha/rate throttles. Take
+        # the (KAIX_TRUSTED_PROXY_HOPS)-th value from the RIGHT — the IP our own
+        # trusted proxy actually observed — instead.
         xff = self.headers.get("X-Forwarded-For", "")
-        if xff:
-            return xff.split(",")[0].strip()
+        if xff and KAIX_TRUSTED_PROXY_HOPS > 0:
+            parts = [p.strip() for p in xff.split(",") if p.strip()]
+            if parts:
+                return parts[max(0, len(parts) - KAIX_TRUSTED_PROXY_HOPS)]
         return self.client_address[0] if self.client_address else "anon"
 
     def _route(self, conn: sqlite3.Connection, method: str, path: str, query: dict[str, str]) -> Any:
@@ -24816,8 +25006,15 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         signed = (data.get("signedTransaction") or data.get("signed_transaction") or "").strip()
         product_id = (data.get("productId") or data.get("product_id") or APPLE_IAP_PRODUCT_ID).strip()
-        plan = get_plan_by_apple_product(conn, product_id) or get_plan(conn, MEMBERSHIP_PLAN_KEY)
-        plan_key = plan["plan_key"] if plan else MEMBERSHIP_PLAN_KEY
+        # This endpoint grants MEMBERSHIP only. A product_id that doesn't map to a
+        # membership plan (e.g. a Machi Points consumable, which shares the same
+        # bundleId so the structural JWS check passes) MUST be rejected — the old
+        # `or get_plan(MEMBERSHIP_PLAN_KEY)` fallback let a cheap points purchase be
+        # replayed here for free membership. Points have their own verify endpoint.
+        plan = get_plan_by_apple_product(conn, product_id)
+        if not plan:
+            raise APIError("该商品不是会员套餐", 400, "product_not_membership")
+        plan_key = plan["plan_key"]
         txn_id = str(data.get("transactionId") or data.get("transaction_id") or "")
         orig_id = str(data.get("originalTransactionId") or data.get("original_transaction_id") or "")
         if not signed:
@@ -24978,6 +25175,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"status": "pending", "wallet": get_wallet_snapshot(conn, user["id"])})
         order_no = str(session.get("client_reference_id") or (session.get("metadata") or {}).get("order_no") or "")
         if order_no.startswith("WT") and str(session.get("payment_status") or "") == "paid":
+            # Defense-in-depth amount check (parity with mark_order_paid /
+            # settle_guide_order): the paid Stripe amount must equal what we
+            # charged for this top-up order before any points are credited.
+            wt = conn.execute("SELECT amount_cents, currency FROM wallet_topup_orders WHERE order_no = ?", (order_no,)).fetchone()
+            if wt:
+                expected = _stripe_minor_units(int(wt["amount_cents"] or 0), str(wt["currency"] or "usd"))
+                paid = int(session.get("amount_total") or 0)
+                if expected and paid and paid != expected:
+                    ERR_LOG.warning("wallet topup amount mismatch order=%s got=%s want=%s", order_no, paid, expected)
+                    raise APIError("支付金额与订单不一致", 400, "amount_mismatch")
             result = wallet_credit_topup(conn, order_no, provider_trade_no=str(session.get("payment_intent") or ""),
                                          source_type="stripe")
             return self.send_json({
@@ -26693,6 +26900,10 @@ class Handler(BaseHTTPRequestHandler):
         for field in fields:
             if field in data and data[field] is not None:
                 updates.append((field, str(data[field])))
+        # H4: screen the free-text profile fields (display name + bio) — these are
+        # public UGC and were bypassing the content filter that posts/comments/DMs
+        # already run.
+        enforce_content_policy(*[v for f, v in updates if f in ("display_name", "bio")])
         if "email" in data and data["email"] is not None:
             raise APIError("修改绑定邮箱需要安全验证", 403, "verification_required")
         # Region (phase 1). `country/province/city` is the user's declared
@@ -27166,9 +27377,23 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_report(self, conn: sqlite3.Connection, kind: str, target_id: str) -> None:
         user = self.require_user(conn)
+        # H5: per-account velocity limit so one account (or bot) can't mass-report
+        # to bury content / poison the admin queue.
+        if not rate_check("report:" + user["id"], "report"):
+            raise APIError("举报过于频繁，请稍后再试", 429, "rate_limited")
         data = self.read_json()
         reason = (data.get("reason") or "other").strip()
         note = (data.get("note") or "").strip()
+        # H5: dedup — a reporter can only count ONCE per target, so report_count
+        # reflects DISTINCT reporters and can't be inflated by repeated POSTs.
+        # Idempotent: a repeat report from the same user is a no-op success.
+        already = conn.execute(
+            "SELECT 1 FROM reports WHERE reporter_id = ? AND target_kind = ? AND target_id = ? LIMIT 1",
+            (user["id"], kind, target_id),
+        ).fetchone()
+        if already:
+            self.send_json({"ok": True, "deduped": True})
+            return
         conn.execute(
             "INSERT INTO reports (id, reporter_id, target_kind, target_id, reason, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (str(uuid.uuid4()), user["id"], kind, target_id, reason, note, now_iso()),
@@ -27840,6 +28065,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("标题过长", 400, "title_too_long")
         if len(description) > 3000:
             raise APIError("描述过长", 400, "description_too_long")
+        enforce_content_policy(title, description)  # H4: screen listing free text
 
         category = str(data.get("category") or "").strip()[:80]
         currency = str(data.get("currency") or "JPY").strip().upper()[:8] or "JPY"
@@ -28422,6 +28648,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("对方暂时无法接收你的咨询", 403, "blocked")
         data = self.read_json()
         message = str(data.get("message") or "").strip()[:1000]
+        enforce_content_policy(message)  # H4: the inquiry seeds a real DM thread
         contact_value = str(data.get("contact_value") or "").strip()[:200]
         row_dict = dict(row)
         inquiry_kind = listing_inquiry_type(row_dict)
@@ -28940,13 +29167,22 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("该时段已约满", 400, "slot_full")
         note = _clean_text(self.read_json().get("note"), 200)
         now = now_iso()
+        # Atomic seat claim: only the writer that WINS `booked_count < capacity`
+        # increments — so two concurrent bookings can't both pass the Python check
+        # above and overbook past capacity. Claim the seat BEFORE inserting the
+        # booking row so a lost race never leaves an orphan booking.
+        claimed = conn.execute(
+            "UPDATE listing_booking_slots SET booked_count = booked_count + 1 "
+            "WHERE id = ? AND status = 'open' AND booked_count < capacity",
+            (slot_id,))
+        if claimed.rowcount != 1:
+            raise APIError("该时段已约满", 400, "slot_full")
         booking_id = str(uuid.uuid4())
         conn.execute(
             """INSERT INTO listing_bookings (id, slot_id, listing_id, user_id, owner_id, status, note, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, 'confirmed', ?, ?, ?)""",
             (booking_id, slot_id, listing_id, user["id"], listing["seller_user_id"], note, now, now),
         )
-        conn.execute("UPDATE listing_booking_slots SET booked_count = booked_count + 1 WHERE id = ?", (slot_id,))
         owner_id = listing["seller_user_id"]
         if owner_id and owner_id != user["id"]:
             HUB.publish(owner_id, {"type": "notification", "kind": "booking"})
@@ -31280,6 +31516,7 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         data = self.read_json()
         content = (data.get("content") or "").strip()
+        enforce_content_policy(content)  # H4: reject banned/scam/illegal text on create
         media_ids = data.get("media_ids") or []
         repost_of_id = data.get("repost_of_id")
         # Content type + typed attributes. Validated + truncated
@@ -31754,6 +31991,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("评论不能为空", 400, "empty_comment")
         if len(content) > 2000:
             raise APIError("评论过长", 400, "comment_too_long")
+        enforce_content_policy(content)  # H4: reject banned/scam/illegal text on create
         post = conn.execute("SELECT author_id, content_type FROM posts WHERE id = ? AND deleted_at IS NULL", (post_id,)).fetchone()
         if not post:
             raise APIError("帖子不存在", 404, "post_not_found")
@@ -32600,6 +32838,16 @@ class Handler(BaseHTTPRequestHandler):
         if not row or (row["participant_a"] != user["id"] and row["participant_b"] != user["id"]):
             raise APIError("无权操作", 403, "forbidden")
         other_id = row["participant_b"] if row["participant_a"] == user["id"] else row["participant_a"]
+        # H3: re-check mutual block on EVERY send. Block is enforced at
+        # conversation creation, but if B blocks A *after* the thread already
+        # exists, A could keep messaging B indefinitely (block fails its core
+        # purpose for the most common harassment vector). Honor it on the send
+        # path too — including inquiry threads; harassment doesn't respect type.
+        if conn.execute(
+            "SELECT 1 FROM blocks WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?) LIMIT 1",
+            (user["id"], other_id, other_id, user["id"]),
+        ).fetchone():
+            raise APIError("已拉黑或被对方拉黑，无法发送消息", 403, "blocked")
         # Listing-inquiry threads are business conversations opened by the
         # contact flow — dm_privacy must not break buyer↔seller follow-ups.
         is_inquiry_thread = conn.execute(
@@ -32622,6 +32870,7 @@ class Handler(BaseHTTPRequestHandler):
         ]))
         if not content and not attachment_ids and not submitted_media_ids:
             raise APIError("消息不能为空", 400, "empty_message")
+        enforce_content_policy(content)  # H4: reject banned/scam/illegal text in DMs
         legacy_media_rows: list[dict[str, Any]] = []
         attachment_rows: list[dict[str, Any]] = []
         attachment_lookup_ids = list(dict.fromkeys([*attachment_ids, *submitted_media_ids]))
@@ -34302,7 +34551,14 @@ class Handler(BaseHTTPRequestHandler):
     def api_save_draft(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         data = self.read_json()
-        draft_id = data.get("id") or str(uuid.uuid4())
+        raw_id = str(data.get("id") or "").strip()
+        # Reuse a client-supplied draft id ONLY if it's the caller's own draft;
+        # a stale/foreign id would otherwise fall through to INSERT and PK-collide
+        # on another user's row (a 500 + cross-user信号). Mint a fresh id instead.
+        if raw_id and conn.execute("SELECT 1 FROM drafts WHERE id = ? AND user_id = ?", (raw_id, user["id"])).fetchone():
+            draft_id = raw_id
+        else:
+            draft_id = str(uuid.uuid4())
         media_ids = "|".join(data.get("media_ids") or [])
         tags = "|".join(data.get("tags") or [])
         content_type = str(data.get("content_type") or "dynamic").strip() or "dynamic"
