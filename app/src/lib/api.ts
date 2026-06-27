@@ -1155,11 +1155,12 @@ export const api = {
     const { items } = await request<{ items: KXCityListing[] }>("GET", `/api/my/saved-listings?type=${encodeURIComponent(type)}`);
     return items;
   },
-  async myListingInquiries(opts: { role?: "all" | "sent" | "received"; type?: KXListingType | string; status?: string } = {}): Promise<KXListingInquiry[]> {
+  async myListingInquiries(opts: { role?: "all" | "sent" | "received"; type?: KXListingType | string; status?: string; bucket?: "consultation" | "reservation" | "application" } = {}): Promise<KXListingInquiry[]> {
     const params = new URLSearchParams();
     if (opts.role) params.set("role", opts.role);
     if (opts.type) params.set("type", opts.type);
     if (opts.status) params.set("status", opts.status);
+    if (opts.bucket) params.set("bucket", opts.bucket);
     const { items } = await request<{ items: KXListingInquiry[] }>("GET", `/api/my/listing-inquiries?${params.toString()}`);
     return items;
   },

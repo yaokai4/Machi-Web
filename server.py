@@ -784,6 +784,15 @@ LISTING_VERIFICATION_TYPES: set[str] = {
 }
 LISTING_TYPES_DEFAULT_REVIEW: set[str] = {"rental", "job", "hiring", "local_service"}
 LISTING_TYPES_REQUIRING_MEMBERSHIP: set[str] = {"rental", "job", "hiring", "local_service", "discount"}
+# Workbench information architecture: every listing inquiry belongs to exactly
+# one bucket so a record never shows under two conflicting entries.
+#   reservation  — scheduled with a time/place (看房 / 订座 / 到店服务)  → 我的预约
+#   application  — a real application (招聘报名)                        → 我的申请
+#   consultation — a plain question / claim (二手 / 优惠 / 活动)        → 我的咨询
+# Slot-based reservations (listing_bookings) and merchant/membership
+# applications live in their own tables and join these buckets at the UI layer.
+INQUIRY_RESERVATION_LISTING_TYPES: tuple[str, ...] = ("rental", "local_service")
+INQUIRY_APPLICATION_LISTING_TYPES: tuple[str, ...] = ("job", "hiring")
 BUSINESS_CONSOLE_LISTING_TYPES: tuple[str, ...] = ("local_service", "discount", "event", "hiring")
 LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT = max(0, int(_env("LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT", "3") or 3))
 LISTING_MEMBERSHIP_QUOTA_GROUPS: dict[str, set[str]] = {
@@ -28717,6 +28726,21 @@ class Handler(BaseHTTPRequestHandler):
             if types:
                 clauses.append("l.type IN (%s)" % ",".join("?" * len(types)))
                 params.extend(types)
+        # Bucket routing (see INQUIRY_*_LISTING_TYPES). Keeps each record in a
+        # single workbench entry; absent = legacy "everything" behaviour.
+        bucket = (query.get("bucket") or "").strip().lower()
+        reservation_types = INQUIRY_RESERVATION_LISTING_TYPES
+        application_types = INQUIRY_APPLICATION_LISTING_TYPES
+        if bucket == "reservation":
+            clauses.append("l.type IN (%s)" % ",".join("?" * len(reservation_types)))
+            params.extend(reservation_types)
+        elif bucket == "application":
+            clauses.append("l.type IN (%s)" % ",".join("?" * len(application_types)))
+            params.extend(application_types)
+        elif bucket == "consultation":
+            excluded = (*reservation_types, *application_types)
+            clauses.append("l.type NOT IN (%s)" % ",".join("?" * len(excluded)))
+            params.extend(excluded)
         if status:
             clauses.append("i.status = ?")
             params.append(status)

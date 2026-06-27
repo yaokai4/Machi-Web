@@ -2117,6 +2117,16 @@ export function MyListingInquiriesPage({ mode = "inquiries" }: { mode?: "inquiri
   const title = applications ? "我的申请" : appointments ? "我的预约" : "我的咨询";
   const loadingTitle = applications ? "正在加载申请记录" : appointments ? "正在加载预约记录" : "正在加载咨询记录";
   const errorTitle = applications ? "申请记录暂时无法加载" : appointments ? "预约记录暂时无法加载" : "咨询记录暂时无法加载";
+  const subtitle = applications
+    ? "招聘报名等申请记录,与咨询、预约分开管理。"
+    : appointments
+      ? "看房、订座、到店服务等有时间的预约都在这里。"
+      : "二手、优惠、活动等沟通记录;看房与服务预约请在「我的预约」查看。";
+  const emptyHint = applications
+    ? "你提交的招聘报名等申请会出现在这里。"
+    : appointments
+      ? "你发起的看房、订座和服务预约会出现在这里。"
+      : "你发起的二手、优惠、活动等咨询会出现在这里。";
   const query = useQuery({
     queryKey: [mode === "bookings" ? "my-bookings" : applications ? "my-applications" : appointments ? "my-service-appointments" : "my-listing-inquiries"],
     queryFn: async () => {
@@ -2131,13 +2141,15 @@ export function MyListingInquiriesPage({ mode = "inquiries" }: { mode?: "inquiri
         const res = await api.myServiceAppointments();
         return { items: res.items, guide: res.guide_service_requests };
       }
-      return { items: await api.myListingInquiries({ role: "all" }), guide: [] as Array<Record<string, unknown>> };
+      // 我的咨询 only holds plain consultations (二手 / 优惠 / 活动); 看房·服务
+      // 预约归「我的预约」、招聘报名归「我的申请」,避免一条记录出现在多个入口。
+      return { items: await api.myListingInquiries({ role: "all", bucket: "consultation" }), guide: [] as Array<Record<string, unknown>> };
     },
   });
   return (
     <AppShell requireAuth wide right={null}>
       <main className="mx-auto max-w-5xl px-3 py-4 sm:px-4">
-        <WorkbenchBackHeader title={title} subtitle="联系记录绑定具体城市信息，避免把高意图咨询混进普通私信。" />
+        <WorkbenchBackHeader title={title} subtitle={subtitle} />
         <div className="mt-4 space-y-3">
           {query.isLoading ? <SectionLoading title={loadingTitle} rows={3} /> : null}
           {query.isError ? (
@@ -2150,7 +2162,7 @@ export function MyListingInquiriesPage({ mode = "inquiries" }: { mode?: "inquiri
           {!query.isLoading && !query.isError && !(query.data?.items || []).length && !(query.data?.guide || []).length ? (
             <section className="rounded-3xl border border-slate-200/70 bg-white px-5 py-9 text-center">
               <p className="text-base font-black text-slate-950">暂无记录</p>
-              <p className="mt-2 text-sm font-semibold text-slate-500">你发起的咨询、申请、看房预约和服务预约记录会出现在这里。</p>
+              <p className="mt-2 text-sm font-semibold text-slate-500">{emptyHint}</p>
             </section>
           ) : null}
         </div>
