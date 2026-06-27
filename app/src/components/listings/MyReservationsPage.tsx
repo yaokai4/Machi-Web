@@ -7,6 +7,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { api } from "@/lib/api";
 import type { KXBooking } from "@/lib/types";
 import { useToasts } from "@/lib/store";
+import { InquiryCard } from "@/components/listings/ListingKit";
 
 /**
  * "我的预约" — slot reservations the user made as a customer (看房 / 到店 /
@@ -68,6 +69,14 @@ export function MyReservationsPage() {
   const qc = useQueryClient();
   const query = useQuery({ queryKey: ["my-reservations"], queryFn: () => api.myReservations() });
   const items = query.data || [];
+  // Intake-form bookings (看房 / 订座 / 服务预约) live as reservation-bucket
+  // inquiries; surface them here too so 我的预约 is the single home for every
+  // reservation, regardless of whether it went through a time slot.
+  const requestsQuery = useQuery({
+    queryKey: ["my-reservation-requests"],
+    queryFn: () => api.myListingInquiries({ role: "all", bucket: "reservation" }),
+  });
+  const requests = requestsQuery.data || [];
 
   async function cancel(booking: KXBooking) {
     try {
@@ -108,14 +117,25 @@ export function MyReservationsPage() {
               </button>
             </section>
           ) : null}
+          {items.length > 0 ? (
+            <p className="pt-1 text-xs font-black uppercase tracking-wide text-slate-400">已约时段</p>
+          ) : null}
           {items.map((b) => (
             <ReservationCard key={b.id} booking={b} onCancel={cancel} cancelling={false} />
           ))}
-          {!query.isLoading && !query.isError && items.length === 0 ? (
+
+          {requests.length > 0 ? (
+            <>
+              <p className="pt-3 text-xs font-black uppercase tracking-wide text-slate-400">预约请求</p>
+              {requests.map((inq) => <InquiryCard key={inq.id} inquiry={inq} />)}
+            </>
+          ) : null}
+
+          {!query.isLoading && !query.isError && !requestsQuery.isLoading && items.length === 0 && requests.length === 0 ? (
             <section className="rounded-3xl border border-slate-200/70 bg-white px-5 py-12 text-center">
               <CalendarClock className="mx-auto h-8 w-8 text-slate-300" />
               <p className="mt-3 text-base font-black text-slate-950">还没有预约</p>
-              <p className="mt-2 text-sm font-semibold text-slate-500">在房源、餐厅或服务详情里选择时段即可预约。</p>
+              <p className="mt-2 text-sm font-semibold text-slate-500">在房源、餐厅或服务详情里选择时段即可预约;看房、服务等预约也会显示在这里。</p>
             </section>
           ) : null}
         </div>

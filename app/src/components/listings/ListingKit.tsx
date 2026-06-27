@@ -3581,7 +3581,7 @@ function ListingManageCard({ listing, onStatus, onDelete }: { listing: KXCityLis
   );
 }
 
-function InquiryCard({ inquiry }: { inquiry: KXListingInquiry }) {
+export function InquiryCard({ inquiry }: { inquiry: KXListingInquiry }) {
   const item = inquiry.listing;
   const created = inquiry.created_at ? new Date(inquiry.created_at).toLocaleString("zh-CN") : "";
   const conversationId = inquiry.conversation_id || inquiry.conversationId;
@@ -3964,7 +3964,7 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
               ) : f.kind === "textarea" ? (
                 <textarea value={values[f.key] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} placeholder={f.placeholder} className="kx-input mt-1 min-h-20 w-full p-3 text-sm" />
               ) : (
-                <input type={f.kind === "date" ? "date" : "text"} value={values[f.key] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} placeholder={f.placeholder} className="kx-input mt-1 h-11 w-full px-3 text-sm" />
+                <input type={f.kind === "date" ? "date" : "text"} min={f.kind === "date" ? new Date().toISOString().slice(0, 10) : undefined} value={values[f.key] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} placeholder={f.placeholder} className="kx-input mt-1 h-11 w-full px-3 text-sm" />
               )}
             </label>
           ))}
