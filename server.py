@@ -138,6 +138,10 @@ import seed_content_library as seedlib
 import seed_llm
 import seed_listings_library as seedpacks
 import seed_post_images
+try:
+    from seed_comments_pack import COMMENTS as SEED_COMMENTS
+except Exception:
+    SEED_COMMENTS = []
 from server_schema import MIGRATIONS, SCHEMA
 import server_apns
 import server_shared_state as shared_state
@@ -15626,6 +15630,231 @@ def start_guide_reminder_dispatcher() -> None:
 
 
 # ---------------------------------------------------------------------------
+# engagement simulation — seed personas gradually like / 收藏 / comment / follow
+# seed content over its first few days, with per-post/per-user randomized
+# ceilings and a front-loaded growth curve, so 推荐/热搜/feed look organically
+# alive. Counts are live-computed, so inserting raw rows is sufficient. Tunable
+# from the admin backend (site_settings engagement_sim_*). Scheduler-gated so it
+# runs on exactly one worker.
+# ---------------------------------------------------------------------------
+
+KAIX_ENGAGEMENT_SIM_INTERVAL_SEC = max(60, int(_env("KAIX_ENGAGEMENT_SIM_INTERVAL_SEC", "600")))
+_ENGAGEMENT_SIM_STARTED = False
+
+
+def _eng_hash01(*parts: Any) -> float:
+    """Stable float in [0,1) from the given parts (deterministic per id)."""
+    h = hashlib.sha256("|".join(str(p) for p in parts).encode("utf-8")).hexdigest()
+    return int(h[:12], 16) / float(0x1000000000000)
+
+
+def _eng_range(lo: float, hi: float, *parts: Any) -> float:
+    return lo + (hi - lo) * _eng_hash01(*parts)
+
+
+# A small immediate floor so even brand-new posts show a few likes right away
+# (real posts get early traction too); the rest grows over the window.
+ENG_BASELINE_FRAC = 0.06
+
+
+def _eng_frac(age_h: float, halflife: float) -> float:
+    g = 1.0 - 0.5 ** (age_h / halflife)
+    return ENG_BASELINE_FRAC + (1.0 - ENG_BASELINE_FRAC) * g
+
+
+def _engagement_settings(conn: sqlite3.Connection) -> dict[str, Any]:
+    s = _site_settings(conn)
+
+    def _i(k: str, d: int) -> int:
+        try:
+            return int(float(s.get(k) or d))
+        except (TypeError, ValueError):
+            return d
+
+    def _f(k: str, d: float) -> float:
+        try:
+            return float(s.get(k) or d)
+        except (TypeError, ValueError):
+            return d
+
+    return {
+        "enabled": (s.get("engagement_sim_enabled", "1") == "1"),
+        "max_days": max(1, _i("engagement_sim_max_days", 3)),
+        "like_min": max(0, _i("engagement_sim_like_min", 20)),
+        "like_max": max(1, _i("engagement_sim_like_max", 400)),
+        "bookmark_ratio": max(0.0, _f("engagement_sim_bookmark_ratio", 0.25)),
+        "comment_max": max(0, _i("engagement_sim_comment_max", 12)),
+        "follow_max": max(0, _i("engagement_sim_follow_max", 200)),
+        "halflife": max(1.0, _f("engagement_sim_halflife_hours", 18.0)),
+        "mutual": 0.35,
+    }
+
+
+def _eng_spread_ts(start: datetime, end: datetime, rng: Any) -> str:
+    """A timestamp uniformly between start and end (so growth looks gradual)."""
+    if end <= start:
+        return start.isoformat()
+    return (start + timedelta(seconds=rng.random() * (end - start).total_seconds())).isoformat()
+
+
+def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str, int]) -> None:
+    rng = secrets.SystemRandom()
+    POST_LIMIT = 400
+    budget = 1600
+    personas = seed_user_ids(conn)
+    if len(personas) < 5:
+        return
+    persona_set = set(personas)
+    now = datetime.now(timezone.utc)
+    window = s["max_days"] * 24.0
+    cutoff = (now - timedelta(days=s["max_days"])).isoformat()
+
+    posts = conn.execute(
+        "SELECT id, created_at, content_type FROM posts "
+        "WHERE is_seed_content = 1 AND deleted_at IS NULL AND status IN ('published', 'active') "
+        "AND created_at >= ? ORDER BY created_at DESC LIMIT ?",
+        (cutoff, POST_LIMIT),
+    ).fetchall()
+    for p in posts:
+        if budget <= 0:
+            break
+        pid = p["id"]
+        created = parse_iso(p["created_at"]) or now
+        age_h = min(max(0.0, (now - created).total_seconds() / 3600.0), window)
+        if age_h <= 0:
+            continue
+        frac = _eng_frac(age_h, s["halflife"])
+        like_cap = min(len(personas), int(_eng_range(s["like_min"], s["like_max"], pid, "like")))
+        bm_cap = int(like_cap * s["bookmark_ratio"] * _eng_range(0.6, 1.4, pid, "bm"))
+        guide_bonus = 1.6 if p["content_type"] == "guide" else 1.0
+        cm_cap = min(s["comment_max"], int(round(like_cap * _eng_range(0.02, 0.09, pid, "cm") * guide_bonus)))
+
+        for kind, target, key in (("like", int(round(like_cap * frac)), "likes"),
+                                  ("bookmark", int(round(bm_cap * frac)), "bookmarks")):
+            if budget <= 0:
+                break
+            done = {r["user_id"] for r in conn.execute(
+                "SELECT user_id FROM interactions WHERE target_id = ? AND kind = ?", (pid, kind))}
+            delta = min(target - len(done), 60, budget)
+            if delta <= 0:
+                continue
+            avail = [u for u in personas if u not in done]
+            for uid in rng.sample(avail, min(delta, len(avail))):
+                conn.execute(
+                    "INSERT INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
+                    (str(uuid.uuid4()), pid, uid, kind, _eng_spread_ts(created, now, rng)),
+                )
+                out[key] += 1
+                budget -= 1
+
+        if budget > 0 and cm_cap > 0 and SEED_COMMENTS:
+            rows = conn.execute(
+                "SELECT author_id, content FROM comments WHERE post_id = ? AND deleted_at IS NULL", (pid,)).fetchall()
+            commenters = {r["author_id"] for r in rows}
+            used_lines = {r["content"] for r in rows}
+            delta = min(int(round(cm_cap * frac)) - len(rows), 6, budget)
+            avail = [u for u in personas if u not in commenters]
+            rng.shuffle(avail)
+            for uid in avail[:max(0, delta)]:
+                line = next((c for c in (rng.choice(SEED_COMMENTS) for _ in range(6)) if c not in used_lines), None)
+                if not line:
+                    break
+                used_lines.add(line)
+                ts = _eng_spread_ts(created, now, rng)
+                conn.execute(
+                    "INSERT INTO comments (id, post_id, author_id, content, parent_comment_id, reply_to_user_id, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)",
+                    (str(uuid.uuid4()), pid, uid, line, ts, ts),
+                )
+                out["comments"] += 1
+                budget -= 1
+
+    # follows among personas — each persona gains followers over its window,
+    # with occasional mutual follow-backs (互关).
+    follow_budget = min(400, budget)
+    young = conn.execute(
+        "SELECT u.id, u.created_at FROM content_pack_users cpu JOIN users u ON u.id = cpu.user_id "
+        "WHERE u.deleted_at IS NULL AND u.created_at >= ? ORDER BY u.created_at DESC LIMIT 200",
+        (cutoff,),
+    ).fetchall()
+    rng.shuffle(young)
+    for u in young:
+        if follow_budget <= 0:
+            break
+        uid = u["id"]
+        created = parse_iso(u["created_at"]) or now
+        age_h = min(max(0.0, (now - created).total_seconds() / 3600.0), window)
+        if age_h <= 0:
+            continue
+        frac = _eng_frac(age_h, s["halflife"])
+        cap = int(_eng_range(2, max(3, s["follow_max"]), uid, "fol"))
+        followers = {r["follower_id"] for r in conn.execute(
+            "SELECT follower_id FROM follows WHERE following_id = ?", (uid,))}
+        delta = min(int(round(cap * frac)) - len(followers & persona_set), 40, follow_budget)
+        if delta <= 0:
+            continue
+        avail = [x for x in personas if x != uid and x not in followers]
+        for fid in rng.sample(avail, min(delta, len(avail))):
+            conn.execute(
+                "INSERT INTO follows (id, follower_id, following_id, created_at) VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), fid, uid, _eng_spread_ts(created, now, rng)),
+            )
+            out["follows"] += 1
+            follow_budget -= 1
+            if rng.random() < s["mutual"] and not conn.execute(
+                "SELECT 1 FROM follows WHERE follower_id = ? AND following_id = ?", (uid, fid)).fetchone():
+                conn.execute(
+                    "INSERT INTO follows (id, follower_id, following_id, created_at) VALUES (?, ?, ?, ?)",
+                    (str(uuid.uuid4()), uid, fid, _eng_spread_ts(created, now, rng)),
+                )
+                out["follows"] += 1
+
+
+def run_engagement_simulation_tick(conn: sqlite3.Connection | None = None) -> dict[str, int]:
+    """One pass of engagement growth. Pass a conn to run in-band (admin trigger);
+    omit it to acquire the write lock + a fresh connection (background daemon)."""
+    out = {"likes": 0, "bookmarks": 0, "comments": 0, "follows": 0}
+    if conn is not None:
+        s = _engagement_settings(conn)
+        if s["enabled"]:
+            _engagement_pass(conn, s, out)
+    else:
+        with DB_LOCK:
+            c = db()
+            try:
+                s = _engagement_settings(c)
+                if s["enabled"]:
+                    _engagement_pass(c, s, out)
+                c.commit()
+            finally:
+                c.close()
+    if any(out.values()):
+        invalidate_public_ranking_caches()
+    return out
+
+
+def start_engagement_simulator() -> None:
+    global _ENGAGEMENT_SIM_STARTED
+    if _ENGAGEMENT_SIM_STARTED:
+        return
+    _ENGAGEMENT_SIM_STARTED = True
+
+    def _loop() -> None:
+        time.sleep(150)
+        while True:
+            try:
+                n = run_engagement_simulation_tick()
+                if any(n.values()):
+                    ACCESS_LOG.info("engagement sim: +%d likes +%d 收藏 +%d comments +%d follows",
+                                    n["likes"], n["bookmarks"], n["comments"], n["follows"])
+            except Exception:
+                ERR_LOG.exception("engagement sim tick failed")
+            time.sleep(KAIX_ENGAGEMENT_SIM_INTERVAL_SEC)
+
+    threading.Thread(target=_loop, name="engagement-sim", daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
 # site settings + server metrics
 # ---------------------------------------------------------------------------
 
@@ -15679,6 +15908,15 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "explore_exclude_reported": "1",
     "explore_exclude_low_quality": "1",
     "explore_exclude_banned_users": "1",
+    # --- Engagement simulation (seed personas gradually like/收藏/comment/follow) ---
+    "engagement_sim_enabled": "1",
+    "engagement_sim_max_days": "3",        # only grow a post/user for its first N days
+    "engagement_sim_like_min": "20",       # per-post like ceiling range (varied by post)
+    "engagement_sim_like_max": "400",
+    "engagement_sim_bookmark_ratio": "0.25",  # 收藏 ceiling ≈ likes * this
+    "engagement_sim_comment_max": "12",    # max comments dripped per post
+    "engagement_sim_follow_max": "200",    # per-persona follower ceiling (varied)
+    "engagement_sim_halflife_hours": "18", # growth curve half-life (smaller = faster early)
 }
 SITE_SETTING_KEYS = set(SITE_SETTING_DEFAULTS)
 
@@ -16946,6 +17184,28 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             limit = 8
         self.send_json({"contentType": ctype, "images": seed_post_images.suggestions(app_ctype, limit)})
+
+    def api_admin_engagement_status(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        s = _site_settings(conn)
+        settings = {k: s.get(k) for k in sorted(SITE_SETTING_KEYS) if k.startswith("engagement_sim_")}
+        _ensure_content_pack_users_table(conn)
+        q = lambda sql: int(conn.execute(sql).fetchone()[0])
+        stats = {
+            "seed_posts": q("SELECT COUNT(*) FROM posts WHERE is_seed_content = 1 AND deleted_at IS NULL"),
+            "seed_likes": q("SELECT COUNT(*) FROM interactions WHERE kind='like' AND target_id IN (SELECT id FROM posts WHERE is_seed_content=1)"),
+            "seed_bookmarks": q("SELECT COUNT(*) FROM interactions WHERE kind='bookmark' AND target_id IN (SELECT id FROM posts WHERE is_seed_content=1)"),
+            "seed_comments": q("SELECT COUNT(*) FROM comments WHERE deleted_at IS NULL AND post_id IN (SELECT id FROM posts WHERE is_seed_content=1)"),
+            "persona_follows": q("SELECT COUNT(*) FROM follows WHERE following_id IN (SELECT user_id FROM content_pack_users)"),
+        }
+        self.send_json({"settings": settings, "stats": stats})
+
+    def api_admin_engagement_run(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        result = run_engagement_simulation_tick(conn)
+        log_seed_action(conn, admin_id=admin["id"], action="engagement_run", country="jp",
+                        language="zh", content_type="engagement", count=int(sum(result.values())), metadata=result)
+        self.send_json({"ok": True, "result": result})
 
     # ---- Local News Desk / 本地资讯台 ----
 
@@ -24565,6 +24825,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_content_pack_users_clear(conn)
         if path == "/api/post-image-suggestions" and method == "GET":
             return self.api_post_image_suggestions(conn, query)
+        if path == "/api/admin/engagement/status" and method == "GET":
+            return self.api_admin_engagement_status(conn)
+        if path == "/api/admin/engagement/run" and method == "POST":
+            return self.api_admin_engagement_run(conn)
         if path.startswith("/api/admin/seed-content/batches/"):
             parts = path.split("/")  # ['', 'api', 'admin', 'seed-content', 'batches', '{id}', '{action}'?]
             batch_id = parts[5] if len(parts) > 5 else ""
@@ -36088,8 +36352,9 @@ def run() -> None:
     if _env("KAIX_ENABLE_SCHEDULERS", "1") == "1":
         start_retention_janitor()
         start_guide_reminder_dispatcher()
+        start_engagement_simulator()
     else:
-        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor + guide reminders disabled on this worker")
+        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor + guide reminders + engagement sim disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")
     port = int(_env("KAIX_PORT", "8787"))
     server = MachiHTTPServer((host, port), Handler)

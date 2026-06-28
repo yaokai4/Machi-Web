@@ -1304,6 +1304,11 @@ function SeedBotPanel() {
     queryKey: ["admin-content-pack-users"],
     queryFn: () => api.adminContentPackUsersPreview(),
   });
+  const engagement = useQuery({ queryKey: ["admin-engagement"], queryFn: () => api.adminEngagementStatus() });
+  const [engForm, setEngForm] = useState<Record<string, string>>({});
+  const [engBusy, setEngBusy] = useState(false);
+  const engVal = (k: string) => engForm[k] ?? engagement.data?.settings?.[k] ?? "";
+  const setEng = (k: string, v: string) => setEngForm((f) => ({ ...f, [k]: v }));
 
   const refresh = async () => {
     await queryClient.invalidateQueries({ queryKey: ["admin-seed-batches"] });
@@ -1350,6 +1355,26 @@ function SeedBotPanel() {
 
   const togglePackCity = (v: string) =>
     setPackCities((cur) => (cur.includes(v) ? cur.filter((c) => c !== v) : [...cur, v]));
+
+  const saveEngagement = async () => {
+    setEngBusy(true);
+    try {
+      await api.adminUpdateSiteSettings(engForm as Parameters<typeof api.adminUpdateSiteSettings>[0]);
+      await queryClient.invalidateQueries({ queryKey: ["admin-engagement"] });
+      pushToast({ kind: "success", message: "互动模拟设置已保存" });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+    finally { setEngBusy(false); }
+  };
+  const runEngagement = async () => {
+    setEngBusy(true);
+    try {
+      const r = await api.adminEngagementRun();
+      await queryClient.invalidateQueries({ queryKey: ["admin-engagement"] });
+      const x = r.result;
+      pushToast({ kind: "success", message: `本轮 +${x.likes} 赞 · +${x.bookmarks} 收藏 · +${x.comments} 评论 · +${x.follows} 关注` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+    finally { setEngBusy(false); }
+  };
 
   const importUsers = async () => {
     setUsersBusy(true);
@@ -1482,6 +1507,35 @@ function SeedBotPanel() {
           {usersPreview.data ? (
             <span className="text-xs text-kx-muted">照片头像 {usersPreview.data.pack.photographic} · 插画头像 {usersPreview.data.pack.illustrated}</span>
           ) : null}
+        </div>
+      </section>
+
+      <section className="kx-card border border-kx-accent/30">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="inline-flex items-center gap-1.5 text-base font-bold"><Sparkles className="h-4 w-4 text-kx-accent" /> 互动模拟（点赞 · 收藏 · 评论 · 关注）</h2>
+          {engagement.data ? (
+            <span className="text-xs text-kx-muted">
+              已模拟 赞 {engagement.data.stats.seed_likes} · 收藏 {engagement.data.stats.seed_bookmarks} · 评论 {engagement.data.stats.seed_comments} · 关注 {engagement.data.stats.persona_follows}
+            </span>
+          ) : null}
+        </div>
+        <p className="mt-1 text-xs leading-5 text-kx-muted">
+          让生成的内容在头 N 天内由城市用户<b>逐步</b>点赞 / 收藏 / 评论 / 互关——按时间增长、每个帖子和用户的数量都不一样，看起来真实自然。可在此调参或关闭；后台每隔几分钟自动跑一轮。
+        </p>
+        <div className="mt-3 flex flex-wrap items-end gap-3">
+          <label className="flex items-center gap-1.5 text-sm">
+            <input type="checkbox" checked={engVal("engagement_sim_enabled") === "1"} onChange={(e) => setEng("engagement_sim_enabled", e.target.checked ? "1" : "0")} /> 启用
+          </label>
+          {([["engagement_sim_max_days", "增长天数"], ["engagement_sim_like_max", "单帖最高赞"], ["engagement_sim_follow_max", "单人最高粉"], ["engagement_sim_comment_max", "单帖最多评论"]] as const).map(([k, lab]) => (
+            <label key={k} className="grid gap-0.5 text-[11px] font-semibold text-kx-muted">
+              {lab}
+              <input className="kx-input h-8 w-24 text-xs" value={engVal(k)} onChange={(e) => setEng(k, e.target.value)} />
+            </label>
+          ))}
+          <button className="kx-button-ghost h-9 px-3 text-xs disabled:opacity-40" disabled={engBusy} onClick={saveEngagement}>保存设置</button>
+          <button className="kx-button-primary h-9 px-3 text-xs inline-flex items-center justify-center gap-1.5 disabled:opacity-40" disabled={engBusy} onClick={runEngagement}>
+            <Sparkles className="h-4 w-4" /> {engBusy ? "运行中…" : "立即模拟一轮"}
+          </button>
         </div>
       </section>
 

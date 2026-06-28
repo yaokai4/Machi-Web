@@ -245,7 +245,15 @@ export type SiteSettings = Record<
   | "explore_city_isolated"
   | "explore_exclude_reported"
   | "explore_exclude_low_quality"
-  | "explore_exclude_banned_users",
+  | "explore_exclude_banned_users"
+  | "engagement_sim_enabled"
+  | "engagement_sim_max_days"
+  | "engagement_sim_like_min"
+  | "engagement_sim_like_max"
+  | "engagement_sim_bookmark_ratio"
+  | "engagement_sim_comment_max"
+  | "engagement_sim_follow_max"
+  | "engagement_sim_halflife_hours",
   string
 >;
 
@@ -1560,6 +1568,15 @@ export const api = {
   async adminUpdateSiteSettings(patch: Partial<SiteSettings>): Promise<SiteSettings> {
     const { settings } = await request<{ settings: SiteSettings }>("PATCH", `/api/admin/site-settings`, patch);
     return settings;
+  },
+  async adminEngagementStatus(): Promise<{
+    settings: Record<string, string>;
+    stats: { seed_posts: number; seed_likes: number; seed_bookmarks: number; seed_comments: number; persona_follows: number };
+  }> {
+    return request("GET", `/api/admin/engagement/status`);
+  },
+  async adminEngagementRun(): Promise<{ ok: boolean; result: { likes: number; bookmarks: number; comments: number; follows: number } }> {
+    return request("POST", `/api/admin/engagement/run`, {}, { timeoutMs: 90_000 });
   },
   // Admin-only access log (visitor IP + resolved region + rollups). Requires
   // an admin session; ordinary users get 401/403 from the server.
