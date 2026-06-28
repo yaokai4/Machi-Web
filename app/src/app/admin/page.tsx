@@ -279,13 +279,21 @@ function UsersPanel() {
   const pushToast = useToasts((s) => s.push);
   const [q, setQ] = useState("");
   const dq = useDebounce(q, 250);
+  const [page, setPage] = useState(0);
+  const [seedOnly, setSeedOnly] = useState(false);
   const [pendingBan, setPendingBan] = useState<string | null>(null);
   const [manageUser, setManageUser] = useState<KXUser | null>(null);
   const [pendingErase, setPendingErase] = useState<KXUser | null>(null);
+  const [pendingClearSeed, setPendingClearSeed] = useState(false);
+  const PAGE = 30;
   const list = useQuery({
-    queryKey: ["admin-users", dq],
-    queryFn: () => api.adminUsers(dq || undefined),
+    queryKey: ["admin-users", dq, page, seedOnly],
+    queryFn: () => api.adminUsers({ q: dq || undefined, limit: PAGE, offset: page * PAGE, seed: seedOnly }),
   });
+  const users = list.data?.items ?? [];
+  const total = list.data?.total ?? 0;
+  const seedTotal = list.data?.seedTotal ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE));
 
   const update = async (id: string, patch: Parameters<typeof api.adminUpdateUser>[1]) => {
     try {
@@ -352,12 +360,32 @@ function UsersPanel() {
       pushToast({ kind: "success", message: "账号已永久删除" });
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
   };
+  const clearGenerated = async () => {
+    setPendingClearSeed(false);
+    try {
+      const r = await api.adminContentPackUsersClear();
+      setPage(0);
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-content-pack-users"] });
+      pushToast({ kind: "success", message: `已删除生成用户 ${r.cleared} 个（其房源/帖子已归还回退账号）` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
 
   return (
     <div className="space-y-3">
-      <div className="kx-card p-3 flex items-center gap-2">
+      <div className="kx-card p-3 flex flex-wrap items-center gap-2">
         <Search className="w-4 h-4 text-kx-muted" />
-        <input className="kx-input h-9" placeholder="搜用户名 / 显示名 / 邮箱" value={q} onChange={(e) => setQ(e.target.value)} />
+        <input className="kx-input h-9 flex-1 min-w-[180px]" placeholder="搜用户名 / 显示名 / 邮箱" value={q}
+               onChange={(e) => { setQ(e.target.value); setPage(0); }} />
+        <label className="inline-flex items-center gap-1.5 text-xs text-kx-muted whitespace-nowrap">
+          <input type="checkbox" checked={seedOnly} onChange={(e) => { setSeedOnly(e.target.checked); setPage(0); }} />
+          只看生成的用户{seedTotal ? `（${seedTotal}）` : ""}
+        </label>
+        <button className="kx-button-ghost h-9 px-3 text-xs text-kx-danger disabled:opacity-40"
+                disabled={!seedTotal} onClick={() => setPendingClearSeed(true)}>
+          <Trash2 className="w-3.5 h-3.5" /> 一键删除生成用户
+        </button>
+        <span className="text-xs text-kx-muted whitespace-nowrap ml-auto">共 {total} 人</span>
       </div>
       {list.isError ? <ErrorState onRetry={() => list.refetch()} /> : !list.data ? <InlineLoading /> : (
         <>
@@ -375,7 +403,7 @@ function UsersPanel() {
                 </tr>
               </thead>
               <tbody>
-                {list.data.map((u) => (
+                {users.map((u) => (
                   <tr key={u.id} className={clsx("border-t border-kx-stroke/30 hover:bg-kx-soft/40", u.deleted_at && "bg-kx-danger/5 opacity-70")}>
                     <td className="px-4 py-2.5">
                       <Link href={`/u/${u.handle}`} className="flex items-center gap-2 group min-w-0">
@@ -386,7 +414,10 @@ function UsersPanel() {
                             {showOfficialBadge(u) ? <OfficialBadge /> : showVerifiedBadge(u) ? <VerifiedBadge /> : null}
                             {u.deleted_at ? <span className="rounded-full bg-kx-danger/10 px-2 py-0.5 text-[11px] font-bold text-kx-danger">已封禁</span> : null}
                           </div>
-                          <div className="text-xs text-kx-muted truncate">@{u.handle}</div>
+                          <div className="text-xs text-kx-muted truncate">
+                            @{u.handle}
+                            {u.isSeed ? <span className="ml-1 rounded bg-kx-soft px-1 text-[10px] text-kx-subtle">生成</span> : null}
+                          </div>
                           <div className="text-xs text-kx-muted truncate">
                             {[u.country, u.province, u.city].filter(Boolean).join(" / ") || "未选地区"} · 🔥 {compactNumber(u.total_heat || 0)}
                           </div>
@@ -446,7 +477,7 @@ function UsersPanel() {
                     </td>
                   </tr>
                 ))}
-                {list.data.length === 0 ? (
+                {users.length === 0 ? (
                   <tr><td colSpan={6} className="px-4 py-8 text-center text-kx-muted">没有匹配的用户</td></tr>
                 ) : null}
               </tbody>
@@ -455,7 +486,7 @@ function UsersPanel() {
 
           {/* Mobile card stack */}
           <ul className="md:hidden space-y-2">
-            {list.data.map((u) => (
+            {users.map((u) => (
               <li key={u.id} className={clsx("kx-card", u.deleted_at && "border-kx-danger/20 bg-kx-danger/5 opacity-80")}>
                 <div className="flex items-start gap-2.5">
                   <Avatar user={u} size={40} />
@@ -512,8 +543,17 @@ function UsersPanel() {
                 </div>
               </li>
             ))}
-            {list.data.length === 0 ? <li className="text-center text-kx-muted py-8">没有匹配的用户</li> : null}
+            {users.length === 0 ? <li className="text-center text-kx-muted py-8">没有匹配的用户</li> : null}
           </ul>
+          {totalPages > 1 ? (
+            <div className="flex items-center justify-center gap-3 py-2 text-sm">
+              <button className="kx-button-ghost h-8 px-3 disabled:opacity-40" disabled={page <= 0}
+                      onClick={() => setPage((p) => Math.max(0, p - 1))}>上一页</button>
+              <span className="text-kx-muted">第 {page + 1} / {totalPages} 页 · 共 {total} 人</span>
+              <button className="kx-button-ghost h-8 px-3 disabled:opacity-40" disabled={page >= totalPages - 1}
+                      onClick={() => setPage((p) => p + 1)}>下一页</button>
+            </div>
+          ) : null}
         </>
       )}
       <ConfirmDialog
@@ -524,6 +564,12 @@ function UsersPanel() {
         confirmLabel="确认封禁"
         onConfirm={() => pendingBan && suspend(pendingBan)}
         onCancel={() => setPendingBan(null)}
+      />
+      <ConfirmDialog
+        open={pendingClearSeed}
+        title={`删除全部生成用户（${seedTotal} 个）？`}
+        description="只删除由「城市内容包」生成的用户账号（带标记），不会动任何真实用户。被删用户名下的房源会归还回退账号、其生成的帖子会被回收。可随时在城市内容助手重新导入。"
+        destructive confirmLabel="确认删除" onConfirm={clearGenerated} onCancel={() => setPendingClearSeed(false)}
       />
       <UserManageDialog
         user={manageUser}
@@ -1187,6 +1233,7 @@ const SEED_TYPE_OPTIONS = [
   { value: "food", label: "美食发现" }, { value: "meetup", label: "本地小组" },
   { value: "event", label: "活动推荐" }, { value: "local_service", label: "本地服务" },
   { value: "alert", label: "本地提醒" }, { value: "daily_life", label: "生活日常" },
+  { value: "spotlight", label: "精选攻略（日本生活·玩乐）" },
 ];
 const SEED_TONE_OPTIONS = [
   { value: "natural", label: "城市日常" }, { value: "helpful", label: "经验提醒" },

@@ -43,6 +43,7 @@ APP_CONTENT_TYPE: dict[str, str] = {
     "local_service": "service",
     "alert": "warning",
     "daily_life": "dynamic",
+    "spotlight": "guide",  # 精选攻略：日本生活/玩乐干货长帖（渲染为指南卡片）
 }
 
 SUPPORTED_CONTENT_TYPES: tuple[str, ...] = tuple(APP_CONTENT_TYPE.keys())
@@ -87,6 +88,7 @@ _DEFAULT_MIX: dict[str, int] = {
     "local_service": 8,
     "event": 7,
     "secondhand": 4,
+    "spotlight": 4,
     "meetup": 3,
     "food": 2,
     "alert": 2,
@@ -476,6 +478,14 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("daily_life", "ja"): [
         "{city}での最初の週末、何もせずひたすら寝ていたい。",
     ],
+    ("spotlight", "zh"): [
+        "在{city}的第一个月，建议先把这几件事按顺序办：住址登记、手机卡、银行卡、交通IC卡、常去超市和药妆的位置。前两周别贪多，先把日常跑通。",
+        "{city}周末怎么安排：上午去{place}逛逛、中午找家定食、下午看个展或去河边走走，傍晚赶在末班车前回家。临时起意也不会太累。",
+        "来{city}玩/生活，省钱小结：午市比晚市便宜、业务超市囤货、药妆比价、二手店淘家电、交通用IC卡。攒下来的钱够你多吃几顿好的。",
+    ],
+    ("spotlight", "ja"): [
+        "{city}に来た最初の1ヶ月でやることリスト：住所登録、SIM、銀行口座、ICカード、よく行くスーパーと薬局の確認。焦らず順番に。",
+    ],
 }
 
 # A couple of natural tag seeds per content type (kept short, no spam).
@@ -483,7 +493,7 @@ _TAG_BASE: dict[str, list[str]] = {
     "city_square": [], "qa": [], "guide": ["攻略"], "housing_tip": ["租房"],
     "secondhand": ["二手"], "jobs_tip": ["找工作"], "food": ["美食"],
     "meetup": ["搭子"], "event": ["活动"], "local_service": ["本地服务"],
-    "alert": ["避坑"], "daily_life": [],
+    "alert": ["避坑"], "daily_life": [], "spotlight": ["攻略", "精选"],
 }
 
 

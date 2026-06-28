@@ -1627,11 +1627,15 @@ export const api = {
     const { reputation } = await request<{ reputation: KXReputationProfile }>("POST", `/api/reputation/admin/unfreeze`, payload);
     return reputation;
   },
-  async adminUsers(q?: string): Promise<KXUser[]> {
+  async adminUsers(opts: { q?: string; limit?: number; offset?: number; seed?: boolean } = {}): Promise<{
+    items: (KXUser & { isSeed?: boolean })[]; total: number; limit: number; offset: number; seedTotal: number;
+  }> {
     const usp = new URLSearchParams();
-    if (q) usp.set("q", q);
-    const { items } = await request<{ items: KXUser[] }>("GET", `/api/admin/users?${usp.toString()}`);
-    return items;
+    if (opts.q) usp.set("q", opts.q);
+    if (opts.limit) usp.set("limit", String(opts.limit));
+    if (opts.offset) usp.set("offset", String(opts.offset));
+    if (opts.seed) usp.set("seed", "1");
+    return request("GET", `/api/admin/users?${usp.toString()}`);
   },
   async adminUpdateUser(id: string, patch: { is_verified?: boolean; is_official?: boolean; official_role?: string; role?: string; membership_tier?: string; creator_badge?: string; custom_tags?: string[]; is_merchant?: boolean; merchant_verified?: boolean; email?: string }): Promise<KXUser> {
     const { user } = await request<{ user: KXUser }>("PATCH", `/api/admin/users/${encodeURIComponent(id)}`, patch);

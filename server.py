@@ -35425,25 +35425,48 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_admin_users(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
-        limit = max(1, min(int(query.get("limit") or 50), 200))
+        try:
+            limit = max(1, min(int(query.get("limit") or 30), 100))
+        except (TypeError, ValueError):
+            limit = 30
+        try:
+            offset = max(0, int(query.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
         q = (query.get("q") or "").strip()
-        like = f"%{q}%"
+        seed_only = (query.get("seed") or "").strip().lower() in ("1", "true", "yes")
+        _ensure_content_pack_users_table(conn)
+        where = ["1 = 1"]
+        params: list[Any] = []
         if q:
-            rows = list(conn.execute(
-                "SELECT * FROM users WHERE handle LIKE ? OR display_name LIKE ? OR email LIKE ? ORDER BY created_at DESC LIMIT ?",
-                (like, like, like, limit),
-            ))
-        else:
-            rows = list(conn.execute(
-                "SELECT * FROM users ORDER BY created_at DESC LIMIT ?",
-                (limit,),
-            ))
+            like = f"%{q}%"
+            where.append("(u.handle LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)")
+            params += [like, like, like]
+        join = "JOIN content_pack_users cpu ON cpu.user_id = u.id" if seed_only else ""
+        where_sql = " AND ".join(where)
+        total = int(conn.execute(
+            f"SELECT COUNT(*) FROM users u {join} WHERE {where_sql}", params
+        ).fetchone()[0])
+        rows = list(conn.execute(
+            f"SELECT u.* FROM users u {join} WHERE {where_sql} ORDER BY u.created_at DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
+        ))
+        # Mark which rows are generated seed personas (for a badge + bulk-clear).
+        ids = [r["id"] for r in rows]
+        seed_ids: set[str] = set()
+        if ids:
+            placeholders = ",".join("?" * len(ids))
+            seed_ids = {r[0] for r in conn.execute(
+                f"SELECT user_id FROM content_pack_users WHERE user_id IN ({placeholders})", ids
+            ).fetchall()}
+        seed_total = int(conn.execute("SELECT COUNT(*) FROM content_pack_users").fetchone()[0])
         items = []
         for r in rows:
             d = dict(r)
             base = serialize_user(d)
             base["role"] = d.get("role", "member")
             base["deleted_at"] = d.get("deleted_at")
+            base["isSeed"] = d["id"] in seed_ids
             base["follower_count"] = int(conn.execute(
                 "SELECT COUNT(*) FROM follows WHERE following_id = ?", (d["id"],)
             ).fetchone()[0])
@@ -35451,7 +35474,7 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT COUNT(*) FROM posts WHERE author_id = ? AND deleted_at IS NULL", (d["id"],)
             ).fetchone()[0])
             items.append(base)
-        self.send_json({"items": items})
+        self.send_json({"items": items, "total": total, "limit": limit, "offset": offset, "seedTotal": seed_total})
 
     def api_admin_update_user(self, conn: sqlite3.Connection, user_id: str) -> None:
         admin = self.require_admin(conn)

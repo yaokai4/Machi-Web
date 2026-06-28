@@ -155,6 +155,7 @@ _TYPE_BRIEF: dict[str, str] = {
     "local_service": "找或提醒本地服务：搬家、维修、剪发、翻译代办、宠物照护、上门清洁",
     "alert": "安全避坑：租房/兼职/二手骗局、上来就要转账、深夜路段、诈骗电话短信、台风地震防灾",
     "daily_life": "生活碎碎念/小确幸/emo：加班、想家、做饭翻车、追剧、钱包瘪了、天气、猫、随手感慨",
+    "spotlight": "精选攻略·干货长帖：围绕一个清晰主题把日本生活/玩乐讲透——如「在日第一个月必办清单」「东京周末去哪玩」「关西三日游路线」「赏樱/赏枫/温泉地图」「便利店&药妆必买」「租房/找工避坑全攻略」「省钱技巧合集」",
 }
 
 _LANG_NAME = {"zh": "简体中文", "en": "English", "ja": "自然な日本語"}
@@ -194,9 +195,16 @@ def _build_prompt(*, region_code: str, language: str, tone: str, plan: dict[str,
         "只输出 JSON，不要解释。"
     )
 
+    spotlight_note = (
+        "\n注意：spotlight 是「精选攻略 / 干货长帖」的例外——可以写长一点（约 150-400 字），"
+        "围绕一个清晰主题讲透，可用短换行或「1. 2. 3.」分点，但仍要像热心网友的真实分享："
+        "口语、有个人语气和取舍，给具体地名/价格/时间，绝不要像官方说明书或 AI 罗列。"
+        if "spotlight" in plan else ""
+    )
     user = (
         f"语言：{lang_name}。真实地名/车站（自然地用，别硬塞）：{place_hint}。\n\n"
-        f"按「类型: 条数」产出，每条符合该类型的角度、彼此不重复：\n{plan_lines}\n\n"
+        f"按「类型: 条数」产出，每条符合该类型的角度、彼此不重复：\n{plan_lines}\n"
+        f"{spotlight_note}\n"
         '输出严格 JSON：{"items": [{"type": "<类型key>", "content": "<一条帖子正文>"}, ...]}\n'
         "再次强调：长度参差、口吻像真人随手发、角度发散、细节具体——读起来绝不能像 AI 生成的。"
     )
@@ -379,7 +387,8 @@ def generate(
             continue
         if remaining.get(ctype, 0) <= 0:
             continue
-        if not (_MIN_LEN <= len(text) <= _MAX_LEN):
+        max_len = 700 if ctype == "spotlight" else _MAX_LEN
+        if not (_MIN_LEN <= len(text) <= max_len):
             continue
         if not seedlib._is_clean(text):
             continue
