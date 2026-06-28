@@ -34,6 +34,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import time
 import urllib.error
 import urllib.request
 from typing import Any
@@ -517,3 +518,127 @@ def generate_comments(
         if len(out) >= n:
             break
     return out or None
+
+
+# --- Machi AI (internal chat backend) ---------------------------------------
+#
+# Powers the in-app "Machi AI" assistant. This is a *general chat* completion
+# (free-form natural-language answers), distinct from the JSON-mode seed
+# generation above. The provider is an internal server-side detail: the caller
+# (server.py) never surfaces the provider name, model id, raw upstream error,
+# or any ``reasoning_content`` to clients. We keep this stdlib-only (urllib)
+# like the rest of the module and never log the key, the user text, or the
+# upstream response body.
+
+MACHI_AI_CHAT_MODEL = _env("MACHI_AI_MODEL", "deepseek-v4-flash")
+MACHI_AI_CHAT_MAX_TOKENS = int(_env("MACHI_AI_MAX_TOKENS", "1600"))
+
+
+def _deepseek_chat_once(payload: dict[str, Any], timeout: float) -> dict[str, Any]:
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{DEEPSEEK_BASE_URL}/chat/completions", data=body, method="POST"
+    )
+    req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {DEEPSEEK_API_KEY}")
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        raw = resp.read().decode("utf-8", "replace")
+    return json.loads(raw)
+
+
+def machi_ai_chat_completion(
+    messages: list[dict[str, str]],
+    *,
+    model: str | None = None,
+    thinking: bool = False,
+    max_tokens: int = 1600,
+    timeout: float | None = None,
+) -> dict[str, Any] | None:
+    """Run one stateless chat completion for Machi AI.
+
+    ``messages`` is the full OpenAI-style turn list the *server* assembles
+    (system + optional Guide context + recent history + latest user turn).
+
+    Returns a normalized dict::
+
+        {content, finish_reason, model, usage:{prompt_tokens,
+         completion_tokens, total_tokens}, latency_ms}
+
+    or ``None`` on **any** problem (no key configured, network/HTTP error,
+    empty/malformed output) so the caller can answer with a friendly
+    "temporarily unavailable" instead of leaking a provider error. Never
+    raises out of the happy path; never returns ``reasoning_content``.
+
+    ``thinking`` toggles the upstream deep-reasoning mode for clearly complex
+    questions: enabled ⇒ ``reasoning_effort: "high"`` and no temperature;
+    disabled (default) ⇒ a low temperature for fast, stable everyday answers.
+    """
+    if not DEEPSEEK_API_KEY:
+        return None
+    if not isinstance(messages, list) or not messages:
+        return None
+    model = (model or MACHI_AI_CHAT_MODEL).strip() or MACHI_AI_CHAT_MODEL
+    req_timeout = float(timeout or SEED_LLM_TIMEOUT)
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": False,
+        "max_tokens": int(max_tokens or MACHI_AI_CHAT_MAX_TOKENS),
+        # New thinking control (deepseek-v4-*). Disabled by default for speed
+        # and cost on everyday questions.
+        "thinking": {"type": "enabled" if thinking else "disabled"},
+    }
+    if thinking:
+        # Thinking mode forbids temperature/top_p; ask for deeper reasoning.
+        payload["reasoning_effort"] = "high"
+    else:
+        payload["temperature"] = 0.4
+
+    start = time.monotonic()
+    data: dict[str, Any] | None = None
+    # One short backoff retry on transient upstream states (429/5xx, network).
+    for attempt in range(2):
+        try:
+            data = _deepseek_chat_once(payload, req_timeout)
+            break
+        except urllib.error.HTTPError as exc:
+            # Drain the body without logging it (no provider error leakage).
+            try:
+                exc.read()
+            except Exception:
+                pass
+            if attempt == 0 and exc.code in (429, 500, 502, 503):
+                time.sleep(0.6)
+                continue
+            return None
+        except Exception:
+            if attempt == 0:
+                time.sleep(0.4)
+                continue
+            return None
+
+    if not isinstance(data, dict):
+        return None
+    try:
+        choice = (data.get("choices") or [])[0]
+        msg = choice.get("message") or {}
+        content = str(msg.get("content") or "").strip()
+        finish = str(choice.get("finish_reason") or "")
+    except Exception:
+        return None
+    if not content:
+        return None
+    usage = data.get("usage") or {}
+    return {
+        "content": content,
+        "finish_reason": finish,
+        # The resolved model id is for internal diagnostics only — the server
+        # stores it in model_internal and never returns it to clients.
+        "model": str(data.get("model") or model),
+        "usage": {
+            "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+            "completion_tokens": int(usage.get("completion_tokens") or 0),
+            "total_tokens": int(usage.get("total_tokens") or 0),
+        },
+        "latency_ms": int((time.monotonic() - start) * 1000),
+    }

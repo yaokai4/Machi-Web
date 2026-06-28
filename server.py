@@ -710,6 +710,21 @@ MEMBERSHIP_DAILY_LIMIT_VERIFIED = int(_env("MEMBERSHIP_DAILY_LIMIT_VERIFIED", "0
 # Kept small on purpose so it never overpowers genuine engagement.
 VERIFIED_BOOST_SCORE = float(_env("MEMBERSHIP_VERIFIED_BOOST", "1.05"))
 
+# --- Machi AI (原创 in-app assistant) -------------------------------------
+# Server-side limits + provider config for the "Machi AI" feature. The
+# underlying LLM provider/model is an INTERNAL detail and is never surfaced to
+# clients (no provider/model name in any response, error, or user-visible
+# string). Daily limits are enforced on the server only — a tampered client
+# cannot exceed them. Member daily limit is never echoed back to members.
+MACHI_AI_FREE_DAILY_LIMIT = int(_env("MACHI_AI_FREE_DAILY_LIMIT", "3"))
+MACHI_AI_MEMBER_DAILY_LIMIT = int(_env("MACHI_AI_MEMBER_DAILY_LIMIT", "20"))
+MACHI_AI_MODEL = _env("MACHI_AI_MODEL", "deepseek-v4-flash")
+MACHI_AI_PRO_MODEL = _env("MACHI_AI_PRO_MODEL", "deepseek-v4-pro")
+MACHI_AI_TIMEOUT_SEC = float(_env("MACHI_AI_TIMEOUT_SEC", "35"))
+MACHI_AI_MAX_INPUT_CHARS = int(_env("MACHI_AI_MAX_INPUT_CHARS", "1200"))
+MACHI_AI_MAX_HISTORY_MESSAGES = int(_env("MACHI_AI_MAX_HISTORY_MESSAGES", "10"))
+MACHI_AI_MAX_CONTEXT_ITEMS = int(_env("MACHI_AI_MAX_CONTEXT_ITEMS", "6"))
+
 # --- payment providers (all optional; configured per-deploy) ---
 WECHAT_PAY_APP_ID = _env("WECHAT_PAY_APP_ID", "")
 WECHAT_PAY_MCH_ID = _env("WECHAT_PAY_MCH_ID", "")
@@ -12736,6 +12751,320 @@ def has_active_membership(conn: sqlite3.Connection, user_id: str) -> bool:
     return get_user_membership_status(conn, user_id)["is_active"]
 
 
+# ---------------------------------------------------------------------------
+# Machi AI — original in-app assistant (日本生活 / 升学 / 就职 / Machi 使用).
+#
+# Everything the user ever sees is "Machi AI". The underlying LLM provider and
+# model are an INTERNAL server-side detail (seed_llm.machi_ai_chat_completion)
+# and are never returned to clients, logged in the access log, or named in any
+# user-visible string. These helpers handle the JST usage day, lightweight
+# Guide retrieval (keyword/LIKE — never a vector store), the brand system
+# prompt, the starter suggestions, and quota bookkeeping. Retrieval is
+# best-effort and never raises into the chat path.
+# ---------------------------------------------------------------------------
+
+_MACHI_AI_JST = timezone(timedelta(hours=9))  # Asia/Tokyo, no DST
+
+
+def machi_ai_usage_date() -> str:
+    """Current calendar date in Japan time (YYYY-MM-DD) — the daily quota key."""
+    return datetime.now(_MACHI_AI_JST).date().isoformat()
+
+
+def machi_ai_lang_key(language: str) -> str:
+    low = (language or "").strip().lower()
+    if low.startswith("ja") or low == "jp":
+        return "ja"
+    if low.startswith("en"):
+        return "en"
+    return "zh"
+
+
+def machi_ai_text(language: str, zh: str, ja: str, en: str) -> str:
+    return {"ja": ja, "en": en}.get(machi_ai_lang_key(language), zh)
+
+
+def machi_ai_usage_count(conn: sqlite3.Connection, user_id: str, usage_date: str) -> int:
+    row = conn.execute(
+        "SELECT total_count FROM guide_ai_usage WHERE user_id = ? AND usage_date = ?",
+        (user_id, usage_date),
+    ).fetchone()
+    return int(row["total_count"]) if row else 0
+
+
+def machi_ai_daily_limit(is_member: bool) -> int:
+    return MACHI_AI_MEMBER_DAILY_LIMIT if is_member else MACHI_AI_FREE_DAILY_LIMIT
+
+
+def _machi_ai_title_from_message(message: str) -> str:
+    """Conversation title = the question's first ~24 chars, newlines stripped."""
+    text = " ".join((message or "").split()).strip()
+    if len(text) > 24:
+        text = text[:24]
+    return text or "Machi AI"
+
+
+# Lightweight keyword extraction. CJK input has no spaces, so a small domain
+# vocabulary scan (terms actually present in the message) does the heavy
+# lifting; a punctuation/whitespace split covers everything else (incl. ASCII).
+_MACHI_AI_TOKEN_SPLIT = re.compile(
+    r"[\s,.!?;:'\"()\[\]{}<>/\\|`~@#$%^&*+=_…·、。，！？；：「」『』（）【】〜～　-]+"
+)
+_MACHI_AI_VOCAB: tuple[str, ...] = (
+    "租房", "房子", "初期费用", "礼金", "敷金", "更新料", "保证公司", "share house", "ur",
+    "搬家", "退租", "押金", "签证", "在留", "在留资格", "更新", "入管", "永住", "归化",
+    "年金", "国民年金", "厚生年金", "保险", "健康保险", "医疗", "看病", "牙医", "防灾",
+    "地震", "台风", "垃圾", "分类", "区役所", "市役所", "银行", "开户", "手机", "手机卡",
+    "语言学校", "大学", "大学院", "出愿", "研究计划", "研究计划书", "教授", "内诺", "奖学金",
+    "eju", "留考", "面接", "面试", "履历书", "职务经历", "就活", "就职", "转职", "派遣",
+    "正社员", "兼职", "打工", "时薪", "工作签证", "职场", "日语", "jlpt", "n1", "n2", "n3",
+    "敬语", "商务邮件", "会员", "工作台", "todo", "日历", "学校库", "公司库",
+)
+
+
+def machi_ai_keywords(text: str, *, limit: int = 6) -> list[str]:
+    text = (text or "").strip()
+    if not text:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    low = text.lower()
+    for term in _MACHI_AI_VOCAB:
+        if term in low and term not in seen:
+            seen.add(term)
+            out.append(term)
+            if len(out) >= limit:
+                return out
+    for raw in _MACHI_AI_TOKEN_SPLIT.split(text):
+        word = raw.strip()
+        if 2 <= len(word) <= 16 and word.lower() not in seen:
+            seen.add(word.lower())
+            out.append(word)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def _machi_ai_like_rows(conn: sqlite3.Connection, table: str, columns: list[str],
+                        base_where: list[str], base_params: list[Any], terms: list[str],
+                        order_by: str, limit_rows: int) -> list[Any]:
+    if not terms or not columns:
+        return []
+    ors: list[str] = []
+    params: list[Any] = list(base_params)
+    for term in terms:
+        like = f"%{term}%"
+        ors.append("(" + " OR ".join(f"{c} LIKE ?" for c in columns) + ")")
+        params.extend([like] * len(columns))
+    where = " AND ".join(base_where + ["(" + " OR ".join(ors) + ")"])
+    sql = f"SELECT * FROM {table} WHERE {where} ORDER BY {order_by} LIMIT {int(limit_rows)}"
+    return conn.execute(sql, params).fetchall()
+
+
+def guide_ai_retrieve_context(conn: sqlite3.Connection, *, user_message: str, country: str,
+                              language: str, limit: int = MACHI_AI_MAX_CONTEXT_ITEMS) -> list[dict[str, Any]]:
+    """Best-effort keyword/LIKE retrieval over PUBLIC Guide content.
+
+    Returns up to ``limit`` items, each ``{type, title, subtitle, route,
+    modelLine}``. ``route`` is a small public locator the client can navigate
+    (article/product → slug; school/company/faq → id). Only public columns are
+    read — never private member resources. Any failure degrades to fewer/zero
+    items; it never raises into the chat flow.
+    """
+    limit = max(0, min(int(limit or 0), MACHI_AI_MAX_CONTEXT_ITEMS))
+    if limit <= 0:
+        return []
+    country = (country or GUIDE_DEFAULT_COUNTRY).strip().lower() or GUIDE_DEFAULT_COUNTRY
+    terms = machi_ai_keywords(user_message, limit=5)
+    if not terms:
+        return []
+
+    def _clip(value: Any, n: int) -> str:
+        return " ".join(str(value or "").split())[:n]
+
+    buckets: list[list[dict[str, Any]]] = []
+
+    def _try(builder) -> None:
+        try:
+            rows = builder()
+        except Exception:
+            rows = []
+        bucket: list[dict[str, Any]] = []
+        for row in rows or []:
+            try:
+                bucket.append(dict(row))
+            except Exception:
+                continue
+        if bucket:
+            buckets.append(bucket)
+
+    # Articles
+    _try(lambda: [
+        {"_kind": "guide_article", "title": _clip(r["title"], 60), "subtitle": _clip(r["summary"], 80),
+         "route": {"kind": "article", "slug": r["slug"]},
+         "modelLine": f"【指南文章】{_clip(r['title'], 60)} — {_clip(r['summary'], 120)}"}
+        for r in _machi_ai_like_rows(conn, "guide_articles", ["title", "summary", "tags"],
+                                     ["country = ?", "status = 'published'"], [country], terms,
+                                     "is_featured DESC, published_at DESC", 4)
+    ])
+    # Schools
+    _try(lambda: [
+        {"_kind": "guide_school", "title": _clip(r["school_name"], 60),
+         "subtitle": _clip(" · ".join(x for x in [r["prefecture"], r["city"]] if x), 80) or _clip(r["school_type"], 80),
+         "route": {"kind": "school", "id": r["id"]},
+         "modelLine": f"【学校】{_clip(r['school_name'], 60)}（{_clip(r['prefecture'], 20)} {_clip(r['school_type'], 20)}）"}
+        for r in _machi_ai_like_rows(conn, "guide_schools",
+                                     ["school_name", "school_name_jp", "school_name_en", "prefecture", "city",
+                                      "fields_of_study", "departments", "tags"],
+                                     ["country = ?", "status = 'published'"], [country], terms,
+                                     "is_featured DESC, data_quality_score DESC", 3)
+    ])
+    # Companies
+    _try(lambda: [
+        {"_kind": "guide_company", "title": _clip(r["company_name"], 60),
+         "subtitle": _clip(" · ".join(x for x in [r["industry"], r["prefecture"]] if x), 80),
+         "route": {"kind": "company", "id": r["id"]},
+         "modelLine": f"【公司】{_clip(r['company_name'], 60)}（{_clip(r['industry'], 30)}）"}
+        for r in _machi_ai_like_rows(conn, "guide_companies",
+                                     ["company_name", "company_name_jp", "company_name_en", "industry",
+                                      "sub_industry", "city", "description", "tags"],
+                                     ["country = ?", "status = 'published'", "data_quality_score >= 15"], [country], terms,
+                                     "is_featured DESC, data_quality_score DESC", 3)
+    ])
+    # Products / services
+    _try(lambda: [
+        {"_kind": "guide_product", "title": _clip(r["title"], 60),
+         "subtitle": _clip(r["subtitle"] or r["description"], 80),
+         "route": {"kind": "product", "slug": r["slug"]},
+         "modelLine": f"【资料/服务】{_clip(r['title'], 60)} — {_clip(r['subtitle'] or r['description'], 100)}"}
+        for r in _machi_ai_like_rows(conn, "guide_products", ["title", "subtitle", "description", "tags"],
+                                     ["country = ?", "status IN ('published','coming_soon')"], [country], terms,
+                                     "is_coming_soon ASC, sort_order", 3)
+    ])
+    # FAQ
+    _try(lambda: [
+        {"_kind": "guide_faq", "title": _clip(r["question"], 60), "subtitle": _clip(r["answer"], 80),
+         "route": {"kind": "faq", "id": r["id"]},
+         "modelLine": f"【常见问题】{_clip(r['question'], 60)} — {_clip(r['answer'], 120)}"}
+        for r in _machi_ai_like_rows(conn, "guide_faq", ["question", "answer"],
+                                     ["country = ?", "status = 'published'"], [country], terms,
+                                     "sort_order", 2)
+    ])
+
+    # Round-robin merge so the context is a mix of types, not all one table.
+    out: list[dict[str, Any]] = []
+    seen: set[tuple] = set()
+    idx = 0
+    while len(out) < limit and any(idx < len(b) for b in buckets):
+        for bucket in buckets:
+            if idx >= len(bucket):
+                continue
+            it = bucket[idx]
+            route = it.get("route") or {}
+            key = (it.get("_kind"), route.get("slug") or route.get("id") or it.get("title"))
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"type": it["_kind"], "title": it["title"], "subtitle": it["subtitle"],
+                        "route": route, "modelLine": it["modelLine"]})
+            if len(out) >= limit:
+                break
+        idx += 1
+    return out
+
+
+# The brand system prompt lives on the server only — never on the client. It
+# defines the persona, refusal-free helpfulness, Japan-affairs safety rules,
+# and Machi product awareness, and forbids naming any external model/provider.
+MACHI_AI_SYSTEM_PROMPT = (
+    "你是 Machi AI，Machi App 内的日本生活、升学、就职与 Machi 使用助手。你服务在日华人、留学生、"
+    "工作者、准备赴日的人，以及正在使用 Machi Guide 的用户。\n\n"
+    "品牌规则：\n"
+    "- 你只能自称 Machi AI。\n"
+    "- 不要提及任何外部模型、供应商或底层技术。\n"
+    "- 不要说“作为 AI 模型”。\n"
+    "- 不要说自己不能提供帮助后就结束，要给可执行的下一步。\n\n"
+    "回答风格：\n"
+    "- 使用用户提问的语言回答。\n"
+    "- 语气温暖、可靠、具体，不要营销腔。\n"
+    "- 优先给步骤、清单、注意事项、时间线、材料列表、提问模板。\n"
+    "- 如果问题很大，先给最重要的 3-5 步。\n"
+    "- 适合手机阅读：短段落、清晰小标题、必要时用项目符号。\n"
+    "- 不要输出冗长大段墙。\n\n"
+    "日本事务安全规则：\n"
+    "- 签证、法律、税务、医疗、劳动纠纷、学校录取、公司招聘等高风险内容，只能提供一般信息和准备方向。\n"
+    "- 必须提醒用户最终以日本官方机构、学校、公司、人事、入管、区役所、年金事务所、税务署、专业士业或医生意见为准。\n"
+    "- 不要编造实时政策、价格、截止日期、录取承诺、招聘名额或官方链接。\n"
+    "- 不确定时说明“不确定”，并告诉用户应该向哪里确认。\n\n"
+    "Machi 产品规则：\n"
+    "- 如果用户问 Machi 怎么用，要结合 Machi Guide、学校库、公司库、会员资料、我的工作台、Todo、日历、"
+    "资料与服务、会员权益来回答。\n"
+    "- 如果用户的问题适合使用 Machi 的某个功能，可以自然建议“你可以在 Machi Guide 里打开学校库/公司库/"
+    "我的工作台/会员资料继续整理”。"
+)
+
+_MACHI_AI_LANG_DIRECTIVE = {
+    "zh": "请用简体中文回答。",
+    "ja": "日本語で自然に回答してください。",
+    "en": "Respond in clear English.",
+}
+
+# Heuristic: route a clearly complex / high-stakes question to the deeper
+# (thinking) path; everyday questions stay on the fast path.
+_MACHI_AI_COMPLEX_HINTS = (
+    "研究计划", "计划书", "对比", "比较", "方案", "整个流程", "详细步骤", "纠纷", "诉讼",
+    "确定申告", "策略", "规划", "区别", "step by step", "step-by-step", "比較", "違い",
+)
+
+
+def machi_ai_is_complex(message: str) -> bool:
+    text = message or ""
+    if len(text) >= 220:
+        return True
+    low = text.lower()
+    return any(hint.lower() in low for hint in _MACHI_AI_COMPLEX_HINTS)
+
+
+def machi_ai_build_messages(*, user_message: str, language: str,
+                            history: list[dict[str, Any]],
+                            context_items: list[dict[str, Any]]) -> list[dict[str, str]]:
+    """Assemble the stateless turn list: system (+ optional Guide context) +
+    recent history + the latest user turn."""
+    lang = machi_ai_lang_key(language)
+    system = MACHI_AI_SYSTEM_PROMPT + "\n\n" + _MACHI_AI_LANG_DIRECTIVE.get(lang, _MACHI_AI_LANG_DIRECTIVE["zh"])
+    lines = [f"- {it.get('modelLine') or it.get('title')}" for it in (context_items or []) if (it.get("modelLine") or it.get("title"))]
+    if lines:
+        system += ("\n\n以下是 Machi Guide 中可能相关的资料摘要。你可以参考，但不要编造摘要以外的事实：\n"
+                   + "\n".join(lines[:MACHI_AI_MAX_CONTEXT_ITEMS]))
+    messages: list[dict[str, str]] = [{"role": "system", "content": system}]
+    for h in history or []:
+        role = h.get("role")
+        content = (h.get("content") or "").strip()
+        if role in ("user", "assistant") and content:
+            messages.append({"role": role, "content": content})
+    messages.append({"role": "user", "content": user_message})
+    return messages
+
+
+_MACHI_AI_SUGGESTIONS: tuple[tuple[str, str, str, str, str], ...] = (
+    # (id, category, zh, ja, en)
+    ("first_week", "life", "刚来日本第一周要办什么？", "来日して最初の一週間で何を手続きする？", "What should I set up in my first week in Japan?"),
+    ("rent_cost", "life", "租房初期费用怎么看？", "賃貸の初期費用はどう見ればいい？", "How do I read move-in costs when renting?"),
+    ("baito", "career", "留学生找兼职要注意什么？", "留学生がバイトを探すときの注意点は？", "What should students watch out for in part-time work?"),
+    ("grad_school", "study", "大学院申请第一步做什么？", "大学院の出願、まず何から始める？", "What's the first step to apply for grad school?"),
+    ("resume", "career", "履历书和职务经歴書有什么区别？", "履歴書と職務経歴書の違いは？", "What's the difference between rirekisho and shokumu-keirekisho?"),
+    ("visa_renew", "life", "签证更新前要准备什么？", "ビザ更新の前に何を準備する？", "What should I prepare before renewing my visa?"),
+    ("interview", "career", "日企面试常见问题有哪些？", "日本企業の面接でよく聞かれることは？", "What are common Japanese job-interview questions?"),
+    ("use_machi", "machi", "Machi Guide 怎么用？", "Machi Guide はどう使う？", "How do I use Machi Guide?"),
+)
+
+
+def machi_ai_suggestions(language: str) -> list[dict[str, str]]:
+    lang = machi_ai_lang_key(language)
+    pick = {"ja": 3, "en": 4}.get(lang, 2)
+    return [{"id": item[0], "category": item[1], "title": item[pick]} for item in _MACHI_AI_SUGGESTIONS]
+
+
 def require_verified_membership(conn: sqlite3.Connection, user_id: str, content_type: str | None) -> None:
     """403 MEMBERSHIP_REQUIRED if the content type is gated and the user
     isn't an active verified member. Same rule for every client."""
@@ -17725,6 +18054,345 @@ class Handler(BaseHTTPRequestHandler):
                     "ORDER BY sort_order LIMIT 8", (country, like, like)).fetchall()])
         self.send_json({"status": "ok", "country": country, "query": keyword,
                         "scopes": GUIDE_SEARCH_SCOPES, "groups": groups})
+
+    # --- Machi AI (原创 in-app assistant) -----------------------------------
+    # The user only ever sees "Machi AI". The underlying provider/model never
+    # appears in any response, error, or log. Daily limits are enforced here on
+    # the server, so a tampered client can't exceed them, and the member limit
+    # number is never echoed back to members.
+
+    def _guide_ai_conversation_dto(self, row: Any) -> dict[str, Any]:
+        r = dict(row)
+        return {
+            "id": r.get("id"),
+            "title": r.get("title") or "",
+            "lastMessagePreview": r.get("last_message_preview") or "",
+            "messageCount": int(r.get("message_count") or 0),
+            "country": r.get("country") or "jp",
+            "language": r.get("language") or "zh-CN",
+            "createdAt": r.get("created_at"),
+            "updatedAt": r.get("updated_at"),
+        }
+
+    def _guide_ai_message_dto(self, row: Any) -> dict[str, Any]:
+        r = dict(row)
+        out: dict[str, Any] = {
+            "id": r.get("id"),
+            "role": r.get("role"),
+            "content": r.get("content") or "",
+            "createdAt": r.get("created_at"),
+        }
+        # Only assistant turns carry Guide reference sources. model_internal /
+        # token counts / finish_reason are intentionally NOT exposed.
+        if r.get("role") == "assistant":
+            sources: list[Any] = []
+            raw = (r.get("sources_json") or "").strip()
+            if raw:
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, list):
+                        sources = parsed
+                except Exception:
+                    sources = []
+            out["sources"] = sources
+        return out
+
+    def api_guide_ai_bootstrap(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
+        is_member = has_active_membership(conn, user["id"])
+        used = machi_ai_usage_count(conn, user["id"], machi_ai_usage_date())
+        # Members don't get a number; free users see how many remain today.
+        remaining = None if is_member else max(0, MACHI_AI_FREE_DAILY_LIMIT - used)
+        self.send_json({
+            "status": "ok",
+            "membershipActive": is_member,
+            "remainingFreeUses": remaining,
+            "suggestions": machi_ai_suggestions(language),
+            "disclaimer": machi_ai_text(
+                language,
+                "Machi AI 可以帮你整理步骤和注意事项，重要决定请以官方与专业意见为准。",
+                "Machi AI は手順や注意点の整理をお手伝いします。重要な判断は必ず公式・専門家の意見をご確認ください。",
+                "Machi AI helps you organize steps and things to watch for. For important decisions, rely on official and professional advice.",
+            ),
+        })
+
+    def api_guide_ai_conversations(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        try:
+            limit = int(query.get("limit") or 30)
+        except (TypeError, ValueError):
+            limit = 30
+        limit = max(1, min(limit, 50))
+        rows = conn.execute(
+            "SELECT * FROM guide_ai_conversations WHERE user_id = ? AND deleted_at = '' "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (user["id"], limit),
+        ).fetchall()
+        self.send_json({"status": "ok", "items": [self._guide_ai_conversation_dto(r) for r in rows]})
+
+    def api_guide_ai_messages(self, conn: sqlite3.Connection, conversation_id: str) -> None:
+        user = self.require_user(conn)
+        conversation_id = (conversation_id or "").strip()
+        # Ownership is enforced in the WHERE clause: another user's id never
+        # matches, so they get a 404 (can't read someone else's conversation).
+        conv = conn.execute(
+            "SELECT * FROM guide_ai_conversations WHERE id = ? AND user_id = ? AND deleted_at = ''",
+            (conversation_id, user["id"]),
+        ).fetchone()
+        if not conv:
+            return self.send_error_json("conversation not found", 404, "not_found")
+        rows = conn.execute(
+            "SELECT * FROM guide_ai_messages WHERE conversation_id = ? ORDER BY created_at ASC LIMIT 200",
+            (conversation_id,),
+        ).fetchall()
+        self.send_json({
+            "status": "ok",
+            "conversation": self._guide_ai_conversation_dto(conv),
+            "items": [self._guide_ai_message_dto(r) for r in rows],
+        })
+
+    def _guide_ai_quota_response(self, language: str, is_member: bool) -> None:
+        # Free users learn it's a daily free cap (and may upgrade). Members are
+        # only told "that's all for today" — never the internal number.
+        if is_member:
+            msg = machi_ai_text(
+                language,
+                "今天的 Machi AI 使用次数已用完，明天可以继续咨询。",
+                "本日の Machi AI のご利用回数の上限に達しました。明日また利用できます。",
+                "You've reached today's Machi AI limit. Please come back tomorrow.",
+            )
+        else:
+            msg = machi_ai_text(
+                language,
+                "今日免费次数已用完，明天可以继续使用 Machi AI。",
+                "本日の無料回数を使い切りました。明日また Machi AI をご利用いただけます。",
+                "You've used today's free questions. Machi AI is available again tomorrow.",
+            )
+        envelope = self._error_envelope("AI_QUOTA_EXCEEDED", msg)
+        envelope["upgradeSuggested"] = not is_member
+        envelope["usage"] = {
+            "membershipActive": is_member,
+            "remainingFreeUses": None if is_member else 0,
+            "upgradeSuggested": not is_member,
+        }
+        self.send_json(envelope, 429)
+
+    def _machi_ai_increment_usage(self, conn: sqlite3.Connection, user_id: str, usage_date: str,
+                                  is_member: bool, usage: dict[str, Any]) -> None:
+        prompt = int((usage or {}).get("prompt_tokens") or 0)
+        completion = int((usage or {}).get("completion_tokens") or 0)
+        now = now_iso()
+        existing = conn.execute(
+            "SELECT id FROM guide_ai_usage WHERE user_id = ? AND usage_date = ?",
+            (user_id, usage_date),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE guide_ai_usage SET total_count = total_count + 1, "
+                "free_count = free_count + ?, member_count = member_count + ?, "
+                "prompt_tokens = prompt_tokens + ?, completion_tokens = completion_tokens + ?, "
+                "updated_at = ? WHERE user_id = ? AND usage_date = ?",
+                (0 if is_member else 1, 1 if is_member else 0, prompt, completion, now, user_id, usage_date),
+            )
+        else:
+            conn.execute(
+                "INSERT INTO guide_ai_usage (id, user_id, usage_date, free_count, member_count, "
+                "total_count, prompt_tokens, completion_tokens, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
+                (str(uuid.uuid4()), user_id, usage_date, 0 if is_member else 1,
+                 1 if is_member else 0, prompt, completion, now),
+            )
+
+    def api_guide_ai_chat(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        self._enforce_not_muted(user)
+        body = self.read_json()
+        country = (str(body.get("country") or "").strip().lower()) or GUIDE_DEFAULT_COUNTRY
+        country = _normalize_country_code(country) or GUIDE_DEFAULT_COUNTRY
+        language = (str(body.get("language") or "zh-CN").strip()) or "zh-CN"
+        message = str(body.get("message") or "").strip()
+        if not message:
+            return self.send_error_json(
+                machi_ai_text(language, "请输入你的问题。", "質問を入力してください。", "Please enter your question."),
+                400, "invalid_message",
+            )
+        if len(message) > MACHI_AI_MAX_INPUT_CHARS:
+            return self.send_error_json(
+                machi_ai_text(language, "消息太长了，请精简后再发送。", "メッセージが長すぎます。短くしてください。",
+                              "Your message is too long — please shorten it."),
+                400, "invalid_message",
+            )
+
+        usage_date = machi_ai_usage_date()
+        is_member = has_active_membership(conn, user["id"])
+        used = machi_ai_usage_count(conn, user["id"], usage_date)
+        limit = machi_ai_daily_limit(is_member)
+        if used >= limit:
+            return self._guide_ai_quota_response(language, is_member)
+
+        # Resolve (but don't yet create) the conversation, and pull recent
+        # history. Persisting is deferred until the AI call succeeds, so a hard
+        # provider failure never leaves orphan rows or burns a quota slot.
+        conv_id = str(body.get("conversationId") or body.get("conversation_id") or "").strip() or None
+        conv_row = None
+        if conv_id:
+            conv_row = conn.execute(
+                "SELECT * FROM guide_ai_conversations WHERE id = ? AND user_id = ? AND deleted_at = ''",
+                (conv_id, user["id"]),
+            ).fetchone()
+            if not conv_row:
+                return self.send_error_json(
+                    machi_ai_text(language, "对话不存在或已删除。", "会話が見つかりません。", "Conversation not found."),
+                    404, "not_found",
+                )
+
+        history: list[dict[str, Any]] = []
+        if conv_row is not None:
+            hist_rows = conn.execute(
+                "SELECT role, content FROM guide_ai_messages WHERE conversation_id = ? "
+                "ORDER BY created_at DESC LIMIT ?",
+                (conv_id, MACHI_AI_MAX_HISTORY_MESSAGES),
+            ).fetchall()
+            history = [dict(r) for r in reversed(hist_rows)]
+
+        try:
+            context_items = guide_ai_retrieve_context(
+                conn, user_message=message, country=country, language=language,
+                limit=MACHI_AI_MAX_CONTEXT_ITEMS,
+            )
+        except Exception:
+            context_items = []
+
+        messages = machi_ai_build_messages(
+            user_message=message, language=language, history=history, context_items=context_items,
+        )
+        thinking = machi_ai_is_complex(message)
+        completion = None
+        try:
+            completion = seed_llm.machi_ai_chat_completion(
+                messages,
+                model=MACHI_AI_MODEL,
+                thinking=thinking,
+                max_tokens=1600,
+                timeout=MACHI_AI_TIMEOUT_SEC,
+            )
+        except Exception:
+            # Never surface the provider's raw error — degrade to "unavailable".
+            completion = None
+        if not completion or not str(completion.get("content") or "").strip():
+            return self.send_json(
+                self._error_envelope("AI_UNAVAILABLE", machi_ai_text(
+                    language,
+                    "Machi AI 暂时无法回答，请稍后再试。",
+                    "Machi AI は現在応答できません。しばらくしてから再度お試しください。",
+                    "Machi AI is temporarily unavailable. Please try again shortly.",
+                )),
+                503,
+            )
+
+        assistant_content = str(completion.get("content") or "").strip()
+        usage = completion.get("usage") or {}
+        # Public sources for the client: type/title/subtitle/route only.
+        client_sources = [
+            {"type": it["type"], "title": it["title"], "subtitle": it.get("subtitle") or "",
+             "route": it.get("route") or {}}
+            for it in context_items
+        ]
+
+        now = now_iso()
+        if conv_row is None:
+            conv_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO guide_ai_conversations (id, user_id, title, country, language, "
+                "last_message_preview, message_count, created_at, updated_at, deleted_at) "
+                "VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, '')",
+                (conv_id, user["id"], _machi_ai_title_from_message(message), country, language, now, now),
+            )
+        # User turn.
+        conn.execute(
+            "INSERT INTO guide_ai_messages (id, conversation_id, user_id, role, content, source_count, "
+            "sources_json, model_internal, finish_reason, prompt_tokens, completion_tokens, total_tokens, "
+            "latency_ms, created_at) VALUES (?, ?, ?, 'user', ?, 0, '', '', '', 0, 0, 0, 0, ?)",
+            (str(uuid.uuid4()), conv_id, user["id"], message, now),
+        )
+        # Assistant turn. model_internal is for diagnostics only; never returned.
+        assistant_msg_id = str(uuid.uuid4())
+        assistant_now = now_iso()
+        conn.execute(
+            "INSERT INTO guide_ai_messages (id, conversation_id, user_id, role, content, source_count, "
+            "sources_json, model_internal, finish_reason, prompt_tokens, completion_tokens, total_tokens, "
+            "latency_ms, created_at) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (assistant_msg_id, conv_id, user["id"], assistant_content, len(client_sources),
+             json.dumps(client_sources, ensure_ascii=False), str(completion.get("model") or ""),
+             str(completion.get("finish_reason") or ""), int(usage.get("prompt_tokens") or 0),
+             int(usage.get("completion_tokens") or 0), int(usage.get("total_tokens") or 0),
+             int(completion.get("latency_ms") or 0), assistant_now),
+        )
+        preview = " ".join(assistant_content.split())[:80]
+        conn.execute(
+            "UPDATE guide_ai_conversations SET last_message_preview = ?, "
+            "message_count = message_count + 2, updated_at = ? WHERE id = ?",
+            (preview, assistant_now, conv_id),
+        )
+        self._machi_ai_increment_usage(conn, user["id"], usage_date, is_member, usage)
+
+        remaining = None if is_member else max(0, limit - (used + 1))
+        self.send_json({
+            "status": "ok",
+            "conversationId": conv_id,
+            "message": {
+                "id": assistant_msg_id,
+                "role": "assistant",
+                "content": assistant_content,
+                "createdAt": assistant_now,
+                "sources": client_sources,
+            },
+            "usage": {
+                "membershipActive": is_member,
+                "remainingFreeUses": remaining,
+                "upgradeSuggested": (not is_member) and remaining == 0,
+            },
+        })
+
+    def api_guide_ai_conversation_delete(self, conn: sqlite3.Connection, conversation_id: str) -> None:
+        user = self.require_user(conn)
+        conversation_id = (conversation_id or "").strip()
+        conv = conn.execute(
+            "SELECT id FROM guide_ai_conversations WHERE id = ? AND user_id = ? AND deleted_at = ''",
+            (conversation_id, user["id"]),
+        ).fetchone()
+        if not conv:
+            return self.send_error_json("conversation not found", 404, "not_found")
+        now = now_iso()
+        conn.execute(
+            "UPDATE guide_ai_conversations SET deleted_at = ?, updated_at = ? WHERE id = ? AND user_id = ?",
+            (now, now, conversation_id, user["id"]),
+        )
+        self.send_json({"status": "ok"})
+
+    def api_guide_ai_feedback(self, conn: sqlite3.Connection, message_id: str) -> None:
+        user = self.require_user(conn)
+        message_id = (message_id or "").strip()
+        body = self.read_json()
+        rating = str(body.get("rating") or "").strip().lower()
+        if rating not in ("helpful", "not_helpful"):
+            return self.send_error_json("invalid rating", 400, "invalid_body")
+        reason = str(body.get("reason") or "").strip()[:500]
+        # The message must exist and belong to this user.
+        msg = conn.execute(
+            "SELECT id FROM guide_ai_messages WHERE id = ? AND user_id = ?",
+            (message_id, user["id"]),
+        ).fetchone()
+        if not msg:
+            return self.send_error_json("message not found", 404, "not_found")
+        conn.execute(
+            "INSERT INTO guide_ai_feedback (id, user_id, message_id, rating, reason, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (str(uuid.uuid4()), user["id"], message_id, rating, reason, now_iso()),
+        )
+        self.send_json({"status": "ok", "rating": rating})
 
     # --- Per-user Guide progress (login required) ---------------------------
     def _guide_progress_summary(self, conn: sqlite3.Connection, user_id: str,
@@ -24209,6 +24877,29 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_journey_detail(conn, unquote(path[len("/api/guide/journeys/"):]).strip("/"), query)
         if path == "/api/guide/search" and method == "GET":
             return self.api_guide_search(conn, query)
+        # Machi AI (原创 in-app assistant)
+        if path == "/api/guide/ai/bootstrap" and method == "GET":
+            return self.api_guide_ai_bootstrap(conn, query)
+        if path == "/api/guide/ai/conversations" and method == "GET":
+            return self.api_guide_ai_conversations(conn, query)
+        if path == "/api/guide/ai/chat" and method == "POST":
+            return self.api_guide_ai_chat(conn)
+        if path.startswith("/api/guide/ai/conversations/"):
+            rest = unquote(path[len("/api/guide/ai/conversations/"):]).strip("/")
+            parts = rest.split("/")
+            conv_id = parts[0]
+            tail = "/".join(parts[1:])
+            if tail == "messages" and method == "GET":
+                return self.api_guide_ai_messages(conn, conv_id)
+            if not tail and method == "DELETE":
+                return self.api_guide_ai_conversation_delete(conn, conv_id)
+        if path.startswith("/api/guide/ai/messages/") and method == "POST":
+            rest = unquote(path[len("/api/guide/ai/messages/"):]).strip("/")
+            parts = rest.split("/")
+            msg_id = parts[0]
+            tail = "/".join(parts[1:])
+            if tail == "feedback":
+                return self.api_guide_ai_feedback(conn, msg_id)
         if path == "/api/guide/progress" and method == "GET":
             return self.api_guide_progress(conn, query)
         if path == "/api/guide/progress" and method == "PATCH":

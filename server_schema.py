@@ -1095,6 +1095,68 @@ CREATE TABLE IF NOT EXISTS guide_home_modules (
 );
 CREATE INDEX IF NOT EXISTS idx_guide_home_modules_scope ON guide_home_modules(country, language, status, is_active, sort_order);
 
+-- Machi AI (原创 in-app assistant). Conversations + messages + a per-day usage
+-- counter + thumbs feedback. Message content is functional data and is stored,
+-- but the underlying provider/model is an internal detail (kept in
+-- model_internal, never returned to clients) and nothing here is written to the
+-- ordinary access log. See server.py machi_ai_* / api_guide_ai_*.
+CREATE TABLE IF NOT EXISTS guide_ai_conversations (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    title TEXT NOT NULL DEFAULT '',
+    country TEXT NOT NULL DEFAULT 'jp',
+    language TEXT NOT NULL DEFAULT 'zh-CN',
+    last_message_preview TEXT NOT NULL DEFAULT '',
+    message_count INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_guide_ai_conversations_user_updated ON guide_ai_conversations(user_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_guide_ai_conversations_user_deleted ON guide_ai_conversations(user_id, deleted_at);
+
+CREATE TABLE IF NOT EXISTS guide_ai_messages (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL,
+    source_count INTEGER NOT NULL DEFAULT 0,
+    sources_json TEXT NOT NULL DEFAULT '',
+    model_internal TEXT NOT NULL DEFAULT '',
+    finish_reason TEXT NOT NULL DEFAULT '',
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    total_tokens INTEGER NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guide_ai_messages_conversation_created ON guide_ai_messages(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_guide_ai_messages_user_created ON guide_ai_messages(user_id, created_at);
+
+CREATE TABLE IF NOT EXISTS guide_ai_usage (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    usage_date TEXT NOT NULL,
+    free_count INTEGER NOT NULL DEFAULT 0,
+    member_count INTEGER NOT NULL DEFAULT 0,
+    total_count INTEGER NOT NULL DEFAULT 0,
+    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+    completion_tokens INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_guide_ai_usage_user_date ON guide_ai_usage(user_id, usage_date);
+
+CREATE TABLE IF NOT EXISTS guide_ai_feedback (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    message_id TEXT NOT NULL,
+    rating TEXT NOT NULL DEFAULT '',
+    reason TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guide_ai_feedback_message ON guide_ai_feedback(message_id, created_at);
+
 CREATE TABLE IF NOT EXISTS listing_taxonomy_categories (
     id TEXT PRIMARY KEY,
     listing_type TEXT NOT NULL,
@@ -4072,6 +4134,68 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         );
         CREATE INDEX IF NOT EXISTS idx_appeals_status ON appeals(status, created_at);
         CREATE INDEX IF NOT EXISTS idx_appeals_user ON appeals(user_id, created_at);
+        """,
+    ),
+    # Machi AI (原创 in-app assistant): conversations / messages / per-day usage
+    # counter / feedback. No backend marker → runs on both SQLite and Postgres
+    # (fresh installs also get these from SCHEMA). All idempotent.
+    (
+        83,
+        "machi ai: conversations + messages + usage + feedback",
+        """
+        CREATE TABLE IF NOT EXISTS guide_ai_conversations (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            title TEXT NOT NULL DEFAULT '',
+            country TEXT NOT NULL DEFAULT 'jp',
+            language TEXT NOT NULL DEFAULT 'zh-CN',
+            last_message_preview TEXT NOT NULL DEFAULT '',
+            message_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_ai_conversations_user_updated ON guide_ai_conversations(user_id, updated_at);
+        CREATE INDEX IF NOT EXISTS idx_guide_ai_conversations_user_deleted ON guide_ai_conversations(user_id, deleted_at);
+        CREATE TABLE IF NOT EXISTS guide_ai_messages (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            source_count INTEGER NOT NULL DEFAULT 0,
+            sources_json TEXT NOT NULL DEFAULT '',
+            model_internal TEXT NOT NULL DEFAULT '',
+            finish_reason TEXT NOT NULL DEFAULT '',
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            latency_ms INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_ai_messages_conversation_created ON guide_ai_messages(conversation_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_guide_ai_messages_user_created ON guide_ai_messages(user_id, created_at);
+        CREATE TABLE IF NOT EXISTS guide_ai_usage (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            usage_date TEXT NOT NULL,
+            free_count INTEGER NOT NULL DEFAULT 0,
+            member_count INTEGER NOT NULL DEFAULT 0,
+            total_count INTEGER NOT NULL DEFAULT 0,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_guide_ai_usage_user_date ON guide_ai_usage(user_id, usage_date);
+        CREATE TABLE IF NOT EXISTS guide_ai_feedback (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            message_id TEXT NOT NULL,
+            rating TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_ai_feedback_message ON guide_ai_feedback(message_id, created_at);
         """,
     ),
 ]
