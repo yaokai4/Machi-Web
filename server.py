@@ -135,6 +135,9 @@ import xml.etree.ElementTree as ET
 # City Seed Bot content library — local module, no third-party deps. Holds the
 # curated city-life content pools + generator used by 城市内容助手.
 import seed_content_library as seedlib
+import seed_llm
+import seed_listings_library as seedpacks
+import seed_post_images
 from server_schema import MIGRATIONS, SCHEMA
 import server_apns
 import server_shared_state as shared_state
@@ -9132,6 +9135,261 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             )
 
 
+def import_premium_listings(
+    conn: sqlite3.Connection,
+    samples: list[dict[str, Any]],
+    *,
+    seller_id: str | None = None,
+    seller_pool: list[str] | None = None,
+    pack_version: str = seedpacks.PACK_VERSION,
+) -> dict[str, Any]:
+    """Idempotently upsert a curated premium listing pack (城市精选内容包).
+
+    Unlike :func:`ensure_city_listing_seed` (which only runs when the table is
+    empty in production), this is admin-triggered and safe to run any time:
+    - upsert keyed by ``(city_slug, type, title)`` → never duplicates;
+    - each imported listing is tagged with a ``__content_pack`` attribute so it
+      can be cleared again later without ever touching real user content.
+    Returns a counts summary.
+    """
+    if seller_id is None:
+        seller = conn.execute("SELECT id FROM users WHERE handle = 'kaizi' LIMIT 1").fetchone()
+        if not seller:
+            seller = conn.execute("SELECT id FROM users ORDER BY created_at ASC LIMIT 1").fetchone()
+        if not seller:
+            raise APIError("没有可用的发布者账号", 400, "no_seller")
+        seller_id = seller["id"]
+    # Distribute sellers across the persona pool when provided, so the imported
+    # listings look like they come from many users (not one account).
+    pool = [s for s in (seller_pool or []) if s]
+    now = now_iso()
+    created = 0
+    updated = 0
+    by_city: dict[str, int] = {}
+    by_type: dict[str, int] = {}
+    for index, sample in enumerate(samples):
+        city_slug = sample["city_slug"]
+        ltype = sample["type"]
+        title = sample["title"]
+        by_city[city_slug] = by_city.get(city_slug, 0) + 1
+        by_type[ltype] = by_type.get(ltype, 0) + 1
+        rating_avg = float(sample.get("rating") or 0)
+        rating_count = int(sample.get("reviews") or 0)
+        cover_url = str(sample.get("image_url") or listing_image_fallback(ltype, index))
+        promoted = bool(sample.get("promoted"))
+        exists = conn.execute(
+            "SELECT id FROM city_listings WHERE city_slug = ? AND type = ? AND title = ? AND deleted_at IS NULL LIMIT 1",
+            (city_slug, ltype, title),
+        ).fetchone()
+        if exists:
+            listing_id = exists["id"]
+            conn.execute(
+                """UPDATE city_listings SET description = ?, price = ?, currency = ?, price_type = ?,
+                   location_text = ?, status = ?, verification_status = ?, is_promoted = ?,
+                   promotion_weight = ?, rating_avg = ?, rating_count = ?, updated_at = ? WHERE id = ?""",
+                (sample.get("description") or "", sample.get("price"), sample.get("currency") or "JPY",
+                 sample.get("price_type") or "fixed", sample.get("location_text") or "",
+                 sample.get("status") or "published", sample.get("verification_status") or "unverified",
+                 1 if promoted else 0, 20 if promoted else 0, rating_avg, rating_count, now, listing_id),
+            )
+            cover = conn.execute(
+                "SELECT id FROM listing_media WHERE listing_id = ? AND is_cover = 1 ORDER BY sort_order ASC LIMIT 1",
+                (listing_id,),
+            ).fetchone()
+            if cover:
+                conn.execute("UPDATE listing_media SET url = ?, thumbnail_url = ? WHERE id = ?",
+                             (cover_url, cover_url, cover["id"]))
+            else:
+                conn.execute(
+                    "INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)"
+                    " VALUES (?, ?, 'image', ?, ?, 0, 1, ?)",
+                    (str(uuid.uuid4()), listing_id, cover_url, cover_url, now),
+                )
+            updated += 1
+        else:
+            listing_id = str(uuid.uuid4())
+            conn.execute(
+                """INSERT INTO city_listings (
+                    id, country_code, city_id, city_slug, region_code, language, type, category, title,
+                    description, price, currency, price_type, location_text, status, verification_status,
+                    seller_user_id, business_id, contact_method, view_count, inquiry_count, favorite_count,
+                    report_count, is_promoted, promotion_weight, published_at, expires_at, created_at,
+                    updated_at, rating_avg, rating_count)
+                   VALUES (?, ?, ?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'app_message',
+                    0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (listing_id, sample.get("country_code") or "jp", city_slug, city_slug,
+                 sample.get("region_code") or "", ltype, sample.get("category") or "", title,
+                 sample.get("description") or "", sample.get("price"), sample.get("currency") or "JPY",
+                 sample.get("price_type") or "fixed", sample.get("location_text") or "",
+                 sample.get("status") or "published", sample.get("verification_status") or "unverified",
+                 (pool[index % len(pool)] if pool else seller_id), 1 if promoted else 0, 20 if promoted else 0, now,
+                 (datetime.now(timezone.utc) + timedelta(days=120)).isoformat(), now, now,
+                 rating_avg, rating_count),
+            )
+            conn.execute(
+                "INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)"
+                " VALUES (?, ?, 'image', ?, ?, 0, 1, ?)",
+                (str(uuid.uuid4()), listing_id, cover_url, cover_url, now),
+            )
+            created += 1
+        # Replace structured attributes, then re-stamp the pack marker (the
+        # marker bypasses normalize_listing_attributes on purpose so the clear
+        # can find pack rows precisely).
+        conn.execute("DELETE FROM listing_attributes WHERE listing_id = ?", (listing_id,))
+        for key, (value, value_type) in normalize_listing_attributes(
+            ltype, sample.get("attributes"), sample.get("category") or ""
+        ).items():
+            conn.execute(
+                "INSERT INTO listing_attributes (id, listing_id, key, value, value_type, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), listing_id, key, value, value_type, now, now),
+            )
+        conn.execute(
+            "INSERT INTO listing_attributes (id, listing_id, key, value, value_type, created_at, updated_at)"
+            " VALUES (?, ?, '__content_pack', ?, 'string', ?, ?)",
+            (str(uuid.uuid4()), listing_id, pack_version, now, now),
+        )
+    return {
+        "created": created, "updated": updated, "total": created + updated,
+        "by_city": by_city, "by_type": by_type, "pack_version": pack_version,
+    }
+
+
+def clear_premium_listings(
+    conn: sqlite3.Connection,
+    *,
+    cities: list[str] | None = None,
+    pack_version: str = seedpacks.PACK_VERSION,
+) -> int:
+    """Soft-delete (hide) listings created by the premium pack. Reversible, and
+    only ever touches rows carrying the ``__content_pack`` marker."""
+    now = now_iso()
+    rows = conn.execute(
+        "SELECT listing_id FROM listing_attributes WHERE key = '__content_pack' AND value = ?",
+        (pack_version,),
+    ).fetchall()
+    ids = [r["listing_id"] for r in rows]
+    if not ids:
+        return 0
+    wanted = {str(c).strip().lower() for c in cities} if cities else None
+    cleared = 0
+    for lid in ids:
+        row = conn.execute(
+            "SELECT id, city_slug FROM city_listings WHERE id = ? AND deleted_at IS NULL", (lid,)
+        ).fetchone()
+        if not row:
+            continue
+        if wanted and (row["city_slug"] or "").lower() not in wanted:
+            continue
+        conn.execute(
+            "UPDATE city_listings SET status = 'hidden', deleted_at = ?, updated_at = ? WHERE id = ?",
+            (now, now, lid),
+        )
+        cleared += 1
+    return cleared
+
+
+_PERSONA_CITY_LABEL = {
+    "tokyo": "东京", "osaka": "大阪", "yokohama": "横滨", "kyoto": "京都",
+    "nagoya": "名古屋", "fukuoka": "福冈", "kobe": "神户", "sapporo": "札幌",
+}
+
+
+def _ensure_content_pack_users_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS content_pack_users ("
+        "user_id TEXT PRIMARY KEY, handle TEXT, pack_version TEXT, created_at TEXT)"
+    )
+
+
+def import_seed_users(
+    conn: sqlite3.Connection,
+    personas: list[dict[str, Any]],
+    *,
+    pack_version: str = seedpacks.PACK_VERSION,
+) -> dict[str, Any]:
+    """Create seed user personas (城市用户) with avatars. Idempotent by handle.
+
+    Personas can never log in (a single unguessable random password hash is
+    shared; the plaintext is discarded) and are tracked in ``content_pack_users``
+    so they can be cleared later. An existing *real* handle is left untouched.
+    """
+    _ensure_content_pack_users_table(conn)
+    now = now_iso()
+    unusable = hash_password(uuid.uuid4().hex)
+    created = 0
+    skipped = 0
+    for p in personas:
+        handle = normalize_handle(str(p.get("handle") or ""))
+        if not handle:
+            skipped += 1
+            continue
+        existing = conn.execute("SELECT id FROM users WHERE handle = ? LIMIT 1", (handle,)).fetchone()
+        if existing:
+            marked = conn.execute(
+                "SELECT 1 FROM content_pack_users WHERE user_id = ?", (existing["id"],)
+            ).fetchone()
+            if marked:  # refresh our own persona; never touch a real user
+                conn.execute(
+                    "UPDATE users SET display_name = ?, bio = ?, avatar_url = ?, membership_tier = ?, "
+                    "is_verified = ?, updated_at = ? WHERE id = ?",
+                    (str(p.get("display_name") or handle)[:60], str(p.get("bio") or "")[:200],
+                     str(p.get("avatar_url") or ""), str(p.get("tier") or "free"),
+                     1 if p.get("verified") else 0, now, existing["id"]),
+                )
+            skipped += 1
+            continue
+        country, province, city = _parse_region_code(str(p.get("region_code") or ""))
+        location = _PERSONA_CITY_LABEL.get(str(p.get("city") or ""), str(p.get("city") or ""))
+        uid = str(uuid.uuid4())
+        conn.execute(
+            """INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
+               avatar_symbol, avatar_color, avatar_url, cover_url, membership_tier, is_verified, role,
+               country, province, city, current_region_code, recent_region_codes, joined_at, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 'person.fill', 'indigo', ?, '', ?, ?, 'member', ?, ?, ?, ?, '', ?, ?, ?)""",
+            (uid, handle, str(p.get("display_name") or handle)[:60], f"{handle}@seed.machi.local",
+             unusable, str(p.get("bio") or "")[:200], location,
+             str(p.get("avatar_url") or ""), str(p.get("tier") or "free"),
+             1 if p.get("verified") else 0, country, province, city,
+             str(p.get("region_code") or ""), now, now, now),
+        )
+        conn.execute("INSERT OR IGNORE INTO settings (user_id, updated_at) VALUES (?, ?)", (uid, now))
+        conn.execute(
+            "INSERT INTO content_pack_users (user_id, handle, pack_version, created_at) VALUES (?, ?, ?, ?)",
+            (uid, handle, pack_version, now),
+        )
+        created += 1
+    return {"created": created, "skipped": skipped, "total": created + skipped, "pack_version": pack_version}
+
+
+def seed_user_ids(conn: sqlite3.Connection) -> list[str]:
+    """Ids of imported persona accounts (used to distribute listing sellers)."""
+    _ensure_content_pack_users_table(conn)
+    return [r["user_id"] for r in conn.execute("SELECT user_id FROM content_pack_users").fetchall()]
+
+
+def clear_seed_users(conn: sqlite3.Connection) -> int:
+    """Delete imported persona accounts; reassign any listings they sold back to
+    the fallback seller first so nothing dangles. Only touches marked rows."""
+    _ensure_content_pack_users_table(conn)
+    ids = [r["user_id"] for r in conn.execute("SELECT user_id FROM content_pack_users").fetchall()]
+    if not ids:
+        return 0
+    fb = conn.execute("SELECT id FROM users WHERE handle = 'kaizi' LIMIT 1").fetchone()
+    if not fb:
+        fb = conn.execute("SELECT id FROM users ORDER BY created_at ASC LIMIT 1").fetchone()
+    fallback = fb["id"] if fb else None
+    cleared = 0
+    for uid in ids:
+        if fallback:
+            conn.execute("UPDATE city_listings SET seller_user_id = ? WHERE seller_user_id = ?", (fallback, uid))
+        conn.execute("DELETE FROM settings WHERE user_id = ?", (uid,))
+        conn.execute("DELETE FROM users WHERE id = ?", (uid,))
+        conn.execute("DELETE FROM content_pack_users WHERE user_id = ?", (uid,))
+        cleared += 1
+    return cleared
+
+
 def reputation_status_for_score(score: int) -> str:
     score = max(REPUTATION_MIN_SCORE, min(int(score or 0), REPUTATION_MAX_SCORE))
     if score >= 90:
@@ -15694,6 +15952,7 @@ SEED_SOURCE = "seed_bot"
 SEED_PUBLISHED_STATUS = "published"   # feed shows status IN ('published','active')
 SEED_DRAFT_STATUS = "draft"           # generated-but-not-published → hidden
 SEED_CLEARED_STATUS = "cleared"       # soft-deleted → hidden (never a hard DELETE)
+SEED_POST_IMAGES = _env("SEED_POST_IMAGES", "1") == "1"  # attach a premium cover image to seed posts
 
 # (author_type, language) → (handle, display_name, bio, avatar_symbol, avatar_color)
 _SEED_BOT_IDENTITY: dict[tuple[str, str], tuple[str, str, str, str, str]] = {
@@ -15786,6 +16045,22 @@ def insert_seed_post(
          app_content_type, attributes, language, batch_id, SEED_SOURCE, author_type,
          now_iso(), now_iso()),
     )
+    # Attach a premium cover image (real photo, never AI) so the feed looks rich.
+    # Stored as a normal media + post_media row → renders exactly like a user post.
+    if SEED_POST_IMAGES:
+        image_url = seed_post_images.pick(app_content_type, post_id)
+        if image_url:
+            media_id = str(uuid.uuid4())
+            now = now_iso()
+            conn.execute(
+                "INSERT INTO media (id, owner_id, type, url, thumb_url, mime, width, height, "
+                "duration, byte_size, created_at) VALUES (?, ?, 'image', ?, ?, 'image/jpeg', 0, 0, 0, 0, ?)",
+                (media_id, author_id, image_url, image_url, now),
+            )
+            conn.execute(
+                "INSERT INTO post_media (id, post_id, media_id, sort_index) VALUES (?, ?, ?, 0)",
+                (str(uuid.uuid4()), post_id, media_id),
+            )
     for tag in (tags or []):
         norm = str(tag).strip().lstrip("#").lower()
         if norm:
@@ -16277,6 +16552,9 @@ class Handler(BaseHTTPRequestHandler):
         language = (data.get("language") or "zh").strip().lower()
         content_type = (data.get("contentType") or data.get("content_type") or "mixed").strip()
         tone = (data.get("tone") or "natural").strip()
+        engine = (data.get("engine") or "auto").strip().lower()
+        if engine not in seed_llm.ENGINES:
+            engine = "auto"
         publish_now = bool(data.get("publishNow") if data.get("publishNow") is not None else data.get("publish_now"))
         try:
             count = int(data.get("count") or 0)
@@ -16298,10 +16576,26 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("请选择城市（region_code 或 country+city）", 400, "city_required")
 
         seed_throttle(admin["id"])
-        items = seedlib.generate(
-            region_code=region_code, country=country, city=city,
-            language=language, content_type=content_type, count=count, tone=tone,
-        )
+        # Try the LLM engine first (DeepSeek primary / Claude reserved); on any
+        # failure or when offline is requested, fall back to the curated pool so
+        # generation never hard-fails.
+        items: list[dict[str, Any]] | None = None
+        engine_used = "offline"
+        if engine != "offline":
+            llm_items = seed_llm.generate(
+                region_code=region_code, country=country, city=city,
+                language=language, content_type=content_type, count=count,
+                tone=tone, provider=engine,
+            )
+            if llm_items:
+                items = llm_items
+                engine_used = str(llm_items[0].get("engine") or "llm")
+        if items is None:
+            items = seedlib.generate(
+                region_code=region_code, country=country, city=city,
+                language=language, content_type=content_type, count=count, tone=tone,
+            )
+            engine_used = "offline"
         status = SEED_PUBLISHED_STATUS if publish_now else SEED_DRAFT_STATUS
         batch_id = str(uuid.uuid4())
         now = now_iso()
@@ -16325,12 +16619,12 @@ class Handler(BaseHTTPRequestHandler):
         log_seed_action(
             conn, admin_id=admin["id"], action="generate", batch_id=batch_id, country=country,
             city=city, region_code=region_code, language=language, content_type=content_type,
-            count=len(items), metadata={"tone": tone, "publishNow": publish_now, "requested": count},
+            count=len(items), metadata={"tone": tone, "publishNow": publish_now, "requested": count, "engine": engine_used},
         )
         if publish_now:
             invalidate_public_ranking_caches()
         self.send_json({"batch": self._seed_batch_dict(conn, batch_id, include_items=True),
-                        "requested": count, "created": len(items)})
+                        "requested": count, "created": len(items), "engine": engine_used})
 
     def api_admin_seed_batches(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
@@ -16483,6 +16777,118 @@ class Handler(BaseHTTPRequestHandler):
                 d["metadata"] = {}
             items.append(d)
         self.send_json({"items": items})
+
+    def api_admin_seed_engines(self, conn: sqlite3.Connection) -> None:
+        """Non-secret status of the assistant's LLM engines (for the UI)."""
+        self.require_admin(conn)
+        self.send_json(seed_llm.provider_status())
+
+    # ---- City Content Pack (城市精选内容包) — premium curated listings ----
+
+    def _content_pack_cities(self, raw: Any) -> list[str]:
+        if not raw:
+            return list(seedpacks.SUPPORTED_CITIES)
+        if isinstance(raw, str):
+            raw = [c for c in raw.replace(",", " ").split() if c]
+        out = [str(c).strip().lower() for c in (raw or [])]
+        out = [c for c in out if c in seedpacks.SUPPORTED_CITIES]
+        return out or list(seedpacks.SUPPORTED_CITIES)
+
+    def api_admin_content_pack_preview(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        cities = self._content_pack_cities(query.get("cities"))
+        summary = seedpacks.pack_counts(cities)
+        imported = conn.execute(
+            "SELECT COUNT(DISTINCT listing_id) AS c FROM listing_attributes "
+            "WHERE key = '__content_pack' AND value = ?",
+            (seedpacks.PACK_VERSION,),
+        ).fetchone()["c"]
+        self.send_json({
+            "preview": summary,
+            "alreadyImported": int(imported or 0),
+            "supportedCities": list(seedpacks.SUPPORTED_CITIES),
+            "cityLabels": seedpacks.CITY_LABEL,
+        })
+
+    def api_admin_content_pack_import(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        cities = self._content_pack_cities(data.get("cities"))
+        samples = seedpacks.premium_listings(cities)
+        if not samples:
+            raise APIError("内容包为空（请确认内容包数据已生成）", 400, "empty_pack")
+        seed_throttle(admin["id"])
+        # Distribute sellers across imported personas (if any) so listings look
+        # like they come from many users instead of one account.
+        result = import_premium_listings(conn, samples, seller_pool=seed_user_ids(conn))
+        invalidate_public_ranking_caches()
+        log_seed_action(
+            conn, admin_id=admin["id"], action="pack_import", country="jp",
+            city=",".join(sorted(result.get("by_city", {}).keys())),
+            language="zh", content_type="listing_pack", count=int(result.get("total", 0)),
+            metadata={"cities": sorted(cities), **result},
+        )
+        self.send_json({"ok": True, "result": result})
+
+    def api_admin_content_pack_clear(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        if not bool(data.get("confirm")):
+            raise APIError("请确认后再清除（confirm=true）", 400, "confirm_required")
+        cities = self._content_pack_cities(data.get("cities"))
+        cleared = clear_premium_listings(conn, cities=list(cities))
+        invalidate_public_ranking_caches()
+        log_seed_action(
+            conn, admin_id=admin["id"], action="pack_clear", country="jp",
+            city=",".join(sorted(cities)), language="zh",
+            content_type="listing_pack", count=int(cleared), metadata={"cities": sorted(cities)},
+        )
+        self.send_json({"ok": True, "cleared": cleared})
+
+    def api_admin_content_pack_users_preview(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        _ensure_content_pack_users_table(conn)
+        imported = conn.execute("SELECT COUNT(*) AS c FROM content_pack_users").fetchone()["c"]
+        self.send_json({"pack": seedpacks.persona_counts(), "alreadyImported": int(imported or 0)})
+
+    def api_admin_content_pack_users_import(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        personas = seedpacks.PERSONAS
+        if not personas:
+            raise APIError("用户档案为空（请确认 seed_users_pack 数据已生成）", 400, "empty_users")
+        seed_throttle(admin["id"])
+        result = import_seed_users(conn, personas)
+        invalidate_public_ranking_caches()
+        log_seed_action(
+            conn, admin_id=admin["id"], action="pack_users_import", country="jp",
+            language="zh", content_type="user_pack", count=int(result.get("created", 0)),
+            metadata=result,
+        )
+        self.send_json({"ok": True, "result": result})
+
+    def api_admin_content_pack_users_clear(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        if not bool(data.get("confirm")):
+            raise APIError("请确认后再清除（confirm=true）", 400, "confirm_required")
+        cleared = clear_seed_users(conn)
+        invalidate_public_ranking_caches()
+        log_seed_action(
+            conn, admin_id=admin["id"], action="pack_users_clear", country="jp",
+            language="zh", content_type="user_pack", count=int(cleared), metadata={},
+        )
+        self.send_json({"ok": True, "cleared": cleared})
+
+    def api_post_image_suggestions(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Curated premium cover images for a post type — a foundation the compose
+        flow can offer users (real photos, never AI). No auth needed (public CDN)."""
+        ctype = (query.get("contentType") or query.get("content_type") or query.get("type") or "dynamic").strip()
+        app_ctype = seedlib.APP_CONTENT_TYPE.get(ctype, ctype)
+        try:
+            limit = max(1, min(int(query.get("limit") or 8), 24))
+        except (TypeError, ValueError):
+            limit = 8
+        self.send_json({"contentType": ctype, "images": seed_post_images.suggestions(app_ctype, limit)})
 
     # ---- Local News Desk / 本地资讯台 ----
 
@@ -24085,6 +24491,23 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_seed_clear_city(conn)
         if path == "/api/admin/seed-content/logs" and method == "GET":
             return self.api_admin_seed_logs(conn, query)
+        if path == "/api/admin/seed-content/engines" and method == "GET":
+            return self.api_admin_seed_engines(conn)
+        # admin: City Content Pack (城市精选内容包) — premium curated listings
+        if path == "/api/admin/content-pack/preview" and method == "GET":
+            return self.api_admin_content_pack_preview(conn, query)
+        if path == "/api/admin/content-pack/import" and method == "POST":
+            return self.api_admin_content_pack_import(conn)
+        if path == "/api/admin/content-pack/clear" and method == "POST":
+            return self.api_admin_content_pack_clear(conn)
+        if path == "/api/admin/content-pack/users/preview" and method == "GET":
+            return self.api_admin_content_pack_users_preview(conn)
+        if path == "/api/admin/content-pack/users/import" and method == "POST":
+            return self.api_admin_content_pack_users_import(conn)
+        if path == "/api/admin/content-pack/users/clear" and method == "POST":
+            return self.api_admin_content_pack_users_clear(conn)
+        if path == "/api/post-image-suggestions" and method == "GET":
+            return self.api_post_image_suggestions(conn, query)
         if path.startswith("/api/admin/seed-content/batches/"):
             parts = path.split("/")  # ['', 'api', 'admin', 'seed-content', 'batches', '{id}', '{action}'?]
             batch_id = parts[5] if len(parts) > 5 else ""

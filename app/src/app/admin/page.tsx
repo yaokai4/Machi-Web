@@ -1194,6 +1194,20 @@ const SEED_TONE_OPTIONS = [
   { value: "editorial", label: "编辑部整理" }, { value: "casual", label: "轻松互动" },
   { value: "question", label: "真实提问" }, { value: "warning", label: "风险提醒" },
 ];
+const SEED_ENGINE_OPTIONS = [
+  { value: "auto", label: "自动（优先 AI · 回退离线）" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "claude", label: "Claude" },
+  { value: "offline", label: "离线模板库" },
+];
+// City Content Pack (城市精选内容包) — premium curated listings.
+const PACK_CITY_OPTIONS = [
+  { value: "tokyo", label: "东京" }, { value: "osaka", label: "大阪" },
+  { value: "yokohama", label: "横滨" }, { value: "kyoto", label: "京都" },
+];
+const PACK_TYPE_LABEL: Record<string, string> = {
+  secondhand: "二手", rental: "租房", local_service: "商家/民宿", job: "招聘", hiring: "招聘",
+};
 
 function seedStatusPill(status: string) {
   const map: Record<string, string> = {
@@ -1208,13 +1222,18 @@ function SeedBotPanel() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
   const [form, setForm] = useState({
-    regionCode: "jp.tokyo.tokyo", language: "zh", contentType: "mixed", count: 30, tone: "natural", publishNow: false,
+    regionCode: "jp.tokyo.tokyo", language: "zh", contentType: "mixed", count: 30, tone: "natural", publishNow: false, engine: "auto",
   });
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const [pendingClear, setPendingClear] = useState<string | null>(null);
   const [cityForm, setCityForm] = useState({ regionCode: "", language: "", contentType: "" });
   const [pendingCityClear, setPendingCityClear] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [packCities, setPackCities] = useState<string[]>(["tokyo", "osaka", "yokohama", "kyoto"]);
+  const [packBusy, setPackBusy] = useState(false);
+  const [pendingPackClear, setPendingPackClear] = useState(false);
+  const [usersBusy, setUsersBusy] = useState(false);
+  const [pendingUsersClear, setPendingUsersClear] = useState(false);
 
   const batches = useQuery({ queryKey: ["admin-seed-batches"], queryFn: () => api.adminSeedBatches({ limit: 50 }) });
   const logs = useQuery({ queryKey: ["admin-seed-logs"], queryFn: () => api.adminSeedLogs(30) });
@@ -1222,6 +1241,15 @@ function SeedBotPanel() {
     queryKey: ["admin-seed-batch", selectedBatchId],
     queryFn: () => api.adminSeedBatch(selectedBatchId as string),
     enabled: !!selectedBatchId,
+  });
+  const engines = useQuery({ queryKey: ["admin-seed-engines"], queryFn: () => api.adminSeedEngines() });
+  const packPreview = useQuery({
+    queryKey: ["admin-content-pack", packCities.join(",")],
+    queryFn: () => api.adminContentPackPreview(packCities),
+  });
+  const usersPreview = useQuery({
+    queryKey: ["admin-content-pack-users"],
+    queryFn: () => api.adminContentPackUsersPreview(),
   });
 
   const refresh = async () => {
@@ -1235,14 +1263,58 @@ function SeedBotPanel() {
     try {
       const r = await api.adminSeedGenerate({
         regionCode: form.regionCode, language: form.language, contentType: form.contentType,
-        count: form.count, tone: form.tone, publishNow: form.publishNow,
+        count: form.count, tone: form.tone, publishNow: form.publishNow, engine: form.engine,
       });
       setSelectedBatchId(r.batch.id);
       await refresh();
-      pushToast({ kind: "success", message: `已生成 ${r.created} 条（请求 ${r.requested}${r.created < r.requested ? "，去重后库存不足" : ""}）` });
+      const engineLabel = r.engine === "offline" ? "离线模板" : (r.engine || form.engine);
+      pushToast({ kind: "success", message: `已生成 ${r.created} 条 · 引擎 ${engineLabel}（请求 ${r.requested}${r.created < r.requested ? "，去重后库存不足" : ""}）` });
     } catch (e) {
       pushToast({ kind: "error", message: (e as APIError).message });
     } finally { setBusy(false); }
+  };
+
+  const importPack = async () => {
+    setPackBusy(true);
+    try {
+      const r = await api.adminContentPackImport(packCities);
+      await queryClient.invalidateQueries({ queryKey: ["admin-content-pack"] });
+      pushToast({ kind: "success", message: `已导入精选内容：新增 ${r.result.created}、更新 ${r.result.updated}（共 ${r.result.total} 条）` });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally { setPackBusy(false); }
+  };
+
+  const clearPack = async () => {
+    setPendingPackClear(false);
+    try {
+      const r = await api.adminContentPackClear(packCities);
+      await queryClient.invalidateQueries({ queryKey: ["admin-content-pack"] });
+      pushToast({ kind: "success", message: `已清除内容包 ${r.cleared} 条（仅内容包，不动真实用户内容）` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
+
+  const togglePackCity = (v: string) =>
+    setPackCities((cur) => (cur.includes(v) ? cur.filter((c) => c !== v) : [...cur, v]));
+
+  const importUsers = async () => {
+    setUsersBusy(true);
+    try {
+      const r = await api.adminContentPackUsersImport();
+      await queryClient.invalidateQueries({ queryKey: ["admin-content-pack-users"] });
+      pushToast({ kind: "success", message: `已导入城市用户：新增 ${r.result.created}、已存在跳过 ${r.result.skipped}` });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally { setUsersBusy(false); }
+  };
+
+  const clearUsers = async () => {
+    setPendingUsersClear(false);
+    try {
+      const r = await api.adminContentPackUsersClear();
+      await queryClient.invalidateQueries({ queryKey: ["admin-content-pack-users"] });
+      pushToast({ kind: "success", message: `已清除城市用户 ${r.cleared} 个（其房源已归还回退账号）` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
   };
 
   const publish = async (id: string) => {
@@ -1292,6 +1364,73 @@ function SeedBotPanel() {
         </div>
       </div>
 
+      <section className="kx-card border border-kx-accent/30 bg-kx-accentSoft/20">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="inline-flex items-center gap-1.5 text-base font-bold"><Sparkles className="h-4 w-4 text-kx-accent" /> 城市精选内容包</h2>
+          {packPreview.data ? (
+            <span className="text-xs text-kx-muted">已导入 {packPreview.data.alreadyImported} 条 · 版本 {packPreview.data.preview.version}</span>
+          ) : null}
+        </div>
+        <p className="mt-1 text-xs leading-5 text-kx-muted">
+          一键把人工精选的高质量 <b>房源 / 商家 / 二手 / 民宿</b> 内容导入所选城市，专治冷启动。
+          幂等可重复导入（同标题只更新不重复）；清除只回收内容包本身，<b>永不删除真实用户内容</b>。
+        </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          {PACK_CITY_OPTIONS.map((c) => {
+            const on = packCities.includes(c.value);
+            const n = packPreview.data?.preview.by_city?.[c.value];
+            return (
+              <button key={c.value} type="button" onClick={() => togglePackCity(c.value)}
+                className={clsx("rounded-full border px-3 py-1 text-xs font-semibold transition",
+                  on ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : "border-kx-soft text-kx-muted")}>
+                {c.label}{on && typeof n === "number" ? ` · ${n}` : ""}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button className="kx-button-primary h-10 inline-flex items-center justify-center gap-1.5 disabled:opacity-40"
+            disabled={packBusy || packCities.length === 0} onClick={importPack}>
+            <Sparkles className="h-4 w-4" /> {packBusy ? "导入中…" : `导入精选内容${packPreview.data ? `（约 ${packPreview.data.preview.total} 条）` : ""}`}
+          </button>
+          <button className="kx-button-ghost h-10 px-4 text-kx-danger disabled:opacity-40"
+            disabled={packBusy || packCities.length === 0} onClick={() => setPendingPackClear(true)}>
+            <Eraser className="h-4 w-4" /> 清除内容包
+          </button>
+          {packPreview.data && Object.keys(packPreview.data.preview.by_type || {}).length ? (
+            <span className="text-xs text-kx-muted">
+              {Object.entries(packPreview.data.preview.by_type).map(([k, v]) => `${PACK_TYPE_LABEL[k] || k} ${v}`).join(" · ")}
+            </span>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="kx-card border border-kx-accent/30">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h2 className="inline-flex items-center gap-1.5 text-base font-bold"><Sparkles className="h-4 w-4 text-kx-accent" /> 城市用户（头像账号）</h2>
+          {usersPreview.data ? (
+            <span className="text-xs text-kx-muted">已导入 {usersPreview.data.alreadyImported} / 共 {usersPreview.data.pack.total} 个</span>
+          ) : null}
+        </div>
+        <p className="mt-1 text-xs leading-5 text-kx-muted">
+          一键导入 {usersPreview.data?.pack.total ?? "500"}+ 个带头像的城市用户（在日华人画像，照片 + 插画头像混合），让社区与房源更有人气。
+          账号<b>无法登录</b>、可随时清除（清除时其房源会自动归还回退账号）。建议<b>先导入用户、再导入房源</b>，房源发布者会自动分散到这些用户。
+        </p>
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <button className="kx-button-primary h-10 inline-flex items-center justify-center gap-1.5 disabled:opacity-40"
+            disabled={usersBusy} onClick={importUsers}>
+            <Sparkles className="h-4 w-4" /> {usersBusy ? "导入中…" : `导入城市用户${usersPreview.data ? `（${usersPreview.data.pack.total} 个）` : ""}`}
+          </button>
+          <button className="kx-button-ghost h-10 px-4 text-kx-danger disabled:opacity-40"
+            disabled={usersBusy} onClick={() => setPendingUsersClear(true)}>
+            <Eraser className="h-4 w-4" /> 清除城市用户
+          </button>
+          {usersPreview.data ? (
+            <span className="text-xs text-kx-muted">照片头像 {usersPreview.data.pack.photographic} · 插画头像 {usersPreview.data.pack.illustrated}</span>
+          ) : null}
+        </div>
+      </section>
+
       <div className="grid gap-3 lg:grid-cols-[minmax(0,380px)_1fr]">
         <section className="kx-card">
           <h2 className="text-base font-bold">生成城市底稿</h2>
@@ -1327,6 +1466,21 @@ function SeedBotPanel() {
                 {SEED_TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </label>
+            <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+              生成引擎
+              <select className="kx-input h-10" value={form.engine} onChange={(e) => setForm((f) => ({ ...f, engine: e.target.value }))}>
+                {SEED_ENGINE_OPTIONS.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                    {o.value === "deepseek" && engines.data && !engines.data.deepseek ? "（未配置 key）" : ""}
+                    {o.value === "claude" && engines.data && !engines.data.claude ? "（未配置 key）" : ""}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {engines.data && !engines.data.ready ? (
+              <p className="text-[11px] leading-4 text-amber-600">未检测到 AI key（DeepSeek/Claude），当前走离线模板库。配置 <code className="rounded bg-kx-soft px-1">DEEPSEEK_API_KEY</code> 后即可启用 AI 生成。</p>
+            ) : null}
             <label className="grid gap-1 text-xs font-semibold text-kx-muted">
               数量（最多 100）
               <input className="kx-input h-10" type="number" min={1} max={100} value={form.count}
@@ -1464,6 +1618,18 @@ function SeedBotPanel() {
         title={`清除 ${cityForm.regionCode} 的 seed 内容？`}
         description="此操作只会清除该城市系统生成的 seed 内容（软删除），不会删除真实用户内容。请再次确认城市、语言和类型。"
         destructive confirmLabel="确认清除" onConfirm={clearCity} onCancel={() => setPendingCityClear(false)}
+      />
+      <ConfirmDialog
+        open={pendingPackClear}
+        title="清除已导入的精选内容包？"
+        description="只会软删除由内容包导入的房源 / 商家 / 二手 / 民宿（带内容包标记），不会删除任何真实用户内容。可随时重新导入恢复。"
+        destructive confirmLabel="确认清除" onConfirm={clearPack} onCancel={() => setPendingPackClear(false)}
+      />
+      <ConfirmDialog
+        open={pendingUsersClear}
+        title="清除已导入的城市用户？"
+        description="只会删除由内容包导入的城市用户账号（带标记），不会动任何真实用户。被清除用户名下的内容包房源会自动归还回退账号。可随时重新导入。"
+        destructive confirmLabel="确认清除" onConfirm={clearUsers} onCancel={() => setPendingUsersClear(false)}
       />
     </div>
   );

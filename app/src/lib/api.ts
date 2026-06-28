@@ -1788,9 +1788,15 @@ export const api = {
   // ---- admin: City Seed Bot (城市内容助手) ----
   async adminSeedGenerate(payload: {
     country?: string; city?: string; regionCode?: string; language: string;
-    contentType: string; count: number; tone: string; publishNow: boolean;
-  }): Promise<{ batch: SeedBatch; requested: number; created: number }> {
+    contentType: string; count: number; tone: string; publishNow: boolean; engine?: string;
+  }): Promise<{ batch: SeedBatch; requested: number; created: number; engine?: string }> {
     return request("POST", `/api/admin/seed-content/generate`, payload);
+  },
+  async adminSeedEngines(): Promise<{
+    default: string; configured: string[]; deepseek: boolean; claude: boolean;
+    deepseek_model: string; claude_model: string; engines: string[]; ready: boolean;
+  }> {
+    return request("GET", `/api/admin/seed-content/engines`);
   },
   async adminSeedBatches(opts: { region_code?: string; status?: string; limit?: number } = {}): Promise<SeedBatch[]> {
     const usp = new URLSearchParams();
@@ -1818,6 +1824,37 @@ export const api = {
   async adminSeedLogs(limit = 50): Promise<SeedLog[]> {
     const { items } = await request<{ items: SeedLog[] }>("GET", `/api/admin/seed-content/logs?limit=${limit}`);
     return items;
+  },
+
+  // ---- admin: City Content Pack (城市精选内容包) — premium curated listings ----
+  async adminContentPackPreview(cities?: string[]): Promise<{
+    preview: { version: string; total: number; by_city: Record<string, number>; by_type: Record<string, number>; cities: string[] };
+    alreadyImported: number; supportedCities: string[]; cityLabels: Record<string, string>;
+  }> {
+    const usp = new URLSearchParams();
+    if (cities && cities.length) usp.set("cities", cities.join(","));
+    return request("GET", `/api/admin/content-pack/preview?${usp.toString()}`);
+  },
+  async adminContentPackImport(cities?: string[]): Promise<{ ok: boolean; result: {
+    created: number; updated: number; total: number;
+    by_city: Record<string, number>; by_type: Record<string, number>; pack_version: string;
+  } }> {
+    return request("POST", `/api/admin/content-pack/import`, { cities: cities && cities.length ? cities : undefined });
+  },
+  async adminContentPackClear(cities?: string[]): Promise<{ ok: boolean; cleared: number }> {
+    return request("POST", `/api/admin/content-pack/clear`, { cities: cities && cities.length ? cities : undefined, confirm: true });
+  },
+  async adminContentPackUsersPreview(): Promise<{
+    pack: { total: number; by_city: Record<string, number>; photographic: number; illustrated: number };
+    alreadyImported: number;
+  }> {
+    return request("GET", `/api/admin/content-pack/users/preview`);
+  },
+  async adminContentPackUsersImport(): Promise<{ ok: boolean; result: { created: number; skipped: number; total: number; pack_version: string } }> {
+    return request("POST", `/api/admin/content-pack/users/import`, {});
+  },
+  async adminContentPackUsersClear(): Promise<{ ok: boolean; cleared: number }> {
+    return request("POST", `/api/admin/content-pack/users/clear`, { confirm: true });
   },
 
   // ---- drafts ----

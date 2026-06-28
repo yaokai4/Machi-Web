@@ -293,6 +293,22 @@ CURATED: dict[tuple[str, str], dict[str, list[str]]] = {
 }
 
 
+# Merge generated extra curated lines (city content packs) into CURATED. Kept in
+# a separate generated module so this file stays hand-editable; failures are
+# non-fatal (the base pool still works).
+try:  # pragma: no cover - data module is generated, optional at import
+    from seed_content_packs import EXTRA_CURATED as _EXTRA_CURATED
+    for _key, _region_map in _EXTRA_CURATED.items():
+        _dst = CURATED.setdefault(_key, {})
+        for _rc, _lines in _region_map.items():
+            _existing = _dst.setdefault(_rc, [])
+            for _ln in _lines:
+                if _ln not in _existing:
+                    _existing.append(_ln)
+except Exception:
+    pass
+
+
 # --- generic templates ------------------------------------------------------
 # {city} = localised city name, {place} = a local place name. Written to read
 # like ordinary community lines, not filled-in forms. Keyed by
