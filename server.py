@@ -16334,7 +16334,13 @@ class Handler(BaseHTTPRequestHandler):
         # Idempotency-Key can NEVER replay one caller's cached response body to a
         # different caller. Without this the scope was (method, path) only, so two
         # users sending the same key on the same path cross-leaked responses.
-        return f"{self._idempotency_caller_tag()}\0{method} {path}"
+        # NOTE: the delimiter MUST NOT be a NUL (\0) byte — this string is bound
+        # as a SQL parameter (idempotency_keys.scope), and Postgres rejects NUL
+        # in text with "A string literal cannot contain NUL (0x00) characters"
+        # (SQLite tolerates it, so a NUL delimiter passes locally but 500s in
+        # prod on every idempotent POST/PUT — e.g. media upload presign). The
+        # caller tag is fixed-length hex, so \x1f (unit separator) is unambiguous.
+        return f"{self._idempotency_caller_tag()}\x1f{method} {path}"
 
     def _idempotency_key(self) -> str:
         key = (self.headers.get("Idempotency-Key") or "").strip()
