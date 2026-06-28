@@ -46,6 +46,85 @@ function newId() {
   return `m_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
 }
 
+// Lightweight Markdown render for Machi AI answers (no deps): headings,
+// bullet / numbered lists, and inline **bold**. Anything else renders as a
+// paragraph, so raw `###` / `**` markers never leak into the bubble.
+function inlineMd(s: string): React.ReactNode[] {
+  return s.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
+    /^\*\*[^*]+\*\*$/.test(part) ? (
+      <strong key={i} className="font-bold">
+        {part.slice(2, -2)}
+      </strong>
+    ) : (
+      <span key={i}>{part}</span>
+    ),
+  );
+}
+
+function MachiMarkdown({ content }: { content: string }) {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const out: React.ReactNode[] = [];
+  let list: { ordered: boolean; items: string[] } | null = null;
+  let key = 0;
+  const flush = () => {
+    if (!list) return;
+    const items = list.items.map((it, i) => (
+      <li key={i} className="leading-7">
+        {inlineMd(it)}
+      </li>
+    ));
+    out.push(
+      list.ordered ? (
+        <ol key={`b${key++}`} className="ml-5 list-decimal space-y-0.5 marker:font-bold marker:text-kx-accent">
+          {items}
+        </ol>
+      ) : (
+        <ul key={`b${key++}`} className="ml-5 list-disc space-y-0.5 marker:text-kx-accent">
+          {items}
+        </ul>
+      ),
+    );
+    list = null;
+  };
+  for (const raw of lines) {
+    const t = raw.trim();
+    const h = /^#{1,4}\s+(.*)$/.exec(t);
+    const ul = /^[-*•]\s+(.*)$/.exec(t);
+    const ol = /^\d+[.)]\s+(.*)$/.exec(t);
+    if (h) {
+      flush();
+      out.push(
+        <p key={`b${key++}`} className="font-bold text-kx-text">
+          {inlineMd(h[1])}
+        </p>,
+      );
+    } else if (ul) {
+      if (!list || list.ordered) {
+        flush();
+        list = { ordered: false, items: [] };
+      }
+      list.items.push(ul[1]);
+    } else if (ol) {
+      if (!list || !list.ordered) {
+        flush();
+        list = { ordered: true, items: [] };
+      }
+      list.items.push(ol[1]);
+    } else if (!t) {
+      flush();
+    } else {
+      flush();
+      out.push(
+        <p key={`b${key++}`} className="leading-7">
+          {inlineMd(t)}
+        </p>,
+      );
+    }
+  }
+  flush();
+  return <div className="space-y-2">{out}</div>;
+}
+
 function sourceHref(s: GuideAISource): string | null {
   const kind = (s.route?.kind || s.type || "").toLowerCase();
   if (kind.includes("article") && s.route?.slug) return `/guide/articles/${encodeURIComponent(s.route.slug)}`;
@@ -607,8 +686,8 @@ function AssistantBubble({
         </div>
       ) : (
         <>
-          <div className="whitespace-pre-wrap break-words rounded-[1.25rem] border border-kx-stroke/40 bg-kx-card px-4 py-3 text-sm leading-7 text-kx-text">
-            {message.content}
+          <div className="break-words rounded-[1.25rem] border border-kx-stroke/40 bg-kx-card px-4 py-3 text-sm text-kx-text">
+            <MachiMarkdown content={message.content} />
           </div>
 
           {sources.length ? (
