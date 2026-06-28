@@ -252,6 +252,7 @@ export type SiteSettings = Record<
   | "engagement_sim_like_max"
   | "engagement_sim_bookmark_ratio"
   | "engagement_sim_comment_max"
+  | "engagement_sim_comment_ai"
   | "engagement_sim_follow_max"
   | "engagement_sim_halflife_hours",
   string

@@ -15655,6 +15655,9 @@ def _eng_range(lo: float, hi: float, *parts: Any) -> float:
 # A small immediate floor so even brand-new posts show a few likes right away
 # (real posts get early traction too); the rest grows over the window.
 ENG_BASELINE_FRAC = 0.06
+# Max posts that get fresh DeepSeek-generated comments per tick (bounds cost +
+# keeps the in-band manual run well under the request timeout).
+ENG_AI_COMMENT_POSTS_PER_TICK = 6
 
 
 def _eng_frac(age_h: float, halflife: float) -> float:
@@ -15684,7 +15687,8 @@ def _engagement_settings(conn: sqlite3.Connection) -> dict[str, Any]:
         "like_max": max(1, _i("engagement_sim_like_max", 400)),
         "bookmark_ratio": max(0.0, _f("engagement_sim_bookmark_ratio", 0.25)),
         "comment_max": max(0, _i("engagement_sim_comment_max", 12)),
-        "follow_max": max(0, _i("engagement_sim_follow_max", 200)),
+        "comment_ai": (s.get("engagement_sim_comment_ai", "1") == "1"),
+        "follow_max": max(0, _i("engagement_sim_follow_max", 1000)),
         "halflife": max(1.0, _f("engagement_sim_halflife_hours", 18.0)),
         "mutual": 0.35,
     }
@@ -15710,11 +15714,12 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
     cutoff = (now - timedelta(days=s["max_days"])).isoformat()
 
     posts = conn.execute(
-        "SELECT id, created_at, content_type FROM posts "
+        "SELECT id, created_at, content_type, content, language FROM posts "
         "WHERE is_seed_content = 1 AND deleted_at IS NULL AND status IN ('published', 'active') "
         "AND created_at >= ? ORDER BY created_at DESC LIMIT ?",
         (cutoff, POST_LIMIT),
     ).fetchall()
+    ai_left = ENG_AI_COMMENT_POSTS_PER_TICK if s.get("comment_ai") else 0
     for p in posts:
         if budget <= 0:
             break
@@ -15747,27 +15752,42 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
                 out[key] += 1
                 budget -= 1
 
-        if budget > 0 and cm_cap > 0 and SEED_COMMENTS:
+        if budget > 0 and cm_cap > 0:
             rows = conn.execute(
                 "SELECT author_id, content FROM comments WHERE post_id = ? AND deleted_at IS NULL", (pid,)).fetchall()
             commenters = {r["author_id"] for r in rows}
             used_lines = {r["content"] for r in rows}
             delta = min(int(round(cm_cap * frac)) - len(rows), 6, budget)
-            avail = [u for u in personas if u not in commenters]
-            rng.shuffle(avail)
-            for uid in avail[:max(0, delta)]:
-                line = next((c for c in (rng.choice(SEED_COMMENTS) for _ in range(6)) if c not in used_lines), None)
-                if not line:
-                    break
-                used_lines.add(line)
-                ts = _eng_spread_ts(created, now, rng)
-                conn.execute(
-                    "INSERT INTO comments (id, post_id, author_id, content, parent_comment_id, reply_to_user_id, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)",
-                    (str(uuid.uuid4()), pid, uid, line, ts, ts),
-                )
-                out["comments"] += 1
-                budget -= 1
+            if delta > 0:
+                # Prefer fresh DeepSeek comments contextual to this post; fall back
+                # to the static pool when AI is off / unavailable / exhausted.
+                lines: list[str] | None = None
+                if s.get("comment_ai") and ai_left > 0:
+                    ai_left -= 1
+                    try:
+                        lines = seed_llm.generate_comments(p["content"], delta, language=(p["language"] or "zh"))
+                    except Exception:
+                        lines = None
+                if not lines:
+                    pool = [c for c in SEED_COMMENTS if c not in used_lines]
+                    rng.shuffle(pool)
+                    lines = pool[:delta]
+                avail = [u for u in personas if u not in commenters]
+                rng.shuffle(avail)
+                for i, line in enumerate(lines):
+                    if i >= len(avail) or budget <= 0:
+                        break
+                    if line in used_lines:
+                        continue
+                    used_lines.add(line)
+                    ts = _eng_spread_ts(created, now, rng)
+                    conn.execute(
+                        "INSERT INTO comments (id, post_id, author_id, content, parent_comment_id, reply_to_user_id, created_at, updated_at) "
+                        "VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)",
+                        (str(uuid.uuid4()), pid, avail[i], line, ts, ts),
+                    )
+                    out["comments"] += 1
+                    budget -= 1
 
     # follows among personas — each persona gains followers over its window,
     # with occasional mutual follow-backs (互关).
@@ -15915,7 +15935,8 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "engagement_sim_like_max": "400",
     "engagement_sim_bookmark_ratio": "0.25",  # 收藏 ceiling ≈ likes * this
     "engagement_sim_comment_max": "12",    # max comments dripped per post
-    "engagement_sim_follow_max": "200",    # per-persona follower ceiling (varied)
+    "engagement_sim_comment_ai": "1",      # 1 = comments via DeepSeek (contextual), 0 = static pool
+    "engagement_sim_follow_max": "1000",   # per-persona follower ceiling (varied; bounded by user count)
     "engagement_sim_halflife_hours": "18", # growth curve half-life (smaller = faster early)
 }
 SITE_SETTING_KEYS = set(SITE_SETTING_DEFAULTS)

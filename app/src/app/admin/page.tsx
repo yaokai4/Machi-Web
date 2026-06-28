@@ -1526,6 +1526,9 @@ function SeedBotPanel() {
           <label className="flex items-center gap-1.5 text-sm">
             <input type="checkbox" checked={engVal("engagement_sim_enabled") === "1"} onChange={(e) => setEng("engagement_sim_enabled", e.target.checked ? "1" : "0")} /> 启用
           </label>
+          <label className="flex items-center gap-1.5 text-sm">
+            <input type="checkbox" checked={engVal("engagement_sim_comment_ai") === "1"} onChange={(e) => setEng("engagement_sim_comment_ai", e.target.checked ? "1" : "0")} /> 评论用 AI 生成
+          </label>
           {([["engagement_sim_max_days", "增长天数"], ["engagement_sim_like_max", "单帖最高赞"], ["engagement_sim_follow_max", "单人最高粉"], ["engagement_sim_comment_max", "单帖最多评论"]] as const).map(([k, lab]) => (
             <label key={k} className="grid gap-0.5 text-[11px] font-semibold text-kx-muted">
               {lab}

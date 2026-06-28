@@ -425,3 +425,51 @@ def generate(
         })
 
     return out or None
+
+
+def generate_comments(
+    post_content: str,
+    n: int,
+    *,
+    language: str = "zh",
+    provider: str = "auto",
+    model: str | None = None,
+) -> list[str] | None:
+    """Generate up to ``n`` short, varied, real-sounding comments for one post
+    (contextual to its content). Returns None on any failure → caller falls back
+    to the static pool. Never raises."""
+    chosen = _resolve_provider(provider)
+    if not chosen or n <= 0:
+        return None
+    lang = language if language in seedlib.SUPPORTED_LANGUAGES else "zh"
+    n = max(1, min(int(n), 8))
+    lang_name = _LANG_NAME.get(lang, "简体中文")
+    system = (
+        "你是在一个面向在日华人/留学生的本地生活社区里、刷到同一条帖子的【不同】真实用户。"
+        "给这条帖子写若干条评论。铁律：像真人随手评论，每条像不同的人——口气各异、长短不一"
+        "（短的三四个字，长的也别超过 40 字）；可提问/附和/补充经验/吐槽/感谢/报个地点或价格；"
+        "针对帖子内容来评，但不要复述帖子原文；不要广告腔/AI腔、不堆 emoji、不带话题标签#、不放链接。只输出 JSON。"
+    )
+    user = (
+        f"语言：{lang_name}。帖子内容：\n{(post_content or '')[:700]}\n\n"
+        f'写 {n} 条不同的人会发的评论。输出严格 JSON：{{"comments": ["...", "..."]}}，共 {n} 条。'
+    )
+    try:
+        raw = _call_deepseek(system, user, model, 900) if chosen == "deepseek" else _call_claude(system, user, 900)
+        parsed = _extract_json(raw)
+    except Exception:
+        return None
+    arr = parsed.get("comments") if isinstance(parsed, dict) else parsed
+    if not isinstance(arr, list):
+        return None
+    out: list[str] = []
+    seen: set[str] = set()
+    for c in arr:
+        c = str(c or "").strip().lstrip("#").strip()
+        if not (2 <= len(c) <= 60) or not seedlib._is_clean(c) or c in seen:
+            continue
+        seen.add(c)
+        out.append(c)
+        if len(out) >= n:
+            break
+    return out or None
