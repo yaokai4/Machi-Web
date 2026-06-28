@@ -9321,6 +9321,19 @@ def _ensure_content_pack_users_table(conn: sqlite3.Connection) -> None:
     )
 
 
+def _persona_gender_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """user_id -> 'male'/'female' for imported personas, derived from the pack's
+    handle→gender (no schema change needed)."""
+    by_handle = {u.get("handle"): (u.get("gender") or "") for u in seedpacks.PERSONAS}
+    out: dict[str, str] = {}
+    try:
+        for r in conn.execute("SELECT user_id, handle FROM content_pack_users").fetchall():
+            out[r["user_id"]] = by_handle.get(r["handle"], "")
+    except sqlite3.OperationalError:
+        pass
+    return out
+
+
 def import_seed_users(
     conn: sqlite3.Connection,
     personas: list[dict[str, Any]],
@@ -16038,6 +16051,7 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
     if len(personas) < 5:
         return
     persona_set = set(personas)
+    gmap = _persona_gender_map(conn)  # user_id -> 'male'/'female'/''
     now = datetime.now(timezone.utc)
     window = s["max_days"] * 24.0
     cutoff = (now - timedelta(days=s["max_days"])).isoformat()
@@ -16103,32 +16117,45 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
             used_lines = {r["content"] for r in rows}
             delta = min(int(round(cm_cap * frac)) - len(rows), 6, budget)
             if delta > 0:
-                # Prefer fresh DeepSeek comments contextual to this post; fall back
-                # to the static pool when AI is off / unavailable / exhausted.
-                lines: list[str] | None = None
+                # Prefer fresh DeepSeek comments (gender-tagged, contextual to the
+                # post); fall back to the static pool when AI is off/unavailable.
+                comment_items: list[dict[str, str]] | None = None
                 if s.get("comment_ai") and ai_left > 0:
                     ai_left -= 1
                     try:
-                        lines = seed_llm.generate_comments(p["content"], delta, language=(p["language"] or "zh"))
+                        comment_items = seed_llm.generate_comments(p["content"], delta, language=(p["language"] or "zh"))
                     except Exception:
-                        lines = None
-                if not lines:
+                        comment_items = None
+                if not comment_items:
                     pool = [c for c in SEED_COMMENTS if c not in used_lines]
                     rng.shuffle(pool)
-                    lines = pool[:delta]
+                    comment_items = [{"text": c, "gender": ""} for c in pool[:delta]]
+                # Commenters available, split by gender so a male-voiced comment is
+                # posted by a male persona (and vice versa).
                 avail = [u for u in personas if u not in commenters]
                 rng.shuffle(avail)
-                for i, line in enumerate(lines):
-                    if i >= len(avail) or budget <= 0:
+                avail_by_g = {"male": [u for u in avail if gmap.get(u) == "male"],
+                              "female": [u for u in avail if gmap.get(u) == "female"]}
+                for ci in comment_items:
+                    if budget <= 0:
                         break
-                    if line in used_lines:
+                    line = ci.get("text", "")
+                    if not line or line in used_lines:
                         continue
+                    g = ci.get("gender") or ""
+                    picks = avail_by_g.get(g) if avail_by_g.get(g) else avail
+                    if not picks:
+                        break
+                    uid = picks.pop()
+                    for lst in (avail, avail_by_g.get("male"), avail_by_g.get("female")):
+                        if lst and uid in lst:
+                            lst.remove(uid)
                     used_lines.add(line)
                     ts = _eng_spread_ts(created, now, rng)
                     conn.execute(
                         "INSERT INTO comments (id, post_id, author_id, content, parent_comment_id, reply_to_user_id, created_at, updated_at) "
                         "VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)",
-                        (str(uuid.uuid4()), pid, avail[i], line, ts, ts),
+                        (str(uuid.uuid4()), pid, uid, line, ts, ts),
                     )
                     out["comments"] += 1
                     budget -= 1
@@ -17274,8 +17301,15 @@ class Handler(BaseHTTPRequestHandler):
             image_ratio = max(0.0, min(1.0, float(_site_settings(conn).get("seed_post_image_ratio") or 0.72)))
         except (TypeError, ValueError):
             image_ratio = 0.72
+        # Route each post to a persona whose gender matches the post's voice so a
+        # "male-voiced" post is authored by a male persona (and vice versa).
+        gmap = _persona_gender_map(conn)
+        by_gender = {"male": [u for u in persona_ids if gmap.get(u) == "male"],
+                     "female": [u for u in persona_ids if gmap.get(u) == "female"]}
         for it in items:
-            author_id = (secrets.choice(persona_ids) if persona_ids
+            want = it.get("gender") or ""
+            pool = by_gender.get(want) or persona_ids
+            author_id = (secrets.choice(pool) if pool
                          else ensure_seed_bot_account(conn, it["author_type"], language))
             insert_seed_post(
                 conn, author_id=author_id, author_type=it["author_type"], content=it["content"],

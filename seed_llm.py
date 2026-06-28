@@ -217,6 +217,7 @@ def _build_prompt(*, region_code: str, language: str, tone: str, plan: dict[str,
         "3) 细节具体——具体车站/线路/价格(日元)/时间/天气/店的类型/具体的烦恼，越具体越真。\n"
         "4) 角度发散——吐槽、求助、分享、提醒、晒、约、问路、省钱、踩坑、emo……同一批里语气别雷同。\n"
         "5) 自然融入真实日本生活——在留卡/区役所/年金/确定申告/ゴミ分类/交通系IC卡/便利店/药妆/UR/礼金敷金/台风地震/樱花梅雨红叶等真实场景，自然带到、别堆砌。\n"
+        "6) 性别声音——为每条标注作者性别 g（\"m\"=男 / \"f\"=女），男女都要有；按性别自然区分语气与用词：女生更细腻、爱用「真的」「姐妹」「绝了」、更关注种草/氛围/性价比/穿搭；男生更直接精简、更关注实用/数据/效率/省事——但都别刻板、别油腻、别用力过猛。\n"
         "绝不：① 不要工整对仗、不要总结升华、不要面面俱到；② 不要广告腔/AI腔（高效便捷/全方位/优质服务/宝藏/一站式/作为AI 等）；"
         "③ 不要编造具体个人身份或已完成的交易、不要点名真实在营商家做评价；④ 不要话题标签#、不堆 emoji、不放链接。\n"
         "只输出 JSON，不要解释。"
@@ -242,7 +243,7 @@ def _build_prompt(*, region_code: str, language: str, tone: str, plan: dict[str,
         f"语言：{lang_name}。真实地名/车站（自然地用，别硬塞）：{place_hint}。\n\n"
         f"按「类型: 条数」产出，每条符合该类型的角度、彼此不重复：\n{plan_lines}\n"
         f"{spotlight_note}\n"
-        '输出严格 JSON：{"items": [{"type": "<类型key>", "content": "<一条帖子正文>"}, ...]}\n'
+        '输出严格 JSON：{"items": [{"type": "<类型key>", "content": "<一条帖子正文>", "g": "m或f"}, ...]}\n'
         "再次强调：长度参差、口吻像真人随手发、角度发散、细节具体——读起来绝不能像 AI 生成的。"
     )
     return system, user
@@ -456,6 +457,8 @@ def generate(
         city_name = seedlib._city_name(region_code, lang)
         if city_name and lang == "zh":
             tags = ([city_name] + tags)[:3]
+        g = str(entry.get("g") or entry.get("gender") or "").strip().lower()
+        gender = "female" if g in ("f", "female", "女") else ("male" if g in ("m", "male", "男") else "")
         out.append({
             "content": text,
             "title": "",
@@ -467,6 +470,7 @@ def generate(
             "tone": tone,
             "engine": chosen,
             "model": model_id if chosen == "deepseek" else "",
+            "gender": gender,
         })
 
     return out or None
@@ -479,10 +483,12 @@ def generate_comments(
     language: str = "zh",
     provider: str = "auto",
     model: str | None = None,
-) -> list[str] | None:
+) -> list[dict[str, str]] | None:
     """Generate up to ``n`` short, varied, real-sounding comments for one post
-    (contextual to its content). Returns None on any failure → caller falls back
-    to the static pool. Never raises."""
+    (contextual to its content), each tagged with the commenter's gender so the
+    caller can attribute it to a matching persona. Returns a list of
+    ``{"text", "gender"}`` (gender is "male"/"female"/""), or None on any failure
+    → caller falls back to the static pool. Never raises."""
     chosen = _resolve_provider(provider)
     if not chosen or n <= 0:
         return None
@@ -493,11 +499,12 @@ def generate_comments(
         "你是在一个面向在日华人/留学生的本地生活社区里、刷到同一条帖子的【不同】真实用户。"
         "给这条帖子写若干条评论。铁律：像真人随手评论，每条像不同的人——口气各异、长短不一"
         "（短的三四个字，长的也别超过 40 字）；可提问/附和/补充经验/吐槽/感谢/报个地点或价格；"
-        "针对帖子内容来评，但不要复述帖子原文；不要广告腔/AI腔、不堆 emoji、不带话题标签#、不放链接。只输出 JSON。"
+        "针对帖子内容来评，但不要复述帖子原文；不要广告腔/AI腔、不堆 emoji、不带话题标签#、不放链接。"
+        "为每条标注作者性别 g（\"m\"男 / \"f\"女），男女都要有，语气按性别自然区分（女生更细腻爱用「真的」「姐妹」，男生更直接精简）。只输出 JSON。"
     )
     user = (
         f"语言：{lang_name}。帖子内容：\n{(post_content or '')[:700]}\n\n"
-        f'写 {n} 条不同的人会发的评论。输出严格 JSON：{{"comments": ["...", "..."]}}，共 {n} 条。'
+        f'写 {n} 条不同的人会发的评论。输出严格 JSON：{{"comments": [{{"c": "评论", "g": "m或f"}}, ...]}}，共 {n} 条。'
     )
     try:
         raw = _call_deepseek(system, user, model, 900) if chosen == "deepseek" else _call_claude(system, user, 900)
@@ -507,14 +514,20 @@ def generate_comments(
     arr = parsed.get("comments") if isinstance(parsed, dict) else parsed
     if not isinstance(arr, list):
         return None
-    out: list[str] = []
+    out: list[dict[str, str]] = []
     seen: set[str] = set()
-    for c in arr:
-        c = str(c or "").strip().lstrip("#").strip()
+    for item in arr:
+        if isinstance(item, dict):
+            c = str(item.get("c") or item.get("content") or item.get("text") or "").strip()
+            g = str(item.get("g") or item.get("gender") or "").strip().lower()
+        else:
+            c, g = str(item or "").strip(), ""
+        c = c.lstrip("#").strip()
         if not (2 <= len(c) <= 60) or not seedlib._is_clean(c) or c in seen:
             continue
+        gender = "female" if g in ("f", "female", "女") else ("male" if g in ("m", "male", "男") else "")
         seen.add(c)
-        out.append(c)
+        out.append({"text": c, "gender": gender})
         if len(out) >= n:
             break
     return out or None
