@@ -37,6 +37,8 @@ import urllib.error
 import urllib.request
 from typing import Any
 
+from concurrent.futures import ThreadPoolExecutor
+
 import seed_content_library as seedlib
 
 
@@ -60,9 +62,14 @@ ANTHROPIC_BASE_URL = _env("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rst
 ANTHROPIC_MODEL = _env("SEED_LLM_CLAUDE_MODEL", "claude-sonnet-4-6")
 ANTHROPIC_VERSION = _env("ANTHROPIC_VERSION", "2023-06-01")
 
-SEED_LLM_TIMEOUT = float(_env("SEED_LLM_TIMEOUT", "45"))
-SEED_LLM_MAX_TOKENS = int(_env("SEED_LLM_MAX_TOKENS", "4000"))
+SEED_LLM_TIMEOUT = float(_env("SEED_LLM_TIMEOUT", "40"))
+SEED_LLM_MAX_TOKENS = int(_env("SEED_LLM_MAX_TOKENS", "2200"))
 SEED_LLM_TEMPERATURE = float(_env("SEED_LLM_TEMPERATURE", "1.05"))
+# A single big request is slow (token generation is sequential). We split the
+# batch into small chunks and call the model concurrently, so wall-clock time
+# stays ~ one chunk regardless of the requested count.
+SEED_LLM_CHUNK_ITEMS = max(2, int(_env("SEED_LLM_CHUNK_ITEMS", "6")))
+SEED_LLM_MAX_WORKERS = max(1, int(_env("SEED_LLM_MAX_WORKERS", "6")))
 
 # Per-line sanity bounds. Guides run long; one-liners run short.
 _MIN_LEN = 6
@@ -243,6 +250,43 @@ def _extract_json(text: str) -> Any:
         raise
 
 
+def _split_plan(plan: dict[str, int], chunk_items: int) -> list[dict[str, int]]:
+    """Break a plan into sub-plans each summing to <= chunk_items, so generation
+    fans out into small concurrent requests instead of one slow large call."""
+    tasks: list[tuple[str, int]] = []
+    for t, n in plan.items():
+        n = int(n)
+        while n > 0:
+            take = min(n, chunk_items)
+            tasks.append((t, take))
+            n -= take
+    chunks: list[dict[str, int]] = []
+    cur: dict[str, int] = {}
+    cur_sum = 0
+    for t, n in tasks:
+        if cur and cur_sum + n > chunk_items:
+            chunks.append(cur)
+            cur, cur_sum = {}, 0
+        cur[t] = cur.get(t, 0) + n
+        cur_sum += n
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _generate_chunk(chosen: str, region_code: str, lang: str, tone: str,
+                    sub_plan: dict[str, int]) -> list[Any]:
+    """One provider call for a small sub-plan. Returns raw item dicts (or [])."""
+    system, user = _build_prompt(region_code=region_code, language=lang, tone=tone, plan=sub_plan)
+    try:
+        raw = _call_deepseek(system, user) if chosen == "deepseek" else _call_claude(system, user)
+        parsed = _extract_json(raw)
+    except Exception:
+        return []
+    items = parsed.get("items") if isinstance(parsed, dict) else parsed
+    return items if isinstance(items, list) else []
+
+
 # --- public API -------------------------------------------------------------
 
 def generate(
@@ -271,17 +315,22 @@ def generate(
     if not plan or count <= 0:
         return None
 
-    system, user = _build_prompt(region_code=region_code, language=lang, tone=tone, plan=plan)
-
-    try:
-        raw = _call_deepseek(system, user) if chosen == "deepseek" else _call_claude(system, user)
-        parsed = _extract_json(raw)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError,
-            KeyError, IndexError, ValueError, json.JSONDecodeError, Exception):
-        return None
-
-    raw_items = parsed.get("items") if isinstance(parsed, dict) else parsed
-    if not isinstance(raw_items, list):
+    # Fan out small concurrent chunks so wall-clock stays ~ one chunk even for
+    # large counts (a single big request is sequential token-gen and too slow).
+    chunks = _split_plan(plan, SEED_LLM_CHUNK_ITEMS)
+    raw_items: list[Any] = []
+    if len(chunks) <= 1:
+        raw_items = _generate_chunk(chosen, region_code, lang, tone, plan)
+    else:
+        try:
+            with ThreadPoolExecutor(max_workers=min(SEED_LLM_MAX_WORKERS, len(chunks))) as ex:
+                for res in ex.map(
+                    lambda c: _generate_chunk(chosen, region_code, lang, tone, c), chunks
+                ):
+                    raw_items.extend(res or [])
+        except Exception:
+            raw_items = []
+    if not raw_items:
         return None
 
     remaining = dict(plan)  # type → how many still wanted

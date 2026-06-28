@@ -458,10 +458,12 @@ function idempotencyKey(prefix: string): string {
   return `${prefix}-${id}`;
 }
 
-async function request<T>(method: string, path: string, body?: unknown, init?: RequestInit): Promise<T> {
+async function request<T>(method: string, path: string, body?: unknown, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  const { timeoutMs, ...fetchInit } = init ?? {};
+  const timeoutVal = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const headers: Record<string, string> = {
     Accept: "application/json",
-    ...(init?.headers as Record<string, string> | undefined),
+    ...(fetchInit.headers as Record<string, string> | undefined),
   };
   if (body !== undefined && !(body instanceof FormData)) {
     headers["Content-Type"] = "application/json";
@@ -483,7 +485,7 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
           } catch {
             // ignore
           }
-        }, DEFAULT_TIMEOUT_MS)
+        }, timeoutVal)
       : null;
     try {
       res = await fetch(`${apiBase}${path}`, {
@@ -498,7 +500,7 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
         credentials: "same-origin",
         cache: "no-store",
         signal: controller?.signal,
-        ...init,
+        ...fetchInit,
       });
       break;
     } catch (err) {
@@ -1790,7 +1792,7 @@ export const api = {
     country?: string; city?: string; regionCode?: string; language: string;
     contentType: string; count: number; tone: string; publishNow: boolean; engine?: string;
   }): Promise<{ batch: SeedBatch; requested: number; created: number; engine?: string }> {
-    return request("POST", `/api/admin/seed-content/generate`, payload);
+    return request("POST", `/api/admin/seed-content/generate`, payload, { timeoutMs: 90_000 });
   },
   async adminSeedEngines(): Promise<{
     default: string; configured: string[]; deepseek: boolean; claude: boolean;
@@ -1839,10 +1841,10 @@ export const api = {
     created: number; updated: number; total: number;
     by_city: Record<string, number>; by_type: Record<string, number>; pack_version: string;
   } }> {
-    return request("POST", `/api/admin/content-pack/import`, { cities: cities && cities.length ? cities : undefined });
+    return request("POST", `/api/admin/content-pack/import`, { cities: cities && cities.length ? cities : undefined }, { timeoutMs: 120_000 });
   },
   async adminContentPackClear(cities?: string[]): Promise<{ ok: boolean; cleared: number }> {
-    return request("POST", `/api/admin/content-pack/clear`, { cities: cities && cities.length ? cities : undefined, confirm: true });
+    return request("POST", `/api/admin/content-pack/clear`, { cities: cities && cities.length ? cities : undefined, confirm: true }, { timeoutMs: 90_000 });
   },
   async adminContentPackUsersPreview(): Promise<{
     pack: { total: number; by_city: Record<string, number>; photographic: number; illustrated: number };
@@ -1851,10 +1853,10 @@ export const api = {
     return request("GET", `/api/admin/content-pack/users/preview`);
   },
   async adminContentPackUsersImport(): Promise<{ ok: boolean; result: { created: number; skipped: number; total: number; pack_version: string } }> {
-    return request("POST", `/api/admin/content-pack/users/import`, {});
+    return request("POST", `/api/admin/content-pack/users/import`, {}, { timeoutMs: 120_000 });
   },
   async adminContentPackUsersClear(): Promise<{ ok: boolean; cleared: number }> {
-    return request("POST", `/api/admin/content-pack/users/clear`, { confirm: true });
+    return request("POST", `/api/admin/content-pack/users/clear`, { confirm: true }, { timeoutMs: 90_000 });
   },
 
   // ---- drafts ----
