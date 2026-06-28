@@ -57,6 +57,23 @@ DEEPSEEK_API_KEY = _env("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
 DEEPSEEK_MODEL = _env("DEEPSEEK_MODEL", "deepseek-chat")
 
+# Selectable DeepSeek generation modes (model id -> human label). All verified
+# to work with JSON mode. "深度思考"/"Pro" think before answering (slower, higher
+# quality); "标准" is the fast default.
+DEEPSEEK_MODELS: dict[str, str] = {
+    "deepseek-chat": "标准（快速）",
+    "deepseek-reasoner": "深度思考",
+    "deepseek-v4-pro": "Pro（更强）",
+}
+
+
+def _resolve_model(model: str | None) -> str:
+    """Validate a requested model against the allowlist; fall back to default."""
+    m = (model or "").strip()
+    if m in DEEPSEEK_MODELS or m == DEEPSEEK_MODEL:
+        return m
+    return DEEPSEEK_MODEL
+
 ANTHROPIC_API_KEY = _env("ANTHROPIC_API_KEY")
 ANTHROPIC_BASE_URL = _env("ANTHROPIC_BASE_URL", "https://api.anthropic.com").rstrip("/")
 ANTHROPIC_MODEL = _env("SEED_LLM_CLAUDE_MODEL", "claude-sonnet-4-6")
@@ -100,6 +117,9 @@ def provider_status() -> dict[str, Any]:
         "deepseek_model": DEEPSEEK_MODEL if DEEPSEEK_API_KEY else "",
         "claude_model": ANTHROPIC_MODEL if ANTHROPIC_API_KEY else "",
         "engines": list(ENGINES),
+        # Selectable DeepSeek modes for the UI: [{id, label}], default first.
+        "deepseek_models": [{"id": k, "label": v} for k, v in DEEPSEEK_MODELS.items()],
+        "default_model": DEEPSEEK_MODEL,
         "ready": bool(providers),
     }
 
@@ -193,22 +213,28 @@ def _http_json(url: str, payload: dict[str, Any], headers: dict[str, str]) -> di
     return json.loads(raw)
 
 
-def _call_deepseek(system: str, user: str) -> str:
+def _call_deepseek(system: str, user: str, model: str | None = None) -> str:
+    model = model or DEEPSEEK_MODEL
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_tokens": SEED_LLM_MAX_TOKENS,
+        "response_format": {"type": "json_object"},
+        "stream": False,
+    }
+    # The reasoning model ignores/forbids temperature; the others accept it.
+    if "reasoner" not in model:
+        payload["temperature"] = SEED_LLM_TEMPERATURE
     data = _http_json(
         f"{DEEPSEEK_BASE_URL}/chat/completions",
-        {
-            "model": DEEPSEEK_MODEL,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "temperature": SEED_LLM_TEMPERATURE,
-            "max_tokens": SEED_LLM_MAX_TOKENS,
-            "response_format": {"type": "json_object"},
-            "stream": False,
-        },
+        payload,
         {"Authorization": f"Bearer {DEEPSEEK_API_KEY}"},
     )
+    # deepseek-reasoner returns chain-of-thought in reasoning_content; we only
+    # want the final answer (content).
     return data["choices"][0]["message"]["content"]
 
 
@@ -275,11 +301,11 @@ def _split_plan(plan: dict[str, int], chunk_items: int) -> list[dict[str, int]]:
 
 
 def _generate_chunk(chosen: str, region_code: str, lang: str, tone: str,
-                    sub_plan: dict[str, int]) -> list[Any]:
+                    sub_plan: dict[str, int], model: str | None = None) -> list[Any]:
     """One provider call for a small sub-plan. Returns raw item dicts (or [])."""
     system, user = _build_prompt(region_code=region_code, language=lang, tone=tone, plan=sub_plan)
     try:
-        raw = _call_deepseek(system, user) if chosen == "deepseek" else _call_claude(system, user)
+        raw = _call_deepseek(system, user, model) if chosen == "deepseek" else _call_claude(system, user)
         parsed = _extract_json(raw)
     except Exception:
         return []
@@ -299,15 +325,19 @@ def generate(
     count: int,
     tone: str,
     provider: str = "auto",
+    model: str | None = None,
 ) -> list[dict[str, Any]] | None:
     """LLM-generate seed items, or return None to fall back to the offline pool.
 
-    Returns the same item shape as ``seedlib.generate``. May return *fewer*
-    items than requested (after dedup/guardrails); never more.
+    ``model`` selects the DeepSeek generation mode (标准 / 深度思考 / Pro);
+    ignored for the Claude provider. Returns the same item shape as
+    ``seedlib.generate``. May return *fewer* items than requested (after
+    dedup/guardrails); never more.
     """
     chosen = _resolve_provider(provider)
     if not chosen:
         return None
+    model_id = _resolve_model(model)
 
     lang = language if language in seedlib.SUPPORTED_LANGUAGES else "zh"
     count = max(0, min(int(count or 0), seedlib.MAX_BATCH_COUNT))
@@ -320,12 +350,12 @@ def generate(
     chunks = _split_plan(plan, SEED_LLM_CHUNK_ITEMS)
     raw_items: list[Any] = []
     if len(chunks) <= 1:
-        raw_items = _generate_chunk(chosen, region_code, lang, tone, plan)
+        raw_items = _generate_chunk(chosen, region_code, lang, tone, plan, model_id)
     else:
         try:
             with ThreadPoolExecutor(max_workers=min(SEED_LLM_MAX_WORKERS, len(chunks))) as ex:
                 for res in ex.map(
-                    lambda c: _generate_chunk(chosen, region_code, lang, tone, c), chunks
+                    lambda c: _generate_chunk(chosen, region_code, lang, tone, c, model_id), chunks
                 ):
                     raw_items.extend(res or [])
         except Exception:
@@ -368,6 +398,7 @@ def generate(
             "tags": tags,
             "tone": tone,
             "engine": chosen,
+            "model": model_id if chosen == "deepseek" else "",
         })
 
     return out or None

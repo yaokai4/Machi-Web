@@ -1790,13 +1790,14 @@ export const api = {
   // ---- admin: City Seed Bot (城市内容助手) ----
   async adminSeedGenerate(payload: {
     country?: string; city?: string; regionCode?: string; language: string;
-    contentType: string; count: number; tone: string; publishNow: boolean; engine?: string;
-  }): Promise<{ batch: SeedBatch; requested: number; created: number; engine?: string }> {
+    contentType: string; count: number; tone: string; publishNow: boolean; engine?: string; model?: string;
+  }): Promise<{ batch: SeedBatch; requested: number; created: number; engine?: string; model?: string }> {
     return request("POST", `/api/admin/seed-content/generate`, payload, { timeoutMs: 90_000 });
   },
   async adminSeedEngines(): Promise<{
     default: string; configured: string[]; deepseek: boolean; claude: boolean;
-    deepseek_model: string; claude_model: string; engines: string[]; ready: boolean;
+    deepseek_model: string; claude_model: string; engines: string[];
+    deepseek_models: { id: string; label: string }[]; default_model: string; ready: boolean;
   }> {
     return request("GET", `/api/admin/seed-content/engines`);
   },

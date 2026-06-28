@@ -16555,6 +16555,7 @@ class Handler(BaseHTTPRequestHandler):
         engine = (data.get("engine") or "auto").strip().lower()
         if engine not in seed_llm.ENGINES:
             engine = "auto"
+        model = (data.get("model") or "").strip()  # DeepSeek mode: 标准/深度思考/Pro
         publish_now = bool(data.get("publishNow") if data.get("publishNow") is not None else data.get("publish_now"))
         try:
             count = int(data.get("count") or 0)
@@ -16581,15 +16582,17 @@ class Handler(BaseHTTPRequestHandler):
         # generation never hard-fails.
         items: list[dict[str, Any]] | None = None
         engine_used = "offline"
+        model_used = ""
         if engine != "offline":
             llm_items = seed_llm.generate(
                 region_code=region_code, country=country, city=city,
                 language=language, content_type=content_type, count=count,
-                tone=tone, provider=engine,
+                tone=tone, provider=engine, model=model,
             )
             if llm_items:
                 items = llm_items
                 engine_used = str(llm_items[0].get("engine") or "llm")
+                model_used = str(llm_items[0].get("model") or "")
         if items is None:
             items = seedlib.generate(
                 region_code=region_code, country=country, city=city,
@@ -16619,12 +16622,12 @@ class Handler(BaseHTTPRequestHandler):
         log_seed_action(
             conn, admin_id=admin["id"], action="generate", batch_id=batch_id, country=country,
             city=city, region_code=region_code, language=language, content_type=content_type,
-            count=len(items), metadata={"tone": tone, "publishNow": publish_now, "requested": count, "engine": engine_used},
+            count=len(items), metadata={"tone": tone, "publishNow": publish_now, "requested": count, "engine": engine_used, "model": model_used},
         )
         if publish_now:
             invalidate_public_ranking_caches()
         self.send_json({"batch": self._seed_batch_dict(conn, batch_id, include_items=True),
-                        "requested": count, "created": len(items), "engine": engine_used})
+                        "requested": count, "created": len(items), "engine": engine_used, "model": model_used})
 
     def api_admin_seed_batches(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
