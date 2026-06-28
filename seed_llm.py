@@ -196,9 +196,14 @@ def _build_prompt(*, region_code: str, language: str, tone: str, plan: dict[str,
     )
 
     spotlight_note = (
-        "\n注意：spotlight 是「精选攻略 / 干货长帖」的例外——可以写长一点（约 150-400 字），"
-        "围绕一个清晰主题讲透，可用短换行或「1. 2. 3.」分点，但仍要像热心网友的真实分享："
-        "口语、有个人语气和取舍，给具体地名/价格/时间，绝不要像官方说明书或 AI 罗列。"
+        "\n【spotlight = 精选攻略·干货长帖，这是重点，要写得又长又有用】：\n"
+        "- 长度 350-700 字，围绕一个清晰主题真正讲透（不是泛泛而谈）。\n"
+        "- 开头用一句真人化的引子（自己的经历/踩过的坑/被问烦了所以整理），别上来就「干货分享」。\n"
+        "- 正文用「1️⃣ 2️⃣ 3️⃣」或短换行分点，每点给**具体可执行**的信息：具体地名/车站/店类型/价格(日元)/时间/步骤/注意事项，最好有数字。\n"
+        "- 适当加个人取舍和真实细节（「我一般」「亲测」「踩过坑」「排了40分钟值」），可有一两句吐槽。\n"
+        "- 结尾自然收（「有问题评论问我」「先码后看」之类），不要总结升华、不要客套。\n"
+        "- 主题示例：在日第一个月必办清单 / 东京周末去哪玩 / 关西三日游路线 / 赏樱赏枫温泉地图 / 便利店&药妆必买 / 租房找工避坑 / 省钱技巧合集 / 看病就医流程。\n"
+        "- 务必像小红书里真人写的高赞干货帖，绝不能像 AI 罗列或官方说明书。\n"
         if "spotlight" in plan else ""
     )
     user = (
@@ -224,7 +229,7 @@ def _http_json(url: str, payload: dict[str, Any], headers: dict[str, str]) -> di
     return json.loads(raw)
 
 
-def _call_deepseek(system: str, user: str, model: str | None = None) -> str:
+def _call_deepseek(system: str, user: str, model: str | None = None, max_tokens: int | None = None) -> str:
     model = model or DEEPSEEK_MODEL
     payload: dict[str, Any] = {
         "model": model,
@@ -232,7 +237,7 @@ def _call_deepseek(system: str, user: str, model: str | None = None) -> str:
             {"role": "system", "content": system},
             {"role": "user", "content": user},
         ],
-        "max_tokens": SEED_LLM_MAX_TOKENS,
+        "max_tokens": max_tokens or SEED_LLM_MAX_TOKENS,
         "response_format": {"type": "json_object"},
         "stream": False,
     }
@@ -249,13 +254,13 @@ def _call_deepseek(system: str, user: str, model: str | None = None) -> str:
     return data["choices"][0]["message"]["content"]
 
 
-def _call_claude(system: str, user: str) -> str:
+def _call_claude(system: str, user: str, max_tokens: int | None = None) -> str:
     # Reserved interface: enabled the moment ANTHROPIC_API_KEY is set.
     data = _http_json(
         f"{ANTHROPIC_BASE_URL}/v1/messages",
         {
             "model": ANTHROPIC_MODEL,
-            "max_tokens": SEED_LLM_MAX_TOKENS,
+            "max_tokens": max_tokens or SEED_LLM_MAX_TOKENS,
             "temperature": min(SEED_LLM_TEMPERATURE, 1.0),
             "system": system + "\n\n只返回 JSON，不要任何额外文字或代码块标记。",
             "messages": [{"role": "user", "content": user}],
@@ -312,11 +317,13 @@ def _split_plan(plan: dict[str, int], chunk_items: int) -> list[dict[str, int]]:
 
 
 def _generate_chunk(chosen: str, region_code: str, lang: str, tone: str,
-                    sub_plan: dict[str, int], model: str | None = None) -> list[Any]:
+                    sub_plan: dict[str, int], model: str | None = None,
+                    max_tokens: int | None = None) -> list[Any]:
     """One provider call for a small sub-plan. Returns raw item dicts (or [])."""
     system, user = _build_prompt(region_code=region_code, language=lang, tone=tone, plan=sub_plan)
     try:
-        raw = _call_deepseek(system, user, model) if chosen == "deepseek" else _call_claude(system, user)
+        raw = (_call_deepseek(system, user, model, max_tokens) if chosen == "deepseek"
+               else _call_claude(system, user, max_tokens))
         parsed = _extract_json(raw)
     except Exception:
         return []
@@ -358,15 +365,19 @@ def generate(
 
     # Fan out small concurrent chunks so wall-clock stays ~ one chunk even for
     # large counts (a single big request is sequential token-gen and too slow).
-    chunks = _split_plan(plan, SEED_LLM_CHUNK_ITEMS)
+    # Spotlight posts are long-form, so use smaller chunks + a bigger token cap.
+    spotlight = "spotlight" in plan
+    chunk_items = 3 if spotlight else SEED_LLM_CHUNK_ITEMS
+    chunk_tokens = 3600 if spotlight else SEED_LLM_MAX_TOKENS
+    chunks = _split_plan(plan, chunk_items)
     raw_items: list[Any] = []
     if len(chunks) <= 1:
-        raw_items = _generate_chunk(chosen, region_code, lang, tone, plan, model_id)
+        raw_items = _generate_chunk(chosen, region_code, lang, tone, plan, model_id, chunk_tokens)
     else:
         try:
             with ThreadPoolExecutor(max_workers=min(SEED_LLM_MAX_WORKERS, len(chunks))) as ex:
                 for res in ex.map(
-                    lambda c: _generate_chunk(chosen, region_code, lang, tone, c, model_id), chunks
+                    lambda c: _generate_chunk(chosen, region_code, lang, tone, c, model_id, chunk_tokens), chunks
                 ):
                     raw_items.extend(res or [])
         except Exception:
@@ -387,7 +398,7 @@ def generate(
             continue
         if remaining.get(ctype, 0) <= 0:
             continue
-        max_len = 700 if ctype == "spotlight" else _MAX_LEN
+        max_len = 1100 if ctype == "spotlight" else _MAX_LEN
         if not (_MIN_LEN <= len(text) <= max_len):
             continue
         if not seedlib._is_clean(text):

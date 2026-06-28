@@ -15966,6 +15966,13 @@ SEED_PUBLISHED_STATUS = "published"   # feed shows status IN ('published','activ
 SEED_DRAFT_STATUS = "draft"           # generated-but-not-published → hidden
 SEED_CLEARED_STATUS = "cleared"       # soft-deleted → hidden (never a hard DELETE)
 SEED_POST_IMAGES = _env("SEED_POST_IMAGES", "1") == "1"  # attach a premium cover image to seed posts
+# Curated posts have no real engagement, so without a nudge they never surface in
+# 推荐/热搜/热榜. Give them a plausible baseline view_count + a heat boost (the boost
+# is added to the heat score while boosted_until is in the future).
+SEED_POST_BOOST_WEIGHT = int(_env("SEED_POST_BOOST_WEIGHT", "45"))
+SEED_POST_BOOST_DAYS = int(_env("SEED_POST_BOOST_DAYS", "90"))
+SEED_POST_VIEW_MIN = int(_env("SEED_POST_VIEW_MIN", "80"))
+SEED_POST_VIEW_MAX = int(_env("SEED_POST_VIEW_MAX", "1500"))
 
 # (author_type, language) → (handle, display_name, bio, avatar_symbol, avatar_color)
 _SEED_BOT_IDENTITY: dict[tuple[str, str], tuple[str, str, str, str, str]] = {
@@ -16046,17 +16053,25 @@ def insert_seed_post(
     generated_by) so the row is auditable and reversible."""
     post_id = str(uuid.uuid4())
     attributes = normalize_post_attributes(app_content_type, {})
+    # Deterministic, plausible baseline view count (so cards look alive) + a boost
+    # window so curated posts can rank in 推荐/热搜/热榜 despite zero engagement.
+    span = max(1, SEED_POST_VIEW_MAX - SEED_POST_VIEW_MIN)
+    try:
+        view_count = SEED_POST_VIEW_MIN + int(post_id.replace("-", "")[:8], 16) % span
+    except ValueError:
+        view_count = SEED_POST_VIEW_MIN
+    boosted_until = (datetime.now(timezone.utc) + timedelta(days=SEED_POST_BOOST_DAYS)).isoformat()
     conn.execute(
         """
         INSERT INTO posts (id, author_id, content, repost_of_id, view_count, status,
                            country, province, city, region_code, content_type, attributes,
                            language, is_seed_content, seed_batch_id, seed_source, generated_by,
-                           created_at, updated_at)
-        VALUES (?, ?, ?, NULL, 0, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?)
+                           created_at, updated_at, is_boosted, boost_weight, boosted_until)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
-        (post_id, author_id, content, status, country, province, city, region_code,
+        (post_id, author_id, content, view_count, status, country, province, city, region_code,
          app_content_type, attributes, language, batch_id, SEED_SOURCE, author_type,
-         now_iso(), now_iso()),
+         now_iso(), now_iso(), SEED_POST_BOOST_WEIGHT, boosted_until),
     )
     # Attach a premium cover image (real photo, never AI) so the feed looks rich.
     # Stored as a normal media + post_media row → renders exactly like a user post.

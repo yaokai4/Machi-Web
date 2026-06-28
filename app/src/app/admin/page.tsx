@@ -1226,6 +1226,7 @@ const SEED_LANG_OPTIONS = [
   { value: "zh", label: "中文" }, { value: "en", label: "English" }, { value: "ja", label: "日本語" },
 ];
 const SEED_TYPE_OPTIONS = [
+  { value: "spotlight", label: "精选攻略（日本生活·玩乐）⭐" },
   { value: "mixed", label: "综合（推荐分布）" },
   { value: "city_square", label: "城市广场" }, { value: "qa", label: "本地问答" },
   { value: "guide", label: "城市指南" }, { value: "housing_tip", label: "租房提醒" },
@@ -1233,7 +1234,6 @@ const SEED_TYPE_OPTIONS = [
   { value: "food", label: "美食发现" }, { value: "meetup", label: "本地小组" },
   { value: "event", label: "活动推荐" }, { value: "local_service", label: "本地服务" },
   { value: "alert", label: "本地提醒" }, { value: "daily_life", label: "生活日常" },
-  { value: "spotlight", label: "精选攻略（日本生活·玩乐）" },
 ];
 const SEED_TONE_OPTIONS = [
   { value: "natural", label: "城市日常" }, { value: "helpful", label: "经验提醒" },
@@ -1275,7 +1275,7 @@ function SeedBotPanel() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
   const [form, setForm] = useState({
-    regionCode: "jp.tokyo.tokyo", language: "zh", contentType: "mixed", count: 30, tone: "natural", publishNow: false, engine: "auto", model: "deepseek-chat",
+    regionCode: "jp.tokyo.tokyo", language: "zh", contentType: "spotlight", count: 20, tone: "natural", publishNow: true, engine: "auto", model: "deepseek-reasoner",
   });
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const [pendingClear, setPendingClear] = useState<string | null>(null);
