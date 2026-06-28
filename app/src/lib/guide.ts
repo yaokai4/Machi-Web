@@ -1170,6 +1170,61 @@ export interface GuideMyLibrary {
   orders: GuideLibraryOrder[];
 }
 
+// --- Machi AI (原创 in-app assistant) ---
+// To the client this is entirely "Machi AI"; the underlying provider/model
+// never appears in any of these payloads.
+export interface GuideAIRoute {
+  kind?: string;
+  slug?: string;
+  id?: string;
+}
+export interface GuideAISource {
+  type?: string;
+  title?: string;
+  subtitle?: string;
+  route?: GuideAIRoute;
+}
+export interface GuideAISuggestion {
+  id: string;
+  title: string;
+  category?: string;
+}
+export interface GuideAIConversation {
+  id: string;
+  title?: string;
+  lastMessagePreview?: string;
+  messageCount?: number;
+  country?: string;
+  language?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+export interface GuideAIMessage {
+  id: string;
+  role: "user" | "assistant" | string;
+  content: string;
+  createdAt?: string;
+  sources?: GuideAISource[];
+}
+export interface GuideAIUsage {
+  membershipActive?: boolean;
+  remainingFreeUses?: number | null;
+  upgradeSuggested?: boolean;
+}
+export interface GuideAIBootstrap {
+  status?: string;
+  membershipActive?: boolean;
+  remainingFreeUses?: number | null;
+  suggestions?: GuideAISuggestion[];
+  disclaimer?: string;
+}
+export interface GuideAIChatResult {
+  status?: string;
+  conversationId?: string;
+  message?: GuideAIMessage;
+  usage?: GuideAIUsage;
+}
+
 export const guide = {
   home: (country = "jp", language = "zh-CN") =>
     greq<GuideHomeResponse>("GET", `/api/guide/home${qs({ country, language })}`),
@@ -1391,6 +1446,22 @@ export const guide = {
   confirmCheckout: (sessionId: string) =>
     greq<{ status: string; orderNo?: string }>(
       "POST", `/api/payments/stripe/guide-confirm`, { sessionId }),
+
+  // Machi AI (原创 in-app assistant)
+  aiBootstrap: (country = "jp", language = "zh-CN") =>
+    greq<GuideAIBootstrap>("GET", `/api/guide/ai/bootstrap${qs({ country, language })}`),
+  aiConversations: (limit = 30) =>
+    greq<{ status: string; items: GuideAIConversation[] }>("GET", `/api/guide/ai/conversations${qs({ limit })}`),
+  aiMessages: (conversationId: string) =>
+    greq<{ status: string; conversation: GuideAIConversation; items: GuideAIMessage[] }>(
+      "GET", `/api/guide/ai/conversations/${encodeURIComponent(conversationId)}/messages`),
+  aiChat: (body: { conversationId?: string | null; message: string; country?: string; language?: string; category?: string }) =>
+    greq<GuideAIChatResult>("POST", "/api/guide/ai/chat", body),
+  aiDeleteConversation: (id: string) =>
+    greq<{ status: string }>("DELETE", `/api/guide/ai/conversations/${encodeURIComponent(id)}`),
+  aiFeedback: (messageId: string, rating: "helpful" | "not_helpful", reason?: string) =>
+    greq<{ status: string; rating: string }>(
+      "POST", `/api/guide/ai/messages/${encodeURIComponent(messageId)}/feedback`, { rating, reason }),
 };
 
 export const adminGuide = {

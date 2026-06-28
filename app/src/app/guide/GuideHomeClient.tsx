@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ArrowRight,
   Bell,
   CalendarClock,
   CalendarDays,
@@ -146,6 +147,8 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
           <GuideModuleNav />
         </header>
 
+        <GuideAIEntryCard />
+
         {activePlan.isError ? (
           <div className="rounded-2xl border border-amber-400/25 bg-amber-400/10 px-4 py-3 text-sm font-semibold text-amber-700 dark:text-amber-300">
             个人计划暂时加载失败，今日页仍可继续使用。请稍后重试或刷新。
@@ -201,6 +204,50 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
         ) : null}
       </main>
     </GuideShell>
+  );
+}
+
+// 高质感 Machi AI 入口 —— 放在 Guide 首页头部下方、内容之前。原创品牌，
+// 不出现任何供应商/模型名。
+function GuideAIEntryCard() {
+  return (
+    <Link
+      href="/guide/ai"
+      className="group block rounded-[1.75rem] border border-kx-accent/30 bg-gradient-to-br from-kx-accentSoft/60 to-kx-card/85 p-5 shadow-[0_18px_50px_-44px_rgba(20,112,103,0.45)] transition hover:-translate-y-0.5 hover:border-kx-accent/55 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kx-accent sm:p-6"
+    >
+      <div className="flex items-center gap-4">
+        <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-kx-accent text-white shadow-[0_10px_24px_-12px_rgba(20,112,103,0.8)]">
+          <Sparkles className="h-6 w-6" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h2 className="text-lg font-black tracking-[-0.01em] text-kx-text">Machi AI</h2>
+            <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[10px] font-black uppercase tracking-[0.1em] text-kx-accent">
+              Beta
+            </span>
+          </div>
+          <p className="mt-0.5 text-sm font-semibold leading-6 text-kx-subtle">
+            日本生活、升学、就职和 Machi 使用问题，都可以先问问。
+          </p>
+        </div>
+        <span className="hidden shrink-0 items-center gap-1.5 rounded-full bg-kx-accent px-4 py-2 text-sm font-black text-white transition group-hover:gap-2.5 sm:inline-flex">
+          开始对话 <ArrowRight className="h-4 w-4" />
+        </span>
+      </div>
+      <div className="mt-4 flex flex-wrap gap-2">
+        {["生活手续", "升学规划", "就职准备"].map((chip) => (
+          <span
+            key={chip}
+            className="rounded-full border border-kx-accent/20 bg-kx-card/70 px-3 py-1 text-xs font-bold text-kx-accent"
+          >
+            {chip}
+          </span>
+        ))}
+        <span className="inline-flex items-center gap-1 rounded-full bg-kx-accent px-3 py-1 text-xs font-black text-white sm:hidden">
+          开始对话 <ArrowRight className="h-3.5 w-3.5" />
+        </span>
+      </div>
+    </Link>
   );
 }
 
