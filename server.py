@@ -15713,6 +15713,21 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
     window = s["max_days"] * 24.0
     cutoff = (now - timedelta(days=s["max_days"])).isoformat()
 
+    # Heal: older seed posts authored by an official seed-bot (before personas
+    # existed) should belong to real personas, so the feed never shows them all
+    # as "编辑部". Reassign a bounded batch each tick.
+    bot_ids = [r["id"] for r in conn.execute("SELECT id FROM users WHERE COALESCE(is_official, 0) = 1")]
+    if bot_ids:
+        ph = ",".join("?" * len(bot_ids))
+        stale = conn.execute(
+            f"SELECT id FROM posts WHERE is_seed_content = 1 AND deleted_at IS NULL AND author_id IN ({ph}) LIMIT 800",
+            bot_ids,
+        ).fetchall()
+        for r in stale:
+            conn.execute("UPDATE posts SET author_id = ? WHERE id = ?", (secrets.choice(personas), r["id"]))
+        if stale:
+            out["reassigned"] = out.get("reassigned", 0) + len(stale)
+
     posts = conn.execute(
         "SELECT id, created_at, content_type, content, language FROM posts "
         "WHERE is_seed_content = 1 AND deleted_at IS NULL AND status IN ('published', 'active') "
@@ -15938,6 +15953,7 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "engagement_sim_comment_ai": "1",      # 1 = comments via DeepSeek (contextual), 0 = static pool
     "engagement_sim_follow_max": "1000",   # per-persona follower ceiling (varied; bounded by user count)
     "engagement_sim_halflife_hours": "18", # growth curve half-life (smaller = faster early)
+    "seed_post_image_ratio": "0.72",       # share of generated posts that get a cover image (0–1)
 }
 SITE_SETTING_KEYS = set(SITE_SETTING_DEFAULTS)
 
@@ -16306,6 +16322,7 @@ def insert_seed_post(
     conn: sqlite3.Connection, *, author_id: str, author_type: str, content: str,
     app_content_type: str, country: str, province: str, city: str, region_code: str,
     language: str, tags: list[str], batch_id: str, status: str,
+    image_ratio: float = 1.0,
 ) -> str:
     """Insert one seed post. Mirrors the normal post insert but stamps the
     seed-tracking columns (is_seed_content / seed_batch_id / seed_source /
@@ -16332,10 +16349,11 @@ def insert_seed_post(
          app_content_type, attributes, language, batch_id, SEED_SOURCE, author_type,
          now_iso(), now_iso(), SEED_POST_BOOST_WEIGHT, boosted_until),
     )
-    # Attach a premium cover image (real photo, never AI) so the feed looks rich.
-    # Stored as a normal media + post_media row → renders exactly like a user post.
-    if SEED_POST_IMAGES:
-        image_url = seed_post_images.pick(app_content_type, post_id)
+    # Attach a topic-matched cover image (real photo, never AI) to a share of
+    # posts — not all of them, so the feed isn't a wall of stock images. The
+    # image varies by what the post is about (food / interior / work / travel…).
+    if SEED_POST_IMAGES and _eng_hash01(post_id, "img") < image_ratio:
+        image_url = seed_post_images.pick_topic(content, app_content_type, post_id)
         if image_url:
             media_id = str(uuid.uuid4())
             now = now_iso()
@@ -16923,6 +16941,10 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT u.id FROM content_pack_users cpu JOIN users u ON u.id = cpu.user_id "
                 "WHERE u.deleted_at IS NULL"
             ).fetchall()]
+        try:
+            image_ratio = max(0.0, min(1.0, float(_site_settings(conn).get("seed_post_image_ratio") or 0.72)))
+        except (TypeError, ValueError):
+            image_ratio = 0.72
         for it in items:
             author_id = (secrets.choice(persona_ids) if persona_ids
                          else ensure_seed_bot_account(conn, it["author_type"], language))
@@ -16930,7 +16952,7 @@ class Handler(BaseHTTPRequestHandler):
                 conn, author_id=author_id, author_type=it["author_type"], content=it["content"],
                 app_content_type=it["app_content_type"], country=country, province=province, city=city,
                 region_code=region_code, language=language, tags=it.get("tags") or [],
-                batch_id=batch_id, status=status,
+                batch_id=batch_id, status=status, image_ratio=image_ratio,
             )
         log_seed_action(
             conn, admin_id=admin["id"], action="generate", batch_id=batch_id, country=country,
@@ -17209,7 +17231,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_admin_engagement_status(self, conn: sqlite3.Connection) -> None:
         self.require_admin(conn)
         s = _site_settings(conn)
-        settings = {k: s.get(k) for k in sorted(SITE_SETTING_KEYS) if k.startswith("engagement_sim_")}
+        keys = [k for k in sorted(SITE_SETTING_KEYS) if k.startswith("engagement_sim_")] + ["seed_post_image_ratio"]
+        settings = {k: s.get(k) for k in keys}
         _ensure_content_pack_users_table(conn)
         q = lambda sql: int(conn.execute(sql).fetchone()[0])
         stats = {
@@ -31691,6 +31714,36 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 ERR_LOG.warning("discover hot degraded error=%s", exc)
                 rows = []
+            # Fallback: an empty local board (e.g. a prefecture with no content yet)
+            # should show the country-wide 热榜 rather than nothing.
+            if not rows and scope != "national" and country:
+                try:
+                    rows = list(conn.execute(
+                        f"""
+                        SELECT t.tag AS tag,
+                               COUNT(DISTINCT p.id) AS related,
+                               CAST(SUM({heat_sql}) AS INTEGER) AS heat,
+                               SUM((SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.deleted_at IS NULL)) AS comments,
+                               SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END) AS recent_new
+                          FROM post_tags t
+                          JOIN posts p ON p.id = t.post_id
+                         WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
+                           AND (p.created_at >= ?
+                                OR EXISTS (SELECT 1 FROM comments c2
+                                            WHERE c2.post_id = p.id
+                                              AND c2.deleted_at IS NULL
+                                              AND c2.created_at >= ?))
+                           AND p.country = ?
+                         GROUP BY t.tag
+                         ORDER BY heat DESC
+                         LIMIT 20
+                        """,
+                        [half, cutoff, cutoff, country],
+                    ))
+                    if rows:
+                        scope = "national"
+                except Exception:
+                    pass
             scope_label = {"city": "本市", "metro": "都市圈", "prefecture": "都道府县", "national": "全国"}.get(scope, "本地")
             window_label = {"2h": "2 小时内", "24h": "24 小时内", "3d": "3 天内", "7d": "7 天内"}[window]
             items = []

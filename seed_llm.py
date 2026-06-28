@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import urllib.error
 import urllib.request
 from typing import Any
@@ -160,6 +161,30 @@ _TYPE_BRIEF: dict[str, str] = {
 
 _LANG_NAME = {"zh": "简体中文", "en": "English", "ja": "自然な日本語"}
 
+# Distinct spotlight (精选攻略) themes across 衣/食/住/行/玩乐 + 考学/就职, so a batch
+# never repeats the same "周末怎么安排" template. One theme per post.
+SPOTLIGHT_THEMES: tuple[str, ...] = (
+    # 食
+    "便利店必买清单", "业务超市/超市省钱囤货", "深夜想吃去哪", "拉面探店地图", "居酒屋第一次怎么点",
+    "一人食友好的店", "和牛/烧肉怎么吃不踩雷", "回转寿司攻略", "好喝的咖啡店打卡", "甜品/和菓子推荐",
+    # 住
+    "第一次租房避坑全攻略", "UR 团地值不值得", "share house 真实体验", "租房初期费用清单", "退租押金怎么要回",
+    "怎么挑安静不踩雷的房子", "搬家流程与省钱",
+    # 行
+    "交通 IC 卡怎么用最划算", "JR Pass 到底值不值", "夜行巴士体验", "市内骑自行车注意事项", "机场到市区怎么走最省",
+    "末班车与深夜回家",
+    # 玩乐
+    "东京近郊一日游路线", "温泉怎么泡更舒服", "赏樱地图", "赏枫地图", "美术馆/展览推荐", "祭典与花火大会",
+    "迪士尼/环球省钱攻略", "镰仓/箱根/河口湖怎么玩",
+    # 衣 + 办事
+    "换季穿搭与买衣服", "二手店/古着淘宝", "药妆护肤必买", "第一个月必办清单", "区役所手续怎么办",
+    "国民年金与健康保险", "确定申告怎么报", "看病就医流程", "手机卡运营商对比", "银行开户怎么选",
+    # 考学
+    "语言学校怎么选", "大学院出愿流程", "EJU/留考备考", "研究计划书怎么写", "怎么联系教授拿内诺", "面接经验分享",
+    # 就职
+    "在日转职流程", "履历书/职务经历书怎么写", "面接经验与常见问题", "工作签证更新", "派遣 vs 正社员", "双语/IT 岗位怎么找",
+)
+
 
 def _plan(content_type: str, count: int) -> dict[str, int]:
     if content_type in ("mixed", "all", ""):
@@ -169,7 +194,8 @@ def _plan(content_type: str, count: int) -> dict[str, int]:
     return {}
 
 
-def _build_prompt(*, region_code: str, language: str, tone: str, plan: dict[str, int]) -> tuple[str, str]:
+def _build_prompt(*, region_code: str, language: str, tone: str, plan: dict[str, int],
+                  themes: list[str] | None = None) -> tuple[str, str]:
     lang = language if language in seedlib.SUPPORTED_LANGUAGES else "zh"
     city_name = seedlib._city_name(region_code, lang) or region_code
     places = seedlib._places(region_code, lang)
@@ -202,8 +228,13 @@ def _build_prompt(*, region_code: str, language: str, tone: str, plan: dict[str,
         "- 正文用「1️⃣ 2️⃣ 3️⃣」或短换行分点，每点给**具体可执行**的信息：具体地名/车站/店类型/价格(日元)/时间/步骤/注意事项，最好有数字。\n"
         "- 适当加个人取舍和真实细节（「我一般」「亲测」「踩过坑」「排了40分钟值」），可有一两句吐槽。\n"
         "- 结尾自然收（「有问题评论问我」「先码后看」之类），不要总结升华、不要客套。\n"
-        "- 主题示例：在日第一个月必办清单 / 东京周末去哪玩 / 关西三日游路线 / 赏樱赏枫温泉地图 / 便利店&药妆必买 / 租房找工避坑 / 省钱技巧合集 / 看病就医流程。\n"
-        "- 务必像小红书里真人写的高赞干货帖，绝不能像 AI 罗列或官方说明书。\n"
+        + (
+            "- 这一批每条分别写下面这些**互不相同**的主题（一条对应一个，绝不重复、绝不都写「周末怎么安排」）："
+            + "；".join(themes) + "。\n"
+            if themes else
+            "- 每条主题必须完全不同（衣/食/住/行/玩乐/考学/就职都可以），绝不重复套同一个模板。\n"
+        )
+        + "- 务必像小红书里真人写的高赞干货帖，绝不能像 AI 罗列或官方说明书。\n"
         if "spotlight" in plan else ""
     )
     user = (
@@ -318,9 +349,9 @@ def _split_plan(plan: dict[str, int], chunk_items: int) -> list[dict[str, int]]:
 
 def _generate_chunk(chosen: str, region_code: str, lang: str, tone: str,
                     sub_plan: dict[str, int], model: str | None = None,
-                    max_tokens: int | None = None) -> list[Any]:
+                    max_tokens: int | None = None, themes: list[str] | None = None) -> list[Any]:
     """One provider call for a small sub-plan. Returns raw item dicts (or [])."""
-    system, user = _build_prompt(region_code=region_code, language=lang, tone=tone, plan=sub_plan)
+    system, user = _build_prompt(region_code=region_code, language=lang, tone=tone, plan=sub_plan, themes=themes)
     try:
         raw = (_call_deepseek(system, user, model, max_tokens) if chosen == "deepseek"
                else _call_claude(system, user, max_tokens))
@@ -370,14 +401,27 @@ def generate(
     chunk_items = 3 if spotlight else SEED_LLM_CHUNK_ITEMS
     chunk_tokens = 3600 if spotlight else SEED_LLM_MAX_TOKENS
     chunks = _split_plan(plan, chunk_items)
+    # For spotlight, hand each chunk a distinct set of themes so the batch covers
+    # 衣/食/住/行/玩乐/考学/就职 instead of repeating one template.
+    theme_by_chunk: list[list[str] | None] = [None] * len(chunks)
+    if spotlight:
+        rng = secrets.SystemRandom()
+        pool = list(SPOTLIGHT_THEMES)
+        rng.shuffle(pool)
+        idx = 0
+        for ci, ch in enumerate(chunks):
+            k = sum(ch.values())
+            theme_by_chunk[ci] = [pool[(idx + j) % len(pool)] for j in range(k)]
+            idx += k
     raw_items: list[Any] = []
     if len(chunks) <= 1:
-        raw_items = _generate_chunk(chosen, region_code, lang, tone, plan, model_id, chunk_tokens)
+        raw_items = _generate_chunk(chosen, region_code, lang, tone, plan, model_id, chunk_tokens, theme_by_chunk[0])
     else:
         try:
+            work = list(zip(chunks, theme_by_chunk))
             with ThreadPoolExecutor(max_workers=min(SEED_LLM_MAX_WORKERS, len(chunks))) as ex:
                 for res in ex.map(
-                    lambda c: _generate_chunk(chosen, region_code, lang, tone, c, model_id, chunk_tokens), chunks
+                    lambda cw: _generate_chunk(chosen, region_code, lang, tone, cw[0], model_id, chunk_tokens, cw[1]), work
                 ):
                     raw_items.extend(res or [])
         except Exception:
