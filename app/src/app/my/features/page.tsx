@@ -9,17 +9,23 @@ import {
   Bookmark,
   BriefcaseBusiness,
   CalendarClock,
+  CalendarDays,
   ChevronRight,
   ClipboardList,
   Coins,
   CreditCard,
+  FileText,
+  IdCard,
   LayoutDashboard,
   ListChecks,
   MessageSquare,
+  Receipt,
+  Route,
   Settings,
   Star,
   Store,
   UserRoundCog,
+  Wallet,
   type LucideIcon,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -44,6 +50,19 @@ const WORK_ITEMS = [
   { href: "/my/orders", title: "我的订单", subtitle: "会员、Guide 和服务订单", icon: CreditCard, tone: "text-pink-600 bg-pink-50", badge: "" },
   { href: "/membership", title: "Machi 会员", subtitle: "认证标识与高信任发布权限", icon: BadgeCheck, tone: "text-blue-700 bg-blue-50", badge: "membership" },
   { href: "/settings", title: "账号设置", subtitle: "资料、地区、隐私和安全", icon: Settings, tone: "text-slate-700 bg-slate-100", badge: "" },
+];
+
+// 个人生活管理工具。原先散落在 Guide(现 Machi AI)首页,现与 iOS 的「我的工作台」
+// 一致地收到这里;底层路由仍在 /guide/* 下,只是入口改到工作台。
+const LIFE_ADMIN_ITEMS = [
+  { href: "/guide/tasks", title: "今日待办", subtitle: "把今天要做的事一处管理", icon: ListChecks, tone: "text-blue-600 bg-blue-50" },
+  { href: "/guide/calendar", title: "日历", subtitle: "截止日与日程一眼看全", icon: CalendarDays, tone: "text-cyan-600 bg-cyan-50" },
+  { href: "/guide/finance", title: "收支记账", subtitle: "记一笔、看结余、设预算", icon: Wallet, tone: "text-emerald-600 bg-emerald-50" },
+  { href: "/guide/life", title: "生活缴费", subtitle: "房租、水电、手机费提醒", icon: Receipt, tone: "text-orange-600 bg-orange-50" },
+  { href: "/guide/applications", title: "升学 / 签证申请", subtitle: "大学、语言学校、签证、JLPT", icon: ClipboardList, tone: "text-violet-600 bg-violet-50" },
+  { href: "/guide/contracts", title: "合同管理", subtitle: "续约与解约窗口提醒", icon: FileText, tone: "text-rose-600 bg-rose-50" },
+  { href: "/guide/documents", title: "证件到期", subtitle: "在留卡、护照、My Number", icon: IdCard, tone: "text-teal-600 bg-teal-50" },
+  { href: "/guide/goals", title: "目标 / 路径", subtitle: "就职、升学、JLPT 等模板", icon: Route, tone: "text-indigo-600 bg-indigo-50" },
 ];
 
 export default function MyFeaturesPage() {
@@ -151,6 +170,30 @@ export default function MyFeaturesPage() {
           </section>
         ) : null}
 
+        <div>
+          <h2 className="mb-2 px-1 text-sm font-black text-slate-500">生活管理 · 个人事务</h2>
+          <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+            {LIFE_ADMIN_ITEMS.map((item) => {
+              const Icon = item.icon;
+              return (
+                <Link key={item.href} href={item.href} className="group rounded-[22px] border border-slate-200/70 bg-white p-4 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-emerald-200">
+                  <div className="flex items-center gap-3">
+                    <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${item.tone}`}>
+                      <Icon className="h-5 w-5" />
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-black text-slate-950">{item.title}</p>
+                      <p className="mt-1 truncate text-xs font-semibold text-slate-500">{item.subtitle}</p>
+                    </div>
+                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-300 transition group-hover:text-emerald-500" />
+                  </div>
+                </Link>
+              );
+            })}
+          </section>
+        </div>
+
+        <h2 className="px-1 text-sm font-black text-slate-500">发布、账户与服务</h2>
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {WORK_ITEMS.map((item) => {
             const Icon = item.icon;

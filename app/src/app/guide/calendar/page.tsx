@@ -29,7 +29,7 @@ export default function GuideCalendarPage() {
 
   if (!user) {
     return (
-      <GuideShell back={{ href: "/guide", label: "今日" }}>
+      <GuideShell back={{ href: "/my/features", label: "我的工作台" }}>
         <div className="px-4 py-8 sm:px-7">
           <section className="kx-guide-hero p-6">
             <CalendarDays className="h-8 w-8 text-kx-accent" />
@@ -66,7 +66,7 @@ function CalendarBody({ todos, events, loading, error, onRetry }: { todos: Guide
   const visibleTodos = useMemo(() => filterCalendarTodos(baseTodos, scope), [baseTodos, scope]);
   const visibleEvents = useMemo(() => filterCalendarEvents(events, scope), [events, scope]);
   return (
-    <GuideShell back={{ href: "/guide", label: "今日" }}>
+    <GuideShell back={{ href: "/my/features", label: "我的工作台" }}>
       <div className="space-y-7 px-4 py-7 sm:px-7">
         <header className="kx-guide-hero p-6">
           <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Guide Calendar</p>

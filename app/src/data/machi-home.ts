@@ -167,6 +167,21 @@ export const marketingCopy = {
         ["资料与服务", "数字资料、模板、清单、翻译、接机、手续协助和申请辅导"],
       ],
     },
+    machiAiSection: {
+      label: "Machi AI · 智能助手",
+      title: "在日本遇到问题，先问 Machi AI。",
+      body: "Machi AI 是 Machi 的原创智能助手。用中文、日文或英文提问，它结合 Machi 的学校库、公司库与指南，把在留手续、租房、升学、就职、日语和日常生活的问题，一步步说清楚。",
+      cta: "开始和 Machi AI 对话",
+      bullets: [
+        "懂在日生活：在留、役所、租房、打工、保险，一问就答",
+        "答案有来源：关联 Machi 指南、学校库与公司库",
+        "三语都行：中文 · 日本語 · English，随时切换",
+      ],
+      chips: ["刚来日本第一周要办什么？", "租房初期费用怎么看？", "大学院申请第一步做什么？", "新卒就职的时间线？"],
+      sampleQuestion: "在留卡快到期了，我该怎么续？",
+      sampleAnswer: "到期前 3 个月就可以办。带上在留卡、护照、证件照和「在留期間更新許可申請書」到所在地入管局提交；学生还需在学证明，工作者需在职证明。建议尽早预约、避开月末高峰。",
+      sourceLabel: "参考自 Machi 指南",
+    },
     brandStory: {
       label: "品牌故事",
       title: "城市的样子，藏在每个人认真生活的细节里。",
@@ -514,6 +529,21 @@ export const marketingCopy = {
         ["Materials & Services", "Digital resources, templates, checklists, translation, airport pickup, procedure support and application coaching"],
       ],
     },
+    machiAiSection: {
+      label: "Machi AI · Assistant",
+      title: "Stuck in Japan? Ask Machi AI first.",
+      body: "Machi AI is Machi's original assistant. Ask in Chinese, Japanese, or English — it draws on Machi's school library, company library, and guides to walk you through residence procedures, housing, study, work, Japanese, and daily life, step by step.",
+      cta: "Start chatting with Machi AI",
+      bullets: [
+        "Knows life in Japan: residence, city hall, housing, work, insurance",
+        "Answers with sources: linked to Machi guides, schools & companies",
+        "Trilingual: 中文 · 日本語 · English, switch anytime",
+      ],
+      chips: ["What to do my first week in Japan?", "How do rental upfront costs work?", "First step for grad school?", "New-grad job-hunting timeline?"],
+      sampleQuestion: "My residence card is expiring — how do I renew it?",
+      sampleAnswer: "You can apply up to 3 months before expiry. Bring your residence card, passport, a photo, and the renewal application to your regional immigration office; students also need proof of enrollment, workers proof of employment. Book early and avoid the month-end rush.",
+      sourceLabel: "From Machi guides",
+    },
     brandStory: {
       label: "Brand story",
       title: "A city comes into focus through the details of everyday life.",
@@ -766,6 +796,21 @@ export const marketingCopy = {
         ["資料とサービス", "デジタル資料、テンプレート、チェックリスト、翻訳、空港送迎、手続き同行、申請サポート"],
       ],
     },
+    machiAiSection: {
+      label: "Machi AI · アシスタント",
+      title: "日本で困ったら、まず Machi AI。",
+      body: "Machi AI は Machi のオリジナルアシスタント。日本語・中国語・英語で質問でき、Machi の学校データベース・企業データベース・ガイドをもとに、在留手続き、住まい、進学、就職、日本語、生活の疑問を一つずつ整理して答えます。",
+      cta: "Machi AI と話してみる",
+      bullets: [
+        "日本生活に強い：在留・役所・住まい・アルバイト・保険",
+        "出典つきの回答：Machi のガイド・学校・企業データと連携",
+        "三言語対応：日本語 · 中文 · English をいつでも切替",
+      ],
+      chips: ["来日して最初の一週間ですべきことは？", "賃貸の初期費用の見方は？", "大学院出願の第一歩は？", "新卒就活のスケジュールは？"],
+      sampleQuestion: "在留カードの期限が近いです。更新はどうすれば？",
+      sampleAnswer: "満了の3か月前から申請できます。在留カード、パスポート、証明写真、「在留期間更新許可申請書」を持って地方入管へ。学生は在学証明、就労者は在職証明も必要です。月末の混雑を避け、早めの予約がおすすめです。",
+      sourceLabel: "Machi ガイドより",
+    },
     brandStory: {
       label: "ブランドストーリー",
       title: "街の輪郭は、そこに暮らす人の日常から見えてくる。",
@@ -903,6 +948,7 @@ export const marketingCopy = {
   appMockup: { title: string; region: string; search: string; hotTitle: string; hotSubtitle: string; quickEntries: string[]; hotItems: string[]; cards: Array<{ type: string; title: string; place: string; heat: string }> };
   brandIntro: { label: string; title: string; body: string; pillars: Array<[string, string]> };
   guideSection: { label: string; title: string; body: string; cta: string; expansion: string; cards: Array<[string, string]> };
+  machiAiSection: { label: string; title: string; body: string; cta: string; bullets: string[]; chips: string[]; sampleQuestion: string; sampleAnswer: string; sourceLabel: string };
   brandStory: { label: string; title: string; lead: string; cityLines: string[]; paragraphs: string[]; highlights: Array<[string, string]>; echoLabel: string; echoNodes: string[]; closing: string };
   announcementsSection: { label: string; title: string; body: string; manageHint: string; manageLabel: string; composerTitle: string; titlePlaceholder: string; bodyPlaceholder: string; publish: string; empty: string; saved: string; tabs: string[]; defaultItems: Announcement[] };
   citySection: {

@@ -38,13 +38,19 @@ export default function GuideFinancePage() {
     const saved = typeof window !== "undefined" ? window.localStorage.getItem(CURRENCY_KEY) : null;
     if (saved) setCurrency(saved);
   }, []);
-  const symbol = CURRENCIES.find((c) => c.code === currency)?.symbol ?? "¥";
-  const money = (n: number) => symbol + (n || 0).toLocaleString("en-US");
+  const symbolFor = (code: string) => CURRENCIES.find((c) => c.code === code)?.symbol ?? code;
 
   const cats = useQuery({ queryKey: ["guide", "finance-cats"], queryFn: () => guide.financeCategories(), enabled: Boolean(user), staleTime: 600_000 });
   const summary = useQuery({ queryKey: ["guide", "finance-summary", user?.id || "guest", month], queryFn: () => guide.financeSummary(month), enabled: Boolean(user) });
   const txns = useQuery({ queryKey: ["guide", "transactions", user?.id || "guest", month], queryFn: () => guide.transactions({ month, limit: 200 }), enabled: Boolean(user) });
   const trend = useQuery({ queryKey: ["guide", "finance-trend", user?.id || "guest", month], queryFn: () => guide.financeTrend(6, month), enabled: Boolean(user) });
+
+  // Totals are summed server-side in the ledger's base currency — label them with
+  // that (summary.currency), not the local entry-currency picker, so the displayed
+  // symbol always matches the numbers. Each transaction row uses its own stored
+  // currency below, so a row saved in another currency is never mislabeled.
+  const baseSymbol = symbolFor(summary.data?.currency || currency);
+  const money = (n: number) => baseSymbol + (n || 0).toLocaleString("en-US");
 
   const invalidate = () => {
     qc.invalidateQueries({ queryKey: ["guide", "finance-summary"] });
@@ -298,7 +304,7 @@ export default function GuideFinancePage() {
                         <span className="block truncate text-sm font-bold text-kx-text">{catLabel[t.category] || t.category}{t.note ? <span className="font-normal text-kx-muted"> · {t.note}</span> : null}{t.source !== "manual" ? <span className="ml-1 rounded bg-kx-accentSoft px-1.5 py-0.5 text-[10px] font-bold text-kx-accent">固定</span> : null}</span>
                         <span className="text-[11px] text-kx-muted">{t.occurredOn}</span>
                       </span>
-                      <span className={"shrink-0 text-sm font-black " + (t.kind === "income" ? "text-kx-accent" : "text-kx-text")}>{t.kind === "income" ? "+" : "-"}{money(t.amount)}</span>
+                      <span className={"shrink-0 text-sm font-black " + (t.kind === "income" ? "text-kx-accent" : "text-kx-text")}>{t.kind === "income" ? "+" : "-"}{symbolFor(t.currency) + (t.amount || 0).toLocaleString("en-US")}</span>
                       <button type="button" onClick={() => remove.mutate(t.id)} className="shrink-0 text-kx-muted opacity-0 transition hover:text-rose-500 group-hover:opacity-100" aria-label="删除">
                         <Trash2 className="h-4 w-4" />
                       </button>

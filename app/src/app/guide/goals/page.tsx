@@ -54,7 +54,7 @@ export default function GuideGoalsPage() {
   });
 
   return (
-    <GuideShell back={{ href: "/guide", label: "今日" }}>
+    <GuideShell back={{ href: "/my/features", label: "我的工作台" }}>
       <div className="space-y-8 px-4 py-7 sm:px-7">
         <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div>

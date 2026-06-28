@@ -20,7 +20,9 @@
   --kx-stroke: 172 181 195;
   --kx-text: 18 20 24;
   --kx-subtle: 79 86 96;
-  --kx-muted: 138 145 158;
+  /* Darkened from 138 145 158 (#8A919E, 3.17:1 — failed WCAG AA) to #6B7280
+     (≈4.7:1) so all secondary text incl. the Machi AI disclaimer clears AA. */
+  --kx-muted: 107 114 126;
   --kx-accent: 20 112 103;
   --kx-accent-soft: 229 242 237;
   --kx-heat: 204 112 37;

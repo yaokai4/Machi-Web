@@ -12,6 +12,7 @@ export type ShellVariant =
   | "detail"
   | "settings"
   | "guide"
+  | "machiAI"
   | "wallet"
   | "messages";
 
@@ -21,6 +22,7 @@ export function shellVariantForPath(pathname?: string | null): ShellVariant {
   if (p.startsWith("/settings")) return "settings";
   if (p.startsWith("/wallet")) return "wallet";
   if (p.startsWith("/membership")) return "wallet";
+  if (p.startsWith("/guide/ai")) return "machiAI";
   if (p.startsWith("/guide")) return "guide";
   if (/\/(marketplace|rentals|jobs|services|deals|discounts)\/[^/]+$/.test(p)) return "detail";
   if (p.startsWith("/listings/") || p.startsWith("/post/")) return "detail";
@@ -203,6 +205,39 @@ function CenterSkeleton({ variant }: { variant: ShellVariant }) {
             </div>
           ))}
         </div>
+      </div>
+    );
+  }
+  if (variant === "machiAI") {
+    // Chat-shaped: back link + sticky header (avatar/title/controls) + a couple
+    // of message bubbles + bottom composer — mirrors the real /guide/ai layout
+    // so the load reads as intentional instead of flashing the guide grid.
+    return (
+      <div className="flex h-full flex-col p-3 md:p-4">
+        <Skeleton className="mb-3 h-5 w-24 rounded-full" />
+        <div className="flex items-center gap-3 border-b border-kx-stroke/30 pb-3">
+          <Skeleton className="h-10 w-10 shrink-0 rounded-[28%]" />
+          <div className="flex-1 space-y-2">
+            <Skeleton className="h-4 w-28 rounded-full" />
+            <Skeleton className="h-3 w-40 rounded-full" />
+          </div>
+          <Skeleton className="hidden h-9 w-20 rounded-full sm:block" />
+          <Skeleton className="h-9 w-9 rounded-full" />
+        </div>
+        <div className="flex-1 space-y-5 py-5">
+          <div className="flex items-start gap-2">
+            <Skeleton className="h-8 w-8 shrink-0 rounded-[28%]" />
+            <Skeleton className="h-20 w-3/5 rounded-[1.25rem]" />
+          </div>
+          <div className="flex justify-end">
+            <Skeleton className="h-12 w-2/5 rounded-[1.25rem]" />
+          </div>
+          <div className="flex items-start gap-2">
+            <Skeleton className="h-8 w-8 shrink-0 rounded-[28%]" />
+            <Skeleton className="h-28 w-3/4 rounded-[1.25rem]" />
+          </div>
+        </div>
+        <Skeleton className="h-12 w-full rounded-full" />
       </div>
     );
   }

@@ -23,7 +23,6 @@ import {
   Sun,
   Moon,
   Wallet,
-  GraduationCap,
   UserPlus,
   User as UserIcon,
   Hash,
@@ -39,6 +38,7 @@ import { Toaster } from "@/components/design/Toaster";
 import { Composer } from "@/components/compose/Composer";
 import { AuthRequiredDialog, authRedirectHref } from "@/components/auth/AuthRequiredDialog";
 import { BrandMark, BrandText } from "@/components/marketing/BrandText";
+import { MachiAIGlyph } from "@/components/brand/MachiAIMark";
 import { useRealtime } from "@/lib/realtime";
 import { useGlobalShortcuts } from "@/lib/keyboard";
 import { ErrorBoundary } from "@/components/design/ErrorBoundary";
@@ -59,7 +59,7 @@ interface AppShellProps {
 const NAV_ITEMS = [
   { href: "/home", labelKey: "nav_home" as I18nKey, icon: Home, key: "home", badgeKey: undefined as undefined | "notifications" | "messages" },
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
-  { href: "/guide", labelKey: "nav_guide" as I18nKey, icon: GraduationCap, key: "guide", badgeKey: undefined },
+  { href: "/guide", labelKey: "nav_machi_ai" as I18nKey, icon: MachiAIGlyph, key: "guide", badgeKey: undefined },
   { href: "/wallet", labelKey: "nav_wallet" as I18nKey, icon: Wallet, key: "wallet", badgeKey: undefined },
   { href: "/my/features", labelKey: "nav_workbench" as I18nKey, icon: LayoutDashboard, key: "features", badgeKey: undefined },
   { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
@@ -533,7 +533,7 @@ function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPa
   const items = [
     { kind: "link" as const, href: "/home", label: t("nav_home"), icon: Home, badge: 0 },
     { kind: "link" as const, href: "/explore", label: t("nav_explore"), icon: Compass, badge: 0 },
-    { kind: "link" as const, href: "/guide", label: t("nav_guide"), icon: GraduationCap, badge: 0 },
+    { kind: "link" as const, href: "/guide", label: t("nav_machi_ai"), icon: MachiAIGlyph, badge: 0 },
     { kind: "messages" as const, href: "/messages", label: t("nav_messages"), icon: Mail, badge: unreadMsg },
     { kind: "mine" as const, label: t("nav_profile"), icon: user ? UserIcon : MoreHorizontal, badge: unreadNotif },
   ];

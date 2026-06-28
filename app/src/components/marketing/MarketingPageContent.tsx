@@ -12,6 +12,7 @@ import { GuideSection } from "./GuideSection";
 import { Header } from "./Header";
 import { HeroSection } from "./HeroSection";
 import { LanguageSection } from "./LanguageSection";
+import { MachiAISection } from "./MachiAISection";
 import { MarketingMotion } from "./MarketingMotion";
 import { SafetySection } from "./SafetySection";
 import { SocialConnectionSection } from "./SocialConnectionSection";
@@ -30,6 +31,7 @@ export function MarketingPageContent() {
       <FounderSection />
       <FeatureChannelGrid />
       <GuideSection />
+      <MachiAISection />
       <SocialConnectionSection />
       <SafetySection />
       <BusinessSection />

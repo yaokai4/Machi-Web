@@ -15,11 +15,11 @@ import {
   Moon,
   Plus,
   Send,
-  Sparkles,
   ThumbsDown,
   ThumbsUp,
   Trash2,
 } from "lucide-react";
+import { MachiAIMark, MachiAIGlyph } from "@/components/brand/MachiAIMark";
 import { guide, type GuideAIConversation, type GuideAISource, type GuideAISuggestion } from "@/lib/guide";
 import { APIError } from "@/lib/api";
 import { GuideShell } from "@/components/guide/GuideKit";
@@ -147,6 +147,13 @@ export default function GuideAIChatClient() {
   const { locale } = useI18n();
   const language = appLocaleToGuideLanguage(locale);
   const user = useSession((s) => s.user);
+  const status = useSession((s) => s.status);
+  // Only a *confirmed* guest sees the sign-in wall. While the session is still
+  // loading or the probe is "degraded" (transient 5xx/429/network — the user may
+  // well be logged in), keep the composer available; the server still enforces
+  // auth via require_user. This stops a real member from being walled out on a
+  // flaky probe.
+  const isGuest = status === "unauthed";
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
 
@@ -202,6 +209,22 @@ export default function GuideAIChatClient() {
     };
   }, [user, language, refreshConversations]);
 
+  // Prefill from a deep link (?q=…) so the Guide-home hero / suggestion chips
+  // can hand a question straight into the composer (focused, not auto-sent — the
+  // user taps send, so guests aren't surprised and quota isn't spent silently).
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search).get("q");
+    if (q && q.trim()) {
+      setInput(q.trim());
+      requestAnimationFrame(() => {
+        textareaRef.current?.focus();
+        autoGrow();
+      });
+    }
+    // run once on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   // Auto-scroll to the latest message.
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
@@ -218,7 +241,7 @@ export default function GuideAIChatClient() {
     async (text: string) => {
       const trimmed = text.trim();
       if (!trimmed || sending) return;
-      if (!user) {
+      if (isGuest) {
         openAuthPrompt("generic");
         return;
       }
@@ -269,7 +292,7 @@ export default function GuideAIChatClient() {
         setSending(false);
       }
     },
-    [conversationId, language, locale, membershipActive, openAuthPrompt, refreshConversations, sending, user],
+    [conversationId, language, locale, membershipActive, openAuthPrompt, refreshConversations, sending, isGuest],
   );
 
   const onSubmit = useCallback(() => {
@@ -392,7 +415,7 @@ export default function GuideAIChatClient() {
   const canSend = input.trim().length > 0 && !sending && !quotaReached;
 
   return (
-    <GuideShell back={{ href: "/guide", label: pick(locale, "指南", "ガイド", "Guide") }}>
+    <GuideShell back={{ href: "/guide", label: "Machi AI" }}>
       <div className="mx-auto flex min-h-[78dvh] w-full max-w-3xl flex-col px-3 sm:px-5">
         {/* Header */}
         <div className="sticky top-0 z-20 -mx-3 flex items-center gap-3 border-b border-kx-stroke/40 bg-kx-card/80 px-3 py-3 backdrop-blur-md sm:-mx-5 sm:px-5">
@@ -443,7 +466,7 @@ export default function GuideAIChatClient() {
 
         {/* Messages */}
         <div className="flex-1 space-y-5 py-5">
-          {!user ? (
+          {isGuest ? (
             <SignInPanel
               locale={locale}
               onSignIn={() => openAuthPrompt("generic")}
@@ -483,7 +506,7 @@ export default function GuideAIChatClient() {
         </div>
 
         {/* Composer */}
-        {user ? (
+        {!isGuest ? (
           <div className="sticky bottom-0 z-20 -mx-3 border-t border-kx-stroke/40 bg-kx-card/85 px-3 py-3 backdrop-blur-md sm:-mx-5 sm:px-5">
             {errorMessage ? (
               <div className="mb-2 flex items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-700 dark:text-amber-300">
@@ -554,11 +577,11 @@ export default function GuideAIChatClient() {
 function Avatar({ size = 38 }: { size?: number }) {
   return (
     <span
-      className="grid shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-kx-accent to-kx-accent/80 text-white shadow-[0_8px_20px_-10px_rgba(20,112,103,0.9)]"
+      className="grid shrink-0 place-items-center rounded-[28%] shadow-[0_8px_20px_-10px_rgba(20,112,103,0.9)]"
       style={{ width: size, height: size }}
       aria-hidden
     >
-      <Sparkles style={{ width: size * 0.5, height: size * 0.5 }} />
+      <MachiAIMark className="h-full w-full" />
     </span>
   );
 }
@@ -677,8 +700,8 @@ function AssistantBubble({
 
   return (
     <div className="flex max-w-[92%] flex-col gap-2">
-      <div className="flex items-center gap-1.5 px-1 text-[11px] font-bold text-kx-muted">
-        <Sparkles className="h-3 w-3 text-kx-accent" /> Machi AI
+      <div className="flex items-center gap-1.5 px-1 text-xs font-bold text-kx-subtle">
+        <MachiAIGlyph className="h-3.5 w-3.5 text-kx-accent" /> Machi AI
       </div>
       {message.pending ? (
         <div className="w-fit rounded-[1.25rem] border border-kx-stroke/40 bg-kx-card px-4 py-3">

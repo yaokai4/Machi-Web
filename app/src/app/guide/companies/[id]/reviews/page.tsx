@@ -232,7 +232,9 @@ export default function GuideCompanyReviewsPage() {
   }, [searchParams]);
 
   const company = useQuery({
-    queryKey: ["guide", "company", country, id, language],
+    // Same element order as the company detail page so both share the warm cache
+    // (was [country, id, language] here vs [country, language, id] there).
+    queryKey: ["guide", "company", country, language, id],
     queryFn: () => guide.company(id, country, language),
     enabled: country === "jp" && id.length > 0,
     staleTime: 60_000,

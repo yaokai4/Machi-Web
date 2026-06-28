@@ -7,19 +7,19 @@ export const dynamic = "force-dynamic";
 
 const META = {
   zh: {
-    title: "Machi Guide｜今日待办、日历与日本生活管理",
+    title: "Machi AI｜日本生活・升学・就职 智能助手与指南",
     description:
-      "Machi Guide 是面向在日用户的个人行动中心：统一管理 Todo、日历、申请、ES、面试、JLPT、房租、水电、合同、证件到期和资料服务。",
+      "Machi AI 是 Machi 的原创智能助手：用对话解决在日本生活、升学、就职的问题，并查阅日本学校库、外国人就职公司库与指南文章。",
   },
   en: {
-    title: "Machi Guide | Today, tasks, calendar, and Japan life management",
+    title: "Machi AI | Your Japan life, study & work assistant",
     description:
-      "Machi Guide is a personal action center for Japan life: todos, calendar, applications, interviews, JLPT, rent, utilities, contracts, document expiry, resources, and services.",
+      "Machi AI is Machi's original assistant — ask anything about living, studying, and working in Japan, and browse the Japan school library, company library, and guides.",
   },
   ja: {
-    title: "Machi Guide｜今日のTodo、カレンダー、日本生活管理",
+    title: "Machi AI｜日本の生活・進学・就職アシスタント",
     description:
-      "Machi Guide は日本生活のための行動センターです。Todo、カレンダー、出願、ES、面接、JLPT、家賃、公共料金、契約、証件期限、資料とサービスを管理できます。",
+      "Machi AI は Machi のオリジナルアシスタント。日本での生活・進学・就職を対話で解決し、学校データベース・企業データベース・ガイド記事も閲覧できます。",
   },
 };
 
@@ -38,7 +38,7 @@ export async function generateMetadata(): Promise<Metadata> {
       description: meta.description,
       url: "https://www.machicity.com/guide",
       siteName: "Machi",
-      images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi Guide" }],
+      images: [{ url: "/og-image.png", width: 1200, height: 630, alt: "Machi AI" }],
       locale: locale === "zh" ? "zh_CN" : locale === "ja" ? "ja_JP" : "en_US",
       type: "website",
     },
@@ -59,7 +59,7 @@ export default async function GuideHomePage() {
   const structuredData = {
     "@context": "https://schema.org",
     "@type": "SoftwareApplication",
-    name: "Machi Guide",
+    name: "Machi AI",
     applicationCategory: "ProductivityApplication",
     operatingSystem: "Web, iOS",
     url: "https://www.machicity.com/guide",

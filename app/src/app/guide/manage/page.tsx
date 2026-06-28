@@ -86,7 +86,7 @@ export default function GuideManagePage() {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   return (
-    <GuideShell back={{ href: "/guide", label: "今日" }}>
+    <GuideShell back={{ href: "/my/features", label: "我的工作台" }}>
       <main className="space-y-7 px-4 py-7 sm:px-7">
         <header className="rounded-[2rem] border border-kx-stroke/40 bg-kx-card/80 p-6 sm:p-7">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">

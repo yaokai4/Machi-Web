@@ -26,7 +26,7 @@ export default function MyLibraryPage() {
   const [tab, setTab] = useState<Tab>("materials");
 
   const q = useQuery({
-    queryKey: ["guide", "my-library", user?.id || "anon"],
+    queryKey: ["guide", "my-library", user?.id || "anon", appLocaleToGuideLanguage(locale)],
     queryFn: () => guide.myLibrary(appLocaleToGuideLanguage(locale)),
     enabled: !!user,
     staleTime: 15_000,

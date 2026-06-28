@@ -38,7 +38,7 @@ export default function GuidePlanPage() {
 
   if (!user) {
     return (
-      <GuideShell back={{ href: "/guide", label: "今日" }}>
+      <GuideShell back={{ href: "/my/features", label: "我的工作台" }}>
         <div className="px-4 py-8 sm:px-7">
           <section className="kx-guide-hero p-6">
             <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Tasks</p>
@@ -52,7 +52,7 @@ export default function GuidePlanPage() {
   }
 
   return (
-    <GuideShell back={{ href: "/guide", label: "今日" }}>
+    <GuideShell back={{ href: "/my/features", label: "我的工作台" }}>
       <div className="space-y-8 px-4 py-7 sm:px-7">
         <header>
           <p className="text-xs font-black uppercase tracking-[0.12em] text-[rgb(var(--kx-living-warm))]">Tasks</p>
