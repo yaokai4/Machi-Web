@@ -2047,6 +2047,10 @@ export type SeedBatchItem = {
   language: string;
   author_type: string;
   created_at: string;
+  authorName?: string;
+  authorHandle?: string;
+  authorAvatar?: string;
+  authorOfficial?: number;
 };
 
 export type SeedBatch = {

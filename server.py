@@ -9379,10 +9379,23 @@ def clear_seed_users(conn: sqlite3.Connection) -> int:
     if not fb:
         fb = conn.execute("SELECT id FROM users ORDER BY created_at ASC LIMIT 1").fetchone()
     fallback = fb["id"] if fb else None
+    # Official seed-bot to inherit any persona-authored posts (so deleting the
+    # persona never leaves a dangling author_id / broken post).
+    post_fallback = ensure_seed_bot_account(conn, "official_bot", "zh")
+    now = now_iso()
     cleared = 0
     for uid in ids:
         if fallback:
             conn.execute("UPDATE city_listings SET seller_user_id = ? WHERE seller_user_id = ?", (fallback, uid))
+        # Retire the persona's seed posts (they were the fake-user content), then
+        # reassign any remaining posts off the persona before deleting it.
+        conn.execute(
+            "UPDATE posts SET status = 'cleared', deleted_at = ?, updated_at = ? "
+            "WHERE author_id = ? AND is_seed_content = 1 AND deleted_at IS NULL",
+            (now, now, uid),
+        )
+        conn.execute("UPDATE posts SET author_id = ?, updated_at = ? WHERE author_id = ?",
+                     (post_fallback, now, uid))
         conn.execute("DELETE FROM settings WHERE user_id = ?", (uid,))
         conn.execute("DELETE FROM users WHERE id = ?", (uid,))
         conn.execute("DELETE FROM content_pack_users WHERE user_id = ?", (uid,))
@@ -16528,8 +16541,11 @@ class Handler(BaseHTTPRequestHandler):
         out: dict[str, Any] = {k: d.get(k) for k in self._SEED_BATCH_KEYS}
         if include_items:
             items = conn.execute(
-                "SELECT id, content, content_type, status, language, generated_by, created_at "
-                "FROM posts WHERE seed_batch_id = ? ORDER BY created_at",
+                "SELECT p.id, p.content, p.content_type, p.status, p.language, p.generated_by, p.created_at, "
+                "u.display_name AS author_name, u.handle AS author_handle, u.avatar_url AS author_avatar, "
+                "COALESCE(u.is_official, 0) AS author_official "
+                "FROM posts p LEFT JOIN users u ON u.id = p.author_id "
+                "WHERE p.seed_batch_id = ? ORDER BY p.created_at",
                 (batch_id,),
             ).fetchall()
             out["items"] = [
@@ -16537,6 +16553,8 @@ class Handler(BaseHTTPRequestHandler):
                     "id": r["id"], "content": r["content"], "content_type": r["content_type"],
                     "status": r["status"], "language": r["language"],
                     "author_type": r["generated_by"], "created_at": r["created_at"],
+                    "authorName": r["author_name"] or "", "authorHandle": r["author_handle"] or "",
+                    "authorAvatar": r["author_avatar"] or "", "authorOfficial": int(r["author_official"] or 0),
                 }
                 for r in items
             ]
@@ -16611,10 +16629,25 @@ class Handler(BaseHTTPRequestHandler):
              ("published" if publish_now else "draft"), admin["id"], len(items),
              (len(items) if publish_now else 0), now, now),
         )
+        # Author the posts as imported personas so the feed looks like many real
+        # users instead of one official "城市助手" account. Prefer personas in the
+        # same region; fall back to any persona; only use the official seed-bot
+        # when no personas have been imported.
+        _ensure_content_pack_users_table(conn)
+        persona_ids = [r["id"] for r in conn.execute(
+            "SELECT u.id FROM content_pack_users cpu JOIN users u ON u.id = cpu.user_id "
+            "WHERE u.deleted_at IS NULL AND u.current_region_code = ?", (region_code,)
+        ).fetchall()]
+        if not persona_ids:
+            persona_ids = [r["id"] for r in conn.execute(
+                "SELECT u.id FROM content_pack_users cpu JOIN users u ON u.id = cpu.user_id "
+                "WHERE u.deleted_at IS NULL"
+            ).fetchall()]
         for it in items:
-            account_id = ensure_seed_bot_account(conn, it["author_type"], language)
+            author_id = (secrets.choice(persona_ids) if persona_ids
+                         else ensure_seed_bot_account(conn, it["author_type"], language))
             insert_seed_post(
-                conn, author_id=account_id, author_type=it["author_type"], content=it["content"],
+                conn, author_id=author_id, author_type=it["author_type"], content=it["content"],
                 app_content_type=it["app_content_type"], country=country, province=province, city=city,
                 region_code=region_code, language=language, tags=it.get("tags") or [],
                 batch_id=batch_id, status=status,

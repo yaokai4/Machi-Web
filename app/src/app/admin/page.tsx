@@ -1365,8 +1365,8 @@ function SeedBotPanel() {
           <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-kx-accent" />
           <p className="text-xs leading-5 text-kx-subtle">
             城市内容助手用于给新城市铺第一层城市生活底稿：问答、租房提醒、办事经验、活动线索、本地服务和日常动态。
-            内容会由官方账号（Machi 城市助手 / 编辑部）发布，并标记为 <code className="rounded bg-kx-soft px-1">seed_content</code>；
-            建议先小批量生成、逐条预览，再发布或按批次回滚。清除只影响系统生成内容，<b>永远不会删除真实用户内容</b>。
+            <b>已导入城市用户时，帖子会随机分配到这些用户名下发布（看起来像真实用户）</b>，没有则回退到官方账号；全部标记为 <code className="rounded bg-kx-soft px-1">seed_content</code>。
+            建议先导入城市用户，再小批量生成、逐条预览，最后发布或按批次回滚。清除只影响系统生成内容，<b>永远不会删除真实用户内容</b>。
           </p>
         </div>
       </div>
@@ -1527,7 +1527,14 @@ function SeedBotPanel() {
                 <li key={it.id} className="rounded-xl bg-kx-soft/60 px-3 py-2">
                   <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-kx-muted">
                     <span className="rounded-full bg-kx-accentSoft px-1.5 py-0.5 font-semibold text-kx-accent">{it.content_type}</span>
-                    <span>{it.author_type === "editorial" ? "编辑部整理" : "城市助手"}</span>
+                    {it.authorName && !it.authorOfficial ? (
+                      <span className="inline-flex items-center gap-1">
+                        {it.authorAvatar ? <img src={it.authorAvatar} alt="" className="h-4 w-4 rounded-full object-cover" /> : null}
+                        {it.authorName}{it.authorHandle ? <span className="text-kx-subtle">@{it.authorHandle}</span> : null}
+                      </span>
+                    ) : (
+                      <span>{it.author_type === "editorial" ? "编辑部整理" : "城市助手"}</span>
+                    )}
                     {seedStatusPill(it.status)}
                   </div>
                   <p className="mt-1 whitespace-pre-wrap text-sm leading-6 text-kx-text">{it.content}</p>
