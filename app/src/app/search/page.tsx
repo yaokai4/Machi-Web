@@ -5,7 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Flame, History, Hash, Search as SearchIcon, X, Trash2, TrendingUp, Loader2 } from "lucide-react";
+import { Flame, History, Hash, Search as SearchIcon, X, Trash2, TrendingUp, Loader2, BookOpen, Package } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading, PostSkeleton } from "@/components/design/States";
@@ -25,7 +25,7 @@ import {
 } from "@/lib/listingFormat";
 import type { KXCityListing, KXPost } from "@/lib/types";
 
-type Kind = "all" | "post" | "listing" | "user" | "topic";
+type Kind = "all" | "post" | "listing" | "user" | "topic" | "guide";
 
 /// Same Suspense gating as /login — Next.js 15 wants the boundary.
 export default function SearchPage() {
@@ -59,6 +59,7 @@ function SearchPageInner() {
     listing: t("search_kind_listings"),
     user: t("search_users"),
     topic: t("search_topics"),
+    guide: t("search_kind_guide"),
   };
   const initialQuery = params.get("q") || "";
   const [query, setQuery] = useState(initialQuery);
@@ -219,13 +220,34 @@ function SearchPageInner() {
                 </section>
               ) : null}
 
+              {(kind === "all" || kind === "guide") && (search.data!.guide || []).length > 0 ? (
+                <section className="space-y-2">
+                  <h3 className="kx-section-title px-1">{t("search_kind_guide")}</h3>
+                  {(search.data!.guide || []).map((g) => (
+                    <Link
+                      key={`${g.kind}-${g.id}`}
+                      href={g.kind === "article" ? `/guide/articles/${g.slug}` : `/guide/products/${g.slug}`}
+                      className="flex items-center gap-3 rounded-2xl border border-kx-stroke/45 bg-kx-card/70 px-4 py-3 transition hover:border-kx-accent/40"
+                    >
+                      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-kx-accent/10 text-kx-accent">
+                        {g.kind === "article" ? <BookOpen className="h-5 w-5" /> : <Package className="h-5 w-5" />}
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate font-bold text-kx-text">{g.title}</span>
+                        {g.subtitle ? <span className="block truncate text-xs text-kx-subtle">{g.subtitle}</span> : null}
+                      </span>
+                    </Link>
+                  ))}
+                </section>
+              ) : null}
+
               {(kind === "all" || kind === "post") && search.data!.posts.length > 0 ? (
                 <section className="space-y-3">
                   {search.data!.posts.map((post) => <PostCard key={post.id} post={post} />)}
                 </section>
               ) : null}
 
-              {search.data!.posts.length === 0 && (search.data!.listings || []).length === 0 && search.data!.users.length === 0 && search.data!.topics.length === 0 ? (
+              {search.data!.posts.length === 0 && (search.data!.listings || []).length === 0 && search.data!.users.length === 0 && search.data!.topics.length === 0 && (search.data!.guide || []).length === 0 ? (
                 <EmptyState title={t("search_empty_title")} subtitle={t("search_empty_subtitle")} />
               ) : null}
             </div>

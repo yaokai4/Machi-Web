@@ -34235,7 +34235,7 @@ class Handler(BaseHTTPRequestHandler):
         q = (query.get("q") or "").strip()
         kind = query.get("kind") or "all"
         if not q:
-            self.send_json({"posts": [], "listings": [], "users": [], "topics": [], "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
+            self.send_json({"posts": [], "listings": [], "users": [], "topics": [], "guide": [], "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
             return
         if viewer_id:
             # Dedupe by (user, query) and cap per-user history so the table can't
@@ -34324,7 +34324,29 @@ class Handler(BaseHTTPRequestHandler):
                 params,
             ))
             topics = [{"tag": r["tag"], "post_count": int(r["post_count"])} for r in rows]
-        self.send_json({"posts": posts, "listings": listings, "users": users, "topics": topics, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
+        guide: list[dict[str, Any]] = []
+        if kind in ("all", "guide"):
+            # Guide content (articles + products) so the unified search isn't blind
+            # to the Guide library. Country-scoped (guide content currently = jp).
+            gc = viewer_country or GUIDE_DEFAULT_COUNTRY
+            for r in conn.execute(
+                "SELECT id, slug, title, summary FROM guide_articles WHERE country = ? AND status = 'published' "
+                "AND (title LIKE ? OR summary LIKE ?) ORDER BY is_featured DESC, updated_at DESC LIMIT 12",
+                (gc, like, like),
+            ):
+                d = dict(r)
+                guide.append({"kind": "article", "id": d["id"], "slug": d.get("slug") or "",
+                              "title": d.get("title") or "", "subtitle": d.get("summary") or ""})
+            for r in conn.execute(
+                "SELECT id, slug, title, subtitle FROM guide_products WHERE country = ? "
+                "AND status IN ('published','coming_soon') AND title LIKE ? "
+                "ORDER BY is_featured DESC, sort_order ASC LIMIT 12",
+                (gc, like),
+            ):
+                d = dict(r)
+                guide.append({"kind": "product", "id": d["id"], "slug": d.get("slug") or "",
+                              "title": d.get("title") or "", "subtitle": d.get("subtitle") or ""})
+        self.send_json({"posts": posts, "listings": listings, "users": users, "topics": topics, "guide": guide, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
     def api_search_history(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)

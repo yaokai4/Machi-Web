@@ -122,6 +122,14 @@ export function writeToken(token: string | null): void {
   }
 }
 
+export type KXSearchGuideItem = {
+  kind: "article" | "product";
+  id: string;
+  slug: string;
+  title: string;
+  subtitle: string;
+};
+
 export type MarketingCopyBlock = {
   id: string;
   page_key: string;
@@ -1321,7 +1329,7 @@ export const api = {
   },
 
   // ---- search / topics ----
-  async search(q: string, kind: "all" | "post" | "listing" | "user" | "topic" = "all"): Promise<{ posts: KXPost[]; listings: KXCityListing[]; users: KXUser[]; topics: KXTrendingTopic[] }> {
+  async search(q: string, kind: "all" | "post" | "listing" | "user" | "topic" | "guide" = "all"): Promise<{ posts: KXPost[]; listings: KXCityListing[]; users: KXUser[]; topics: KXTrendingTopic[]; guide?: KXSearchGuideItem[] }> {
     const params = new URLSearchParams({ q, kind });
     return request("GET", `/api/search?${params.toString()}`);
   },
