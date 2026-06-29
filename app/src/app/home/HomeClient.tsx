@@ -185,41 +185,39 @@ export default function HomeClient() {
             </button>
           )}
         </div>
-        <form onSubmit={submitSearch} className="flex items-center gap-2">
-          <label className="group flex min-h-12 flex-1 items-center gap-3 rounded-full border border-kx-accent/[0.18] bg-white/[0.94] px-3.5 text-sm font-semibold text-kx-subtle shadow-[0_14px_34px_-28px_rgba(17,22,34,0.62)] ring-1 ring-white/70 transition focus-within:border-kx-accent/[0.38] focus-within:ring-2 focus-within:ring-kx-accent/20 dark:bg-kx-card/[0.88] dark:ring-white/10">
-            <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-kx-accentSoft text-kx-accent ring-1 ring-kx-accent/15">
-              <Search className="h-4 w-4" />
-            </span>
-            <input
-              name="q"
-              value={searchDraft}
-              onChange={(event) => setSearchDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key !== "Enter") return;
-                event.preventDefault();
-                goToSearch(event.currentTarget.value);
-              }}
-              placeholder={copy.searchPlaceholder}
-              className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold text-kx-text placeholder:text-kx-muted focus:outline-none"
-            />
-          </label>
-          {searchDraft.trim() ? (
-            <button type="submit" className="h-10 rounded-full bg-kx-accent px-4 text-sm font-black text-white shadow-[0_14px_30px_-22px_rgba(37,99,235,0.85)] transition hover:bg-blue-700">
-              {copy.search}
-            </button>
-          ) : null}
-        </form>
-        <div className="flex items-center gap-1 self-start rounded-full border border-kx-stroke/40 bg-white/[0.82] p-1 shadow-[0_12px_28px_-24px_rgba(17,22,34,0.55)] ring-1 ring-white/[0.65] dark:bg-kx-card/[0.82] dark:ring-white/10">
-          {MODES.map((m) => (
-            <button
-              key={m.value}
-              className={clsx("kx-tab", "px-2.5 sm:px-3.5 h-8 text-sm")}
-              data-active={mode === m.value}
-              onClick={() => (m.value === "following" && !user ? openAuthPrompt("follow") : setModeSmooth(m.value))}
-            >
-              {m.label}
-            </button>
-          ))}
+        {/* Tabs + search merged into one slim row to reclaim vertical space:
+            tabs on the left, a compact search pill to the right of 关注. */}
+        <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-0.5 rounded-full border border-kx-stroke/40 bg-white/[0.82] p-1 shadow-[0_12px_28px_-24px_rgba(17,22,34,0.55)] ring-1 ring-white/[0.65] dark:bg-kx-card/[0.82] dark:ring-white/10">
+            {MODES.map((m) => (
+              <button
+                key={m.value}
+                className={clsx("kx-tab", "px-2 sm:px-3 h-8 text-sm")}
+                data-active={mode === m.value}
+                onClick={() => (m.value === "following" && !user ? openAuthPrompt("follow") : setModeSmooth(m.value))}
+              >
+                {m.label}
+              </button>
+            ))}
+          </div>
+          <form onSubmit={submitSearch} className="ml-auto min-w-0 flex-1 sm:max-w-[17rem]">
+            <label className="group flex h-9 items-center gap-2 rounded-full border border-kx-accent/[0.16] bg-white/[0.94] pl-3 pr-3 shadow-[0_12px_30px_-26px_rgba(17,22,34,0.6)] ring-1 ring-white/70 transition focus-within:border-kx-accent/[0.4] focus-within:ring-2 focus-within:ring-kx-accent/20 dark:bg-kx-card/[0.88] dark:ring-white/10">
+              <Search className="h-4 w-4 shrink-0 text-kx-accent" />
+              <input
+                name="q"
+                value={searchDraft}
+                onChange={(event) => setSearchDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  event.preventDefault();
+                  goToSearch(event.currentTarget.value);
+                }}
+                placeholder={copy.searchPlaceholder}
+                aria-label={copy.search}
+                className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold text-kx-text placeholder:font-medium placeholder:text-kx-muted focus:outline-none"
+              />
+            </label>
+          </form>
         </div>
       </div>
 
@@ -288,7 +286,7 @@ function homeCopy(locale: Locale) {
       return {
         switchRegion: "Switch region",
         search: "Search",
-        searchPlaceholder: "Search housing, language exchange, jobs, events, and local questions...",
+        searchPlaceholder: "Search users, posts, news, trending…",
         switched: (region: string) => `Switched to ${region}`,
         loadErrorTitle: "This page cannot load right now",
         loadErrorSubtitle: "The home feed cannot load at the moment. Please try again later.",
@@ -300,7 +298,7 @@ function homeCopy(locale: Locale) {
       return {
         switchRegion: "地域を切り替え",
         search: "検索",
-        searchPlaceholder: "住まい、言語交換、仕事、イベント、地域の質問を検索...",
+        searchPlaceholder: "ユーザー・投稿・ニュース・話題を検索…",
         switched: (region: string) => `${region}に切り替えました`,
         loadErrorTitle: "ページを読み込めません",
         loadErrorSubtitle: "ホームフィードを現在読み込めません。時間を置いてもう一度お試しください。",
@@ -312,7 +310,7 @@ function homeCopy(locale: Locale) {
       return {
         switchRegion: "切換地區",
         search: "搜尋",
-        searchPlaceholder: "搜尋租房、語言交換、工作、活動、本地問題...",
+        searchPlaceholder: "搜尋用戶、貼文、新聞、熱搜…",
         switched: (region: string) => `已切換到 ${region}`,
         loadErrorTitle: "頁面暫時無法載入",
         loadErrorSubtitle: "首頁內容暫時無法載入，請稍後再試。",
@@ -324,7 +322,7 @@ function homeCopy(locale: Locale) {
       return {
         switchRegion: "切换地区",
         search: "搜索",
-        searchPlaceholder: "搜索租房、语言交换、工作、活动、本地问题...",
+        searchPlaceholder: "搜索用户、帖子、新闻、热搜…",
         switched: (region: string) => `已切换到 ${region}`,
         loadErrorTitle: "页面暂时无法加载",
         loadErrorSubtitle: "首页内容暂时无法加载，请稍后再试。",
