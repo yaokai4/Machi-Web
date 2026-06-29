@@ -1,10 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowRight, LayoutDashboard, Send } from "lucide-react";
+import { ArrowRight, LayoutDashboard } from "lucide-react";
 import { guide, type GuideHomeResponse } from "@/lib/guide";
 import { MachiAIMark } from "@/components/brand/MachiAIMark";
 import {
@@ -148,23 +147,23 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
   );
 }
 
-// 主卖场:Machi AI 对话入口。大号品牌头 + 行内提问框 + 示例问题,一步进入 /guide/ai。
+// 主卖场:Machi AI 纯入口卡。不再有输入框——整块是「入口」,点进去才到聊天页
+// /guide/ai;示例问题是快捷入口,带着问题进入。彩色 logo + 柔光呼应品牌。
 function MachiAIHero({ locale }: { locale: string }) {
-  const router = useRouter();
-  const [q, setQ] = useState("");
   const lang = locale.startsWith("ja") ? "ja" : locale.startsWith("en") ? "en" : "zh";
-  const go = (text: string) => {
-    const t = text.trim();
-    setQ("");
-    router.push(t ? `/guide/ai?q=${encodeURIComponent(t)}` : "/guide/ai");
-  };
+  const cta = pick(locale, "开始对话", "対話を始める", "Start chat");
   return (
-    <section className="relative overflow-hidden rounded-[2rem] border border-kx-accent/25 bg-gradient-to-br from-kx-accentSoft/70 to-kx-card/85 px-5 py-7 shadow-[0_24px_70px_-50px_rgba(20,112,103,0.55)] dark:border-kx-accent/35 dark:from-[rgb(26_54_49)] dark:to-[rgb(18_32_29)] sm:px-8 sm:py-9">
-      <div aria-hidden className="pointer-events-none absolute -right-16 -top-20 h-52 w-52 rounded-full bg-kx-accent/15 blur-3xl" />
+    <section className="relative overflow-hidden rounded-[2rem] border border-kx-stroke/40 bg-kx-card px-5 py-7 shadow-[0_24px_70px_-50px_rgba(30,30,70,0.45)] sm:px-8 sm:py-8">
+      <div aria-hidden className="pointer-events-none absolute -right-12 -top-16 h-48 w-48 rounded-full bg-[#A06BF0]/18 blur-3xl" />
+      <div aria-hidden className="pointer-events-none absolute -bottom-16 -left-12 h-44 w-44 rounded-full bg-[#36D6C3]/16 blur-3xl" />
       <div className="relative">
-        <div className="flex items-center gap-3">
-          <MachiAIMark className="h-14 w-14 shadow-[0_14px_32px_-16px_rgba(20,112,103,0.85)]" />
-          <div className="min-w-0">
+        <Link
+          href="/guide/ai"
+          aria-label={pick(locale, "进入 Machi AI", "Machi AI を開く", "Open Machi AI")}
+          className="group flex items-center gap-4 rounded-2xl outline-none transition focus-visible:ring-2 focus-visible:ring-kx-accent/40"
+        >
+          <MachiAIMark className="h-16 w-16 shrink-0 shadow-[0_16px_38px_-18px_rgba(91,141,239,0.85)] transition duration-300 group-hover:scale-[1.04]" />
+          <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h1 className="text-2xl font-extrabold tracking-[-0.01em] text-kx-text sm:text-3xl">Machi AI</h1>
               <span className="rounded-full bg-kx-accent/15 px-2 py-0.5 text-[11px] font-bold uppercase tracking-[0.1em] text-kx-accent">
@@ -180,41 +179,27 @@ function MachiAIHero({ locale }: { locale: string }) {
               )}
             </p>
           </div>
-        </div>
+          <span className="hidden shrink-0 items-center gap-1.5 rounded-full bg-kx-accent px-4 py-2.5 text-sm font-bold text-white shadow-sm transition group-hover:gap-2.5 sm:inline-flex">
+            {cta} <ArrowRight className="h-4 w-4" />
+          </span>
+        </Link>
 
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            go(q);
-          }}
-          className="mt-5 flex items-center gap-2 rounded-2xl border border-kx-stroke/50 bg-kx-card/90 p-1.5 shadow-sm transition focus-within:border-kx-accent/55 focus-within:ring-2 focus-within:ring-kx-accent/20"
-        >
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder={pick(locale, "问问 Machi AI…", "Machi AI に聞いてみる…", "Ask Machi AI…")}
-            aria-label={pick(locale, "向 Machi AI 提问", "Machi AI に質問", "Ask Machi AI")}
-            className="min-w-0 flex-1 bg-transparent px-3 py-2.5 text-sm font-medium text-kx-text placeholder:text-kx-muted focus:outline-none"
-          />
-          <button
-            type="submit"
-            className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl bg-kx-accent px-4 text-sm font-bold text-white transition hover:bg-kx-accent/90 active:scale-95"
+        {/* 快捷入口:带着问题直接进入聊天页 */}
+        <div className="mt-5 flex flex-wrap items-center gap-2">
+          <Link
+            href="/guide/ai"
+            className="inline-flex items-center gap-1.5 rounded-full bg-kx-accent px-4 py-2 text-sm font-bold text-white shadow-sm transition active:scale-95 sm:hidden"
           >
-            <Send className="h-4 w-4" />
-            <span className="hidden sm:inline">{pick(locale, "提问", "質問", "Ask")}</span>
-          </button>
-        </form>
-
-        <div className="mt-3 flex flex-wrap gap-2">
+            {cta} <ArrowRight className="h-4 w-4" />
+          </Link>
           {HERO_SUGGESTIONS[lang].map((s) => (
-            <button
+            <Link
               key={s}
-              type="button"
-              onClick={() => go(s)}
-              className="rounded-full border border-kx-accent/35 bg-kx-card/80 px-3 py-1.5 text-xs font-semibold text-kx-accent transition hover:border-kx-accent/55 hover:bg-kx-accentSoft/60"
+              href={`/guide/ai?q=${encodeURIComponent(s)}`}
+              className="rounded-full border border-kx-accent/30 bg-kx-card/80 px-3 py-1.5 text-xs font-semibold text-kx-accent transition hover:border-kx-accent/55 hover:bg-kx-accentSoft/60"
             >
               {s}
-            </button>
+            </Link>
           ))}
         </div>
       </div>

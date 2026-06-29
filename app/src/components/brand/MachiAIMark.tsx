@@ -1,8 +1,8 @@
 import { forwardRef, useId, type SVGProps } from "react";
 import clsx from "clsx";
 
-// Machi AI 自有品牌标志 —— 「灵光 Spark」。品牌青绿渐变 squircle + 一颗精致的
-// 四角星灵光 + 一颗微光点,玻璃高光带来高级的体积感。web↔iOS 像素级一致
+// Machi AI 自有品牌标志 —— 「灵光 Spark」。Apple 风多彩渐变 squircle
+// (粉→紫→蓝→青) + 一颗精致的四角星灵光 + 一颗微光点,玻璃高光带来高级的体积感。web↔iOS 像素级一致
 // (见 iOS Machi/Components/MachiAIMark.swift)。
 //   <MachiAIMark>   渐变 squircle 徽标 —— 头像 / 入口卡 / 应用与营销
 //   <MachiAIGlyph>  单色线形灵光 —— 底部 Tab / 行内,继承 currentColor
@@ -36,8 +36,10 @@ export function MachiAIMark({ className }: { className?: string }) {
       <svg viewBox="0 0 100 100" className="h-full w-full" fill="none">
         <defs>
           <linearGradient id={`machiMark-${gid}`} x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0" stopColor="#2EBE9F" />
-            <stop offset="1" stopColor="#0B4A40" />
+            <stop offset="0" stopColor="#FF6FB5" />
+            <stop offset="0.38" stopColor="#A06BF0" />
+            <stop offset="0.72" stopColor="#5B8DEF" />
+            <stop offset="1" stopColor="#36D6C3" />
           </linearGradient>
           <radialGradient id={`machiGlow-${gid}`} cx="0.32" cy="0.26" r="0.75">
             <stop offset="0" stopColor="#ffffff" stopOpacity="0.24" />

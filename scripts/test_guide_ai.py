@@ -117,10 +117,12 @@ def main() -> None:
             assert exc.code == "AUTH_REQUIRED", exc.code
             assert exc.status == 401, exc.status
 
-        # 2) Free user: first 3 succeed, remaining decrements 2 → 1 → 0.
+        # 2) Free user: first 3 succeed, remaining decrements by one each time
+        #    (computed from the configured cap, not hardcoded).
         free_uid = _make_user(conn)
         conn.commit()
-        expected_remaining = [2, 1, 0]
+        free_limit = server.MACHI_AI_FREE_DAILY_LIMIT
+        expected_remaining = [free_limit - 1 - i for i in range(3)]
         last_conv = None
         for i in range(3):
             # Continue the same thread so we end with one conversation of 6 msgs.
@@ -135,8 +137,15 @@ def main() -> None:
             _assert_no_leak(data)
             last_conv = data["conversationId"]
 
-        # 3) Free user 4th call → 429 AI_QUOTA_EXCEEDED + upgrade hint.
-        cap = _chat(conn, free_uid, "再问一个问题")
+        # 3) Free user exceeding the daily cap → 429 AI_QUOTA_EXCEEDED + upgrade hint.
+        #    Uses a fresh user (and the configured cap) so the test-#6 conversation
+        #    above stays at exactly 3 turns regardless of the limit value.
+        quota_uid = _make_user(conn)
+        conn.commit()
+        for i in range(free_limit):
+            cap = _chat(conn, quota_uid, f"额度测试 {i}")
+            assert cap["status"] == 200, (i, cap)
+        cap = _chat(conn, quota_uid, "再问一个问题")
         assert cap["status"] == 429, cap
         assert cap["data"]["error"]["code"] == "AI_QUOTA_EXCEEDED", cap["data"]
         assert cap["data"]["upgradeSuggested"] is True, cap["data"]

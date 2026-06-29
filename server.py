@@ -716,8 +716,8 @@ VERIFIED_BOOST_SCORE = float(_env("MEMBERSHIP_VERIFIED_BOOST", "1.05"))
 # clients (no provider/model name in any response, error, or user-visible
 # string). Daily limits are enforced on the server only — a tampered client
 # cannot exceed them. Member daily limit is never echoed back to members.
-MACHI_AI_FREE_DAILY_LIMIT = int(_env("MACHI_AI_FREE_DAILY_LIMIT", "3"))
-MACHI_AI_MEMBER_DAILY_LIMIT = int(_env("MACHI_AI_MEMBER_DAILY_LIMIT", "20"))
+MACHI_AI_FREE_DAILY_LIMIT = int(_env("MACHI_AI_FREE_DAILY_LIMIT", "10"))
+MACHI_AI_MEMBER_DAILY_LIMIT = int(_env("MACHI_AI_MEMBER_DAILY_LIMIT", "30"))
 MACHI_AI_MODEL = _env("MACHI_AI_MODEL", "deepseek-v4-flash")
 MACHI_AI_PRO_MODEL = _env("MACHI_AI_PRO_MODEL", "deepseek-v4-pro")
 MACHI_AI_TIMEOUT_SEC = float(_env("MACHI_AI_TIMEOUT_SEC", "35"))
@@ -3071,6 +3071,25 @@ def extract_tags(content: str) -> list[str]:
         if tag and tag not in seen:
             seen.append(tag)
     return seen
+
+
+# Tags that are too generic / tautological to be meaningful "hot topics" on the
+# 热榜 ranking: bare location names (the city you're already browsing) and meta
+# filler that gets stamped onto bulk-seeded content. They still work as normal
+# clickable hashtags and in /api/topics — they're only suppressed from the
+# ranked discover board so it surfaces real discussion topics instead of "#东京".
+HOT_BOARD_TAG_BLOCKLIST = {
+    # 都道府県 / 主要都市（中日双写）
+    "日本", "东京", "東京", "东京都", "東京都", "大阪", "大阪府", "京都", "京都府",
+    "横滨", "横浜", "名古屋", "札幌", "福冈", "福岡", "神户", "神戸", "北海道",
+    "冲绳", "沖縄", "千叶", "千葉", "埼玉", "神奈川", "兵库", "兵庫", "爱知", "愛知",
+    "关东", "関東", "关西", "関西", "九州", "东北", "東北",
+    # 中国主要城市（种子数据里也会出现）
+    "北京", "上海", "广州", "深圳", "杭州", "成都", "武汉", "西安", "长沙", "香港",
+    # 泛化 / 运营填充标签
+    "精选", "攻略", "推荐", "热门", "动态", "日常", "生活", "分享", "记录", "打卡",
+    "machi", "machicity",
+}
 
 
 def cursor_encode(iso_value: str, item_id: str) -> str:
@@ -32465,6 +32484,11 @@ class Handler(BaseHTTPRequestHandler):
             scope_clause = "AND p.region_code = ?"
             scope_params.append(region_code)
 
+        # Drop bare location / generic filler tags so the board ranks real
+        # discussion topics instead of "#东京" (the city you're already in).
+        block_tags = sorted(HOT_BOARD_TAG_BLOCKLIST)
+        block_clause = ("AND t.tag NOT IN (%s)" % ",".join("?" * len(block_tags))) if block_tags else ""
+
         cache_key = f"discover:hot:{scope}:{window}:{region_code or country or 'all'}"
         cached = _cache_get(cache_key)
         if cached is None:
@@ -32489,11 +32513,12 @@ class Handler(BaseHTTPRequestHandler):
                                           AND c2.deleted_at IS NULL
                                           AND c2.created_at >= ?))
                        {scope_clause}
+                       {block_clause}
                      GROUP BY t.tag
                      ORDER BY heat DESC
                      LIMIT 20
                     """,
-                    [half, cutoff, cutoff] + scope_params,
+                    [half, cutoff, cutoff] + scope_params + block_tags,
                 ))
             except Exception as exc:
                 ERR_LOG.warning("discover hot degraded error=%s", exc)
@@ -32518,11 +32543,12 @@ class Handler(BaseHTTPRequestHandler):
                                               AND c2.deleted_at IS NULL
                                               AND c2.created_at >= ?))
                            AND p.country = ?
+                           {block_clause}
                          GROUP BY t.tag
                          ORDER BY heat DESC
                          LIMIT 20
                         """,
-                        [half, cutoff, cutoff, country],
+                        [half, cutoff, cutoff, country] + block_tags,
                     ))
                     if rows:
                         scope = "national"
