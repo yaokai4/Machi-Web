@@ -155,6 +155,7 @@ function MachiAIHero({ locale }: { locale: string }) {
   const lang = locale.startsWith("ja") ? "ja" : locale.startsWith("en") ? "en" : "zh";
   const go = (text: string) => {
     const t = text.trim();
+    setQ("");
     router.push(t ? `/guide/ai?q=${encodeURIComponent(t)}` : "/guide/ai");
   };
   return (
@@ -210,7 +211,7 @@ function MachiAIHero({ locale }: { locale: string }) {
               key={s}
               type="button"
               onClick={() => go(s)}
-              className="rounded-full border border-kx-accent/20 bg-kx-card/70 px-3 py-1.5 text-xs font-semibold text-kx-accent transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/60"
+              className="rounded-full border border-kx-accent/35 bg-kx-card/80 px-3 py-1.5 text-xs font-semibold text-kx-accent transition hover:border-kx-accent/55 hover:bg-kx-accentSoft/60"
             >
               {s}
             </button>

@@ -220,6 +220,8 @@ export default function GuideAIChatClient() {
         textareaRef.current?.focus();
         autoGrow();
       });
+      // Strip ?q= from the URL so a refresh / back navigation doesn't re-inject it.
+      window.history.replaceState(null, "", window.location.pathname);
     }
     // run once on mount
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -259,15 +261,29 @@ export default function GuideAIChatClient() {
           setQuotaReached(!res.usage.membershipActive && (res.usage.remainingFreeUses ?? 1) <= 0);
         }
         const m = res.message;
+        if (!m || !(m.content && m.content.trim())) {
+          // 200 OK but no usable answer → surface an error instead of an empty
+          // assistant bubble (silent data loss); keep the turn retryable.
+          lastFailedText.current = trimmed;
+          setMessages((prev) =>
+            prev
+              .filter((msg) => msg.id !== pendingId)
+              .map((msg) => (msg.id === userMsg.id ? { ...msg, failed: true } : msg)),
+          );
+          setErrorMessage(
+            pick(
+              locale,
+              "Machi AI 暂时无法回答，请稍后再试。",
+              "Machi AI は現在応答できません。しばらくしてから再度お試しください。",
+              "Machi AI is temporarily unavailable. Please try again shortly.",
+            ),
+          );
+          return;
+        }
         setMessages((prev) =>
           prev.map((msg) =>
             msg.id === pendingId
-              ? {
-                  id: m?.id || pendingId,
-                  role: "assistant",
-                  content: m?.content || "",
-                  sources: m?.sources || [],
-                }
+              ? { id: m.id || pendingId, role: "assistant", content: m.content, sources: m.sources || [] }
               : msg,
           ),
         );
