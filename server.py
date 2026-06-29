@@ -672,9 +672,16 @@ MEMBERSHIP_PLAN_YEARLY_KEY = "machi_verified_yearly"
 MEMBERSHIP_LEGACY_PLAN_KEY = "machi_verified_monthly_cny_10"
 MEMBERSHIP_PLAN_KEY = _env("MEMBERSHIP_PLAN_KEY", MEMBERSHIP_PLAN_MONTHLY_KEY)
 # Seed values only. Operators edit membership_plans from admin after boot.
-MEMBERSHIP_PRICE_CNY = int(_env("MEMBERSHIP_PRICE_CNY", "18"))
-MEMBERSHIP_PRICE_FEN = MEMBERSHIP_PRICE_CNY * 100
-MEMBERSHIP_CURRENCY = "CNY"
+# Membership is a NON-RENEWING one-time purchase, priced for the Japan market in
+# JPY. `billing_period` (monthly/yearly) is the ACCESS-DURATION engine
+# (monthly = 30 days of access, yearly = 365) — NOT recurring billing. Clients
+# render it as a one-time "N-day pass", never "monthly/yearly subscription".
+# Internal storage is value×100 for every currency; the Stripe edge divides by
+# 100 for zero-decimal currencies like JPY (see _stripe_minor_units), so a ¥600
+# pass is price=600, amount_cents=60000, charged as 600 minor units.
+MEMBERSHIP_PRICE_JPY = int(_env("MEMBERSHIP_PRICE_JPY", "600"))                 # 30-day pass
+MEMBERSHIP_PRICE_YEARLY_JPY = int(_env("MEMBERSHIP_PRICE_YEARLY_JPY", "4800"))  # 365-day pass
+MEMBERSHIP_CURRENCY = _env("MEMBERSHIP_CURRENCY", "JPY")
 MEMBERSHIP_BILLING_CYCLE = "monthly"
 # Apple App Store product ids for the same plans. iOS buys through IAP.
 APPLE_IAP_PRODUCT_ID = _env("APPLE_IAP_PRODUCT_ID", "machi_yuedu_18")
@@ -2176,11 +2183,6 @@ def local_upload_path(object_key: str) -> Path:
     return target
 
 
-def upload_count_limit_for_listing(listing_type: str) -> int:
-    purpose = LISTING_PURPOSE_BY_TYPE.get(normalize_listing_type(listing_type), "secondhand_image")
-    return int(UPLOAD_PURPOSES[purpose]["count"])
-
-
 def serialize_uploaded_file(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     d = dict(row)
     purpose = d.get("purpose") or ""
@@ -2669,9 +2671,22 @@ def _cache_get(key: str) -> Any | None:
     return None
 
 
+_CACHE_MAX_ENTRIES = int(os.environ.get("KAIX_CACHE_MAX_ENTRIES", "5000"))
+
+
 def _cache_put(key: str, value: Any, ttl_seconds: float) -> None:
+    now = time.monotonic()
     with _CACHE_LOCK:
-        _CACHE[key] = (time.monotonic() + ttl_seconds, value)
+        # Bound the in-process cache so it can't grow without limit. Sweep
+        # expired entries first; if still at the cap, evict the ~10% nearest
+        # expiry. (Previously this dict had no size cap or background sweep.)
+        if len(_CACHE) >= _CACHE_MAX_ENTRIES:
+            for k in [k for k, v in list(_CACHE.items()) if v[0] <= now]:
+                _CACHE.pop(k, None)
+            if len(_CACHE) >= _CACHE_MAX_ENTRIES:
+                for k in sorted(_CACHE, key=lambda k: _CACHE[k][0])[: max(1, len(_CACHE) // 10)]:
+                    _CACHE.pop(k, None)
+        _CACHE[key] = (now + ttl_seconds, value)
 
 
 def _cache_invalidate(prefix: str = "") -> None:
@@ -4597,18 +4612,18 @@ def _membership_plan_seed_rows() -> list[dict[str, Any]]:
     return [
         {
             "plan_key": MEMBERSHIP_PLAN_MONTHLY_KEY,
-            "name": "Machi 认证会员",
-            "name_zh": "Machi 认证会员",
-            "name_en": "Machi Verified",
-            "name_ja": "Machi 認証メンバー",
-            "subtitle": "按月购买，到期前可再次续购",
-            "description": "蓝色认证标识、高信任内容发布、会员资料与服务优惠。",
+            "name": "Machi 认证会员 · 30天",
+            "name_zh": "Machi 认证会员 · 30天",
+            "name_en": "Machi Verified — 30-day pass",
+            "name_ja": "Machi 認証メンバー・30日パス",
+            "subtitle": "一次性购买 30 天会员（非自动续费，到期可再次购买）",
+            "description": "蓝色认证标识、高信任内容发布、会员资料与服务优惠。一次性购买，不会自动续费。",
             "billing_period": "monthly",
             "interval_count": 1,
-            "price": float(MEMBERSHIP_PRICE_CNY),
-            "amount_cents": int(MEMBERSHIP_PRICE_FEN),
+            "price": float(MEMBERSHIP_PRICE_JPY),
+            "amount_cents": int(MEMBERSHIP_PRICE_JPY * 100),
             "currency": MEMBERSHIP_CURRENCY,
-            "price_label": "¥18 / 月",
+            "price_label": f"¥{MEMBERSHIP_PRICE_JPY} / 30天",
             "original_price": 0,
             "discount_label": "",
             "stripe_product_id": "",
@@ -4623,20 +4638,20 @@ def _membership_plan_seed_rows() -> list[dict[str, Any]]:
         },
         {
             "plan_key": MEMBERSHIP_PLAN_YEARLY_KEY,
-            "name": "Machi 认证会员 · 包年",
-            "name_zh": "Machi 认证会员 · 包年",
-            "name_en": "Machi Verified Yearly",
-            "name_ja": "Machi 認証メンバー 年額",
-            "subtitle": "包年更划算，适合长期使用",
-            "description": "一次购买一年，同步获得 Machi 认证会员全部权益。",
+            "name": "Machi 认证会员 · 365天",
+            "name_zh": "Machi 认证会员 · 365天",
+            "name_en": "Machi Verified — 365-day pass",
+            "name_ja": "Machi 認証メンバー・365日パス",
+            "subtitle": "一次性购买 365 天会员（更划算，非自动续费）",
+            "description": "一次性购买 365 天，享 Machi 认证会员全部权益。不会自动续费。",
             "billing_period": "yearly",
             "interval_count": 1,
-            "price": 198.0,
-            "amount_cents": 19800,
-            "currency": "CNY",
-            "price_label": "¥198 / 年",
-            "original_price": 216.0,
-            "discount_label": "约省 1 个月",
+            "price": float(MEMBERSHIP_PRICE_YEARLY_JPY),
+            "amount_cents": int(MEMBERSHIP_PRICE_YEARLY_JPY * 100),
+            "currency": MEMBERSHIP_CURRENCY,
+            "price_label": f"¥{MEMBERSHIP_PRICE_YEARLY_JPY} / 365天",
+            "original_price": float(MEMBERSHIP_PRICE_JPY * 12),
+            "discount_label": "约省 33%",
             "stripe_product_id": "",
             "stripe_price_id": "",
             "ios_iap_product_id": APPLE_IAP_PRODUCT_ID_YEARLY,
@@ -4693,6 +4708,175 @@ def ensure_booking_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_listing_bookings_owner ON listing_bookings(owner_id, created_at);
         """
     )
+
+
+# ---------------------------------------------------------------------------
+# Saved-search alerts (N4). A user pins a (vertical, location, keyword, filter)
+# query; when a matching listing publishes we drop an in-app notification (push
+# is wired separately under N1, gated on APNs/VAPID creds). New table for
+# existing SQLite DBs; PostgreSQL gets it via the migrate script / prod SQL.
+# Money is never touched.
+# ---------------------------------------------------------------------------
+SAVED_SEARCH_CADENCES = ("instant", "daily", "off")
+SAVED_SEARCH_MAX_PER_USER = 50
+
+
+def ensure_saved_search_schema(conn: sqlite3.Connection) -> None:
+    """Idempotent: create the saved_searches table + indexes."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS saved_searches (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            vertical TEXT NOT NULL DEFAULT '',
+            city_slug TEXT NOT NULL DEFAULT '',
+            region_code TEXT NOT NULL DEFAULT '',
+            country_code TEXT NOT NULL DEFAULT '',
+            keyword TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            filter_json TEXT NOT NULL DEFAULT '{}',
+            label TEXT NOT NULL DEFAULT '',
+            cadence TEXT NOT NULL DEFAULT 'instant',
+            last_notified_at TEXT NOT NULL DEFAULT '',
+            match_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_searches_user ON saved_searches(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_saved_searches_match ON saved_searches(vertical, cadence);
+        """
+    )
+
+
+def serialize_saved_search(row: dict[str, Any]) -> dict[str, Any]:
+    d = dict(row)
+    try:
+        filters = json.loads(d.get("filter_json") or "{}")
+    except (TypeError, ValueError):
+        filters = {}
+    return {
+        "id": d.get("id"),
+        "vertical": d.get("vertical") or "",
+        "listingType": d.get("vertical") or "",
+        "citySlug": d.get("city_slug") or "", "city_slug": d.get("city_slug") or "",
+        "regionCode": d.get("region_code") or "", "region_code": d.get("region_code") or "",
+        "countryCode": d.get("country_code") or "", "country_code": d.get("country_code") or "",
+        "keyword": d.get("keyword") or "",
+        "category": d.get("category") or "",
+        "filters": filters, "filterJson": d.get("filter_json") or "{}",
+        "label": d.get("label") or "",
+        "cadence": d.get("cadence") or "instant",
+        "matchCount": int(d.get("match_count") or 0), "match_count": int(d.get("match_count") or 0),
+        "lastNotifiedAt": d.get("last_notified_at") or "", "last_notified_at": d.get("last_notified_at") or "",
+        "createdAt": d.get("created_at"), "created_at": d.get("created_at"),
+        "updatedAt": d.get("updated_at") or "", "updated_at": d.get("updated_at") or "",
+    }
+
+
+def saved_search_auto_label(vertical: str, city_slug: str, region_code: str, keyword: str, category: str) -> str:
+    bits: list[str] = []
+    if keyword:
+        bits.append(keyword)
+    if category and category != keyword:
+        bits.append(category)
+    loc = city_slug or region_code
+    if loc:
+        bits.append(loc)
+    if not bits and vertical:
+        bits.append(vertical)
+    label = " · ".join(b for b in bits if b)[:120]
+    return label or "我的订阅"
+
+
+def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any]) -> int:
+    """Best-effort: notify every user whose saved search matches this freshly
+    published listing. NEVER raises — a saved-search bug must not break listing
+    publishing. Returns the number of users notified. Filter-level (attribute)
+    matching is intentionally deferred to v2; v1 matches on vertical + location
+    (metro-circle aware) + keyword + category."""
+    try:
+        listing_id = listing.get("id")
+        if not listing_id:
+            return 0
+        ltype = str(listing.get("type") or "").strip().lower()
+        seller_id = listing.get("seller_user_id") or ""
+        l_city = str(listing.get("city_slug") or "").strip().lower()
+        l_region = str(listing.get("region_code") or "").strip().lower()
+        l_country = str(listing.get("country_code") or "").strip().lower()
+        l_category = str(listing.get("category") or "").strip()
+        haystack = " ".join(
+            str(listing.get(k) or "") for k in ("title", "description", "category")
+        ).lower()
+        rows = list(conn.execute(
+            """
+            SELECT * FROM saved_searches
+             WHERE cadence != 'off'
+               AND (vertical = '' OR vertical = ?)
+             ORDER BY created_at DESC
+             LIMIT 1000
+            """,
+            (ltype,),
+        ))
+        notified = 0
+        now = now_iso()
+        for r in rows:
+            s = dict(r)
+            uid = s.get("user_id")
+            if not uid or uid == seller_id:
+                continue
+            s_city = str(s.get("city_slug") or "").strip().lower()
+            s_region = str(s.get("region_code") or "").strip().lower()
+            s_country = str(s.get("country_code") or "").strip().lower()
+            if s_city:
+                circle = {c.lower() for c in (metro_circle_city_slugs_for_city(l_country or "jp", s_city) or [])}
+                circle.add(s_city)
+                if l_city not in circle:
+                    continue
+            elif s_region:
+                circle = {c.lower() for c in (metro_circle_region_codes(s_region) or [])}
+                circle.add(s_region)
+                if l_region not in circle:
+                    continue
+            elif s_country:
+                if l_country != s_country:
+                    continue
+            kw = str(s.get("keyword") or "").strip().lower()
+            if kw and kw not in haystack:
+                continue
+            cat = str(s.get("category") or "").strip()
+            if cat and cat != l_category:
+                continue
+            # Dedupe: at most one saved-search notification per (user, listing).
+            if conn.execute(
+                "SELECT 1 FROM notifications WHERE user_id = ? AND type = 'saved_search' "
+                "AND target_listing_id = ? AND deleted_at IS NULL LIMIT 1",
+                (uid, listing_id),
+            ).fetchone():
+                continue
+            content = (str(listing.get("title") or "").strip() or "新的匹配信息")[:140]
+            conn.execute(
+                """
+                INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, content, created_at)
+                VALUES (?, ?, ?, 'saved_search', ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), uid, seller_id or uid, listing_id, content, now),
+            )
+            conn.execute(
+                "UPDATE saved_searches SET match_count = match_count + 1, last_notified_at = ?, "
+                "updated_at = ? WHERE id = ?",
+                (now, now, s.get("id")),
+            )
+            # Push banner (N1) — no-op until APNs is configured; never raises.
+            server_apns.enqueue(uid, ntype="saved_search", actor_id=seller_id or "", content=content)
+            notified += 1
+        return notified
+    except Exception as exc:  # pragma: no cover - defensive: must not break publish
+        try:
+            ERR_LOG.warning("notify_saved_search_matches failed listing=%s error=%s",
+                            listing.get("id"), exc)
+        except Exception:
+            pass
+        return 0
 
 
 def ensure_membership_plans(conn: sqlite3.Connection) -> None:
@@ -10053,10 +10237,18 @@ def require_membership_listing_publish(
         return
     usage = membership_listing_monthly_usage(conn, user_id, normalized)
     if int(usage["used"]) >= int(usage["limit"]):
+        # Structured detail so the client shows the real next step (resets next
+        # month) instead of a circular "Upgrade to membership" the member owns.
         raise APIError(
             f"Machi 会员每月可免费发布 {usage['limit']} 条{label}信息，本月次数已用完。",
             403,
             "MEMBERSHIP_LISTING_QUOTA_EXCEEDED",
+            detail={
+                "used": int(usage["used"]),
+                "limit": int(usage["limit"]),
+                "monthStart": usage.get("month_start"),
+                "listingType": normalized,
+            },
         )
 
 
@@ -10346,6 +10538,7 @@ def init_db() -> None:
         ensure_membership_plans(conn)
         ensure_wallet_schema(conn)
         ensure_moderation_schema(conn)
+        ensure_saved_search_schema(conn)
         ensure_guide_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
@@ -11176,11 +11369,6 @@ LISTING_TAXONOMY_DEFAULTS: dict[str, dict[str, Any]] = {
         ],
     },
 }
-
-
-def _taxonomy_key(value: Any, fallback: str = "") -> str:
-    raw = str(value or "").strip()
-    return raw or fallback
 
 
 def ensure_listing_taxonomy_defaults(conn: sqlite3.Connection, listing_type: str) -> None:
@@ -12312,10 +12500,14 @@ def fetch_listings_with_extras(conn: sqlite3.Connection, rows: list[dict[str, An
 
 
 class APIError(Exception):
-    def __init__(self, message: str, status: int = 400, code: str = "bad_request"):
+    def __init__(self, message: str, status: int = 400, code: str = "bad_request",
+                 detail: dict[str, Any] | None = None):
         super().__init__(message)
         self.status = status
         self.code = code
+        # Optional structured payload surfaced under error.detail so clients can
+        # render specifics (e.g. quota used/limit/reset) without parsing copy.
+        self.detail = detail or {}
 
 
 def dm_privacy_allows(conn: sqlite3.Connection, sender_id: str, recipient_id: str) -> bool:
@@ -12601,9 +12793,12 @@ def serialize_plan(plan: dict[str, Any]) -> dict[str, Any]:
     cents = int(plan.get("amount_cents") or round(amount * 100))
     currency = normalize_currency(plan.get("currency", MEMBERSHIP_CURRENCY))
     billing_period = plan.get("billing_period") or plan.get("billing_cycle") or MEMBERSHIP_BILLING_CYCLE
+    # Membership is a one-time, non-renewing pass. Expose the access duration in
+    # days so clients can render "N-day pass" instead of implying recurring billing.
+    term_days = 365 if billing_period == "yearly" else 30 * max(1, int(plan.get("interval_count") or 1))
     price_label = str(plan.get("price_label") or "").strip()
     if not price_label:
-        suffix = "/ 年" if billing_period == "yearly" else "/ 月" if billing_period == "monthly" else ""
+        suffix = "/ 365天" if billing_period == "yearly" else "/ 30天" if billing_period == "monthly" else ""
         price_label = f"{format_price_value(amount, currency)} {suffix}".strip()
     return {
         "plan_key": plan["plan_key"],
@@ -12630,6 +12825,10 @@ def serialize_plan(plan: dict[str, Any]) -> dict[str, Any]:
         "billingPeriod": billing_period,
         "interval_count": int(plan.get("interval_count") or 1),
         "intervalCount": int(plan.get("interval_count") or 1),
+        "term_days": term_days,
+        "termDays": term_days,
+        "one_time": True,
+        "oneTime": True,
         "stripe_product_id": plan.get("stripe_product_id") or "",
         "stripeProductId": plan.get("stripe_product_id") or "",
         "stripe_price_id": plan.get("stripe_price_id") or "",
@@ -12877,11 +13076,22 @@ def machi_ai_keywords(text: str, *, limit: int = 6) -> list[str]:
     return out
 
 
+_SAFE_SQL_IDENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SAFE_SQL_ORDER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*( (ASC|DESC))?(\s*,\s*[A-Za-z_][A-Za-z0-9_]*( (ASC|DESC))?)*$")
+
+
 def _machi_ai_like_rows(conn: sqlite3.Connection, table: str, columns: list[str],
                         base_where: list[str], base_params: list[Any], terms: list[str],
                         order_by: str, limit_rows: int) -> list[Any]:
     if not terms or not columns:
         return []
+    # Defense-in-depth: table / columns / order_by are always code constants
+    # here, but enforce a strict identifier whitelist so no future caller can
+    # inject through an identifier (the search VALUES are already bound params).
+    if not _SAFE_SQL_IDENT.match(table) or not all(_SAFE_SQL_IDENT.match(c) for c in columns):
+        raise ValueError("unsafe SQL identifier")
+    if order_by and not _SAFE_SQL_ORDER.match(order_by):
+        raise ValueError("unsafe SQL order_by")
     ors: list[str] = []
     params: list[Any] = list(base_params)
     for term in terms:
@@ -13437,9 +13647,12 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
     return fresh
 
 
+@money_atomic
 def refund_order(conn: sqlite3.Connection, order_no: str) -> None:
     """MS-6: refund a membership order — mark refunded, record the event, AND
-    revoke the membership so a refunded user loses access (idempotent)."""
+    revoke the membership so a refunded user loses access (idempotent). The
+    three dependent writes commit as one transaction so a crash can't leave an
+    order flagged refunded with the membership still active (or vice versa)."""
     order = conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone()
     if not order:
         return
@@ -13473,6 +13686,52 @@ def record_payment_webhook(conn: sqlite3.Connection, provider: str, event_type: 
          (raw or "")[:8000], 1 if signature_valid else 0, now_iso(), now_iso()),
     )
     return True
+
+
+def _payment_webhook_seen(conn: sqlite3.Connection, provider: str, event_id: str) -> bool:
+    """True if this provider event was already durably recorded (dedup)."""
+    if not event_id:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM payment_webhooks WHERE provider = ? AND event_id = ?", (provider, event_id)
+    ).fetchone() is not None
+
+
+@money_atomic
+def _settle_and_record_webhook(conn: sqlite3.Connection, provider: str, event_type: str,
+                               event_id: str, order_no: str, raw: str, settle) -> bool:
+    """Grant the entitlement AND write the dedup row as ONE atomic unit that
+    commits together. Closes the record-then-settle window: the dedup INSERT
+    used to commit on its own BEFORE settle ran, so a crash in between left the
+    event marked processed while nothing was granted, and the provider's retry
+    was then skipped (first=False) — the "charged real money, received nothing,
+    unrecoverable" hole. Now a crash rolls back BOTH, so the retry re-processes."""
+    settle(conn)
+    record_payment_webhook(conn, provider, event_type, event_id, order_no, raw, True)
+    return True
+
+
+def process_payment_webhook(conn: sqlite3.Connection, provider: str, event_type: str,
+                            event_id: str, order_no: str, raw: str, settle) -> bool:
+    """Idempotently settle a verified provider callback. `settle(conn)` performs
+    the grant and MUST raise APIError for a PERMANENT business rejection (amount
+    mismatch / wrong provider / not payable) — those are recorded as seen WITHOUT
+    granting, so the provider stops retrying a non-settleable event. Any OTHER
+    exception (a transient crash / DB error) propagates after the transaction
+    rolls back, leaving no dedup row, so the provider retry re-processes it
+    cleanly. Returns True iff this call performed the first settlement."""
+    if _payment_webhook_seen(conn, provider, event_id):
+        return False
+    try:
+        return _settle_and_record_webhook(conn, provider, event_type, event_id, order_no, raw, settle)
+    except APIError as exc:
+        ACCESS_LOG.warning("%s webhook settle rejected order=%s code=%s",
+                           provider, order_no, getattr(exc, "code", ""))
+        try:
+            record_payment_webhook(conn, provider, event_type, event_id, order_no, raw, True)
+        except Exception:
+            pass
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -13991,13 +14250,16 @@ def _guide_product_resource_type(product_row: dict[str, Any]) -> str:
     return str(dict(product_row).get("entitlement_type") or "guide_product")
 
 
+@money_atomic
 def wallet_debit_for_product(conn: sqlite3.Connection, user_id: str, product_row: dict[str, Any], *,
                              idempotency_key: str = "") -> dict[str, Any]:
     """Spend Machi Points on a guide product: debit the wallet, create a
     fulfilled guide_order, grant the entitlement. Returns a status dict with
-    one of: already_owned / insufficient / fulfilled. The debit is atomic and
-    never overdraws; if the entitlement can't be granted afterward the points
-    are returned via a refund_credit so the user is never charged for nothing."""
+    one of: already_owned / insufficient / fulfilled. The whole debit→order→
+    grant runs as ONE transaction (@money_atomic) so a crash mid-sequence can't
+    leave points spent with no entitlement; never overdraws; if a concurrent
+    purchase wins the entitlement race the points are refunded so the user is
+    never charged for nothing."""
     d = dict(product_row)
     resource_type = _guide_product_resource_type(d)
     resource_id = str(d.get("id"))
@@ -14685,8 +14947,14 @@ def verify_wechat_webhook(headers: dict[str, str], raw_body: bytes) -> dict[str,
         if not _verify_wechat_signature(headers, raw_body):
             ERR_LOG.warning("wechat webhook rejected: platform signature/timestamp invalid")
             return None
+    elif PRODUCTION:
+        # Defense-in-depth: never accept an unverified (decrypt-only) callback in
+        # production. Require the platform public key so WeChat's RSA signature +
+        # replay window are actually checked before we settle real money.
+        ERR_LOG.warning("wechat webhook rejected: WECHAT_PAY_PLATFORM_PUBLIC_KEY unset in production")
+        return None
     else:
-        ERR_LOG.warning("wechat webhook: WECHAT_PAY_PLATFORM_PUBLIC_KEY unset — decrypt-only")
+        ERR_LOG.warning("wechat webhook: WECHAT_PAY_PLATFORM_PUBLIC_KEY unset — decrypt-only (non-prod only)")
     try:
         envelope = json.loads(body_text)
         resource = envelope["resource"]
@@ -16928,13 +17196,13 @@ class Handler(BaseHTTPRequestHandler):
         self._set_security_headers()
         self.end_headers()
 
-    def _error_envelope(self, code: str, message: str) -> dict[str, Any]:
+    def _error_envelope(self, code: str, message: str, detail: dict[str, Any] | None = None) -> dict[str, Any]:
         # Unified error envelope. requestId is also in the X-Request-Id header;
         # echoing it in the body lets clients surface it without reading
         # headers. Additive — existing {error:{code,message}} / {ok,code,message}
         # consumers keep working. Matches brief §8.
         rid = getattr(self, "_request_id", "") or ""
-        return {
+        env: dict[str, Any] = {
             "success": False,
             "ok": False,
             "code": code,
@@ -16942,9 +17210,14 @@ class Handler(BaseHTTPRequestHandler):
             "requestId": rid,
             "error": {"code": code, "message": message, "requestId": rid},
         }
+        if detail:
+            env["detail"] = detail
+            env["error"]["detail"] = detail
+        return env
 
-    def send_error_json(self, message: str, status: int = 400, code: str = "bad_request") -> None:
-        self.send_json(self._error_envelope(code, message), status)
+    def send_error_json(self, message: str, status: int = 400, code: str = "bad_request",
+                        detail: dict[str, Any] | None = None) -> None:
+        self.send_json(self._error_envelope(code, message, detail), status)
 
     # --- Generic idempotency (opt-in via the Idempotency-Key header) ----------
     # A repeated write (POST/PATCH/PUT/DELETE) carrying the same
@@ -21249,6 +21522,127 @@ class Handler(BaseHTTPRequestHandler):
             product["canBuyWithPoints"] = bool(base_points_eligible and int(row["wallet_price_points"] or 0) > 0)
         self.send_json({"status": "ok", "product": product})
 
+    def api_entitlement_resolve(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Single source of truth for a guide product's unlock path. Collapses the
+        three payment systems (membership-included / Machi Points / one-time
+        purchase) into ONE ordered `options` list + a single `recommended` method,
+        so iOS and Web render one unified unlock control instead of two competing
+        ones. Read-only — no money moves, mirrors api_guide_product_detail's gate."""
+        country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
+        lang = _guide_lang_key(language)
+        id_or_slug = (query.get("product") or query.get("id") or query.get("slug") or "").strip()
+        if not id_or_slug:
+            raise APIError("缺少 product 参数", 400, "product_required")
+        row = conn.execute(
+            "SELECT * FROM guide_products WHERE (id = ? OR slug = ?) AND country = ? "
+            "AND status IN ('published','coming_soon') LIMIT 1",
+            (id_or_slug, id_or_slug, country)).fetchone()
+        if not row:
+            raise APIError("资料/服务不存在", 404, "guide_product_not_found")
+        d = dict(row)
+
+        is_free = bool(d.get("is_free"))
+        is_service = bool(d.get("is_service"))
+        is_coming = bool(d.get("is_coming_soon"))
+        is_hidden = bool(d.get("is_price_hidden"))
+        is_appt = bool(d.get("is_appointment_only"))
+        member_included = bool(d.get("is_member_included")) and not is_service
+        price = int(d.get("price") or 0)
+        currency = normalize_currency(d.get("currency") or "CNY")
+        price_label = guide_price_label_from_row(d) or format_price_value(price, currency)
+
+        session = self.current_session(conn)
+        uid = session["user_id"] if session else None
+        owned = False
+        is_member = False
+        if uid:
+            owned = conn.execute(
+                "SELECT 1 FROM guide_orders WHERE user_id = ? AND product_id = ? "
+                "AND status IN ('paid','fulfilled') LIMIT 1",
+                (uid, d["id"])).fetchone() is not None
+            if not owned and user_has_entitlement(conn, uid, _guide_product_resource_type(d), d["id"]):
+                owned = True
+            is_member = has_active_membership(conn, uid)
+        member_unlocked = bool(member_included and is_member)
+
+        points_eligible = bool(
+            d.get("wallet_eligible") and not is_coming and not is_hidden and not is_appt)
+        required_points = 0
+        balance_points = 0
+        if uid and points_eligible:
+            required_points = compute_product_points_price(conn, uid, d)
+            balance_points = get_wallet_snapshot(conn, uid)["balancePoints"]
+        elif points_eligible:
+            required_points = int(d.get("wallet_price_points") or 0)
+
+        def _l(en: str, ja: str, zh: str) -> str:
+            return en if lang == "en" else (ja if lang == "ja" else zh)
+
+        if owned or member_unlocked:
+            state = "owned"
+        elif is_free:
+            state = "free"
+        else:
+            state = "locked"
+
+        options: list[dict[str, Any]] = []
+        if state == "locked":
+            if member_included:
+                options.append({
+                    "method": "membership", "available": True, "route": "membership",
+                    "label": _l("Unlock with membership", "メンバーシップで解除", "开通会员解锁"),
+                    "detail": _l("Included free for Machi members", "Machi メンバーは無料で閲覧",
+                                 "Machi 认证会员免费查看"),
+                })
+            if points_eligible and required_points > 0:
+                sufficient = bool(uid and balance_points >= required_points)
+                options.append({
+                    "method": "points", "available": sufficient, "route": "points_purchase",
+                    "requiredPoints": required_points,
+                    "currentBalance": balance_points if uid else 0, "sufficient": sufficient,
+                    "label": _l(f"Use {required_points:,} points", f"{required_points:,} ポイントで購入",
+                                f"用 {required_points:,} 币购买"),
+                    "detail": (_l("Top up to unlock", "チャージして解除", "余额不足，可充值后购买")
+                               if uid and not sufficient else ""),
+                })
+            if not is_service and not is_coming and not is_hidden and not is_appt and price > 0:
+                options.append({
+                    "method": "purchase",
+                    "available": bool(stripe_configured() or PAYMENT_MOCK_ENABLED),
+                    "route": "stripe_checkout", "price": price, "currency": currency,
+                    "priceLabel": price_label,
+                    "iosIapProductId": d.get("ios_iap_product_id") or "",
+                    "appleProductId": d.get("apple_product_id") or "",
+                    "label": _l(f"Buy {price_label}", f"購入 {price_label}", f"购买 {price_label}"),
+                })
+            if is_service or is_hidden or is_appt:
+                options.append({
+                    "method": "consultation", "available": True, "route": "consultation",
+                    "label": _l("Book a consultation", "相談予約", "预约咨询"),
+                })
+            if is_coming:
+                options.append({
+                    "method": "coming_soon", "available": False, "route": "",
+                    "label": _l("Coming soon", "準備中", "即将开放"),
+                })
+
+        recommended = ""
+        for opt in options:
+            if opt.get("available"):
+                recommended = str(opt["method"])
+                break
+        if not recommended and options:
+            recommended = str(options[0]["method"])
+
+        payload = {
+            "productId": d["id"], "slug": d.get("slug") or "", "title": d.get("title") or "",
+            "state": state, "signedIn": session is not None, "isMember": is_member,
+            "owned": owned, "memberUnlocked": member_unlocked,
+            "options": options, "recommended": recommended,
+        }
+        self.send_json({"status": "ok", "resolver": payload, "data": payload})
+
     def api_guide_my_library(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         """Unified purchase-after view: owned + member-unlocked materials, the
         user's service requests, and a merged order history (guide purchases +
@@ -24478,7 +24872,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         except APIError as exc:
             status_code = exc.status
-            self.send_error_json(str(exc), exc.status, exc.code)
+            self.send_error_json(str(exc), exc.status, exc.code, getattr(exc, "detail", None))
         except sqlite3.IntegrityError as exc:
             status_code = 409
             self.send_error_json(str(exc), 409, "conflict")
@@ -24782,6 +25176,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_listings(conn, query)
         if path == "/api/listings" and method == "POST":
             return self.api_create_listing(conn)
+        if path == "/api/listing_publish_precheck" and method == "GET":
+            return self.api_listing_publish_precheck(conn, query)
         if path in {"/api/my/listings", "/api/me/listings"} and method == "GET":
             next_query = dict(query)
             next_query["owner"] = "me"
@@ -24909,13 +25305,21 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/notifications/") and method == "DELETE":
             return self.api_delete_notification(conn, path.split("/")[3])
 
+        # saved-search alerts (N4)
+        if path == "/api/saved_searches" and method == "GET":
+            return self.api_saved_searches(conn)
+        if path == "/api/saved_searches" and method == "POST":
+            return self.api_create_saved_search(conn)
+        if path.startswith("/api/saved_searches/") and method == "DELETE":
+            return self.api_delete_saved_search(conn, unquote(path[len("/api/saved_searches/"):]))
+
         # conversations
         if path == "/api/messages/mutual-friends" and method == "GET":
             return self.api_mutual_message_friends(conn, query)
         if path == "/api/messages/conversations/create" and method == "POST":
             return self.api_create_conversation(conn)
         if path == "/api/conversations" and method == "GET":
-            return self.api_conversations(conn)
+            return self.api_conversations(conn, query)
         if path == "/api/conversations" and method == "POST":
             return self.api_create_conversation(conn)
         if path.startswith("/api/conversations/"):
@@ -25176,6 +25580,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_article_detail(conn, unquote(path[len("/api/guide/articles/"):]), query)
         if path == "/api/guide/my-library" and method == "GET":
             return self.api_guide_my_library(conn, query)
+        if path == "/api/entitlement/resolve" and method == "GET":
+            return self.api_entitlement_resolve(conn, query)
         if path == "/api/guide/products" and method == "GET":
             return self.api_guide_products(conn, query)
         if path.startswith("/api/guide/products/"):
@@ -25184,6 +25590,8 @@ class Handler(BaseHTTPRequestHandler):
             tail = "/".join(parts[1:])
             if not tail and method == "GET":
                 return self.api_guide_product_detail(conn, product_id, query)
+            if tail == "entitlement" and method == "GET":
+                return self.api_entitlement_resolve(conn, {**query, "product": product_id})
             if tail == "purchase" and method == "POST":
                 return self.api_guide_purchase_product(conn, product_id)
             if tail == "download-url" and method == "POST":
@@ -26090,14 +26498,15 @@ class Handler(BaseHTTPRequestHandler):
         transaction_id = str(resource.get("transaction_id") or "")
         amount_total = int((resource.get("amount") or {}).get("total") or 0)
         event_id = transaction_id or out_trade_no
-        first = record_payment_webhook(conn, "wechat_pay", trade_state, event_id, out_trade_no,
-                                       json.dumps(resource, ensure_ascii=False), True)
-        if first and trade_state == "SUCCESS" and out_trade_no:
-            try:
-                mark_order_paid(conn, out_trade_no, provider_trade_no=transaction_id,
-                                expected_provider="wechat_pay", paid_amount_cents=amount_total)
-            except APIError as exc:
-                ACCESS_LOG.warning("wechat webhook settle rejected order=%s code=%s", out_trade_no, exc.code)
+        raw_resource = json.dumps(resource, ensure_ascii=False)
+        if trade_state == "SUCCESS" and out_trade_no:
+            process_payment_webhook(
+                conn, "wechat_pay", trade_state, event_id, out_trade_no, raw_resource,
+                lambda c: mark_order_paid(c, out_trade_no, provider_trade_no=transaction_id,
+                                          expected_provider="wechat_pay", paid_amount_cents=amount_total),
+            )
+        else:
+            record_payment_webhook(conn, "wechat_pay", trade_state, event_id, out_trade_no, raw_resource, True)
         self.send_json({"code": "SUCCESS", "message": "OK"})
 
     def api_payment_webhook_alipay(self, conn: sqlite3.Connection) -> None:
@@ -26116,13 +26525,14 @@ class Handler(BaseHTTPRequestHandler):
         body = b"failure"
         if ok:
             event_id = trade_no or out_trade_no
-            first = record_payment_webhook(conn, "alipay", trade_status, event_id, out_trade_no, raw[:8000], True)
-            if first and trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and out_trade_no:
-                try:
-                    mark_order_paid(conn, out_trade_no, provider_trade_no=trade_no,
-                                    expected_provider="alipay", paid_amount_cents=amount_cents)
-                except APIError as exc:
-                    ACCESS_LOG.warning("alipay webhook settle rejected order=%s code=%s", out_trade_no, exc.code)
+            if trade_status in ("TRADE_SUCCESS", "TRADE_FINISHED") and out_trade_no:
+                process_payment_webhook(
+                    conn, "alipay", trade_status, event_id, out_trade_no, raw[:8000],
+                    lambda c: mark_order_paid(c, out_trade_no, provider_trade_no=trade_no,
+                                              expected_provider="alipay", paid_amount_cents=amount_cents),
+                )
+            else:
+                record_payment_webhook(conn, "alipay", trade_status, event_id, out_trade_no, raw[:8000], True)
             body = b"success"
         else:
             record_payment_webhook(conn, "alipay", trade_status, trade_no or out_trade_no, out_trade_no, raw[:8000], False)
@@ -26149,23 +26559,25 @@ class Handler(BaseHTTPRequestHandler):
             amount_total = int(obj.get("amount_total") or 0)
             payment_intent = str(obj.get("payment_intent") or "")
             subscription_id = str(obj.get("subscription") or "")
-            first = record_payment_webhook(conn, "stripe", event_type, event_id, order_no,
-                                           json.dumps(event, ensure_ascii=False), True)
             kind = str((obj.get("metadata") or {}).get("kind") or "")
-            if first and order_no and str(obj.get("payment_status") or "") == "paid":
-                if kind == "wallet_topup" or order_no.startswith("WT"):
-                    # Machi Points top-up — credit points exactly once.
-                    wallet_credit_topup(conn, order_no, provider_trade_no=payment_intent, source_type="stripe")
-                elif order_no.startswith("GP"):
-                    # Machi Guide product order (digital resource / paid service).
-                    settle_guide_order(conn, order_no, payment_intent, amount_total)
-                else:
-                    try:
-                        mark_order_paid(conn, order_no, provider_trade_no=payment_intent,
+            raw_event = json.dumps(event, ensure_ascii=False)
+            if order_no and str(obj.get("payment_status") or "") == "paid":
+                def _settle_stripe(c: sqlite3.Connection) -> None:
+                    if kind == "wallet_topup" or order_no.startswith("WT"):
+                        # Machi Points top-up — credit points exactly once.
+                        wallet_credit_topup(c, order_no, provider_trade_no=payment_intent, source_type="stripe")
+                    elif order_no.startswith("GP"):
+                        # Machi Guide product order (digital resource / paid service).
+                        settle_guide_order(c, order_no, payment_intent, amount_total)
+                    else:
+                        mark_order_paid(c, order_no, provider_trade_no=payment_intent,
                                         expected_provider="stripe", paid_amount_cents=amount_total,
                                         provider_subscription_id=subscription_id)
-                    except APIError as exc:
-                        ACCESS_LOG.warning("stripe webhook settle rejected order=%s code=%s", order_no, exc.code)
+                # Dedup-record + settle commit as one unit (process_payment_webhook).
+                process_payment_webhook(conn, "stripe", event_type, event_id, order_no, raw_event, _settle_stripe)
+            else:
+                # Not an actionable paid checkout — just mark the event seen.
+                record_payment_webhook(conn, "stripe", event_type, event_id, order_no, raw_event, True)
         elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
             sub_id = str(obj.get("id") or "")
             status = str(obj.get("status") or "")
@@ -27235,8 +27647,10 @@ class Handler(BaseHTTPRequestHandler):
         )
         if handle in RESERVED_HANDLES and not bootstrap_allowed:
             raise APIError("这个用户名不可使用", 400, "reserved_handle")
-        if len(password) < 6:
-            raise APIError("密码至少 6 位", 400, "invalid_password")
+        # Single source of truth for password strength (>=8 chars + letters and
+        # digits). Enforced on EVERY registration path — the legacy codeless path
+        # previously only required >=6, weaker than the policy Web/iOS advertise.
+        validate_password_strength(password)
         if len(password) > 256:
             raise APIError("密码过长", 400, "invalid_password")
         if not display_name:
@@ -27256,7 +27670,6 @@ class Handler(BaseHTTPRequestHandler):
         if require_code:
             if not is_valid_email(email):
                 raise APIError("请填写有效邮箱", 400, "invalid_email")
-            validate_password_strength(password)
             consume_auth_code(conn, purpose="register", email=email, code=submitted_code)
         else:
             # Codeless (legacy) registration is otherwise a wide-open bot
@@ -29539,6 +29952,64 @@ class Handler(BaseHTTPRequestHandler):
         items = fetch_listings_with_extras(conn, picked, viewer_id)
         self.send_json({"ok": True, "items": items, "data": {"items": items}})
 
+    def api_listing_publish_precheck(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Pre-flight a listing publish (modify#9): returns ALL blockers
+        (membership / reputation / quota) + thresholds + remedy BEFORE the user
+        fills the form, so REPUTATION_LIMITED / MEMBERSHIP_* finally have an
+        explanation. Read-only — calls the SAME gate as api_create_listing but
+        converts raised APIErrors into structured blockers instead of 403ing."""
+        user = self.require_user(conn)
+        listing_type = normalize_listing_type(query.get("type") or query.get("listing_type"))
+        blockers: list[dict[str, Any]] = []
+        requires_review = False
+        try:
+            requires_review, _reason = reputation_validate_listing_publish(conn, user, listing_type)
+        except APIError as exc:
+            blockers.append({
+                "code": exc.code, "message": str(exc),
+                "detail": getattr(exc, "detail", None),
+                "remedy": {
+                    "MEMBERSHIP_REQUIRED": "join_membership",
+                    "MEMBERSHIP_LISTING_QUOTA_EXCEEDED": "wait_next_month_or_upgrade",
+                    "REPUTATION_LIMITED": "build_reputation",
+                }.get(exc.code, ""),
+            })
+        requires_membership = listing_type_requires_membership(listing_type)
+        has_member = has_active_membership(conn, user["id"])
+        membership_ctx: dict[str, Any] = {"required": requires_membership, "hasActive": has_member}
+        if requires_membership:
+            prior = conn.execute(
+                "SELECT COUNT(*) AS c FROM city_listings WHERE seller_user_id = ? AND type = ? AND status != 'deleted'",
+                (user["id"], listing_type),
+            ).fetchone()
+            membership_ctx["freeFirst"] = {
+                "limit": LISTING_FREE_FIRST_PER_TYPE,
+                "used": int((prior["c"] if prior else 0) or 0),
+            }
+            if has_member:
+                usage = membership_listing_monthly_usage(conn, user["id"], listing_type)
+                membership_ctx["quota"] = {
+                    "used": int(usage["used"]), "limit": int(usage["limit"]),
+                    "remaining": usage["remaining"], "monthStart": usage.get("month_start"),
+                }
+        rep = reputation_ensure_user(conn, user["id"])
+        controls = reputation_effective_limits(conn, rep, user)
+        reputation_ctx = {
+            "canPublishSecondhand": bool(controls.get("can_publish_secondhand")),
+            "secondhandRequiresReview": bool(controls.get("secondhand_requires_review")),
+            "highRiskRequiresReview": bool(controls.get("high_risk_requires_review")),
+        }
+        payload = {
+            "listingType": listing_type,
+            "canPublish": len(blockers) == 0,
+            "requiresReview": bool(requires_review) or listing_type in LISTING_TYPES_DEFAULT_REVIEW,
+            "blockers": blockers,
+            "membership": membership_ctx,
+            "reputation": reputation_ctx,
+            "reviewByDefault": listing_type in LISTING_TYPES_DEFAULT_REVIEW,
+        }
+        self.send_json({"ok": True, "precheck": payload, "data": payload})
+
     def api_create_listing(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         data = self.read_json()
@@ -29695,6 +30166,9 @@ class Handler(BaseHTTPRequestHandler):
         elif status == "pending_review":
             reputation_open_trust_review(conn, user["id"], int(reputation_ensure_user(conn, user["id"]).get("risk_score") or 0), target_kind="listing", target_id=listing_id, reason=reputation_review_reason)
         HUB.broadcast([user["id"]], {"type": "listing_created", "listing_id": listing_id, "listing_type": listing_type})
+        if status == "published":
+            notify_saved_search_matches(conn, dict(conn.execute(
+                "SELECT * FROM city_listings WHERE id = ?", (listing_id,)).fetchone()))
         requires_review = status == "pending_review"
         self.send_json({"ok": True, "listing": listing, "requires_review": requires_review, "data": {"listing": listing, "requires_review": requires_review}}, status=201)
 
@@ -29916,6 +30390,74 @@ class Handler(BaseHTTPRequestHandler):
         ))
         items = fetch_listings_with_extras(conn, [dict(r) for r in rows], user["id"])
         self.send_json({"ok": True, "items": items, "data": {"items": items, "filters": {"type": listing_type}}})
+
+    def api_saved_searches(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        rows = list(conn.execute(
+            "SELECT * FROM saved_searches WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+            (user["id"], SAVED_SEARCH_MAX_PER_USER),
+        ))
+        items = [serialize_saved_search(dict(r)) for r in rows]
+        self.send_json({"ok": True, "items": items, "data": {"items": items}})
+
+    def api_create_saved_search(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        raw_vertical = str(data.get("vertical") or data.get("type") or data.get("listing_type") or "").strip().lower()
+        vertical = normalize_listing_type(raw_vertical) if raw_vertical else ""
+        city_slug = str(data.get("city_slug") or data.get("city") or "").strip().lower()[:80]
+        region_code = str(data.get("region_code") or "").strip().lower()[:40]
+        country_code = str(data.get("country_code") or data.get("country") or "").strip().lower()[:8]
+        keyword = str(data.get("keyword") or data.get("q") or "").strip()[:120]
+        category = str(data.get("category") or "").strip()[:80]
+        cadence = str(data.get("cadence") or "instant").strip().lower()
+        if cadence not in SAVED_SEARCH_CADENCES:
+            cadence = "instant"
+        if not (vertical or city_slug or region_code or country_code or keyword or category):
+            raise APIError("订阅条件不能为空", 400, "empty_saved_search")
+        raw_filters = data.get("filters")
+        if raw_filters is None:
+            raw_filters = data.get("filter_json") or {}
+        if isinstance(raw_filters, str):
+            try:
+                raw_filters = json.loads(raw_filters or "{}")
+            except (TypeError, ValueError):
+                raw_filters = {}
+        if not isinstance(raw_filters, dict):
+            raw_filters = {}
+        filter_json = json.dumps(raw_filters, ensure_ascii=False)[:4000]
+        label = str(data.get("label") or "").strip()[:120] or saved_search_auto_label(
+            vertical, city_slug, region_code, keyword, category)
+        count = conn.execute(
+            "SELECT COUNT(*) AS c FROM saved_searches WHERE user_id = ?", (user["id"],)
+        ).fetchone()["c"]
+        if int(count) >= SAVED_SEARCH_MAX_PER_USER:
+            raise APIError(f"订阅数量已达上限({SAVED_SEARCH_MAX_PER_USER})", 400, "saved_search_limit")
+        sid = str(uuid.uuid4())
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO saved_searches (
+                id, user_id, vertical, city_slug, region_code, country_code,
+                keyword, category, filter_json, label, cadence, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (sid, user["id"], vertical, city_slug, region_code, country_code,
+             keyword, category, filter_json, label, cadence, now, now),
+        )
+        row = conn.execute("SELECT * FROM saved_searches WHERE id = ?", (sid,)).fetchone()
+        item = serialize_saved_search(dict(row))
+        self.send_json({"ok": True, "item": item, "data": {"item": item}}, status=201)
+
+    def api_delete_saved_search(self, conn: sqlite3.Connection, sid: str) -> None:
+        user = self.require_user(conn)
+        row = conn.execute("SELECT user_id FROM saved_searches WHERE id = ?", (sid,)).fetchone()
+        if not row:
+            raise APIError("订阅不存在", 404, "saved_search_not_found")
+        if row["user_id"] != user["id"]:
+            raise APIError("无权操作", 403, "forbidden")
+        conn.execute("DELETE FROM saved_searches WHERE id = ?", (sid,))
+        self.send_json({"ok": True})
 
     def api_listing_report(self, conn: sqlite3.Connection, listing_id: str) -> None:
         user = self.require_user(conn)
@@ -31132,6 +31674,10 @@ class Handler(BaseHTTPRequestHandler):
                 metadata={"listing_type": row["type"], "status": updates.get("status"), "verification_status": updates.get("verification_status")},
                 reviewed=True,
             )
+        if updates.get("status") == "published" and row["status"] != "published":
+            # A listing that cleared review is now public — fire saved-search alerts.
+            notify_saved_search_matches(conn, dict(conn.execute(
+                "SELECT * FROM city_listings WHERE id = ?", (listing_id,)).fetchone()))
         if updates.get("status") in {"hidden", "rejected"} and row["status"] not in {"hidden", "rejected"}:
             rule_key = "content_removed"
             reason_text = str(data.get("note") or "城市信息未通过审核或已下架")
@@ -33469,10 +34015,39 @@ class Handler(BaseHTTPRequestHandler):
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
         sort = query.get("sort") or "top"
-        rows = list(conn.execute(
-            "SELECT * FROM comments WHERE post_id = ? AND deleted_at IS NULL ORDER BY created_at DESC",
-            (post_id,),
-        ))
+        # H3: opt-in keyset pagination. No `limit` → unchanged full-set behavior
+        # (honors top/new sort globally). With `limit`, paginate chronologically
+        # (newest-first) with a real `next_cursor` for "load earlier".
+        limit_raw = str(query.get("limit") or "").strip()
+        page_limit: int | None = None
+        if limit_raw:
+            try:
+                page_limit = max(1, min(int(limit_raw), 100))
+            except ValueError:
+                raise APIError("limit 无效", 400, "invalid_limit")
+        next_cursor: str | None = None
+        if page_limit is None:
+            rows = list(conn.execute(
+                "SELECT * FROM comments WHERE post_id = ? AND deleted_at IS NULL ORDER BY created_at DESC",
+                (post_id,),
+            ))
+        else:
+            clauses = ["post_id = ?", "deleted_at IS NULL"]
+            cparams: list[Any] = [post_id]
+            before = cursor_decode(query.get("cursor") or query.get("before"))
+            if before:
+                clauses.append("(created_at < ? OR (created_at = ? AND id < ?))")
+                cparams.extend([before[0], before[0], before[1]])
+            fetched = list(conn.execute(
+                f"SELECT * FROM comments WHERE {' AND '.join(clauses)} "
+                f"ORDER BY created_at DESC, id DESC LIMIT ?",
+                [*cparams, page_limit + 1],
+            ))
+            has_more = len(fetched) > page_limit
+            rows = fetched[:page_limit]
+            if has_more and rows:
+                oldest = rows[-1]
+                next_cursor = cursor_encode(oldest["created_at"], oldest["id"])
         ids = [r["id"] for r in rows]
         like_counts: dict[str, int] = {}
         liked_set: set[str] = set()
@@ -33502,11 +34077,12 @@ class Handler(BaseHTTPRequestHandler):
             )
             for r in rows
         ]
-        if sort == "top":
+        if page_limit is None and sort == "top":
             comments.sort(key=lambda c: (c["like_count"], c["created_at"]), reverse=True)
         else:
+            # paginated mode is chronological so the keyset cursor stays valid
             comments.sort(key=lambda c: c["created_at"], reverse=True)
-        self.send_json({"items": comments, "next_cursor": None})
+        self.send_json({"items": comments, "next_cursor": next_cursor, "nextCursor": next_cursor})
 
     def api_create_comment(self, conn: sqlite3.Connection, post_id: str) -> None:
         user = self.require_user(conn)
@@ -33631,9 +34207,18 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"posts": [], "listings": [], "users": [], "topics": [], "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
             return
         if viewer_id:
+            # Dedupe by (user, query) and cap per-user history so the table can't
+            # grow a row on every keystroke-search forever (reads already GROUP BY
+            # query; this stops the underlying row churn / unbounded retention).
+            conn.execute("DELETE FROM search_history WHERE user_id = ? AND query = ?", (viewer_id, q))
             conn.execute(
                 "INSERT INTO search_history (id, user_id, query, created_at) VALUES (?, ?, ?, ?)",
                 (str(uuid.uuid4()), viewer_id, q, now_iso()),
+            )
+            conn.execute(
+                "DELETE FROM search_history WHERE user_id = ? AND id NOT IN ("
+                "SELECT id FROM search_history WHERE user_id = ? ORDER BY created_at DESC LIMIT 50)",
+                (viewer_id, viewer_id),
             )
         like = f"%{q}%"
         posts: list[dict[str, Any]] = []
@@ -33921,20 +34506,28 @@ class Handler(BaseHTTPRequestHandler):
             viewer_country = (viewer_row["country"] if viewer_row else "") or ""
         country_clause = "AND p.country = ?" if viewer_country else ""
         params: tuple[Any, ...] = (viewer_country,) if viewer_country else ()
-        topics = [
-            {"tag": r["tag"], "post_count": int(r["c"])}
-            for r in conn.execute(
-                f"""
-                SELECT t.tag, COUNT(*) AS c
-                FROM post_tags t
-                JOIN posts p ON p.id = t.post_id
-                WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
-                  {country_clause}
-                GROUP BY t.tag ORDER BY c DESC LIMIT 50
-                """,
-                params,
-            )
-        ]
+        # This full post_tags×posts GROUP BY used to run on EVERY call. Cache the
+        # public aggregate per country for a short window (keyed only by country —
+        # the only input that changes the result); viewer-specific fields below
+        # stay live. Collapses the legacy /api/topics fan-out to one DB hit/window.
+        cache_key = f"topics:{viewer_country or '*'}"
+        topics = _cache_get(cache_key)
+        if topics is None:
+            topics = [
+                {"tag": r["tag"], "post_count": int(r["c"])}
+                for r in conn.execute(
+                    f"""
+                    SELECT t.tag, COUNT(*) AS c
+                    FROM post_tags t
+                    JOIN posts p ON p.id = t.post_id
+                    WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
+                      {country_clause}
+                    GROUP BY t.tag ORDER BY c DESC LIMIT 50
+                    """,
+                    params,
+                )
+            ]
+            _cache_put(cache_key, topics, 60.0)
         self.send_json({
             "topics": topics,
             "items": topics,
@@ -34039,24 +34632,47 @@ class Handler(BaseHTTPRequestHandler):
         )
         return dict(conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone())
 
-    def api_conversations(self, conn: sqlite3.Connection) -> None:
+    def api_conversations(self, conn: sqlite3.Connection, query: dict[str, str] | None = None) -> None:
         user = self.require_user(conn)
-        rows = list(conn.execute(
-            """
-            SELECT *
-              FROM conversations
-             WHERE deleted_at IS NULL
-               AND (
-                 (participant_a = ? AND COALESCE(hidden_for_a_at, '') = '')
-                 OR
-                 (participant_b = ? AND COALESCE(hidden_for_b_at, '') = '')
-               )
-             ORDER BY updated_at DESC
-            """,
-            (user["id"], user["id"]),
-        ))
+        query = query or {}
+        # Opt-in keyset pagination on (updated_at, id). No `limit` → unchanged
+        # (entire inbox) so existing clients never regress.
+        limit_raw = str(query.get("limit") or "").strip()
+        page_limit: int | None = None
+        if limit_raw:
+            try:
+                page_limit = max(1, min(int(limit_raw), 100))
+            except ValueError:
+                raise APIError("limit 无效", 400, "invalid_limit")
+        next_cursor: str | None = None
+        clauses = [
+            "deleted_at IS NULL",
+            "((participant_a = ? AND COALESCE(hidden_for_a_at, '') = '') "
+            "OR (participant_b = ? AND COALESCE(hidden_for_b_at, '') = ''))",
+        ]
+        cparams: list[Any] = [user["id"], user["id"]]
+        if page_limit is not None:
+            before = cursor_decode(query.get("cursor") or query.get("before"))
+            if before:
+                clauses.append("(updated_at < ? OR (updated_at = ? AND id < ?))")
+                cparams.extend([before[0], before[0], before[1]])
+            fetched = list(conn.execute(
+                f"SELECT * FROM conversations WHERE {' AND '.join(clauses)} "
+                f"ORDER BY updated_at DESC, id DESC LIMIT ?",
+                [*cparams, page_limit + 1],
+            ))
+            has_more = len(fetched) > page_limit
+            rows = fetched[:page_limit]
+            if has_more and rows:
+                oldest = rows[-1]
+                next_cursor = cursor_encode(oldest["updated_at"], oldest["id"])
+        else:
+            rows = list(conn.execute(
+                f"SELECT * FROM conversations WHERE {' AND '.join(clauses)} ORDER BY updated_at DESC",
+                cparams,
+            ))
         if not rows:
-            self.send_json({"items": []})
+            self.send_json({"items": [], "next_cursor": next_cursor, "nextCursor": next_cursor})
             return
         conv_ids = [r["id"] for r in rows]
         placeholders = ",".join("?" * len(conv_ids))
@@ -34149,7 +34765,7 @@ class Handler(BaseHTTPRequestHandler):
                 }) if last else None,
                 "unread_count": unread_map.get(r["id"], 0),
             }))
-        self.send_json({"items": items})
+        self.send_json({"items": items, "next_cursor": next_cursor, "nextCursor": next_cursor})
 
     def api_create_conversation(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -34308,10 +34924,41 @@ class Handler(BaseHTTPRequestHandler):
                 params.extend([day_start, day_end])
             except ValueError:
                 raise APIError("日期格式无效", 400, "invalid_date")
-        rows = list(conn.execute(
-            f"SELECT * FROM messages WHERE {' AND '.join(filters)} ORDER BY created_at",
-            params,
-        ))
+        # H2: opt-in keyset pagination. With no `limit`, behavior is UNCHANGED
+        # (full chronological history) so existing clients never regress. With
+        # `limit`, return the newest page (optionally older than `cursor`) plus a
+        # `next_cursor` the client passes back to load earlier messages.
+        limit_raw = str(query.get("limit") or "").strip()
+        page_limit: int | None = None
+        if limit_raw:
+            try:
+                page_limit = max(1, min(int(limit_raw), 200))
+            except ValueError:
+                raise APIError("limit 无效", 400, "invalid_limit")
+        next_cursor: str | None = None
+        if page_limit is None:
+            rows = list(conn.execute(
+                f"SELECT * FROM messages WHERE {' AND '.join(filters)} ORDER BY created_at",
+                params,
+            ))
+        else:
+            page_filters = list(filters)
+            page_params = list(params)
+            before = cursor_decode(query.get("cursor") or query.get("before"))
+            if before:
+                page_filters.append("(created_at < ? OR (created_at = ? AND id < ?))")
+                page_params.extend([before[0], before[0], before[1]])
+            fetched = list(conn.execute(
+                f"SELECT * FROM messages WHERE {' AND '.join(page_filters)} "
+                f"ORDER BY created_at DESC, id DESC LIMIT ?",
+                [*page_params, page_limit + 1],
+            ))
+            has_more = len(fetched) > page_limit
+            page = fetched[:page_limit]
+            if has_more and page:
+                oldest = page[-1]
+                next_cursor = cursor_encode(oldest["created_at"], oldest["id"])
+            rows = list(reversed(page))  # ascending for the client
         message_ids = [r["id"] for r in rows]
         media_by_msg: dict[str, list[dict[str, Any]]] = {}
         if message_ids:
@@ -34358,7 +35005,7 @@ class Handler(BaseHTTPRequestHandler):
             })
             for r in rows
         ]
-        self.send_json({"items": items})
+        self.send_json({"items": items, "next_cursor": next_cursor, "nextCursor": next_cursor})
 
     def api_create_message(self, conn: sqlite3.Connection, conv_id: str) -> None:
         user = self.require_user(conn)

@@ -50,24 +50,27 @@ jobs:
       - name: Run backend regression tests
         run: |
           set -euo pipefail
-          python scripts/test_auth_cookie.py
-          python scripts/test_private_media_encryption.py
-          python scripts/test_error_envelope.py
-          python scripts/test_idempotency.py
-          python scripts/test_listing_media_security.py
-          python scripts/test_listing_update_moderation.py
-          python scripts/test_anonymous_post_privacy.py
-          python scripts/test_pg_xlate.py
-          python scripts/test_seed_bot.py
-          python scripts/test_stripe_hardening.py
-          python scripts/test_apple_iap_hardening.py
-          python scripts/test_adaptive_captcha.py
-          python scripts/test_wallet_points.py
-          python scripts/test_account_deletion_scrub.py
-          python scripts/test_ugc_moderation.py
-          python scripts/test_content_policy.py
-          python scripts/test_shared_state.py
-          python scripts/test_lifehub.py
+          # Auto-discover EVERY scripts/test_*.py so new suites are never
+          # silently excluded from CI (H20). Each test is a standalone script
+          # that exits non-zero on failure; we run them in a stable sorted
+          # order and fail the job if any single suite fails.
+          status=0
+          failed=""
+          for t in $(ls scripts/test_*.py | sort); do
+            echo "::group::$t"
+            if python "$t"; then
+              echo "PASS $t"
+            else
+              echo "FAIL $t"
+              status=1
+              failed="$failed $t"
+            fi
+            echo "::endgroup::"
+          done
+          if [ "$status" != 0 ]; then
+            echo "Failing backend suites:$failed"
+            exit 1
+          fi
 
       - name: Verify SQLite to PostgreSQL migration and runtime
         env:

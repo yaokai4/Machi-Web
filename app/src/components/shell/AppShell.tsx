@@ -80,6 +80,7 @@ function currentBrowserPathForRedirect(pathname: string | null) {
 }
 
 export function AppShell({ children, right, requireAuth = true, wide = false, hideBottomNav = false }: AppShellProps) {
+  const { t } = useI18n();
   const user = useSession((s) => s.user);
   const status = useSession((s) => s.status);
   const router = useRouter();
@@ -149,12 +150,15 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
   return (
     <div className="kx-app-shell min-h-dvh">
       <div className="kx-grain" aria-hidden="true" />
+      {/* Skip link: first focusable element, lets keyboard/AT users jump past the
+          nav straight to content. Visually hidden until focused. */}
+      <a href="#main-content" className="kx-skip-link">{t("skip_to_content")}</a>
       <Toaster />
       <Composer />
       <AuthRequiredDialog />
       <div className="relative z-[1] mx-auto flex w-full max-w-kx-shell">
         <Sidebar pathname={pathname} redirectPath={redirectPath} user={user} />
-        <main className={clsx(
+        <main id="main-content" className={clsx(
           "kx-shell-main flex-1 min-w-0 border-x border-kx-stroke/35",
           useWideLayout ? "lg:max-w-none" : "lg:max-w-kx-feed",
         )}>
@@ -258,6 +262,8 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
                 type="button"
                 onClick={() => openAuthPrompt(item.key === "messages" ? "message" : "generic")}
                 data-active={active}
+                aria-label={t(item.labelKey)}
+                aria-current={active ? "page" : undefined}
                 className={clsx(itemClass, "text-left")}
               >
                 {content}
@@ -269,6 +275,8 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
               key={item.key}
               href={item.href}
               data-active={active}
+              aria-label={t(item.labelKey)}
+              aria-current={active ? "page" : undefined}
               className={itemClass}
             >
               {content}

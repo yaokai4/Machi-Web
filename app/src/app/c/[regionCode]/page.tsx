@@ -112,7 +112,9 @@ export default function CityChannelPage({
     return () => io.disconnect();
   }, [feed]);
 
-  const items = feed.data?.pages.flatMap((p) => p.items) ?? [];
+  // Guard each page's items: a malformed page (missing/!array items) would make
+  // flatMap throw and crash the feed. Mirrors HomeClient's defensive flatten.
+  const items = feed.data?.pages.flatMap((p) => (Array.isArray(p?.items) ? p.items : [])) ?? [];
 
   return (
     <AppShell requireAuth={false}>

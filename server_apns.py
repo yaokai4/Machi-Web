@@ -124,6 +124,7 @@ _TYPE_COPY = {
     "bookmark": ("收藏了你的帖子", "があなたの投稿を保存しました", "bookmarked your post"),
     "message":  ("给你发来私信", "からメッセージが届きました", "sent you a message"),
     "listing_inquiry": ("咨询了你的发布", "があなたの出品に問い合わせました", "asked about your listing"),
+    "saved_search": ("有新的匹配信息", "保存した検索に新しい一致があります", "New match for your saved search"),
 }
 _SYSTEM_TITLE = ("系统通知", "システム通知", "System notification")
 
@@ -230,7 +231,7 @@ def _deliver(job: dict[str, Any]) -> None:
         title = f"{actor_name}{action}" if idx == 1 else f"{actor_name} {action}"
     elif job["ntype"] in _TYPE_COPY:
         action = _TYPE_COPY[job["ntype"]][idx]
-        title = action if idx == 1 else action[0].upper() + action[1:] if idx == 2 else action
+        title = action if idx == 1 else (action[:1].upper() + action[1:]) if idx == 2 else action
     else:
         title = _SYSTEM_TITLE[idx]
 

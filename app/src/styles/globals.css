@@ -1565,6 +1565,36 @@ body::before {
            disabled:opacity-50 disabled:pointer-events-none;
   }
 
+  /* H9: in light mode the accent is #147067 and white text is 5.9:1 (AA pass),
+     but in dark mode the accent lightens to mint (#5CBEB2) where white text is
+     only 2.22:1 (fails WCAG AA). Use the dark page ink (#101216) on the mint
+     fill instead — that pair is ~9:1. Higher specificity overrides text-white. */
+  :root.dark .kx-button-primary,
+  [data-theme="dark"] .kx-button-primary {
+    color: rgb(var(--kx-bg));
+  }
+
+  /* Skip-to-content link: off-screen until focused, then slides in. Lets
+     keyboard / screen-reader users jump past the nav. */
+  .kx-skip-link {
+    position: fixed;
+    left: 12px;
+    top: -56px;
+    z-index: 200;
+    padding: 9px 16px;
+    border-radius: 9999px;
+    background: rgb(var(--kx-accent));
+    color: rgb(var(--kx-bg));
+    font-weight: 600;
+    box-shadow: 0 6px 18px rgb(0 0 0 / 0.18);
+    transition: top 0.16s ease-out;
+  }
+  .kx-skip-link:focus {
+    top: 12px;
+    outline: 2px solid rgb(var(--kx-text));
+    outline-offset: 2px;
+  }
+
   .kx-button-ghost {
     @apply inline-flex items-center justify-center gap-1.5 rounded-full
            bg-kx-soft text-kx-text font-medium text-sm px-3 h-9

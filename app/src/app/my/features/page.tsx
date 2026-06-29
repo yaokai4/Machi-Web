@@ -37,37 +37,39 @@ import { regionDisplayName, regionFromUser } from "@/lib/regions";
 import { useI18n } from "@/lib/i18n";
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 
-const WORK_ITEMS = [
-  { href: "/listings/create", title: "发布城市信息", subtitle: "二手、租房、招聘、商家与服务", icon: BriefcaseBusiness, tone: "text-blue-600 bg-blue-50", badge: "" },
-  { href: "/my/listings", title: "我的发布", subtitle: "审核状态、上下架和详情", icon: ClipboardList, tone: "text-slate-700 bg-slate-100", badge: "" },
-  { href: "/my/saved-listings", title: "我的收藏", subtitle: "收藏的二手、房源和服务", icon: Bookmark, tone: "text-emerald-600 bg-emerald-50", badge: "" },
-  { href: "/my/inquiries", title: "我的咨询", subtitle: "交易、房源和服务沟通", icon: MessageSquare, tone: "text-cyan-600 bg-cyan-50", badge: "leads" },
-  { href: "/my/applications", title: "我的申请", subtitle: "招聘报名与进度", icon: ListChecks, tone: "text-violet-600 bg-violet-50", badge: "" },
-  { href: "/my/reservations", title: "我的预约", subtitle: "看房、订座与到店服务预约", icon: CalendarClock, tone: "text-orange-600 bg-orange-50", badge: "" },
-  { href: "/my/slots", title: "时段预约", subtitle: "为房源/服务设置可预约时段", icon: CalendarClock, tone: "text-teal-600 bg-teal-50", badge: "" },
-  { href: "/my/business", title: "商家服务后台", subtitle: "认证申请、服务管理、线索和点评", icon: Store, tone: "text-teal-700 bg-teal-50", badge: "merchant" },
-  { href: "/wallet", title: "Machi 币钱包", subtitle: "Machi 币余额、充值与记录", icon: Coins, tone: "text-amber-600 bg-amber-50", badge: "" },
-  { href: "/my/orders", title: "我的订单", subtitle: "会员、Guide 和服务订单", icon: CreditCard, tone: "text-pink-600 bg-pink-50", badge: "" },
-  { href: "/membership", title: "Machi 会员", subtitle: "认证标识与高信任发布权限", icon: BadgeCheck, tone: "text-blue-700 bg-blue-50", badge: "membership" },
-  { href: "/settings", title: "账号设置", subtitle: "资料、地区、隐私和安全", icon: Settings, tone: "text-slate-700 bg-slate-100", badge: "" },
+type WorkbenchKey = Parameters<ReturnType<typeof useI18n>["t"]>[0];
+
+const WORK_ITEMS: { href: string; titleKey: WorkbenchKey; subtitleKey: WorkbenchKey; icon: LucideIcon; tone: string; badge: string }[] = [
+  { href: "/listings/create", titleKey: "workbench_item_create_title", subtitleKey: "workbench_item_create_sub", icon: BriefcaseBusiness, tone: "text-blue-600 bg-blue-50", badge: "" },
+  { href: "/my/listings", titleKey: "workbench_item_listings_title", subtitleKey: "workbench_item_listings_sub", icon: ClipboardList, tone: "text-slate-700 bg-slate-100", badge: "" },
+  { href: "/my/saved-listings", titleKey: "workbench_item_saved_title", subtitleKey: "workbench_item_saved_sub", icon: Bookmark, tone: "text-emerald-600 bg-emerald-50", badge: "" },
+  { href: "/my/inquiries", titleKey: "workbench_item_inquiries_title", subtitleKey: "workbench_item_inquiries_sub", icon: MessageSquare, tone: "text-cyan-600 bg-cyan-50", badge: "leads" },
+  { href: "/my/applications", titleKey: "workbench_item_applications_title", subtitleKey: "workbench_item_applications_sub", icon: ListChecks, tone: "text-violet-600 bg-violet-50", badge: "" },
+  { href: "/my/reservations", titleKey: "workbench_item_reservations_title", subtitleKey: "workbench_item_reservations_sub", icon: CalendarClock, tone: "text-orange-600 bg-orange-50", badge: "" },
+  { href: "/my/slots", titleKey: "workbench_item_slots_title", subtitleKey: "workbench_item_slots_sub", icon: CalendarClock, tone: "text-teal-600 bg-teal-50", badge: "" },
+  { href: "/my/business", titleKey: "workbench_item_business_title", subtitleKey: "workbench_item_business_sub", icon: Store, tone: "text-teal-700 bg-teal-50", badge: "merchant" },
+  { href: "/wallet", titleKey: "workbench_item_wallet_title", subtitleKey: "workbench_item_wallet_sub", icon: Coins, tone: "text-amber-600 bg-amber-50", badge: "" },
+  { href: "/my/orders", titleKey: "workbench_item_orders_title", subtitleKey: "workbench_item_orders_sub", icon: CreditCard, tone: "text-pink-600 bg-pink-50", badge: "" },
+  { href: "/membership", titleKey: "workbench_item_membership_title", subtitleKey: "workbench_item_membership_sub", icon: BadgeCheck, tone: "text-blue-700 bg-blue-50", badge: "membership" },
+  { href: "/settings", titleKey: "workbench_item_settings_title", subtitleKey: "workbench_item_settings_sub", icon: Settings, tone: "text-slate-700 bg-slate-100", badge: "" },
 ];
 
 // 个人生活管理工具。原先散落在 Guide(现 Machi AI)首页,现与 iOS 的「我的工作台」
 // 一致地收到这里;底层路由仍在 /guide/* 下,只是入口改到工作台。
-const LIFE_ADMIN_ITEMS = [
-  { href: "/guide/tasks", title: "今日待办", subtitle: "把今天要做的事一处管理", icon: ListChecks, tone: "text-blue-600 bg-blue-50" },
-  { href: "/guide/calendar", title: "日历", subtitle: "截止日与日程一眼看全", icon: CalendarDays, tone: "text-cyan-600 bg-cyan-50" },
-  { href: "/guide/finance", title: "收支记账", subtitle: "记一笔、看结余、设预算", icon: Wallet, tone: "text-emerald-600 bg-emerald-50" },
-  { href: "/guide/life", title: "生活缴费", subtitle: "房租、水电、手机费提醒", icon: Receipt, tone: "text-orange-600 bg-orange-50" },
-  { href: "/guide/applications", title: "升学 / 签证申请", subtitle: "大学、语言学校、签证、JLPT", icon: ClipboardList, tone: "text-violet-600 bg-violet-50" },
-  { href: "/guide/contracts", title: "合同管理", subtitle: "续约与解约窗口提醒", icon: FileText, tone: "text-rose-600 bg-rose-50" },
-  { href: "/guide/documents", title: "证件到期", subtitle: "在留卡、护照、My Number", icon: IdCard, tone: "text-teal-600 bg-teal-50" },
-  { href: "/guide/goals", title: "目标 / 路径", subtitle: "就职、升学、JLPT 等模板", icon: Route, tone: "text-indigo-600 bg-indigo-50" },
+const LIFE_ADMIN_ITEMS: { href: string; titleKey: WorkbenchKey; subtitleKey: WorkbenchKey; icon: LucideIcon; tone: string }[] = [
+  { href: "/guide/tasks", titleKey: "workbench_life_tasks_title", subtitleKey: "workbench_life_tasks_sub", icon: ListChecks, tone: "text-blue-600 bg-blue-50" },
+  { href: "/guide/calendar", titleKey: "workbench_life_calendar_title", subtitleKey: "workbench_life_calendar_sub", icon: CalendarDays, tone: "text-cyan-600 bg-cyan-50" },
+  { href: "/guide/finance", titleKey: "workbench_life_finance_title", subtitleKey: "workbench_life_finance_sub", icon: Wallet, tone: "text-emerald-600 bg-emerald-50" },
+  { href: "/guide/life", titleKey: "workbench_life_life_title", subtitleKey: "workbench_life_life_sub", icon: Receipt, tone: "text-orange-600 bg-orange-50" },
+  { href: "/guide/applications", titleKey: "workbench_life_applications_title", subtitleKey: "workbench_life_applications_sub", icon: ClipboardList, tone: "text-violet-600 bg-violet-50" },
+  { href: "/guide/contracts", titleKey: "workbench_life_contracts_title", subtitleKey: "workbench_life_contracts_sub", icon: FileText, tone: "text-rose-600 bg-rose-50" },
+  { href: "/guide/documents", titleKey: "workbench_life_documents_title", subtitleKey: "workbench_life_documents_sub", icon: IdCard, tone: "text-teal-600 bg-teal-50" },
+  { href: "/guide/goals", titleKey: "workbench_life_goals_title", subtitleKey: "workbench_life_goals_sub", icon: Route, tone: "text-indigo-600 bg-indigo-50" },
 ];
 
 export default function MyFeaturesPage() {
   const user = useSession((s) => s.user);
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const router = useRouter();
   const region = regionFromUser(user);
   const newLeads = useQuery({
@@ -96,18 +98,18 @@ export default function MyFeaturesPage() {
     const status = dashboard.data?.business?.verification_status;
     if (status) {
       switch (status) {
-        case "verified": return "已开通";
+        case "verified": return t("workbench_badge_active");
         case "pending":
-        case "needs_review": return "审核中";
-        case "rejected": return "审核失败";
-        case "suspended": return "已暂停";
-        case "draft": return "草稿";
+        case "needs_review": return t("workbench_badge_review");
+        case "rejected": return t("workbench_badge_rejected");
+        case "suspended": return t("workbench_badge_suspended");
+        case "draft": return t("workbench_badge_draft");
         default: break;
       }
     }
-    if (user?.merchant_verified) return "已开通";
-    if (user?.is_merchant) return "审核中";
-    return "未开通";
+    if (user?.merchant_verified) return t("workbench_badge_active");
+    if (user?.is_merchant) return t("workbench_badge_review");
+    return t("workbench_badge_inactive");
   })();
 
   return (
@@ -116,7 +118,7 @@ export default function MyFeaturesPage() {
         <button
           type="button"
           onClick={() => router.back()}
-          aria-label="返回"
+          aria-label={t("workbench_back")}
           className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-kx-stroke/60 bg-kx-card text-kx-text shadow-[0_8px_22px_-16px_rgba(15,23,42,0.5)] transition hover:border-kx-accent/40 hover:text-kx-accent active:scale-95"
         >
           <ArrowLeft className="h-5 w-5" />
@@ -126,14 +128,14 @@ export default function MyFeaturesPage() {
             <Avatar user={user || undefined} size={64} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="truncate text-2xl font-black text-slate-950">我的工作台</h1>
+                <h1 className="truncate text-2xl font-black text-slate-950">{t("workbench_title")}</h1>
                 {showOfficialBadge(user) ? <OfficialBadge /> : showVerifiedBadge(user) ? <VerifiedBadge /> : null}
               </div>
               <p className="mt-1 truncate text-sm font-semibold text-slate-500">@{user?.handle || "machi"}</p>
               <div className="mt-3 flex flex-wrap gap-2 text-xs font-black text-slate-600">
-                <span className="rounded-full bg-slate-100 px-3 py-1">帖子 {compactNumber(user?.post_count || 0)}</span>
-                <span className="rounded-full bg-slate-100 px-3 py-1">关注 {compactNumber(user?.following_count || 0)}</span>
-                <span className="rounded-full bg-slate-100 px-3 py-1">粉丝 {compactNumber(user?.follower_count || 0)}</span>
+                <span className="rounded-full bg-slate-100 px-3 py-1">{t("workbench_stat_posts")} {compactNumber(user?.post_count || 0)}</span>
+                <span className="rounded-full bg-slate-100 px-3 py-1">{t("workbench_stat_following")} {compactNumber(user?.following_count || 0)}</span>
+                <span className="rounded-full bg-slate-100 px-3 py-1">{t("workbench_stat_followers")} {compactNumber(user?.follower_count || 0)}</span>
                 {region ? <span className="rounded-full bg-blue-50 px-3 py-1 text-blue-700">{region.country_emoji} {regionDisplayName(region, locale)}</span> : null}
               </div>
             </div>
@@ -148,30 +150,30 @@ export default function MyFeaturesPage() {
             <div className="flex flex-wrap items-center justify-between gap-2 px-1">
               <p className="flex items-center gap-2 text-sm font-black text-slate-950">
                 <Store className="h-4 w-4 text-teal-700" />
-                经营概览
+                {t("workbench_business_overview")}
                 {dashboard.data?.business?.verification_status === "verified" ? (
                   <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-black text-emerald-700">
                     <BadgeCheck className="h-3 w-3" />
-                    已认证
+                    {t("workbench_verified")}
                   </span>
                 ) : null}
               </p>
               <Link href="/my/business" className="inline-flex items-center gap-1 text-xs font-black text-teal-700 hover:text-teal-800">
-                进入商家后台
+                {t("workbench_enter_business")}
                 <ChevronRight className="h-3.5 w-3.5" />
               </Link>
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              <MiniMetric icon={ClipboardList} title="在线服务" value={String(merchantMetrics.published)} />
-              <MiniMetric icon={MessageSquare} title="新线索" value={String(merchantMetrics.new_inquiries)} highlight={merchantMetrics.new_inquiries > 0} />
-              <MiniMetric icon={Star} title="收藏" value={String(merchantMetrics.favorites)} />
-              <MiniMetric icon={LayoutDashboard} title="浏览" value={String(merchantMetrics.views)} />
+              <MiniMetric icon={ClipboardList} title={t("workbench_metric_published")} value={String(merchantMetrics.published)} />
+              <MiniMetric icon={MessageSquare} title={t("workbench_metric_new_leads")} value={String(merchantMetrics.new_inquiries)} highlight={merchantMetrics.new_inquiries > 0} />
+              <MiniMetric icon={Star} title={t("workbench_metric_favorites")} value={String(merchantMetrics.favorites)} />
+              <MiniMetric icon={LayoutDashboard} title={t("workbench_metric_views")} value={String(merchantMetrics.views)} />
             </div>
           </section>
         ) : null}
 
         <div>
-          <h2 className="mb-2 px-1 text-sm font-black text-slate-500">生活管理 · 个人事务</h2>
+          <h2 className="mb-2 px-1 text-sm font-black text-slate-500">{t("workbench_section_life")}</h2>
           <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {LIFE_ADMIN_ITEMS.map((item) => {
               const Icon = item.icon;
@@ -182,8 +184,8 @@ export default function MyFeaturesPage() {
                       <Icon className="h-5 w-5" />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-black text-slate-950">{item.title}</p>
-                      <p className="mt-1 truncate text-xs font-semibold text-slate-500">{item.subtitle}</p>
+                      <p className="truncate text-sm font-black text-slate-950">{t(item.titleKey)}</p>
+                      <p className="mt-1 truncate text-xs font-semibold text-slate-500">{t(item.subtitleKey)}</p>
                     </div>
                     <ChevronRight className="h-4 w-4 shrink-0 text-slate-300 transition group-hover:text-emerald-500" />
                   </div>
@@ -193,7 +195,7 @@ export default function MyFeaturesPage() {
           </section>
         </div>
 
-        <h2 className="px-1 text-sm font-black text-slate-500">发布、账户与服务</h2>
+        <h2 className="px-1 text-sm font-black text-slate-500">{t("workbench_section_listings")}</h2>
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {WORK_ITEMS.map((item) => {
             const Icon = item.icon;
@@ -201,8 +203,17 @@ export default function MyFeaturesPage() {
             const merchantBadge = item.badge === "merchant"
               ? merchantStatusBadge
               : item.badge === "membership" && user?.is_verified_member
-                ? "已开通"
+                ? t("workbench_badge_active")
                 : "";
+            const badgeTone = !merchantBadge
+              ? ""
+              : merchantBadge === t("workbench_badge_active") || merchantBadge === t("workbench_verified")
+                ? "bg-emerald-50 text-emerald-700"
+                : merchantBadge === t("workbench_badge_review") || merchantBadge === t("workbench_badge_draft")
+                  ? "bg-amber-50 text-amber-700"
+                  : merchantBadge === t("workbench_badge_rejected") || merchantBadge === t("workbench_badge_suspended")
+                    ? "bg-rose-50 text-rose-700"
+                    : "bg-slate-100 text-slate-500";
             return (
               <Link key={item.href} href={item.href} className="group rounded-[22px] border border-slate-200/70 bg-white p-4 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-blue-200">
                 <div className="flex items-center gap-3">
@@ -216,22 +227,14 @@ export default function MyFeaturesPage() {
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-950">
-                      {item.title}
+                      {t(item.titleKey)}
                       {merchantBadge ? (
-                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${
-                          merchantBadge === "已认证" || merchantBadge === "已开通"
-                            ? "bg-emerald-50 text-emerald-700"
-                            : merchantBadge === "审核中" || merchantBadge === "草稿"
-                              ? "bg-amber-50 text-amber-700"
-                              : merchantBadge === "审核失败" || merchantBadge === "已暂停"
-                                ? "bg-rose-50 text-rose-700"
-                                : "bg-slate-100 text-slate-500"
-                        }`}>
+                        <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${badgeTone}`}>
                           {merchantBadge}
                         </span>
                       ) : null}
                     </p>
-                    <p className="mt-1 truncate text-xs font-semibold text-slate-500">{item.subtitle}</p>
+                    <p className="mt-1 truncate text-xs font-semibold text-slate-500">{t(item.subtitleKey)}</p>
                   </div>
                   <ChevronRight className="h-4 w-4 shrink-0 text-slate-300 transition group-hover:text-blue-500" />
                 </div>

@@ -14,6 +14,7 @@ import { AlertTriangle, CheckCircle2, Coins, Loader2, RefreshCw, ShieldCheck, Sp
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 import type { KXWalletTopupProduct } from "@/lib/types";
 
 // A safe in-app return target carried across the Stripe round trip, so a topup
@@ -28,6 +29,7 @@ export default function WalletPage() {
   const router = useRouter();
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [buying, setBuying] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -71,7 +73,7 @@ export default function WalletPage() {
         await refresh();
         if (res.status === "fulfilled") {
           const granted = res.grantedPoints ?? 0;
-          pushToast({ kind: "success", message: `已到账 ${granted} 币` });
+          pushToast({ kind: "success", message: t("wallet_topup_received").replace("{n}", String(granted)) });
           // Round-trip back to the product the topup was started from.
           if (returnTo) {
             setTopupReceipt(null);
@@ -94,7 +96,7 @@ export default function WalletPage() {
         setConfirming(false);
         clearParams();
       });
-  }, [user, refresh, pushToast, router]);
+  }, [user, refresh, pushToast, router, t]);
 
   const onTopup = useCallback(
     async (pack: KXWalletTopupProduct) => {
@@ -117,12 +119,12 @@ export default function WalletPage() {
           return;
         }
       } catch {
-        pushToast({ kind: "error", message: "充值发起失败，请稍后再试" });
+        pushToast({ kind: "error", message: t("wallet_topup_start_failed") });
       } finally {
         setBuying(null);
       }
     },
-    [user, openAuthPrompt, pushToast],
+    [user, openAuthPrompt, pushToast, t],
   );
 
   const wallet = walletQuery.data?.wallet;
@@ -140,7 +142,7 @@ export default function WalletPage() {
       <div className="mx-auto w-full max-w-2xl space-y-4 px-4 py-6">
         <header className="flex items-center gap-2">
           <Coins className="h-6 w-6 text-kx-accent" />
-          <h1 className="text-xl font-semibold text-kx-text">Machi 币钱包</h1>
+          <h1 className="text-xl font-semibold text-kx-text">{t("wallet_title")}</h1>
         </header>
 
         {topupReceipt ? (
@@ -149,34 +151,34 @@ export default function WalletPage() {
 
         {!user ? (
           <section className="kx-card text-center space-y-3">
-            <p className="text-kx-subtle">登录后查看你的 Machi 币余额与充值。</p>
+            <p className="text-kx-subtle">{t("wallet_guest_hint")}</p>
             <button type="button" onClick={() => openAuthPrompt("generic")} className="kx-button-primary mx-auto justify-center">
-              登录 / 注册
+              {t("wallet_login_register")}
             </button>
           </section>
         ) : walletUnsupported ? (
           <section className="kx-card space-y-3 text-center">
             <AlertTriangle className="mx-auto h-8 w-8 text-kx-subtle" />
-            <p className="text-kx-text">当前版本暂未开放 Machi 币钱包。</p>
-            <p className="text-sm text-kx-subtle">请稍后再试，或更新到最新版本。</p>
+            <p className="text-kx-text">{t("wallet_unsupported_title")}</p>
+            <p className="text-sm text-kx-subtle">{t("wallet_unsupported_hint")}</p>
             <button type="button" onClick={() => walletQuery.refetch()} className="kx-button-ghost mx-auto justify-center">
-              <RefreshCw className="h-4 w-4" /> 重试
+              <RefreshCw className="h-4 w-4" /> {t("wallet_retry")}
             </button>
           </section>
         ) : walletQuery.isError ? (
           <section className="kx-card space-y-3 text-center">
             <AlertTriangle className="mx-auto h-8 w-8 text-amber-500" />
-            <p className="text-kx-text">钱包加载失败</p>
-            <p className="text-sm text-kx-subtle">网络或服务暂时不可用，请重试。</p>
+            <p className="text-kx-text">{t("wallet_load_failed")}</p>
+            <p className="text-sm text-kx-subtle">{t("wallet_load_failed_hint")}</p>
             <button type="button" onClick={() => walletQuery.refetch()} className="kx-button-primary mx-auto justify-center">
-              <RefreshCw className="h-4 w-4" /> 重试
+              <RefreshCw className="h-4 w-4" /> {t("wallet_retry")}
             </button>
           </section>
         ) : (
           <>
             {/* Balance */}
             <section className="kx-card border-kx-accent/20 bg-kx-accentSoft/45">
-              <div className="text-sm text-kx-subtle">当前余额</div>
+              <div className="text-sm text-kx-subtle">{t("wallet_current_balance")}</div>
               <div className="mt-1 flex items-baseline gap-2">
                 <span className="text-3xl font-bold text-kx-text">
                   {wallet ? wallet.displayBalance : <Loader2 className="inline h-6 w-6 animate-spin" />}
@@ -184,15 +186,15 @@ export default function WalletPage() {
               </div>
               {confirming && (
                 <div className="mt-2 flex items-center gap-1 text-sm text-kx-subtle">
-                  <Loader2 className="h-4 w-4 animate-spin" /> 正在确认到账…
+                  <Loader2 className="h-4 w-4 animate-spin" /> {t("wallet_confirming")}
                 </div>
               )}
               <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1">
                 <Link href="/guide" className="inline-flex items-center gap-1 text-sm font-medium text-kx-accent hover:underline">
-                  用 Machi 币购买学习资料 →
+                  {t("wallet_buy_materials")}
                 </Link>
                 <Link href="/guide/my-library" className="inline-flex items-center gap-1 text-sm font-medium text-kx-accent hover:underline">
-                  我的资料库 →
+                  {t("wallet_my_library")}
                 </Link>
               </div>
             </section>
@@ -201,7 +203,7 @@ export default function WalletPage() {
             <section className="kx-card space-y-3">
               <div className="flex items-center gap-2">
                 <Sparkles className="h-5 w-5 text-kx-accent" />
-                <h2 className="font-semibold text-kx-text">充值 Machi 币</h2>
+                <h2 className="font-semibold text-kx-text">{t("wallet_topup_title")}</h2>
               </div>
               {walletQuery.isLoading ? (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -210,7 +212,7 @@ export default function WalletPage() {
                   ))}
                 </div>
               ) : packs.length === 0 ? (
-                <p className="text-sm text-kx-subtle">暂无可充值套餐，请稍后再试。</p>
+                <p className="text-sm text-kx-subtle">{t("wallet_no_packs")}</p>
               ) : (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {packs.map((pack) => (
@@ -228,7 +230,7 @@ export default function WalletPage() {
                         {buying === pack.packKey ? (
                           <Loader2 className="h-4 w-4 animate-spin text-kx-subtle" />
                         ) : (
-                          <span className="text-xs text-kx-subtle">{pack.purchasable ? "Stripe 充值" : "暂不可用"}</span>
+                          <span className="text-xs text-kx-subtle">{pack.purchasable ? t("wallet_topup_via_stripe") : t("wallet_pack_unavailable")}</span>
                         )}
                       </div>
                     </button>
@@ -248,18 +250,18 @@ export default function WalletPage() {
             {/* Recent ledger */}
             <section className="kx-card space-y-2">
               <div className="flex items-center justify-between">
-                <h2 className="font-semibold text-kx-text">最近记录</h2>
+                <h2 className="font-semibold text-kx-text">{t("wallet_recent")}</h2>
                 <Link href="/wallet/ledger" className="text-sm text-kx-accent hover:underline">
-                  全部
+                  {t("wallet_view_all")}
                 </Link>
               </div>
               {entries.length === 0 ? (
-                <p className="text-sm text-kx-subtle">暂无记录。</p>
+                <p className="text-sm text-kx-subtle">{t("wallet_no_records")}</p>
               ) : (
                 <ul className="divide-y divide-kx-stroke/40">
                   {entries.map((e) => (
                     <li key={e.id} className="flex items-center justify-between py-2 text-sm">
-                      <span className="text-kx-text">{ledgerLabel(e.entryType)}</span>
+                      <span className="text-kx-text">{ledgerLabel(e.entryType, t)}</span>
                       <span className={e.pointsDelta >= 0 ? "font-medium text-emerald-600" : "font-medium text-kx-subtle"}>
                         {e.displayDelta}
                       </span>
@@ -275,20 +277,20 @@ export default function WalletPage() {
   );
 }
 
-function ledgerLabel(entryType: string): string {
+function ledgerLabel(entryType: string, t: ReturnType<typeof useI18n>["t"]): string {
   switch (entryType) {
     case "topup":
-      return "充值";
+      return t("wallet_ledger_topup");
     case "bonus":
-      return "充值赠送";
+      return t("wallet_ledger_bonus");
     case "spend":
-      return "购买资料";
+      return t("wallet_ledger_spend");
     case "refund_credit":
-      return "退款返还";
+      return t("wallet_ledger_refund");
     case "admin_adjustment":
-      return "客服调整";
+      return t("wallet_ledger_adjustment");
     case "membership_bonus":
-      return "会员赠币";
+      return t("wallet_ledger_membership_bonus");
     default:
       return entryType;
   }
@@ -304,22 +306,23 @@ function WalletReturnReceipt({
   receipt: { status: "checking" | "success" | "pending" | "error"; points?: number; orderNo?: string };
   onDismiss: () => void;
 }) {
+  const { t } = useI18n();
   const isChecking = receipt.status === "checking";
   const isSuccess = receipt.status === "success";
   const title = isChecking
-    ? "正在确认充值…"
+    ? t("wallet_receipt_checking_title")
     : isSuccess
-      ? "充值成功"
+      ? t("wallet_receipt_success_title")
       : receipt.status === "pending"
-        ? "支付已收到，到账处理中"
-        : "确认失败";
+        ? t("wallet_receipt_pending_title")
+        : t("wallet_receipt_error_title");
   const subtitle = isChecking
-    ? "正在和支付服务核对你的订单，请稍候。"
+    ? t("wallet_receipt_checking_body")
     : isSuccess
-      ? `Machi 币已到账，可立即用于购买资料与服务。`
+      ? t("wallet_receipt_success_body")
       : receipt.status === "pending"
-        ? "支付已完成，点数会在稍后自动到账，无需重复支付。"
-        : "暂时无法确认这笔充值，如果已扣款，点数会在稍后自动到账。";
+        ? t("wallet_receipt_pending_body")
+        : t("wallet_receipt_error_body");
   return (
     <section className="kx-card border-kx-accent/20 bg-kx-accentSoft/45">
       <div className="flex items-start gap-3">
@@ -331,7 +334,7 @@ function WalletReturnReceipt({
             <h2 className="font-black text-kx-text">{title}</h2>
             {!isChecking ? (
               <button type="button" onClick={onDismiss} className="text-xs font-bold text-kx-muted hover:text-kx-text">
-                关闭
+                {t("wallet_receipt_close")}
               </button>
             ) : null}
           </div>
@@ -339,11 +342,11 @@ function WalletReturnReceipt({
           {isSuccess && typeof receipt.points === "number" ? (
             <div className="mt-3 inline-flex items-center gap-2 rounded-kx-md bg-kx-card/70 px-3 py-2">
               <Coins className="h-4 w-4 text-kx-accent" />
-              <span className="font-black text-kx-text">+{receipt.points.toLocaleString()} 币</span>
+              <span className="font-black text-kx-text">+{receipt.points.toLocaleString()} {t("wallet_coins_suffix")}</span>
             </div>
           ) : null}
           {receipt.orderNo ? (
-            <div className="mt-2 text-xs text-kx-muted">订单号：<span className="break-all font-bold text-kx-subtle">{receipt.orderNo}</span></div>
+            <div className="mt-2 text-xs text-kx-muted">{t("wallet_order_no")}<span className="break-all font-bold text-kx-subtle">{receipt.orderNo}</span></div>
           ) : null}
         </div>
       </div>

@@ -641,9 +641,12 @@ function getRentalTabFromUrl(): "homes" | "stays" {
   return tab === "stays" || tab === "hotels" ? "stays" : "homes";
 }
 
-export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; kind: ChannelKind }) {
+export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; kind: ChannelKind }) {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
+  // Cross-city / nationwide index when no citySlug is given (the top-level
+  // /rentals, /jobs, /marketplace entries). City-scoped behavior is unchanged.
+  const nationwide = !citySlug;
   const city = getCityBySlug(citySlug) || getDefaultCity();
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("全部");
@@ -653,7 +656,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   const [sort, setSort] = useState("latest");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
-  const [scope, setScope] = useState<ListingScope>("city");
+  const [scope, setScope] = useState<ListingScope>(nationwide ? "country" : "city");
   // Optional ?seller=<userId> filter — drives the profile's "TA 的发布" view.
   const [sellerFilter, setSellerFilter] = useState("");
   useEffect(() => {
@@ -691,7 +694,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
   // 无限分页：cursor 为字符串；工作频道合并 job+hiring 两条流,
   // 把两个游标编进同一个 JSON pageParam,各自走到尽头为止。
   const listings = useInfiniteQuery({
-    queryKey: ["listings", city.slug, kind, spec.type, category, sort, query, scope, filters.scope_area || "", filters.scope_city || "", JSON.stringify(filters), rentalTab, sectionCategoriesParam, sellerFilter],
+    queryKey: ["listings", nationwide ? "national" : city.slug, kind, spec.type, category, sort, query, scope, filters.scope_area || "", filters.scope_city || "", JSON.stringify(filters), rentalTab, sectionCategoriesParam, sellerFilter],
     initialPageParam: "",
     getNextPageParam: (last: { items: KXCityListing[]; next_cursor: string | null }) => last.next_cursor || undefined,
     queryFn: async ({ pageParam }) => {
@@ -793,7 +796,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
             <spec.icon className="h-5 w-5" />
           </span>
           <div className="min-w-0 flex-1">
-            <h1 className="truncate text-xl font-black text-[rgb(var(--kx-living-ink))]">{city.name} · {spec.title}</h1>
+            <h1 className="truncate text-xl font-black text-[rgb(var(--kx-living-ink))]">{nationwide ? `${pickText(locale, "全国", "全国", "Nationwide")} · ${spec.title}` : `${city.name} · ${spec.title}`}</h1>
             <p className="truncate text-xs font-semibold text-[rgb(var(--kx-living-muted))]">{spec.subtitle}</p>
           </div>
           <Link href="/notifications" className="kx-listing-icon-button hidden sm:grid">
@@ -836,7 +839,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
             </label>
             <button type="button" onClick={() => setFiltersOpen(true)} className="kx-job-search-field text-left">
               <MapPin className="h-5 w-5" />
-              <span className="min-w-0 flex-1 truncate font-semibold">{scopedCity?.name || city.name}</span>
+              <span className="min-w-0 flex-1 truncate font-semibold">{scopedCity?.name || (nationwide ? pickText(locale, "全国", "全国", "Nationwide") : city.name)}</span>
             </button>
             <button type="submit" className="kx-job-search-submit">
               <Search className="h-4 w-4" />
@@ -918,6 +921,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
           <section className="kx-listing-controls mb-5">
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2">
+              {nationwide ? null : (
               <div className="inline-flex shrink-0 items-center rounded-full border border-slate-200 bg-slate-100/80 p-0.5">
                 <button
                   type="button"
@@ -936,6 +940,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
                   {scopeCountryName}
                 </button>
               </div>
+              )}
               <button
                 type="button"
                 onClick={() => setFiltersOpen((value) => !value)}
@@ -1036,11 +1041,11 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
             ) : null}
           </section>
 
-          {kind === "services" ? <VerifiedMerchantsStrip citySlug={city.slug} locale={locale} /> : null}
+          {kind === "services" && !nationwide ? <VerifiedMerchantsStrip citySlug={city.slug} locale={locale} /> : null}
 
           {listings.isLoading ? (
             <div className="space-y-3">
-              <SectionLoading title={`正在加载${city.name}${spec.title}`} rows={1} />
+              <SectionLoading title={nationwide ? `正在加载${spec.title}` : `正在加载${city.name}${spec.title}`} rows={1} />
               <ListingSkeletonGrid type={spec.type} />
             </div>
           ) : listings.isError ? (
@@ -1081,7 +1086,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug: string; k
               </div>
             )
           ) : (
-            <ListingEmptyState type={lodgingActive ? "local_service" : spec.type} cityName={city.name} stays={lodgingActive} />
+            <ListingEmptyState type={lodgingActive ? "local_service" : spec.type} cityName={nationwide ? pickText(locale, "全国", "全国", "Nationwide") : city.name} stays={lodgingActive} />
           )}
           {listings.hasNextPage ? (
             <div ref={loadMoreRef} className="mt-6 flex justify-center">

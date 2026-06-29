@@ -302,21 +302,13 @@ export default function MembershipPage() {
               <BadgeCheck className="mt-0.5 h-4 w-4 shrink-0 text-kx-verified" />
               <div className="text-kx-subtle">
                 <p className="font-semibold text-kx-text">
-                  {locale === "en"
-                    ? "Membership is an identity & benefits plan — not a spendable balance."
-                    : locale === "ja"
-                      ? "メンバーシップは身分と特典であり、残高ではありません。"
-                      : "会员是身份与权益，不是可消费余额。"}
+                  {t("membership_vs_coins_title")}
                 </p>
                 <p className="mt-1">
-                  {locale === "en"
-                    ? "Verified members get a trust badge, posting permissions, priority review, the member library, member discounts and service priority. Machi Coins are a separate prepaid balance you spend on individual materials and services."
-                    : locale === "ja"
-                      ? "認証メンバーは信頼バッジ・投稿権限・優先審査・メンバー資料庫・割引・優先対応を利用できます。Machi コインは個別の資料やサービスを購入する別の前払い残高です。"
-                      : "认证会员享信任标识、发布权限、优先审核、会员资料库、会员折扣与服务优先；Machi 币是另一套预充值余额，用于单独购买资料 / 服务。"}
+                  {t("membership_vs_coins_body")}
                 </p>
                 <Link href="/wallet" className="mt-1 inline-block font-semibold text-kx-accent hover:underline">
-                  {locale === "en" ? "Open wallet →" : locale === "ja" ? "ウォレットを開く →" : "前往钱包 →"}
+                  {t("membership_open_wallet")}
                 </Link>
               </div>
             </section>

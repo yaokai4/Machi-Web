@@ -130,6 +130,10 @@ export function useRealtime() {
       es.onerror = () => {
         es?.close();
         es = null;
+        // Cancel the pending token-rotation timer for this now-dead stream —
+        // otherwise it would later fire its own connect() alongside the backoff
+        // reconnect below, producing a stray duplicate stream.
+        if (renewTimer) { clearTimeout(renewTimer); renewTimer = null; }
         // Reconnect with exponential backoff (closing es stops the browser's
         // own auto-retry so the two can't compound into a storm).
         scheduleReconnect();
