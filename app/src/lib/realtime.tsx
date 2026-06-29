@@ -33,6 +33,19 @@ export function useRealtime() {
     let retryTimer: ReturnType<typeof setTimeout> | null = null;
     let renewTimer: ReturnType<typeof setTimeout> | null = null;
     let closed = false;
+    let attempt = 0;
+
+    // Exponential backoff with jitter (3s → 5min). A persistently failing stream
+    // must never become a reconnect/token storm: the old fixed 5s retry meant a
+    // single left-open tab could hammer POST /api/events/token indefinitely (and
+    // once rate-limited, spin on 429s), starving the user's other API calls.
+    const scheduleReconnect = () => {
+      if (closed) return;
+      if (retryTimer) clearTimeout(retryTimer);
+      const expo = Math.min(5 * 60_000, 3000 * 2 ** Math.min(attempt, 7));
+      attempt += 1;
+      retryTimer = setTimeout(() => void connect(), expo + Math.random() * Math.min(expo, 4000));
+    };
 
     const connect = async () => {
       if (closed) return;
@@ -44,10 +57,10 @@ export function useRealtime() {
         // Renew well before the server-side TTL (default 300s).
         renewMs = Math.max(30_000, (issued.expires_in - 30) * 1000);
       } catch {
-        // If the token endpoint is unreachable, schedule a retry but
-        // do NOT fall back to putting the long-lived bearer in the
-        // URL — keeping it out of logs is the whole point.
-        if (!closed) retryTimer = setTimeout(connect, 5000);
+        // If the token endpoint is unreachable (or rate-limited), back off
+        // exponentially. Do NOT fall back to putting the long-lived bearer in
+        // the URL — keeping it out of logs is the whole point.
+        scheduleReconnect();
         return;
       }
       try {
@@ -61,6 +74,7 @@ export function useRealtime() {
         if (closed) return;
         try { es?.close(); } catch { /* ignore */ }
         es = null;
+        attempt = 0; // planned rotation, not a failure
         void connect();
       }, renewMs);
 
@@ -110,16 +124,15 @@ export function useRealtime() {
 
       es.addEventListener("hello", () => {
         lastEventAt.current = Date.now();
+        attempt = 0; // stream is live again — reset the backoff
       });
 
       es.onerror = () => {
         es?.close();
         es = null;
-        // Reconnect with backoff. The browser may also auto-retry; this
-        // guards against the page being suspended for long periods.
-        if (!closed) {
-          retryTimer = setTimeout(connect, 5000);
-        }
+        // Reconnect with exponential backoff (closing es stops the browser's
+        // own auto-retry so the two can't compound into a storm).
+        scheduleReconnect();
       };
     };
 
