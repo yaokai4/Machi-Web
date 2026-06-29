@@ -16,6 +16,8 @@ import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -260,6 +262,80 @@ def main() -> None:
         h, captured = _handler(free_uid)
         h.api_guide_ai_conversations(conn, {})
         assert all(c["id"] != last_conv for c in captured["data"]["items"]), "deleted conversation must be hidden"
+
+        # 11) Concurrent burst must NOT exceed the daily cap, and must not call
+        #     the paid upstream more than `limit` times. Before the atomic
+        #     reservation, N simultaneous requests all read the same stale count,
+        #     passed the gate, and each burned a real upstream call. Each worker
+        #     uses its OWN connection (sqlite3 connections aren't thread-safe)
+        #     and all start together so the gate/increment windows overlap.
+        burst_uid = _make_user(conn)
+        conn.commit()
+        free_limit = server.MACHI_AI_FREE_DAILY_LIMIT  # 3
+        n_threads = free_limit + 5  # comfortably more requests than the cap
+
+        upstream_calls = {"n": 0}
+        call_lock = threading.Lock()
+
+        def _counting_completion(messages, *, model=None, thinking=False,
+                                 max_tokens=1600, timeout=None):
+            with call_lock:
+                upstream_calls["n"] += 1
+            # A small dwell widens the window a concurrent overrun would exploit,
+            # so a regressed (non-atomic) gate would actually let extras through.
+            time.sleep(0.03)
+            return {
+                "content": "并发回答：请以官方意见为准。",
+                "finish_reason": "stop",
+                "model": "deepseek-v4-flash",  # internal only — must not leak
+                "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+                "latency_ms": 1,
+            }
+
+        seed_llm.machi_ai_chat_completion = _counting_completion  # type: ignore[assignment]
+        server.seed_llm.machi_ai_chat_completion = _counting_completion  # type: ignore[assignment]
+        try:
+            start = threading.Barrier(n_threads)
+            statuses: list[int] = []
+            errors: list[str] = []
+            sink_lock = threading.Lock()
+
+            def _worker(i: int) -> None:
+                tconn = server.db()
+                try:
+                    start.wait()  # release all workers at once
+                    cap = _chat(tconn, burst_uid, f"并发问题 {i}")
+                    with sink_lock:
+                        statuses.append(cap["status"])
+                        _assert_no_leak(cap["data"])
+                except Exception as exc:  # noqa: BLE001 — surface, don't swallow
+                    with sink_lock:
+                        errors.append(f"{type(exc).__name__}: {exc}")
+                finally:
+                    tconn.close()
+
+            workers = [threading.Thread(target=_worker, args=(i,)) for i in range(n_threads)]
+            for t in workers:
+                t.start()
+            for t in workers:
+                t.join()
+
+            assert not errors, f"concurrent workers raised: {errors}"
+            ok = sum(1 for s in statuses if s == 200)
+            denied = sum(1 for s in statuses if s == 429)
+            assert ok == free_limit, f"exactly {free_limit} may pass under a burst, got {ok}: {statuses}"
+            assert denied == n_threads - free_limit, f"the rest must be 429'd: {statuses}"
+            # The money invariant: a paid call happens at most once per allowed
+            # slot. (Reservation precedes the upstream call, so over-claimers are
+            # rejected before ever reaching it — exactly `free_limit` calls.)
+            assert upstream_calls["n"] <= free_limit, (
+                f"paid upstream called {upstream_calls['n']}x but cap is {free_limit} — a burst burned money"
+            )
+            # Ledger settled at exactly the cap; refunds returned every over-claim.
+            assert machi_usage(conn, burst_uid) == free_limit, machi_usage(conn, burst_uid)
+        finally:
+            seed_llm.machi_ai_chat_completion = _mock_completion  # type: ignore[assignment]
+            server.seed_llm.machi_ai_chat_completion = _mock_completion  # type: ignore[assignment]
 
         print("OK")
     finally:

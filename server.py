@@ -17227,7 +17227,7 @@ class Handler(BaseHTTPRequestHandler):
         engine = (data.get("engine") or "auto").strip().lower()
         if engine not in seed_llm.ENGINES:
             engine = "auto"
-        model = (data.get("model") or "").strip()  # DeepSeek mode: 标准/深度思考/Pro
+        model = (data.get("model") or "").strip()  # neutral generation mode: fast/think/pro
         publish_now = bool(data.get("publishNow") if data.get("publishNow") is not None else data.get("publish_now"))
         try:
             count = int(data.get("count") or 0)
@@ -18213,31 +18213,71 @@ class Handler(BaseHTTPRequestHandler):
         }
         self.send_json(envelope, 429)
 
-    def _machi_ai_increment_usage(self, conn: sqlite3.Connection, user_id: str, usage_date: str,
-                                  is_member: bool, usage: dict[str, Any]) -> None:
+    def _machi_ai_reserve_usage(self, conn: sqlite3.Connection, user_id: str,
+                                usage_date: str, is_member: bool) -> int:
+        """Atomically claim one daily quota slot; return the new running total.
+
+        A single UPSERT increments total_count (and the per-tier counter) and
+        RETURNs the post-increment value, so N concurrent callers receive N
+        distinct totals. This closes the check-then-increment race where every
+        request read the same stale count, passed the gate, and burned a paid
+        upstream call. The caller compares the returned count to the daily limit
+        and refunds via _machi_ai_refund_usage if it over-claimed. Correct on
+        SQLite (single writer) and Postgres (the conflicting row is locked for
+        the duration of each INSERT ... ON CONFLICT DO UPDATE)."""
+        now = now_iso()
+        free_delta = 0 if is_member else 1
+        member_delta = 1 if is_member else 0
+        row = conn.execute(
+            "INSERT INTO guide_ai_usage (id, user_id, usage_date, free_count, member_count, "
+            "total_count, prompt_tokens, completion_tokens, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, 1, 0, 0, ?) "
+            "ON CONFLICT(user_id, usage_date) DO UPDATE SET "
+            "total_count = guide_ai_usage.total_count + 1, "
+            "free_count = guide_ai_usage.free_count + ?, "
+            "member_count = guide_ai_usage.member_count + ?, "
+            "updated_at = ? "
+            "RETURNING total_count",
+            (str(uuid.uuid4()), user_id, usage_date, free_delta, member_delta, now,
+             free_delta, member_delta, now),
+        ).fetchone()
+        return int(row["total_count"]) if row else 0
+
+    def _machi_ai_refund_usage(self, conn: sqlite3.Connection, user_id: str,
+                               usage_date: str, is_member: bool) -> None:
+        """Give back a slot reserved by _machi_ai_reserve_usage.
+
+        Used when the reservation over-shot the cap (lost the concurrent race)
+        or the AI call produced no answer, so quota is only ever spent on a real
+        response. Counts are clamped at zero defensively — paired reserve/refund
+        can't underflow, but a stray refund must never push a counter negative."""
+        free_delta = 0 if is_member else 1
+        member_delta = 1 if is_member else 0
+        conn.execute(
+            "UPDATE guide_ai_usage SET "
+            "total_count = MAX(total_count - 1, 0), "
+            "free_count = MAX(free_count - ?, 0), "
+            "member_count = MAX(member_count - ?, 0), "
+            "updated_at = ? WHERE user_id = ? AND usage_date = ?",
+            (free_delta, member_delta, now_iso(), user_id, usage_date),
+        )
+
+    def _machi_ai_record_usage_tokens(self, conn: sqlite3.Connection, user_id: str,
+                                      usage_date: str, usage: dict[str, Any]) -> None:
+        """Add the upstream token tallies to today's row after a successful call.
+
+        The quota slot itself was already claimed by _machi_ai_reserve_usage, so
+        this only updates the diagnostic token columns and never the counters."""
         prompt = int((usage or {}).get("prompt_tokens") or 0)
         completion = int((usage or {}).get("completion_tokens") or 0)
-        now = now_iso()
-        existing = conn.execute(
-            "SELECT id FROM guide_ai_usage WHERE user_id = ? AND usage_date = ?",
-            (user_id, usage_date),
-        ).fetchone()
-        if existing:
-            conn.execute(
-                "UPDATE guide_ai_usage SET total_count = total_count + 1, "
-                "free_count = free_count + ?, member_count = member_count + ?, "
-                "prompt_tokens = prompt_tokens + ?, completion_tokens = completion_tokens + ?, "
-                "updated_at = ? WHERE user_id = ? AND usage_date = ?",
-                (0 if is_member else 1, 1 if is_member else 0, prompt, completion, now, user_id, usage_date),
-            )
-        else:
-            conn.execute(
-                "INSERT INTO guide_ai_usage (id, user_id, usage_date, free_count, member_count, "
-                "total_count, prompt_tokens, completion_tokens, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)",
-                (str(uuid.uuid4()), user_id, usage_date, 0 if is_member else 1,
-                 1 if is_member else 0, prompt, completion, now),
-            )
+        if not prompt and not completion:
+            return
+        conn.execute(
+            "UPDATE guide_ai_usage SET prompt_tokens = prompt_tokens + ?, "
+            "completion_tokens = completion_tokens + ?, updated_at = ? "
+            "WHERE user_id = ? AND usage_date = ?",
+            (prompt, completion, now_iso(), user_id, usage_date),
+        )
 
     def api_guide_ai_chat(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
@@ -18261,9 +18301,12 @@ class Handler(BaseHTTPRequestHandler):
 
         usage_date = machi_ai_usage_date()
         is_member = has_active_membership(conn, user["id"])
-        used = machi_ai_usage_count(conn, user["id"], usage_date)
         limit = machi_ai_daily_limit(is_member)
-        if used >= limit:
+        # Cheap, non-authoritative fast path: reject an obviously over-quota
+        # caller before doing any retrieval work. This read alone is racy (N
+        # concurrent requests all see the same stale count), so the real gate is
+        # the atomic reservation just before the upstream call below.
+        if machi_ai_usage_count(conn, user["id"], usage_date) >= limit:
             return self._guide_ai_quota_response(language, is_member)
 
         # Resolve (but don't yet create) the conversation, and pull recent
@@ -18303,6 +18346,17 @@ class Handler(BaseHTTPRequestHandler):
             user_message=message, language=language, history=history, context_items=context_items,
         )
         thinking = machi_ai_is_complex(message)
+        # Atomically claim a quota slot BEFORE spending money upstream. The
+        # reservation increments and returns today's running total in one
+        # statement, so concurrent requests get distinct totals and only those
+        # landing within the cap proceed — closing the check-then-increment race
+        # that let a burst exceed the free/member cap and burn real tokens. A
+        # failed AI call refunds the slot below, preserving "quota is only ever
+        # spent on a real answer".
+        reserved = self._machi_ai_reserve_usage(conn, user["id"], usage_date, is_member)
+        if reserved > limit:
+            self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
+            return self._guide_ai_quota_response(language, is_member)
         completion = None
         try:
             completion = seed_llm.machi_ai_chat_completion(
@@ -18316,6 +18370,9 @@ class Handler(BaseHTTPRequestHandler):
             # Never surface the provider's raw error — degrade to "unavailable".
             completion = None
         if not completion or not str(completion.get("content") or "").strip():
+            # No answer was produced — refund the reserved slot so a provider
+            # failure never costs the user a quota slot.
+            self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
             return self.send_json(
                 self._error_envelope("AI_UNAVAILABLE", machi_ai_text(
                     language,
@@ -18370,9 +18427,11 @@ class Handler(BaseHTTPRequestHandler):
             "message_count = message_count + 2, updated_at = ? WHERE id = ?",
             (preview, assistant_now, conv_id),
         )
-        self._machi_ai_increment_usage(conn, user["id"], usage_date, is_member, usage)
+        # The quota slot was reserved before the call; only the token tallies
+        # remain to be recorded.
+        self._machi_ai_record_usage_tokens(conn, user["id"], usage_date, usage)
 
-        remaining = None if is_member else max(0, limit - (used + 1))
+        remaining = None if is_member else max(0, limit - reserved)
         self.send_json({
             "status": "ok",
             "conversationId": conv_id,

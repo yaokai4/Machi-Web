@@ -51,27 +51,62 @@ def _env(name: str, default: str = "") -> str:
     return value.strip() if isinstance(value, str) and value.strip() else default
 
 
-# "auto" → try the first configured provider (deepseek, then claude), else None.
-# "deepseek" / "claude" → force that provider. "offline"/"none" → always None.
+# Public engine tokens (what the client/API speak) are neutral: "auto" tries the
+# first configured provider, "engine_a"/"engine_b" force a specific one, and
+# "offline"/"none" skip the LLM. The mapping to the real upstream providers lives
+# only inside this module (see _ENGINE_TO_PROVIDER) — vendor names never leave the
+# server (bundle / API / logs).
 DEFAULT_PROVIDER = _env("SEED_LLM_PROVIDER", "auto").lower()
 
 DEEPSEEK_API_KEY = _env("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = _env("DEEPSEEK_BASE_URL", "https://api.deepseek.com").rstrip("/")
 DEEPSEEK_MODEL = _env("DEEPSEEK_MODEL", "deepseek-chat")
 
-# Selectable DeepSeek generation modes (model id -> human label). All verified
-# to work with JSON mode. "深度思考"/"Pro" think before answering (slower, higher
-# quality); "标准" is the fast default.
+# Real upstream model ids → human label (server-internal). All verified to work
+# with JSON mode. "深度思考"/"Pro" think before answering (slower, higher quality);
+# "标准" is the fast default.
 DEEPSEEK_MODELS: dict[str, str] = {
     "deepseek-chat": "标准（快速）",
     "deepseek-reasoner": "深度思考",
     "deepseek-v4-pro": "Pro（更强）",
 }
 
+# --- public ↔ internal token maps -------------------------------------------
+# The admin UI and every API response speak *neutral* tokens; the real provider
+# and model ids stay server-internal (resolved here from env). This keeps the
+# upstream vendor names out of the client bundle, API payloads, and logs.
 
-def _resolve_model(model: str | None) -> str:
-    """Validate a requested model against the allowlist; fall back to default."""
-    m = (model or "").strip()
+# Neutral generation-mode token → human label (surfaced to the UI).
+SEED_MODES: dict[str, str] = {
+    "fast": "标准（快速）",
+    "think": "深度思考",
+    "pro": "Pro（更强）",
+}
+# Neutral mode token → real upstream model id (never leaves the server).
+_MODE_TO_MODEL: dict[str, str] = {
+    "fast": "deepseek-chat",
+    "think": "deepseek-reasoner",
+    "pro": "deepseek-v4-pro",
+}
+_MODEL_TO_MODE: dict[str, str] = {v: k for k, v in _MODE_TO_MODEL.items()}
+
+# Neutral engine token → real internal provider (never leaves the server).
+_ENGINE_TO_PROVIDER: dict[str, str] = {
+    "engine_a": "deepseek",
+    "engine_b": "claude",
+}
+_PROVIDER_TO_ENGINE: dict[str, str] = {v: k for k, v in _ENGINE_TO_PROVIDER.items()}
+
+
+def _resolve_model(mode: str | None) -> str:
+    """Map a neutral mode token (fast/think/pro) to a real upstream model id.
+
+    Falls back to the configured default for unknown/empty input. Tolerates a
+    real id passed straight through (defensive — the UI only ever sends neutral
+    tokens)."""
+    m = (mode or "").strip()
+    if m in _MODE_TO_MODEL:
+        return _MODE_TO_MODEL[m]
     if m in DEEPSEEK_MODELS or m == DEEPSEEK_MODEL:
         return m
     return DEEPSEEK_MODEL
@@ -94,8 +129,8 @@ SEED_LLM_MAX_WORKERS = max(1, int(_env("SEED_LLM_MAX_WORKERS", "6")))
 _MIN_LEN = 6
 _MAX_LEN = 400
 
-# Engine ids surfaced to the admin UI / accepted from the request.
-ENGINES = ("auto", "deepseek", "claude", "offline")
+# Neutral engine tokens surfaced to the admin UI / accepted from the request.
+ENGINES = ("auto", "engine_a", "engine_b", "offline")
 
 
 def configured_providers() -> list[str]:
@@ -109,33 +144,38 @@ def configured_providers() -> list[str]:
 
 
 def provider_status() -> dict[str, Any]:
-    """Non-secret status for the admin panel (never returns keys)."""
+    """Non-secret, *neutralized* status for the admin panel.
+
+    Returns only neutral engine/mode tokens — never the real provider names,
+    model ids, or keys."""
     providers = configured_providers()
     return {
-        "default": DEFAULT_PROVIDER,
-        "configured": providers,
-        "deepseek": bool(DEEPSEEK_API_KEY),
-        "claude": bool(ANTHROPIC_API_KEY),
-        "deepseek_model": DEEPSEEK_MODEL if DEEPSEEK_API_KEY else "",
-        "claude_model": ANTHROPIC_MODEL if ANTHROPIC_API_KEY else "",
+        "default": _PROVIDER_TO_ENGINE.get(DEFAULT_PROVIDER, DEFAULT_PROVIDER),
+        "configured": [_PROVIDER_TO_ENGINE.get(p, p) for p in providers],
+        "engine_a": bool(DEEPSEEK_API_KEY),
+        "engine_b": bool(ANTHROPIC_API_KEY),
         "engines": list(ENGINES),
-        # Selectable DeepSeek modes for the UI: [{id, label}], default first.
-        "deepseek_models": [{"id": k, "label": v} for k, v in DEEPSEEK_MODELS.items()],
-        "default_model": DEEPSEEK_MODEL,
+        # Selectable neutral generation modes for the UI: [{id, label}], default first.
+        "modes": [{"id": k, "label": v} for k, v in SEED_MODES.items()],
+        "default_mode": _MODEL_TO_MODE.get(DEEPSEEK_MODEL, "fast"),
         "ready": bool(providers),
     }
 
 
 def _resolve_provider(requested: str) -> str | None:
-    """Map a requested engine to a concrete, *configured* provider or None."""
+    """Map a requested neutral engine token to a concrete, *configured* provider.
+
+    Returns the real provider name (server-internal) or None to fall back to the
+    offline pool."""
     req = (requested or "auto").strip().lower()
     if req in ("offline", "none", ""):
         return None
-    if req == "deepseek":
+    provider = _ENGINE_TO_PROVIDER.get(req)
+    if provider == "deepseek":
         return "deepseek" if DEEPSEEK_API_KEY else None
-    if req == "claude":
+    if provider == "claude":
         return "claude" if ANTHROPIC_API_KEY else None
-    # auto
+    # "auto" (or anything unrecognized) → first configured provider.
     configured = configured_providers()
     return configured[0] if configured else None
 
@@ -468,8 +508,9 @@ def generate(
                 content_type=ctype, tone=tone, country=country, city=city),
             "tags": tags,
             "tone": tone,
-            "engine": chosen,
-            "model": model_id if chosen == "deepseek" else "",
+            # Neutral tokens only — the caller echoes these to the API/logs.
+            "engine": _PROVIDER_TO_ENGINE.get(chosen, chosen),
+            "model": _MODEL_TO_MODE.get(model_id, "") if chosen == "deepseek" else "",
             "gender": gender,
         })
 

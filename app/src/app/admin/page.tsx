@@ -1243,15 +1243,15 @@ const SEED_TONE_OPTIONS = [
 ];
 const SEED_ENGINE_OPTIONS = [
   { value: "auto", label: "自动（优先 AI · 回退离线）" },
-  { value: "deepseek", label: "DeepSeek" },
-  { value: "claude", label: "Claude" },
+  { value: "engine_a", label: "AI 引擎 A" },
+  { value: "engine_b", label: "AI 引擎 B" },
   { value: "offline", label: "离线模板库" },
 ];
-// DeepSeek generation modes (fallback if the server list isn't loaded yet).
+// AI generation modes (fallback if the server list isn't loaded yet).
 const SEED_MODEL_OPTIONS = [
-  { id: "deepseek-chat", label: "标准（快速）" },
-  { id: "deepseek-reasoner", label: "深度思考" },
-  { id: "deepseek-v4-pro", label: "Pro（更强）" },
+  { id: "fast", label: "标准（快速）" },
+  { id: "think", label: "深度思考" },
+  { id: "pro", label: "Pro（更强）" },
 ];
 // City Content Pack (城市精选内容包) — premium curated listings.
 const PACK_CITY_OPTIONS = [
@@ -1275,7 +1275,7 @@ function SeedBotPanel() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
   const [form, setForm] = useState({
-    regionCode: "jp.tokyo.tokyo", language: "zh", contentType: "spotlight", count: 20, tone: "natural", publishNow: true, engine: "auto", model: "deepseek-reasoner",
+    regionCode: "jp.tokyo.tokyo", language: "zh", contentType: "spotlight", count: 20, tone: "natural", publishNow: true, engine: "auto", model: "think",
   });
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const [pendingClear, setPendingClear] = useState<string | null>(null);
@@ -1325,7 +1325,8 @@ function SeedBotPanel() {
       });
       setSelectedBatchId(r.batch.id);
       await refresh();
-      const engineLabel = r.engine === "offline" ? "离线模板" : (r.engine || form.engine);
+      const engineLabel = r.engine === "offline" ? "离线模板"
+        : (SEED_ENGINE_OPTIONS.find((o) => o.value === r.engine)?.label || r.engine || form.engine);
       const modeLabel = r.model ? (SEED_MODEL_OPTIONS.find((m) => m.id === r.model)?.label || r.model) : "";
       pushToast({ kind: "success", message: `已生成 ${r.created} 条 · 引擎 ${engineLabel}${modeLabel ? " · " + modeLabel : ""}（请求 ${r.requested}${r.created < r.requested ? "，去重后库存不足" : ""}）` });
     } catch (e) {
@@ -1583,20 +1584,20 @@ function SeedBotPanel() {
                 {SEED_ENGINE_OPTIONS.map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label}
-                    {o.value === "deepseek" && engines.data && !engines.data.deepseek ? "（未配置 key）" : ""}
-                    {o.value === "claude" && engines.data && !engines.data.claude ? "（未配置 key）" : ""}
+                    {o.value === "engine_a" && engines.data && !engines.data.engine_a ? "（未配置 key）" : ""}
+                    {o.value === "engine_b" && engines.data && !engines.data.engine_b ? "（未配置 key）" : ""}
                   </option>
                 ))}
               </select>
             </label>
             {engines.data && !engines.data.ready ? (
-              <p className="text-[11px] leading-4 text-amber-600">未检测到 AI key（DeepSeek/Claude），当前走离线模板库。配置 <code className="rounded bg-kx-soft px-1">DEEPSEEK_API_KEY</code> 后即可启用 AI 生成。</p>
+              <p className="text-[11px] leading-4 text-amber-600">未检测到 AI key，当前走离线模板库。在服务端配置 AI key 后即可启用 AI 生成。</p>
             ) : null}
-            {(form.engine === "auto" || form.engine === "deepseek") ? (
+            {(form.engine === "auto" || form.engine === "engine_a") ? (
               <label className="grid gap-1 text-xs font-semibold text-kx-muted">
-                生成模式（DeepSeek）
+                生成模式
                 <select className="kx-input h-10" value={form.model} onChange={(e) => setForm((f) => ({ ...f, model: e.target.value }))}>
-                  {(engines.data?.deepseek_models?.length ? engines.data.deepseek_models : SEED_MODEL_OPTIONS).map((m) => (
+                  {(engines.data?.modes?.length ? engines.data.modes : SEED_MODEL_OPTIONS).map((m) => (
                     <option key={m.id} value={m.id}>{m.label}</option>
                   ))}
                 </select>
