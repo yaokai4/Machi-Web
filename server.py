@@ -20462,14 +20462,15 @@ class Handler(BaseHTTPRequestHandler):
         if amount <= 0:
             return self.send_error_json("amount required", 400, "invalid_body")
         occurred_on = _guide_date_value(body.get("occurredOn") or body.get("occurred_on")) or _guide_today_date().date().isoformat()
+        currency = str(body.get("currency") or "JPY").strip()[:12] or "JPY"
+        category = str(body.get("category") or "other").strip()[:60] or "other"
         now = now_iso()
         tid = str(uuid.uuid4())
         conn.execute(
             "INSERT INTO guide_transactions (id, user_id, kind, amount, currency, category, account, occurred_on, note, source, source_id, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
-                tid, user["id"], kind, amount, str(body.get("currency") or "JPY").strip()[:12] or "JPY",
-                str(body.get("category") or "other").strip()[:60] or "other",
+                tid, user["id"], kind, amount, currency, category,
                 str(body.get("account") or "").strip()[:60], occurred_on,
                 str(body.get("note") or "").strip()[:500],
                 str(body.get("source") or "manual").strip()[:40] or "manual",
@@ -20478,14 +20479,19 @@ class Handler(BaseHTTPRequestHandler):
         )
         row = conn.execute("SELECT * FROM guide_transactions WHERE id = ?", (tid,)).fetchone()
         if kind == "expense":
-            self._guide_check_budget_alert(conn, user["id"], str(body.get("category") or "other").strip()[:60] or "other", occurred_on, amount)
+            self._guide_check_budget_alert(conn, user["id"], category, occurred_on, amount, currency)
         self.send_json({"status": "ok", "transaction": serialize_guide_transaction(row)})
 
-    def _guide_check_budget_alert(self, conn: sqlite3.Connection, user_id: str, category: str, occurred_on: str, amount: int) -> None:
+    def _guide_check_budget_alert(self, conn: sqlite3.Connection, user_id: str, category: str, occurred_on: str, amount: int, currency: str = "") -> None:
         """If this expense pushed a category from at-or-under its monthly budget to
         over, fire a one-time alert (in-app + APNs). Only the crossing transaction
-        notifies — later overspending in the same month stays quiet."""
+        notifies — later overspending in the same month stays quiet. O3: budgets are
+        in the ledger currency, so only ledger-currency spending is checked."""
         try:
+            ledger = self._finance_ledger_currency(conn, user_id)
+            # A non-ledger-currency entry doesn't move the (ledger-currency) budget.
+            if currency and currency != ledger:
+                return
             b = conn.execute("SELECT monthly_limit FROM guide_budgets WHERE user_id = ? AND category = ?", (user_id, category)).fetchone()
             if not b or int(b["monthly_limit"] or 0) <= 0:
                 return
@@ -20495,8 +20501,8 @@ class Handler(BaseHTTPRequestHandler):
             nm, ny = (sm + 1, sy) if sm < 12 else (1, sy + 1)
             end = datetime(ny, nm, 1).date().isoformat()
             spent_after = int((conn.execute(
-                "SELECT COALESCE(SUM(amount),0) AS s FROM guide_transactions WHERE user_id = ? AND kind = 'expense' AND category = ? AND occurred_on >= ? AND occurred_on < ?",
-                (user_id, category, start, end),
+                "SELECT COALESCE(SUM(amount),0) AS s FROM guide_transactions WHERE user_id = ? AND kind = 'expense' AND category = ? AND currency = ? AND occurred_on >= ? AND occurred_on < ?",
+                (user_id, category, ledger, start, end),
             ).fetchone())["s"] or 0)
             if spent_after > limit >= (spent_after - amount):  # crossed the line on this entry
                 label = next((zh for (c, zh, *_rest) in GUIDE_FINANCE_CATEGORIES["expense"] if c == category), category)
@@ -20602,6 +20608,18 @@ class Handler(BaseHTTPRequestHandler):
             pass
         return total
 
+    def _finance_ledger_currency(self, conn: sqlite3.Connection, user_id: str) -> str:
+        """O3: the user's single ledger currency. Mixing currencies in one SUM is
+        meaningless, so the finance views report ONE currency — the user's most-used
+        one (default JPY). Backward-compatible: an all-JPY ledger resolves to JPY and
+        every row is counted exactly as before."""
+        row = conn.execute(
+            "SELECT currency, COUNT(*) AS c FROM guide_transactions WHERE user_id = ? "
+            "AND currency != '' GROUP BY currency ORDER BY c DESC, currency ASC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+        return (row["currency"] if row and row["currency"] else "JPY")
+
     def api_guide_finance_summary(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         user = self.require_user(conn)
         month = (query.get("month") or "").strip()
@@ -20612,11 +20630,13 @@ class Handler(BaseHTTPRequestHandler):
         if pm < 1:
             pm = 12; py -= 1
         prev_start = datetime(py, pm, 1).date().isoformat()
+        # O3: sum a SINGLE currency — never blindly add JPY + CNY into one number.
+        ledger = self._finance_ledger_currency(conn, user["id"])
 
         def total(kind: str, s: str, e: str) -> int:
             r = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0) AS s FROM guide_transactions WHERE user_id = ? AND kind = ? AND occurred_on >= ? AND occurred_on < ?",
-                (user["id"], kind, s, e),
+                "SELECT COALESCE(SUM(amount), 0) AS s FROM guide_transactions WHERE user_id = ? AND kind = ? AND currency = ? AND occurred_on >= ? AND occurred_on < ?",
+                (user["id"], kind, ledger, s, e),
             ).fetchone()
             return int(r["s"] or 0)
         income = total("income", start, end)
@@ -20624,8 +20644,8 @@ class Handler(BaseHTTPRequestHandler):
         by_cat = [
             {"category": r["category"], "amount": int(r["s"] or 0)}
             for r in conn.execute(
-                "SELECT category, SUM(amount) AS s FROM guide_transactions WHERE user_id = ? AND kind = 'expense' AND occurred_on >= ? AND occurred_on < ? GROUP BY category ORDER BY s DESC",
-                (user["id"], start, end),
+                "SELECT category, SUM(amount) AS s FROM guide_transactions WHERE user_id = ? AND kind = 'expense' AND currency = ? AND occurred_on >= ? AND occurred_on < ? GROUP BY category ORDER BY s DESC",
+                (user["id"], ledger, start, end),
             )
         ]
         spent_by_cat = {c["category"]: c["amount"] for c in by_cat}
@@ -20633,10 +20653,19 @@ class Handler(BaseHTTPRequestHandler):
             {"category": r["category"], "limit": int(r["monthly_limit"] or 0), "spent": spent_by_cat.get(r["category"], 0)}
             for r in conn.execute("SELECT category, monthly_limit FROM guide_budgets WHERE user_id = ? AND monthly_limit > 0", (user["id"],))
         ]
+        # Entries this month in OTHER currencies are not summed into the ledger
+        # total — surface the count so the client can tell the user honestly
+        # (instead of silently dropping or wrongly summing them).
+        other_currency_count = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_transactions WHERE user_id = ? AND currency != ? AND occurred_on >= ? AND occurred_on < ?",
+            (user["id"], ledger, start, end),
+        ).fetchone()["c"] or 0)
         self.send_json({
             "status": "ok",
             "month": start[:7],
-            "currency": "JPY",
+            "currency": ledger,
+            "ledgerCurrency": ledger,
+            "otherCurrencyCount": other_currency_count,
             "income": income,
             "expense": expense,
             "net": income - expense,
@@ -20652,6 +20681,7 @@ class Handler(BaseHTTPRequestHandler):
         anchor = (query.get("month") or "").strip()
         start, _ = self._guide_month_bounds(anchor)
         y, m = (int(x) for x in start.split("-")[:2])
+        ledger = self._finance_ledger_currency(conn, user["id"])  # O3: single currency
         out: list[dict[str, Any]] = []
         for _ in range(months):
             ms = datetime(y, m, 1).date().isoformat()
@@ -20659,8 +20689,8 @@ class Handler(BaseHTTPRequestHandler):
             ny = y + (1 if nm > 12 else 0)
             me = datetime(ny, nm - 12 if nm > 12 else nm, 1).date().isoformat()
             row = conn.execute(
-                "SELECT kind, COALESCE(SUM(amount),0) AS s FROM guide_transactions WHERE user_id = ? AND occurred_on >= ? AND occurred_on < ? GROUP BY kind",
-                (user["id"], ms, me),
+                "SELECT kind, COALESCE(SUM(amount),0) AS s FROM guide_transactions WHERE user_id = ? AND currency = ? AND occurred_on >= ? AND occurred_on < ? GROUP BY kind",
+                (user["id"], ledger, ms, me),
             ).fetchall()
             by = {r["kind"]: int(r["s"] or 0) for r in row}
             inc, exp = by.get("income", 0), by.get("expense", 0)
@@ -20669,7 +20699,7 @@ class Handler(BaseHTTPRequestHandler):
             if m < 1:
                 m = 12; y -= 1
         out.reverse()
-        self.send_json({"status": "ok", "months": out})
+        self.send_json({"status": "ok", "currency": ledger, "ledgerCurrency": ledger, "months": out})
 
     @staticmethod
     def _guide_finance_category_for(kind: str, key: str) -> str:
@@ -20752,11 +20782,12 @@ class Handler(BaseHTTPRequestHandler):
         today_iso = today.date().isoformat()
         horizon = (today + timedelta(days=days)).date().isoformat()
         start, end = self._guide_month_bounds("")
+        ledger = self._finance_ledger_currency(conn, user["id"])  # O3: single currency
 
         def total(kind: str) -> int:
             r = conn.execute(
-                "SELECT COALESCE(SUM(amount),0) AS s FROM guide_transactions WHERE user_id = ? AND kind = ? AND occurred_on >= ? AND occurred_on < ?",
-                (user["id"], kind, start, end),
+                "SELECT COALESCE(SUM(amount),0) AS s FROM guide_transactions WHERE user_id = ? AND kind = ? AND currency = ? AND occurred_on >= ? AND occurred_on < ?",
+                (user["id"], kind, ledger, start, end),
             ).fetchone()
             return int(r["s"] or 0)
         income, expense = total("income"), total("expense")
@@ -20804,8 +20835,8 @@ class Handler(BaseHTTPRequestHandler):
         docs.sort(key=lambda d: d["daysLeft"])
 
         by_cat = {r["category"]: int(r["s"] or 0) for r in conn.execute(
-            "SELECT category, SUM(amount) AS s FROM guide_transactions WHERE user_id = ? AND kind = 'expense' AND occurred_on >= ? AND occurred_on < ? GROUP BY category",
-            (user["id"], start, end),
+            "SELECT category, SUM(amount) AS s FROM guide_transactions WHERE user_id = ? AND kind = 'expense' AND currency = ? AND occurred_on >= ? AND occurred_on < ? GROUP BY category",
+            (user["id"], ledger, start, end),
         )}
         alerts: list[dict[str, Any]] = []
         for r in conn.execute("SELECT category, monthly_limit FROM guide_budgets WHERE user_id = ? AND monthly_limit > 0", (user["id"],)):

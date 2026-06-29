@@ -29,12 +29,6 @@ const SUPPORT_CATEGORY_KEYS = [
   "guide_services",
 ];
 
-function pick(locale: string, zh: string, ja: string, en: string): string {
-  if (locale.startsWith("ja")) return ja;
-  if (locale.startsWith("en")) return en;
-  return zh;
-}
-
 const HERO_SUGGESTIONS: Record<"zh" | "ja" | "en", string[]> = {
   zh: [
     "在留卡快到期了，我该怎么续？",
@@ -58,7 +52,7 @@ const HERO_SUGGESTIONS: Record<"zh" | "ja" | "en", string[]> = {
 
 export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHomeResponse }) {
   const country = useGuideCountry();
-  const { locale } = useI18n();
+  const { locale, t } = useI18n();
   const language = appLocaleToGuideLanguage(locale);
 
   const home = useQuery({
@@ -87,7 +81,7 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
     return (
       <GuideShell>
         <div className="px-4 py-8 sm:px-7">
-          <ErrorState title="Machi AI 加载失败" subtitle="请稍后重试。" onRetry={() => home.refetch()} />
+          <ErrorState title={t("guide_home_ai_load_error_title")} subtitle={t("guide_home_ai_load_error_subtitle")} onRetry={() => home.refetch()} />
         </div>
       </GuideShell>
     );
@@ -107,13 +101,8 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
 
         <section>
           <SectionHeading
-            title={pick(locale, "六大指南与资料", "6つのガイドと資料", "Six guides & resources")}
-            subtitle={pick(
-              locale,
-              "查方法、学校、就职信息，或购买资料与服务，从这里进入。",
-              "方法・学校・就職情報の確認、資料やサービスの購入はこちらから。",
-              "Find methods, schools, and job info, or buy resources and services.",
-            )}
+            title={t("guide_home_six_guides_title")}
+            subtitle={t("guide_home_six_guides_subtitle")}
           />
           <div className="grid grid-cols-2 gap-3 lg:grid-cols-3">
             {supportCategories.map((category) => (
@@ -125,13 +114,8 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
         {(home.data.resourceEntries || []).length ? (
           <section>
             <SectionHeading
-              title={pick(locale, "学校与公司资料库", "学校・企業データベース", "School & company library")}
-              subtitle={pick(
-                locale,
-                "查询大学、大学院、专门学校、语言学校，以及适合外国人就职的日本公司。",
-                "大学・大学院・専門学校・語学学校、外国人採用の日本企業を検索。",
-                "Browse universities, graduate, vocational, and language schools, plus foreigner-friendly employers.",
-              )}
+              title={t("guide_home_library_title")}
+              subtitle={t("guide_home_library_subtitle")}
             />
             <div className="grid gap-3 md:grid-cols-2">
               {(home.data.resourceEntries || []).map((entry) => (
@@ -141,7 +125,7 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
           </section>
         ) : null}
 
-        <GuideWorkbenchCTA locale={locale} />
+        <GuideWorkbenchCTA />
       </main>
     </GuideShell>
   );
@@ -150,8 +134,9 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
 // 主卖场:Machi AI 纯入口卡。不再有输入框——整块是「入口」,点进去才到聊天页
 // /guide/ai;示例问题是快捷入口,带着问题进入。彩色 logo + 柔光呼应品牌。
 function MachiAIHero({ locale }: { locale: string }) {
+  const { t } = useI18n();
   const lang = locale.startsWith("ja") ? "ja" : locale.startsWith("en") ? "en" : "zh";
-  const cta = pick(locale, "开始对话", "対話を始める", "Start chat");
+  const cta = t("guide_home_ai_cta");
   return (
     <section className="relative overflow-hidden rounded-[2rem] border border-kx-stroke/40 bg-kx-card px-5 py-7 shadow-[0_24px_70px_-50px_rgba(30,30,70,0.45)] sm:px-8 sm:py-8">
       <div aria-hidden className="pointer-events-none absolute -right-12 -top-16 h-48 w-48 rounded-full bg-[#A06BF0]/18 blur-3xl" />
@@ -159,7 +144,7 @@ function MachiAIHero({ locale }: { locale: string }) {
       <div className="relative">
         <Link
           href="/guide/ai"
-          aria-label={pick(locale, "进入 Machi AI", "Machi AI を開く", "Open Machi AI")}
+          aria-label={t("guide_home_ai_open_aria")}
           className="group flex items-center gap-4 rounded-2xl outline-none transition focus-visible:ring-2 focus-visible:ring-kx-accent/40"
         >
           <MachiAIMark className="h-16 w-16 shrink-0 shadow-[0_16px_38px_-18px_rgba(91,141,239,0.85)] transition duration-300 group-hover:scale-[1.04]" />
@@ -171,12 +156,7 @@ function MachiAIHero({ locale }: { locale: string }) {
               </span>
             </div>
             <p className="mt-1 text-sm font-medium leading-6 text-kx-subtle">
-              {pick(
-                locale,
-                "日本生活、升学、就职和 Machi 使用问题，先问问 Machi AI。",
-                "日本の生活・進学・就職や Machi の使い方、まず Machi AI に聞いてみよう。",
-                "Ask Machi AI anything about life, study, work in Japan, or using Machi.",
-              )}
+              {t("guide_home_ai_blurb")}
             </p>
           </div>
           <span className="hidden shrink-0 items-center gap-1.5 rounded-full bg-kx-accent px-4 py-2.5 text-sm font-bold text-white shadow-sm transition group-hover:gap-2.5 sm:inline-flex">
@@ -208,7 +188,8 @@ function MachiAIHero({ locale }: { locale: string }) {
 }
 
 // 轻入口:个人事务都在「我的工作台」。和 iOS 的 GuidePersonalWorkbenchCTA 一致。
-function GuideWorkbenchCTA({ locale }: { locale: string }) {
+function GuideWorkbenchCTA() {
+  const { t } = useI18n();
   return (
     <Link
       href="/my/features"
@@ -218,14 +199,9 @@ function GuideWorkbenchCTA({ locale }: { locale: string }) {
         <LayoutDashboard className="h-5 w-5" />
       </span>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-bold text-kx-text">{pick(locale, "我的工作台", "マイ・ワークベンチ", "My workbench")}</p>
+        <p className="text-sm font-bold text-kx-text">{t("guide_home_workbench_title")}</p>
         <p className="text-xs text-kx-muted">
-          {pick(
-            locale,
-            "待办、日历、记账、申请、合同、证件等个人事务都在这里。",
-            "ToDo・カレンダー・家計簿・申請・契約・書類はこちら。",
-            "Todos, calendar, finance, applications, contracts & documents.",
-          )}
+          {t("guide_home_workbench_subtitle")}
         </p>
       </div>
       <ArrowRight className="h-4 w-4 shrink-0 text-kx-muted transition group-hover:translate-x-0.5 group-hover:text-kx-accent" />
@@ -234,6 +210,7 @@ function GuideWorkbenchCTA({ locale }: { locale: string }) {
 }
 
 function SectionHeading({ title, subtitle, href }: { title: string; subtitle?: string; href?: string }) {
+  const { t } = useI18n();
   return (
     <div className="mb-3 flex items-end justify-between gap-3">
       <div className="min-w-0">
@@ -242,7 +219,7 @@ function SectionHeading({ title, subtitle, href }: { title: string; subtitle?: s
       </div>
       {href ? (
         <Link href={href} className="shrink-0 text-xs font-bold text-kx-accent hover:underline">
-          查看
+          {t("guide_home_section_view")}
         </Link>
       ) : null}
     </div>

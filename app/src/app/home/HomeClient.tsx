@@ -9,12 +9,13 @@ import {
   ChevronDown,
   MapPin,
   Search,
+  Users,
 } from "lucide-react";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import type { FeedMode, KXPost, Paginated } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
 import { PostCard } from "@/components/feed/PostCard";
-import { EmptyState, ErrorState, PostSkeleton } from "@/components/design/States";
+import { ErrorState, PostSkeleton } from "@/components/design/States";
 import { ChannelEmptyState } from "@/components/feed/ChannelEmptyState";
 import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
@@ -102,19 +103,25 @@ export default function HomeClient() {
   });
 
   const sentinelRef = useRef<HTMLDivElement | null>(null);
+  // Depend only on the stable values this effect actually uses — NOT the whole
+  // `feed` object (React Query returns a fresh object almost every render, which
+  // would tear down + rebuild the observer constantly). fetchNextPage is stable.
+  const feedHasNextPage = feed.hasNextPage;
+  const feedIsFetching = feed.isFetching;
+  const feedFetchNextPage = feed.fetchNextPage;
   useEffect(() => {
-    if (!feed.hasNextPage || feed.isFetching) return;
+    if (!feedHasNextPage || feedIsFetching) return;
     const el = sentinelRef.current;
     if (!el) return;
     const io = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting) feed.fetchNextPage();
+        if (entries[0].isIntersecting) feedFetchNextPage();
       },
       { rootMargin: "1200px 0px 1200px 0px" },
     );
     io.observe(el);
     return () => io.disconnect();
-  }, [feed]);
+  }, [feedHasNextPage, feedIsFetching, feedFetchNextPage]);
 
   const items = feed.data?.pages.flatMap((p) => (Array.isArray(p.items) ? p.items : [])) ?? [];
 
@@ -194,7 +201,7 @@ export default function HomeClient() {
                 key={m.value}
                 className={clsx("kx-tab", "px-2 sm:px-3 h-8 text-sm")}
                 data-active={mode === m.value}
-                onClick={() => (m.value === "following" && !user ? openAuthPrompt("follow") : setModeSmooth(m.value))}
+                onClick={() => setModeSmooth(m.value)}
               >
                 {m.label}
               </button>
@@ -232,10 +239,29 @@ export default function HomeClient() {
           <ErrorState title={copy.loadErrorTitle} onRetry={() => feed.refetch()} subtitle={copy.loadErrorSubtitle} />
         ) : items.length === 0 ? (
           mode === "following" ? (
-            <EmptyState
-              title={t("empty_following_title")}
-              subtitle={t("empty_following_subtitle")}
-            />
+            // Following tab is no longer a dead/silent tab for guests: it offers
+            // a path forward (sign up + discover) instead of just blocking.
+            <div className="flex flex-col items-center justify-center px-6 py-16 text-center text-kx-subtle">
+              <div className="rounded-full bg-kx-soft p-3">
+                <Users className="h-6 w-6 text-kx-accent" />
+              </div>
+              <div className="mt-3 text-base font-semibold text-kx-text">
+                {user ? t("empty_following_title") : t("following_guest_title")}
+              </div>
+              <div className="mt-2 max-w-sm text-sm text-kx-subtle">
+                {user ? t("empty_following_subtitle") : t("following_guest_subtitle")}
+              </div>
+              <div className="mt-4 flex items-center gap-2">
+                {!user ? (
+                  <button type="button" className="kx-button-primary" onClick={() => openAuthPrompt("follow")}>
+                    {t("following_guest_cta")}
+                  </button>
+                ) : null}
+                <Link href="/explore" className="kx-button-secondary">
+                  {t("following_discover_cta")}
+                </Link>
+              </div>
+            </div>
           ) : mode === "local" && !currentRegion ? (
             <div className="flex flex-col items-center justify-center px-6 py-16 text-center text-kx-subtle">
               <div className="rounded-full bg-kx-soft p-3">

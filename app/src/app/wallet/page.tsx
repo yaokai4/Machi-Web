@@ -6,7 +6,7 @@
 // On return from Stripe (?wallet_session=...) it confirms the top-up so a
 // missed webhook still credits the points. Reuses the kx-* design tokens only.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -51,11 +51,18 @@ export default function WalletPage() {
   }, [queryClient]);
 
   // Return from Stripe Checkout carries a session id we confirm server-side.
+  // Idempotency guard: confirm each session id at most ONCE on the client, even
+  // if the effect re-fires (deps like `t`/`refresh` can change reference before
+  // clearParams() strips the URL param). The server is also CAS-safe, but this
+  // avoids a redundant request + a double success toast.
+  const confirmedSessionRef = useRef<string | null>(null);
   useEffect(() => {
     if (typeof window === "undefined" || !user) return;
     const params = new URLSearchParams(window.location.search);
     const session = params.get("wallet_session") || params.get("stripe_session");
     if (!session) return;
+    if (confirmedSessionRef.current === session) return;
+    confirmedSessionRef.current = session;
     const returnTo = safeReturnTo(params.get("returnTo"));
     const clearParams = () => {
       const url = new URL(window.location.href);

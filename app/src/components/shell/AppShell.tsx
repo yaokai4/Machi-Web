@@ -35,7 +35,7 @@ import { api } from "@/lib/api";
 import { useAuthPrompt, useCompose, useSession, useSettings, useToasts, type AuthPromptKind } from "@/lib/store";
 import { Avatar } from "@/components/design/Avatar";
 import { Toaster } from "@/components/design/Toaster";
-import { Composer } from "@/components/compose/Composer";
+import dynamic from "next/dynamic";
 import { AuthRequiredDialog, authRedirectHref } from "@/components/auth/AuthRequiredDialog";
 import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { MachiAIGlyph } from "@/components/brand/MachiAIMark";
@@ -78,6 +78,14 @@ function currentBrowserPathForRedirect(pathname: string | null) {
   const candidate = `${window.location.pathname}${window.location.search}`;
   return candidate.startsWith("/") && !candidate.startsWith("//") ? candidate : pathname || "/home";
 }
+
+// H7 code-splitting: the 1,125-line Composer modal is mounted on every page via
+// AppShell, so eagerly importing it puts its JS in every page's initial bundle.
+// Lazy-load it client-only — it stays always-mounted (so the Dialog's open/close
+// animations are unchanged), but its chunk is split out of the critical bundle.
+const Composer = dynamic(() => import("@/components/compose/Composer").then((m) => m.Composer), {
+  ssr: false,
+});
 
 export function AppShell({ children, right, requireAuth = true, wide = false, hideBottomNav = false }: AppShellProps) {
   const { t } = useI18n();

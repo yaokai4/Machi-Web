@@ -35,6 +35,10 @@ const ZH_HANS = {
   tab_hot: "热榜",
   empty_following_title: "你还没有关注任何人",
   empty_following_subtitle: "前往「发现」找些感兴趣的账号关注吧。",
+  following_guest_title: "登录后查看你的关注动态",
+  following_guest_subtitle: "关注感兴趣的人，这里会聚合他们的最新内容。先去发现页找些账号吧。",
+  following_guest_cta: "登录 / 注册",
+  following_discover_cta: "去发现",
   empty_feed_title: "没有可显示的内容",
   empty_feed_subtitle: "试试切换其他频道。",
   // actions
@@ -497,6 +501,19 @@ const ZH_HANS = {
   workbench_life_documents_sub: "在留卡、护照、My Number",
   workbench_life_goals_title: "目标 / 路径",
   workbench_life_goals_sub: "就职、升学、JLPT 等模板",
+  // guide home (Machi AI hub)
+  guide_home_ai_load_error_title: "Machi AI 加载失败",
+  guide_home_ai_load_error_subtitle: "请稍后重试。",
+  guide_home_six_guides_title: "六大指南与资料",
+  guide_home_six_guides_subtitle: "查方法、学校、就职信息，或购买资料与服务，从这里进入。",
+  guide_home_library_title: "学校与公司资料库",
+  guide_home_library_subtitle: "查询大学、大学院、专门学校、语言学校，以及适合外国人就职的日本公司。",
+  guide_home_ai_cta: "开始对话",
+  guide_home_ai_open_aria: "进入 Machi AI",
+  guide_home_ai_blurb: "日本生活、升学、就职和 Machi 使用问题，先问问 Machi AI。",
+  guide_home_workbench_title: "我的工作台",
+  guide_home_workbench_subtitle: "待办、日历、记账、申请、合同、证件等个人事务都在这里。",
+  guide_home_section_view: "查看",
 } as const;
 
 type DictKey = keyof typeof ZH_HANS;
@@ -577,6 +594,10 @@ const ZH_HANT: Partial<Dict> = {
 };
 
 const EN: Partial<Dict> = {
+  following_guest_title: "Sign in to see your following feed",
+  following_guest_subtitle: "Follow people you’re interested in and their latest posts show up here. Head to Discover to find accounts.",
+  following_guest_cta: "Sign in / Sign up",
+  following_discover_cta: "Discover",
   nav_home: "Home",
   nav_explore: "Explore",
   nav_news: "News",
@@ -1039,9 +1060,26 @@ const EN: Partial<Dict> = {
   workbench_life_documents_sub: "Residence card, passport, My Number",
   workbench_life_goals_title: "Goals / paths",
   workbench_life_goals_sub: "Templates for jobs, study, JLPT and more",
+  // guide home (Machi AI hub)
+  guide_home_ai_load_error_title: "Couldn't load Machi AI",
+  guide_home_ai_load_error_subtitle: "Please try again later.",
+  guide_home_six_guides_title: "Six guides & resources",
+  guide_home_six_guides_subtitle: "Find methods, schools, and job info, or buy resources and services.",
+  guide_home_library_title: "School & company library",
+  guide_home_library_subtitle: "Browse universities, graduate, vocational, and language schools, plus foreigner-friendly employers.",
+  guide_home_ai_cta: "Start chat",
+  guide_home_ai_open_aria: "Open Machi AI",
+  guide_home_ai_blurb: "Ask Machi AI anything about life, study, work in Japan, or using Machi.",
+  guide_home_workbench_title: "My workbench",
+  guide_home_workbench_subtitle: "Todos, calendar, finance, applications, contracts & documents.",
+  guide_home_section_view: "View",
 };
 
 const JA: Partial<Dict> = {
+  following_guest_title: "ログインしてフォロー中のフィードを見る",
+  following_guest_subtitle: "気になる人をフォローすると、最新の投稿がここに表示されます。まずは発見ページでアカウントを探しましょう。",
+  following_guest_cta: "ログイン / 登録",
+  following_discover_cta: "発見",
   nav_home: "ホーム",
   nav_explore: "発見",
   nav_news: "ニュース",
@@ -1408,6 +1446,19 @@ const JA: Partial<Dict> = {
   workbench_life_documents_sub: "在留カード・パスポート・マイナンバー",
   workbench_life_goals_title: "目標 / パス",
   workbench_life_goals_sub: "就職・進学・JLPT などのテンプレート",
+  // guide home (Machi AI hub)
+  guide_home_ai_load_error_title: "Machi AI を読み込めません",
+  guide_home_ai_load_error_subtitle: "しばらくしてからもう一度お試しください。",
+  guide_home_six_guides_title: "6つのガイドと資料",
+  guide_home_six_guides_subtitle: "方法・学校・就職情報の確認、資料やサービスの購入はこちらから。",
+  guide_home_library_title: "学校・企業データベース",
+  guide_home_library_subtitle: "大学・大学院・専門学校・語学学校、外国人採用の日本企業を検索。",
+  guide_home_ai_cta: "対話を始める",
+  guide_home_ai_open_aria: "Machi AI を開く",
+  guide_home_ai_blurb: "日本の生活・進学・就職や Machi の使い方、まず Machi AI に聞いてみよう。",
+  guide_home_workbench_title: "マイ・ワークベンチ",
+  guide_home_workbench_subtitle: "ToDo・カレンダー・家計簿・申請・契約・書類はこちら。",
+  guide_home_section_view: "見る",
 };
 
 const TABLE: Record<Locale, Partial<Dict>> = {
