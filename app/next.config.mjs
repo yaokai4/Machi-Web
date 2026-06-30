@@ -121,6 +121,14 @@ const nextConfig = {
       { protocol: "http",  hostname: "localhost" },
       { protocol: "https", hostname: "**" },
     ],
+    // NOTE on H8 (image optimisation): listing/business/avatar images are
+    // backend-served, same-origin *signed* URLs and the API already returns
+    // sized thumbnails for cards. Those <Image>s deliberately set
+    // `unoptimized` because routing them through the self-hosted sharp
+    // optimiser would re-encode every image on a 2-core production box —
+    // a net CPU loss with no byte win over the existing thumbnails. The
+    // optimiser stays enabled (patterns above) for any future CDN/static
+    // imagery; do not blanket-remove `unoptimized` without a CDN loader.
   },
 };
 

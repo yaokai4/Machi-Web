@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import { dehydrate, HydrationBoundary, QueryClient } from "@tanstack/react-query";
 import HomeClient from "./HomeClient";
+import { prefetchRecommendFeedFirstPage } from "@/lib/server/feedPrefetch";
 
 const title = "Machi | 在每一座城市，找到生活的回声";
 const description =
@@ -74,7 +76,21 @@ function HomeSsrSnapshot() {
   );
 }
 
-export default function HomePage() {
+export default async function HomePage() {
+  // SSR-prefetch the default feed's first page and hydrate React Query so the
+  // first paint shows real content instead of a skeleton + client-side fetch
+  // waterfall. The query key MUST match HomeClient's default
+  // (mode="recommend", no region) — see HomeClient.tsx useInfiniteQuery.
+  const queryClient = new QueryClient();
+  const firstPage = await prefetchRecommendFeedFirstPage();
+  if (firstPage) {
+    queryClient.setQueryData(["feed", "recommend", "", ""], {
+      pages: [firstPage],
+      pageParams: [undefined],
+    });
+  }
+  const dehydratedState = dehydrate(queryClient);
+
   return (
     <>
       <script
@@ -82,7 +98,9 @@ export default function HomePage() {
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
       />
       <HomeSsrSnapshot />
-      <HomeClient />
+      <HydrationBoundary state={dehydratedState}>
+        <HomeClient />
+      </HydrationBoundary>
     </>
   );
 }

@@ -8,6 +8,7 @@ import { api } from "@/lib/api";
 import { useSession, useToasts } from "@/lib/store";
 import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { detectAuthLocale } from "@/lib/authLocale";
+import { safeRedirectPath } from "@/lib/safeRedirect";
 
 const COPY = {
   zh: {
@@ -32,12 +33,6 @@ const COPY = {
     welcome: (name: string) => `Welcome back, ${name}`,
   },
 } as const;
-
-function safeRedirectPath(raw: string | null) {
-  if (!raw) return "/home";
-  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("://")) return "/home";
-  return raw;
-}
 
 export default function GoogleCallbackPage() {
   return (

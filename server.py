@@ -146,6 +146,7 @@ from server_schema import MIGRATIONS, SCHEMA
 import server_apns
 import server_shared_state as shared_state
 import server_lifehub as lifehub
+import server_partners as partners
 from server_serializers import (
     serialize_guide_category, serialize_guide_article_progress, serialize_guide_company_position, serialize_guide_company_review,
     serialize_guide_faq, serialize_guide_tag, serialize_guide_home_module, serialize_guide_journey,
@@ -637,6 +638,7 @@ UPLOAD_PURPOSES: dict[str, dict[str, Any]] = {
 LISTING_PURPOSE_BY_TYPE = {
     "secondhand": "secondhand_image",
     "rental": "rental_image",
+    "for_sale": "rental_image",
     "job": "job_image",
     "hiring": "job_image",
     "local_service": "service_image",
@@ -647,6 +649,7 @@ LISTING_PURPOSE_BY_TYPE = {
 LISTING_VIDEO_PURPOSE_BY_TYPE = {
     "secondhand": "secondhand_video",
     "rental": "rental_video",
+    "for_sale": "rental_video",
     "job": "job_video",
     "hiring": "job_video",
     "local_service": "service_video",
@@ -860,7 +863,7 @@ POST_STATUSES: set[str] = {"published", "active", "hidden", "deleted", "under_re
 # posts: marketplace/rental/job cards need price, status, media, filters,
 # moderation and owner workflows that do not belong in the short-form feed.
 LISTING_TYPES: set[str] = {
-    "secondhand", "rental", "job", "hiring", "local_service", "discount", "event",
+    "secondhand", "rental", "for_sale", "job", "hiring", "local_service", "discount", "event",
 }
 LISTING_STATUSES: set[str] = {
     "draft", "pending_review", "published", "reserved", "sold", "rented",
@@ -881,7 +884,7 @@ LISTING_PROMOTION_TYPES: set[str] = {
 LISTING_VERIFICATION_TYPES: set[str] = {
     "seller", "rental_provider", "recruiter", "service_provider", "business",
 }
-LISTING_TYPES_DEFAULT_REVIEW: set[str] = {"rental", "job", "hiring", "local_service"}
+LISTING_TYPES_DEFAULT_REVIEW: set[str] = {"rental", "for_sale", "job", "hiring", "local_service"}
 LISTING_TYPES_REQUIRING_MEMBERSHIP: set[str] = {"rental", "job", "hiring", "local_service", "discount"}
 # Workbench information architecture: every listing inquiry belongs to exactly
 # one bucket so a record never shows under two conflicting entries.
@@ -890,7 +893,7 @@ LISTING_TYPES_REQUIRING_MEMBERSHIP: set[str] = {"rental", "job", "hiring", "loca
 #   consultation — a plain question / claim (二手 / 优惠 / 活动)        → 我的咨询
 # Slot-based reservations (listing_bookings) and merchant/membership
 # applications live in their own tables and join these buckets at the UI layer.
-INQUIRY_RESERVATION_LISTING_TYPES: tuple[str, ...] = ("rental", "local_service")
+INQUIRY_RESERVATION_LISTING_TYPES: tuple[str, ...] = ("rental", "for_sale", "local_service")
 INQUIRY_APPLICATION_LISTING_TYPES: tuple[str, ...] = ("job", "hiring")
 BUSINESS_CONSOLE_LISTING_TYPES: tuple[str, ...] = ("local_service", "discount", "event", "hiring")
 LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT = max(0, int(_env("LISTING_MEMBERSHIP_MONTHLY_FREE_LIMIT", "3") or 3))
@@ -932,6 +935,22 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         "nearest_station", "station_distance_minutes", "move_in_date", "short_term_allowed",
         "share_allowed", "furnished", "pet_allowed", "floor", "building_type",
         "publisher_type", "initial_cost_note", "lease_term",
+        # Partner-import (星域东京 等) rental + 出售/投资 fields, Machi推荐, sparkle
+        # badges and the denormalised reservation contact. See server_partners.py.
+        "listing_intent", "sale_price", "yield_rate", "building_age", "structure",
+        "land_area", "nearest_lines", "source_url", "machi_recommended",
+        "machi_badges", "reservation_contact", "reservation_contact_id", "partner_key",
+    },
+    # 买房 (property for sale / investment) — a SEPARATE vertical from 长租.
+    # Shares many descriptive fields with rental but the price is a total sale
+    # price (not monthly rent) and adds sale-specific fields (利回り/築年/構造/土地).
+    "for_sale": {
+        "listing_intent", "sale_price", "yield_rate", "layout", "area_sqm", "land_area",
+        "building_age", "structure", "floor", "building_type", "nearest_station",
+        "station_distance_minutes", "nearest_lines", "management_fee", "move_in_date",
+        "parking", "balcony_area", "source_url",
+        "machi_recommended", "machi_badges", "reservation_contact",
+        "reservation_contact_id", "partner_key",
     },
     "job": {
         "salary_min", "salary_max", "salary_type", "employment_type",
@@ -4810,7 +4829,7 @@ def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any
         rows = list(conn.execute(
             """
             SELECT * FROM saved_searches
-             WHERE cadence != 'off'
+             WHERE cadence = 'instant'
                AND (vertical = '' OR vertical = ?)
              ORDER BY created_at DESC
              LIMIT 1000
@@ -4874,6 +4893,127 @@ def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any
         try:
             ERR_LOG.warning("notify_saved_search_matches failed listing=%s error=%s",
                             listing.get("id"), exc)
+        except Exception:
+            pass
+        return 0
+
+
+def _saved_search_matches_listing(s: dict[str, Any], listing: dict[str, Any]) -> bool:
+    """Shared predicate: does saved search row `s` match listing `listing`?
+    Mirrors the per-listing logic in notify_saved_search_matches (vertical is
+    assumed pre-filtered by the caller)."""
+    l_city = str(listing.get("city_slug") or "").strip().lower()
+    l_region = str(listing.get("region_code") or "").strip().lower()
+    l_country = str(listing.get("country_code") or "").strip().lower()
+    s_city = str(s.get("city_slug") or "").strip().lower()
+    s_region = str(s.get("region_code") or "").strip().lower()
+    s_country = str(s.get("country_code") or "").strip().lower()
+    if s_city:
+        circle = {c.lower() for c in (metro_circle_city_slugs_for_city(l_country or "jp", s_city) or [])}
+        circle.add(s_city)
+        if l_city not in circle:
+            return False
+    elif s_region:
+        circle = {c.lower() for c in (metro_circle_region_codes(s_region) or [])}
+        circle.add(s_region)
+        if l_region not in circle:
+            return False
+    elif s_country:
+        if l_country != s_country:
+            return False
+    kw = str(s.get("keyword") or "").strip().lower()
+    if kw:
+        haystack = " ".join(
+            str(listing.get(k) or "") for k in ("title", "description", "category")
+        ).lower()
+        if kw not in haystack:
+            return False
+    cat = str(s.get("category") or "").strip()
+    if cat and cat != str(listing.get("category") or "").strip():
+        return False
+    return True
+
+
+def run_saved_search_digests(conn: sqlite3.Connection) -> int:
+    """Daily digest for saved searches with cadence='daily': batch every new
+    matching listing published since the search's last digest into ONE
+    notification, instead of an instant ping per match. Each daily search is
+    digested at most once per ~20h (gated by last_notified_at) so the 6-hourly
+    janitor that calls this never double-sends. Best-effort; never raises."""
+    try:
+        now = now_iso()
+        due_cutoff = (datetime.now(timezone.utc) - timedelta(hours=20)).isoformat()
+        default_since = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        rows = list(conn.execute(
+            """
+            SELECT * FROM saved_searches
+             WHERE cadence = 'daily'
+               AND (last_notified_at = '' OR last_notified_at < ?)
+             ORDER BY updated_at ASC
+             LIMIT 500
+            """,
+            (due_cutoff,),
+        ))
+        sent = 0
+        for r in rows:
+            s = dict(r)
+            uid = s.get("user_id")
+            if not uid:
+                continue
+            vertical = str(s.get("vertical") or "").strip().lower()
+            since = s.get("last_notified_at") or default_since
+            where = [
+                "status = 'published'",
+                "deleted_at IS NULL",
+                "COALESCE(NULLIF(published_at, ''), created_at) > ?",
+            ]
+            params: list[Any] = [since]
+            if vertical:
+                where.append("type = ?")
+                params.append(vertical)
+            cands = list(conn.execute(
+                "SELECT id, title, description, category, type, city_slug, region_code, "
+                "country_code, seller_user_id, "
+                "COALESCE(NULLIF(published_at, ''), created_at) AS pub "
+                "FROM city_listings WHERE " + " AND ".join(where) +
+                " ORDER BY pub DESC LIMIT 200",
+                params,
+            ))
+            matches = [
+                dict(c) for c in cands
+                if dict(c).get("seller_user_id") != uid
+                and _saved_search_matches_listing(s, dict(c))
+            ]
+            # Always advance last_notified_at to reset the 20h window, even with
+            # zero matches — otherwise an empty search re-scans every sweep.
+            if not matches:
+                conn.execute(
+                    "UPDATE saved_searches SET last_notified_at = ?, updated_at = ? WHERE id = ?",
+                    (now, now, s.get("id")),
+                )
+                continue
+            count = len(matches)
+            top = matches[0]
+            label = str(s.get("label") or s.get("keyword") or vertical or "保存的搜索").strip()
+            content = f"「{label}」有 {count} 条新匹配信息"[:140]
+            conn.execute(
+                """
+                INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, content, created_at)
+                VALUES (?, ?, ?, 'saved_search', ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), uid, uid, top["id"], content, now),
+            )
+            conn.execute(
+                "UPDATE saved_searches SET match_count = match_count + ?, last_notified_at = ?, "
+                "updated_at = ? WHERE id = ?",
+                (count, now, now, s.get("id")),
+            )
+            server_apns.enqueue(uid, ntype="saved_search", actor_id="", content=content)
+            sent += 1
+        return sent
+    except Exception as exc:  # pragma: no cover - defensive: must not break the janitor
+        try:
+            ERR_LOG.warning("run_saved_search_digests failed error=%s", exc)
         except Exception:
             pass
         return 0
@@ -11371,6 +11511,175 @@ LISTING_TAXONOMY_DEFAULTS: dict[str, dict[str, Any]] = {
 }
 
 
+# Japanese / English labels for the default taxonomy vocabulary. Japan is the
+# primary market, so seeding these means JA/EN clients get native category and
+# field labels out of the box instead of falling back to Chinese. Keyed by the
+# canonical Chinese label (also used as the seeded category/field label). Any
+# term missing here falls back to the Chinese label — strictly additive.
+_TAXONOMY_LABEL_I18N: dict[str, tuple[str, str]] = {
+    # ---- categories ----
+    "一日游": ("日帰りツアー", "Day trip"),
+    "中华料理": ("中華料理", "Chinese cuisine"),
+    "临时照看": ("一時預かり", "Temporary care"),
+    "书籍教材": ("書籍・教材", "Books & textbooks"),
+    "优惠预约": ("優待予約", "Discount booking"),
+    "体检/牙科预约协助": ("健診・歯科予約サポート", "Checkup/dental booking help"),
+    "体验活动": ("体験アクティビティ", "Experience activities"),
+    "儿童用品租赁": ("ベビー用品レンタル", "Kids' item rental"),
+    "免费送": ("無料で譲ります", "Giveaway (free)"),
+    "全职": ("正社員", "Full-time"),
+    "兼职": ("アルバイト", "Part-time"),
+    "包车": ("チャーター", "Chartered car"),
+    "包车行程": ("チャーター行程", "Charter itinerary"),
+    "单人": ("1名", "Single"),
+    "合租": ("ルームシェア", "Shared rental"),
+    "周末": ("週末", "Weekend"),
+    "咖啡甜品": ("カフェ・スイーツ", "Café & desserts"),
+    "地址登记协助": ("住所登録サポート", "Address registration help"),
+    "实习": ("インターン", "Internship"),
+    "宠物寄养": ("ペット預かり", "Pet boarding"),
+    "家具": ("家具", "Furniture"),
+    "家具家电": ("家具・家電", "Furniture & appliances"),
+    "家具家电配送协助": ("家具・家電配送サポート", "Furniture/appliance delivery help"),
+    "家庭协助": ("家事サポート", "Household help"),
+    "家电": ("家電", "Appliances"),
+    "寿司海鲜": ("寿司・海鮮", "Sushi & seafood"),
+    "居酒屋": ("居酒屋", "Izakaya"),
+    "市役所陪同": ("市役所同行", "City hall accompaniment"),
+    "手机卡协助": ("SIM契約サポート", "SIM card help"),
+    "手机卡开通": ("SIM開通", "SIM activation"),
+    "手机数码": ("スマホ・デジタル", "Phones & digital"),
+    "拉面": ("ラーメン", "Ramen"),
+    "按摩": ("マッサージ", "Massage"),
+    "搬家": ("引っ越し", "Moving"),
+    "搬家出清": ("引っ越し処分", "Moving clearance"),
+    "教材": ("教材", "Textbooks"),
+    "整租": ("まるごと賃貸", "Entire place"),
+    "无经验可": ("未経験可", "No experience OK"),
+    "日本料理": ("日本料理", "Japanese cuisine"),
+    "时给": ("時給", "Hourly wage"),
+    "景点门票": ("観光チケット", "Attraction tickets"),
+    "月给": ("月給", "Monthly salary"),
+    "本地向导": ("現地ガイド", "Local guide"),
+    "机场接送": ("空港送迎", "Airport transfer"),
+    "材料翻译": ("書類翻訳", "Document translation"),
+    "母婴儿童": ("ベビー・キッズ", "Baby & kids"),
+    "水电煤协助": ("水道・電気・ガスサポート", "Utilities setup help"),
+    "求购": ("求む", "Wanted"),
+    "派遣": ("派遣", "Dispatch"),
+    "烧肉火锅": ("焼肉・鍋", "Yakiniku & hot pot"),
+    "生活": ("生活", "Daily life"),
+    "生活用品": ("生活用品", "Household goods"),
+    "生活跑腿": ("生活お使い", "Life errands"),
+    "电子产品": ("電子製品", "Electronics"),
+    "电脑办公": ("PC・オフィス", "Computers & office"),
+    "留学生可": ("留学生可", "Students OK"),
+    "皮肤管理": ("スキンケア", "Skin care"),
+    "票券卡券": ("チケット・クーポン", "Tickets & coupons"),
+    "租房申请协助": ("賃貸申込サポート", "Rental application help"),
+    "签证支持": ("ビザサポート", "Visa support"),
+    "签证材料整理": ("ビザ書類整理", "Visa document prep"),
+    "粗大垃圾协助": ("粗大ごみサポート", "Bulky waste help"),
+    "粗大垃圾预约": ("粗大ごみ予約", "Bulky waste booking"),
+    "网络开通": ("ネット開通", "Internet setup"),
+    "美容": ("美容", "Beauty"),
+    "美容美发": ("美容・ヘア", "Beauty & hair"),
+    "美甲": ("ネイル", "Nails"),
+    "行李协助": ("荷物サポート", "Luggage help"),
+    "行李搬运": ("荷物運搬", "Luggage carrying"),
+    "衣物": ("衣類", "Clothing"),
+    "西餐": ("洋食", "Western food"),
+    "购物": ("ショッピング", "Shopping"),
+    "车站接送": ("駅送迎", "Station pickup"),
+    "运动户外": ("スポーツ・アウトドア", "Sports & outdoor"),
+    "近车站": ("駅近", "Near station"),
+    "退房清洁": ("退去クリーニング", "Move-out cleaning"),
+    "遛狗": ("犬の散歩", "Dog walking"),
+    "银行卡协助": ("銀行口座サポート", "Bank account help"),
+    "限时": ("期間限定", "Limited time"),
+    "韩国料理": ("韓国料理", "Korean cuisine"),
+    "餐饮": ("飲食", "Dining"),
+    # ---- fields ----
+    "不包含内容": ("含まれない内容", "Not included"),
+    "交付时间": ("受け渡し時間", "Delivery time"),
+    "交易方式": ("取引方法", "Transaction method"),
+    "交通费": ("交通費", "Transportation fee"),
+    "价格可商量": ("価格応相談", "Price negotiable"),
+    "价格说明": ("価格の説明", "Price details"),
+    "休日休假": ("休日・休暇", "Days off"),
+    "优惠内容": ("優待内容", "Discount details"),
+    "使用规则": ("利用ルール", "Usage rules"),
+    "公司/店铺名称": ("会社・店舗名", "Company/store name"),
+    "初期费用说明": ("初期費用の説明", "Initial cost details"),
+    "包含内容": ("含まれる内容", "Included"),
+    "医疗免责声明": ("医療免責事項", "Medical disclaimer"),
+    "原价/参考价": ("定価・参考価格", "Original/reference price"),
+    "发布类型": ("投稿タイプ", "Listing type"),
+    "取消规则": ("キャンセル規定", "Cancellation policy"),
+    "取货/邮寄说明": ("受け取り・配送の説明", "Pickup/shipping notes"),
+    "可交易时间": ("取引可能時間", "Available trade time"),
+    "可入住时间": ("入居可能日", "Move-in date"),
+    "可合租": ("ルームシェア可", "Shareable"),
+    "可宠物": ("ペット可", "Pets OK"),
+    "可远程": ("リモート可", "Remote OK"),
+    "可预约时间": ("予約可能時間", "Bookable time"),
+    "品牌": ("ブランド", "Brand"),
+    "商家/服务方名称": ("店舗・サービス名", "Business/provider name"),
+    "商家名称": ("店舗名", "Business name"),
+    "商家认证": ("店舗認証", "Business verification"),
+    "团购套餐": ("共同購入プラン", "Group-buy plan"),
+    "型号": ("型番", "Model"),
+    "工作时间": ("勤務時間", "Working hours"),
+    "应聘条件": ("応募条件", "Requirements"),
+    "开通事项": ("開通事項", "Setup items"),
+    "户型": ("間取り", "Floor plan"),
+    "所需材料": ("必要書類", "Required documents"),
+    "押金": ("敷金", "Deposit"),
+    "支持自取/面交": ("手渡し可", "Pickup/in-person OK"),
+    "支持邮寄": ("配送可", "Shipping available"),
+    "文件/手续类型": ("書類・手続き種別", "Document/procedure type"),
+    "新旧程度": ("状態", "Condition"),
+    "日语要求": ("日本語レベル", "Japanese level"),
+    "最近车站": ("最寄り駅", "Nearest station"),
+    "有效期": ("有効期限", "Valid until"),
+    "服务区域": ("サービス対応エリア", "Service area"),
+    "服务对象": ("対象", "Service target"),
+    "服务时长": ("サービス時間", "Service duration"),
+    "服务类型": ("サービス種別", "Service type"),
+    "服务项目": ("サービス内容", "Service items"),
+    "机场/路线": ("空港・ルート", "Airport/route"),
+    "物品量": ("荷物の量", "Volume of items"),
+    "瑕疵说明": ("不具合の説明", "Defect notes"),
+    "用户需准备": ("ご準備いただくもの", "What you prepare"),
+    "礼金": ("礼金", "Key money"),
+    "票种/行程类型": ("券種・行程タイプ", "Ticket/itinerary type"),
+    "福利待遇": ("福利厚生", "Benefits"),
+    "租期": ("契約期間", "Lease term"),
+    "管理费": ("管理費", "Management fee"),
+    "菜单": ("メニュー", "Menu"),
+    "营业时间": ("営業時間", "Business hours"),
+    "薪资类型": ("給与形態", "Salary type"),
+    "行李数": ("荷物の数", "Number of bags"),
+    "试用期": ("試用期間", "Probation"),
+    "购买时间": ("購入時期", "Purchase date"),
+    "车型": ("車種", "Vehicle type"),
+    "车站距离": ("駅からの距離", "Distance from station"),
+    "车辆/人员": ("車両・人員", "Vehicle/staff"),
+    "配件/包装": ("付属品・梱包", "Accessories/packaging"),
+    "集合地点": ("集合場所", "Meeting point"),
+    "雇佣类型": ("雇用形態", "Employment type"),
+    "面积 m²": ("面積 m²", "Area m²"),
+    "预约说明": ("予約の説明", "Booking notes"),
+}
+
+
+def _taxonomy_i18n(label: str) -> tuple[str, str]:
+    """Return (label_ja, label_en) for a default taxonomy label, falling back
+    to the Chinese label so a missing translation never blanks the column."""
+    ja, en = _TAXONOMY_LABEL_I18N.get(label, (label, label))
+    return ja or label, en or label
+
+
 def ensure_listing_taxonomy_defaults(conn: sqlite3.Connection, listing_type: str) -> None:
     listing_type = normalize_listing_type(listing_type)
     conn.execute("""
@@ -11399,25 +11708,27 @@ def ensure_listing_taxonomy_defaults(conn: sqlite3.Connection, listing_type: str
     spec = LISTING_TAXONOMY_DEFAULTS.get(listing_type) or LISTING_TAXONOMY_DEFAULTS["secondhand"]
     now = now_iso()
     for idx, label in enumerate(spec.get("categories", [])):
+        cat_ja, cat_en = _taxonomy_i18n(label)
         conn.execute(
             """
             INSERT OR IGNORE INTO listing_taxonomy_categories (
-                id, listing_type, category_key, label, sort_order, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                id, listing_type, category_key, label, label_ja, label_en, sort_order, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (str(uuid.uuid4()), listing_type, label, label, idx * 10, now, now),
+            (str(uuid.uuid4()), listing_type, label, label, cat_ja, cat_en, idx * 10, now, now),
         )
     for idx, entry in enumerate(spec.get("fields", [])):
         category_key, field_key, label, field_kind, options, required, placeholder = entry
+        field_ja, field_en = _taxonomy_i18n(label)
         conn.execute(
             """
             INSERT OR IGNORE INTO listing_taxonomy_fields (
-                id, listing_type, category_key, field_key, label, field_kind, options_json,
+                id, listing_type, category_key, field_key, label, label_ja, label_en, field_kind, options_json,
                 required, placeholder, sort_order, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
-                str(uuid.uuid4()), listing_type, category_key, field_key, label, field_kind,
+                str(uuid.uuid4()), listing_type, category_key, field_key, label, field_ja, field_en, field_kind,
                 json.dumps(options or [], ensure_ascii=False), 1 if required else 0,
                 placeholder or "", idx * 10, now, now,
             ),
@@ -11619,7 +11930,9 @@ def public_listing_title(title: Any) -> str:
 def public_listing_attributes(listing_type: str, attrs: Any) -> dict[str, Any]:
     if not isinstance(attrs, dict):
         return {}
-    cleaned = dict(attrs)
+    # Drop internal markers (e.g. __content_pack, __partner, __partner_ext_id):
+    # they are bookkeeping only and must never reach the client payload.
+    cleaned = {k: v for k, v in attrs.items() if not str(k).startswith("__")}
     if listing_type == "rental":
         cleaned.pop("foreigners_allowed", None)
     return cleaned
@@ -11628,6 +11941,7 @@ def public_listing_attributes(listing_type: str, attrs: Any) -> dict[str, Any]:
 LISTING_FALLBACK_ART: dict[str, tuple[str, str, str, str]] = {
     "secondhand": ("#2563eb", "#f97316", "二手市场", "bag"),
     "rental": ("#0ea5e9", "#22c55e", "租房", "home"),
+    "for_sale": ("#1f6feb", "#0ea5e9", "买房", "home"),
     "job": ("#7c3aed", "#f59e0b", "工作", "briefcase"),
     "hiring": ("#7c3aed", "#f59e0b", "招聘", "briefcase"),
     "local_service": ("#0f766e", "#d97706", "本地服务", "tools"),
@@ -11637,6 +11951,7 @@ LISTING_FALLBACK_ART: dict[str, tuple[str, str, str, str]] = {
 LISTING_FALLBACK_EN_LABEL: dict[str, str] = {
     "secondhand": "Secondhand",
     "rental": "Rental",
+    "for_sale": "For Sale",
     "job": "Jobs",
     "hiring": "Hiring",
     "local_service": "Local Service",
@@ -11648,6 +11963,7 @@ LISTING_FALLBACK_ASSET_DIR = Path(__file__).resolve().parent / "assets" / "listi
 LISTING_FALLBACK_ASSET_BY_TYPE: dict[str, str] = {
     "secondhand": "secondhand.png",
     "rental": "rental.png",
+    "for_sale": "rental.png",
     "job": "job.png",
     "hiring": "job.png",
     "local_service": "local-service.png",
@@ -12020,6 +12336,8 @@ def listing_inquiry_type(row_or_type: Any) -> str:
         attrs = _listing_attr_dict(row_or_type)
     if listing_type == "secondhand":
         return "secondhand_trade_request"
+    if listing_type == "for_sale":
+        return "property_viewing"
     if listing_type == "rental":
         return "rental_viewing"
     if listing_type in {"job", "hiring"}:
@@ -12060,6 +12378,7 @@ def listing_inquiry_action_word(inquiry_type: str) -> str:
     return {
         "secondhand_trade_request": "咨询交易",
         "secondhand_consult": "咨询商品",
+        "property_viewing": "预约看房/咨询",
         "rental_viewing": "申请看房",
         "rental_application": "申请房源",
         "job_apply": "申请职位",
@@ -12081,7 +12400,7 @@ def listing_inquiry_action_word(inquiry_type: str) -> str:
 def listing_inquiry_success_title(inquiry_type: str) -> str:
     if inquiry_type in {"job_apply", "rental_application"}:
         return "已提交申请"
-    if inquiry_type.endswith("_booking") or inquiry_type == "rental_viewing":
+    if inquiry_type.endswith("_booking") or inquiry_type in {"rental_viewing", "property_viewing"}:
         return "已提交预约"
     return "已发送咨询"
 
@@ -12216,10 +12535,41 @@ def fetch_listing_inquiries_with_extras(conn: sqlite3.Connection, rows: list[dic
     return out
 
 
+def _listing_badge_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(x).strip() for x in value if str(x).strip()][:4]
+    if isinstance(value, str) and value.strip().startswith("["):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, list):
+                return [str(x).strip() for x in parsed if str(x).strip()][:4]
+        except Exception:
+            pass
+    return [s.strip() for s in re.split(r"[,，、]", str(value or "")) if s.strip()][:4] if value else []
+
+
+def _listing_json_obj(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip().startswith("{"):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return None
+
+
 def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None) -> dict[str, Any]:
     extras = extras or {}
     listing_type = row.get("type", "") or ""
     attrs = public_listing_attributes(listing_type, extras.get("attributes") or {})
+    # Partner-import surface (星域东京 等专属后台): Machi推荐 + 闪耀标签 + 预约联系人.
+    machi_badges = _listing_badge_list(attrs.get("machi_badges"))
+    _reco = attrs.get("machi_recommended")
+    machi_recommended = (_reco is True) or (str(_reco).strip().lower() in {"1", "true", "yes"})
+    reservation_contact = _listing_json_obj(attrs.get("reservation_contact"))
     media = extras.get("media") or []
     cover_media = next((m for m in media if m.get("is_cover") or m.get("isCover")), None)
     if not cover_media and media:
@@ -12245,6 +12595,8 @@ def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None)
         "isVerified": row.get("verification_status") == "verified",
         "isFavorited": liked,
         "isPromoted": bool(row.get("is_promoted", 0)),
+        "machiRecommended": machi_recommended,
+        "machiBadges": machi_badges,
         "citySlug": row.get("city_slug", "") or "",
         "cityLabel": city_label,
         "coverUrl": cover_url,
@@ -12298,6 +12650,12 @@ def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None)
         "isPromoted": bool(row.get("is_promoted", 0)),
         "promotion_weight": int(row.get("promotion_weight") or 0),
         "promotionWeight": int(row.get("promotion_weight") or 0),
+        "machi_recommended": machi_recommended,
+        "machiRecommended": machi_recommended,
+        "machi_badges": machi_badges,
+        "machiBadges": machi_badges,
+        "reservation_contact": reservation_contact,
+        "reservationContact": reservation_contact,
         "rating_avg": round(float(row.get("rating_avg") or 0), 2),
         "ratingAvg": round(float(row.get("rating_avg") or 0), 2),
         "rating_count": int(row.get("rating_count") or 0),
@@ -16114,7 +16472,7 @@ def close_expired_unpaid_orders(conn: sqlite3.Connection) -> int:
 
 def run_retention_sweep() -> dict[str, int]:
     """One pass of the retention sweeps. Returns per-table delete counts."""
-    counts = {"visitor_logs": 0, "sessions": 0, "idempotency_keys": 0, "expired_orders": 0}
+    counts = {"visitor_logs": 0, "sessions": 0, "idempotency_keys": 0, "expired_orders": 0, "saved_search_digests": 0}
     with DB_LOCK:
         conn = db()
         try:
@@ -16128,6 +16486,9 @@ def run_retention_sweep() -> dict[str, int]:
             )
             counts["idempotency_keys"] = cur.rowcount if cur.rowcount is not None else 0
             counts["expired_orders"] = close_expired_unpaid_orders(conn)
+            # Daily saved-search digests (cadence='daily'); self-gated to once/~20h per search.
+            counts["saved_search_digests"] = run_saved_search_digests(conn)
+            conn.commit()
         finally:
             conn.close()
     return counts
@@ -16148,9 +16509,9 @@ def start_retention_janitor() -> None:
                 counts = run_retention_sweep()
                 if any(counts.values()):
                     ACCESS_LOG.info(
-                        "retention sweep: visitor_logs=%d sessions=%d idempotency_keys=%d expired_orders=%d",
+                        "retention sweep: visitor_logs=%d sessions=%d idempotency_keys=%d expired_orders=%d saved_search_digests=%d",
                         counts["visitor_logs"], counts["sessions"], counts["idempotency_keys"],
-                        counts.get("expired_orders", 0),
+                        counts.get("expired_orders", 0), counts.get("saved_search_digests", 0),
                     )
             except Exception:
                 ERR_LOG.exception("retention sweep failed")
@@ -26125,6 +26486,60 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_admin_seed_publish(conn, batch_id)
             if method == "POST" and action == "clear":
                 return self.api_admin_seed_clear(conn, batch_id)
+
+        # ── Partner import backends (星域东京 等专属后台) ─────────────────────
+        if path.startswith("/api/partner/"):
+            seg = path[len("/api/partner/"):].split("/")
+            pkey = seg[0] if seg else ""
+            sub = "/".join(seg[1:])
+            if pkey:
+                if sub == "branding" and method == "GET":
+                    return self.api_partner_branding(conn, pkey)
+                if sub == "session" and method == "POST":
+                    return self.api_partner_session(conn, pkey)
+                if sub == "template.csv" and method == "GET":
+                    return self.api_partner_template(conn, pkey)
+                if sub == "contacts" and method == "GET":
+                    return self.api_partner_contacts(conn, pkey, query)
+                if sub == "contacts" and method == "POST":
+                    return self.api_partner_contact_create(conn, pkey)
+                if sub.startswith("contacts/") and len(seg) > 2 and method in ("PATCH", "PUT"):
+                    return self.api_partner_contact_update(conn, pkey, seg[2])
+                if sub.startswith("contacts/") and len(seg) > 2 and method == "DELETE":
+                    return self.api_partner_contact_delete(conn, pkey, seg[2])
+                if sub == "uploads" and method == "POST":
+                    return self.api_partner_upload(conn, pkey)
+                if sub == "import/parse" and method == "POST":
+                    return self.api_partner_import_parse(conn, pkey)
+                if sub == "import/commit" and method == "POST":
+                    return self.api_partner_import_commit(conn, pkey)
+                if sub == "listings" and method == "GET":
+                    return self.api_partner_listings(conn, pkey, query)
+                if sub == "listings" and method == "POST":
+                    return self.api_partner_listing_create(conn, pkey)
+                if sub.startswith("listings/") and len(seg) > 2 and method == "GET":
+                    return self.api_partner_listing_detail(conn, pkey, seg[2])
+                if sub.startswith("listings/") and len(seg) > 2 and method in ("PATCH", "PUT"):
+                    return self.api_partner_listing_update(conn, pkey, seg[2])
+                if sub.startswith("listings/") and len(seg) > 2 and method == "DELETE":
+                    return self.api_partner_listing_delete(conn, pkey, seg[2])
+
+        # admin: manage partner backends
+        if path == "/api/admin/partners" and method == "GET":
+            return self.api_admin_partners(conn)
+        if path == "/api/admin/partners" and method == "POST":
+            return self.api_admin_partner_create(conn)
+        if path.startswith("/api/admin/partners/"):
+            rest = path[len("/api/admin/partners/"):].split("/")
+            akey = rest[0] if rest else ""
+            action = rest[1] if len(rest) > 1 else ""
+            if akey:
+                if not action and method in ("PATCH", "PUT"):
+                    return self.api_admin_partner_update(conn, akey)
+                if action == "rotate-token" and method == "POST":
+                    return self.api_admin_partner_rotate(conn, akey)
+                if action == "listings" and method == "GET":
+                    return self.api_admin_partner_listings(conn, akey, query)
 
         # Machi Points wallet
         if path == "/api/wallet/me" and method == "GET":
@@ -36537,6 +36952,388 @@ class Handler(BaseHTTPRequestHandler):
         record_upload_audit(conn, user["id"], "legacy_upload", file_id=media_id, status="ready", metadata={"bytes": len(raw), "mime": mime})
         fresh = dict(conn.execute("SELECT * FROM media WHERE id = ?", (media_id,)).fetchone())
         self.send_json({"media": serialize_media(fresh)})
+
+    # ── Partner import backends (星域东京 等专属后台) ───────────────────────────
+    # Token-gated, scoped-to-self mini backends. require_partner authorises ONLY
+    # that partner's own listings + contacts; it is never a site-admin grant.
+    # The heavy logic lives in server_partners.py; these are thin handlers.
+    _PARTNER_IMG_MAX = 15 * 1024 * 1024
+
+    def require_partner(self, conn: sqlite3.Connection, key: str) -> dict[str, Any]:
+        key = (key or "").strip().lower()
+        token = (self.headers.get("X-Partner-Token") or "").strip()
+        if not token:
+            auth = self.headers.get("Authorization") or ""
+            if auth.lower().startswith("bearer "):
+                token = auth[7:].strip()
+        partner = partners.authenticate_partner(conn, key, token) if token else None
+        if not partner:
+            raise APIError("访问口令无效或已失效", 401, "partner_auth")
+        return partner
+
+    def _ensure_partner_seller(self, conn: sqlite3.Connection, key: str, name: str, data: dict[str, Any]) -> str:
+        explicit = str(data.get("seller_user_id") or "").strip()
+        if explicit and conn.execute("SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL", (explicit,)).fetchone():
+            return explicit
+        handle = f"partner_{key}"
+        if conn.execute("SELECT 1 FROM users WHERE handle = ?", (handle,)).fetchone():
+            handle = f"{handle}_{uuid.uuid4().hex[:6]}"
+        uid = str(uuid.uuid4())
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
+                               avatar_symbol, avatar_color, avatar_url, cover_url, membership_tier,
+                               is_verified, role, country, province, city, current_region_code,
+                               recent_region_codes, joined_at, created_at, updated_at)
+            VALUES (?, ?, ?, '', ?, '', '', 'building.2.fill', 'teal', '', '', 'free', 1, 'member', 'jp', '', '', '', '', ?, ?, ?)
+            """,
+            (uid, handle, name or key, hash_password(uuid.uuid4().hex + uuid.uuid4().hex), now, now, now),
+        )
+        conn.execute("INSERT OR IGNORE INTO settings (user_id, updated_at) VALUES (?, ?)", (uid, now))
+        return uid
+
+    def _read_multipart_file(self) -> tuple[str, str, bytes]:
+        ctype = self.headers.get("Content-Type", "")
+        boundary = None
+        for part in ctype.split(";"):
+            part = part.strip()
+            if part.startswith("boundary="):
+                boundary = part[len("boundary="):].strip('"')
+                break
+        if not boundary:
+            raise APIError("missing boundary", 400, "invalid_payload")
+        raw = self.read_bytes()
+        for section in raw.split(b"--" + boundary.encode()):
+            if not section or section.startswith(b"--"):
+                continue
+            if section.startswith(b"\r\n"):
+                section = section[2:]
+            header_blob, sep, body = section.partition(b"\r\n\r\n")
+            if not sep:
+                continue
+            headers_text = header_blob.decode("utf-8", errors="replace")
+            if "filename=" not in headers_text:
+                continue
+            if body.endswith(b"\r\n"):
+                body = body[:-2]
+            fname_match = re.search(r'filename="([^"]*)"', headers_text)
+            mime_match = re.search(r"Content-Type:\s*([^\r\n]+)", headers_text)
+            filename = (fname_match.group(1).strip() if fname_match else "")
+            mime = (mime_match.group(1).strip().lower() if mime_match else "")
+            return filename, mime, body
+        raise APIError("no file part", 400, "invalid_payload")
+
+    def _partner_persist_image_bytes(self, conn, partner, raw, declared_mime, filename=""):
+        if not raw:
+            raise APIError("空图片", 400, "invalid_payload")
+        if len(raw) > self._PARTNER_IMG_MAX:
+            raise APIError("图片过大(上限 15MB)", 413, "too_large")
+        sniffed = _sniff_mime(raw)
+        if not sniffed or not sniffed.startswith("image/"):
+            raise APIError("不支持的图片类型", 415, "unsupported_media")
+        mime = declared_mime if (declared_mime in ALLOWED_MIME and declared_mime == sniffed) else sniffed
+        if mime not in ALLOWED_MIME:
+            raise APIError("不支持的图片类型", 415, "unsupported_media")
+        sha = hashlib.sha256(raw).hexdigest()
+        if media_hash_blocked(conn, sha):
+            raise APIError("该图片无法上传", 422, "media_blocked")
+        ext = EXT_BY_MIME.get(mime, ".jpg")
+        media_id = "file_" + uuid.uuid4().hex
+        object_key = f"partners/{partner['partner_key']}/listings/{media_id}{ext}"
+        target = local_upload_path(object_key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(raw)
+        url = upload_public_url(object_key)
+        thumb = upload_thumbnail_url(object_key, mime) or url
+        owner = partner.get("seller_user_id") or ""
+        now = now_iso()
+        metadata = {"source": "partner_import", "partner": partner["partner_key"], "thumbnail_url": thumb}
+        conn.execute(
+            """
+            INSERT INTO uploaded_files (
+                id, upload_id, user_id, bucket, object_key, public_url, cdn_url, content_type,
+                file_size, file_type, purpose, entity_type, entity_id, status, checksum, etag,
+                metadata, created_at, updated_at)
+            VALUES (?, ?, ?, 'local-dev', ?, ?, ?, ?, ?, ?, 'rental_image', 'listing', '', 'ready', ?, ?, ?, ?, ?)
+            """,
+            (media_id, "partner_" + uuid.uuid4().hex, owner, object_key, url, url, mime, len(raw),
+             upload_file_type(mime), sha, hashlib.md5(raw).hexdigest(),
+             json.dumps(metadata, ensure_ascii=False, sort_keys=True), now, now),
+        )
+        conn.execute(
+            "INSERT INTO media (id, owner_id, type, url, thumb_url, mime, width, height, duration, byte_size, created_at) VALUES (?, ?, 'image', ?, ?, ?, 0, 0, 0, ?, ?)",
+            (media_id, owner, url, thumb, mime, len(raw), now),
+        )
+        record_upload_audit(conn, owner, "partner_upload", file_id=media_id, status="ready", metadata={"bytes": len(raw), "mime": mime})
+        return {"url": url, "thumbnail_url": thumb, "media_id": media_id, "filename": filename}
+
+    def _partner_rehost_url(self, conn, partner, url):
+        try:
+            from urllib.request import Request, urlopen
+            req = Request(url, headers={"User-Agent": "MachiPartnerImport/1.0"})
+            with urlopen(req, timeout=15) as resp:
+                rmime = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                data = resp.read(self._PARTNER_IMG_MAX + 1)
+            if len(data) > self._PARTNER_IMG_MAX:
+                return None
+            return self._partner_persist_image_bytes(conn, partner, data, rmime)
+        except Exception:
+            ERR_LOG.warning("partner image rehost failed url=%s", str(url)[:120])
+            return None
+
+    def _partner_image_resolver(self, conn, partner, rehost):
+        def resolve(mapped):
+            items = []
+            for u in mapped.get("image_urls", []):
+                u = str(u or "").strip()
+                if not u:
+                    continue
+                if u.startswith("/media/") or (u.startswith("http") and not rehost):
+                    items.append({"url": u, "thumbnail_url": u})
+                elif u.startswith("http"):
+                    got = self._partner_rehost_url(conn, partner, u)
+                    items.append(got or {"url": u, "thumbnail_url": u})
+            return items
+        return resolve
+
+    def _partner_listings_payload(self, conn, key, limit):
+        ids = partners.list_partner_listing_ids(conn, key, limit=limit)
+        if not ids:
+            return []
+        placeholders = ",".join("?" * len(ids))
+        rows = [dict(r) for r in conn.execute(
+            f"SELECT * FROM city_listings WHERE id IN ({placeholders}) AND deleted_at IS NULL", ids)]
+        order = {lid: i for i, lid in enumerate(ids)}
+        rows.sort(key=lambda r: order.get(r["id"], 10 ** 9))
+        return fetch_listings_with_extras(conn, rows, None)
+
+    # ---- partner-facing endpoints ----
+    def api_partner_branding(self, conn: sqlite3.Connection, key: str) -> None:
+        p = partners.get_partner(conn, key)
+        if not p or p.get("status") != "active":
+            raise APIError("后台不存在", 404, "not_found")
+        self.send_json({"partner": partners.serialize_partner(p, public=True)})
+
+    def api_partner_session(self, conn: sqlite3.Connection, key: str) -> None:
+        body = self.read_json()
+        token = (self.headers.get("X-Partner-Token") or str(body.get("token") or "")).strip()
+        partner = partners.authenticate_partner(conn, key, token)
+        if not partner:
+            raise APIError("访问口令无效", 401, "partner_auth")
+        self.send_json({
+            "partner": partners.serialize_partner(partner),
+            "contacts": [partners.serialize_contact(c) for c in partners.list_partner_contacts(conn, key)],
+            "templateColumns": [{"header": h, "hint": hint} for h, hint in partners.TEMPLATE_COLUMNS],
+        })
+
+    def api_partner_template(self, conn: sqlite3.Connection, key: str) -> None:
+        self.require_partner(conn, key)
+        self.send_json({
+            "filename": f"{key}_listings_template.csv",
+            "csv": partners.build_template_csv(),
+            "columns": [{"header": h, "hint": hint} for h, hint in partners.TEMPLATE_COLUMNS],
+        })
+
+    def api_partner_contacts(self, conn: sqlite3.Connection, key: str, query: dict[str, str]) -> None:
+        self.require_partner(conn, key)
+        self.send_json({"contacts": [partners.serialize_contact(c) for c in partners.list_partner_contacts(conn, key)]})
+
+    def api_partner_contact_create(self, conn: sqlite3.Connection, key: str) -> None:
+        self.require_partner(conn, key)
+        data = self.read_json()
+        if not str(data.get("name") or "").strip():
+            raise APIError("缺少联系人姓名", 400, "invalid")
+        c = partners.create_partner_contact(conn, key, data, now=now_iso())
+        self.send_json({"contact": partners.serialize_contact(c)}, 201)
+
+    def api_partner_contact_update(self, conn: sqlite3.Connection, key: str, cid: str) -> None:
+        self.require_partner(conn, key)
+        data = self.read_json()
+        c = partners.update_partner_contact(conn, key, cid, data, now=now_iso())
+        if not c:
+            raise APIError("联系人不存在", 404, "not_found")
+        resynced = partners.resync_contact_snapshots(conn, key, cid, now=now_iso())
+        self.send_json({"contact": partners.serialize_contact(c), "resynced": resynced})
+
+    def api_partner_contact_delete(self, conn: sqlite3.Connection, key: str, cid: str) -> None:
+        self.require_partner(conn, key)
+        if not partners.delete_partner_contact(conn, key, cid, now=now_iso()):
+            raise APIError("联系人不存在", 404, "not_found")
+        self.send_json({"ok": True})
+
+    def api_partner_upload(self, conn: sqlite3.Connection, key: str) -> None:
+        partner = self.require_partner(conn, key)
+        filename, mime, raw = self._read_multipart_file()
+        media = self._partner_persist_image_bytes(conn, partner, raw, mime, filename)
+        self.send_json({"url": media["url"], "thumbnailUrl": media["thumbnail_url"], "filename": filename})
+
+    def api_partner_import_parse(self, conn: sqlite3.Connection, key: str) -> None:
+        partner = self.require_partner(conn, key)
+        filename, _mime, raw = self._read_multipart_file()
+        try:
+            parsed = partners.parse_spreadsheet(raw, filename)
+        except Exception as exc:
+            raise APIError(f"解析失败:{exc}", 400, "parse_failed")
+        contacts = partners.list_partner_contacts(conn, key)
+        by_id = {c["id"]: c for c in contacts}
+        by_name = {str(c.get("name") or "").lower(): c for c in contacts}
+        dflt = partners.default_contact(conn, key)
+        images_by_row = parsed.get("images_by_row") or {}
+        preview = []
+        for idx, raw_row in enumerate(parsed["rows"][:partners.MAX_IMPORT_ROWS]):
+            mapped = partners.map_row(raw_row, partner, contacts_by_id=by_id, contacts_by_name=by_name,
+                                      default_contact_row=dflt, row_index=idx)
+            for img in images_by_row.get(idx, []):
+                try:
+                    m = self._partner_persist_image_bytes(conn, partner, img["data"], "", img.get("filename", ""))
+                    mapped["image_urls"].append(m["url"])
+                except Exception:
+                    mapped.setdefault("warnings", []).append("一张嵌入图片无法导入")
+            c = mapped.get("contact") or None
+            mapped["contact"] = ({"id": c.get("id", ""), "name": c.get("name", ""), "phone": c.get("phone", "")} if c else None)
+            preview.append(mapped)
+        self.send_json({
+            "columns": parsed.get("headers", []),
+            "rows": preview,
+            "warnings": parsed.get("warnings", []),
+            "rowCount": len(preview),
+        })
+
+    def api_partner_import_commit(self, conn: sqlite3.Connection, key: str) -> None:
+        partner = self.require_partner(conn, key)
+        body = self.read_json()
+        rows = body.get("rows")
+        if not isinstance(rows, list) or not rows:
+            raise APIError("没有可导入的房源", 400, "empty")
+        if len(rows) > partners.MAX_IMPORT_ROWS:
+            raise APIError(f"单次最多导入 {partners.MAX_IMPORT_ROWS} 条", 400, "too_many")
+        options = body.get("options") if isinstance(body.get("options"), dict) else {}
+        rehost = bool(options.get("rehostUrls", True))
+        contacts = partners.list_partner_contacts(conn, key)
+        by_id = {c["id"]: c for c in contacts}
+        dflt = partners.default_contact(conn, key)
+        mapped = partners.sanitize_commit_rows(rows, partner, contacts_by_id=by_id, default_contact_row=dflt)
+        resolver = self._partner_image_resolver(conn, partner, rehost)
+        result = partners.import_partner_listings(conn, partner, mapped, now=now_iso(), image_resolver=resolver)
+        invalidate_public_ranking_caches()
+        ACCESS_LOG.info("partner import key=%s created=%s updated=%s", key, result["created"], result["updated"])
+        self.send_json({"ok": True, "result": result})
+
+    def api_partner_listings(self, conn: sqlite3.Connection, key: str, query: dict[str, str]) -> None:
+        self.require_partner(conn, key)
+        self.send_json({"listings": self._partner_listings_payload(conn, key, 200)})
+
+    def _serialize_one_listing(self, conn, listing_id):
+        row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
+        if not row:
+            return None
+        items = fetch_listings_with_extras(conn, [dict(row)], None)
+        return items[0] if items else None
+
+    def api_partner_listing_detail(self, conn: sqlite3.Connection, key: str, listing_id: str) -> None:
+        self.require_partner(conn, key)
+        if not partners.partner_owns_listing(conn, key, listing_id):
+            raise APIError("房源不存在或无权限", 404, "not_found")
+        item = self._serialize_one_listing(conn, listing_id)
+        if not item:
+            raise APIError("房源不存在", 404, "not_found")
+        self.send_json({"listing": item})
+
+    def _partner_single_mapped(self, conn, key, partner, body):
+        row = body.get("row") if isinstance(body.get("row"), dict) else body
+        contacts = partners.list_partner_contacts(conn, key)
+        by_id = {c["id"]: c for c in contacts}
+        dflt = partners.default_contact(conn, key)
+        mapped = partners.sanitize_commit_rows([row], partner, contacts_by_id=by_id, default_contact_row=dflt)
+        if not mapped or mapped[0].get("errors"):
+            raise APIError("缺少必填字段(标题)", 400, "invalid")
+        return row, mapped[0]
+
+    def api_partner_listing_create(self, conn: sqlite3.Connection, key: str) -> None:
+        partner = self.require_partner(conn, key)
+        body = self.read_json()
+        _row, mapped = self._partner_single_mapped(conn, key, partner, body)
+        rehost = bool((body.get("options") or {}).get("rehostUrls", True))
+        resolver = self._partner_image_resolver(conn, partner, rehost)
+        result = partners.import_partner_listings(conn, partner, [mapped], now=now_iso(), image_resolver=resolver)
+        invalidate_public_ranking_caches()
+        lid = (result["results"][0]["listing_id"] if result.get("results") else "")
+        self.send_json({"ok": True, "listing": self._serialize_one_listing(conn, lid) if lid else None, "result": result}, 201)
+
+    def api_partner_listing_update(self, conn: sqlite3.Connection, key: str, listing_id: str) -> None:
+        partner = self.require_partner(conn, key)
+        if not partners.partner_owns_listing(conn, key, listing_id):
+            raise APIError("房源不存在或无权限", 404, "not_found")
+        body = self.read_json()
+        row, mapped = self._partner_single_mapped(conn, key, partner, body)
+        replace_media = bool(row.get("image_urls") or row.get("images"))
+        rehost = bool((body.get("options") or {}).get("rehostUrls", True))
+        resolver = self._partner_image_resolver(conn, partner, rehost)
+        lid = partners.update_partner_listing(conn, partner, listing_id, mapped, now=now_iso(),
+                                              image_resolver=resolver, replace_media=replace_media)
+        if not lid:
+            raise APIError("房源不存在或无权限", 404, "not_found")
+        invalidate_public_ranking_caches()
+        self.send_json({"ok": True, "listing": self._serialize_one_listing(conn, listing_id)})
+
+    def api_partner_listing_delete(self, conn: sqlite3.Connection, key: str, listing_id: str) -> None:
+        self.require_partner(conn, key)
+        if not partners.delete_partner_listing(conn, key, listing_id, now=now_iso()):
+            raise APIError("房源不存在或无权限", 404, "not_found")
+        invalidate_public_ranking_caches()
+        self.send_json({"ok": True})
+
+    # ---- admin: manage partner backends ----
+    def api_admin_partners(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        self.send_json({"partners": [partners.serialize_partner(p) for p in partners.list_partners(conn)]})
+
+    def api_admin_partner_create(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        key = str(data.get("key") or "").strip().lower()
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise APIError("缺少名称", 400, "invalid")
+        seller_id = self._ensure_partner_seller(conn, key, name, data)
+        try:
+            partner, token = partners.create_partner(
+                conn, key=key, name=name, seller_user_id=seller_id,
+                name_ja=str(data.get("name_ja") or ""), name_en=str(data.get("name_en") or ""),
+                website=str(data.get("website") or ""),
+                default_city_slug=str(data.get("default_city_slug") or "tokyo"),
+                default_region_code=str(data.get("default_region_code") or ""),
+                default_category=str(data.get("default_category") or ""),
+                sale_enabled=bool(data.get("sale_enabled")),
+                brand_color=str(data.get("brand_color") or ""), accent_color=str(data.get("accent_color") or ""),
+                logo_url=str(data.get("logo_url") or ""), intro=str(data.get("intro") or ""),
+                default_badges=data.get("default_badges") if isinstance(data.get("default_badges"), list) else None,
+                machi_recommended_default=bool(data.get("machi_recommended_default", True)),
+                created_by_admin_id=admin["id"], now=now_iso(),
+            )
+        except ValueError as exc:
+            raise APIError(str(exc), 400, "invalid")
+        self.send_json({"partner": partners.serialize_partner(partner), "accessToken": token,
+                        "url": f"/partner/{partner['partner_key']}"}, 201)
+
+    def api_admin_partner_update(self, conn: sqlite3.Connection, key: str) -> None:
+        self.require_admin(conn)
+        p = partners.update_partner(conn, key, self.read_json(), now=now_iso())
+        if not p:
+            raise APIError("不存在", 404, "not_found")
+        self.send_json({"partner": partners.serialize_partner(p)})
+
+    def api_admin_partner_rotate(self, conn: sqlite3.Connection, key: str) -> None:
+        self.require_admin(conn)
+        token = partners.rotate_partner_token(conn, key, now=now_iso())
+        if not token:
+            raise APIError("不存在", 404, "not_found")
+        self.send_json({"accessToken": token})
+
+    def api_admin_partner_listings(self, conn: sqlite3.Connection, key: str, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        self.send_json({"listings": self._partner_listings_payload(conn, key, 300)})
 
     def api_admin_media(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)

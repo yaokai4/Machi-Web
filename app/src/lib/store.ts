@@ -132,6 +132,9 @@ interface ComposeState {
   /// shortcut so the composer opens in the right form.
   initialContentType: ContentType | null;
   open: (opts?: { initialContent?: string; initialTags?: string[]; initialMediaIds?: string[]; draftId?: string | null; initialContentType?: ContentType | null }) => void;
+  /// Adopt the server-assigned draft id after the first autosave so
+  /// subsequent autosaves upsert the SAME row instead of creating dupes.
+  setDraftId: (id: string | null) => void;
   close: () => void;
 }
 
@@ -151,6 +154,7 @@ export const useCompose = create<ComposeState>((set) => ({
       initialMediaIds: opts?.initialMediaIds ?? [],
       initialContentType: opts?.initialContentType ?? null,
     }),
+  setDraftId: (id) => set({ draftId: id }),
   close: () =>
     set({
       isOpen: false,

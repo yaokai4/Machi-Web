@@ -1327,6 +1327,65 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_user_entitlements_active ON user_entitleme
 CREATE INDEX IF NOT EXISTS idx_user_entitlements_user ON user_entitlements(user_id, status, resource_type);
 CREATE INDEX IF NOT EXISTS idx_user_entitlements_resource ON user_entitlements(resource_type, resource_id);
 
+-- ── External partner import backends (星域东京 等专属后台) ──────────────────
+-- A partner is a scoped, token-gated mini-backend served at /partner/<key>.
+-- It can batch-import listings (owned by ONE system seller account) and manage
+-- its own reservation contacts. A partner is NEVER a site admin: the access
+-- token only authorises that partner's own listings + contacts, nothing else.
+CREATE TABLE IF NOT EXISTS partners (
+    id TEXT PRIMARY KEY,
+    partner_key TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    name_ja TEXT NOT NULL DEFAULT '',
+    name_en TEXT NOT NULL DEFAULT '',
+    website TEXT NOT NULL DEFAULT '',
+    access_token_hash TEXT NOT NULL DEFAULT '',
+    token_hint TEXT NOT NULL DEFAULT '',
+    token_rotated_at TEXT NOT NULL DEFAULT '',
+    seller_user_id TEXT NOT NULL DEFAULT '',
+    default_city_slug TEXT NOT NULL DEFAULT 'tokyo',
+    default_region_code TEXT NOT NULL DEFAULT '',
+    default_country_code TEXT NOT NULL DEFAULT 'jp',
+    default_listing_type TEXT NOT NULL DEFAULT 'rental',
+    default_category TEXT NOT NULL DEFAULT '',
+    sale_enabled INTEGER NOT NULL DEFAULT 0,
+    brand_color TEXT NOT NULL DEFAULT '',
+    accent_color TEXT NOT NULL DEFAULT '',
+    logo_url TEXT NOT NULL DEFAULT '',
+    machi_recommended_default INTEGER NOT NULL DEFAULT 1,
+    default_badges_json TEXT NOT NULL DEFAULT '[]',
+    intro TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'active',
+    listing_count INTEGER NOT NULL DEFAULT 0,
+    created_by_admin_id TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_key ON partners(partner_key);
+
+-- Reservation contacts (预约联系人) shown on a partner's imported listings.
+CREATE TABLE IF NOT EXISTS partner_contacts (
+    id TEXT PRIMARY KEY,
+    partner_key TEXT NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    name_ja TEXT NOT NULL DEFAULT '',
+    title TEXT NOT NULL DEFAULT '',
+    phone TEXT NOT NULL DEFAULT '',
+    email TEXT NOT NULL DEFAULT '',
+    line_id TEXT NOT NULL DEFAULT '',
+    wechat_id TEXT NOT NULL DEFAULT '',
+    whatsapp TEXT NOT NULL DEFAULT '',
+    languages TEXT NOT NULL DEFAULT '',
+    photo_url TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    is_default INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_partner_contacts_partner ON partner_contacts(partner_key, sort_order);
+
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL,
@@ -4196,6 +4255,67 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             created_at TEXT NOT NULL
         );
         CREATE INDEX IF NOT EXISTS idx_guide_ai_feedback_message ON guide_ai_feedback(message_id, created_at);
+        """,
+    ),
+    # External partner import backends (星域东京 等专属后台). Token-gated,
+    # scoped-to-self mini backends that batch-import listings + manage their own
+    # reservation contacts. No backend marker → runs on SQLite and Postgres
+    # (fresh installs also get these from SCHEMA). All idempotent.
+    (
+        84,
+        "partners: partner backends + reservation contacts",
+        """
+        CREATE TABLE IF NOT EXISTS partners (
+            id TEXT PRIMARY KEY,
+            partner_key TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            name_ja TEXT NOT NULL DEFAULT '',
+            name_en TEXT NOT NULL DEFAULT '',
+            website TEXT NOT NULL DEFAULT '',
+            access_token_hash TEXT NOT NULL DEFAULT '',
+            token_hint TEXT NOT NULL DEFAULT '',
+            token_rotated_at TEXT NOT NULL DEFAULT '',
+            seller_user_id TEXT NOT NULL DEFAULT '',
+            default_city_slug TEXT NOT NULL DEFAULT 'tokyo',
+            default_region_code TEXT NOT NULL DEFAULT '',
+            default_country_code TEXT NOT NULL DEFAULT 'jp',
+            default_listing_type TEXT NOT NULL DEFAULT 'rental',
+            default_category TEXT NOT NULL DEFAULT '',
+            sale_enabled INTEGER NOT NULL DEFAULT 0,
+            brand_color TEXT NOT NULL DEFAULT '',
+            accent_color TEXT NOT NULL DEFAULT '',
+            logo_url TEXT NOT NULL DEFAULT '',
+            machi_recommended_default INTEGER NOT NULL DEFAULT 1,
+            default_badges_json TEXT NOT NULL DEFAULT '[]',
+            intro TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'active',
+            listing_count INTEGER NOT NULL DEFAULT 0,
+            created_by_admin_id TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_partners_key ON partners(partner_key);
+        CREATE TABLE IF NOT EXISTS partner_contacts (
+            id TEXT PRIMARY KEY,
+            partner_key TEXT NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            name_ja TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL DEFAULT '',
+            phone TEXT NOT NULL DEFAULT '',
+            email TEXT NOT NULL DEFAULT '',
+            line_id TEXT NOT NULL DEFAULT '',
+            wechat_id TEXT NOT NULL DEFAULT '',
+            whatsapp TEXT NOT NULL DEFAULT '',
+            languages TEXT NOT NULL DEFAULT '',
+            photo_url TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            is_default INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_partner_contacts_partner ON partner_contacts(partner_key, sort_order);
         """,
     ),
 ]

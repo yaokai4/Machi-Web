@@ -621,11 +621,26 @@ export type KXDraft = z.infer<typeof DraftSchema>;
 export type KXListingType =
   | "secondhand"
   | "rental"
+  | "for_sale"
   | "job"
   | "hiring"
   | "local_service"
   | "discount"
   | "event";
+
+// 预约联系人（partner-import 房源,如星域东京）。后端 reservationContact 序列化。
+export interface KXReservationContact {
+  name?: string;
+  nameJa?: string;
+  title?: string;
+  phone?: string;
+  email?: string;
+  lineId?: string;
+  wechatId?: string;
+  whatsapp?: string;
+  languages?: string;
+  photoUrl?: string;
+}
 
 export const MEMBERSHIP_REQUIRED_LISTING_TYPES: readonly KXListingType[] = [
   "rental", "job", "hiring", "local_service", "discount",
@@ -779,6 +794,10 @@ export interface KXCityListing {
   ratingAvg?: number;
   rating_count?: number;
   ratingCount?: number;
+  // Machi 推荐金徽章 + 闪耀标签（partner-import 房源）+ 预约联系人。
+  machiRecommended?: boolean;
+  machiBadges?: string[];
+  reservationContact?: KXReservationContact | null;
 }
 
 export interface KXListingReview {

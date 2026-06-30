@@ -60,7 +60,10 @@ const NAV_ITEMS = [
   { href: "/home", labelKey: "nav_home" as I18nKey, icon: Home, key: "home", badgeKey: undefined as undefined | "notifications" | "messages" },
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
   { href: "/guide", labelKey: "nav_machi_ai" as I18nKey, icon: MachiAIGlyph, key: "guide", badgeKey: undefined },
-  { href: "/wallet", labelKey: "nav_wallet" as I18nKey, icon: Wallet, key: "wallet", badgeKey: undefined },
+  // /wallet was demoted out of the primary content nav — it now sits in the
+  // "账户与额度 / Account & balance" cluster at the sidebar footer, next to
+  // membership, so points/wallet and membership read as one account hub
+  // rather than two co-equal payment systems competing with home/explore.
   { href: "/my/features", labelKey: "nav_workbench" as I18nKey, icon: LayoutDashboard, key: "features", badgeKey: undefined },
   { href: "/notifications", labelKey: "nav_notifications" as I18nKey, icon: Bell, key: "notifications", badgeKey: "notifications" as const },
   { href: "/messages", labelKey: "nav_messages" as I18nKey, icon: Mail, key: "messages", badgeKey: "messages" as const },
@@ -240,7 +243,7 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
         )}
         <BrandText className="hidden text-base font-black lg:inline">{brandTitle}</BrandText>
       </Link>
-      <nav className="flex flex-col gap-0.5 mt-1">
+      <nav className="flex flex-col gap-0.5 mt-1" aria-label={t("nav_primary")}>
         {NAV_ITEMS.map((item) => {
           const active = pathname?.startsWith(item.href);
           const Icon = item.icon;
@@ -328,6 +331,20 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
           {appearance === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
           <span className="hidden lg:inline">{appearance === "dark" ? t("settings_appearance_light") : t("settings_appearance_dark")}</span>
         </button>
+        <Link
+          href="/wallet"
+          data-active={pathname?.startsWith("/wallet")}
+          aria-label={t("nav_wallet")}
+          className={clsx(
+            "kx-sidebar-nav-item relative flex items-center gap-2 px-3 py-2 rounded-full text-sm transition",
+            pathname?.startsWith("/wallet")
+              ? "font-semibold text-kx-accent"
+              : "font-medium text-kx-subtle hover:text-kx-accent hover:font-semibold",
+          )}
+        >
+          <Wallet className="w-4 h-4" />
+          <span className="hidden lg:inline">{t("nav_wallet")}</span>
+        </Link>
         <Link
           href="/membership"
           data-active={pathname?.startsWith("/membership")}
@@ -583,6 +600,7 @@ function MobileTabBar({ pathname, redirectPath }: { pathname: string; redirectPa
       <nav
         className="kx-mobile-tabbar md:hidden px-2 py-2"
         data-elevated={moreOpen}
+        aria-label={t("nav_mobile")}
         style={{ bottom: "var(--kx-mobile-tabbar-bottom)" }}
       >
         <ul className="relative z-[1] flex h-12 items-center justify-between">
@@ -862,7 +880,7 @@ function MobileMoreSheet({
             {user?.is_verified_member ? t("mem_status_active") : t("mem_view_plans")}
           </span>
         </Link>
-        <nav className="px-3 pb-2">
+        <nav className="px-3 pb-2" aria-label={t("nav_account")}>
           <ul>
             {links.map((link) => {
               const hrefPath = link.href?.split("?")[0] ?? "";

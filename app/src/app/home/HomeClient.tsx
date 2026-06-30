@@ -17,7 +17,13 @@ import { AppShell } from "@/components/shell/AppShell";
 import { PostCard } from "@/components/feed/PostCard";
 import { ErrorState, PostSkeleton } from "@/components/design/States";
 import { ChannelEmptyState } from "@/components/feed/ChannelEmptyState";
-import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
+import dynamic from "next/dynamic";
+// Code-split the region picker (~385 lines) out of the home entry chunk —
+// it's only mounted when the user opens the city selector.
+const RegionPickerDialog = dynamic(
+  () => import("@/components/feed/RegionPickerDialog").then((m) => m.RegionPickerDialog),
+  { ssr: false },
+);
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n, type Locale } from "@/lib/i18n";
 import { Avatar } from "@/components/design/Avatar";
@@ -295,13 +301,15 @@ export default function HomeClient() {
           <div className="text-center text-kx-muted text-xs py-6">{t("no_more")}</div>
         ) : null}
       </div>
-      <RegionPickerDialog
-        open={regionPickerOpen}
-        onClose={() => setRegionPickerOpen(false)}
-        onSelect={persistRegion}
-        initialCountry={user?.country || currentRegion?.country_code || "jp"}
-        allowsAnyCountry={false}
-      />
+      {regionPickerOpen && (
+        <RegionPickerDialog
+          open={regionPickerOpen}
+          onClose={() => setRegionPickerOpen(false)}
+          onSelect={persistRegion}
+          initialCountry={user?.country || currentRegion?.country_code || "jp"}
+          allowsAnyCountry={false}
+        />
+      )}
     </AppShell>
   );
 }

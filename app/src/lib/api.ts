@@ -466,6 +466,37 @@ export type EditorialComment = {
 };
 
 
+// 入驻商专属导入后台（如 星域东京）。管理员在 /admin/partners 创建后，
+// 把一次性 ACCESS TOKEN + 专属链接 /partner/<key> 交给入驻商，由其在专属
+// 后台批量导入房源。tokenHint 仅是口令末四位（用于核对），完整口令永不
+// 回传——只在创建 / 重新生成时一次性返回。
+export type Partner = {
+  key: string;
+  name: string;
+  nameJa: string;
+  nameEn: string;
+  website: string;
+  brandColor: string;
+  accentColor: string;
+  logoUrl: string;
+  intro: string;
+  status: string;
+  defaultCitySlug: string;
+  defaultRegionCode: string;
+  defaultCountryCode: string;
+  defaultListingType: string;
+  defaultCategory: string;
+  saleEnabled: boolean;
+  machiRecommendedDefault: boolean;
+  defaultBadges: string[];
+  sellerUserId: string;
+  tokenHint: string;
+  tokenRotatedAt: string;
+  listingCount: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
 const DEFAULT_TIMEOUT_MS = 12_000;
 const RETRYABLE_METHODS = new Set(["GET", "HEAD"]);
 
@@ -1720,6 +1751,62 @@ export const api = {
   async adminDeleteListing(id: string): Promise<void> {
     await request<void>("DELETE", `/api/admin/listings/${encodeURIComponent(id)}`);
   },
+
+  // ---- admin: 入驻商专属后台（星域等房源导入后台）----
+  async adminPartners(): Promise<{ partners: Partner[] }> {
+    return request("GET", `/api/admin/partners`);
+  },
+  // 创建后一次性返回明文 accessToken 与专属链接 url；之后只能查看 tokenHint。
+  async adminCreatePartner(body: {
+    key: string;
+    name: string;
+    name_ja?: string;
+    name_en?: string;
+    website?: string;
+    brand_color?: string;
+    accent_color?: string;
+    logo_url?: string;
+    intro?: string;
+    default_city_slug?: string;
+    default_region_code?: string;
+    default_country_code?: string;
+    default_listing_type?: string;
+    default_category?: string;
+    sale_enabled?: boolean;
+    machi_recommended_default?: boolean;
+    default_badges?: string[];
+  }): Promise<{ partner: Partner; accessToken: string; url: string }> {
+    return request("POST", `/api/admin/partners`, body);
+  },
+  async adminUpdatePartner(key: string, body: {
+    name?: string;
+    name_ja?: string;
+    name_en?: string;
+    website?: string;
+    brand_color?: string;
+    accent_color?: string;
+    logo_url?: string;
+    intro?: string;
+    status?: string;
+    default_city_slug?: string;
+    default_region_code?: string;
+    default_country_code?: string;
+    default_listing_type?: string;
+    default_category?: string;
+    sale_enabled?: boolean;
+    machi_recommended_default?: boolean;
+    default_badges?: string[];
+  }): Promise<{ partner: Partner }> {
+    return request("PATCH", `/api/admin/partners/${encodeURIComponent(key)}`, body);
+  },
+  // 旧口令立即失效，返回新的一次性明文 accessToken。
+  async adminRotatePartnerToken(key: string): Promise<{ accessToken: string }> {
+    return request("POST", `/api/admin/partners/${encodeURIComponent(key)}/rotate-token`, {});
+  },
+  async adminPartnerListings(key: string): Promise<{ listings: KXCityListing[] }> {
+    return request("GET", `/api/admin/partners/${encodeURIComponent(key)}/listings`);
+  },
+
   async adminListingReports(status = "open"): Promise<Array<Record<string, unknown>>> {
     const { items } = await request<{ items: Array<Record<string, unknown>> }>("GET", `/api/admin/listing-reports?status=${encodeURIComponent(status)}`);
     return items;

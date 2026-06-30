@@ -28,6 +28,7 @@ const EMPTY_VALUES = new Set([
 const LISTING_TYPE_LABELS: Record<string, LabelSet> = {
   secondhand: { zh: "二手市场", en: "Marketplace", ja: "マーケット" },
   rental: { zh: "租房", en: "Rentals", ja: "住まい" },
+  for_sale: { zh: "买房", en: "For sale", ja: "物件購入" },
   job: { zh: "找工作", en: "Jobs", ja: "仕事探し" },
   hiring: { zh: "招聘", en: "Hiring", ja: "求人" },
   local_service: { zh: "商家与服务", en: "Businesses & local services", ja: "店舗・地域サービス" },
@@ -51,6 +52,7 @@ const LISTING_STATUS_LABELS: Record<string, LabelSet> = {
 const PUBLISHED_BY_TYPE: Record<string, LabelSet> = {
   secondhand: { zh: "出售中", en: "Available", ja: "販売中" },
   rental: { zh: "可咨询", en: "Available", ja: "相談可" },
+  for_sale: { zh: "在售", en: "For sale", ja: "販売中" },
   job: { zh: "求职中", en: "Open", ja: "募集中" },
   hiring: { zh: "招聘中", en: "Hiring", ja: "募集中" },
   local_service: { zh: "可预约", en: "Bookable", ja: "予約可" },
@@ -234,11 +236,13 @@ function fallbackPriceLabel(type?: string, locale: ListingLocale = "zh"): string
   if (locale !== "zh") {
     if (type === "job" || type === "hiring") return "Salary negotiable";
     if (type === "rental") return "Rent on request";
+    if (type === "for_sale") return "Price on request";
     if (type === "local_service") return "Book to inquire";
     return "Price on request";
   }
   if (type === "job" || type === "hiring") return "薪资面议";
   if (type === "rental") return "租金咨询";
+  if (type === "for_sale") return "价格待询";
   if (type === "local_service") return "预约咨询";
   if (type === "discount") return "查看优惠";
   return "价格咨询";
@@ -545,6 +549,17 @@ const DETAIL_FIELD_LABELS: Record<string, LabelSet> = {
   "交易地点": { ja: "受け渡し場所", en: "Meetup location" },
   "交易方式": { ja: "受け渡し方法", en: "Delivery method" },
   "品牌": { ja: "ブランド", en: "Brand" },
+  "物件类型": { ja: "物件種別", en: "Property type" },
+  "土地面积": { ja: "土地面積", en: "Land area" },
+  "楼层": { ja: "所在階", en: "Floor" },
+  "築年": { ja: "築年数", en: "Building age" },
+  "構造": { ja: "構造", en: "Structure" },
+  "最寄駅": { ja: "最寄り駅", en: "Nearest station" },
+  "徒歩分": { ja: "駅徒歩", en: "Walk to station" },
+  "沿线": { ja: "路線", en: "Train lines" },
+  "利回り": { ja: "利回り", en: "Yield" },
+  "販売価格": { ja: "販売価格", en: "Sale price" },
+  "原始链接": { ja: "元リンク", en: "Source link" },
 };
 
 const NOT_SPECIFIED: Record<ListingLocale, string> = { zh: "未注明", ja: "未記入", en: "Not specified" };
@@ -574,6 +589,30 @@ export function listingDetailFields(item: KXCityListing, locale: ListingLocale =
         ["家具家电", yesNo("furnished")],
         ["宠物", yesNo("pet_allowed")],
       ]
+    : item.type === "for_sale"
+    ? (() => {
+        const yieldRate = cleanListingText(item.attributes?.yield_rate);
+        const salePrice = typeof item.price === "number" && Number.isFinite(item.price) && item.price > 0
+          ? formatAmount(item.price, item.currency)
+          : "";
+        return [
+          ["地区", location],
+          ["物件类型", attr("building_type")],
+          ["户型", attr("layout")],
+          ["面积", attr("area_sqm")],
+          ["土地面积", attr("land_area")],
+          ["楼层", attr("floor")],
+          ["築年", attr("building_age")],
+          ["構造", attr("structure")],
+          ["最寄駅", attr("nearest_station")],
+          ["徒歩分", attr("station_distance_minutes")],
+          ["沿线", attr("nearest_lines")],
+          ["管理费", attr("management_fee")],
+          ["利回り", yieldRate ? `${yieldRate}%` : ""],
+          ["販売価格", salePrice],
+          ["原始链接", cleanListingText(item.attributes?.source_url)],
+        ] as Array<[string, string]>;
+      })()
     : item.type === "job" || item.type === "hiring"
       ? [
           ["公司/店铺", attr("company_name")],

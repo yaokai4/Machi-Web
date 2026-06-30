@@ -220,6 +220,7 @@ export function Composer() {
   const initialTagsFromStore = useCompose((s) => s.initialTags);
   const initialTypeFromStore = useCompose((s) => s.initialContentType);
   const draftId = useCompose((s) => s.draftId);
+  const setDraftId = useCompose((s) => s.setDraftId);
 
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
@@ -510,10 +511,16 @@ export function Composer() {
         content,
         media_ids: media.map((m) => m.id),
         tags,
-      }).catch(() => undefined);
+      })
+        // Adopt the server id so the NEXT autosave upserts this row instead
+        // of inserting a second draft (only when we didn't already have one).
+        .then(({ id }) => {
+          if (id && !draftId) setDraftId(id);
+        })
+        .catch(() => undefined);
     }, 4000);
     return () => clearTimeout(handle);
-  }, [isOpen, content, media, tags, draftId]);
+  }, [isOpen, content, media, tags, draftId, setDraftId]);
 
   const saveDraft = async () => {
     if (!content.trim() && media.length === 0) {

@@ -1,11 +1,8 @@
-import { Suspense } from "react";
-import { MyListingsPage } from "@/components/listings/ListingKit";
-import { RouteFallback } from "@/components/design/RouteFallback";
+import { permanentRedirect } from "next/navigation";
 
+// `/my/favorites` and `/my/saved-listings` both rendered <MyListingsPage saved />.
+// `/my/saved-listings` is the canonical route linked from the workbench;
+// redirect the `favorites` alias to it to remove the duplicate surface.
 export default function MyFavoritesRoute() {
-  return (
-    <Suspense fallback={<RouteFallback title="正在加载我的收藏" />}>
-      <MyListingsPage saved />
-    </Suspense>
-  );
+  permanentRedirect("/my/saved-listings");
 }

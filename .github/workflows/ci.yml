@@ -141,6 +141,10 @@ jobs:
           for attempt in {1..60}; do
             if curl -fsS http://127.0.0.1:3000/home >/dev/null; then
               HOME_URL=http://127.0.0.1:3000/home npm run test:home:ssr
+              # Route health gate: fail the build if any primary route returns
+              # 5xx/404/empty/error-state against the production server.
+              # route-scan only flags REAL failures (see its header comment).
+              ROUTE_SCAN_BASE=http://127.0.0.1:3000 npm run route-scan
               exit 0
             fi
             sleep 1

@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { useSession, useToasts } from "@/lib/store";
+import { safeRedirectPath } from "@/lib/safeRedirect";
 import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { RegionPickerDialog } from "@/components/feed/RegionPickerDialog";
 import { regionDisplayName, type RegionInfo } from "@/lib/regions";
@@ -86,12 +87,6 @@ function mapRegisterError(err: unknown, c: (typeof AUTH_COPY)[AuthLocale]): { fi
 
 export default function RegisterClient() {
   return <RegisterForm />;
-}
-
-function safeRedirectPath(raw: string | null) {
-  if (!raw) return "/home";
-  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("://")) return "/home";
-  return raw;
 }
 
 function RegisterForm() {

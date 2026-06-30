@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { useSession, useToasts } from "@/lib/store";
+import { safeRedirectPath } from "@/lib/safeRedirect";
 import { BrandMark, BrandText } from "@/components/marketing/BrandText";
 import { FieldShell } from "@/components/design/FieldShell";
 import { GoogleSignInButton } from "@/components/auth/GoogleSignInButton";
@@ -57,12 +58,6 @@ function mapLoginError(err: unknown, c: (typeof AUTH_COPY)[AuthLocale]): { field
     if (err.message) return { message: err.message };
   }
   return { message: c.loginFailed };
-}
-
-function safeRedirectPath(raw: string | null) {
-  if (!raw) return "/home";
-  if (!raw.startsWith("/") || raw.startsWith("//") || raw.includes("://")) return "/home";
-  return raw;
 }
 
 function LoginForm() {
