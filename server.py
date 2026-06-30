@@ -682,6 +682,10 @@ GUIDE_HOME_CACHE_TTL = float(os.environ.get("KAIX_GUIDE_HOME_CACHE_TTL", "30"))
 # hardest. A short TTL collapses that fan-out to one DB hit per window
 # without ever serving stale content to logged-in users (they bypass it).
 ANON_FEED_CACHE_TTL = float(os.environ.get("KAIX_ANON_FEED_CACHE_TTL", "20"))
+# Per-viewer interest profile (recommend feed): a 10-minute-stale profile is
+# invisible to the user but turns repeated home opens from two engagement scans
+# into a cache hit. Keeps the personalized first page cheap as DAU grows.
+KAIX_RECPROFILE_TTL_SEC = float(os.environ.get("KAIX_RECPROFILE_TTL_SEC", "600"))
 
 
 def _cache_get(key: str) -> Any | None:
@@ -1033,10 +1037,21 @@ def _time_decay(created_at: str | None) -> float:
     return max(0.0, 24.0 - age_hours)
 
 
+# Recency component for the additive heat score. The old term hard-zeroed at 24h
+# — a brand-new post lost ALL of its freshness advantage after a single day.
+# Ramp down linearly over HEAT_RECENCY_WINDOW_H hours instead, keeping the same
+# peak weight at h=0, so fresh posts retain a gentle edge for ~2 days. Pure
+# +,-,*,/ so it stays portable across SQLite and Postgres (no exp/pow).
+HEAT_RECENCY_WINDOW_H = 48.0
+HEAT_RECENCY_PEAK = 24.0
+
+
 def _heat_score_sql(alias: str = "p") -> str:
-    # Recency/boost use time functions that differ by backend. Keep the SQLite
-    # path byte-identical (datetime/julianday) and emit Postgres equivalents
-    # (EXTRACT EPOCH + ISO text compare) only when the PG backend is active.
+    # Reads the denormalized engagement counters on `posts` (migration v85)
+    # instead of four correlated COUNT subqueries — the heat of every candidate
+    # post is now plain arithmetic over the row, so ranking scans are O(N) index
+    # reads rather than O(N × interactions). Recency/boost use time functions
+    # that differ by backend, branched the same way as before.
     if KAIX_DB_BACKEND == "postgres":
         boost_cmp = f"{alias}.boosted_until > '{now_iso()}'"
         hours_since = f"EXTRACT(EPOCH FROM (now() - {alias}.created_at::timestamptz)) / 3600.0"
@@ -1045,11 +1060,12 @@ def _heat_score_sql(alias: str = "p") -> str:
         boost_cmp = f"{alias}.boosted_until > datetime('now')"
         hours_since = f"(julianday('now') - julianday({alias}.created_at)) * 24.0"
         max2 = "MAX"
+    recency_per_hour = HEAT_RECENCY_PEAK / HEAT_RECENCY_WINDOW_H
     return f"""
-      ((SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'like') * 1
-       + (SELECT COUNT(*) FROM comments c WHERE c.post_id = {alias}.id AND c.deleted_at IS NULL) * 3
-       + (SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'repost') * 5
-       + (SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'bookmark') * 4
+      (COALESCE({alias}.like_count, 0) * 1
+       + COALESCE({alias}.comment_count, 0) * 3
+       + COALESCE({alias}.repost_count, 0) * 5
+       + COALESCE({alias}.bookmark_count, 0) * 4
        - COALESCE({alias}.report_count, 0) * 10
        + CASE
            WHEN COALESCE({alias}.is_boosted, 0) = 1
@@ -1057,8 +1073,47 @@ def _heat_score_sql(alias: str = "p") -> str:
            THEN COALESCE({alias}.boost_weight, 0)
            ELSE 0
          END
-       + {max2}(0, 24 - ({hours_since})))
+       + {max2}(0, {HEAT_RECENCY_WINDOW_H} - ({hours_since})) * {recency_per_hour})
     """
+
+
+# Denormalized engagement counters on `posts` (migration v85). Maintained
+# incrementally at the interaction/comment write sites so ranking never needs a
+# correlated COUNT subquery — the single biggest lever for scaling the feed /
+# 热榜 / 热搜 reads as volume grows.
+_POST_COUNTER_COLUMNS = {
+    "like": "like_count",
+    "bookmark": "bookmark_count",
+    "repost": "repost_count",
+    "comment": "comment_count",
+}
+
+
+def bump_post_counter(conn: sqlite3.Connection, post_id: str, column: str, delta: int) -> None:
+    """Adjust one denormalized counter on a post by +1 / -1. Decrements clamp at
+    0 via CASE (backend-agnostic — Postgres `MAX` is an aggregate, not the 2-arg
+    function SQLite has). Best-effort: a counter drift never blocks the write."""
+    if column not in {"like_count", "bookmark_count", "repost_count", "comment_count"} or delta == 0:
+        return
+    try:
+        if delta > 0:
+            conn.execute(f"UPDATE posts SET {column} = {column} + ? WHERE id = ?", (int(delta), post_id))
+        else:
+            n = abs(int(delta))
+            conn.execute(
+                f"UPDATE posts SET {column} = CASE WHEN {column} >= ? THEN {column} - ? ELSE 0 END WHERE id = ?",
+                (n, n, post_id),
+            )
+    except Exception:
+        ERR_LOG.warning("bump_post_counter failed post=%s col=%s delta=%s", post_id, column, delta)
+
+
+def bump_post_counter_for_kind(conn: sqlite3.Connection, post_id: str, kind: str, delta: int) -> None:
+    """Map an interaction `kind` (like/bookmark/repost/comment) to its counter
+    column and bump it. Unknown kinds (e.g. meetup_join) are silently ignored."""
+    column = _POST_COUNTER_COLUMNS.get(kind)
+    if column:
+        bump_post_counter(conn, post_id, column, delta)
 
 
 def hash_password(password: str) -> str:
@@ -12128,7 +12183,7 @@ def close_expired_unpaid_orders(conn: sqlite3.Connection) -> int:
 
 def run_retention_sweep() -> dict[str, int]:
     """One pass of the retention sweeps. Returns per-table delete counts."""
-    counts = {"visitor_logs": 0, "sessions": 0, "idempotency_keys": 0, "expired_orders": 0, "saved_search_digests": 0}
+    counts = {"visitor_logs": 0, "sessions": 0, "idempotency_keys": 0, "expired_orders": 0, "saved_search_digests": 0, "post_counters": 0}
     with DB_LOCK:
         conn = db()
         try:
@@ -12144,6 +12199,11 @@ def run_retention_sweep() -> dict[str, int]:
             counts["expired_orders"] = close_expired_unpaid_orders(conn)
             # Daily saved-search digests (cadence='daily'); self-gated to once/~20h per search.
             counts["saved_search_digests"] = run_saved_search_digests(conn)
+            # Self-heal the denormalized post counters from the source tables for
+            # the active window. The write sites keep them exact on the common
+            # paths; this catches drift from rare bulk operations (e.g. account
+            # deletion soft-deleting a user's comments) so ranking never skews.
+            counts["post_counters"] = reconcile_post_counters(conn)
             conn.commit()
         finally:
             conn.close()
@@ -12174,6 +12234,129 @@ def start_retention_janitor() -> None:
             time.sleep(KAIX_JANITOR_INTERVAL_SEC)
 
     threading.Thread(target=_loop, name="retention-janitor", daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Hot-score refresher — the scalability core of the ranking system.
+#
+# A single bounded background pass recomputes posts.hot_score for the active
+# window so trending / 热搜 read an indexed precomputed column instead of
+# sorting a live time-dependent expression. This is what keeps read cost flat
+# as QPS grows: the expensive part runs once per minute on ONE worker, not on
+# every request. Gated by KAIX_ENABLE_SCHEDULERS so multi-process deploys run
+# it exactly once. Pairs with the denormalized counters (migration v85) — those
+# removed the per-read COUNT subqueries; this removes the per-read time sort.
+# ---------------------------------------------------------------------------
+KAIX_HOT_SCORE_INTERVAL_SEC = max(30, int(_env("KAIX_HOT_SCORE_INTERVAL_SEC", "60")))
+KAIX_HOT_SCORE_WINDOW_DAYS = max(1, int(_env("KAIX_HOT_SCORE_WINDOW_DAYS", "21")))
+HOT_SCORE_DECAY_H = 48.0          # engagement value halves ~every 48h of age
+HOT_SCORE_FRESH_WINDOW_H = 12.0   # new-post visibility bonus fades over 12h
+HOT_SCORE_FRESH_PEAK = 30.0       # peak freshness bonus (~30 like-points) for a brand-new post
+_HOT_SCORE_STARTED = False
+
+
+def refresh_hot_scores(conn: sqlite3.Connection) -> int:
+    """Recompute posts.hot_score for the active window in one bounded UPDATE:
+
+        hot_score = engagement * (DECAY / (age_h + DECAY))     # rational decay
+                    + FRESH_PEAK * max(0, FRESH_WINDOW - age_h) / FRESH_WINDOW
+
+    The rational decay keeps an engaged post ranking while gently fading with
+    age; the freshness term gives a brand-new, zero-engagement post real
+    visibility for its first hours (then fades) — that is the lever that lets
+    newly-posted content be seen. Portable arithmetic only (no exp/pow), backend
+    -branched exactly like the heat SQL. Returns rows touched."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=KAIX_HOT_SCORE_WINDOW_DAYS)).isoformat()
+    if KAIX_DB_BACKEND == "postgres":
+        boost_cmp = f"boosted_until > '{now_iso()}'"
+        hours_since = "EXTRACT(EPOCH FROM (now() - created_at::timestamptz)) / 3600.0"
+        max2 = "GREATEST"
+    else:
+        boost_cmp = "boosted_until > datetime('now')"
+        hours_since = "(julianday('now') - julianday(created_at)) * 24.0"
+        max2 = "MAX"
+    sql = f"""
+        UPDATE posts SET hot_score =
+            (COALESCE(like_count, 0) * 1.0
+             + COALESCE(comment_count, 0) * 3.0
+             + COALESCE(repost_count, 0) * 5.0
+             + COALESCE(bookmark_count, 0) * 4.0
+             - COALESCE(report_count, 0) * 10.0
+             + CASE WHEN COALESCE(is_boosted, 0) = 1
+                      AND (COALESCE(boosted_until, '') = '' OR {boost_cmp})
+                     THEN COALESCE(boost_weight, 0) ELSE 0 END)
+            * ({HOT_SCORE_DECAY_H} / ({max2}(0.0, {hours_since}) + {HOT_SCORE_DECAY_H}))
+            + {HOT_SCORE_FRESH_PEAK} * {max2}(0.0, {HOT_SCORE_FRESH_WINDOW_H} - ({hours_since})) / {HOT_SCORE_FRESH_WINDOW_H}
+        WHERE deleted_at IS NULL
+          AND status IN ('published', 'active')
+          AND created_at >= ?
+    """
+    cur = conn.execute(sql, (cutoff,))
+    return cur.rowcount or 0
+
+
+def reconcile_post_counters(conn: sqlite3.Connection) -> int:
+    """Recompute the denormalized engagement counters from the source tables for
+    posts in the active window. Cheap to run on a slow cadence (piggybacks the
+    retention sweep); keeps the counters honest against drift from rare bulk
+    paths. Returns the window size touched (best-effort)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=KAIX_HOT_SCORE_WINDOW_DAYS)).isoformat()
+    conn.execute(
+        "UPDATE posts SET like_count = (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'like') WHERE created_at >= ?",
+        (cutoff,),
+    )
+    conn.execute(
+        "UPDATE posts SET repost_count = (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'repost') WHERE created_at >= ?",
+        (cutoff,),
+    )
+    conn.execute(
+        "UPDATE posts SET bookmark_count = (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'bookmark') WHERE created_at >= ?",
+        (cutoff,),
+    )
+    cur = conn.execute(
+        "UPDATE posts SET comment_count = (SELECT COUNT(*) FROM comments c WHERE c.post_id = posts.id AND c.deleted_at IS NULL) WHERE created_at >= ?",
+        (cutoff,),
+    )
+    # Recompute last_activity_at to the latest live comment time ('' when none,
+    # so reads fall back to created_at). Heals drift from comment deletions that
+    # left the incremental value pointing at a now-removed comment.
+    conn.execute(
+        "UPDATE posts SET last_activity_at = COALESCE((SELECT MAX(c.created_at) FROM comments c WHERE c.post_id = posts.id AND c.deleted_at IS NULL), '') WHERE created_at >= ?",
+        (cutoff,),
+    )
+    return cur.rowcount or 0
+
+
+def run_hot_score_refresh() -> int:
+    with DB_LOCK:
+        conn = db()
+        try:
+            n = refresh_hot_scores(conn)
+            conn.commit()
+            return n
+        finally:
+            conn.close()
+
+
+def start_hot_score_refresher() -> None:
+    global _HOT_SCORE_STARTED
+    if _HOT_SCORE_STARTED:
+        return
+    _HOT_SCORE_STARTED = True
+
+    def _loop() -> None:
+        # First pass quickly after boot so the board reflects live recency decay
+        # within ~15s of a deploy. The migration seeds an engagement-only
+        # baseline meanwhile, so the board is never empty in between.
+        time.sleep(15)
+        while True:
+            try:
+                run_hot_score_refresh()
+            except Exception:
+                ERR_LOG.exception("hot_score refresh failed")
+            time.sleep(KAIX_HOT_SCORE_INTERVAL_SEC)
+
+    threading.Thread(target=_loop, name="hot-score-refresher", daemon=True).start()
 
 
 KAIX_GUIDE_REMINDER_INTERVAL_SEC = max(120, int(_env("KAIX_GUIDE_REMINDER_INTERVAL_SEC", "600")))
@@ -12756,14 +12939,42 @@ def _explore_heat_score_sql(alias: str, config: dict[str, Any]) -> str:
         hours_since = f"(julianday('now') - julianday({alias}.created_at)) * 24.0"
         max2 = "MAX"
     decay_hours = max(24.0, float(config.get("hot_days") or 10) * 24.0)
+    # Same denormalized-counter rewrite as _heat_score_sql: no correlated COUNT
+    # subqueries, so the explore/热榜 ranking scans are cheap arithmetic per row.
     return f"""
-      ((SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'like') * {float(config["like_weight"])}
-       + (SELECT COUNT(*) FROM comments c WHERE c.post_id = {alias}.id AND c.deleted_at IS NULL) * {float(config["comment_weight"])}
-       + (SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'repost') * {float(config["repost_weight"])}
-       + (SELECT COUNT(*) FROM interactions i WHERE i.target_id = {alias}.id AND i.kind = 'bookmark') * {float(config["favorite_weight"])}
+      (COALESCE({alias}.like_count, 0) * {float(config["like_weight"])}
+       + COALESCE({alias}.comment_count, 0) * {float(config["comment_weight"])}
+       + COALESCE({alias}.repost_count, 0) * {float(config["repost_weight"])}
+       + COALESCE({alias}.bookmark_count, 0) * {float(config["favorite_weight"])}
        + COALESCE({alias}.view_count, 0) * {float(config["view_weight"])}
        - COALESCE({alias}.report_count, 0) * {float(config["report_penalty"])}
        + ({max2}(0, {decay_hours} - ({hours_since})) / {decay_hours}) * {float(config["time_decay_weight"])})
+    """
+
+
+def _happening_score_sql(alias: str, config: dict[str, Any]) -> str:
+    """正在发生 = a live radar, distinct from the 热榜 (accumulated heat). Ranks by
+    *recency of activity* — a post's own creation OR its latest comment, via
+    last_activity_at — so something being discussed right now bubbles up even if
+    it was posted earlier, with a light engagement nudge on top. Recency
+    dominates (up to 100 pts, fading to 0 across the short happening window).
+    Columns only: no correlated subqueries, no per-row live aggregation."""
+    activity = f"COALESCE(NULLIF({alias}.last_activity_at, ''), {alias}.created_at)"
+    if KAIX_DB_BACKEND == "postgres":
+        hours_since = f"EXTRACT(EPOCH FROM (now() - ({activity})::timestamptz)) / 3600.0"
+        max2 = "GREATEST"
+    else:
+        hours_since = f"(julianday('now') - julianday({activity})) * 24.0"
+        max2 = "MAX"
+    window_h = max(6.0, float(config.get("happening_days") or 2) * 24.0)
+    report_penalty = float(config.get("report_penalty") or 20)
+    return f"""
+      ({max2}(0.0, {window_h} - ({hours_since})) / {window_h} * 100.0
+       + COALESCE({alias}.like_count, 0) * 1.0
+       + COALESCE({alias}.comment_count, 0) * 2.0
+       + COALESCE({alias}.repost_count, 0) * 3.0
+       + COALESCE({alias}.bookmark_count, 0) * 2.0
+       - COALESCE({alias}.report_count, 0) * {report_penalty})
     """
 
 
@@ -14372,33 +14583,48 @@ class Handler(BaseHTTPRequestHandler):
         if want("articles"):
             groups["articles"] = _safe(lambda: [
                 localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
-                    "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND (title LIKE ? OR summary LIKE ?) "
-                    "ORDER BY is_featured DESC, published_at DESC LIMIT 10", (country, like, like)).fetchall()])
+                    "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' "
+                    "AND (title LIKE ? OR summary LIKE ? OR body LIKE ? OR tags LIKE ? OR category_key LIKE ? OR sub_category_key LIKE ?) "
+                    "ORDER BY is_featured DESC, published_at DESC LIMIT 10",
+                    (country, like, like, like, like, like, like)).fetchall()])
         if want("schools"):
             groups["schools"] = _safe(lambda: [
                 localize_guide_school_payload(serialize_guide_school(r), language) for r in conn.execute(
-                    "SELECT * FROM guide_schools WHERE country = ? AND status = 'published' AND (name LIKE ? OR name_jp LIKE ? OR name_en LIKE ?) "
-                    "ORDER BY is_featured DESC, data_quality_score DESC LIMIT 8", (country, like, like, like)).fetchall()])
+                    "SELECT * FROM guide_schools WHERE country = ? AND status = 'published' "
+                    "AND (school_name LIKE ? OR school_name_jp LIKE ? OR school_name_en LIKE ? OR school_type LIKE ? "
+                    "OR prefecture LIKE ? OR city LIKE ? OR fields_of_study LIKE ? OR departments LIKE ? "
+                    "OR faculties LIKE ? OR graduate_schools LIKE ? OR tags LIKE ?) "
+                    "ORDER BY is_featured DESC, data_quality_score DESC, updated_at DESC LIMIT 8",
+                    (country, like, like, like, like, like, like, like, like, like, like, like)).fetchall()])
         if want("companies"):
             groups["companies"] = _safe(lambda: [
                 localize_guide_company_payload(serialize_guide_company(r), language) for r in conn.execute(
-                    "SELECT * FROM guide_companies WHERE country = ? AND status = 'published' AND name LIKE ? "
-                    "ORDER BY is_featured DESC, data_quality_score DESC LIMIT 8", (country, like)).fetchall()])
+                    "SELECT * FROM guide_companies WHERE country = ? AND status = 'published' "
+                    "AND (company_name LIKE ? OR company_name_jp LIKE ? OR company_name_en LIKE ? OR industry LIKE ? "
+                    "OR sub_industry LIKE ? OR prefecture LIKE ? OR city LIKE ? OR description LIKE ? "
+                    "OR short_description LIKE ? OR tags LIKE ? OR japanese_level_required LIKE ? OR english_level_required LIKE ?) "
+                    "ORDER BY is_featured DESC, data_quality_score DESC, review_count DESC, updated_at DESC LIMIT 8",
+                    (country, like, like, like, like, like, like, like, like, like, like, like, like)).fetchall()])
         if want("products"):
             groups["products"] = _safe(lambda: [
                 localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
-                    "SELECT * FROM guide_products WHERE country = ? AND status IN ('published','coming_soon') AND title LIKE ? "
-                    "ORDER BY is_coming_soon ASC, sort_order LIMIT 8", (country, like)).fetchall()])
+                    "SELECT * FROM guide_products WHERE country = ? AND status IN ('published','coming_soon') "
+                    "AND (title LIKE ? OR subtitle LIKE ? OR description LIKE ? OR tags LIKE ? "
+                    "OR target_audience LIKE ? OR product_type LIKE ? OR category_key LIKE ? OR sub_category_key LIKE ?) "
+                    "ORDER BY is_coming_soon ASC, sort_order LIMIT 8",
+                    (country, like, like, like, like, like, like, like, like)).fetchall()])
         if want("faq"):
             groups["faq"] = _safe(lambda: [
                 serialize_guide_faq(r) for r in conn.execute(
-                    "SELECT * FROM guide_faq WHERE country = ? AND status = 'published' AND (question LIKE ? OR answer LIKE ?) "
-                    "ORDER BY sort_order LIMIT 8", (country, like, like)).fetchall()])
+                    "SELECT * FROM guide_faq WHERE country = ? AND status = 'published' AND language = ? "
+                    "AND (question LIKE ? OR answer LIKE ? OR category_key LIKE ?) "
+                    "ORDER BY sort_order LIMIT 8", (country, language, like, like, like)).fetchall()])
         if want("journeys"):
             groups["journeys"] = _safe(lambda: [
                 serialize_guide_journey(r) for r in conn.execute(
-                    "SELECT * FROM guide_journeys WHERE country = ? AND language = 'zh-CN' AND status = 'published' AND (title LIKE ? OR subtitle LIKE ?) "
-                    "ORDER BY sort_order LIMIT 8", (country, like, like)).fetchall()])
+                    "SELECT * FROM guide_journeys WHERE country = ? AND language = ? AND status = 'published' "
+                    "AND (title LIKE ? OR subtitle LIKE ? OR audience LIKE ? OR hero_title LIKE ? OR hero_subtitle LIKE ?) "
+                    "ORDER BY sort_order LIMIT 8", (country, language, like, like, like, like, like)).fetchall()])
         self.send_json({"status": "ok", "country": country, "query": keyword,
                         "scopes": GUIDE_SEARCH_SCOPES, "groups": groups})
 
@@ -29105,7 +29331,17 @@ class Handler(BaseHTTPRequestHandler):
             region_params = []
         score_config = dict(config)
         score_config["hot_days"] = days
-        score_sql = _explore_heat_score_sql("p", score_config)
+        # 正在发生 (happening) and 热榜 (hot) are now genuinely different boards:
+        # happening ranks by recency-of-activity (resurfaces posts being discussed
+        # right now) and windows on that activity; hot ranks by accumulated,
+        # weighted, decaying heat over its longer window. Both read denormalized
+        # columns — no correlated subqueries.
+        if kind == "happening":
+            score_sql = _happening_score_sql("p", score_config)
+            cutoff_expr = "COALESCE(NULLIF(p.last_activity_at, ''), p.created_at)"
+        else:
+            score_sql = _explore_heat_score_sql("p", score_config)
+            cutoff_expr = "p.created_at"
         type_clause = " AND p.content_type NOT IN (%s)" % ",".join("?" * len(HIGH_INTENT_POST_TYPES))
         type_params = sorted(HIGH_INTENT_POST_TYPES)
         quality_clause = ""
@@ -29133,7 +29369,7 @@ class Handler(BaseHTTPRequestHandler):
             cache_key = "explore:posts:" + hashlib.sha1(json.dumps(cache_input, sort_keys=True).encode("utf-8")).hexdigest()
             cached_rank = _cache_get(cache_key)
             if cached_rank is None:
-                cutoff_clause = " AND p.created_at >= ?" if cutoff else ""
+                cutoff_clause = f" AND {cutoff_expr} >= ?" if cutoff else ""
                 params: list[Any] = []
                 if cutoff:
                     params.append(cutoff)
@@ -29236,23 +29472,22 @@ class Handler(BaseHTTPRequestHandler):
             now = datetime.now(timezone.utc)
             cutoff = (now - timedelta(hours=hours)).isoformat()
             half = (now - timedelta(hours=hours / 2)).isoformat()
-            heat_sql = _heat_score_sql("p")
+            # Subquery-free: sum the precomputed hot_score + denormalized
+            # comment_count, and use last_activity_at (vs a correlated EXISTS) to
+            # keep a topic alive when an older post is being commented on now.
             try:
                 rows = list(conn.execute(
                     f"""
                     SELECT t.tag AS tag,
                            COUNT(DISTINCT p.id) AS related,
-                           CAST(SUM({heat_sql}) AS INTEGER) AS heat,
-                           SUM((SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.deleted_at IS NULL)) AS comments,
+                           CAST(SUM(COALESCE(p.hot_score, 0)) AS INTEGER) AS heat,
+                           SUM(COALESCE(p.comment_count, 0)) AS comments,
                            SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END) AS recent_new
                       FROM post_tags t
                       JOIN posts p ON p.id = t.post_id
                      WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
                        AND (p.created_at >= ?
-                            OR EXISTS (SELECT 1 FROM comments c2
-                                        WHERE c2.post_id = p.id
-                                          AND c2.deleted_at IS NULL
-                                          AND c2.created_at >= ?))
+                            OR COALESCE(NULLIF(p.last_activity_at, ''), p.created_at) >= ?)
                        {scope_clause}
                        {block_clause}
                      GROUP BY t.tag
@@ -29272,17 +29507,14 @@ class Handler(BaseHTTPRequestHandler):
                         f"""
                         SELECT t.tag AS tag,
                                COUNT(DISTINCT p.id) AS related,
-                               CAST(SUM({heat_sql}) AS INTEGER) AS heat,
-                               SUM((SELECT COUNT(*) FROM comments c WHERE c.post_id = p.id AND c.deleted_at IS NULL)) AS comments,
+                               CAST(SUM(COALESCE(p.hot_score, 0)) AS INTEGER) AS heat,
+                               SUM(COALESCE(p.comment_count, 0)) AS comments,
                                SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END) AS recent_new
                           FROM post_tags t
                           JOIN posts p ON p.id = t.post_id
                          WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
                            AND (p.created_at >= ?
-                                OR EXISTS (SELECT 1 FROM comments c2
-                                            WHERE c2.post_id = p.id
-                                              AND c2.deleted_at IS NULL
-                                              AND c2.created_at >= ?))
+                                OR COALESCE(NULLIF(p.last_activity_at, ''), p.created_at) >= ?)
                            AND p.country = ?
                            {block_clause}
                          GROUP BY t.tag
@@ -29459,7 +29691,18 @@ class Handler(BaseHTTPRequestHandler):
         / repost / comment on. Returns normalized weight maps + the set of posts
         they've already engaged with (so we don't re-surface them). All best
         effort — any failure yields an empty profile and the caller falls back to
-        plain recency. This is a ranking signal, never an access control."""
+        plain recency. This is a ranking signal, never an access control.
+
+        Cached per viewer for KAIX_RECPROFILE_TTL_SEC: the two engagement scans
+        are the most expensive part of a personalized first page, and a 10-minute
+        -stale interest profile is indistinguishable to the user — so at scale a
+        returning viewer's repeated home opens cost ~one query window, not two
+        scans every time. The scans are also row-capped so a power user with a
+        huge history can't make the profile build unbounded."""
+        cache_key = f"recprofile:{viewer_id}"
+        cached_profile = _cache_get(cache_key)
+        if cached_profile is not None:
+            return cached_profile
         since = (datetime.now(timezone.utc) - timedelta(days=90)).isoformat()
         types: dict[str, float] = {}
         topics: dict[str, float] = {}
@@ -29478,7 +29721,8 @@ class Handler(BaseHTTPRequestHandler):
             for r in conn.execute(
                 """SELECT p.id AS pid, p.content_type AS ct, p.author_id AS aid, i.kind AS kind
                    FROM interactions i JOIN posts p ON p.id = i.target_id
-                   WHERE i.user_id = ? AND i.created_at >= ? AND p.deleted_at IS NULL""",
+                   WHERE i.user_id = ? AND i.created_at >= ? AND p.deleted_at IS NULL
+                   ORDER BY i.created_at DESC LIMIT 400""",
                 (viewer_id, since),
             ):
                 d = dict(r)
@@ -29489,7 +29733,8 @@ class Handler(BaseHTTPRequestHandler):
             for r in conn.execute(
                 """SELECT p.id AS pid, p.content_type AS ct, p.author_id AS aid
                    FROM comments c JOIN posts p ON p.id = c.post_id
-                   WHERE c.author_id = ? AND c.created_at >= ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL""",
+                   WHERE c.author_id = ? AND c.created_at >= ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL
+                   ORDER BY c.created_at DESC LIMIT 200""",
                 (viewer_id, since),
             ):
                 d = dict(r)
@@ -29501,13 +29746,15 @@ class Handler(BaseHTTPRequestHandler):
         def _norm(m: dict[str, float]) -> dict[str, float]:
             top = max(m.values()) if m else 0.0
             return {k: v / top for k, v in m.items()} if top > 0 else {}
-        return {
+        profile = {
             "types": _norm(types),
             "topics": _norm(topics),
             "authors": _norm(authors),
             "seen": seen,
             "active": bool(types or topics or authors),
         }
+        _cache_put(cache_key, profile, ttl_seconds=KAIX_RECPROFILE_TTL_SEC)
+        return profile
 
     def _recommend_rank(self, rows: list[dict[str, Any]], profile: dict[str, Any], limit: int) -> list[dict[str, Any]]:
         """Re-rank a recency-ordered candidate pool by interest match while
@@ -29553,7 +29800,21 @@ class Handler(BaseHTTPRequestHandler):
                 break
         if len(out) < limit:
             out.extend(deferred[: limit - len(out)])
-        return out[:limit]
+        ranked = out[:limit]
+
+        # Freshness floor — guarantees newly-posted content is actually seen.
+        # The interest score can let a strongly-matched older post outrank a
+        # brand-new, zero-engagement one, so a fresh post could miss page 1
+        # entirely. Reserve a small quota for the very newest pool rows (the pool
+        # is recency-ordered, idx 0 = newest) and splice any that the ranking
+        # dropped in right after the top personalized pick, where they're seen.
+        fresh_quota = min(limit, max(2, limit // 6))
+        ranked_ids = {r.get("id") for r in ranked}
+        missing_fresh = [r for r in rows[:fresh_quota] if r.get("id") not in ranked_ids]
+        if missing_fresh:
+            keep = ranked[: max(1, limit - len(missing_fresh))]
+            ranked = (keep[:1] + missing_fresh + keep[1:])[:limit]
+        return ranked[:limit]
 
     def api_feed(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
@@ -29998,6 +30259,7 @@ class Handler(BaseHTTPRequestHandler):
                 (str(uuid.uuid4()), post_id, user["id"], kind, now_iso()),
             )
             changed = True
+            bump_post_counter_for_kind(conn, post_id, kind, +1)
             if kind == "bookmark":
                 reputation_apply_event(
                     conn,
@@ -30035,6 +30297,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
         elif not on and existing:
             conn.execute("DELETE FROM interactions WHERE id = ?", (existing["id"],))
+            bump_post_counter_for_kind(conn, post_id, kind, -1)
             changed = True
         if changed:
             invalidate_public_ranking_caches()
@@ -30106,6 +30369,7 @@ class Handler(BaseHTTPRequestHandler):
                     (str(uuid.uuid4()), post_id, user["id"], now_iso()),
                 )
                 changed = True
+                bump_post_counter(conn, post_id, "repost_count", +1)
             except sqlite3.IntegrityError:
                 pass
             existing_repost_post = conn.execute(
@@ -30143,10 +30407,12 @@ class Handler(BaseHTTPRequestHandler):
                 HUB.publish(post["author_id"], {"type": "notification", "kind": "repost"})
                 server_apns.enqueue(post["author_id"], ntype="repost", actor_id=user["id"], post_id=post_id)
         else:
-            conn.execute(
+            removed = conn.execute(
                 "DELETE FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'repost'",
                 (post_id, user["id"]),
             )
+            if (removed.rowcount or 0) > 0:
+                bump_post_counter(conn, post_id, "repost_count", -1)
             conn.execute(
                 """
                 UPDATE posts
@@ -30324,6 +30590,10 @@ class Handler(BaseHTTPRequestHandler):
             "INSERT INTO comments (id, post_id, author_id, content, parent_comment_id, reply_to_user_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (comment_id, post_id, user["id"], content, parent_comment_id or None, reply_to_user_id or None, now, now),
         )
+        bump_post_counter(conn, post_id, "comment_count", +1)
+        # Mark the post active *now* so the 正在发生 radar resurfaces it even if it
+        # was created days ago (recency-of-activity, not just recency-of-creation).
+        conn.execute("UPDATE posts SET last_activity_at = ? WHERE id = ?", (now, post_id))
         if post["author_id"] != user["id"]:
             reputation_apply_event(
                 conn,
@@ -30372,6 +30642,9 @@ class Handler(BaseHTTPRequestHandler):
         if row["author_id"] != user["id"] and (not post or post["author_id"] != user["id"]):
             raise APIError("无权删除", 403, "forbidden")
         conn.execute("UPDATE comments SET deleted_at = ?, updated_at = ? WHERE id = ?", (now_iso(), now_iso(), comment_id))
+        # Only decrement once — guard against a double delete of the same comment.
+        if not row["deleted_at"]:
+            bump_post_counter(conn, row["post_id"], "comment_count", -1)
         self.send_json({"ok": True})
 
     def api_comment_like(self, conn: sqlite3.Connection, comment_id: str, on: bool) -> None:
@@ -30548,15 +30821,20 @@ class Handler(BaseHTTPRequestHandler):
             cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
             country_clause = "AND p.country = ?" if viewer_country else ""
             params: tuple[Any, ...] = (cutoff_24h, viewer_country) if viewer_country else (cutoff_24h,)
+            # Order by the precomputed, indexed hot_score (idx_posts_hot) instead
+            # of a live heat expression — the most-hit global widget now resolves
+            # to an index scan whose cost is independent of how many posts or
+            # interactions exist. hot_score already bakes in recency decay; the
+            # 24h window keeps "trending = right now" semantics.
             id_rows = list(conn.execute(
                 f"""
-                SELECT p.id, {_heat_score_sql('p')} AS heat
+                SELECT p.id, p.hot_score AS heat
                 FROM posts p
                 WHERE p.deleted_at IS NULL
                   AND p.status IN ('published', 'active')
                   AND p.created_at >= ?
                   {country_clause}
-                ORDER BY heat DESC LIMIT 20
+                ORDER BY p.hot_score DESC LIMIT 20
                 """,
                 params,
             ))
@@ -30564,22 +30842,74 @@ class Handler(BaseHTTPRequestHandler):
             _cache_put(f"trending:{cache_scope}:post_ids", cached_ids, ttl_seconds=30)
         if cached_topics is None:
             try:
+                # 热搜 = what's hot *now*, not all time. Window the tags to the last
+                # 7 days, rank by the summed hot_score of their posts (not a raw
+                # count, so a few high-engagement posts beat a flood of low ones),
+                # drop generic/location filler (#东京 etc.), and compute velocity by
+                # comparing the recent half vs the older half of the window so a
+                # rising topic is marked "up". Old all-time counts let city names
+                # and tautological tags sit on top forever.
+                now = datetime.now(timezone.utc)
+                win_cutoff = (now - timedelta(days=7)).isoformat()
+                half_cutoff = (now - timedelta(hours=84)).isoformat()  # 3.5 days
                 country_clause = "AND p.country = ?" if viewer_country else ""
-                params = (viewer_country,) if viewer_country else ()
-                cached_topics = [
-                    {"tag": r["tag"], "post_count": int(r["c"])}
-                    for r in conn.execute(
-                        f"""
-                        SELECT t.tag, COUNT(*) AS c
-                        FROM post_tags t
-                        JOIN posts p ON p.id = t.post_id
-                        WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
-                          {country_clause}
-                        GROUP BY t.tag ORDER BY c DESC LIMIT 20
-                        """,
-                        params,
-                    )
-                ]
+                block_tags = sorted(HOT_BOARD_TAG_BLOCKLIST)
+                block_clause = ("AND t.tag NOT IN (%s)" % ",".join("?" * len(block_tags))) if block_tags else ""
+                tparams: list[Any] = [half_cutoff, win_cutoff]
+                if viewer_country:
+                    tparams.append(viewer_country)
+                tparams.extend(block_tags)
+                cached_topics = []
+                for r in conn.execute(
+                    f"""
+                    SELECT t.tag AS tag,
+                           COUNT(DISTINCT p.id) AS c,
+                           COALESCE(SUM(p.hot_score), 0) AS heat,
+                           SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END) AS recent_new
+                    FROM post_tags t
+                    JOIN posts p ON p.id = t.post_id
+                    WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
+                      AND p.created_at >= ?
+                      {country_clause}
+                      {block_clause}
+                    GROUP BY t.tag
+                    ORDER BY heat DESC, c DESC
+                    LIMIT 20
+                    """,
+                    tparams,
+                ):
+                    row = dict(r)
+                    related = int(row.get("c") or 0)
+                    recent_new = int(row.get("recent_new") or 0)
+                    older = max(0, related - recent_new)
+                    cached_topics.append({
+                        "tag": row["tag"],
+                        "post_count": related,
+                        "heat": int(row.get("heat") or 0),
+                        "trend": "up" if recent_new > older else ("down" if older > recent_new else "flat"),
+                    })
+                # Cold-start / sparse city: if the windowed board is empty, fall
+                # back to the all-time top tags so the rail is never blank.
+                if not cached_topics:
+                    fb_params: list[Any] = []
+                    if viewer_country:
+                        fb_params.append(viewer_country)
+                    fb_params.extend(block_tags)
+                    cached_topics = [
+                        {"tag": r["tag"], "post_count": int(r["c"]), "heat": 0, "trend": "flat"}
+                        for r in conn.execute(
+                            f"""
+                            SELECT t.tag, COUNT(*) AS c
+                            FROM post_tags t
+                            JOIN posts p ON p.id = t.post_id
+                            WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
+                              {country_clause}
+                              {block_clause}
+                            GROUP BY t.tag ORDER BY c DESC LIMIT 20
+                            """,
+                            fb_params,
+                        )
+                    ]
                 _cache_put(f"trending:{cache_scope}:topics", cached_topics, ttl_seconds=60)
             except Exception as exc:
                 ERR_LOG.warning("trending topics degraded error=%s", exc)
@@ -34500,8 +34830,9 @@ def run() -> None:
         start_retention_janitor()
         start_guide_reminder_dispatcher()
         start_engagement_simulator()
+        start_hot_score_refresher()
     else:
-        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor + guide reminders + engagement sim disabled on this worker")
+        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor + guide reminders + engagement sim + hot-score refresher disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")
     port = int(_env("KAIX_PORT", "8787"))
     server = MachiHTTPServer((host, port), Handler)

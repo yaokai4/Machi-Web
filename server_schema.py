@@ -4318,6 +4318,61 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_partner_contacts_partner ON partner_contacts(partner_key, sort_order);
         """,
     ),
+    (
+        85,
+        "posts: denormalized engagement counters + hot_score for scalable ranking",
+        """
+        ALTER TABLE posts ADD COLUMN like_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE posts ADD COLUMN comment_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE posts ADD COLUMN repost_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE posts ADD COLUMN bookmark_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE posts ADD COLUMN hot_score REAL NOT NULL DEFAULT 0;
+
+        UPDATE posts SET like_count =
+            (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'like');
+        UPDATE posts SET repost_count =
+            (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'repost');
+        UPDATE posts SET bookmark_count =
+            (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'bookmark');
+        UPDATE posts SET comment_count =
+            (SELECT COUNT(*) FROM comments c WHERE c.post_id = posts.id AND c.deleted_at IS NULL);
+
+        -- Seed an engagement-only baseline so the board has a sane order the
+        -- instant the migration finishes; the hot_score refresher then layers
+        -- on recency decay within ~1 minute of boot. Mirrors the engagement
+        -- weights in _heat_score_sql (like 1, comment 3, repost 5, bookmark 4,
+        -- report -10) plus any active boost.
+        UPDATE posts SET hot_score =
+            like_count * 1.0
+            + comment_count * 3.0
+            + repost_count * 5.0
+            + bookmark_count * 4.0
+            - COALESCE(report_count, 0) * 10.0
+            + CASE WHEN COALESCE(is_boosted, 0) = 1 THEN COALESCE(boost_weight, 0) ELSE 0 END;
+
+        CREATE INDEX IF NOT EXISTS idx_posts_hot ON posts(status, hot_score);
+        """,
+    ),
+    (
+        86,
+        "posts: last_activity_at for the 正在发生 radar + subquery-free 热榜",
+        """
+        ALTER TABLE posts ADD COLUMN last_activity_at TEXT NOT NULL DEFAULT '';
+
+        -- Latest non-deleted comment time per post. Posts with no comments keep
+        -- '' and read paths fall back to created_at (activity == creation). This
+        -- lets 正在发生 rank by *recency of activity* (an old post getting fresh
+        -- comments resurfaces) and lets the 热榜 drop its correlated EXISTS.
+        UPDATE posts SET last_activity_at = (
+            SELECT MAX(c.created_at) FROM comments c
+             WHERE c.post_id = posts.id AND c.deleted_at IS NULL
+        )
+        WHERE EXISTS (
+            SELECT 1 FROM comments c
+             WHERE c.post_id = posts.id AND c.deleted_at IS NULL
+        );
+        """,
+    ),
 ]
 
 
