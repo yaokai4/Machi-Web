@@ -101,6 +101,31 @@ export interface GuideArticle {
   updatedAt: string | null;
 }
 
+export interface GuideAIArticleDraft {
+  title: string;
+  slug: string;
+  status?: string;
+  categoryKey: string;
+  subCategoryKey?: string;
+  summary: string;
+  body: string;
+  seoTitle?: string;
+  seoDescription?: string;
+  coverImage?: string;
+  tags?: string[];
+  relatedArticleSlugs?: string[];
+  relatedProductSlugs?: string[];
+  authorName?: string;
+  sortOrder?: number;
+  isFeatured?: boolean;
+  isFree?: boolean;
+  isPaid?: boolean;
+  sourceLabel?: string;
+  sourceUrl?: string;
+  verifiedAt?: string;
+  staleAfterDays?: number;
+}
+
 export interface GuideProduct {
   id: string;
   title: string;
@@ -988,7 +1013,7 @@ export interface GuideSavedItem {
 
 const GUIDE_TIMEOUT_MS = 12_000;
 
-async function greq<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function greq<T>(method: string, path: string, body?: unknown, timeoutMs = GUIDE_TIMEOUT_MS): Promise<T> {
   const headers: Record<string, string> = { Accept: "application/json" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const token = readToken();
@@ -1001,7 +1026,7 @@ async function greq<T>(method: string, path: string, body?: unknown): Promise<T>
         } catch {
           // ignore
         }
-      }, GUIDE_TIMEOUT_MS)
+      }, timeoutMs)
     : null;
   let res: Response;
   try {
@@ -1476,6 +1501,9 @@ export const adminGuide = {
       "GET", `/api/admin/guide/articles/${encodeURIComponent(idOrSlug)}`),
   createArticle: (body: Record<string, unknown>) =>
     greq<{ status: string; id: string; slug: string }>("POST", "/api/admin/guide/articles", body),
+  generateArticleDraft: (body: Record<string, unknown>) =>
+    greq<{ status: string; article: GuideAIArticleDraft; qualityWarnings?: string[]; qualityNotes?: string[] }>(
+      "POST", "/api/admin/guide/articles/ai-draft", body, 70_000),
   updateArticle: (id: string, body: Record<string, unknown>) =>
     greq<{ status: string; id: string }>("PATCH", `/api/admin/guide/articles/${encodeURIComponent(id)}`, body),
   deleteArticle: (id: string) =>

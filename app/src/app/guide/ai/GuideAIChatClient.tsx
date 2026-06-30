@@ -4,17 +4,25 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight,
+  ArrowUpRight,
   BookOpen,
+  Briefcase,
   Building2,
   Check,
   Clock,
+  Compass,
   Copy,
   FileText,
   GraduationCap,
   HelpCircle,
+  Home,
+  type LucideIcon,
   Moon,
   Plus,
   Send,
+  ShieldCheck,
+  Sparkles,
+  Stamp,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -142,6 +150,24 @@ function SourceIcon({ kind }: { kind: string }) {
   if (k.includes("faq")) return <HelpCircle className="h-3.5 w-3.5" />;
   return <BookOpen className="h-3.5 w-3.5" />;
 }
+
+// Brand-mark gradient (pink → violet → blue → teal) — mirrors MachiAIMark so the
+// hero word "Machi AI" and ambient glow stay pixel-consistent with the logo.
+const SPARK_GRADIENT = "linear-gradient(105deg,#FF6FB5 0%,#A06BF0 36%,#5B8DEF 68%,#36D6C3 100%)";
+
+// Per-category icons for the starter prompts. Index-aligned with `promptChips`
+// (same eight categories, same order across every locale), so a flat string list
+// still renders a tidy icon + question card.
+const STARTER_ICONS: LucideIcon[] = [
+  Sparkles, // 第一周 / arrival
+  Home, // 租房 / housing
+  Briefcase, // 兼职 / part-time
+  GraduationCap, // 升学 / grad school
+  Building2, // 面试 / interview
+  FileText, // 履历书 / documents
+  Stamp, // 签证 / visa
+  Compass, // Machi Guide
+];
 
 export default function GuideAIChatClient() {
   const { locale } = useI18n();
@@ -431,15 +457,15 @@ export default function GuideAIChatClient() {
   const canSend = input.trim().length > 0 && !sending && !quotaReached;
 
   return (
-    <GuideShell back={{ href: "/guide", label: "Machi AI" }}>
-      <div className="mx-auto flex min-h-[78dvh] w-full max-w-3xl flex-col px-3 sm:px-5">
+    <GuideShell back={{ href: "/guide", label: pick(locale, "Machi Guide", "Machi Guide", "Machi Guide") }}>
+      <div className="mx-auto flex min-h-[82dvh] w-full max-w-3xl flex-col px-3 sm:px-5">
         {/* Header */}
-        <div className="sticky top-0 z-20 -mx-3 flex items-center gap-3 border-b border-kx-stroke/40 bg-kx-card/80 px-3 py-3 backdrop-blur-md sm:-mx-5 sm:px-5">
-          <Avatar size={38} />
+        <div className="sticky top-0 z-20 -mx-3 flex items-center gap-3 border-b border-kx-stroke/35 bg-kx-card/70 px-3 py-2.5 backdrop-blur-xl sm:-mx-5 sm:px-5">
+          <Avatar size={40} />
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h1 className="text-base font-black tracking-[-0.01em] text-kx-text">Machi AI</h1>
-              <span className="rounded-full bg-kx-accentSoft px-1.5 py-0.5 text-[9px] font-black uppercase tracking-[0.1em] text-kx-accent">
+            <div className="flex items-center gap-1.5">
+              <h1 className="text-[0.95rem] font-black tracking-[-0.01em] text-kx-text">Machi AI</h1>
+              <span className="rounded-full bg-kx-accentSoft px-1.5 py-[3px] text-[9px] font-black uppercase leading-none tracking-[0.12em] text-kx-accent">
                 Beta
               </span>
             </div>
@@ -450,7 +476,7 @@ export default function GuideAIChatClient() {
           <button
             type="button"
             onClick={startNew}
-            className="inline-flex h-9 items-center gap-1 rounded-full border border-kx-stroke/50 bg-kx-card px-3 text-xs font-bold text-kx-text transition hover:border-kx-accent/40 hover:text-kx-accent"
+            className="inline-flex h-9 items-center gap-1 rounded-full border border-kx-stroke/50 bg-kx-card/90 px-3 text-xs font-bold text-kx-text shadow-sm transition hover:-translate-y-px hover:border-kx-accent/45 hover:text-kx-accent"
           >
             <Plus className="h-3.5 w-3.5" /> {pick(locale, "新对话", "新規", "New")}
           </button>
@@ -462,7 +488,7 @@ export default function GuideAIChatClient() {
               "grid h-9 w-9 place-items-center rounded-full border transition " +
               (showHistory
                 ? "border-kx-accent/50 bg-kx-accentSoft text-kx-accent"
-                : "border-kx-stroke/50 bg-kx-card text-kx-muted hover:text-kx-accent")
+                : "border-kx-stroke/50 bg-kx-card/90 text-kx-muted hover:text-kx-accent")
             }
           >
             <Clock className="h-4 w-4" />
@@ -481,7 +507,14 @@ export default function GuideAIChatClient() {
         ) : null}
 
         {/* Messages */}
-        <div className="flex-1 space-y-5 py-5">
+        <div
+          className={
+            "flex-1 " +
+            (isGuest || messages.length === 0
+              ? "flex flex-col justify-center gap-5 py-6"
+              : "space-y-5 py-5")
+          }
+        >
           {isGuest ? (
             <SignInPanel
               locale={locale}
@@ -523,7 +556,7 @@ export default function GuideAIChatClient() {
 
         {/* Composer */}
         {!isGuest ? (
-          <div className="sticky bottom-0 z-20 -mx-3 border-t border-kx-stroke/40 bg-kx-card/85 px-3 py-3 backdrop-blur-md sm:-mx-5 sm:px-5">
+          <div className="sticky bottom-0 z-20 -mx-3 border-t border-kx-stroke/35 bg-kx-card/75 px-3 pb-3 pt-2.5 backdrop-blur-xl sm:-mx-5 sm:px-5">
             {errorMessage ? (
               <div className="mb-2 flex items-center gap-2 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-xs font-semibold text-amber-700 dark:text-amber-300">
                 <span className="min-w-0 flex-1 truncate">{errorMessage}</span>
@@ -544,7 +577,7 @@ export default function GuideAIChatClient() {
                 )}
               </p>
             ) : null}
-            <div className="flex items-end gap-2 rounded-[1.4rem] border border-kx-stroke/50 bg-kx-card p-1.5 shadow-[0_10px_30px_-24px_rgba(20,112,103,0.5)] focus-within:border-kx-accent/45">
+            <div className="flex items-end gap-2 rounded-[1.5rem] border border-kx-stroke/50 bg-kx-card p-1.5 shadow-[0_16px_40px_-30px_rgba(20,112,103,0.6)] transition focus-within:border-kx-accent/50 focus-within:shadow-[0_18px_44px_-26px_rgba(91,141,239,0.45)]">
               <textarea
                 ref={textareaRef}
                 value={input}
@@ -566,7 +599,7 @@ export default function GuideAIChatClient() {
                   "日本生活・進学・就職や Machi の使い方を質問…",
                   "Ask about life, study, work in Japan, or using Machi…",
                 )}
-                className="max-h-40 min-h-[2.5rem] flex-1 resize-none bg-transparent px-3 py-2 text-sm font-medium leading-6 text-kx-text outline-none placeholder:text-kx-muted disabled:opacity-60"
+                className="max-h-40 min-h-[2.75rem] flex-1 resize-none bg-transparent px-3 py-2.5 text-sm font-medium leading-6 text-kx-text outline-none placeholder:text-kx-muted disabled:opacity-60"
               />
               <button
                 type="button"
@@ -574,13 +607,24 @@ export default function GuideAIChatClient() {
                 disabled={!canSend}
                 aria-label={pick(locale, "发送", "送信", "Send")}
                 className={
-                  "grid h-10 w-10 shrink-0 place-items-center rounded-full transition " +
-                  (canSend ? "bg-kx-accent text-white hover:brightness-105" : "bg-kx-soft text-kx-muted")
+                  "grid h-10 w-10 shrink-0 place-items-center rounded-full text-white transition " +
+                  (canSend
+                    ? "shadow-[0_8px_18px_-8px_rgba(91,141,239,0.8)] hover:brightness-[1.06]"
+                    : "bg-kx-soft text-kx-muted")
                 }
+                style={canSend ? { backgroundImage: SPARK_GRADIENT } : undefined}
               >
                 {sending ? <Spinner /> : <Send className="h-4 w-4" />}
               </button>
             </div>
+            <p className="mt-2 px-1 text-center text-[10.5px] font-medium text-kx-muted/80">
+              {pick(
+                locale,
+                "Enter 发送 · Shift + Enter 换行",
+                "Enter で送信 · Shift + Enter で改行",
+                "Enter to send · Shift + Enter for a new line",
+              )}
+            </p>
           </div>
         ) : null}
       </div>
@@ -593,7 +637,7 @@ export default function GuideAIChatClient() {
 function Avatar({ size = 38 }: { size?: number }) {
   return (
     <span
-      className="grid shrink-0 place-items-center rounded-[28%] shadow-[0_8px_20px_-10px_rgba(20,112,103,0.9)]"
+      className="grid shrink-0 place-items-center rounded-[28%] shadow-[0_8px_20px_-12px_rgba(20,112,103,0.65)]"
       style={{ width: size, height: size }}
       aria-hidden
     >
@@ -644,41 +688,61 @@ function EmptyState({
   onChip: (c: string) => void;
 }) {
   return (
-    <div className="space-y-5">
-      <div className="rounded-[1.75rem] border border-kx-stroke/40 bg-kx-card/80 p-6 sm:p-7">
-        <Avatar size={52} />
-        <h2 className="mt-4 text-2xl font-black tracking-[-0.02em] text-kx-text">
-          {pick(locale, "在日本遇到的问题，先问 Machi AI", "日本での困りごとは、まず Machi AI に", "Stuck in Japan? Ask Machi AI first")}
-        </h2>
-        <p className="mt-2 max-w-xl text-sm font-semibold leading-7 text-kx-subtle">
-          {pick(
-            locale,
-            "手续、租房、升学、就职、日语学习和 Machi 使用，都可以从一个清晰答案开始。",
-            "手続き・住まい・進学・就職・日本語学習、そして Machi の使い方まで、ひとつの明快な答えから。",
-            "Paperwork, housing, study, work, Japanese, and using Machi — start from one clear answer.",
-          )}
-        </p>
-      </div>
-
-      <div>
-        <p className="mb-2.5 px-1 text-xs font-bold text-kx-muted">
-          {pick(locale, "试试这样问", "こんな質問から", "Try asking")}
-        </p>
-        <div className="flex flex-wrap gap-2">
-          {chips.map((chip) => (
-            <button
-              key={chip}
-              type="button"
-              onClick={() => onChip(chip)}
-              className="rounded-full border border-kx-stroke/50 bg-kx-card px-3.5 py-2 text-sm font-semibold text-kx-text transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:text-kx-accent"
-            >
-              {chip}
-            </button>
-          ))}
+    <div className="space-y-6">
+      {/* Hero — clean card with a gradient-painted wordmark (no ambient glow) */}
+      <div className="rounded-[2rem] border border-kx-stroke/40 bg-kx-card/85 p-7 shadow-[0_24px_50px_-44px_rgba(0,0,0,0.5)] sm:p-9">
+        <div>
+          <Avatar size={60} />
+          <h2 className="mt-5 text-[1.7rem] font-black leading-[1.18] tracking-[-0.025em] text-kx-text sm:text-[1.9rem]">
+            {pick(locale, "在日本遇到的问题，先问", "日本での困りごとは、まず", "Stuck in Japan? Just ask")}{" "}
+            <span className="bg-clip-text text-transparent" style={{ backgroundImage: SPARK_GRADIENT }}>
+              Machi AI
+            </span>
+          </h2>
+          <p className="mt-3 max-w-xl text-[0.95rem] font-medium leading-7 text-kx-subtle">
+            {pick(
+              locale,
+              "手续、租房、升学、就职、日语学习和 Machi 使用，都可以从一个清晰答案开始。",
+              "手続き・住まい・進学・就職・日本語学習、そして Machi の使い方まで、ひとつの明快な答えから。",
+              "Paperwork, housing, study, work, Japanese, and using Machi — start from one clear answer.",
+            )}
+          </p>
         </div>
       </div>
 
-      {disclaimer ? <p className="px-1 text-xs leading-5 text-kx-muted">{disclaimer}</p> : null}
+      {/* Starter prompts — iconified cards read far more polished than flat pills */}
+      <div>
+        <p className="mb-3 flex items-center gap-1.5 px-1 text-xs font-bold uppercase tracking-[0.08em] text-kx-muted">
+          <Sparkles className="h-3.5 w-3.5 text-kx-accent" />
+          {pick(locale, "试试这样问", "こんな質問から", "Try asking")}
+        </p>
+        <div className="grid gap-2.5 sm:grid-cols-2">
+          {chips.map((chip, i) => {
+            const Icon = STARTER_ICONS[i % STARTER_ICONS.length];
+            return (
+              <button
+                key={chip}
+                type="button"
+                onClick={() => onChip(chip)}
+                className="group flex items-center gap-3 rounded-2xl border border-kx-stroke/40 bg-kx-card/70 px-3.5 py-3 text-left transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:bg-kx-card hover:shadow-[0_18px_36px_-28px_rgba(20,112,103,0.7)]"
+              >
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-kx-accentSoft text-kx-accent transition group-hover:scale-[1.06]">
+                  <Icon className="h-[1.05rem] w-[1.05rem]" />
+                </span>
+                <span className="min-w-0 flex-1 text-[0.9rem] font-semibold leading-snug text-kx-text">{chip}</span>
+                <ArrowUpRight className="h-4 w-4 shrink-0 text-kx-muted opacity-0 transition group-hover:text-kx-accent group-hover:opacity-100" />
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {disclaimer ? (
+        <p className="flex items-start gap-1.5 px-1 text-xs leading-5 text-kx-muted">
+          <ShieldCheck className="mt-px h-3.5 w-3.5 shrink-0 text-kx-muted/80" />
+          <span>{disclaimer}</span>
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -688,7 +752,7 @@ function UserBubble({ text, failed }: { text: string; failed?: boolean }) {
     <div className="flex justify-end">
       <div
         className={
-          "max-w-[82%] whitespace-pre-wrap break-words rounded-[1.25rem] bg-kx-accent px-4 py-2.5 text-sm font-medium leading-6 text-white shadow-sm " +
+          "max-w-[82%] whitespace-pre-wrap break-words rounded-[1.35rem] rounded-br-md bg-kx-accent px-4 py-2.5 text-sm font-medium leading-6 text-white shadow-[0_10px_24px_-14px_rgba(20,112,103,0.85)] " +
           (failed ? "opacity-60" : "")
         }
       >
@@ -720,12 +784,12 @@ function AssistantBubble({
         <MachiAIGlyph className="h-3.5 w-3.5 text-kx-accent" /> Machi AI
       </div>
       {message.pending ? (
-        <div className="w-fit rounded-[1.25rem] border border-kx-stroke/40 bg-kx-card px-4 py-3">
+        <div className="w-fit rounded-[1.35rem] rounded-bl-md border border-kx-stroke/40 bg-kx-card px-4 py-3 shadow-[0_10px_28px_-22px_rgba(0,0,0,0.5)]">
           <TypingDots />
         </div>
       ) : (
         <>
-          <div className="break-words rounded-[1.25rem] border border-kx-stroke/40 bg-kx-card px-4 py-3 text-sm text-kx-text">
+          <div className="break-words rounded-[1.35rem] rounded-bl-md border border-kx-stroke/40 bg-kx-card px-4 py-3 text-sm leading-7 text-kx-text shadow-[0_10px_28px_-22px_rgba(0,0,0,0.5)]">
             <MachiMarkdown content={message.content} />
           </div>
 

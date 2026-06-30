@@ -256,10 +256,12 @@ def _build_prompt(*, region_code: str, language: str, tone: str, plan: dict[str,
         "2) 口语随性——可以是没说完的半句、带点情绪/吐槽/小确幸/求助，可用语气词和网络口语（啊/欸/哈/谁懂/绝了/麻了/救命），标点可随意。\n"
         "3) 细节具体——具体车站/线路/价格(日元)/时间/天气/店的类型/具体的烦恼，越具体越真。\n"
         "4) 角度发散——吐槽、求助、分享、提醒、晒、约、问路、省钱、踩坑、emo……同一批里语气别雷同。\n"
-        "5) 自然融入真实日本生活——在留卡/区役所/年金/确定申告/ゴミ分类/交通系IC卡/便利店/药妆/UR/礼金敷金/台风地震/樱花梅雨红叶等真实场景，自然带到、别堆砌。\n"
-        "6) 性别声音——为每条标注作者性别 g（\"m\"=男 / \"f\"=女），男女都要有；按性别自然区分语气与用词：女生更细腻、爱用「真的」「姐妹」「绝了」、更关注种草/氛围/性价比/穿搭；男生更直接精简、更关注实用/数据/效率/省事——但都别刻板、别油腻、别用力过猛。\n"
-        "绝不：① 不要工整对仗、不要总结升华、不要面面俱到；② 不要广告腔/AI腔（高效便捷/全方位/优质服务/宝藏/一站式/作为AI 等）；"
-        "③ 不要编造具体个人身份或已完成的交易、不要点名真实在营商家做评价；④ 不要话题标签#、不堆 emoji、不放链接。\n"
+        "5) 自然融入真实日本生活——在留卡/区役所/年金/确定申告/ゴミ分类/交通系IC卡/便利店/药妆/UR/礼金敷金/台风地震/樱花梅雨红叶等真实场景，自然带到、别堆砌（别每条都提行政手续，多数帖子就是日常）。\n"
+        "6) 在日华人的语气——偶尔自然夹一两个日语词（バイト/シフト/在留/ビザ/めっちゃ/やばい/お疲れ/微妙）但别整句日语；可以和国内对比着吐槽、想家、找老乡/搭子、吐槽日语和职场。像在留学生群/华人群里随口说话。\n"
+        "7) 有时效感——可带「今天/昨天/刚刚/这周」这种当下感，像刚发生的事顺手发出来。\n"
+        "8) 性别声音——为每条标注作者性别 g（\"m\"=男 / \"f\"=女），男女都要有；按性别自然区分语气与用词：女生更细腻、爱用「真的」「姐妹」「绝了」、更关注种草/氛围/性价比/穿搭；男生更直接精简、更关注实用/数据/效率/省事——但都别刻板、别油腻、别用力过猛。\n"
+        "绝不：① 不要工整对仗、不要总结升华、不要面面俱到；② 不要广告腔/AI腔（高效便捷/全方位/优质服务/宝藏/一站式/家人们/作为AI 等）；"
+        "③ 不要编造具体个人身份或已完成的交易、不要点名真实在营商家做评价；④ 不要话题标签#、不堆 emoji（最多一两个）、不放链接。\n"
         "只输出 JSON，不要解释。"
     )
 
@@ -540,7 +542,8 @@ def generate_comments(
         "你是在一个面向在日华人/留学生的本地生活社区里、刷到同一条帖子的【不同】真实用户。"
         "给这条帖子写若干条评论。铁律：像真人随手评论，每条像不同的人——口气各异、长短不一"
         "（短的三四个字，长的也别超过 40 字）；可提问/附和/补充经验/吐槽/感谢/报个地点或价格；"
-        "针对帖子内容来评，但不要复述帖子原文；不要广告腔/AI腔、不堆 emoji、不带话题标签#、不放链接。"
+        "针对帖子内容来评，但不要复述帖子原文；可偶尔自然夹个日语词（めっちゃ/やばい/お疲れ/同じ）像华人群里说话；"
+        "不要广告腔/AI腔（家人们/宝藏/作为AI）、不堆 emoji、不带话题标签#、不放链接。"
         "为每条标注作者性别 g（\"m\"男 / \"f\"女），男女都要有，语气按性别自然区分（女生更细腻爱用「真的」「姐妹」，男生更直接精简）。只输出 JSON。"
     )
     user = (
@@ -572,6 +575,251 @@ def generate_comments(
         if len(out) >= n:
             break
     return out or None
+
+
+# --- Guide article draft generation ----------------------------------------
+#
+# Admin-facing long-form Guide article drafting. This is intentionally separate
+# from the public Machi AI chat: it returns a structured article draft that an
+# admin reviews before publishing. The prompt optimizes for practical,
+# source-aware, user-first articles rather than generic SEO filler.
+
+_GUIDE_ARTICLE_SOURCE_CATALOG: dict[str, list[dict[str, str]]] = {
+    "study_japan": [
+        {"label": "JASSO Study in Japan", "url": "https://www.studyinjapan.go.jp/"},
+        {"label": "文部科学省", "url": "https://www.mext.go.jp/"},
+        {"label": "各大学・研究科官方募集要项", "url": "https://www.studyinjapan.go.jp/en/search-school/"},
+    ],
+    "study_abroad_japan": [
+        {"label": "出入国在留管理庁", "url": "https://www.moj.go.jp/isa/"},
+        {"label": "外務省签证信息", "url": "https://www.mofa.go.jp/j_info/visit/visa/"},
+        {"label": "JASSO Study in Japan", "url": "https://www.studyinjapan.go.jp/"},
+    ],
+    "career_japan": [
+        {"label": "厚生労働省 労働条件ポータル", "url": "https://www.check-roudou.mhlw.go.jp/"},
+        {"label": "ハローワークインターネットサービス", "url": "https://www.hellowork.mhlw.go.jp/"},
+        {"label": "出入国在留管理庁", "url": "https://www.moj.go.jp/isa/"},
+    ],
+    "jlpt": [
+        {"label": "JLPT 官方网站", "url": "https://www.jlpt.jp/"},
+        {"label": "Japan Foundation", "url": "https://www.jpf.go.jp/"},
+    ],
+    "life_japan": [
+        {"label": "出入国在留管理庁", "url": "https://www.moj.go.jp/isa/"},
+        {"label": "日本年金機構", "url": "https://www.nenkin.go.jp/"},
+        {"label": "国税庁", "url": "https://www.nta.go.jp/"},
+        {"label": "厚生労働省", "url": "https://www.mhlw.go.jp/"},
+        {"label": "国土交通省", "url": "https://www.mlit.go.jp/"},
+    ],
+    "guide_services": [
+        {"label": "Machi Guide 编辑部", "url": "https://machicity.com/guide"},
+    ],
+}
+
+_GUIDE_ARTICLE_REQUIRED_SECTIONS: tuple[str, ...] = (
+    "适合谁",
+    "先看结论",
+    "时间线",
+    "准备材料",
+    "具体步骤",
+    "费用",
+    "常见坑",
+    "分情况",
+    "官方确认",
+    "行动清单",
+)
+
+_GUIDE_ARTICLE_BAD_PHRASES: tuple[str, ...] = (
+    "作为ai",
+    "作为 ai",
+    "我是ai",
+    "我是 ai",
+    "全方位",
+    "一站式",
+    "高效便捷",
+    "赋能",
+    "综上所述",
+    "总而言之",
+    "本文将带你",
+    "干货满满",
+)
+
+
+def _guide_article_sources(category_key: str, source_hint: str = "") -> list[dict[str, str]]:
+    sources = list(_GUIDE_ARTICLE_SOURCE_CATALOG.get(category_key) or [])
+    if source_hint.strip():
+        sources.insert(0, {"label": "后台补充来源", "url": source_hint.strip()[:500]})
+    if not sources:
+        sources = [{"label": "Machi Guide 编辑部", "url": "https://machicity.com/guide"}]
+    # De-dupe by URL while preserving order.
+    seen: set[str] = set()
+    out: list[dict[str, str]] = []
+    for item in sources:
+        url = (item.get("url") or "").strip()
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append({"label": (item.get("label") or "参考来源").strip(), "url": url})
+    return out[:5]
+
+
+def _guide_article_slug(title: str) -> str:
+    text = (title or "").strip().lower()
+    # Keep ASCII words when present; CJK-only titles fall back to a stable-ish
+    # opaque slug that the server may replace with its own slugifier.
+    parts = [p for p in "".join(ch if ch.isalnum() else "-" for ch in text).split("-") if p and p.isascii()]
+    return "-".join(parts[:10]) or f"guide-{secrets.token_hex(4)}"
+
+
+def _guide_article_quality_warnings(article: dict[str, Any]) -> list[str]:
+    title = str(article.get("title") or "").strip()
+    summary = str(article.get("summary") or "").strip()
+    body = str(article.get("body") or "").strip()
+    warnings: list[str] = []
+    if len(title) < 8:
+        warnings.append("标题过短")
+    if len(summary) < 45:
+        warnings.append("摘要过短")
+    if len(body) < 1800:
+        warnings.append("正文少于 1800 字符，不够详细")
+    low = body.lower()
+    missing = [s for s in _GUIDE_ARTICLE_REQUIRED_SECTIONS if s not in body]
+    if len(missing) >= 4:
+        warnings.append("缺少关键栏目：" + "、".join(missing[:5]))
+    if not any(mark in body for mark in ("清单", "材料", "准备")):
+        warnings.append("缺少可执行清单")
+    if not any(mark in body for mark in ("风险", "避坑", "注意")):
+        warnings.append("缺少风险/避坑提醒")
+    if not any(mark in body for mark in ("官方", "官网", "役所", "入管", "税务署", "年金", "募集要项", "人事")):
+        warnings.append("缺少官方确认点")
+    for phrase in _GUIDE_ARTICLE_BAD_PHRASES:
+        if phrase in low:
+            warnings.append(f"出现 AI/营销腔：{phrase}")
+            break
+    return warnings
+
+
+def generate_guide_article_draft(
+    *,
+    topic: str,
+    category_key: str,
+    sub_category_key: str = "",
+    audience: str = "",
+    language: str = "zh-CN",
+    country: str = "jp",
+    source_hint: str = "",
+    context_lines: list[str] | None = None,
+    provider: str = "auto",
+    model: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a long, structured Guide article draft, or None on failure.
+
+    The output is intended for admin review, not automatic publishing. The
+    generated article must be practical: steps, checklists, risk checks, source
+    reminders, and next actions. No fake user stories, no fabricated policies.
+    """
+    chosen = _resolve_provider(provider)
+    if not chosen:
+        return None
+    topic = (topic or "").strip()
+    if len(topic) < 4:
+        return None
+    lang = machi_lang = ("ja" if str(language).lower().startswith("ja") else ("en" if str(language).lower().startswith("en") else "zh"))
+    if machi_lang != "zh":
+        # The current Guide editorial workflow is Chinese-first; localized
+        # payloads are handled elsewhere in server.py.
+        lang = "zh"
+    model_id = _resolve_model(model)
+    sources = _guide_article_sources(category_key, source_hint)
+    source_lines = "\n".join(f"- {s['label']}: {s['url']}" for s in sources)
+    context = "\n".join(f"- {line[:220]}" for line in (context_lines or []) if str(line).strip())[:1800]
+    audience_text = audience.strip() or "准备赴日、刚到日本、正在升学/就职/生活手续中遇到具体问题的用户"
+    system = (
+        "你是 Machi Guide 编辑部的资深中文编辑，负责写给在日华人、留学生、赴日准备者看的长篇实用指南。\n"
+        "写作目标：让用户读完就知道下一步怎么做、准备什么、去哪确认、哪些坑要避开。\n"
+        "绝对不要写得像 AI、不要空话、不要营销腔、不要虚构政策/截止日期/金额/通过率/个人经历。\n"
+        "涉及签证、税务、劳动、医疗、学校录取、公司招聘等内容时，只能给一般准备方向，并提醒以官方或当事机构最新说明为准。\n"
+        "只输出 JSON，不要代码块，不要解释。"
+    )
+    user = (
+        f"请生成一篇 Machi Guide 长文草稿。\n"
+        f"主题：{topic}\n"
+        f"主分类：{category_key}\n"
+        f"子分类：{sub_category_key or '未指定'}\n"
+        f"目标读者：{audience_text}\n"
+        f"国家：{country}\n\n"
+        "可参考的 Machi 内部资料摘要（只能作为线索，不要编造摘要之外的事实）：\n"
+        f"{context or '- 暂无内部资料摘要'}\n\n"
+        "可用官方/可信来源候选（文章必须选择其中一个作为 sourceLabel/sourceUrl；正文里也要提醒用户最终确认官方最新信息）：\n"
+        f"{source_lines}\n\n"
+        "正文要求：\n"
+        "- 简体中文，2200-3600 字符，手机阅读友好，但必须足够细。\n"
+        "- 语气像真实编辑在帮用户解决问题，直接、具体、有取舍，不要官样文章。\n"
+        "- 必须包含这些小标题，且每节要有实质内容：适合谁 / 先看结论 / 时间线 / 准备材料 / 具体步骤 / 费用与预算 / 常见坑 / 分情况处理 / 官方确认点 / 下一步行动清单。\n"
+        "- 要写具体可执行信息：材料名称、窗口/机构、询问方式、判断标准、表格化清单、邮件/电话提问模板都可以。\n"
+        "- 费用和时间可以写区间或判断方法；不确定就写“以官方/合同/募集要项/人事回复为准”，不要装作知道实时金额。\n"
+        "- 不要使用：高效便捷、全方位、一站式、赋能、干货满满、本文将带你、综上所述、作为AI。\n\n"
+        "输出严格 JSON：\n"
+        "{\n"
+        '  "title": "文章标题",\n'
+        '  "slug": "ascii-slug-suggestion",\n'
+        '  "summary": "90-150字摘要，说明解决什么真实问题",\n'
+        '  "body": "完整正文，使用 Markdown 小标题和列表",\n'
+        '  "seoTitle": "搜索标题",\n'
+        '  "seoDescription": "120-180字搜索描述",\n'
+        '  "tags": ["标签1", "标签2", "标签3"],\n'
+        '  "sourceLabel": "从候选来源中选择",\n'
+        '  "sourceUrl": "从候选来源中选择的URL",\n'
+        '  "staleAfterDays": 90或180,\n'
+        '  "qualityNotes": ["说明你如何保证这篇文章有用"]\n'
+        "}"
+    )
+    try:
+        raw = _call_deepseek(system, user, model_id, 6500) if chosen == "deepseek" else _call_claude(system, user, 6500)
+        parsed = _extract_json(raw)
+    except Exception:
+        return None
+    article = parsed.get("article") if isinstance(parsed, dict) and isinstance(parsed.get("article"), dict) else parsed
+    if not isinstance(article, dict):
+        return None
+    title = str(article.get("title") or topic).strip()[:200]
+    body = str(article.get("body") or "").strip()
+    source_url = str(article.get("sourceUrl") or article.get("source_url") or "").strip()
+    source_label = str(article.get("sourceLabel") or article.get("source_label") or "").strip()
+    exact_source = next((s for s in sources if s["url"] == source_url), None)
+    if not exact_source and source_label:
+        label_low = source_label.lower()
+        exact_source = next((s for s in sources if s["label"].lower() in label_low or label_low in s["label"].lower()), None)
+    if not exact_source:
+        # Do not let the model invent a precise official sub-URL. Use one of
+        # the curated official entry points (or the admin-provided sourceHint).
+        exact_source = sources[0]
+    source_url = exact_source["url"]
+    source_label = exact_source["label"]
+    try:
+        stale_after_days = int(article.get("staleAfterDays") or 180)
+    except (TypeError, ValueError):
+        stale_after_days = 180
+    out = {
+        "title": title,
+        "slug": str(article.get("slug") or _guide_article_slug(title)).strip()[:120],
+        "summary": str(article.get("summary") or "").strip()[:600],
+        "body": body,
+        "seoTitle": str(article.get("seoTitle") or article.get("seo_title") or title).strip()[:220],
+        "seoDescription": str(article.get("seoDescription") or article.get("seo_description") or article.get("summary") or "").strip()[:320],
+        "tags": [str(t).strip() for t in (article.get("tags") or []) if str(t).strip()][:8],
+        "sourceLabel": source_label[:120],
+        "sourceUrl": source_url[:500],
+        "staleAfterDays": max(30, min(stale_after_days, 365)),
+        "qualityNotes": [str(t).strip() for t in (article.get("qualityNotes") or []) if str(t).strip()][:6],
+        "qualityWarnings": [],
+        "engine": _PROVIDER_TO_ENGINE.get(chosen, chosen),
+        "model": _MODEL_TO_MODE.get(model_id, "") if chosen == "deepseek" else "",
+    }
+    if not out["tags"]:
+        out["tags"] = [topic[:18], category_key]
+    out["qualityWarnings"] = _guide_article_quality_warnings(out)
+    return out
 
 
 # --- Machi AI (internal chat backend) ---------------------------------------

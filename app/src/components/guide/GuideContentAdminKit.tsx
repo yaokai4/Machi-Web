@@ -15,6 +15,7 @@ import {
   Save,
   Search,
   Signpost,
+  Sparkles,
   Tags,
   Trash2,
 } from "lucide-react";
@@ -596,6 +597,10 @@ type ArticleForm = {
   relatedProductSlugs: string;
   authorName: string;
   sortOrder: string;
+  sourceLabel: string;
+  sourceUrl: string;
+  verifiedAt: string;
+  staleAfterDays: string;
   isFeatured: boolean;
   isFree: boolean;
   isPaid: boolean;
@@ -617,6 +622,10 @@ const DEFAULT_ARTICLE_FORM: ArticleForm = {
   relatedProductSlugs: "",
   authorName: "Machi 日本指南编辑部",
   sortOrder: "0",
+  sourceLabel: "",
+  sourceUrl: "",
+  verifiedAt: "",
+  staleAfterDays: "180",
   isFeatured: false,
   isFree: true,
   isPaid: false,
@@ -640,6 +649,10 @@ function articleForm(article?: GuideArticle): ArticleForm {
     relatedProductSlugs: (article.relatedProductSlugs || []).join(", "),
     authorName: article.authorName || "Machi 日本指南编辑部",
     sortOrder: String(article.sortOrder ?? 0),
+    sourceLabel: article.sourceLabel || "",
+    sourceUrl: article.sourceUrl || "",
+    verifiedAt: article.verifiedAt || "",
+    staleAfterDays: String(article.staleAfterDays ?? 180),
     isFeatured: Boolean(article.isFeatured),
     isFree: Boolean(article.isFree),
     isPaid: Boolean(article.isPaid),
@@ -652,6 +665,7 @@ function articlePayload(form: ArticleForm): Record<string, unknown> {
     country: "jp",
     language: "zh-CN",
     sortOrder: Number(form.sortOrder || 0),
+    staleAfterDays: Number(form.staleAfterDays || 180),
     tags: cleanList(form.tags),
     relatedArticleSlugs: cleanList(form.relatedArticleSlugs),
     relatedProductSlugs: cleanList(form.relatedProductSlugs),
@@ -752,6 +766,10 @@ export function GuideArticleEditPage({ create = false }: { create?: boolean }) {
   const qc = useQueryClient();
   const pushToast = useToasts((s) => s.push);
   const [form, setForm] = useState<ArticleForm>(DEFAULT_ARTICLE_FORM);
+  const [aiTopic, setAiTopic] = useState("");
+  const [aiAudience, setAiAudience] = useState("");
+  const [aiSourceHint, setAiSourceHint] = useState("");
+  const [aiWarnings, setAiWarnings] = useState<string[]>([]);
   const categories = useQuery({ queryKey: ["admin-guide", "categories", "flat"], queryFn: () => adminGuide.categories(), staleTime: 60_000 });
   const article = useQuery({
     queryKey: ["admin-guide", "article", id],
@@ -779,6 +797,54 @@ export function GuideArticleEditPage({ create = false }: { create?: boolean }) {
     },
     onError: (error) => pushToast({ kind: "error", message: errorMessage(error) }),
   });
+  const generateDraft = useMutation({
+    mutationFn: async () => {
+      const topic = (aiTopic || form.title || form.summary).trim();
+      if (!topic) throw new Error("请输入文章主题");
+      return adminGuide.generateArticleDraft({
+        topic,
+        audience: aiAudience,
+        sourceHint: aiSourceHint,
+        categoryKey: form.categoryKey,
+        subCategoryKey: form.subCategoryKey,
+        country: "jp",
+        language: "zh-CN",
+        mode: "think",
+      });
+    },
+    onSuccess: (result) => {
+      const draft = result.article;
+      setForm((current) => ({
+        ...current,
+        title: draft.title || current.title,
+        slug: draft.slug || current.slug,
+        status: "draft",
+        categoryKey: draft.categoryKey || current.categoryKey,
+        subCategoryKey: draft.subCategoryKey || current.subCategoryKey,
+        summary: draft.summary || current.summary,
+        body: draft.body || current.body,
+        seoTitle: draft.seoTitle || draft.title || current.seoTitle,
+        seoDescription: draft.seoDescription || draft.summary || current.seoDescription,
+        coverImage: draft.coverImage || current.coverImage,
+        tags: (draft.tags || []).join(", "),
+        relatedArticleSlugs: (draft.relatedArticleSlugs || []).join(", "),
+        relatedProductSlugs: (draft.relatedProductSlugs || []).join(", "),
+        authorName: draft.authorName || current.authorName,
+        sortOrder: String(draft.sortOrder ?? current.sortOrder),
+        sourceLabel: draft.sourceLabel || current.sourceLabel,
+        sourceUrl: draft.sourceUrl || current.sourceUrl,
+        verifiedAt: draft.verifiedAt || current.verifiedAt,
+        staleAfterDays: String(draft.staleAfterDays ?? current.staleAfterDays),
+        isFeatured: Boolean(draft.isFeatured ?? current.isFeatured),
+        isFree: Boolean(draft.isFree ?? current.isFree),
+        isPaid: Boolean(draft.isPaid ?? current.isPaid),
+      }));
+      const warnings = result.qualityWarnings || [];
+      setAiWarnings(warnings);
+      pushToast({ kind: warnings.length ? "info" : "success", message: warnings.length ? "AI 草稿已生成，请重点复核提示项" : "AI 长文草稿已生成" });
+    },
+    onError: (error) => pushToast({ kind: "error", message: errorMessage(error) }),
+  });
 
   if (!create && article.isLoading) {
     return <GuideAdminShell title="编辑指南文章"><InlineLoading /></GuideAdminShell>;
@@ -800,6 +866,54 @@ export function GuideArticleEditPage({ create = false }: { create?: boolean }) {
         }}
       >
         <section className="space-y-3 rounded-kx-lg border border-kx-stroke/60 bg-kx-card p-4">
+          <div className="rounded-kx-lg border border-kx-accent/20 bg-kx-accentSoft/40 p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-kx-accent" />
+              <div>
+                <p className="text-sm font-black text-kx-text">Machi AI 长文草稿</p>
+                <p className="text-xs leading-5 text-kx-muted">生成后会填入正文、SEO、标签和来源，默认保持 draft。</p>
+              </div>
+            </div>
+            <div className="grid gap-2 lg:grid-cols-[minmax(0,1fr)_180px]">
+              <input
+                className="h-10 rounded-kx-md border border-kx-stroke/70 bg-kx-card px-3 text-sm outline-none focus:border-kx-accent"
+                value={aiTopic}
+                onChange={(event) => setAiTopic(event.target.value)}
+                placeholder={form.title || "例如：日本租房签约前必须确认什么"}
+              />
+              <button
+                type="button"
+                className="kx-button-primary h-10 justify-center"
+                disabled={generateDraft.isPending}
+                onClick={() => generateDraft.mutate()}
+              >
+                {generateDraft.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
+                生成长文
+              </button>
+            </div>
+            <div className="mt-2 grid gap-2 lg:grid-cols-2">
+              <input
+                className="h-10 rounded-kx-md border border-kx-stroke/70 bg-kx-card px-3 text-sm outline-none focus:border-kx-accent"
+                value={aiAudience}
+                onChange={(event) => setAiAudience(event.target.value)}
+                placeholder="目标读者：留学生 / 转职者 / 刚到日本的人（可选）"
+              />
+              <input
+                className="h-10 rounded-kx-md border border-kx-stroke/70 bg-kx-card px-3 text-sm outline-none focus:border-kx-accent"
+                value={aiSourceHint}
+                onChange={(event) => setAiSourceHint(event.target.value)}
+                placeholder="官方来源 URL（可选）"
+              />
+            </div>
+            {aiWarnings.length ? (
+              <div className="mt-2 rounded-kx-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+                <p className="font-black">生成质量复核</p>
+                <ul className="mt-1 list-disc pl-4">
+                  {aiWarnings.map((warning) => <li key={warning}>{warning}</li>)}
+                </ul>
+              </div>
+            ) : null}
+          </div>
           <TextField field={{ key: "title", label: "标题", required: true }} value={form.title} onChange={(value) => setForm((f) => ({ ...f, title: String(value) }))} />
           <TextField field={{ key: "summary", label: "摘要", type: "textarea", rows: 3, required: true }} value={form.summary} onChange={(value) => setForm((f) => ({ ...f, summary: String(value) }))} />
           <TextField field={{ key: "body", label: "正文", type: "textarea", rows: 28, placeholder: "建议包含：适合人群、准备材料、办理步骤、费用、时间线、常见坑、下一步行动。" }} value={form.body} onChange={(value) => setForm((f) => ({ ...f, body: String(value) }))} />
@@ -843,6 +957,17 @@ export function GuideArticleEditPage({ create = false }: { create?: boolean }) {
           <div className="grid gap-3 sm:grid-cols-2">
             <TextField field={{ key: "authorName", label: "作者" }} value={form.authorName} onChange={(value) => setForm((f) => ({ ...f, authorName: String(value) }))} />
             <TextField field={{ key: "sortOrder", label: "排序" }} value={form.sortOrder} onChange={(value) => setForm((f) => ({ ...f, sortOrder: String(value) }))} />
+          </div>
+          <div className="rounded-kx-md border border-kx-stroke/60 bg-kx-soft/30 p-3">
+            <p className="mb-2 text-xs font-black text-kx-muted">来源与复核</p>
+            <div className="space-y-2">
+              <TextField field={{ key: "sourceLabel", label: "来源名称" }} value={form.sourceLabel} onChange={(value) => setForm((f) => ({ ...f, sourceLabel: String(value) }))} />
+              <TextField field={{ key: "sourceUrl", label: "来源 URL" }} value={form.sourceUrl} onChange={(value) => setForm((f) => ({ ...f, sourceUrl: String(value) }))} />
+              <div className="grid gap-2 sm:grid-cols-2">
+                <TextField field={{ key: "verifiedAt", label: "复核日期" }} value={form.verifiedAt} onChange={(value) => setForm((f) => ({ ...f, verifiedAt: String(value) }))} />
+                <TextField field={{ key: "staleAfterDays", label: "过期天数" }} value={form.staleAfterDays} onChange={(value) => setForm((f) => ({ ...f, staleAfterDays: String(value) }))} />
+              </div>
+            </div>
           </div>
           <div className="grid gap-2">
             <TextField field={{ key: "isFeatured", label: "精选文章", type: "checkbox" }} value={form.isFeatured} onChange={(value) => setForm((f) => ({ ...f, isFeatured: Boolean(value) }))} />

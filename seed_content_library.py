@@ -126,6 +126,54 @@ CITY: dict[str, dict[str, Any]] = {
             "ja": ["梅田", "難波", "天王寺", "心斎橋", "新大阪", "京橋"],
         },
     },
+    "jp.kanagawa.yokohama": {
+        "zh": "横滨", "en": "Yokohama", "ja": "横浜",
+        "places": {
+            "zh": ["横滨站", "港未来", "中华街", "元町", "关内", "樱木町", "新横滨"],
+            "en": ["Yokohama Station", "Minato Mirai", "Chinatown", "Motomachi", "Kannai", "Sakuragicho"],
+            "ja": ["横浜駅", "みなとみらい", "中華街", "元町", "関内", "桜木町", "新横浜"],
+        },
+    },
+    "jp.kyoto.kyoto": {
+        "zh": "京都", "en": "Kyoto", "ja": "京都",
+        "places": {
+            "zh": ["京都站", "河原町", "祇园", "四条", "伏见", "岚山", "北大路"],
+            "en": ["Kyoto Station", "Kawaramachi", "Gion", "Shijo", "Fushimi", "Arashiyama"],
+            "ja": ["京都駅", "河原町", "祇園", "四条", "伏見", "嵐山", "北大路"],
+        },
+    },
+    "jp.aichi.nagoya": {
+        "zh": "名古屋", "en": "Nagoya", "ja": "名古屋",
+        "places": {
+            "zh": ["名古屋站", "荣", "大须", "金山", "星丘", "今池"],
+            "en": ["Nagoya Station", "Sakae", "Osu", "Kanayama", "Hoshigaoka", "Imaike"],
+            "ja": ["名古屋駅", "栄", "大須", "金山", "星ヶ丘", "今池"],
+        },
+    },
+    "jp.fukuoka.fukuoka": {
+        "zh": "福冈", "en": "Fukuoka", "ja": "福岡",
+        "places": {
+            "zh": ["博多", "天神", "中洲", "大名", "西新", "药院"],
+            "en": ["Hakata", "Tenjin", "Nakasu", "Daimyo", "Nishijin", "Yakuin"],
+            "ja": ["博多", "天神", "中洲", "大名", "西新", "薬院"],
+        },
+    },
+    "jp.hokkaido.sapporo": {
+        "zh": "札幌", "en": "Sapporo", "ja": "札幌",
+        "places": {
+            "zh": ["札幌站", "大通", "薄野", "狸小路", "円山", "北24条"],
+            "en": ["Sapporo Station", "Odori", "Susukino", "Tanukikoji", "Maruyama", "Kita-24jo"],
+            "ja": ["札幌駅", "大通", "すすきの", "狸小路", "円山", "北24条"],
+        },
+    },
+    "jp.hyogo.kobe": {
+        "zh": "神户", "en": "Kobe", "ja": "神戸",
+        "places": {
+            "zh": ["三宫", "元町", "神户站", "北野", "六甲", "新开地"],
+            "en": ["Sannomiya", "Motomachi", "Kobe Station", "Kitano", "Rokko", "Shinkaichi"],
+            "ja": ["三宮", "元町", "神戸駅", "北野", "六甲", "新開地"],
+        },
+    },
     "cn.shanghai.shanghai": {
         "zh": "上海", "en": "Shanghai", "ja": "上海",
         "places": {
@@ -322,6 +370,13 @@ GENERIC: dict[tuple[str, str], list[str]] = {
         "在{city}待久了，慢慢就知道哪几个路口最容易堵。",
         "周末想去{place}附近走走，有什么顺路能逛的吗？",
         "{place}那边晚上挺安静的，适合饭后散步。",
+        "今天{place}站又遇到电车遅延，站台上全是叹气的打工人，我也是其中一个。",
+        "在{city}住下来才发现，最难的不是日语，是一个人扛着行李搬家那天。",
+        "刚到{city}，求问哪里有华人超市，想买点老干妈和挂面，馋了。",
+        "{place}今天天气好到不真实，临时决定翘班去晒太阳，お疲れ我自己。",
+        "有没有在{city}的朋友想组个搭子，周末一起逛逛，一个人久了有点闷。",
+        "下班的{place}，地铁里全是西装，突然有点想家。",
+        "{place}的便利店凌晨还亮着灯，emo的时候真的会想进去买瓶热的。",
     ],
     ("city_square", "en"): [
         "{place} was packed today — even a quick errand turned into a wait.",
@@ -407,6 +462,10 @@ GENERIC: dict[tuple[str, str], list[str]] = {
         "在{city}想找个安静点吃饭的地方，{place}那边小店挺多。",
         "约饭帖最好写清楚人数、预算、口味和是否AA，临时组局会顺很多。",
         "{city}有些店午市和晚市价格差不少，想省预算可以先看午餐时段。",
+        "{place}那家拉面今天排了半小时，吃到嘴里的时候觉得汤都值了。",
+        "在{city}吃来吃去还是想念家里那口，今天自己包了顿饺子治愈一下。",
+        "求{city}好吃又不贵的中华料理，最近真的吃腻便利店便当了。",
+        "{place}的居酒屋下班去刚刚好，一杯生啤把一天的班都冲掉了。",
     ],
     ("food", "en"): [
         "That new coffee spot near {place} is quiet in the afternoon — good for sitting a while.",
@@ -470,6 +529,12 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("daily_life", "zh"): [
         "在{city}的第一个周末，什么都不想干，就想睡到自然醒。",
         "下班路过{place}，顺手买了点东西，感觉一天才算结束。",
+        "在{city}的早上靠一杯便利店咖啡续命，シフト排太满了，麻了。",
+        "今天终于把区役所的手续办完，{place}走一圈腿都断了，但心里踏实多了。",
+        "{place}的药妆店打折，囤了一堆，钱包空了但很满足。",
+        "周末{city}哪都没去，在家煮了顿火锅，一个人也要好好吃饭。",
+        "刚发完工资就被房租和年金清空，在{city}活着是真的费钱啊。",
+        "{place}下雨，伞又忘带了，在站前站了十分钟等雨小一点。",
     ],
     ("daily_life", "en"): [
         "First weekend in {city} and all I want to do is sleep in.",

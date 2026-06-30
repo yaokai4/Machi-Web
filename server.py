@@ -134,6 +134,7 @@ import xml.etree.ElementTree as ET
 
 # City Seed Bot content library — local module, no third-party deps. Holds the
 # curated city-life content pools + generator used by 城市内容助手.
+import seed_avatars
 import seed_content_library as seedlib
 import seed_llm
 import seed_listings_library as seedpacks
@@ -9699,6 +9700,14 @@ def import_seed_users(
         if not handle:
             skipped += 1
             continue
+        # 小红书-style avatar: honour a baked-in non-legacy URL, otherwise derive
+        # one (interest-matched photo / East-Asian illustration). This upgrades
+        # any persona still on a legacy randomuser portrait on re-import.
+        avatar = str(p.get("avatar_url") or "")
+        if seed_avatars.is_legacy_avatar(avatar):
+            avatar = seed_avatars.avatar_for(
+                handle, str(p.get("gender") or ""),
+                str(p.get("bio") or ""), str(p.get("display_name") or ""))
         existing = conn.execute("SELECT id FROM users WHERE handle = ? LIMIT 1", (handle,)).fetchone()
         if existing:
             marked = conn.execute(
@@ -9709,7 +9718,7 @@ def import_seed_users(
                     "UPDATE users SET display_name = ?, bio = ?, avatar_url = ?, membership_tier = ?, "
                     "is_verified = ?, updated_at = ? WHERE id = ?",
                     (str(p.get("display_name") or handle)[:60], str(p.get("bio") or "")[:200],
-                     str(p.get("avatar_url") or ""), str(p.get("tier") or "free"),
+                     avatar, str(p.get("tier") or "free"),
                      1 if p.get("verified") else 0, now, existing["id"]),
                 )
             skipped += 1
@@ -9724,7 +9733,7 @@ def import_seed_users(
                VALUES (?, ?, ?, ?, ?, ?, ?, 'person.fill', 'indigo', ?, '', ?, ?, 'member', ?, ?, ?, ?, '', ?, ?, ?)""",
             (uid, handle, str(p.get("display_name") or handle)[:60], f"{handle}@seed.machi.local",
              unusable, str(p.get("bio") or "")[:200], location,
-             str(p.get("avatar_url") or ""), str(p.get("tier") or "free"),
+             avatar, str(p.get("tier") or "free"),
              1 if p.get("verified") else 0, country, province, city,
              str(p.get("region_code") or ""), now, now, now),
         )
@@ -10650,6 +10659,43 @@ def record_admin_action(conn: sqlite3.Connection, admin_id: str, action: str, *,
     )
 
 
+def ensure_post_tags_backfill(conn: sqlite3.Connection) -> None:
+    """Reconcile post_tags with the #hashtags written into post bodies.
+
+    Some historical seed/import paths inserted posts without populating
+    post_tags from the ``#tag`` tokens in their content. The result: a post can
+    carry ``#东京`` in its text yet be invisible on the /api/topics/东京 page,
+    which only joins post_tags — the "tag is added but the topic shows nothing"
+    bug. Backfill once so every hashtag a post actually contains becomes a
+    clickable, queryable topic. Idempotent (INSERT OR IGNORE) and guarded by a
+    site-settings flag so the content scan runs a single time per database.
+    """
+    try:
+        if _site_settings(conn).get("post_tags_backfill_v1") == "done":
+            return
+        scanned = 0
+        inserted = 0
+        for row in conn.execute(
+            "SELECT id, content FROM posts WHERE content LIKE '%#%' AND deleted_at IS NULL"
+        ).fetchall():
+            scanned += 1
+            for tag in extract_tags(row["content"] or ""):
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (row["id"], tag)
+                )
+                try:
+                    inserted += max(0, int(cur.rowcount or 0))
+                except Exception:
+                    pass
+        _upsert_site_settings(conn, {"post_tags_backfill_v1": "done"})
+        ACCESS_LOG.info(
+            "post_tags backfill complete scanned=%s inserted=%s", scanned, inserted
+        )
+    except Exception:
+        # Never block startup on a best-effort data reconciliation.
+        ERR_LOG.exception("post_tags backfill failed (non-fatal)")
+
+
 def init_db() -> None:
     if (PRODUCTION and KAIX_DB_BACKEND != "postgres"
             and _env("KAIX_ALLOW_SQLITE_IN_PRODUCTION", "0") != "1"):
@@ -10667,6 +10713,8 @@ def init_db() -> None:
         # scripts/migrate_sqlite_to_postgres.py — don't run SQLite DDL/seed here.
         with db() as conn:
             conn.execute("SELECT 1").fetchone()
+            # One-time, guarded data reconciliation (no DDL) — safe on prod.
+            ensure_post_tags_backfill(conn)
         return
     with DB_LOCK, db() as conn:
         conn.executescript(SCHEMA)
@@ -10685,6 +10733,9 @@ def init_db() -> None:
             # first registered user is the founder.
             seed(conn)
         ensure_city_listing_seed(conn)
+        # Reconcile post_tags with #hashtags written into post bodies so the
+        # topic pages list every post that actually carries a tag (one-time).
+        ensure_post_tags_backfill(conn)
         # Always ensure the default admin exists (prod + dev). This never
         # touches or downgrades any other account, so existing admins are
         # preserved exactly as-is.
@@ -17370,9 +17421,15 @@ def insert_seed_post(
                 "INSERT INTO post_media (id, post_id, media_id, sort_index) VALUES (?, ?, ?, 0)",
                 (str(uuid.uuid4()), post_id, media_id),
             )
-    for tag in (tags or []):
-        norm = str(tag).strip().lstrip("#").lower()
-        if norm:
+    # Capture BOTH the explicit seed tags AND any #hashtags written into the
+    # body — parity with api_create_post. Without this a seeded post that says
+    # "#东京" shows the chip but stays invisible on the topic page (which only
+    # queries post_tags), which is exactly the "tag added but topic empty" bug.
+    seen_tags: set[str] = set()
+    explicit = [str(t).strip().lstrip("#").lower() for t in (tags or [])]
+    for norm in [*extract_tags(content), *explicit]:
+        if norm and norm not in seen_tags:
+            seen_tags.add(norm)
             conn.execute("INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (post_id, norm))
     return post_id
 
@@ -22950,6 +23007,93 @@ class Handler(BaseHTTPRequestHandler):
             "page": page, "pageSize": page_size, "total": int(total), "stats": stats,
         })
 
+    def api_admin_guide_article_ai_draft(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        data = self.read_json()
+        topic = _clean_text(data.get("topic") or data.get("title"), 200)
+        if not topic:
+            raise APIError("请输入要生成的文章主题", 400, "empty_topic")
+        country = _normalize_country_code(data.get("country") or "jp")
+        language = _normalize_language_tag(data.get("language") or "zh-CN")
+        category_key = _clean_text(data.get("categoryKey") or data.get("category_key") or "study_japan", 80)
+        sub_category_key = _clean_text(data.get("subCategoryKey") or data.get("sub_category_key"), 80)
+        audience = _clean_text(data.get("audience"), 300)
+        source_hint = str(data.get("sourceHint") or data.get("sourceUrl") or "").strip()[:500]
+        context_items: list[dict[str, Any]] = []
+        try:
+            context_items = guide_ai_retrieve_context(
+                conn,
+                user_message=" ".join(x for x in [topic, category_key, sub_category_key, audience] if x),
+                country=country,
+                language=language,
+                limit=8,
+            )
+        except Exception:
+            context_items = []
+        draft = seed_llm.generate_guide_article_draft(
+            topic=topic,
+            category_key=category_key,
+            sub_category_key=sub_category_key,
+            audience=audience,
+            language=language,
+            country=country,
+            source_hint=source_hint,
+            context_lines=[str(item.get("modelLine") or item.get("title") or "") for item in context_items],
+            provider=str(data.get("engine") or "auto"),
+            model=str(data.get("mode") or data.get("model") or "think"),
+        )
+        if not draft:
+            return self.send_json(
+                self._error_envelope(
+                    "AI_DRAFT_UNAVAILABLE",
+                    "Machi AI 暂时无法生成文章草稿，请稍后重试，或先手动保存一篇草稿。",
+                ),
+                503,
+            )
+        # Server-side cleanup and DB-ready defaults. The draft is never published
+        # automatically; admins review and explicitly save/publish.
+        slug_base = self._guide_slugify(draft.get("slug") or draft.get("title") or topic, fallback=uuid.uuid4().hex[:10])
+        slug = slug_base
+        suffix = 2
+        while conn.execute(
+            "SELECT id FROM guide_articles WHERE country = ? AND slug = ? LIMIT 1",
+            (country, slug),
+        ).fetchone():
+            slug = f"{slug_base}-{suffix}"
+            suffix += 1
+        now = now_iso()
+        article = {
+            "title": draft.get("title") or topic,
+            "slug": slug,
+            "status": "draft",
+            "categoryKey": category_key,
+            "subCategoryKey": sub_category_key,
+            "summary": draft.get("summary") or "",
+            "body": draft.get("body") or "",
+            "seoTitle": draft.get("seoTitle") or draft.get("title") or topic,
+            "seoDescription": draft.get("seoDescription") or draft.get("summary") or "",
+            "coverImage": "",
+            "tags": draft.get("tags") or [],
+            "relatedArticleSlugs": [],
+            "relatedProductSlugs": [],
+            "authorName": "Machi 日本指南编辑部",
+            "sortOrder": 0,
+            "isFeatured": False,
+            "isFree": True,
+            "isPaid": False,
+            "sourceLabel": draft.get("sourceLabel") or "",
+            "sourceUrl": draft.get("sourceUrl") or "",
+            "verifiedAt": now,
+            "staleAfterDays": int(draft.get("staleAfterDays") or 180),
+        }
+        self.send_json({
+            "status": "ok",
+            "article": article,
+            "qualityWarnings": draft.get("qualityWarnings") or [],
+            "qualityNotes": draft.get("qualityNotes") or [],
+            "context": [{"type": it.get("type"), "title": it.get("title"), "route": it.get("route")} for it in context_items],
+        })
+
     def api_admin_guide_article_detail(self, conn: sqlite3.Connection, article_id: str) -> None:
         self.require_admin(conn)
         row = conn.execute("SELECT * FROM guide_articles WHERE id = ? OR slug = ? LIMIT 1", (article_id, article_id)).fetchone()
@@ -26032,6 +26176,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_guide_os(conn, query)
         if path == "/api/admin/guide/articles" and method == "GET":
             return self.api_admin_guide_articles(conn, query)
+        if path == "/api/admin/guide/articles/ai-draft" and method == "POST":
+            return self.api_admin_guide_article_ai_draft(conn)
         if path == "/api/admin/guide/articles" and method == "POST":
             return self.api_admin_guide_create_article(conn)
         if path.startswith("/api/admin/guide/articles/"):
@@ -35019,6 +35165,23 @@ class Handler(BaseHTTPRequestHandler):
             """,
             (tag_clean,),
         ))
+        if not rows and tag_clean:
+            # Safety net: a post can carry "#东京" in its body yet lack a
+            # post_tags row (older seed/import paths that never ran extract_tags).
+            # Only when the indexed lookup is empty, scan content for the exact
+            # hashtag token — filtered through extract_tags so "#东京" never
+            # matches "#东京塔" — so a topic that genuinely has posts is never
+            # shown as empty. Read-only; the startup backfill repairs the index.
+            candidates = conn.execute(
+                f"""
+                SELECT p.* FROM posts p
+                WHERE p.content LIKE ? AND p.deleted_at IS NULL
+                  AND p.status IN ('published', 'active')
+                ORDER BY {order} LIMIT 200
+                """,
+                (f"%#{tag_clean}%",),
+            ).fetchall()
+            rows = [r for r in candidates if tag_clean in extract_tags(r["content"] or "")][:50]
         posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
         self.send_json({"tag": tag_clean, "items": posts, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 

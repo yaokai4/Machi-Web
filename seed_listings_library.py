@@ -162,15 +162,20 @@ except Exception:
 def persona_counts() -> dict[str, Any]:
     by_city: dict[str, int] = {}
     photo = 0
+    legacy = 0
     for u in PERSONAS:
         by_city[u.get("city", "")] = by_city.get(u.get("city", ""), 0) + 1
-        if "randomuser" in (u.get("avatar_url") or ""):
+        av = u.get("avatar_url") or ""
+        if "unsplash" in av:  # 小红书 interest-matched aesthetic photo
             photo += 1
+        if "randomuser" in av:  # legacy Western portrait (should be 0 now)
+            legacy += 1
     return {
         "total": len(PERSONAS),
         "by_city": by_city,
         "photographic": photo,
         "illustrated": len(PERSONAS) - photo,
+        "legacy_portraits": legacy,
     }
 
 
