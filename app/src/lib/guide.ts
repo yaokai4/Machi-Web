@@ -1214,6 +1214,12 @@ export interface GuideAISuggestion {
   title: string;
   category?: string;
 }
+export interface GuideAIAbility {
+  key: string;
+  title: string;
+  description?: string;
+  memberOnly?: boolean;
+}
 export interface GuideAIConversation {
   id: string;
   title?: string;
@@ -1241,6 +1247,7 @@ export interface GuideAIBootstrap {
   membershipActive?: boolean;
   remainingFreeUses?: number | null;
   suggestions?: GuideAISuggestion[];
+  abilities?: GuideAIAbility[];
   disclaimer?: string;
 }
 export interface GuideAIChatResult {
@@ -1480,7 +1487,7 @@ export const guide = {
   aiMessages: (conversationId: string) =>
     greq<{ status: string; conversation: GuideAIConversation; items: GuideAIMessage[] }>(
       "GET", `/api/guide/ai/conversations/${encodeURIComponent(conversationId)}/messages`),
-  aiChat: (body: { conversationId?: string | null; message: string; country?: string; language?: string; category?: string }) =>
+  aiChat: (body: { conversationId?: string | null; message: string; country?: string; language?: string; category?: string; ability?: string }) =>
     greq<GuideAIChatResult>("POST", "/api/guide/ai/chat", body),
   aiDeleteConversation: (id: string) =>
     greq<{ status: string }>("DELETE", `/api/guide/ai/conversations/${encodeURIComponent(id)}`),

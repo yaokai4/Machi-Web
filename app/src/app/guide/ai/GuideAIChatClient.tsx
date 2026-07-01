@@ -28,7 +28,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { MachiAIMark, MachiAIGlyph } from "@/components/brand/MachiAIMark";
-import { guide, type GuideAIConversation, type GuideAISource, type GuideAISuggestion } from "@/lib/guide";
+import { guide, type GuideAIAbility, type GuideAIConversation, type GuideAISource, type GuideAISuggestion } from "@/lib/guide";
 import { APIError } from "@/lib/api";
 import { GuideShell } from "@/components/guide/GuideKit";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
@@ -188,6 +188,8 @@ export default function GuideAIChatClient() {
   const [sending, setSending] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [suggestions, setSuggestions] = useState<GuideAISuggestion[]>([]);
+  const [abilities, setAbilities] = useState<GuideAIAbility[]>([]);
+  const [activeAbility, setActiveAbility] = useState<string | null>(null);
   const [disclaimer, setDisclaimer] = useState<string>("");
   const [membershipActive, setMembershipActive] = useState(false);
   const [remainingFreeUses, setRemainingFreeUses] = useState<number | null>(null);
@@ -223,6 +225,7 @@ export default function GuideAIChatClient() {
         setMembershipActive(Boolean(res.membershipActive));
         setRemainingFreeUses(res.membershipActive ? null : res.remainingFreeUses ?? null);
         setSuggestions(res.suggestions || []);
+        setAbilities(res.abilities || []);
         if (res.disclaimer) setDisclaimer(res.disclaimer);
         setQuotaReached(!res.membershipActive && (res.remainingFreeUses ?? 1) <= 0);
       } catch {
@@ -279,7 +282,7 @@ export default function GuideAIChatClient() {
       setMessages((prev) => [...prev, userMsg, { id: pendingId, role: "assistant", content: "", pending: true }]);
       setSending(true);
       try {
-        const res = await guide.aiChat({ conversationId, message: trimmed, country, language });
+        const res = await guide.aiChat({ conversationId, message: trimmed, country, language, ability: activeAbility ?? undefined });
         setConversationId(res.conversationId ?? conversationId);
         if (res.usage) {
           setMembershipActive(Boolean(res.usage.membershipActive));
@@ -325,6 +328,10 @@ export default function GuideAIChatClient() {
           setQuotaReached(true);
           setQuotaMessage(err.message);
           if (!membershipActive) setRemainingFreeUses(0);
+        } else if (err instanceof APIError && err.code === "AI_MEMBER_ABILITY_REQUIRED") {
+          // 会员专属能力：退回普通模式并提示升级（保持输入框可用）。
+          setActiveAbility(null);
+          setErrorMessage(err.message);
         } else if (err instanceof APIError) {
           setErrorMessage(err.message);
         } else {
@@ -334,7 +341,7 @@ export default function GuideAIChatClient() {
         setSending(false);
       }
     },
-    [conversationId, language, locale, membershipActive, openAuthPrompt, refreshConversations, sending, isGuest],
+    [activeAbility, conversationId, language, locale, membershipActive, openAuthPrompt, refreshConversations, sending, isGuest],
   );
 
   const onSubmit = useCallback(() => {
@@ -344,6 +351,27 @@ export default function GuideAIChatClient() {
     requestAnimationFrame(autoGrow);
     send(text);
   }, [autoGrow, input, send]);
+
+  const onAbility = useCallback(
+    (ab: GuideAIAbility) => {
+      // 非会员点会员专属能力：直接提示升级，不激活也不发请求。
+      if (ab.memberOnly && !membershipActive) {
+        setErrorMessage(
+          pick(
+            locale,
+            `「${ab.title}」是 Machi 会员专属能力，开通会员即可使用。`,
+            `「${ab.title}」は Machi メンバー限定機能です。メンバーになると利用できます。`,
+            `“${ab.title}” is a Machi members-only ability. Become a member to use it.`,
+          ),
+        );
+        return;
+      }
+      setErrorMessage("");
+      setActiveAbility((cur) => (cur === ab.key ? null : ab.key));
+      requestAnimationFrame(() => textareaRef.current?.focus());
+    },
+    [locale, membershipActive],
+  );
 
   const retry = useCallback(() => {
     const text = lastFailedText.current;
@@ -365,6 +393,7 @@ export default function GuideAIChatClient() {
     setQuotaMessage("");
     setQuotaReached(!membershipActive && (remainingFreeUses ?? 1) <= 0);
     setErrorMessage("");
+    setActiveAbility(null);
     setShowHistory(false);
   }, [membershipActive, remainingFreeUses]);
 
@@ -577,6 +606,31 @@ export default function GuideAIChatClient() {
                 )}
               </p>
             ) : null}
+            {abilities.length > 0 && !quotaReached ? (
+              <div className="mb-2 flex gap-1.5 overflow-x-auto pb-0.5">
+                {abilities.map((ab) => {
+                  const on = activeAbility === ab.key;
+                  const locked = Boolean(ab.memberOnly) && !membershipActive;
+                  return (
+                    <button
+                      key={ab.key}
+                      type="button"
+                      onClick={() => onAbility(ab)}
+                      title={ab.description || ""}
+                      aria-pressed={on}
+                      className={
+                        "shrink-0 rounded-full border px-3 py-1 text-[11.5px] font-bold transition " +
+                        (on
+                          ? "border-kx-accent/50 bg-kx-accent/12 text-kx-accent"
+                          : "border-kx-stroke/50 bg-kx-card text-kx-muted hover:text-kx-text")
+                      }
+                    >
+                      {(locked ? "🔒 " : on ? "✓ " : "") + ab.title}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
             <div className="flex items-end gap-2 rounded-[1.5rem] border border-kx-stroke/50 bg-kx-card p-1.5 shadow-[0_16px_40px_-30px_rgba(20,112,103,0.6)] transition focus-within:border-kx-accent/50 focus-within:shadow-[0_18px_44px_-26px_rgba(91,141,239,0.45)]">
               <textarea
                 ref={textareaRef}
@@ -593,12 +647,18 @@ export default function GuideAIChatClient() {
                     onSubmit();
                   }
                 }}
-                placeholder={pick(
-                  locale,
-                  "问问日本生活、升学、就职或 Machi 使用问题…",
-                  "日本生活・進学・就職や Machi の使い方を質問…",
-                  "Ask about life, study, work in Japan, or using Machi…",
-                )}
+                placeholder={
+                  activeAbility === "resume_polish"
+                    ? pick(locale, "粘贴你的履历书 / 职务経歴書 / 自己PR / 志望动机…", "履歴書・職務経歴書・自己PR・志望動機を貼り付け…", "Paste your resume / shokumu-keirekisho / PR to polish…")
+                    : activeAbility === "mock_interview"
+                      ? pick(locale, "告诉我你应聘的行业 / 职位，开始模拟面试…", "応募する業界・職種を教えて、模擬面接を開始…", "Tell me the role you're applying for to start the mock interview…")
+                      : pick(
+                          locale,
+                          "问问日本生活、升学、就职或 Machi 使用问题…",
+                          "日本生活・進学・就職や Machi の使い方を質問…",
+                          "Ask about life, study, work in Japan, or using Machi…",
+                        )
+                }
                 className="max-h-40 min-h-[2.75rem] flex-1 resize-none bg-transparent px-3 py-2.5 text-sm font-medium leading-6 text-kx-text outline-none placeholder:text-kx-muted disabled:opacity-60"
               />
               <button
