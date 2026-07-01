@@ -561,8 +561,17 @@ function TypedSummary({ post }: { post: KXPost }) {
   };
   const type = post.content_type || "dynamic";
   const chips: string[] = [];
-  if (type === "secondhand") chips.push(pick("price") ? `¥ ${pick("price")}` : "", pick("condition"), pick("trade_method"), pick("area"));
-  if (type === "housing") chips.push(pick("rent") ? `¥ ${pick("rent")}` : "", pick("room_type"), pick("area"), pick("nearest_station"), pick("move_in_date"));
+  // Respect the listing's currency when present; default to ¥ (JP-first).
+  const cur = (() => {
+    const code = pick("currency", "currency_code").toUpperCase();
+    if (code === "USD") return "$";
+    if (code === "EUR") return "€";
+    if (code === "KRW") return "₩";
+    if (code === "GBP") return "£";
+    return "¥";
+  })();
+  if (type === "secondhand") chips.push(pick("price") ? `${cur} ${pick("price")}` : "", pick("condition"), pick("trade_method"), pick("area"));
+  if (type === "housing") chips.push(pick("rent") ? `${cur} ${pick("rent")}` : "", pick("room_type"), pick("area"), pick("nearest_station"), pick("move_in_date"));
   if (type === "roommate") chips.push(pick("rent_range"), pick("area"), pick("move_in_date"));
   if (type === "job_seek") chips.push(pick("desired_job"), pick("skills"), pick("visa_status"));
   if (type === "job_post") chips.push(pick("job_title"), pick("salary"), pick("job_type"), pick("work_location"));

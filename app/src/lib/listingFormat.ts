@@ -211,24 +211,26 @@ export function formatPrice(input: PriceInput, currency = "JPY", locale: Listing
   const priceType = normalizedKey(item.price_type || item.priceType);
   const rawPrice = typeof item.price === "number" ? item.price : item.price == null ? undefined : Number(item.price);
 
+  const per = (zh: string, en: string, ja: string) => (locale === "ja" ? ja : locale === "en" ? en : zh);
+
   if (priceType === "free") return locale === "ja" ? "無料" : locale === "en" ? "Free" : "免费";
   if (["appointment_only", "quote_required", "consultation", "negotiable"].includes(priceType)) {
-    return type === "local_service" ? "预约咨询" : fallbackPriceLabel(type, locale);
+    return type === "local_service" ? per("预约咨询", "Book to inquire", "予約制") : fallbackPriceLabel(type, locale);
   }
   if (rawPrice == null || !Number.isFinite(rawPrice) || rawPrice <= 0) {
     return fallbackPriceLabel(type, locale);
   }
 
   const rendered = formatAmount(rawPrice, item.currency || currency);
-  if (priceType === "starting_from") return `${rendered} 起`;
-  if (priceType === "monthly" || priceType === "month") return `${rendered}/月`;
-  if (priceType === "hourly" || priceType === "hour") return `${rendered}/小时`;
+  if (priceType === "starting_from") return locale === "en" ? `From ${rendered}` : `${rendered}${per(" 起", " 起", "〜")}`;
+  if (priceType === "monthly" || priceType === "month") return `${rendered}${per("/月", "/mo", "/月")}`;
+  if (priceType === "hourly" || priceType === "hour") return `${rendered}${per("/小时", "/hr", "/時間")}`;
   if (priceType === "per_night" || priceType === "nightly") {
     return locale === "ja" ? `${rendered}/泊` : locale === "en" ? `${rendered}/night` : `${rendered}/晚`;
   }
-  if (priceType === "daily") return `${rendered}/日`;
-  if (priceType === "weekly") return `${rendered}/周`;
-  if (priceType === "yearly" || priceType === "annual") return `${rendered}/年`;
+  if (priceType === "daily") return `${rendered}${per("/日", "/day", "/日")}`;
+  if (priceType === "weekly") return `${rendered}${per("/周", "/wk", "/週")}`;
+  if (priceType === "yearly" || priceType === "annual") return `${rendered}${per("/年", "/yr", "/年")}`;
   return rendered;
 }
 
