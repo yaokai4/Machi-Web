@@ -1257,9 +1257,28 @@ export interface GuideAIChatResult {
   usage?: GuideAIUsage;
 }
 
+export interface GuideJlptLevel {
+  key: string;
+  label: string;
+  summary: string;
+}
+export interface GuideJlptZone {
+  status?: string;
+  country?: string;
+  hero?: { title?: string; subtitle?: string };
+  levels?: GuideJlptLevel[];
+  articles?: GuideArticle[];
+  resources?: GuideProduct[];
+  faq?: GuideFaq[];
+  studyPlan?: { title?: string; subtitle?: string; route?: string };
+  disclaimer?: string;
+}
+
 export const guide = {
   home: (country = "jp", language = "zh-CN") =>
     greq<GuideHomeResponse>("GET", `/api/guide/home${qs({ country, language })}`),
+  jlptZone: (country = "jp", language = "zh-CN") =>
+    greq<GuideJlptZone>("GET", `/api/guide/jlpt${qs({ country, language })}`),
   categories: (country = "jp", language = "zh-CN") =>
     greq<{ status: GuideStatus; country: string; categories: GuideCategory[] }>(
       "GET", `/api/guide/categories${qs({ country, language })}`),
