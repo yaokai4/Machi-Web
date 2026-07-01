@@ -6,7 +6,7 @@ import { usePathname } from "next/navigation";
 import { AppMockup } from "./AppMockup";
 import { BrandPhrase, BrandText } from "./BrandText";
 import { Button } from "./Button";
-import { StoreButton } from "./StoreButtons";
+import { StoreButton, APP_STORE_URL } from "./StoreButtons";
 import { useMarketingI18n } from "./MarketingI18n";
 
 // CJK text wraps between any two characters, so at display sizes the
@@ -144,18 +144,18 @@ export function HeroSection() {
               kind="app-store"
               label={copy.hero.appStore}
               caption={copy.hero.appStoreCaption}
-              href="#waitlist-form"
+              href={APP_STORE_URL}
               className="items-center sm:items-start"
             />
             <StoreButton
               kind="google-play"
               label={copy.hero.googlePlay}
               caption={copy.hero.googlePlayCaption}
-              href="#waitlist-form"
+              href="/download#waitlist-form"
               className="items-center sm:items-start"
             />
             <a
-              href="#waitlist-form"
+              href="/home"
               className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-stone-200/80 bg-white/86 px-4 py-3 text-sm font-black text-stone-700 shadow-sm transition hover:-translate-y-0.5 hover:border-orange-200 hover:text-orange-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500 dark:border-white/10 dark:bg-white/[0.06] dark:text-stone-200"
             >
               <MonitorSmartphone className="h-4 w-4" aria-hidden="true" />

@@ -404,13 +404,13 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
   download: {
     zh: { eyebrow: "使用 Machi", title: "Web 版已经开放，App 正在路上。", intro: "现在可以直接注册并使用 Machi Web。iOS 与 Android 正在准备，正式上架前会始终明确标注状态。", blocks: [{ title: "Web 版可以做什么", variant: "grid", items: [
 	      { title: "城市首页", body: "查看与你所在城市有关的内容、频道和动态。" }, { title: "发现与搜索", body: "查找租房、工作、问答、活动与本地服务。" }, { title: "通知与私信", body: "接收回复、关注话题，并继续一对一沟通。" }, { title: "发布与个人主页", body: "分享经验、提出需求，也让别人了解你的公开身份。" }, { title: "社区参与", body: "加入公开城市话题、本地小组、活动讨论和语言交换。" },
-    ] }, { title: "状态", variant: "list", items: [{ title: "iOS", body: "即将上线" }, { title: "Android", body: "即将上线" }, { title: "Web Beta", body: "已开放体验" }] }] },
+    ] }, { title: "状态", variant: "list", items: [{ title: "iOS", body: "现已上线" }, { title: "Android", body: "即将上线" }, { title: "Web Beta", body: "已开放体验" }] }] },
     en: { eyebrow: "Use Machi", title: "The web app is live. Mobile apps are on the way.", intro: "You can register and use Machi Web now. iOS and Android are in preparation, with availability kept clearly marked until each store release.", blocks: [{ title: "What you can do on the web", variant: "grid", items: [
 	      { title: "City home", body: "See content, channels, and activity related to your city." }, { title: "Discovery and search", body: "Find housing, jobs, Q&A, events, and local services." }, { title: "Notifications and messages", body: "Follow replies and local topics, then continue conversations privately." }, { title: "Posting and profiles", body: "Share experience, post a need, and present a clear public profile." }, { title: "Community participation", body: "Join public city topics, local groups, event discussions, and language exchange." },
-    ] }, { title: "Status", variant: "list", items: [{ title: "iOS", body: "Coming soon" }, { title: "Android", body: "Coming soon" }, { title: "Web Beta", body: "Available now" }] }] },
+    ] }, { title: "Status", variant: "list", items: [{ title: "iOS", body: "Available now" }, { title: "Android", body: "Coming soon" }, { title: "Web Beta", body: "Available now" }] }] },
     ja: { eyebrow: "Machi を使う", title: "Web 版は公開中。アプリも準備を進めています。", intro: "Machi Web は現在ご利用いただけます。iOS と Android は準備中で、ストアで正式公開するまでは提供状況を明確に表示します。", blocks: [{ title: "Web 版でできること", variant: "grid", items: [
 	      { title: "街のホーム", body: "現在の街に関係する投稿、チャンネル、動きを確認できます。" }, { title: "発見と検索", body: "住まい、仕事、Q&A、イベント、地域サービスを探せます。" }, { title: "通知とメッセージ", body: "返信や地域の話題を確認し、必要に応じて個別にやり取りできます。" }, { title: "投稿とプロフィール", body: "経験や必要としていることを投稿し、公開プロフィールで自分を伝えられます。" }, { title: "コミュニティへの参加", body: "街の話題、地域グループ、イベント、言語交換に参加できます。" },
-    ] }, { title: "ステータス", variant: "list", items: [{ title: "iOS", body: "近日公開" }, { title: "Android", body: "近日公開" }, { title: "Web Beta", body: "利用できます" }] }] },
+    ] }, { title: "ステータス", variant: "list", items: [{ title: "iOS", body: "公開中" }, { title: "Android", body: "近日公開" }, { title: "Web Beta", body: "利用できます" }] }] },
   },
   updates: {
     zh: { eyebrow: "更新", title: "Machi 正在做到哪里", intro: "产品状态、Guide 更新、新城市准备与合作开放，都在这里如实记录。", blocks: [{ title: "当前状态", variant: "list", items: [

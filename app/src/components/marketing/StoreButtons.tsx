@@ -7,6 +7,11 @@ import { useMarketingI18n } from "./MarketingI18n";
 
 type StoreKind = "app-store" | "google-play";
 
+// Canonical App Store listing for Machi (你的日本生活). Kept here so every
+// store badge across the marketing site points to a single source of truth.
+export const APP_STORE_URL =
+  "https://apps.apple.com/cn/app/machi-%E4%BD%A0%E7%9A%84%E6%97%A5%E6%9C%AC%E7%94%9F%E6%B4%BB/id6781900781";
+
 // We render the store badges as crisp vector type + logo instead of the
 // baked-in PNG marketing badges. That keeps them razor-sharp at any size,
 // lets the wording follow the site's own typography, and gives us the
@@ -90,11 +95,16 @@ export function StoreButton({
   const words = STORE_COPY[locale]?.[kind] ?? STORE_COPY.en[kind];
   const eyebrow = caption ?? availabilityCopy[locale];
   const aria = kind === "app-store" ? "Download on the App Store" : "Get it on Google Play";
+  // A full URL (the live App Store listing) opens in a new tab; in-page
+  // anchors (#download) stay in the current tab.
+  const isExternal = /^https?:\/\//.test(href);
 
   return (
     <Link
       href={href}
       aria-label={aria}
+      target={isExternal ? "_blank" : undefined}
+      rel={isExternal ? "noopener noreferrer" : undefined}
       className={clsx(
         "group inline-flex flex-col items-center gap-2 focus-visible:outline-none",
         className,
