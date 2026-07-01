@@ -2,13 +2,20 @@
 // match the iOS App's DateFormatterUtils / NumberFormatterUtils logic.
 
 export function compactNumber(value: number | null | undefined): string {
-  if (value == null) return "0";
+  if (value == null || Number.isNaN(value)) return "0";
   const abs = Math.abs(value);
   if (abs < 1_000) return String(value);
-  if (abs < 10_000) return `${(value / 1_000).toFixed(1).replace(/\.0$/, "")}k`;
-  if (abs < 1_000_000) return `${Math.round(value / 1_000)}k`;
-  if (abs < 100_000_000) return `${(value / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  return `${Math.round(value / 1_000_000)}M`;
+  const sign = value < 0 ? "-" : "";
+  const fmt = (div: number, unit: string) => {
+    const scaled = abs / div;
+    const s = scaled < 10 ? scaled.toFixed(1).replace(/\.0$/, "") : String(Math.round(scaled));
+    return `${sign}${s}${unit}`;
+  };
+  // Roll up to the next unit when rounding within a tier would reach 1000
+  // (e.g. 999_600 -> "1M", never "1000k"; 999_600_000 -> "1B").
+  if (abs < 1_000_000) return Math.round(abs / 1_000) >= 1_000 ? fmt(1_000_000, "M") : fmt(1_000, "k");
+  if (abs < 1_000_000_000) return Math.round(abs / 1_000_000) >= 1_000 ? fmt(1_000_000_000, "B") : fmt(1_000_000, "M");
+  return fmt(1_000_000_000, "B");
 }
 
 export function relativeTime(iso: string): string {

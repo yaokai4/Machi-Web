@@ -37,7 +37,7 @@ export default function MembershipOrdersPage() {
                     <div className="mt-1 text-xs text-kx-muted">{String(row.provider || "")} · {String(row.created_at || "")}</div>
                   </div>
                   <div className="text-right">
-                    <div className="font-black text-kx-text">{formatPrice({ price: Number(row.amount || 0), currency: String(row.currency || "CNY") })}</div>
+                    <div className="font-black text-kx-text">{formatPrice({ price: Number(row.amount || 0), currency: String(row.currency || "JPY") })}</div>
                     <div className="mt-1 text-xs font-bold text-kx-muted">{membershipOrderStatusLabel(String(row.status || ""), locale)}</div>
                   </div>
                 </div>

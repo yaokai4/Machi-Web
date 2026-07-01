@@ -339,19 +339,19 @@ function SearchListingCard({ listing, locale, localFallback }: { listing: KXCity
   return (
     <Link
       href={listingSearchHref(listing)}
-      className="grid gap-3 rounded-2xl border border-slate-200/70 bg-white p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)] sm:grid-cols-[96px_1fr]"
+      className="grid gap-3 rounded-2xl border border-slate-200/70 bg-white p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)] transition hover:border-slate-300 sm:grid-cols-[96px_1fr] dark:border-white/10 dark:bg-white/[0.04] dark:hover:border-white/20"
     >
-      <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-100 sm:aspect-square">
+      <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-100 sm:aspect-square dark:bg-white/[0.06]">
         {listing.cover_url ? <Image src={listing.cover_url} alt={title} fill sizes="96px" className="object-cover" unoptimized /> : null}
       </div>
       <div className="min-w-0">
         <div className="flex items-center gap-2">
-          <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black text-slate-600">{formatListingType(listing.type, locale)}</span>
-          <span className="text-xs font-bold text-slate-400">{city}</span>
+          <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black text-slate-600 dark:bg-white/10 dark:text-slate-300">{formatListingType(listing.type, locale)}</span>
+          <span className="text-xs font-bold text-slate-400 dark:text-slate-500">{city}</span>
         </div>
-        <h4 className="mt-2 line-clamp-1 text-base font-black text-slate-950">{title}</h4>
-        <p className="mt-1 text-sm font-bold text-slate-900">{formatListingPrice(listing, undefined, locale)}</p>
-        <p className="mt-1 line-clamp-1 text-sm text-slate-500">{location}</p>
+        <h4 className="mt-2 line-clamp-1 text-base font-black text-slate-950 dark:text-white">{title}</h4>
+        <p className="mt-1 text-sm font-bold text-slate-900 dark:text-slate-100">{formatListingPrice(listing, undefined, locale)}</p>
+        <p className="mt-1 line-clamp-1 text-sm text-slate-500 dark:text-slate-400">{location}</p>
       </div>
     </Link>
   );

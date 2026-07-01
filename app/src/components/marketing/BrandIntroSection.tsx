@@ -32,7 +32,9 @@ export function BrandIntroSection() {
 
         <div className="mt-10 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {copy.brandIntro.pillars.map(([title, description], index) => {
-            const meta = pillarMeta[index];
+            // Cycle icons/tones so an extra pillar in the copy data never
+            // crashes the homepage with an out-of-bounds `meta`.
+            const meta = pillarMeta[index % pillarMeta.length];
             const Icon = meta.icon;
             return (
               <article key={title} className="mc-reveal mc-glass p-5 sm:p-6">

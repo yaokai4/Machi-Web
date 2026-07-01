@@ -50,7 +50,7 @@ export default function SettingsPage() {
   const pushToast = useToasts((s) => s.push);
   const { t, locale } = useI18n();
   const [pwOpen, setPwOpen] = useState(false);
-  const [pwForm, setPwForm] = useState({ password: "", confirm: "" });
+  const [pwForm, setPwForm] = useState({ current: "", password: "", confirm: "" });
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [logoutOpen, setLogoutOpen] = useState(false);
   const [unlinkGoogleOpen, setUnlinkGoogleOpen] = useState(false);
@@ -149,6 +149,10 @@ export default function SettingsPage() {
   };
 
   const onChangePassword = async () => {
+    if (!pwForm.current) {
+      pushToast({ kind: "error", message: "请输入当前密码" });
+      return;
+    }
     if (pwForm.password.length < 6) {
       pushToast({ kind: "error", message: "密码至少 6 位" });
       return;
@@ -158,9 +162,12 @@ export default function SettingsPage() {
       return;
     }
     try {
-      await api.updateMe({ password: pwForm.password });
+      // The backend enforces changes via POST /api/auth/change-password,
+      // which requires the current password. updateMe does not change the
+      // password, so calling it here always no-op'd / failed.
+      await api.changePassword(pwForm.current, pwForm.password);
       setPwOpen(false);
-      setPwForm({ password: "", confirm: "" });
+      setPwForm({ current: "", password: "", confirm: "" });
       pushToast({ kind: "success", message: "密码已更新" });
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
@@ -421,12 +428,16 @@ export default function SettingsPage() {
       }>
         <div className="space-y-3">
           <label className="block">
+            <span className="text-sm font-semibold">当前密码</span>
+            <input type="password" autoComplete="current-password" className="kx-input mt-1" value={pwForm.current} onChange={(e) => setPwForm({ ...pwForm, current: e.target.value })} />
+          </label>
+          <label className="block">
             <span className="text-sm font-semibold">新密码</span>
-            <input type="password" className="kx-input mt-1" value={pwForm.password} onChange={(e) => setPwForm({ ...pwForm, password: e.target.value })} />
+            <input type="password" autoComplete="new-password" className="kx-input mt-1" value={pwForm.password} onChange={(e) => setPwForm({ ...pwForm, password: e.target.value })} />
           </label>
           <label className="block">
             <span className="text-sm font-semibold">确认新密码</span>
-            <input type="password" className="kx-input mt-1" value={pwForm.confirm} onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })} />
+            <input type="password" autoComplete="new-password" className="kx-input mt-1" value={pwForm.confirm} onChange={(e) => setPwForm({ ...pwForm, confirm: e.target.value })} />
           </label>
         </div>
       </Dialog>
