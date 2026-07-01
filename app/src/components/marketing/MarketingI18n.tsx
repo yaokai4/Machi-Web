@@ -144,3 +144,16 @@ export function useMarketingI18n() {
   }
   return context;
 }
+
+/**
+ * Prefix an internal marketing path with the active locale (`/en`, `/ja`) so
+ * in-body CTAs keep the visitor in their chosen language — matching how the
+ * Header/Footer already localize their links. `zh` is the unprefixed default;
+ * external URLs, hashes, and the `/home` app route are left untouched.
+ */
+export function localizedMarketingHref(href: string, locale: MarketingLocale): string {
+  if (locale === "zh") return href;
+  if (!href.startsWith("/") || href.startsWith("//")) return href;
+  if (href === "/home" || href.startsWith("/home/") || href.startsWith("/home#")) return href;
+  return `/${locale}${href}`;
+}

@@ -3,10 +3,10 @@
 import { BadgeCheck, BarChart3, Building2, Megaphone, ShieldCheck, Sparkles } from "lucide-react";
 import { Button } from "./Button";
 import { BrandPhrase } from "./BrandText";
-import { useMarketingI18n } from "./MarketingI18n";
+import { useMarketingI18n, localizedMarketingHref } from "./MarketingI18n";
 
 export function BusinessSection() {
-  const { copy } = useMarketingI18n();
+  const { copy, locale } = useMarketingI18n();
 
   return (
     <section id="business" className="relative overflow-hidden px-5 py-14 sm:px-6 lg:py-20">
