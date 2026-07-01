@@ -14470,6 +14470,71 @@ class Handler(BaseHTTPRequestHandler):
         _cache_put(cache_key, payload, GUIDE_HOME_CACHE_TTL)
         self.send_json(payload)
 
+    def api_guide_jlpt_zone(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """JLPT 备考专区: a curated public prep hub aggregating JLPT roadmap
+        articles, resources (free/member/paid), FAQ, an N5–N1 level structure and
+        a study-plan CTA. Doubles as a membership hook (member-priced resources).
+        Fully public, cached like guide-home."""
+        country = self._guide_country(query)
+        language = (query.get("language") or "zh-CN").strip() or "zh-CN"
+        if not self._guide_is_open(country):
+            return self.send_json({
+                "status": "coming_soon", "country": country,
+                "hero": {}, "levels": [], "articles": [], "resources": [], "faq": [], "studyPlan": {},
+            })
+        cache_key = f"guide_jlpt:{country}:{language}"
+        cached = _cache_get(cache_key)
+        if cached is not None:
+            return self.send_json(cached)
+        articles = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
+            "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND category_key = 'jlpt' "
+            "ORDER BY is_featured DESC, sort_order, published_at DESC LIMIT 12", (country,)).fetchall()]
+        # JLPT resources are content packs (not human services), so keep
+        # coming_soon ones visible — they show 即将开放 and keep the roadmap whole.
+        # Member-included packs sort first as the concrete membership payoff.
+        resources = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
+            "SELECT * FROM guide_products WHERE country = ? AND category_key = 'jlpt' "
+            "AND status IN ('published','coming_soon') "
+            "ORDER BY is_coming_soon ASC, is_member_included DESC, sort_order LIMIT 24", (country,)).fetchall()]
+        faq = [serialize_guide_faq(r) for r in conn.execute(
+            "SELECT * FROM guide_faq WHERE country = ? AND status = 'published' AND category_key = 'jlpt' "
+            "ORDER BY sort_order LIMIT 8", (country,)).fetchall()]
+        levels = [
+            {"key": "n5", "label": "N5", "summary": machi_ai_text(language, "入门:基础词汇语法与生活场景。", "入門:基礎の語彙・文法と日常場面。", "Beginner: core vocabulary, grammar, everyday scenes.")},
+            {"key": "n4", "label": "N4", "summary": machi_ai_text(language, "初级:扩展词汇与日常表达。", "初級:語彙拡張と日常表現。", "Elementary: broader vocabulary and daily expression.")},
+            {"key": "n3", "label": "N3", "summary": machi_ai_text(language, "过渡:承上启下,读解听力提速。", "橋渡し:読解・聴解のスピードアップ。", "Bridge: faster reading and listening.")},
+            {"key": "n2", "label": "N2", "summary": machi_ai_text(language, "就职常见门槛:语法读解强化。", "就職でよく求められる:文法・読解の強化。", "Common job threshold: stronger grammar and reading.")},
+            {"key": "n1", "label": "N1", "summary": machi_ai_text(language, "高级:综合岗位与升学的敲门砖。", "上級:総合職・進学の関門。", "Advanced: gateway for careers and grad school.")},
+        ]
+        payload = {
+            "status": "ok",
+            "country": country,
+            "hero": {
+                "title": machi_ai_text(language, "JLPT 备考专区", "JLPT 対策センター", "JLPT Prep Center"),
+                "subtitle": machi_ai_text(
+                    language,
+                    "N5–N1 备考路线、题型趋势、高频词汇与模拟题,配合官方过去问一起用。",
+                    "N5〜N1 の学習ロードマップ、出題傾向、頻出語彙、模擬問題。公式過去問と併用。",
+                    "N5–N1 roadmaps, question trends, high-frequency vocabulary, and mock tests."),
+            },
+            "levels": levels,
+            "articles": articles,
+            "resources": resources,
+            "faq": faq,
+            "studyPlan": {
+                "title": machi_ai_text(language, "制定我的 JLPT 学习计划", "JLPT 学習計画を作る", "Build my JLPT study plan"),
+                "subtitle": machi_ai_text(language, "按考试日期和每日时间自动排期。", "試験日と学習時間から自動で予定化。", "Auto-schedule from your exam date and daily time."),
+                "route": "guidePlan",
+            },
+            "disclaimer": machi_ai_text(
+                language,
+                "Machi 的 JLPT 资料为原创整理,不含未授权真题原文;请以 JLPT 官方最新公告为准。",
+                "Machi の JLPT 資料はオリジナル整理で、無断の過去問原文は含みません。最新は JLPT 公式でご確認ください。",
+                "Machi's JLPT materials are original summaries (no unauthorized past-paper text). Verify with official JLPT announcements."),
+        }
+        _cache_put(cache_key, payload, GUIDE_HOME_CACHE_TTL)
+        self.send_json(payload)
+
     def api_guide_categories(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
         language = (query.get("language") or "zh-CN").strip() or "zh-CN"
@@ -21954,6 +22019,8 @@ class Handler(BaseHTTPRequestHandler):
         # Machi Guide / 日本指南 — public + auth (replaces the old crawler 资讯 surface)
         if path == "/api/guide/home" and method == "GET":
             return self.api_guide_home(conn, query)
+        if path == "/api/guide/jlpt" and method == "GET":
+            return self.api_guide_jlpt_zone(conn, query)
         if path == "/api/guide/categories" and method == "GET":
             return self.api_guide_categories(conn, query)
         if path == "/api/guide/journeys" and method == "GET":
