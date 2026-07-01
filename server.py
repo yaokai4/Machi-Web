@@ -9410,6 +9410,67 @@ MACHI_AI_SYSTEM_PROMPT = (
     "我的工作台/会员资料继续整理”。"
 )
 
+# --- Machi AI 会员专属能力 -------------------------------------------------
+# 客户端可发起的专用「能力」(简历润色 / 模拟面试)。每个能力在基础人设之上
+# 追加一段 system 指令。member_only 能力需要有效会员——是一个具体、值钱的
+# 付费理由。底层模型/供应商始终不外泄。title/description 顺序为 (zh, ja, en)。
+MACHI_AI_ABILITIES: dict[str, dict[str, Any]] = {
+    "resume_polish": {
+        "member_only": True,
+        "force_thinking": True,
+        "title": ("简历润色", "職務経歴書の添削", "Resume polish"),
+        "description": (
+            "把履历书 / 职务経歴書 / 自己PR / 志望动机润色成地道日语",
+            "履歴書・職務経歴書・自己PR・志望動機を自然な日本語に添削",
+            "Polish your rirekisho / shokumu-keirekisho / PR into natural Japanese",
+        ),
+        "system": (
+            "【专属能力·简历润色】用户会粘贴日文或中文的履历书、职务経歴書、自己PR 或志望动机。"
+            "面向日本就职/转职市场帮他润色：\n"
+            "- 先指出 2-4 个最关键、可操作的改进点。\n"
+            "- 再给出润色后的日文版本，自然、符合商务日语与日企习惯，避免直译腔。\n"
+            "- 严格保持事实不变，绝不编造经历、公司名、数字或成果。\n"
+            "- 如信息不足，先列出需要补充的关键信息，再给初步建议。\n"
+            "- 结尾提醒最终以目标公司要求与真实经历为准。"
+        ),
+    },
+    "mock_interview": {
+        "member_only": True,
+        "force_thinking": False,
+        "title": ("模拟面试", "模擬面接", "Mock interview"),
+        "description": (
+            "和 AI 面试官一对一练习日企面试，逐题推进并给反馈",
+            "AI 面接官と一対一で日本企業の面接を練習、質問ごとにフィードバック",
+            "Practice a Japanese job interview one question at a time with feedback",
+        ),
+        "system": (
+            "【专属能力·模拟面试】你现在是日企面试官，和用户进行一对一模拟面试：\n"
+            "- 一次只问一个问题，等用户回答后再问下一个，像真实面试一样推进。\n"
+            "- 从常见问题开始（自我介绍、志望动机、ガクチカ、强弱项），逐步深入到具体经历追问。\n"
+            "- 用户每次回答后，先简短点评（好在哪、可以怎么改），再自然地问下一题。\n"
+            "- 用礼貌的商务日语提问，必要时附简短中文提示；态度鼓励但不放水。\n"
+            "- 当用户说“结束”或“请评价”时，给整体反馈：优点、改进点、下一步练习建议。\n"
+            "- 若为本轮第一条消息且用户未提供背景，先用一句话确认应聘的行业/职位，再开始第一题。"
+        ),
+    },
+}
+
+
+def machi_ai_ability(key: Any) -> dict[str, Any] | None:
+    """Resolve an ability by key; None for unknown/empty (→ general chat)."""
+    return MACHI_AI_ABILITIES.get(str(key or "").strip()) or None
+
+
+def machi_ai_abilities_dto(language: str) -> list[dict[str, Any]]:
+    """Client-facing ability entry points (key/title/description/memberOnly)."""
+    idx = {"ja": 1, "en": 2}.get(machi_ai_lang_key(language), 0)
+    return [
+        {"key": key, "title": ab["title"][idx], "description": ab["description"][idx],
+         "memberOnly": bool(ab["member_only"])}
+        for key, ab in MACHI_AI_ABILITIES.items()
+    ]
+
+
 _MACHI_AI_LANG_DIRECTIVE = {
     "zh": "请用简体中文回答。",
     "ja": "日本語で自然に回答してください。",
@@ -9434,11 +9495,14 @@ def machi_ai_is_complex(message: str) -> bool:
 
 def machi_ai_build_messages(*, user_message: str, language: str,
                             history: list[dict[str, Any]],
-                            context_items: list[dict[str, Any]]) -> list[dict[str, str]]:
-    """Assemble the stateless turn list: system (+ optional Guide context) +
-    recent history + the latest user turn."""
+                            context_items: list[dict[str, Any]],
+                            ability: dict[str, Any] | None = None) -> list[dict[str, str]]:
+    """Assemble the stateless turn list: system (+ optional ability directive +
+    optional Guide context) + recent history + the latest user turn."""
     lang = machi_ai_lang_key(language)
     system = MACHI_AI_SYSTEM_PROMPT + "\n\n" + _MACHI_AI_LANG_DIRECTIVE.get(lang, _MACHI_AI_LANG_DIRECTIVE["zh"])
+    if ability and ability.get("system"):
+        system += "\n\n" + ability["system"]
     lines = [f"- {it.get('modelLine') or it.get('title')}" for it in (context_items or []) if (it.get("modelLine") or it.get("title"))]
     if lines:
         system += ("\n\n以下是 Machi Guide 中可能相关的资料摘要。你可以参考，但不要编造摘要以外的事实：\n"
@@ -14795,6 +14859,7 @@ class Handler(BaseHTTPRequestHandler):
             "membershipActive": is_member,
             "remainingFreeUses": remaining,
             "suggestions": machi_ai_suggestions(language),
+            "abilities": machi_ai_abilities_dto(language),
             "disclaimer": machi_ai_text(
                 language,
                 "Machi AI 可以帮你整理步骤和注意事项，重要决定请以官方与专业意见为准。",
@@ -14863,6 +14928,21 @@ class Handler(BaseHTTPRequestHandler):
             "upgradeSuggested": not is_member,
         }
         self.send_json(envelope, 429)
+
+    def _guide_ai_member_ability_response(self, language: str, ability: dict[str, Any]) -> None:
+        """403 upgrade prompt when a non-member requests a members-only ability.
+        No quota is touched and no upstream call is made."""
+        title = ability["title"][{"ja": 1, "en": 2}.get(machi_ai_lang_key(language), 0)]
+        msg = machi_ai_text(
+            language,
+            f"「{title}」是 Machi 会员专属能力。开通会员即可使用，还包含更高每日额度与 Pro 深度模型。",
+            f"「{title}」は Machi メンバー限定機能です。メンバーになると利用でき、1日の上限アップと Pro モデルも含まれます。",
+            f"“{title}” is a Machi members-only ability. Become a member to use it, plus a higher daily limit and the Pro model.",
+        )
+        envelope = self._error_envelope("AI_MEMBER_ABILITY_REQUIRED", msg)
+        envelope["upgradeSuggested"] = True
+        envelope["usage"] = {"membershipActive": False, "remainingFreeUses": None, "upgradeSuggested": True}
+        self.send_json(envelope, 403)
 
     def _machi_ai_reserve_usage(self, conn: sqlite3.Connection, user_id: str,
                                 usage_date: str, is_member: bool) -> int:
@@ -14953,6 +15033,13 @@ class Handler(BaseHTTPRequestHandler):
         usage_date = machi_ai_usage_date()
         is_member = has_active_membership(conn, user["id"])
         limit = machi_ai_daily_limit(is_member)
+        # Specialized member-only abilities (resume polish / mock interview).
+        # An unknown/empty ability falls back to general chat. A member-only
+        # ability requested by a non-member returns an upgrade prompt BEFORE any
+        # quota is touched or upstream call is made.
+        ability = machi_ai_ability(body.get("ability"))
+        if ability and ability["member_only"] and not is_member:
+            return self._guide_ai_member_ability_response(language, ability)
         # Cheap, non-authoritative fast path: reject an obviously over-quota
         # caller before doing any retrieval work. This read alone is racy (N
         # concurrent requests all see the same stale count), so the real gate is
@@ -14995,8 +15082,9 @@ class Handler(BaseHTTPRequestHandler):
 
         messages = machi_ai_build_messages(
             user_message=message, language=language, history=history, context_items=context_items,
+            ability=ability,
         )
-        thinking = machi_ai_is_complex(message)
+        thinking = machi_ai_is_complex(message) or bool(ability and ability.get("force_thinking"))
         # Atomically claim a quota slot BEFORE spending money upstream. The
         # reservation increments and returns today's running total in one
         # statement, so concurrent requests get distinct totals and only those
