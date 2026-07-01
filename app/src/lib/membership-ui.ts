@@ -91,6 +91,11 @@ const UI: Record<"zh" | "en" | "ja", MembershipUi> = {
 };
 
 const BENEFITS: Record<string, Text> = {
+  ai_member_quota: {
+    zh: "Machi AI 会员额度|更高每日提问额度,并解锁 Pro 深度模型,升学·就职·生活问答更强更准。",
+    en: "Higher Machi AI limit|A higher daily question limit plus the Pro deep-reasoning model for stronger study, career, and daily-life answers.",
+    ja: "Machi AI メンバー枠|1日の質問回数の上限を引き上げ、Pro 深思考モデルも解放。進学・就職・生活の相談がより的確になります。",
+  },
   verified_badge: {
     zh: "蓝色认证标识|昵称、个人主页和内容卡片展示 Machi 认证标识。",
     en: "Verified badge|Show a Machi Verified badge next to your name, on your profile, and on public content cards.",
