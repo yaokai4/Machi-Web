@@ -3251,6 +3251,12 @@ def ensure_membership_plans(conn: sqlite3.Connection) -> None:
 
 GUIDE_DEFAULT_COUNTRY = "jp"
 GUIDE_OPEN_COUNTRIES = {"jp"}
+# Hide un-fulfillable "coming soon" human services (resume review, mock
+# interview, consultation) from public Guide surfaces until a real fulfillment
+# flow exists — a wall of un-tappable "预约" entries erodes trust. Content
+# resources marked coming_soon are unaffected (they still show "即将开放").
+# Set GUIDE_HIDE_EMPTY_SERVICES=0 to preview services before launch.
+GUIDE_HIDE_EMPTY_SERVICES = os.environ.get("GUIDE_HIDE_EMPTY_SERVICES", "1") == "1"
 GUIDE_CAPITAL_PREFECTURES = {"tokyo", "kanagawa", "chiba", "saitama"}
 GUIDE_KANSAI_PREFECTURES = {"osaka", "kyoto", "hyogo", "nara", "shiga", "wakayama"}
 # GUIDE_HERO moved to server_guide_data.py (re-exported for compat).
@@ -14359,8 +14365,9 @@ class Handler(BaseHTTPRequestHandler):
         featured_products = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? AND is_service = 0 AND status IN ('published','coming_soon') "
             "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()] if module_on("commerce") else []
+        _svc_status = "status = 'published'" if GUIDE_HIDE_EMPTY_SERVICES else "status IN ('published','coming_soon')"
         featured_services = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
-            "SELECT * FROM guide_products WHERE country = ? AND is_service = 1 AND status IN ('published','coming_soon') "
+            f"SELECT * FROM guide_products WHERE country = ? AND is_service = 1 AND {_svc_status} "
             "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()] if module_on("commerce") else []
         featured_schools = [localize_guide_school_payload(serialize_guide_school(r), language) for r in conn.execute(
             "SELECT * FROM guide_schools WHERE country = ? AND status = 'published' "
