@@ -521,16 +521,19 @@ MEMBERSHIP_PLAN_YEARLY_KEY = "machi_verified_yearly"
 MEMBERSHIP_LEGACY_PLAN_KEY = "machi_verified_monthly_cny_10"
 MEMBERSHIP_PLAN_KEY = _env("MEMBERSHIP_PLAN_KEY", MEMBERSHIP_PLAN_MONTHLY_KEY)
 # Seed values only. Operators edit membership_plans from admin after boot.
-# Membership is a NON-RENEWING one-time purchase, priced for the Japan market in
-# JPY. `billing_period` (monthly/yearly) is the ACCESS-DURATION engine
-# (monthly = 30 days of access, yearly = 365) — NOT recurring billing. Clients
-# render it as a one-time "N-day pass", never "monthly/yearly subscription".
-# Internal storage is value×100 for every currency; the Stripe edge divides by
-# 100 for zero-decimal currencies like JPY (see _stripe_minor_units), so a ¥600
-# pass is price=600, amount_cents=60000, charged as 600 minor units.
-MEMBERSHIP_PRICE_JPY = int(_env("MEMBERSHIP_PRICE_JPY", "600"))                 # 30-day pass
-MEMBERSHIP_PRICE_YEARLY_JPY = int(_env("MEMBERSHIP_PRICE_YEARLY_JPY", "4800"))  # 365-day pass
-MEMBERSHIP_CURRENCY = _env("MEMBERSHIP_CURRENCY", "JPY")
+# Membership is a NON-RENEWING one-time purchase. `billing_period`
+# (monthly/yearly) is the ACCESS-DURATION engine (monthly = 30 days of access,
+# yearly = 365) — NOT recurring billing. Clients render it as a one-time
+# "N-day pass", never "monthly/yearly subscription".
+# Priced in CNY to match the App Store products (machi_yuedu_18 /
+# machi_1niandu_198). Internal storage is value×100 for every currency; the
+# Stripe edge keeps minor units for 2-decimal currencies like CNY (see
+# _stripe_minor_units), so an ¥18 pass is price=18, amount_cents=1800, charged
+# as 1800 minor units (¥18.00). NOTE: the env keys keep the historical *_JPY
+# name for backward-compat, but the value is denominated in MEMBERSHIP_CURRENCY.
+MEMBERSHIP_PRICE_JPY = int(_env("MEMBERSHIP_PRICE_JPY", "18"))                 # 30-day pass (CNY)
+MEMBERSHIP_PRICE_YEARLY_JPY = int(_env("MEMBERSHIP_PRICE_YEARLY_JPY", "198"))  # 365-day pass (CNY)
+MEMBERSHIP_CURRENCY = _env("MEMBERSHIP_CURRENCY", "CNY")
 MEMBERSHIP_BILLING_CYCLE = "monthly"
 # Apple App Store product ids for the same plans. iOS buys through IAP.
 APPLE_IAP_PRODUCT_ID = _env("APPLE_IAP_PRODUCT_ID", "machi_yuedu_18")

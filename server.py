@@ -2775,7 +2775,7 @@ def _membership_plan_seed_rows() -> list[dict[str, Any]]:
             "currency": MEMBERSHIP_CURRENCY,
             "price_label": f"¥{MEMBERSHIP_PRICE_YEARLY_JPY} / 365天",
             "original_price": float(MEMBERSHIP_PRICE_JPY * 12),
-            "discount_label": "约省 33%",
+            "discount_label": "约省 1 个月",
             "stripe_product_id": "",
             "stripe_price_id": "",
             "ios_iap_product_id": APPLE_IAP_PRODUCT_ID_YEARLY,
@@ -3218,34 +3218,32 @@ def ensure_membership_plans(conn: sqlite3.Connection) -> None:
     conn.execute(
         """
         UPDATE membership_plans
-           SET price = CASE WHEN price IN (0, 10) THEN 18 ELSE price END,
-               amount_cents = CASE WHEN amount_cents IN (0, 1000) THEN 1800 ELSE amount_cents END,
-               price_label = CASE WHEN price_label IN ('', '¥10 / 月') THEN '¥18 / 月' ELSE price_label END,
-               ios_iap_product_id = CASE WHEN ios_iap_product_id IN ('', 'machi_verified_monthly_cny_10') THEN ? ELSE ios_iap_product_id END,
-               apple_product_id = CASE WHEN apple_product_id IN ('', 'machi_verified_monthly_cny_10') THEN ? ELSE apple_product_id END,
+           SET price = 18,
+               amount_cents = 1800,
+               currency = 'CNY',
+               price_label = '¥18 / 30天',
+               ios_iap_product_id = ?,
+               apple_product_id = ?,
                updated_at = ?
          WHERE plan_key = ?
-           AND (ios_iap_product_id IN ('', 'machi_verified_monthly_cny_10')
-                OR apple_product_id IN ('', 'machi_verified_monthly_cny_10')
-                OR price_label = '¥10 / 月')
+           AND price IN (0, 10, 600)
         """,
         (APPLE_IAP_PRODUCT_ID, APPLE_IAP_PRODUCT_ID, now, MEMBERSHIP_PLAN_MONTHLY_KEY),
     )
     conn.execute(
         """
         UPDATE membership_plans
-           SET price = CASE WHEN price IN (0, 98, 138) THEN 198 ELSE price END,
-               amount_cents = CASE WHEN amount_cents IN (0, 9800, 13800) THEN 19800 ELSE amount_cents END,
-               price_label = CASE WHEN price_label IN ('', '¥98 / 年', '¥138 / 年') THEN '¥198 / 年' ELSE price_label END,
-               original_price = CASE WHEN original_price IN (0, 120) THEN 216 ELSE original_price END,
-               discount_label = CASE WHEN discount_label IN ('', '约省 2 个月') THEN '约省 1 个月' ELSE discount_label END,
-               ios_iap_product_id = CASE WHEN ios_iap_product_id IN ('', 'machi_verified_yearly_cny_98') THEN ? ELSE ios_iap_product_id END,
-               apple_product_id = CASE WHEN apple_product_id IN ('', 'machi_verified_yearly_cny_98') THEN ? ELSE apple_product_id END,
+           SET price = 198,
+               amount_cents = 19800,
+               currency = 'CNY',
+               price_label = '¥198 / 365天',
+               original_price = 216,
+               discount_label = '约省 1 个月',
+               ios_iap_product_id = ?,
+               apple_product_id = ?,
                updated_at = ?
          WHERE plan_key = ?
-           AND (ios_iap_product_id IN ('', 'machi_verified_yearly_cny_98')
-                OR apple_product_id IN ('', 'machi_verified_yearly_cny_98')
-                OR price_label IN ('¥98 / 年', '¥138 / 年'))
+           AND price IN (0, 98, 138, 4800)
         """,
         (APPLE_IAP_PRODUCT_ID_YEARLY, APPLE_IAP_PRODUCT_ID_YEARLY, now, MEMBERSHIP_PLAN_YEARLY_KEY),
     )
