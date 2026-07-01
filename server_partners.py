@@ -918,6 +918,9 @@ _SANITIZE_ATTR_KEYS = {
     "management_fee", "land_area", "area_sqm", "layout", "floor", "building_type",
     "building_age", "structure", "nearest_station", "nearest_lines", "move_in_date",
     "source_url", "station_distance_minutes",
+    # 星域东京官网详情接口带来的更完整字段(见 server_stareal.map_item)。
+    "total_floors", "room_no", "property_no", "availability_status", "confirmed_at",
+    "needs_renovation", "lease_term", "down_payment", "amenities", "nearby_facilities",
 }
 
 
@@ -965,7 +968,7 @@ def sanitize_commit_rows(
             if k not in _SANITIZE_ATTR_KEYS or v in (None, ""):
                 continue
             if k in ("rent", "sale_price", "yield_rate", "deposit", "key_money",
-                     "management_fee", "land_area", "area_sqm"):
+                     "management_fee", "land_area", "area_sqm", "down_payment"):
                 num = _to_number(v)
                 if num is not None:
                     attrs[k] = num
@@ -1089,6 +1092,7 @@ def import_partner_listings(
     now: str | None = None,
     region_resolver: Optional[Callable[[str], str]] = None,
     image_resolver: Optional[Callable[[dict[str, Any]], list[dict[str, Any]]]] = None,
+    progress_callback: Optional[Callable[[int, int, dict[str, Any]], None]] = None,
 ) -> dict[str, Any]:
     """Idempotently upsert a batch of partner listings.
 
@@ -1108,11 +1112,15 @@ def import_partner_listings(
     created = 0
     updated = 0
     results: list[dict[str, Any]] = []
+    total_rows = len(mapped_rows)
 
-    for mapped in mapped_rows:
+    for idx, mapped in enumerate(mapped_rows):
         if mapped.get("errors"):
-            results.append({"row_index": mapped.get("row_index"), "status": "error",
-                            "title": mapped.get("title", ""), "errors": mapped["errors"]})
+            item = {"row_index": mapped.get("row_index"), "status": "error",
+                    "title": mapped.get("title", ""), "errors": mapped["errors"]}
+            results.append(item)
+            if progress_callback:
+                progress_callback(idx + 1, total_rows, item)
             continue
         ext_id = mapped.get("ext_id") or ""
         city_slug = mapped["city_slug"]
@@ -1130,7 +1138,7 @@ def import_partner_listings(
                 "WHERE la.key = '__partner_ext_id' AND la.value = ? LIMIT 1",
                 (key, ext_id),
             ).fetchone()
-        if not existing:
+        if not existing and not ext_id:
             existing = conn.execute(
                 "SELECT cl.id AS id FROM city_listings cl "
                 "JOIN listing_attributes lp ON lp.listing_id = cl.id AND lp.key = '__partner' AND lp.value = ? "
@@ -1236,12 +1244,15 @@ def import_partner_listings(
                  json.dumps({"source": "partner", "partner": key}, ensure_ascii=False), now, now),
             )
 
-        results.append({
+        item = {
             "row_index": mapped.get("row_index"), "status": action, "listing_id": listing_id,
             "title": title, "warnings": mapped.get("warnings", []),
             "imageCount": len([m for m in media_items if m.get("url")]),
             "machiRecommended": promoted,
-        })
+        }
+        results.append(item)
+        if progress_callback:
+            progress_callback(idx + 1, total_rows, item)
 
     # refresh the partner's denormalised listing count
     cnt = conn.execute(
@@ -1259,14 +1270,66 @@ def import_partner_listings(
     }
 
 
-def list_partner_listing_ids(conn, key: str, *, limit: int = 200) -> list[str]:
-    rows = conn.execute(
+def search_partner_listing_ids(
+    conn,
+    key: str,
+    *,
+    q: str = "",
+    limit: int | None = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    q = str(q or "").strip()
+    offset = max(0, int(offset or 0))
+    limit = None if limit is None or int(limit) <= 0 else max(1, int(limit))
+    clauses = ["la.key = '__partner'", "la.value = ?", "cl.deleted_at IS NULL"]
+    params: list[Any] = [key]
+    if q:
+        like = f"%{q}%"
+        clauses.append(
+            "("
+            "cl.id LIKE ? OR cl.title LIKE ? OR cl.description LIKE ? OR "
+            "cl.location_text LIKE ? OR cl.category LIKE ? OR "
+            "EXISTS ("
+            "  SELECT 1 FROM listing_attributes sx"
+            "  WHERE sx.listing_id = cl.id"
+            "    AND sx.key IN ('__partner_ext_id','listing_intent','nearest_station','layout','rent','sale_price')"
+            "    AND sx.value LIKE ?"
+            ")"
+            ")"
+        )
+        params.extend([like, like, like, like, like, like])
+
+    where = " AND ".join(clauses)
+    total = conn.execute(
+        "SELECT COUNT(*) AS c FROM city_listings cl "
+        "JOIN listing_attributes la ON la.listing_id = cl.id "
+        f"WHERE {where}",
+        params,
+    ).fetchone()["c"]
+
+    sql = (
         "SELECT cl.id AS id FROM city_listings cl "
-        "JOIN listing_attributes la ON la.listing_id = cl.id AND la.key = '__partner' AND la.value = ? "
-        "WHERE cl.deleted_at IS NULL ORDER BY cl.created_at DESC LIMIT ?",
-        (key, limit),
-    ).fetchall()
-    return [r["id"] for r in rows]
+        "JOIN listing_attributes la ON la.listing_id = cl.id "
+        f"WHERE {where} ORDER BY cl.created_at DESC, cl.id DESC"
+    )
+    page_params = list(params)
+    if limit is not None:
+        sql += " LIMIT ? OFFSET ?"
+        page_params.extend([limit, offset])
+    rows = conn.execute(sql, page_params).fetchall()
+    ids = [r["id"] for r in rows]
+    return {
+        "ids": ids,
+        "total": int(total or 0),
+        "limit": int(limit or 0),
+        "offset": offset,
+        "q": q,
+        "hasMore": bool(limit is not None and offset + len(ids) < int(total or 0)),
+    }
+
+
+def list_partner_listing_ids(conn, key: str, *, limit: int = 200) -> list[str]:
+    return search_partner_listing_ids(conn, key, limit=limit)["ids"]
 
 
 # ── per-listing CRUD (scoped to the partner's own listings) ──────────────────

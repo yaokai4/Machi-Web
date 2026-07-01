@@ -11,15 +11,18 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  CloudDownload,
+  CloudUpload,
   Copy,
   ExternalLink,
   KeyRound,
+  Loader2,
   Pencil,
   Plus,
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
-import { api, APIError, type Partner } from "@/lib/api";
+import { api, APIError, type AdminPartnerStarealJob, type AdminPartnerStarealSummary, type Partner } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { ConfirmDialog, Dialog } from "@/components/design/Dialog";
@@ -27,6 +30,34 @@ import { useSession, useToasts } from "@/lib/store";
 import { fullDateTime } from "@/lib/format";
 
 const DEFAULT_BADGES = "Machi推荐,星域臻选,认证房源";
+const STAREAL_PARTNER_KEYS = new Set(["xingyu-tokyo", "stareal"]);
+const STAREAL_TYPES: Array<"buy" | "rent" | "invest"> = ["buy", "rent", "invest"];
+
+function isStarealPartner(key: string): boolean {
+  return STAREAL_PARTNER_KEYS.has(key);
+}
+
+function starealSummaryText(summary: AdminPartnerStarealSummary | null): string {
+  if (!summary) return "";
+  const rent = summary.byIntent?.rent || 0;
+  const sale = summary.byIntent?.sale || 0;
+  const investment = summary.byIntent?.investment || 0;
+  return `房源 ${summary.mapped} 套 · 图片 ${summary.imageCount} 张 · 租 ${rent} / 售 ${sale} / 投资 ${investment}`;
+}
+
+function isStarealJobActive(job: AdminPartnerStarealJob | null | undefined): boolean {
+  return job?.status === "queued" || job?.status === "running";
+}
+
+function starealJobResult(job: AdminPartnerStarealJob | null | undefined) {
+  const result = job?.result || {};
+  return {
+    created: Number(result.created ?? job?.created ?? 0),
+    updated: Number(result.updated ?? job?.updated ?? 0),
+    total: Number(result.total ?? ((job?.created || 0) + (job?.updated || 0))),
+    errors: Array.isArray(result.errors) ? result.errors.length : Number(job?.errors || 0),
+  };
+}
 
 function originBase(): string {
   if (typeof window === "undefined") return "";
@@ -212,15 +243,62 @@ function CopyButton({ value, label = "复制", className }: { value: string; lab
 }
 
 function PartnerCard({ partner, onEdit, onRotate }: { partner: Partner; onEdit: () => void; onRotate: () => void }) {
+  const queryClient = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
   const [showListings, setShowListings] = useState(false);
+  const [starealSummary, setStarealSummary] = useState<AdminPartnerStarealSummary | null>(null);
   const link = partnerLink(partner.key);
   const disabled = partner.status === "disabled";
+  const canSyncStareal = isStarealPartner(partner.key);
 
   const listings = useQuery({
     queryKey: ["admin-partner-listings", partner.key],
     queryFn: () => api.adminPartnerListings(partner.key),
     enabled: showListings,
   });
+
+  const starealJobQuery = useQuery({
+    queryKey: ["admin-partner-stareal-job", partner.key],
+    queryFn: () => api.adminPartnerStarealJob(partner.key),
+    enabled: canSyncStareal,
+    refetchInterval: canSyncStareal ? 2500 : false,
+  });
+  const starealJob = starealJobQuery.data?.job || null;
+  const starealJobActive = isStarealJobActive(starealJob);
+  const jobResult = starealJobResult(starealJob);
+
+  useEffect(() => {
+    if (starealJob?.status === "succeeded") {
+      queryClient.invalidateQueries({ queryKey: ["admin-partners"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-partner-listings", partner.key] });
+    }
+  }, [partner.key, queryClient, starealJob?.status]);
+
+  const starealPreview = useMutation({
+    mutationFn: () => api.adminPartnerStarealPreview(partner.key, { types: STAREAL_TYPES, maxImages: 20, fullRes: true }),
+    onSuccess: (res) => {
+      setStarealSummary(res.summary);
+      pushToast({ kind: "success", message: `官网预览完成：${starealSummaryText(res.summary)}` });
+    },
+    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message || "官网预览失败" }),
+  });
+
+  const starealSync = useMutation({
+    mutationFn: () => api.adminPartnerStarealSync(partner.key, {
+      types: STAREAL_TYPES,
+      maxImages: 20,
+      fullRes: true,
+      rehostUrls: true,
+    }),
+    onSuccess: (res) => {
+      queryClient.invalidateQueries({ queryKey: ["admin-partner-stareal-job", partner.key] });
+      pushToast({ kind: "success", message: res.reused ? "已有同步任务正在进行，已恢复进度" : "已开始后台同步，关闭浏览器也会继续执行" });
+    },
+    onError: (e) => pushToast({ kind: "error", message: (e as APIError).message || "官网同步失败" }),
+  });
+
+  const starealBusy = starealPreview.isPending || starealSync.isPending || starealJobActive;
+  const effectiveSummary = starealSummary || (starealJob?.summary?.mapped ? starealJob.summary as AdminPartnerStarealSummary : null);
 
   return (
     <li className={clsx("kx-card", disabled && "opacity-70")}>
@@ -296,6 +374,77 @@ function PartnerCard({ partner, onEdit, onRotate }: { partner: Partner; onEdit: 
             {partner.tokenRotatedAt ? `口令更新于 ${fullDateTime(partner.tokenRotatedAt)}` : null}
             {partner.createdAt ? `${partner.tokenRotatedAt ? " · " : ""}创建于 ${fullDateTime(partner.createdAt)}` : null}
           </div>
+
+          {canSyncStareal ? (
+            <div className="mt-3 border-t border-kx-stroke/40 pt-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="text-xs font-bold text-kx-text">星域东京官网同步</div>
+                  <div className="mt-0.5 text-[11px] text-kx-muted">
+                    从 stareal.jp 拉取买房、租房、投资房源与照片；相同官网物件编号会更新原房源，不会重复发布。
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="kx-button-ghost h-8 px-3 text-xs"
+                  disabled={disabled || starealBusy}
+                  onClick={() => starealPreview.mutate()}
+                >
+                  {starealPreview.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CloudDownload className="w-3.5 h-3.5" />}
+                  预览官网房源
+                </button>
+                <button
+                  type="button"
+                  className="kx-button-primary h-8 px-3 text-xs"
+                  disabled={disabled || starealBusy}
+                  onClick={() => starealSync.mutate()}
+                >
+                  {starealSync.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <CloudUpload className="w-3.5 h-3.5" />}
+                  {starealJobActive ? "同步中" : "同步并发布"}
+                </button>
+              </div>
+              {starealJob ? (
+                <div className="mt-3 rounded-kx-md border border-kx-stroke/50 bg-kx-soft/50 p-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                    <span className="font-bold text-kx-text">{starealJob.message || "同步任务"}</span>
+                    <span className="font-mono text-kx-muted">{Math.max(0, Math.min(100, starealJob.progress || 0))}%</span>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-kx-card">
+                    <div
+                      className="h-full rounded-full bg-kx-accent transition-all"
+                      style={{ width: `${Math.max(2, Math.min(100, starealJob.progress || 0))}%` }}
+                    />
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-2 text-[11px] text-kx-muted">
+                    <span>{starealJob.status === "failed" ? "失败" : starealJob.status === "succeeded" ? "已完成" : "进行中"}</span>
+                    {starealJob.totalSteps ? <span>已处理 {starealJob.processedSteps}/{starealJob.totalSteps}</span> : null}
+                    {starealJob.imageCount ? <span>照片 {starealJob.imageCount}</span> : null}
+                    {starealJob.status === "succeeded" ? <span>新增 {jobResult.created} · 更新重复 {jobResult.updated}</span> : null}
+                    {starealJob.status === "failed" ? <span className="text-kx-danger">{starealJob.errorMessage || "同步失败"}</span> : null}
+                  </div>
+                </div>
+              ) : null}
+              {effectiveSummary ? (
+                <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+                  <span className="px-2 py-0.5 rounded-full bg-kx-soft text-kx-muted">官网 {effectiveSummary.mapped} 套</span>
+                  <span className="px-2 py-0.5 rounded-full bg-kx-soft text-kx-muted">图片 {effectiveSummary.imageCount} 张</span>
+                  <span className="px-2 py-0.5 rounded-full bg-kx-soft text-kx-muted">
+                    租 {effectiveSummary.byIntent?.rent || 0} · 售 {effectiveSummary.byIntent?.sale || 0} · 投资 {effectiveSummary.byIntent?.investment || 0}
+                  </span>
+                  {effectiveSummary.missingImageCount ? (
+                    <span className="px-2 py-0.5 rounded-full bg-kx-danger/10 text-kx-danger">
+                      缺图 {effectiveSummary.missingImageCount} 套
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+              {starealJob?.status === "succeeded" ? (
+                <div className="mt-1.5 text-[11px] text-kx-muted">
+                  上次同步：新增 {jobResult.created}，更新重复 {jobResult.updated}，处理 {jobResult.total}。
+                </div>
+              ) : null}
+            </div>
+          ) : null}
         </div>
 
         <div className="flex flex-col gap-1.5 shrink-0">

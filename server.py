@@ -187,6 +187,7 @@ import server_apns
 import server_shared_state as shared_state
 import server_lifehub as lifehub
 import server_partners as partners
+import server_stareal
 from server_serializers import (
     serialize_guide_category, serialize_guide_article_progress, serialize_guide_company_position, serialize_guide_company_review,
     serialize_guide_faq, serialize_guide_tag, serialize_guide_home_module, serialize_guide_journey,
@@ -212,6 +213,7 @@ from server_regions import (
     _region_payload_for_code,
     _resolve_region_code,
     _resolve_region_label,
+    region_code_for_city_slug,
 )
 from services.crawler import CrawlerError, CrawlerSkipped, crawl_source, normalize_allowed_domain
 
@@ -1114,6 +1116,50 @@ def bump_post_counter_for_kind(conn: sqlite3.Connection, post_id: str, kind: str
     column = _POST_COUNTER_COLUMNS.get(kind)
     if column:
         bump_post_counter(conn, post_id, column, delta)
+
+
+def retire_reposts_of_deleted_post(conn: sqlite3.Connection, post_id: str) -> None:
+    """Cascade a post deletion to its reposts.
+
+    A pure repost (empty body) is just a pointer at the original, so once the
+    original is gone it would otherwise linger in every feed rendering the
+    now-deleted content, and its reposter could no longer undo it. Soft-delete
+    those repost rows and drop the repost interactions so `reposted` state
+    clears everywhere. Quote-reposts (non-empty body) are the reposter's own
+    words — they survive, and their original preview resolves to null via
+    fetch_posts_with_extras. Call this after the original has been soft-deleted.
+    """
+    conn.execute(
+        """
+        UPDATE posts
+           SET status = 'deleted', deleted_at = ?, updated_at = ?
+         WHERE repost_of_id = ? AND COALESCE(content, '') = '' AND deleted_at IS NULL
+        """,
+        (now_iso(), now_iso(), post_id),
+    )
+    conn.execute("DELETE FROM interactions WHERE target_id = ? AND kind = 'repost'", (post_id,))
+
+
+def retire_reposts_of_deleted_posts_bulk(conn: sqlite3.Connection, where_sql: str, params: list[Any]) -> None:
+    """Bulk variant of retire_reposts_of_deleted_post for paths that remove
+    many originals at once (account scrub, seed clear). `where_sql` is a
+    predicate over a `posts` alias `o` selecting the removed originals; pure
+    reposts of any matched original are soft-deleted and their repost
+    interactions dropped. Pure SQL, so it runs on SQLite and Postgres alike."""
+    conn.execute(
+        f"""
+        UPDATE posts
+           SET status = 'deleted', deleted_at = ?, updated_at = ?
+         WHERE COALESCE(content, '') = '' AND deleted_at IS NULL
+           AND repost_of_id IN (SELECT o.id FROM posts o WHERE {where_sql})
+        """,
+        (now_iso(), now_iso(), *params),
+    )
+    conn.execute(
+        f"DELETE FROM interactions WHERE kind = 'repost' "
+        f"AND target_id IN (SELECT o.id FROM posts o WHERE {where_sql})",
+        tuple(params),
+    )
 
 
 def hash_password(password: str) -> str:
@@ -7031,7 +7077,14 @@ def fetch_posts_with_extras(conn: sqlite3.Connection, post_rows: list[dict[str, 
     originals: dict[str, dict[str, Any]] = {}
     if repost_ids:
         placeholders = ",".join("?" * len(repost_ids))
-        rows = list(conn.execute(f"SELECT * FROM posts WHERE id IN ({placeholders})", repost_ids))
+        # Only surface originals that are still live. A deleted original must
+        # never leak its content back into a repost/quote — the preview
+        # resolves to null and clients drop the pure repost / show a tombstone.
+        rows = list(conn.execute(
+            f"SELECT * FROM posts WHERE id IN ({placeholders}) "
+            f"AND deleted_at IS NULL AND status IN ('published', 'active')",
+            repost_ids,
+        ))
         og_ids = [r["id"] for r in rows]
         og_extras = hydrate_post_extras(conn, og_ids, current_user_id)
         author_ids = [r["author_id"] for r in rows]
@@ -12855,6 +12908,9 @@ def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
         "WHERE author_id = ? AND deleted_at IS NULL",
         (now, now, user_id),
     )
+    # Cascade to other users' reposts of this person's now-deleted posts so they
+    # don't linger in feeds pointing at scrubbed content.
+    retire_reposts_of_deleted_posts_bulk(conn, "o.author_id = ?", [user_id])
     conn.execute(
         "UPDATE comments SET deleted_at = ? WHERE author_id = ? AND deleted_at IS NULL",
         (now, user_id),
@@ -13926,6 +13982,10 @@ class Handler(BaseHTTPRequestHandler):
             (SEED_CLEARED_STATUS, now_iso(), now_iso(), batch_id, SEED_CLEARED_STATUS),
         )
         cleared = cur.rowcount or 0
+        # Retire any reposts of the seed posts we just cleared.
+        retire_reposts_of_deleted_posts_bulk(
+            conn, "o.is_seed_content = 1 AND o.seed_batch_id = ?", [batch_id]
+        )
         conn.execute(
             "UPDATE seed_content_batches SET status = 'cleared', cleared_count = ?, updated_at = ? WHERE id = ?",
             (cleared, now_iso(), batch_id),
@@ -13954,23 +14014,31 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("请提供城市（region_code 或 country+city）", 400, "city_required")
         seed_throttle(admin["id"])
         # ALWAYS guarded by is_seed_content = 1 — real user content is untouchable.
-        where = ["is_seed_content = 1", "region_code = ?", "status != ?"]
-        params: list[Any] = [region_code, SEED_CLEARED_STATUS]
+        # `stable_*` mirror the filter minus the volatile `status != ?` clause so
+        # the repost cascade can still match rows *after* they flip to cleared.
+        stable_where = ["is_seed_content = 1", "region_code = ?"]
+        stable_params: list[Any] = [region_code]
         if language:
             if language not in seedlib.SUPPORTED_LANGUAGES:
                 raise APIError("不支持的语言", 400, "invalid_language")
-            where.append("language = ?")
-            params.append(language)
+            stable_where.append("language = ?")
+            stable_params.append(language)
         if content_type:
             if content_type not in seedlib.SUPPORTED_CONTENT_TYPES:
                 raise APIError("不支持的内容类型", 400, "invalid_content_type")
-            where.append("content_type = ?")
-            params.append(seedlib.APP_CONTENT_TYPE[content_type])
+            stable_where.append("content_type = ?")
+            stable_params.append(seedlib.APP_CONTENT_TYPE[content_type])
+        where = [*stable_where, "status != ?"]
+        params: list[Any] = [*stable_params, SEED_CLEARED_STATUS]
         cur = conn.execute(
             f"UPDATE posts SET status = ?, deleted_at = ?, updated_at = ? WHERE {' AND '.join(where)}",
             [SEED_CLEARED_STATUS, now_iso(), now_iso(), *params],
         )
         cleared = cur.rowcount or 0
+        # Retire reposts of the seed posts in this scope. Uses the stable filter
+        # (bare column names resolve against the `o` alias) so it matches the
+        # rows we just cleared even though their status has changed.
+        retire_reposts_of_deleted_posts_bulk(conn, " AND ".join(stable_where), list(stable_params))
         conn.execute(
             "UPDATE seed_content_batches SET status = 'cleared', updated_at = ? "
             "WHERE region_code = ? AND status != 'cleared'",
@@ -22488,6 +22556,12 @@ class Handler(BaseHTTPRequestHandler):
                     return self.api_partner_import_parse(conn, pkey)
                 if sub == "import/commit" and method == "POST":
                     return self.api_partner_import_commit(conn, pkey)
+                if sub == "stareal/preview" and method == "POST":
+                    return self.api_partner_stareal_preview(conn, pkey)
+                if sub == "stareal/sync" and method == "POST":
+                    return self.api_partner_stareal_sync(conn, pkey)
+                if sub == "stareal/job" and method == "GET":
+                    return self.api_partner_stareal_job(conn, pkey)
                 if sub == "listings" and method == "GET":
                     return self.api_partner_listings(conn, pkey, query)
                 if sub == "listings" and method == "POST":
@@ -22515,6 +22589,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self.api_admin_partner_rotate(conn, akey)
                 if action == "listings" and method == "GET":
                     return self.api_admin_partner_listings(conn, akey, query)
+                if action == "stareal" and len(rest) > 2:
+                    sub_action = rest[2]
+                    if sub_action == "preview" and method == "POST":
+                        return self.api_admin_partner_stareal_preview(conn, akey)
+                    if sub_action == "sync" and method == "POST":
+                        return self.api_admin_partner_stareal_sync(conn, akey)
+                    if sub_action == "job" and method == "GET":
+                        return self.api_admin_partner_stareal_job(conn, akey)
 
         # Machi Points wallet
         if path == "/api/wallet/me" and method == "GET":
@@ -26109,19 +26191,32 @@ class Handler(BaseHTTPRequestHandler):
             if item.strip()
         ][:32]
         country_code = (query.get("country") or query.get("country_code") or "").strip().lower()
+        # 都道府县(省/州)级过滤:传 province_codes=tokyo,chiba 即按整个都道府县匹配
+        # (region_code LIKE 'jp.tokyo.%')。比让客户端枚举城市更稳——客户端城市表
+        # 不全,而 region_code 前缀能覆盖该县全部城市。国家取 country_code,默认 jp。
+        province_codes = [
+            item.strip().lower()
+            for item in re.split(r"[,，\s]+", str(query.get("province_codes") or query.get("provinces") or ""))
+            if item.strip()
+        ][:32]
         # 都市圈聚合:单个城市/region 默认扩展为整个生活圈(关东圈/关西圈…)的城市集合。
-        # 显式传 city_slugs/region_codes 或 exact=1 时不扩展。
+        # 显式传 province_codes/city_slugs/region_codes 或 exact=1 时不扩展。
         exact_city = (query.get("exact") or "").strip() in {"1", "true", "yes"}
-        if not exact_city and not city_slugs and region_code:
+        if not exact_city and not province_codes and not city_slugs and region_code:
             expanded = metro_circle_region_codes(region_code)
             if len(expanded) > 1:
                 region_codes = expanded
                 region_code = ""
-        if not exact_city and not city_slugs and not region_codes and city_slug:
+        if not exact_city and not province_codes and not city_slugs and not region_codes and city_slug:
             circle = metro_circle_city_slugs_for_city(country_code or "jp", city_slug)
             if len(circle) > 1:
                 city_slugs = circle
-        if city_slugs:
+        if province_codes:
+            prefix_country = country_code or "jp"
+            like_clauses = " OR ".join(["region_code LIKE ?"] * len(province_codes))
+            clauses.append("(%s)" % like_clauses)
+            params.extend(f"{prefix_country}.{prov}.%" for prov in province_codes)
+        elif city_slugs:
             clauses.append("city_slug IN (%s)" % ",".join("?" * len(city_slugs)))
             params.extend(city_slugs)
         elif city_slug:
@@ -26304,6 +26399,7 @@ class Handler(BaseHTTPRequestHandler):
                     "city_slugs": city_slugs,
                     "region_code": region_code,
                     "region_codes": region_codes,
+                    "province_codes": province_codes,
                     "country_code": country_code,
                     "category": category,
                     "sort": sort,
@@ -30240,7 +30336,9 @@ class Handler(BaseHTTPRequestHandler):
             """,
             (now_iso(), now_iso(), post_id, user["id"]),
         )
+        retire_reposts_of_deleted_post(conn, post_id)
         invalidate_public_ranking_caches()
+        _cache_invalidate("feed:")
         self.send_json({"ok": True})
 
     def api_post_interaction(self, conn: sqlite3.Connection, post_id: str, kind: str, on: bool) -> None:
@@ -30358,8 +30456,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_repost(self, conn: sqlite3.Connection, post_id: str, on: bool) -> None:
         user = self.require_user(conn)
-        post = conn.execute("SELECT * FROM posts WHERE id = ? AND deleted_at IS NULL", (post_id,)).fetchone()
+        # Soft-deleted rows still exist, so look up without the deleted filter:
+        # you can only repost a *live* post, but undoing a repost must keep
+        # working even after the original was deleted (otherwise a lingering
+        # repost can never be cleared).
+        post = conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone()
         if not post:
+            raise APIError("帖子不存在", 404, "post_not_found")
+        if on and (post["deleted_at"] or post["status"] not in ("published", "active")):
             raise APIError("帖子不存在", 404, "post_not_found")
         changed = False
         if on:
@@ -33120,7 +33224,7 @@ class Handler(BaseHTTPRequestHandler):
             return filename, mime, body
         raise APIError("no file part", 400, "invalid_payload")
 
-    def _partner_persist_image_bytes(self, conn, partner, raw, declared_mime, filename=""):
+    def _partner_persist_image_bytes(self, conn, partner, raw, declared_mime, filename="", source_url=""):
         if not raw:
             raise APIError("空图片", 400, "invalid_payload")
         if len(raw) > self._PARTNER_IMG_MAX:
@@ -33137,23 +33241,61 @@ class Handler(BaseHTTPRequestHandler):
         ext = EXT_BY_MIME.get(mime, ".jpg")
         media_id = "file_" + uuid.uuid4().hex
         object_key = f"partners/{partner['partner_key']}/listings/{media_id}{ext}"
-        target = local_upload_path(object_key)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(raw)
-        url = upload_public_url(object_key)
-        thumb = upload_thumbnail_url(object_key, mime) or url
+        s3_backed = s3_ready_for_upload()
+        if PRODUCTION and not s3_backed:
+            raise APIError("生产环境对象存储暂不可用", 503, "s3_unavailable")
+        if s3_backed:
+            try:
+                _s3_client().put_object(
+                    Bucket=AWS_S3_BUCKET,
+                    Key=object_key,
+                    Body=raw,
+                    ContentType=mime,
+                    CacheControl="public, max-age=31536000, immutable",
+                    Metadata={"machi-source": "partner-import", "partner": str(partner["partner_key"])},
+                )
+                head = _s3_head_object(object_key)
+                if int(head.get("ContentLength") or -1) != len(raw):
+                    _s3_delete_object(object_key)
+                    raise APIError("图片上传校验失败", 502, "partner_image_upload_verify_failed")
+            except APIError:
+                raise
+            except (BotoCoreError, ClientError, OSError) as exc:
+                raise APIError("图片存储失败", 502, "partner_image_store_failed") from exc
+            url = upload_public_url(object_key)
+        else:
+            target = local_upload_path(object_key)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+            url = f"/media/{object_key}"
+        thumb = upload_thumbnail_url(object_key, mime) if s3_backed else url
+        thumb = thumb or url
         owner = partner.get("seller_user_id") or ""
         now = now_iso()
-        metadata = {"source": "partner_import", "partner": partner["partner_key"], "thumbnail_url": thumb}
+        bucket = AWS_S3_BUCKET if s3_backed else "local-dev"
+        # 来源 URL 派生一个确定性 upload_id(UNIQUE 索引),这样每天自动同步时
+        # 已转存过的同一张图能被 _partner_hosted_by_source 命中复用,不重复下载。
+        if source_url:
+            upload_id = "partnersrc_" + hashlib.sha256(
+                f"{partner['partner_key']}|{source_url}".encode("utf-8")).hexdigest()
+        else:
+            upload_id = "partner_" + uuid.uuid4().hex
+        metadata = {
+            "source": "partner_import_s3" if s3_backed else "partner_import_local",
+            "partner": partner["partner_key"],
+            "source_url": source_url,
+            "thumbnail_url": thumb,
+            "variants": {"original": url, "large": url, "medium": url, "thumbnail": thumb},
+        }
         conn.execute(
             """
             INSERT INTO uploaded_files (
                 id, upload_id, user_id, bucket, object_key, public_url, cdn_url, content_type,
                 file_size, file_type, purpose, entity_type, entity_id, status, checksum, etag,
                 metadata, created_at, updated_at)
-            VALUES (?, ?, ?, 'local-dev', ?, ?, ?, ?, ?, ?, 'rental_image', 'listing', '', 'ready', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'rental_image', 'listing', '', 'ready', ?, ?, ?, ?, ?)
             """,
-            (media_id, "partner_" + uuid.uuid4().hex, owner, object_key, url, url, mime, len(raw),
+            (media_id, upload_id, owner, bucket, object_key, url, url, mime, len(raw),
              upload_file_type(mime), sha, hashlib.md5(raw).hexdigest(),
              json.dumps(metadata, ensure_ascii=False, sort_keys=True), now, now),
         )
@@ -33164,7 +33306,35 @@ class Handler(BaseHTTPRequestHandler):
         record_upload_audit(conn, owner, "partner_upload", file_id=media_id, status="ready", metadata={"bytes": len(raw), "mime": mime})
         return {"url": url, "thumbnail_url": thumb, "media_id": media_id, "filename": filename}
 
+    def _partner_hosted_by_source(self, conn, partner, source_url):
+        """已按来源 URL 转存过的图片直接复用,避免每日同步重复下载(6GB/晚)。"""
+        if not source_url:
+            return None
+        upload_id = "partnersrc_" + hashlib.sha256(
+            f"{partner['partner_key']}|{source_url}".encode("utf-8")).hexdigest()
+        row = conn.execute(
+            "SELECT public_url, cdn_url, metadata FROM uploaded_files WHERE upload_id = ? AND status = 'ready'",
+            (upload_id,),
+        ).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        url = d.get("cdn_url") or d.get("public_url") or ""
+        if not url:
+            return None
+        thumb = url
+        try:
+            meta = json.loads(d.get("metadata") or "{}")
+            thumb = meta.get("thumbnail_url") or url
+        except Exception:
+            pass
+        return {"url": url, "thumbnail_url": thumb}
+
     def _partner_rehost_url(self, conn, partner, url):
+        # 先看有没有转存过同一来源 URL 的图片,命中就复用(不重复下载)。
+        cached = self._partner_hosted_by_source(conn, partner, url)
+        if cached:
+            return cached
         try:
             from urllib.request import Request, urlopen
             req = Request(url, headers={"User-Agent": "MachiPartnerImport/1.0"})
@@ -33173,7 +33343,12 @@ class Handler(BaseHTTPRequestHandler):
                 data = resp.read(self._PARTNER_IMG_MAX + 1)
             if len(data) > self._PARTNER_IMG_MAX:
                 return None
-            return self._partner_persist_image_bytes(conn, partner, data, rmime)
+            return self._partner_persist_image_bytes(conn, partner, data, rmime, source_url=url)
+        except APIError as exc:
+            if exc.code in {"s3_unavailable", "partner_image_store_failed", "partner_image_upload_verify_failed"}:
+                raise
+            ERR_LOG.warning("partner image rehost failed url=%s code=%s", str(url)[:120], exc.code)
+            return None
         except Exception:
             ERR_LOG.warning("partner image rehost failed url=%s", str(url)[:120])
             return None
@@ -33189,20 +33364,51 @@ class Handler(BaseHTTPRequestHandler):
                     items.append({"url": u, "thumbnail_url": u})
                 elif u.startswith("http"):
                     got = self._partner_rehost_url(conn, partner, u)
-                    items.append(got or {"url": u, "thumbnail_url": u})
+                    if got:
+                        items.append(got)
             return items
         return resolve
 
-    def _partner_listings_payload(self, conn, key, limit):
-        ids = partners.list_partner_listing_ids(conn, key, limit=limit)
+    def _parse_partner_listing_query(self, query: dict[str, str], default_limit: int) -> dict[str, Any]:
+        raw_limit = str(query.get("limit") or default_limit).strip().lower()
+        if raw_limit in {"all", "unlimited", "none", "0", "-1"}:
+            limit: int | None = None
+        else:
+            try:
+                limit = max(1, min(int(raw_limit), 500))
+            except Exception:
+                limit = default_limit
+        try:
+            offset = max(0, int(query.get("offset") or 0))
+        except Exception:
+            offset = 0
+        return {"q": str(query.get("q") or "").strip()[:120], "limit": limit, "offset": offset}
+
+    def _partner_listings_page(self, conn, key, query: dict[str, str], *, default_limit: int):
+        opts = self._parse_partner_listing_query(query, default_limit)
+        page = partners.search_partner_listing_ids(conn, key, q=opts["q"], limit=opts["limit"], offset=opts["offset"])
+        ids = page["ids"]
+        listings = []
         if not ids:
-            return []
-        placeholders = ",".join("?" * len(ids))
-        rows = [dict(r) for r in conn.execute(
-            f"SELECT * FROM city_listings WHERE id IN ({placeholders}) AND deleted_at IS NULL", ids)]
-        order = {lid: i for i, lid in enumerate(ids)}
-        rows.sort(key=lambda r: order.get(r["id"], 10 ** 9))
-        return fetch_listings_with_extras(conn, rows, None)
+            listings = []
+        else:
+            placeholders = ",".join("?" * len(ids))
+            rows = [dict(r) for r in conn.execute(
+                f"SELECT * FROM city_listings WHERE id IN ({placeholders}) AND deleted_at IS NULL", ids)]
+            order = {lid: i for i, lid in enumerate(ids)}
+            rows.sort(key=lambda r: order.get(r["id"], 10 ** 9))
+            listings = fetch_listings_with_extras(conn, rows, None)
+        return {
+            "listings": listings,
+            "total": page["total"],
+            "limit": page["limit"],
+            "offset": page["offset"],
+            "q": page["q"],
+            "hasMore": page["hasMore"],
+        }
+
+    def _partner_listings_payload(self, conn, key, limit):
+        return self._partner_listings_page(conn, key, {"limit": str(limit)}, default_limit=limit)["listings"]
 
     # ---- partner-facing endpoints ----
     def api_partner_branding(self, conn: sqlite3.Connection, key: str) -> None:
@@ -33311,14 +33517,451 @@ class Handler(BaseHTTPRequestHandler):
         dflt = partners.default_contact(conn, key)
         mapped = partners.sanitize_commit_rows(rows, partner, contacts_by_id=by_id, default_contact_row=dflt)
         resolver = self._partner_image_resolver(conn, partner, rehost)
-        result = partners.import_partner_listings(conn, partner, mapped, now=now_iso(), image_resolver=resolver)
+        result = partners.import_partner_listings(
+            conn, partner, mapped, now=now_iso(), image_resolver=resolver,
+            region_resolver=lambda cs: region_code_for_city_slug(partner.get("default_country_code") or "jp", cs),
+        )
         invalidate_public_ranking_caches()
         ACCESS_LOG.info("partner import key=%s created=%s updated=%s", key, result["created"], result["updated"])
         self.send_json({"ok": True, "result": result})
 
+    def _partner_stareal_options(self, body: dict[str, Any]) -> dict[str, Any]:
+        allowed = set(server_stareal.ALL_HOUSE_TYPES)
+        raw_types = body.get("types") or body.get("houseTypes") or list(server_stareal.ALL_HOUSE_TYPES)
+        if isinstance(raw_types, str):
+            raw_types = [x.strip() for x in raw_types.split(",")]
+        if not isinstance(raw_types, list):
+            raw_types = list(server_stareal.ALL_HOUSE_TYPES)
+        house_types: list[str] = []
+        for item in raw_types:
+            t = str(item or "").strip().lower()
+            if t == "all":
+                house_types = list(server_stareal.ALL_HOUSE_TYPES)
+                break
+            if t in allowed and t not in house_types:
+                house_types.append(t)
+        if not house_types:
+            raise APIError("请选择要同步的房源范围", 400, "invalid_stareal_types")
+        try:
+            max_images = int(body.get("maxImages") or body.get("max_images") or partners.MAX_IMAGES_PER_LISTING)
+        except Exception:
+            max_images = partners.MAX_IMAGES_PER_LISTING
+        max_images = max(1, min(max_images, partners.MAX_IMAGES_PER_LISTING))
+
+        def bool_option(name: str, default: bool) -> bool:
+            if name not in body:
+                return default
+            value = body.get(name)
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() not in {"0", "false", "no", "off", "否"}
+
+        try:
+            crawl_sleep = float(body.get("crawlSleep") or body.get("sleep") or 0.35)
+        except Exception:
+            crawl_sleep = 0.35
+        crawl_sleep = max(0.0, min(crawl_sleep, 2.0))
+        return {
+            "house_types": house_types,
+            "max_images": max_images,
+            "full_res": bool_option("fullRes", True),
+            "rehost_urls": bool_option("rehostUrls", True),
+            "crawl_sleep": crawl_sleep,
+        }
+
+    def _json_cell(self, value: Any, fallback: Any) -> Any:
+        if value in (None, ""):
+            return fallback
+        if isinstance(value, (dict, list)):
+            return value
+        try:
+            parsed = json.loads(str(value))
+        except Exception:
+            return fallback
+        return parsed if isinstance(parsed, type(fallback)) else fallback
+
+    def _partner_sync_job_payload(self, row: Any | None) -> dict[str, Any] | None:
+        if not row:
+            return None
+        d = dict(row)
+        summary = self._json_cell(d.get("summary_json"), {})
+        result = self._json_cell(d.get("result_json"), {})
+        warnings = self._json_cell(d.get("warnings_json"), [])
+        options = self._json_cell(d.get("options_json"), {})
+        return {
+            "id": d.get("id") or "",
+            "partnerKey": d.get("partner_key") or "",
+            "source": d.get("source") or "",
+            "status": d.get("status") or "",
+            "stage": d.get("stage") or "",
+            "message": d.get("message") or "",
+            "progress": int(d.get("progress") or 0),
+            "totalSteps": int(d.get("total_steps") or 0),
+            "processedSteps": int(d.get("processed_steps") or 0),
+            "fetched": int(d.get("fetched_count") or 0),
+            "mapped": int(d.get("mapped_count") or 0),
+            "imageCount": int(d.get("image_count") or 0),
+            "missingImageCount": int(d.get("missing_image_count") or 0),
+            "created": int(d.get("created_count") or 0),
+            "updated": int(d.get("updated_count") or 0),
+            "errors": int(d.get("error_count") or 0),
+            "errorCode": d.get("error_code") or "",
+            "errorMessage": d.get("error_message") or "",
+            "options": options,
+            "summary": summary,
+            "result": result,
+            "warnings": warnings,
+            "startedAt": d.get("started_at") or "",
+            "finishedAt": d.get("finished_at") or "",
+            "createdAt": d.get("created_at") or "",
+            "updatedAt": d.get("updated_at") or "",
+        }
+
+    def _partner_latest_sync_job(self, conn: sqlite3.Connection, key: str, *, running_only: bool = False) -> Any | None:
+        if running_only:
+            return conn.execute(
+                "SELECT * FROM partner_sync_jobs WHERE partner_key = ? AND source = 'stareal' "
+                "AND status IN ('queued','running') ORDER BY created_at DESC LIMIT 1",
+                (key,),
+            ).fetchone()
+        return conn.execute(
+            "SELECT * FROM partner_sync_jobs WHERE partner_key = ? AND source = 'stareal' "
+            "ORDER BY created_at DESC LIMIT 1",
+            (key,),
+        ).fetchone()
+
+    def _partner_sync_job_update(self, job_id: str, **fields: Any) -> None:
+        if not fields:
+            return
+        fields["updated_at"] = now_iso()
+        if "progress" in fields:
+            fields["progress"] = max(0, min(100, int(fields.get("progress") or 0)))
+        allowed = {
+            "status", "stage", "message", "progress", "total_steps", "processed_steps",
+            "fetched_count", "mapped_count", "image_count", "missing_image_count",
+            "created_count", "updated_count", "error_count", "summary_json", "result_json",
+            "warnings_json", "error_code", "error_message", "started_at", "finished_at",
+            "updated_at",
+        }
+        clean = {k: v for k, v in fields.items() if k in allowed}
+        if not clean:
+            return
+        assignments = ", ".join(f"{k} = ?" for k in clean)
+        with DB_LOCK, db() as jconn:
+            jconn.execute(
+                f"UPDATE partner_sync_jobs SET {assignments} WHERE id = ?",
+                [*clean.values(), job_id],
+            )
+
+    def _start_partner_stareal_sync_job(
+        self,
+        conn: sqlite3.Connection,
+        partner: dict[str, Any],
+        options: dict[str, Any],
+        *,
+        created_by_user_id: str = "",
+        created_by_role: str = "",
+    ) -> tuple[dict[str, Any], bool]:
+        key = str(partner.get("partner_key") or "")
+        existing = self._partner_latest_sync_job(conn, key, running_only=True)
+        if existing:
+            return self._partner_sync_job_payload(existing) or {}, False
+        job_id = "psync_" + uuid.uuid4().hex
+        now = now_iso()
+        conn.execute(
+            """
+            INSERT INTO partner_sync_jobs (
+                id, partner_key, source, status, stage, message, progress, options_json,
+                created_by_user_id, created_by_role, created_at, updated_at
+            )
+            VALUES (?, ?, 'stareal', 'queued', 'queued', '等待开始同步', 1, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id, key, json.dumps(options, ensure_ascii=False, sort_keys=True),
+                created_by_user_id or "", created_by_role or "", now, now,
+            ),
+        )
+        try:
+            conn.commit()
+        except Exception:
+            pass
+        row = conn.execute("SELECT * FROM partner_sync_jobs WHERE id = ?", (job_id,)).fetchone()
+        thread = threading.Thread(
+            target=self._run_partner_stareal_sync_job,
+            args=(job_id,),
+            daemon=True,
+            name=f"stareal-sync-{key[:20]}",
+        )
+        thread.start()
+        return self._partner_sync_job_payload(row) or {"id": job_id, "status": "queued", "progress": 1}, True
+
+    def _run_partner_stareal_sync_job(self, job_id: str) -> None:
+        stats = {"created": 0, "updated": 0, "errors": 0}
+        try:
+            self._partner_sync_job_update(
+                job_id,
+                status="running",
+                stage="fetching",
+                message="正在获取星域东京官网房源",
+                progress=5,
+                started_at=now_iso(),
+            )
+            with db() as rconn:
+                job = rconn.execute("SELECT * FROM partner_sync_jobs WHERE id = ?", (job_id,)).fetchone()
+                if not job:
+                    return
+                options = self._json_cell(job["options_json"], {})
+                partner = partners.get_partner(rconn, job["partner_key"])
+                if not partner:
+                    raise APIError("合作商不存在", 404, "partner_not_found")
+                partner = self._ensure_stareal_partner(partner)
+                # 后台同步:开启详情抓取,把官网上每套房源的完整字段(经纬度/築年/
+                # 階数/物件番号/设备设施等)一并拉全。
+                payload = self._partner_stareal_rows(rconn, partner, options, with_detail=True)
+
+            summary = payload["summary"]
+            self._partner_sync_job_update(
+                job_id,
+                stage="importing",
+                message="官网数据已获取，正在导入房源和照片",
+                progress=40,
+                total_steps=max(1, len(payload["rows"])),
+                fetched_count=int(summary.get("fetched") or 0),
+                mapped_count=int(summary.get("mapped") or 0),
+                image_count=int(summary.get("imageCount") or 0),
+                missing_image_count=int(summary.get("missingImageCount") or 0),
+                summary_json=json.dumps(summary, ensure_ascii=False, sort_keys=True),
+                warnings_json=json.dumps(payload["warnings"], ensure_ascii=False),
+            )
+
+            def on_progress(done: int, total: int, item: dict[str, Any]) -> None:
+                status = item.get("status")
+                if status == "created":
+                    stats["created"] += 1
+                elif status == "updated":
+                    stats["updated"] += 1
+                elif status == "error":
+                    stats["errors"] += 1
+                pct = 40 + int((max(0, done) / max(1, total)) * 55)
+                self._partner_sync_job_update(
+                    job_id,
+                    progress=pct,
+                    processed_steps=done,
+                    total_steps=total,
+                    created_count=stats["created"],
+                    updated_count=stats["updated"],
+                    error_count=stats["errors"],
+                    message=f"正在导入 {done}/{total} 套房源",
+                )
+
+            with DB_LOCK, db() as wconn:
+                partner = partners.get_partner(wconn, str(summary.get("partnerKey") or "") or job["partner_key"])
+                if not partner:
+                    partner = partners.get_partner(wconn, job["partner_key"])
+                if not partner:
+                    raise APIError("合作商不存在", 404, "partner_not_found")
+                resolver = self._partner_image_resolver(wconn, partner, bool(options.get("rehost_urls", True)))
+                result = partners.import_partner_listings(
+                    wconn,
+                    partner,
+                    payload["rows"],
+                    now=now_iso(),
+                    image_resolver=resolver,
+                    region_resolver=lambda cs: region_code_for_city_slug(partner.get("default_country_code") or "jp", cs),
+                    progress_callback=on_progress,
+                )
+                invalidate_public_ranking_caches()
+
+            self._partner_sync_job_update(
+                job_id,
+                status="succeeded",
+                stage="done",
+                message="同步完成",
+                progress=100,
+                processed_steps=max(1, len(payload["rows"])),
+                total_steps=max(1, len(payload["rows"])),
+                created_count=int(result.get("created") or 0),
+                updated_count=int(result.get("updated") or 0),
+                error_count=len(result.get("errors") or []),
+                result_json=json.dumps(result, ensure_ascii=False, sort_keys=True),
+                finished_at=now_iso(),
+            )
+            ACCESS_LOG.info(
+                "partner stareal job done id=%s created=%s updated=%s",
+                job_id, result.get("created"), result.get("updated"),
+            )
+        except Exception as exc:
+            code = getattr(exc, "code", "stareal_sync_failed")
+            message = str(exc) or "同步失败"
+            ERR_LOG.exception("partner stareal job failed id=%s", job_id)
+            self._partner_sync_job_update(
+                job_id,
+                status="failed",
+                stage="failed",
+                message=message[:500],
+                error_code=code,
+                error_message=message[:1000],
+                finished_at=now_iso(),
+            )
+
+    def _require_stareal_partner(self, conn: sqlite3.Connection, key: str) -> dict[str, Any]:
+        partner = self.require_partner(conn, key)
+        return self._ensure_stareal_partner(partner)
+
+    def _require_admin_stareal_partner(self, conn: sqlite3.Connection, key: str) -> dict[str, Any]:
+        self.require_admin(conn)
+        partner = partners.get_partner(conn, key)
+        if not partner:
+            raise APIError("不存在", 404, "not_found")
+        return self._ensure_stareal_partner(partner)
+
+    def _ensure_stareal_partner(self, partner: dict[str, Any]) -> dict[str, Any]:
+        key = str(partner.get("partner_key") or "").strip().lower()
+        if key not in server_stareal.AUTHORIZED_PARTNER_KEYS:
+            raise APIError("该同步器仅限星域东京后台使用", 403, "stareal_partner_required")
+        return partner
+
+    def _compact_partner_row_contact(self, row: dict[str, Any]) -> None:
+        c = row.get("contact") or None
+        row["contact"] = (
+            {"id": c.get("id", ""), "name": c.get("name", ""), "phone": c.get("phone", "")}
+            if isinstance(c, dict)
+            else None
+        )
+
+    def _partner_stareal_rows(self, conn: sqlite3.Connection, partner: dict[str, Any], options: dict[str, Any],
+                              *, with_detail: bool = False) -> dict[str, Any]:
+        try:
+            raw_items = server_stareal.fetch_all_items(
+                options["house_types"],
+                sleep=options["crawl_sleep"],
+                timeout=30.0,
+                with_detail=with_detail,
+            )
+        except Exception as exc:
+            raise APIError(f"星域东京官网获取失败:{exc}", 502, "stareal_fetch_failed")
+        rows = server_stareal.map_all(
+            raw_items,
+            full_res=options["full_res"],
+            default_city=partner.get("default_city_slug") or "tokyo",
+            max_images=options["max_images"],
+        )
+        for idx, row in enumerate(rows):
+            row["row_index"] = idx
+        contacts = partners.list_partner_contacts(conn, partner["partner_key"])
+        by_id = {c["id"]: c for c in contacts}
+        dflt = partners.default_contact(conn, partner["partner_key"])
+        mapped = partners.sanitize_commit_rows(rows, partner, contacts_by_id=by_id, default_contact_row=dflt)
+        by_type: dict[str, int] = {}
+        for entry in raw_items:
+            t = str(entry.get("house_type") or "")
+            by_type[t] = by_type.get(t, 0) + 1
+        by_intent: dict[str, int] = {}
+        image_count = 0
+        missing_images = 0
+        for row in mapped:
+            intent = str(row.get("listing_intent") or "")
+            by_intent[intent] = by_intent.get(intent, 0) + 1
+            imgs = row.get("image_urls") or []
+            image_count += len(imgs)
+            if not imgs:
+                missing_images += 1
+        warnings = []
+        if not dflt:
+            warnings.append("未设置默认预约联系人,同步房源将不显示预约联系人")
+        summary = {
+            "source": "stareal.jp",
+            "partnerKey": partner.get("partner_key") or "",
+            "fetched": len(raw_items),
+            "mapped": len(mapped),
+            "imageCount": image_count,
+            "missingImageCount": missing_images,
+            "byType": by_type,
+            "byIntent": by_intent,
+            "maxImages": options["max_images"],
+            "fullRes": options["full_res"],
+        }
+        return {"rows": mapped, "summary": summary, "warnings": warnings}
+
+    def _partner_preview_rows(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        out = []
+        for row in rows:
+            item = dict(row)
+            self._compact_partner_row_contact(item)
+            out.append(item)
+        return out
+
+    def api_partner_stareal_preview(self, conn: sqlite3.Connection, key: str) -> None:
+        partner = self._require_stareal_partner(conn, key)
+        options = self._partner_stareal_options(self.read_json())
+        payload = self._partner_stareal_rows(conn, partner, options)
+        ACCESS_LOG.info(
+            "partner stareal preview key=%s rows=%s images=%s",
+            key, payload["summary"]["mapped"], payload["summary"]["imageCount"],
+        )
+        self.send_json({
+            "rows": self._partner_preview_rows(payload["rows"]),
+            "warnings": payload["warnings"],
+            "rowCount": payload["summary"]["mapped"],
+            "summary": payload["summary"],
+        })
+
+    def api_partner_stareal_sync(self, conn: sqlite3.Connection, key: str) -> None:
+        partner = self._require_stareal_partner(conn, key)
+        options = self._partner_stareal_options(self.read_json())
+        job, created = self._start_partner_stareal_sync_job(
+            conn,
+            partner,
+            options,
+            created_by_user_id=partner.get("seller_user_id") or "",
+            created_by_role="partner",
+        )
+        self.send_json({"ok": True, "job": job, "reused": not created}, 202 if created else 200)
+
+    def api_partner_stareal_job(self, conn: sqlite3.Connection, key: str) -> None:
+        partner = self._require_stareal_partner(conn, key)
+        row = self._partner_latest_sync_job(conn, partner["partner_key"])
+        self.send_json({"job": self._partner_sync_job_payload(row)})
+
+    def api_admin_partner_stareal_preview(self, conn: sqlite3.Connection, key: str) -> None:
+        partner = self._require_admin_stareal_partner(conn, key)
+        options = self._partner_stareal_options(self.read_json())
+        payload = self._partner_stareal_rows(conn, partner, options)
+        ACCESS_LOG.info(
+            "admin partner stareal preview key=%s rows=%s images=%s",
+            key, payload["summary"]["mapped"], payload["summary"]["imageCount"],
+        )
+        self.send_json({
+            "rows": self._partner_preview_rows(payload["rows"]),
+            "warnings": payload["warnings"],
+            "rowCount": payload["summary"]["mapped"],
+            "summary": payload["summary"],
+        })
+
+    def api_admin_partner_stareal_sync(self, conn: sqlite3.Connection, key: str) -> None:
+        admin = self.require_admin(conn)
+        partner = partners.get_partner(conn, key)
+        if not partner:
+            raise APIError("不存在", 404, "not_found")
+        partner = self._ensure_stareal_partner(partner)
+        options = self._partner_stareal_options(self.read_json())
+        job, created = self._start_partner_stareal_sync_job(
+            conn,
+            partner,
+            options,
+            created_by_user_id=admin.get("id") or "",
+            created_by_role="admin",
+        )
+        self.send_json({"ok": True, "job": job, "reused": not created}, 202 if created else 200)
+
+    def api_admin_partner_stareal_job(self, conn: sqlite3.Connection, key: str) -> None:
+        partner = self._require_admin_stareal_partner(conn, key)
+        row = self._partner_latest_sync_job(conn, partner["partner_key"])
+        self.send_json({"job": self._partner_sync_job_payload(row)})
+
     def api_partner_listings(self, conn: sqlite3.Connection, key: str, query: dict[str, str]) -> None:
         self.require_partner(conn, key)
-        self.send_json({"listings": self._partner_listings_payload(conn, key, 200)})
+        self.send_json(self._partner_listings_page(conn, key, query, default_limit=60))
 
     def _serialize_one_listing(self, conn, listing_id):
         row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
@@ -33352,7 +33995,10 @@ class Handler(BaseHTTPRequestHandler):
         _row, mapped = self._partner_single_mapped(conn, key, partner, body)
         rehost = bool((body.get("options") or {}).get("rehostUrls", True))
         resolver = self._partner_image_resolver(conn, partner, rehost)
-        result = partners.import_partner_listings(conn, partner, [mapped], now=now_iso(), image_resolver=resolver)
+        result = partners.import_partner_listings(
+            conn, partner, [mapped], now=now_iso(), image_resolver=resolver,
+            region_resolver=lambda cs: region_code_for_city_slug(partner.get("default_country_code") or "jp", cs),
+        )
         invalidate_public_ranking_caches()
         lid = (result["results"][0]["listing_id"] if result.get("results") else "")
         self.send_json({"ok": True, "listing": self._serialize_one_listing(conn, lid) if lid else None, "result": result}, 201)
@@ -33429,7 +34075,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_admin_partner_listings(self, conn: sqlite3.Connection, key: str, query: dict[str, str]) -> None:
         self.require_admin(conn)
-        self.send_json({"listings": self._partner_listings_payload(conn, key, 300)})
+        self.send_json(self._partner_listings_page(conn, key, query, default_limit=300))
 
     def api_admin_media(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
@@ -34525,6 +35171,9 @@ class Handler(BaseHTTPRequestHandler):
             values = [v for _, v in updates] + [now_iso(), post_id]
             conn.execute(f"UPDATE posts SET {sets} WHERE id = ?", values)
             if any(f == "status" and v in {"hidden", "deleted"} for f, v in updates) and row["status"] not in {"hidden", "deleted"}:
+                # The original just left public view — retire its reposts so
+                # they don't keep rendering the removed content in feeds.
+                retire_reposts_of_deleted_post(conn, post_id)
                 reputation_apply_event(
                     conn,
                     row["author_id"],
@@ -34537,6 +35186,7 @@ class Handler(BaseHTTPRequestHandler):
                     reviewed=True,
                 )
             invalidate_public_ranking_caches()
+            _cache_invalidate("feed:")
             ACCESS_LOG.info("admin %s updated post %s fields=%s", admin["handle"], post_id, [f for f, _ in updates])
         fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
         post = fetch_posts_with_extras(conn, [fresh], None)[0]
@@ -34550,6 +35200,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("帖子不存在", 404, "post_not_found")
         conn.execute("UPDATE posts SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?",
                      (now_iso(), now_iso(), post_id))
+        retire_reposts_of_deleted_post(conn, post_id)
         reputation_apply_event(
             conn,
             row["author_id"],
@@ -34561,6 +35212,7 @@ class Handler(BaseHTTPRequestHandler):
             reviewed=True,
         )
         invalidate_public_ranking_caches()
+        _cache_invalidate("feed:")
         ACCESS_LOG.warning("admin %s removed post %s", admin["handle"], post_id)
         self.send_json({"ok": True})
 
@@ -34806,6 +35458,70 @@ class MachiHTTPServer(ThreadingHTTPServer):
     block_on_close = False
 
 
+# ── 星域东京官网每日自动同步(默认每天 00:00 JST)────────────────────────────────
+# 合作方官网(stareal.jp)会频繁上新/下架房源。这个后台任务每天午夜自动跑一次全量
+# 同步(经既有 job 机制,含去重、图片全分辨率转存、字段全量抓取),把官网当天的
+# 房源与照片同步到 Machi。手动一键同步与之共用同一套 job,互不冲突(有在跑就不重复)。
+KAIX_STAREAL_DAILY_SYNC = _env("KAIX_STAREAL_DAILY_SYNC", "1") == "1"
+KAIX_STAREAL_SYNC_HOUR_JST = max(0, min(23, int(_env("KAIX_STAREAL_SYNC_HOUR_JST", "0"))))
+_STAREAL_SCHEDULER_STARTED = False
+
+
+def _seconds_until_jst_hour(hour: int) -> float:
+    jst = timezone(timedelta(hours=9))
+    now = datetime.now(jst)
+    target = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return max(1.0, (target - now).total_seconds())
+
+
+def run_stareal_daily_sync() -> int:
+    """为每个授权合作方(星域东京)启动一次全量同步 job。返回真正新建的 job 数。"""
+    started = 0
+    handler = Handler.__new__(Handler)
+    with DB_LOCK, db() as conn:
+        for key in sorted(server_stareal.AUTHORIZED_PARTNER_KEYS):
+            partner = partners.get_partner(conn, key)
+            if not partner or partner.get("status") != "active":
+                continue
+            options = {
+                "house_types": list(server_stareal.ALL_HOUSE_TYPES),
+                "max_images": partners.MAX_IMAGES_PER_LISTING,
+                "full_res": True,
+                "rehost_urls": True,
+                "crawl_sleep": 0.35,
+            }
+            try:
+                _job, created = handler._start_partner_stareal_sync_job(
+                    conn, partner, options, created_by_role="scheduler")
+                if created:
+                    started += 1
+            except Exception:
+                ERR_LOG.exception("stareal daily sync enqueue failed key=%s", key)
+    return started
+
+
+def start_stareal_daily_scheduler() -> None:
+    global _STAREAL_SCHEDULER_STARTED
+    if _STAREAL_SCHEDULER_STARTED or not KAIX_STAREAL_DAILY_SYNC:
+        return
+    _STAREAL_SCHEDULER_STARTED = True
+
+    def _loop() -> None:
+        while True:
+            delay = _seconds_until_jst_hour(KAIX_STAREAL_SYNC_HOUR_JST)
+            time.sleep(delay)
+            try:
+                n = run_stareal_daily_sync()
+                ACCESS_LOG.info("stareal daily sync fired hour=%s jst enqueued=%s", KAIX_STAREAL_SYNC_HOUR_JST, n)
+            except Exception:
+                ERR_LOG.exception("stareal daily sync loop failed")
+            time.sleep(90)  # 跨过整分,避免同一时刻重复触发
+
+    threading.Thread(target=_loop, name="stareal-daily-sync", daemon=True).start()
+
+
 def run() -> None:
     if PRODUCTION and AWS_S3_BUCKET:
         try:
@@ -34831,6 +35547,7 @@ def run() -> None:
         start_guide_reminder_dispatcher()
         start_engagement_simulator()
         start_hot_score_refresher()
+        start_stareal_daily_scheduler()
     else:
         ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor + guide reminders + engagement sim + hot-score refresher disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")

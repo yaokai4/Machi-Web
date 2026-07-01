@@ -106,6 +106,31 @@ class ListingFilterTests(unittest.TestCase):
         })
         self.assertEqual(ids, ["l-used"])
 
+    def test_province_codes_filter_matches_whole_prefecture(self) -> None:
+        # 都道府县级过滤走 region_code LIKE 'jp.<prov>.%'，覆盖该县全部城市。
+        ts = now()
+        for lid, region_code in (
+            ("pv-tokyo", "jp.tokyo.tokyo"),
+            ("pv-hachioji", "jp.tokyo.hachioji"),
+            ("pv-kashiwa", "jp.chiba.kashiwa"),
+            ("pv-osaka", "jp.osaka.osaka"),
+            ("pv-empty", ""),  # 空 region_code：不该被都道府县过滤命中
+        ):
+            city = region_code.split(".")[-1] or "tokyo"
+            self.conn.execute(
+                "INSERT INTO city_listings (id, country_code, city_slug, region_code, type, category,"
+                " title, status, seller_user_id, created_at, updated_at)"
+                " VALUES (?, 'jp', ?, ?, 'rental', '整租', ?, 'published', 'u-seller', ?, ?)",
+                (lid, city, region_code, f"房{lid}", ts, ts),
+            )
+        one = self.fetch({"type": "rental", "province_codes": "tokyo"})
+        self.assertEqual(set(one), {"pv-tokyo", "pv-hachioji"})
+        two = self.fetch({"type": "rental", "province_codes": "tokyo,chiba"})
+        self.assertEqual(set(two), {"pv-tokyo", "pv-hachioji", "pv-kashiwa"})
+        # 空 region_code 在「全国」范围仍可见（country_code 过滤不依赖 region_code）。
+        nationwide = self.fetch({"type": "rental", "country_code": "jp"})
+        self.assertIn("pv-empty", nationwide)
+
     def test_bool_attr_filter_accepts_truthy_spellings(self) -> None:
         ids = self.fetch({"type": "secondhand", "city_slug": "tokyo", "attr_price_negotiable": "true"})
         self.assertEqual(ids, ["l-new"])

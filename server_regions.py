@@ -421,6 +421,27 @@ def _resolve_region_label(country: str, province: str, city: str) -> str:
     return ""
 
 
+def region_code_for_city_slug(country: str, city: str) -> str:
+    """Best-effort region_code for a bare city slug — discovers the province
+    the city belongs to (hierarchical countries), else builds a flat code.
+    Used to stamp region_code on imported listings that only carry a city
+    slug (e.g. partner uploads without an explicit region). Returns "" when
+    the city can't be placed inside a known province, so callers never write
+    a malformed 2-part code into a 3-part directory."""
+    country = (country or "").strip().lower()
+    city = (city or "").strip().lower()
+    if not country or not city:
+        return ""
+    spec = _country_lookup(country) or {}
+    if spec.get("has_provinces"):
+        for province in REGION_PROVINCES.get(country, []):
+            for c in _cities_for_parent(country, province["code"]):
+                if c["code"] == city:
+                    return _resolve_region_code(country, province["code"], city)
+        return ""
+    return _resolve_region_code(country, "", city)
+
+
 # 日本「都市圈」聚合：同城 / 二手 / 租房 / 工作 / 商家 都按生活圈(关东圈/关西圈…)
 # 合并展示,而不是只看单个城市(城市之间离得很近,单城太窄)。province codes 与
 # iOS KaiXRegionDirectory.jpMetroCircles / web JP_METRO_CIRCLES 保持一致。
@@ -627,4 +648,5 @@ __all__ = [
     "_region_payload_for_code",
     "_resolve_region_code",
     "_resolve_region_label",
+    "region_code_for_city_slug",
 ]

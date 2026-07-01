@@ -860,6 +860,9 @@ export function listingSectionForType(type?: KXListingType | string | null): str
     case "secondhand":
       return "marketplace";
     case "rental":
+    // 买房(for_sale)是「租房 · 住宿」频道下的一个分栏,没有独立路由段。
+    // 以前漏了这个 case → 落进 default「jobs」→ 买房详情返回竟跳到找工作页。
+    case "for_sale":
       return "rentals";
     case "local_service":
       return "services";

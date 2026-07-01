@@ -443,7 +443,7 @@ S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS = max(60, min(int(_env("S3_PRIVATE_DOWNLOAD_
 
 
 UPLOAD_PURPOSES: dict[str, dict[str, Any]] = {
-    "avatar": {"kind": "image", "max": 5 * 1024 * 1024, "count": 1},
+    "avatar": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1},
     "profile_cover": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1},
     "post_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9},
     "post_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1},
@@ -786,6 +786,9 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         "listing_intent", "sale_price", "yield_rate", "building_age", "structure",
         "land_area", "nearest_lines", "source_url", "machi_recommended",
         "machi_badges", "reservation_contact", "reservation_contact_id", "partner_key",
+        # 星域东京官网详情接口带来的更完整字段(见 server_stareal.map_item)。
+        "total_floors", "room_no", "property_no", "availability_status", "confirmed_at",
+        "needs_renovation", "down_payment", "amenities", "nearby_facilities",
     },
     # 买房 (property for sale / investment) — a SEPARATE vertical from 长租.
     # Shares many descriptive fields with rental but the price is a total sale
@@ -797,6 +800,9 @@ LISTING_ATTRIBUTE_KEYS: dict[str, set[str]] = {
         "parking", "balcony_area", "source_url",
         "machi_recommended", "machi_badges", "reservation_contact",
         "reservation_contact_id", "partner_key",
+        # 星域东京官网详情接口带来的更完整字段(见 server_stareal.map_item)。
+        "total_floors", "room_no", "property_no", "availability_status", "confirmed_at",
+        "needs_renovation", "lease_term", "down_payment", "amenities", "nearby_facilities",
     },
     "job": {
         "salary_min", "salary_max", "salary_type", "employment_type",

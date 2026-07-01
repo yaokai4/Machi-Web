@@ -4373,6 +4373,139 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         );
         """,
     ),
+    (
+        87,
+        "reposts: retire pure-reposts whose original was deleted",
+        # Heals data left dangling before api_delete_post cascaded. A pure
+        # repost (empty body) of a since-deleted original used to stay live in
+        # every feed showing the deleted content, and its reposter could not
+        # undo it. Soft-delete those orphan reposts and drop the now-meaningless
+        # repost interactions. deleted_at reuses the row's own created_at so the
+        # value is non-null on both SQLite and Postgres (only its null-ness is
+        # ever queried). Quote-reposts (non-empty body) are intentionally left
+        # alone. Pure SQL, so it runs identically on both backends.
+        """
+        UPDATE posts
+           SET status = 'deleted',
+               deleted_at = COALESCE(NULLIF(created_at, ''), 'deleted'),
+               updated_at = updated_at
+         WHERE repost_of_id IS NOT NULL
+           AND COALESCE(content, '') = ''
+           AND deleted_at IS NULL
+           AND NOT EXISTS (
+               SELECT 1 FROM posts o
+                WHERE o.id = posts.repost_of_id
+                  AND o.deleted_at IS NULL
+                  AND o.status IN ('published', 'active')
+           );
+
+        DELETE FROM interactions
+         WHERE kind = 'repost'
+           AND NOT EXISTS (
+               SELECT 1 FROM posts o
+                WHERE o.id = interactions.target_id
+                  AND o.deleted_at IS NULL
+                  AND o.status IN ('published', 'active')
+           );
+        """,
+    ),
+    (
+        88,
+        "partners: persistent website sync jobs",
+        """
+        CREATE TABLE IF NOT EXISTS partner_sync_jobs (
+          id TEXT PRIMARY KEY,
+          partner_key TEXT NOT NULL,
+          source TEXT NOT NULL DEFAULT '',
+          status TEXT NOT NULL DEFAULT 'queued',
+          stage TEXT NOT NULL DEFAULT '',
+          message TEXT NOT NULL DEFAULT '',
+          progress INTEGER NOT NULL DEFAULT 0,
+          total_steps INTEGER NOT NULL DEFAULT 0,
+          processed_steps INTEGER NOT NULL DEFAULT 0,
+          fetched_count INTEGER NOT NULL DEFAULT 0,
+          mapped_count INTEGER NOT NULL DEFAULT 0,
+          image_count INTEGER NOT NULL DEFAULT 0,
+          missing_image_count INTEGER NOT NULL DEFAULT 0,
+          created_count INTEGER NOT NULL DEFAULT 0,
+          updated_count INTEGER NOT NULL DEFAULT 0,
+          error_count INTEGER NOT NULL DEFAULT 0,
+          options_json TEXT NOT NULL DEFAULT '{}',
+          summary_json TEXT NOT NULL DEFAULT '{}',
+          result_json TEXT NOT NULL DEFAULT '{}',
+          warnings_json TEXT NOT NULL DEFAULT '[]',
+          error_code TEXT NOT NULL DEFAULT '',
+          error_message TEXT NOT NULL DEFAULT '',
+          created_by_user_id TEXT NOT NULL DEFAULT '',
+          created_by_role TEXT NOT NULL DEFAULT '',
+          started_at TEXT,
+          finished_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_partner_sync_jobs_partner_source_created
+          ON partner_sync_jobs(partner_key, source, created_at);
+        CREATE INDEX IF NOT EXISTS idx_partner_sync_jobs_status
+          ON partner_sync_jobs(status, updated_at);
+        """,
+    ),
+    (
+        89,
+        "city_listings: backfill empty region_code from city_slug (JP)",
+        # Historical listings (notably partner uploads whose partner had no
+        # default_region_code) landed with region_code='' — invisible to any
+        # region_code / metro-circle / 都道府县 filter. Stamp the canonical JP
+        # region_code from the known city_slug. Only touches empty rows, never
+        # overwrites an existing value → idempotent. City slugs are unique
+        # across JP prefectures (verified), so the scalar subquery is unambiguous.
+        """
+        WITH region_map(city, code) AS (
+            VALUES
+            ('tokyo','jp.tokyo.tokyo'), ('hachioji','jp.tokyo.hachioji'), ('machida','jp.tokyo.machida'),
+            ('tachikawa','jp.tokyo.tachikawa'), ('musashino','jp.tokyo.musashino'), ('osaka','jp.osaka.osaka'),
+            ('sakai','jp.osaka.sakai'), ('suita','jp.osaka.suita'), ('toyonaka','jp.osaka.toyonaka'),
+            ('higashiosaka','jp.osaka.higashiosaka'), ('kyoto','jp.kyoto.kyoto'), ('uji','jp.kyoto.uji'),
+            ('fukuoka','jp.fukuoka.fukuoka'), ('kitakyushu','jp.fukuoka.kitakyushu'), ('kurume','jp.fukuoka.kurume'),
+            ('nagoya','jp.aichi.nagoya'), ('toyota','jp.aichi.toyota'), ('okazaki','jp.aichi.okazaki'),
+            ('ichinomiya','jp.aichi.ichinomiya'), ('yokohama','jp.kanagawa.yokohama'), ('kawasaki','jp.kanagawa.kawasaki'),
+            ('sagamihara','jp.kanagawa.sagamihara'), ('kamakura','jp.kanagawa.kamakura'), ('fujisawa','jp.kanagawa.fujisawa'),
+            ('yokosuka','jp.kanagawa.yokosuka'), ('saitama','jp.saitama.saitama'), ('kawaguchi','jp.saitama.kawaguchi'),
+            ('kawagoe','jp.saitama.kawagoe'), ('tokorozawa','jp.saitama.tokorozawa'), ('koshigaya','jp.saitama.koshigaya'),
+            ('chiba','jp.chiba.chiba'), ('funabashi','jp.chiba.funabashi'), ('matsudo','jp.chiba.matsudo'),
+            ('kashiwa','jp.chiba.kashiwa'), ('ichikawa','jp.chiba.ichikawa'), ('narita','jp.chiba.narita'),
+            ('kobe','jp.hyogo.kobe'), ('nishinomiya','jp.hyogo.nishinomiya'), ('himeji','jp.hyogo.himeji'),
+            ('amagasaki','jp.hyogo.amagasaki'), ('sapporo','jp.hokkaido.sapporo'), ('asahikawa','jp.hokkaido.asahikawa'),
+            ('hakodate','jp.hokkaido.hakodate'), ('sendai','jp.miyagi.sendai'), ('ishinomaki','jp.miyagi.ishinomaki'),
+            ('hiroshima','jp.hiroshima.hiroshima'), ('fukuyama','jp.hiroshima.fukuyama'), ('naha','jp.okinawa.naha'),
+            ('okinawa','jp.okinawa.okinawa'), ('shizuoka','jp.shizuoka.shizuoka'), ('hamamatsu','jp.shizuoka.hamamatsu'),
+            ('numazu','jp.shizuoka.numazu'), ('tsukuba','jp.ibaraki.tsukuba'), ('mito','jp.ibaraki.mito'),
+            ('hitachinaka','jp.ibaraki.hitachinaka'), ('nara','jp.nara.nara'), ('ikoma','jp.nara.ikoma'),
+            ('yokkaichi','jp.mie.yokkaichi'), ('tsu','jp.mie.tsu'), ('kumamoto','jp.kumamoto.kumamoto'),
+            ('kagoshima','jp.kagoshima.kagoshima'), ('nagano','jp.nagano.nagano'), ('matsumoto','jp.nagano.matsumoto'),
+            ('kanazawa','jp.ishikawa.kanazawa'), ('komatsu','jp.ishikawa.komatsu'), ('okayama','jp.okayama.okayama'),
+            ('kurashiki','jp.okayama.kurashiki'), ('niigata','jp.niigata.niigata'), ('nagaoka','jp.niigata.nagaoka'),
+            ('utsunomiya','jp.tochigi.utsunomiya'), ('oyama','jp.tochigi.oyama'), ('takasaki','jp.gunma.takasaki'),
+            ('maebashi','jp.gunma.maebashi'), ('otsu','jp.shiga.otsu'), ('kusatsu','jp.shiga.kusatsu'),
+            ('gifu','jp.gifu.gifu'), ('ogaki','jp.gifu.ogaki'), ('aomori','jp.aomori.aomori'),
+            ('hachinohe','jp.aomori.hachinohe'), ('morioka','jp.iwate.morioka'), ('ichinoseki','jp.iwate.ichinoseki'),
+            ('akita','jp.akita.akita'), ('yamagata','jp.yamagata.yamagata'), ('tsuruoka','jp.yamagata.tsuruoka'),
+            ('fukushima','jp.fukushima.fukushima'), ('koriyama','jp.fukushima.koriyama'), ('iwaki','jp.fukushima.iwaki'),
+            ('toyama','jp.toyama.toyama'), ('takaoka','jp.toyama.takaoka'), ('fukui','jp.fukui.fukui'),
+            ('kofu','jp.yamanashi.kofu'), ('wakayama','jp.wakayama.wakayama'), ('tottori','jp.tottori.tottori'),
+            ('yonago','jp.tottori.yonago'), ('matsue','jp.shimane.matsue'), ('izumo','jp.shimane.izumo'),
+            ('yamaguchi','jp.yamaguchi.yamaguchi'), ('shimonoseki','jp.yamaguchi.shimonoseki'), ('tokushima','jp.tokushima.tokushima'),
+            ('takamatsu','jp.kagawa.takamatsu'), ('matsuyama','jp.ehime.matsuyama'), ('imabari','jp.ehime.imabari'),
+            ('kochi','jp.kochi.kochi'), ('saga','jp.saga.saga'), ('nagasaki','jp.nagasaki.nagasaki'),
+            ('sasebo','jp.nagasaki.sasebo'), ('oita','jp.oita.oita'), ('beppu','jp.oita.beppu'),
+            ('miyazaki','jp.miyazaki.miyazaki')
+        )
+        UPDATE city_listings
+           SET region_code = (SELECT code FROM region_map WHERE region_map.city = city_listings.city_slug)
+         WHERE (region_code IS NULL OR region_code = '')
+           AND country_code IN ('jp', '')
+           AND city_slug IN (SELECT city FROM region_map);
+        """,
+    ),
 ]
 
 

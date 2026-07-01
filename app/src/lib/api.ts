@@ -497,6 +497,74 @@ export type Partner = {
   updatedAt: string;
 };
 
+export type AdminPartnerStarealSummary = {
+  source: string;
+  partnerKey?: string;
+  fetched: number;
+  mapped: number;
+  imageCount: number;
+  missingImageCount: number;
+  byType: Record<string, number>;
+  byIntent: Record<string, number>;
+  maxImages: number;
+  fullRes: boolean;
+};
+
+export type AdminPartnerStarealOptions = {
+  types?: Array<"buy" | "rent" | "invest">;
+  maxImages?: number;
+  fullRes?: boolean;
+  rehostUrls?: boolean;
+};
+
+export type AdminPartnerStarealPreviewResult = {
+  rows: unknown[];
+  warnings: string[];
+  rowCount: number;
+  summary: AdminPartnerStarealSummary;
+};
+
+export type AdminPartnerStarealSyncResult = {
+  ok: true;
+  job: AdminPartnerStarealJob;
+  reused: boolean;
+};
+
+export type AdminPartnerStarealJob = {
+  id: string;
+  partnerKey: string;
+  source: string;
+  status: "queued" | "running" | "succeeded" | "failed" | string;
+  stage: string;
+  message: string;
+  progress: number;
+  totalSteps: number;
+  processedSteps: number;
+  fetched: number;
+  mapped: number;
+  imageCount: number;
+  missingImageCount: number;
+  created: number;
+  updated: number;
+  errors: number;
+  errorCode: string;
+  errorMessage: string;
+  options: AdminPartnerStarealOptions;
+  summary: Partial<AdminPartnerStarealSummary>;
+  result: {
+    created?: number;
+    updated?: number;
+    total?: number;
+    errors?: unknown[];
+    results?: unknown[];
+  };
+  warnings: string[];
+  startedAt: string;
+  finishedAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 const DEFAULT_TIMEOUT_MS = 12_000;
 const RETRYABLE_METHODS = new Set(["GET", "HEAD"]);
 
@@ -1075,6 +1143,8 @@ export const api = {
     country_code?: string;
     region_code?: string;
     region_codes?: string;
+    /** 逗号分隔的都道府县(省/州)code,服务端按 region_code 前缀匹配整个县。 */
+    province_codes?: string;
     category?: string;
     /** 逗号分隔的多类目过滤（如住宿集合、服务分区集合），优先于 category。 */
     categories?: string;
@@ -1805,6 +1875,25 @@ export const api = {
   },
   async adminPartnerListings(key: string): Promise<{ listings: KXCityListing[] }> {
     return request("GET", `/api/admin/partners/${encodeURIComponent(key)}/listings`);
+  },
+  async adminPartnerStarealPreview(
+    key: string,
+    options: AdminPartnerStarealOptions = {},
+  ): Promise<AdminPartnerStarealPreviewResult> {
+    return request("POST", `/api/admin/partners/${encodeURIComponent(key)}/stareal/preview`, options, {
+      timeoutMs: 120_000,
+    });
+  },
+  async adminPartnerStarealSync(
+    key: string,
+    options: AdminPartnerStarealOptions = {},
+  ): Promise<AdminPartnerStarealSyncResult> {
+    return request("POST", `/api/admin/partners/${encodeURIComponent(key)}/stareal/sync`, options, {
+      timeoutMs: 30_000,
+    });
+  },
+  async adminPartnerStarealJob(key: string): Promise<{ job: AdminPartnerStarealJob | null }> {
+    return request("GET", `/api/admin/partners/${encodeURIComponent(key)}/stareal/job`);
   },
 
   async adminListingReports(status = "open"): Promise<Array<Record<string, unknown>>> {

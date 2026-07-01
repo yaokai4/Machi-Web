@@ -305,6 +305,68 @@ export interface PartnerCommitResult {
   };
 }
 
+export interface PartnerStarealSummary {
+  source: string;
+  partnerKey?: string;
+  fetched: number;
+  mapped: number;
+  imageCount: number;
+  missingImageCount: number;
+  byType: Record<string, number>;
+  byIntent: Record<string, number>;
+  maxImages: number;
+  fullRes: boolean;
+}
+
+export interface PartnerStarealOptions {
+  types?: Array<"buy" | "rent" | "invest">;
+  maxImages?: number;
+  fullRes?: boolean;
+  rehostUrls?: boolean;
+}
+
+export interface PartnerStarealPreviewResult {
+  rows: PartnerMappedRow[];
+  warnings: string[];
+  rowCount: number;
+  summary: PartnerStarealSummary;
+}
+
+export interface PartnerStarealSyncResult {
+  ok: true;
+  job: PartnerStarealJob;
+  reused: boolean;
+}
+
+export interface PartnerStarealJob {
+  id: string;
+  partnerKey: string;
+  source: string;
+  status: "queued" | "running" | "succeeded" | "failed" | string;
+  stage: string;
+  message: string;
+  progress: number;
+  totalSteps: number;
+  processedSteps: number;
+  fetched: number;
+  mapped: number;
+  imageCount: number;
+  missingImageCount: number;
+  created: number;
+  updated: number;
+  errors: number;
+  errorCode: string;
+  errorMessage: string;
+  options: PartnerStarealOptions;
+  summary: Partial<PartnerStarealSummary>;
+  result: Partial<PartnerCommitResult["result"]>;
+  warnings: string[];
+  startedAt: string;
+  finishedAt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface PartnerListingReservationContact {
   name?: string;
   phone?: string;
@@ -325,6 +387,21 @@ export interface PartnerListing {
   attributes?: Record<string, unknown>;
   type?: string;
   [extra: string]: unknown;
+}
+
+export interface PartnerListingListParams {
+  q?: string;
+  limit?: number | "all";
+  offset?: number;
+}
+
+export interface PartnerListingListResult {
+  listings: PartnerListing[];
+  total: number;
+  limit: number;
+  offset: number;
+  q: string;
+  hasMore: boolean;
 }
 
 // ============================================================
@@ -399,8 +476,38 @@ export function commitPartnerImport(
   });
 }
 
-export function listPartnerListings(key: string): Promise<{ listings: PartnerListing[] }> {
-  return partnerRequest<{ listings: PartnerListing[] }>(key, "GET", "/listings");
+export function previewStarealImport(
+  key: string,
+  options: PartnerStarealOptions = {},
+): Promise<PartnerStarealPreviewResult> {
+  return partnerRequest<PartnerStarealPreviewResult>(key, "POST", "/stareal/preview", options, undefined, {
+    timeoutMs: 120_000,
+  });
+}
+
+export function syncStarealImport(
+  key: string,
+  options: PartnerStarealOptions = {},
+): Promise<PartnerStarealSyncResult> {
+  return partnerRequest<PartnerStarealSyncResult>(key, "POST", "/stareal/sync", options, undefined, {
+    timeoutMs: 30_000,
+  });
+}
+
+export function getStarealSyncJob(key: string): Promise<{ job: PartnerStarealJob | null }> {
+  return partnerRequest<{ job: PartnerStarealJob | null }>(key, "GET", "/stareal/job");
+}
+
+export function listPartnerListings(
+  key: string,
+  params: PartnerListingListParams = {},
+): Promise<PartnerListingListResult> {
+  const qs = new URLSearchParams();
+  if (params.q?.trim()) qs.set("q", params.q.trim());
+  if (params.limit !== undefined) qs.set("limit", String(params.limit));
+  if (params.offset !== undefined) qs.set("offset", String(Math.max(0, params.offset)));
+  const suffix = qs.toString() ? `?${qs.toString()}` : "";
+  return partnerRequest<PartnerListingListResult>(key, "GET", `/listings${suffix}`);
 }
 
 // Body accepted by single-listing create / update. snake_case to match the

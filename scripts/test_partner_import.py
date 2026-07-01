@@ -140,7 +140,9 @@ class PartnerImportTests(unittest.TestCase):
         server.run_migrations(cls.conn)
         # redirect media writes into the temp dir
         cls._media_backup = server.MEDIA_DIR
+        cls._server_media_backup = server.server_media.MEDIA_DIR
         server.MEDIA_DIR = _TMP / "media"
+        server.server_media.MEDIA_DIR = server.MEDIA_DIR
         server.MEDIA_DIR.mkdir(parents=True, exist_ok=True)
         ts = now()
         cls.conn.execute(
@@ -150,6 +152,7 @@ class PartnerImportTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         server.MEDIA_DIR = cls._media_backup
+        server.server_media.MEDIA_DIR = cls._server_media_backup
 
     def _admin(self, **kw):
         return _H(admin_id="admin1", **kw)
@@ -317,6 +320,29 @@ class PartnerImportTests(unittest.TestCase):
         self.assertTrue(payload["machiRecommended"])
         self.assertEqual(payload["reservationContact"]["name"], "田中太郎")
         self.assertIn("sale_price", payload["attributes"])
+
+    def test_10_partner_listings_search_pagination_and_all(self):
+        h = _H(headers={"X-Partner-Token": self.TOKEN})
+        h.h.api_partner_listings(self.conn, "stareal", {"limit": "2", "offset": "0"})
+        first = h.last
+        self.assertEqual(len(first["listings"]), 2)
+        self.assertGreaterEqual(first["total"], 4)
+        self.assertEqual(first["limit"], 2)
+        self.assertEqual(first["offset"], 0)
+        self.assertTrue(first["hasMore"])
+
+        h2 = _H(headers={"X-Partner-Token": self.TOKEN})
+        h2.h.api_partner_listings(self.conn, "stareal", {"q": "SALE-1", "limit": "10"})
+        found = h2.last
+        self.assertEqual(found["total"], 1)
+        self.assertTrue(found["listings"][0]["title"].startswith("银座投资"))
+
+        h3 = _H(headers={"X-Partner-Token": self.TOKEN})
+        h3.h.api_partner_listings(self.conn, "stareal", {"limit": "all"})
+        all_rows = h3.last
+        self.assertEqual(all_rows["limit"], 0)
+        self.assertEqual(len(all_rows["listings"]), all_rows["total"])
+        self.assertFalse(all_rows["hasMore"])
 
     def test_11_partner_single_listing_crud(self):
         # CREATE one

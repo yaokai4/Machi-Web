@@ -12,9 +12,12 @@ import {
   Loader2,
   CheckCircle2,
   AlertTriangle,
+  ChevronLeft,
+  ChevronRight,
   Download,
   LogOut,
   Building2,
+  Globe2,
   Trash2,
   Pencil,
   Save,
@@ -22,6 +25,8 @@ import {
   Image as ImageIcon,
   MessageCircle,
   Mail,
+  RefreshCw,
+  Search,
 } from "lucide-react";
 import { Toaster } from "@/components/design/Toaster";
 import { useToasts } from "@/lib/store";
@@ -36,6 +41,9 @@ import {
   uploadPartnerImage,
   parsePartnerImport,
   commitPartnerImport,
+  previewStarealImport,
+  syncStarealImport,
+  getStarealSyncJob,
   listPartnerListings,
   partnerCreateListing,
   partnerUpdateListing,
@@ -50,6 +58,8 @@ import {
   type PartnerContactPayload,
   type PartnerMappedRow,
   type PartnerCommitResult,
+  type PartnerStarealJob,
+  type PartnerStarealSummary,
   type PartnerListing,
   type PartnerListingDraft,
 } from "@/lib/partner";
@@ -63,6 +73,14 @@ function safeColor(value: string | undefined, fallback: string): string {
 const ACCENT_FALLBACK = "#147067"; // --kx-accent
 
 type TabKey = "import" | "contacts" | "listings";
+
+const STAREAL_TYPES: Array<"buy" | "rent" | "invest"> = ["buy", "rent", "invest"];
+const STAREAL_PARTNER_KEYS = new Set(["xingyu-tokyo", "stareal"]);
+const STAREAL_TYPE_LABELS: Record<string, string> = {
+  buy: "买房",
+  rent: "租房",
+  invest: "投资",
+};
 
 // ============================================================
 // Page entry
@@ -405,6 +423,25 @@ function intentPill(intent: PartnerMappedRow["listing_intent"] | string) {
   }
 }
 
+function starealTypeSummary(summary: PartnerStarealSummary | null) {
+  if (!summary) return "";
+  return STAREAL_TYPES.map((t) => `${STAREAL_TYPE_LABELS[t]} ${summary.byType?.[t] || 0}`).join(" · ");
+}
+
+function isPartnerStarealJobActive(job: PartnerStarealJob | null | undefined): boolean {
+  return job?.status === "queued" || job?.status === "running";
+}
+
+function partnerStarealJobResult(job: PartnerStarealJob | null | undefined) {
+  const result = job?.result || {};
+  return {
+    created: Number(result.created ?? job?.created ?? 0),
+    updated: Number(result.updated ?? job?.updated ?? 0),
+    total: Number(result.total ?? ((job?.created || 0) + (job?.updated || 0))),
+    errors: Array.isArray(result.errors) ? result.errors.length : Number(job?.errors || 0),
+  };
+}
+
 function Card({ children, className = "" }: { children: React.ReactNode; className?: string }) {
   return (
     <section className={`rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 sm:p-5 ${className}`}>
@@ -440,8 +477,26 @@ function ImportTab({
   const [rehostUrls, setRehostUrls] = useState(true);
   const [matchedImages, setMatchedImages] = useState<number | null>(null);
   const [commitResult, setCommitResult] = useState<PartnerCommitResult["result"] | null>(null);
+  const [starealSummary, setStarealSummary] = useState<PartnerStarealSummary | null>(null);
 
   const templateColumns = session.templateColumns || [];
+  const isStarealPartner = STAREAL_PARTNER_KEYS.has(partnerKey);
+
+  const starealJobQuery = useQuery({
+    queryKey: ["partner", partnerKey, "stareal-job"],
+    queryFn: () => getStarealSyncJob(partnerKey),
+    enabled: isStarealPartner,
+    refetchInterval: isStarealPartner ? 2500 : false,
+  });
+  const starealJob = starealJobQuery.data?.job || null;
+  const starealJobActive = isPartnerStarealJobActive(starealJob);
+  const starealJobResult = partnerStarealJobResult(starealJob);
+
+  useEffect(() => {
+    if (starealJob?.status === "succeeded") {
+      queryClient.invalidateQueries({ queryKey: ["partner", partnerKey, "listings"] });
+    }
+  }, [partnerKey, queryClient, starealJob?.status]);
 
   const downloadTemplate = useMutation({
     mutationFn: () => getPartnerTemplate(partnerKey),
@@ -468,11 +523,44 @@ function ImportTab({
       setParseWarnings(data.warnings || []);
       setMatchedImages(null);
       setCommitResult(null);
+      setStarealSummary(null);
       pushToast({ kind: "success", message: `已解析 ${data.rowCount} 条房源` });
     },
     onError: (err) => {
       onError(err);
       pushToast({ kind: "error", message: err instanceof Error ? err.message : "解析失败" });
+    },
+  });
+
+  const starealPreview = useMutation({
+    mutationFn: () => previewStarealImport(partnerKey, { types: STAREAL_TYPES, maxImages: 20, fullRes: true }),
+    onSuccess: (data) => {
+      setRows(data.rows || []);
+      setParseWarnings(data.warnings || []);
+      setMatchedImages(null);
+      setCommitResult(null);
+      setStarealSummary(data.summary || null);
+      pushToast({ kind: "success", message: `已获取官网 ${data.rowCount} 条房源` });
+    },
+    onError: (err) => {
+      onError(err);
+      pushToast({ kind: "error", message: err instanceof Error ? err.message : "官网获取失败" });
+    },
+  });
+
+  const starealSync = useMutation({
+    mutationFn: () =>
+      syncStarealImport(partnerKey, { types: STAREAL_TYPES, maxImages: 20, fullRes: true, rehostUrls }),
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ["partner", partnerKey, "stareal-job"] });
+      pushToast({
+        kind: "success",
+        message: data.reused ? "已有同步任务正在进行，已恢复进度" : "已开始后台同步，关闭浏览器也会继续执行",
+      });
+    },
+    onError: (err) => {
+      onError(err);
+      pushToast({ kind: "error", message: err instanceof Error ? err.message : "同步失败" });
     },
   });
 
@@ -538,8 +626,113 @@ function ImportTab({
     if (files.length) uploadImages.mutate(files);
   };
 
+  const starealBusy = starealPreview.isPending || starealSync.isPending || starealJobActive;
+  const effectiveStarealSummary = starealSummary || (starealJob?.summary?.mapped ? starealJob.summary as PartnerStarealSummary : null);
+
   return (
     <div className="grid gap-4">
+      {isStarealPartner ? (
+        <Card>
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="mb-2 flex items-center gap-2">
+                <Globe2 className="h-5 w-5" style={{ color: accent }} />
+                <h2 className="text-base font-black text-kx-text">星域东京官网同步</h2>
+              </div>
+              <p className="text-sm leading-6 text-kx-subtle">
+                从 stareal.jp 直接获取买房、租房、投资房源与全部照片。相同官网物件编号会更新原房源，不会重复发布。
+              </p>
+            </div>
+            <span className="rounded-full bg-kx-accentSoft px-3 py-1 text-xs font-bold text-kx-accent">
+              授权合作方
+            </span>
+          </div>
+
+          {effectiveStarealSummary ? (
+            <div className="mt-4 grid gap-2 sm:grid-cols-3">
+              <div className="rounded-kx-md border border-kx-stroke/50 bg-kx-soft/50 px-3 py-2.5">
+                <div className="text-xs font-semibold text-kx-muted">官网房源</div>
+                <div className="mt-1 text-2xl font-black text-kx-text">{effectiveStarealSummary.mapped}</div>
+                <div className="mt-0.5 text-xs text-kx-muted">{starealTypeSummary(effectiveStarealSummary)}</div>
+              </div>
+              <div className="rounded-kx-md border border-kx-stroke/50 bg-kx-soft/50 px-3 py-2.5">
+                <div className="text-xs font-semibold text-kx-muted">照片</div>
+                <div className="mt-1 text-2xl font-black text-kx-text">{effectiveStarealSummary.imageCount}</div>
+                <div className="mt-0.5 text-xs text-kx-muted">每套最多 {effectiveStarealSummary.maxImages} 张</div>
+              </div>
+              <div className="rounded-kx-md border border-kx-stroke/50 bg-kx-soft/50 px-3 py-2.5">
+                <div className="text-xs font-semibold text-kx-muted">发布类型</div>
+                <div className="mt-1 text-2xl font-black text-kx-text">
+                  {(effectiveStarealSummary.byIntent?.rent || 0) + (effectiveStarealSummary.byIntent?.sale || 0) + (effectiveStarealSummary.byIntent?.investment || 0)}
+                </div>
+                <div className="mt-0.5 text-xs text-kx-muted">
+                  出租 {effectiveStarealSummary.byIntent?.rent || 0} · 出售 {effectiveStarealSummary.byIntent?.sale || 0} · 投资 {effectiveStarealSummary.byIntent?.investment || 0}
+                </div>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="mt-4 grid gap-3">
+            {starealJob ? (
+              <div className="rounded-kx-md border border-kx-stroke/50 bg-kx-soft/50 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <span className="font-bold text-kx-text">{starealJob.message || "同步任务"}</span>
+                  <span className="font-mono text-kx-muted">{Math.max(0, Math.min(100, starealJob.progress || 0))}%</span>
+                </div>
+                <div className="mt-2 h-2 overflow-hidden rounded-full bg-kx-card">
+                  <div
+                    className="h-full rounded-full transition-all"
+                    style={{ width: `${Math.max(2, Math.min(100, starealJob.progress || 0))}%`, background: accent }}
+                  />
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2 text-xs text-kx-muted">
+                  <span>{starealJob.status === "failed" ? "失败" : starealJob.status === "succeeded" ? "已完成" : "进行中"}</span>
+                  {starealJob.totalSteps ? <span>已处理 {starealJob.processedSteps}/{starealJob.totalSteps}</span> : null}
+                  {starealJob.imageCount ? <span>照片 {starealJob.imageCount}</span> : null}
+                  {starealJob.status === "succeeded" ? (
+                    <span>新增 {starealJobResult.created} · 更新重复 {starealJobResult.updated}</span>
+                  ) : null}
+                  {starealJob.status === "failed" ? (
+                    <span className="text-kx-danger">{starealJob.errorMessage || "同步失败"}</span>
+                  ) : null}
+                </div>
+              </div>
+            ) : null}
+            <label className="flex items-center gap-2 text-sm text-kx-subtle">
+              <input
+                type="checkbox"
+                className="h-4 w-4 accent-kx-accent"
+                checked={rehostUrls}
+                onChange={(e) => setRehostUrls(e.target.checked)}
+              />
+              同步时下载并托管照片到 Machi
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <button
+                className="kx-button-ghost h-9"
+                disabled={starealBusy}
+                onClick={() => starealPreview.mutate()}
+              >
+                {starealPreview.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                预览官网房源
+              </button>
+              <button
+                className="kx-button-primary h-9"
+                style={{ background: accent, borderColor: accent }}
+                disabled={starealBusy}
+                onClick={() => starealSync.mutate()}
+              >
+                {starealSync.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+                {starealJobActive ? "同步中" : "同步并发布"}
+              </button>
+              {starealJobActive ? (
+                <span className="self-center text-xs text-kx-muted">后台正在同步，离开页面后也会继续。</span>
+              ) : null}
+            </div>
+          </div>
+        </Card>
+      ) : null}
+
       {/* Intro / help */}
       <Card>
         <div className="mb-3 flex items-center gap-2">
@@ -1198,9 +1391,23 @@ function ListingsTab({
   accent: string;
   onError: (err: unknown) => void;
 }) {
+  const pageSizeOptions = [
+    { label: "30 / 页", value: "30" },
+    { label: "60 / 页", value: "60" },
+    { label: "120 / 页", value: "120" },
+    { label: "200 / 页", value: "200" },
+    { label: "全部", value: "all" },
+  ];
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [pageSize, setPageSize] = useState("60");
+  const [page, setPage] = useState(0);
+  const isUnlimited = pageSize === "all";
+  const pageLimit = isUnlimited ? "all" : Number(pageSize);
+  const offset = isUnlimited ? 0 : page * Number(pageSize);
   const q = useQuery({
-    queryKey: ["partner", partnerKey, "listings"],
-    queryFn: () => listPartnerListings(partnerKey),
+    queryKey: ["partner", partnerKey, "listings", search, pageSize, offset],
+    queryFn: () => listPartnerListings(partnerKey, { q: search, limit: pageLimit, offset }),
   });
 
   useEffect(() => {
@@ -1226,20 +1433,85 @@ function ListingsTab({
   });
 
   const listings: PartnerListing[] = q.data?.listings || [];
+  const total = q.data?.total ?? listings.length;
+  const currentOffset = q.data?.offset ?? offset;
+  const currentStart = total > 0 ? currentOffset + 1 : 0;
+  const currentEnd = total > 0 ? currentOffset + listings.length : 0;
+  const hasPrevious = !isUnlimited && currentOffset > 0;
+  const hasNext = !isUnlimited && !!q.data?.hasMore;
+  const applySearch = () => {
+    setSearch(searchInput.trim());
+    setPage(0);
+  };
+  const clearSearch = () => {
+    setSearchInput("");
+    setSearch("");
+    setPage(0);
+  };
 
   return (
     <div className="grid gap-4">
-      <div className="flex items-center justify-between">
-        <p className="text-sm text-kx-muted">
-          共 {listings.length} 条房源{q.isFetching ? " · 刷新中…" : ""}
-        </p>
-        <button
-          className="kx-button-primary h-9"
-          style={{ background: accent, borderColor: accent }}
-          onClick={() => setEditor({ id: null, listing: null })}
+      <div className="grid gap-3 rounded-kx-lg border border-kx-stroke/50 bg-kx-card/85 p-3 shadow-[0_18px_58px_-44px_rgba(15,23,42,0.4)] backdrop-blur">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-kx-muted">
+              共 {total} 条房源
+              {search ? <span> · 搜索 “{search}”</span> : null}
+              {q.isFetching ? " · 刷新中…" : ""}
+            </p>
+            <p className="mt-0.5 text-xs text-kx-muted">
+              {isUnlimited ? "当前显示全部匹配房源" : total > 0 ? `当前 ${currentStart}-${currentEnd}` : "当前无结果"}
+            </p>
+          </div>
+          <button
+            className="kx-button-primary h-9"
+            style={{ background: accent, borderColor: accent }}
+            onClick={() => setEditor({ id: null, listing: null })}
+          >
+            <Plus className="h-4 w-4" /> 新增房源
+          </button>
+        </div>
+
+        <form
+          className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto_auto]"
+          onSubmit={(event) => {
+            event.preventDefault();
+            applySearch();
+          }}
         >
-          <Plus className="h-4 w-4" /> 新增房源
-        </button>
+          <label className="relative block">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-kx-muted" />
+            <input
+              className="kx-input h-10 w-full pl-9"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="搜索标题、地址、官网物件编号、户型、车站"
+            />
+          </label>
+          <select
+            className="kx-input h-10 min-w-[128px]"
+            value={pageSize}
+            onChange={(e) => {
+              setPageSize(e.target.value);
+              setPage(0);
+            }}
+            aria-label="每页显示数量"
+          >
+            {pageSizeOptions.map((item) => (
+              <option key={item.value} value={item.value}>{item.label}</option>
+            ))}
+          </select>
+          <div className="flex gap-2">
+            <button className="kx-button-primary h-10 px-4" style={{ background: accent, borderColor: accent }} type="submit">
+              搜索
+            </button>
+            {search || searchInput ? (
+              <button className="kx-button-ghost h-10 px-4" type="button" onClick={clearSearch}>
+                清空
+              </button>
+            ) : null}
+          </div>
+        </form>
       </div>
 
       {q.isLoading ? (
@@ -1252,8 +1524,10 @@ function ListingsTab({
         <Card>
           <div className="py-10 text-center">
             <Building2 className="mx-auto mb-2 h-8 w-8 text-kx-muted" />
-            <p className="text-sm font-semibold text-kx-text">暂无房源</p>
-            <p className="mt-1 text-xs text-kx-muted">点击右上角「新增房源」或前往「批量导入房源」。</p>
+            <p className="text-sm font-semibold text-kx-text">{search ? "没有找到匹配房源" : "暂无房源"}</p>
+            <p className="mt-1 text-xs text-kx-muted">
+              {search ? "换一个关键词，或清空搜索查看全部房源。" : "点击右上角「新增房源」或前往「批量导入房源」。"}
+            </p>
           </div>
         </Card>
       ) : (
@@ -1316,6 +1590,32 @@ function ListingsTab({
           ))}
         </div>
       )}
+
+      {!isUnlimited && total > 0 ? (
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-kx-lg border border-kx-stroke/50 bg-kx-card/80 px-3 py-2">
+          <p className="text-xs font-semibold text-kx-muted">
+            第 {page + 1} 页 · 显示 {currentStart}-{currentEnd} / {total}
+          </p>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="kx-button-ghost h-9 px-3"
+              disabled={!hasPrevious || q.isFetching}
+              onClick={() => setPage((p) => Math.max(0, p - 1))}
+            >
+              <ChevronLeft className="h-4 w-4" /> 上一页
+            </button>
+            <button
+              type="button"
+              className="kx-button-ghost h-9 px-3"
+              disabled={!hasNext || q.isFetching}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              下一页 <ChevronRight className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+      ) : null}
 
       {editor ? (
         <ListingEditor

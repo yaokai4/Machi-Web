@@ -22,6 +22,7 @@ import {
   Bus,
   CheckCircle2,
   ChefHat,
+  ChevronLeft,
   ChevronRight,
   Clock,
   Coffee,
@@ -68,6 +69,7 @@ import { ListingBookingSection } from "@/components/listings/ListingBookingSecti
 import { CITY_AREA_GROUPS, getCityBySlug, getDefaultCity } from "@/config/cities";
 import {
   REGION_COUNTRIES,
+  JP_METRO_CIRCLES,
   cityDisplayName,
   countryDisplayName,
   resolveRegion,
@@ -665,7 +667,9 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
   const [sort, setSort] = useState("latest");
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
-  const [scope, setScope] = useState<ListingScope>(nationwide ? "country" : "city");
+  // 默认「全国」不做地域预筛(即便从某城市入口进来),先看到全部内容;用户再主动
+  // 收窄到都市圈 / 都道府县 / 本市。
+  const [scope, setScope] = useState<ListingScope>("country");
   // Optional ?seller=<userId> filter — drives the profile's "TA 的发布" view.
   const [sellerFilter, setSellerFilter] = useState("");
   useEffect(() => {
@@ -692,6 +696,17 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
   const scopeCountryName = scopeCountrySpec ? countryDisplayName(scopeCountrySpec, locale) : "当前国家";
   const scopedCity = getCityBySlug(filters.scope_city || "");
   const scopedArea = CITY_AREA_GROUPS.find((group) => group.slug === filters.scope_area);
+  // 都道府县级过滤:整个县(region_code 前缀匹配),覆盖客户端城市表之外的城市。
+  const scopedProvince = (filters.scope_province || "").trim();
+  // 当前生效范围的显示名——与查询分支保持一致(城市>都道府县>都市圈>全国>本市)。
+  const scopeLabel = scopedCity?.name
+    || (scopedProvince
+      ? (provincesFor(scopeCountry).find((p) => p.code === scopedProvince)?.name || pickText(locale, "都道府县", "都道府県", "Prefecture"))
+      : scopedArea
+        ? scopedArea.label
+        : scope === "country"
+          ? pickText(locale, "全国", "全国", "Nationwide")
+          : city.name);
 
   const sectionCategoriesParam = kind === "services" && category === "全部"
     ? (SERVICE_SECTIONS.find((section) => section.key === serviceSection)?.categories || []).join(",")
@@ -704,17 +719,19 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
   // 无限分页：cursor 为字符串；工作频道合并 job+hiring 两条流,
   // 把两个游标编进同一个 JSON pageParam,各自走到尽头为止。
   const listings = useInfiniteQuery({
-    queryKey: ["listings", nationwide ? "national" : city.slug, kind, spec.type, category, sort, query, scope, filters.scope_area || "", filters.scope_city || "", JSON.stringify(filters), rentalTab, sectionCategoriesParam, sellerFilter],
+    queryKey: ["listings", nationwide ? "national" : city.slug, kind, spec.type, category, sort, query, scope, filters.scope_area || "", filters.scope_city || "", filters.scope_province || "", JSON.stringify(filters), rentalTab, sectionCategoriesParam, sellerFilter],
     initialPageParam: "",
     getNextPageParam: (last: { items: KXCityListing[]; next_cursor: string | null }) => last.next_cursor || undefined,
     queryFn: async ({ pageParam }) => {
       const scoped = scopedCity
         ? { city_slug: scopedCity.slug }
-        : scopedArea
-          ? { city_slugs: scopedArea.cities.join(",") }
-          : scope === "country"
-            ? { country: scopeCountry }
-            : { city_slug: city.slug };
+        : scopedProvince
+          ? { province_codes: scopedProvince, country: scopeCountry }
+          : scopedArea
+            ? { city_slugs: scopedArea.cities.join(",") }
+            : scope === "country"
+              ? { country: scopeCountry }
+              : { city_slug: city.slug };
       const shared = { ...scoped, category, sort, q: query, min_price: filters.min_price, max_price: filters.max_price, attrs: serverAttrs, ...(sellerFilter ? { seller_id: sellerFilter } : {}) };
       if (forSaleActive) {
         // 买房：独立 for_sale 类型，与长租/民宿分开。「全部」=不限类目。
@@ -858,7 +875,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
             </label>
             <button type="button" onClick={() => setFiltersOpen(true)} className="kx-job-search-field text-left">
               <MapPin className="h-5 w-5" />
-              <span className="min-w-0 flex-1 truncate font-semibold">{scopedCity?.name || (nationwide ? pickText(locale, "全国", "全国", "Nationwide") : city.name)}</span>
+              <span className="min-w-0 flex-1 truncate font-semibold">{scopeLabel}</span>
             </button>
             <button type="submit" className="kx-job-search-submit">
               <Search className="h-4 w-4" />
@@ -1106,7 +1123,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
               </div>
             )
           ) : (
-            <ListingEmptyState type={lodgingActive ? "local_service" : forSaleActive ? "for_sale" : spec.type} cityName={nationwide ? pickText(locale, "全国", "全国", "Nationwide") : city.name} stays={lodgingActive} />
+            <ListingEmptyState type={lodgingActive ? "local_service" : forSaleActive ? "for_sale" : spec.type} cityName={scopeLabel} stays={lodgingActive} />
           )}
           {listings.hasNextPage ? (
             <div ref={loadMoreRef} className="mt-6 flex justify-center">
@@ -1206,35 +1223,8 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
       <main className="kx-listing-detail-page px-3 py-4 sm:px-4" data-kind={item.type}>
         <section className="kx-living-detail-shell">
           {(() => {
-            const galleryMedia = (item.media.length ? item.media : listingCoverMedia(item) ? [listingCoverMedia(item)!] : [{ id: "cover", listing_id: item.id, media_type: "image", url: listingCoverPreview(item), sort_order: 0, is_cover: true } satisfies KXListingMedia]).slice(0, 4);
-            return (
-          <div className={`kx-living-detail-gallery grid gap-2 p-2 ${galleryMedia.length > 1 ? "sm:grid-cols-2" : ""}`}>
-            {galleryMedia.map((media, index) => (
-              <div key={media.id || index} className={`relative overflow-hidden rounded-[20px] bg-[rgb(var(--kx-living-soft))] ${galleryMedia.length === 1 ? "aspect-[16/9] sm:aspect-[21/9]" : "aspect-[4/3]"}`}>
-                {isVideoMedia(media) ? (
-                  mediaSourceUrl(media) ? (
-                    <video
-                      src={mediaSourceUrl(media)}
-                      poster={mediaPreviewImageUrl(media) || fallbackVideoPoster}
-                      preload="metadata"
-                      controls
-                      playsInline
-                      className="h-full w-full bg-slate-950 object-contain"
-                    />
-                  ) : (
-                    <span className="absolute inset-0 grid place-items-center bg-slate-950 text-white">
-                      <Play className="h-8 w-8 fill-current" />
-                    </span>
-                  )
-                ) : mediaPreviewImageUrl(media) ? (
-                  <Image src={mediaPreviewImageUrl(media)} alt={displayTitle} fill sizes="(max-width: 768px) 50vw, 360px" className="object-cover" unoptimized />
-                ) : (
-                  <span className="absolute inset-0 bg-slate-100" />
-                )}
-              </div>
-            ))}
-          </div>
-            );
+            const galleryMedia = item.media.length ? item.media : listingCoverMedia(item) ? [listingCoverMedia(item)!] : [{ id: "cover", listing_id: item.id, media_type: "image", url: listingCoverPreview(item), sort_order: 0, is_cover: true } satisfies KXListingMedia];
+            return <DetailGallery media={galleryMedia} title={displayTitle} />;
           })()}
           <div className="p-5 sm:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -4063,9 +4053,10 @@ function ListingFilterPanel({
   context?: ListingFilterContext;
 }) {
   const set = (key: string, value: string) => onChange({ ...filters, [key]: value });
-  const setScopeArea = (value: string) => onChange({ ...filters, scope_area: value, scope_city: "" });
-  const setScopeCity = (value: string) => onChange({ ...filters, scope_area: "", scope_city: value });
-  const clearScope = () => onChange({ ...filters, scope_area: "", scope_city: "" });
+  const setScopeArea = (value: string) => onChange({ ...filters, scope_area: value, scope_city: "", scope_province: "" });
+  const setScopeCity = (value: string) => onChange({ ...filters, scope_area: "", scope_city: value, scope_province: "" });
+  const setScopeProvince = (value: string) => onChange({ ...filters, scope_area: "", scope_city: "", scope_province: value });
+  const clearScope = () => onChange({ ...filters, scope_area: "", scope_city: "", scope_province: "" });
   const reset = () => onChange({});
   const currentCity = getCityBySlug(currentCitySlug);
   return (
@@ -4083,7 +4074,7 @@ function ListingFilterPanel({
           <button
             type="button"
             onClick={clearScope}
-            data-active={!filters.scope_area && !filters.scope_city}
+            data-active={!filters.scope_area && !filters.scope_city && !filters.scope_province}
             className="h-8 rounded-full border border-slate-200 px-3 text-xs font-black text-slate-500 transition hover:border-blue-300 hover:text-blue-700 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
           >
             跟随顶部
@@ -4125,6 +4116,34 @@ function ListingFilterPanel({
               </div>
             </div>
           ))}
+        </div>
+        <div className="mt-3 border-t border-slate-200/70 pt-3">
+          <p className="text-xs font-black text-slate-500">都道府县</p>
+          <p className="mt-0.5 text-[11px] font-semibold text-slate-400">选一个县 = 看该县全部城市。</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {JP_METRO_CIRCLES.map((circle) => (
+              <div key={circle.code} className="rounded-2xl bg-slate-50/80 p-2">
+                <p className="px-1 pb-1 text-[11px] font-black text-slate-400">{circle.name}</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {circle.provinceCodes.map((pc) => {
+                    const prov = provincesFor("jp").find((p) => p.code === pc);
+                    if (!prov) return null;
+                    return (
+                      <button
+                        key={pc}
+                        type="button"
+                        onClick={() => setScopeProvince(pc)}
+                        data-active={filters.scope_province === pc}
+                        className="h-8 rounded-full px-2.5 text-xs font-black text-slate-500 transition hover:bg-white hover:text-blue-700 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
+                      >
+                        {prov.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
       <div className={variant === "inline" ? "mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" : "mt-3 grid gap-3"}>
@@ -4856,12 +4875,155 @@ function verificationLabel(status: string) {
   return formatVerificationStatus(status);
 }
 
+// 房源详情相册:单张大图 + 左右翻动(箭头/滑动/缩略图)+ 位置角标,和 iOS 一致。
+function DetailGallery({ media, title }: { media: KXListingMedia[]; title: string }) {
+  const items = media.filter((m) => mediaSourceUrl(m) || mediaPreviewImageUrl(m) || isVideoMedia(m));
+  const count = items.length;
+  const [index, setIndex] = useState(0);
+  const touchStartX = useRef<number | null>(null);
+  const safeIndex = count ? Math.min(index, count - 1) : 0;
+  const go = (delta: number) => {
+    if (count <= 1) return;
+    setIndex((i) => {
+      const cur = Math.min(i, count - 1);
+      return (cur + delta + count) % count;
+    });
+  };
+  const onGalleryKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      go(-1);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      go(1);
+    }
+  };
+
+  if (!count) {
+    return (
+      <div className="kx-living-detail-gallery p-2">
+        <div className="relative aspect-[16/10] overflow-hidden rounded-[20px] bg-[rgb(var(--kx-living-soft))] sm:aspect-[16/9]">
+          <span className="absolute inset-0 bg-slate-100" />
+        </div>
+      </div>
+    );
+  }
+
+  const current = items[safeIndex];
+  const heroImage = mediaSourceUrl(current) || mediaPreviewImageUrl(current);
+
+  return (
+    <div className="kx-living-detail-gallery p-2">
+      <div
+        role="group"
+        aria-roledescription="carousel"
+        aria-label={`${title} 图片轮播`}
+        aria-live="polite"
+        tabIndex={count > 1 ? 0 : -1}
+        className="group relative aspect-[16/10] select-none overflow-hidden rounded-[20px] bg-[rgb(var(--kx-living-soft))] outline-none ring-0 transition focus-visible:ring-2 focus-visible:ring-[rgb(var(--kx-living-accent))] focus-visible:ring-offset-2 sm:aspect-[16/9]"
+        onKeyDown={onGalleryKeyDown}
+        onTouchStart={(e) => { touchStartX.current = e.touches[0]?.clientX ?? null; }}
+        onTouchEnd={(e) => {
+          if (touchStartX.current == null) return;
+          const dx = (e.changedTouches[0]?.clientX ?? 0) - touchStartX.current;
+          touchStartX.current = null;
+          if (Math.abs(dx) > 40) go(dx < 0 ? 1 : -1);
+        }}
+      >
+        {isVideoMedia(current) ? (
+          mediaSourceUrl(current) ? (
+            <video
+              src={mediaSourceUrl(current)}
+              poster={mediaPreviewImageUrl(current) || fallbackVideoPoster}
+              preload="metadata"
+              controls
+              playsInline
+              className="h-full w-full bg-slate-950 object-contain"
+            />
+          ) : (
+            <span className="absolute inset-0 grid place-items-center bg-slate-950 text-white"><Play className="h-8 w-8 fill-current" /></span>
+          )
+        ) : heroImage ? (
+          <Image src={heroImage} alt={title} fill sizes="(max-width: 768px) 100vw, 760px" className="object-cover" unoptimized priority />
+        ) : (
+          <span className="absolute inset-0 bg-slate-100" />
+        )}
+
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/42 via-black/12 to-transparent" />
+
+        {count > 1 ? (
+          <>
+            <div className="pointer-events-none absolute left-2 top-2 rounded-full bg-black/45 px-2.5 py-1 text-xs font-bold text-white shadow-sm backdrop-blur">
+              照片
+            </div>
+            <button
+              type="button"
+              aria-label="上一张"
+              onClick={() => go(-1)}
+              className="absolute left-2 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white opacity-90 shadow-lg backdrop-blur transition hover:bg-black/65 focus:outline-none focus-visible:ring-2 focus-visible:ring-white sm:opacity-0 sm:group-hover:opacity-100"
+            >
+              <ChevronLeft className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              aria-label="下一张"
+              onClick={() => go(1)}
+              className="absolute right-2 top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-full bg-black/45 text-white opacity-90 shadow-lg backdrop-blur transition hover:bg-black/65 focus:outline-none focus-visible:ring-2 focus-visible:ring-white sm:opacity-0 sm:group-hover:opacity-100"
+            >
+              <ChevronRight className="h-5 w-5" />
+            </button>
+            <div className="pointer-events-none absolute bottom-2 right-2 rounded-full bg-black/58 px-2.5 py-1 text-xs font-bold text-white shadow-sm backdrop-blur">
+              {safeIndex + 1} / {count}
+            </div>
+            {count <= 12 ? (
+              <div className="pointer-events-none absolute bottom-2 left-1/2 flex -translate-x-1/2 items-center gap-1.5">
+                {items.map((m, i) => (
+                  <span
+                    key={m.id || i}
+                    className={`h-1.5 rounded-full transition-all ${i === safeIndex ? "w-4 bg-white" : "w-1.5 bg-white/55"}`}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </>
+        ) : null}
+      </div>
+
+      {count > 1 ? (
+        <div className="mt-2 flex gap-2 overflow-x-auto pb-1">
+          {items.map((m, i) => (
+            <button
+              key={m.id || i}
+              type="button"
+              aria-label={`查看第 ${i + 1} 张`}
+              aria-current={i === safeIndex ? "true" : undefined}
+              onClick={() => setIndex(i)}
+              className={`relative h-14 w-20 shrink-0 overflow-hidden rounded-xl border-2 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--kx-living-accent))] focus-visible:ring-offset-2 ${i === safeIndex ? "border-[rgb(var(--kx-living-accent))] opacity-100 shadow-sm" : "border-transparent opacity-70 hover:opacity-100"}`}
+            >
+              {isVideoMedia(m) ? (
+                <span className="absolute inset-0 grid place-items-center bg-slate-900 text-white"><Play className="h-4 w-4 fill-current" /></span>
+              ) : mediaPreviewImageUrl(m) || mediaSourceUrl(m) ? (
+                <Image src={mediaPreviewImageUrl(m) || mediaSourceUrl(m)} alt="" fill sizes="80px" className="object-cover" unoptimized />
+              ) : (
+                <span className="absolute inset-0 bg-slate-100" />
+              )}
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function detailHref(item: KXCityListing) {
   return `/cities/${item.city_slug || "tokyo"}/${listingSectionForType(item.type)}/${item.id}`;
 }
 
 function listingBackHref(item: KXCityListing) {
-  return `/cities/${item.city_slug || "tokyo"}/${listingSectionForType(item.type)}`;
+  const base = `/cities/${item.city_slug || "tokyo"}/${listingSectionForType(item.type)}`;
+  // 买房归在「租房 · 住宿」频道的买房分栏,返回时带上 tab 直接落回买房栏。
+  if (item.type === "for_sale") return `${base}?tab=forsale`;
+  return base;
 }
 
 function defaultPriceType(type: KXListingType) {
@@ -5355,7 +5517,7 @@ function filterOptions(type: KXListingType, context: ListingFilterContext = "def
 
 /// 这些 filter key 走专用查询参数（城市范围 / 价格区间），其余 key 直接
 /// 转成 attr_<key> 交给服务端过滤。
-const FILTER_NON_ATTR_KEYS = new Set(["scope_area", "scope_city", "min_price", "max_price"]);
+const FILTER_NON_ATTR_KEYS = new Set(["scope_area", "scope_city", "scope_province", "min_price", "max_price"]);
 
 function normalizeListingType(value?: string | null): KXListingType {
   const normalized = cleanListingText(value).toLowerCase().replace(/[\s-]+/g, "_");
