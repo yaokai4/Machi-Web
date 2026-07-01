@@ -2607,20 +2607,21 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
 
 
 def default_membership_benefits() -> list[dict[str, Any]]:
+    # 只列真正能兑现的权益。历史上的 higher_quota(默认无限,与免费无差别)、
+    # priority_review(未实现)、service_priority(人工服务尚未上线)已移除,避免
+    # 「买了发现是空的」的落差。新增 ai_member_quota 作为会员核心价值。
     titles = [
+        ("ai_member_quota", "Machi AI 会员额度", "更高每日提问额度,并解锁 Pro 深度模型,升学·就职·生活问答更强更准。", "wand.and.stars"),
         ("verified_badge", "蓝色认证标识", "个人主页和内容卡片展示 Machi 认证标识。", "checkmark.seal.fill"),
         ("profile_verified", "个人主页认证展示", "认证状态在个人主页稳定展示。", "person.crop.circle.badge.checkmark"),
         ("card_verified", "内容卡片认证展示", "你的公开内容卡片显示认证信息。", "rectangle.badge.checkmark"),
         ("trusted_publish", "高信任内容发布", "可发布招聘、租房、本地服务等高信任内容。", "shield.checkered"),
-        ("higher_quota", "更高每日发布额度", "每日发布额度高于普通账号。", "speedometer"),
-        ("priority_review", "优先审核", "内容进入更高优先级审核队列。", "clock.badge.checkmark"),
         ("light_boost", "内容轻微优先展示", "合规内容获得温和展示加成。", "sparkles"),
         ("exclusive_resources", "查看会员专属资料", "访问会员专属资料、清单和模板。", "book.closed"),
         ("jlpt_discount", "JLPT 资料会员折扣", "指定 JLPT 资料享会员价。", "text.book.closed"),
         ("grad_discount", "大学院申请资料会员折扣", "大学院申请相关资料享会员价。", "graduationcap"),
         ("career_discount", "日本就职资料会员折扣", "日本就职资料和模板享会员价。", "briefcase"),
         ("life_checklist", "日本生活清单会员可看", "查看入境、租房、手续等生活清单。", "list.bullet.clipboard"),
-        ("service_priority", "服务预约优先处理", "人工服务预约优先进入处理队列。", "person.wave.2"),
         ("service_discount", "指定服务会员优惠", "指定服务支持会员折扣价。", "tag"),
         ("member_points_price", "Machi 币会员价", "用 Machi 币购买资料时享更低会员价。", "circle.hexagongrid.fill"),
         ("purchase_center", "已购资料统一管理", "集中管理已购资料与会员可看内容。", "tray.full"),
@@ -2642,6 +2643,11 @@ def default_membership_benefits() -> list[dict[str, Any]]:
 
 
 MEMBERSHIP_BENEFIT_I18N: dict[str, dict[str, tuple[str, str]]] = {
+    "ai_member_quota": {
+        "zh": ("Machi AI 会员额度", "更高每日提问额度,并解锁 Pro 深度模型,升学·就职·生活问答更强更准。"),
+        "en": ("Higher Machi AI limit", "A higher daily question limit plus the Pro deep-reasoning model for stronger study, career, and daily-life answers."),
+        "ja": ("Machi AI メンバー枠", "1日の質問回数の上限を引き上げ、Pro 深思考モデルも解放。進学・就職・生活の相談がより的確になります。"),
+    },
     "verified_badge": {
         "zh": ("蓝色认证标识", "个人主页和内容卡片展示 Machi 认证标识。"),
         "en": ("Verified badge", "Show a Machi Verified badge next to your name, on your profile, and on public content cards."),
@@ -9165,14 +9171,36 @@ _MACHI_AI_TOKEN_SPLIT = re.compile(
 )
 _MACHI_AI_VOCAB: tuple[str, ...] = (
     "租房", "房子", "初期费用", "礼金", "敷金", "更新料", "保证公司", "share house", "ur",
-    "搬家", "退租", "押金", "签证", "在留", "在留资格", "更新", "入管", "永住", "归化",
-    "年金", "国民年金", "厚生年金", "保险", "健康保险", "医疗", "看病", "牙医", "防灾",
-    "地震", "台风", "垃圾", "分类", "区役所", "市役所", "银行", "开户", "手机", "手机卡",
-    "语言学校", "大学", "大学院", "出愿", "研究计划", "研究计划书", "教授", "内诺", "奖学金",
-    "eju", "留考", "面接", "面试", "履历书", "职务经历", "就活", "就职", "转职", "派遣",
-    "正社员", "兼职", "打工", "时薪", "工作签证", "职场", "日语", "jlpt", "n1", "n2", "n3",
-    "敬语", "商务邮件", "会员", "工作台", "todo", "日历", "学校库", "公司库",
+    "搬家", "退租", "押金", "转租", "室友", "民宿", "买房", "签证", "在留", "在留资格",
+    "在留卡", "更新", "入管", "永住", "归化", "再入国", "家族滞在", "经营管理", "高度人才",
+    "特定技能", "技术人文", "住民票", "印鉴", "マイナンバー", "my number",
+    "年金", "国民年金", "厚生年金", "免除", "保险", "健康保险", "国民健康保险", "医疗", "看病",
+    "牙医", "防灾", "地震", "台风", "垃圾", "分类", "区役所", "市役所", "银行", "开户",
+    "手机", "手机卡", "定期券", "通勤", "驾照", "免许", "国际驾照", "家计簿", "确定申告",
+    "住民税", "所得税", "保育园", "育儿", "二手",
+    "语言学校", "专门学校", "大学", "大学院", "出愿", "编入", "研究计划", "研究计划书",
+    "教授", "内诺", "奖学金", "学费", "入学金", "eju", "留考",
+    "面接", "面试", "履历书", "职务经历", "自己pr", "志望动机", "内定", "内推", "实习",
+    "就活", "就职", "求人", "转职", "派遣", "正社员", "兼职", "打工", "时薪", "工作签证",
+    "职场", "es", "web测试", "toeic", "托业",
+    "日语", "jlpt", "n1", "n2", "n3", "敬语", "商务邮件",
+    "会员", "工作台", "todo", "日历", "学校库", "公司库",
 )
+
+# 口语说法 → Guide 词表里的规范词。用户"换个说法"提问时(如"找工作""住的地方"
+# "考日语"),把它映射到 Guide 内容里实际用的词,显著提升 LIKE 检索的召回。
+_MACHI_AI_ALIASES: dict[str, tuple[str, ...]] = {
+    "找工作": ("就职", "求人", "面试"), "求职": ("就职", "求人"), "工作": ("就职", "求人"),
+    "上班": ("就职", "职场"), "换工作": ("转职", "求人"), "跳槽": ("转职",),
+    "住的地方": ("租房", "房子"), "房租": ("租房", "初期费用"), "租房子": ("租房", "初期费用"),
+    "搬家": ("搬家", "退租"), "考日语": ("jlpt", "n1", "n2"), "日语考试": ("jlpt", "n1", "n2"),
+    "能力考": ("jlpt",), "考级": ("jlpt",), "看病": ("医疗", "健康保险"), "生病": ("医疗", "健康保险"),
+    "养老": ("年金",), "退休": ("年金",), "续签": ("在留", "更新", "入管"),
+    "签证到期": ("在留", "更新", "入管"), "延签": ("在留", "更新"), "电话卡": ("手机卡",),
+    "开卡": ("银行", "开户"), "读研": ("大学院", "研究计划书"), "考研": ("大学院", "出愿"),
+    "升学": ("大学院", "语言学校"), "报税": ("确定申告", "住民税"), "交税": ("住民税", "所得税"),
+    "考驾照": ("驾照", "免许"), "记账": ("家计簿",), "怎么用": ("工作台", "学校库", "公司库"),
+}
 
 
 def machi_ai_keywords(text: str, *, limit: int = 6) -> list[str]:
@@ -9182,19 +9210,30 @@ def machi_ai_keywords(text: str, *, limit: int = 6) -> list[str]:
     out: list[str] = []
     seen: set[str] = set()
     low = text.lower()
+
+    def _add(term: str) -> bool:
+        key = term.lower()
+        if not term or key in seen:
+            return False
+        seen.add(key)
+        out.append(term)
+        return len(out) >= limit
+
+    # 1) 领域词表直接命中
     for term in _MACHI_AI_VOCAB:
-        if term in low and term not in seen:
-            seen.add(term)
-            out.append(term)
-            if len(out) >= limit:
-                return out
+        if term in low and _add(term):
+            return out
+    # 2) 口语别名扩展(治"换个说法搜不到")
+    for trigger, extras in _MACHI_AI_ALIASES.items():
+        if trigger in low:
+            for extra in extras:
+                if _add(extra):
+                    return out
+    # 3) 兜底:按标点/空白切词,补足剩余名额
     for raw in _MACHI_AI_TOKEN_SPLIT.split(text):
         word = raw.strip()
-        if 2 <= len(word) <= 16 and word.lower() not in seen:
-            seen.add(word.lower())
-            out.append(word)
-            if len(out) >= limit:
-                break
+        if 2 <= len(word) <= 16 and _add(word):
+            break
     return out
 
 
@@ -9239,7 +9278,7 @@ def guide_ai_retrieve_context(conn: sqlite3.Connection, *, user_message: str, co
     if limit <= 0:
         return []
     country = (country or GUIDE_DEFAULT_COUNTRY).strip().lower() or GUIDE_DEFAULT_COUNTRY
-    terms = machi_ai_keywords(user_message, limit=5)
+    terms = machi_ai_keywords(user_message, limit=8)
     if not terms:
         return []
 
@@ -14965,10 +15004,14 @@ class Handler(BaseHTTPRequestHandler):
             self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
             return self._guide_ai_quota_response(language, is_member)
         completion = None
+        # 会员用 Pro 深度模型,免费用户用基础模型 —— 这是会员的核心价值之一。
+        # 若 Pro 模型上游异常,下方 try/except 会优雅降级为 AI_UNAVAILABLE 并退还
+        # 额度,不会影响会员正常使用其它功能。
+        chat_model = MACHI_AI_PRO_MODEL if (is_member and MACHI_AI_PRO_MODEL) else MACHI_AI_MODEL
         try:
             completion = seed_llm.machi_ai_chat_completion(
                 messages,
-                model=MACHI_AI_MODEL,
+                model=chat_model,
                 thinking=thinking,
                 max_tokens=1600,
                 timeout=MACHI_AI_TIMEOUT_SEC,
