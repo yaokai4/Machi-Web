@@ -450,6 +450,9 @@ export const PostSchema: z.ZodType<KXPost, z.ZodTypeDef, unknown> = z.lazy(() =>
     is_boosted: z.boolean().optional(),
     boost_weight: z.number().optional(),
     boosted_until: z.string().optional(),
+    // Latest live activity (e.g. a new comment) — powers the "N min ago" note on
+    // the Discover "happening now" radar. Optional: older servers omit it.
+    last_activity_at: z.string().nullable().optional(),
     language: z.string().optional(),
     poll: z.object({
       options: z.array(z.string()),
@@ -497,6 +500,7 @@ export interface KXPost {
   is_boosted?: boolean;
   boost_weight?: number;
   boosted_until?: string;
+  last_activity_at?: string | null;
   language?: string;
   poll?: {
     options: string[];

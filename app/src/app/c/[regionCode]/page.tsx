@@ -1,10 +1,11 @@
 "use client";
 
-import { use, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { use, useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useInfiniteQuery, keepPreviousData } from "@tanstack/react-query";
 import clsx from "clsx";
 import { Briefcase, ChevronLeft, Flame, Info, Leaf, Newspaper, ShoppingBag, Sparkles, Users } from "lucide-react";
 import Link from "next/link";
+import { usePathname, useRouter } from "next/navigation";
 import { AppShell } from "@/components/shell/AppShell";
 import { PostCard } from "@/components/feed/PostCard";
 import { ChannelEmptyState } from "@/components/feed/ChannelEmptyState";
@@ -49,6 +50,8 @@ export default function CityChannelPage({
   const { regionCode } = use(params);
   const { channel } = use(searchParams);
   const { locale } = useI18n();
+  const router = useRouter();
+  const pathname = usePathname();
   const decodedCode = decodeURIComponent(regionCode);
   const initialChannel = CITY_CHANNELS.includes(channel as CityChannelKey) ? (channel as CityChannelKey) : "recommend";
   const [primary, setPrimary] = useState<CityPrimary>(() => primaryForChannel(initialChannel));
@@ -62,6 +65,18 @@ export default function CityChannelPage({
     setPrimary(primaryForChannel(next));
     setActiveChannel(next);
   }, [channel]);
+
+  // Mirror the active channel into ?channel= so a deep link / refresh / share
+  // lands on the same tab, and browser back/forward moves between channels.
+  // scroll:false keeps the feed position when only the query changes.
+  const selectChannel = useCallback((next: CityChannelKey) => {
+    setPrimary(primaryForChannel(next));
+    setActiveChannel(next);
+    const usp = new URLSearchParams();
+    if (next !== "recommend") usp.set("channel", next);
+    const query = usp.toString();
+    router.replace(`${pathname}${query ? `?${query}` : ""}`, { scroll: false });
+  }, [router, pathname]);
 
   // Keep the active channel valid when the primary changes — snap to the
   // first channel of the new primary.
@@ -139,7 +154,7 @@ export default function CityChannelPage({
                 type="button"
                 data-active={primary === p}
                 className="kx-tab shrink-0 inline-flex items-center gap-1 px-3 h-8 text-sm whitespace-nowrap"
-                onClick={() => startTransition(() => setPrimary(p))}
+                onClick={() => startTransition(() => selectChannel(CITY_PRIMARY_CHANNELS[p][0] ?? "recommend"))}
               >
                 <Icon className="w-3.5 h-3.5" />
                 <span>{CITY_PRIMARY_LABELS[p]}</span>
@@ -158,7 +173,7 @@ export default function CityChannelPage({
               className={clsx(
                 "kx-tab shrink-0 px-2.5 h-7 text-xs whitespace-nowrap",
               )}
-              onClick={() => startTransition(() => setActiveChannel(c))}
+              onClick={() => startTransition(() => selectChannel(c))}
             >
               {CITY_CHANNEL_LABELS[c]}
             </button>

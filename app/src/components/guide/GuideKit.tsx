@@ -31,7 +31,7 @@ import {
 } from "lucide-react";
 import type { GuideCategory, GuideEmptyState, GuideProduct, GuideCompany, GuideGoalEntry, GuideResourceEntry, GuideSchool, GuideJourney } from "@/lib/guide";
 import { GUIDE_PRODUCT_TYPE_LABELS, guideCityLabel, isGuideArticleStale } from "@/lib/guide";
-import { formatPrice } from "@/lib/format";
+import { formatPrice, type FormatLocale } from "@/lib/format";
 import { regionAccountPatch, resolveRegion } from "@/lib/regions";
 import { useI18n, type Locale } from "@/lib/i18n";
 
@@ -438,16 +438,16 @@ function priceToneClass(tone: string): string {
   return base + "bg-kx-accentSoft text-kx-accent";
 }
 
-export function guideProductPrice(p: GuideProduct): { label: string; tone: "soon" | "free" | "service" | "paid" } {
-  if (p.isComingSoon || p.status === "coming_soon") return { label: formatPrice(p), tone: "soon" };
+export function guideProductPrice(p: GuideProduct, locale: FormatLocale = "zh-Hans"): { label: string; tone: "soon" | "free" | "service" | "paid" } {
+  if (p.isComingSoon || p.status === "coming_soon") return { label: formatPrice(p, "CNY", locale), tone: "soon" };
   if (p.isFree) return { label: "免费", tone: "free" };
-  if (p.isService || p.isAppointmentOnly || p.isPriceHidden) return { label: formatPrice(p) || "预约咨询", tone: "service" };
-  return { label: formatPrice(p), tone: "paid" };
+  if (p.isService || p.isAppointmentOnly || p.isPriceHidden) return { label: formatPrice(p, "CNY", locale) || "预约咨询", tone: "service" };
+  return { label: formatPrice(p, "CNY", locale), tone: "paid" };
 }
 
 export function ProductCard({ product }: { product: GuideProduct }) {
-  const { t } = useI18n();
-  const price = guideProductPrice(product);
+  const { t, locale } = useI18n();
+  const price = guideProductPrice(product, locale);
   const priceLabel = price.tone === "free" ? t("guide_free") : price.tone === "service" && price.label === "预约咨询" ? t("guide_appointment") : price.label;
   const typeLabel = GUIDE_PRODUCT_TYPE_LABELS[product.productType] || (product.isService ? t("guide_service") : t("guide_material"));
   return (

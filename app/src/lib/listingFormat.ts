@@ -319,32 +319,48 @@ export function formatListingAttribute(key: string, value: unknown, locale: List
   return clean;
 }
 
-export function compactListingFields(item: KXCityListing): string[] {
-  const attr = (key: string) => formatListingAttribute(key, item.attributes?.[key]);
+// Short chip labels used only by compactListingFields. Kept local (rather than
+// in DETAIL_FIELD_LABELS) so the compact-card wording can diverge from the
+// detail-page field labels.
+const COMPACT_CHIP_LABELS: Record<string, Record<ListingLocale, string>> = {
+  short_term: { zh: "短租", ja: "短期", en: "Short-term" },
+  roomshare: { zh: "合租", ja: "ルームシェア", en: "Roomshare" },
+  furnished: { zh: "家具家电", ja: "家具家電", en: "Furnished" },
+  visa_support: { zh: "签证支持", ja: "ビザサポート", en: "Visa support" },
+  foreigner_friendly: { zh: "外国人友好", ja: "外国人歓迎", en: "Foreigner friendly" },
+  verified_provider: { zh: "认证服务商", ja: "認証プロバイダー", en: "Verified provider" },
+  verified_merchant: { zh: "认证商家", ja: "認証店舗", en: "Verified merchant" },
+};
+const JAPANESE_PREFIX: Record<ListingLocale, string> = { zh: "日语", ja: "日本語", en: "Japanese" };
+const VALID_UNTIL_PREFIX: Record<ListingLocale, string> = { zh: "有效至", ja: "有効期限", en: "Valid until" };
+
+export function compactListingFields(item: KXCityListing, locale: ListingLocale = "zh"): string[] {
+  const attr = (key: string) => formatListingAttribute(key, item.attributes?.[key], locale);
   const clean = (value: unknown) => cleanListingText(value);
+  const chip = (key: keyof typeof COMPACT_CHIP_LABELS) => COMPACT_CHIP_LABELS[key][locale];
   const fields = item.type === "rental"
     ? [
         attr("nearest_station"),
         attr("layout"),
         attr("area_sqm"),
-        boolAttr(item, "short_term_allowed") ? "短租" : "",
-        boolAttr(item, "share_allowed") ? "合租" : "",
-        boolAttr(item, "furnished") ? "家具家电" : "",
-        item.verification_status !== "verified" ? formatVerificationStatus(item.verification_status) : "",
+        boolAttr(item, "short_term_allowed") ? chip("short_term") : "",
+        boolAttr(item, "share_allowed") ? chip("roomshare") : "",
+        boolAttr(item, "furnished") ? chip("furnished") : "",
+        item.verification_status !== "verified" ? formatVerificationStatus(item.verification_status, locale) : "",
       ]
     : item.type === "job" || item.type === "hiring"
       ? [
           attr("company_name"),
           attr("employment_type"),
           attr("salary_type"),
-          attr("japanese_level") ? `日语 ${attr("japanese_level")}` : "",
-          boolAttr(item, "visa_support") ? "签证支持" : "",
-          boolAttr(item, "foreigner_friendly") ? "外国人友好" : "",
+          attr("japanese_level") ? `${JAPANESE_PREFIX[locale]} ${attr("japanese_level")}` : "",
+          boolAttr(item, "visa_support") ? chip("visa_support") : "",
+          boolAttr(item, "foreigner_friendly") ? chip("foreigner_friendly") : "",
         ]
       : item.type === "local_service"
-        ? [attr("service_type"), attr("service_area"), attr("price_unit"), item.verification_status === "verified" ? "认证服务商" : ""]
+        ? [attr("service_type"), attr("service_area"), attr("price_unit"), item.verification_status === "verified" ? chip("verified_provider") : ""]
         : item.type === "discount"
-          ? [attr("merchant_name"), attr("discount_info"), attr("valid_until") ? `有效至 ${attr("valid_until")}` : "", item.verification_status === "verified" ? "认证商家" : ""]
+          ? [attr("merchant_name"), attr("discount_info"), attr("valid_until") ? `${VALID_UNTIL_PREFIX[locale]} ${attr("valid_until")}` : "", item.verification_status === "verified" ? chip("verified_merchant") : ""]
           : [clean(item.category), attr("listing_mode"), attr("condition"), attr("delivery_method")];
   return fields.filter((field) => !!clean(field));
 }

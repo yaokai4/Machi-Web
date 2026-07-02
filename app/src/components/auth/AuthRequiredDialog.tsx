@@ -4,7 +4,8 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { Dialog } from "@/components/design/Dialog";
-import { useAuthPrompt } from "@/lib/store";
+import { useAuthPrompt, AUTH_PROMPT_KEYS } from "@/lib/store";
+import { useI18n, type I18nKey } from "@/lib/i18n";
 
 function currentRedirectPath() {
   if (typeof window === "undefined") return "/";
@@ -22,6 +23,7 @@ export function AuthRequiredDialog() {
   const pathname = usePathname();
   const prompt = useAuthPrompt((s) => s.prompt);
   const close = useAuthPrompt((s) => s.close);
+  const { t } = useI18n();
   const [redirect, setRedirect] = useState("/");
 
   useEffect(() => {
@@ -36,26 +38,31 @@ export function AuthRequiredDialog() {
     [redirect],
   );
 
+  // Literal overrides win; otherwise resolve the keyed copy for the prompt kind.
+  const keys = prompt ? AUTH_PROMPT_KEYS[prompt.kind] : null;
+  const title = prompt?.title ?? (keys ? t(keys.titleKey as I18nKey) : undefined);
+  const body = prompt?.body ?? (keys ? t(keys.bodyKey as I18nKey) : undefined);
+
   return (
     <Dialog
       open={!!prompt}
       onClose={close}
-      title={prompt?.title}
+      title={title}
       footer={
         <>
           <button type="button" className="kx-button-ghost" onClick={close}>
-            稍后再说
+            {t("auth_prompt_later")}
           </button>
           <Link className="kx-button-ghost" href={links.register} onClick={close}>
-            注册
+            {t("register")}
           </Link>
           <Link className="kx-button-primary" href={links.login} onClick={close}>
-            登录
+            {t("login")}
           </Link>
         </>
       }
     >
-      <p className="text-sm leading-relaxed text-kx-subtle">{prompt?.body}</p>
+      <p className="text-sm leading-relaxed text-kx-subtle">{body}</p>
     </Dialog>
   );
 }

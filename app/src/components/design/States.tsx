@@ -3,6 +3,7 @@
 import clsx from "clsx";
 import type React from "react";
 import { AlertCircle, ArrowRight, Inbox, Loader2, RefreshCw } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 export function Skeleton({ className }: { className?: string }) {
   return <div className={clsx("kx-skeleton", className)} />;
@@ -105,19 +106,21 @@ export function PremiumEmptyState(props: Parameters<typeof EmptyState>[0]) {
 }
 
 export function SectionLoading({
-  title = "正在加载内容",
+  title,
   rows = 3,
 }: {
   title?: string;
   rows?: number;
 }) {
+  const { t } = useI18n();
+  const resolvedTitle = title ?? t("states_section_loading");
   return (
     <div className="rounded-[28px] border border-kx-stroke/35 bg-kx-card/82 p-4 shadow-[0_18px_54px_-42px_rgb(var(--kx-shadow)/0.42)]">
       <div className="mb-4 flex items-center gap-3">
         <Skeleton className="h-10 w-10 rounded-2xl" />
         <div className="min-w-0 flex-1 space-y-2">
           <Skeleton className="h-3 w-36 rounded-full" />
-          <div className="text-xs font-semibold text-kx-muted">{title}</div>
+          <div className="text-xs font-semibold text-kx-muted">{resolvedTitle}</div>
         </div>
       </div>
       <div className="space-y-3">
@@ -130,7 +133,7 @@ export function SectionLoading({
 }
 
 export function ErrorState({
-  title = "页面暂时无法加载",
+  title,
   subtitle,
   onRetry,
 }: {
@@ -138,16 +141,17 @@ export function ErrorState({
   subtitle?: string;
   onRetry?: () => void;
 }) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-col items-center justify-center text-center px-6 py-12 gap-3 text-kx-subtle">
       <div className="rounded-full bg-kx-accent/10 p-3">
         <AlertCircle className="w-6 h-6 text-kx-accent/80" />
       </div>
-      <div className="text-base font-semibold text-kx-text">{title}</div>
+      <div className="text-base font-semibold text-kx-text">{title ?? t("states_error_title")}</div>
       {subtitle ? <div className="text-sm text-kx-subtle max-w-sm">{subtitle}</div> : null}
       {onRetry ? (
         <button onClick={onRetry} className="kx-button-ghost mt-1">
-          <RefreshCw className="w-4 h-4" /> 重新尝试
+          <RefreshCw className="w-4 h-4" /> {t("action_retry")}
         </button>
       ) : null}
     </div>
@@ -162,10 +166,11 @@ export function FullPageLoading() {
   );
 }
 
-export function InlineLoading({ label = "加载中" }: { label?: string }) {
+export function InlineLoading({ label }: { label?: string }) {
+  const { t } = useI18n();
   return (
     <div className="flex items-center justify-center py-8 gap-2 text-kx-muted text-sm">
-      <Loader2 className="w-4 h-4 animate-spin" /> {label}
+      <Loader2 className="w-4 h-4 animate-spin" /> {label ?? t("loading")}
     </div>
   );
 }

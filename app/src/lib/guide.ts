@@ -1509,7 +1509,10 @@ export const guide = {
     greq<{ status: string; conversation: GuideAIConversation; items: GuideAIMessage[] }>(
       "GET", `/api/guide/ai/conversations/${encodeURIComponent(conversationId)}/messages`),
   aiChat: (body: { conversationId?: string | null; message: string; country?: string; language?: string; category?: string; ability?: string }) =>
-    greq<GuideAIChatResult>("POST", "/api/guide/ai/chat", body),
+    // Machi AI answers can take a while (RAG + LLM). Give the request a
+    // generous 90s ceiling — the default 12s greq timeout aborts mid-answer,
+    // which still deducts server-side quota but drops the reply on the floor.
+    greq<GuideAIChatResult>("POST", "/api/guide/ai/chat", body, 90_000),
   aiDeleteConversation: (id: string) =>
     greq<{ status: string }>("DELETE", `/api/guide/ai/conversations/${encodeURIComponent(id)}`),
   aiFeedback: (messageId: string, rating: "helpful" | "not_helpful", reason?: string) =>

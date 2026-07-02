@@ -16,6 +16,7 @@ import {
   Users,
   Compass,
   MapPin,
+  Zap,
 } from "lucide-react";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
@@ -597,8 +598,27 @@ function HotScopeTabs({ scope, onChange, region, locale }: { scope: HotScope; on
   );
 }
 
+// Minutes since the post's latest live activity, but only when the backend
+// sends last_activity_at AND it is meaningfully newer than creation (a real new
+// discussion, not just the created timestamp echoed back). Returns null to hide.
+function recentActivityMinutes(post: KXPost): number | null {
+  const raw = post.last_activity_at;
+  if (!raw) return null;
+  const activity = new Date(raw).getTime();
+  const created = new Date(post.created_at).getTime();
+  if (!Number.isFinite(activity)) return null;
+  // Require >= 2 min gap over creation so we don't label brand-new posts.
+  if (Number.isFinite(created) && activity - created < 2 * 60 * 1000) return null;
+  const minutes = Math.round((Date.now() - activity) / 60000);
+  // Only badge activity within the last 24h; older isn't "happening now".
+  if (minutes < 0 || minutes > 24 * 60) return null;
+  return Math.max(1, minutes);
+}
+
 function HotPostItem({ post, rank, locale }: { post: KXPost; rank: number; locale: Locale }) {
+  const { t } = useI18n();
   const title = post.content || String(post.attributes?.title || contentTypeLabel(post.content_type || "dynamic", locale));
+  const activityMinutes = recentActivityMinutes(post);
   return (
     <li>
       <Link href={`/p/${post.id}`} className="group kx-discover-row -mx-2 flex items-start gap-3 px-2 py-3">
@@ -615,8 +635,14 @@ function HotPostItem({ post, rank, locale }: { post: KXPost; rank: number; local
             <span className="rounded-full bg-kx-soft px-2 py-0.5 font-medium text-kx-subtle">{contentTypeLabel(post.content_type || "dynamic", locale)}</span>
             <span className="inline-flex items-center gap-1"><MessageCircle className="h-3 w-3" /> {compactNumber(post.comment_count)}</span>
             <span className="inline-flex items-center gap-1"><Eye className="h-3 w-3" /> {compactNumber(post.view_count)}</span>
-            <span>{relativeTime(post.created_at)}</span>
+            <time dateTime={post.created_at} suppressHydrationWarning>{relativeTime(post.created_at, locale)}</time>
           </div>
+          {activityMinutes !== null ? (
+            <div className="mt-1 inline-flex items-center gap-1 text-xs font-bold text-kx-accent">
+              <Zap className="h-3 w-3" />
+              {t("topic_last_activity").replace("{n}", String(activityMinutes))}
+            </div>
+          ) : null}
         </div>
       </Link>
     </li>

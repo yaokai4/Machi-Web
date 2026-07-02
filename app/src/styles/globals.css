@@ -106,16 +106,37 @@ body {
   overflow-x: clip;
   background: rgb(var(--kx-bg));
   color: rgb(var(--kx-text));
-  font-family: var(--kx-font, "Inter"), Inter, system-ui, -apple-system, BlinkMacSystemFont,
-    "Segoe UI", "Noto Sans SC", "Noto Sans JP", "PingFang SC", "Hiragino Sans", sans-serif;
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "Segoe UI", "PingFang SC", "Hiragino Sans", "Noto Sans JP", "Noto Sans SC", sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
+/* Reserve the scrollbar's width even when content doesn't overflow, so
+   navigating between short and long pages doesn't shift the layout. */
+html {
+  scrollbar-gutter: stable;
+}
+
+/* Language-aware font stacks: put the matching CJK face first so Japanese
+   and Chinese text renders in its native metrics instead of a fallback. */
+:root:lang(ja),
+:lang(ja) {
+  font-family: "Hiragino Sans", "Noto Sans JP", system-ui, -apple-system,
+    BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+
+:root:lang(zh),
+:lang(zh) {
+  font-family: "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", system-ui,
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+}
+
 body {
   min-height: 100dvh;
-  color: #333333;
+  /* No explicit color here — the `html, body { color: rgb(var(--kx-text)) }`
+     rule above owns text colour so dark mode inherits correctly. */
   background:
     linear-gradient(45deg, #FFFEFC 0%, #FAF7F1 24%, #F4FAF6 48%, #F2F9F4 72%, #FCFAF4 100%);
   background-size: 100% 100%;
@@ -222,7 +243,7 @@ body::before {
 
 /* selection */
 ::selection {
-  background: rgba(60, 64, 198, 0.18);
+  background: rgb(var(--kx-accent) / 0.22);
   color: rgb(var(--kx-text));
 }
 
@@ -326,7 +347,7 @@ body::before {
     align-items: center;
     justify-content: center;
     border-radius: 999px;
-    color: #666666;
+    color: rgb(var(--kx-subtle));
     transition:
       color 180ms ease,
       background 180ms ease,
@@ -1129,6 +1150,22 @@ body::before {
       0 18px 40px -34px rgb(var(--kx-shadow) / 0.28);
   }
 
+  /* Dark mode: the hardcoded white gradient above blows out on the dark
+     surface — mirror the guide-card dark treatment (living-surface fill +
+     faint white edge) so panels read as raised cards, not white blocks. */
+  :root.dark .kx-guide-plan-panel,
+  :root.dark .kx-guide-tool-panel,
+  :root.dark .kx-guide-context-empty,
+  [data-theme="dark"] .kx-guide-plan-panel,
+  [data-theme="dark"] .kx-guide-tool-panel,
+  [data-theme="dark"] .kx-guide-context-empty {
+    border-color: rgb(255 255 255 / 0.06);
+    background: linear-gradient(180deg, rgb(var(--kx-living-surface)), rgb(var(--kx-living-surface) / 0.9));
+    box-shadow:
+      inset 0 1px 0 rgb(255 255 255 / 0.04),
+      0 18px 40px -34px rgb(0 0 0 / 0.5);
+  }
+
   .kx-guide-tool-button {
     display: flex;
     min-height: 4.25rem;
@@ -1602,6 +1639,18 @@ body::before {
            transition-all duration-200 ease-out;
   }
 
+  /* Outlined accent CTA — a step between the filled primary and the neutral
+     ghost. Reads as a real call-to-action (accent text + hairline accent
+     border) without the visual weight of a filled button. Token-driven so
+     dark mode is automatic. */
+  .kx-button-secondary {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-full
+           bg-transparent text-kx-accent font-semibold text-sm px-4 h-9
+           border border-kx-accent/40 hover:bg-kx-accentSoft active:scale-[0.97]
+           transition-all duration-200 ease-out
+           disabled:opacity-50 disabled:pointer-events-none;
+  }
+
   .kx-button-danger {
     @apply inline-flex items-center justify-center gap-1.5 rounded-full
            bg-kx-danger text-white font-semibold text-sm px-4 h-9
@@ -1707,6 +1756,14 @@ body::before {
     @apply inline-flex items-center gap-1.5 text-kx-meta font-semibold text-kx-subtle
            min-h-9 px-2 rounded-full transition-all duration-200 ease-out
            hover:text-kx-text hover:bg-kx-soft/60 active:scale-[0.96];
+    /* Counts don't jitter in width as they tick up. */
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Opt-in tabular figures for prices / stats / any right-aligned numeric
+     column so digits line up and don't reflow as values change. */
+  .kx-tabular-nums {
+    font-variant-numeric: tabular-nums;
   }
   .kx-metric:hover svg { @apply scale-110; transition: transform 200ms ease-out; }
   .kx-metric svg { transition: transform 200ms ease-out; }
@@ -1749,6 +1806,11 @@ body::before {
     min-height: 40px;
     padding-left: 0.625rem;
     padding-right: 0.625rem;
+  }
+  .kx-tab,
+  .kx-nav-tab,
+  .kx-chat-tool-button {
+    min-height: 40px;
   }
 }
 

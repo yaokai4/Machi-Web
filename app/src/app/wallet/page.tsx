@@ -10,7 +10,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { AlertTriangle, CheckCircle2, Coins, Loader2, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
+import { AlertTriangle, BadgeCheck, CheckCircle2, Coins, Loader2, RefreshCw, ShieldCheck, Sparkles } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
@@ -206,11 +206,34 @@ export default function WalletPage() {
               </div>
             </section>
 
+            {/* Membership cross-sell — only for users who are NOT already members.
+                Members already have the member price, so no need to upsell them. */}
+            {!user.is_verified_member ? (
+              <section className="kx-card flex items-start gap-3">
+                <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-kx-accentSoft text-kx-accent">
+                  <BadgeCheck className="h-5 w-5" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h2 className="font-semibold text-kx-text">{t("wallet_membership_card_title")}</h2>
+                  <p className="mt-1 text-sm text-kx-subtle">{t("wallet_membership_card_body")}</p>
+                  <Link href="/membership" className="mt-2 inline-flex items-center gap-1 text-sm font-bold text-kx-accent hover:underline">
+                    {t("wallet_membership_card_cta")} →
+                  </Link>
+                </div>
+              </section>
+            ) : null}
+
             {/* Top-up packs */}
             <section className="kx-card space-y-3">
-              <div className="flex items-center gap-2">
-                <Sparkles className="h-5 w-5 text-kx-accent" />
-                <h2 className="font-semibold text-kx-text">{t("wallet_topup_title")}</h2>
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-kx-accent" />
+                  <h2 className="font-semibold text-kx-text">{t("wallet_topup_title")}</h2>
+                </div>
+                <span className="inline-flex items-center gap-1 rounded-full bg-kx-accentSoft px-2.5 py-1 text-xs font-bold text-kx-accent">
+                  <BadgeCheck className="h-3.5 w-3.5" />
+                  {t("wallet_member_price_note")}
+                </span>
               </div>
               {walletQuery.isLoading ? (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

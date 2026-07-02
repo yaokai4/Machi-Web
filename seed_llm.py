@@ -68,6 +68,7 @@ DEEPSEEK_MODEL = _env("DEEPSEEK_MODEL", "deepseek-chat")
 DEEPSEEK_MODELS: dict[str, str] = {
     "deepseek-chat": "标准（快速）",
     "deepseek-reasoner": "深度思考",
+    "deepseek-v4-flash": "标准（快速）",  # Machi AI base model (verified live on /models)
     "deepseek-v4-pro": "Pro（更强）",
 }
 
@@ -898,23 +899,47 @@ def machi_ai_chat_completion(
 
     start = time.monotonic()
     data: dict[str, Any] | None = None
-    # One short backoff retry on transient upstream states (429/5xx, network).
-    for attempt in range(2):
+    # Two independent one-shot retries:
+    #  - transient backoff on 429/5xx/network (unchanged behaviour), and
+    #  - a model-fallback: if the upstream rejects the requested model (e.g. a
+    #    Pro id gets renamed/retired) with a 400, retry once on the verified base
+    #    model so members degrade to a working answer instead of a hard failure.
+    # Each budget is spent at most once; the loop can therefore run 2 attempts.
+    transient_retry_left = 1
+    model_retry_left = 1
+    while True:
         try:
             data = _deepseek_chat_once(payload, req_timeout)
             break
         except urllib.error.HTTPError as exc:
-            # Drain the body without logging it (no provider error leakage).
+            # Read the body once so we can inspect a 400 for a model complaint.
+            # We never log it (no provider error leakage) and only sniff for the
+            # narrow "invalid model" signal.
+            err_body = ""
             try:
-                exc.read()
+                err_body = (exc.read() or b"").decode("utf-8", "replace").lower()
             except Exception:
-                pass
-            if attempt == 0 and exc.code in (429, 500, 502, 503):
+                err_body = ""
+            # Invalid-model 400 → retry once on the base model, only when we
+            # weren't already on it.
+            if (
+                exc.code == 400
+                and model_retry_left > 0
+                and payload["model"] != MACHI_AI_CHAT_MODEL
+                and "model" in err_body
+                and "invalid" in err_body
+            ):
+                model_retry_left = 0
+                payload["model"] = MACHI_AI_CHAT_MODEL
+                continue
+            if transient_retry_left > 0 and exc.code in (429, 500, 502, 503):
+                transient_retry_left = 0
                 time.sleep(0.6)
                 continue
             return None
         except Exception:
-            if attempt == 0:
+            if transient_retry_left > 0:
+                transient_retry_left = 0
                 time.sleep(0.4)
                 continue
             return None

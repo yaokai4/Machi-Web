@@ -28,7 +28,7 @@ import { EmptyState, ErrorState, InlineLoading } from "@/components/design/State
 import { NavTabs } from "@/components/design/NavTabs";
 import { relativeTime } from "@/lib/format";
 import { useToasts } from "@/lib/store";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type I18nKey } from "@/lib/i18n";
 import type { KXNotification } from "@/lib/types";
 
 type NotificationsResponse = { items: KXNotification[]; unread_count: number };
@@ -55,7 +55,7 @@ export default function NotificationsPage() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
   const router = useRouter();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const FILTERS = [
     { value: "all", label: t("notif_filter_all") },
     { value: "like", label: t("notif_filter_like") },
@@ -100,11 +100,16 @@ export default function NotificationsPage() {
     }
   };
 
-  const remove = async (id: string) => {
+  // The list groups consecutive same-type notifications by post, so deleting a
+  // row must delete EVERY notification in that group — otherwise the group just
+  // re-renders from the remaining items and the row looks undeletable.
+  const removeGroup = async (ids: string[]) => {
+    if (ids.length === 0) return;
     try {
-      await api.deleteNotification(id);
+      await Promise.all(ids.map((id) => api.deleteNotification(id)));
       queryClient.invalidateQueries({ queryKey: ["notifications"] });
     } catch (err) {
+      queryClient.invalidateQueries({ queryKey: ["notifications"] });
       pushToast({ kind: "error", message: (err as APIError).message });
     }
   };
@@ -182,6 +187,7 @@ export default function NotificationsPage() {
             const moreCount = group.items.length - 1;
             const unread = group.items.some((i) => !i.is_read);
             const unreadIds = group.items.filter((i) => !i.is_read).map((i) => i.id);
+            const groupIds = group.items.map((i) => i.id);
             return (
               <li
                 key={group.key}
@@ -238,9 +244,9 @@ export default function NotificationsPage() {
                         {main.actor.display_name}
                       </Link>
                     ) : (
-                      <strong>用户</strong>
+                      <strong>{t("notif_actor_fallback")}</strong>
                     )}
-                    {moreCount > 0 ? <span className="text-kx-muted"> 等 {moreCount + 1} 位 </span> : <span className="text-kx-muted"> </span>}
+                    {moreCount > 0 ? <span className="text-kx-muted"> {t("notif_more").replace("{n}", String(moreCount + 1))} </span> : <span className="text-kx-muted"> </span>}
                     <NotifVerb kind={group.kind} />
                     {main.target_conversation_id ? (
                       <Link
@@ -252,7 +258,7 @@ export default function NotificationsPage() {
                         }}
                         className="kx-link ml-1"
                       >
-                        查看对话
+                        {t("notif_view_conversation")}
                       </Link>
                     ) : main.target_listing_id ? (
                       <Link
@@ -264,7 +270,7 @@ export default function NotificationsPage() {
                         }}
                         className="kx-link ml-1"
                       >
-                        查看信息
+                        {t("notif_view_listing")}
                       </Link>
                     ) : main.target_post_id ? (
                       <Link
@@ -276,12 +282,12 @@ export default function NotificationsPage() {
                         }}
                         className="kx-link ml-1"
                       >
-                        查看帖子
+                        {t("notif_view_post")}
                       </Link>
                     ) : null}
                   </div>
                   {main.content ? <div className="text-xs text-kx-subtle mt-1 line-clamp-2">{main.content}</div> : null}
-                  <div className="text-xs text-kx-muted mt-1">{relativeTime(main.created_at)}</div>
+                  <div className="text-xs text-kx-muted mt-1"><time dateTime={main.created_at} suppressHydrationWarning>{relativeTime(main.created_at, locale)}</time></div>
                 </div>
                 <div className="flex shrink-0 flex-col items-end gap-2">
                   {unread ? (
@@ -291,22 +297,22 @@ export default function NotificationsPage() {
                         e.stopPropagation();
                         void markIds(unreadIds);
                       }}
-                      aria-label="标记为已查看"
+                      aria-label={t("notif_unviewed")}
                     >
-                      <CheckCheck className="h-3.5 w-3.5" /> 未查看
+                      <CheckCheck className="h-3.5 w-3.5" /> {t("notif_unviewed")}
                     </button>
                   ) : (
                     <span className="inline-flex h-8 items-center gap-1.5 whitespace-nowrap rounded-full bg-kx-soft px-2.5 text-xs font-bold text-kx-muted">
-                      <CheckCheck className="h-3.5 w-3.5" /> 已查看
+                      <CheckCheck className="h-3.5 w-3.5" /> {t("notif_viewed")}
                     </span>
                   )}
                   <button
                     className="text-kx-muted opacity-70 transition hover:text-kx-danger group-hover:opacity-100"
                     onClick={(e) => {
                       e.stopPropagation();
-                      remove(main.id);
+                      void removeGroup(groupIds);
                     }}
-                    aria-label="删除"
+                    aria-label={t("notif_delete")}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -320,22 +326,24 @@ export default function NotificationsPage() {
   );
 }
 
+const NOTIF_VERB_KEYS: Record<string, I18nKey> = {
+  like: "notif_verb_like",
+  comment: "notif_verb_comment",
+  reply: "notif_verb_reply",
+  repost: "notif_verb_repost",
+  follow: "notif_verb_follow",
+  bookmark: "notif_verb_bookmark",
+  mention: "notif_verb_mention",
+  system: "notif_verb_system",
+  listing_inquiry: "notif_verb_listing_inquiry",
+  listing_inquiry_status: "notif_verb_listing_inquiry_status",
+  listing_review: "notif_verb_listing_review",
+  listing_review_reply: "notif_verb_listing_review_reply",
+  message: "notif_verb_message",
+  meetup_join: "notif_verb_meetup_join",
+};
+
 function NotifVerb({ kind }: { kind: string }) {
-  switch (kind) {
-    case "like": return <>赞了你的帖子</>;
-    case "comment": return <>评论了你的帖子</>;
-    case "reply": return <>回复了你</>;
-    case "repost": return <>转发了你的帖子</>;
-    case "follow": return <>关注了你</>;
-    case "bookmark": return <>收藏了你的帖子</>;
-    case "mention": return <>提到了你</>;
-    case "system": return <>系统通知</>;
-    case "listing_inquiry": return <>联系了你发布的城市信息</>;
-    case "listing_inquiry_status": return <>更新了咨询 / 预约状态</>;
-    case "listing_review": return <>点评了你发布的城市信息</>;
-    case "listing_review_reply": return <>回复了你的点评</>;
-    case "message": return <>给你发来一条私信</>;
-    case "meetup_join": return <>报名参加了你的活动</>;
-    default: return <>给你发来新通知</>;
-  }
+  const { t } = useI18n();
+  return <>{t(NOTIF_VERB_KEYS[kind] ?? "notif_verb_default")}</>;
 }

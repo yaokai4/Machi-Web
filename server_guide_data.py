@@ -28,6 +28,109 @@ def _normalize_language_tag(raw: Any) -> str:
     return aliases.get(value.lower(), value if value in {"zh-CN", "en", "ja"} else value[:16])
 
 
+# All seed articles are original editorial整理, so every row carries this label.
+GUIDE_ARTICLE_SOURCE_LABEL = "Machi 编辑部整理"
+# Publish/verify date for the seed batch. Used as verified_at so the stale queue
+# has a real anchor; the ensure_ backfill also fills existing empty rows with it.
+GUIDE_ARTICLE_SEED_VERIFIED_AT = "2026-07-01"
+
+# 政策/时效敏感文章的复核窗口更短(签证·入管·税务·年金·保险·劳动法·换驾照 90 天),
+# 其余生活/学习类 180 天。source_url 只对能对上官方主管机关的政策类文章填写,
+# 其余留空(source_label 仍标 Machi 编辑部整理,诚实表明是原创整理而非转载)。
+# 官方站:出入国在留管理庁 moj.go.jp/isa、国税庁 nta.go.jp、日本年金機構 nenkin.go.jp、
+# 厚生労働省 mhlw.go.jp、国土交通省 mlit.go.jp、警察庁 npa.go.jp、JLPT jlpt.jp、JASSO jasso.go.jp。
+_STALE_POLICY = 90   # 政策类:更新快,复核勤
+_STALE_DEFAULT = 180  # 生活/学习类
+
+# slug -> (source_url, stale_after_days)。未列入的文章走 (''、180 天) 默认。
+GUIDE_ARTICLE_SOURCE_META: dict[str, tuple[str, int]] = {
+    # ---- 入管/在留/签证(政策 90 天,出入国在留管理庁)----
+    "language-school-application": ("https://www.moj.go.jp/isa/", _STALE_POLICY),
+    "first-week-in-japan-checklist": ("https://www.moj.go.jp/isa/", _STALE_POLICY),
+    "residence-card-and-juminhyo": ("https://www.moj.go.jp/isa/", _STALE_POLICY),
+    "student-part-time-job-rules": ("https://www.moj.go.jp/isa/", _STALE_POLICY),
+    "work-visa-gijinkoku-basics": ("https://www.moj.go.jp/isa/", _STALE_POLICY),
+    "student-visa-documents-parent-sponsor": ("https://www.moj.go.jp/isa/", _STALE_POLICY),
+    # ---- 医疗保险/劳动/年金(政策 90 天,厚生労働省)----
+    "seeing-a-doctor-in-japan": ("https://www.mhlw.go.jp/", _STALE_POLICY),
+    "labor-conditions-checklist-japan": ("https://www.mhlw.go.jp/", _STALE_POLICY),
+    "leaving-a-job-checklist": ("https://www.mhlw.go.jp/", _STALE_POLICY),
+    # ---- 换驾照(政策 90 天,警察庁)----
+    "drivers-license-conversion": ("https://www.npa.go.jp/", _STALE_POLICY),
+    # ---- 租房原状回复引用国交省指引(政策类合同 90 天)----
+    "viewing-and-lease-contract-tips": ("https://www.mlit.go.jp/", _STALE_POLICY),
+    # ---- JLPT(官方 jlpt.jp,备考策略偏稳定,180 天)----
+    "jlpt-n2-study-roadmap": ("https://www.jlpt.jp/", _STALE_DEFAULT),
+    "jlpt-reading-speed": ("https://www.jlpt.jp/", _STALE_DEFAULT),
+    "n1-n2-grammar-method": ("https://www.jlpt.jp/", _STALE_DEFAULT),
+    "jlpt-n2-to-n1-strategy": ("https://www.jlpt.jp/", _STALE_DEFAULT),
+    "jlpt-n3-to-n2-roadmap": ("https://www.jlpt.jp/", _STALE_DEFAULT),
+    "jlpt-vocabulary-system": ("https://www.jlpt.jp/", _STALE_DEFAULT),
+    "jlpt-listening-training": ("https://www.jlpt.jp/", _STALE_DEFAULT),
+    "jlpt-mock-test-review-method": ("https://www.jlpt.jp/", _STALE_DEFAULT),
+    # ---- 奖学金(JASSO,180 天)----
+    "scholarships-overview-japan": ("https://www.jasso.go.jp/", _STALE_DEFAULT),
+    "scholarship-and-tuition-waiver-grad": ("https://www.jasso.go.jp/", _STALE_DEFAULT),
+}
+
+
+def guide_article_source_meta(slug: str) -> tuple[str, str, str, int]:
+    """(source_url, source_label, verified_at, stale_after_days) for a seed slug."""
+    url, stale = GUIDE_ARTICLE_SOURCE_META.get(slug, ("", _STALE_DEFAULT))
+    return url, GUIDE_ARTICLE_SOURCE_LABEL, GUIDE_ARTICLE_SEED_VERIFIED_AT, stale
+
+
+# ---- B5:12 篇旗舰文章正文升级(种子只插不改,线上老行靠幂等迁移升级)----
+# 这 12 篇 slug 的 body/summary 已在 GUIDE_ARTICLE_SEED 里升级为「旗舰规格」
+# (1500–3000 字、markdown 分节/步骤/表格/⚠提示/官方链接与免责声明)。新库 seed
+# 直接写入升级后正文;但线上库这些行早已存在,insert-only 的 seed 不会更新它们。
+# 因此 server._guide_backfill_existing_rows 会对这些行做一次幂等 UPDATE。
+# 安全条件:只更新「正文仍为种子时代原文」的行——用旧正文前 64 字符做指纹比对,
+# 不匹配(说明管理员在后台手改过)则跳过并记日志,绝不覆盖人工内容。
+GUIDE_FLAGSHIP_UPGRADE_VERIFIED_AT = "2026-07-03"
+
+# slug -> 种子时代旧 body 的前 64 个字符(升级前的原文指纹)。这些是升级前
+# GUIDE_ARTICLE_SEED 中对应文章 body 的开头,用于识别「未被人工改动」的线上行。
+_GUIDE_FLAGSHIP_OLD_BODY_FINGERPRINT: dict[str, str] = {
+    "first-week-in-japan-checklist": "刚到日本头几天事情很多，按优先级一件件来就不会乱。落地时在机场领取在留卡（部分机场当场发放），这是你在日本最重要的身份证件，务必",
+    "renting-initial-costs-explained": "在日本租房，搬进去之前要付的「初期费用」常常达到月租的 4–6 倍，由这些项目组成：敷金（押金，退房时扣除清洁修缮费后返还）、礼",
+    "residence-card-and-juminhyo": "在留卡（在留カード）是中长期在留外国人的法定身份证件，记录你的姓名、在留资格、在留期间和居住地等信息。需要随身携带，地址变更、在",
+    "work-visa-gijinkoku-basics": "「技術・人文知識・国際業務」（俗称技人国）是留学生就职后最常见的在留资格，覆盖工程师、设计、企划、营业、翻译等白领岗位。审查核心",
+    "bank-account-opening-guide": "刚到日本最容易开的是ゆうちょ银行（邮储）：对在留时间要求宽松、网点遍布全国，适合作为第一个账户。三菱UFJ、三井住友、みずほ等都",
+    "mobile-sim-and-internet": "日本手机资费大致三档：大手三社（docomo/au/SoftBank）信号与服务最全但月费高；它们的线上品牌（ahamo/pov",
+    "seeing-a-doctor-in-japan": "日本就医的基本逻辑是「先诊所后医院」：感冒发烧、皮肤、牙科等先去街边的クリニック（诊所）；需要进一步检查或手术时，由诊所开「紹介",
+    "jlpt-n2-study-roadmap": "N2 是很多升学和就职的门槛线。整体备考可以分三个阶段：打基础（词汇+语法）、强化（阅读+听力）、冲刺（真题题型+查漏补缺）。如",
+    "job-hunting-full-process": "日本就职分「新卒」和「中途」两条路。新卒就活高度流程化、时间线统一：大致从前一年的自我分析与行业研究开始，经历说明会、实习（イン",
+    "drivers-license-conversion": "持有效外国驾照、且能证明取得驾照后在发照国累计停留 3 个月以上的人，可以在住地的运转免许中心申请「外免切替」。中国大陆驾照属于",
+    "leaving-a-job-checklist": "离职时从公司拿齐四样东西：雇用保険被保険者証、離職票（约 10 天后寄到）、源泉徴収票、年金手帳（若由公司保管）。这些是后续所有",
+    "viewing-and-lease-contract-tips": "看房时除了户型采光，重点检查：手机信号、墙壁隔音（敲一敲、留意隣户生活声）、水压、霉味与结露痕迹、垃圾置场的状态、夜间周边环境。",
+}
+
+# 12 篇旗舰 slug 的稳定顺序(即上面 dict 的键)。
+GUIDE_FLAGSHIP_SLUGS: tuple[str, ...] = tuple(_GUIDE_FLAGSHIP_OLD_BODY_FINGERPRINT.keys())
+
+
+def guide_flagship_upgrade_rows() -> list[tuple[str, str, str, str, str]]:
+    """返回 12 篇旗舰文章的幂等升级参数:
+    (slug, old_body_prefix, new_body, new_summary, verified_at)。
+    new_body/new_summary 直接取自升级后的 GUIDE_ARTICLE_SEED(单一事实源,避免正文
+    在两处重复而漂移);old_body_prefix 是升级前旧正文的前 64 字符指纹。"""
+    by_slug = {a["slug"]: a for a in GUIDE_ARTICLE_SEED}
+    rows: list[tuple[str, str, str, str, str]] = []
+    for slug in GUIDE_FLAGSHIP_SLUGS:
+        art = by_slug.get(slug)
+        if not art:  # 理论上不会发生;seed 缺失就跳过,避免 KeyError 影响启动
+            continue
+        rows.append((
+            slug,
+            _GUIDE_FLAGSHIP_OLD_BODY_FINGERPRINT[slug],
+            art.get("body", ""),
+            art.get("summary", ""),
+            GUIDE_FLAGSHIP_UPGRADE_VERIFIED_AT,
+        ))
+    return rows
+
+
 GUIDE_ARTICLE_I18N: dict[str, dict[str, dict[str, str]]] = {
     "graduate-school-full-process": {
         "en": {"title": "A Complete Roadmap for Japanese Graduate School Applications", "summary": "A step-by-step timeline from choosing a research direction and contacting professors to application, exams, interviews, and enrollment procedures."},
@@ -50,12 +153,12 @@ GUIDE_ARTICLE_I18N: dict[str, dict[str, dict[str, str]]] = {
         "ja": {"title": "日本留学 1 年にかかる費用の目安", "summary": "学費、住まい、生活費、初期費用、アルバイトで補える範囲を整理します。"},
     },
     "first-week-in-japan-checklist": {
-        "en": {"title": "Your First-Week Checklist After Arriving in Japan", "summary": "Residence card, resident registration, phone plan, bank account, insurance, and other first-week essentials."},
-        "ja": {"title": "日本入国後 1 週間でやるべき手続きチェックリスト", "summary": "在留カード、住民登録、スマホ、銀行口座、保険など、到着直後の重要手続きを整理します。"},
+        "en": {"title": "Your First-Week Checklist After Arriving in Japan", "summary": 'A priority-ordered checklist for your first week in Japan: pick up your residence card at the airport, register your address at the ward office, join national health insurance, and set up a phone and bank account.'},
+        "ja": {"title": "日本入国後 1 週間でやるべき手続きチェックリスト", "summary": '来日最初の一週間にやるべき手続きを優先順にチェックリスト化：空港での在留カード受け取り、役所での住民登録、国民健康保険の加入、携帯・銀行口座の開設まで。'},
     },
     "job-hunting-full-process": {
-        "en": {"title": "Japan Job-Hunting Flow for New Graduates and Mid-Career Applicants", "summary": "Self-analysis, company briefings, entry sheets, web tests, interviews, offers, and work-visa changes."},
-        "ja": {"title": "日本の就職活動の全体像（新卒・中途）", "summary": "自己分析、説明会、ES、Web テスト、面接、内定、在留資格変更までを整理します。"},
+        "en": {"title": "Japan Job-Hunting Flow for New Graduates and Mid-Career Applicants", "summary": 'The full flow and timeline for both new-graduate and mid-career hiring — self-analysis, info sessions, ES, web tests, interviews, job offers — plus the visa change international students must not forget.'},
+        "ja": {"title": "日本の就職活動の全体像（新卒・中途）", "summary": '新卒・中途それぞれの完全な流れとタイムライン（自己分析・説明会・ES・Webテスト・面接・内定）と、留学生が忘れてはならない在留資格変更を解説します。'},
     },
     "rirekisho-vs-shokumukeirekisho": {
         "en": {"title": "Rirekisho vs. Shokumukeirekisho: What Is the Difference?", "summary": "One document explains who you are; the other explains what you have done and what you can contribute."},
@@ -66,8 +169,8 @@ GUIDE_ARTICLE_I18N: dict[str, dict[str, dict[str, str]]] = {
         "ja": {"title": "日本語面接のよくある質問と答え方", "summary": "自己 PR、志望動機、学生時代の経験、逆質問など、面接官が確認したいポイントを整理します。"},
     },
     "jlpt-n2-study-roadmap": {
-        "en": {"title": "JLPT N2 Study Roadmap and Timeline", "summary": "How to phase vocabulary, grammar, reading, and listening practice into a realistic study plan."},
-        "ja": {"title": "JLPT N2 の学習ロードマップと時間計画", "summary": "語彙、文法、読解、聴解を段階的に進める実行しやすい計画を整理します。"},
+        "en": {"title": "JLPT N2 Study Roadmap and Timeline", "summary": 'How to advance vocabulary, grammar, reading, and listening in three phases, an actionable study schedule, and notes on registration, exam day, and using legitimate materials.'},
+        "ja": {"title": "JLPT N2 の学習ロードマップと時間計画", "summary": '語彙・文法・読解・聴解を3段階でどう進めるか、実行可能な学習スケジュール、そして申し込み・試験当日・正規教材の利用についての注意点。'},
     },
     "n1-n2-grammar-method": {
         "en": {"title": "How to Study N1/N2 Grammar Without Forgetting It", "summary": "Learn grammar in context, group similar patterns, and reinforce them through output instead of memorizing tables."},
@@ -78,8 +181,8 @@ GUIDE_ARTICLE_I18N: dict[str, dict[str, dict[str, str]]] = {
         "ja": {"title": "JLPT 読解スピードを上げる方法", "summary": "先に設問を読み、接続詞と指示語を追い、文章ごとに時間を管理するコツを整理します。"},
     },
     "residence-card-and-juminhyo": {
-        "en": {"title": "Residence Card and Resident Registration Procedures", "summary": "What the residence card is, how to file a move-in notification, and which insurance or My Number steps to handle together."},
-        "ja": {"title": "在留カードと住民登録（役所）の手続き", "summary": "在留カード、転入届、国民健康保険、マイナンバー関連手続きを整理します。"},
+        "en": {"title": "Residence Card and Resident Registration Procedures", "summary": 'What the residence card is, how to file your move-in notification, how address changes tie into re-entry, and the health insurance, My Number, and pension steps you handle at the ward office.'},
+        "ja": {"title": "在留カードと住民登録（役所）の手続き", "summary": '在留カードとは何か、転入届の出し方、住所変更と再入国の関係、そして役所で併せて行う国民健康保険・マイナンバー・年金の手続きを整理します。'},
     },
     "renting-initial-cost": {
         "en": {"title": "Initial Costs When Renting in Japan", "summary": "Deposit, key money, agent fees, guarantor companies, and how to reduce your first payment."},
@@ -100,6 +203,158 @@ GUIDE_ARTICLE_I18N: dict[str, dict[str, dict[str, str]]] = {
     "identify-black-company": {
         "en": {"title": "How to Spot Risky Companies from Job Listings", "summary": "Frequent recruiting, vague pay, inflated language, and other warning signs you can catch before applying."},
         "ja": {"title": "求人情報からリスクの高い会社を見分ける基礎", "summary": "頻繁な大量募集、曖昧な給与、誇張表現など、応募前に確認したい注意点を整理します。"},
+    },
+    "renting-initial-costs-explained": {
+        "en": {"title": "Japan Rental Move-In Costs Explained: What Are Shikikin and Reikin?", "summary": "Understand every line of Japan's rental move-in costs — deposit, key money, agency fee, guarantor company, fire insurance — plus how to save and which contract clauses to watch before signing."},
+        "ja": {"title": "日本の賃貸初期費用を徹底解説：敷金・礼金とは何か", "summary": '敷金・礼金・仲介手数料・保証会社・火災保険など、日本の賃貸初期費用の内訳を一つずつ解説。節約のコツと契約前に確認すべき条項もまとめます。'},
+    },
+    "viewing-and-lease-contract-tips": {
+        "en": {"title": "Viewing and Signing a Lease: What to Watch in the Important Matters Statement", "summary": 'What to inspect during a viewing, the flow from application to tenant screening, which lease clauses trip people up, and how to use the restoration guideline to protect your deposit.'},
+        "ja": {"title": "内見と契約の注意点：重要事項説明で確認すべきこと", "summary": '内見時のチェックポイント、申込から入居審査までの流れ、契約時に見落としやすい条項、そして退去時に原状回復ガイドラインで自分の権利を守る方法。'},
+    },
+    "bank-account-opening-guide": {
+        "en": {"title": "Opening a Bank Account in Japan: Choices, Documents, and Common Rejections", "summary": 'How to choose between Japan Post Bank, city banks, and online banks; what documents you need; why applications get rejected; and pitfalls after opening an account.'},
+        "ja": {"title": "日本で銀行口座を開く：選び方・必要書類・断られる理由", "summary": 'ゆうちょ・都市銀行・ネット銀行の選び方、必要書類、断られる理由、そして口座開設後の注意点まで、日本で初めて口座を作る人向けのガイド。'},
+    },
+    "mobile-sim-and-internet": {
+        "en": {"title": "Choosing a Mobile Plan and Home Internet in Japan", "summary": 'How to weigh the big three carriers, their online sub-brands, and budget SIMs; what you need to sign up; and how to choose home fiber, a home router, or pocket WiFi.'},
+        "ja": {"title": "日本のスマホと自宅ネットの選び方：大手・格安・光回線", "summary": '大手3社・オンラインブランド・格安SIMの選び方、契約に必要なもの、そして光回線・ホームルーター・ポケットWiFiの選び方をまとめます。'},
+    },
+    "seeing-a-doctor-in-japan": {
+        "en": {"title": "Seeing a Doctor in Japan: Flow, Costs, and Language Support", "summary": 'The clinic-first, hospital-later triage logic, how insurance cost-sharing works, multilingual medical support, and what to do for nighttime emergencies or calling an ambulance.'},
+        "ja": {"title": "日本で病院にかかる：受診の流れ・費用・言語サポート", "summary": '「まず診療所、次に病院」という受診の流れ、保険の自己負担、多言語の医療サポート、そして夜間の急病や救急車の呼び方まで解説します。'},
+    },
+    "garbage-sorting-and-rules": {
+        "en": {"title": "Garbage Sorting and Everyday Living Rules in Japan", "summary": "How to sort burnable, non-burnable, recyclable, and oversized waste, what happens if you get it wrong, and neighbor etiquette."},
+        "ja": {"title": "ゴミ分別と日常生活のルール入門", "summary": "可燃・不燃・資源・粗大ゴミの分け方、間違えたときの影響、近所づきあいのマナーを整理します。"},
+    },
+    "disaster-preparedness-basics": {
+        "en": {"title": "Earthquake and Typhoon Preparedness Basics: Alerts, Shelters, and Supplies", "summary": "What to do when an earthquake early warning sounds, how to find shelters, what to stock at home, and how to call 110/119."},
+        "ja": {"title": "地震・台風の防災入門：警報・避難・備蓄", "summary": "緊急地震速報が鳴ったときの行動、避難所の探し方、家庭の備蓄、110/119 の使い方を整理します。"},
+    },
+    "drivers-license-conversion": {
+        "en": {"title": "Converting a Foreign Driver's License to a Japanese One (Gaimen Kirikae)", "summary": 'Who is eligible, what documents you need, what the knowledge and skills tests cover, and the current reservation situation for converting a foreign license in Japan (gaimen kirikae).'},
+        "ja": {"title": "外国運転免許を日本の免許に切り替える（外免切替）", "summary": '外国免許切替の対象者、必要書類、知識確認と技能確認の内容、そして各地の予約状況まで、外国免許から日本免許への切り替えの流れを解説します。'},
+    },
+    "work-visa-gijinkoku-basics": {
+        "en": {"title": "Work Visa Basics: What the Engineer/Specialist in Humanities/International Services Status Really Checks", "summary": "The scope of the 'Engineer/Specialist in Humanities/International Services' status, how your degree must match the job, the change-of-status flow, and common reasons applications are denied."},
+        "ja": {"title": "就労ビザの基本：技術・人文知識・国際業務で見られること", "summary": '「技術・人文知識・国際業務」の対象範囲、学歴と職務の一致要件、留学から就労への変更手続き、そして不許可になりやすい理由を解説します。'},
+    },
+    "tenshoku-process-timeline": {
+        "en": {"title": "The Full Japanese Job-Change Process: A Timeline From Prep to Onboarding", "summary": "How to write a work-history document, how to pick job-change channels, the interview-to-offer rhythm, and leaving your current job gracefully."},
+        "ja": {"title": "日本の転職プロセス全体像：準備から入社までのタイムライン", "summary": "職務経歴書の書き方、転職チャネルの選び方、面接から内定までの流れ、円満退職の進め方を整理します。"},
+    },
+    "shukatsu-timeline-for-students": {
+        "en": {"title": "New-Graduate Job Hunting for International Students: Timeline and ES/SPI/Interview Prep", "summary": "The standard shukatsu rhythm from junior year, entry sheets and aptitude tests, and how international students can stand out."},
+        "ja": {"title": "留学生の新卒就活タイムラインと ES・SPI・面接対策", "summary": "大学3年からの標準的な就活の流れ、エントリーシートと適性検査、留学生ならではの戦い方を整理します。"},
+    },
+    "leaving-a-job-checklist": {
+        "en": {"title": "Resignation Checklist: Don't Miss Insurance, Pension, or Taxes", "summary": 'Which documents to collect from your employer, how to claim unemployment benefits, how to bridge health insurance and pension during a gap, and how to handle resident tax and tax filing.'},
+        "ja": {"title": "退職手続きチェックリスト：保険・年金・税金を漏らさない", "summary": '退職時に会社から受け取るもの、失業給付の受け方、空白期間の健康保険・年金の切り替え、そして住民税と確定申告の扱いまでの手続きチェックリスト。'},
+    },
+    "jlpt-n2-to-n1-strategy": {
+        "en": {"title": "From N2 to N1: A Six-Month Study Strategy and Resource Choices", "summary": "Where the real gap between N1 and N2 lies, how to allocate time across sections, and how to drill in the final sprint."},
+        "ja": {"title": "N2 から N1 へ：半年の学習戦略と教材選び", "summary": "N1 と N2 の本当の差、各科目の時間配分、直前期の問題演習の進め方を整理します。"},
+    },
+    "scholarships-overview-japan": {
+        "en": {"title": "An Overview of Scholarships in Japan: From JASSO to Private Foundations", "summary": "The tiers of government, JASSO, local, and private-foundation scholarships, their application paths, and realistic expectations."},
+        "ja": {"title": "日本の奨学金制度一覧：国費から民間財団まで", "summary": "国費・JASSO・地方・民間財団奨学金の階層、申請ルート、現実的な期待値を整理します。"},
+    },
+    "university-vs-vocational-school-choice": {
+        "en": {"title": "University, Graduate School, or Vocational School: Who Each Fits and the Risks", "summary": "Comparing the three by academic goals, employment paths, visa relevance, and cost cycles."},
+        "ja": {"title": "大学・大学院・専門学校の選び方：向いている人とリスク", "summary": "進学目標、就職ルート、在留資格との関連、費用の観点から3種類の学校を比較します。"},
+    },
+    "labor-conditions-checklist-japan": {
+        "en": {"title": "The Working-Conditions Notice You Must Check Before Accepting an Offer", "summary": "Salary, fixed overtime, probation, transfers, and visa paperwork — verify each item before signing to avoid post-hire regrets."},
+        "ja": {"title": "内定前に必ず確認する労働条件通知書チェックリスト", "summary": "年収、固定残業、試用期間、転勤、ビザ書類など、入社後に後悔しないよう契約前に確認する項目を整理します。"},
+    },
+    "foreign-student-it-career-japan": {
+        "en": {"title": "International Students Aiming for Japanese IT Companies: Paths, Portfolios, and Japanese Requirements", "summary": "Switching from humanities to coding, vocational/graduate paths, portfolios, interviews, and a realistic read on English-language roles."},
+        "ja": {"title": "留学生が日本の IT 企業を目指す：ルート・ポートフォリオ・日本語要件", "summary": "文系から開発職への転向、専門学校・大学院ルート、ポートフォリオ、面接、英語職の現実を整理します。"},
+    },
+    "rental-contract-before-signing": {
+        "en": {"title": "20 Things to Confirm Before Signing a Rental Contract in Japan", "summary": "From move-in costs, cleaning fees, and guarantor companies to internet and garbage rules — ask everything before you sign."},
+        "ja": {"title": "日本の賃貸契約前に確認する20項目", "summary": "初期費用、退去時の清掃、保証会社からネット・ゴミのルールまで、契約前に一度で確認する項目を整理します。"},
+    },
+    "application-documents-checklist-grad": {
+        "en": {"title": "Graduate School Application Documents: Preparing Transcripts, Diplomas, and Recommendations", "summary": "Breaking common graduate-application documents into school records, research materials, language scores, and a mailing check."},
+        "ja": {"title": "大学院出願書類チェックリスト：成績証明・卒業証明・推薦状の準備", "summary": "大学院出願でよく必要になる書類を、学校証明・研究資料・語学スコア・郵送確認の4つに整理します。"},
+    },
+    "graduate-school-interview-prep": {
+        "en": {"title": "Preparing for a Graduate School Interview: What Professors Really Want to Confirm", "summary": "Prepare answers around your research plan, prior studies, methodological feasibility, and post-enrollment plans."},
+        "ja": {"title": "大学院面接の準備：教授が本当に確認したいこと", "summary": "研究計画、先行研究、方法の実現可能性、入学後の計画を軸に回答を準備する方法を整理します。"},
+    },
+    "vocational-school-application-japan": {
+        "en": {"title": "Applying to a Japanese Vocational School: Who It Fits, Documents, and Employment Risks", "summary": "Vocational schools are more career-focused, but you must confirm the major, employment outcomes, and visa relevance."},
+        "ja": {"title": "日本の専門学校申請：向いている人・書類・就職リスク", "summary": "専門学校は職業志向が強い一方、専攻・就職実績・在留資格との関連を必ず確認すべき点を整理します。"},
+    },
+    "scholarship-and-tuition-waiver-grad": {
+        "en": {"title": "Graduate Scholarships and Tuition Waivers: When to Apply and What They Check", "summary": "Planning government, JASSO, private-foundation, and university tuition-waiver support as separate tracks."},
+        "ja": {"title": "大学院の奨学金と授業料免除：申請時期と審査ポイント", "summary": "国費・JASSO・民間財団の奨学金と大学の授業料免除を、別々のルートとして計画する方法を整理します。"},
+    },
+    "student-visa-documents-parent-sponsor": {
+        "en": {"title": "Preparing Financial Sponsor Documents for a Student Visa", "summary": "The logic behind the sponsorship letter, bank balance certificate, income proof, and relationship documents."},
+        "ja": {"title": "留学ビザの経費支弁者書類の準備", "summary": "経費支弁書、預金残高証明、収入証明、続柄証明の準備の考え方を整理します。"},
+    },
+    "language-school-selection-criteria": {
+        "en": {"title": "Choosing a Language School: Don't Look at Tuition and Location Alone", "summary": "Judge school quality by advancement support, attendance management, visa pass rates, and student composition."},
+        "ja": {"title": "日本語学校の選び方：学費と立地だけで決めない", "summary": "進学サポート、出席管理、ビザ通過率、学生構成から学校の質を見極める方法を整理します。"},
+    },
+    "arrival-prep-before-flight": {
+        "en": {"title": "A 30-Day Pre-Departure Checklist: Documents, Housing, Cash, and Phone", "summary": "The documents, housing, transport, cash, and communications to confirm in the month before you fly to Japan."},
+        "ja": {"title": "渡日前30日の準備チェックリスト：書類・住まい・現金・スマホ", "summary": "渡日前1か月で確認すべき証明書類、住まい、交通、現金、通信手段を整理します。"},
+    },
+    "study-cost-budget-template": {
+        "en": {"title": "Building a Study-Abroad Budget for Japan: Separate One-Time and Monthly Costs", "summary": "Budgeting in three layers: one-time costs, fixed monthly expenses, and flexible spending."},
+        "ja": {"title": "日本留学の予算表の作り方：一時費用と毎月費用を分けて計算", "summary": "一時費用、毎月の固定支出、変動支出の3層で予算を組む方法を整理します。"},
+    },
+    "jlpt-n3-to-n2-roadmap": {
+        "en": {"title": "From N3 to N2: A Three-Month Study Roadmap", "summary": "Splitting vocabulary, grammar, reading, and listening across 12 weeks so you review instead of only drilling."},
+        "ja": {"title": "N3 から N2 へ：3か月の学習ロードマップ", "summary": "語彙・文法・読解・聴解を12週に分け、解きっぱなしにしない学習計画を整理します。"},
+    },
+    "jlpt-vocabulary-system": {
+        "en": {"title": "How to Memorize JLPT Vocabulary: Roots, Context, and Review Cycles", "summary": "Don't memorize words in isolation — build a vocabulary web by kanji, collocation, context, and spaced review."},
+        "ja": {"title": "JLPT の語彙の覚え方：漢字・文脈・復習サイクル", "summary": "単語を孤立して覚えず、漢字・コロケーション・文脈・間隔反復で語彙のネットワークを作る方法を整理します。"},
+    },
+    "jlpt-listening-training": {
+        "en": {"title": "JLPT Listening Training: From Not Understanding to Catching the Key Points", "summary": "Improve listening stability using question types, keywords, shadowing, and re-listening notes."},
+        "ja": {"title": "JLPT 聴解トレーニング：聞き取れないから要点をつかむへ", "summary": "問題タイプ、キーワード、シャドーイング、聞き直しノートで聴解を安定させる方法を整理します。"},
+    },
+    "jlpt-mock-test-review-method": {
+        "en": {"title": "How to Review JLPT Mock Tests: What to Look At Beyond the Score", "summary": "The value of mock tests lies in pinpointing weak question types, time allocation, and error patterns."},
+        "ja": {"title": "JLPT 模擬試験の復習法：点数の先に見るもの", "summary": "模試の価値は、弱い問題タイプ・時間配分・間違いの傾向を特定することにあると整理します。"},
+    },
+    "how-to-use-machi-materials": {
+        "en": {"title": "How to Use Machi Resource Packs: Diagnose First, Then Fill the Gaps", "summary": "More packs isn't better — first learn what you lack, then use checklists and templates to close the gaps."},
+        "ja": {"title": "Machi 資料パックの使い方：まず診断、次に弱点を補う", "summary": "資料は多ければ良いわけではなく、まず不足を把握し、チェックリストとテンプレートで補う方法を整理します。"},
+    },
+    "service-template-editing-rules": {
+        "en": {"title": "Rules for Using Template Resources: What You Can Reuse and What You Must Rewrite", "summary": "You can reference the structure of research plans, resumes, and statements of purpose, but the core content must be personalized."},
+        "ja": {"title": "テンプレート資料の使用ルール：流用できる部分と書き直すべき部分", "summary": "研究計画書・履歴書・志望理由書は構成を参考にできても、中身は必ず個別化すべき点を整理します。"},
+    },
+    "consultation-before-booking": {
+        "en": {"title": "What to Prepare Before Booking a Consultation: Make One Session Truly Useful", "summary": "Organizing your background, goals, materials, and specific questions in advance sharply improves consultation efficiency."},
+        "ja": {"title": "相談予約の前に準備すること：一回の相談を本当に役立てる", "summary": "背景・目標・資料・具体的な質問を事前に整理すると、相談の効率が大きく上がる点を整理します。"},
+    },
+    "refund-and-delivery-rules-guide": {
+        "en": {"title": "How to Clearly State Delivery, Cancellation, and Refund Rules for Resources and Services", "summary": "Digital resources, live consultations, and document revisions each need clear delivery methods, timelines, and refund boundaries."},
+        "ja": {"title": "資料とサービスの提供・キャンセル・返金ルールの明記の仕方", "summary": "デジタル資料、対面相談、書類添削それぞれで提供方法・期限・返金の境界を明確にする方法を整理します。"},
+    },
+    "research-plan-review-service-scope": {
+        "en": {"title": "Who the Research-Plan Review Service Fits: Scope and Delivery Standards", "summary": "The service helps optimize your structure and argument, but it does not write the research content for you."},
+        "ja": {"title": "研究計画書添削サービスは誰向けか：範囲と成果物の基準", "summary": "本サービスは構成と論証の最適化を支援しますが、研究内容の代筆は行わない点を整理します。"},
+    },
+    "resume-review-service-scope": {
+        "en": {"title": "Who the Resume Review Service Fits: Self-PR, Motivation, and Work History", "summary": "Clarifying the scope, required inputs, and deliverables of Japanese job-hunting document review."},
+        "ja": {"title": "履歴書添削サービスは誰向けか：自己PR・志望動機・職務経歴", "summary": "日本就職の書類添削の範囲、必要な入力資料、成果物を明確に整理します。"},
+    },
+    "free-checklist-vs-paid-pack": {
+        "en": {"title": "What's the Difference Between Free Checklists and Paid Resource Packs?", "summary": "Free checklists help you quickly confirm direction; paid resources go deeper with writing help, templates, and examples."},
+        "ja": {"title": "無料チェックリストと有料資料パックの違い", "summary": "無料チェックリストは方向確認に、有料資料は文章作成・テンプレート・事例で深掘りするのに向くと整理します。"},
+    },
+    "member-resource-library-guide": {
+        "en": {"title": "How to Use the Member Resource Library: Connecting Resources, Discounts, and Services", "summary": "The member library isn't a single file — it's a long-term toolkit spanning admissions, careers, daily life, and Japanese study."},
+        "ja": {"title": "会員資料ライブラリの使い方：資料・割引・サービスをつなげる", "summary": "会員ライブラリは単一ファイルではなく、進学・就職・生活・日本語をまたぐ長期のツールキットだと整理します。"},
     },
 }
 
@@ -140,6 +395,7 @@ GUIDE_CATEGORY_SEED: list[dict[str, Any]] = [
             ("professor_contact", "教授联系"), ("application_documents", "出愿材料"),
             ("undergraduate_transfer", "学部·编入"), ("vocational_school", "专门学校"),
             ("scholarship", "奖学金"), ("admission_interview", "面试"),
+            ("school_choice", "择校"),
         ],
     },
     {
@@ -264,6 +520,95 @@ GUIDE_FAQ_SEED: list[dict[str, str]] = [
      "a": "会员的核心价值包括：更高的 Machi AI 每日提问额度并解锁 Pro 深度模型；蓝色认证标识；可发布招聘、租房、本地服务等高信任内容；JLPT、大学院、就职等资料的会员折扣与会员专属清单模板；已购资料统一管理。我们只列出真正能兑现的权益，不做空承诺。",
      "category_key": ""},
 ]
+
+# FAQ 三语:zh-CN 原文在 GUIDE_FAQ_SEED,ja/en 译文在此,按中文 question 匹配。
+# ensure_guide_seed 幂等插入每条 FAQ 的 zh-CN + ja + en 三行(仅当该语言行缺失时)。
+GUIDE_FAQ_I18N: dict[str, dict[str, dict[str, str]]] = {
+    "语言学校和大学院申请有什么区别？": {
+        "ja": {"q": "日本語学校と大学院の申請はどう違いますか？", "a": "日本語学校は、まず日本語の基礎を固めてから進学・就職したい人向けで、入学のハードルが低く、語学学習と進学指導が中心です。大学院（修士・博士）は研究段階で、研究計画書、教授への連絡、出願書類が必要になり、日本語や英語のスコア、専攻背景も求められます。多くの人はまず日本語学校を経て、その後に大学院を目指します。"},
+        "en": {"q": "What's the difference between a language school and a graduate school application?", "a": "Language school is for people who want to build a Japanese foundation before advancing to further study or work; the bar to enter is low and the focus is language learning and admissions guidance. Graduate school (master's/doctorate) is the research stage, requiring a research plan, contacting professors, and application documents, with expectations for Japanese or English scores and an academic background. Many people attend a language school first as a bridge, then apply to graduate school."},
+    },
+    "研究计划书一般要写多少字？": {
+        "ja": {"q": "研究計画書はどのくらいの文字数が必要ですか？", "a": "統一された厳密な規定はありません。人文系では2000〜4000字程度が一般的で、理工系は短めでも研究方法の実現可能性が重視されます。重要なのは文字数ではなく、研究テーマ・先行研究・研究目的・研究方法・期待される成果が明確で、志望する教授の研究方向と一致しているかどうかです。"},
+        "en": {"q": "How many words should a research plan usually be?", "a": "There is no single fixed rule. Humanities plans are often 2,000–4,000 characters; STEM plans may be shorter but weigh methodological feasibility more heavily. What matters is not length but whether your research topic, prior studies, purpose, methods, and expected outcomes are clear and match your target professor's research direction."},
+    },
+    "留学签证（COE）一般什么时候开始申请？": {
+        "ja": {"q": "留学ビザ（COE）はいつ頃から申請しますか？", "a": "COE（在留資格認定証明書）は日本の学校が入管に代理申請するもので、通常は入学の3〜4か月前に始まります。4月入学の場合、多くの日本語学校は前年の11月頃に書類を締め切ります。書類の公証・翻訳・経費証明の準備時間も見込んで逆算してください。"},
+        "en": {"q": "When does a student visa (COE) application usually start?", "a": "The COE (Certificate of Eligibility) is filed with immigration by your school in Japan, usually starting 3–4 months before enrollment. For April enrollment, most language schools close document submission around the previous November. Work backwards and leave time for notarization, translation, and proof of funds."},
+    },
+    "在日本找工作一定要 N1 吗？": {
+        "ja": {"q": "日本で就職するには N1 が必須ですか？", "a": "絶対ではありませんが、日本人向けの総合職（営業・企画・総合職）は実質 N1 に近い日本語が求められることが多いです。IT・研究開発・英語環境の外資ポジションは N2 以下でもチャンスがあります。日本語が高いほど選択肢は広がり、面接では資格よりも実際のコミュニケーション力が重視されがちです。"},
+        "en": {"q": "Do you always need N1 to find a job in Japan?", "a": "Not absolutely, but most generalist roles aimed at Japanese speakers (sales, planning, sougoushoku) effectively expect near-N1 Japanese. IT, R&D, and English-environment foreign-company roles have openings at N2 or even lower. Stronger Japanese widens your options, and interviews often value real communication ability over certificates."},
+    },
+    "JLPT 一年考几次？什么时候报名？": {
+        "ja": {"q": "JLPT は年に何回、いつ申し込みますか？", "a": "JLPT は年2回、7月と12月に実施されます。申し込みは通常約3か月前に始まり、定員があり人気会場はすぐ埋まります。JLPT 公式サイトの申込期間を確認し、受験級を決めたら早めに申し込み、学習計画を立てましょう。"},
+        "en": {"q": "How many times a year is the JLPT, and when do you register?", "a": "The JLPT is held twice a year, in July and December. Registration usually opens about three months in advance, seats are limited, and popular sites fill quickly. Watch the official JLPT site for the registration window, and once you decide your level, register early and plan your study."},
+    },
+    "Machi 指南的内容来自哪里？可信吗？": {
+        "ja": {"q": "Machi ガイドの内容はどこから来ていますか？信頼できますか？", "a": "すべてのガイドは Machi 編集部が整理しており、身元は公式／編集部／提携先として明示しています。ニュースのスクレイピングや著作権教材の複製、ユーザー内容の偽造は行いません。企業の面接レビューは実際のユーザー投稿を審査したものです。公式試験や入管情報を引用する際は出典を示しますが、必ず公式の最新発表もご確認ください。"},
+        "en": {"q": "Where does Machi Guide content come from? Is it trustworthy?", "a": "All guides are curated by the Machi editorial team, with identities clearly labeled as official/editorial/partner. We do not scrape news, copy copyrighted materials, or fabricate user content. Company interview reviews come from real, moderated user submissions. When citing official exam or immigration information we note the source, but always confirm against the latest official announcements."},
+    },
+    "刚到日本第一周要优先办哪些手续？": {
+        "ja": {"q": "日本に来た最初の週に優先すべき手続きは？", "a": "入国後14日以内に住所地の区役所・市役所で「転入届」を出し「住民票」を取得します。同時に「マイナンバー」が発行され、国民健康保険・国民年金（学生は納付特例を申請可）も手続きします。その後、銀行口座とスマホ（互いに前提になることが多いので、預金証明不要の事業者から始めると良い）を用意します。詳細は各区役所窓口の案内に従ってください。"},
+        "en": {"q": "Which procedures should you prioritize in your first week in Japan?", "a": "Within 14 days of arrival, file a move-in notification (tennyuu todoke) at your local ward/city office and get your resident record (juuminhyou); you'll also receive your My Number. Handle national health insurance and national pension (students can apply for a payment exception) at the same time. Then open a bank account and get a phone plan (they often require each other, so start with a carrier that doesn't need a deposit certificate). Follow each office's window requirements."},
+    },
+    "在日本怎么开银行账户？外国人能开吗？": {
+        "ja": {"q": "日本で銀行口座はどう開きますか？外国人でも開けますか？", "a": "開けます。一般に在留カード、住民票または住所証明、印鑑（署名可の銀行もあり）、場合により在日6か月以上や在職・在学証明が必要です。ゆうちょ銀行や楽天銀行などは外国人に比較的やさしいです。来日半年未満の場合、まずすぐ開けるネット銀行を勧められることもあります。条件は各銀行の最新規定に従ってください。"},
+        "en": {"q": "How do you open a bank account in Japan? Can foreigners open one?", "a": "Yes. You generally need a residence card, a resident record or proof of address, a personal seal (some banks accept a signature), and sometimes six months of residence or proof of employment/enrollment. Japan Post Bank and Rakuten Bank are relatively foreigner-friendly. If you've been in Japan less than six months, you may be steered to an online bank you can open immediately. Conditions follow each bank's latest rules."},
+    },
+    "国民健康保险和厚生年金、国民年金分别是什么？": {
+        "ja": {"q": "国民健康保険と厚生年金・国民年金はそれぞれ何ですか？", "a": "会社の社会保険がない人（留学生・自由業）は「国民健康保険」（自己負担約3割）と「国民年金」に加入します。会社がある人は会社が「健康保険＋厚生年金」に加入し、保険料は会社が半分負担します。留学生で国民年金が払えない場合は年金事務所で「学生納付特例」を申請し猶予できます。金額は前年収入で計算され、窓口通知に従います。"},
+        "en": {"q": "What are National Health Insurance, Employees' Pension, and National Pension?", "a": "People without company social insurance (students, freelancers) join National Health Insurance (about 30% out-of-pocket) and the National Pension. People with a company are enrolled by the company in Health Insurance + Employees' Pension, with the company covering half the premium. Students who can't afford the National Pension can apply for a 'student payment exception' at the pension office to defer. Amounts are based on the prior year's income; follow the office's notice."},
+    },
+    "日本的垃圾要怎么分类？扔错了会怎样？": {
+        "ja": {"q": "日本のゴミはどう分別しますか？間違えるとどうなりますか？", "a": "自治体ごとにルールが異なり、一般に「可燃・不燃・資源（プラ／ビン缶／紙）・粗大ゴミ」に分かれ、種類ごとに収集日が決まっています。指定袋・指定時間（多くは当日の朝）に出します。粗大ゴミは予約と有料券が必要なことが多いです。引っ越し時に区役所や不動産会社が地区の分別カレンダーを配るので、それに従うのが確実です。"},
+        "en": {"q": "How do you sort garbage in Japan, and what happens if you get it wrong?", "a": "Rules differ by municipality, but generally waste is split into burnable, non-burnable, recyclable (plastic/bottles-cans/paper), and oversized, each with a fixed collection day, put out in designated bags at the designated time (often that morning). Oversized items usually need a reservation and a paid sticker. When you move in, the ward office or agent typically gives you the local sorting calendar—following it is the safest approach."},
+    },
+    "确定申告（报税）是什么？我需要报吗？": {
+        "ja": {"q": "確定申告とは何ですか？私は必要ですか？", "a": "確定申告は毎年2月中旬〜3月中旬に、前年の所得を税務署へ申告し過不足を精算する手続きです。会社で年末調整を受ける会社員は通常不要ですが、複数の副収入がある人、自由業、年の途中で退職した人、医療費控除やふるさと納税を申告したい人は必要です。必要か・何を控除できるかは税務署または税理士の判断に従ってください。"},
+        "en": {"q": "What is a final tax return (kakutei shinkoku), and do I need to file?", "a": "The final tax return is filed with the tax office each year from mid-February to mid-March to report the prior year's income and settle any balance. Salaried workers whose company does a year-end adjustment usually don't file, but people with multiple side incomes, freelancers, those who left a job mid-year, or those claiming medical-expense or hometown-tax deductions do. Whether you must file and what you can deduct follows the tax office's or a tax accountant's guidance."},
+    },
+    "留学生打工有什么限制？": {
+        "ja": {"q": "留学生のアルバイトにはどんな制限がありますか？", "a": "留学ビザでアルバイトする前に「資格外活動許可」を申請する必要があり、その後は週28時間まで（長期休暇中は1日8時間・週40時間まで緩和）で、風俗関連の業種では働けません。超過就労は在留更新や永住申請に大きく響きます。入管の最新規定に従ってください。"},
+        "en": {"q": "What limits are there on international students working part-time?", "a": "Before working part-time on a student visa you must apply for permission to engage in activities outside your status; after that, you can work up to 28 hours per week (relaxed to 8 hours a day / 40 hours a week during long breaks), and you cannot work in adult-entertainment industries. Working over the limit seriously affects visa renewal and even permanent residence applications. Follow immigration's latest rules."},
+    },
+    "在留资格更新（续签）一般提前多久、要什么材料？": {
+        "ja": {"q": "在留資格の更新はどのくらい前に、どんな書類が必要ですか？", "a": "在留カードの期限の約3か月前から入管で更新申請ができます。一般的な書類は申請書、パスポート、在留カード、証明写真、および現在の活動を証明する書類（在学証明＋成績＋出席、または在職証明＋源泉徴収票・住民税課税証明）です。出席率の低さ、超過就労、税金・年金の滞納は審査に影響します。入管窓口の最新要件に従ってください。"},
+        "en": {"q": "How far ahead do you renew your residence status, and what documents are needed?", "a": "You can apply to renew at immigration about three months before your residence card expires. Common documents: the application form, passport, residence card, ID photo, and proof of your current activity (enrollment certificate + transcript + attendance, or employment certificate + withholding slip + resident-tax certificate). Low attendance, over-limit work, and unpaid taxes or pension can affect review. Follow immigration's latest requirements."},
+    },
+    "永住（永久居留）大致需要满足什么条件？": {
+        "ja": {"q": "永住（永住権）にはおおよそどんな条件が必要ですか？", "a": "一般に日本での継続居住約10年（うち就労・居住資格5年以上）が求められ、高度人材は1〜3年に短縮されます。加えて、比較的長い在留期間、重大な違法がないこと、安定した収入と納税、年金・健康保険・税金の期限内納付の良好な記録が必要です。これは概略で、実際の審査は入管の最新指針と個別事情によります。"},
+        "en": {"q": "What conditions roughly qualify you for permanent residence?", "a": "Generally about 10 years of continuous residence in Japan (with 5+ years on a work/residence status); highly-skilled professionals can shorten this to 1–3 years. You also need a fairly long residence period, no serious legal violations, stable income and tax payment, and a good record of on-time pension, health-insurance, and tax payments. This is a general outline; actual review follows immigration's latest guidelines and individual circumstances."},
+    },
+    "日本找工作的时间线是怎样的？什么时候开始准备？": {
+        "ja": {"q": "日本の就活のタイムラインは？いつ準備を始めますか？", "a": "新卒就活は卒業の1年以上前に始まります。大学3年・修士1年の夏にインターン、3月前後に企業説明会と正式エントリーが解禁、その後 ES・Web テスト・複数回の面接があり、6月から内定が出始めます。中途（社会人）転職は通年募集で、ポジション次第で随時応募します。自己分析・業界研究・ES テンプレートを早めに準備しましょう。"},
+        "en": {"q": "What's the timeline for job hunting in Japan, and when do you start?", "a": "New-graduate job hunting starts more than a year before graduation: internships in the summer of junior year (or first-year master's), company briefings and formal entry opening around March, then entry sheets, web tests, and several interview rounds, with offers starting in June. Mid-career transfers hire year-round—apply anytime by role. Prepare self-analysis, industry research, and entry-sheet templates early."},
+    },
+    "日企面试常见会问什么？怎么准备？": {
+        "ja": {"q": "日本企業の面接ではよく何を聞かれますか？どう準備しますか？", "a": "頻出の質問は、自己紹介、志望動機（なぜこの会社・業界か）、学生時代に最も力を入れたこと（ガクチカ）、強み・弱み、キャリアプラン、逆質問です。準備では「具体的な事例＋数字＋結果」で語り、会社ごとに異なる志望動機を書き、敬語とオンライン面接のカメラ映りを練習しましょう。"},
+        "en": {"q": "What do Japanese company interviews commonly ask, and how do you prepare?", "a": "Frequent questions include self-introduction, motivation (why this company/industry), what you worked hardest on as a student (gakuchika), your strengths and weaknesses, career plans, and your questions for the company (gyaku-shitsumon). Prepare by telling stories with 'concrete example + numbers + result,' writing a different motivation for each company, and practicing keigo and how you come across on camera in online interviews."},
+    },
+    "拿到内定之后还要做什么？": {
+        "ja": {"q": "内定をもらった後は何をしますか？", "a": "「内定通知書・承諾書」を受け取り、期限内に受諾するか回答します。複数の内定を持つ場合は早めに他社を辞退します。その後、企業は入社前の健康診断や書類提出（卒業証明、在留資格変更など）を手配します。留学生は通常、ビザを「留学」から「技術・人文知識・国際業務」などの就労ビザへ変更します。企業と入管の具体的な通知に従ってください。"},
+        "en": {"q": "What do you do after receiving a job offer (naitei)?", "a": "You'll receive an offer/acceptance letter and must reply within the deadline on whether you accept; if you hold multiple offers, decline the others early. The company then arranges a pre-employment health check and document submission (graduation certificate, status-of-residence change, etc.). International students usually change their visa from 'Student' to a work visa such as 'Engineer/Specialist in Humanities/International Services.' Follow the specific notices from the company and immigration."},
+    },
+    "语言学校怎么选？看哪些指标？": {
+        "ja": {"q": "日本語学校はどう選びますか？どの指標を見ますか？", "a": "重点は、進学・就職の実績と進路、目標方向（進学 vs 就職 vs 会話）のコースがあるか、講師と1クラスの人数、立地と学費、そして「優良校」かどうか（ビザ書類の簡素化に関わる）です。広告だけでなく、過年度の進路データや在校生の生の声をできるだけ確認しましょう。Machi の学校データベースを起点にしつつ、最終的には学校公式の募集要項に従ってください。"},
+        "en": {"q": "How do you choose a language school, and which metrics matter?", "a": "Focus on advancement/employment outcomes and destinations, whether they offer courses for your goal (further study vs. work vs. conversation), teachers and class size, location and tuition, and whether it's a 'designated good school' (which simplifies visa paperwork). Don't rely on ads—look at past outcome data and real student feedback where possible. Use Machi's school database as a starting point, and ultimately follow the school's official admissions guidelines."},
+    },
+    "申请大学院怎么联系教授？邮件要写什么？": {
+        "ja": {"q": "大学院申請で教授にどう連絡しますか？メールには何を書きますか？", "a": "まず志望教授の近年の研究方向と論文を読み、自分の研究計画と一致するか確認してから「アポイントメール」を送ります。簡潔な自己紹介、その研究室を志望する理由、研究計画書の概要、成績・日本語や英語のスコアを添え、受け入れ枠があるか丁寧に尋ねます。1通のメールでは1人の教授だけに連絡し、正式な口調で一斉送信感を避けます。"},
+        "en": {"q": "How do you contact professors for graduate school, and what goes in the email?", "a": "First read your target professor's recent research direction and papers to confirm they match your plan, then send an appointment email: a brief self-introduction, why you want to join that lab, a summary of your research plan, and your transcript and Japanese/English scores, politely asking whether they have an opening. Contact only one professor per email, keep the tone formal, and avoid a mass-mailed feel."},
+    },
+    "备考 JLPT N1/N2 大概需要多久？怎么规划？": {
+        "ja": {"q": "JLPT N1/N2 の対策はどのくらいかかりますか？どう計画しますか？", "a": "基礎により異なりますが、ある程度基礎がある人で N2 から N1 まで約6〜12か月の継続学習が一般的です。「語彙→文法→読解のスピードアップ→聴解→過去問模試」の順で進め、前半は量を積み、後半は本番の時間で通し演習し解答ペースを鍛えます。Machi の JLPT 資料には題型傾向分析、高頻度語彙計画、模擬問題があり、公式過去問と併用できます。"},
+        "en": {"q": "How long does JLPT N1/N2 prep take, and how do you plan it?", "a": "It depends on your base, but going from N2 to N1 often takes about 6–12 months of steady study for those with some foundation. Progress in the order 'vocabulary → grammar → faster reading → listening → full past-paper mocks,' building volume early and drilling full sets at exam timing later to train your pace. Machi's JLPT materials include question-trend analysis, high-frequency vocabulary plans, and mock questions to use alongside official past papers."},
+    },
+    "开通 Machi 会员能得到什么？": {
+        "ja": {"q": "Machi 会員になると何が得られますか？", "a": "会員の中心的な価値は、Machi AI の1日の質問枠が増え Pro の高度モデルが解放されること、青の認証マーク、求人・賃貸・地域サービスなど信頼性の高い投稿ができること、JLPT・大学院・就職などの資料の会員割引と会員限定リストテンプレート、購入済み資料の一元管理です。実際に提供できる権益だけを掲載し、空約束はしません。"},
+        "en": {"q": "What do you get with a Machi membership?", "a": "The core benefits are a higher daily Machi AI question quota with the Pro advanced model unlocked, a blue verification badge, the ability to post higher-trust content like jobs, rentals, and local services, member discounts and member-only list templates for JLPT/graduate-school/job-hunting resources, and unified management of purchased materials. We list only benefits we can actually deliver—no empty promises."},
+    },
+}
 
 GUIDE_GOAL_I18N: dict[str, dict[str, str]] = {
     "goal_study_abroad": {"en": "I want to study in Japan", "ja": "日本に留学したい"},
@@ -395,6 +740,7 @@ GUIDE_SUBCATEGORY_I18N: dict[str, dict[str, str]] = {
     "vocational_school": {"en": "Vocational schools", "ja": "専門学校"},
     "scholarship": {"en": "Scholarships", "ja": "奨学金"},
     "admission_interview": {"en": "Admissions interview", "ja": "面接"},
+    "school_choice": {"en": "Choosing a school", "ja": "学校選び"},
     "job_hunting_flow": {"en": "Job-hunting flow", "ja": "就職活動の流れ"},
     "rirekisho": {"en": "Japanese resume", "ja": "履歴書"},
     "shokumukeirekisho": {"en": "Work-history document", "ja": "職務経歴書"},
@@ -565,24 +911,14 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
     {"slug": "first-week-in-japan-checklist", "title": "入境日本后第一周必须做的手续清单",
      "category": "study_abroad_japan", "sub": "arrival_preparation", "featured": False,
      "author": "Machi 日本生活编辑部", "tags": ["入境", "在留卡", "清单"],
-     "summary": "在留卡、住民登记、手机卡、银行卡、保险——刚落地最该先办的几件事。",
-     "body": _guide_paras(
-        "刚到日本头几天事情很多，按优先级一件件来就不会乱。落地时在机场领取在留卡（部分机场当场发放），这是你在日本最重要的身份证件，务必随身保管。",
-        "第一周内到居住地的区/市役所办理住民登记（転入届），同时办理国民健康保险加入手续；很多人会顺便办理 My Number 相关流程。住民票之后办很多事都会用到。",
-        "接着办手机卡和银行账户。手机号在注册各种服务、收验证码时几乎必需；银行账户用于收打工工资、交房租。部分银行对刚入境、在留时间短的外国人开户有限制，可以先选对留学生友好的银行。",
-        "其余还有：交通卡（Suica/ICOCA）、印章（部分手续需要）、若打工需确认「资格外活动许可」。把这些列成清单逐项打勾，第一周就能把生活基础搭好。具体手续以所在区役所的最新指引为准。",
-     )},
+     "summary": '从机场领在留卡到役所住民登记、国保加入、开手机银行——把落地第一周该办的手续按优先级排成一张可打勾的清单，并给出所需材料与官方链接。',
+     "body": '刚落地日本，头几天要办的事情多而杂，但只要按优先级一件件来就不会乱。本文把来日**第一周**的关键动作整理成一张可打勾的清单，帮你把生活基础一次搭稳，也避免因为漏办某个前置手续而反复跑窗口。**下文提到的窗口时间、所需材料与费用请一律以你所在区/市役所和各机构的最新公告为准。**\n\n## 落地当天:在机场拿到在留卡\n\n中长期在留者（留学、工作、家族滞在等）入境时，会在成田、羽田、关西、中部等指定机场当场发放**在留卡（在留カード）**。这是你在日本最重要的法定身份证件，之后办任何手续几乎都要用到，务必随身保管、不要弯折损坏。\n\n- 入境审查时，当场确认在留卡上的**姓名、在留资格、在留期间**等信息无误，有误立即向工作人员反映。\n- 部分小机场不当场发卡，会在你完成住民登记后把卡**邮寄**到登记住址。\n- 出关后若要坐电车或打车到住处，可先用现金，或在机场买一张交通卡。\n- 随身带好护照、入学/在职相关文件、少量日元现金，落地初期很多地方还不能刷卡。\n\n## 入境 14 天内:役所住民登记\n\n确定住所后，法律要求你在**14 天以内**到居住地的区/市役所提交**転入届（住民登记）**，登记你的正式住址。役所会把住址更新到在留卡背面。住民登记是后面几乎所有手续的前提，务必优先办。\n\n去役所前先在官网确认该窗口的受理时间和所需材料，避免白跑。办这一步时，建议把下面几件事在**同一趟**一并问清、一并办掉，能少跑好几趟：\n\n1. **国民健康保险**加入（留学生、无公司社保者需要加入，看病自付比例大幅下降）。\n2. **My Number（个人番号）**通知的领取或确认——开户、打工、报税都会用到。\n3. **国民年金**相关手续的咨询（20 岁以上原则上需要加入，学生可申请缴纳特例）。\n4. 如已确定打工，确认**资格外活动许可**是否已在入境时盖章，没有的话在此了解申请方式。\n5. 顺便取几份**住民票副本**，之后办手机、开户、签合同都可能要用。\n\n## 手机卡与银行账户:注意先后顺序\n\n这两件事互为前提，建议**先办手机号，再去开银行户**——很多银行开户或激活网银需要一个能收短信的日本手机号。\n\n| 事项 | 常见材料 | 提示 |\n| --- | --- | --- |\n| 手机卡 | 在留卡、本人银行卡或信用卡、有时需 My Number | 线上品牌/格安 SIM 更便宜，部分支持便利店取卡或 eSIM 当天开通 |\n| 银行账户 | 在留卡（地址须已更新）、护照、印章或签名、日本手机号 | ゆうちょ银行对新入境者较友好，适合作为第一个账户 |\n\n> ⚠ 注意:部分银行对在留时间短的新入境者开户审查较严，被一家拒绝可以换一家或换网点再试，不代表你不符合条件。\n\n## 其余基础项:一次配齐\n\n- **交通卡**：Suica / ICOCA / PASMO 等，充值即用，绑定手机后更方便。\n- **印章（印鑑）**：部分合同和银行手续仍会用到，可先刻一枚常用姓氏章。\n- **家里的水电煤气**：确认是否已开通，未开通的按房源指引联系各公司办理开栓。\n- **网络**：如房源不含网络，尽早联系光回线或办 Home Router，详见「手机卡与家庭网络」篇。\n- **打工前**再次确认「资格外活动许可」已生效，未经许可打工会影响在留资格。\n\n## 一周行动清单\n\n1. 机场领取并妥善保管在留卡，核对卡面信息。\n2. 14 天内到役所办**転入届**（住民登记）。\n3. 同一趟办好**国保加入**、确认 **My Number**、咨询**年金**、取住民票副本。\n4. 办**手机卡**（先）→ 开**银行账户**（后）。\n5. 办交通卡、按需刻印章、确认水电煤气与网络。\n6. 需要打工的确认**资格外活动许可**。\n\n把以上逐项打勾，第一周就能把在日生活的地基打稳。各地窗口、材料与办理顺序略有差异，第一次去一个新窗口前，**先在该自治体官网查清受理时间和携带物**，能省下大量往返。\n\n## 官方参考与免责声明\n\n- 出入国在留管理庁（在留卡·在留资格）:[https://www.moj.go.jp/isa/](https://www.moj.go.jp/isa/)\n- 各市区町村役所窗口信息、住民登记与国保手续以**所在自治体官网**为准。\n\n本文由 Machi 编辑部整理，仅供参考，不构成法律或行政建议。手续要件、费用与期限可能随政策调整，**办理前请务必以官方最新公告和你所在自治体的窗口指引为准**。'},
     # ---- 日本就职 ----
     {"slug": "job-hunting-full-process", "title": "日本就职活动完整流程（新卒 / 中途）",
      "category": "career_japan", "sub": "job_hunting_flow", "featured": True,
      "author": "Machi 就职编辑部", "tags": ["就活", "新卒", "中途"],
-     "summary": "从自我分析、说明会、ES、Web测试到面试、内定和签证变更的全流程。",
-     "body": _guide_paras(
-        "日本就职分「新卒」和「中途」两条路。新卒就活高度流程化、时间线统一：大致从前一年的自我分析与行业研究开始，经历说明会、实习（インターン）、ES 提交、Web 测试（SPI 等）、多轮面试，到拿到内定（内定），再到次年 4 月入社。",
-        "自我分析和行业研究是地基：搞清楚自己的强项、想做的工作和行业，再有针对性地投递。ES（エントリーシート）和履历书是第一道筛选，志望动机和自己 PR 要具体、有事实支撑，避免空话。",
-        "面试通常一次到三次：一次面试看基本沟通和动机，二次看专业匹配，最终面试多由管理层或役员把关。日语表达、逻辑和对公司的理解都会被考察，逆質問（反问环节）也要提前准备。",
-        "中途採用更看重职务经歴和即战力，流程更短、随时招聘。对留学生而言，拿到内定后还有关键一步：把留学签证变更为工作签证（技术・人文知识・国际业务等），需要公司配合提供材料，建议尽早和公司人事确认时间线。",
-     )},
+     "summary": '从自我分析、说明会、ES、Web 测试到面试、内定和签证变更——新卒与中途两条路的完整流程与时间线，以及留学生要特别注意的在留资格衔接，附入管官方链接。',
+     "body": '日本就职分**「新卒（应届）」**和**「中途（社会人转职）」**两条路，流程和节奏差别很大。搞清自己走哪条路、每一步做什么，比盲目海投更重要。本文梳理两者的完整流程，并特别提示留学生容易忽略的在留资格衔接。**下文招聘时间线各公司不同，仅供参考。**\n\n## 两条路的区别\n\n| 维度 | 新卒 | 中途 |\n| --- | --- | --- |\n| 时间线 | 高度统一、提前一年多启动 | 全年招聘、随时进行 |\n| 考察重点 | 潜力、动机、基本素质 | 即战力、职务经历、专业匹配 |\n| 主材料 | ES ＋ 履历书 | 职务经历书 ＋ 履历书 |\n| 周期 | 数月到近一年 | 通常约 2–3 个月 |\n\n判断自己走哪条：应届（含即将毕业的留学生）通常走新卒；已有工作经验、换工作的走中途。两条路的准备重点完全不同。\n\n## 新卒就活流程\n\n新卒就活高度流程化，跟着节奏走、把每一环做扎实即可：\n\n1. **自我分析 ＋ 行业研究**：想清楚强项、想做的工作和行业，别一上来就海投。\n2. **说明会 ＋ 实习（インターン）**：了解公司、积累接触点，也是很多公司的隐性筛选环节。\n3. **ES 提交**：核心三问——自我 PR、学生时代最努力的事（ガクチカ）、志望动机，用**具体经历**支撑，避免空话。\n4. **Web 测试（SPI 等）**：语言 ＋ 非语言，留足练习时间，题集刷两遍是基本盘。\n5. **多轮面试**：一次看沟通与动机，二次看专业匹配，最终多由管理层把关；每轮都准备**逆質問**。\n6. **内定 → 入社**：拿到内定后通常次年 4 月统一入职。\n\n## 中途转职流程\n\n中途更看即战力，流程更短、随时进行：\n\n1. **准备职务经历书**（A4 一到两页）：写清做过什么、用了什么技能、产生了什么**可量化成果**。\n2. **选渠道**：转职网站、转职 Agent（顾问推荐＋条件交涉）、Scout 型平台、内推组合使用。\n3. **面试（通常 2–3 轮）**：转职理由转成「想做的事在贵司能实现」的正向逻辑，避免单纯抱怨现职。\n4. **内定与条件确认**：核对劳动条件通知书（年收构成、试用期、加班制度）。\n5. **向现职退职并交接**：法定提前通知、按规定办离职手续，交接干净——行业圈子比想象的小。\n\n## 留学生:别漏了在留资格变更\n\n对留学生而言，拿到内定后有关键一步:**把留学签证变更为工作签证**（如「技术·人文知识·国际业务」）。这一步不办，拿了内定也没法正式入职。\n\n> ⚠ 注意:变更需要公司配合出具材料，且毕业季（12 月至次年 3 月）是申请高峰。务必尽早和公司人事确认时间线，避免影响 4 月入职。职务内容要与所学专业对得上，选 offer 时就该纳入考量。\n\n## 留学生的差异化打法\n\n新卒赛道竞争激烈，留学生要把自身优势落到具体业务场景里，而不是停留在标签上：\n\n1. **语言与跨文化**：中日双语、对两国市场的理解，在有海外业务的公司是加分项。\n2. **具体成果**：把实习、研究、项目、社团里做出的成果讲清楚，用「情况—课题—行动—结果」结构呈现。\n3. **善用专属渠道**：留学生专场招聘会、大学キャリアセンター、面向外国人的就职支援机构，命中率往往高于海投。\n\n## 面试与内定后的实用提醒\n\n- **逆質問**每轮都要准备 2–3 个有质量的问题，避免只问官网能查到的信息。\n- 拿到内定后**确认劳动条件通知书**：年收构成、试用期、加班与假期制度，别只看总额。\n- 手握多个内定时，**尽早礼貌回绝**其余公司，行业圈子不大，留个好印象。\n- 内定后**同步推进在留资格变更**，把签证时间线和入职时间线对齐。\n\n## 判断一家公司适不适合自己\n\n拿到面试或内定后，可以从几个可观察的维度判断是否值得去：\n\n| 维度 | 看什么 |\n| --- | --- |\n| 签证与外国人支持 | 是否愿意办签证变更、有无外国人员工及其发展 |\n| 语言环境 | 业务是否全日语、能否边工作边提升、有无英语岗位 |\n| 晋升与评价 | 标准是否透明、外国人能否进管理岗 |\n| 加班与休假 | 平均加班、请假难易、有无隐形加班 |\n\n信息可以结合官网、说明会、面试中的逆質問和真实员工评价交叉验证，但任何单条评价都只是参考，最终要结合自己的情况判断。\n\n## 官方参考与免责声明\n\n- 在留资格变更（工作签证）:出入国在留管理庁 [https://www.moj.go.jp/isa/](https://www.moj.go.jp/isa/)\n\n本文由 Machi 编辑部整理，仅供参考。就活时间线与招聘方式各公司不同、逐年调整，**以目标企业的官方招聘信息与入管最新公告为准**。'},
     {"slug": "rirekisho-vs-shokumukeirekisho", "title": "履历书和职务经歴书有什么区别",
      "category": "career_japan", "sub": "rirekisho", "featured": False,
      "author": "Machi 就职编辑部", "tags": ["履历书", "职务经歴书"],
@@ -607,13 +943,8 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
     {"slug": "jlpt-n2-study-roadmap", "title": "JLPT N2 备考路线与时间规划",
      "category": "jlpt", "sub": "jlpt_n2", "featured": True,
      "author": "Machi 日语学习编辑部", "tags": ["JLPT", "N2", "学习计划"],
-     "summary": "词汇、语法、阅读、听力如何分阶段推进，以及一份可执行的时间表。",
-     "body": _guide_paras(
-        "N2 是很多升学和就职的门槛线。整体备考可以分三个阶段：打基础（词汇+语法）、强化（阅读+听力）、冲刺（真题题型+查漏补缺）。如果每天能稳定投入 1–2 小时，3–6 个月是比较现实的周期，基础不同会有差异。",
-        "第一阶段集中过一遍 N2 核心词汇和语法点，建议词汇和语法同步推进，边学边用例句记忆，而不是孤立背单词。每天固定一个词汇/语法的小目标，靠持续而非突击。",
-        "第二阶段把重心转到阅读和听力。阅读练「带着问题找信息」的读法，控制单篇用时；听力靠量的积累和精听，刚开始可以「听一遍做题 + 再听对答案 + 看原文」三步走。",
-        "第三阶段做整套限时练习，熟悉题型和时间分配，统计错题集中突破薄弱模块。考前两周回归高频词汇和语法、保持听力手感。注意：练习请使用正规、原创或正版资料，避免盗版真题。",
-     )},
+     "summary": '词汇、语法、阅读、听力如何分阶段推进，一份可执行的三阶段时间表，以及报名、考试当天和用正版资料的注意事项，附 JLPT 官方链接。',
+     "body": '**JLPT N2** 是许多升学、就职的门槛线，很多学校和公司把它当作日语能力的硬指标。备考最怕的是「四科平均用力却都不深」，本文把 N2 备考拆成可执行的三个阶段，并给出时间规划与考试注意事项。**下文考试日程、报名时间与合格标准以 JLPT 官方（jlpt.jp）公告为准。**\n\n## 总体思路:三阶段推进\n\n| 阶段 | 重点 | 大致占比 |\n| --- | --- | --- |\n| 打基础 | 核心词汇 ＋ 语法 | 前段 |\n| 强化 | 阅读 ＋ 听力 | 中段 |\n| 冲刺 | 真题题型 ＋ 查漏补缺 | 后段 |\n\n若每天能稳定投入一段完整学习时间，用几个月完成一轮完整备考是较现实的节奏（基础不同、投入不同，差异较大）。关键不是「刷了多少书」，而是**每个阶段有没有真正吃透重点**。\n\n## 第一阶段:打基础\n\n这一阶段的目标是把 N2 的词汇和语法过一遍，建立起「看得懂、认得出」的底子。\n\n- **词汇与语法同步推进**，边学边用例句记忆，而不是孤立背单词。\n- 每天设一个**小目标**（如若干词汇 ＋ 几个语法点），靠持续而非突击。\n- 语法点配 1–2 个自然例句，记住「在什么场景、表达什么语气」，而不是只记中文翻译。\n- 近义语法容易混，学的时候就把差别（语气、书面/口语色彩）记在一起。\n\n## 第二阶段:强化阅读与听力\n\n基础打好后，把重心转到最拉分、也最考熟练度的阅读和听力：\n\n1. **阅读**：练「带着问题找信息」的读法，先看题再回文定位，控制单篇用时，避免逐字通读。\n2. **听力**：靠量的积累和精听。刚开始用「听一遍做题 → 再听对答案 → 看原文找没听出的地方」三步走。\n3. 把日语材料（新闻、Podcast、剧集）**当背景常听**，把语感养出来。\n\n## 第三阶段:冲刺\n\n- 做**整套限时练习**，熟悉题型与时间分配，模拟真实考试节奏。\n- 用**错题本**集中突破薄弱模块，把反复错的点单独攻克。\n- 考前两周**回归高频词汇语法、保持听力手感**，不再铺新内容，稳住状态。\n\n> ⚠ 注意:练习请使用正规、原创或正版资料，避免使用来路不明的盗版真题——既是尊重版权，也能保证内容和题型准确。\n\n## 四科怎么分配精力\n\nN2 分「言语知识（文字·词汇·语法）＋阅读」和「听力」两大块计分，不同基础的人重心不同：\n\n- **词汇薄弱**：优先补词汇，它是阅读和听力的共同地基，词汇量上不去，其他都吃力。\n- **语法混淆**：按意义分组、结合例句区分近义句型，别死记接续表。\n- **阅读做不完**：练限时、练定位，先看题再回文，放弃逐字读。\n- **听力抓不住**：靠日常大量输入＋精听，先盲听做题、再对原文找音变。\n\n> ⚠ 注意:合格通常既要总分达标、也要每一大块不低于各自的**基准点**，别把某一科彻底放弃，导致总分够了却因单科不过而不合格。\n\n## 一份可执行的周计划示例\n\n| 时段 | 主要任务 |\n| --- | --- |\n| 平日每天 | 固定词汇/语法小目标 ＋ 20–30 分钟听力输入 |\n| 周中 2–3 天 | 加练阅读，限时做题并复盘错题 |\n| 周末 | 一次较完整的分科或整卷练习 ＋ 错题归纳 |\n| 考前两周 | 整卷限时模考 ＋ 回归高频词汇语法 |\n\n以上仅为结构示例，实际按自己的基础和可投入时间调整。\n\n## 常见误区\n\n- **只刷题不打基础**：题感重要，但词汇语法不过关，刷再多题也难稳定提分。\n- **词汇孤立死记**：脱离例句和场景背单词，容易记完就忘、考场上认不出。\n- **听力临时抱佛脚**：听力靠长期积累，考前一周才开始练几乎来不及。\n- **忽视各科基准点**：只顾总分，某一大块彻底放弃，可能总分够却单科不过。\n- **用盗版真题**：内容可能有误、题型过时，既不准也不合规。\n\n## 报名与考试当天\n\n1. **报名**通过 JLPT 官方渠道，日本国内每年通常有两次考试机会，**具体日程和报名窗口以官方公告为准**，热门考点名额可能紧张，尽早报名。\n2. 考前**确认考场位置**、携带准考证与规定证件、留足交通时间。\n3. 各科目按「言语知识（词汇语法）→ 阅读 → 听力」的顺序进行，**合格线与各科门槛以官方为准**。\n4. 考试当天保持规律作息，别熬夜突击到影响听力状态；带好水和必要文具，提前到场。\n\n## 官方参考与免责声明\n\n- 日本語能力試験 JLPT 官方:[https://www.jlpt.jp/](https://www.jlpt.jp/)\n\n本文由 Machi 编辑部整理，仅供学习参考。考试日程、报名方式与合格标准可能变动，**报名与备考前请以 JLPT 官方最新公告为准**。'},
     {"slug": "n1-n2-grammar-method", "title": "N1/N2 语法到底怎么学才不会忘",
      "category": "jlpt", "sub": "grammar", "featured": False,
      "author": "Machi 日语学习编辑部", "tags": ["语法", "N1", "N2"],
@@ -638,13 +969,8 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
     {"slug": "residence-card-and-juminhyo", "title": "在留卡和住民登记（役所）办理流程",
      "category": "life_japan", "sub": "city_hall", "featured": True,
      "author": "Machi 日本生活编辑部", "tags": ["在留卡", "役所", "住民登记"],
-     "summary": "在留卡是什么、转入届怎么办、顺带要办的保险和 My Number。",
-     "body": _guide_paras(
-        "在留卡（在留カード）是中长期在留外国人的法定身份证件，记录你的姓名、在留资格、在留期间和居住地等信息。需要随身携带，地址变更、在留资格变更、续签都和它绑定。入境时在指定机场会当场发放。",
-        "确定住所后，要在 14 天内到居住地的区/市役所办理住民登记（転入届），登记你的住址。役所会把住址信息写到在留卡背面或更新到系统里。这一步是后续办很多手续的前提。",
-        "在役所通常会顺带办理几件事：加入国民健康保险（留学生等需要加入）、领取或确认 My Number（个人番号）通知、了解国民年金相关手续。把这些一次性问清楚，能少跑几趟。",
-        "之后如果搬家，旧址要办「転出届」、新址办「転入届」；离开日本要办「転出届」。手续细节各地略有差异，请以所在区役所的最新窗口指引为准。",
-     )},
+     "summary": '在留卡是什么、转入届怎么办、地址变更与再入国的关系，以及在役所顺带办的国保、My Number、年金——把在留身份相关的役所手续一次说清，并给出入管官方链接。',
+     "body": '**在留卡（在留カード）**是中长期在留外国人的法定身份证件；**住民登记**则把你的住址登记进日本的住民基本台帐。两者是你在日本一切行政手续的基础，办得规范、更新及时，后续的续签、开户、加入保险才顺。本文梳理它们的办理流程与彼此的联动关系。**下文各地窗口、材料与期限略有差异，请以所在区/市役所和出入国在留管理庁的最新指引为准。**\n\n## 在留卡:随身携带的法定身份证\n\n在留卡记录你的姓名、国籍、在留资格、在留期间、居住地等信息，中长期在留者入境时在指定机场当场发放（部分情形改为邮寄）。它相当于你在日本的「身份证」。\n\n- **须随身携带**，警察等依法查验时要能出示。\n- **在留资格变更、在留期间更新、地址变更**都与它绑定。\n- 卡面信息有误、损坏或遗失，要及时到入管申请更正或再发行。\n- 卡上的「在留期间满了日」是重要日期，务必提前留意续签窗口。\n\n## 住民登记(転入届):入境 14 天内\n\n确定住所后，须在**14 天以内**到居住地的区/市役所办理**転入届**，登记正式住址。役所会将住址信息记入在留卡背面或系统。\n\n办理时通常需要在留卡、护照等，具体材料以役所要求为准。这一步是后续开户、签合同、加入保险等几乎所有手续的前提——没有住民登记，很多窗口都办不了事。\n\n## 在役所顺带办的几件事\n\n到役所办住民登记时，建议把下面几项一并问清、一并办完，避免来回跑：\n\n1. **国民健康保险**加入（无公司社保者，看病自付比例大幅下降）。\n2. **My Number（个人番号）**通知的领取或确认——开户、打工、报税都会用到。\n3. **国民年金**手续（20 岁以上原则上需加入，学生可咨询缴纳特例）。\n4. 如已确定打工，了解**资格外活动许可**相关流程。\n5. 取几份**住民票副本**备用。\n\n## 搬家与离境时的地址手续\n\n住址变更也要办手续，漏办会让在留卡信息与实际不符，影响后续办事：\n\n| 情形 | 要办的手续 | 在哪办 |\n| --- | --- | --- |\n| 同市内搬家 | 転居届 | 现居地役所 |\n| 跨市区搬家 | 旧址办転出届、新址办転入届 | 分别到两地役所 |\n| 长期离开日本 | 転出届 | 现居地役所 |\n\n> ⚠ 注意:住址变更要在搬家后规定期限内到役所办理;地址长期不更新会影响在留卡信息的准确性，进而影响续签、开户、领取邮件等手续。\n\n## 再入国与在留期间\n\n短期出境时，持有效在留卡通常可利用**みなし再入国（视为再入国）**制度，在规定期限内返回日本无需另外申请再入国许可；超过期限或长期出境的规则不同，出境前请务必确认自己的情形，避免在留资格失效。回国探亲、旅游前，先看清自己这次出境是否在みなし再入国的允许范围内。\n\n**在留期间更新（续签）**建议在到期前提前准备，材料通常包括在留卡、护照、能证明当前活动的文件（如在学证明＋成绩＋出勤，或在职证明＋收入相关文件）等。出勤率过低、超时打工、税金或年金未缴等都可能影响审查。**再入国、在留期间更新、资格变更的具体条件以出入国在留管理庁公告为准。**\n\n## 常见疑问\n\n- **在留卡丢了怎么办？** 尽快到入管申请再发行，同时按需报警备案；补办期间随身带好护照等能证明身份的文件。\n- **搬家了还要单独通知入管吗？** 住址变更在役所办転入/転居届即可，役所会更新在留卡背面住址；但公司或学校（所属机关）发生变更时，另有向入管的届出义务。\n- **国保、年金没按时缴，会影响续签吗？** 税金、保险、年金的缴纳状况可能被纳入在留审查的考量，尽量按时缴、留好凭据。\n\n## 一份役所手续速览清单\n\n1. 入境 14 天内办**転入届**（住民登记）。\n2. 同趟办**国保加入**、确认 **My Number**、咨询**国民年金**。\n3. 随身携带在留卡，信息有误/损坏及时到入管更正。\n4. 搬家办**転居/転出・転入届**，长期离境办**転出届**。\n5. 出境前确认**みなし再入国**的适用与期限。\n6. 在留到期前提早准备**更新申请**材料。\n\n## 官方参考与免责声明\n\n- 出入国在留管理庁（在留卡·在留资格·再入国）:[https://www.moj.go.jp/isa/](https://www.moj.go.jp/isa/)\n- 住民登记等窗口手续以各市区町村役所官网为准。\n\n本文由 Machi 编辑部整理，仅供参考，不构成法律或行政建议。在留资格与住民手续的要件可能随政策调整，**办理前请以官方最新公告及你所在自治体窗口指引为准**。'},
     {"slug": "renting-initial-cost", "title": "日本租房初期费用详解",
      "category": "life_japan", "sub": "renting", "featured": False,
      "author": "Machi 日本生活编辑部", "tags": ["租房", "初期费用"],
@@ -698,57 +1024,32 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
      )},
     # ---- 在日生活（扩充批）----
     {"slug": "renting-initial-costs-explained", "title": "日本租房初期费用全拆解：敷金礼金到底是什么",
-     "category": "life_japan", "sub": "housing", "featured": True,
+     "category": "life_japan", "sub": "renting", "featured": True,
      "author": "Machi 日本生活编辑部", "tags": ["租房", "敷金", "礼金", "初期费用"],
-     "summary": "敷金、礼金、仲介手数料、保证会社、火灾保险——第一次租房前看懂每一项钱花在哪。",
-     "body": _guide_paras(
-        "在日本租房，搬进去之前要付的「初期费用」常常达到月租的 4–6 倍，由这些项目组成：敷金（押金，退房时扣除清洁修缮费后返还）、礼金（付给房东的谢礼，不返还）、仲介手数料（中介费，常见为一个月房租+消费税）、前家賃（首月或次月房租）、保证会社利用料、火灾保险、换锁费等。",
-        "敷金礼金各 1 个月是传统行情，但现在「敷金礼金零」的房源也很多——注意零礼金房源有时会把成本转移到清洁费或解约金里，签约前把退房条款看清楚。保证会社是大多数房源的必选项：没有日本保证人的外国人基本都走保证会社，首次费用常见为月租的 50%–100%，之后每年或每两年续费。",
-        "火灾保险一般两年 1.5–2 万日元区间；换锁费 1.5–2.5 万日元常见。部分房源还有「室内消毒」「24 小时支援」等可选项目，签约时可以确认哪些能去掉。",
-        "省钱思路：找敷礼零或 Free Rent（免首月租）房源、避开 1–3 月搬家高峰、考虑 UR 赁贷（无礼金无中介费无保证人，但有收入条件）。所有金额以房源募集条件和重要事项说明书为准。",
-     )},
+     "summary": '敷金、礼金、仲介手数料、保证会社、火灾保险——第一次在日本租房前，看懂初期费用每一项钱花在哪、怎么省、签约前盯紧哪些条款，并给出官方原状回复指引链接。',
+     "body": '在日本租房，真正让预算吃紧的往往不是每月房租，而是搬进去之前要一次性付清的「**初期费用（初期費用）**」，它常常达到月租的数倍。很多人因为没提前算清这笔钱，落地就陷入现金紧张。本文拆解初期费用的每一项、省钱思路，以及签约时最容易踩坑的条款。**下文所有金额区间仅为常见行情，实际以房源募集条件和重要事项说明书为准。**\n\n## 初期费用由哪些项目组成\n\n| 项目 | 含义 | 常见行情 |\n| --- | --- | --- |\n| 敷金（敷金） | 押金，退房时扣除清洁/修缮后返还余额 | 常见 1 个月房租，视房源而定 |\n| 礼金（礼金） | 付给房东的谢礼，**不返还** | 0～1 个月，近年零礼金房源增多 |\n| 仲介手数料 | 中介费 | 常见约 1 个月房租＋消费税（上限受法规约束） |\n| 前家賃 | 首月（有时含次月）房租 | 按入居日计算 |\n| 保证会社利用料 | 无日本担保人时的代担保费用 | 首次常为月租的一部分，之后定期续费 |\n| 火灾保险 | 租房必备的家财/责任保险 | 通常按 1–2 年一签 |\n| 换锁费・其他 | 更换门锁、室内消毒、24 小时支援等 | 部分为可选项 |\n\n把这些项目加起来，就能理解为什么初期费用动辄是月租的数倍。签约前一定要拿到一份逐项列明的费用清单（見積書），看清每一笔钱花在哪。\n\n> ⚠ 注意:「敷金礼金零」的房源很有吸引力，但成本有时被转移到清洁费、解约违约金或较高的仲介费里。看到「ゼロゼロ物件」时，务必把退房条款和各项杂费一起看清，别只盯着「初期便宜」。\n\n## 敷金、礼金、保证会社分别是什么\n\n**敷金**类似押金，退租时扣除清洁、修缮等费用后，把余额返还给你；正常居住产生的自然损耗原则上不该从敷金里扣。**礼金**是一次性付给房东的谢礼，不返还，近年很多房源已经「礼金 0」。\n\n**保证会社**是很多人不熟悉的一项：大多数房东要求租客要么有日本担保人，要么加入保证会社代为担保。没有日本亲友做保证人的外国人基本都走保证会社，费用通常首次一笔、之后按年或按两年续费一次。这是一项几乎躲不掉的固定成本，看房时就要把它算进总预算。\n\n## 怎么省初期费用\n\n1. 优先找**敷礼零**或**フリーレント（免首月/免数月租）**的房源。\n2. **避开 1–3 月搬家高峰**，此时房源紧俏、优惠少、议价空间小；淡季（如 6–8 月）更容易谈。\n3. 考虑 **UR 赁贷**：无礼金、无仲介手数料、无需保证人（但有收入门槛要求）。\n4. 学生可留意**学生宿舍、社宅、留学生会馆**等礼金较低的选择。\n5. 可选项目（室内消毒、24 小时支援等）签约时确认哪些能去掉，能省则省。\n6. 多比较几家中介与房源，同一栋楼不同中介报的初期费用也可能不同。\n\n## 签约前必看的条款\n\n- **解约预告期**：多为退房前提前一定时间书面通知，忘了通知可能白付一个月房租。\n- **短期解约违约金**：约定期限内退房可能要额外付款，短住者尤其要看。\n- **更新料**：很多地区每隔固定年限续约时要再付约 1 个月房租，属于长住的隐性成本。\n- **原状回复范围**：退房时哪些属于自然损耗（不该你承担）、哪些要赔，直接影响押金退还。\n- **禁止事项**：能否养宠物、乐器、转租、增加同住人等，违约可能被要求解约。\n\n关于退房结算，**国土交通省发布过「原状回復ガイドライン」**，明确正常居住产生的自然损耗与老化不应由租客承担。退房时若遇到明显不合理的扣款，可以引用该指引与管理公司协商。\n\n## 一份简单的预算准备法\n\n把「一次性初期费用」和「每月固定支出」分开算，才不会被大数字吓到、也不会低估长期成本：\n\n1. **一次性** = 敷金＋礼金＋仲介手数料＋首月房租＋保证会社费＋火灾保险＋换锁等。\n2. **每月** = 房租＋管理費/共益費＋（如有）停车位＋水电煤气网络。\n3. 手上现金至少准备到「一次性费用 ＋ 2–3 个月生活费」再签约，避免落地即紧张。\n\n## 官方参考与免责声明\n\n- 国土交通省「原状回復をめぐるトラブルとガイドライン」:[https://www.mlit.go.jp/](https://www.mlit.go.jp/)\n\n本文由 Machi 编辑部整理，仅供参考。费用行情因地区、房型、房源差异极大，本文为结构性说明而非报价，**具体金额与条款一律以房源的募集条件、重要事项说明书和租赁合同为准**。'},
     {"slug": "viewing-and-lease-contract-tips", "title": "看房与签约注意事项：重要事项说明里要盯紧什么",
-     "category": "life_japan", "sub": "housing", "featured": False,
+     "category": "life_japan", "sub": "renting", "featured": False,
      "author": "Machi 日本生活编辑部", "tags": ["租房", "合同", "看房"],
-     "summary": "看房时检查什么、申込到入居审查的流程、签约时哪些条款最容易踩坑。",
-     "body": _guide_paras(
-        "看房时除了户型采光，重点检查：手机信号、墙壁隔音（敲一敲、留意隣户生活声）、水压、霉味与结露痕迹、垃圾置场的状态、夜间周边环境。木造和轻量铁骨的隔音明显弱于 RC（钢筋混凝土），对声音敏感的人选 RC 会舒服很多。",
-        "流程上：看中后提交入居申込书 → 保证会社与房东审查（通常 3–7 天，会核对在留资格、收入或学校在籍）→ 审查通过后签订赁贷借契约。审查阶段如实填写即可，收入不稳定的学生通常以经费支付人或学校名义补强。",
-        "签约时中介有义务做「重要事項説明」。要盯紧的条款：解约预告期（多为 1 个月前通知）、短期解约违约金（如 1 年内退房付 1 个月房租）、更新料（很多地区每两年 1 个月房租）、退房时的原状回复范围、禁止事项（宠物、乐器、转租等）。",
-        "国土交通省的「原状回復ガイドライン」明确了自然损耗不应由租客承担——退房结算如遇明显不合理的扣款，可以引用该指引协商。合同和重要事项说明书务必保留好。",
-     )},
+     "summary": '看房时检查什么、从申込到入居审查的流程、签约时哪些条款最容易踩坑，以及退房时如何引用原状回复指引维护权益——附国土交通省官方链接。',
+     "body": '在日本租房，看房和签约环节的细节，直接决定你之后住得舒不舒服、退房时会不会被多扣钱。同样的房租，因为忽略了隔音、更新料或原状回复条款，实际体验和成本可能差很多。本文梳理看房检查点、审查流程和签约必看条款。**下文具体条款与费用以房源的重要事项说明书和租赁合同为准。**\n\n## 看房时检查什么\n\n除了户型和采光这些一眼能看到的，重点检查这些容易被忽略、住进去才后悔的地方：\n\n- **手机信号**（现场在各个房间实测，别只在门口看）。\n- **隔音**：敲一敲墙、留意隣户的生活声、走廊脚步声。\n- **水压**、**霉味与结露痕迹**、**通风**（尤其朝北和一楼的房间）。\n- **垃圾置场**的位置与规则、**夜间周边环境**（白天看不出的噪音和治安）。\n\n> ⚠ 注意:木造和轻量铁骨的隔音明显弱于 RC(钢筋混凝土)。对声音敏感的人，优先选 RC 结构会舒服很多，这一点看房时就要问清建筑构造。\n\n## 从看房到入居的流程\n\n看中房子后，通常要经过申请和审查才能签约：\n\n1. 看中后提交**入居申込书**，填写本人、工作/在学、担保等信息。\n2. **保证会社与房东审查**（通常需要数日，会核对在留资格、收入或学校在籍等）。\n3. 审查通过后签订**赁贷借契约（租赁合同）**并办理入居手续、领钥匙。\n\n审查阶段**如实填写**即可。收入不稳定的学生，通常以**经费支付人或学校名义**补强担保，看房时可以先问清楚需要哪些担保材料。\n\n## 签约时要盯紧的条款\n\n签约时最容易踩坑的就是这些藏在合同里的条款，逐条看清：\n\n| 条款 | 常见内容 | 为什么重要 |\n| --- | --- | --- |\n| 解约预告期 | 退房前提前一定时间书面通知 | 忘了通知可能白付一个月 |\n| 短期解约违约金 | 约定期限内退房要额外付款 | 短住者尤其要看 |\n| 更新料 | 部分地区每隔固定年限续约付约 1 个月房租 | 长住成本的一部分 |\n| 原状回复范围 | 退房时哪些要恢复、哪些算自然损耗 | 直接影响押金退还 |\n| 禁止事项 | 宠物、乐器、转租、增加同住人等 | 违约可能被要求解约 |\n\n## 重要事项说明与你的权益\n\n签约时，**宅建业者有义务向你做「重要事項説明」**。这一步不要走过场，逐条听清、有疑问当场问，尤其是**费用和退房相关条款**——签字之后就难改了。\n\n关于退房结算，**国土交通省发布过「原状回復ガイドライン」**，明确正常居住产生的自然损耗与老化不应由租客承担。退房时若遇到明显不合理的扣款，可以引用该指引与管理公司协商。**合同书与重要事项说明书务必妥善保管**，它们是日后维护权益的凭据。入住时最好把房屋既有的划痕、污渍拍照留存，退房时能证明不是你造成的。\n\n## 关于建筑构造与朝向\n\n同样的房租，构造和朝向不同，住起来差别很大，看房时值得多问一句：\n\n| 构造 | 隔音 | 特点 |\n| --- | --- | --- |\n| 木造 | 较弱 | 房租低、冬冷夏热更明显 |\n| 轻量铁骨 | 一般 | 介于木造与 RC 之间 |\n| RC（钢筋混凝土） | 较好 | 隔音好、抗震与保温更优，房租偏高 |\n\n朝向上，朝南采光和干燥度通常更好；一楼和朝北的房间要特别留意**结露、霉味和治安**。\n\n## 申请时怎么让审查更顺\n\n入居审查主要看你能否稳定付租、身份是否清晰。想让审查更顺，可以做这些准备：\n\n1. **收入/在学证明齐全**：在职者备在职与收入证明，学生备在学证明。\n2. **担保安排清楚**：无日本担保人时通过保证会社，学生可用经费支付人或学校名义补强。\n3. **信息如实一致**：申込书上的姓名、联系方式、工作/在学信息与证件一致，别填错。\n4. **保持电话畅通**：审查期间保证会社或中介可能来电确认，及时接听。\n\n## 入住与退房的实用提醒\n\n1. **入住时拍照/录像**留存房屋原有的划痕、污渍、设备状态，标注日期。\n2. **重要事项说明书、合同、費用明细**分类保存，电子版也存一份。\n3. 遇到设备故障，**先联系管理公司**报修，别自行拆改。\n4. **退房前提前按合同的预告期通知**，约好退房立会（现场验收）时间。\n5. 退房时对不合理扣款，冷静核对合同与原状回复指引，理性协商。\n\n## 官方参考与免责声明\n\n- 国土交通省「原状回復をめぐるトラブルとガイドライン」:[https://www.mlit.go.jp/](https://www.mlit.go.jp/)\n\n本文由 Machi 编辑部整理，仅供参考。房源条款、费用与审查要求差异很大，**签约前请以房源的重要事项说明书与租赁合同为准**。'},
     {"slug": "bank-account-opening-guide", "title": "在日本开银行账户：选择、材料与常见被拒原因",
-     "category": "life_japan", "sub": "banking", "featured": False,
+     "category": "life_japan", "sub": "bank_account", "featured": False,
      "author": "Machi 日本生活编辑部", "tags": ["银行", "开户", "ゆうちょ"],
-     "summary": "ゆうちょ、都市银行、网银怎么选，需要什么材料，为什么会被拒。",
-     "body": _guide_paras(
-        "刚到日本最容易开的是ゆうちょ银行（邮储）：对在留时间要求宽松、网点遍布全国，适合作为第一个账户。三菱UFJ、三井住友、みずほ等都市银行功能全，但部分网点对在留未满 6 个月的新人审查较严。乐天银行、住信SBI 等网银无网点、手续费友好，适合作为第二账户。",
-        "开户基本材料：在留卡（地址须与申请一致）、护照、印章（部分银行接受签名）、电话号码；有些银行会要求学生证/在职证明或 My Number。注意：先办好手机号再去开户会顺利很多。",
-        "常见被拒原因：在留期过短（剩余在留期间不足）、住址未更新、无法说明开户用途、短期签证（旅游签不能开户）。被一家拒绝可以换一家银行或网点再试。",
-        "开户后注意：账户长期不用可能被冻结；回国前要么注销账户、要么确认银行允许非居住者保留。绝对不要出售或出借账户——在日本这是犯罪行为，会直接影响在留。",
-     )},
+     "summary": 'ゆうちょ、都市银行、网银怎么选，需要哪些材料，为什么会被拒，开户后又有哪些坑——第一次在日本开银行账户的完整指南，附金融厅官方链接。',
+     "body": '银行账户是在日本收工资、交房租、绑定各种服务的基础。但刚入境的外国人开户，常遇到审查偏严、材料不齐被退回的情况。本文讲清怎么选银行、备什么材料、为什么会被拒，以及开户之后要避开的坑。**下文各行政策与材料要求以银行官网及网点最新说明为准。**\n\n## 银行类型怎么选\n\n| 类型 | 代表 | 特点 |\n| --- | --- | --- |\n| ゆうちょ银行（邮储） | ゆうちょ | 对新入境者较友好、网点遍布全国，适合第一个账户 |\n| 都市银行 | 三菱UFJ、三井住友、みずほ | 功能全，但部分网点对在留短的新人审查较严 |\n| 网络银行 | 乐天银行、住信SBI 等 | 无实体网点、手续费友好，适合作为第二账户 |\n| 地方银行/信用金库 | 各地方行 | 与本地生活、房东、公司结算贴合 |\n\n建议新入境者**先开一个容易通过的主账户（如ゆうちょ）**，稳定后再补一个网银做日常转账和收付。不同银行的定位不同，多开一两个能覆盖不同场景（工资、房租、网购）。\n\n## 开户材料\n\n1. **在留卡**（卡面地址须与住民登记一致）。\n2. **护照**。\n3. **印章**（部分银行接受签名，但备一枚更稳妥）。\n4. **日本手机号**（很多银行开户或激活网银需要收短信）。\n5. 部分银行会要求**学生证/在职证明**或 **My Number**。\n\n> ⚠ 注意:先办好手机号再去开户会顺利很多;地址一定要先在役所更新，卡面旧地址常导致当场被退回，白跑一趟。\n\n## 常见被拒原因\n\n被拒不代表你有问题，多数是材料或时机不对，换个思路就能解决：\n\n1. **剩余在留期间过短**（部分银行要求在留期还剩若干个月以上）。\n2. **住址未更新**或与在留卡不一致。\n3. **无法说明开户用途**（如实说明留学、工作、收房租工资即可）。\n4. **短期签证**（旅游签等原则上不能开户）。\n\n被一家拒绝时，可以换一家银行或换网点再试，不同机构标准不同；ゆうちょ 和部分网银通常门槛更低。\n\n## 开户后要注意\n\n1. 账户**长期不使用可能被冻结或休眠**，保持偶尔使用。\n2. **回国前**要么注销账户，要么确认银行是否允许非居住者继续保留。\n3. **绝不要出售、出借或转让账户**——在日本这属于犯罪行为，会直接影响在留资格，也可能被卷入诈骗案件。\n4. 妥善保管**存折、现金卡与网银密码**，遗失立即挂失。\n5. 收到自称银行/机构的**可疑电话或短信**索要密码、验证码时一律不要提供，官方不会这样索取。\n\n## 印章、网银与常用功能\n\n开户时可以一并办好这些，日后用起来更顺：\n\n1. **网银（インターネットバンキング）**：开通后转账、查余额都在手机上完成，省去跑网点。\n2. **现金卡（キャッシュカード）**：多为邮寄到登记住址，注意保管好、别和密码放一起。\n3. **国际汇款/换汇**：如需给家里汇款或收海外汇款，事先问清该行的手续费和额度，网银汇款或部分专门汇款服务通常比柜台便宜。\n4. **自动扣款（口座振替）**：房租、水电、手机费很多都能设自动扣款，绑定后不易漏缴。\n\n## 一张开户前的自查清单\n\n1. 住民登记已办、在留卡地址已更新。\n2. 手机号已开通、能正常收短信。\n3. 在留卡、护照、印章（或签名）齐全。\n4. 想清楚开户用途，能一句话说明。\n5. 目标银行官网确认过材料与受理条件。\n\n## 汇款回国与外币\n\n留学生和新社会人常有给家里汇款、或收海外汇款的需求，几种方式成本差别不小：\n\n- **银行柜台电汇**：稳妥但手续费和汇率点差通常较高。\n- **网银汇款**：比柜台便宜、可随时操作，适合小额高频。\n- **正规汇款服务/持牌机构**：部分手续费更低、到账更快，选择时认准**持牌合规**的机构，避开来路不明的「地下钱庄」。\n\n无论哪种方式，都要保留好汇款记录；大额资金往来注意合规，必要时准备好资金来源说明。\n\n## 防诈骗提醒\n\n在日本，账户安全直接关系到在留资格，务必记住几条底线：官方绝不会打电话/发短信索要你的密码或验证码；不要为「兼职」「代收款」出借账户；接到自称警察、入管、银行要求转账「验资」的，一律挂断并向正规渠道核实。一旦怀疑账户被盗用或收到可疑扣款，**立即联系银行冻结并保留证据**。近年针对在日外国人的电话诈骗不少，多一分警惕就少一分损失。\n\n## 官方参考与免责声明\n\n- 金融庁（金融机构相关信息）:[https://www.fsa.go.jp/](https://www.fsa.go.jp/)\n- 各银行开户条件、必要材料与手续费以其**官方网站及网点最新说明**为准。\n\n本文由 Machi 编辑部整理，仅供参考。银行政策各不相同且时有调整，**开户前请以目标银行的官方最新说明为准**。'},
     {"slug": "mobile-sim-and-internet", "title": "手机卡与家庭网络怎么选：大手、格安与光回线",
-     "category": "life_japan", "sub": "mobile_internet", "featured": False,
+     "category": "life_japan", "sub": "mobile_sim", "featured": False,
      "author": "Machi 日本生活编辑部", "tags": ["手机", "SIM", "网络"],
-     "summary": "三大运营商、线上品牌与格安 SIM 的取舍，办理材料和家庭光纤的基本概念。",
-     "body": _guide_paras(
-        "日本手机资费大致三档：大手三社（docomo/au/SoftBank）信号与服务最全但月费高；它们的线上品牌（ahamo/povo/LINEMO）性价比高、流程全线上；格安 SIM（楽天モバイル、IIJmio、mineo 等）最便宜，高峰时段网速可能略降。新来者从线上品牌或格安 SIM 起步是常见选择。",
-        "办理通常需要：在留卡、本人名义的日本银行账户或信用卡、有时需要 My Number。部分格安 SIM 支持便利店取卡和 eSIM 即时开通。注意确认在留剩余期间，部分运营商要求在留期 90 天以上。",
-        "家庭网络主流是光回线（光纤），代表有フレッツ光系（docomo光/SoftBank光等）和独立的 NURO 光、auひかり。签约常含工事费分期与 2 年绑定，搬家或解约时注意违约金与设备返还。租房前也可以确认房源是否「インターネット無料」。",
-        "短期或不想施工的替代方案是 Home Router（插电即用）或 Pocket WiFi。选择时把「实际月费=基本费+设备费-优惠」算清楚再比较。",
-     )},
+     "summary": '三大运营商、线上品牌与格安 SIM 怎么取舍，办理需要什么材料，家庭光回线与 Home Router/Pocket WiFi 又该怎么选——把在日通信费一次算清楚，附总务省官方链接。',
+     "body": '手机卡和家庭网络是落地后马上要办的事。日本通信市场选择多、价差大，选对能每月省下不少，选错则可能被长约和违约金绑住。本文梳理手机资费的三档和家庭上网的几种方案，帮你按需求做取舍。**下文具体资费、优惠与合约条件以各运营商官网最新公告为准。**\n\n## 手机资费三档\n\n| 档位 | 代表 | 特点 |\n| --- | --- | --- |\n| 大手三社 | docomo / au / SoftBank | 信号与服务最全，月费最高，门店支持多 |\n| 线上品牌 | ahamo / povo / LINEMO | 性价比高、流程全线上，门店支持少 |\n| 格安 SIM（MVNO） | 楽天モバイル、IIJmio、mineo 等 | 最便宜，网络高峰时段速度可能略降 |\n\n新来者常见做法是**从线上品牌或格安 SIM 起步**，先解决「有号能用」，稳定后再按实际用量和信号体验调整。三大运营商信号最稳，但月费也最高；格安 SIM 便宜，代价是高峰期网速和门店支持。\n\n## 办理手机卡需要什么\n\n1. **在留卡**。\n2. **本人名义的日本银行账户或信用卡**（用于扣费）。\n3. 有时需要 **My Number**。\n4. 部分运营商要求**在留剩余期间达到一定天数以上**。\n\n> ⚠ 注意:部分格安 SIM 支持便利店取卡或 eSIM 即时开通，落地当天就能有号;但用国际信用卡付费、或在留期偏短时可能受限，办理前先看清受理条件，别到窗口才发现材料不符。\n\n## 家庭网络怎么选\n\n主流是**光回线（光纤）**，代表有フレッツ光系（docomo光、SoftBank光等）以及独立的 NURO 光、auひかり。选之前先确认三件事：\n\n- 房源是否**已经通光纤**、能否施工（部分公寓有限制）。\n- 合约的**工事费分期**与**绑定期**，搬家或解约时的违约金与设备返还。\n- 租房前先看房源是否「**インターネット無料**」，自带网络能直接省一笔。\n\n不想施工、或短期居住的替代方案：\n\n1. **Home Router**：插电即用的固定无线路由，免工事，适合租期不长或无法施工的房子。\n2. **Pocket WiFi**：便携随身，适合搬家频繁或临时使用，但速度和稳定性一般不如光纤。\n\n## 怎么比较才不吃亏\n\n不要只看广告里的最低价，把真实成本算清楚再横向比较：\n\n1. **实际月费 = 基本费 ＋ 设备/工事分期 − 各种优惠**。\n2. 留意**优惠到期后的涨价**、**绑定期与解约金**、赠品是否附带隐性条件。\n3. 手机与家庭网络的「**套餐合并折扣**」是否划算，要按你实际的用量核算，而不是被「合并更便宜」的话术带走。\n4. 经常换住处的人，优先选**无长约或短约**的方案，避免频繁付违约金。\n\n## 按不同人群怎么选\n\n| 人群 | 手机 | 家庭网络 |\n| --- | --- | --- |\n| 短期/常搬家 | 格安 SIM 或 eSIM，无长约 | Home Router 或 Pocket WiFi |\n| 长期稳定居住 | 线上品牌或大手 | 光回线，绑定期换更优月费 |\n| 用量大/多设备 | 无限流量套餐 | 光回线，注意上行速度与稳定性 |\n| 预算优先 | 格安 SIM | 房源自带网络或最低档光回线 |\n\n## 办理与解约的实用提醒\n\n- 开通前确认**是否需要本人名义的银行卡/信用卡**，用家人或他人卡付费可能受限。\n- **eSIM** 开通快、不用等实体卡，换机时也方便，但要确认手机支持。\n- 解约或搬家时，别忘了**归还租借的路由设备**、结清工事费分期，避免产生额外费用。\n- 保留好合约条款，尤其是**绑定期结束日**和**解约金**的说明，到期前评估是否换更划算的方案。\n\n## 落地初期的过渡方案\n\n刚到日本、还没办好正式手机卡和家庭网络时，可以用这些方式过渡，避免「失联」：\n\n1. **机场/便利店预付卡或短期 SIM**：落地当天就能上网，适合头几天联络和查路。\n2. **国内漫游或旅行 eSIM**：出发前就能开通，一落地就有网。\n3. **临时 Pocket WiFi 租借**：适合还没定住处、需要多设备联网的过渡期。\n\n等住址和银行账户稳定后，再办性价比更高的正式套餐，把过渡方案退掉即可。\n\n> ⚠ 注意:过渡方案通常单价更高，只当短期用;别因为图省事一直用高价临时卡，长期算下来并不划算。\n\n## 官方参考与免责声明\n\n- 総務省（电气通信/通信服务相关信息）:[https://www.soumu.go.jp/](https://www.soumu.go.jp/)\n- 各运营商资费、优惠与合约条件以其**官方网站**为准，解约金、工事费等以合约书为准。\n\n本文由 Machi 编辑部整理，仅供参考。资费与优惠变动频繁，**签约前请以各运营商官方最新公告为准**。'},
     {"slug": "seeing-a-doctor-in-japan", "title": "在日本看病：流程、费用与语言支持",
      "category": "life_japan", "sub": "medical", "featured": False,
      "author": "Machi 日本生活编辑部", "tags": ["医疗", "保险", "就医"],
-     "summary": "小病去诊所、大病去医院的分诊逻辑，国保 3 割负担，以及找会外语的医生。",
-     "body": _guide_paras(
-        "日本就医的基本逻辑是「先诊所后医院」：感冒发烧、皮肤、牙科等先去街边的クリニック（诊所）；需要进一步检查或手术时，由诊所开「紹介状」转去大医院。没有介绍信直接去大医院，常要加收数千日元的初诊费用。",
-        "持国民健康保险或社会保险就医，窗口自付 30%（3 割负担）。看病记得带保险证（或资格确认书/My Number 卡）与现金，部分小诊所不收信用卡。药一般凭处方到隔壁的调剂药局取。",
-        "语言不通时：各都道府县多有多语言医疗信息网站可按语言搜索医院；东京都的「ひまわり」、AMDA 国际医疗信息中心等提供电话咨询。手机翻译应付一般问诊也基本够用，关键术语可提前查好。",
-        "夜间急病拨 #7119（救急相談，部分地区）咨询是否需要急诊；危及生命直接拨 119 叫救护车（免费）。高额医疗费有「高額療養費制度」兜底，超过自付上限的部分可申请返还。",
-     )},
+     "summary": '小病去诊所、大病去医院的分诊逻辑，保险自付比例，多语言就医支援，以及夜间急病和叫救护车怎么办——在日本看病前先看这一篇，附厚労省官方链接。',
+     "body": '在日本看病和在国内很不一样:讲究「先诊所、后医院」的分级就诊，绝大多数情况凭保险就医只自付一部分。搞懂这套逻辑，既能省钱，也能在急病时不慌。本文说明就医流程、费用逻辑、语言支援和急救渠道。**下文保险制度、自付比例与各项制度细节以厚生労働省及各保险机构的最新公告为准。**\n\n## 基本逻辑:先诊所,后医院\n\n- **常见小病**（感冒发烧、皮肤、牙科等）先去街边的**クリニック（诊所）**。\n- 需要进一步检查或手术时，由诊所开**「紹介状（介绍信）」**转去大医院。\n- **没有介绍信直接去大医院**，通常要额外加收初诊费用（具体金额各院不同）。\n\n这套分诊逻辑的好处是：小病在诊所快速解决，大医院把资源留给真正需要的重症患者。平时就该记好住处附近有哪些诊所和综合医院。\n\n## 费用与保险\n\n持**国民健康保险**或公司**社会保险**就医，窗口只需自付医疗费的一部分（**具体比例以制度规定为准**，多数情形为较低比例）。看病时：\n\n1. 带好**保险证 / 资格确认书 / My Number 卡**与**现金**（部分小诊所不收信用卡）。\n2. 药一般凭处方到附近的**调剂药局**领取，同一张处方在指定期限内有效。\n3. 医疗费畸高时有**「高額療養費制度」**兜底：超过自付上限的部分可申请返还，**上限与申请方式以官方规定为准**。\n\n> ⚠ 注意:一定要保管好保险证，看病随身带;未加入任何医疗保险时看病是全额自付，费用会高很多。落地后应尽快到役所加入国民健康保险，别拖。\n\n## 语言不通怎么办\n\n- 各都道府县多有**多语言医疗信息网站**，可按语言检索能应对外语的医院。\n- 部分地区有多语言医疗咨询热线（如面向东京都的医疗信息服务、AMDA 国际医疗信息中心等）。\n- 一般问诊用手机翻译基本够用，**关键症状与病史术语可提前查好**，写在纸上或手机里，进诊室直接出示。\n\n## 急病与救护\n\n| 情形 | 拨打 | 说明 |\n| --- | --- | --- |\n| 拿不准要不要急诊 | #7119（部分地区的救急相谈） | 有人指导判断是否需就医 |\n| 危及生命 | 119 | 叫救护车，日本救护车免费 |\n\n摇晃、剧痛、意识不清、大出血、呼吸困难等紧急情况不要犹豫，直接拨 **119**。语言不通时可以尽量说清地址和症状，接线方会协助。\n\n## 药局与常见小病的自我处理\n\n日本的药局分两类，遇到小毛病可以先判断该去哪：\n\n- **调剂药局（調剤薬局）**：凭医生处方取药，多开在诊所或医院附近。\n- **药妆店（ドラッグストア）**：可买不需处方的市贩药（感冒药、退烧止痛、肠胃药、创可贴等），店里常有药剂师可咨询。\n\n轻微感冒、头痛、划伤等，可以先在药妆店买对症的市贩药应对；但**症状持续、加重，或拿不准时一定要及时就医**，别硬扛。\n\n## 就医费用与报销要点\n\n| 情形 | 处理方式 |\n| --- | --- |\n| 日常门诊 | 出示保险证，窗口按规定比例自付 |\n| 医疗费畸高 | 可申请「高額療養費制度」，超上限部分返还 |\n| 未带保险证 | 可能先全额自付，之后按流程申请返还 |\n| 意外/工伤 | 工伤走劳灾保险，规则与普通就医不同 |\n\n> ⚠ 注意:高額療養費、返还申请等制度的具体上限、条件和期限以官方规定为准，办理前先向保险机构或役所确认。\n\n## 挂号与就诊的基本流程\n\n第一次去日本的诊所，流程和国内不同，心里有数就不慌：\n\n1. 到诊所**填初诊问诊表**（含症状、既往病史、过敏史），出示保险证。\n2. 候诊叫号后进诊室，向医生说明症状；语言不便时可出示提前查好的中日双语症状说明。\n3. 就诊后到窗口**结算并拿处方**，凭处方到附近调剂药局取药。\n4. 需要复诊或转院的，按医生指引预约或拿介绍信。\n\n大医院通常需要预约、或凭诊所介绍信就诊，直接挂号往往等待时间长。\n\n## 儿童、孕产与牙科\n\n- **儿童医疗**：很多自治体有儿童医疗费补助，看病自付很低，落地后到役所确认申请方式。\n- **孕产**：确认怀孕后到役所领**母子健康手帳**，享受产检补助等；生育相关另有给付制度。\n- **牙科**：牙科属于常见的独立诊所，洗牙、补牙等走保险，出现牙痛别硬扛，尽早预约。\n\n## 平时可以做的准备\n\n提前把这些备好，急病时能少走弯路：\n\n1. 落地后**尽快加入医疗保险**，随身带好保险证。\n2. 记下住处附近的**诊所、急救医院和夜间门诊**信息。\n3. 手机存好翻译工具，整理好**过敏史、常用药、既往病史**（可备中日双语）。\n4. 了解所在地区的**多语言医疗热线**号码，把 119、#7119 存进手机。\n\n## 官方参考与免责声明\n\n- 厚生労働省（医疗保险·医疗制度）:[https://www.mhlw.go.jp/](https://www.mhlw.go.jp/)\n- 具体医院、多语言支援与热线以各都道府县/自治体官网为准。\n\n本文由 Machi 编辑部整理，仅供参考，**不构成医疗建议**。身体不适请及时就医。保险自付比例、各项制度上限与申请方式可能调整，**以官方最新公告为准**。'},
     {"slug": "garbage-sorting-and-rules", "title": "垃圾分类与日常生活规则速成",
-     "category": "life_japan", "sub": "daily_life", "featured": False,
+     "category": "life_japan", "sub": "life_tips", "featured": False,
      "author": "Machi 日本生活编辑部", "tags": ["垃圾分类", "生活规则"],
      "summary": "可燃/不燃/资源/粗大垃圾的基本分法，扔错的后果，以及邻里相处的几条潜规则。",
      "body": _guide_paras(
@@ -758,7 +1059,7 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
         "邻里相处的潜规则：晚上十点后控制音量（木造房尤其）、阳台不要堆垃圾、楼道不放私物、收快递不在的话尽快处理不在票。这些小事做好，邻里关系基本不会出问题。",
      )},
     {"slug": "disaster-preparedness-basics", "title": "地震台风防灾速成：警报、避难与常备物资",
-     "category": "life_japan", "sub": "safety", "featured": False,
+     "category": "life_japan", "sub": "life_tips", "featured": False,
      "author": "Machi 日本生活编辑部", "tags": ["防灾", "地震", "台风"],
      "summary": "紧急地震速报响起怎么办、避难所怎么找、家里该备什么、110/119 怎么打。",
      "body": _guide_paras(
@@ -768,28 +1069,18 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
         "紧急电话：110 报警、119 火灾/救护、171 灾害留言电话。多数都道府县另有多语言灾害咨询热线。记住：地震后不乘电梯、海边大摇晃后立即往高处撤离。",
      )},
     {"slug": "drivers-license-conversion", "title": "外国驾照换日本驾照（外免切替）流程",
-     "category": "life_japan", "sub": "driving", "featured": False,
+     "category": "life_japan", "sub": "transportation", "featured": False,
      "author": "Machi 日本生活编辑部", "tags": ["驾照", "外免切替"],
-     "summary": "谁可以换、需要什么材料、知识与技能确认考什么、各地预约现状。",
-     "body": _guide_paras(
-        "持有效外国驾照、且能证明取得驾照后在发照国累计停留 3 个月以上的人，可以在住地的运转免许中心申请「外免切替」。中国大陆驾照属于需要参加知识确认+技能确认的类别；部分国家/地区（如台湾、韩国、多数欧洲国家）可免试换发。",
-        "基本材料：外国驾照原件（及取得日期证明）、驾照的官方译文（JAF 或大使馆出具）、护照（含出入境记录）、在留卡、住民票、证件照。各地细节略有差异，出发前看清当地免许中心的最新要求。",
-        "知识确认是 10 题左右的交规判断题（多语言可选），相对简单；技能确认在场内进行，考察起步、转弯、坡道、S 弯/曲线、确认安全等基本操作——按日本的「确认动作」标准来做是通过关键，很多人挂在左右确认和压线细节上。",
-        "大城市的预约可能要排几周到几个月，建议尽早预约；技能确认不限次数但每次都要重新预约缴费。换照后初次拿到的是绿色新手期驾照，租车自驾与保险规则与普通驾照相同。",
-     )},
+     "summary": '谁可以换、需要哪些材料、知识确认与技能确认考什么、各地预约现状——把外国驾照换日本驾照（外免切替）的流程一次说清，附警察庁官方链接。',
+     "body": '如果你在日本长期生活并想开车，把外国驾照换成日本驾照的**「外免切替（外国免許切替）」**是绕不开的一步。这个流程材料多、预约紧、技能确认还有不少人挂在细节上，提前搞清能少走弯路。本文说明谁能换、要备什么、考什么。**下文具体要件、材料与流程以警察庁及各都道府县运転免許中心的最新公告为准。**\n\n## 谁可以申请\n\n持有效外国驾照、且能证明**取得驾照后在发照国累计停留一定期间以上**的人，可到住地的运転免許中心申请外免切替。\n\n- **中国大陆驾照**通常属于需要参加**知识确认＋技能确认**的类别。\n- 部分国家/地区（政策不时调整）可**免技能确认换发**，具体以官方名单为准。\n- 「取得后停留期间」是核心门槛，通常靠护照的出入境记录来证明，务必确认自己的护照能证明这一点。\n\n## 需要准备的材料\n\n1. **外国驾照原件**，以及**取得日期的证明**。\n2. 驾照的**官方译文**（如 JAF 或大使馆/领事馆出具）。\n3. **护照**（含出入境记录，用于证明取得后的停留期间）。\n4. **在留卡、住民票、证件照**等。\n\n> ⚠ 注意:各都道府县对材料和「取得后停留期间」的核对方式略有差异，出发前务必看清当地免許中心的最新要求，尤其是护照出入境记录能否证明停留期。旧护照如有相关记录也要一并带上。\n\n## 考试内容\n\n| 环节 | 内容 | 提示 |\n| --- | --- | --- |\n| 知识确认 | 约 10 题左右的交规判断题，多语言可选 | 相对简单，考前刷一遍即可 |\n| 技能确认 | 场内驾驶：起步、转弯、坡道、S 弯/曲线、安全确认 | 按日本的「确认动作」标准来做是通过关键 |\n\n技能确认里，很多人挂在**左右确认不到位、压线、路口停止不彻底**等细节上——熟悉日本特有的「目视确认」动作和考试路线，比车技本身更重要。有条件的可以提前做一两次「一発试験」练习或找教练带一次场内路线。\n\n## 预约与流程现状\n\n1. **大城市预约紧张**，可能要排几周到几个月，建议一确定要换就尽早预约。\n2. 技能确认**不限次数**，但每次不过都要重新预约、重新缴费，时间成本高。\n3. 换照后初次拿到的是**新手期（初心运転者）驾照**；租车自驾与保险规则与普通驾照相同。\n4. 通过后当天或按指引领取新驾照，注意随身携带、按期更新。\n\n## 技能确认容易挂的细节\n\n日本的场内考试非常看重「按规矩做动作」，很多有多年驾龄的人反而挂在这些点上：\n\n- **左右·后方目视确认**：变道、转弯、起步前要有明显的转头确认动作，只用后视镜不够。\n- **压线与靠边**：S 弯、曲线、路口的车轮轨迹要压准，靠边停车距路缘的距离有要求。\n- **停止线彻底停车**：该停的地方要停稳、停够，别「滑行式」通过。\n- **速度与位置**：直线该提的速度要提，转弯前充分减速，行车位置保持在正确车道内。\n\n考前若能在当地场内练一两次、或找教练带一次路线，通过率会明显提高。\n\n## 换照前的准备清单\n\n1. 确认自己属于**免试还是需考试**的国家/地区类别。\n2. 备齐**外国驾照、取得日期证明、官方译文、护照（含出入境记录）、在留卡、住民票、证件照**。\n3. 到当地免許中心官网查**最新受理条件与预约方式**，尽早预约。\n4. 需考技能的，提前熟悉日本的**确认动作与场内路线**。\n\n## 换照后的用车提醒\n\n拿到日本驾照后，开车上路还有几件事要留意：\n\n- **靠左行驶**：日本靠左行驶、方向盘在右，刚上手先在熟悉路段适应。\n- **车检与保险**：自有车要按期车检（車検），并投**自賠責保険**（强制）加**任意保険**（建议），别只上强制险。\n- **交规细节**：一时停止（一時停止）标志要停稳、行人优先、饮酒驾驶处罚极严，切勿酒驾。\n- **租车自驾**：多数租车公司认日本驾照即可，取车时按要求出示驾照并购买保险/补偿制度。\n\n> ⚠ 注意:新手期驾照有相应的规则与标识要求，按规定粘贴初心者标志、遵守限制，平稳度过新手期。\n\n## 官方参考与免责声明\n\n- 警察庁（运転免許·外国免許切替）:[https://www.npa.go.jp/](https://www.npa.go.jp/)\n- 具体受理条件、材料与预约方式以各都道府县运転免許中心官网为准。\n\n本文由 Machi 编辑部整理，仅供参考。免许制度与各地窗口要求时有调整，**申请前请以官方最新公告及当地免許中心指引为准**。'},
     # ---- 在日工作（扩充批）----
     {"slug": "work-visa-gijinkoku-basics", "title": "工作签证基础：技术·人文知识·国际业务到底看什么",
-     "category": "career_japan", "sub": "visa", "featured": True,
+     "category": "career_japan", "sub": "work_visa", "featured": True,
      "author": "Machi 职场编辑部", "tags": ["工作签证", "技人国", "在留资格"],
-     "summary": "最常见工作在留资格的适用范围、学历职务一致性、变更流程与常见拒签原因。",
-     "body": _guide_paras(
-        "「技術・人文知識・国際業務」（俗称技人国）是留学生就职后最常见的在留资格，覆盖工程师、设计、企划、营业、翻译等白领岗位。审查核心是「学历/专业与职务内容的关联性」与「工作的专业性」——单纯体力或店面接客类工作原则上不在范围内。",
-        "学历要件通常为大学本科以上或日本的专门学校毕业（专门士）。专门学校毕业生的职务关联性审查更严格，岗位要与所学专业明显对口。薪资需达到与日本人同等水平。",
-        "从留学变更到技人国：拿到内定后由本人向入管提交在留资格变更许可申请，材料包括公司方的雇佣合同、登记事项证明、决算文书、业务说明，以及本人的毕业（见込）证明、成绩单等。每年 12 月到次年 3 月是申请高峰，毕业前尽早提交。",
-        "常见不许可原因：职务与专业无关、公司规模/财务难以说明雇佣必要性、申请材料前后矛盾、出勤率过低的留学经历。被不许可后可以听取理由并补强再申请。转职时若职务类型变化大，建议申请「就労資格証明書」确认新工作符合在留资格。",
-     )},
+     "summary": '「技术·人文知识·国际业务」的适用范围、学历与职务的一致性要求、从留学变更为工作签证的流程与常见不许可原因，一篇讲清留学生就职最常见的在留资格，并附入管官方链接。',
+     "body": '**「技術・人文知識・国際業務」**（俗称「技人国」）是留学生在日本就职后最常见的在留资格，覆盖工程师、设计、企划、营业、翻译等白领岗位。搞清它的边界和审查逻辑，能帮你在找工作时就避开「岗位对不上资格」的坑。本文说明它的适用范围、审查要点与变更流程。**下文具体要件、材料与审查标准以出入国在留管理庁的最新公告为准。**\n\n## 技人国覆盖哪些工作\n\n审查的核心是两点:**学历/专业与职务内容的关联性**，以及**工作本身的专业性**。三类岗位大致对应：\n\n- **技术**：理工科背景的工程、开发、系统、研究等岗位。\n- **人文知识**：法律、经济、经营、社会学等文科知识对应的企划、营业、经理、事务等岗位。\n- **国际业务**：需要外语能力和外国文化素养的翻译、口译、海外营业、对外交涉等岗位。\n\n单纯的体力劳动、店面接客、简单重复的事务等，原则上不在此资格范围内。选 offer 时要先判断岗位内容是否落在这三类里。\n\n## 主要要件\n\n| 项目 | 一般要求 |\n| --- | --- |\n| 学历 | 大学本科以上，或日本专门学校毕业（取得「专门士」） |\n| 职务关联性 | 岗位内容须与所学专业有明显对口关系（专门学校毕业者审查更严） |\n| 薪资水平 | 须达到与日本人从事同等工作相当的报酬 |\n| 雇佣单位 | 公司经营稳定、有雇佣该外国人的合理必要性 |\n\n> ⚠ 注意:专门学校毕业生的「专业与职务对口」审查通常比大学毕业生更严格。拿 offer 前，先对照自己所学专业和岗位内容，判断关联性是否说得通。\n\n## 从留学变更为技人国:流程\n\n拿到内定后，由本人向出入国在留管理局提交**在留资格变更许可申请**，主要步骤如下：\n\n1. 与公司确认能配合出具雇佣所需材料，**尽早**启动，别拖到毕业前才动手。\n2. 准备**本人材料**：毕业（见込）证明、成绩单、护照、在留卡、申请书、证件照等。\n3. 准备**公司材料**：雇佣合同/内定通知、公司登记事项证明、决算文书、业务与职务说明等。\n4. **递交申请**并等待审查；每年 **12 月至次年 3 月**是毕业季申请高峰，务必提前排队。\n5. 许可下来后**换发新在留卡**，按公司要求（通常 4 月）入职。\n\n## 常见不许可原因\n\n了解这些原因，能帮你在选工作、备材料时提前规避：\n\n1. 职务内容与所学专业**无明显关联**。\n2. 公司规模/财务状况难以说明**雇佣该职位的必要性**。\n3. 申请材料**前后矛盾**，或职务说明与实际不符。\n4. 留学期间**出勤率过低**、有超时打工等在留状况问题。\n\n被不许可后，可向入管听取具体理由，补强材料后再次申请，不必因一次不许可就放弃。\n\n## 转职时的注意点\n\n在技人国资格有效期内转职，若新工作的职务类型与原来差别很大，建议申请**「就労資格証明書」**，事先确认新岗位仍符合当前在留资格，避免下次更新时才发现职务不符、临时补救。此外，转职通常还需要向入管做**「所属机关变更届出」**（离开原公司、进入新公司都要在规定期限内届出），别漏办。\n\n## 与其他工作在留资格的区别\n\n技人国不是唯一的工作在留资格，选工作时可以大致了解相邻的几类，避免用错资格：\n\n- **高度专门职**：面向高学历、高收入、高技能人才，按积分制评估，权益（如永住年限缩短）更优。\n- **特定技能**：面向特定行业的技能岗位，与技人国面向的白领岗位不同。\n- **経営・管理**：面向在日本创业、经营公司的人。\n\n到底适用哪种，取决于你的学历、职务内容和公司情况，拿不准时建议咨询专业行政书士或直接向入管确认。\n\n## 备考材料时的实用提醒\n\n1. **毕业见込证明**在毕业前就能开，别等拿到正式毕业证才动手。\n2. 公司材料多由人事准备，**主动跟进进度**，尤其在申请高峰期。\n3. 材料里的**职务内容描述**要和实际岗位、和你的专业对得上，前后一致。\n4. 保留好每一份提交材料的复印件，便于后续更新或补件时对照。\n\n## 官方参考与免责声明\n\n- 出入国在留管理庁（在留资格·变更许可）:[https://www.moj.go.jp/isa/](https://www.moj.go.jp/isa/)\n\n本文由 Machi 编辑部整理，仅供参考，不构成法律或签证代办建议。在留资格审查为个案判断，**实际要件、必要材料与结果以出入国在留管理庁最新公告及个案审查为准**。'},
     {"slug": "tenshoku-process-timeline", "title": "日本转职完整流程：从准备到入职的时间线",
-     "category": "career_japan", "sub": "job_change", "featured": False,
+     "category": "career_japan", "sub": "job_hunting_flow", "featured": False,
      "author": "Machi 职场编辑部", "tags": ["转职", "职务经历书", "面试"],
      "summary": "职务经历书怎么写、转职渠道怎么选、面试到内定的节奏、现职怎么体面退出。",
      "body": _guide_paras(
@@ -799,7 +1090,7 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
         "面试常被问转职理由——避免单纯抱怨现职，转成「想做的事在贵司能实现」的正向逻辑。拿到内定后确认劳动条件通知书（年收构成、试用期、加班制度），再向现职提交退职意向；交接干净、按规定办理离职手续，行业圈子比想象的小。",
      )},
     {"slug": "shukatsu-timeline-for-students", "title": "留学生新卒就活时间线与 ES/SPI/面接备战",
-     "category": "career_japan", "sub": "new_grad", "featured": False,
+     "category": "career_japan", "sub": "job_hunting_flow", "featured": False,
      "author": "Machi 职场编辑部", "tags": ["就活", "新卒", "ES", "SPI"],
      "summary": "大三开始的标准就活节奏、Entry Sheet 与适性检查、留学生的优势打法。",
      "body": _guide_paras(
@@ -809,18 +1100,13 @@ GUIDE_ARTICLE_SEED: list[dict[str, Any]] = [
         "渠道上除了 Rikunabi/Mynavi 两大平台，留学生专场招聘会、大学的キャリアセンター、面向外国人的就职支援机构都值得用。内定后记得在毕业前完成在留资格变更，时间线参考工作签证篇。",
      )},
     {"slug": "leaving-a-job-checklist", "title": "退职手续清单：保险、年金、税金一个都不能漏",
-     "category": "career_japan", "sub": "job_change", "featured": False,
+     "category": "career_japan", "sub": "job_hunting_flow", "featured": False,
      "author": "Machi 职场编辑部", "tags": ["退职", "失业保险", "国保"],
-     "summary": "离职后 14 天内要办什么、失业给付怎么领、空窗期保险年金怎么接续。",
-     "body": _guide_paras(
-        "离职时从公司拿齐四样东西：雇用保険被保険者証、離職票（约 10 天后寄到）、源泉徴収票、年金手帳（若由公司保管）。这些是后续所有手续的钥匙。",
-        "如果离职后不马上入职新公司：14 天内到市区役所把健康保险切换为国民健康保险（或申请原公司保险的任意继续，二选一比较保费），同时把厚生年金切换为国民年金。空窗期间这两项都不能断。",
-        "有失业给付资格的人（一般为离职前两年内缴满 12 个月雇用保险），带離職票到住地的 Hello Work 办理求职登记。自都合离职有约 2 个月的给付限制期，会社都合则当月即可开始领取；领取期间按要求完成求职活动认定即可。",
-        "税金方面：年内再就职的话把源泉徴収票交给新公司做年末调整；年内未再就职则次年自行确定申告退税。住民税是按上一年收入后置征收的，离职后会收到普通征收的缴付书——这笔钱要提前留出来。",
-     )},
+     "summary": '离职时要从公司拿齐哪几样、失业给付怎么领、空窗期的健康保险和年金怎么接续、住民税与确定申告怎么处理——退职前必看的手续清单，附厚労省与年金机构官方链接。',
+     "body": '在日本离职，除了交接工作，还有一整套**保险、年金、税金**的手续要办，漏掉任何一项都可能带来麻烦或金钱损失。尤其是空窗期的保险年金接续、后置征收的住民税，很多人事后才发现问题。本文把退职手续整理成一份可执行的清单。**下文各项制度的具体条件、期限与金额以厚生労働省、日本年金機構等官方公告为准。**\n\n## 第一步:从公司拿齐这几样\n\n离职时确保拿到（或确认由谁保管）以下材料，它们是后续所有手续的钥匙：\n\n1. **雇用保険被保険者証**。\n2. **離職票**（通常离职后约 10 天寄到，是领失业给付的关键）。\n3. **源泉徴収票**（做年末调整或确定申告要用）。\n4. **年金手帳 / 基础年金番号**相关资料（若由公司保管则取回）。\n\n离职前和公司人事确认这些材料的交付方式和时间，别等到需要用时才发现没拿到。\n\n## 第二步:健康保险怎么接续\n\n离职后如果不马上入职新公司，健康保险不能断，通常在**二选一**中挑保费更低的方案，并在规定期限内办理：\n\n| 选项 | 办理地点 | 说明 |\n| --- | --- | --- |\n| 国民健康保险 | 市区役所 | 按住民手续加入 |\n| 任意继续（原公司保险） | 原保险机构 | 一定期限内可继续参加，需在期限内申请 |\n\n> ⚠ 注意:任意继续和国保的申请都有时间限制，且哪个更便宜因人而异（与收入、家属人数有关）。离职前后尽快比较并办理，别让保险出现空窗——空窗期间生病看病会全额自付。\n\n## 第三步:年金接续\n\n离职后从厚生年金切换为**国民年金**，到役所办理。空窗期间年金也不能断；经济困难时可咨询**缴纳免除/缓纳**等制度，避免因欠缴影响将来的年金权利。**具体条件以日本年金機構公告为准。**\n\n## 第四步:失业给付(失业保险)\n\n有资格的人别忘了领这笔钱：\n\n1. 一般需要**离职前一定期间内缴满规定月数**的雇用保险（**具体条件以官方为准**）。\n2. 带**離職票**到住地的 **Hello Work** 办理求职登记。\n3. **自己都合离职**通常有一段给付限制期，**会社都合**则可较早开始领取。\n4. 领取期间须按要求完成**求职活动认定**，按时到 Hello Work 报到。\n\n## 第五步:税金\n\n税金是最容易被忽略、也最容易「后知后觉多缴/漏退」的一块：\n\n- **年内再就职**：把源泉徴収票交给新公司做**年末调整**。\n- **年内未再就职**：次年自行做**确定申告**，多退少补。\n- **住民税**：按上一年收入**后置征收**，离职后可能收到普通征收的缴款书——**这笔钱要提前留出来**，很多人因为不知道而被账单吓到。\n\n## 时间线:离职前后各做什么\n\n| 时点 | 要做的事 |\n| --- | --- |\n| 离职前 | 与人事确认离职票、源泉徴収票等材料的交付时间；结清未休年假等 |\n| 离职当天/次日 | 归还工牌、保险证等公司物品，取回年金手帳等个人材料 |\n| 约 10 天内 | 收到离职票（未收到主动催）；在期限内办健康保险切换 |\n| 空窗期间 | 切换国民年金；持离职票到 Hello Work 求职登记 |\n| 次年报税季 | 未再就职者自行确定申告；留意住民税缴款书 |\n\n## 留学生/外国人特别提醒\n\n- **在留资格**：以工作在留资格（如技人国）在日者，长期无正当活动可能影响在留；离职后要尽快找到新工作或与入管确认自身情形，并按规定做**所属机关变更等届出**。\n- **转职衔接**：如已确定新公司，确认新旧工作的职务类型是否一致，必要时申请「就労資格証明書」。\n- **回国**：如决定离开日本，别忘办**転出届**、结清税金保险、处理银行账户等收尾手续。\n\n> ⚠ 注意:离职涉及在留资格的外国人，处理节奏比日本人更需谨慎，拿不准时尽早向入管或专业人士确认，避免拖成在留问题。\n\n## 退职手续速览清单\n\n1. 收齐**離職票、源泉徴収票、雇用保险证、年金资料**。\n2. 规定期限内办**健康保险**（国保或任意继续，选便宜的）。\n3. 切换**国民年金**，必要时咨询免除/缓纳。\n4. 持離職票到 **Hello Work** 办失业给付。\n5. 处理**税金**：年末调整或确定申告，预留住民税。\n6. 涉及在留资格的，按规定做**所属机关变更等届出**。\n\n## 官方参考与免责声明\n\n- 厚生労働省（雇用保险·劳动）:[https://www.mhlw.go.jp/](https://www.mhlw.go.jp/)\n- 日本年金機構（国民年金）:[https://www.nenkin.go.jp/](https://www.nenkin.go.jp/)\n- 国税庁（确定申告）:[https://www.nta.go.jp/](https://www.nta.go.jp/)\n\n本文由 Machi 编辑部整理，仅供参考，不构成税务或法律建议。各项制度的条件、期限与金额可能调整，**办理前请以官方最新公告及你所在自治体窗口指引为准**。'},
     # ---- JLPT / 留学（扩充批）----
     {"slug": "jlpt-n2-to-n1-strategy", "title": "从 N2 到 N1：半年备考策略与资料选择",
-     "category": "jlpt", "sub": "n1", "featured": False,
+     "category": "jlpt", "sub": "jlpt_n1", "featured": False,
      "author": "Machi JLPT 编辑部", "tags": ["JLPT", "N1", "备考"],
      "summary": "N1 和 N2 的真正差距在哪、各科怎么分配时间、冲刺期怎么刷题。",
      "body": _guide_paras(
@@ -853,7 +1139,7 @@ GUIDE_ARTICLE_SEED.extend([
         "学部路线适合希望重新建立学历基础的人，但时间和费用成本最高。最终选择建议用四个问题判断：毕业后要在日本就业还是回国？目标岗位是否要求大学学历？日语和英语成绩能支撑哪个层级？家庭预算能承受几年？把答案写下来，再反推学校类型会清楚很多。",
      )},
     {"slug": "labor-conditions-checklist-japan", "title": "内定前必须确认的劳动条件通知书清单",
-     "category": "career_japan", "sub": "job_offer", "featured": False,
+     "category": "career_japan", "sub": "job_hunting_flow", "featured": False,
      "author": "Machi 职场编辑部", "tags": ["内定", "劳动条件", "黑心企业"],
      "summary": "年收、固定残业、试用期、转勤、签证材料——签约前逐项确认，避免入职后踩坑。",
      "body": _guide_paras(
@@ -863,7 +1149,7 @@ GUIDE_ARTICLE_SEED.extend([
         "如果对条款不理解，可以先问 HR，并把回复留在邮件里。遇到要求缴纳保证金、培训费、押金，或拒绝提供书面条件的公司，要高度警惕。内定很珍贵，但签下模糊条件后的代价更高。",
      )},
     {"slug": "foreign-student-it-career-japan", "title": "留学生想进日本 IT 公司：路线、作品集与日语要求",
-     "category": "career_japan", "sub": "it_career", "featured": False,
+     "category": "career_japan", "sub": "industry_guides", "featured": False,
      "author": "Machi 就职编辑部", "tags": ["IT", "工程师", "留学生就职"],
      "summary": "文科转码、专门学校/大学院路线、作品集、面试和英文岗位的现实判断。",
      "body": _guide_paras(
@@ -1068,27 +1354,27 @@ GUIDE_ARTICLE_SEED.extend([
 GUIDE_PRODUCT_SEED: list[dict[str, Any]] = [
     {"slug": "n2-grammar-pack", "title": "N2 语法整理资料包", "subtitle": "适合 N2 备考和自学",
      "category": "jlpt", "sub": "jlpt_materials", "product_type": "pdf_material",
-     "price": 29, "currency": "CNY", "price_label": "", "coming_soon": True, "is_service": 0,
+     "price": 580, "currency": "JPY", "price_label": "", "coming_soon": True, "is_service": 0,
      "target": "备考 N2 的同学", "delivery": "数字下载",
      "description": "Machi 编辑部原创整理的 N2 高频语法点，按意义分组、配自然例句与易混对比，便于系统复习。原创内容，非真题搬运。"},
     {"slug": "research-plan-template-pack", "title": "大学院研究计划书模板包", "subtitle": "模板、示例、教授邮件范文",
      "category": "study_japan", "sub": "research_plan", "product_type": "template",
-     "price": 49, "currency": "CNY", "price_label": "", "coming_soon": True, "is_service": 0,
+     "price": 980, "currency": "JPY", "price_label": "", "coming_soon": True, "is_service": 0,
      "target": "准备申请大学院的同学", "delivery": "数字下载",
      "description": "研究计划书结构模板、文/理科示例框架，以及联系教授的日文/英文邮件范文，帮助你从 0 起步搭建框架。内容原创，仅供学习参考。"},
     {"slug": "rirekisho-review-service", "title": "日本就职履历书修改服务", "subtitle": "适合准备就职活动的用户",
      "category": "career_japan", "sub": "rirekisho", "product_type": "resume_review",
-     "price": 0, "currency": "CNY", "price_label": "¥199 起", "coming_soon": True, "is_service": 1,
+     "price": 0, "currency": "JPY", "price_label": "¥3,980 起", "coming_soon": True, "is_service": 1,
      "target": "正在就活的用户", "delivery": "人工服务·线上",
      "description": "由有日本就职经验的编辑/合作方，对你的履历书与职务经歴书逐项给出修改建议，覆盖志望动机、自己 PR 与排版规范。人工服务，按工作量计费。"},
     {"slug": "language-school-doc-checklist", "title": "语言学校申请材料清单", "subtitle": "赴日留学前的材料准备",
      "category": "study_abroad_japan", "sub": "language_school", "product_type": "checklist",
-     "price": 0, "currency": "CNY", "price_label": "免费", "coming_soon": False, "is_service": 0, "is_free": 1,
+     "price": 0, "currency": "JPY", "price_label": "免费", "coming_soon": False, "is_service": 0, "is_free": 1,
      "target": "准备申请语言学校的同学", "delivery": "登录后查看",
      "description": "语言学校出愿常用材料的整理清单：本人材料、学历材料、经费支付人材料与时间节点提醒。登录后即可查看，帮助你不漏项。"},
     {"slug": "interview-100-questions", "title": "日本面试常见问题 100 题", "subtitle": "一次面试、二次面试、最终面试准备",
      "category": "career_japan", "sub": "job_interview", "product_type": "pdf_material",
-     "price": 39, "currency": "CNY", "price_label": "", "coming_soon": True, "is_service": 0,
+     "price": 780, "currency": "JPY", "price_label": "", "coming_soon": True, "is_service": 0,
      "target": "准备日本就职面试的用户", "delivery": "数字下载",
      "description": "按面试轮次与问题类型整理的高频问题与回答思路，含自己 PR、志望动机、逆質問示例。Machi 编辑部原创整理。"},
 ]
@@ -1096,139 +1382,139 @@ GUIDE_PRODUCT_SEED: list[dict[str, Any]] = [
 GUIDE_PRODUCT_SEED.extend([
     # JLPT — 合规原创整理，不包含未授权官方真题原文。
     {"slug": "jlpt-n1-20-year-trend-analysis", "title": "N1 近 20 年题型趋势分析", "subtitle": "题型变化、备考重点与时间分配",
-     "category": "jlpt", "sub": "jlpt_n1", "product_type": "pdf_material", "price": 49, "currency": "CNY",
-     "price_label": "¥49", "coming_soon": True, "member_included": 1, "is_featured": 1,
+     "category": "jlpt", "sub": "jlpt_n1", "product_type": "pdf_material", "price": 980, "currency": "JPY",
+     "price_label": "¥980", "coming_soon": True, "member_included": 1, "is_featured": 1,
      "target": "准备 N1 的学习者", "delivery": "数字资料", "tags": ["JLPT", "N1", "趋势分析"],
      "preview": "目录预览：言语知识、阅读、听力三大模块的题型变化与备考节奏。",
      "purchase": "购买后可查看完整趋势拆解、30 天复习建议与错题整理模板。",
      "notes": "基于公开考试结构和题型变化整理，不包含未授权官方真题原文。"},
     {"slug": "jlpt-n2-20-year-trend-analysis", "title": "N2 近 20 年题型趋势分析", "subtitle": "N2 高频题型与备考路线",
-     "category": "jlpt", "sub": "jlpt_n2", "product_type": "pdf_material", "price": 49, "currency": "CNY",
-     "price_label": "¥49", "coming_soon": True, "member_included": 1,
+     "category": "jlpt", "sub": "jlpt_n2", "product_type": "pdf_material", "price": 980, "currency": "JPY",
+     "price_label": "¥980", "coming_soon": True, "member_included": 1,
      "target": "准备 N2 的学习者", "delivery": "数字资料", "tags": ["JLPT", "N2", "趋势分析"],
      "preview": "目录预览：N2 词汇语法、阅读速度和听力题型的复习顺序。",
      "purchase": "购买后可查看完整题型趋势笔记、练习计划和官方样题解析笔记。",
      "notes": "不包含未授权官方真题原文。"},
     {"slug": "jlpt-n1-original-mock-20", "title": "N1 原创模拟题 20 套", "subtitle": "Machi 编辑部原创练习",
-     "category": "jlpt", "sub": "mock_test", "product_type": "pdf_material", "price": 69, "currency": "CNY",
-     "price_label": "¥69", "coming_soon": True, "member_included": 1, "target": "N1 冲刺阶段学习者",
+     "category": "jlpt", "sub": "mock_test", "product_type": "pdf_material", "price": 1380, "currency": "JPY",
+     "price_label": "¥1,380", "coming_soon": True, "member_included": 1, "target": "N1 冲刺阶段学习者",
      "delivery": "数字资料", "tags": ["JLPT", "N1", "原创模拟题"], "notes": "原创模拟题，不复制官方真题。"},
     {"slug": "jlpt-n2-original-mock-20", "title": "N2 原创模拟题 20 套", "subtitle": "阅读、语法、听力综合训练",
-     "category": "jlpt", "sub": "mock_test", "product_type": "pdf_material", "price": 69, "currency": "CNY",
-     "price_label": "¥69", "coming_soon": True, "member_included": 1, "target": "N2 冲刺阶段学习者",
+     "category": "jlpt", "sub": "mock_test", "product_type": "pdf_material", "price": 1380, "currency": "JPY",
+     "price_label": "¥1,380", "coming_soon": True, "member_included": 1, "target": "N2 冲刺阶段学习者",
      "delivery": "数字资料", "tags": ["JLPT", "N2", "原创模拟题"], "notes": "原创模拟题，不复制官方真题。"},
     {"slug": "jlpt-n1-high-frequency-vocab-plan", "title": "N1 高频词汇计划", "subtitle": "按主题和语境整理",
-     "category": "jlpt", "sub": "vocabulary", "product_type": "pdf_material", "price": 39, "currency": "CNY",
+     "category": "jlpt", "sub": "vocabulary", "product_type": "pdf_material", "price": 780, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "备考 N1 的学习者",
      "delivery": "会员资料", "tags": ["N1", "词汇", "会员资料"]},
     {"slug": "jlpt-n5-n1-roadmap", "title": "JLPT N5-N1 学习路线图", "subtitle": "从入门到高阶的学习路径",
-     "category": "jlpt", "sub": "study_plan", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "jlpt", "sub": "study_plan", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "所有日语学习者", "delivery": "登录后查看",
      "tags": ["JLPT", "学习计划"]},
     {"slug": "jlpt-n3-30-day-plan", "title": "N3 30 天备考计划", "subtitle": "每天一个复习任务",
-     "category": "jlpt", "sub": "jlpt_n3", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "jlpt", "sub": "jlpt_n3", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备 N3 的学习者",
      "delivery": "会员资料"},
     {"slug": "jlpt-n4-basic-grammar-pack", "title": "N4 基础语法整理", "subtitle": "初级语法体系化复习",
-     "category": "jlpt", "sub": "jlpt_n4", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "category": "jlpt", "sub": "jlpt_n4", "product_type": "pdf_material", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备 N4 的学习者",
      "delivery": "会员资料"},
     {"slug": "jlpt-n5-entry-study-plan", "title": "N5 入门学习计划", "subtitle": "假名、基础词汇与入门语法",
-     "category": "jlpt", "sub": "jlpt_n5", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "jlpt", "sub": "jlpt_n5", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "刚开始学日语的用户", "delivery": "登录后查看"},
 
     # 大学院 / 留学
     {"slug": "graduate-school-application-full-pack", "title": "大学院申请全流程资料包", "subtitle": "时间线、材料、教授联系与面试准备",
-     "category": "study_japan", "sub": "graduate_school", "product_type": "pdf_material", "price": 99, "currency": "CNY",
-     "price_label": "¥99", "coming_soon": True, "member_included": 1, "is_featured": 1, "target": "准备申请大学院的用户",
+     "category": "study_japan", "sub": "graduate_school", "product_type": "pdf_material", "price": 1980, "currency": "JPY",
+     "price_label": "¥1,980", "coming_soon": True, "member_included": 1, "is_featured": 1, "target": "准备申请大学院的用户",
      "delivery": "数字资料", "tags": ["大学院", "申请流程"]},
     {"slug": "professor-email-template-pack", "title": "教授联系邮件模板", "subtitle": "事前相談与研究室联系",
-     "category": "study_japan", "sub": "research_plan", "product_type": "template", "price": 29, "currency": "CNY",
+     "category": "study_japan", "sub": "research_plan", "product_type": "template", "price": 580, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "需要联系教授的申请者",
      "delivery": "会员资料"},
     {"slug": "graduate-school-interview-100", "title": "大学院面试问题 100 题", "subtitle": "研究计划、志望理由与逆質問",
-     "category": "study_japan", "sub": "interview", "product_type": "pdf_material", "price": 49, "currency": "CNY",
-     "price_label": "¥49", "coming_soon": True, "member_included": 1, "target": "准备大学院面试的申请者", "delivery": "数字资料"},
+     "category": "study_japan", "sub": "admission_interview", "product_type": "pdf_material", "price": 980, "currency": "JPY",
+     "price_label": "¥980", "coming_soon": True, "member_included": 1, "target": "准备大学院面试的申请者", "delivery": "数字资料"},
     {"slug": "application-documents-checklist", "title": "出愿材料检查清单", "subtitle": "出愿前逐项确认",
-     "category": "study_japan", "sub": "application_documents", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "study_japan", "sub": "application_documents", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备出愿的申请者", "delivery": "会员资料"},
     {"slug": "humanities-research-plan-guide", "title": "文科研究计划书写作指南", "subtitle": "问题意识、先行研究、研究方法",
-     "category": "study_japan", "sub": "research_plan", "product_type": "pdf_material", "price": 59, "currency": "CNY",
-     "price_label": "¥59", "coming_soon": True, "member_included": 1, "target": "文科大学院申请者", "delivery": "数字资料"},
+     "category": "study_japan", "sub": "research_plan", "product_type": "pdf_material", "price": 1180, "currency": "JPY",
+     "price_label": "¥1,180", "coming_soon": True, "member_included": 1, "target": "文科大学院申请者", "delivery": "数字资料"},
     {"slug": "science-research-plan-guide", "title": "理科研究计划书写作指南", "subtitle": "课题设定、实验计划与可行性",
-     "category": "study_japan", "sub": "research_plan", "product_type": "pdf_material", "price": 59, "currency": "CNY",
-     "price_label": "¥59", "coming_soon": True, "member_included": 1, "target": "理工科大学院申请者", "delivery": "数字资料"},
+     "category": "study_japan", "sub": "research_plan", "product_type": "pdf_material", "price": 1180, "currency": "JPY",
+     "price_label": "¥1,180", "coming_soon": True, "member_included": 1, "target": "理工科大学院申请者", "delivery": "数字资料"},
     {"slug": "language-school-selection-guide", "title": "语言学校选择指南", "subtitle": "地区、费用、升学支持和签证流程",
-     "category": "study_abroad_japan", "sub": "language_school", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "category": "study_abroad_japan", "sub": "language_school", "product_type": "pdf_material", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备申请语言学校的用户", "delivery": "会员资料"},
     {"slug": "coe-material-guide", "title": "COE 材料准备指南", "subtitle": "经费支付人、学历证明与材料节奏",
-     "category": "study_abroad_japan", "sub": "visa", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "study_abroad_japan", "sub": "student_visa", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备申请留学签证的用户", "delivery": "会员资料"},
 
     # 就职 / 生活
     {"slug": "rirekisho-template-pack", "title": "履历书模板包", "subtitle": "日本就职标准格式和填写提示",
-     "category": "career_japan", "sub": "rirekisho", "product_type": "template", "price": 29, "currency": "CNY",
+     "category": "career_japan", "sub": "rirekisho", "product_type": "template", "price": 580, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "member_discount": 0, "target": "准备就职的用户", "delivery": "会员资料"},
     {"slug": "shokumukeirekisho-template-pack", "title": "职务经歴书模板包", "subtitle": "中途转职与经验整理",
-     "category": "career_japan", "sub": "rirekisho", "product_type": "template", "price": 39, "currency": "CNY",
+     "category": "career_japan", "sub": "rirekisho", "product_type": "template", "price": 780, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备日本转职的用户", "delivery": "会员资料"},
     {"slug": "self-pr-motivation-template", "title": "自己 PR 和志望动机模板", "subtitle": "故事结构和表达模板",
-     "category": "career_japan", "sub": "job_interview", "product_type": "template", "price": 39, "currency": "CNY",
-     "price_label": "¥39", "coming_soon": True, "member_included": 1, "target": "准备 ES/面试的用户", "delivery": "数字资料"},
+     "category": "career_japan", "sub": "job_interview", "product_type": "template", "price": 780, "currency": "JPY",
+     "price_label": "¥780", "coming_soon": True, "member_included": 1, "target": "准备 ES/面试的用户", "delivery": "数字资料"},
     {"slug": "foreigner-company-selection-checklist", "title": "外国人公司选择清单", "subtitle": "签证、语言环境、评价制度和加班文化",
-     "category": "career_japan", "sub": "company_selection", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "career_japan", "sub": "company_selection", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备投递公司的用户", "delivery": "会员资料"},
     {"slug": "work-visa-change-checklist", "title": "签证变更材料清单", "subtitle": "留学签转工作签的材料准备",
-     "category": "career_japan", "sub": "visa", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "career_japan", "sub": "work_visa", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "拿到内定准备变更签证的用户", "delivery": "会员资料"},
     {"slug": "bank-account-document-checklist", "title": "日本银行卡申请材料清单", "subtitle": "开户前准备材料",
-     "category": "life_japan", "sub": "bank_account_japan", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "bank_account", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "刚到日本需要开户的用户", "delivery": "登录后查看"},
     {"slug": "three-bank-comparison", "title": "三大银行开户对比表", "subtitle": "MUFG、SMBC、Mizuho 对比",
-     "category": "life_japan", "sub": "bank_account_japan", "product_type": "member_resource", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "bank_account", "product_type": "member_resource", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "需要选择银行的用户", "delivery": "会员资料"},
     {"slug": "national-health-insurance-checklist", "title": "国民健康保险办理清单", "subtitle": "役所办理前后要确认的事项",
-     "category": "life_japan", "sub": "national_health_insurance", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "health_insurance", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "刚到日本或搬家的用户", "delivery": "登录后查看"},
     {"slug": "pension-exemption-student-guide", "title": "年金免除/学生纳付特例说明", "subtitle": "留学生年金手续",
-     "category": "life_japan", "sub": "national_pension", "product_type": "member_resource", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "pension", "product_type": "member_resource", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "20 岁以上留学生", "delivery": "会员资料"},
     {"slug": "mobile-plan-comparison", "title": "日本手机卡选择对比表", "subtitle": "大手、格安 SIM、eSIM",
-     "category": "life_japan", "sub": "mobile_plan_japan", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "mobile_sim", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "免费", "coming_soon": False, "is_free": 1, "target": "准备办理手机卡的用户", "delivery": "登录后查看"},
     {"slug": "four-carriers-comparison", "title": "四大运营商对比", "subtitle": "Docomo、au、SoftBank、Rakuten Mobile",
-     "category": "life_japan", "sub": "mobile_plan_japan", "product_type": "member_resource", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "mobile_sim", "product_type": "member_resource", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "想比较运营商的用户", "delivery": "会员资料"},
     {"slug": "mnp-switching-notes", "title": "MNP 转社注意事项", "subtitle": "携号转网、费用和积分活动风险",
-     "category": "life_japan", "sub": "points_and_switching", "product_type": "member_resource", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "mobile_sim", "product_type": "member_resource", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "考虑手机转社的用户", "delivery": "会员资料",
      "notes": "活动条件经常变化，请以运营商和活动页面为准。Machi 不承诺一定获得积分。"},
 
     # 服务类：只做预约/支付预留，不进入会员免费权益。
     {"slug": "shokumukeirekisho-review-service", "title": "职务经歴书修改服务", "subtitle": "中途转职材料优化",
-     "category": "career_japan", "sub": "rirekisho", "product_type": "resume_review", "price": 0, "currency": "CNY",
-     "price_label": "¥299 起", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备转职的用户",
+     "category": "career_japan", "sub": "rirekisho", "product_type": "resume_review", "price": 0, "currency": "JPY",
+     "price_label": "¥5,980 起", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备转职的用户",
      "delivery": "人工服务·线上", "refund_policy": "人工服务预约后按实际确认的服务范围执行，未开始前可联系协商取消。"},
     {"slug": "research-plan-review-service", "title": "研究计划书修改服务", "subtitle": "大学院申请材料辅导",
-     "category": "study_japan", "sub": "research_plan", "product_type": "research_plan_review", "price": 0, "currency": "CNY",
-     "price_label": "¥499 起", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备大学院申请的用户",
+     "category": "study_japan", "sub": "research_plan", "product_type": "research_plan_review", "price": 0, "currency": "JPY",
+     "price_label": "¥9,800 起", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备大学院申请的用户",
      "delivery": "人工服务·线上"},
     {"slug": "graduate-school-consultation", "title": "大学院申请咨询", "subtitle": "选校、研究室、时间线",
-     "category": "study_japan", "sub": "graduate_school", "product_type": "graduate_school_support", "price": 0, "currency": "CNY",
+     "category": "study_japan", "sub": "graduate_school", "product_type": "graduate_school_support", "price": 0, "currency": "JPY",
      "price_label": "预约咨询", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "需要申请规划的用户",
      "delivery": "预约咨询"},
     {"slug": "language-school-consultation", "title": "语言学校申请咨询", "subtitle": "择校、材料和 COE",
-     "category": "study_abroad_japan", "sub": "language_school", "product_type": "language_school_support", "price": 0, "currency": "CNY",
+     "category": "study_abroad_japan", "sub": "language_school", "product_type": "language_school_support", "price": 0, "currency": "JPY",
      "price_label": "预约咨询", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备赴日留学的用户",
      "delivery": "预约咨询"},
     {"slug": "japan-job-mock-interview", "title": "日本就职模拟面试", "subtitle": "一次/二次/最终面试演练",
-     "category": "career_japan", "sub": "job_interview", "product_type": "interview_coaching", "price": 0, "currency": "CNY",
-     "price_label": "¥299 起", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备日本就职面试的用户",
+     "category": "career_japan", "sub": "job_interview", "product_type": "interview_coaching", "price": 0, "currency": "JPY",
+     "price_label": "¥5,980 起", "coming_soon": True, "is_service": 1, "member_discount": 1, "target": "准备日本就职面试的用户",
      "delivery": "人工服务·线上"},
 ])
 
 # ---------------------------------------------------------------------------
-# JLPT N1-N5「过去问题型趋势分析与原创练习」— 统一 ¥49。
+# JLPT N1-N5「过去问题型趋势分析与原创练习」— 统一 ¥980。
 # 合规：原创整理 + 题型趋势 + 原创练习题，绝不包含未授权官方历年真题原文。
 # is_member_included 默认 false（可后台改），is_member_discount=true（可后台改）。
 # ---------------------------------------------------------------------------
@@ -1242,11 +1528,11 @@ def _jlpt_trend_product(level: str, sub: str, contents: list[str], *, featured: 
     return {
         "slug": f"jlpt-{level.lower()}-past-trend-original-practice",
         "title": f"JLPT {level} 过去问题型趋势分析与原创练习",
-        "subtitle": f"{level} 题型趋势 + 原创练习，统一 ¥49",
+        "subtitle": f"{level} 题型趋势 + 原创练习，统一 ¥980",
         "category": "jlpt", "sub": sub, "product_type": "pdf_material",
-        "price": 49, "currency": "CNY", "price_label": "¥49",
+        "price": 980, "currency": "JPY", "price_label": "¥980",
         "coming_soon": False, "is_service": 0,
-        "member_included": 0, "member_discount": 1, "member_price": 39,
+        "member_included": 0, "member_discount": 1, "member_price": 780,
         "is_featured": 1 if featured else 0,
         "target": f"准备 {level} 的学习者", "delivery": "数字资料（PDF，购买后可在“我的资料”查看）",
         "tags": ["JLPT", level, "过去问趋势", "原创练习"],
@@ -1289,7 +1575,7 @@ GUIDE_PRODUCT_SEED.extend([
 # ---------------------------------------------------------------------------
 # 日本本地服务商品。is_service=1 ⇒ 永不进入会员免费权益（后台/种子均强制），
 # 但可设 member_discount。多数为「预约咨询」(price_label 报价、走预约表单)；
-# 有固定价的(如语言学校申请咨询 ¥1000)也可走 Web Stripe。
+# 有固定价的(如语言学校申请咨询 ¥20,000)也可走 Web Stripe。
 # ---------------------------------------------------------------------------
 def _guide_service(slug: str, title: str, subtitle: str, product_type: str, sub: str,
                    price_label: str, target: str, scope: list[str], excludes: list[str],
@@ -1303,7 +1589,7 @@ def _guide_service(slug: str, title: str, subtitle: str, product_type: str, sub:
     return {
         "slug": slug, "title": title, "subtitle": subtitle,
         "category": "guide_services", "sub": sub, "product_type": product_type,
-        "price": price, "currency": "CNY", "price_label": price_label,
+        "price": price, "currency": "JPY", "price_label": price_label,
         "coming_soon": False, "is_service": 1, "member_discount": 1,
         "is_featured": 1 if featured else 0, "target": target, "delivery": delivery,
         "description": "\n\n".join(p for p in desc_parts if p),
@@ -1325,12 +1611,12 @@ GUIDE_PRODUCT_SEED.extend([
         ["交通费", "高速费", "停车费", "额外等待费（可后台设置）", "酒店/房东费用"],
         extra="可选机场：成田、羽田、关西、中部国际、福冈。", featured=True),
     _guide_service("japanese-phone-call-proxy", "日语翻译与电话代打", "用日语联系学校、房东、银行、役所等",
-        "translation_call", "japan_language_support", "¥99 起",
+        "translation_call", "japan_language_support", "¥1,980 起",
         "需要用日语联系学校/房东/中介/银行/手机公司/役所/医院/快递等的用户",
         ["电话前信息整理", "日语电话代打", "简单口译", "通话结果整理", "文字说明反馈"],
         ["法律/医疗专业判断", "替用户作虚假陈述", "高风险合同承诺", "代签文件"]),
     _guide_service("japanese-document-translation", "日语文件翻译协助", "通知、邮件、学校材料的中日翻译协助",
-        "translation_call", "japan_language_support", "¥99 起",
+        "translation_call", "japan_language_support", "¥1,980 起",
         "需要理解简单文件、通知、邮件、生活手续说明的用户",
         ["日文通知理解", "邮件翻译", "简单文件说明", "回复文案建议"],
         ["法律认证翻译", "公证翻译", "医疗诊断翻译", "高风险合同审查"]),
@@ -1374,23 +1660,23 @@ GUIDE_PRODUCT_SEED.extend([
         ["申请方向梳理", "研究室/教授匹配建议", "出愿时间线规划", "材料清单", "面试准备建议"],
         ["不保证合格", "不代替教授决定", "不提供虚假材料"]),
     _guide_service("research-plan-revision", "研究计划书修改服务", "结构、问题意识、研究方法逐项修改",
-        "research_plan_review", "japan_graduate_school", "¥499 起",
+        "research_plan_review", "japan_graduate_school", "¥9,800 起",
         "准备大学院出愿、需要打磨研究计划书的用户",
         ["结构梳理", "问题意识与先行研究建议", "研究方法可行性建议", "语言表达润色", "教授视角反馈"],
         ["不代写", "不保证合格", "不提供学术不端协助"]),
     _guide_service("language-school-application-consult", "语言学校申请咨询", "选校、材料、经费与签证全流程",
-        "language_school_support", "japan_study_abroad", "¥1000",
+        "language_school_support", "japan_study_abroad", "¥20,000",
         "准备申请语言学校赴日留学的用户",
         ["选校建议", "申请材料清单与检查", "经费支付人材料说明", "COE/签证流程说明", "时间线规划"],
         ["不保证 COE/签证通过", "不代替入管审核", "不提供虚假材料"],
-        price=1000, delivery="人工服务·线上（一次性套餐 ¥1000）"),
+        price=20000, delivery="人工服务·线上（一次性套餐 ¥20,000）"),
     _guide_service("shokumukeirekisho-revision", "职务经歴书修改服务", "技能、项目与成果表达打磨",
-        "resume_review", "japan_job_support", "¥299 起",
+        "resume_review", "japan_job_support", "¥5,980 起",
         "准备日本中途就职、需要打磨职务经歴书的用户",
         ["结构梳理", "技能总结建议", "项目经历表达", "成果量化建议", "排版规范"],
         ["不代写虚假经历", "不保证录用"]),
     _guide_service("es-motivation-revision", "ES / 志望动机修改服务", "志望动机与自己 PR 文案打磨",
-        "career_support", "japan_job_support", "¥199 起",
+        "career_support", "japan_job_support", "¥3,980 起",
         "准备日本就职、需要打磨 ES / 志望动机的用户",
         ["志望动机结构建议", "自己 PR 表达打磨", "公司针对性建议", "日语表达润色"],
         ["不代写虚假内容", "不保证通过筛选"]),
@@ -1400,12 +1686,12 @@ GUIDE_PRODUCT_SEED.extend([
         ["问题梳理", "可行方案建议", "所需材料/流程说明", "避坑提醒", "后续行动建议"],
         ["法律/医疗/税务专业判断", "不替代官方机构", "不提供虚假材料"]),
     _guide_service("hospital-appointment-call", "医院预约电话协助", "日语电话预约医院、说明症状协助",
-        "translation_call", "japan_language_support", "¥99 起",
+        "translation_call", "japan_language_support", "¥1,980 起",
         "需要用日语预约医院、说明就诊需求的用户",
         ["预约前信息整理", "日语电话预约", "简单症状沟通协助", "预约结果整理"],
         ["医疗诊断与建议", "替用户作虚假陈述", "紧急医疗（请直接拨打急救）"]),
     _guide_service("delivery-utility-call", "快递/水电煤电话协助", "联系快递、水电气等日语电话协助",
-        "translation_call", "japan_life_procedure", "¥99 起",
+        "translation_call", "japan_life_procedure", "¥1,980 起",
         "需要联系快递、水电煤气等服务的用户",
         ["电话前信息整理", "日语电话代打", "结果整理与反馈"],
         ["费用代缴", "高风险合同承诺", "代签文件"]),
@@ -1414,35 +1700,35 @@ GUIDE_PRODUCT_SEED.extend([
 # 会员资料库扩充批：与指南文章配套的模板/清单类原创资料。
 GUIDE_PRODUCT_SEED.extend([
     {"slug": "renting-initial-cost-worksheet", "title": "租房初期费用核算表", "subtitle": "把敷金礼金中介费一项项算清楚",
-     "category": "life_japan", "sub": "housing", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "renting", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备在日本租房的用户",
      "delivery": "会员资料", "tags": ["租房", "初期费用", "会员资料"], "is_featured": 1},
     {"slug": "lease-contract-check-list", "title": "签约前合同检查清单", "subtitle": "重要事项说明 20 个必看条款",
-     "category": "life_japan", "sub": "housing", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "renting", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "即将签订赁贷合同的用户",
      "delivery": "会员资料", "tags": ["租房", "合同", "会员资料"]},
     {"slug": "first-week-procedures-pack", "title": "入境第一周手续包", "subtitle": "在留卡·住民登记·保险·银行一页流",
-     "category": "life_japan", "sub": "arrival_preparation", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "arrival_preparation", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "刚入境或即将入境日本的用户",
      "delivery": "会员资料", "tags": ["入境", "手续", "会员资料"], "is_featured": 1},
     {"slug": "research-plan-template-annotated", "title": "研究计划书模板（逐段讲解版）", "subtitle": "结构模板+每一段写什么的批注",
-     "category": "study_japan", "sub": "research_plan", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "category": "study_japan", "sub": "research_plan", "product_type": "pdf_material", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备大学院出愿的用户",
      "delivery": "会员资料", "tags": ["研究计划书", "大学院", "会员资料"], "is_featured": 1},
     {"slug": "shokumu-keirekisho-template", "title": "职务经历书模板与写法示例", "subtitle": "转职材料的核心一页怎么写",
-     "category": "career_japan", "sub": "job_change", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "category": "career_japan", "sub": "job_hunting_flow", "product_type": "pdf_material", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "准备在日转职的用户",
      "delivery": "会员资料", "tags": ["转职", "職務経歴書", "会员资料"]},
     {"slug": "interview-qa-100", "title": "面接想定问答 100 题", "subtitle": "新卒与转职高频问题+回答框架",
-     "category": "career_japan", "sub": "interview", "product_type": "pdf_material", "price": 0, "currency": "CNY",
+     "category": "career_japan", "sub": "job_interview", "product_type": "pdf_material", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "正在准备日企面试的用户",
      "delivery": "会员资料", "tags": ["面接", "就活", "会员资料"]},
     {"slug": "taishoku-procedures-checklist", "title": "退职手续核对清单", "subtitle": "保险·年金·失业给付·税金时间线",
-     "category": "career_japan", "sub": "job_change", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "career_japan", "sub": "job_hunting_flow", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "即将离职或换工作的用户",
      "delivery": "会员资料", "tags": ["退职", "手续", "会员资料"]},
     {"slug": "disaster-kit-checklist", "title": "家庭防灾物资清单", "subtitle": "按人数勾选的常备物资与文件备份表",
-     "category": "life_japan", "sub": "safety", "product_type": "checklist", "price": 0, "currency": "CNY",
+     "category": "life_japan", "sub": "life_tips", "product_type": "checklist", "price": 0, "currency": "JPY",
      "price_label": "会员专属", "coming_soon": False, "member_included": 1, "target": "所有在日居住用户",
      "delivery": "会员资料", "tags": ["防灾", "清单", "会员资料"]},
 ])
@@ -1930,3 +2216,49 @@ for _company in [
 ]:
     _append_guide_company_seed(*_company)
 
+
+
+# ---------------------------------------------------------------------------
+# related_article_slugs 种子(B4 item 8)。在所有 GUIDE_ARTICLE_SEED / GUIDE_TOPIC_SEED
+# 填充完成后,按「同 topic 同伴 → 同子分类 → 同大分类」就近取 2–3 篇互相串联。
+# ensure_guide_seed 幂等回填(仅对 related_article_slugs 为空的行)。返回顺序稳定。
+# ---------------------------------------------------------------------------
+def _build_guide_related_articles() -> dict[str, list[str]]:
+    by_slug = {a["slug"]: a for a in GUIDE_ARTICLE_SEED}
+    order = {a["slug"]: i for i, a in enumerate(GUIDE_ARTICLE_SEED)}
+    by_sub: dict[tuple[str, str], list[str]] = {}
+    by_cat: dict[str, list[str]] = {}
+    for a in GUIDE_ARTICLE_SEED:
+        by_sub.setdefault((a["category"], a.get("sub", "")), []).append(a["slug"])
+        by_cat.setdefault(a["category"], []).append(a["slug"])
+    topic_rel: dict[str, set[str]] = {}
+    for t in GUIDE_TOPIC_SEED:
+        slugs = [s for s in t.get("articleSlugs", []) if s in by_slug]
+        for s in slugs:
+            topic_rel.setdefault(s, set()).update(o for o in slugs if o != s)
+
+    out: dict[str, list[str]] = {}
+    for a in GUIDE_ARTICLE_SEED:
+        slug = a["slug"]
+        picks: list[str] = []
+        for o in sorted(topic_rel.get(slug, ()), key=lambda x: order[x]):
+            if o != slug and o not in picks:
+                picks.append(o)
+        for pool in (by_sub[(a["category"], a.get("sub", ""))], by_cat[a["category"]]):
+            for o in pool:
+                if o != slug and o not in picks:
+                    picks.append(o)
+                if len(picks) >= 3:
+                    break
+            if len(picks) >= 3:
+                break
+        if picks:
+            out[slug] = picks[:3]
+    return out
+
+
+GUIDE_ARTICLE_RELATED: dict[str, list[str]] = _build_guide_related_articles()
+
+
+def guide_article_related_slugs(slug: str) -> list[str]:
+    return list(GUIDE_ARTICLE_RELATED.get(slug, ()))

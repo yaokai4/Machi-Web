@@ -47,6 +47,25 @@ import { SmartAppBanner } from "@/components/shell/SmartAppBanner";
 import { useI18n, type I18nKey } from "@/lib/i18n";
 import type { KXUser } from "@/lib/types";
 
+// The quick-toggle buttons need the *effective* theme, not the raw `appearance`
+// store value: a user on "system" is rendered light or dark by ThemeBridge, so
+// `appearance === "dark"` would mislabel the button and require a double click.
+// ThemeBridge is the single writer of the `.dark` class on <html>, so read it
+// back as the source of truth and re-read whenever it flips (explicit toggle or
+// OS scheme change while following the system).
+function useEffectiveDark(): boolean {
+  const [isDark, setIsDark] = useState(false);
+  useEffect(() => {
+    const root = document.documentElement;
+    const sync = () => setIsDark(root.classList.contains("dark"));
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(root, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  return isDark;
+}
+
 interface AppShellProps {
   children: React.ReactNode;
   right?: React.ReactNode;
@@ -191,8 +210,8 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
 function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectPath: string; user: KXUser | null }) {
   const compose = useCompose((s) => s.open);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
-  const appearance = useSettings((s) => s.appearance);
   const setAppearance = useSettings((s) => s.setAppearance);
+  const isDark = useEffectiveDark();
   const pushToast = useToasts((s) => s.push);
   const setSessionUser = useSession((s) => s.setUser);
   const queryClient = useQueryClient();
@@ -328,12 +347,12 @@ function Sidebar({ pathname, redirectPath, user }: { pathname: string; redirectP
 
       <div className="mt-auto flex flex-col gap-1">
         <button
-          onClick={() => setAppearance(appearance === "dark" ? "light" : "dark")}
+          onClick={() => setAppearance(isDark ? "light" : "dark")}
           className="flex items-center gap-2 px-3 py-2 rounded-full hover:bg-kx-soft text-sm text-kx-subtle"
           aria-label={t("settings_appearance")}
         >
-          {appearance === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-          <span className="hidden lg:inline">{appearance === "dark" ? t("settings_appearance_light") : t("settings_appearance_dark")}</span>
+          {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
+          <span className="hidden lg:inline">{isDark ? t("settings_appearance_light") : t("settings_appearance_dark")}</span>
         </button>
         <Link
           href="/wallet"
@@ -763,8 +782,8 @@ function MobileMoreSheet({
   const setSessionUser = useSession((s) => s.setUser);
   const pushToast = useToasts((s) => s.push);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
-  const appearance = useSettings((s) => s.appearance);
   const setAppearance = useSettings((s) => s.setAppearance);
+  const isDark = useEffectiveDark();
 
   useEffect(() => {
     setMounted(true);
@@ -927,14 +946,14 @@ function MobileMoreSheet({
           <button
             type="button"
             onClick={() => {
-              setAppearance(appearance === "dark" ? "light" : "dark");
+              setAppearance(isDark ? "light" : "dark");
             }}
             className="w-full flex items-center gap-3 rounded-2xl px-3 py-3 text-[15px] font-semibold text-kx-text hover:bg-kx-soft"
           >
             <span className="inline-flex w-9 h-9 items-center justify-center rounded-full bg-kx-soft text-kx-subtle">
-              {appearance === "dark" ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+              {isDark ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
             </span>
-            <span className="flex-1 text-left">{appearance === "dark" ? t("settings_appearance_light") : t("settings_appearance_dark")}</span>
+            <span className="flex-1 text-left">{isDark ? t("settings_appearance_light") : t("settings_appearance_dark")}</span>
           </button>
           {user ? (
             <button

@@ -140,6 +140,13 @@ _TYPE_COPY = {
     "message":  ("给你发来私信", "からメッセージが届きました", "sent you a message"),
     "listing_inquiry": ("咨询了你的发布", "があなたの出品に問い合わせました", "asked about your listing"),
     "saved_search": ("有新的匹配信息", "保存した検索に新しい一致があります", "New match for your saved search"),
+    # Growth hooks (B6). These have no actor to prefix — the delivery path
+    # attaches the body text (real user-facing copy assembled server-side) and
+    # falls back to these action strings for the banner title.
+    "favorite_price_drop": ("你收藏的信息降价了", "保存した出品が値下げされました", "A listing you saved dropped in price"),
+    "favorite_closed": ("你收藏的信息已下架", "保存した出品が掲載終了しました", "A listing you saved was taken down"),
+    "follow_digest": ("你关注的人发布了新内容", "フォロー中のユーザーが新しく投稿しました", "People you follow shared new posts"),
+    "city_digest": ("你的城市有新动态", "あなたの街に新しい情報があります", "New activity in your city"),
 }
 _SYSTEM_TITLE = ("系统通知", "システム通知", "System notification")
 
@@ -175,10 +182,26 @@ _TRANSACTIONAL_TYPES = {
     "listing_review",
     "listing_review_reply",
     "booking",
+    # Favorite price-drop / take-down (B6): low-frequency, high-value alerts
+    # about a listing the recipient explicitly saved — deliver day and night,
+    # uncapped, like other "something you're tracking changed" pushes.
+    "favorite_price_drop",
+    "favorite_closed",
 }
 _CAPPED_TYPES = {
     "saved_search",
     "system",
+    # Daily digests (B6): follow_digest ("你关注的 N 人发布了新内容" + followed
+    # topics) and city_digest (inactive-user recall) are reminder-flavoured, so
+    # they share the small per-user daily push budget and can't stack up.
+    "follow_digest",
+    "city_digest",
+}
+# High-volume social pushes about one post — collapsed per (type, post) so a
+# burst of likes/reposts replaces the previous banner instead of stacking (B6).
+_COLLAPSE_TYPES = {
+    "like",
+    "repost",
 }
 
 
@@ -310,7 +333,8 @@ def _deliver(job: dict[str, Any]) -> None:
             if actor_row:
                 actor_name = actor_row["display_name"] or actor_row["handle"] or ""
         unread_row = conn.execute(
-            "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND is_read = 0", (recipient_id,)
+            "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND is_read = 0 AND deleted_at IS NULL",
+            (recipient_id,),
         ).fetchone()
         badge = int(unread_row["c"] if unread_row else 0)
 
@@ -349,9 +373,17 @@ def _deliver(job: dict[str, Any]) -> None:
     jwt = _provider_jwt()
     if not jwt:
         return
+    # Push aggregation (B6): collapse repeated social notifications about the
+    # SAME post into one banner (Apple replaces the previous push with the same
+    # apns-collapse-id) — 50 likes on one post shouldn't be 50 lock-screen
+    # buzzes. Only for the high-volume social types on a specific post; DMs,
+    # inquiries, digests etc. keep their own natural cadence.
+    collapse_id = ""
+    if job["ntype"] in _COLLAPSE_TYPES and job["post_id"]:
+        collapse_id = f"machi.{job['ntype']}.{job['post_id']}"
     dead: list[str] = []
     for entry in tokens:
-        status, response = _post_one(entry["token"], blob, jwt)
+        status, response = _post_one(entry["token"], blob, jwt, collapse_id=collapse_id)
         if status in (400, 410) and ("BadDeviceToken" in response or "Unregistered" in response or status == 410):
             dead.append(entry["id"])
     if dead:
@@ -368,9 +400,11 @@ def _deliver(job: dict[str, Any]) -> None:
             pass
 
 
-def _post_one(device_token: str, payload: str, jwt: str) -> tuple[int, str]:
+def _post_one(device_token: str, payload: str, jwt: str, *, collapse_id: str = "") -> tuple[int, str]:
     """One HTTP/2 POST via system curl. The JWT travels through stdin
-    (`-K -`) so it never appears in the process list."""
+    (`-K -`) so it never appears in the process list. An optional
+    `collapse_id` sets apns-collapse-id so repeated pushes about the same
+    entity replace each other on the device instead of stacking up."""
     url = f"{APNS_HOST}/3/device/{device_token}"
     config = (
         f'url = "{url}"\n'
@@ -380,6 +414,10 @@ def _post_one(device_token: str, payload: str, jwt: str) -> tuple[int, str]:
         'header = "apns-priority: 10"\n'
         'header = "content-type: application/json"\n'
     )
+    if collapse_id:
+        # APNs caps apns-collapse-id at 64 bytes; our ids (machi.<type>.<uuid>)
+        # are well under, but truncate defensively so a long id can't 400.
+        config += f'header = "apns-collapse-id: {collapse_id[:64]}"\n'
     try:
         proc = subprocess.run(
             ["curl", "--http2", "-sS", "-K", "-", "-X", "POST",

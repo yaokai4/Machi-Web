@@ -526,7 +526,7 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
       <div className="fixed inset-0 z-[80] grid place-items-end bg-black/30 p-0 sm:place-items-center sm:p-5" role="presentation" onMouseDown={(event) => {
         if (event.target === event.currentTarget) setDetailOpen(false);
       }}>
-        <section role="dialog" aria-modal="true" aria-labelledby={`todo-detail-${todo.id}`} className="max-h-[92dvh] w-full overflow-y-auto rounded-t-[24px] bg-kx-card p-5 shadow-2xl sm:max-w-2xl sm:rounded-[24px] sm:p-6">
+        <section role="dialog" aria-modal="true" aria-labelledby={`todo-detail-${todo.id}`} className="max-h-[92dvh] w-full overflow-y-auto rounded-t-[24px] bg-kx-card p-5 shadow-2xl sm:max-w-2xl sm:rounded-kx-sheet sm:p-6">
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="text-xs font-black uppercase tracking-[0.12em] text-kx-muted">Todo Detail</p>

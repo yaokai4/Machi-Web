@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 interface DialogProps {
   open: boolean;
@@ -23,17 +24,56 @@ interface DialogProps {
  * feed cards use `transform`, which would otherwise trap a
  * `position: fixed` descendant inside the card.
  */
+const FOCUSABLE_SELECTOR =
+  'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
 export function Dialog({ open, onClose, title, children, footer, maxWidth = "32rem", mobileFull = false }: DialogProps) {
+  const { t } = useI18n();
   const [mounted, setMounted] = useState(false);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
+  // Keep the latest onClose in a ref so the keydown/focus effects can stay keyed
+  // only on `open` — otherwise a caller passing an inline (non-memoized) onClose
+  // would re-run the effects every render and prematurely restore focus while the
+  // dialog is still open.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
+  // Body scroll lock + Escape + Tab focus-trap. Keyed only on `open`.
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onCloseRef.current();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      // Trap Tab within the dialog so focus can't escape to the page behind it.
+      const container = surfaceRef.current;
+      if (!container) return;
+      const focusables = Array.from(container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR)).filter(
+        (el) => el.offsetParent !== null || el === document.activeElement,
+      );
+      if (focusables.length === 0) {
+        e.preventDefault();
+        container.focus();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !container.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else if (active === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     document.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
@@ -42,7 +82,30 @@ export function Dialog({ open, onClose, title, children, footer, maxWidth = "32r
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
     };
-  }, [open, onClose]);
+  }, [open]);
+
+  // Focus management: capture the opener, move focus into the dialog on open,
+  // and restore focus to the opener on close. Keyed only on `open` so it fires
+  // exactly on the open/close transition.
+  useEffect(() => {
+    if (!open) return;
+    const previouslyFocused = typeof document !== "undefined" ? (document.activeElement as HTMLElement | null) : null;
+    // Move focus into the dialog — unless a child already grabbed it (e.g. a
+    // button with `autoFocus`, like ConfirmDialog's confirm action).
+    const focusTimer = window.setTimeout(() => {
+      const container = surfaceRef.current;
+      if (!container) return;
+      if (container.contains(document.activeElement)) return;
+      const firstFocusable = container.querySelector<HTMLElement>(FOCUSABLE_SELECTOR);
+      (firstFocusable ?? container).focus();
+    }, 0);
+    return () => {
+      window.clearTimeout(focusTimer);
+      if (previouslyFocused && typeof previouslyFocused.focus === "function") {
+        previouslyFocused.focus();
+      }
+    };
+  }, [open]);
 
   if (!open || !mounted) return null;
 
@@ -61,8 +124,10 @@ export function Dialog({ open, onClose, title, children, footer, maxWidth = "32r
         aria-hidden
       />
       <div
+        ref={surfaceRef}
+        tabIndex={-1}
         className={
-          "relative kx-glass-surface w-full flex flex-col animate-kx-scale-in shadow-kx-glow " +
+          "relative kx-glass-surface w-full flex flex-col animate-kx-scale-in shadow-kx-glow outline-none " +
           (mobileFull ? "max-sm:h-[100dvh] max-sm:rounded-none" : "max-sm:mt-auto max-sm:rounded-b-none")
         }
         style={{
@@ -83,7 +148,7 @@ export function Dialog({ open, onClose, title, children, footer, maxWidth = "32r
             <button
               onClick={onClose}
               className="text-kx-muted hover:text-kx-text rounded-full p-1 hover:bg-kx-soft transition"
-              aria-label="关闭"
+              aria-label={t("aria_close")}
             >
               <X className="w-5 h-5" />
             </button>
@@ -118,12 +183,13 @@ export function ConfirmDialog({
   open,
   title,
   description,
-  confirmLabel = "确认",
-  cancelLabel = "取消",
+  confirmLabel,
+  cancelLabel,
   destructive = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const { t } = useI18n();
   return (
     <Dialog
       open={open}
@@ -132,14 +198,14 @@ export function ConfirmDialog({
       footer={
         <>
           <button className="kx-button-ghost" onClick={onCancel}>
-            {cancelLabel}
+            {cancelLabel ?? t("action_cancel")}
           </button>
           <button
             className={destructive ? "kx-button-danger" : "kx-button-primary"}
             onClick={onConfirm}
             autoFocus
           >
-            {confirmLabel}
+            {confirmLabel ?? t("action_confirm")}
           </button>
         </>
       }

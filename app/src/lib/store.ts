@@ -68,59 +68,42 @@ export const useToasts = create<ToastState>((set) => ({
 
 export type AuthPromptKind = "generic" | "like" | "bookmark" | "comment" | "follow" | "message" | "publish" | "saveSearch";
 
-export interface AuthPromptCopy {
-  title: string;
-  body: string;
-}
-
-export const AUTH_PROMPT_COPY: Record<AuthPromptKind, AuthPromptCopy> = {
-  generic: {
-    title: "登录后继续",
-    body: "登录后可以发布内容、评论、收藏、关注和使用更多 Machi 功能。",
-  },
-  like: {
-    title: "登录后点赞",
-    body: "登录后可以点赞、收藏和参与城市讨论。",
-  },
-  bookmark: {
-    title: "登录后收藏",
-    body: "登录后可以保存租房、资讯、攻略和本地生活信息。",
-  },
-  comment: {
-    title: "登录后评论",
-    body: "登录后可以参与讨论，分享你的经验和问题。",
-  },
-  follow: {
-    title: "登录后关注",
-    body: "登录后可以关注你感兴趣的城市账号和本地用户。",
-  },
-  message: {
-    title: "登录后发送私信",
-    body: "登录后可以和对方联系。",
-  },
-  publish: {
-    title: "登录后发布",
-    body: "登录后可以发布本地动态、租房、二手、工作、本地小组和生活经验。",
-  },
-  saveSearch: {
-    title: "登录后订阅搜索",
-    body: "登录后可以订阅当前搜索条件，有匹配的新发布时第一时间通知你。",
-  },
+// i18n key pairs per prompt kind. The actual localized strings live in
+// i18n.tsx (auth_prompt_*_title / auth_prompt_*_body); the dialog resolves them
+// with `t()` at render so the copy follows the user's language. Optional
+// literal overrides (`title` / `body`) still win when provided.
+export const AUTH_PROMPT_KEYS: Record<AuthPromptKind, { titleKey: string; bodyKey: string }> = {
+  generic: { titleKey: "auth_prompt_generic_title", bodyKey: "auth_prompt_generic_body" },
+  like: { titleKey: "auth_prompt_like_title", bodyKey: "auth_prompt_like_body" },
+  bookmark: { titleKey: "auth_prompt_bookmark_title", bodyKey: "auth_prompt_bookmark_body" },
+  comment: { titleKey: "auth_prompt_comment_title", bodyKey: "auth_prompt_comment_body" },
+  follow: { titleKey: "auth_prompt_follow_title", bodyKey: "auth_prompt_follow_body" },
+  message: { titleKey: "auth_prompt_message_title", bodyKey: "auth_prompt_message_body" },
+  publish: { titleKey: "auth_prompt_publish_title", bodyKey: "auth_prompt_publish_body" },
+  saveSearch: { titleKey: "auth_prompt_saveSearch_title", bodyKey: "auth_prompt_saveSearch_body" },
 };
 
+export interface AuthPromptState_Prompt {
+  kind: AuthPromptKind;
+  // Optional literal overrides; when set they take precedence over the keyed
+  // copy (used for one-off custom prompts).
+  title?: string;
+  body?: string;
+}
+
 interface AuthPromptState {
-  prompt: AuthPromptCopy | null;
-  open: (input?: AuthPromptKind | Partial<AuthPromptCopy> & { kind?: AuthPromptKind }) => void;
+  prompt: AuthPromptState_Prompt | null;
+  open: (input?: AuthPromptKind | (Partial<Omit<AuthPromptState_Prompt, "kind">> & { kind?: AuthPromptKind })) => void;
   close: () => void;
 }
 
 export const useAuthPrompt = create<AuthPromptState>((set) => ({
   prompt: null,
   open: (input = "generic") => {
-    const next =
+    const next: AuthPromptState_Prompt =
       typeof input === "string"
-        ? AUTH_PROMPT_COPY[input]
-        : { ...AUTH_PROMPT_COPY[input.kind ?? "generic"], ...input };
+        ? { kind: input }
+        : { kind: input.kind ?? "generic", title: input.title, body: input.body };
     set({ prompt: next });
   },
   close: () => set({ prompt: null }),
@@ -171,14 +154,20 @@ export const useCompose = create<ComposeState>((set) => ({
 }));
 
 interface SettingsState {
-  appearance: "light" | "dark";
+  // "system" follows the OS colour scheme; it is a client-only preference
+  // (the server KXSettings enum is still light|dark). ThemeBridge resolves
+  // "system" to an effective light/dark for the <html> class.
+  appearance: "light" | "dark" | "system";
   settings: KXSettings | null;
   setAppearance: (value: SettingsState["appearance"]) => void;
   setSettings: (settings: KXSettings | null) => void;
 }
 
 export const useSettings = create<SettingsState>((set) => ({
-  appearance: "light",
+  // Default to "system" so a fresh load never spuriously persists "light"
+  // before ThemeBridge hydrates the real stored/OS preference. The pre-paint
+  // script in layout.tsx has already set the correct <html> class by now.
+  appearance: "system",
   settings: null,
   setAppearance: (appearance) => set({ appearance }),
   setSettings: (settings) => set({ settings }),

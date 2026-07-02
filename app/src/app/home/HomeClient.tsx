@@ -171,7 +171,7 @@ export default function HomeClient() {
           <button
             type="button"
             onClick={() => (user ? setRegionPickerOpen(true) : openAuthPrompt("generic"))}
-            className="ml-auto inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-white/95 px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgba(37,99,235,0.75)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35 dark:bg-kx-card/[0.9] dark:hover:bg-kx-accentSoft/55"
+            className="ml-auto inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-accent/25 bg-white/95 px-3 text-sm font-black text-kx-text shadow-[0_14px_34px_-26px_rgb(var(--kx-accent)/0.5)] transition hover:border-kx-accent/45 hover:bg-kx-accentSoft/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/35 dark:bg-kx-card/[0.9] dark:hover:bg-kx-accentSoft/55"
             title={copy.switchRegion}
           >
             <span className="max-w-[7.5rem] truncate">

@@ -95,7 +95,10 @@ class WalletFoundationTests(unittest.TestCase):
         self.assertEqual(pack["bonus_points"], 100)
         serialized = server.serialize_wallet_topup_product(pack)
         self.assertEqual(serialized["totalPoints"], 1900)
-        self.assertEqual(serialized["priceLabel"], "¥18")  # amount_cents 1800 -> ¥18
+        # amount_cents 1800 -> ¥18. Wallet packs are still CNY-priced; now that
+        # membership moved to JPY, format_price_value annotates non-JPY ¥ amounts
+        # with the currency so a CNY figure can't be misread as yen.
+        self.assertEqual(serialized["priceLabel"], "¥18 (人民币)")
 
     # 4. wallet_credit_topup is idempotent — same order never double-credits
     def test_credit_topup_idempotent(self):

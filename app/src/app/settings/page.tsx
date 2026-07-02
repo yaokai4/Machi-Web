@@ -47,6 +47,9 @@ export default function SettingsPage() {
   const setUser = useSession((s) => s.setUser);
   const setSettings = useSettings((s) => s.setSettings);
   const setAppearance = useSettings((s) => s.setAppearance);
+  // The effective client theme preference — includes "system", which the
+  // server settings enum can't represent, so the select binds to this.
+  const appearancePref = useSettings((s) => s.appearance);
   const pushToast = useToasts((s) => s.push);
   const { t, locale } = useI18n();
   const [pwOpen, setPwOpen] = useState(false);
@@ -339,12 +342,31 @@ export default function SettingsPage() {
               <option value="multi">多语言内容</option>
             </select>
           </RowSwitch>
-          <RowSwitch icon={Palette} label={t("settings_appearance")} valueLabel={s.appearance === "dark" ? t("settings_appearance_dark") : t("settings_appearance_light")}>
+          <RowSwitch
+            icon={Palette}
+            label={t("settings_appearance")}
+            valueLabel={
+              appearancePref === "system"
+                ? t("settings_appearance_system")
+                : appearancePref === "dark"
+                  ? t("settings_appearance_dark")
+                  : t("settings_appearance_light")
+            }
+          >
             <select
               className="kx-input h-8 px-2 w-32"
-              value={s.appearance === "dark" ? "dark" : "light"}
-              onChange={(e) => patch({ appearance: e.target.value as "light" | "dark" })}
+              value={appearancePref}
+              onChange={(e) => {
+                const next = e.target.value as "light" | "dark" | "system";
+                if (next === "system") {
+                  // Client-only preference — the server enum has no "system".
+                  setAppearance("system");
+                } else {
+                  patch({ appearance: next });
+                }
+              }}
             >
+              <option value="system">{t("settings_appearance_system")}</option>
               <option value="light">{t("settings_appearance_light")}</option>
               <option value="dark">{t("settings_appearance_dark")}</option>
             </select>

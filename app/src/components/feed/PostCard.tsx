@@ -318,7 +318,7 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
               {showOfficialBadge(displayAuthor) ? <OfficialBadge /> : showVerifiedBadge(displayAuthor) ? <VerifiedBadge /> : null}
             </div>
             <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-kx-muted text-kx-meta">
-              <span className="truncate">@{displayAuthor?.handle || "machi"} · {relativeTime(displayPost.created_at)}</span>
+              <span className="truncate">@{displayAuthor?.handle || "machi"} · <time dateTime={displayPost.created_at} suppressHydrationWarning>{relativeTime(displayPost.created_at, locale)}</time></span>
               {displayRegion ? (
                 <>
                   <span aria-hidden="true">·</span>

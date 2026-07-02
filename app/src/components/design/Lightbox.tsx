@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, ChevronRight, X, Download, ZoomIn, ZoomOut } from "lucide-react";
 import { isVideoMedia, mediaPosterOrFallback, mediaSourceUrl } from "@/lib/media";
+import { useI18n } from "@/lib/i18n";
 import type { KXMedia } from "@/lib/types";
 
 interface LightboxProps {
@@ -23,6 +24,7 @@ interface LightboxProps {
  * image download.
  */
 export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
+  const { t } = useI18n();
   const [index, setIndex] = useState(Math.max(0, Math.min(startIndex, items.length - 1)));
   const [mounted, setMounted] = useState(false);
   // Fit mode shrinks the media into the viewport; zoom mode renders the image
@@ -30,6 +32,10 @@ export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
   // be read top-to-bottom instead of being shrunk into an unreadable strip.
   const [zoomed, setZoomed] = useState(false);
   const current = items[index];
+  // Horizontal swipe to change image (mobile). Track the touch start; on end,
+  // a decisive horizontal move past the threshold advances / rewinds.
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const SWIPE_THRESHOLD = 48;
 
   const prev = useCallback(() => {
     setZoomed(false);
@@ -69,11 +75,29 @@ export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
       onClick={onClose}
       role="dialog"
       aria-modal="true"
+      onTouchStart={(e) => {
+        if (zoomed || items.length <= 1) return;
+        const touch = e.touches[0];
+        touchStart.current = { x: touch.clientX, y: touch.clientY };
+      }}
+      onTouchEnd={(e) => {
+        const start = touchStart.current;
+        touchStart.current = null;
+        if (!start || zoomed || items.length <= 1) return;
+        const touch = e.changedTouches[0];
+        const dx = touch.clientX - start.x;
+        const dy = touch.clientY - start.y;
+        // Only treat clearly-horizontal gestures as swipes (ignore vertical
+        // scroll / pinch drift).
+        if (Math.abs(dx) < SWIPE_THRESHOLD || Math.abs(dx) < Math.abs(dy)) return;
+        if (dx < 0) next();
+        else prev();
+      }}
     >
       <button
         className="absolute top-4 right-4 z-[101] text-white/85 hover:text-white p-2 rounded-full bg-white/10 hover:bg-white/20 transition"
         onClick={(e) => { e.stopPropagation(); onClose(); }}
-        aria-label="关闭"
+        aria-label={t("aria_close")}
       >
         <X className="w-5 h-5" />
       </button>
@@ -84,7 +108,7 @@ export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
         target="_blank"
         rel="noreferrer"
         onClick={(e) => e.stopPropagation()}
-        aria-label="下载"
+        aria-label={t("lightbox_download")}
       >
         <Download className="w-5 h-5" />
       </a>
@@ -92,7 +116,7 @@ export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
         <button
           className="absolute top-4 right-28 z-[101] text-white/85 hover:text-white p-2 rounded-full bg-white/10 hover:bg-white/20 transition"
           onClick={(e) => { e.stopPropagation(); setZoomed((z) => !z); }}
-          aria-label={zoomed ? "适应屏幕" : "放大查看"}
+          aria-label={zoomed ? t("lightbox_zoom_out") : t("lightbox_zoom_in")}
         >
           {zoomed ? <ZoomOut className="w-5 h-5" /> : <ZoomIn className="w-5 h-5" />}
         </button>
@@ -102,14 +126,14 @@ export function Lightbox({ items, startIndex, onClose }: LightboxProps) {
           <button
             className="absolute left-4 top-1/2 -translate-y-1/2 z-[101] text-white/85 hover:text-white p-3 rounded-full bg-white/10 hover:bg-white/20 transition"
             onClick={(e) => { e.stopPropagation(); prev(); }}
-            aria-label="上一张"
+            aria-label={t("lightbox_prev")}
           >
             <ChevronLeft className="w-6 h-6" />
           </button>
           <button
             className="absolute right-4 top-1/2 -translate-y-1/2 z-[101] text-white/85 hover:text-white p-3 rounded-full bg-white/10 hover:bg-white/20 transition"
             onClick={(e) => { e.stopPropagation(); next(); }}
-            aria-label="下一张"
+            aria-label={t("lightbox_next")}
           >
             <ChevronRight className="w-6 h-6" />
           </button>

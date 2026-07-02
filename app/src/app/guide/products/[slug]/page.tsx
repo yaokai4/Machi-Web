@@ -86,7 +86,7 @@ export default function GuideProductPage() {
   const access = p.access;
   const canAccess = !!access?.canAccess;
   const isComing = p.isComingSoon || p.status === "coming_soon";
-  const priceLabel = formatPrice(p) || p.priceLabel;
+  const priceLabel = formatPrice(p, "CNY", locale) || p.priceLabel;
 
   const onBuy = async () => {
     if (!user) return openAuthPrompt("generic");
@@ -211,7 +211,7 @@ export default function GuideProductPage() {
               </span>
               {p.isMemberDiscount && (p.memberPrice || p.memberEffectivePrice) ? (
                 <span className="ml-2 text-xs font-semibold text-emerald-600 dark:text-emerald-400">
-                  {p.memberPriceLabel || `${t("mem_exclusive")} ${formatPrice({ price: p.memberEffectivePrice || p.memberPrice, currency: p.currency })}`}
+                  {p.memberPriceLabel || `${t("mem_exclusive")} ${formatPrice({ price: p.memberEffectivePrice || p.memberPrice, currency: p.currency }, "CNY", locale)}`}
                 </span>
               ) : null}
             </div>

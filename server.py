@@ -173,11 +173,14 @@ from server_reputation import (
     reputation_open_trust_review, reputation_status_for_score, reputation_status_payload,
 )
 from server_guide_data import (
-    GUIDE_ARTICLE_I18N, GUIDE_CATEGORY_I18N, GUIDE_CATEGORY_SEED, GUIDE_FAQ_SEED,
+    GUIDE_ARTICLE_I18N, GUIDE_CATEGORY_I18N, GUIDE_CATEGORY_SEED, GUIDE_FAQ_SEED, GUIDE_FAQ_I18N,
     GUIDE_GOAL_I18N, GUIDE_GOAL_SEED, GUIDE_HOME_MODULE_SEED, GUIDE_TOPIC_SEED,
     GUIDE_PRODUCT_BASE_I18N, GUIDE_RESOURCE_ENTRIES, GUIDE_RESOURCE_I18N,
     GUIDE_SUBCATEGORY_I18N, GUIDE_TAG_SEED, GUIDE_UI_I18N, GUIDE_ARTICLE_SEED,
     GUIDE_PRODUCT_SEED, GUIDE_SCHOOL_SEED, GUIDE_COMPANY_SEED, GUIDE_HERO,
+    GUIDE_ARTICLE_SOURCE_LABEL, GUIDE_ARTICLE_SEED_VERIFIED_AT,
+    GUIDE_FLAGSHIP_UPGRADE_VERIFIED_AT, guide_flagship_upgrade_rows,
+    guide_article_source_meta, guide_article_related_slugs,
     _JLPT_COMPLIANCE_NOTE,
     _normalize_language_tag, _guide_paras, _guide_int, _guide_float,
     _jlpt_trend_product, _guide_service, _append_guide_school_seed,
@@ -1069,12 +1072,27 @@ def _heat_score_sql(alias: str = "p") -> str:
         hours_since = f"EXTRACT(EPOCH FROM (now() - {alias}.created_at::timestamptz)) / 3600.0"
         max2 = "GREATEST"
     else:
-        boost_cmp = f"{alias}.boosted_until > datetime('now')"
+        # boosted_until is stored as an ISO string ('T'-separated, +00:00 suffix
+        # from datetime.isoformat()). SQLite's datetime('now') is SPACE-separated,
+        # so a lexical compare put the 'T' (0x54) above the ' ' (0x20) at char 10
+        # and the boost read as active forever. Compare against the SAME ISO shape
+        # via a now_iso() literal (matches the Postgres branch) so it's correct.
+        boost_cmp = f"{alias}.boosted_until > '{now_iso()}'"
         hours_since = f"(julianday('now') - julianday({alias}.created_at)) * 24.0"
         max2 = "MAX"
     recency_per_hour = HEAT_RECENCY_PEAK / HEAT_RECENCY_WINDOW_H
+    # light_boost membership benefit: a verified member's post gets a gentle
+    # ×1.05 on its heat. Correlated subquery on the author's is_verified_member
+    # (portable on both backends); non-members / unknown authors get ×1.0.
+    member_mult = (
+        f"(CASE WHEN COALESCE((SELECT is_verified_member FROM users WHERE users.id = {alias}.author_id), 0) = 1 "
+        f"THEN 1.05 ELSE 1.0 END)"
+    )
+    # Seed suppression (kept in lock-step with refresh_hot_scores): curated/seed
+    # content rides at 0.6× so real UGC out-ranks it on heat-sorted surfaces.
+    seed_mult = f"(CASE WHEN COALESCE({alias}.is_seed_content, 0) = 1 THEN {HOT_SCORE_SEED_MULT} ELSE 1.0 END)"
     return f"""
-      (COALESCE({alias}.like_count, 0) * 1
+      ((COALESCE({alias}.like_count, 0) * 1
        + COALESCE({alias}.comment_count, 0) * 3
        + COALESCE({alias}.repost_count, 0) * 5
        + COALESCE({alias}.bookmark_count, 0) * 4
@@ -1086,6 +1104,7 @@ def _heat_score_sql(alias: str = "p") -> str:
            ELSE 0
          END
        + {max2}(0, {HEAT_RECENCY_WINDOW_H} - ({hours_since})) * {recency_per_hour})
+       * {member_mult} * {seed_mult})
     """
 
 
@@ -1213,6 +1232,81 @@ def extract_tags(content: str) -> list[str]:
     return seen
 
 
+# @mention parsing (B6). Handles are [a-z0-9_.] (see HANDLE_RE); we accept the
+# same run of chars after '@', deduped and lowercased for a users.handle lookup.
+# The 3..20 length bound mirrors HANDLE_RE so junk like "@a" isn't queried. The
+# negative lookbehind rejects an '@' glued to a preceding word char (an email
+# local part like "a@b.com" must not read as a mention of "b.com").
+MENTION_RE = re.compile(r"(?<![A-Za-z0-9_.])@([A-Za-z0-9_.]{3,20})")
+
+
+def extract_mentions(content: str) -> list[str]:
+    """Unique lowercased handles mentioned in `content`, in first-seen order.
+    Trailing dots (from sentence punctuation like "@alice.") are trimmed."""
+    seen: list[str] = []
+    for match in MENTION_RE.findall(content or ""):
+        handle = match.strip().strip(".").lower()
+        if len(handle) < 3:
+            continue  # a bare "@a." collapses below the handle minimum
+        if handle and handle not in seen:
+            seen.append(handle)
+    return seen
+
+
+def notify_mentions(
+    conn: sqlite3.Connection,
+    content: str,
+    *,
+    actor_id: str,
+    post_id: str,
+    comment_id: str = "",
+    already_notified: set[str] | None = None,
+    now: str | None = None,
+) -> int:
+    """Best-effort: write a `mention` notification for every real @handle in
+    `content`, excluding the actor themselves and any user id in
+    `already_notified` (people who were already pinged via reply/comment for the
+    same event, so they don't get two rows). Dedupes by resolved user id, so
+    "@bob @bob" pings bob once. NEVER raises. Returns the number notified."""
+    try:
+        handles = extract_mentions(content)
+        if not handles:
+            return 0
+        skip = set(already_notified or set())
+        skip.add(actor_id)
+        now = now or now_iso()
+        notified = 0
+        seen_uids: set[str] = set()
+        for handle in handles:
+            urow = conn.execute(
+                "SELECT id FROM users WHERE handle = ? AND deleted_at IS NULL", (handle,)
+            ).fetchone()
+            if not urow:
+                continue
+            uid = urow["id"]
+            if uid in skip or uid in seen_uids:
+                continue
+            seen_uids.add(uid)
+            conn.execute(
+                "INSERT INTO notifications (id, user_id, actor_id, type, target_post_id, target_comment_id, content, created_at) "
+                "VALUES (?, ?, ?, 'mention', ?, ?, ?, ?)",
+                (str(uuid.uuid4()), uid, actor_id, post_id, comment_id or None, (content or "")[:140], now),
+            )
+            HUB.publish(uid, {"type": "notification", "kind": "mention", "post_id": post_id,
+                              **({"comment_id": comment_id} if comment_id else {})})
+            server_apns.enqueue(uid, ntype="mention", actor_id=actor_id,
+                                content=(content or "")[:140], post_id=post_id)
+            notified += 1
+        return notified
+    except Exception as exc:  # pragma: no cover - defensive: must not break the write
+        try:
+            ERR_LOG.warning("notify_mentions failed post=%s comment=%s error=%s",
+                            post_id, comment_id, exc)
+        except Exception:
+            pass
+        return 0
+
+
 # Tags that are too generic / tautological to be meaningful "hot topics" on the
 # 热榜 ranking: bare location names (the city you're already browsing) and meta
 # filler that gets stamped onto bulk-seeded content. They still work as normal
@@ -1230,6 +1324,12 @@ HOT_BOARD_TAG_BLOCKLIST = {
     "精选", "攻略", "推荐", "热门", "动态", "日常", "生活", "分享", "记录", "打卡",
     "machi", "machicity",
 }
+
+# Author diversity cap for ranked boards (热榜 / 正在发生 / trending): a single
+# author may hold at most this many slots on one page, so a prolific poster can't
+# monopolize a board. Applied as an in-memory filter over an over-fetched
+# candidate pool, in rank order (an author keeps their highest-ranked posts).
+EXPLORE_MAX_POSTS_PER_AUTHOR = 2
 
 
 def cursor_encode(iso_value: str, item_id: str) -> str:
@@ -2480,6 +2580,15 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "entitlement_type": "TEXT NOT NULL DEFAULT 'guide_product'",
         "platform_policy": "TEXT NOT NULL DEFAULT 'digital_iap_required'",
         "points_purchase_limit": "INTEGER NOT NULL DEFAULT 0",
+        # Localized titles for the paid-order receipt email (queue_guide_payment
+        # _email selects these). They were referenced in code but never actually
+        # declared on the table, so a *successful* guide settlement raised
+        # "no such column: title_en". That crash was masked until B1 item 1 fixed
+        # settle_guide_order (which used to throw on a missing amount_cents column
+        # before ever reaching the email). Default '' → the email falls back to
+        # the base `title`.
+        "title_en": "TEXT NOT NULL DEFAULT ''",
+        "title_ja": "TEXT NOT NULL DEFAULT ''",
     })
     _ensure_columns(conn, "membership_plans", {
         "name": "TEXT NOT NULL DEFAULT ''",
@@ -2544,6 +2653,18 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "entitlement_id": "TEXT NOT NULL DEFAULT ''",
         "provider_trade_no": "TEXT NOT NULL DEFAULT ''",
     })
+    # initiator_id: who opened the DM (real active-DM quota). manual_unread_{a,b}:
+    # let a participant flag a conversation unread even with no inbound message.
+    # Idempotent belt-and-suspenders alongside migration 92 so a fresh SQLite DB
+    # (base SCHEMA has neither column) always has them regardless of order.
+    _ensure_columns(conn, "conversations", {
+        "initiator_id": "TEXT NOT NULL DEFAULT ''",
+        "created_at": "TEXT NOT NULL DEFAULT ''",
+        "manual_unread_a": "INTEGER NOT NULL DEFAULT 0",
+        "manual_unread_b": "INTEGER NOT NULL DEFAULT 0",
+    })
+    # Backfill created_at from updated_at for rows added before column existed.
+    conn.execute("UPDATE conversations SET created_at = updated_at WHERE COALESCE(created_at, '') = ''")
     _ensure_columns(conn, "guide_service_requests", {
         "contact_value": "TEXT NOT NULL DEFAULT ''",
         "preferred_time": "TEXT NOT NULL DEFAULT ''",
@@ -2630,7 +2751,7 @@ def default_membership_benefits() -> list[dict[str, Any]]:
         ("verified_badge", "蓝色认证标识", "个人主页和内容卡片展示 Machi 认证标识。", "checkmark.seal.fill"),
         ("profile_verified", "个人主页认证展示", "认证状态在个人主页稳定展示。", "person.crop.circle.badge.checkmark"),
         ("card_verified", "内容卡片认证展示", "你的公开内容卡片显示认证信息。", "rectangle.badge.checkmark"),
-        ("trusted_publish", "高信任内容发布", "可发布招聘、租房、本地服务等高信任内容。", "shield.checkered"),
+        ("trusted_publish", "高信任内容发布", "可发布招聘、租房、本地服务等高信任内容。每组每月 3 条,次月重置。", "shield.checkered"),
         ("light_boost", "内容轻微优先展示", "合规内容获得温和展示加成。", "sparkles"),
         ("exclusive_resources", "查看会员专属资料", "访问会员专属资料、清单和模板。", "book.closed"),
         ("jlpt_discount", "JLPT 资料会员折扣", "指定 JLPT 资料享会员价。", "text.book.closed"),
@@ -2679,9 +2800,9 @@ MEMBERSHIP_BENEFIT_I18N: dict[str, dict[str, tuple[str, str]]] = {
         "ja": ("コンテンツカードでの認証表示", "公開コンテンツカードに認証情報を表示します。"),
     },
     "trusted_publish": {
-        "zh": ("高信任内容发布", "可发布招聘、租房、本地服务等高信任内容。"),
-        "en": ("High-trust posting access", "Post jobs, housing, local services, and other channels that require stronger trust."),
-        "ja": ("高信頼投稿へのアクセス", "求人、住まい、ローカルサービスなど、信頼性が求められる投稿が可能になります。"),
+        "zh": ("高信任内容发布", "可发布招聘、租房、本地服务等高信任内容。每组每月 3 条,次月重置。"),
+        "en": ("High-trust posting access", "Post jobs, housing, local services, and other channels that require stronger trust. 3 per group each month, resets the next month."),
+        "ja": ("高信頼投稿へのアクセス", "求人、住まい、ローカルサービスなど、信頼性が求められる投稿が可能になります。グループごとに月3件、翌月にリセットされます。"),
     },
     "higher_quota": {
         "zh": ("更高每日发布额度", "每日发布额度高于普通账号。"),
@@ -2788,7 +2909,7 @@ def _membership_plan_seed_rows() -> list[dict[str, Any]]:
             "price": float(MEMBERSHIP_PRICE_YEARLY_JPY),
             "amount_cents": int(MEMBERSHIP_PRICE_YEARLY_JPY * 100),
             "currency": MEMBERSHIP_CURRENCY,
-            "price_label": f"¥{MEMBERSHIP_PRICE_YEARLY_JPY} / 365天",
+            "price_label": f"¥{MEMBERSHIP_PRICE_YEARLY_JPY:,} / 365天",
             "original_price": float(MEMBERSHIP_PRICE_JPY * 12),
             "discount_label": "约省 1 个月",
             "stripe_product_id": "",
@@ -2958,6 +3079,68 @@ def _saved_search_category_set(s: dict[str, Any]) -> set[str]:
     if isinstance(raw, list):
         return {str(c).strip() for c in raw if str(c).strip()}
     return {c.strip() for c in str(raw or "").split(",") if c.strip()}
+
+
+def notify_favorite_listing_change(
+    conn: sqlite3.Connection,
+    listing_id: str,
+    *,
+    author_id: str,
+    title: str,
+    kind: str,
+    old_price: Any = None,
+    new_price: Any = None,
+) -> int:
+    """Best-effort: notify everyone who favorited `listing_id` that it either
+    dropped in price (kind='favorite_price_drop') or was taken down
+    (kind='favorite_closed'). NEVER raises — a notification bug must not break
+    the owner's edit. The author is always excluded (you don't get pinged about
+    your own listing). Both are _TRANSACTIONAL_TYPES on the push side (low-freq,
+    high-value). Returns the number of favoriters notified."""
+    try:
+        if kind not in ("favorite_price_drop", "favorite_closed"):
+            return 0
+        favoriters = [
+            dict(r) for r in conn.execute(
+                "SELECT user_id FROM listing_favorites WHERE listing_id = ?", (listing_id,)
+            )
+        ]
+        if not favoriters:
+            return 0
+        title = (str(title or "").strip() or "你收藏的信息")[:140]
+        if kind == "favorite_price_drop":
+            # Show the concrete drop when both prices are clean numbers; otherwise
+            # a generic "降价了" still tells the user to go look.
+            try:
+                content = f"「{title}」降价了：¥{int(float(new_price)):,} (原 ¥{int(float(old_price)):,})"[:140]
+            except (TypeError, ValueError):
+                content = f"「{title}」降价了"[:140]
+        else:
+            content = f"「{title}」已下架"[:140]
+        now = now_iso()
+        notified = 0
+        for f in favoriters:
+            uid = f.get("user_id")
+            if not uid or uid == author_id:
+                continue  # never notify the author about their own listing
+            conn.execute(
+                """
+                INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, content, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (str(uuid.uuid4()), uid, author_id or uid, kind, listing_id, content, now),
+            )
+            HUB.publish(uid, {"type": "notification", "kind": kind, "listing_id": listing_id})
+            server_apns.enqueue(uid, ntype=kind, actor_id="", content=content, listing_id=listing_id)
+            notified += 1
+        return notified
+    except Exception as exc:  # pragma: no cover - defensive: must not break the edit
+        try:
+            ERR_LOG.warning("notify_favorite_listing_change failed listing=%s kind=%s error=%s",
+                            listing_id, kind, exc)
+        except Exception:
+            pass
+        return 0
 
 
 def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any]) -> int:
@@ -3191,6 +3374,316 @@ def run_saved_search_digests(conn: sqlite3.Connection) -> int:
         return 0
 
 
+# Digest cadence: at most one of each digest type per user per ~20h. Reuses the
+# same "look at the last notification row of this type" gate as saved-search
+# digests, so the 6-hourly janitor never double-sends even though it runs 4×/day.
+_DIGEST_MIN_INTERVAL_HOURS = 20
+
+
+def _digest_recently_sent(conn: sqlite3.Connection, user_id: str, ntype: str, cutoff_iso: str) -> bool:
+    """True if a `ntype` notification was written to `user_id` since `cutoff_iso`
+    — the once-per-day gate for the digest tasks."""
+    return conn.execute(
+        "SELECT 1 FROM notifications WHERE user_id = ? AND type = ? "
+        "AND created_at >= ? AND deleted_at IS NULL LIMIT 1",
+        (user_id, ntype, cutoff_iso),
+    ).fetchone() is not None
+
+
+def run_follow_digests(conn: sqlite3.Connection) -> int:
+    """Daily "你关注的 N 人发布了新内容" summary (B6 #4 + #7). For each user who
+    follows people and/or topics, count the DISTINCT authors they follow who
+    posted in the last day, plus new posts under followed hashtags, and write ONE
+    `follow_digest` notification (payload lands the 关注 tab — no postId). Gated to
+    once/~20h per user. Best-effort; never raises."""
+    try:
+        now = now_iso()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=_DIGEST_MIN_INTERVAL_HOURS)).isoformat()
+        since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        # Everyone who follows at least one person OR at least one topic.
+        followers = [
+            dict(r) for r in conn.execute(
+                """
+                SELECT DISTINCT user_id FROM (
+                    SELECT follower_id AS user_id FROM follows
+                    UNION
+                    SELECT user_id FROM topic_follows
+                ) t
+                LIMIT 5000
+                """
+            )
+        ]
+        sent = 0
+        for f in followers:
+            uid = f.get("user_id")
+            if not uid:
+                continue
+            if _digest_recently_sent(conn, uid, "follow_digest", cutoff):
+                continue
+            # (a) distinct followed authors who posted in the last day.
+            people_row = conn.execute(
+                """
+                SELECT COUNT(DISTINCT p.author_id) AS c
+                  FROM follows fo
+                  JOIN posts p ON p.author_id = fo.following_id
+                 WHERE fo.follower_id = ?
+                   AND p.created_at >= ?
+                   AND p.status = 'active'
+                   AND p.deleted_at IS NULL
+                   AND p.author_id <> ?
+                """,
+                (uid, since, uid),
+            ).fetchone()
+            people = int(people_row["c"] if people_row else 0)
+            # (b) new posts under any topic this user follows (last day).
+            topic_row = conn.execute(
+                """
+                SELECT COUNT(DISTINCT pt.post_id) AS c
+                  FROM topic_follows tf
+                  JOIN post_tags pt ON pt.tag = tf.tag
+                  JOIN posts p ON p.id = pt.post_id
+                 WHERE tf.user_id = ?
+                   AND p.created_at >= ?
+                   AND p.status = 'active'
+                   AND p.deleted_at IS NULL
+                   AND p.author_id <> ?
+                """,
+                (uid, since, uid),
+            ).fetchone()
+            topics = int(topic_row["c"] if topic_row else 0)
+            if people <= 0 and topics <= 0:
+                continue
+            frags: list[str] = []
+            if people > 0:
+                frags.append(f"你关注的 {people} 人发布了新内容")
+            if topics > 0:
+                frags.append(f"关注的话题有 {topics} 条新帖")
+            content = "，".join(frags)[:140]
+            conn.execute(
+                """
+                INSERT INTO notifications (id, user_id, actor_id, type, content, created_at)
+                VALUES (?, ?, ?, 'follow_digest', ?, ?)
+                """,
+                (str(uuid.uuid4()), uid, uid, content, now),
+            )
+            # No postId — the client routes follow_digest to the 关注 tab.
+            server_apns.enqueue(uid, ntype="follow_digest", actor_id="", content=content)
+            sent += 1
+        return sent
+    except Exception as exc:  # pragma: no cover - defensive: must not break the janitor
+        try:
+            ERR_LOG.warning("run_follow_digests failed error=%s", exc)
+        except Exception:
+            pass
+        return 0
+
+
+def run_city_digests(conn: sqlite3.Connection) -> int:
+    """Inactive-user recall (B6 #5). For users whose most-recent session was
+    3..8 days ago (a light re-engagement window, not a firehose), count the
+    NEW listings and hot posts in their region over the last week and, when
+    there's something real to show, write ONE `city_digest` notification. Zero
+    on both counts → no push (never nag with nothing). Gated once/~20h per user.
+    The daily push cap (_CAPPED_TYPES) is the backstop against over-messaging.
+    Best-effort; never raises."""
+    try:
+        now = now_iso()
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=_DIGEST_MIN_INTERVAL_HOURS)).isoformat()
+        window_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat()
+        inactive_lo = (datetime.now(timezone.utc) - timedelta(days=8)).isoformat()
+        inactive_hi = (datetime.now(timezone.utc) - timedelta(days=3)).isoformat()
+        # Users whose LATEST session activity falls in the [3d, 8d) window. We
+        # use MAX(last_seen_at) per user so someone with an old session but a
+        # fresh one isn't treated as inactive. (sessions has no revoked_at
+        # column — see campaign_recipient_rows — so we don't filter on it.)
+        candidates = [
+            dict(r) for r in conn.execute(
+                """
+                SELECT u.id AS user_id, u.current_region_code AS region_code,
+                       u.city AS city, u.country AS country
+                  FROM users u
+                  JOIN (
+                      SELECT user_id, MAX(last_seen_at) AS seen
+                        FROM sessions GROUP BY user_id
+                  ) s ON s.user_id = u.id
+                 WHERE u.deleted_at IS NULL
+                   AND s.seen >= ?
+                   AND s.seen < ?
+                 LIMIT 5000
+                """,
+                (inactive_lo, inactive_hi),
+            )
+        ]
+        sent = 0
+        for c in candidates:
+            uid = c.get("user_id")
+            region = str(c.get("region_code") or "").strip().lower()
+            country = str(c.get("country") or "").strip().lower()
+            if not uid:
+                continue
+            if not region and not country:
+                continue  # no region to summarise — skip rather than guess
+            if _digest_recently_sent(conn, uid, "city_digest", cutoff):
+                continue
+            # New listings in the user's region over the last week (real count).
+            if region:
+                listing_row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM city_listings "
+                    "WHERE region_code = ? AND status = 'published' AND deleted_at IS NULL "
+                    "AND COALESCE(NULLIF(published_at, ''), created_at) >= ?",
+                    (region, window_start),
+                ).fetchone()
+                post_row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM posts "
+                    "WHERE region_code = ? AND status = 'active' AND deleted_at IS NULL "
+                    "AND created_at >= ? AND weighted_interaction_score > 0",
+                    (region, window_start),
+                ).fetchone()
+            else:
+                listing_row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM city_listings "
+                    "WHERE country_code = ? AND status = 'published' AND deleted_at IS NULL "
+                    "AND COALESCE(NULLIF(published_at, ''), created_at) >= ?",
+                    (country, window_start),
+                ).fetchone()
+                post_row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM posts "
+                    "WHERE country = ? AND status = 'active' AND deleted_at IS NULL "
+                    "AND created_at >= ? AND weighted_interaction_score > 0",
+                    (country, window_start),
+                ).fetchone()
+            listings = int(listing_row["c"] if listing_row else 0)
+            hot_posts = int(post_row["c"] if post_row else 0)
+            if listings <= 0 and hot_posts <= 0:
+                continue  # nothing real to say — don't nag
+            frags: list[str] = []
+            if listings > 0:
+                frags.append(f"新增 {listings} 条房源/信息")
+            if hot_posts > 0:
+                frags.append(f"{hot_posts} 个热帖")
+            content = ("你的城市" + "，".join(frags))[:140]
+            conn.execute(
+                """
+                INSERT INTO notifications (id, user_id, actor_id, type, content, created_at)
+                VALUES (?, ?, ?, 'city_digest', ?, ?)
+                """,
+                (str(uuid.uuid4()), uid, uid, content, now),
+            )
+            server_apns.enqueue(uid, ntype="city_digest", actor_id="", content=content)
+            sent += 1
+        return sent
+    except Exception as exc:  # pragma: no cover - defensive: must not break the janitor
+        try:
+            ERR_LOG.warning("run_city_digests failed error=%s", exc)
+        except Exception:
+            pass
+        return 0
+
+
+# Orphan-media GC (B6 #8). Uploads that were presigned + completed but never
+# attached to any content leak S3 objects + rows forever. This sweep is
+# deliberately CONSERVATIVE: it only touches rows that are (a) status='ready',
+# (b) older than 48h, (c) never attached to an entity (entity_type/entity_id
+# both empty), (d) NOT a purpose that's referenced by URL instead of by an
+# entity row (avatar / cover / logo — those live in users/businesses columns,
+# not in a *_media table, so entity_type stays empty even when in use), and
+# (e) confirmed absent from EVERY known reference table. Anything whose
+# reference we can't establish is left alone. Bounded per pass to avoid a long
+# write transaction.
+KAIX_ORPHAN_MEDIA_MAX_PER_SWEEP = max(1, int(_env("KAIX_ORPHAN_MEDIA_MAX_PER_SWEEP", "200")))
+
+# Purposes referenced by a URL/id column on users/businesses (avatar_url,
+# cover_url, business logo/cover) rather than by a *_media / *_attachments row.
+# entity_type is empty for these even when they're live, so the entity-based
+# orphan test would false-positive — never sweep them here.
+_ORPHAN_GC_SKIP_PURPOSES = {
+    "avatar",
+    "profile_cover",
+    "business_logo",
+    "business_cover",
+}
+
+
+def _uploaded_file_is_referenced(conn: sqlite3.Connection, file_id: str) -> bool:
+    """True if `file_id` is used by any known content table. Mirrors the
+    in-use check in api_upload_delete, extended with the guide-product and
+    business-verification reference tables. Conservative: any hit (or any
+    query error) means 'referenced', so the GC never deletes on doubt."""
+    try:
+        row = conn.execute(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM post_media WHERE media_id = ? OR uploaded_file_id = ?) +
+              (SELECT COUNT(*) FROM message_media WHERE media_id = ?) +
+              (SELECT COUNT(*) FROM message_attachments WHERE (uploaded_file_id = ? OR thumbnail_file_id = ?) AND deleted_at IS NULL) +
+              (SELECT COUNT(*) FROM listing_media WHERE uploaded_file_id = ? OR id = ?) +
+              (SELECT COUNT(*) FROM guide_product_files WHERE uploaded_file_id = ?) +
+              (SELECT COUNT(*) FROM business_verification_documents WHERE uploaded_file_id = ?) AS c
+            """,
+            (file_id, file_id, file_id, file_id, file_id, file_id, file_id, file_id, file_id),
+        ).fetchone()
+        return int(row["c"] if row else 1) > 0
+    except Exception:
+        return True  # unknown → treat as referenced, never delete
+
+
+def run_orphan_media_gc(conn: sqlite3.Connection) -> int:
+    """Delete a bounded batch of orphaned uploads (S3 object + row). Returns the
+    number of rows swept. Best-effort; never raises."""
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        candidates = [
+            dict(r) for r in conn.execute(
+                """
+                SELECT id, object_key, bucket, purpose
+                  FROM uploaded_files
+                 WHERE status = 'ready'
+                   AND deleted_at IS NULL
+                   AND created_at < ?
+                   AND COALESCE(entity_type, '') = ''
+                   AND COALESCE(entity_id, '') = ''
+                 ORDER BY created_at ASC
+                 LIMIT ?
+                """,
+                (cutoff, KAIX_ORPHAN_MEDIA_MAX_PER_SWEEP),
+            )
+        ]
+        now = now_iso()
+        swept = 0
+        for d in candidates:
+            if str(d.get("purpose") or "") in _ORPHAN_GC_SKIP_PURPOSES:
+                continue
+            if _uploaded_file_is_referenced(conn, d["id"]):
+                continue
+            # Best-effort object delete first; even if it fails we still soft-delete
+            # the row so it stops being scanned (a leaked object is far cheaper than
+            # re-scanning it every sweep, and admin temp-cleanup can reap it later).
+            try:
+                object_key = str(d.get("object_key") or "")
+                if object_key:
+                    if d.get("bucket") == "local-dev":
+                        local_upload_path(object_key).unlink(missing_ok=True)
+                    else:
+                        _s3_delete_object(object_key)
+            except Exception:
+                pass
+            conn.execute(
+                "UPDATE uploaded_files SET status = 'deleted', deleted_at = ?, updated_at = ? WHERE id = ?",
+                (now, now, d["id"]),
+            )
+            # Keep any mirror media row consistent (media.id == uploaded_files.id
+            # on the current upload path).
+            conn.execute("UPDATE media SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL", (now, d["id"]))
+            swept += 1
+        return swept
+    except Exception as exc:  # pragma: no cover - defensive: must not break the janitor
+        try:
+            ERR_LOG.warning("run_orphan_media_gc failed error=%s", exc)
+        except Exception:
+            pass
+        return 0
+
+
 def ensure_membership_plans(conn: sqlite3.Connection) -> None:
     """Seed editable monthly/yearly plans without overwriting admin changes."""
     now = now_iso()
@@ -3277,40 +3770,46 @@ def ensure_membership_plans(conn: sqlite3.Connection) -> None:
             "包年订阅，同步获得 Machi 认证会员全部权益。",
         ),
     )
-    # App Store Connect production products were created as:
-    #   monthly: machi_yuedu_18
-    #   yearly:  machi_1niandu_198
-    # Only migrate rows still carrying the old seeded values. If an operator
-    # has already changed pricing/IAP IDs in Admin, leave that work intact.
+    # Membership is now denominated in JPY (Japan-facing). Rewrite old
+    # seeded/production rows that still carry a historical CNY price to the new
+    # JPY figures: ¥600 / 30天 and ¥4,800 / 365天. Storage stays value×100
+    # (amount_cents), and the Stripe edge divides by 100 for JPY (zero-decimal),
+    # so amount_cents=60000 charges 600 minor units = ¥600. Only migrate rows
+    # still carrying a known-old value; if an operator has already set the JPY
+    # price in Admin (600 / 4800) the WHERE clause skips them, preserving edits.
+    # (Guard on currency='CNY' too so an already-migrated JPY 600 row is left
+    # intact even though 600 appears in the monthly value list.)
     conn.execute(
         """
         UPDATE membership_plans
-           SET price = 18,
-               amount_cents = 1800,
-               currency = 'CNY',
-               price_label = '¥18 / 30天',
+           SET price = 600,
+               amount_cents = 60000,
+               currency = 'JPY',
+               price_label = '¥600 / 30天',
                ios_iap_product_id = ?,
                apple_product_id = ?,
                updated_at = ?
          WHERE plan_key = ?
-           AND price IN (0, 10, 600)
+           AND currency = 'CNY'
+           AND price IN (0, 10, 18, 600)
         """,
         (APPLE_IAP_PRODUCT_ID, APPLE_IAP_PRODUCT_ID, now, MEMBERSHIP_PLAN_MONTHLY_KEY),
     )
     conn.execute(
         """
         UPDATE membership_plans
-           SET price = 198,
-               amount_cents = 19800,
-               currency = 'CNY',
-               price_label = '¥198 / 365天',
-               original_price = 216,
+           SET price = 4800,
+               amount_cents = 480000,
+               currency = 'JPY',
+               price_label = '¥4,800 / 365天',
+               original_price = 7200,
                discount_label = '约省 1 个月',
                ios_iap_product_id = ?,
                apple_product_id = ?,
                updated_at = ?
          WHERE plan_key = ?
-           AND price IN (0, 98, 138, 4800)
+           AND currency = 'CNY'
+           AND price IN (0, 98, 138, 198, 4800)
         """,
         (APPLE_IAP_PRODUCT_ID_YEARLY, APPLE_IAP_PRODUCT_ID_YEARLY, now, MEMBERSHIP_PLAN_YEARLY_KEY),
     )
@@ -3490,17 +3989,32 @@ def localize_guide_article_payload(item: dict[str, Any], language: Any, *, inclu
     out["authorName"] = "Machi Editorial Team" if lang == "en" else "Machi 編集部"
     out["tags"] = localize_guide_tags(list(out.get("tags") or []), language)
     if include_body and "body" in out:
-        summary = str(out.get("summary") or "")
+        # Honest degradation: the full article body is authored in Chinese. Rather
+        # than silently replacing it with a generic template (which pretended the
+        # article was translated), we prepend a translated notice + the translated
+        # summary, then keep the complete Chinese original underneath so the reader
+        # still gets the real content — just labeled as machine/summary-level for
+        # the non-Chinese UI.
+        summary = str((loc.get("summary") if loc else None) or out.get("summary") or "")
+        original = str(item.get("body") or "")
         if lang == "en":
-            out["body"] = (
-                f"{summary}\n\nThis guide summarizes the practical steps, documents, timing, and risk checks you should review before making decisions in Japan. "
-                "Because school admissions, immigration, employment, housing, and local procedures can change, always confirm deadlines, fees, and requirements on official websites before applying or paying."
+            notice = (
+                "The full version of this guide is currently available in Chinese. "
+                "Below is a translated summary, followed by the complete Chinese original."
             )
+            original_label = "Full text (Chinese)"
         else:
-            out["body"] = (
-                f"{summary}\n\nこのガイドでは、日本で手続きを進める前に確認したい流れ、書類、時期、注意点を整理しています。"
-                "進学、在留、就職、住まい、生活手続きの条件は変更される場合があるため、申請や支払いの前に必ず公式サイトで最新情報を確認してください。"
+            notice = (
+                "本ガイドの完全版は現在、中国語で提供しています。"
+                "以下は翻訳した要約で、その後に中国語の全文を掲載します。"
             )
+            original_label = "全文（中国語）"
+        parts = [notice]
+        if summary:
+            parts.append(summary)
+        if original:
+            parts.append(f"—— {original_label} ——\n\n{original}")
+        out["body"] = "\n\n".join(parts)
     return out
 
 
@@ -3765,8 +4279,13 @@ def format_price_value(price: Any, currency: str = "CNY") -> str:
         value = float(price or 0)
     except (TypeError, ValueError):
         value = 0
-    if currency in {"CNY", "JPY"}:
+    if currency == "JPY":
         return f"¥{int(round(value))}"
+    # Both JPY and CNY render with the ¥ glyph; now that membership is JPY,
+    # disambiguate any legacy CNY amount so a mixed list can't read a CNY figure
+    # as yen. JPY is the unmarked default; CNY carries an explicit annotation.
+    if currency == "CNY":
+        return f"¥{int(round(value))} (人民币)"
     if currency == "USD":
         return f"${value:.2f}".rstrip("0").rstrip(".") if value % 1 else f"${int(value)}"
     return f"{currency} {int(value) if value % 1 == 0 else round(value, 2)}"
@@ -4672,6 +5191,32 @@ def _guide_funnel_log(event: str, user_id: str = "", **extra: Any) -> None:
         pass
 
 
+# Generic product funnel (B6 #6). Whitelisted client events for the discovery /
+# listing / compose / purchase funnels, logged as structured ACCESS_LOG lines
+# (no table) so they're grep-able / shippable to a log aggregator like the guide
+# funnel above. Unknown events are rejected so the log stays clean.
+FUNNEL_EVENTS = {
+    "listing_impression",
+    "listing_detail",
+    "listing_contact",
+    "compose_open",
+    "compose_submit",
+    "purchase_step",
+}
+
+
+def _funnel_log(event: str, user_id: str = "", entity_type: str = "", entity_id: str = "") -> None:
+    """One structured ACCESS_LOG line per funnel event; mirrors _guide_funnel_log."""
+    try:
+        parts = " ".join(
+            f"{k}={v}" for k, v in
+            (("entityType", entity_type), ("entityId", entity_id)) if v not in (None, "")
+        )
+        ACCESS_LOG.info("funnel event=%s user=%s %s", event, (user_id or "guest")[:12], parts)
+    except Exception:
+        pass
+
+
 def _guide_reminder_tier_dates(due_at: str, reminder_at: str | None, multi_tier: bool) -> list[str]:
     """All reminder dates for a todo (sorted, de-duped). High-value todos get a
     T-7/T-3/T-1 ladder off the due date; everything else just `reminder_at`."""
@@ -4919,18 +5464,28 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
         )
         result["homeModules"] += 1
 
-    # --- faq ---
+    # --- faq (三语:zh-CN 原文 + ja/en 译文,每语言一行,各自幂等) ---
     faq_order = 0
     for faq in GUIDE_FAQ_SEED:
         faq_order += 1
-        exists = conn.execute(
-            "SELECT id FROM guide_faq WHERE question = ? AND country = ?", (faq["q"], country)
-        ).fetchone()
-        if not exists:
+        cat = faq.get("category_key", "")
+        # (language, question, answer) 三元组:zh-CN 恒有,ja/en 有译文才插。
+        variants = [("zh-CN", faq["q"], faq["a"])]
+        for lang in ("ja", "en"):
+            loc = GUIDE_FAQ_I18N.get(faq["q"], {}).get(lang)
+            if loc and loc.get("q") and loc.get("a"):
+                variants.append((lang, loc["q"], loc["a"]))
+        for lang, question, answer in variants:
+            exists = conn.execute(
+                "SELECT id FROM guide_faq WHERE question = ? AND country = ? AND language = ?",
+                (question, country, lang),
+            ).fetchone()
+            if exists:
+                continue
             conn.execute(
                 "INSERT INTO guide_faq (id, question, answer, category_key, country, language, sort_order, status, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, 'zh-CN', ?, 'published', ?, ?)",
-                (str(uuid.uuid4()), faq["q"], faq["a"], faq.get("category_key", ""), country, faq_order, now, now),
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 'published', ?, ?)",
+                (str(uuid.uuid4()), question, answer, cat, country, lang, faq_order, now, now),
             )
             result["faq"] += 1
 
@@ -4943,15 +5498,21 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
         ).fetchone()
         if exists:
             continue
+        # 信任字段:政策类文章带官方 source_url + 90 天复核窗口,其余原创整理 180 天。
+        src_url, src_label, verified_at, stale_days = guide_article_source_meta(art["slug"])
+        related_slugs = _guide_csv(guide_article_related_slugs(art["slug"]))
         conn.execute(
             "INSERT INTO guide_articles (id, title, slug, summary, body, category_key, sub_category_key, "
-            "content_type, country, city, language, cover_image, seo_title, seo_description, tags, author_type, author_name, is_featured, "
-            "is_free, is_paid, status, view_count, save_count, sort_order, created_at, updated_at, published_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, 'guide', ?, '', 'zh-CN', '', ?, ?, ?, 'editorial', ?, ?, 1, 0, 'published', 0, 0, ?, ?, ?, ?)",
+            "content_type, country, city, language, cover_image, seo_title, seo_description, tags, related_article_slugs, "
+            "author_type, author_name, is_featured, "
+            "is_free, is_paid, status, source_url, source_label, verified_at, stale_after_days, "
+            "view_count, save_count, sort_order, created_at, updated_at, published_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, 'guide', ?, '', 'zh-CN', '', ?, ?, ?, ?, 'editorial', ?, ?, 1, 0, 'published', ?, ?, ?, ?, 0, 0, ?, ?, ?, ?)",
             (str(uuid.uuid4()), art["title"], art["slug"], art.get("summary", ""), art.get("body", ""),
              art["category"], art.get("sub", ""), country, art.get("seo_title", art["title"]),
-             art.get("seo_description", art.get("summary", "")), ",".join(art.get("tags", [])),
+             art.get("seo_description", art.get("summary", "")), ",".join(art.get("tags", [])), related_slugs,
              art.get("author", "Machi 日本指南编辑部"), 1 if art.get("featured") else 0,
+             src_url, src_label, verified_at, stale_days,
              art_order, now, now, now),
         )
         result["articles"] += 1
@@ -5210,7 +5771,107 @@ def ensure_guide_seed(conn: sqlite3.Connection) -> dict[str, int]:
 
     result["planTemplates"] = _guide_seed_plan_templates(conn)
     result["productRelations"] = _guide_seed_product_relations(conn)
+
+    # --- B4 幂等回填:线上库已有行不会被上面的 INSERT 更新,这里对现有行做一次性
+    # 幂等 UPDATE(每次启动都跑,只改仍为空/仍需迁移的行,重复运行无副作用)。 ---
+    _guide_backfill_existing_rows(conn, country)
     return result
+
+
+def _guide_backfill_existing_rows(conn: sqlite3.Connection, country: str) -> None:
+    """对已存在的 guide_articles / guide_products 行做 B4 幂等回填:
+    ① 信任字段(verified_at/source_label/source_url/stale_after_days)
+    ② 孤儿子分类归位  ③ related_article_slugs  ④ 资料币种 CNY→JPY。
+    全部用参数化 UPDATE,PG/SQLite 双方言安全;仅命中需要修的行。"""
+    # ① 信任字段:先给所有 author_type='editorial' 且 verified_at 为空的行铺默认
+    # (label + 发布日 + 默认 180 天),再按 source-meta 覆盖政策类文章的 url/stale。
+    conn.execute(
+        "UPDATE guide_articles SET source_label = ?, verified_at = ?, stale_after_days = ? "
+        "WHERE country = ? AND author_type = 'editorial' AND (verified_at IS NULL OR verified_at = '')",
+        (GUIDE_ARTICLE_SOURCE_LABEL, GUIDE_ARTICLE_SEED_VERIFIED_AT, 180, country),
+    )
+    for art in GUIDE_ARTICLE_SEED:
+        src_url, src_label, verified_at, stale_days = guide_article_source_meta(art["slug"])
+        # 只对政策类(有 source_url 或非默认 stale)且当前还没填 source_url 的行覆盖,
+        # 避免反复覆写管理员后台手动改过的值。
+        if not src_url and stale_days == 180:
+            continue
+        conn.execute(
+            "UPDATE guide_articles SET source_url = ?, source_label = ?, stale_after_days = ? "
+            "WHERE country = ? AND slug = ? AND author_type = 'editorial' "
+            "AND (source_url IS NULL OR source_url = '')",
+            (src_url, src_label, stale_days, country, art["slug"]),
+        )
+
+    # ①b B5 旗舰文章正文升级:种子只插不改,所以线上已存在的这 12 篇不会被上面的
+    # INSERT 更新。这里对它们做一次幂等 body/summary/verified_at 升级。安全条件:
+    # 只更新「正文仍为种子时代原文」的行——用旧正文前 64 字符做指纹(SUBSTR 在
+    # SQLite/PG 都按字符计,双方言一致);不匹配说明管理员在后台手改过正文,跳过
+    # 并记日志,绝不覆盖人工内容。SET 已升级则命中 0 行(幂等),重复启动无副作用。
+    _flagship_now = now_iso()
+    for slug, old_prefix, new_body, new_summary, verified_at in guide_flagship_upgrade_rows():
+        cur = conn.execute(
+            "UPDATE guide_articles SET body = ?, summary = ?, verified_at = ?, updated_at = ? "
+            "WHERE country = ? AND slug = ? AND author_type = 'editorial' "
+            "AND SUBSTR(body, 1, ?) = ?",
+            (new_body, new_summary, verified_at, _flagship_now,
+             country, slug, len(old_prefix), old_prefix),
+        )
+        # rowcount==0 既可能是「已升级过」(幂等再跑),也可能是「正文被手改/不存在」。
+        # 只在确实存在该 slug 且正文既不是旧指纹、也不是新正文时,才判定为人工改动并记日志。
+        if getattr(cur, "rowcount", -1) == 0:
+            row = conn.execute(
+                "SELECT SUBSTR(body, 1, ?) AS head FROM guide_articles "
+                "WHERE country = ? AND slug = ? AND author_type = 'editorial'",
+                (len(old_prefix), country, slug),
+            ).fetchone()
+            if row is not None and row["head"] != old_prefix and row["head"] != new_body[:len(old_prefix)]:
+                ACCESS_LOG.info(
+                    "guide flagship upgrade skipped (admin-edited body) country=%s slug=%s",
+                    country, slug,
+                )
+
+    # ② 孤儿子分类归位:线上行 sub_category_key 若仍是旧的孤儿键,改成规范子分类。
+    _orphan_sub_remap = {
+        ("life_japan", "housing"): "renting", ("life_japan", "banking"): "bank_account",
+        ("life_japan", "bank_account_japan"): "bank_account", ("life_japan", "mobile_internet"): "mobile_sim",
+        ("life_japan", "mobile_plan_japan"): "mobile_sim", ("life_japan", "points_and_switching"): "mobile_sim",
+        ("life_japan", "daily_life"): "life_tips", ("life_japan", "safety"): "life_tips",
+        ("life_japan", "driving"): "transportation", ("life_japan", "national_health_insurance"): "health_insurance",
+        ("life_japan", "national_pension"): "pension", ("career_japan", "job_change"): "job_hunting_flow",
+        ("career_japan", "new_grad"): "job_hunting_flow", ("career_japan", "job_offer"): "job_hunting_flow",
+        ("career_japan", "it_career"): "industry_guides", ("career_japan", "interview"): "job_interview",
+        ("career_japan", "visa"): "work_visa", ("study_japan", "interview"): "admission_interview",
+        ("study_abroad_japan", "visa"): "student_visa", ("jlpt", "n1"): "jlpt_n1",
+    }
+    for (cat, old_sub), new_sub in _orphan_sub_remap.items():
+        conn.execute(
+            "UPDATE guide_articles SET sub_category_key = ? "
+            "WHERE country = ? AND category_key = ? AND sub_category_key = ?",
+            (new_sub, country, cat, old_sub),
+        )
+
+    # ③ related_article_slugs:仅对当前为空的行回填种子关联。
+    for art in GUIDE_ARTICLE_SEED:
+        related = _guide_csv(guide_article_related_slugs(art["slug"]))
+        if not related:
+            continue
+        conn.execute(
+            "UPDATE guide_articles SET related_article_slugs = ? "
+            "WHERE country = ? AND slug = ? AND (related_article_slugs IS NULL OR related_article_slugs = '')",
+            (related, country, art["slug"]),
+        )
+
+    # ④ 资料币种 JPY:仅对仍是 CNY 的行,按 seed 里对应 slug 的新价/币种/标签回写。
+    for prod in GUIDE_PRODUCT_SEED:
+        if prod.get("currency") != "JPY":
+            continue
+        conn.execute(
+            "UPDATE guide_products SET currency = 'JPY', price = ?, price_label = ?, member_price = ? "
+            "WHERE country = ? AND slug = ? AND currency = 'CNY'",
+            (int(prod.get("price", 0)), prod.get("price_label", ""),
+             int(prod.get("member_price", 0) or 0), country, prod["slug"]),
+        )
 
 
 def _guide_upsert_category(conn: sqlite3.Connection, key: str, parent_key: str, title: str, subtitle: str,
@@ -6617,13 +7278,13 @@ def seed(conn: sqlite3.Connection) -> None:
         conn.execute(
             """
             INSERT INTO posts (id, author_id, content, view_count, country, province,
-                               city, region_code, content_type, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'dynamic', 'active', ?, ?)
+                               city, region_code, content_type, status, created_at, updated_at, last_activity_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'dynamic', 'active', ?, ?, ?)
             """,
             (
                 post_id, ids[handle], content, views,
                 country, province, city, region_code,
-                created.isoformat(), created.isoformat(),
+                created.isoformat(), created.isoformat(), created.isoformat(),
             ),
         )
         for tag in extract_tags(content):
@@ -6848,6 +7509,11 @@ def serialize_post(row: dict[str, Any], extras: dict[str, Any] | None = None) ->
         "createdAt": row["created_at"],
         "updated_at": row["updated_at"],
         "updatedAt": row["updated_at"],
+        # last_activity_at = own creation OR latest live comment. The 正在发生 radar
+        # revives older posts on it; the client renders "N 分钟前有新讨论" when it's
+        # newer than created_at. Falls back to created_at so it's never null.
+        "last_activity_at": row.get("last_activity_at") or row.get("created_at") or "",
+        "lastActivityAt": row.get("last_activity_at") or row.get("created_at") or "",
         "deleted_at": row.get("deleted_at"),
         "repost_of_id": row.get("repost_of_id"),
         "view_count": view_count,
@@ -8883,7 +9549,9 @@ def enforce_content_policy(*texts: str) -> None:
 #     is ever logged or returned by any API.
 # ===========================================================================
 
-MEMBERSHIP_ACTIVE_STATUSES = {"active", "grace_period", "trialing"}
+# 'grace_period' removed — no code path ever writes it (one-time purchase model
+# has no dunning/grace state), so it was a dead status that could never match.
+MEMBERSHIP_ACTIVE_STATUSES = {"active", "trialing"}
 _PROVIDER_SOURCE = {
     "wechat_pay": "wechat_pay",
     "alipay": "alipay",
@@ -9132,7 +9800,7 @@ def sync_user_membership_cache(conn: sqlite3.Connection, user_id: str) -> dict[s
 def _expire_membership_row(conn: sqlite3.Connection, row: dict[str, Any]) -> None:
     conn.execute(
         "UPDATE user_memberships SET status = 'expired', expired_at = ?, updated_at = ? "
-        "WHERE id = ? AND status IN ('active', 'grace_period')",
+        "WHERE id = ? AND status = 'active'",
         (now_iso(), now_iso(), row["id"]),
     )
     record_entitlement_event(conn, row["user_id"], row["id"], "membership_expired", row.get("source") or "", {})
@@ -9181,8 +9849,9 @@ def get_user_membership_status(conn: sqlite3.Connection, user_id: str) -> dict[s
         "canAccessExclusivePage": is_active,
         "daily_post_limit": MEMBERSHIP_DAILY_LIMIT_VERIFIED if is_active and MEMBERSHIP_DAILY_LIMIT_VERIFIED > 0 else MEMBERSHIP_DAILY_LIMIT_FREE,
         "dailyPostLimit": MEMBERSHIP_DAILY_LIMIT_VERIFIED if is_active and MEMBERSHIP_DAILY_LIMIT_VERIFIED > 0 else MEMBERSHIP_DAILY_LIMIT_FREE,
-        "priority_review": is_active,
-        "priorityReview": is_active,
+        # priority_review removed — it was never a real benefit (no code path
+        # gives a member's content faster review). light_boost IS real now (see
+        # refresh_hot_scores / _heat_score_sql ×1.05 for verified-member authors).
         "light_boost": is_active,
         "lightBoost": is_active,
         "cancel_at_period_end": bool(row.get("cancel_at_period_end")) if row else False,
@@ -9313,6 +9982,24 @@ _MACHI_AI_ALIASES: dict[str, tuple[str, ...]] = {
     "开卡": ("银行", "开户"), "读研": ("大学院", "研究计划书"), "考研": ("大学院", "出愿"),
     "升学": ("大学院", "语言学校"), "报税": ("确定申告", "住民税"), "交税": ("住民税", "所得税"),
     "考驾照": ("驾照", "免许"), "记账": ("家计簿",), "怎么用": ("工作台", "学校库", "公司库"),
+    # 日语高频词 → Guide 内容里实际用的中文主题词。用户直接用日语搜(引っ越し/
+    # 保証人 等)时,映射到中文规范词让 LIKE 命中中文正文。既有 vocab 已含部分片假名
+    # 词(マイナンバー等),这里补充平/汉字形态与就职·签证·生活高频词。
+    "引っ越し": ("搬家", "退租"), "保証人": ("保证公司", "租房"), "保証会社": ("保证公司", "租房"),
+    "在留資格": ("在留资格", "在留", "签证"), "確定申告": ("确定申告", "住民税"),
+    "敷金": ("敷金", "初期费用", "租房"), "礼金": ("礼金", "初期费用", "租房"),
+    "内定": ("内定", "就职"), "転職": ("转职", "求人"), "年金": ("年金", "国民年金"),
+    "健康保険": ("健康保险", "国民健康保险"), "国民健康保険": ("国民健康保险", "医疗"),
+    "銀行口座": ("银行", "开户"), "口座開設": ("银行", "开户"), "賃貸": ("租房", "初期费用"),
+    "家賃": ("租房", "初期费用"), "奨学金": ("奖学金", "学费"), "アルバイト": ("打工", "时薪"),
+    "ビザ": ("签证", "在留资格"), "永住": ("永住", "在留"), "帰化": ("归化",),
+    "源泉徴収": ("确定申告", "住民税"), "住民票": ("住民票", "区役所"), "住民登録": ("住民票", "区役所"),
+    "在留カード": ("在留卡", "在留"), "資格外活動": ("打工", "在留资格"),
+    "履歴書": ("履历书", "就职"), "職務経歴書": ("职务经历", "转职"), "志望動機": ("志望动机", "面试"),
+    "就活": ("就活", "就职"), "面接": ("面试", "面接"), "確定拠出": ("年金",),
+    "国民年金": ("国民年金", "年金"), "厚生年金": ("厚生年金", "年金"), "納付特例": ("国民年金", "免除"),
+    "光回線": ("网络", "手机卡"), "格安SIM": ("手机卡", "手机"),
+    "研究計画書": ("研究计划书", "大学院"), "日本語学校": ("语言学校", "升学"),
 }
 
 
@@ -9342,11 +10029,13 @@ def machi_ai_keywords(text: str, *, limit: int = 6) -> list[str]:
             for extra in extras:
                 if _add(extra):
                     return out
-    # 3) 兜底:按标点/空白切词,补足剩余名额
+    # 3) 兜底:按标点/空白切词,收集至多 limit 个 token(不是命中第一个就停,
+    #    否则多词短语只召回一个词)。_add 在达到 limit 时返回 True,此时才 break。
     for raw in _MACHI_AI_TOKEN_SPLIT.split(text):
         word = raw.strip()
-        if 2 <= len(word) <= 16 and _add(word):
-            break
+        if 2 <= len(word) <= 16:
+            if _add(word):
+                break
     return out
 
 
@@ -9832,7 +10521,7 @@ def cancel_membership(conn: sqlite3.Connection, user_id: str, immediate: bool = 
 
 def expire_due_memberships(conn: sqlite3.Connection) -> int:
     rows = list(conn.execute(
-        "SELECT * FROM user_memberships WHERE status IN ('active', 'grace_period') "
+        "SELECT * FROM user_memberships WHERE status = 'active' "
         "AND current_period_end IS NOT NULL AND current_period_end < ?",
         (now_iso(),),
     ))
@@ -11016,7 +11705,12 @@ def settle_guide_order(conn: sqlite3.Connection, order_no: str, payment_intent: 
         return False
     # Same amount-tampering guard as membership settlement: the webhook's
     # amount_total (Stripe minor units) must equal what we charged.
-    expected = _stripe_minor_units(int(order["amount_cents"] or 0), str(order["currency"] or "cny"))
+    # guide_orders stores a plain `price` value (no amount_cents column); the
+    # checkout charges `price * 100` fed through _stripe_minor_units (see
+    # api_guide_stripe_checkout ~18979). Reproduce that exact quantum here — the
+    # old code read a non-existent order["amount_cents"] and raised at runtime,
+    # so *every* settle threw before this guard, i.e. paid orders never fulfilled.
+    expected = _stripe_minor_units(int(order["price"] or 0) * 100, str(order["currency"] or "cny"))
     if amount_cents and expected and int(amount_cents) != expected:
         ERR_LOG.warning("guide settle amount mismatch order=%s got=%s want=%s", order_no, amount_cents, expected)
         return False
@@ -12456,7 +13150,7 @@ def close_expired_unpaid_orders(conn: sqlite3.Connection) -> int:
 
 def run_retention_sweep() -> dict[str, int]:
     """One pass of the retention sweeps. Returns per-table delete counts."""
-    counts = {"visitor_logs": 0, "sessions": 0, "idempotency_keys": 0, "expired_orders": 0, "saved_search_digests": 0, "post_counters": 0}
+    counts = {"visitor_logs": 0, "sessions": 0, "idempotency_keys": 0, "expired_orders": 0, "saved_search_digests": 0, "post_counters": 0, "follow_digests": 0, "city_digests": 0, "orphan_media": 0}
     with DB_LOCK:
         conn = db()
         try:
@@ -12472,6 +13166,12 @@ def run_retention_sweep() -> dict[str, int]:
             counts["expired_orders"] = close_expired_unpaid_orders(conn)
             # Daily saved-search digests (cadence='daily'); self-gated to once/~20h per search.
             counts["saved_search_digests"] = run_saved_search_digests(conn)
+            # Daily follow / topic digest + inactive-user city recall (B6);
+            # each self-gated to once/~20h per user.
+            counts["follow_digests"] = run_follow_digests(conn)
+            counts["city_digests"] = run_city_digests(conn)
+            # Orphan-media GC (B6): bounded batch of never-attached uploads.
+            counts["orphan_media"] = run_orphan_media_gc(conn)
             # Self-heal the denormalized post counters from the source tables for
             # the active window. The write sites keep them exact on the common
             # paths; this catches drift from rare bulk operations (e.g. account
@@ -12498,9 +13198,12 @@ def start_retention_janitor() -> None:
                 counts = run_retention_sweep()
                 if any(counts.values()):
                     ACCESS_LOG.info(
-                        "retention sweep: visitor_logs=%d sessions=%d idempotency_keys=%d expired_orders=%d saved_search_digests=%d",
+                        "retention sweep: visitor_logs=%d sessions=%d idempotency_keys=%d expired_orders=%d "
+                        "saved_search_digests=%d follow_digests=%d city_digests=%d orphan_media=%d",
                         counts["visitor_logs"], counts["sessions"], counts["idempotency_keys"],
                         counts.get("expired_orders", 0), counts.get("saved_search_digests", 0),
+                        counts.get("follow_digests", 0), counts.get("city_digests", 0),
+                        counts.get("orphan_media", 0),
                     )
             except Exception:
                 ERR_LOG.exception("retention sweep failed")
@@ -12521,10 +13224,16 @@ def start_retention_janitor() -> None:
 # removed the per-read COUNT subqueries; this removes the per-read time sort.
 # ---------------------------------------------------------------------------
 KAIX_HOT_SCORE_INTERVAL_SEC = max(30, int(_env("KAIX_HOT_SCORE_INTERVAL_SEC", "60")))
-KAIX_HOT_SCORE_WINDOW_DAYS = max(1, int(_env("KAIX_HOT_SCORE_WINDOW_DAYS", "21")))
+KAIX_HOT_SCORE_WINDOW_DAYS = max(1, int(_env("KAIX_HOT_SCORE_WINDOW_DAYS", "10")))
 HOT_SCORE_DECAY_H = 48.0          # engagement value halves ~every 48h of age
 HOT_SCORE_FRESH_WINDOW_H = 12.0   # new-post visibility bonus fades over 12h
 HOT_SCORE_FRESH_PEAK = 30.0       # peak freshness bonus (~30 like-points) for a brand-new post
+HOT_SCORE_REPORT_PENALTY_CAP = 30.0  # max heat a report barrage can subtract (≈3 reports)
+HOT_SCORE_SEED_MULT = 0.6         # seed/simulated content rides below genuine UGC
+# 正在发生: a revival counts as "live" (uncapped recency) only while its reviving
+# comment is this fresh; past it the revived post's recency is capped at 70 so a
+# stale late comment can't pin an ancient thread to the top (see _happening_score_sql).
+HAPPENING_LIVE_WINDOW_H = 6.0
 _HOT_SCORE_STARTED = False
 
 
@@ -12539,33 +13248,259 @@ def refresh_hot_scores(conn: sqlite3.Connection) -> int:
     visibility for its first hours (then fades) — that is the lever that lets
     newly-posted content be seen. Portable arithmetic only (no exp/pow), backend
     -branched exactly like the heat SQL. Returns rows touched."""
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=KAIX_HOT_SCORE_WINDOW_DAYS)).isoformat()
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=KAIX_HOT_SCORE_WINDOW_DAYS)).isoformat()
+    # Rows created more than ~13h ago no longer have a freshness bonus to update
+    # (the bonus fades to 0 over FRESH_WINDOW = 12h); a 1h margin covers the
+    # refresh interval so a post crossing 12h still gets its final bonus tick.
+    fresh_cutoff = (now - timedelta(hours=HOT_SCORE_FRESH_WINDOW_H + 1.0)).isoformat()
     if KAIX_DB_BACKEND == "postgres":
         boost_cmp = f"boosted_until > '{now_iso()}'"
         hours_since = "EXTRACT(EPOCH FROM (now() - created_at::timestamptz)) / 3600.0"
         max2 = "GREATEST"
+        min2 = "LEAST"
     else:
-        boost_cmp = "boosted_until > datetime('now')"
+        # See _heat_score_sql: compare boosted_until (ISO 'T' string) against a
+        # now_iso() literal, NOT datetime('now') (space-separated), or the lexical
+        # compare mis-reads every boost as still active.
+        boost_cmp = f"boosted_until > '{now_iso()}'"
         hours_since = "(julianday('now') - julianday(created_at)) * 24.0"
         max2 = "MAX"
+        min2 = "MIN"
+    # light_boost membership benefit (made real): a verified member's post gets a
+    # gentle ×1.05 on its final hot_score. Correlated subquery on the author's
+    # is_verified_member — same portable pattern used elsewhere (e.g. the region
+    # backfill). Non-members and unknown authors get ×1.0 (no change).
+    member_mult = (
+        f"(CASE WHEN COALESCE((SELECT is_verified_member FROM users WHERE users.id = posts.author_id), 0) = 1 "
+        f"THEN 1.05 ELSE 1.0 END)"
+    )
+    # Per-author freshness decay: the free "曝光分" (freshness bonus) that lets a
+    # brand-new post be seen is halved for each *fresher* post the same author
+    # already has inside the freshness window — so an author flooding the feed
+    # can't stack full-strength exposure bonuses on every post. n-1 = the count
+    # of that author's newer, still-fresh, live posts; the multiplier is
+    # 0.5^(n-1). Expressed as a portable CASE ladder (SQLite has no POWER()),
+    # saturating near-zero past the 5th concurrent fresh post.
+    fresh_newer_by_author = (
+        f"(SELECT COUNT(*) FROM posts pp "
+        f" WHERE pp.author_id = posts.author_id AND pp.deleted_at IS NULL "
+        f"   AND pp.status IN ('published', 'active') "
+        f"   AND pp.created_at > posts.created_at AND pp.created_at >= ?)"
+    )
+    fresh_author_mult = (
+        f"(CASE {fresh_newer_by_author} "
+        f"WHEN 0 THEN 1.0 WHEN 1 THEN 0.5 WHEN 2 THEN 0.25 "
+        f"WHEN 3 THEN 0.125 WHEN 4 THEN 0.0625 ELSE 0.03125 END)"
+    )
+    # Seed suppression: curated/simulated seed content (is_seed_content=1) rides
+    # at 0.6× so genuine UGC out-ranks it on the boards over time. Kept in sync
+    # with the same multiplier in _heat_score_sql (the live explore path).
+    seed_mult = f"(CASE WHEN COALESCE(is_seed_content, 0) = 1 THEN {HOT_SCORE_SEED_MULT} ELSE 1.0 END)"
+    # Engagement-only heat (× decay), WITHOUT the freshness "曝光分". This is what
+    # tag heat (热搜) sums, so a flood of brand-new posts under a tag can't inflate
+    # it on freshness alone. hot_score adds the freshness term on top; both share
+    # this bracket and the member/seed multipliers so they stay consistent.
+    #
+    # Like/repost/bookmark heat rides weighted_interaction_score (item B3.7), NOT
+    # the raw counts: reconcile_post_counters bakes the same kind weights
+    # (like×1 + repost×5 + bookmark×4) into that column but with 互刷 marginal
+    # decay + a new-account penalty, so a like-ring can't linearly pump the board.
+    # The raw counts stay real for DISPLAY. Comments (own table, not the 互刷-prone
+    # interactions table) keep their true-count ×3 weight. On a brand-new post the
+    # column is 0 until the first reconcile pass — that's fine, the freshness term
+    # gives it visibility meanwhile and comments still count immediately.
+    engaged_decayed = (
+        f"((COALESCE(weighted_interaction_score, 0) * 1.0"
+        f" + COALESCE(comment_count, 0) * 3.0"
+        f" - {min2}({HOT_SCORE_REPORT_PENALTY_CAP}, COALESCE(report_count, 0) * 10.0)"
+        f" + CASE WHEN COALESCE(is_boosted, 0) = 1"
+        f"          AND (COALESCE(boosted_until, '') = '' OR {boost_cmp})"
+        f"         THEN COALESCE(boost_weight, 0) ELSE 0 END)"
+        f" * ({HOT_SCORE_DECAY_H} / ({max2}(0.0, {hours_since}) + {HOT_SCORE_DECAY_H})))"
+    )
+    freshness_term = (
+        f"({HOT_SCORE_FRESH_PEAK} * {max2}(0.0, {HOT_SCORE_FRESH_WINDOW_H} - ({hours_since}))"
+        f" / {HOT_SCORE_FRESH_WINDOW_H} * {fresh_author_mult})"
+    )
     sql = f"""
-        UPDATE posts SET hot_score =
-            (COALESCE(like_count, 0) * 1.0
-             + COALESCE(comment_count, 0) * 3.0
-             + COALESCE(repost_count, 0) * 5.0
-             + COALESCE(bookmark_count, 0) * 4.0
-             - COALESCE(report_count, 0) * 10.0
-             + CASE WHEN COALESCE(is_boosted, 0) = 1
-                      AND (COALESCE(boosted_until, '') = '' OR {boost_cmp})
-                     THEN COALESCE(boost_weight, 0) ELSE 0 END)
-            * ({HOT_SCORE_DECAY_H} / ({max2}(0.0, {hours_since}) + {HOT_SCORE_DECAY_H}))
-            + {HOT_SCORE_FRESH_PEAK} * {max2}(0.0, {HOT_SCORE_FRESH_WINDOW_H} - ({hours_since})) / {HOT_SCORE_FRESH_WINDOW_H}
+        UPDATE posts SET
+            hot_score = ({engaged_decayed} + {freshness_term}) * {member_mult} * {seed_mult},
+            hot_score_engaged = {engaged_decayed} * {member_mult} * {seed_mult}
         WHERE deleted_at IS NULL
           AND status IN ('published', 'active')
           AND created_at >= ?
+          -- Write reduction: only recompute rows whose score can still MOVE this
+          -- pass. A row with no engagement, no active freshness bonus, and an
+          -- already-negligible hot_score would just be re-written to (nearly) the
+          -- same value every minute — pure write amplification on a growing table.
+          -- Skip those; they stay at their last value until something engages them.
+          AND (COALESCE(like_count, 0) + COALESCE(comment_count, 0)
+               + COALESCE(repost_count, 0) + COALESCE(bookmark_count, 0)
+               + COALESCE(report_count, 0) > 0
+               OR created_at >= ?
+               OR COALESCE(hot_score, 0) > 0.1)
     """
-    cur = conn.execute(sql, (cutoff,))
+    # Param order follows textual position: the fresh-author-rank subquery in the
+    # SET clause (fresh_cutoff) precedes the two WHERE bounds (cutoff, fresh_cutoff).
+    cur = conn.execute(sql, (fresh_cutoff, cutoff, fresh_cutoff))
     return cur.rowcount or 0
+
+
+# ---------------------------------------------------------------------------
+# 热搜/热榜 rank snapshots (topic_rank_snapshots). Written by the hot-score
+# refresher on a ~10 min cadence so rankDelta (this rank vs the previous
+# snapshot's) and velocity (this window's heat vs the previous equal-length
+# window's) are real instead of hard-coded 0. All queries double-quote the
+# reserved-word columns "window" and "rank" (see migration 96).
+# ---------------------------------------------------------------------------
+KAIX_TOPIC_SNAPSHOT_INTERVAL_SEC = max(60, int(_env("KAIX_TOPIC_SNAPSHOT_INTERVAL_SEC", "600")))
+KAIX_TOPIC_SNAPSHOT_RETAIN_DAYS = 7
+_TOPIC_SNAPSHOT_WINDOWS = {"2h": 2, "24h": 24, "3d": 72, "7d": 168}
+_LAST_TOPIC_SNAPSHOT_AT = 0.0
+
+
+def _topic_snapshot_scope_key(scope: str, region_key: str) -> str:
+    """Composite identity for a board so a snapshot lookup matches the exact
+    board a user is viewing. region_key is a region_code / country / 'all'."""
+    return f"{scope}:{region_key or 'all'}"
+
+
+def _capture_topic_rank_for_scope(
+    conn: sqlite3.Connection,
+    *,
+    scope_key: str,
+    window: str,
+    hours: int,
+    country: str,
+    captured_at: str,
+) -> None:
+    """Compute the top-50 tags for one board (national/country level) and append
+    them as a snapshot. Same heat definition as api_discover_hot / api_trending
+    (SUM(hot_score_engaged), last_activity_at keeps a discussed-now post alive,
+    blocklist drops filler tags) so the recorded ranks line up with what those
+    endpoints display. Best-effort — a snapshot failure never blocks the refresh."""
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(hours=hours)).isoformat()
+    block_tags = sorted(HOT_BOARD_TAG_BLOCKLIST)
+    block_clause = ("AND t.tag NOT IN (%s)" % ",".join("?" * len(block_tags))) if block_tags else ""
+    country_clause = "AND p.country = ?" if country else ""
+    params: list[Any] = [cutoff, cutoff]
+    if country:
+        params.append(country)
+    params.extend(block_tags)
+    try:
+        rows = list(conn.execute(
+            f"""
+            SELECT t.tag AS tag,
+                   CAST(SUM(COALESCE(p.hot_score_engaged, 0)) AS INTEGER) AS heat,
+                   COUNT(DISTINCT p.author_id) AS authors
+              FROM post_tags t
+              JOIN posts p ON p.id = t.post_id
+             WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
+               AND (p.created_at >= ?
+                    OR COALESCE(NULLIF(p.last_activity_at, ''), p.created_at) >= ?)
+               {country_clause}
+               {block_clause}
+             GROUP BY t.tag
+             ORDER BY heat DESC, authors DESC
+             LIMIT 50
+            """,
+            params,
+        ))
+    except Exception as exc:
+        ERR_LOG.warning("topic snapshot query degraded scope=%s window=%s error=%s", scope_key, window, exc)
+        return
+    for rank, r in enumerate(rows, 1):
+        tag = (r["tag"] or "").strip()
+        if not tag:
+            continue
+        conn.execute(
+            'INSERT INTO topic_rank_snapshots (scope, "window", tag, "rank", heat, captured_at) '
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (scope_key, window, tag, rank, max(0, int(r["heat"] or 0)), captured_at),
+        )
+
+
+def capture_topic_rank_snapshots(conn: sqlite3.Connection) -> int:
+    """One snapshot pass: record the top-50 tags per (scope, window) for the
+    national boards that api_trending / api_discover_hot serve at country + 'all'
+    granularity, then prune rows older than the retention window. Region-specific
+    boards additionally self-snapshot on read (see _record_board_snapshot) so a
+    delta exists for exactly the regions people actually view — this refresher
+    pass guarantees the always-visible national/global boards have history.
+    Returns the number of (scope, window) boards captured."""
+    captured_at = now_iso()
+    # Countries with live content in the hot window — bounded (a handful), not
+    # every possible region. 'all' is the global board api_trending uses when the
+    # viewer has no country. Each becomes a national-scope snapshot.
+    try:
+        countries = [
+            (r["country"] or "").strip().lower()
+            for r in conn.execute(
+                "SELECT DISTINCT country FROM posts "
+                "WHERE deleted_at IS NULL AND status IN ('published','active') "
+                "AND created_at >= ? AND COALESCE(country,'') <> ''",
+                ((datetime.now(timezone.utc) - timedelta(days=7)).isoformat(),),
+            )
+        ]
+    except Exception:
+        countries = []
+    boards = 0
+    scope_targets = [("national", "", "")]  # (scope, region_key, country) for the global board
+    for c in countries:
+        if c:
+            scope_targets.append(("national", c, c))
+    for scope, region_key, country in scope_targets:
+        scope_key = _topic_snapshot_scope_key(scope, region_key)
+        for window, hours in _TOPIC_SNAPSHOT_WINDOWS.items():
+            _capture_topic_rank_for_scope(
+                conn, scope_key=scope_key, window=window, hours=hours,
+                country=country, captured_at=captured_at,
+            )
+            boards += 1
+    # Retention: drop snapshots older than the retention window in the same pass.
+    floor = (datetime.now(timezone.utc) - timedelta(days=KAIX_TOPIC_SNAPSHOT_RETAIN_DAYS)).isoformat()
+    try:
+        conn.execute("DELETE FROM topic_rank_snapshots WHERE captured_at < ?", (floor,))
+    except Exception:
+        pass
+    return boards
+
+
+def _previous_topic_ranks(conn: sqlite3.Connection, scope_key: str, window: str) -> dict[str, dict[str, int]]:
+    """The most recent PRIOR snapshot for a board as {tag: {"rank", "heat"}}.
+    'Prior' = the latest single captured_at for this (scope, window). Used to
+    compute rankDelta (prev_rank - current_rank) and heat velocity. Returns {}
+    when no snapshot exists yet (first run) so callers degrade to delta 0."""
+    try:
+        last = conn.execute(
+            'SELECT MAX(captured_at) AS c FROM topic_rank_snapshots WHERE scope = ? AND "window" = ?',
+            (scope_key, window),
+        ).fetchone()
+    except Exception:
+        return {}
+    if not last or not last["c"]:
+        return {}
+    out: dict[str, dict[str, int]] = {}
+    for r in conn.execute(
+        'SELECT tag, "rank" AS rnk, heat FROM topic_rank_snapshots '
+        'WHERE scope = ? AND "window" = ? AND captured_at = ?',
+        (scope_key, window, last["c"]),
+    ):
+        out[r["tag"]] = {"rank": int(r["rnk"] or 0), "heat": int(r["heat"] or 0)}
+    return out
+
+
+def run_topic_rank_snapshot() -> int:
+    with DB_LOCK:
+        conn = db()
+        try:
+            n = capture_topic_rank_snapshots(conn)
+            conn.commit()
+            return n
+        finally:
+            conn.close()
 
 
 def reconcile_post_counters(conn: sqlite3.Connection) -> int:
@@ -12574,30 +13509,108 @@ def reconcile_post_counters(conn: sqlite3.Connection) -> int:
     retention sweep); keeps the counters honest against drift from rare bulk
     paths. Returns the window size touched (best-effort)."""
     cutoff = (datetime.now(timezone.utc) - timedelta(days=KAIX_HOT_SCORE_WINDOW_DAYS)).isoformat()
+    # Exclude self-interactions (i.user_id = posts.author_id) from the three
+    # interaction-derived counters — the incremental write path (api_post_interaction)
+    # already skips the bump for a self like/收藏/repost, so the reconcile MUST use
+    # the same rule or it would silently drift the count back up on every pass.
     conn.execute(
-        "UPDATE posts SET like_count = (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'like') WHERE created_at >= ?",
+        "UPDATE posts SET like_count = (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'like' AND i.user_id <> posts.author_id) WHERE created_at >= ?",
         (cutoff,),
     )
     conn.execute(
-        "UPDATE posts SET repost_count = (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'repost') WHERE created_at >= ?",
+        "UPDATE posts SET repost_count = (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'repost' AND i.user_id <> posts.author_id) WHERE created_at >= ?",
         (cutoff,),
     )
     conn.execute(
-        "UPDATE posts SET bookmark_count = (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'bookmark') WHERE created_at >= ?",
+        "UPDATE posts SET bookmark_count = (SELECT COUNT(*) FROM interactions i WHERE i.target_id = posts.id AND i.kind = 'bookmark' AND i.user_id <> posts.author_id) WHERE created_at >= ?",
         (cutoff,),
     )
     cur = conn.execute(
         "UPDATE posts SET comment_count = (SELECT COUNT(*) FROM comments c WHERE c.post_id = posts.id AND c.deleted_at IS NULL) WHERE created_at >= ?",
         (cutoff,),
     )
-    # Recompute last_activity_at to the latest live comment time ('' when none,
-    # so reads fall back to created_at). Heals drift from comment deletions that
-    # left the incremental value pointing at a now-removed comment.
+    # Recompute last_activity_at to the latest live comment time, falling back to
+    # the post's own created_at when it has no comments (NOT ''). Keeping the
+    # column always-populated lets the 正在发生 radar filter+sort on the bare
+    # column with an index instead of a per-row COALESCE(NULLIF(...)) expression.
+    # Heals drift from comment deletions that left the value pointing at a
+    # now-removed comment.
     conn.execute(
-        "UPDATE posts SET last_activity_at = COALESCE((SELECT MAX(c.created_at) FROM comments c WHERE c.post_id = posts.id AND c.deleted_at IS NULL), '') WHERE created_at >= ?",
+        "UPDATE posts SET last_activity_at = COALESCE((SELECT MAX(c.created_at) FROM comments c WHERE c.post_id = posts.id AND c.deleted_at IS NULL), created_at) WHERE created_at >= ?",
         (cutoff,),
     )
+    _reconcile_weighted_interaction_score(conn, cutoff)
     return cur.rowcount or 0
+
+
+def _reconcile_weighted_interaction_score(conn: sqlite3.Connection, window_cutoff: str) -> None:
+    """互刷边际递减 (item B3.7): recompute posts.weighted_interaction_score — the
+    de-inflated engagement figure hot_score reads for its like/repost/bookmark
+    heat. The DISPLAY counters (like_count etc.) stay exact real counts; only the
+    heat input is weighted, so a ring of accounts liking each other can't linearly
+    pump the board.
+
+    Each non-self like/repost/bookmark contributes:
+        kind_heat (like=1, repost=5, bookmark=4)
+        × marginal_decay   — the Nth interaction from the SAME user to the SAME
+                             author within 30 days: 1.0, 0.5, 0.25, 0.125, then
+                             0.0625 (ROW_NUMBER over (user_id, author_id))
+        × account_factor   — 0.3 if the interacting account was <48h old at the
+                             time of the interaction (fresh sockpuppet), else 1.0
+
+    Interactions are already self-excluded upstream; this stacks cleanly on that
+    (the SQL also filters user_id <> author_id). Computed with a window function
+    over the last 30 days, aggregated per post in Python for backend portability
+    (SQLite + Postgres differ on UPDATE..FROM + window semantics), then written
+    back for the posts in the active hot window. Best-effort: any failure leaves
+    the last good weights in place (hot_score just uses slightly stale weights)."""
+    pair_cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    if KAIX_DB_BACKEND == "postgres":
+        # Account age at interaction time, in hours.
+        age_h = "EXTRACT(EPOCH FROM (i.created_at::timestamptz - u.created_at::timestamptz)) / 3600.0"
+    else:
+        age_h = "(julianday(i.created_at) - julianday(u.created_at)) * 24.0"
+    kind_heat = "CASE i.kind WHEN 'like' THEN 1.0 WHEN 'repost' THEN 5.0 WHEN 'bookmark' THEN 4.0 ELSE 0.0 END"
+    marginal = (
+        "CASE ROW_NUMBER() OVER (PARTITION BY i.user_id, p.author_id ORDER BY i.created_at) "
+        "WHEN 1 THEN 1.0 WHEN 2 THEN 0.5 WHEN 3 THEN 0.25 WHEN 4 THEN 0.125 ELSE 0.0625 END"
+    )
+    # <48h means account age is between 0 and 48h at interaction time; a negative
+    # age (clock skew / bad data) is treated as normal (1.0) rather than penalized.
+    account_factor = f"CASE WHEN ({age_h}) >= 0 AND ({age_h}) < 48.0 THEN 0.3 ELSE 1.0 END"
+    try:
+        rows = list(conn.execute(
+            f"""
+            SELECT pid, COALESCE(SUM(w), 0.0) AS total FROM (
+                SELECT i.target_id AS pid,
+                       ({kind_heat}) * ({marginal}) * ({account_factor}) AS w
+                  FROM interactions i
+                  JOIN posts p ON p.id = i.target_id
+                  JOIN users u ON u.id = i.user_id
+                 WHERE i.kind IN ('like', 'repost', 'bookmark')
+                   AND i.user_id <> p.author_id
+                   AND i.created_at >= ?
+                   AND p.created_at >= ?
+            ) sub
+            GROUP BY pid
+            """,
+            (pair_cutoff, window_cutoff),
+        ))
+    except Exception as exc:
+        ERR_LOG.warning("weighted interaction reconcile degraded error=%s", exc)
+        return
+    # Reset in-window posts to 0 first so a post that lost all its interactions
+    # (e.g. un-likes) drops to 0 instead of keeping a stale positive weight, then
+    # apply the computed sums. Both statements bounded to the hot window.
+    conn.execute(
+        "UPDATE posts SET weighted_interaction_score = 0 WHERE created_at >= ?",
+        (window_cutoff,),
+    )
+    for r in rows:
+        conn.execute(
+            "UPDATE posts SET weighted_interaction_score = ? WHERE id = ?",
+            (float(r["total"] or 0.0), r["pid"]),
+        )
 
 
 def run_hot_score_refresh() -> int:
@@ -12618,6 +13631,7 @@ def start_hot_score_refresher() -> None:
     _HOT_SCORE_STARTED = True
 
     def _loop() -> None:
+        global _LAST_TOPIC_SNAPSHOT_AT
         # First pass quickly after boot so the board reflects live recency decay
         # within ~15s of a deploy. The migration seeds an engagement-only
         # baseline meanwhile, so the board is never empty in between.
@@ -12627,6 +13641,17 @@ def start_hot_score_refresher() -> None:
                 run_hot_score_refresh()
             except Exception:
                 ERR_LOG.exception("hot_score refresh failed")
+            # Piggyback the 热搜/热榜 rank snapshot on the refresher, but on its own
+            # slower cadence (~10 min) — the ranks only need to be sampled often
+            # enough for a meaningful delta, not every minute. Runs right after the
+            # score refresh so the snapshot reflects the just-updated hot_score.
+            now_mono = time.monotonic()
+            if now_mono - _LAST_TOPIC_SNAPSHOT_AT >= KAIX_TOPIC_SNAPSHOT_INTERVAL_SEC:
+                _LAST_TOPIC_SNAPSHOT_AT = now_mono
+                try:
+                    run_topic_rank_snapshot()
+                except Exception:
+                    ERR_LOG.exception("topic rank snapshot failed")
             time.sleep(KAIX_HOT_SCORE_INTERVAL_SEC)
 
     threading.Thread(target=_loop, name="hot-score-refresher", daemon=True).start()
@@ -12790,7 +13815,7 @@ def _engagement_settings(conn: sqlite3.Connection) -> dict[str, Any]:
         "enabled": (s.get("engagement_sim_enabled", "1") == "1"),
         "max_days": max(1, _i("engagement_sim_max_days", 3)),
         "like_min": max(0, _i("engagement_sim_like_min", 20)),
-        "like_max": max(1, _i("engagement_sim_like_max", 400)),
+        "like_max": max(1, _i("engagement_sim_like_max", 30)),
         "bookmark_ratio": max(0.0, _f("engagement_sim_bookmark_ratio", 0.25)),
         "comment_max": max(0, _i("engagement_sim_comment_max", 12)),
         "comment_ai": (s.get("engagement_sim_comment_ai", "1") == "1"),
@@ -12836,7 +13861,7 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
             out["reassigned"] = out.get("reassigned", 0) + len(stale)
 
     posts = conn.execute(
-        "SELECT id, created_at, content_type, content, language FROM posts "
+        "SELECT id, author_id, created_at, content_type, content, language FROM posts "
         "WHERE is_seed_content = 1 AND deleted_at IS NULL AND status IN ('published', 'active') "
         "AND created_at >= ? ORDER BY created_at DESC LIMIT ?",
         (cutoff, POST_LIMIT),
@@ -12846,6 +13871,7 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
         if budget <= 0:
             break
         pid = p["id"]
+        author_id = p["author_id"]
         created = parse_iso(p["created_at"]) or now
         age_h = min(max(0.0, (now - created).total_seconds() / 3600.0), window)
         if age_h <= 0:
@@ -12865,14 +13891,31 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
             delta = min(target - len(done), 60, budget)
             if delta <= 0:
                 continue
-            avail = [u for u in personas if u not in done]
+            # Exclude the post's own author from the sample: a persona liking a
+            # seed post it was reassigned to would be a self-interaction, which
+            # reconcile_post_counters drops — so counting it here would drift.
+            avail = [u for u in personas if u not in done and u != author_id]
+            inserted = 0
             for uid in rng.sample(avail, min(delta, len(avail))):
-                conn.execute(
-                    "INSERT INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
+                # OR IGNORE against the UNIQUE(target_id,user_id,kind) index: the
+                # `done` set already excludes existing rows, but a concurrent tick
+                # / real interaction could have landed one; the guard keeps the
+                # `inserted` tally (used to bump the counter) exactly true.
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
                     (str(uuid.uuid4()), pid, uid, kind, _eng_spread_ts(created, now, rng)),
                 )
-                out[key] += 1
+                if (cur.rowcount or 0) > 0:
+                    out[key] += 1
+                    inserted += 1
                 budget -= 1
+            # Keep the denormalized counters (the ONLY thing ranking reads) in
+            # step with the rows we just wrote — otherwise simulated engagement
+            # was invisible to hot_score until reconcile_post_counters ran up to
+            # 6h later. Non-author samples only (see above), so reconcile and the
+            # incremental bump stay in lock-step.
+            if inserted:
+                bump_post_counter_for_kind(conn, pid, kind, inserted)
 
         if budget > 0 and cm_cap > 0:
             rows = conn.execute(
@@ -12900,6 +13943,8 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
                 rng.shuffle(avail)
                 avail_by_g = {"male": [u for u in avail if gmap.get(u) == "male"],
                               "female": [u for u in avail if gmap.get(u) == "female"]}
+                cm_inserted = 0
+                latest_ts = ""
                 for ci in comment_items:
                     if budget <= 0:
                         break
@@ -12922,7 +13967,23 @@ def _engagement_pass(conn: sqlite3.Connection, s: dict[str, Any], out: dict[str,
                         (str(uuid.uuid4()), pid, uid, line, ts, ts),
                     )
                     out["comments"] += 1
+                    cm_inserted += 1
+                    if ts > latest_ts:
+                        latest_ts = ts
                     budget -= 1
+                # Denormalized comment_count + activity radar in step with the
+                # rows written (see the like/收藏 note above). last_activity_at
+                # only advances if the newest simulated comment is more recent
+                # than what's stored, so the 正在发生 radar reflects it without a
+                # 6h reconcile lag.
+                if cm_inserted:
+                    bump_post_counter(conn, pid, "comment_count", cm_inserted)
+                    if latest_ts:
+                        conn.execute(
+                            "UPDATE posts SET last_activity_at = ? WHERE id = ? "
+                            "AND (last_activity_at = '' OR last_activity_at < ?)",
+                            (latest_ts, pid, latest_ts),
+                        )
 
     # follows among personas — each persona gains followers over its window,
     # with occasional mutual follow-backs (互关).
@@ -13067,7 +14128,7 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "engagement_sim_enabled": "1",
     "engagement_sim_max_days": "3",        # only grow a post/user for its first N days
     "engagement_sim_like_min": "20",       # per-post like ceiling range (varied by post)
-    "engagement_sim_like_max": "400",
+    "engagement_sim_like_max": "30",       # keep simulated heat modest so real UGC leads
     "engagement_sim_bookmark_ratio": "0.25",  # 收藏 ceiling ≈ likes * this
     "engagement_sim_comment_max": "12",    # max comments dripped per post
     "engagement_sim_comment_ai": "1",      # 1 = comments via DeepSeek (contextual), 0 = static pool
@@ -13243,17 +14304,38 @@ def _happening_score_sql(alias: str, config: dict[str, Any]) -> str:
     if KAIX_DB_BACKEND == "postgres":
         hours_since = f"EXTRACT(EPOCH FROM (now() - ({activity})::timestamptz)) / 3600.0"
         max2 = "GREATEST"
+        min2 = "LEAST"
     else:
         hours_since = f"(julianday('now') - julianday({activity})) * 24.0"
         max2 = "MAX"
+        min2 = "MIN"
     window_h = max(6.0, float(config.get("happening_days") or 2) * 24.0)
     report_penalty = float(config.get("report_penalty") or 20)
+    # A post is "revived" when its latest activity (a fresh comment) is newer than
+    # its own creation — an older post being discussed now. That's the radar's
+    # whole point, so a *just*-revived post keeps full recency and correctly beats
+    # a quiet newer post. The anti-necro guard (item B3.5) is narrower: cap the
+    # recency of a revival at 70 only once the revival itself is no longer live —
+    # i.e. the reviving comment is older than HAPPENING_LIVE_WINDOW_H — so a single
+    # late comment can't keep an ancient thread pinned near the top for the whole
+    # window. Portable string compare on the ISO timestamps (same 'T' format).
+    revived = f"({activity} > {alias}.created_at)"
+    stale_revival = f"({revived} AND ({hours_since}) > {HAPPENING_LIVE_WINDOW_H})"
+    recency_raw = f"({max2}(0.0, {window_h} - ({hours_since})) / {window_h} * 100.0)"
+    recency_term = f"(CASE WHEN {stale_revival} THEN {min2}(70.0, {recency_raw}) ELSE {recency_raw} END)"
+    # Engagement is a *nudge* on the recency radar, not the ranking itself — cap
+    # the summed engagement contribution at 40 so a high-like post can't sit at
+    # the top of 正在发生 on accumulated heat (that's the 热榜's job).
+    engagement_nudge = (
+        f"{min2}(40.0, "
+        f"COALESCE({alias}.like_count, 0) * 1.0"
+        f" + COALESCE({alias}.comment_count, 0) * 2.0"
+        f" + COALESCE({alias}.repost_count, 0) * 3.0"
+        f" + COALESCE({alias}.bookmark_count, 0) * 2.0)"
+    )
     return f"""
-      ({max2}(0.0, {window_h} - ({hours_since})) / {window_h} * 100.0
-       + COALESCE({alias}.like_count, 0) * 1.0
-       + COALESCE({alias}.comment_count, 0) * 2.0
-       + COALESCE({alias}.repost_count, 0) * 3.0
-       + COALESCE({alias}.bookmark_count, 0) * 2.0
+      ({recency_term}
+       + {engagement_nudge}
        - COALESCE({alias}.report_count, 0) * {report_penalty})
     """
 
@@ -13488,17 +14570,18 @@ def insert_seed_post(
     except ValueError:
         view_count = SEED_POST_VIEW_MIN
     boosted_until = (datetime.now(timezone.utc) + timedelta(days=SEED_POST_BOOST_DAYS)).isoformat()
+    seed_created = now_iso()
     conn.execute(
         """
         INSERT INTO posts (id, author_id, content, repost_of_id, view_count, status,
                            country, province, city, region_code, content_type, attributes,
                            language, is_seed_content, seed_batch_id, seed_source, generated_by,
-                           created_at, updated_at, is_boosted, boost_weight, boosted_until)
-        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 1, ?, ?)
+                           created_at, updated_at, last_activity_at, is_boosted, boost_weight, boosted_until)
+        VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 1, ?, ?)
         """,
         (post_id, author_id, content, view_count, status, country, province, city, region_code,
          app_content_type, attributes, language, batch_id, SEED_SOURCE, author_type,
-         now_iso(), now_iso(), SEED_POST_BOOST_WEIGHT, boosted_until),
+         seed_created, seed_created, seed_created, SEED_POST_BOOST_WEIGHT, boosted_until),
     )
     # Attach a topic-matched cover image (real photo, never AI) to a share of
     # posts — not all of them, so the feed isn't a wall of stock images. The
@@ -14512,6 +15595,27 @@ class Handler(BaseHTTPRequestHandler):
                 return bool(module.get("isActive")) and str(module.get("status") or "published") == "published"
         return True
 
+    def _guide_faq_rows(self, conn: sqlite3.Connection, country: str, language: Any,
+                        *, category_key: str | None = None, limit: int = 8) -> list[Any]:
+        """FAQ rows in the requested language, falling back to zh-CN when the
+        localized rows are missing. Keeps guide-home / JLPT / search FAQ口径一致."""
+        lang = _normalize_language_tag(language)
+        base = "SELECT * FROM guide_faq WHERE country = ? AND status = 'published'"
+        params: list[Any] = [country]
+        if category_key:
+            base += " AND category_key = ?"
+            params.append(category_key)
+        rows = conn.execute(
+            f"{base} AND language = ? ORDER BY sort_order LIMIT ?",
+            [*params, lang, limit],
+        ).fetchall()
+        if not rows and lang != "zh-CN":
+            rows = conn.execute(
+                f"{base} AND language = 'zh-CN' ORDER BY sort_order LIMIT ?",
+                [*params, limit],
+            ).fetchall()
+        return rows
+
     def api_guide_home(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
         language = (query.get("language") or "zh-CN").strip() or "zh-CN"
@@ -14556,9 +15660,7 @@ class Handler(BaseHTTPRequestHandler):
         companies = [localize_guide_company_payload(serialize_guide_company(r), language) for r in conn.execute(
             "SELECT * FROM guide_companies WHERE country = ? AND status = 'published' AND (website <> '' OR career_url <> '' OR global_career_url <> '') AND data_quality_score >= 15 "
             "ORDER BY is_featured DESC, data_quality_score DESC, review_count DESC, created_at DESC LIMIT 6", (country,)).fetchall()] if module_on("companyHighlights") else []
-        faqs = [serialize_guide_faq(r) for r in conn.execute(
-            "SELECT * FROM guide_faq WHERE country = ? AND status = 'published' ORDER BY sort_order LIMIT 8",
-            (country,)).fetchall()] if module_on("faq") else []
+        faqs = [serialize_guide_faq(r) for r in self._guide_faq_rows(conn, country, language)] if module_on("faq") else []
         categories = self._guide_categories_payload(conn, country, language) if module_on("categories") else []
         resource_entries = [localize_guide_resource(r, language) for r in GUIDE_RESOURCE_ENTRIES] if module_on("resources") else []
         goal_entries = [localize_guide_goal(g, language) for g in GUIDE_GOAL_SEED] if module_on("goals") else []
@@ -14636,9 +15738,7 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT * FROM guide_products WHERE country = ? AND category_key = 'jlpt' "
             "AND status IN ('published','coming_soon') "
             "ORDER BY is_coming_soon ASC, is_member_included DESC, sort_order LIMIT 24", (country,)).fetchall()]
-        faq = [serialize_guide_faq(r) for r in conn.execute(
-            "SELECT * FROM guide_faq WHERE country = ? AND status = 'published' AND category_key = 'jlpt' "
-            "ORDER BY sort_order LIMIT 8", (country,)).fetchall()]
+        faq = [serialize_guide_faq(r) for r in self._guide_faq_rows(conn, country, language, category_key="jlpt")]
         levels = [
             {"key": "n5", "label": "N5", "summary": machi_ai_text(language, "入门:基础词汇语法与生活场景。", "入門:基礎の語彙・文法と日常場面。", "Beginner: core vocabulary, grammar, everyday scenes.")},
             {"key": "n4", "label": "N4", "summary": machi_ai_text(language, "初级:扩展词汇与日常表达。", "初級:語彙拡張と日常表現。", "Elementary: broader vocabulary and daily expression.")},
@@ -14995,11 +16095,17 @@ class Handler(BaseHTTPRequestHandler):
                     "ORDER BY is_coming_soon ASC, sort_order LIMIT 8",
                     (country, like, like, like, like, like, like, like, like)).fetchall()])
         if want("faq"):
-            groups["faq"] = _safe(lambda: [
-                serialize_guide_faq(r) for r in conn.execute(
-                    "SELECT * FROM guide_faq WHERE country = ? AND status = 'published' AND language = ? "
-                    "AND (question LIKE ? OR answer LIKE ? OR category_key LIKE ?) "
-                    "ORDER BY sort_order LIMIT 8", (country, language, like, like, like)).fetchall()])
+            def _faq_search_rows() -> list[Any]:
+                # Match guide-home口径: localized rows first, zh-CN fallback when
+                # the requested language has no seeded FAQ yet.
+                faq_lang = _normalize_language_tag(language)
+                sql = ("SELECT * FROM guide_faq WHERE country = ? AND status = 'published' AND language = ? "
+                       "AND (question LIKE ? OR answer LIKE ? OR category_key LIKE ?) ORDER BY sort_order LIMIT 8")
+                rows = conn.execute(sql, (country, faq_lang, like, like, like)).fetchall()
+                if not rows and faq_lang != "zh-CN":
+                    rows = conn.execute(sql, (country, "zh-CN", like, like, like)).fetchall()
+                return rows
+            groups["faq"] = _safe(lambda: [serialize_guide_faq(r) for r in _faq_search_rows()])
         if want("journeys"):
             groups["journeys"] = _safe(lambda: [
                 serialize_guide_journey(r) for r in conn.execute(
@@ -19293,6 +20399,39 @@ class Handler(BaseHTTPRequestHandler):
             "page": page, "pageSize": page_size, "total": int(total), "stats": stats,
         })
 
+    def api_admin_guide_stale_queue(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """过期复核队列:列出 verified_at + stale_after_days 已过期(或即将过期)的已发布
+        文章,按类别 + 过期天数排序。日期加减在 Python 里做,避免 PG/SQLite 方言差异。"""
+        self.require_admin(conn)
+        country = _normalize_country_code(query.get("country") or "jp")
+        rows = conn.execute(
+            "SELECT id, title, slug, category_key, sub_category_key, source_url, source_label, "
+            "verified_at, stale_after_days, updated_at FROM guide_articles "
+            "WHERE country = ? AND status = 'published' AND verified_at <> '' AND stale_after_days > 0",
+            (country,),
+        ).fetchall()
+        today = datetime.now(timezone.utc).date()
+        items: list[dict[str, Any]] = []
+        for r in rows:
+            d = dict(r)
+            checked_dt = parse_iso(str(d.get("verified_at") or ""))
+            if checked_dt is None:
+                continue
+            due = checked_dt.date() + timedelta(days=int(d.get("stale_after_days") or 0))
+            overdue_days = (today - due).days  # >0 已过期,<=0 未到期
+            if overdue_days < 0:
+                continue  # 只列已过期的
+            items.append({
+                "id": d.get("id"), "title": d.get("title"), "slug": d.get("slug"),
+                "categoryKey": d.get("category_key") or "", "subCategoryKey": d.get("sub_category_key") or "",
+                "sourceUrl": d.get("source_url") or "", "sourceLabel": d.get("source_label") or "",
+                "verifiedAt": d.get("verified_at") or "", "staleAfterDays": int(d.get("stale_after_days") or 0),
+                "dueAt": due.isoformat(), "overdueDays": overdue_days,
+            })
+        # 过期最久的排最前;同过期天数按类别稳定排序。
+        items.sort(key=lambda x: (-x["overdueDays"], x["categoryKey"], x["slug"]))
+        self.send_json({"status": "ok", "country": country, "total": len(items), "items": items})
+
     def api_admin_guide_article_ai_draft(self, conn: sqlite3.Connection) -> None:
         self.require_admin(conn)
         data = self.read_json()
@@ -21900,6 +23039,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_post_interaction(conn, post_id, "bookmark", True)
             if rest == "save" and method == "DELETE":
                 return self.api_post_interaction(conn, post_id, "bookmark", False)
+            # 不感兴趣 (negative feedback): records a 'dismiss' interaction that
+            # feeds the recommender's negative-preference maps. Never bumps heat,
+            # never notifies (see api_post_interaction).
+            if rest == "dismiss" and method == "POST":
+                return self.api_post_interaction(conn, post_id, "dismiss", True)
+            if rest == "dismiss" and method == "DELETE":
+                return self.api_post_interaction(conn, post_id, "dismiss", False)
             if rest == "join" and method == "POST":
                 return self.api_meetup_join(conn, post_id, True)
             if rest == "join" and method == "DELETE":
@@ -22006,6 +23152,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_listings(conn, next_query)
         if path in {"/api/my/saved-listings", "/api/me/saved-listings", "/api/my/favorites", "/api/me/favorites"} and method == "GET":
             return self.api_my_saved_listings(conn, query)
+        if path in {"/api/my/topic-follows", "/api/me/topic-follows"} and method == "GET":
+            return self.api_my_topic_follows(conn)
         if path in {"/api/my/workbench/summary", "/api/me/workbench/summary"} and method == "GET":
             return self.api_my_workbench_summary(conn)
         if path in {"/api/my/listing-inquiries", "/api/my/inquiries", "/api/me/listing-inquiries", "/api/me/inquiries"} and method == "GET":
@@ -22110,8 +23258,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_explore_topics(conn, query)
         if path in {"/api/discover/hot", "/api/explore/hot-board"} and method == "GET":
             return self.api_discover_hot(conn, query)
+        # Lightweight product funnel (B6 #6): guest or logged-in.
+        if path == "/api/funnel" and method == "POST":
+            return self.api_funnel(conn)
         if path == "/api/topics" and method == "GET":
             return self.api_topics(conn)
+        # Topic-follow (B6 #7) must be matched before the generic topic GET below.
+        if path.startswith("/api/topics/") and path.endswith("/follow") and method in ("POST", "DELETE"):
+            tag = path[len("/api/topics/"):-len("/follow")]
+            return self.api_topic_follow(conn, tag, method == "POST")
         if path.startswith("/api/topics/") and method == "GET":
             tag = unquote(path[len("/api/topics/"):])
             return self.api_topic(conn, tag, query)
@@ -22468,6 +23623,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_guide_os(conn, query)
         if path == "/api/admin/guide/articles" and method == "GET":
             return self.api_admin_guide_articles(conn, query)
+        if path == "/api/admin/guide/stale-queue" and method == "GET":
+            return self.api_admin_guide_stale_queue(conn, query)
         if path == "/api/admin/guide/articles/ai-draft" and method == "POST":
             return self.api_admin_guide_article_ai_draft(conn)
         if path == "/api/admin/guide/articles" and method == "POST":
@@ -23022,6 +24179,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_membership_orders(conn, query)
         if path == "/api/membership/insights" and method == "GET":
             return self.api_membership_insights(conn)
+        if path == "/api/my/membership/listing-quota" and method == "GET":
+            return self.api_membership_listing_quota(conn)
         if path == "/api/membership/create-checkout" and method == "POST":
             return self.api_membership_create_checkout(conn)
         if path == "/api/payments/create-order" and method == "POST":
@@ -23236,6 +24395,36 @@ class Handler(BaseHTTPRequestHandler):
             "plan": serialize_plan(plan) if plan else None,
             "user": serialize_user_with_counts(conn, fresh),
         })
+
+    def api_membership_listing_quota(self, conn: sqlite3.Connection) -> None:
+        """Per-group monthly high-trust publishing quota for the current user, so
+        the client can show "used / limit / remaining" before the paywall. The
+        three quota GROUPS (租房 / 招聘 / 本地商家·服务) collapse their member types
+        (e.g. job+hiring, local_service+discount) into one shared counter — same
+        source of truth as require_membership_listing_publish (membership_listing
+        _monthly_usage). Auth required."""
+        user = self.require_user(conn)
+        # One representative type per distinct quota group (dedupe the group sets).
+        seen: set[frozenset[str]] = set()
+        groups: list[dict[str, Any]] = []
+        for rep in ("rental", "job", "local_service"):
+            types = frozenset(listing_membership_quota_types(rep))
+            if types in seen:
+                continue
+            seen.add(types)
+            usage = membership_listing_monthly_usage(conn, user["id"], rep)
+            limit = int(usage.get("limit") or 0)
+            used = int(usage.get("used") or 0)
+            remaining = usage.get("remaining")
+            groups.append({
+                "key": rep,
+                "label": LISTING_MEMBERSHIP_GROUP_LABELS.get(rep, rep),
+                "used": used,
+                "limit": limit,
+                # remaining is None when limit is unlimited (limit <= 0).
+                "remaining": remaining if remaining is not None else None,
+            })
+        self.send_json({"groups": groups})
 
     def api_create_payment_order(self, conn: sqlite3.Connection) -> None:
         """Create a Web payment order. The amount is ALWAYS taken from the
@@ -23476,41 +24665,12 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 # Not an actionable paid checkout — just mark the event seen.
                 record_payment_webhook(conn, "stripe", event_type, event_id, order_no, raw_event, True)
-        elif event_type in {"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}:
-            sub_id = str(obj.get("id") or "")
-            status = str(obj.get("status") or "")
-            cancel_at_period_end = 1 if obj.get("cancel_at_period_end") else 0
-            period_end = obj.get("current_period_end")
-            period_end_iso = datetime.fromtimestamp(int(period_end), timezone.utc).isoformat() if period_end else ""
-            first = record_payment_webhook(conn, "stripe", event_type, event_id, sub_id,
-                                           json.dumps(event, ensure_ascii=False), True)
-            if first and sub_id:
-                membership = conn.execute(
-                    "SELECT * FROM user_memberships WHERE provider_subscription_id = ? ORDER BY updated_at DESC LIMIT 1",
-                    (sub_id,),
-                ).fetchone()
-                if membership:
-                    mapped = {
-                        "active": "active",
-                        "trialing": "trialing",
-                        "past_due": "past_due",
-                        "incomplete": "incomplete",
-                        "canceled": "cancelled",
-                        "unpaid": "past_due",
-                    }.get(status, status or "active")
-                    if event_type == "customer.subscription.deleted":
-                        mapped = "cancelled"
-                    updates = {
-                        "status": mapped,
-                        "cancel_at_period_end": cancel_at_period_end,
-                        "updated_at": now_iso(),
-                    }
-                    if period_end_iso:
-                        updates["current_period_end"] = period_end_iso
-                        updates["expires_at"] = period_end_iso
-                    cols = ", ".join(f"{k} = ?" for k in updates)
-                    conn.execute(f"UPDATE user_memberships SET {cols} WHERE id = ?", [*updates.values(), membership["id"]])
-                    sync_user_membership_cache(conn, membership["user_id"])
+        # NOTE: the customer.subscription.{created,updated,deleted} branch was
+        # removed — Machi membership is a NON-RENEWING one-time purchase (see the
+        # MEMBERSHIP_* config), so Stripe never creates a subscription object and
+        # these events can never fire. The dead branch also wrote a 'cancelled'
+        # status that no read path expected. Refunds/chargebacks are handled by
+        # the charge.refunded / charge.dispute.* branch below.
         elif event_type in {"invoice.paid", "invoice.payment_failed"}:
             sub_id = str(obj.get("subscription") or "")
             first = record_payment_webhook(conn, "stripe", event_type, event_id, sub_id,
@@ -23754,6 +24914,14 @@ class Handler(BaseHTTPRequestHandler):
                             provider_subscription_id=orig_id, provider_price_id=product_id,
                             notify_email=not is_sandbox_txn)
         expires_at = apple_payload_expiry_iso(payload)
+        # Sandbox / Xcode transactions may carry a far-future (or auto-renew
+        # accelerated) expiry; cap the membership they grant at 7 days so a
+        # tester can never mint a long-lived membership from a non-money txn.
+        # Production transactions are untouched. Cap only shortens, never extends.
+        if is_sandbox_txn and expires_at:
+            sandbox_ceiling = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+            if expires_at > sandbox_ceiling:
+                expires_at = sandbox_ceiling
         if expires_at:
             sync_apple_membership_expiry(conn, user["id"], plan_key, expires_at, orig_id, product_id,
                                          "apple_client_verify", minimum_until_iso=previous_until)
@@ -26865,8 +28033,25 @@ class Handler(BaseHTTPRequestHandler):
                 # Page 1 hoists promoted rows out of keyset order, so resume
                 # from the oldest ORGANIC row actually shown (promoted rows
                 # are excluded from cursor pages — already surfaced here).
-                organic = [r for r in rows if not r["is_promoted"]] or rows
-                anchor = min(organic, key=lambda r: (str(r["updated_at"]), str(r["id"])))
+                organic = [r for r in rows if not r["is_promoted"]]
+                if organic:
+                    anchor = min(organic, key=lambda r: (str(r["updated_at"]), str(r["id"])))
+                else:
+                    # Every row on page 1 was promoted, so there is no organic
+                    # anchor in-hand. Landing the cursor on a promoted row would
+                    # make page 2 (which excludes promoted rows and walks
+                    # (updated_at,id) < anchor) skip every organic row NEWER than
+                    # that promoted row. Anchor on the newest natural row of the
+                    # whole filtered set instead so page 2 starts from the top of
+                    # the organic keyset. Reuses page-1 clauses/params (no cursor
+                    # clause yet); append is_promoted = 0.
+                    max_row = conn.execute(
+                        f"SELECT updated_at, id FROM city_listings "
+                        f"WHERE {' AND '.join(clauses)} AND is_promoted = 0 "
+                        f"ORDER BY updated_at DESC, id DESC LIMIT 1",
+                        params,
+                    ).fetchone()
+                    anchor = max_row if max_row else rows[-1]
             next_cursor = cursor_encode(anchor["updated_at"], anchor["id"])
         items = fetch_listings_with_extras(conn, [dict(r) for r in rows], viewer_id)
         viewer_payload = {"id": viewer_id} if viewer_id else None
@@ -27250,6 +28435,29 @@ class Handler(BaseHTTPRequestHandler):
             allowed["updated_at"] = now_iso()
             cols = ", ".join(f"{key} = ?" for key in allowed)
             conn.execute(f"UPDATE city_listings SET {cols} WHERE id = ?", [*allowed.values(), listing_id])
+        # Favorite-watcher alerts (B6): if this edit dropped the price or took a
+        # published listing down, ping everyone who saved it. Best-effort and
+        # never raises — the notify helper swallows its own errors. `row` holds
+        # the pre-edit state; `allowed`/`publication` the post-edit state.
+        old_status = str(row["status"] or "")
+        new_status = str(allowed.get("status", old_status) or "")
+        if new_status == "closed" and old_status == "published":
+            notify_favorite_listing_change(
+                conn, listing_id, author_id=user["id"], title=next_title,
+                kind="favorite_closed",
+            )
+        elif "price" in allowed:
+            try:
+                _old_p = None if row["price"] in (None, "") else float(row["price"])
+                _new_p = None if allowed["price"] in (None, "") else float(allowed["price"])
+            except (TypeError, ValueError):
+                _old_p = _new_p = None
+            # Only a genuine drop to a lower positive price counts as a "降价".
+            if _old_p is not None and _new_p is not None and _new_p < _old_p:
+                notify_favorite_listing_change(
+                    conn, listing_id, author_id=user["id"], title=next_title,
+                    kind="favorite_price_drop", old_price=_old_p, new_price=_new_p,
+                )
         if "attributes" in data:
             listing_type = row["type"]
             attrs = normalize_listing_attributes(listing_type, data.get("attributes"), next_category)
@@ -29949,7 +31157,10 @@ class Handler(BaseHTTPRequestHandler):
         # columns — no correlated subqueries.
         if kind == "happening":
             score_sql = _happening_score_sql("p", score_config)
-            cutoff_expr = "COALESCE(NULLIF(p.last_activity_at, ''), p.created_at)"
+            # Bare column (not COALESCE(NULLIF(...))): last_activity_at is now
+            # always populated (INSERT init + migration backfill + reconcile
+            # fallback to created_at), so filter+sort can ride idx_posts_last_activity.
+            cutoff_expr = "p.last_activity_at"
         else:
             score_sql = _explore_heat_score_sql("p", score_config)
             cutoff_expr = "p.created_at"
@@ -29957,9 +31168,20 @@ class Handler(BaseHTTPRequestHandler):
         type_params = sorted(HIGH_INTENT_POST_TYPES)
         quality_clause = ""
         if config.get("exclude_reported"):
-            quality_clause += " AND COALESCE(p.report_count, 0) = 0"
-        if config.get("exclude_low_quality"):
-            quality_clause += " AND (length(trim(COALESCE(p.content, ''))) >= 2 OR EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.id))"
+            # Report leverage, not a kill switch: a single stray report no longer
+            # exiles an otherwise-loved post from the board. Hide it once reports
+            # cross a small absolute floor (3) AND outweigh a tenth of its likes —
+            # so a viral post with a few reports survives while a low-engagement
+            # post with real complaints drops.
+            quality_clause += " AND (COALESCE(p.report_count, 0) < 3 OR COALESCE(p.report_count, 0) * 10 < COALESCE(p.like_count, 0))"
+        # Low-quality gate = "has real text OR has media". The has-media half was a
+        # per-candidate `EXISTS (SELECT ... FROM post_media)` correlated subquery
+        # baked into the ranking scan. Move it out: SQL no longer probes media at
+        # all, and the media check runs as ONE batched query over the fetched
+        # candidate ids (see _drop_textless_no_media below). Posts that clearly
+        # have text (>=2 non-space chars) never need the probe, so we still keep a
+        # DB-side fast path for them and only Python-filter the text-empty ones.
+        exclude_low_quality = bool(config.get("exclude_low_quality"))
         blocked_ids: set[str] = set()
         if viewer_id:
             blocked_ids = {
@@ -29986,8 +31208,26 @@ class Handler(BaseHTTPRequestHandler):
                     params.append(cutoff)
                 params.extend(region_params)
                 params.extend(type_params)
-                params.append(limit)
+                # Over-fetch candidates so the per-author cap (applied below) can
+                # drop a prolific author's surplus posts and still return a full
+                # page. 4× limit is plenty of headroom for a 2-per-author cap.
+                params.append(limit * 4)
                 user_join = "JOIN users u ON u.id = p.author_id AND u.deleted_at IS NULL" if config.get("exclude_banned_users") else "JOIN users u ON u.id = p.author_id"
+                # Candidate SELECTION order:
+                #  - hot board: order by the precomputed, indexed hot_score
+                #    (idx_posts_hot) so the DB does an index scan instead of
+                #    sorting a live weighted expression over the whole window;
+                #    then re-rank the bounded candidate set in Python by the
+                #    admin-tuned config weights (explore_score).
+                #  - happening board: no precomputed column captures its
+                #    recency-of-activity semantics, so keep the in-SQL sort by
+                #    the (subquery-free) score expression.
+                if kind == "happening":
+                    order_by = "explore_score DESC, p.created_at DESC"
+                    reorder_in_python = False
+                else:
+                    order_by = "p.hot_score DESC, p.created_at DESC"
+                    reorder_in_python = True
                 ranked_rows = list(conn.execute(
                     f"""
                     SELECT p.id, {score_sql} AS explore_score
@@ -29999,12 +31239,17 @@ class Handler(BaseHTTPRequestHandler):
                        {region_clause}
                        {type_clause}
                        {quality_clause}
-                     ORDER BY explore_score DESC, p.created_at DESC
+                     ORDER BY {order_by}
                      LIMIT ?
                     """,
                     params,
                 ))
                 cached_rank = [{"id": r["id"], "score": float(r["explore_score"] or 0)} for r in ranked_rows]
+                # Re-rank the hot candidates by the config-weighted score so the
+                # admin weights still decide final order within the index-selected
+                # pool. Stable sort preserves the hot_score tiebreak for equal scores.
+                if reorder_in_python:
+                    cached_rank.sort(key=lambda item: item["score"], reverse=True)
                 _cache_put(cache_key, cached_rank, ttl_seconds=30)
             if not cached_rank:
                 return []
@@ -30013,13 +31258,47 @@ class Handler(BaseHTTPRequestHandler):
             rows = list(conn.execute(f"SELECT * FROM posts WHERE id IN ({placeholders})", ids))
             row_by_id = {r["id"]: dict(r) for r in rows}
             score_by_id = {str(item["id"]): float(item.get("score") or 0) for item in cached_rank}
+            # Low-quality media probe (moved out of the ranking scan): only the
+            # candidates whose text is too short to pass on its own need a media
+            # check. Resolve those with ONE batched post_media query instead of a
+            # per-row correlated EXISTS in the hot-path SQL.
+            media_ok: set[str] = set()
+            if exclude_low_quality:
+                textless = [
+                    pid for pid in ids
+                    if len((row_by_id.get(pid, {}).get("content") or "").strip()) < 2
+                ]
+                if textless:
+                    tph = ",".join("?" * len(textless))
+                    media_ok = {
+                        r["post_id"]
+                        for r in conn.execute(
+                            f"SELECT DISTINCT post_id FROM post_media WHERE post_id IN ({tph})", textless
+                        )
+                    }
             ordered: list[dict[str, Any]] = []
+            # Author diversity: no single author may occupy more than 2 slots on a
+            # ranked board, so one prolific poster can't wall off the whole 热榜/
+            # 正在发生 page. Applied in rank order so an author keeps their two
+            # highest-ranked posts. Truncate to the requested page size at the end.
+            author_seen: dict[str, int] = {}
             for post_id in ids:
                 row = row_by_id.get(post_id)
                 if not row or row.get("author_id") in blocked_ids:
                     continue
+                # Drop text-empty posts that also have no media (the has-text-OR-
+                # has-media low-quality gate, now enforced in memory).
+                if exclude_low_quality and len((row.get("content") or "").strip()) < 2 and post_id not in media_ok:
+                    continue
+                author_id = row.get("author_id") or ""
+                if author_id:
+                    if author_seen.get(author_id, 0) >= EXPLORE_MAX_POSTS_PER_AUTHOR:
+                        continue
+                    author_seen[author_id] = author_seen.get(author_id, 0) + 1
                 row["explore_score"] = score_by_id.get(post_id, 0)
                 ordered.append(row)
+                if len(ordered) >= limit:
+                    break
             return ordered
 
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
@@ -30083,15 +31362,19 @@ class Handler(BaseHTTPRequestHandler):
             now = datetime.now(timezone.utc)
             cutoff = (now - timedelta(hours=hours)).isoformat()
             half = (now - timedelta(hours=hours / 2)).isoformat()
-            # Subquery-free: sum the precomputed hot_score + denormalized
-            # comment_count, and use last_activity_at (vs a correlated EXISTS) to
-            # keep a topic alive when an older post is being commented on now.
+            # Subquery-free: sum the engagement-only hot_score_engaged (NOT
+            # hot_score — its freshness "曝光分" would let a burst of brand-new posts
+            # inflate a tag) + denormalized comment_count, and use last_activity_at
+            # to keep a topic alive when an older post is being commented on now.
+            # COUNT(DISTINCT p.author_id) is the secondary sort so a single author
+            # spamming one tag can't out-rank a tag many people actually discuss.
             try:
                 rows = list(conn.execute(
                     f"""
                     SELECT t.tag AS tag,
                            COUNT(DISTINCT p.id) AS related,
-                           CAST(SUM(COALESCE(p.hot_score, 0)) AS INTEGER) AS heat,
+                           COUNT(DISTINCT p.author_id) AS authors,
+                           CAST(SUM(COALESCE(p.hot_score_engaged, 0)) AS INTEGER) AS heat,
                            SUM(COALESCE(p.comment_count, 0)) AS comments,
                            SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END) AS recent_new
                       FROM post_tags t
@@ -30102,7 +31385,7 @@ class Handler(BaseHTTPRequestHandler):
                        {scope_clause}
                        {block_clause}
                      GROUP BY t.tag
-                     ORDER BY heat DESC
+                     ORDER BY heat DESC, authors DESC
                      LIMIT 20
                     """,
                     [half, cutoff, cutoff] + scope_params + block_tags,
@@ -30118,7 +31401,8 @@ class Handler(BaseHTTPRequestHandler):
                         f"""
                         SELECT t.tag AS tag,
                                COUNT(DISTINCT p.id) AS related,
-                               CAST(SUM(COALESCE(p.hot_score, 0)) AS INTEGER) AS heat,
+                               COUNT(DISTINCT p.author_id) AS authors,
+                               CAST(SUM(COALESCE(p.hot_score_engaged, 0)) AS INTEGER) AS heat,
                                SUM(COALESCE(p.comment_count, 0)) AS comments,
                                SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END) AS recent_new
                           FROM post_tags t
@@ -30129,7 +31413,7 @@ class Handler(BaseHTTPRequestHandler):
                            AND p.country = ?
                            {block_clause}
                          GROUP BY t.tag
-                         ORDER BY heat DESC
+                         ORDER BY heat DESC, authors DESC
                          LIMIT 20
                         """,
                         [half, cutoff, cutoff, country] + block_tags,
@@ -30140,7 +31424,19 @@ class Handler(BaseHTTPRequestHandler):
                     pass
             scope_label = {"city": "本市", "metro": "都市圈", "prefecture": "都道府县", "national": "全国"}.get(scope, "本地")
             window_label = {"2h": "2 小时内", "24h": "24 小时内", "3d": "3 天内", "7d": "7 天内"}[window]
+            # rankDelta / velocity from the previous snapshot (item B3.6). scope
+            # may have been reassigned to 'national' by the fallback above, so key
+            # the snapshot on the FINAL scope + the region we actually served. If
+            # no prior snapshot exists for this exact board yet (first view of a
+            # region), fall back to the national board's history so a delta is
+            # still available rather than a flat 0.
+            snap_region = region_code or country or "all"
+            scope_key = _topic_snapshot_scope_key(scope, snap_region)
+            prev = _previous_topic_ranks(conn, scope_key, window)
+            if not prev:
+                prev = _previous_topic_ranks(conn, _topic_snapshot_scope_key("national", country or "all"), window)
             items = []
+            snapshot_rows: list[tuple[str, int, int]] = []  # (tag, rank, heat) for the read-time snapshot
             for rank, r in enumerate(rows, 1):
                 row = dict(r)
                 tag = row.get("tag") or ""
@@ -30151,13 +31447,27 @@ class Handler(BaseHTTPRequestHandler):
                 comments = int(row.get("comments") or 0)
                 recent_new = int(row.get("recent_new") or 0)
                 older = max(0, related - recent_new)
+                prev_entry = prev.get(tag)
+                # Positive delta = climbed (previous rank number was larger). A
+                # brand-new tag with no prior snapshot gets delta 0 (unknown, not
+                # a fake surge).
+                rank_delta = (prev_entry["rank"] - rank) if prev_entry else 0
+                heat_gained = (heat_v - prev_entry["heat"]) if prev_entry else 0
                 if recent_new >= 2 and recent_new >= older:
                     reason = f"新发布 {recent_new} 条"
                 elif comments >= max(1, related):
                     reason = "评论增长快"
                 else:
                     reason = f"{window_label} {heat_v} 热度"
-                trend = "up" if recent_new > older else ("down" if older > recent_new else "flat")
+                # Trend now folds in the real rank movement + heat velocity from
+                # the snapshot, not just the new-vs-older post split: a tag that
+                # climbed ranks OR gained heat since last snapshot reads "up".
+                if rank_delta > 0 or (prev_entry and heat_gained > 0) or recent_new > older:
+                    trend = "up"
+                elif rank_delta < 0 or (prev_entry and heat_gained < 0) or older > recent_new:
+                    trend = "down"
+                else:
+                    trend = "flat"
                 items.append({
                     "id": f"topic:{tag}",
                     "kind": "topic",
@@ -30168,12 +31478,31 @@ class Handler(BaseHTTPRequestHandler):
                     "scopeLabel": scope_label,
                     "timeWindow": window,
                     "rank": rank,
-                    "rankDelta": 0,   # honest: real delta needs ranking snapshots
+                    "rankDelta": rank_delta,
+                    "heatDelta": heat_gained,
                     "trend": trend,
                     "heatScore": heat_v,
                     "relatedPosts": related,
                     "route": {"type": "topic", "id": tag},
                 })
+                snapshot_rows.append((tag, rank, heat_v))
+            # Read-time snapshot for the exact board just served: this block runs
+            # only on a cache MISS, so it's naturally throttled to ~once / 60s per
+            # board — giving region-specific boards (which the refresher's
+            # national pass doesn't cover) their own delta history without an
+            # unbounded refresher cross-product. Best-effort; never blocks the
+            # response.
+            if snapshot_rows:
+                try:
+                    _captured = now_iso()
+                    for _tag, _rank, _heat in snapshot_rows:
+                        conn.execute(
+                            'INSERT INTO topic_rank_snapshots (scope, "window", tag, "rank", heat, captured_at) '
+                            "VALUES (?, ?, ?, ?, ?, ?)",
+                            (scope_key, window, _tag, _rank, _heat, _captured),
+                        )
+                except Exception as exc:
+                    ERR_LOG.warning("discover hot read snapshot failed error=%s", exc)
             cached = items
             _cache_put(cache_key, cached, ttl_seconds=60)
         self.send_json({"items": cached, "scope": scope, "timeWindow": window})
@@ -30227,7 +31556,12 @@ class Handler(BaseHTTPRequestHandler):
         score_sql = _explore_heat_score_sql("p", score_config)
         quality_clause = ""
         if config.get("exclude_reported"):
-            quality_clause += " AND COALESCE(p.report_count, 0) = 0"
+            # Report leverage, not a kill switch: a single stray report no longer
+            # exiles an otherwise-loved post from the board. Hide it once reports
+            # cross a small absolute floor (3) AND outweigh a tenth of its likes —
+            # so a viral post with a few reports survives while a low-engagement
+            # post with real complaints drops.
+            quality_clause += " AND (COALESCE(p.report_count, 0) < 3 OR COALESCE(p.report_count, 0) * 10 < COALESCE(p.like_count, 0))"
         if config.get("exclude_low_quality"):
             quality_clause += " AND (length(trim(COALESCE(p.content, ''))) >= 2 OR EXISTS (SELECT 1 FROM post_media pm WHERE pm.post_id = p.id))"
 
@@ -30244,9 +31578,13 @@ class Handler(BaseHTTPRequestHandler):
             params.extend(region_params)
             params.append(limit)
             user_join = "JOIN users u ON u.id = p.author_id AND u.deleted_at IS NULL" if config.get("exclude_banned_users") else "JOIN users u ON u.id = p.author_id"
+            # COUNT(DISTINCT p.author_id) as a sort key (above raw post_count) so a
+            # tag many DIFFERENT people post under out-ranks one author stuffing it.
             rows = list(conn.execute(
                 f"""
-                SELECT t.tag, COUNT(*) AS post_count, SUM({score_sql}) AS topic_heat
+                SELECT t.tag, COUNT(*) AS post_count,
+                       COUNT(DISTINCT p.author_id) AS authors,
+                       SUM({score_sql}) AS topic_heat
                   FROM post_tags t
                   JOIN posts p ON p.id = t.post_id
                   {user_join}
@@ -30256,7 +31594,7 @@ class Handler(BaseHTTPRequestHandler):
                    {region_clause}
                    {quality_clause}
                  GROUP BY t.tag
-                 ORDER BY topic_heat DESC, post_count DESC, t.tag ASC
+                 ORDER BY topic_heat DESC, authors DESC, post_count DESC, t.tag ASC
                  LIMIT ?
                 """,
                 params,
@@ -30319,6 +31657,21 @@ class Handler(BaseHTTPRequestHandler):
         topics: dict[str, float] = {}
         authors: dict[str, float] = {}
         seen: set[str] = set()
+        # Negative-preference maps (item B3.2): posts the viewer explicitly
+        # dismissed ("不感兴趣") push their author + tags down. Kept separate from
+        # the positive maps so a tag the viewer both engaged with AND dismissed
+        # nets out honestly instead of one silently overwriting the other.
+        neg_topics: dict[str, float] = {}
+        neg_authors: dict[str, float] = {}
+        dismissed: set[str] = set()
+        # Tag heat rides post_tags, which has no single-row-per-post shape — a
+        # post can carry several tags. Aggregate them into one comma string per
+        # post via a grouped subquery join so the profile scan stays one query
+        # per source table (not N+1 tag lookups). Backend-branched: Postgres
+        # STRING_AGG, SQLite GROUP_CONCAT.
+        tags_agg = "STRING_AGG(pt.tag, ',')" if KAIX_DB_BACKEND == "postgres" else "GROUP_CONCAT(pt.tag)"
+        tag_join = f"LEFT JOIN (SELECT pt.post_id AS post_id, {tags_agg} AS tags FROM post_tags pt GROUP BY pt.post_id) tg ON tg.post_id = p.id"
+
         def _absorb(content_type: str, topic_slugs: str, author_id: str, weight: float) -> None:
             if content_type:
                 types[content_type] = types.get(content_type, 0.0) + weight
@@ -30328,31 +31681,56 @@ class Handler(BaseHTTPRequestHandler):
                     topics[slug] = topics.get(slug, 0.0) + weight
             if author_id:
                 authors[author_id] = authors.get(author_id, 0.0) + weight
+
+        def _absorb_neg(topic_slugs: str, author_id: str, weight: float) -> None:
+            # weight is the (positive) magnitude of the negative signal.
+            for slug in (topic_slugs or "").split(","):
+                slug = slug.strip()
+                if slug:
+                    neg_topics[slug] = neg_topics.get(slug, 0.0) + weight
+            if author_id:
+                neg_authors[author_id] = neg_authors.get(author_id, 0.0) + weight
+
         try:
             for r in conn.execute(
-                """SELECT p.id AS pid, p.content_type AS ct, p.author_id AS aid, i.kind AS kind
+                f"""SELECT p.id AS pid, p.content_type AS ct, p.author_id AS aid, i.kind AS kind, tg.tags AS tags
                    FROM interactions i JOIN posts p ON p.id = i.target_id
+                   {tag_join}
                    WHERE i.user_id = ? AND i.created_at >= ? AND p.deleted_at IS NULL
+                     AND i.kind IN ('like', 'bookmark', 'repost', 'dismiss')
                    ORDER BY i.created_at DESC LIMIT 400""",
                 (viewer_id, since),
             ):
                 d = dict(r)
+                kind = d.get("kind") or ""
+                if kind == "dismiss":
+                    # 不感兴趣 is a negative signal: don't count it as "seen &
+                    # liked", record it as a demotion of that author + tags and a
+                    # hard-drop id for _recommend_rank.
+                    dismissed.add(d["pid"])
+                    _absorb_neg(d.get("tags") or "", d.get("aid") or "", 1.5)
+                    continue
                 seen.add(d["pid"])
                 # bookmarks/reposts signal stronger intent than a like.
-                w = {"bookmark": 3.0, "repost": 2.5, "like": 1.0}.get(d.get("kind") or "", 1.0)
-                _absorb(d.get("ct") or "", "", d.get("aid") or "", w)
+                w = {"bookmark": 3.0, "repost": 2.5, "like": 1.0}.get(kind, 1.0)
+                _absorb(d.get("ct") or "", d.get("tags") or "", d.get("aid") or "", w)
             for r in conn.execute(
-                """SELECT p.id AS pid, p.content_type AS ct, p.author_id AS aid
+                f"""SELECT p.id AS pid, p.content_type AS ct, p.author_id AS aid, tg.tags AS tags
                    FROM comments c JOIN posts p ON p.id = c.post_id
+                   {tag_join}
                    WHERE c.author_id = ? AND c.created_at >= ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL
                    ORDER BY c.created_at DESC LIMIT 200""",
                 (viewer_id, since),
             ):
                 d = dict(r)
                 seen.add(d["pid"])
-                _absorb(d.get("ct") or "", "", d.get("aid") or "", 2.0)
+                _absorb(d.get("ct") or "", d.get("tags") or "", d.get("aid") or "", 2.0)
         except Exception:
-            return {"types": {}, "topics": {}, "authors": {}, "seen": set(), "active": False}
+            return {
+                "types": {}, "topics": {}, "authors": {},
+                "neg_topics": {}, "neg_authors": {},
+                "seen": set(), "dismissed": set(), "active": False,
+            }
 
         def _norm(m: dict[str, float]) -> dict[str, float]:
             top = max(m.values()) if m else 0.0
@@ -30361,7 +31739,13 @@ class Handler(BaseHTTPRequestHandler):
             "types": _norm(types),
             "topics": _norm(topics),
             "authors": _norm(authors),
+            # Negative maps are normalized independently (own scale) so a single
+            # dismiss can't swamp a rich positive profile; the ranker weights
+            # them modestly (see _recommend_rank).
+            "neg_topics": _norm(neg_topics),
+            "neg_authors": _norm(neg_authors),
             "seen": seen,
+            "dismissed": dismissed,
             "active": bool(types or topics or authors),
         }
         _cache_put(cache_key, profile, ttl_seconds=KAIX_RECPROFILE_TTL_SEC)
@@ -30375,7 +31759,16 @@ class Handler(BaseHTTPRequestHandler):
         types = profile.get("types") or {}
         topics = profile.get("topics") or {}
         authors = profile.get("authors") or {}
+        neg_topics = profile.get("neg_topics") or {}
+        neg_authors = profile.get("neg_authors") or {}
         seen = profile.get("seen") or set()
+        dismissed = profile.get("dismissed") or set()
+        # Hard-drop dismissed posts up front (item B3.2): the viewer said 不感兴趣,
+        # so it should never re-surface — a mere score penalty could still float
+        # it back onto page 1 in a sparse pool. Removing them here also keeps the
+        # freshness index (below) aligned with what actually gets ranked.
+        if dismissed:
+            rows = [r for r in rows if r.get("id") not in dismissed]
         n = len(rows)
         scored: list[tuple[float, int, dict[str, Any]]] = []
         for idx, row in enumerate(rows):
@@ -30385,32 +31778,67 @@ class Handler(BaseHTTPRequestHandler):
             ct = row.get("content_type") or ""
             if ct and ct in types:
                 interest += 1.6 * types[ct]
+            # Tags now come from a real join in the pool query (topic_slugs), so
+            # the 1.4 topic weight finally fires instead of being dead.
             slugs = [s.strip() for s in (row.get("topic_slugs") or "").split(",") if s.strip()]
             if slugs:
                 interest += 1.4 * (sum(topics.get(s, 0.0) for s in slugs) / len(slugs))
+                # Dismiss-based tag aversion: subtract the average negative
+                # affinity of this post's tags (gentle so it nudges, not exiles).
+                interest -= 1.4 * (sum(neg_topics.get(s, 0.0) for s in slugs) / len(slugs))
             aid = row.get("author_id") or ""
             if aid and aid in authors:
                 interest += 1.2 * authors[aid]
+            if aid and aid in neg_authors:
+                interest -= 1.2 * neg_authors[aid]
             score = 2.0 * freshness + interest
             if row.get("id") in seen:
-                score -= 1.0  # already engaged: down-weight, don't exclude
+                score -= 2.5  # already engaged: down-weight hard, don't exclude
             scored.append((score, idx, row))
         scored.sort(key=lambda t: (-t[0], t[1]))
-        # Diversity pass: avoid three in a row from the same author.
+        # Diversity pass: avoid three in a row from the same author AND more than
+        # three of the same content_type in a sliding window of the last 3 — so
+        # the page doesn't collapse into e.g. six rants back-to-back. Both defer
+        # (not drop) the offending row so it re-enters later in the ordering.
         out: list[dict[str, Any]] = []
         recent_authors: list[str] = []
+        recent_types: list[str] = []
         deferred: list[dict[str, Any]] = []
         for _, _, row in scored:
             aid = row.get("author_id") or ""
+            ct = row.get("content_type") or ""
             if aid and recent_authors[-2:].count(aid) >= 2:
+                deferred.append(row)
+                continue
+            if ct and recent_types[-3:].count(ct) >= 3:
                 deferred.append(row)
                 continue
             out.append(row)
             recent_authors.append(aid)
+            recent_types.append(ct)
             if len(out) >= limit:
                 break
+        # Overflow continuation: keep the same author/type windows honest when
+        # topping up from the deferred queue so a run of same-type posts can't
+        # sneak back in at the tail.
         if len(out) < limit:
-            out.extend(deferred[: limit - len(out)])
+            for row in deferred:
+                if len(out) >= limit:
+                    break
+                aid = row.get("author_id") or ""
+                ct = row.get("content_type") or ""
+                if aid and recent_authors[-2:].count(aid) >= 2:
+                    continue
+                if ct and recent_types[-3:].count(ct) >= 3:
+                    continue
+                out.append(row)
+                recent_authors.append(aid)
+                recent_types.append(ct)
+            # Last resort: if constraints still leave us short (tiny pool), fill
+            # with whatever deferred rows remain so the page isn't under-filled.
+            if len(out) < limit:
+                already = {id(r) for r in out}
+                out.extend(r for r in deferred if id(r) not in already)
         ranked = out[:limit]
 
         # Freshness floor — guarantees newly-posted content is actually seen.
@@ -30426,6 +31854,81 @@ class Handler(BaseHTTPRequestHandler):
             keep = ranked[: max(1, limit - len(missing_fresh))]
             ranked = (keep[:1] + missing_fresh + keep[1:])[:limit]
         return ranked[:limit]
+
+    def _recommend_coldstart_mix(
+        self,
+        conn: sqlite3.Connection,
+        recency_rows: list[dict[str, Any]],
+        limit: int,
+        viewer_id: str | None,
+        region_clause: str,
+        region_params: list[Any],
+        type_clause: str,
+        type_params: list[Any],
+        blocked_clause: str,
+        blocked_params: list[Any],
+        dismissed: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Cold-start home page (item B3.3): a viewer with no interest profile
+        gets an interleave of the hot top-10 and the recency top-10 instead of a
+        flat recency wall — so their very first feed shows both what's *good* and
+        what's *new*. Both inputs already exist (the recency pool is passed in;
+        hot rides the precomputed, indexed hot_score), so this is one extra
+        bounded query. Pure zip-with-dedup in memory; returns [] to signal the
+        caller to fall back to plain recency (e.g. hot empty on a fresh DB).
+
+        A cold-start viewer can still have 不感兴趣 dismisses (dismisses alone don't
+        make a profile 'active'); honor them here too so a dismissed post never
+        reappears via the hot/recency mix."""
+        dismissed = dismissed or set()
+        hot_rows: list[dict[str, Any]] = []
+        try:
+            hot_sql = (
+                "SELECT p.* FROM posts p WHERE p.deleted_at IS NULL "
+                "AND p.status IN ('published', 'active') AND COALESCE(p.hot_score, 0) > 0"
+                + region_clause + type_clause + blocked_clause
+                + " ORDER BY p.hot_score DESC, p.created_at DESC LIMIT ?"
+            )
+            # Over-fetch a little so dismiss filtering still leaves ~10 hot rows.
+            hot_params = [*region_params, *type_params, *blocked_params, 20]
+            hot_rows = [
+                dict(r) for r in conn.execute(hot_sql, hot_params)
+                if r["id"] not in dismissed
+            ][:10]
+        except Exception:
+            hot_rows = []
+        if not hot_rows:
+            # Nothing has heat yet — let the caller serve plain recency.
+            return []
+        recency_top = [r for r in recency_rows if r.get("id") not in dismissed][:10]
+        # Interleave hot / recency, skipping ids already placed so a post that is
+        # both hot AND recent appears once (at its earlier slot).
+        out: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for i in range(max(len(hot_rows), len(recency_top))):
+            for cand in (
+                hot_rows[i] if i < len(hot_rows) else None,
+                recency_top[i] if i < len(recency_top) else None,
+            ):
+                if cand is None:
+                    continue
+                cid = cand.get("id")
+                if cid and cid not in seen_ids:
+                    seen_ids.add(cid)
+                    out.append(cand)
+            if len(out) >= limit:
+                break
+        # Top up from the rest of the recency pool if the interleave ran short
+        # (e.g. heavy overlap between hot and recent). Still skip dismissed.
+        if len(out) < limit:
+            for cand in recency_rows:
+                cid = cand.get("id")
+                if cid and cid not in seen_ids and cid not in dismissed:
+                    seen_ids.add(cid)
+                    out.append(cand)
+                    if len(out) >= limit:
+                        break
+        return out[:limit]
 
     def api_feed(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         viewer = self.current_session(conn)
@@ -30609,7 +32112,20 @@ class Handler(BaseHTTPRequestHandler):
         )
         if personalize:
             pool_size = min(max(limit * 5, 60), 200)
-            pool_sql = base + region_clause + type_clause + blocked_clause + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?"
+            # Join each pool post's tags (comma-joined) as topic_slugs so the
+            # interest ranker's 1.4 topic weight actually has data to score
+            # against — without this the pool carried no tags and that branch was
+            # dead. Backend-branched aggregate; grouped subquery keeps it one row
+            # per post (no fan-out that would break the recency LIMIT).
+            _tags_agg = "STRING_AGG(pt.tag, ',')" if KAIX_DB_BACKEND == "postgres" else "GROUP_CONCAT(pt.tag)"
+            _pool_base = base.replace(
+                "SELECT p.* FROM posts p",
+                f"SELECT p.*, tg.tags AS topic_slugs FROM posts p "
+                f"LEFT JOIN (SELECT pt.post_id AS post_id, {_tags_agg} AS tags "
+                f"FROM post_tags pt GROUP BY pt.post_id) tg ON tg.post_id = p.id",
+                1,
+            )
+            pool_sql = _pool_base + region_clause + type_clause + blocked_clause + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?"
             pool_params = [*base_params, *region_params, *type_params, *blocked_params, pool_size + 1]
             pool_rows = [dict(r) for r in conn.execute(pool_sql, pool_params)]
             profile = self._recommend_interest_profile(conn, viewer_id)
@@ -30629,6 +32145,28 @@ class Handler(BaseHTTPRequestHandler):
                     "canInteract": can_interact, "can_interact": can_interact,
                 })
                 return
+            # Cold start (item B3.3): a viewer with no interest profile yet used
+            # to get pure recency — a wall of whatever was posted last. Instead
+            # interleave the explore hot top-N with the recency top-N so a
+            # newcomer's first page mixes "what's good" with "what's new". Falls
+            # through to plain recency if hot is empty (fresh install / tiny DB).
+            if not profile.get("active") and pool_rows:
+                mixed = self._recommend_coldstart_mix(
+                    conn, pool_rows[:pool_size], limit, viewer_id,
+                    region_clause, region_params, type_clause, type_params,
+                    blocked_clause, blocked_params,
+                    dismissed=profile.get("dismissed") or set(),
+                )
+                if mixed:
+                    tail = pool_rows[: pool_size][-1]
+                    next_cursor = cursor_encode(tail["created_at"], tail["id"])
+                    posts = fetch_posts_with_extras(conn, mixed, viewer_id)
+                    self.send_json({
+                        "items": posts, "next_cursor": next_cursor, "mode": mode,
+                        "coldStart": True, "viewer": viewer_payload,
+                        "canInteract": can_interact, "can_interact": can_interact,
+                    })
+                    return
 
         sql = base + region_clause + type_clause + blocked_clause + cursor_clause + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?"
         params = [*base_params, *region_params, *type_params, *blocked_params, *cursor_params]
@@ -30732,9 +32270,13 @@ class Handler(BaseHTTPRequestHandler):
             country, province, city = _parse_region_code(region_code)
         language = _normalize_language_tag(data.get("language") or user.get("app_language") or "")
         post_id = str(uuid.uuid4())
+        created_ts = now_iso()
+        # Initialize last_activity_at = created_at so the 正在发生 radar can filter
+        # and sort on the bare column (no COALESCE/NULLIF, index-friendly). A live
+        # post always carries a real activity timestamp; comments bump it forward.
         conn.execute(
-            "INSERT INTO posts (id, author_id, content, repost_of_id, view_count, status, country, province, city, region_code, content_type, attributes, language, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (post_id, user["id"], content, repost_of_id, country, province, city, region_code, content_type, attributes, language, now_iso(), now_iso()),
+            "INSERT INTO posts (id, author_id, content, repost_of_id, view_count, status, country, province, city, region_code, content_type, attributes, language, created_at, updated_at, last_activity_at) VALUES (?, ?, ?, ?, 1, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (post_id, user["id"], content, repost_of_id, country, province, city, region_code, content_type, attributes, language, created_ts, created_ts, created_ts),
         )
         for tag in extract_tags(content):
             conn.execute("INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (post_id, tag))
@@ -30776,6 +32318,8 @@ class Handler(BaseHTTPRequestHandler):
                 target_id=post_id,
                 metadata={"content_type": content_type},
             )
+        # Track anyone already pinged for this post so @mentions don't double-notify.
+        mention_skip: set[str] = set()
         if repost_of_id:
             original = conn.execute("SELECT author_id FROM posts WHERE id = ?", (repost_of_id,)).fetchone()
             if original and original["author_id"] != user["id"]:
@@ -30786,6 +32330,11 @@ class Handler(BaseHTTPRequestHandler):
                 HUB.publish(original["author_id"], {"type": "notification", "kind": "repost"})
                 server_apns.enqueue(original["author_id"], ntype="repost", actor_id=user["id"],
                                     content=content, post_id=repost_of_id)
+                mention_skip.add(original["author_id"])
+        # @mentions in the body (B6): notify each real @handle, excluding anyone
+        # already pinged for this post (e.g. the repost target author).
+        notify_mentions(conn, content, actor_id=user["id"], post_id=post_id,
+                        already_notified=mention_skip)
         row = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
         posts = fetch_posts_with_extras(conn, [row], user["id"])
         HUB.broadcast([user["id"]], {"type": "post_created", "post_id": post_id})
@@ -30865,14 +32414,25 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT id FROM interactions WHERE target_id = ? AND user_id = ? AND kind = ?",
             (post_id, user["id"], kind),
         ).fetchone()
-        changed = False
+        # Self-interaction never counts toward heat (an author can't like/收藏/
+        # repost their own post into the 热榜). The interactions row is still
+        # written (so the client reflects the state), but the denormalized
+        # counter — the ONLY thing ranking reads — is left untouched. Kept in
+        # lock-step with reconcile_post_counters, which excludes the same rows,
+        # so the 6h self-heal can't drift the count back up.
+        is_self = post["author_id"] == user["id"]
         if on and not existing:
-            conn.execute(
-                "INSERT INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
+            # OR IGNORE + the UNIQUE(target_id,user_id,kind) index (migration 94)
+            # makes the write idempotent and closes the check-then-insert race:
+            # if two concurrent requests both pass `not existing`, only one row is
+            # actually inserted. Bump the counter ONLY when we truly inserted
+            # (rowcount == 1), so a raced duplicate can't double-count the heat.
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, ?, ?)",
                 (str(uuid.uuid4()), post_id, user["id"], kind, now_iso()),
             )
-            changed = True
-            bump_post_counter_for_kind(conn, post_id, kind, +1)
+            if not is_self and (cur.rowcount or 0) > 0:
+                bump_post_counter_for_kind(conn, post_id, kind, +1)
             if kind == "bookmark":
                 reputation_apply_event(
                     conn,
@@ -30910,10 +32470,21 @@ class Handler(BaseHTTPRequestHandler):
                 )
         elif not on and existing:
             conn.execute("DELETE FROM interactions WHERE id = ?", (existing["id"],))
-            bump_post_counter_for_kind(conn, post_id, kind, -1)
-            changed = True
-        if changed:
-            invalidate_public_ranking_caches()
+            if not is_self:
+                bump_post_counter_for_kind(conn, post_id, kind, -1)
+        # 不感兴趣 (dismiss) is a personal recommender signal, not heat: it maps to
+        # no counter column (bump_post_counter_for_kind ignores it), doesn't
+        # notify the author, and doesn't feed 热榜/正在发生. Its ONE side effect is
+        # the viewer's own interest profile, so bust that cache immediately —
+        # otherwise the demoted author/tags would keep surfacing for up to
+        # KAIX_RECPROFILE_TTL_SEC after the user said "不感兴趣", which feels broken.
+        if kind == "dismiss":
+            _cache_invalidate(f"recprofile:{user['id']}")
+        # No cache invalidation here: the 热榜/推荐 tolerate up to ~60s of
+        # staleness and the hot_score refresher + 30s TTLs converge on their own.
+        # A cache bust on every like/收藏 was pure write amplification against the
+        # shared ranking caches (删帖 / admin下架 still invalidate — those must be
+        # immediate).
         fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
         posts = fetch_posts_with_extras(conn, [fresh], user["id"])
         self.send_json({"post": posts[0]})
@@ -31008,13 +32579,13 @@ class Handler(BaseHTTPRequestHandler):
                     INSERT INTO posts (
                         id, author_id, content, repost_of_id, view_count, status,
                         country, province, city, region_code, content_type, attributes,
-                        created_at, updated_at
-                    ) VALUES (?, ?, '', ?, 1, 'active', ?, ?, ?, ?, 'dynamic', '{}', ?, ?)
+                        created_at, updated_at, last_activity_at
+                    ) VALUES (?, ?, '', ?, 1, 'active', ?, ?, ?, ?, 'dynamic', '{}', ?, ?, ?)
                     """,
                     (
                         str(uuid.uuid4()), user["id"], post_id,
                         post["country"] or "", post["province"] or "", post["city"] or "", post["region_code"] or "",
-                        created, created,
+                        created, created, created,
                     ),
                 )
                 changed = True
@@ -31248,6 +32819,10 @@ class Handler(BaseHTTPRequestHandler):
             HUB.publish(recipient_id, {"type": "notification", "kind": ntype, "post_id": post_id, "comment_id": comment_id})
             server_apns.enqueue(recipient_id, ntype=ntype, actor_id=user["id"],
                                 content=content[:140], post_id=post_id)
+        # @mentions in the comment body (B6): notify each real @handle, skipping
+        # anyone who already got a reply/comment notification for this comment.
+        notify_mentions(conn, content, actor_id=user["id"], post_id=post_id,
+                        comment_id=comment_id, already_notified=set(recipients.keys()), now=now)
         row = dict(conn.execute("SELECT * FROM comments WHERE id = ?", (comment_id,)).fetchone())
         comment = serialize_comment(row, {"author": serialize_user(user), "like_count": 0, "liked": False})
         self.send_json({"comment": comment})
@@ -31260,9 +32835,18 @@ class Handler(BaseHTTPRequestHandler):
         post = conn.execute("SELECT author_id FROM posts WHERE id = ?", (row["post_id"],)).fetchone()
         if row["author_id"] != user["id"] and (not post or post["author_id"] != user["id"]):
             raise APIError("无权删除", 403, "forbidden")
-        conn.execute("UPDATE comments SET deleted_at = ?, updated_at = ? WHERE id = ?", (now_iso(), now_iso(), comment_id))
-        # Only decrement once — guard against a double delete of the same comment.
-        if not row["deleted_at"]:
+        # Compare-and-swap: only the writer whose UPDATE actually flips a live
+        # comment to deleted (rowcount == 1) may decrement the counter. The old
+        # check-then-act (read stale deleted_at, then unconditional UPDATE, then
+        # decrement on the stale flag) let two concurrent deletes both pass the
+        # `not row["deleted_at"]` guard and double-decrement comment_count. Mirrors
+        # mark_order_paid's CAS.
+        now = now_iso()
+        cur = conn.execute(
+            "UPDATE comments SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+            (now, now, comment_id),
+        )
+        if cur.rowcount == 1:
             bump_post_counter(conn, row["post_id"], "comment_count", -1)
         self.send_json({"ok": True})
 
@@ -31445,54 +33029,82 @@ class Handler(BaseHTTPRequestHandler):
             # to an index scan whose cost is independent of how many posts or
             # interactions exist. hot_score already bakes in recency decay; the
             # 24h window keeps "trending = right now" semantics.
+            # Over-fetch (60) so the per-author cap can drop a prolific author's
+            # surplus and still fill the 20-slot rail. p.author_id is selected so
+            # the cap runs in memory without a second query.
             id_rows = list(conn.execute(
                 f"""
-                SELECT p.id, p.hot_score AS heat
+                SELECT p.id, p.author_id AS author_id, p.hot_score AS heat
                 FROM posts p
                 WHERE p.deleted_at IS NULL
                   AND p.status IN ('published', 'active')
                   AND p.created_at >= ?
                   {country_clause}
-                ORDER BY p.hot_score DESC LIMIT 20
+                ORDER BY p.hot_score DESC LIMIT 60
                 """,
                 params,
             ))
-            cached_ids = [r["id"] for r in id_rows]
+            # Author diversity: no author holds more than EXPLORE_MAX_POSTS_PER_AUTHOR
+            # slots on the trending rail, keeping their highest-ranked posts.
+            cached_ids = []
+            _author_seen: dict[str, int] = {}
+            for r in id_rows:
+                aid = r["author_id"] or ""
+                if aid:
+                    if _author_seen.get(aid, 0) >= EXPLORE_MAX_POSTS_PER_AUTHOR:
+                        continue
+                    _author_seen[aid] = _author_seen.get(aid, 0) + 1
+                cached_ids.append(r["id"])
+                if len(cached_ids) >= 20:
+                    break
             _cache_put(f"trending:{cache_scope}:post_ids", cached_ids, ttl_seconds=30)
         if cached_topics is None:
             try:
                 # 热搜 = what's hot *now*, not all time. Window the tags to the last
-                # 7 days, rank by the summed hot_score of their posts (not a raw
-                # count, so a few high-engagement posts beat a flood of low ones),
-                # drop generic/location filler (#东京 etc.), and compute velocity by
-                # comparing the recent half vs the older half of the window so a
-                # rising topic is marked "up". Old all-time counts let city names
-                # and tautological tags sit on top forever.
+                # 7 days, rank by the summed engagement-only heat of their posts
+                # (hot_score_engaged, NOT hot_score — its freshness 曝光分 would let a
+                # burst of brand-new posts inflate a tag), drop generic/location
+                # filler (#东京 etc.), tiebreak on how many DIFFERENT authors use the
+                # tag (blocks single-author stuffing). Velocity now compares this
+                # window's summed heat against the PREVIOUS equal-length window's
+                # (from the snapshot, item B3.6) plus a comment-increment signal,
+                # instead of the crude recent-half-vs-older-half split.
                 now = datetime.now(timezone.utc)
                 win_cutoff = (now - timedelta(days=7)).isoformat()
                 half_cutoff = (now - timedelta(hours=84)).isoformat()  # 3.5 days
                 country_clause = "AND p.country = ?" if viewer_country else ""
                 block_tags = sorted(HOT_BOARD_TAG_BLOCKLIST)
                 block_clause = ("AND t.tag NOT IN (%s)" % ",".join("?" * len(block_tags))) if block_tags else ""
-                tparams: list[Any] = [half_cutoff, win_cutoff]
+                # Window filter unified with api_discover_hot: a post is in-window
+                # if it was created OR last active (a fresh comment) inside the 7d
+                # window — so a resurfaced older thread counts toward its tag's
+                # heat, matching the 热榜 semantics instead of created_at only.
+                tparams: list[Any] = [half_cutoff, win_cutoff, win_cutoff]
                 if viewer_country:
                     tparams.append(viewer_country)
                 tparams.extend(block_tags)
+                # Previous 7d national snapshot for this scope → heat velocity.
+                prev_trend = _previous_topic_ranks(
+                    conn, _topic_snapshot_scope_key("national", viewer_country or "all"), "7d"
+                )
                 cached_topics = []
                 for r in conn.execute(
                     f"""
                     SELECT t.tag AS tag,
                            COUNT(DISTINCT p.id) AS c,
-                           COALESCE(SUM(p.hot_score), 0) AS heat,
+                           COUNT(DISTINCT p.author_id) AS authors,
+                           COALESCE(SUM(p.hot_score_engaged), 0) AS heat,
+                           SUM(COALESCE(p.comment_count, 0)) AS comments,
                            SUM(CASE WHEN p.created_at >= ? THEN 1 ELSE 0 END) AS recent_new
                     FROM post_tags t
                     JOIN posts p ON p.id = t.post_id
                     WHERE p.deleted_at IS NULL AND p.status IN ('published', 'active')
-                      AND p.created_at >= ?
+                      AND (p.created_at >= ?
+                           OR COALESCE(NULLIF(p.last_activity_at, ''), p.created_at) >= ?)
                       {country_clause}
                       {block_clause}
                     GROUP BY t.tag
-                    ORDER BY heat DESC, c DESC
+                    ORDER BY heat DESC, authors DESC, c DESC
                     LIMIT 20
                     """,
                     tparams,
@@ -31501,11 +33113,25 @@ class Handler(BaseHTTPRequestHandler):
                     related = int(row.get("c") or 0)
                     recent_new = int(row.get("recent_new") or 0)
                     older = max(0, related - recent_new)
+                    heat_v = int(row.get("heat") or 0)
+                    comments = int(row.get("comments") or 0)
+                    prev_entry = prev_trend.get(row["tag"])
+                    heat_gained = (heat_v - prev_entry["heat"]) if prev_entry else 0
+                    # Snapshot heat velocity is the primary signal; comment growth
+                    # and the new-vs-older post split are the fallback when there's
+                    # no prior snapshot yet (first 7d of a fresh deploy).
+                    if (prev_entry and heat_gained > 0) or (not prev_entry and (recent_new > older or comments > related)):
+                        trend = "up"
+                    elif (prev_entry and heat_gained < 0) or (not prev_entry and older > recent_new):
+                        trend = "down"
+                    else:
+                        trend = "flat"
                     cached_topics.append({
                         "tag": row["tag"],
                         "post_count": related,
-                        "heat": int(row.get("heat") or 0),
-                        "trend": "up" if recent_new > older else ("down" if older > recent_new else "flat"),
+                        "heat": heat_v,
+                        "heatDelta": heat_gained,
+                        "trend": trend,
                     })
                 # Cold-start / sparse city: if the windowed board is empty, fall
                 # back to the all-time top tags so the rail is never blank.
@@ -31737,6 +33363,51 @@ class Handler(BaseHTTPRequestHandler):
         posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
         self.send_json({"tag": tag_clean, "items": posts, "viewer": {"id": viewer_id} if viewer_id else None, "canInteract": bool(viewer_id), "can_interact": bool(viewer_id)})
 
+    def api_funnel(self, conn: sqlite3.Connection) -> None:
+        """POST /api/funnel (B6 #6). Guest or logged-in. Records a whitelisted
+        client funnel event as a structured ACCESS_LOG line — no table, no PII.
+        Rate-limited by the generic 'write' bucket (see _rate_group_for)."""
+        viewer = self.current_session(conn)
+        user_id = viewer["user_id"] if viewer else ""
+        data = self.read_json()
+        event = str(data.get("event") or "").strip()
+        if event not in FUNNEL_EVENTS:
+            raise APIError("未知事件", 400, "invalid_event")
+        entity_type = str(data.get("entityType") or data.get("entity_type") or "").strip()[:40]
+        entity_id = str(data.get("entityId") or data.get("entity_id") or "").strip()[:64]
+        _funnel_log(event, user_id=user_id, entity_type=entity_type, entity_id=entity_id)
+        self.send_json({"ok": True})
+
+    def api_topic_follow(self, conn: sqlite3.Connection, tag: str, on: bool) -> None:
+        """POST/DELETE /api/topics/<tag>/follow (B6 #7). Follow / unfollow a
+        hashtag; the follow_digest task folds followed topics into the daily
+        summary. Tag is stored lowercased with any leading '#' stripped."""
+        user = self.require_user(conn)
+        tag_clean = unquote(tag or "").strip().lstrip("#").lower()[:80]
+        if not tag_clean:
+            raise APIError("话题不能为空", 400, "invalid_tag")
+        if on:
+            # UNIQUE(user_id, tag) makes this idempotent across both dialects.
+            conn.execute(
+                "INSERT OR IGNORE INTO topic_follows (user_id, tag, created_at) VALUES (?, ?, ?)",
+                (user["id"], tag_clean, now_iso()),
+            )
+        else:
+            conn.execute(
+                "DELETE FROM topic_follows WHERE user_id = ? AND tag = ?",
+                (user["id"], tag_clean),
+            )
+        self.send_json({"ok": True, "tag": tag_clean, "following": on})
+
+    def api_my_topic_follows(self, conn: sqlite3.Connection) -> None:
+        """GET /api/my/topic-follows (B6 #7): the caller's followed hashtags."""
+        user = self.require_user(conn)
+        rows = conn.execute(
+            "SELECT tag FROM topic_follows WHERE user_id = ? ORDER BY created_at DESC LIMIT 500",
+            (user["id"],),
+        ).fetchall()
+        self.send_json({"tags": [r["tag"] for r in rows]})
+
     def api_notifications(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         user = self.require_user(conn)
         kind = query.get("kind") or "all"
@@ -31809,9 +33480,15 @@ class Handler(BaseHTTPRequestHandler):
                 return dict(conn.execute("SELECT * FROM conversations WHERE id = ?", (conv["id"],)).fetchone())
             return conv
         conv_id = str(uuid.uuid4())
+        now = now_iso()
+        # user_id is always the caller who is opening this DM (marketplace inquiry
+        # or api_create_conversation) — record it as the initiator so the daily
+        # active-DM quota can count only conversations this user started, and set
+        # a stable created_at (updated_at moves on every reply, so the quota
+        # window must not key off it).
         conn.execute(
-            "INSERT INTO conversations (id, participant_a, participant_b, updated_at) VALUES (?, ?, ?, ?)",
-            (conv_id, a, b, now_iso()),
+            "INSERT INTO conversations (id, participant_a, participant_b, initiator_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (conv_id, a, b, user_id, now, now),
         )
         return dict(conn.execute("SELECT * FROM conversations WHERE id = ?", (conv_id,)).fetchone())
 
@@ -31940,13 +33617,21 @@ class Handler(BaseHTTPRequestHandler):
         for r in rows:
             peer_id = r["participant_b"] if r["participant_a"] == user["id"] else r["participant_a"]
             last = last_messages.get(r["id"])
+            # A user's manual-unread flag surfaces the thread as unread even with
+            # zero unread inbound messages (e.g. they flagged an empty thread).
+            manual_flag = int(
+                (r["manual_unread_a"] if r["participant_a"] == user["id"] else r["manual_unread_b"]) or 0
+            )
+            unread = unread_map.get(r["id"], 0)
+            if manual_flag and unread < 1:
+                unread = 1
             items.append(serialize_conversation(dict(r), {
                 "peer": users_map.get(peer_id),
                 "last_message": serialize_message(last, {
                     "media": media_by_last.get(last["id"], []),
                     "attachments": attachments_by_last.get(last["id"], []),
                 }) if last else None,
-                "unread_count": unread_map.get(r["id"], 0),
+                "unread_count": unread,
             }))
         self.send_json({"items": items, "next_cursor": next_cursor, "nextCursor": next_cursor})
 
@@ -31988,14 +33673,20 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchone()
         if not existing_conv:
             since = _reputation_now_window(1)
+            # Count only conversations THIS user actively started in the last 24h.
+            # The old query keyed off (participant_a OR participant_b) + updated_at,
+            # so a passive inbound DM, a reply, or a delete that bumped updated_at
+            # all wrongly burned the sender's quota. initiator_id is written only
+            # for the opener (see _conversation_for); use created_at so replies to
+            # an existing thread never re-tick the window.
             today_opened = conn.execute(
                 """
                 SELECT COUNT(*) AS c
                   FROM conversations
-                 WHERE (participant_a = ? OR participant_b = ?)
-                   AND updated_at >= ?
+                 WHERE initiator_id = ?
+                   AND created_at >= ?
                 """,
-                (user["id"], user["id"], since),
+                (user["id"], since),
             ).fetchone()["c"]
             if int(today_opened or 0) >= int(controls["dm_daily_limit"] or 0):
                 raise APIError("今日主动私信次数已达当前信任额度。", 429, "DM_LIMIT_REACHED")
@@ -32463,6 +34154,10 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("无权操作", 403, "forbidden")
         data = self.read_json()
         is_read = bool(data.get("is_read", True))
+        # Per-participant manual-unread flag lets a user mark a conversation
+        # unread even when it has no inbound message to flip (the old code's
+        # is_read=false branch silently no-op'd those). a/b follows participant_a.
+        manual_col = "manual_unread_a" if row["participant_a"] == user["id"] else "manual_unread_b"
         if is_read:
             conn.execute(
                 "UPDATE messages SET is_read = 1 WHERE conversation_id = ? AND sender_id != ?",
@@ -32479,7 +34174,16 @@ class Handler(BaseHTTPRequestHandler):
                 """,
                 (user["id"], conv_id),
             )
+            # Reading clears any manual-unread flag this user set earlier.
+            conn.execute(
+                f"UPDATE conversations SET {manual_col} = 0 WHERE id = ?", (conv_id,)
+            )
         else:
+            # Flag manual-unread for this participant regardless of whether an
+            # inbound message exists — this is the whole point of the fix.
+            conn.execute(
+                f"UPDATE conversations SET {manual_col} = 1 WHERE id = ?", (conv_id,)
+            )
             latest_inbound = conn.execute(
                 """
                 SELECT *
@@ -32534,7 +34238,24 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT COUNT(*) AS c FROM notifications WHERE user_id = ? AND deleted_at IS NULL AND is_read = 0",
             (user["id"],),
         ).fetchone()
-        self.send_json({"ok": True, "unread_count": int(unread_row["c"] if unread_row else 0)})
+        # This conversation's own unread count so the client can reconcile the
+        # thread's badge: inbound unread messages, floored at 1 when the user has
+        # a manual-unread flag set (an empty/no-inbound thread still shows unread).
+        conv_unread = int(conn.execute(
+            "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ? AND deleted_at IS NULL "
+            "AND is_read = 0 AND sender_id != ?",
+            (conv_id, user["id"]),
+        ).fetchone()["c"] or 0)
+        manual_flag = int(conn.execute(
+            f"SELECT {manual_col} AS f FROM conversations WHERE id = ?", (conv_id,)
+        ).fetchone()["f"] or 0)
+        if manual_flag and conv_unread < 1:
+            conv_unread = 1
+        self.send_json({
+            "ok": True,
+            "unread_count": int(unread_row["c"] if unread_row else 0),
+            "unreadCount": conv_unread,
+        })
 
     # ---- S3 / unified uploads ----
 
@@ -35864,6 +37585,23 @@ class Handler(BaseHTTPRequestHandler):
         elif action in ("dismiss", "ignore", "restore"):
             restore_auto_hidden_content(conn, kind, target_id)
             new_status, action = "dismissed", "dismiss"
+            # A dismissed report was judged unfounded — give the post its heat
+            # back. report_count is the ranking penalty (heat -10/report, quality
+            # gate); a bogus/mass report shouldn't durably suppress the post. Roll
+            # back exactly the still-open post reports we're about to close, clamped
+            # at 0. Only 'post' has a denormalized report_count that ranking reads.
+            if kind == "post":
+                open_reports = int((conn.execute(
+                    "SELECT COUNT(*) AS c FROM reports WHERE target_kind = 'post' AND target_id = ? AND status = 'open'",
+                    (target_id,),
+                ).fetchone() or {"c": 0})["c"])
+                if open_reports > 0:
+                    conn.execute(
+                        "UPDATE posts SET report_count = CASE WHEN report_count >= ? THEN report_count - ? ELSE 0 END, "
+                        "updated_at = ? WHERE id = ?",
+                        (open_reports, open_reports, now_iso(), target_id),
+                    )
+                    invalidate_public_ranking_caches()
         else:
             raise APIError("未知的处理动作", 400, "invalid_action")
         conn.execute(
@@ -36136,6 +37874,26 @@ def _nightly_active_days(conn: sqlite3.Connection, start_iso: str, end_iso: str,
     return days
 
 
+def guide_stale_article_count(conn: sqlite3.Connection, country: str = "jp") -> int:
+    """已发布文章中 verified_at + stale_after_days 已过期的条数。日期加减在 Python
+    里做以兼容 PG/SQLite。与 api_admin_guide_stale_queue 同口径。"""
+    rows = conn.execute(
+        "SELECT verified_at, stale_after_days FROM guide_articles "
+        "WHERE country = ? AND status = 'published' AND verified_at <> '' AND stale_after_days > 0",
+        (country,),
+    ).fetchall()
+    today = datetime.now(timezone.utc).date()
+    count = 0
+    for r in rows:
+        checked = parse_iso(str(r["verified_at"] or ""))
+        if checked is None:
+            continue
+        due = checked.date() + timedelta(days=int(r["stale_after_days"] or 0))
+        if (today - due).days >= 0:
+            count += 1
+    return count
+
+
 def run_nightly_report(conn: sqlite3.Connection, jst_day: str | None = None) -> dict[str, Any]:
     """算某个 JST 日(默认昨天)的核心指标。纯读、可单测;返回结构化数字 + 纯文本报告。"""
     if jst_day:
@@ -36201,6 +37959,9 @@ def run_nightly_report(conn: sqlite3.Connection, jst_day: str | None = None) -> 
     )
     ai_alert = KAIX_REPORT_AI_MSG_ALERT > 0 and ai_user_messages > KAIX_REPORT_AI_MSG_ALERT
 
+    # Guide 过期文章数(verified_at + stale_after_days 已过):提示编辑部复核政策类内容。
+    stale_articles = guide_stale_article_count(conn, "jp")
+
     lines = [
         f"Machi 夜间指标 — {day_label}(JST)",
         "",
@@ -36210,6 +37971,7 @@ def run_nightly_report(conn: sqlite3.Connection, jst_day: str | None = None) -> 
         f"W1 回访率: {w1_rate * 100:.1f}% ({w1_retained}/{len(cohort)},cohort=8–14 天前注册)",
         f"保存搜索: 共 {saved_total}(昨日 +{saved_new})",
         f"Machi AI user 消息: {ai_user_messages} 条" + (f"(⚠ 异常: 超过阈值 {KAIX_REPORT_AI_MSG_ALERT})" if ai_alert else ""),
+        f"Guide 过期待复核文章: {stale_articles} 篇" + ("(⚠ 请到后台 内容体检 → 过期队列 处理)" if stale_articles else ""),
         "",
         "口径: 价值行为=预约/发DM/建保存搜索/journey步骤done/发帖/评论/当日AI消息≥2条;已排除种子与官方账号。",
     ]
@@ -36226,6 +37988,7 @@ def run_nightly_report(conn: sqlite3.Connection, jst_day: str | None = None) -> 
         "saved_search_new": saved_new,
         "ai_user_messages": ai_user_messages,
         "ai_alert": ai_alert,
+        "stale_articles": stale_articles,
         "text": "\n".join(lines),
     }
 

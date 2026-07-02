@@ -1185,14 +1185,18 @@ def import_partner_listings(
         conn.execute("DELETE FROM listing_media WHERE listing_id = ?", (listing_id,))
         if not media_items:
             media_items = [{"url": "", "thumbnail_url": ""}]  # placeholder cover handled by client fallback art
-        for idx, m in enumerate(media_items):
+        # m_idx (not idx): the outer enumerate at ~1117 binds idx to the ROW
+        # index that progress_callback(idx + 1, ...) reports below. Shadowing it
+        # here left idx pointing at the last media index, so every row's progress
+        # was misreported as (media_count) instead of the true row number.
+        for m_idx, m in enumerate(media_items):
             url = m.get("url") or ""
             if not url:
                 continue
             conn.execute(
                 "INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)"
                 " VALUES (?, ?, 'image', ?, ?, ?, ?, ?)",
-                (str(uuid.uuid4()), listing_id, url, m.get("thumbnail_url") or url, idx, 1 if idx == 0 else 0, now),
+                (str(uuid.uuid4()), listing_id, url, m.get("thumbnail_url") or url, m_idx, 1 if m_idx == 0 else 0, now),
             )
 
         # ── attributes (public) + internal markers ────────────────────────────

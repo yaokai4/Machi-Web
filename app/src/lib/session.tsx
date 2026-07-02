@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { api, writeToken, APIError } from "./api";
+import { api, writeToken, APIError, SESSION_BUMP_KEY, registerUnauthorizedHandler } from "./api";
 import { useSession, useSettings } from "./store";
 
 // Only an explicit 401/403 means "you are not (or no longer) logged in". Every
@@ -69,10 +69,33 @@ export function SessionBootstrap({ children }: { children: React.ReactNode }) {
         });
     };
 
+    // A 401 from any API call means the cookie session is gone — drop the
+    // in-memory user right away instead of waiting for the next probe.
+    registerUnauthorizedHandler(() => {
+      if (cancelled) return;
+      writeToken(null);
+      setUser(null);
+    });
+
+    // Cross-tab sync: another tab logging in / out writes machi.session.bump,
+    // which fires here. Re-probe so this tab picks up the new session state.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key !== SESSION_BUMP_KEY) return;
+      if (retryTimer) clearTimeout(retryTimer);
+      probe(0);
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener("storage", onStorage);
+    }
+
     probe(0);
     return () => {
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
+      registerUnauthorizedHandler(null);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("storage", onStorage);
+      }
     };
   }, [setUser, setStatus, setSettings]);
 

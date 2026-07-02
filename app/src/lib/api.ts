@@ -60,6 +60,30 @@ import type {
 const TOKEN_KEY = "machi.token";
 const LEGACY_TOKEN_KEY = "kaix.token";
 
+// Cross-tab session signal. Writing this key fires a `storage` event in EVERY
+// OTHER tab of the same origin (never the writer's own tab), which
+// SessionBootstrap listens for to re-probe the session — so logging in / out in
+// one tab reflects in the others without a manual refresh.
+export const SESSION_BUMP_KEY = "machi.session.bump";
+
+export function bumpSessionSignal(): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(SESSION_BUMP_KEY, String(Date.now()));
+  } catch {
+    // quota / privacy mode — non-fatal
+  }
+}
+
+// The session store lives in `store.ts`; wiring it in via a registered callback
+// (instead of a static import) keeps api.ts free of a store dependency and
+// avoids any import cycle. SessionBootstrap registers this on mount so a 401
+// anywhere can drop the in-memory user immediately, not just the token.
+let onUnauthorized: (() => void) | null = null;
+export function registerUnauthorizedHandler(handler: (() => void) | null): void {
+  onUnauthorized = handler;
+}
+
 export const apiBase = ""; // requests proxied through next.config rewrites
 
 export class APIError extends Error {
@@ -659,6 +683,14 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
     if (res.status === 401) {
       payload = { code: "AUTH_REQUIRED", message: "请登录后继续" };
       writeToken(null);
+      // Drop the in-memory user too, so guarded UI reacts immediately instead of
+      // waiting for the next session probe. Best-effort; never let it mask the
+      // real API error.
+      try {
+        onUnauthorized?.();
+      } catch {
+        // ignore
+      }
     }
     throw new APIError(payload, res.status);
   }
@@ -830,6 +862,7 @@ export const api = {
   async login(handle: string, password: string, captcha?: KXCaptchaAnswer): Promise<{ token: string; user: KXUser }> {
     const data = await request<{ token: string; user: KXUser }>("POST", "/api/auth/login", { handle, password, ...(captcha ?? {}) });
     writeToken(data.token);
+    bumpSessionSignal();
     return data;
   },
   async googleAuthStart(client: "web" | "ios" = "web", redirect = "/home"): Promise<GoogleAuthStartResult> {
@@ -863,6 +896,7 @@ export const api = {
   }) {
     const data = await request<{ token: string; user: KXUser }>("POST", "/api/auth/register", payload);
     writeToken(data.token);
+    bumpSessionSignal();
     return data;
   },
   async checkUsername(username: string): Promise<{ available: boolean; message: string; code?: string }> {
@@ -931,7 +965,10 @@ export const api = {
     captcha_code?: string;
   }): Promise<LoginStartResult> {
     const data = await request<LoginStartResult>("POST", "/api/auth/login/start", payload);
-    if (data.requires_code === false && data.token) writeToken(data.token);
+    if (data.requires_code === false && data.token) {
+      writeToken(data.token);
+      bumpSessionSignal();
+    }
     return data;
   },
   // Step 2 of two-step login: exchange a valid code for a session.
@@ -941,6 +978,7 @@ export const api = {
       code,
     });
     writeToken(data.token);
+    bumpSessionSignal();
     return data;
   },
   // Change the current user's password. The server verifies the old password,
@@ -969,6 +1007,7 @@ export const api = {
       await request<void>("POST", "/api/auth/logout");
     } finally {
       writeToken(null);
+      bumpSessionSignal();
     }
   },
   async me(): Promise<KXUser> {
@@ -992,6 +1031,7 @@ export const api = {
   async deleteMe(): Promise<void> {
     await request<void>("DELETE", "/api/auth/me");
     writeToken(null);
+    bumpSessionSignal();
   },
 
   // ---- bootstrap ----
@@ -1535,8 +1575,13 @@ export const api = {
   async topics(): Promise<{ topics: KXTrendingTopic[]; items: KXTrendingTopic[] }> {
     return request("GET", `/api/topics`);
   },
-  async topic(tag: string): Promise<{ tag: string; items: KXPost[] }> {
+  async topic(tag: string): Promise<{ tag: string; items: KXPost[]; following?: boolean }> {
     return request("GET", `/api/topics/${encodeURIComponent(tag.replace(/^#/, ""))}`);
+  },
+  // Follow / unfollow a topic tag. 404 on older servers => the caller hides the
+  // button (feature not yet deployed) rather than surfacing an error.
+  async followTopic(tag: string, on: boolean): Promise<void> {
+    await request<void>(on ? "POST" : "DELETE", `/api/topics/${encodeURIComponent(tag.replace(/^#/, ""))}/follow`);
   },
 
   // ---- notifications ----
@@ -2144,6 +2189,12 @@ export const api = {
   },
   async membershipInsights(): Promise<KXMembershipInsights> {
     return request("GET", `/api/membership/insights`);
+  },
+  // Per-group monthly high-trust publishing quota for the current member, so the
+  // compose form can show "N left this month" before the paywall. Returns 404 on
+  // older servers — callers should treat that as "hide the hint" (not an error).
+  async membershipListingQuota(): Promise<{ groups: Array<{ key: string; label: string; used: number; limit: number; remaining: number | null }> }> {
+    return request("GET", `/api/my/membership/listing-quota`);
   },
   async createPaymentOrder(provider: PaymentProvider, planKey?: string): Promise<KXCreateOrderResult> {
     return request("POST", `/api/payments/create-order`, { provider, clientType: "web", planKey });

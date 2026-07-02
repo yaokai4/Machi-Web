@@ -2,10 +2,12 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
+import { useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Bookmark, CheckCircle2, Clock3, ExternalLink, Eye, Loader2, Share2, ShieldCheck } from "lucide-react";
+import { Bookmark, CheckCircle2, Clock3, ExternalLink, Eye, Loader2, Languages, Share2, ShieldCheck } from "lucide-react";
 import { guide, type GuideArticle } from "@/lib/guide";
 import { GuideShell, GuideComingSoon, ArticleCard, categoryHref, useGuideCountry } from "@/components/guide/GuideKit";
+import { MarkdownLite } from "@/components/guide/MarkdownLite";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { relativeTime } from "@/lib/format";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
@@ -92,20 +94,21 @@ export default function ArticleDetailClient({
   }
   const a = q.data.article;
   const related = q.data.related || [];
-  const paragraphs = (a.body || "").split(/\n{2,}/).filter((p) => p.trim());
 
   return (
     <GuideShell
       back={{ href: categoryHref(a.categoryKey), label: locale === "en" ? "Back to category" : locale === "ja" ? "カテゴリに戻る" : "返回分类" }}
       right={<ArticleRightRail related={related} />}
     >
+      <ReadingProgressBar />
+      {user ? <ReadingProgressReporter slug={a.slug} country={country} initialPercent={a.progressPercent || a.readingProgress?.progressPercent || 0} /> : null}
       <article className="px-4 py-4 sm:px-6">
         <div className="mb-2 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-kx-muted">
           <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-kx-accent">{locale === "en" ? "Guide" : locale === "ja" ? "ガイド" : "指南"}</span>
           <span>{a.authorName}</span>
           {a.publishedAt ? (
             <span className="inline-flex items-center gap-1">
-              <Clock3 className="h-3 w-3" /> {relativeTime(a.publishedAt)}
+              <Clock3 className="h-3 w-3" /> <time dateTime={a.publishedAt} suppressHydrationWarning>{relativeTime(a.publishedAt, locale)}</time>
             </span>
           ) : null}
           <span className="inline-flex items-center gap-1">
@@ -150,12 +153,10 @@ export default function ArticleDetailClient({
         />
         <ArticleTrustPanel article={a} locale={locale} />
 
-        <div className="mt-5 space-y-4 border-t border-kx-stroke/40 pt-5">
-          {paragraphs.map((p, i) => (
-            <p key={i} className="whitespace-pre-line text-[15px] leading-8 text-kx-text/90">
-              {p}
-            </p>
-          ))}
+        {locale !== "en" && locale !== "ja" ? null : <TranslationNotice locale={locale} />}
+
+        <div className="mt-5 border-t border-kx-stroke/40 pt-5">
+          <MarkdownLite body={a.body || ""} />
         </div>
 
         <div className="mt-8 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 text-xs leading-6 text-kx-muted">
@@ -174,6 +175,101 @@ export default function ArticleDetailClient({
         ) : null}
       </article>
     </GuideShell>
+  );
+}
+
+// A thin reading-progress bar pinned to the top of the article, driven by the
+// window scroll position. Pure presentation — token colors only.
+function ReadingProgressBar() {
+  const ref = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    let raf = 0;
+    const update = () => {
+      raf = 0;
+      const el = document.scrollingElement || document.documentElement;
+      const max = el.scrollHeight - el.clientHeight;
+      const pct = max > 0 ? Math.min(100, Math.max(0, (el.scrollTop / max) * 100)) : 0;
+      if (ref.current) ref.current.style.width = `${pct}%`;
+    };
+    const onScroll = () => {
+      if (!raf) raf = window.requestAnimationFrame(update);
+    };
+    update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+      if (raf) window.cancelAnimationFrame(raf);
+    };
+  }, []);
+  return (
+    <div className="sticky top-0 z-40 h-1 w-full bg-transparent" aria-hidden>
+      <div ref={ref} className="h-full bg-kx-accent transition-[width] duration-150 ease-out" style={{ width: "0%" }} />
+    </div>
+  );
+}
+
+// Reports the deepest scroll depth back to the server (throttled), so reading
+// progress persists across devices. Only ever escalates the stored percent
+// (never lowers it), and only fires when it advances by a meaningful step.
+function ReadingProgressReporter({
+  slug,
+  country,
+  initialPercent,
+}: {
+  slug: string;
+  country: string;
+  initialPercent: number;
+}) {
+  const reportedRef = useRef(Math.max(0, Math.min(100, initialPercent || 0)));
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    reportedRef.current = Math.max(reportedRef.current, Math.max(0, Math.min(100, initialPercent || 0)));
+  }, [initialPercent]);
+  useEffect(() => {
+    const send = (pct: number) => {
+      const rounded = Math.round(pct);
+      if (rounded <= reportedRef.current) return;
+      // Only escalate in >= 10-point steps, or when the reader reaches the end.
+      if (rounded < reportedRef.current + 10 && rounded < 95) return;
+      reportedRef.current = rounded;
+      guide.updateArticleProgress(slug, { country, progressPercent: rounded }).catch(() => {
+        /* progress is best-effort; a failed report must never disrupt reading */
+      });
+    };
+    const onScroll = () => {
+      if (timerRef.current) return;
+      timerRef.current = setTimeout(() => {
+        timerRef.current = null;
+        const el = document.scrollingElement || document.documentElement;
+        const max = el.scrollHeight - el.clientHeight;
+        const pct = max > 0 ? (el.scrollTop / max) * 100 : 0;
+        // Reaching the bottom of a page counts as fully read.
+        send(max > 0 && el.scrollTop >= max - 4 ? 100 : pct);
+      }, 1500);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [slug, country]);
+  return null;
+}
+
+// Shown on EN/JA guide articles: the full write-up is authored in Chinese, so
+// the localized view is a machine-assisted summary. Honest, non-blocking notice.
+function TranslationNotice({ locale }: { locale: string }) {
+  return (
+    <div className="mt-4 flex items-start gap-2 rounded-kx-lg border border-kx-accent/25 bg-kx-accentSoft/40 p-3 text-sm leading-6 text-kx-subtle">
+      <Languages className="mt-0.5 h-4 w-4 shrink-0 text-kx-accent" />
+      <span>
+        {locale === "en"
+          ? "The full version of this guide is currently written in Chinese. This is a localized summary — switch to 中文 for the complete text."
+          : "このガイドの完全版は現在中国語で提供しています。こちらは要約版です。全文は中文でご覧いただけます。"}
+      </span>
+    </div>
   );
 }
 

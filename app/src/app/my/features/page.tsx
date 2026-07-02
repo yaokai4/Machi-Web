@@ -42,7 +42,7 @@ type WorkbenchKey = Parameters<ReturnType<typeof useI18n>["t"]>[0];
 
 const WORK_ITEMS: { href: string; titleKey: WorkbenchKey; subtitleKey: WorkbenchKey; icon: LucideIcon; tone: string; badge: string }[] = [
   { href: "/listings/create", titleKey: "workbench_item_create_title", subtitleKey: "workbench_item_create_sub", icon: BriefcaseBusiness, tone: "text-blue-600 bg-blue-50", badge: "" },
-  { href: "/my/listings", titleKey: "workbench_item_listings_title", subtitleKey: "workbench_item_listings_sub", icon: ClipboardList, tone: "text-slate-700 bg-slate-100", badge: "" },
+  { href: "/my/listings", titleKey: "workbench_item_listings_title", subtitleKey: "workbench_item_listings_sub", icon: ClipboardList, tone: "text-kx-subtle bg-kx-soft", badge: "" },
   { href: "/my/saved-listings", titleKey: "workbench_item_saved_title", subtitleKey: "workbench_item_saved_sub", icon: Bookmark, tone: "text-emerald-600 bg-emerald-50", badge: "" },
   { href: "/my/saved-searches", titleKey: "workbench_item_saved_search_title", subtitleKey: "workbench_item_saved_search_sub", icon: BellRing, tone: "text-indigo-600 bg-indigo-50", badge: "" },
   { href: "/my/inquiries", titleKey: "workbench_item_inquiries_title", subtitleKey: "workbench_item_inquiries_sub", icon: MessageSquare, tone: "text-cyan-600 bg-cyan-50", badge: "leads" },
@@ -53,7 +53,7 @@ const WORK_ITEMS: { href: string; titleKey: WorkbenchKey; subtitleKey: Workbench
   { href: "/wallet", titleKey: "workbench_item_wallet_title", subtitleKey: "workbench_item_wallet_sub", icon: Coins, tone: "text-amber-600 bg-amber-50", badge: "" },
   { href: "/my/orders", titleKey: "workbench_item_orders_title", subtitleKey: "workbench_item_orders_sub", icon: CreditCard, tone: "text-pink-600 bg-pink-50", badge: "" },
   { href: "/membership", titleKey: "workbench_item_membership_title", subtitleKey: "workbench_item_membership_sub", icon: BadgeCheck, tone: "text-blue-700 bg-blue-50", badge: "membership" },
-  { href: "/settings", titleKey: "workbench_item_settings_title", subtitleKey: "workbench_item_settings_sub", icon: Settings, tone: "text-slate-700 bg-slate-100", badge: "" },
+  { href: "/settings", titleKey: "workbench_item_settings_title", subtitleKey: "workbench_item_settings_sub", icon: Settings, tone: "text-kx-subtle bg-kx-soft", badge: "" },
 ];
 
 // 个人生活管理工具。原先散落在 Guide(现 Machi AI)首页,现与 iOS 的「我的工作台」
@@ -125,32 +125,32 @@ export default function MyFeaturesPage() {
         >
           <ArrowLeft className="h-5 w-5" />
         </button>
-        <section className="rounded-[28px] border border-slate-200/70 bg-white/90 p-5 shadow-[0_18px_58px_-42px_rgba(15,23,42,0.55)]">
+        <section className="rounded-[28px] border border-kx-stroke/50 bg-kx-card/90 p-5 shadow-kx-float">
           <div className="flex items-start gap-4">
             <Avatar user={user || undefined} size={64} />
             <div className="min-w-0 flex-1">
               <div className="flex flex-wrap items-center gap-2">
-                <h1 className="truncate text-2xl font-black text-slate-950">{t("workbench_title")}</h1>
+                <h1 className="truncate text-2xl font-black text-kx-text">{t("workbench_title")}</h1>
                 {showOfficialBadge(user) ? <OfficialBadge /> : showVerifiedBadge(user) ? <VerifiedBadge /> : null}
               </div>
-              <p className="mt-1 truncate text-sm font-semibold text-slate-500">@{user?.handle || "machi"}</p>
-              <div className="mt-3 flex flex-wrap gap-2 text-xs font-black text-slate-600">
-                <span className="rounded-full bg-slate-100 px-3 py-1">{t("workbench_stat_posts")} {compactNumber(user?.post_count || 0)}</span>
-                <span className="rounded-full bg-slate-100 px-3 py-1">{t("workbench_stat_following")} {compactNumber(user?.following_count || 0)}</span>
-                <span className="rounded-full bg-slate-100 px-3 py-1">{t("workbench_stat_followers")} {compactNumber(user?.follower_count || 0)}</span>
-                {region ? <span className="rounded-full bg-blue-50 px-3 py-1 text-blue-700">{region.country_emoji} {regionDisplayName(region, locale)}</span> : null}
+              <p className="mt-1 truncate text-sm font-semibold text-kx-muted">@{user?.handle || "machi"}</p>
+              <div className="mt-3 flex flex-wrap gap-2 text-xs font-black text-kx-subtle">
+                <span className="rounded-full bg-kx-soft px-3 py-1">{t("workbench_stat_posts")} {compactNumber(user?.post_count || 0)}</span>
+                <span className="rounded-full bg-kx-soft px-3 py-1">{t("workbench_stat_following")} {compactNumber(user?.following_count || 0)}</span>
+                <span className="rounded-full bg-kx-soft px-3 py-1">{t("workbench_stat_followers")} {compactNumber(user?.follower_count || 0)}</span>
+                {region ? <span className="rounded-full bg-kx-accentSoft px-3 py-1 text-kx-accent">{region.country_emoji} {regionDisplayName(region, locale)}</span> : null}
               </div>
             </div>
-            <Link href="/settings" className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-slate-200 bg-white text-slate-700 shadow-sm">
+            <Link href="/settings" className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-kx-stroke/50 bg-kx-card text-kx-subtle shadow-sm">
               <UserRoundCog className="h-5 w-5" />
             </Link>
           </div>
         </section>
 
         {merchantMetrics ? (
-          <section className="rounded-[26px] border border-teal-200/60 bg-gradient-to-br from-teal-50/80 via-white to-emerald-50/60 p-4">
+          <section className="rounded-[26px] border border-teal-200/60 bg-gradient-to-br from-teal-50/80 via-white to-emerald-50/60 p-4 dark:border-kx-accent/25 dark:from-kx-accentSoft dark:via-kx-card dark:to-kx-accentSoft/60">
             <div className="flex flex-wrap items-center justify-between gap-2 px-1">
-              <p className="flex items-center gap-2 text-sm font-black text-slate-950">
+              <p className="flex items-center gap-2 text-sm font-black text-kx-text">
                 <Store className="h-4 w-4 text-teal-700" />
                 {t("workbench_business_overview")}
                 {dashboard.data?.business?.verification_status === "verified" ? (
@@ -175,21 +175,21 @@ export default function MyFeaturesPage() {
         ) : null}
 
         <div>
-          <h2 className="mb-2 px-1 text-sm font-black text-slate-500">{t("workbench_section_life")}</h2>
+          <h2 className="mb-2 px-1 text-sm font-black text-kx-muted">{t("workbench_section_life")}</h2>
           <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {LIFE_ADMIN_ITEMS.map((item) => {
               const Icon = item.icon;
               return (
-                <Link key={item.href} href={item.href} className="group rounded-[22px] border border-slate-200/70 bg-white p-4 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-emerald-200">
+                <Link key={item.href} href={item.href} className="group rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 shadow-kx-card transition hover:-translate-y-0.5 hover:border-kx-accent/40">
                   <div className="flex items-center gap-3">
                     <span className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${item.tone}`}>
                       <Icon className="h-5 w-5" />
                     </span>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-black text-slate-950">{t(item.titleKey)}</p>
-                      <p className="mt-1 truncate text-xs font-semibold text-slate-500">{t(item.subtitleKey)}</p>
+                      <p className="truncate text-sm font-black text-kx-text">{t(item.titleKey)}</p>
+                      <p className="mt-1 truncate text-xs font-semibold text-kx-muted">{t(item.subtitleKey)}</p>
                     </div>
-                    <ChevronRight className="h-4 w-4 shrink-0 text-slate-300 transition group-hover:text-emerald-500" />
+                    <ChevronRight className="h-4 w-4 shrink-0 text-kx-subtle/50 transition group-hover:text-kx-accent" />
                   </div>
                 </Link>
               );
@@ -197,7 +197,7 @@ export default function MyFeaturesPage() {
           </section>
         </div>
 
-        <h2 className="px-1 text-sm font-black text-slate-500">{t("workbench_section_listings")}</h2>
+        <h2 className="px-1 text-sm font-black text-kx-muted">{t("workbench_section_listings")}</h2>
         <section className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {WORK_ITEMS.map((item) => {
             const Icon = item.icon;
@@ -215,9 +215,9 @@ export default function MyFeaturesPage() {
                   ? "bg-amber-50 text-amber-700"
                   : merchantBadge === t("workbench_badge_rejected") || merchantBadge === t("workbench_badge_suspended")
                     ? "bg-rose-50 text-rose-700"
-                    : "bg-slate-100 text-slate-500";
+                    : "bg-kx-soft text-kx-muted";
             return (
-              <Link key={item.href} href={item.href} className="group rounded-[22px] border border-slate-200/70 bg-white p-4 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-blue-200">
+              <Link key={item.href} href={item.href} className="group rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 shadow-kx-card transition hover:-translate-y-0.5 hover:border-kx-accent/40">
                 <div className="flex items-center gap-3">
                   <span className={`relative grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${item.tone}`}>
                     <Icon className="h-5 w-5" />
@@ -228,7 +228,7 @@ export default function MyFeaturesPage() {
                     ) : null}
                   </span>
                   <div className="min-w-0 flex-1">
-                    <p className="flex items-center gap-1.5 truncate text-sm font-black text-slate-950">
+                    <p className="flex items-center gap-1.5 truncate text-sm font-black text-kx-text">
                       {t(item.titleKey)}
                       {merchantBadge ? (
                         <span className={`rounded-full px-1.5 py-0.5 text-[10px] font-black ${badgeTone}`}>
@@ -236,9 +236,9 @@ export default function MyFeaturesPage() {
                         </span>
                       ) : null}
                     </p>
-                    <p className="mt-1 truncate text-xs font-semibold text-slate-500">{t(item.subtitleKey)}</p>
+                    <p className="mt-1 truncate text-xs font-semibold text-kx-muted">{t(item.subtitleKey)}</p>
                   </div>
-                  <ChevronRight className="h-4 w-4 shrink-0 text-slate-300 transition group-hover:text-blue-500" />
+                  <ChevronRight className="h-4 w-4 shrink-0 text-kx-subtle/50 transition group-hover:text-kx-accent" />
                 </div>
               </Link>
             );
@@ -251,14 +251,14 @@ export default function MyFeaturesPage() {
 
 function MiniMetric({ icon: Icon, title, value, highlight }: { icon: LucideIcon; title: string; value: string; highlight?: boolean }) {
   return (
-    <div className={`rounded-[20px] border bg-white p-4 ${highlight ? "border-rose-200 ring-1 ring-rose-100" : "border-slate-200/70"}`}>
+    <div className={`rounded-[20px] border bg-kx-card p-4 ${highlight ? "border-rose-200 ring-1 ring-rose-100 dark:border-rose-500/40 dark:ring-rose-500/20" : "border-kx-stroke/50"}`}>
       <div className="flex items-center gap-3">
-        <span className={`grid h-10 w-10 place-items-center rounded-2xl ${highlight ? "bg-rose-50 text-rose-600" : "bg-slate-100 text-slate-700"}`}>
+        <span className={`grid h-10 w-10 place-items-center rounded-2xl ${highlight ? "bg-rose-50 text-rose-600 dark:bg-rose-500/15" : "bg-kx-soft text-kx-subtle"}`}>
           <Icon className="h-5 w-5" />
         </span>
         <div>
-          <p className="text-xs font-black text-slate-400">{title}</p>
-          <p className={`mt-1 text-sm font-black ${highlight ? "text-rose-600" : "text-slate-950"}`}>{value}</p>
+          <p className="text-xs font-black text-kx-muted">{title}</p>
+          <p className={`mt-1 text-sm font-black ${highlight ? "text-rose-600 dark:text-rose-400" : "text-kx-text"}`}>{value}</p>
         </div>
       </div>
     </div>

@@ -71,6 +71,10 @@ CREATE TABLE IF NOT EXISTS posts (
 
 CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_posts_created ON posts(created_at);
+-- NOTE: the ranking columns (like_count/comment_count/repost_count/bookmark_count/
+-- hot_score via migration 85, last_activity_at via migration 86) and their indexes
+-- (idx_posts_hot, idx_posts_last_activity) are added by MIGRATIONS, not here — this
+-- table CREATE predates them and fresh DBs pick them up through the migration chain.
 
 CREATE TABLE IF NOT EXISTS post_tags (
     post_id TEXT NOT NULL,
@@ -139,6 +143,19 @@ CREATE TABLE IF NOT EXISTS follows (
     created_at TEXT NOT NULL,
     UNIQUE(follower_id, following_id)
 );
+
+-- Topic (hashtag) subscriptions. A user follows a bare tag (no leading '#');
+-- the follow_digest task rolls new posts under followed tags into the daily
+-- "你关注的话题" summary. Tag is stored lowercased, matching post_tags.
+CREATE TABLE IF NOT EXISTS topic_follows (
+    user_id TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(user_id, tag)
+);
+
+CREATE INDEX IF NOT EXISTS idx_topic_follows_user ON topic_follows(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_topic_follows_tag ON topic_follows(tag);
 
 CREATE TABLE IF NOT EXISTS blocks (
     id TEXT PRIMARY KEY,
@@ -1385,6 +1402,27 @@ CREATE TABLE IF NOT EXISTS partner_contacts (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_partner_contacts_partner ON partner_contacts(partner_key, sort_order);
+
+-- 热搜/热榜 ranking snapshots: the hot-score refresher writes the top-N tags per
+-- scope+window every ~10 min so rankDelta (this rank vs the previous snapshot's)
+-- and velocity (this window's heat vs the previous equal-length window's) become
+-- real instead of hard-coded 0. Retained ~7 days; the refresher prunes older rows.
+-- NOTE: "window" and "rank" are reserved words in PostgreSQL (window functions),
+-- so they MUST be double-quoted everywhere they appear as column identifiers —
+-- in this DDL, the indexes, and every INSERT/SELECT against this table. SQLite
+-- accepts the same double-quoted identifiers, so the quoting is portable.
+CREATE TABLE IF NOT EXISTS topic_rank_snapshots (
+    scope TEXT NOT NULL,
+    "window" TEXT NOT NULL,
+    tag TEXT NOT NULL,
+    "rank" INTEGER NOT NULL,
+    heat INTEGER NOT NULL DEFAULT 0,
+    captured_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_topic_rank_snapshots_lookup
+    ON topic_rank_snapshots(scope, "window", captured_at);
+CREATE INDEX IF NOT EXISTS idx_topic_rank_snapshots_tag
+    ON topic_rank_snapshots(scope, "window", tag, captured_at);
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -4531,6 +4569,159 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         """
         -- backend: postgres
         ALTER TABLE guide_user_profiles ADD COLUMN IF NOT EXISTS arrival_stage TEXT;
+        """,
+    ),
+    (
+        92,
+        "conversations: initiator_id (真实主动私信配额) + created_at + manual_unread flags",
+        # initiator_id records who *opened* the DM so the daily active-DM quota
+        # counts only conversations this user started (old code counted any
+        # conversation the user touched — passive/replied/bumped — because it
+        # keyed off updated_at + either participant). participant_a is the
+        # sorted-smaller id, NOT the creator, so we cannot backfill it; old rows
+        # keep '' and simply don't count toward the quota (they're outside the
+        # 24h window anyway). created_at gives the quota a stable window anchor
+        # (updated_at moves on every reply); backfilled from updated_at so a
+        # pre-existing row has a sane, non-moving value. manual_unread_{a,b} let
+        # a user flag a conversation unread even when it has no inbound message
+        # (the old is_read=false path silently no-op'd those). Plain ADD COLUMN
+        # runs on both backends here (fresh version ⇒ no pre-existing column);
+        # mirrors migrations 85/86.
+        """
+        ALTER TABLE conversations ADD COLUMN initiator_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE conversations ADD COLUMN created_at TEXT NOT NULL DEFAULT '';
+        ALTER TABLE conversations ADD COLUMN manual_unread_a INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE conversations ADD COLUMN manual_unread_b INTEGER NOT NULL DEFAULT 0;
+        UPDATE conversations SET created_at = updated_at WHERE COALESCE(created_at, '') = '';
+        """,
+    ),
+    (
+        93,
+        "posts: always-populate last_activity_at + index it for the 正在发生 radar",
+        # The 正在发生 radar now filters+sorts on the bare last_activity_at column
+        # (no COALESCE/NULLIF), so every live post must carry a real value.
+        # Migration 86 only stamped posts that HAD comments; posts with none kept
+        # '' and would sort/filter out under the bare-column query. Backfill those
+        # from created_at (activity == creation when nothing else happened) and add
+        # the covering index. Both statements are idempotent (only touches empty
+        # rows; IF NOT EXISTS on the index) and run on SQLite + Postgres alike.
+        """
+        UPDATE posts SET last_activity_at = created_at
+         WHERE COALESCE(last_activity_at, '') = '';
+        CREATE INDEX IF NOT EXISTS idx_posts_last_activity ON posts(status, last_activity_at);
+        """,
+    ),
+    (
+        94,
+        "interactions: dedup + UNIQUE(target_id,user_id,kind) to kill double-counts",
+        # A UNIQUE constraint on (target_id, user_id, kind) makes the write path
+        # idempotent (INSERT ... ON CONFLICT DO NOTHING) and closes the
+        # check-then-insert race that could double-count a like/收藏/repost under
+        # concurrency. Fresh DBs already have this as an inline table constraint;
+        # this migration retrofits existing SQLite dev DBs and production Postgres.
+        # Must DELETE duplicate rows first (keeping one per group) or the unique
+        # index creation fails. The dedup keeps the lowest id per group — portable
+        # correlated NOT EXISTS, no window functions (SQLite-safe).
+        """
+        DELETE FROM interactions
+         WHERE EXISTS (
+             SELECT 1 FROM interactions d
+              WHERE d.target_id = interactions.target_id
+                AND d.user_id = interactions.user_id
+                AND d.kind = interactions.kind
+                AND d.id < interactions.id
+         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_interactions_unique
+            ON interactions(target_id, user_id, kind);
+        """,
+    ),
+    (
+        95,
+        "posts: hot_score_engaged (engagement-only heat) for de-inflated 热搜 tags",
+        # 热搜 tag heat summed hot_score, which bakes in the new-post freshness
+        # "曝光分". A flood of brand-new posts under a tag could inflate its rank on
+        # freshness alone. hot_score_engaged is the SAME heat WITHOUT the freshness
+        # term (engagement × decay × member × seed) — the hot_score refresher keeps
+        # both columns; tag heat now sums this one. Seeded here to the current
+        # engagement baseline so tag ranking is sane before the first refresh tick.
+        """
+        ALTER TABLE posts ADD COLUMN hot_score_engaged REAL NOT NULL DEFAULT 0;
+        UPDATE posts SET hot_score_engaged =
+            (like_count * 1.0
+             + comment_count * 3.0
+             + repost_count * 5.0
+             + bookmark_count * 4.0
+             - COALESCE(report_count, 0) * 10.0)
+            * (CASE WHEN COALESCE(is_seed_content, 0) = 1 THEN 0.6 ELSE 1.0 END);
+        """,
+    ),
+    (
+        96,
+        "topic_rank_snapshots: 热搜/热榜 rank + heat history for real rankDelta / velocity",
+        # The hot-score refresher writes the top-N tags per scope+window every
+        # ~10 min into this table so api_discover_hot's rankDelta (was hard-coded
+        # 0) becomes (prev_rank - current_rank) and api_trending's velocity can
+        # compare this window's heat against the previous equal-length window's.
+        # Retained ~7 days; the refresher prunes older rows on each pass.
+        # "window" and "rank" are PostgreSQL reserved words → double-quoted here
+        # and in every query. IF NOT EXISTS everywhere so re-running is safe and
+        # a fresh DB (which already got the table from SCHEMA) records this as a
+        # no-op cleanly. Runs on SQLite + Postgres alike (both accept the quotes).
+        """
+        CREATE TABLE IF NOT EXISTS topic_rank_snapshots (
+            scope TEXT NOT NULL,
+            "window" TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            "rank" INTEGER NOT NULL,
+            heat INTEGER NOT NULL DEFAULT 0,
+            captured_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_topic_rank_snapshots_lookup
+            ON topic_rank_snapshots(scope, "window", captured_at);
+        CREATE INDEX IF NOT EXISTS idx_topic_rank_snapshots_tag
+            ON topic_rank_snapshots(scope, "window", tag, captured_at);
+        """,
+    ),
+    (
+        97,
+        "posts: weighted_interaction_score (互刷边际递减) feeds hot_score, display counts stay real",
+        # Anti mutual-刷: heat should not scale linearly with a ring of accounts
+        # liking each other. reconcile_post_counters recomputes this weighted sum
+        # from the interactions table — the Nth like/repost/bookmark from the SAME
+        # user to the SAME author within 30 days decays 1.0/0.5/0.25…, and a like
+        # from an account registered <48h ago counts 0.3×. hot_score reads THIS
+        # column for its like/repost/bookmark heat; the raw like_count/etc. columns
+        # stay exact real counts (what users see). Seeded to the un-weighted
+        # baseline (like*1 + repost*5 + bookmark*4, self-interactions excluded) so
+        # ranking is sane before the first reconcile pass fills the real weights.
+        """
+        ALTER TABLE posts ADD COLUMN weighted_interaction_score REAL NOT NULL DEFAULT 0;
+        UPDATE posts SET weighted_interaction_score =
+            COALESCE((SELECT
+                SUM(CASE i.kind WHEN 'like' THEN 1.0 WHEN 'repost' THEN 5.0 WHEN 'bookmark' THEN 4.0 ELSE 0.0 END)
+                FROM interactions i
+                WHERE i.target_id = posts.id
+                  AND i.kind IN ('like','repost','bookmark')
+                  AND i.user_id <> posts.author_id), 0.0);
+        """,
+    ),
+    (
+        98,
+        "topic_follows: 话题关注 (hashtag subscriptions) for the follow_digest",
+        # A user follows a bare tag (stored lowercased, no '#'); the daily
+        # follow_digest task folds new posts under followed tags into one
+        # "你关注的话题有 N 条新帖" line. UNIQUE(user_id, tag) makes follow
+        # idempotent. IF NOT EXISTS everywhere so a fresh DB (which already got
+        # the table from SCHEMA) records this as a clean no-op.
+        """
+        CREATE TABLE IF NOT EXISTS topic_follows (
+            user_id TEXT NOT NULL,
+            tag TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(user_id, tag)
+        );
+        CREATE INDEX IF NOT EXISTS idx_topic_follows_user ON topic_follows(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_topic_follows_tag ON topic_follows(tag);
         """,
     ),
 ]

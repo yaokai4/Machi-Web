@@ -71,7 +71,7 @@ def main() -> None:
     # and stub the network + JWT so _deliver() runs its full real path.
     server_apns.configure(server.db, server.DB_LOCK)
     server_apns._provider_jwt = lambda: "test-jwt"
-    server_apns._post_one = lambda token, payload, jwt: (SENT.append(payload), (200, ""))[1]
+    server_apns._post_one = lambda token, payload, jwt, **kw: (SENT.append(payload), (200, ""))[1]
 
     conn = server.db()
     try:

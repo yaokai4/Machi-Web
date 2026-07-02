@@ -383,7 +383,7 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
               <div className="flex items-center gap-1.5 text-sm">
                 <Avatar user={c.author || undefined} size={28} />
                 <span className="font-semibold">{c.author?.display_name}</span>
-                <span className="text-kx-muted text-xs">@{c.author?.handle} · {relativeTime(c.created_at)}</span>
+                <span className="text-kx-muted text-xs">@{c.author?.handle} · <time dateTime={c.created_at} suppressHydrationWarning>{relativeTime(c.created_at, locale)}</time></span>
               </div>
               <p className="mt-1.5 text-kx-text text-sm whitespace-pre-wrap break-words">{c.content}</p>
               {c.post ? (

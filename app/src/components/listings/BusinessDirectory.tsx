@@ -222,11 +222,11 @@ export function BusinessPublicPage({ businessId }: { businessId: string }) {
       </header>
       <main className="px-3 py-4 sm:px-4">
         <div className="mx-auto min-w-0 max-w-6xl space-y-4">
-          <section className="rounded-[24px] border border-slate-200/70 bg-white p-4 shadow-[0_14px_42px_rgba(15,23,42,0.06)] sm:p-5">
+          <section className="rounded-kx-sheet border border-slate-200/70 bg-white p-4 shadow-[0_14px_42px_rgba(15,23,42,0.06)] sm:p-5">
             <div className={business.cover_url ? "grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(260px,340px)] lg:items-stretch" : "min-w-0"}>
               <div className="min-w-0">
                 <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-start">
-                  <span className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-[22px] bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100 sm:h-24 sm:w-24">
+                  <span className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-kx-lg bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100 sm:h-24 sm:w-24">
                     {business.logo_url ? (
                       <Image src={business.logo_url} alt={business.business_name} width={96} height={96} className="h-full w-full object-cover" unoptimized />
                     ) : (
@@ -262,7 +262,7 @@ export function BusinessPublicPage({ businessId }: { businessId: string }) {
                 ) : null}
               </div>
               {business.cover_url ? (
-                <div className="relative min-h-44 overflow-hidden rounded-[22px] bg-slate-100 sm:min-h-56 lg:min-h-full">
+                <div className="relative min-h-44 overflow-hidden rounded-kx-lg bg-slate-100 sm:min-h-56 lg:min-h-full">
                   <Image src={business.cover_url} alt={business.business_name} fill sizes="(max-width: 1024px) 100vw, 340px" className="object-cover" unoptimized />
                 </div>
               ) : null}
@@ -310,7 +310,7 @@ export function BusinessPublicPage({ businessId }: { businessId: string }) {
           </section>
 
           {reviews.length ? (
-            <section className="rounded-[24px] border border-slate-200/70 bg-white p-5">
+            <section className="rounded-kx-sheet border border-slate-200/70 bg-white p-5">
               <h3 className="text-lg font-black text-slate-950">最新点评</h3>
               <div className="mt-3 space-y-4">
                 {reviews.map((review) => (

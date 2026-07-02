@@ -175,7 +175,7 @@ function SiteBrandSettingsCard() {
         <Field label="客服邮箱"><input className="kx-input" value={form.support_email || ""} onChange={(e) => update("support_email", e.target.value)} /></Field>
         <Field label="OG 分享图 URL"><input className="kx-input" value={form.og_image_url || ""} onChange={(e) => update("og_image_url", e.target.value)} /></Field>
       </div>
-      <section className="mt-3 rounded-[24px] border border-kx-stroke/60 bg-kx-soft/30 p-3">
+      <section className="mt-3 rounded-kx-sheet border border-kx-stroke/60 bg-kx-soft/30 p-3">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start">
           <div className="flex items-center gap-3 lg:w-64">
             <div className="relative grid h-16 w-16 shrink-0 place-items-center overflow-hidden rounded-2xl border border-kx-stroke/60 bg-white shadow-sm">

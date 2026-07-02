@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import Link from "next/link";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { BadgeCheck, Check, CheckCircle2, CreditCard, Loader2, ShieldAlert } from "lucide-react";
+import { BadgeCheck, Check, CheckCircle2, CreditCard, Loader2, Lock, ShieldAlert } from "lucide-react";
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { VerifiedBadge } from "@/components/design/Avatar";
@@ -21,13 +21,18 @@ import type { KXCreateOrderResult, KXMembershipPlan, PaymentProvider } from "@/l
 import { formatPrice } from "@/lib/format";
 import { membershipBenefitCopy } from "@/lib/membership-ui";
 
+// Fallback benefit list shown only when the server's /api/membership/benefits
+// is unavailable. Lists REAL, implemented benefits only — the removed
+// priority-review / higher-daily-quota / review-queue items were never shipped,
+// so they'd be false promises. AI quota + member resources/pricing are live.
 const BENEFIT_KEYS = [
   "mem_benefit_badge",
   "mem_benefit_publish",
-  "mem_benefit_priority",
+  "mem_benefit_ai",
+  "mem_benefit_resources",
+  "mem_benefit_member_price",
+  "mem_benefit_coin_price",
   "mem_benefit_data",
-  "mem_benefit_quota",
-  "mem_benefit_review",
   "mem_benefit_sync",
   "mem_benefit_audience",
 ] as const;
@@ -352,9 +357,11 @@ export default function MembershipPage() {
                   ))}
                 </div>
               </section>
+            ) : !isActive ? (
+              <LockedInsightsPreview />
             ) : null}
 
-            <section className="kx-card">
+            <section id="mem-purchase" className="kx-card scroll-mt-16">
               <h2 className="font-bold text-kx-text mb-3">{t("mem_select_plan")}</h2>
               <div className="grid gap-3 sm:grid-cols-2">
                 {plans.map((p) => {
@@ -377,7 +384,7 @@ export default function MembershipPage() {
                         {p.isRecommended ? <span className="rounded-full bg-kx-accent px-2 py-0.5 text-[11px] font-bold text-white">{t("mem_recommended")}</span> : null}
                       </div>
                       <div className="mt-3 text-2xl font-black text-kx-text">{planPriceLabel(p, t, locale)}</div>
-                      {localizedDiscountLabel(p, locale) ? <div className="mt-1 text-xs font-bold text-emerald-600">{localizedDiscountLabel(p, locale)}</div> : null}
+                      {localizedDiscountLabel(p, locale) ? <div className="mt-1 text-xs font-bold text-emerald-600 dark:text-emerald-400">{localizedDiscountLabel(p, locale)}</div> : null}
                     </button>
                   );
                 })}
@@ -504,6 +511,51 @@ export default function MembershipPage() {
   );
 }
 
+// Non-member teaser for the member-only content stats: sample numbers rendered
+// blurred behind a lock, with a click target that scrolls down to the plans.
+// Uses kx-* tokens only, so light/dark are both covered.
+function LockedInsightsPreview() {
+  const { t } = useI18n();
+  const SAMPLE: Array<[Parameters<typeof t>[0], string]> = [
+    ["mem_insights_views", "1.2k"],
+    ["mem_insights_likes", "348"],
+    ["mem_insights_comments", "96"],
+    ["mem_insights_bookmarks", "72"],
+    ["mem_insights_posts", "14"],
+  ];
+  const scrollToPurchase = () => {
+    if (typeof document === "undefined") return;
+    document.getElementById("mem-purchase")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+  return (
+    <section className="kx-card">
+      <h2 className="font-bold text-kx-text mb-3">{t("mem_insights_title")}</h2>
+      <button
+        type="button"
+        onClick={scrollToPurchase}
+        className="group relative block w-full text-left"
+        aria-label={t("mem_insights_locked_cta")}
+      >
+        <div className="grid grid-cols-3 gap-2 text-center blur-[3px] select-none" aria-hidden>
+          {SAMPLE.map(([key, val]) => (
+            <div key={key} className="rounded-kx-md bg-kx-soft p-2">
+              <div className="text-lg font-extrabold text-kx-text">{val}</div>
+              <div className="text-xs text-kx-muted">{t(key)}</div>
+            </div>
+          ))}
+        </div>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 rounded-kx-md bg-kx-card/55 backdrop-blur-[1px]">
+          <span className="grid h-9 w-9 place-items-center rounded-full bg-kx-card text-kx-accent shadow-sm">
+            <Lock className="h-4 w-4" />
+          </span>
+          <span className="text-sm font-black text-kx-text">{t("mem_insights_locked_title")}</span>
+          <span className="text-xs font-bold text-kx-accent group-hover:underline">{t("mem_insights_locked_cta")}</span>
+        </div>
+      </button>
+    </section>
+  );
+}
+
 function planKey(plan: KXMembershipPlan): string {
   return plan.plan_key || plan.planKey || "";
 }
@@ -587,7 +639,7 @@ function MembershipReturnReceipt({ receipt }: { receipt: ReturnReceipt }) {
   return (
     <section className="kx-card border-kx-accent/20 bg-kx-accentSoft/45">
       <div className="flex items-start gap-3">
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white text-kx-accent shadow-sm">
+        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-kx-card text-kx-accent shadow-sm">
           {isChecking ? <Loader2 className="h-5 w-5 animate-spin" /> : <CheckCircle2 className="h-5 w-5" />}
         </span>
         <div className="min-w-0 flex-1">
@@ -595,21 +647,21 @@ function MembershipReturnReceipt({ receipt }: { receipt: ReturnReceipt }) {
           <p className="mt-1 text-sm text-kx-subtle">{subtitle}</p>
           <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
             {receipt.orderNo ? (
-              <div className="rounded-kx-md bg-white/70 p-3">
+              <div className="rounded-kx-md bg-kx-card/70 p-3">
                 <dt className="text-xs font-bold text-kx-muted">{t("mem_return_order_no")}</dt>
                 <dd className="mt-1 break-all font-black text-kx-text">{receipt.orderNo}</dd>
               </div>
             ) : null}
             {receipt.currentPeriodEnd ? (
-              <div className="rounded-kx-md bg-white/70 p-3">
+              <div className="rounded-kx-md bg-kx-card/70 p-3">
                 <dt className="text-xs font-bold text-kx-muted">{t("mem_active_until")}</dt>
                 <dd className="mt-1 font-black text-kx-text">{new Date(receipt.currentPeriodEnd).toLocaleDateString()}</dd>
               </div>
             ) : null}
           </dl>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Link href="/membership/orders" className="kx-button-ghost h-9 justify-center bg-white/75">{t("mem_orders")}</Link>
-            <Link href="/membership/benefits" className="kx-button-ghost h-9 justify-center bg-white/75">{t("mem_benefits_detail")}</Link>
+            <Link href="/membership/orders" className="kx-button-ghost h-9 justify-center bg-kx-card/75">{t("mem_orders")}</Link>
+            <Link href="/membership/benefits" className="kx-button-ghost h-9 justify-center bg-kx-card/75">{t("mem_benefits_detail")}</Link>
           </div>
         </div>
       </div>
@@ -631,8 +683,8 @@ function SupportedPaymentLogos() {
   const { t } = useI18n();
 
   return (
-    <div className="border-t border-gray-100 pt-3">
-      <div className="mb-2 text-xs font-medium text-gray-400">{t("mem_supported_payments")}</div>
+    <div className="border-t border-kx-stroke/50 pt-3">
+      <div className="mb-2 text-xs font-medium text-kx-muted">{t("mem_supported_payments")}</div>
       <div className="flex flex-wrap items-center gap-4 sm:gap-6">
         {PAYMENT_LOGOS.map((logo) => (
           <span

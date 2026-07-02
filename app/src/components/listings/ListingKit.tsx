@@ -1396,6 +1396,7 @@ export function CreateListingPage({
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const router = useRouter();
+  const queryClient = useQueryClient();
   const { locale } = useI18n();
   const [type, setType] = useState<KXListingType>(normalizeListingType(initialType));
   const userRegion = useMemo(
@@ -1449,8 +1450,25 @@ export function CreateListingPage({
   const imageLimit = listingImageLimit(type);
   const mediaLimit = imageLimit;
   const membershipRequired = listingTypeRequiresMembership(type);
-  const membershipChannelLabel = type === "rental" ? "租房" : type === "job" || type === "hiring" ? "招聘" : "本地商家/服务";
+  const membershipChannelLabel = type === "rental"
+    ? pickText(locale, "租房", "賃貸", "Rentals")
+    : type === "job" || type === "hiring"
+      ? pickText(locale, "招聘", "求人", "Hiring")
+      : pickText(locale, "本地商家/服务", "店舗・サービス", "Merchants & services");
   const membershipBlocked = !isEditing && membershipRequired && !user?.is_verified_member;
+  // The quota group key the backend reports usage under (rental / job /
+  // local_service). hiring collapses into the job group server-side.
+  const quotaGroupKey = type === "rental" ? "rental" : (type === "job" || type === "hiring") ? "job" : "local_service";
+  // Show "N left this month" for verified members on a high-trust compose form.
+  // 404 => older server without the endpoint; retry:false so we silently hide.
+  const listingQuotaQuery = useQuery({
+    queryKey: ["membership-listing-quota"],
+    queryFn: () => api.membershipListingQuota(),
+    enabled: membershipRequired && !isEditing && !!user?.is_verified_member,
+    retry: false,
+    staleTime: 60 * 1000,
+  });
+  const quotaGroup = listingQuotaQuery.data?.groups?.find((g) => g.key === quotaGroupKey);
   const editQuery = useQuery({
     queryKey: ["listing-edit", editListingId],
     queryFn: () => api.listing(editListingId),
@@ -1729,7 +1747,7 @@ export function CreateListingPage({
   const create = useMutation({
     mutationFn: () => {
       if (!validate()) throw new APIError({ code: "invalid_form", message: "请先补齐必填项。" }, 400);
-      if (membershipBlocked) throw new APIError({ code: "MEMBERSHIP_REQUIRED", message: `发布${membershipChannelLabel}信息需要开通 Machi 会员。` }, 403);
+      if (membershipBlocked) throw new APIError({ code: "MEMBERSHIP_REQUIRED", message: pickText(locale, `发布${membershipChannelLabel}信息需要开通 Machi 会员。`, `${membershipChannelLabel}の掲載には Machi 会員が必要です。`, `Posting ${membershipChannelLabel.toLowerCase()} requires a Machi membership.`) }, 403);
       if (upload.isPending) throw new APIError({ code: "upload_in_progress", message: "媒体仍在上传，请稍等完成后再发布。" }, 400);
       const failedUpload = Object.values(uploadProgress).find((item) => item.error);
       if (failedUpload) throw new APIError({ code: "upload_failed", message: "有媒体上传失败，请删除或重新选择后再发布。" }, 400);
@@ -1766,6 +1784,8 @@ export function CreateListingPage({
     },
     onSuccess: (listing) => {
       if (!isEditing && typeof window !== "undefined") window.localStorage.removeItem(draftKey);
+      // A high-trust publish consumes one monthly slot — refresh the remaining count.
+      if (membershipRequired && !isEditing) queryClient.invalidateQueries({ queryKey: ["membership-listing-quota"] });
       pushToast({
         kind: "success",
         message: listing.status === "pending_review"
@@ -1775,8 +1795,32 @@ export function CreateListingPage({
       router.push(listing.status === "pending_review" ? "/my/listings" : detailHref(listing));
     },
     onError: (e) => {
-      if (isAuthRequiredError(e)) openAuthPrompt("publish");
-      else pushToast({ kind: "error", message: (e as APIError).message });
+      if (isAuthRequiredError(e)) {
+        openAuthPrompt("publish");
+        return;
+      }
+      const err = e as APIError;
+      // The monthly free-listing quota is used up: give a human-readable nudge
+      // (the raw code is opaque) and take the user to the membership page.
+      if (err.code === "MEMBERSHIP_LISTING_QUOTA_EXCEEDED") {
+        pushToast({
+          kind: "error",
+          message: pickText(
+            locale,
+            `本月${membershipChannelLabel}的免费发布额度已用完，升级会员可发布更多。`,
+            `今月の${membershipChannelLabel}の無料掲載枠を使い切りました。会員にアップグレードするともっと掲載できます。`,
+            `You've used this month's free ${membershipChannelLabel.toLowerCase()} listings. Upgrade for more.`,
+          ),
+        });
+        router.push("/membership");
+        return;
+      }
+      if (err.code === "MEMBERSHIP_REQUIRED") {
+        pushToast({ kind: "error", message: err.message });
+        router.push("/membership");
+        return;
+      }
+      pushToast({ kind: "error", message: err.message });
     },
   });
 
@@ -1804,27 +1848,36 @@ export function CreateListingPage({
             </section>
 
             {membershipRequired && !isEditing ? (
-              <section className="flex flex-col gap-3 rounded-[24px] border border-blue-100 bg-blue-50/70 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+              <section className="flex flex-col gap-3 rounded-kx-sheet border border-blue-100 bg-blue-50/70 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-3">
                   <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-white text-blue-600 shadow-sm">
                     <AlertTriangle className="h-5 w-5" />
                   </span>
                   <div>
-                    <p className="font-black text-slate-950">{membershipChannelLabel}发布需要 Machi 会员</p>
-                    <p className="mt-1 font-semibold text-slate-600">会员每月可免费发布 3 条{membershipChannelLabel}信息；提交后会按频道规则进入审核或展示。</p>
+                    <p className="font-black text-slate-950">{pickText(locale, `${membershipChannelLabel}发布需要 Machi 会员`, `${membershipChannelLabel}の掲載には Machi 会員が必要`, `Posting ${membershipChannelLabel.toLowerCase()} needs a Machi membership`)}</p>
+                    <p className="mt-1 font-semibold text-slate-600">{pickText(locale, `会员每月可免费发布 3 条${membershipChannelLabel}信息；提交后会按频道规则进入审核或展示。`, `会員は毎月${membershipChannelLabel}を3件まで無料で掲載できます。送信後はチャンネルのルールに従って審査・掲載されます。`, `Members can post 3 ${membershipChannelLabel.toLowerCase()} listings free each month; after submitting, they're reviewed or shown per channel rules.`)}</p>
                   </div>
                 </div>
                 {membershipBlocked ? (
                   <Link href="/membership" className="h-10 shrink-0 rounded-full bg-blue-600 px-4 text-center text-sm font-black leading-10 text-white shadow-[0_10px_24px_-16px_rgba(37,99,235,0.8)]">
-                    开通会员
+                    {pickText(locale, "开通会员", "会員登録", "Get membership")}
                   </Link>
+                ) : quotaGroup && quotaGroup.remaining !== null ? (
+                  <span className="h-10 shrink-0 rounded-full bg-white px-4 text-center text-sm font-black leading-10 text-blue-700">
+                    {pickText(
+                      locale,
+                      `本月还可发布 ${quotaGroup.remaining} 条`,
+                      `今月あと ${quotaGroup.remaining} 件`,
+                      `${quotaGroup.remaining} left this month`,
+                    )}
+                  </span>
                 ) : (
-                  <span className="h-10 shrink-0 rounded-full bg-white px-4 text-center text-sm font-black leading-10 text-blue-700">会员可发布</span>
+                  <span className="h-10 shrink-0 rounded-full bg-white px-4 text-center text-sm font-black leading-10 text-blue-700">{pickText(locale, "会员可发布", "会員は掲載可能", "Members can post")}</span>
                 )}
               </section>
             ) : null}
 
-            <section className="rounded-[24px] border border-slate-200/70 bg-slate-50/70 p-4">
+            <section className="rounded-kx-sheet border border-slate-200/70 bg-slate-50/70 p-4">
               <p className="mb-3 text-sm font-black text-slate-950">基础信息</p>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Field label="发布地区" required>
@@ -1934,7 +1987,7 @@ export function CreateListingPage({
               </div>
             </section>
 
-            <section className="rounded-[24px] border border-slate-200/70 bg-white p-4">
+            <section className="rounded-kx-sheet border border-slate-200/70 bg-white p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <p className="text-sm font-black text-slate-950">图片与视频</p>
@@ -2045,7 +2098,7 @@ export function CreateListingPage({
               ) : null}
             </section>
 
-            <section className="rounded-[24px] border border-slate-200/70 bg-slate-50/70 p-4">
+            <section className="rounded-kx-sheet border border-slate-200/70 bg-slate-50/70 p-4">
               <p className="mb-3 text-sm font-black text-slate-950">{listingTypeLabel(type)}字段</p>
               <ListingAttributeEditor
                 type={type}
@@ -2599,7 +2652,7 @@ function AdminBusinessCard({
           </div>
         ) : null}
       </div>
-      <aside className="rounded-[22px] bg-slate-50 p-3">
+      <aside className="rounded-kx-lg bg-slate-50 p-3">
         <div className="grid grid-cols-3 gap-2">
           <AdminBusinessMetric icon={Store} label="发布" value={business.listing_count || 0} />
           <AdminBusinessMetric icon={CheckCircle2} label="展示" value={business.published_listing_count || 0} />
@@ -2716,7 +2769,8 @@ function adminBusinessStatusLabel(status: string) {
 }
 
 function MarketplaceCard({ listing }: { listing: KXCityListing }) {
-  const fields = compactFields(listing).slice(0, 4);
+  const { locale } = useI18n();
+  const fields = compactFields(listing, locale).slice(0, 4);
   const location = cleanListingText(listing.location_text) || "本地";
   const title = displayListingTitle(listing) || "城市信息";
   const description = cleanListingText(listing.description);
@@ -2728,7 +2782,7 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
   const coverArtwork = coverIsVideo ? (coverPreview || (coverSource ? fallbackVideoPoster : "")) : coverPreview;
   const useVideoFallbackArtwork = coverIsVideo && !coverPreview;
   return (
-    <Link href={detailHref(listing)} className="group overflow-hidden rounded-[22px] border border-slate-200/70 bg-white shadow-[0_12px_38px_-32px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_22px_56px_-34px_rgba(15,23,42,0.62)]">
+    <Link href={detailHref(listing)} className="group overflow-hidden rounded-kx-lg border border-slate-200/70 bg-white shadow-[0_12px_38px_-32px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_22px_56px_-34px_rgba(15,23,42,0.62)]">
       <div className="relative aspect-[4/3] overflow-hidden bg-slate-100">
         {useVideoFallbackArtwork ? (
           <span className="absolute inset-0 z-[1]" style={videoFallbackArtworkStyle} />
@@ -3025,7 +3079,7 @@ function SecondhandListingCard({ listing }: { listing: KXCityListing }) {
     .slice(0, 3);
   return (
     <Link href={detailHref(listing)} className="kx-secondhand-card group">
-      <div className="relative aspect-square overflow-hidden bg-slate-100">
+      <div className="relative aspect-square overflow-hidden bg-slate-100 dark:bg-slate-800">
         {useVideoFallbackArtwork ? (
           <span className="absolute inset-0 z-[1]" style={videoFallbackArtworkStyle} />
         ) : coverArtwork ? (
@@ -3358,7 +3412,7 @@ export function ServiceCard({ listing, locale }: { listing: KXCityListing; local
         : pickText(locale, "预约", "予約する", "Book");
   return (
     <Link href={detailHref(listing)} className="kx-service-card group">
-      <div className="relative aspect-[16/9] overflow-hidden bg-slate-100">
+      <div className="relative aspect-[16/9] overflow-hidden bg-slate-100 dark:bg-slate-800">
         {coverPreview ? (
           <Image src={coverPreview} alt={title} fill sizes="(max-width: 640px) 100vw, 360px" className="object-cover transition duration-300 group-hover:scale-[1.03]" unoptimized />
         ) : (
@@ -3439,7 +3493,7 @@ function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale
   const items = directory.data?.items || [];
   if (directory.isLoading || !items.length) return null;
   return (
-    <section className="kx-living-contact-card mb-4 !rounded-[24px] p-3.5 sm:p-4">
+    <section className="kx-living-contact-card mb-4 !rounded-kx-sheet p-3.5 sm:p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-2">
           <span className="grid h-9 w-9 shrink-0 place-items-center rounded-2xl bg-emerald-600/10 text-emerald-700 dark:text-emerald-300">
@@ -3599,7 +3653,8 @@ function adminFieldLabel(key: string) {
 }
 
 function StructuredListCard({ listing }: { listing: KXCityListing }) {
-  const fields = compactFields(listing);
+  const { locale } = useI18n();
+  const fields = compactFields(listing, locale);
   const location = cleanListingText(listing.location_text) || cityLabel(listing.city_slug);
   const title = displayListingTitle(listing) || "城市信息";
   const description = cleanListingText(listing.description);
@@ -3983,11 +4038,19 @@ function intakeConfig(type: string, category?: string, locale: Locale = "zh-Hans
 function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; receipt: InquiryReceipt | null; onClose: () => void }) {
   const { locale } = useI18n();
   const listingLocale = appLocaleToMarketingLocale(locale);
+  // Close on Escape (WCAG 2.1.2 no keyboard trap). Effect must run every render
+  // regardless of `receipt`, so it sits above the early return.
+  useEffect(() => {
+    if (!receipt) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [receipt, onClose]);
   if (!receipt) return null;
   const workbenchHref = inquiryWorkbenchHref(receipt.type, item.type);
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/40 p-0 sm:items-center sm:p-4" onClick={onClose}>
-      <section className="w-full max-w-lg rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
+      <section role="dialog" aria-modal="true" aria-label={receipt.title} className="w-full max-w-lg rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-emerald-50 text-emerald-700">
@@ -4059,6 +4122,13 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
   useEffect(() => {
     if (open) { setValues({}); setNote(""); setError(null); }
   }, [open]);
+  // Close on Escape.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
   if (!open) return null;
   const submit = () => {
     for (const f of config.fields) {
@@ -4074,7 +4144,7 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
   };
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/40 p-0 sm:items-center sm:p-4" onClick={onClose}>
-      <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
+      <div role="dialog" aria-modal="true" aria-label={config.title} className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
           <h3 className="text-lg font-black text-slate-950">{config.title}</h3>
           <button type="button" onClick={onClose} aria-label={pickText(locale, "关闭", "閉じる", "Close")} className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600"><X className="h-4 w-4" /></button>
@@ -4129,6 +4199,7 @@ function ListingFilterPanel({
   variant?: "panel" | "inline";
   context?: ListingFilterContext;
 }) {
+  const { locale } = useI18n();
   const set = (key: string, value: string) => onChange({ ...filters, [key]: value });
   const setScopeArea = (value: string) => onChange({ ...filters, scope_area: value, scope_city: "", scope_province: "" });
   const setScopeCity = (value: string) => onChange({ ...filters, scope_area: "", scope_city: value, scope_province: "" });
@@ -4139,14 +4210,14 @@ function ListingFilterPanel({
   return (
     <section className={variant === "inline" ? "rounded-[20px] bg-slate-50/70 p-3" : "sticky top-24 rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.045)]"}>
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-black text-slate-950">筛选</h3>
-        <button type="button" onClick={reset} className="text-xs font-bold text-slate-400 hover:text-slate-900">清空</button>
+        <h3 className="text-sm font-black text-slate-950">{pickText(locale, "筛选", "絞り込み", "Filters")}</h3>
+        <button type="button" onClick={reset} className="text-xs font-bold text-slate-400 hover:text-slate-900">{pickText(locale, "清空", "クリア", "Clear")}</button>
       </div>
       <div className="mt-3 rounded-[18px] border border-slate-200/70 bg-white p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <p className="text-xs font-black text-slate-500">城市范围</p>
-            <p className="mt-0.5 text-[11px] font-semibold text-slate-400">关东圈、关西圈和其他热门城市已收进这里。</p>
+            <p className="text-xs font-black text-slate-500">{pickText(locale, "城市范围", "エリア範囲", "City scope")}</p>
+            <p className="mt-0.5 text-[11px] font-semibold text-slate-400">{pickText(locale, "关东圈、关西圈和其他热门城市已收进这里。", "首都圏・関西圏など主要エリアはこちらにまとめています。", "Kanto, Kansai and other popular areas are grouped here.")}</p>
           </div>
           <button
             type="button"
@@ -4154,7 +4225,7 @@ function ListingFilterPanel({
             data-active={!filters.scope_area && !filters.scope_city && !filters.scope_province}
             className="h-8 rounded-full border border-slate-200 px-3 text-xs font-black text-slate-500 transition hover:border-blue-300 hover:text-blue-700 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
           >
-            跟随顶部
+            {pickText(locale, "跟随顶部", "上部に合わせる", "Follow top")}
           </button>
         </div>
         <div className="mt-3 flex flex-wrap gap-2">
@@ -4772,7 +4843,7 @@ function ListingSkeletonGrid({ type }: { type: KXListingType }) {
       <div className="grid grid-cols-1 gap-x-4 gap-y-7 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {Array.from({ length: 8 }).map((_, i) => (
           <div key={i}>
-            <Skeleton className="aspect-[4/3] rounded-[22px]" />
+            <Skeleton className="aspect-[4/3] rounded-kx-lg" />
             <Skeleton className="mt-2.5 h-4 w-3/4 rounded-md" />
             <Skeleton className="mt-1.5 h-3.5 w-1/2 rounded-md" />
           </div>
@@ -4856,8 +4927,8 @@ function sortListings(a: KXCityListing, b: KXCityListing) {
   return new Date(b.published_at || b.updated_at || b.created_at || 0).getTime() - new Date(a.published_at || a.updated_at || a.created_at || 0).getTime();
 }
 
-function compactFields(item: KXCityListing) {
-  return compactListingFields(item);
+function compactFields(item: KXCityListing, locale: Locale = "zh-Hans") {
+  return compactListingFields(item, appLocaleToMarketingLocale(locale));
 }
 
 function detailFields(item: KXCityListing, locale: Locale = "zh-Hans"): Array<[string, string]> {

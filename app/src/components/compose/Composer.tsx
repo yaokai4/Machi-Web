@@ -9,6 +9,7 @@ import { Dialog } from "@/components/design/Dialog";
 import { Avatar, VerifiedBadge } from "@/components/design/Avatar";
 import { useQueryClient } from "@tanstack/react-query";
 import { useI18n } from "@/lib/i18n";
+import type { FormatLocale } from "@/lib/format";
 import { isVideoMedia, mediaPreviewImageUrl } from "@/lib/media";
 import clsx from "clsx";
 import {
@@ -226,7 +227,7 @@ export function Composer() {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
 
   const [content, setContent] = useState(initialContent);
   const [media, setMedia] = useState<KXMedia[]>([]);
@@ -304,11 +305,11 @@ export function Composer() {
     if (!array.length) return;
     const selectedVideos = array.filter((file) => isUploadVideoFile(file));
     if (selectedVideos.length && array.length > 1) {
-      pushToast({ kind: "error", message: "视频动态一次只能上传 1 个视频，不能和图片混合。已只保留第一个视频。" });
+      pushToast({ kind: "error", message: t("composer_video_single_no_mix") });
       array = [selectedVideos[0]];
     }
     if (selectedVideos.length && media.length > 0) {
-      pushToast({ kind: "error", message: "视频动态不能和已添加的图片或视频混合，请先移除当前媒体。" });
+      pushToast({ kind: "error", message: t("composer_video_no_mix_existing") });
       return;
     }
     setUploading(true);
@@ -325,19 +326,19 @@ export function Composer() {
         }
         const nextItems = [...media, ...uploaded];
         if (isVideo && nextItems.length > 0) {
-          pushToast({ kind: "error", message: "视频动态只能上传 1 个视频，不能和图片混合" });
+          pushToast({ kind: "error", message: t("composer_video_only_one") });
           continue;
         }
         if (!isVideo && nextItems.some((item) => item.type === "video")) {
-          pushToast({ kind: "error", message: "视频动态不能再添加图片" });
+          pushToast({ kind: "error", message: t("composer_video_no_more_images") });
           continue;
         }
         if (isVideo && nextItems.filter((item) => item.type === "video").length >= POST_VIDEO_LIMIT) {
-          pushToast({ kind: "error", message: "每个帖子最多上传 1 个视频" });
+          pushToast({ kind: "error", message: t("composer_video_max_one") });
           continue;
         }
         if (!isVideo && nextItems.filter((item) => item.type === "image").length >= POST_IMAGE_LIMIT) {
-          pushToast({ kind: "error", message: "每个帖子最多上传 9 张图片" });
+          pushToast({ kind: "error", message: t("composer_image_max_nine") });
           continue;
         }
         setUploadProgress((prev) => ({ ...prev, [key]: { name: f.name, progress: 0, status: "准备上传", file: f } }));
@@ -437,7 +438,7 @@ export function Composer() {
         kind: "error",
         message:
           missingRequired.length > 0
-            ? `还差几个必填项: ${missingRequired.map((key) => fieldLabelFor(contentType, key)).join(" · ")}`
+            ? `${t("composer_missing_required")}: ${missingRequired.map((key) => fieldLabelFor(contentType, key, locale)).join(" · ")}`
             : t("composer_empty_error"),
       });
       return;
@@ -484,7 +485,7 @@ export function Composer() {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, content, media, tags, draftId, pushToast, queryClient, close, contentType, attributes, user, selectedLanguage, canPublish, needsMembership, missingRequired, t]);
+  }, [submitting, content, media, tags, draftId, pushToast, queryClient, close, contentType, attributes, user, selectedLanguage, canPublish, needsMembership, missingRequired, t, locale]);
 
   // Cmd/Ctrl+Enter publishes and matches the rest of Machi's shortcut convention.
   useEffect(() => {
@@ -504,6 +505,9 @@ export function Composer() {
   // in the Drafts page across both clients.
   useEffect(() => {
     if (!isOpen) return;
+    // Don't race a publish in progress: publishing deletes the draft and closes
+    // the composer, and a late autosave would resurrect it as an orphan.
+    if (submitting) return;
     if (!content.trim() && media.length === 0) return;
     const handle = setTimeout(() => {
       api.saveDraft({
@@ -515,12 +519,20 @@ export function Composer() {
         // Adopt the server id so the NEXT autosave upserts this row instead
         // of inserting a second draft (only when we didn't already have one).
         .then(({ id }) => {
+          // If the composer already closed (published or discarded) by the time
+          // this in-flight save resolved, it just created an orphan draft with
+          // no live editor bound to it — reap it. Only when we minted a NEW id
+          // here (an existing draftId is a legit saved draft the user keeps).
+          if (id && !draftId && !useCompose.getState().isOpen) {
+            api.deleteDraft(id).catch(() => undefined);
+            return;
+          }
           if (id && !draftId) setDraftId(id);
         })
         .catch(() => undefined);
     }, 4000);
     return () => clearTimeout(handle);
-  }, [isOpen, content, media, tags, draftId, setDraftId]);
+  }, [isOpen, submitting, content, media, tags, draftId, setDraftId]);
 
   const saveDraft = async () => {
     if (!content.trim() && media.length === 0) {
@@ -560,7 +572,7 @@ export function Composer() {
             )}
             onClick={publish}
             disabled={submitting || !canPublish || needsMembership}
-            title={!canPublish && missingRequired.length > 0 ? `还差: ${missingRequired.map((key) => fieldLabelFor(contentType, key)).join(" · ")}` : undefined}
+            title={!canPublish && missingRequired.length > 0 ? `${t("composer_missing_required")}: ${missingRequired.map((key) => fieldLabelFor(contentType, key, locale)).join(" · ")}` : undefined}
           >
             {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
             {t("action_publish")}
@@ -586,7 +598,7 @@ export function Composer() {
           <div className="flex-1 min-w-0">
             <div className="mb-3 grid grid-cols-1 sm:grid-cols-[1fr_auto] gap-2">
               <label className="text-xs font-semibold text-kx-muted">
-                内容类型
+                {t("composer_content_type")}
                 <select
                   className="kx-input h-9 mt-1"
                   value={contentType}
@@ -622,7 +634,7 @@ export function Composer() {
             ) : null}
             <label className="block mb-3 text-xs font-semibold text-kx-muted">
               <span className="inline-flex items-center gap-1">
-                <Languages className="w-3.5 h-3.5" /> 帖子语言
+                <Languages className="w-3.5 h-3.5" /> {t("composer_post_language")}
               </span>
               <select
                 className="kx-input h-9 mt-1"
@@ -636,14 +648,15 @@ export function Composer() {
             </label>
             {missingRequired.length > 0 ? (
               <div className="mb-3 rounded-kx-md bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-900 dark:bg-amber-500/10 dark:border-amber-400/20 dark:text-amber-200">
-                <span className="font-bold">还差几个必填项: </span>
-                {missingRequired.map((key) => fieldLabelFor(contentType, key)).join(" · ")}
+                <span className="font-bold">{t("composer_missing_required")}: </span>
+                {missingRequired.map((key) => fieldLabelFor(contentType, key, locale)).join(" · ")}
               </div>
             ) : null}
             {contentType !== "dynamic" ? (
               <TypedAttributeFields
                 contentType={contentType}
                 attributes={attributes}
+                locale={locale}
                 onChange={(key, value) => setAttributes((prev) => ({ ...prev, [key]: value }))}
               />
             ) : null}
@@ -805,7 +818,7 @@ export function Composer() {
                 }}
                 className={clsx("kx-button-ghost", contentType === "poll" && "border-kx-accent/50 text-kx-accent bg-kx-accentSoft")}
               >
-                <BarChart3 className="w-4 h-4" /> 投票
+                <BarChart3 className="w-4 h-4" /> {t("composer_poll")}
               </button>
               <span className="ml-auto text-xs text-kx-muted">{content.length} / 2000</span>
             </div>
@@ -1001,17 +1014,119 @@ const TYPED_FIELDS: Partial<Record<ContentType, TypedField[]>> = {
   ],
 };
 
-function fieldLabelFor(contentType: ContentType, key: string): string {
-  return TYPED_FIELDS[contentType]?.find((field) => field.key === key)?.label || key;
+// Localizes a typed-field label. The source strings above stay in zh-Hans;
+// this table carries the ja/en (and zh-Hant) variants, mirroring the
+// listingFormat label approach. Any label without an entry falls through to the
+// zh-Hans source so a partial translation is never blank.
+type FieldLabelSet = { "zh-Hant"?: string; en: string; ja: string };
+const COMPOSER_FIELD_LABELS: Record<string, FieldLabelSet> = {
+  "标题": { en: "Title", ja: "タイトル" },
+  "摘要": { en: "Summary", ja: "概要" },
+  "新闻标题": { en: "News title", ja: "ニュースタイトル" },
+  "资讯标题": { en: "Info title", ja: "情報タイトル" },
+  "攻略标题": { en: "Guide title", ja: "ガイドタイトル" },
+  "来源": { en: "Source", ja: "出典" },
+  "地点": { en: "Location", ja: "場所" },
+  "发生时间": { en: "Event time", ja: "発生日時" },
+  "外部链接": { en: "External link", ja: "外部リンク" },
+  "时间": { en: "Time", ja: "時間" },
+  "封面链接": { en: "Cover image URL", ja: "カバー画像URL" },
+  "最后更新": { en: "Last updated", ja: "最終更新" },
+  "问题": { en: "Question", ja: "質問" },
+  "分类": { en: "Category", ja: "カテゴリ" },
+  "价格": { en: "Price", ja: "価格" },
+  "货币": { en: "Currency", ja: "通貨" },
+  "成色": { en: "Condition", ja: "状態" },
+  "交易方式": { en: "Trade method", ja: "取引方法" },
+  "区域": { en: "Area", ja: "エリア" },
+  "状态": { en: "Status", ja: "ステータス" },
+  "租金": { en: "Rent", ja: "家賃" },
+  "房型": { en: "Room type", ja: "間取り" },
+  "最近车站": { en: "Nearest station", ja: "最寄り駅" },
+  "入住时间": { en: "Move-in date", ja: "入居可能日" },
+  "联系方式": { en: "Contact", ja: "連絡方法" },
+  "租金范围": { en: "Rent range", ja: "家賃帯" },
+  "生活习惯": { en: "Lifestyle", ja: "生活習慣" },
+  "要求": { en: "Requirements", ja: "希望条件" },
+  "求职方向": { en: "Desired role", ja: "希望職種" },
+  "技能": { en: "Skills", ja: "スキル" },
+  "语言能力": { en: "Languages", ja: "語学力" },
+  "签证状态": { en: "Visa status", ja: "ビザステータス" },
+  "可开始时间": { en: "Available from", ja: "開始可能日" },
+  "期望薪资": { en: "Expected salary", ja: "希望給与" },
+  "职位": { en: "Position", ja: "職位" },
+  "公司 / 店铺": { en: "Company / shop", ja: "会社・店舗" },
+  "薪资": { en: "Salary", ja: "給与" },
+  "类型": { en: "Type", ja: "種別" },
+  "语言要求": { en: "Language requirement", ja: "語学要件" },
+  "工作地点": { en: "Work location", ja: "勤務地" },
+  "内推职位": { en: "Referral role", ja: "リファラル職種" },
+  "公司": { en: "Company", ja: "会社" },
+  "说明": { en: "Notes", ja: "説明" },
+  "小组类型": { en: "Group type", ja: "グループ種別" },
+  "人数": { en: "Capacity", ja: "人数" },
+  "预算": { en: "Budget", ja: "予算" },
+  "活动标题": { en: "Event title", ja: "イベントタイトル" },
+  "活动时间": { en: "Event time", ja: "開催日時" },
+  "费用": { en: "Fee", ja: "費用" },
+  "名额": { en: "Slots", ja: "定員" },
+  "报名方式": { en: "Registration", ja: "申込方法" },
+  "餐厅 / 区域": { en: "Restaurant / area", ja: "店舗・エリア" },
+  "公司 / 店铺名称": { en: "Company / shop name", ja: "会社・店舗名" },
+  "服务类型": { en: "Service type", ja: "サービス種別" },
+  "服务内容": { en: "Service details", ja: "サービス内容" },
+  "价格范围": { en: "Price range", ja: "価格帯" },
+  "官网 / 预约链接": { en: "Website / booking link", ja: "公式サイト・予約リンク" },
+  "服务地址 / 覆盖区域": { en: "Service address / coverage", ja: "サービス住所・対応エリア" },
+  "营业时间": { en: "Business hours", ja: "営業時間" },
+  "资质 / 备案信息": { en: "License / registration", ja: "資格・登録情報" },
+  "商家名称": { en: "Merchant name", ja: "店舗名" },
+  "公司主体 / 法人名称": { en: "Legal entity name", ja: "運営会社・法人名" },
+  "商家类型": { en: "Merchant type", ja: "店舗種別" },
+  "主营服务 / 商品内容": { en: "Main services / products", ja: "主なサービス・商品" },
+  "地址 / 服务区域": { en: "Address / service area", ja: "住所・対応エリア" },
+  "官网 / 社媒链接": { en: "Website / social link", ja: "公式サイト・SNSリンク" },
+  "营业执照 / 资质说明": { en: "Business license / credentials", ja: "営業許可・資格説明" },
+  "优惠标题": { en: "Offer title", ja: "特典タイトル" },
+  "优惠信息": { en: "Offer details", ja: "特典内容" },
+  "有效期": { en: "Valid until", ja: "有効期限" },
+  "使用规则": { en: "Usage rules", ja: "利用条件" },
+  "适用商品 / 服务": { en: "Applicable items / services", ja: "対象商品・サービス" },
+  "避坑标题": { en: "Warning title", ja: "注意喚起タイトル" },
+  "详情": { en: "Details", ja: "詳細" },
+  "证据图片链接": { en: "Evidence image URLs", ja: "証拠画像リンク" },
+  "审核状态": { en: "Review status", ja: "審査ステータス" },
+  "选项": { en: "Options", ja: "選択肢" },
+  "截止时间": { en: "Closes at", ja: "締切" },
+  "内容": { en: "Content", ja: "内容" },
+};
+
+function localizeFieldLabel(zhLabel: string, locale: FormatLocale): string {
+  if (locale === "zh-Hans") return zhLabel;
+  const set = COMPOSER_FIELD_LABELS[zhLabel];
+  if (!set) return zhLabel;
+  if (locale === "en") return set.en;
+  if (locale === "ja") return set.ja;
+  // zh-Hant: fall back to the zh-Hans source (Traditional variants are close
+  // enough for these short form labels; a dedicated table can be added later).
+  return set["zh-Hant"] ?? zhLabel;
+}
+
+function fieldLabelFor(contentType: ContentType, key: string, locale: FormatLocale = "zh-Hans"): string {
+  const zhLabel = TYPED_FIELDS[contentType]?.find((field) => field.key === key)?.label;
+  if (!zhLabel) return key;
+  return localizeFieldLabel(zhLabel, locale);
 }
 
 function TypedAttributeFields({
   contentType,
   attributes,
+  locale,
   onChange,
 }: {
   contentType: ContentType;
   attributes: Record<string, string | boolean>;
+  locale: FormatLocale;
   onChange: (key: string, value: string | boolean) => void;
 }) {
   if (contentType === "poll") {
@@ -1027,7 +1142,7 @@ function TypedAttributeFields({
     <div className="mb-3 grid grid-cols-1 sm:grid-cols-2 gap-2 rounded-kx-md border border-kx-stroke/60 bg-kx-soft/40 p-2.5">
       {fields.map((field) => (
         <label key={field.key} className={clsx("text-xs font-semibold text-kx-muted", field.kind === "textarea" && "sm:col-span-2")}>
-          {field.label}
+          {localizeFieldLabel(field.label, locale)}
           {field.kind === "textarea" ? (
             <textarea
               className="kx-textarea mt-1 min-h-20 bg-kx-card text-sm"

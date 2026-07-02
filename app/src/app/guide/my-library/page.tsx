@@ -151,6 +151,7 @@ function ServicesTab({ data, tt }: { data: import("@/lib/guide").GuideLibrarySer
 }
 
 function OrdersTab({ data, tt }: { data: import("@/lib/guide").GuideLibraryOrder[]; tt: TT }) {
+  const { locale } = useI18n();
   if (data.length === 0) {
     return <Empty text={tt("还没有订单记录。", "No orders yet.", "注文履歴はまだありません。")} />;
   }
@@ -171,7 +172,7 @@ function OrdersTab({ data, tt }: { data: import("@/lib/guide").GuideLibraryOrder
                 ? `+${o.pricePoints.toLocaleString()} ${tt("币", "coins", "コイン")}`
                 : o.pricePoints > 0
                   ? `${o.pricePoints.toLocaleString()} ${tt("币", "coins", "コイン")}`
-                  : formatPrice({ price: o.amount, currency: o.currency })}
+                  : formatPrice({ price: o.amount, currency: o.currency }, "CNY", locale)}
             </div>
             <StatusBadge status={o.status} tt={tt} />
           </div>

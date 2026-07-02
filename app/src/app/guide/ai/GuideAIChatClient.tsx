@@ -332,6 +332,19 @@ export default function GuideAIChatClient() {
           // 会员专属能力：退回普通模式并提示升级（保持输入框可用）。
           setActiveAbility(null);
           setErrorMessage(err.message);
+        } else if (err instanceof APIError && (err.code === "timeout" || err.code === "network_error")) {
+          // The request aborted client-side, but the server may have already
+          // charged quota and be finishing the answer — it gets written to the
+          // conversation. Tell the user to refresh rather than implying the
+          // turn was lost / their quota was wasted.
+          setErrorMessage(
+            pick(
+              locale,
+              "回答可能仍在生成，稍后刷新对话即可查看。",
+              "回答はまだ生成中の可能性があります。しばらくしてから会話を更新すると表示されます。",
+              "Your answer may still be generating — refresh the conversation shortly to see it.",
+            ),
+          );
         } else if (err instanceof APIError) {
           setErrorMessage(err.message);
         } else {

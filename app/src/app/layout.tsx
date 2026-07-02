@@ -32,11 +32,12 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  // Match the marketing page's warm light gradient and the near-black
-  // indigo dark surface so browser chrome blends instead of clashing.
+  // Match the app shell's own base surface so the browser chrome blends into
+  // the page instead of clashing: the light body gradient starts at #FFFEFC
+  // and the dark body settles on #121019.
   themeColor: [
-    { media: "(prefers-color-scheme: dark)", color: "#0e1026" },
-    { color: "#fff2e8" },
+    { media: "(prefers-color-scheme: dark)", color: "#121019" },
+    { color: "#FFFEFC" },
   ],
   width: "device-width",
   initialScale: 1,

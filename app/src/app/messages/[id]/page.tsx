@@ -13,31 +13,31 @@ import { MediaGrid } from "@/components/design/MediaGrid";
 import { Lightbox } from "@/components/design/Lightbox";
 import { relativeTime } from "@/lib/format";
 import { useSession, useToasts } from "@/lib/store";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type I18nKey } from "@/lib/i18n";
 import { fallbackVideoPoster, isVideoMedia, mediaCardAspectRatio, mediaPreviewImageUrl, sameOriginApiUrl } from "@/lib/media";
 import type { KXMedia, KXMessage, KXMessageAttachment, KXUser } from "@/lib/types";
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 
-const EMOJI_GROUPS = [
+const EMOJI_GROUPS: { labelKey: I18nKey; items: string[] }[] = [
   {
-    label: "常用",
+    labelKey: "msg_emoji_group_common",
     items: ["😀", "😄", "😂", "🤣", "😊", "🥹", "😍", "😘", "😎", "🤔", "😮", "😭", "😴", "🙈", "😋", "😌"],
   },
   {
-    label: "回应",
+    labelKey: "msg_emoji_group_reactions",
     items: ["👍", "👎", "🙏", "👏", "🙌", "🤝", "💪", "👌", "🤏", "🫶", "✌️", "🤟", "✅", "👀", "💯", "🫡"],
   },
   {
-    label: "心情",
+    labelKey: "msg_emoji_group_mood",
     items: ["❤️", "🧡", "💛", "💚", "💙", "💜", "✨", "🔥", "🎉", "🌟", "💡", "💬", "🌙", "☀️", "🌧️", "🍀"],
   },
   {
-    label: "本地生活",
+    labelKey: "msg_emoji_group_local",
     items: ["☕", "🍜", "🍣", "🍱", "🍻", "🍰", "🏠", "🚇", "🚕", "📍", "📷", "🎧", "📚", "💼", "🛒", "🧳"],
   },
 ];
 
-const QUICK_REPLIES = ["你好，我想了解一下", "现在方便聊吗？", "谢谢，我晚点回复"];
+const QUICK_REPLY_KEYS: I18nKey[] = ["msg_quick_reply_1", "msg_quick_reply_2", "msg_quick_reply_3"];
 const MESSAGE_IMAGE_LIMIT = 9;
 const MESSAGE_VIDEO_LIMIT = 1;
 const MESSAGE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
@@ -136,35 +136,35 @@ export default function ConversationPage() {
         const isVideo = isUploadVideoFile(f);
         const isImage = isUploadImageFile(f);
         if (!isVideo && !isImage) {
-          pushToast({ kind: "error", message: `${f.name || "所选文件"} 不是支持的图片或视频` });
+          pushToast({ kind: "error", message: `${f.name || t("msg_media_selected_file")} ${t("msg_media_unsupported")}` });
           continue;
         }
         const purpose = isVideo ? "message_video" : "message_image";
         const maxBytes = isVideo ? MESSAGE_VIDEO_MAX_BYTES : MESSAGE_IMAGE_MAX_BYTES;
         if (f.size > maxBytes) {
-          pushToast({ kind: "error", message: `${f.name} 超过 ${isVideo ? "100MB" : "10MB"} 限制` });
+          pushToast({ kind: "error", message: `${f.name || t("msg_media_selected_file")} ${isVideo ? t("msg_media_over_size_video") : t("msg_media_over_size_image")}` });
           continue;
         }
         const nextItems = [...attachments, ...uploaded];
         if (isVideo && nextItems.length > 0) {
-          pushToast({ kind: "error", message: "视频私信只能发送 1 个视频，不能和图片混合" });
+          pushToast({ kind: "error", message: t("msg_video_only_no_mix") });
           continue;
         }
         if (!isVideo && nextItems.some((item) => item.type === "video")) {
-          pushToast({ kind: "error", message: "视频私信不能再添加图片" });
+          pushToast({ kind: "error", message: t("msg_video_no_more_images") });
           continue;
         }
         if (isVideo && nextItems.filter((item) => item.type === "video").length >= MESSAGE_VIDEO_LIMIT) {
-          pushToast({ kind: "error", message: "每条私信最多发送 1 个视频" });
+          pushToast({ kind: "error", message: t("msg_video_max_one") });
           continue;
         }
         if (!isVideo && nextItems.filter((item) => item.type === "image").length >= MESSAGE_IMAGE_LIMIT) {
-          pushToast({ kind: "error", message: "每条私信最多发送 9 张图片" });
+          pushToast({ kind: "error", message: t("msg_image_max_nine") });
           continue;
         }
         const videoMeta = isVideo ? await readVideoMetadata(f) : { duration: 0, width: 0, height: 0 };
         if (isVideo && videoMeta.duration > 120) {
-          pushToast({ kind: "error", message: `${f.name} 超过 2 分钟限制` });
+          pushToast({ kind: "error", message: `${f.name || t("msg_media_selected_file")} ${t("msg_media_over_duration")}` });
           continue;
         }
         const { media } = await api.uploadFile(f, {
@@ -245,8 +245,8 @@ export default function ConversationPage() {
           <button
             type="button"
             onClick={() => router.back()}
-            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-white/70 bg-white/70 text-slate-700 shadow-[0_8px_22px_rgba(15,23,42,0.08)] transition hover:bg-white"
-            aria-label="返回"
+            className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-white/70 bg-white/70 text-slate-700 shadow-[0_8px_22px_rgba(15,23,42,0.08)] transition hover:bg-white dark:border-white/10 dark:bg-kx-card dark:text-kx-subtle dark:hover:bg-kx-soft"
+            aria-label={t("msg_back")}
           >
             <ArrowLeft className="h-5 w-5" />
           </button>
@@ -263,12 +263,12 @@ export default function ConversationPage() {
             </a>
           ) : (
             <div className="min-w-0">
-              <div className="text-[15px] font-black text-kx-text">对话</div>
-              <div className="text-xs text-kx-muted">私信</div>
+              <div className="text-[15px] font-black text-kx-text">{t("msg_conversation")}</div>
+              <div className="text-xs text-kx-muted">{t("msg_private")}</div>
             </div>
           )}
-          <span className="ml-auto hidden rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-100 sm:inline-flex">
-            私信对话
+          <span className="ml-auto hidden rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-100 dark:bg-kx-accentSoft dark:text-kx-accent dark:ring-kx-accent/20 sm:inline-flex">
+            {t("msg_dm_badge")}
           </span>
         </header>
 
@@ -289,7 +289,7 @@ export default function ConversationPage() {
 
         <div className="kx-chat-composer shrink-0 px-3 pt-2 sm:px-4" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.55rem)" }}>
           {attachments.length ? (
-            <div className="mb-2 flex gap-2 overflow-x-auto rounded-[22px] border border-white/70 bg-white/60 p-2 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.5)] backdrop-blur">
+            <div className="mb-2 flex gap-2 overflow-x-auto rounded-kx-lg border border-white/70 bg-white/60 p-2 shadow-kx-card backdrop-blur dark:border-white/10 dark:bg-kx-card/70">
               {attachments.map((m) => (
                 <div key={m.id} className="relative h-16 w-16 shrink-0 overflow-hidden rounded-2xl bg-kx-soft ring-1 ring-white/70">
                   {isVideoMedia(m) ? (
@@ -334,8 +334,8 @@ export default function ConversationPage() {
               className="kx-chat-tool-button"
               onClick={() => fileInput.current?.click()}
               disabled={uploading || attachmentLimitReached}
-              aria-label="添加图片或视频"
-              title={hasVideo ? "已添加视频" : imageCount >= MESSAGE_IMAGE_LIMIT ? "最多发送 9 张图片" : undefined}
+              aria-label={t("msg_add_media")}
+              title={hasVideo ? t("msg_media_video_added") : imageCount >= MESSAGE_IMAGE_LIMIT ? t("msg_media_image_limit_hint") : undefined}
             >
               {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-5 w-5" />}
             </button>
@@ -392,24 +392,28 @@ export default function ConversationPage() {
 }
 
 function EmptyConversation({ title, onPick }: { title: string; onPick: (text: string) => void }) {
+  const { t } = useI18n();
   return (
     <div className="grid min-h-[18rem] place-items-center px-5 py-10">
       <div className="max-w-sm text-center">
-        <span className="mx-auto grid h-14 w-14 place-items-center rounded-3xl bg-white/78 text-kx-accent shadow-[0_18px_50px_-36px_rgba(15,23,42,0.7)] ring-1 ring-white/80 backdrop-blur">
+        <span className="mx-auto grid h-14 w-14 place-items-center rounded-3xl bg-white/78 text-kx-accent shadow-kx-float ring-1 ring-white/80 backdrop-blur dark:bg-kx-card dark:ring-white/10">
           <MessageCircle className="h-6 w-6" />
         </span>
         <p className="mt-4 text-sm font-semibold text-kx-subtle">{title}</p>
         <div className="mt-4 flex flex-wrap justify-center gap-2">
-          {QUICK_REPLIES.map((reply) => (
-            <button
-              key={reply}
-              type="button"
-              onClick={() => onPick(reply)}
-              className="rounded-full border border-white/80 bg-white/70 px-3 py-2 text-xs font-semibold text-kx-text shadow-[0_10px_26px_-22px_rgba(15,23,42,0.55)] transition hover:-translate-y-px hover:bg-white"
-            >
-              {reply}
-            </button>
-          ))}
+          {QUICK_REPLY_KEYS.map((replyKey) => {
+            const reply = t(replyKey);
+            return (
+              <button
+                key={replyKey}
+                type="button"
+                onClick={() => onPick(reply)}
+                className="rounded-full border border-white/80 bg-white/70 px-3 py-2 text-xs font-semibold text-kx-text shadow-[0_10px_26px_-22px_rgba(15,23,42,0.55)] transition hover:-translate-y-px hover:bg-white dark:border-white/10 dark:bg-kx-card dark:hover:bg-kx-soft"
+              >
+                {reply}
+              </button>
+            );
+          })}
         </div>
       </div>
     </div>
@@ -417,20 +421,21 @@ function EmptyConversation({ title, onPick }: { title: string; onPick: (text: st
 }
 
 function EmojiPanel({ onPick }: { onPick: (emoji: string) => void }) {
+  const { t } = useI18n();
   return (
     <div className="kx-chat-emoji-panel mb-2 p-3">
       <div className="space-y-3">
         {EMOJI_GROUPS.map((group) => (
-          <section key={group.label}>
-            <div className="mb-1.5 px-1 text-[11px] font-bold text-kx-muted">{group.label}</div>
+          <section key={group.labelKey}>
+            <div className="mb-1.5 px-1 text-[11px] font-bold text-kx-muted">{t(group.labelKey)}</div>
             <div className="grid grid-cols-8 gap-1">
               {group.items.map((emoji, idx) => (
                 <button
-                  key={`${group.label}-${emoji}-${idx}`}
+                  key={`${group.labelKey}-${emoji}-${idx}`}
                   type="button"
                   className="grid h-9 w-9 place-items-center rounded-2xl text-lg transition hover:bg-kx-accentSoft active:scale-95"
                   onClick={() => onPick(emoji)}
-                  aria-label={`插入 ${emoji}`}
+                  aria-label={`${t("msg_insert_emoji")} ${emoji}`}
                 >
                   {emoji}
                 </button>
@@ -444,13 +449,14 @@ function EmojiPanel({ onPick }: { onPick: (emoji: string) => void }) {
 }
 
 function Bubble({ msg, mineId, peer, onDelete }: { msg: KXMessage; mineId?: string; peer?: KXUser | null; onDelete: (id: string) => void }) {
+  const { locale, t } = useI18n();
   const mine = msg.sender_id === mineId;
   return (
     <div className={clsx("group flex items-end gap-2", mine ? "justify-end" : "justify-start")}>
       {!mine ? <Avatar user={peer || undefined} size={30} /> : null}
       <div className={clsx("flex max-w-[82%] flex-col gap-1.5 sm:max-w-[76%]", mine && "items-end")}>
         {msg.media?.length ? (
-          <div className={clsx("overflow-hidden rounded-[20px] shadow-[0_12px_34px_-26px_rgba(15,23,42,0.58)]", mine ? "ring-1 ring-blue-200/70" : "ring-1 ring-white/80")}>
+          <div className={clsx("overflow-hidden rounded-[20px] shadow-kx-card", mine ? "ring-1 ring-kx-accent/25" : "ring-1 ring-white/80 dark:ring-white/10")}>
             <MediaGrid items={msg.media} rounded={false} />
           </div>
         ) : null}
@@ -460,23 +466,23 @@ function Bubble({ msg, mineId, peer, onDelete }: { msg: KXMessage; mineId?: stri
         {msg.content ? (
           <div
             className={clsx(
-              "whitespace-pre-wrap break-words px-3.5 py-2.5 text-[15px] leading-6 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.58)]",
+              "whitespace-pre-wrap break-words px-3.5 py-2.5 text-[15px] leading-6 shadow-kx-card",
               mine
-                ? "rounded-[22px] rounded-br-md bg-gradient-to-br from-blue-600 to-indigo-600 text-white"
-                : "rounded-[22px] rounded-bl-md border border-white/80 bg-white/[0.86] text-kx-text backdrop-blur",
+                ? "rounded-kx-lg rounded-br-md bg-[linear-gradient(135deg,rgb(34_140_126),rgb(var(--kx-accent))_54%,rgb(12_78_70))] text-white"
+                : "rounded-kx-lg rounded-bl-md border border-white/80 bg-white/[0.86] text-kx-text backdrop-blur dark:border-white/10 dark:bg-kx-card",
             )}
           >
             {msg.content}
           </div>
         ) : null}
         <div className={clsx("flex items-center gap-1 text-[10px] font-medium text-kx-muted", mine && "flex-row-reverse")}>
-          <span>{relativeTime(msg.created_at)}</span>
+          <time dateTime={msg.created_at} suppressHydrationWarning>{relativeTime(msg.created_at, locale)}</time>
           {mine ? (
             <button
               type="button"
               onClick={() => onDelete(msg.id)}
               className="opacity-60 transition hover:text-kx-danger sm:opacity-0 sm:group-hover:opacity-100"
-              aria-label="删除"
+              aria-label={t("action_delete")}
             >
               <Trash2 className="h-3 w-3" />
             </button>
@@ -491,9 +497,9 @@ function PrivateAttachmentGrid({ messageId, attachments, mine }: { messageId: st
   return (
     <div
       className={clsx(
-        "grid max-w-[18rem] gap-1 overflow-hidden rounded-[20px] p-1 shadow-[0_12px_34px_-26px_rgba(15,23,42,0.58)]",
+        "grid max-w-[18rem] gap-1 overflow-hidden rounded-[20px] p-1 shadow-kx-card",
         attachments.length === 1 ? "grid-cols-1" : "grid-cols-2",
-        mine ? "bg-blue-50/80 ring-1 ring-blue-200/70" : "bg-white/80 ring-1 ring-white/80",
+        mine ? "bg-kx-accentSoft ring-1 ring-kx-accent/20" : "bg-white/80 ring-1 ring-white/80 dark:bg-kx-card dark:ring-white/10",
       )}
     >
       {attachments.map((attachment) => (
@@ -574,7 +580,7 @@ function SignedMessageAttachment({ messageId, attachment }: { messageId: string;
     <button
       type="button"
       onClick={url ? () => window.open(url, "_blank", "noopener,noreferrer") : load}
-      className="grid min-h-[7rem] place-items-center rounded-2xl bg-white/70 p-3 text-center text-xs font-bold text-kx-muted ring-1 ring-white/80 transition hover:bg-white hover:text-kx-accent"
+      className="grid min-h-[7rem] place-items-center rounded-2xl bg-white/70 p-3 text-center text-xs font-bold text-kx-muted ring-1 ring-white/80 transition hover:bg-white hover:text-kx-accent dark:bg-kx-card dark:ring-white/10 dark:hover:bg-kx-soft"
     >
       {loading ? (
         <Loader2 className="h-5 w-5 animate-spin" />

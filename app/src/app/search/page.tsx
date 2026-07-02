@@ -61,18 +61,44 @@ function SearchPageInner() {
     topic: t("search_topics"),
     guide: t("search_kind_guide"),
   };
+  const KIND_VALUES: Kind[] = ["all", "post", "listing", "user", "topic", "guide"];
   const initialQuery = params.get("q") || "";
+  const initialKindParam = params.get("kind");
+  const initialKind: Kind = KIND_VALUES.includes(initialKindParam as Kind) ? (initialKindParam as Kind) : "all";
   const [query, setQuery] = useState(initialQuery);
-  const [kind, setKind] = useState<Kind>("all");
+  const [kind, setKind] = useState<Kind>(initialKind);
   const [submitted, setSubmitted] = useState(initialQuery);
 
   useEffect(() => setQuery(initialQuery), [initialQuery]);
+  // Keep the active tab in sync when the URL changes externally (back/forward,
+  // deep link, share). The URL is the source of truth for the kind tab.
+  useEffect(() => {
+    setKind(KIND_VALUES.includes(initialKindParam as Kind) ? (initialKindParam as Kind) : "all");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialKindParam]);
 
+  // Build a /search URL preserving the current query + the given kind.
+  const searchUrl = (q: string, k: Kind) => {
+    const usp = new URLSearchParams();
+    if (q) usp.set("q", q);
+    if (k !== "all") usp.set("kind", k);
+    const qs = usp.toString();
+    return `/search${qs ? `?${qs}` : ""}`;
+  };
+
+  // A submit is a distinct search — push it so it becomes a back-button step.
   const submit = (q: string) => {
     const trimmed = q.trim();
     setSubmitted(trimmed);
-    const usp = new URLSearchParams(trimmed ? { q: trimmed } : {});
-    router.replace(`/search${trimmed ? `?${usp.toString()}` : ""}`);
+    router.push(searchUrl(trimmed, kind));
+  };
+
+  // Tab switch is a refinement of the same search — replace so it doesn't
+  // clutter history, but still round-trips through the URL so the tab is
+  // shareable and survives refresh.
+  const selectKind = (k: Kind) => {
+    setKind(k);
+    router.replace(searchUrl(submitted, k), { scroll: false });
   };
 
   const search = useQuery({
@@ -171,7 +197,7 @@ function SearchPageInner() {
             <NavTabs
               items={(Object.keys(KIND_LABEL) as Kind[]).map((k) => ({ value: k, label: KIND_LABEL[k] }))}
               value={kind}
-              onChange={(v) => setKind(v as Kind)}
+              onChange={(v) => selectKind(v as Kind)}
               equalWidth
             />
           </div>

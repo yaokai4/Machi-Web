@@ -37,15 +37,25 @@ const config: Config = {
         kx: "0 10px 24px -18px rgb(var(--kx-shadow) / 0.34), 0 1px 2px rgb(var(--kx-shadow) / 0.04)",
         "kx-glow": "0 18px 44px -24px rgb(var(--kx-shadow) / 0.42)",
         "kx-bar": "0 -4px 18px -10px rgb(var(--kx-shadow) / 0.20)",
+        // Semantic card / floating-element shadows — token-driven so they
+        // collapse to a crisp near-black edge in dark mode automatically.
+        "kx-card": "0 12px 34px -28px rgb(var(--kx-shadow) / 0.55), 0 1px 2px rgb(var(--kx-shadow) / 0.05)",
+        "kx-float": "0 22px 60px -42px rgb(var(--kx-shadow) / 0.55)",
       },
       fontFamily: {
+        // Kept in sync with the `html, body` stack in globals.css. System
+        // faces first (no web-font download), with CJK + Japanese fallbacks
+        // so mixed-script UI renders in native metrics.
         sans: [
+          "system-ui",
           "-apple-system",
           "BlinkMacSystemFont",
           "'SF Pro Text'",
+          "'Segoe UI'",
           "'PingFang SC'",
-          "'Hiragino Sans GB'",
-          "system-ui",
+          "'Hiragino Sans'",
+          "'Noto Sans JP'",
+          "'Noto Sans SC'",
           "sans-serif",
         ],
       },

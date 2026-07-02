@@ -20,7 +20,7 @@ export default function MessagesPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [newOpen, setNewOpen] = useState(false);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebounce(search, 250);
@@ -89,7 +89,7 @@ export default function MessagesPage() {
                       <span className="text-kx-muted text-xs truncate">@{peer?.handle}</span>
                       {conv.last_message ? (
                         <span className="ml-auto text-xs text-kx-muted shrink-0">
-                          {relativeTime(conv.last_message.created_at)}
+                          <time dateTime={conv.last_message.created_at} suppressHydrationWarning>{relativeTime(conv.last_message.created_at, locale)}</time>
                         </span>
                       ) : null}
                     </div>

@@ -33,6 +33,10 @@ export default function PostPageClient() {
   const [reply, setReply] = useState("");
   const [replyTo, setReplyTo] = useState<{ id: string; parentId: string; userId: string; name: string } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  // Comment likes in flight — guards against a double-tap firing two toggles
+  // (which would flip the like back off and desync the count).
+  const [likeBusy, setLikeBusy] = useState<Set<string>>(new Set());
 
   const postQuery = useQuery({
     queryKey: ["post", id],
@@ -62,8 +66,10 @@ export default function PostPageClient() {
       openAuthPrompt("comment");
       return;
     }
+    if (submitting) return;
     const text = reply.trim();
     if (!text) return;
+    setSubmitting(true);
     try {
       await api.createComment(id, {
         content: text,
@@ -81,6 +87,8 @@ export default function PostPageClient() {
         return;
       }
       pushToast({ kind: "error", message: (err as APIError).message });
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -100,9 +108,17 @@ export default function PostPageClient() {
       openAuthPrompt("like");
       return;
     }
-    const next = !c.liked;
+    // Ignore re-taps while this comment's toggle is still in flight.
+    if (likeBusy.has(c.id)) return;
+    // Derive the target state and the ±1 delta from the LATEST cached row, not
+    // the render-time snapshot `c` (which may already be stale after an earlier
+    // optimistic flip), so the count never drifts.
+    const cached = queryClient.getQueryData<KXComment[]>(["comments", id, sort]);
+    const currentRow = cached?.find((x) => x.id === c.id) ?? c;
+    const next = !currentRow.liked;
+    setLikeBusy((prev) => new Set(prev).add(c.id));
     queryClient.setQueryData<KXComment[]>(["comments", id, sort], (old) =>
-      (old || []).map((x) => x.id === c.id ? { ...x, liked: next, like_count: c.like_count + (next ? 1 : -1) } : x),
+      (old || []).map((x) => x.id === c.id ? { ...x, liked: next, like_count: Math.max(0, x.like_count + (next ? 1 : -1)) } : x),
     );
     try {
       await api.toggleCommentLike(c.id, next);
@@ -114,6 +130,12 @@ export default function PostPageClient() {
       }
       pushToast({ kind: "error", message: (err as APIError).message });
       commentsQuery.refetch();
+    } finally {
+      setLikeBusy((prev) => {
+        const nextSet = new Set(prev);
+        nextSet.delete(c.id);
+        return nextSet;
+      });
     }
   };
 
@@ -224,7 +246,7 @@ export default function PostPageClient() {
                     maxLength={2000}
                   />
                   <div className="flex justify-end mt-2">
-                    <button className="kx-button-primary h-9" onClick={submitReply} disabled={!reply.trim()}>
+                    <button className="kx-button-primary h-9" onClick={submitReply} disabled={!reply.trim() || submitting}>
                       <Send className="w-4 h-4" /> {t("action_publish")}
                     </button>
                   </div>
@@ -424,7 +446,7 @@ function CommentItem({
   onReport: (comment: KXComment) => void;
   compact?: boolean;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const canDelete = currentUser?.id === comment.author_id || currentUser?.id === postAuthorId;
   return (
     <div className="flex gap-2.5">
@@ -440,7 +462,7 @@ function CommentItem({
               <CheckCircle2 className="h-3 w-3" /> {t("answer_accepted_badge")}
             </span>
           ) : null}
-          <span className="text-kx-muted text-xs truncate">@{comment.author?.handle || "machi"} · {relativeTime(comment.created_at)}</span>
+          <span className="text-kx-muted text-xs truncate">@{comment.author?.handle || "machi"} · <time dateTime={comment.created_at} suppressHydrationWarning>{relativeTime(comment.created_at, locale)}</time></span>
         </div>
         <p className="text-sm text-kx-text whitespace-pre-wrap break-words mt-1">{comment.content}</p>
         <div className="flex items-center gap-5 mt-2 text-xs font-medium">

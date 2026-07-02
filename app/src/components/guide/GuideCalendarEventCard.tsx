@@ -69,7 +69,7 @@ export function GuideCalendarEventCard({ event, compact = false }: { event: Guid
       </button>
       {open ? (
         <div className="fixed inset-0 z-[85] grid place-items-end bg-black/30 sm:place-items-center sm:p-5" onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}>
-          <section role="dialog" aria-modal="true" aria-label="日程详情" className="max-h-[92dvh] w-full overflow-y-auto rounded-t-[24px] bg-kx-card p-5 shadow-2xl sm:max-w-xl sm:rounded-[24px]">
+          <section role="dialog" aria-modal="true" aria-label="日程详情" className="max-h-[92dvh] w-full overflow-y-auto rounded-t-[24px] bg-kx-card p-5 shadow-2xl sm:max-w-xl sm:rounded-kx-sheet">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-black text-kx-text">日程详情</h2>
               <button type="button" onClick={() => setOpen(false)} className="grid min-h-11 min-w-11 place-items-center rounded-full text-kx-muted hover:bg-kx-soft" aria-label="关闭"><X className="h-5 w-5" /></button>
