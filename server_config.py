@@ -479,6 +479,12 @@ UPLOAD_PURPOSES: dict[str, dict[str, Any]] = {
     "message_attachment": {"kind": "disabled", "max": 0, "count": 0},
     "message_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9, "private": True},
     "message_video": {"kind": "video", "max": 200 * 1024 * 1024, "count": 1, "private": True},
+    # Private poster/cover for a DM video. Mirrors message_image's private
+    # (encrypted, signed-URL) policy so the first frame of a video sent inside an
+    # encrypted conversation is NOT served from a public CDN URL. Kept separate
+    # from the public `video_thumbnail` (used by feed/post video covers) so those
+    # stay on the fast public CDN path.
+    "message_video_thumbnail": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1, "private": True},
     "message_file": {"kind": "message_file", "max": 20 * 1024 * 1024, "count": 1, "private": True, "disabled": not MESSAGE_FILE_UPLOAD_ENABLED},
     "video_thumbnail": {"kind": "image", "max": 5 * 1024 * 1024, "count": 20},
     "video_processed_file": {"kind": "video", "max": 300 * 1024 * 1024, "count": 10},

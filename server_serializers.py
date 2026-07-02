@@ -495,21 +495,41 @@ def serialize_message_attachment(row: dict[str, Any]) -> dict[str, Any]:
     message_id = row.get("message_id") or ""
     attachment_id = row.get("id") or ""
     visibility = row.get("visibility") or "thread_members_only"
-    thumbnail_url = (
-        row.get("thumbnail_url")
-        or row.get("thumbnailUrl")
-        or row.get("thumbnail_cdn_url")
-        or row.get("thumbnail_public_url")
-        or row.get("thumb_url")
-        or row.get("thumbUrl")
-        or ""
+    # The poster/cover for a DM video is a private, encrypted upload
+    # (purpose message_video_thumbnail). For those we must NOT emit the public
+    # CDN/public URL — the first frame of a video in an encrypted conversation
+    # would otherwise be viewable by anyone holding the URL. Private posters are
+    # resolved through the same signed view-url mechanism as the video body,
+    # keyed by the attachment (thread-membership auth), with ?kind=poster.
+    # Legacy public covers (purpose video_thumbnail) keep their direct URL.
+    thumbnail_purpose = str(row.get("thumbnail_purpose") or "")
+    poster_is_private = thumbnail_purpose == "message_video_thumbnail"
+    thumbnail_file_id = row.get("thumbnail_file_id") or ""
+    poster_view_url_endpoint = (
+        f"/api/messages/{message_id}/attachments/{attachment_id}/view-url?kind=poster"
+        if poster_is_private and message_id and attachment_id and thumbnail_file_id
+        else ""
     )
-    poster_url = (
-        row.get("poster_url")
-        or row.get("posterUrl")
-        or (thumbnail_url if attachment_type == "video" else "")
-        or ""
-    )
+    if poster_is_private:
+        # Suppress the public URL entirely; the client re-signs on demand.
+        thumbnail_url = ""
+        poster_url = ""
+    else:
+        thumbnail_url = (
+            row.get("thumbnail_url")
+            or row.get("thumbnailUrl")
+            or row.get("thumbnail_cdn_url")
+            or row.get("thumbnail_public_url")
+            or row.get("thumb_url")
+            or row.get("thumbUrl")
+            or ""
+        )
+        poster_url = (
+            row.get("poster_url")
+            or row.get("posterUrl")
+            or (thumbnail_url if attachment_type == "video" else "")
+            or ""
+        )
     payload = {
         "id": attachment_id,
         "message_id": message_id,
@@ -530,6 +550,12 @@ def serialize_message_attachment(row: dict[str, Any]) -> dict[str, Any]:
         "poster_url": poster_url,
         "needsSignedUrl": True,
         "viewUrlEndpoint": f"/api/messages/{message_id}/attachments/{attachment_id}/view-url",
+        # Private DM video poster: the client must fetch a signed URL for the
+        # cover instead of using a public URL. Empty endpoint / False flag means
+        # the poster is a legacy public cover (or none) and is safe to use direct.
+        "needsSignedPoster": poster_is_private,
+        "posterViewUrlEndpoint": poster_view_url_endpoint,
+        "thumbnail_purpose": thumbnail_purpose,
         "thumbnail_file_id": row.get("thumbnail_file_id") or "",
         "duration": float(row.get("duration_seconds") or row.get("duration") or 0),
         "duration_seconds": float(row.get("duration_seconds") or row.get("duration") or 0),

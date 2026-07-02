@@ -23315,7 +23315,7 @@ class Handler(BaseHTTPRequestHandler):
             parts = path[len("/api/messages/"):].split("/")
             msg_id = unquote(parts[0])
             if len(parts) >= 4 and parts[1] == "attachments" and parts[3] == "view-url" and method == "POST":
-                return self.api_message_attachment_view_url(conn, msg_id, unquote(parts[2]))
+                return self.api_message_attachment_view_url(conn, msg_id, unquote(parts[2]), query)
             if len(parts) == 1 and method == "DELETE":
                 return self.api_delete_message(conn, msg_id)
 
@@ -33594,6 +33594,8 @@ class Handler(BaseHTTPRequestHandler):
                   a.id, a.message_id, a.thread_id, a.uploaded_file_id, a.attachment_type,
                   a.thumbnail_file_id,
                   COALESCE(NULLIF(tf.cdn_url, ''), NULLIF(tf.public_url, '')) AS thumbnail_url,
+                  tf.purpose AS thumbnail_purpose,
+                  tf.object_key AS thumbnail_object_key,
                   COALESCE(NULLIF(a.duration_seconds, 0), f.duration, 0) AS duration_seconds,
                   a.file_name,
                   COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
@@ -33853,6 +33855,8 @@ class Handler(BaseHTTPRequestHandler):
                   a.id, a.message_id, a.thread_id, a.uploaded_file_id, a.attachment_type,
                   a.thumbnail_file_id,
                   COALESCE(NULLIF(tf.cdn_url, ''), NULLIF(tf.public_url, '')) AS thumbnail_url,
+                  tf.purpose AS thumbnail_purpose,
+                  tf.object_key AS thumbnail_object_key,
                   COALESCE(NULLIF(a.duration_seconds, 0), f.duration, 0) AS duration_seconds,
                   a.file_name,
                   COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
@@ -33968,12 +33972,15 @@ class Handler(BaseHTTPRequestHandler):
                         raise APIError("每条私信最多发送 1 个附件文件", 400, "message_file_limit")
                 upload["_attachment_type"] = attachment_type
                 if attachment_type == "video" and thumbnail_file_id:
+                    # Accept BOTH the new private DM poster purpose
+                    # (message_video_thumbnail) and the legacy public
+                    # video_thumbnail so older clients / existing rows still work.
                     thumbnail_ok = conn.execute(
                         """
                         SELECT 1 FROM uploaded_files
                          WHERE id = ?
                            AND user_id = ?
-                           AND purpose = 'video_thumbnail'
+                           AND purpose IN ('video_thumbnail', 'message_video_thumbnail')
                            AND status = 'ready'
                            AND deleted_at IS NULL
                          LIMIT 1
@@ -34066,6 +34073,8 @@ class Handler(BaseHTTPRequestHandler):
                   a.id, a.message_id, a.thread_id, a.uploaded_file_id, a.attachment_type,
                   a.thumbnail_file_id,
                   COALESCE(NULLIF(tf.cdn_url, ''), NULLIF(tf.public_url, '')) AS thumbnail_url,
+                  tf.purpose AS thumbnail_purpose,
+                  tf.object_key AS thumbnail_object_key,
                   COALESCE(NULLIF(a.duration_seconds, 0), f.duration, 0) AS duration_seconds,
                   a.file_name,
                   COALESCE(NULLIF(a.file_size, 0), f.file_size, 0) AS file_size,
@@ -34099,8 +34108,12 @@ class Handler(BaseHTTPRequestHandler):
         )
         self.send_json({"ok": True})
 
-    def api_message_attachment_view_url(self, conn: sqlite3.Connection, msg_id: str, attachment_id: str) -> None:
+    def api_message_attachment_view_url(self, conn: sqlite3.Connection, msg_id: str, attachment_id: str, query: dict[str, str] | None = None) -> None:
         user = self.require_user(conn)
+        # kind=poster signs the private video COVER (thumbnail_file_id) instead of
+        # the video body. Authorization is identical (thread membership) — the
+        # poster of a DM video is as private as the video itself.
+        want_poster = str((query or {}).get("kind") or "").strip().lower() == "poster"
         row = conn.execute(
             """
             SELECT
@@ -34108,6 +34121,7 @@ class Handler(BaseHTTPRequestHandler):
               a.message_id,
               a.thread_id,
               a.uploaded_file_id,
+              a.thumbnail_file_id,
               a.status AS attachment_status,
               f.id AS file_id,
               f.user_id AS file_owner_id,
@@ -34116,12 +34130,16 @@ class Handler(BaseHTTPRequestHandler):
               f.content_type,
               f.status AS file_status,
               f.purpose,
+              tf.id AS thumb_file_id,
+              tf.status AS thumb_status,
+              tf.purpose AS thumb_purpose,
               c.participant_a,
               c.participant_b
             FROM message_attachments a
             JOIN messages m ON m.id = a.message_id AND m.deleted_at IS NULL
             JOIN conversations c ON c.id = m.conversation_id AND c.deleted_at IS NULL
             JOIN uploaded_files f ON f.id = a.uploaded_file_id
+            LEFT JOIN uploaded_files tf ON tf.id = a.thumbnail_file_id AND tf.deleted_at IS NULL
             WHERE a.id = ?
               AND a.message_id = ?
               AND a.deleted_at IS NULL
@@ -34136,15 +34154,26 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("附件不存在", 404, "attachment_not_found")
         d = dict(row)
         if d["participant_a"] != user["id"] and d["participant_b"] != user["id"] and user.get("role") != "admin":
-            record_upload_audit(conn, user["id"], "message_attachment_view_denied", file_id=d["file_id"], status="failed", reason="thread_forbidden", metadata={"messageId": msg_id, "attachmentId": attachment_id})
+            record_upload_audit(conn, user["id"], "message_attachment_view_denied", file_id=d["file_id"], status="failed", reason="thread_forbidden", metadata={"messageId": msg_id, "attachmentId": attachment_id, "kind": "poster" if want_poster else "body"})
             raise APIError("无权查看该附件", 403, "forbidden")
-        if str(d.get("purpose") or "") not in {"message_image", "message_video", "message_file"}:
-            raise APIError("附件类型不支持", 400, "invalid_attachment_purpose")
-        if str(d.get("file_status") or "") not in {"uploaded", "processing", "ready"}:
+        if want_poster:
+            target_file_id = str(d.get("thumb_file_id") or "")
+            target_purpose = str(d.get("thumb_purpose") or "")
+            target_status = str(d.get("thumb_status") or "")
+            if not target_file_id or target_purpose != "message_video_thumbnail":
+                # Not a private poster (legacy public cover or none) — nothing to sign.
+                raise APIError("封面无需签名", 400, "poster_not_private")
+        else:
+            target_file_id = str(d.get("file_id") or "")
+            target_purpose = str(d.get("purpose") or "")
+            target_status = str(d.get("file_status") or "")
+            if target_purpose not in {"message_image", "message_video", "message_file"}:
+                raise APIError("附件类型不支持", 400, "invalid_attachment_purpose")
+        if target_status not in {"uploaded", "processing", "ready"}:
             raise APIError("附件尚未可用", 409, "attachment_not_ready")
         expires = S3_PRIVATE_DOWNLOAD_EXPIRES_SECONDS
-        url = self._private_download_url(d["file_id"], expires)
-        record_upload_audit(conn, user["id"], "message_attachment_view_url", file_id=d["file_id"], status="ready", metadata={"messageId": msg_id, "threadId": d["thread_id"], "attachmentId": attachment_id, "expires": expires})
+        url = self._private_download_url(target_file_id, expires)
+        record_upload_audit(conn, user["id"], "message_attachment_view_url", file_id=target_file_id, status="ready", metadata={"messageId": msg_id, "threadId": d["thread_id"], "attachmentId": attachment_id, "kind": "poster" if want_poster else "body", "expires": expires})
         self.send_json({"ok": True, "data": {"url": url, "expiresIn": expires}, "url": url, "expiresIn": expires})
 
     def api_mark_conversation_read(self, conn: sqlite3.Connection, conv_id: str) -> None:
@@ -34398,7 +34427,7 @@ class Handler(BaseHTTPRequestHandler):
         }
         if purpose in max_duration_by_purpose and duration_seconds > max_duration_by_purpose[purpose]:
             raise APIError("视频时长超过限制", 400, "video_duration_too_long")
-        if purpose in {"message_image", "message_video", "message_file"}:
+        if purpose in {"message_image", "message_video", "message_file", "message_video_thumbnail"}:
             if not thread_id:
                 raise APIError("私信上传需要 threadId", 400, "missing_thread_id")
             thread = conn.execute("SELECT * FROM conversations WHERE id = ? AND deleted_at IS NULL", (thread_id,)).fetchone()
@@ -34472,12 +34501,16 @@ class Handler(BaseHTTPRequestHandler):
                 or ""
             ).strip()
             if thumbnail_file_id:
+                # Accept the new private DM poster purpose
+                # (message_video_thumbnail) as well as the legacy public
+                # video_thumbnail — the message_video body uses this same finalize
+                # path, so a DM video's private cover must pass validation here.
                 thumbnail_row = conn.execute(
                     """
                     SELECT * FROM uploaded_files
                      WHERE id = ?
                        AND user_id = ?
-                       AND purpose = 'video_thumbnail'
+                       AND purpose IN ('video_thumbnail', 'message_video_thumbnail')
                        AND status = 'ready'
                        AND deleted_at IS NULL
                      LIMIT 1
@@ -34489,6 +34522,10 @@ class Handler(BaseHTTPRequestHandler):
                 metadata["thumbnail_file_id"] = thumbnail_file_id
                 metadata["poster_file_id"] = thumbnail_file_id
                 thumbnail_media = uploaded_file_as_media(thumbnail_row)
+                # A private poster has no public URL (upload_public_url returns
+                # "" for private purposes); only cache a poster_url/thumbnail_url
+                # here when the cover is a legacy PUBLIC video_thumbnail. Private
+                # covers get a signed URL at read time via the attachment view-url.
                 thumbnail_url = media_card_image_url(thumbnail_media)
                 if thumbnail_url:
                     metadata["thumbnail_url"] = thumbnail_url

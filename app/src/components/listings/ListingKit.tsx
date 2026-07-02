@@ -923,7 +923,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
                 name="q"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                className="min-w-0 flex-1 bg-transparent font-semibold outline-none placeholder:text-slate-400"
+                className="min-w-0 flex-1 bg-transparent font-semibold outline-none placeholder:text-kx-subtle"
                 placeholder={pickText(locale, "职位、公司或关键词", "職種・会社・キーワード", "Role, company or keywords")}
               />
             </label>
@@ -949,7 +949,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
               name="q"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              className="min-w-0 flex-1 bg-transparent font-semibold outline-none placeholder:text-slate-400"
+              className="min-w-0 flex-1 bg-transparent font-semibold outline-none placeholder:text-kx-subtle"
               placeholder={spec.search}
             />
             <button type="submit" className="kx-living-search-submit" aria-label={pickText(locale, "搜索", "検索", "Search")}>
@@ -1013,12 +1013,12 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
             <div className="flex flex-col gap-3">
               <div className="flex flex-wrap items-center gap-2">
               {nationwide ? null : (
-              <div className="inline-flex shrink-0 items-center rounded-full border border-slate-200 bg-slate-100/80 p-0.5">
+              <div className="inline-flex shrink-0 items-center rounded-full border border-kx-stroke/60 bg-kx-surface/80 p-0.5">
                 <button
                   type="button"
                   onClick={() => setScope("city")}
                   data-active={scope === "city"}
-                  className="h-9 rounded-full px-3 text-sm font-black text-slate-500 transition data-[active=true]:bg-white data-[active=true]:text-slate-950 data-[active=true]:shadow-sm"
+                  className="h-9 rounded-full px-3 text-sm font-black text-kx-muted transition data-[active=true]:bg-kx-card data-[active=true]:text-kx-text data-[active=true]:shadow-sm"
                 >
                   {city.name}
                 </button>
@@ -1026,7 +1026,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
                   type="button"
                   onClick={() => setScope("country")}
                   data-active={scope === "country"}
-                  className="h-9 rounded-full px-3 text-sm font-black text-slate-500 transition data-[active=true]:bg-white data-[active=true]:text-slate-950 data-[active=true]:shadow-sm"
+                  className="h-9 rounded-full px-3 text-sm font-black text-kx-muted transition data-[active=true]:bg-kx-card data-[active=true]:text-kx-text data-[active=true]:shadow-sm"
                 >
                   {scopeCountryName}
                 </button>
@@ -1067,7 +1067,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
                   ? pickText(locale, "已订阅", "購読中", "Subscribed")
                   : pickText(locale, "订阅此搜索", "この検索を購読", "Save this search")}
               </button>
-              <p className="ml-auto hidden text-xs font-bold text-slate-400 sm:block">
+              <p className="ml-auto hidden text-xs font-bold text-kx-subtle sm:block">
                 {visibleItems.length
                   ? pickText(locale, `${visibleItems.length}${listings.hasNextPage ? "+" : ""} 条结果`, `${visibleItems.length}${listings.hasNextPage ? "+" : ""} 件`, `${visibleItems.length}${listings.hasNextPage ? "+" : ""} results`)
                   : pickText(locale, "暂无结果", "結果なし", "No results")}
@@ -1138,7 +1138,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
               </div>
             ) : null}
             {filtersOpen ? (
-              <div className="mt-3 border-t border-slate-200/70 pt-3">
+              <div className="mt-3 border-t border-kx-stroke/50 pt-3">
                 <ListingFilterPanel type={lodgingActive ? "local_service" : spec.type} context={lodgingActive ? "lodging" : "default"} currentCitySlug={city.slug} filters={filters} onChange={setFilters} variant="inline" />
               </div>
             ) : null}
@@ -1147,7 +1147,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
           {kind === "services" && !nationwide ? <VerifiedMerchantsStrip citySlug={city.slug} locale={locale} /> : null}
 
           {fallbackFilters?.fallback && fallbackFilters.fallback_label && visibleItems.length ? (
-            <p className="mb-3 rounded-xl bg-slate-100/80 px-4 py-2.5 text-sm font-semibold text-slate-500">
+            <p className="mb-3 rounded-xl bg-kx-surface/80 px-4 py-2.5 text-sm font-semibold text-kx-muted">
               {pickText(
                 locale,
                 `该地区暂无，已为你展示${fallbackFilters.fallback_label}的内容`,
@@ -1163,7 +1163,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
               <ListingSkeletonGrid type={spec.type} />
             </div>
           ) : listings.isError ? (
-            <section className="rounded-2xl bg-white p-5">
+            <section className="rounded-2xl bg-kx-card p-5">
               <ErrorState title="频道暂时无法加载" subtitle="网络或服务器暂时不可用，请稍后重试。" onRetry={() => listings.refetch()} />
             </section>
           ) : visibleItems.length ? (
@@ -1208,7 +1208,7 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
                 type="button"
                 disabled={listings.isFetchingNextPage}
                 onClick={() => listings.fetchNextPage()}
-                className="inline-flex h-11 items-center gap-2 rounded-full border border-slate-200 bg-white px-6 text-sm font-black text-slate-700 shadow-[0_10px_30px_-22px_rgba(15,23,42,0.7)] transition hover:-translate-y-px hover:border-blue-300 hover:text-blue-700 disabled:cursor-wait disabled:opacity-60"
+                className="inline-flex h-11 items-center gap-2 rounded-full border border-kx-stroke/60 bg-kx-card px-6 text-sm font-black text-kx-text shadow-kx-float transition hover:-translate-y-px hover:border-kx-accent/40 hover:text-kx-accent disabled:cursor-wait disabled:opacity-60"
               >
                 {listings.isFetchingNextPage
                   ? pickText(locale, "正在加载…", "読み込み中…", "Loading…")
@@ -1293,7 +1293,7 @@ export function ListingDetailPage({ listingId }: { listingId: string }) {
             <h1 className="truncate text-lg font-black text-[rgb(var(--kx-living-ink))]">{displayTitle}</h1>
           </div>
           <button type="button" onClick={() => favorite.mutate()} className="kx-listing-icon-button ml-auto">
-            <Heart className={`h-4 w-4 ${item.favorited ? "fill-rose-500 text-rose-500" : "text-slate-700"}`} />
+            <Heart className={`h-4 w-4 ${item.favorited ? "fill-rose-500 text-rose-500" : "text-kx-text"}`} />
           </button>
         </div>
       </header>
@@ -1827,20 +1827,20 @@ export function CreateListingPage({
   return (
     <AppShell requireAuth right={null} wide>
       <main className="px-3 py-4 sm:px-4">
-        <section className="rounded-[30px] border border-slate-200/70 bg-white/90 p-5 shadow-[0_18px_58px_-40px_rgba(15,23,42,0.52)] backdrop-blur">
+        <section className="rounded-[30px] border border-kx-stroke/50 bg-kx-card/90 p-5 shadow-kx-float backdrop-blur">
           <div className="flex items-center gap-3">
-            <Link href="/explore" className="grid h-10 w-10 place-items-center rounded-full bg-slate-100"><ArrowLeft className="h-5 w-5" /></Link>
+            <Link href="/explore" className="grid h-10 w-10 place-items-center rounded-full bg-kx-surface"><ArrowLeft className="h-5 w-5" /></Link>
             <div>
-              <h1 className="text-2xl font-black text-slate-950">{isEditing ? "编辑城市信息" : "发布城市信息"}</h1>
-              <p className="text-sm font-semibold text-slate-500">{isEditing ? "修改后的内容会同步到 Web 与 iOS；重要内容变更可能重新进入审核。" : "日常动态留在首页；二手、租房、工作、商家与服务和优惠会进入各自的城市频道。"}</p>
+              <h1 className="text-2xl font-black text-kx-text">{isEditing ? "编辑城市信息" : "发布城市信息"}</h1>
+              <p className="text-sm font-semibold text-kx-muted">{isEditing ? "修改后的内容会同步到 Web 与 iOS；重要内容变更可能重新进入审核。" : "日常动态留在首页；二手、租房、工作、商家与服务和优惠会进入各自的城市频道。"}</p>
             </div>
           </div>
           <div className="mt-5 grid grid-cols-1 gap-5">
             <section>
-              <p className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-slate-400">选择发布类型</p>
+              <p className="mb-2 text-xs font-black uppercase tracking-[0.16em] text-kx-subtle">选择发布类型</p>
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-6">
               {(["secondhand", "rental", "job", "hiring", "local_service", "discount"] as KXListingType[]).map((value) => (
-                <button key={value} type="button" disabled={isEditing} onClick={() => applyType(value)} data-active={type === value} className="h-12 rounded-2xl border border-slate-200 bg-white text-sm font-black text-slate-600 transition hover:-translate-y-px hover:border-blue-200 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-45 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white data-[active=true]:opacity-100">
+                <button key={value} type="button" disabled={isEditing} onClick={() => applyType(value)} data-active={type === value} className="h-12 rounded-2xl border border-kx-stroke/60 bg-kx-card text-sm font-black text-kx-muted transition hover:-translate-y-px hover:border-kx-accent/40 hover:text-kx-accent disabled:cursor-not-allowed disabled:opacity-45 data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white data-[active=true]:opacity-100">
                   {listingTypeLabel(value)}
                 </button>
               ))}
@@ -1850,12 +1850,12 @@ export function CreateListingPage({
             {membershipRequired && !isEditing ? (
               <section className="flex flex-col gap-3 rounded-kx-sheet border border-blue-100 bg-blue-50/70 p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
                 <div className="flex items-start gap-3">
-                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-white text-blue-600 shadow-sm">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-kx-card text-blue-600 shadow-sm">
                     <AlertTriangle className="h-5 w-5" />
                   </span>
                   <div>
-                    <p className="font-black text-slate-950">{pickText(locale, `${membershipChannelLabel}发布需要 Machi 会员`, `${membershipChannelLabel}の掲載には Machi 会員が必要`, `Posting ${membershipChannelLabel.toLowerCase()} needs a Machi membership`)}</p>
-                    <p className="mt-1 font-semibold text-slate-600">{pickText(locale, `会员每月可免费发布 3 条${membershipChannelLabel}信息；提交后会按频道规则进入审核或展示。`, `会員は毎月${membershipChannelLabel}を3件まで無料で掲載できます。送信後はチャンネルのルールに従って審査・掲載されます。`, `Members can post 3 ${membershipChannelLabel.toLowerCase()} listings free each month; after submitting, they're reviewed or shown per channel rules.`)}</p>
+                    <p className="font-black text-kx-text">{pickText(locale, `${membershipChannelLabel}发布需要 Machi 会员`, `${membershipChannelLabel}の掲載には Machi 会員が必要`, `Posting ${membershipChannelLabel.toLowerCase()} needs a Machi membership`)}</p>
+                    <p className="mt-1 font-semibold text-kx-muted">{pickText(locale, `会员每月可免费发布 3 条${membershipChannelLabel}信息；提交后会按频道规则进入审核或展示。`, `会員は毎月${membershipChannelLabel}を3件まで無料で掲載できます。送信後はチャンネルのルールに従って審査・掲載されます。`, `Members can post 3 ${membershipChannelLabel.toLowerCase()} listings free each month; after submitting, they're reviewed or shown per channel rules.`)}</p>
                   </div>
                 </div>
                 {membershipBlocked ? (
@@ -1863,7 +1863,7 @@ export function CreateListingPage({
                     {pickText(locale, "开通会员", "会員登録", "Get membership")}
                   </Link>
                 ) : quotaGroup && quotaGroup.remaining !== null ? (
-                  <span className="h-10 shrink-0 rounded-full bg-white px-4 text-center text-sm font-black leading-10 text-blue-700">
+                  <span className="h-10 shrink-0 rounded-full bg-kx-card px-4 text-center text-sm font-black leading-10 text-blue-700">
                     {pickText(
                       locale,
                       `本月还可发布 ${quotaGroup.remaining} 条`,
@@ -1872,29 +1872,29 @@ export function CreateListingPage({
                     )}
                   </span>
                 ) : (
-                  <span className="h-10 shrink-0 rounded-full bg-white px-4 text-center text-sm font-black leading-10 text-blue-700">{pickText(locale, "会员可发布", "会員は掲載可能", "Members can post")}</span>
+                  <span className="h-10 shrink-0 rounded-full bg-kx-card px-4 text-center text-sm font-black leading-10 text-blue-700">{pickText(locale, "会员可发布", "会員は掲載可能", "Members can post")}</span>
                 )}
               </section>
             ) : null}
 
-            <section className="rounded-kx-sheet border border-slate-200/70 bg-slate-50/70 p-4">
-              <p className="mb-3 text-sm font-black text-slate-950">基础信息</p>
+            <section className="rounded-kx-sheet border border-kx-stroke/50 bg-kx-surface/70 p-4">
+              <p className="mb-3 text-sm font-black text-kx-text">基础信息</p>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Field label="发布地区" required>
-                  <div className="rounded-2xl border border-slate-200 bg-white px-3 py-2.5">
+                  <div className="rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 py-2.5">
                     <div className="flex items-center gap-2">
                       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-blue-50 text-lg">
                         {selectedRegion?.country_emoji || "🌐"}
                       </span>
                       <div className="min-w-0 flex-1">
-                        <div className="truncate text-sm font-black text-slate-950">
+                        <div className="truncate text-sm font-black text-kx-text">
                           {selectedRegion ? regionDisplayName(selectedRegion, locale) : regionCode}
                         </div>
-                        <div className="truncate text-xs font-semibold text-slate-500">
+                        <div className="truncate text-xs font-semibold text-kx-muted">
                           {regionSource === "account" ? "已根据账号当前地区自动选择" : regionSource === "ip" ? "已根据当前位置粗略自动选择" : "已使用默认城市，可手动更改"}
                         </div>
                       </div>
-                      <button type="button" className="h-8 shrink-0 rounded-full border border-slate-200 px-3 text-xs font-black text-slate-600" onClick={() => setRegionEditing((v) => !v)}>
+                      <button type="button" className="h-8 shrink-0 rounded-full border border-kx-stroke/60 px-3 text-xs font-black text-kx-muted" onClick={() => setRegionEditing((v) => !v)}>
                         {regionEditing ? "收起" : "更改"}
                       </button>
                     </div>
@@ -1947,14 +1947,14 @@ export function CreateListingPage({
                             type="button"
                             onClick={() => setCategoryGroup(group.key)}
                             data-active={activeCategoryGroup?.key === group.key}
-                            className="group min-w-[132px] shrink-0 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-left transition hover:border-slate-300 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950"
+                            className="group min-w-[132px] shrink-0 rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 py-2 text-left transition hover:border-kx-stroke data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent"
                           >
-                            <span className="block text-sm font-black text-slate-800 group-data-[active=true]:text-white">{createGroupLabel(group, locale)}</span>
-                            <span className="mt-0.5 block truncate text-[11px] font-bold text-slate-400 group-data-[active=true]:text-white/65">{createGroupDescription(group, locale)}</span>
+                            <span className="block text-sm font-black text-kx-text group-data-[active=true]:text-white">{createGroupLabel(group, locale)}</span>
+                            <span className="mt-0.5 block truncate text-[11px] font-bold text-kx-subtle group-data-[active=true]:text-white/65">{createGroupDescription(group, locale)}</span>
                           </button>
                         ))}
                       </div>
-                      <p className="text-xs font-bold text-slate-400">{pickText(locale, "先选一级方向，再选择具体二级分类，发布后会按都市圈频道展示。", "先に大分類を選び、次に細分類を選択してください。投稿は都市圏チャンネルに表示されます。", "Choose a primary group first, then a specific category. Listings are shown by metro area.")}</p>
+                      <p className="text-xs font-bold text-kx-subtle">{pickText(locale, "先选一级方向，再选择具体二级分类，发布后会按都市圈频道展示。", "先に大分類を選び、次に細分類を選択してください。投稿は都市圏チャンネルに表示されます。", "Choose a primary group first, then a specific category. Listings are shown by metro area.")}</p>
                     </div>
                   ) : null}
                   <div className="flex flex-wrap gap-1.5 pb-1.5">
@@ -1964,7 +1964,7 @@ export function CreateListingPage({
                         type="button"
                         onClick={() => applyCategory(chip)}
                         data-active={category === chip}
-                        className="h-8 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white hover:border-blue-300 hover:text-blue-700"
+                        className="h-8 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-muted transition data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white hover:border-kx-accent/40 hover:text-kx-accent"
                       >
                         {categoryLabel(chip, locale)}
                       </button>
@@ -1972,7 +1972,7 @@ export function CreateListingPage({
                   </div>
                   <input value={category} onChange={(e) => applyCategory(e.target.value)} className="kx-input h-11" placeholder={categoryPlaceholder(type)} />
                   {type === "local_service" && serviceVertical ? (
-                    <p className="mt-1.5 text-xs font-bold text-slate-500">已切换为 {SERVICE_VERTICAL_LABEL[serviceVertical]} 表单</p>
+                    <p className="mt-1.5 text-xs font-bold text-kx-muted">已切换为 {SERVICE_VERTICAL_LABEL[serviceVertical]} 表单</p>
                   ) : null}
                 </Field>
                 <Field field="title" label={type === "job" || type === "hiring" ? "职位标题" : type === "local_service" ? "服务标题" : type === "discount" ? "优惠标题" : "标题"} required error={fieldErrors.title}>
@@ -1987,11 +1987,11 @@ export function CreateListingPage({
               </div>
             </section>
 
-            <section className="rounded-kx-sheet border border-slate-200/70 bg-white p-4">
+            <section className="rounded-kx-sheet border border-kx-stroke/50 bg-kx-card p-4">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
-                  <p className="text-sm font-black text-slate-950">图片与视频</p>
-                  <p className="mt-1 text-xs font-semibold text-slate-500">最多 {mediaLimit} 个媒体，其中最多 1 个视频，第一项作为封面；视频会自动截取首帧封面。</p>
+                  <p className="text-sm font-black text-kx-text">图片与视频</p>
+                  <p className="mt-1 text-xs font-semibold text-kx-muted">最多 {mediaLimit} 个媒体，其中最多 1 个视频，第一项作为封面；视频会自动截取首帧封面。</p>
                 </div>
                 <button
                   type="button"
@@ -2003,7 +2003,7 @@ export function CreateListingPage({
                     fileInputRef.current?.click();
                   }}
                   disabled={upload.isPending || media.length >= mediaLimit}
-                  className="h-10 rounded-full bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50"
+                  className="h-10 rounded-full bg-kx-accent px-4 text-xs font-black text-white disabled:opacity-50"
                 >
                   {upload.isPending ? "上传中..." : "添加媒体"}
                 </button>
@@ -2030,10 +2030,10 @@ export function CreateListingPage({
               {media.length ? (
                 <div className="mt-3 grid grid-cols-3 gap-2 sm:grid-cols-5">
                   {media.map((item, index) => (
-                    <div key={item.id} className="group relative aspect-square overflow-hidden rounded-2xl bg-slate-100">
+                    <div key={item.id} className="group relative aspect-square overflow-hidden rounded-2xl bg-kx-surface">
                       {mediaPreviewImageUrl(item) ? <Image src={mediaPreviewImageUrl(item)} alt={`上传媒体 ${index + 1}`} fill sizes="128px" className="object-cover" unoptimized /> : null}
                       {isVideoMedia(item) ? (
-                        <span className={`absolute inset-0 grid place-items-center text-white ${mediaPreviewImageUrl(item) ? "bg-black/15" : "bg-slate-900"}`}>
+                        <span className={`absolute inset-0 grid place-items-center text-white ${mediaPreviewImageUrl(item) ? "bg-black/15" : "bg-black"}`}>
                           {!mediaPreviewImageUrl(item) ? (
                             <span className="absolute inset-0 bg-[linear-gradient(135deg,#0f172a_0%,#1f2937_48%,#111827_100%)]" aria-hidden />
                           ) : null}
@@ -2044,10 +2044,10 @@ export function CreateListingPage({
                           {mediaDurationLabel(item) ? <span className="absolute bottom-2 right-2 rounded-full bg-black/65 px-2 py-0.5 text-[10px] font-black">{mediaDurationLabel(item)}</span> : null}
                         </span>
                       ) : null}
-                      <button type="button" onClick={() => setMedia((current) => current.filter((m) => m.id !== item.id))} className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full bg-white/90 text-slate-700 opacity-0 shadow-sm transition group-hover:opacity-100">
+                      <button type="button" onClick={() => setMedia((current) => current.filter((m) => m.id !== item.id))} className="absolute right-1.5 top-1.5 grid h-7 w-7 place-items-center rounded-full bg-kx-card/90 text-kx-text opacity-0 shadow-sm transition group-hover:opacity-100">
                         <X className="h-3.5 w-3.5" />
                       </button>
-                      {index === 0 ? <span className="absolute bottom-1.5 left-1.5 rounded-full bg-slate-950/85 px-2 py-0.5 text-[10px] font-black text-white">封面</span> : null}
+                      {index === 0 ? <span className="absolute bottom-1.5 left-1.5 rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-black text-white">封面</span> : null}
                     </div>
                   ))}
                 </div>
@@ -2055,16 +2055,16 @@ export function CreateListingPage({
               {Object.keys(uploadProgress).length ? (
                 <div className="mt-3 space-y-1.5">
 	                  {Object.entries(uploadProgress).map(([key, item]) => (
-	                    <div key={key} className="rounded-2xl bg-slate-50 px-3 py-2 text-xs">
+	                    <div key={key} className="rounded-2xl bg-kx-surface px-3 py-2 text-xs">
 	                      <div className="flex items-center gap-2">
 	                        {item.previewUrl ? (
-	                          <span className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl bg-slate-200">
+	                          <span className="relative h-10 w-10 shrink-0 overflow-hidden rounded-xl bg-kx-soft">
 	                            <Image src={item.previewUrl} alt="" fill sizes="40px" className="object-cover" unoptimized />
 	                            <span className="absolute inset-0 grid place-items-center bg-black/15 text-white"><Play className="h-3.5 w-3.5 fill-current" /></span>
 	                          </span>
 	                        ) : null}
-	                        <span className="min-w-0 flex-1 truncate font-bold text-slate-700">{item.name}</span>
-	                        <span className={item.error ? "font-bold text-red-600" : "font-bold text-slate-500"}>
+	                        <span className="min-w-0 flex-1 truncate font-bold text-kx-text">{item.name}</span>
+	                        <span className={item.error ? "font-bold text-red-600" : "font-bold text-kx-muted"}>
 	                          {item.error ? "失败" : `${item.status} ${Math.round(item.progress * 100)}%`}
 	                        </span>
 	                        {item.error ? (
@@ -2073,7 +2073,7 @@ export function CreateListingPage({
 	                              <button
 	                                type="button"
 	                                onClick={() => upload.mutate([item.file as File])}
-	                                className="rounded-full bg-white px-2 py-0.5 font-black text-blue-600 ring-1 ring-blue-100 hover:bg-blue-50"
+	                                className="rounded-full bg-kx-card px-2 py-0.5 font-black text-blue-600 ring-1 ring-blue-100 hover:bg-kx-accent-soft"
 	                              >
 	                                重试
 	                              </button>
@@ -2082,13 +2082,13 @@ export function CreateListingPage({
 	                              const next = { ...current };
 	                              delete next[key];
 	                              return next;
-	                            })} className="rounded-full bg-white px-2 py-0.5 font-black text-slate-500 ring-1 ring-slate-200 hover:text-slate-900">
+	                            })} className="rounded-full bg-kx-card px-2 py-0.5 font-black text-kx-muted ring-1 ring-kx-stroke/60 hover:text-kx-text">
 	                              清除
 	                            </button>
 	                          </div>
 	                        ) : null}
 	                      </div>
-                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-slate-200">
+                      <div className="mt-1 h-1.5 overflow-hidden rounded-full bg-kx-soft">
                         <div className="h-full rounded-full bg-blue-600 transition-all" style={{ width: `${Math.round(item.progress * 100)}%` }} />
                       </div>
                       {item.error ? <p className="mt-1 text-red-600">{item.error}，请重新选择文件重试。</p> : null}
@@ -2098,8 +2098,8 @@ export function CreateListingPage({
               ) : null}
             </section>
 
-            <section className="rounded-kx-sheet border border-slate-200/70 bg-slate-50/70 p-4">
-              <p className="mb-3 text-sm font-black text-slate-950">{listingTypeLabel(type)}字段</p>
+            <section className="rounded-kx-sheet border border-kx-stroke/50 bg-kx-surface/70 p-4">
+              <p className="mb-3 text-sm font-black text-kx-text">{listingTypeLabel(type)}字段</p>
               <ListingAttributeEditor
                 type={type}
                 category={category}
@@ -2116,11 +2116,11 @@ export function CreateListingPage({
             </Field>
             <SafetyNotice type={type} />
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div className="text-xs font-semibold text-slate-500">
+              <div className="text-xs font-semibold text-kx-muted">
                 {isEditing ? "正在编辑已发布内容，保存后会立即同步或进入复审。" : draftSavedAt ? `草稿已保存于 ${draftSavedAt}` : "草稿会保存在当前浏览器，可随时手动保存。"}
               </div>
               <div className="flex gap-2">
-                {!isEditing ? <button type="button" onClick={saveDraft} className="h-11 rounded-full border border-slate-200 bg-white px-4 text-sm font-black text-slate-700">保存草稿</button> : null}
+                {!isEditing ? <button type="button" onClick={saveDraft} className="h-11 rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-sm font-black text-kx-text">保存草稿</button> : null}
                 <button
                   type="button"
                   disabled={create.isPending || upload.isPending}
@@ -2135,7 +2135,7 @@ export function CreateListingPage({
                     }
                     create.mutate();
                   }}
-                  className="h-11 rounded-full bg-slate-950 px-6 text-sm font-black text-white disabled:opacity-50"
+                  className="h-11 rounded-full bg-kx-accent px-6 text-sm font-black text-white disabled:opacity-50"
                 >
                   {create.isPending ? "提交中..." : createLabel}
                 </button>
@@ -2168,7 +2168,7 @@ function WorkbenchBackHeader({ title, subtitle }: { title: string; subtitle?: st
         type="button"
         onClick={() => router.back()}
         aria-label="返回"
-        className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-kx-stroke/60 bg-kx-card text-kx-text shadow-[0_8px_22px_-16px_rgba(15,23,42,0.5)] transition hover:border-kx-accent/40 hover:text-kx-accent active:scale-95"
+        className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-kx-stroke/60 bg-kx-card text-kx-text shadow-kx-card transition hover:border-kx-accent/40 hover:text-kx-accent active:scale-95"
       >
         <ArrowLeft className="h-5 w-5" />
       </button>
@@ -2220,7 +2220,7 @@ export function MyListingsPage({ saved = false }: { saved?: boolean }) {
         <WorkbenchBackHeader title={saved ? "我的收藏" : "我的发布"} />
         <div className="mt-3 flex gap-2 overflow-x-auto pb-1">
           {(["secondhand", "rental", "job", "hiring", "local_service", "discount"] as KXListingType[]).map((item) => (
-            <button key={item} onClick={() => { setType(item); setStatusGroup("all"); }} data-active={type === item} className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-sm font-bold data-[active=true]:bg-slate-950 data-[active=true]:text-white">
+            <button key={item} onClick={() => { setType(item); setStatusGroup("all"); }} data-active={type === item} className="h-9 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-sm font-bold data-[active=true]:bg-kx-accent data-[active=true]:text-white">
               {listingTypeLabel(item)}
             </button>
           ))}
@@ -2233,7 +2233,7 @@ export function MyListingsPage({ saved = false }: { saved?: boolean }) {
                 : (query.data || []).filter((item) => group.statuses.includes(item.status)).length;
               if (group.key !== "all" && !count) return null;
               return (
-                <button key={group.key} onClick={() => setStatusGroup(group.key)} data-active={statusGroup === group.key} className="h-8 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-500 data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700">
+                <button key={group.key} onClick={() => setStatusGroup(group.key)} data-active={statusGroup === group.key} className="h-8 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-muted data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700">
                   {group.label} {count}
                 </button>
               );
@@ -2242,7 +2242,7 @@ export function MyListingsPage({ saved = false }: { saved?: boolean }) {
         ) : null}
         <div className="mt-4 space-y-3">
           {query.isLoading ? <SectionLoading title={saved ? "正在加载收藏" : "正在加载发布"} rows={3} /> : query.isError ? (
-            <section className="rounded-3xl border border-slate-200/70 bg-white">
+            <section className="rounded-3xl border border-kx-stroke/50 bg-kx-card">
               <ErrorState title={saved ? "收藏暂时无法加载" : "发布记录暂时无法加载"} onRetry={() => query.refetch()} />
             </section>
           ) : query.data?.length ? (() => {
@@ -2301,16 +2301,16 @@ export function MyListingInquiriesPage({ mode = "inquiries" }: { mode?: "inquiri
         <div className="mt-4 space-y-3">
           {query.isLoading ? <SectionLoading title={loadingTitle} rows={3} /> : null}
           {query.isError ? (
-            <section className="rounded-3xl border border-slate-200/70 bg-white">
+            <section className="rounded-3xl border border-kx-stroke/50 bg-kx-card">
               <ErrorState title={errorTitle} onRetry={() => query.refetch()} />
             </section>
           ) : null}
           {(query.data?.items || []).map((item) => <InquiryCard key={item.id} inquiry={item} />)}
           {(query.data?.guide || []).map((item) => <GuideAppointmentCard key={String(item.id)} item={item} />)}
           {!query.isLoading && !query.isError && !(query.data?.items || []).length && !(query.data?.guide || []).length ? (
-            <section className="rounded-3xl border border-slate-200/70 bg-white px-5 py-9 text-center">
-              <p className="text-base font-black text-slate-950">暂无记录</p>
-              <p className="mt-2 text-sm font-semibold text-slate-500">{emptyHint}</p>
+            <section className="rounded-3xl border border-kx-stroke/50 bg-kx-card px-5 py-9 text-center">
+              <p className="text-base font-black text-kx-text">暂无记录</p>
+              <p className="mt-2 text-sm font-semibold text-kx-muted">{emptyHint}</p>
             </section>
           ) : null}
         </div>
@@ -2332,15 +2332,15 @@ export function MyOrdersPage() {
         <div className="mt-4 space-y-3">
           {query.isLoading ? <SectionLoading title="正在加载订单" rows={3} /> : null}
           {query.isError ? (
-            <section className="rounded-3xl border border-slate-200/70 bg-white">
+            <section className="rounded-3xl border border-kx-stroke/50 bg-kx-card">
               <ErrorState title="订单暂时无法加载" onRetry={() => query.refetch()} />
             </section>
           ) : null}
           {items.map((item) => <OrderCard key={`${String(item.source || "order")}-${String(item.id || item.order_no || item.orderNo)}`} item={item} />)}
           {!query.isLoading && !query.isError && !items.length ? (
-            <section className="rounded-3xl border border-slate-200/70 bg-white px-5 py-9 text-center">
-              <p className="text-base font-black text-slate-950">暂无订单</p>
-              <p className="mt-2 text-sm font-semibold text-slate-500">购买会员、Guide 资料或提交服务订单后会显示在这里。</p>
+            <section className="rounded-3xl border border-kx-stroke/50 bg-kx-card px-5 py-9 text-center">
+              <p className="text-base font-black text-kx-text">暂无订单</p>
+              <p className="mt-2 text-sm font-semibold text-kx-muted">购买会员、Guide 资料或提交服务订单后会显示在这里。</p>
             </section>
           ) : null}
         </div>
@@ -2389,40 +2389,40 @@ export function AdminListingsPage({
     <AppShell requireAuth>
       <main className="px-3 py-4 sm:px-4">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-black text-slate-950">Listing 审核</h1>
+          <h1 className="text-2xl font-black text-kx-text">Listing 审核</h1>
           <select value={type} onChange={(e) => setType(e.target.value)} className="kx-input h-10 w-40"><option value="">全部类型</option><option value="secondhand">二手</option><option value="rental">租房</option><option value="job,hiring">工作</option><option value="job">找工作</option><option value="hiring">招聘</option><option value="local_service">商家与服务</option><option value="discount">商家优惠</option><option value="event">活动</option></select>
           <select value={status} onChange={(e) => setStatus(e.target.value)} className="kx-input h-10 w-44"><option value="">全部状态</option><option value="pending_review">待审核</option><option value="published">已发布</option><option value="hidden">已下架</option><option value="rejected">已拒绝</option></select>
           <select value={verificationStatus} onChange={(e) => setVerificationStatus(e.target.value)} className="kx-input h-10 w-44"><option value="">全部核验</option><option value="unverified">未认证</option><option value="pending">待核验</option><option value="verified">已认证</option><option value="needs_review">需复核</option><option value="rejected">核验拒绝</option></select>
           <form onSubmit={(e) => { e.preventDefault(); setQ(qInput.trim()); }} className="flex items-center gap-2">
             <input value={qInput} onChange={(e) => setQInput(e.target.value)} placeholder="搜索标题 / 描述 / 地点" className="kx-input h-10 w-56" />
-            <button type="submit" className="h-10 rounded-full bg-slate-900 px-4 text-xs font-black text-white">搜索</button>
-            {q ? <button type="button" onClick={() => { setQ(""); setQInput(""); }} className="h-10 rounded-full bg-slate-100 px-3 text-xs font-black text-slate-600">清除</button> : null}
+            <button type="submit" className="h-10 rounded-full bg-kx-accent px-4 text-xs font-black text-white">搜索</button>
+            {q ? <button type="button" onClick={() => { setQ(""); setQInput(""); }} className="h-10 rounded-full bg-kx-surface px-3 text-xs font-black text-kx-muted">清除</button> : null}
           </form>
         </div>
-        <div className="mt-4 overflow-hidden rounded-3xl border border-slate-200 bg-white">
+        <div className="mt-4 overflow-hidden rounded-3xl border border-kx-stroke/60 bg-kx-card">
           {listings.isLoading ? <div className="p-4"><SectionLoading title="正在加载审核列表" rows={4} /></div> : null}
           {listings.isError ? <ErrorState title="审核列表暂时无法加载" onRetry={() => listings.refetch()} /> : null}
           {(listings.data || []).map((item) => (
-            <div key={item.id} className="grid gap-3 border-b border-slate-100 p-4 last:border-0 lg:grid-cols-[1fr_auto]">
+            <div key={item.id} className="grid gap-3 border-b border-kx-stroke/40 p-4 last:border-0 lg:grid-cols-[1fr_auto]">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black text-slate-600">{listingTypeLabel(item.type)}</span>
+                  <span className="rounded-full bg-kx-surface px-2 py-1 text-xs font-black text-kx-muted">{listingTypeLabel(item.type)}</span>
                   <StatusBadge item={item} />
-                  <span className="text-xs font-bold text-slate-400">{cityLabel(item.city_slug)} · 举报 {item.report_count || 0}</span>
+                  <span className="text-xs font-bold text-kx-subtle">{cityLabel(item.city_slug)} · 举报 {item.report_count || 0}</span>
                 </div>
-                <h2 className="mt-2 text-base font-black text-slate-950">{item.title}</h2>
-                <p className="mt-1 line-clamp-2 text-sm text-slate-500">{item.description}</p>
+                <h2 className="mt-2 text-base font-black text-kx-text">{item.title}</h2>
+                <p className="mt-1 line-clamp-2 text-sm text-kx-muted">{item.description}</p>
               </div>
               <div className="flex flex-wrap items-center gap-2">
                 <button onClick={() => update.mutate({ id: item.id, patch: { status: "published", verification_status: "verified" } })} className="h-9 rounded-full bg-emerald-600 px-3 text-xs font-black text-white">通过</button>
                 <button onClick={() => update.mutate({ id: item.id, patch: { status: "rejected", verification_status: "rejected" } })} className="h-9 rounded-full bg-rose-600 px-3 text-xs font-black text-white">拒绝</button>
-                <button onClick={() => update.mutate({ id: item.id, patch: { status: "hidden", verification_status: "needs_review" } })} className="h-9 rounded-full bg-slate-900 px-3 text-xs font-black text-white">下架</button>
+                <button onClick={() => update.mutate({ id: item.id, patch: { status: "hidden", verification_status: "needs_review" } })} className="h-9 rounded-full bg-kx-accent px-3 text-xs font-black text-white">下架</button>
                 <button onClick={() => update.mutate({ id: item.id, patch: { is_promoted: true, promotion_weight: 30, promotion_type: item.type === "rental" ? "recommended_rental" : item.type === "job" || item.type === "hiring" ? "urgent_hiring" : "featured" } })} className="h-9 rounded-full bg-blue-600 px-3 text-xs font-black text-white">精选</button>
                 <button onClick={() => { if (window.confirm("确定删除这条信息？删除后会立即从 App 中消失（可在数据库恢复）。")) remove.mutate(item.id); }} disabled={remove.isPending} className="h-9 rounded-full bg-rose-700 px-3 text-xs font-black text-white disabled:opacity-50">删除</button>
               </div>
             </div>
           ))}
-          {!listings.isLoading && !listings.isError && !(listings.data || []).length ? <div className="p-8 text-center text-sm font-semibold text-slate-500">暂无城市信息</div> : null}
+          {!listings.isLoading && !listings.isError && !(listings.data || []).length ? <div className="p-8 text-center text-sm font-semibold text-kx-muted">暂无城市信息</div> : null}
         </div>
       </main>
     </AppShell>
@@ -2495,24 +2495,24 @@ export function AdminListingReviewsPage() {
       )}
     >
       <AdminRecordQueryState query={query} title="正在加载点评" errorTitle="点评暂时无法加载" />
-      <div className="divide-y divide-slate-100">
+      <div className="divide-y divide-kx-stroke/40">
         {rows.map((review) => (
           <div key={review.id} className="p-4">
             <div className="flex flex-wrap items-center gap-2">
               <RatingStars value={review.rating} showValue={false} />
-              <span className="text-xs font-black text-slate-500">{review.author?.display_name || review.author?.handle || review.user_id}</span>
-              <span className="text-xs font-bold text-slate-400">{(review.created_at || "").slice(0, 16).replace("T", " ")}</span>
-              <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${review.status === "published" ? "bg-emerald-50 text-emerald-700" : review.status === "hidden" ? "bg-amber-50 text-amber-700" : "bg-slate-100 text-slate-500"}`}>
+              <span className="text-xs font-black text-kx-muted">{review.author?.display_name || review.author?.handle || review.user_id}</span>
+              <span className="text-xs font-bold text-kx-subtle">{(review.created_at || "").slice(0, 16).replace("T", " ")}</span>
+              <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${review.status === "published" ? "bg-emerald-50 text-emerald-700" : review.status === "hidden" ? "bg-amber-50 text-amber-700" : "bg-kx-surface text-kx-muted"}`}>
                 {review.status === "published" ? "已发布" : review.status === "hidden" ? "已隐藏" : "已删除"}
               </span>
               {review.listing_title ? (
-                <Link href={`/listings/${encodeURIComponent(review.listing_id)}`} className="truncate text-xs font-black text-blue-600 hover:text-blue-700">
+                <Link href={`/listings/${encodeURIComponent(review.listing_id)}`} className="truncate text-xs font-black text-blue-600 hover:text-kx-accent">
                   {review.listing_title}
                 </Link>
               ) : null}
             </div>
-            {review.content ? <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{review.content}</p> : null}
-            {review.owner_reply ? <p className="mt-1.5 rounded-xl bg-slate-50 p-2.5 text-xs leading-5 text-slate-500">商家回复：{review.owner_reply}</p> : null}
+            {review.content ? <p className="mt-2 whitespace-pre-line text-sm leading-6 text-kx-text">{review.content}</p> : null}
+            {review.owner_reply ? <p className="mt-1.5 rounded-xl bg-kx-surface p-2.5 text-xs leading-5 text-kx-muted">商家回复：{review.owner_reply}</p> : null}
             <div className="mt-2.5 flex gap-1.5">
               {review.status !== "hidden" ? (
                 <button type="button" disabled={update.isPending} onClick={() => update.mutate({ id: review.id, next: "hidden" })} className="h-8 rounded-full border border-amber-200 bg-amber-50 px-3 text-[11px] font-black text-amber-700 disabled:opacity-50">
@@ -2533,7 +2533,7 @@ export function AdminListingReviewsPage() {
           </div>
         ))}
         {!query.isLoading && !query.isError && !rows.length ? (
-          <div className="p-8 text-center text-sm font-semibold text-slate-500">暂无点评记录</div>
+          <div className="p-8 text-center text-sm font-semibold text-kx-muted">暂无点评记录</div>
         ) : null}
       </div>
     </AdminRecordPage>
@@ -2582,7 +2582,7 @@ export function AdminBusinessesPage() {
       )}
     >
       <AdminRecordQueryState query={query} title="正在加载商家资料" errorTitle="商家资料暂时无法加载" />
-      <div className="divide-y divide-slate-100">
+      <div className="divide-y divide-kx-stroke/40">
         {(query.data || []).map((business) => (
           <AdminBusinessCard
             key={business.id}
@@ -2592,7 +2592,7 @@ export function AdminBusinessesPage() {
           />
         ))}
       </div>
-      {!query.isLoading && !query.isError && !(query.data || []).length ? <div className="p-8 text-center text-sm font-semibold text-slate-500">暂无商家申请</div> : null}
+      {!query.isLoading && !query.isError && !(query.data || []).length ? <div className="p-8 text-center text-sm font-semibold text-kx-muted">暂无商家申请</div> : null}
     </AdminRecordPage>
   );
 }
@@ -2618,11 +2618,11 @@ function AdminBusinessCard({
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
           <AdminBusinessStatusBadge status={business.verification_status} />
-          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-black text-slate-500">{business.business_type || "商家服务"}</span>
+          <span className="rounded-full bg-kx-surface px-2.5 py-1 text-[11px] font-black text-kx-muted">{business.business_type || "商家服务"}</span>
           <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[11px] font-black text-blue-700">{business.document_count || business.documents?.length || 0} 份材料</span>
         </div>
-        <h2 className="mt-2 truncate text-lg font-black text-slate-950">{business.business_name || "未命名商家"}</h2>
-        <p className="mt-1 line-clamp-2 text-sm font-semibold leading-6 text-slate-600">{business.description || "暂无服务介绍"}</p>
+        <h2 className="mt-2 truncate text-lg font-black text-kx-text">{business.business_name || "未命名商家"}</h2>
+        <p className="mt-1 line-clamp-2 text-sm font-semibold leading-6 text-kx-muted">{business.description || "暂无服务介绍"}</p>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           <AdminBusinessField label="主体" value={business.legal_name || "未填写"} />
           <AdminBusinessField label="负责人" value={business.representative_name || "未填写"} />
@@ -2641,27 +2641,27 @@ function AdminBusinessCard({
         {business.documents?.length ? (
           <div className="mt-3 grid gap-2 sm:grid-cols-2">
             {business.documents.slice(0, 4).map((doc) => (
-              <div key={doc.documentId || doc.id} className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2">
+              <div key={doc.documentId || doc.id} className="flex items-center gap-2 rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 py-2">
                 <FileCheck2 className="h-4 w-4 shrink-0 text-emerald-600" />
                 <div className="min-w-0">
-                  <p className="truncate text-xs font-black text-slate-700">{doc.documentType || "认证材料"}</p>
-                  <p className="text-[11px] font-semibold text-slate-400">{doc.contentType || doc.fileType || "文件"} · {doc.status || doc.documentStatus || "submitted"}</p>
+                  <p className="truncate text-xs font-black text-kx-text">{doc.documentType || "认证材料"}</p>
+                  <p className="text-[11px] font-semibold text-kx-subtle">{doc.contentType || doc.fileType || "文件"} · {doc.status || doc.documentStatus || "submitted"}</p>
                 </div>
               </div>
             ))}
           </div>
         ) : null}
       </div>
-      <aside className="rounded-kx-lg bg-slate-50 p-3">
+      <aside className="rounded-kx-lg bg-kx-surface p-3">
         <div className="grid grid-cols-3 gap-2">
           <AdminBusinessMetric icon={Store} label="发布" value={business.listing_count || 0} />
           <AdminBusinessMetric icon={CheckCircle2} label="展示" value={business.published_listing_count || 0} />
           <AdminBusinessMetric icon={Bell} label="线索" value={business.inquiry_count || 0} />
         </div>
-        <div className="mt-3 rounded-2xl bg-white p-3 ring-1 ring-slate-200/70">
-          <p className="text-[11px] font-black text-slate-400">申请人</p>
-          <p className="mt-1 truncate text-sm font-black text-slate-800">{owner?.display_name || owner?.username || owner?.handle || business.owner_user_id}</p>
-          <p className="mt-1 text-xs font-semibold text-slate-500">提交：{business.submitted_at ? formatAdminRecordValue("submitted_at", business.submitted_at) : "未提交"}</p>
+        <div className="mt-3 rounded-2xl bg-kx-card p-3 ring-1 ring-kx-stroke/50">
+          <p className="text-[11px] font-black text-kx-subtle">申请人</p>
+          <p className="mt-1 truncate text-sm font-black text-kx-text">{owner?.display_name || owner?.username || owner?.handle || business.owner_user_id}</p>
+          <p className="mt-1 text-xs font-semibold text-kx-muted">提交：{business.submitted_at ? formatAdminRecordValue("submitted_at", business.submitted_at) : "未提交"}</p>
         </div>
         <textarea
           value={note}
@@ -2676,7 +2676,7 @@ function AdminBusinessCard({
           <AdminBusinessAction disabled={pending} tone="pause" onClick={() => onReview("suspended", note.trim() || "商家服务已暂停展示，请联系后台复核。")} label="暂停" />
         </div>
         {!note.trim() ? (
-          <p className="mt-2 text-[11px] font-semibold text-slate-400">拒绝 / 补材料 前请在上方填写给商家的具体说明。</p>
+          <p className="mt-2 text-[11px] font-semibold text-kx-subtle">拒绝 / 补材料 前请在上方填写给商家的具体说明。</p>
         ) : null}
       </aside>
     </article>
@@ -2689,8 +2689,8 @@ function AdminBusinessStatusBadge({ status }: { status: string }) {
     pending: "bg-amber-50 text-amber-700 ring-amber-200",
     needs_review: "bg-blue-50 text-blue-700 ring-blue-200",
     rejected: "bg-rose-50 text-rose-700 ring-rose-200",
-    suspended: "bg-slate-100 text-slate-700 ring-slate-200",
-    draft: "bg-slate-100 text-slate-600 ring-slate-200",
+    suspended: "bg-kx-surface text-kx-text ring-kx-stroke/60",
+    draft: "bg-kx-surface text-kx-muted ring-kx-stroke/60",
   };
   return (
     <span className={`inline-flex h-7 items-center rounded-full px-3 text-xs font-black ring-1 ${tone[status] || tone.draft}`}>
@@ -2701,9 +2701,9 @@ function AdminBusinessStatusBadge({ status }: { status: string }) {
 
 function AdminBusinessField({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-2xl bg-slate-50 px-3 py-2">
-      <p className="text-[11px] font-black text-slate-400">{label}</p>
-      <p className="mt-0.5 truncate text-xs font-bold text-slate-700">{value}</p>
+    <div className="min-w-0 rounded-2xl bg-kx-surface px-3 py-2">
+      <p className="text-[11px] font-black text-kx-subtle">{label}</p>
+      <p className="mt-0.5 truncate text-xs font-bold text-kx-text">{value}</p>
     </div>
   );
 }
@@ -2718,10 +2718,10 @@ function AdminBusinessMetric({
   value: number;
 }) {
   return (
-    <div className="rounded-2xl bg-white p-2 text-center ring-1 ring-slate-200/70">
+    <div className="rounded-2xl bg-kx-card p-2 text-center ring-1 ring-kx-stroke/50">
       <Icon className="mx-auto h-4 w-4 text-blue-600" />
-      <p className="mt-1 text-[11px] font-black text-slate-400">{label}</p>
-      <p className="text-sm font-black text-slate-950">{value}</p>
+      <p className="mt-1 text-[11px] font-black text-kx-subtle">{label}</p>
+      <p className="text-sm font-black text-kx-text">{value}</p>
     </div>
   );
 }
@@ -2738,10 +2738,10 @@ function AdminBusinessAction({
   onClick: () => void;
 }) {
   const tones: Record<typeof tone, string> = {
-    approve: "bg-emerald-600 text-white hover:bg-emerald-700",
-    review: "bg-blue-600 text-white hover:bg-blue-700",
+    approve: "bg-emerald-600 text-white hover:bg-kx-accent/90",
+    review: "bg-blue-600 text-white hover:bg-kx-accent/90",
     reject: "bg-rose-600 text-white hover:bg-rose-700",
-    pause: "bg-slate-900 text-white hover:bg-slate-800",
+    pause: "bg-kx-accent text-white hover:bg-kx-accent/90",
   };
   return (
     <button
@@ -2782,15 +2782,15 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
   const coverArtwork = coverIsVideo ? (coverPreview || (coverSource ? fallbackVideoPoster : "")) : coverPreview;
   const useVideoFallbackArtwork = coverIsVideo && !coverPreview;
   return (
-    <Link href={detailHref(listing)} className="group overflow-hidden rounded-kx-lg border border-slate-200/70 bg-white shadow-[0_12px_38px_-32px_rgba(15,23,42,0.55)] transition hover:-translate-y-0.5 hover:border-blue-200 hover:shadow-[0_22px_56px_-34px_rgba(15,23,42,0.62)]">
-      <div className="relative aspect-[4/3] overflow-hidden bg-slate-100">
+    <Link href={detailHref(listing)} className="group overflow-hidden rounded-kx-lg border border-kx-stroke/50 bg-kx-card shadow-kx-float transition hover:-translate-y-0.5 hover:border-kx-accent/40 hover:shadow-kx-card">
+      <div className="relative aspect-[4/3] overflow-hidden bg-kx-surface">
         {useVideoFallbackArtwork ? (
           <span className="absolute inset-0 z-[1]" style={videoFallbackArtworkStyle} />
         ) : coverArtwork ? (
           <Image src={coverArtwork} alt={title} fill sizes="(max-width: 768px) 100vw, 320px" className="relative z-[1] object-cover transition duration-300 group-hover:scale-[1.025]" unoptimized />
         ) : (
-          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.16),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-slate-400">
-            <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/82 text-kx-accent shadow-sm ring-1 ring-slate-200/70">
+          <span className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.16),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-kx-subtle">
+            <span className="grid h-12 w-12 place-items-center rounded-2xl bg-kx-card/82 text-kx-accent shadow-sm ring-1 ring-kx-stroke/50">
               <PlaceholderIcon className="h-5 w-5" />
             </span>
             <span className="text-xs font-black">{formatListingType(listing.type)}</span>
@@ -2803,33 +2803,33 @@ function MarketplaceCard({ listing }: { listing: KXCityListing }) {
             </span>
           </span>
         ) : null}
-        <span className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-white/90 text-slate-700 shadow-sm">
+        <span className="absolute right-2 top-2 grid h-8 w-8 place-items-center rounded-full bg-kx-card/90 text-kx-text shadow-sm">
           <Heart className="h-4 w-4" />
         </span>
-        <span className="absolute left-2 top-2 rounded-full bg-white/90 px-2.5 py-1 text-[11px] font-black text-slate-700 shadow-sm">
+        <span className="absolute left-2 top-2 rounded-full bg-kx-card/90 px-2.5 py-1 text-[11px] font-black text-kx-text shadow-sm">
           {formatListingType(listing.type)}
         </span>
       </div>
       <div className="p-3.5">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <p className="text-lg font-black leading-none text-slate-950">{priceLabel(listing)}</p>
-            <h2 className="mt-2 line-clamp-2 min-h-10 text-sm font-black leading-5 text-slate-950">{title}</h2>
+            <p className="text-lg font-black leading-none text-kx-text">{priceLabel(listing)}</p>
+            <h2 className="mt-2 line-clamp-2 min-h-10 text-sm font-black leading-5 text-kx-text">{title}</h2>
           </div>
           <StatusBadge item={listing} />
         </div>
-        <p className="mt-2 flex min-w-0 items-center gap-1 truncate text-xs font-bold text-slate-500">
+        <p className="mt-2 flex min-w-0 items-center gap-1 truncate text-xs font-bold text-kx-muted">
           <MapPin className="h-3.5 w-3.5 shrink-0" />
           <span className="truncate">{location}</span>
         </p>
         {fields.length ? (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {fields.map((field) => (
-              <span key={field} className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-black text-slate-600">{field}</span>
+              <span key={field} className="rounded-full bg-kx-surface px-2 py-1 text-[11px] font-black text-kx-muted">{field}</span>
             ))}
           </div>
         ) : null}
-        {description ? <p className="mt-2 line-clamp-2 text-xs font-semibold leading-5 text-slate-500">{description}</p> : null}
+        {description ? <p className="mt-2 line-clamp-2 text-xs font-semibold leading-5 text-kx-muted">{description}</p> : null}
       </div>
     </Link>
   );
@@ -2917,12 +2917,12 @@ export function RatingStars({ value, count, size = "sm", showValue = true }: { v
         {[1, 2, 3, 4, 5].map((star) => (
           <Star
             key={star}
-            className={`${dim} ${star <= Math.round(stars) ? "fill-amber-400 text-amber-400" : "fill-slate-200 text-slate-200"}`}
+            className={`${dim} ${star <= Math.round(stars) ? "fill-amber-400 text-amber-400" : "fill-kx-stroke/50 text-kx-subtle"}`}
           />
         ))}
       </span>
       {showValue && stars > 0 ? <span className={`font-black text-amber-600 ${size === "md" ? "text-base" : "text-xs"}`}>{stars.toFixed(1)}</span> : null}
-      {typeof count === "number" && count > 0 ? <span className="text-xs font-bold text-slate-400">({count})</span> : null}
+      {typeof count === "number" && count > 0 ? <span className="text-xs font-bold text-kx-subtle">({count})</span> : null}
     </span>
   );
 }
@@ -3079,13 +3079,13 @@ function SecondhandListingCard({ listing }: { listing: KXCityListing }) {
     .slice(0, 3);
   return (
     <Link href={detailHref(listing)} className="kx-secondhand-card group">
-      <div className="relative aspect-square overflow-hidden bg-slate-100 dark:bg-slate-800">
+      <div className="relative aspect-square overflow-hidden bg-kx-surface dark:bg-kx-soft">
         {useVideoFallbackArtwork ? (
           <span className="absolute inset-0 z-[1]" style={videoFallbackArtworkStyle} />
         ) : coverArtwork ? (
           <Image src={coverArtwork} alt={title} fill sizes="(max-width: 640px) 50vw, 240px" className="relative z-[1] object-cover transition duration-300 group-hover:scale-[1.03]" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[#f0eee8] text-emerald-700/60">
+          <span className="absolute inset-0 grid place-items-center bg-[rgb(var(--kx-living-soft))] text-emerald-700/60">
             <Tag className="h-7 w-7" />
           </span>
         )}
@@ -3097,16 +3097,16 @@ function SecondhandListingCard({ listing }: { listing: KXCityListing }) {
           </span>
         ) : null}
         {/* 价格角标 */}
-        <span className={`absolute bottom-2 left-2 z-[2] rounded-lg px-2 py-1 text-sm font-black text-white shadow-lg ${free ? "bg-emerald-600/95" : "bg-slate-950/85"}`}>
+        <span className={`absolute bottom-2 left-2 z-[2] rounded-lg px-2 py-1 text-sm font-black text-white shadow-lg ${free ? "bg-emerald-600/95" : "bg-black/70"}`}>
           {free ? "免费送" : priceLabel(listing)}
         </span>
         {sold ? (
-          <span className="absolute inset-0 z-[3] grid place-items-center bg-slate-950/55">
-            <span className="rounded-full bg-white px-4 py-1.5 text-sm font-black text-slate-950">{listingStatusText(listing)}</span>
+          <span className="absolute inset-0 z-[3] grid place-items-center bg-black/55">
+            <span className="rounded-full bg-kx-card px-4 py-1.5 text-sm font-black text-kx-text">{listingStatusText(listing)}</span>
           </span>
         ) : null}
         {condition && !sold ? (
-          <span className="absolute left-2 top-2 z-[2] rounded-full bg-white/92 px-2 py-0.5 text-[10px] font-black text-slate-700 shadow-sm">{condition}</span>
+          <span className="absolute left-2 top-2 z-[2] rounded-full bg-kx-card/92 px-2 py-0.5 text-[10px] font-black text-kx-text shadow-sm">{condition}</span>
         ) : null}
         <ListingHeartButton listing={listing} />
       </div>
@@ -3161,9 +3161,9 @@ function ListingHeartButton({ listing }: { listing: KXCityListing }) {
         setFavorited(next);
         toggle.mutate(next);
       }}
-      className="absolute right-2.5 top-2.5 z-10 grid h-9 w-9 place-items-center rounded-full bg-white/92 text-slate-700 shadow-[0_6px_18px_rgba(15,23,42,0.18)] backdrop-blur transition hover:scale-105 active:scale-95"
+      className="absolute right-2.5 top-2.5 z-10 grid h-9 w-9 place-items-center rounded-full bg-kx-card/92 text-kx-text shadow-kx-card backdrop-blur transition hover:scale-105 active:scale-95"
     >
-      <Heart className={`h-4.5 w-4.5 transition ${favorited ? "fill-rose-500 text-rose-500" : "text-slate-700"}`} />
+      <Heart className={`h-4.5 w-4.5 transition ${favorited ? "fill-rose-500 text-rose-500" : "text-kx-text"}`} />
     </button>
   );
 }
@@ -3230,7 +3230,7 @@ function StayListingCard({ listing, locale, variant }: { listing: KXCityListing;
   const machiBadges: string[] = Array.isArray(machiBadgesRaw) ? machiBadgesRaw.filter(Boolean).slice(0, 3) : [];
   return (
     <Link href={detailHref(listing)} className="group block">
-      <div className="kx-stay-image relative aspect-[4/3] overflow-hidden bg-slate-100">
+      <div className="kx-stay-image relative aspect-[4/3] overflow-hidden bg-kx-surface">
         {coverPreview ? (
           <Image src={coverPreview} alt={title} fill sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 300px" className="object-cover transition duration-300 group-hover:scale-[1.04]" unoptimized />
         ) : (
@@ -3251,7 +3251,7 @@ function StayListingCard({ listing, locale, variant }: { listing: KXCityListing;
             </span>
           ) : null}
           {listing.verification_status === "verified" ? (
-            <span className="inline-flex items-center gap-1 rounded-full bg-white/94 px-2.5 py-1 text-[11px] font-black text-slate-800 shadow-sm ring-1 ring-slate-900/10 backdrop-blur-sm dark:bg-slate-900/90 dark:text-slate-100 dark:ring-white/15">
+            <span className="inline-flex items-center gap-1 rounded-full bg-kx-card/94 px-2.5 py-1 text-[11px] font-black text-kx-text shadow-sm ring-1 ring-kx-shadow/10 backdrop-blur-sm dark:bg-kx-surface/90 dark:text-kx-text dark:ring-white/15">
               <BadgeCheck className="h-3.5 w-3.5 text-emerald-600" />
               {variant === "stay" ? pickText(locale, "认证房东", "認証ホスト", "Verified host") : variant === "forsale" ? pickText(locale, "认证房源", "認証物件", "Verified listing") : pickText(locale, "已核验", "確認済み", "Verified")}
             </span>
@@ -3412,11 +3412,11 @@ export function ServiceCard({ listing, locale }: { listing: KXCityListing; local
         : pickText(locale, "预约", "予約する", "Book");
   return (
     <Link href={detailHref(listing)} className="kx-service-card group">
-      <div className="relative aspect-[16/9] overflow-hidden bg-slate-100 dark:bg-slate-800">
+      <div className="relative aspect-[16/9] overflow-hidden bg-kx-surface dark:bg-kx-soft">
         {coverPreview ? (
           <Image src={coverPreview} alt={title} fill sizes="(max-width: 640px) 100vw, 360px" className="object-cover transition duration-300 group-hover:scale-[1.03]" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[#f1ede5] text-orange-700/55">
+          <span className="absolute inset-0 grid place-items-center bg-[rgb(var(--kx-living-soft))] text-orange-700/55">
             {meta ? <meta.Icon className="h-8 w-8" /> : <Store className="h-8 w-8" />}
           </span>
         )}
@@ -3426,7 +3426,7 @@ export function ServiceCard({ listing, locale }: { listing: KXCityListing; local
           </span>
         ) : null}
         {category ? (
-          <span className="absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-white/94 px-2.5 py-1 text-[11px] font-black text-slate-700 shadow-sm">
+          <span className="absolute left-2.5 top-2.5 inline-flex items-center gap-1 rounded-full bg-kx-card/94 px-2.5 py-1 text-[11px] font-black text-kx-text shadow-sm">
             {meta ? <meta.Icon className="h-3.5 w-3.5" /> : null}
             {categoryLabel(category, locale)}
           </span>
@@ -3504,7 +3504,7 @@ function VerifiedMerchantsStrip({ citySlug, locale }: { citySlug: string; locale
             <p className="truncate text-xs font-semibold text-[rgb(var(--kx-living-muted))]">{pickText(locale, "资质审核通过的本地商家与服务方", "審査済みの地元店舗・事業者", "Locally vetted shops & providers")}</p>
           </div>
         </div>
-        <Link href={`/businesses?city=${encodeURIComponent(citySlug)}`} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-xs font-black text-emerald-700 transition hover:bg-emerald-100">
+        <Link href={`/businesses?city=${encodeURIComponent(citySlug)}`} className="inline-flex h-9 shrink-0 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-xs font-black text-emerald-700 transition hover:bg-kx-accent-soft">
           {pickText(locale, "全部商家", "すべて見る", "View all")}
           <ChevronRight className="h-3.5 w-3.5" />
         </Link>
@@ -3577,10 +3577,10 @@ function AdminRecordPage({ title, right, children }: { title: string; right?: Re
     <AppShell requireAuth>
       <main className="px-3 py-4 sm:px-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h1 className="text-2xl font-black text-slate-950">{title}</h1>
+          <h1 className="text-2xl font-black text-kx-text">{title}</h1>
           {right}
         </div>
-        <div className="mt-4 overflow-hidden rounded-3xl border border-slate-200 bg-white">
+        <div className="mt-4 overflow-hidden rounded-3xl border border-kx-stroke/60 bg-kx-card">
           {children}
         </div>
       </main>
@@ -3606,22 +3606,22 @@ function AdminRecordList({ rows, empty }: { rows: Array<Record<string, unknown>>
   return (
     <>
       {rows.map((row, index) => (
-        <div key={String(row.id || index)} className="border-b border-slate-100 p-4 last:border-0">
+        <div key={String(row.id || index)} className="border-b border-kx-stroke/40 p-4 last:border-0">
           <div className="grid gap-2 sm:grid-cols-2">
             {Object.entries(row).slice(0, 8).map(([key, value]) => {
               const rendered = formatAdminRecordValue(key, value);
               if (!rendered) return null;
               return (
-                <div key={key} className="rounded-2xl bg-slate-50 px-3 py-2">
-                  <p className="text-[11px] font-black text-slate-400">{adminFieldLabel(key)}</p>
-                  <p className="mt-0.5 truncate text-xs font-bold text-slate-700">{rendered}</p>
+                <div key={key} className="rounded-2xl bg-kx-surface px-3 py-2">
+                  <p className="text-[11px] font-black text-kx-subtle">{adminFieldLabel(key)}</p>
+                  <p className="mt-0.5 truncate text-xs font-bold text-kx-text">{rendered}</p>
                 </div>
               );
             })}
           </div>
         </div>
       ))}
-      {empty ? <div className="p-8 text-center text-sm font-semibold text-slate-500">暂无记录</div> : null}
+      {empty ? <div className="p-8 text-center text-sm font-semibold text-kx-muted">暂无记录</div> : null}
     </>
   );
 }
@@ -3666,14 +3666,14 @@ function StructuredListCard({ listing }: { listing: KXCityListing }) {
   const useVideoFallbackArtwork = coverIsVideo && !coverPreview;
   const PlaceholderIcon = listingPlaceholderIcon(listing.type);
   return (
-    <Link href={detailHref(listing)} className="grid gap-3 rounded-2xl border border-slate-200/70 bg-white p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)] transition hover:-translate-y-0.5 hover:shadow-[0_14px_38px_rgba(15,23,42,0.08)] sm:grid-cols-[148px_1fr]">
-      <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-100 sm:aspect-square">
+    <Link href={detailHref(listing)} className="grid gap-3 rounded-2xl border border-kx-stroke/50 bg-kx-card p-3 shadow-kx-card transition hover:-translate-y-0.5 hover:shadow-kx-card sm:grid-cols-[148px_1fr]">
+      <div className="relative aspect-[4/3] overflow-hidden rounded-xl bg-kx-surface sm:aspect-square">
         {useVideoFallbackArtwork ? (
           <span className="absolute inset-0" style={videoFallbackArtworkStyle} />
         ) : coverArtwork ? (
           <Image src={coverArtwork} alt={title} fill sizes="148px" className="object-cover" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-slate-400">
+          <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-kx-subtle">
             <PlaceholderIcon className="h-5 w-5" />
           </span>
         )}
@@ -3688,16 +3688,16 @@ function StructuredListCard({ listing }: { listing: KXCityListing }) {
       <div className="min-w-0">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <p className="text-xl font-black text-slate-950">{priceLabel(listing)}</p>
-            <h2 className="mt-1 line-clamp-2 text-base font-black text-slate-950">{title}</h2>
+            <p className="text-xl font-black text-kx-text">{priceLabel(listing)}</p>
+            <h2 className="mt-1 line-clamp-2 text-base font-black text-kx-text">{title}</h2>
           </div>
           <StatusBadge item={listing} />
         </div>
-        <p className="mt-2 flex items-center gap-1 text-sm font-semibold text-slate-500"><MapPin className="h-4 w-4" />{location}</p>
+        <p className="mt-2 flex items-center gap-1 text-sm font-semibold text-kx-muted"><MapPin className="h-4 w-4" />{location}</p>
         <div className="mt-3 flex flex-wrap gap-1.5">
-          {fields.map((field) => <span key={field} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{field}</span>)}
+          {fields.map((field) => <span key={field} className="rounded-full bg-kx-surface px-2.5 py-1 text-xs font-bold text-kx-muted">{field}</span>)}
         </div>
-        {description ? <p className="mt-3 line-clamp-2 text-sm leading-6 text-slate-600">{description}</p> : null}
+        {description ? <p className="mt-3 line-clamp-2 text-sm leading-6 text-kx-muted">{description}</p> : null}
       </div>
     </Link>
   );
@@ -3716,15 +3716,15 @@ function ListingManageCard({ listing, onStatus, onDelete }: { listing: KXCityLis
   const useVideoFallbackArtwork = coverIsVideo && !coverPreview;
   const PlaceholderIcon = listingPlaceholderIcon(listing.type);
   return (
-    <section className="rounded-2xl border border-slate-200/70 bg-white p-3 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
+    <section className="rounded-2xl border border-kx-stroke/50 bg-kx-card p-3 shadow-kx-card">
       <div className="grid gap-3 sm:grid-cols-[148px_1fr]">
-        <Link href={detailHref(listing)} className="relative aspect-[4/3] overflow-hidden rounded-xl bg-slate-100 sm:aspect-square">
+        <Link href={detailHref(listing)} className="relative aspect-[4/3] overflow-hidden rounded-xl bg-kx-surface sm:aspect-square">
           {useVideoFallbackArtwork ? (
             <span className="absolute inset-0" style={videoFallbackArtworkStyle} />
           ) : coverArtwork ? (
             <Image src={coverArtwork} alt={title} fill sizes="148px" className="object-cover" unoptimized />
           ) : (
-            <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-slate-400">
+            <span className="absolute inset-0 grid place-items-center bg-[radial-gradient(circle_at_28%_18%,rgba(37,99,235,0.14),transparent_34%),linear-gradient(135deg,#f8fafc,#eef4ff_52%,#f7fbf5)] text-kx-subtle">
               <PlaceholderIcon className="h-5 w-5" />
             </span>
           )}
@@ -3739,23 +3739,23 @@ function ListingManageCard({ listing, onStatus, onDelete }: { listing: KXCityLis
         <div className="min-w-0">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div className="min-w-0">
-              <p className="text-xl font-black text-slate-950">{priceLabel(listing)}</p>
-              <Link href={detailHref(listing)} className="mt-1 line-clamp-2 text-base font-black text-slate-950 hover:text-blue-700">{title}</Link>
+              <p className="text-xl font-black text-kx-text">{priceLabel(listing)}</p>
+              <Link href={detailHref(listing)} className="mt-1 line-clamp-2 text-base font-black text-kx-text hover:text-kx-accent">{title}</Link>
             </div>
             <StatusBadge item={listing} />
           </div>
-          <p className="mt-2 text-sm font-semibold text-slate-500">{location}</p>
-          <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold text-slate-500">
+          <p className="mt-2 text-sm font-semibold text-kx-muted">{location}</p>
+          <div className="mt-3 flex flex-wrap gap-2 text-xs font-bold text-kx-muted">
             <span>咨询 {listing.inquiry_count || 0}</span>
             <span>收藏 {listing.favorite_count || 0}</span>
             <span>曝光 {listing.view_count || 0}</span>
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
-            <Link href={`/listings/create?type=${listing.type}&edit=${listing.id}`} className="h-9 rounded-full border border-slate-200 px-3 text-xs font-black leading-9 text-slate-700">编辑</Link>
-            <button type="button" onClick={() => onStatus("hidden")} className="h-9 rounded-full border border-slate-200 px-3 text-xs font-black text-slate-700">下架</button>
-            <button type="button" onClick={() => onStatus("published")} className="h-9 rounded-full border border-slate-200 px-3 text-xs font-black text-slate-700">重新发布</button>
-            {listing.type === "secondhand" ? <button type="button" onClick={() => onStatus("reserved")} className="h-9 rounded-full border border-slate-200 px-3 text-xs font-black text-slate-700">标记已预约</button> : null}
-            <button type="button" onClick={() => onStatus(doneStatus)} className="h-9 rounded-full bg-slate-950 px-3 text-xs font-black text-white">{doneLabel}</button>
+            <Link href={`/listings/create?type=${listing.type}&edit=${listing.id}`} className="h-9 rounded-full border border-kx-stroke/60 px-3 text-xs font-black leading-9 text-kx-text">编辑</Link>
+            <button type="button" onClick={() => onStatus("hidden")} className="h-9 rounded-full border border-kx-stroke/60 px-3 text-xs font-black text-kx-text">下架</button>
+            <button type="button" onClick={() => onStatus("published")} className="h-9 rounded-full border border-kx-stroke/60 px-3 text-xs font-black text-kx-text">重新发布</button>
+            {listing.type === "secondhand" ? <button type="button" onClick={() => onStatus("reserved")} className="h-9 rounded-full border border-kx-stroke/60 px-3 text-xs font-black text-kx-text">标记已预约</button> : null}
+            <button type="button" onClick={() => onStatus(doneStatus)} className="h-9 rounded-full bg-kx-accent px-3 text-xs font-black text-white">{doneLabel}</button>
             <button type="button" onClick={onDelete} className="h-9 rounded-full border border-rose-200 px-3 text-xs font-black text-rose-700">删除</button>
           </div>
         </div>
@@ -3771,7 +3771,7 @@ export function InquiryCard({ inquiry }: { inquiry: KXListingInquiry }) {
   const details = Array.isArray(inquiry.details) ? inquiry.details : [];
   const title = item ? displayListingTitle(item) || item.title : "城市信息记录";
   return (
-    <section className="rounded-[28px] border border-slate-200/70 bg-white p-4 shadow-[0_18px_58px_-46px_rgba(15,23,42,0.48)]">
+    <section className="rounded-[28px] border border-kx-stroke/50 bg-kx-card p-4 shadow-kx-float">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-2">
@@ -3779,39 +3779,39 @@ export function InquiryCard({ inquiry }: { inquiry: KXListingInquiry }) {
               <FileCheck2 className="h-3.5 w-3.5" />
               正式记录
             </span>
-            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-black text-slate-600">{inquiryTypeLabel(inquiry.type)}</span>
+            <span className="rounded-full bg-kx-surface px-2.5 py-1 text-xs font-black text-kx-muted">{inquiryTypeLabel(inquiry.type)}</span>
             <span className="rounded-full bg-blue-50 px-2.5 py-1 text-xs font-black text-blue-700">{inquiryStatusLabel(inquiry.status)}</span>
           </div>
           {item ? (
-            <Link href={detailHref(item)} className="mt-2 block text-base font-black text-slate-950 hover:text-blue-700">{title}</Link>
+            <Link href={detailHref(item)} className="mt-2 block text-base font-black text-kx-text hover:text-kx-accent">{title}</Link>
           ) : (
-            <h3 className="mt-2 text-base font-black text-slate-950">{title}</h3>
+            <h3 className="mt-2 text-base font-black text-kx-text">{title}</h3>
           )}
         </div>
-        {created ? <span className="shrink-0 rounded-full bg-slate-50 px-2.5 py-1 text-xs font-bold text-slate-400">{created}</span> : null}
+        {created ? <span className="shrink-0 rounded-full bg-kx-surface px-2.5 py-1 text-xs font-bold text-kx-subtle">{created}</span> : null}
       </div>
       {inquiry.message ? (
-        <p className="mt-3 whitespace-pre-line rounded-2xl bg-slate-50 p-3 text-sm leading-6 text-slate-600">{inquiry.message}</p>
+        <p className="mt-3 whitespace-pre-line rounded-2xl bg-kx-surface p-3 text-sm leading-6 text-kx-muted">{inquiry.message}</p>
       ) : null}
       {details.length ? (
         <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
           {details.slice(0, 8).map((d, i) => (
             <div key={`${d.label}-${i}`} className="rounded-2xl bg-amber-50/70 px-3 py-2 ring-1 ring-amber-100">
               <dt className="font-black text-amber-700">{d.label}</dt>
-              <dd className="mt-0.5 break-words font-semibold leading-5 text-slate-700">{d.value}</dd>
+              <dd className="mt-0.5 break-words font-semibold leading-5 text-kx-text">{d.value}</dd>
             </div>
           ))}
         </dl>
       ) : null}
       <div className="mt-3 flex flex-wrap gap-2">
         {item ? (
-          <Link href={detailHref(item)} className="inline-flex h-9 items-center justify-center gap-1 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-700 transition hover:border-slate-400">
+          <Link href={detailHref(item)} className="inline-flex h-9 items-center justify-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-text transition hover:border-kx-stroke">
             查看发布
             <ChevronRight className="h-3.5 w-3.5" />
           </Link>
         ) : null}
         {conversationId ? (
-          <Link href={`/messages/${encodeURIComponent(conversationId)}`} className="inline-flex h-9 items-center justify-center gap-1 rounded-full bg-slate-950 px-3 text-xs font-black text-white transition hover:bg-slate-800">
+          <Link href={`/messages/${encodeURIComponent(conversationId)}`} className="inline-flex h-9 items-center justify-center gap-1 rounded-full bg-kx-accent px-3 text-xs font-black text-white transition hover:bg-kx-accent/90">
             <MessageSquare className="h-3.5 w-3.5" />
             补充沟通
           </Link>
@@ -3826,13 +3826,13 @@ function GuideAppointmentCard({ item }: { item: Record<string, unknown> }) {
   const title = cleanListingText(item.product_title) || cleanListingText(item.service_type) || "服务预约";
   const detail = cleanListingText(item.request_detail) || cleanListingText(item.message) || "已提交预约，后台会处理。";
   return (
-    <section className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
+    <section className="rounded-2xl border border-kx-stroke/50 bg-kx-card p-4 shadow-kx-card">
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-full bg-orange-50 px-2 py-1 text-xs font-black text-orange-700">Machi 自营服务</span>
-        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black text-slate-600">{formatAdminRecordValue("status", item.status || "pending_review")}</span>
+        <span className="rounded-full bg-kx-surface px-2 py-1 text-xs font-black text-kx-muted">{formatAdminRecordValue("status", item.status || "pending_review")}</span>
       </div>
-      <h2 className="mt-2 text-base font-black text-slate-950">{title}</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-600">{detail}</p>
+      <h2 className="mt-2 text-base font-black text-kx-text">{title}</h2>
+      <p className="mt-2 text-sm leading-6 text-kx-muted">{detail}</p>
     </section>
   );
 }
@@ -3853,24 +3853,24 @@ function OrderCard({ item }: { item: Record<string, unknown> }) {
       ? `${currency} ${(amountCents / 100).toLocaleString("zh-CN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
       : "待确认";
   return (
-    <section className="rounded-2xl border border-slate-200/70 bg-white p-4 shadow-[0_8px_24px_rgba(15,23,42,0.04)]">
+    <section className="rounded-2xl border border-kx-stroke/50 bg-kx-card p-4 shadow-kx-card">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-full bg-slate-100 px-2 py-1 text-xs font-black text-slate-600">{source === "membership" ? "会员" : "Guide"}</span>
+        <span className="rounded-full bg-kx-surface px-2 py-1 text-xs font-black text-kx-muted">{source === "membership" ? "会员" : "Guide"}</span>
         <span className="rounded-full bg-blue-50 px-2 py-1 text-xs font-black text-blue-700">{formatAdminRecordValue("status", status)}</span>
         {paid ? <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-black text-emerald-700">已支付</span> : null}
       </div>
-      <h2 className="mt-2 text-base font-black text-slate-950">{title}</h2>
+      <h2 className="mt-2 text-base font-black text-kx-text">{title}</h2>
       <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
-        <div className="rounded-xl bg-slate-50 p-3">
-          <dt className="text-xs font-bold text-slate-400">金额</dt>
-          <dd className="mt-1 font-black text-slate-800">{money}</dd>
+        <div className="rounded-xl bg-kx-surface p-3">
+          <dt className="text-xs font-bold text-kx-subtle">金额</dt>
+          <dd className="mt-1 font-black text-kx-text">{money}</dd>
         </div>
-        <div className="rounded-xl bg-slate-50 p-3">
-          <dt className="text-xs font-bold text-slate-400">订单号</dt>
-          <dd className="mt-1 break-all font-black text-slate-800">{orderNo || "待生成"}</dd>
+        <div className="rounded-xl bg-kx-surface p-3">
+          <dt className="text-xs font-bold text-kx-subtle">订单号</dt>
+          <dd className="mt-1 break-all font-black text-kx-text">{orderNo || "待生成"}</dd>
         </div>
       </dl>
-      <p className="mt-3 text-xs font-semibold text-slate-500">
+      <p className="mt-3 text-xs font-semibold text-kx-muted">
         {created ? `创建于 ${new Date(created).toLocaleString("zh-CN")}` : "创建时间待同步"}
         {paid ? ` · 支付于 ${new Date(paid).toLocaleString("zh-CN")}` : ""}
       </p>
@@ -3892,7 +3892,7 @@ function DetailContactCard({ item, onContact, isOwner = false }: { item: KXCityL
             <Link href={`/listings/create?type=${item.type}&edit=${item.id}`} className="kx-living-detail-primary mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full text-sm font-black text-white">
               编辑信息
             </Link>
-            <Link href="/my/listings" className="mt-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full border border-slate-200 text-sm font-black text-slate-700">
+            <Link href="/my/listings" className="mt-2 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full border border-kx-stroke/60 text-sm font-black text-kx-text">
               管理我的发布
             </Link>
           </>
@@ -4049,30 +4049,30 @@ function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; 
   if (!receipt) return null;
   const workbenchHref = inquiryWorkbenchHref(receipt.type, item.type);
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/40 p-0 sm:items-center sm:p-4" onClick={onClose}>
-      <section role="dialog" aria-modal="true" aria-label={receipt.title} className="w-full max-w-lg rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4" onClick={onClose}>
+      <section role="dialog" aria-modal="true" aria-label={receipt.title} className="w-full max-w-lg rounded-t-3xl bg-kx-card p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between gap-3">
           <div className="flex items-start gap-3">
             <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-emerald-50 text-emerald-700">
               <CheckCircle2 className="h-5 w-5" />
             </span>
             <div className="min-w-0">
-              <h3 className="text-lg font-black text-slate-950">{receipt.title}</h3>
-              <p className="mt-1 line-clamp-2 text-sm font-semibold text-slate-500">{displayListingTitle(item) || item.title}</p>
+              <h3 className="text-lg font-black text-kx-text">{receipt.title}</h3>
+              <p className="mt-1 line-clamp-2 text-sm font-semibold text-kx-muted">{displayListingTitle(item) || item.title}</p>
             </div>
           </div>
-          <button type="button" onClick={onClose} aria-label={pickText(locale, "关闭", "閉じる", "Close")} className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600">
+          <button type="button" onClick={onClose} aria-label={pickText(locale, "关闭", "閉じる", "Close")} className="grid h-9 w-9 place-items-center rounded-full bg-kx-surface text-kx-muted">
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="mt-4 grid gap-2 text-sm sm:grid-cols-2">
-          <div className="rounded-2xl bg-slate-50 p-3">
-            <p className="text-xs font-black text-slate-400">{pickText(locale, "类型", "種類", "Type")}</p>
-            <p className="mt-1 font-black text-slate-900">{formatInquiryType(receipt.type, listingLocale)}</p>
+          <div className="rounded-2xl bg-kx-surface p-3">
+            <p className="text-xs font-black text-kx-subtle">{pickText(locale, "类型", "種類", "Type")}</p>
+            <p className="mt-1 font-black text-kx-text">{formatInquiryType(receipt.type, listingLocale)}</p>
           </div>
-          <div className="rounded-2xl bg-slate-50 p-3">
-            <p className="text-xs font-black text-slate-400">{pickText(locale, "状态", "ステータス", "Status")}</p>
-            <p className="mt-1 font-black text-slate-900">{formatInquiryStatus(receipt.status, listingLocale)}</p>
+          <div className="rounded-2xl bg-kx-surface p-3">
+            <p className="text-xs font-black text-kx-subtle">{pickText(locale, "状态", "ステータス", "Status")}</p>
+            <p className="mt-1 font-black text-kx-text">{formatInquiryStatus(receipt.status, listingLocale)}</p>
           </div>
         </div>
         {receipt.details.length ? (
@@ -4080,12 +4080,12 @@ function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; 
             {receipt.details.map((d, index) => (
               <div key={`${d.label}-${index}`} className="grid grid-cols-[92px_minmax(0,1fr)] gap-2">
                 <dt className="font-black text-amber-700">{d.label}</dt>
-                <dd className="break-words font-semibold text-slate-700">{d.value}</dd>
+                <dd className="break-words font-semibold text-kx-text">{d.value}</dd>
               </div>
             ))}
           </dl>
         ) : null}
-        <p className="mt-3 text-xs font-semibold leading-5 text-slate-500">
+        <p className="mt-3 text-xs font-semibold leading-5 text-kx-muted">
           {pickText(
             locale,
             "记录已进入工作台；私信只是补充沟通入口。请继续避免提前转账，并在确认身份与服务边界后再线下交易。",
@@ -4094,17 +4094,17 @@ function InquirySuccessSheet({ item, receipt, onClose }: { item: KXCityListing; 
           )}
         </p>
         <div className="mt-4 grid gap-2 sm:grid-cols-3">
-          <Link href={workbenchHref} className="inline-flex h-11 items-center justify-center rounded-full bg-slate-950 px-4 text-sm font-black text-white" onClick={onClose}>
+          <Link href={workbenchHref} className="inline-flex h-11 items-center justify-center rounded-full bg-kx-accent px-4 text-sm font-black text-white" onClick={onClose}>
             {pickText(locale, "查看记录", "記録を見る", "View record")}
           </Link>
           {receipt.conversationId ? (
-            <Link href={`/messages/${encodeURIComponent(receipt.conversationId)}`} className="inline-flex h-11 items-center justify-center rounded-full border border-slate-200 px-4 text-sm font-black text-slate-700" onClick={onClose}>
+            <Link href={`/messages/${encodeURIComponent(receipt.conversationId)}`} className="inline-flex h-11 items-center justify-center rounded-full border border-kx-stroke/60 px-4 text-sm font-black text-kx-text" onClick={onClose}>
               {pickText(locale, "继续私信", "メッセージを続ける", "Continue message")}
             </Link>
           ) : (
-            <button type="button" disabled className="h-11 rounded-full border border-slate-200 px-4 text-sm font-black text-slate-300">{pickText(locale, "继续私信", "メッセージを続ける", "Continue message")}</button>
+            <button type="button" disabled className="h-11 rounded-full border border-kx-stroke/60 px-4 text-sm font-black text-kx-subtle">{pickText(locale, "继续私信", "メッセージを続ける", "Continue message")}</button>
           )}
-          <Link href={detailHref(item)} className="inline-flex h-11 items-center justify-center rounded-full border border-slate-200 px-4 text-sm font-black text-slate-700" onClick={onClose}>
+          <Link href={detailHref(item)} className="inline-flex h-11 items-center justify-center rounded-full border border-kx-stroke/60 px-4 text-sm font-black text-kx-text" onClick={onClose}>
             {pickText(locale, "返回详情", "詳細へ戻る", "Back to detail")}
           </Link>
         </div>
@@ -4143,17 +4143,17 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
     onSubmit(note.trim(), details);
   };
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center bg-slate-950/40 p-0 sm:items-center sm:p-4" onClick={onClose}>
-      <div role="dialog" aria-modal="true" aria-label={config.title} className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-white p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-0 sm:items-center sm:p-4" onClick={onClose}>
+      <div role="dialog" aria-modal="true" aria-label={config.title} className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-t-3xl bg-kx-card p-5 shadow-2xl sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-center justify-between">
-          <h3 className="text-lg font-black text-slate-950">{config.title}</h3>
-          <button type="button" onClick={onClose} aria-label={pickText(locale, "关闭", "閉じる", "Close")} className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-600"><X className="h-4 w-4" /></button>
+          <h3 className="text-lg font-black text-kx-text">{config.title}</h3>
+          <button type="button" onClick={onClose} aria-label={pickText(locale, "关闭", "閉じる", "Close")} className="grid h-9 w-9 place-items-center rounded-full bg-kx-surface text-kx-muted"><X className="h-4 w-4" /></button>
         </div>
-        <p className="mt-1 line-clamp-1 text-sm font-semibold text-slate-500">{displayListingTitle(item) || item.title}</p>
+        <p className="mt-1 line-clamp-1 text-sm font-semibold text-kx-muted">{displayListingTitle(item) || item.title}</p>
         <div className="mt-4 space-y-3">
           {config.fields.map((f) => (
             <label key={f.key} className="block">
-              <span className="text-xs font-black text-slate-600">{f.label}{f.required ? <span className="text-rose-500"> *</span> : null}</span>
+              <span className="text-xs font-black text-kx-muted">{f.label}{f.required ? <span className="text-rose-500"> *</span> : null}</span>
               {f.kind === "select" ? (
                 <select value={values[f.key] || ""} onChange={(e) => setValues((v) => ({ ...v, [f.key]: e.target.value }))} className="kx-input mt-1 h-11 w-full px-3 text-sm">
                   <option value="">{pickText(locale, "请选择", "選択してください", "Select")}</option>
@@ -4167,7 +4167,7 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
             </label>
           ))}
           <label className="block">
-            <span className="text-xs font-black text-slate-600">{config.noteLabel}</span>
+            <span className="text-xs font-black text-kx-muted">{config.noteLabel}</span>
             <textarea value={note} onChange={(e) => setNote(e.target.value)} placeholder={config.optionalPlaceholder} className="kx-input mt-1 min-h-20 w-full p-3 text-sm" />
           </label>
         </div>
@@ -4175,7 +4175,7 @@ function IntakeSheet({ item, open, submitting, onClose, onSubmit }: { item: KXCi
         <p className="mt-3 text-xs font-semibold text-amber-700">
           {pickText(locale, "提交后会生成正式记录，私信只用于后续补充沟通。Machi 不代收交易款、押金、保证金或第三方服务款，请勿提前转账。", "送信後は正式な記録が作成され、メッセージは補足連絡用です。Machi は代金・保証金・第三者サービス費を預かりません。前払いは避けてください。", "Submitting creates an official record; messages are only for follow-up. Machi does not hold trade payments, deposits, guarantees, or third-party service fees. Avoid paying in advance.")}
         </p>
-        <button type="button" disabled={submitting} onClick={submit} className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-slate-950 text-sm font-black text-white disabled:opacity-60">
+        <button type="button" disabled={submitting} onClick={submit} className="mt-3 inline-flex h-11 w-full items-center justify-center gap-2 rounded-full bg-kx-accent text-sm font-black text-white disabled:opacity-60">
           <Send className="h-4 w-4" />
           {submitting ? pickText(locale, "提交中…", "送信中…", "Submitting…") : config.title}
         </button>
@@ -4208,22 +4208,22 @@ function ListingFilterPanel({
   const reset = () => onChange({});
   const currentCity = getCityBySlug(currentCitySlug);
   return (
-    <section className={variant === "inline" ? "rounded-[20px] bg-slate-50/70 p-3" : "sticky top-24 rounded-3xl border border-slate-200 bg-white p-4 shadow-[0_10px_30px_rgba(15,23,42,0.045)]"}>
+    <section className={variant === "inline" ? "rounded-[20px] bg-kx-surface/70 p-3" : "sticky top-24 rounded-3xl border border-kx-stroke/60 bg-kx-card p-4 shadow-kx-card"}>
       <div className="flex items-center justify-between gap-3">
-        <h3 className="text-sm font-black text-slate-950">{pickText(locale, "筛选", "絞り込み", "Filters")}</h3>
-        <button type="button" onClick={reset} className="text-xs font-bold text-slate-400 hover:text-slate-900">{pickText(locale, "清空", "クリア", "Clear")}</button>
+        <h3 className="text-sm font-black text-kx-text">{pickText(locale, "筛选", "絞り込み", "Filters")}</h3>
+        <button type="button" onClick={reset} className="text-xs font-bold text-kx-subtle hover:text-kx-text">{pickText(locale, "清空", "クリア", "Clear")}</button>
       </div>
-      <div className="mt-3 rounded-[18px] border border-slate-200/70 bg-white p-3">
+      <div className="mt-3 rounded-[18px] border border-kx-stroke/50 bg-kx-card p-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div>
-            <p className="text-xs font-black text-slate-500">{pickText(locale, "城市范围", "エリア範囲", "City scope")}</p>
-            <p className="mt-0.5 text-[11px] font-semibold text-slate-400">{pickText(locale, "关东圈、关西圈和其他热门城市已收进这里。", "首都圏・関西圏など主要エリアはこちらにまとめています。", "Kanto, Kansai and other popular areas are grouped here.")}</p>
+            <p className="text-xs font-black text-kx-muted">{pickText(locale, "城市范围", "エリア範囲", "City scope")}</p>
+            <p className="mt-0.5 text-[11px] font-semibold text-kx-subtle">{pickText(locale, "关东圈、关西圈和其他热门城市已收进这里。", "首都圏・関西圏など主要エリアはこちらにまとめています。", "Kanto, Kansai and other popular areas are grouped here.")}</p>
           </div>
           <button
             type="button"
             onClick={clearScope}
             data-active={!filters.scope_area && !filters.scope_city && !filters.scope_province}
-            className="h-8 rounded-full border border-slate-200 px-3 text-xs font-black text-slate-500 transition hover:border-blue-300 hover:text-blue-700 data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
+            className="h-8 rounded-full border border-kx-stroke/60 px-3 text-xs font-black text-kx-muted transition hover:border-kx-accent/40 hover:text-kx-accent data-[active=true]:border-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white"
           >
             {pickText(locale, "跟随顶部", "上部に合わせる", "Follow top")}
           </button>
@@ -4235,7 +4235,7 @@ function ListingFilterPanel({
               type="button"
               onClick={() => setScopeArea(group.slug)}
               data-active={filters.scope_area === group.slug}
-              className="h-9 rounded-full border border-slate-200 bg-slate-50 px-3 text-xs font-black text-slate-600 transition hover:border-blue-300 hover:bg-white hover:text-blue-700 data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
+              className="h-9 rounded-full border border-kx-stroke/60 bg-kx-surface px-3 text-xs font-black text-kx-muted transition hover:border-kx-accent/40 hover:bg-kx-card hover:text-kx-accent data-[active=true]:border-blue-600 data-[active=true]:bg-blue-50 data-[active=true]:text-blue-700"
             >
               {group.label}
             </button>
@@ -4243,8 +4243,8 @@ function ListingFilterPanel({
         </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-3 lg:grid-cols-4">
           {CITY_AREA_GROUPS.map((group) => (
-            <div key={group.slug} className="rounded-2xl bg-slate-50/80 p-2">
-              <p className="px-1 pb-1 text-[11px] font-black text-slate-400">{group.label}</p>
+            <div key={group.slug} className="rounded-2xl bg-kx-surface/80 p-2">
+              <p className="px-1 pb-1 text-[11px] font-black text-kx-subtle">{group.label}</p>
               <div className="flex flex-wrap gap-1.5">
                 {group.cities.map((slug) => {
                   const city = getCityBySlug(slug);
@@ -4255,7 +4255,7 @@ function ListingFilterPanel({
                       type="button"
                       onClick={() => setScopeCity(slug)}
                       data-active={filters.scope_city === slug}
-                      className="h-8 rounded-full px-2.5 text-xs font-black text-slate-500 transition hover:bg-white hover:text-blue-700 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
+                      className="h-8 rounded-full px-2.5 text-xs font-black text-kx-muted transition hover:bg-kx-card hover:text-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white"
                     >
                       {city.slug === currentCity?.slug ? `${city.name} · 当前` : city.name}
                     </button>
@@ -4265,13 +4265,13 @@ function ListingFilterPanel({
             </div>
           ))}
         </div>
-        <div className="mt-3 border-t border-slate-200/70 pt-3">
-          <p className="text-xs font-black text-slate-500">都道府县</p>
-          <p className="mt-0.5 text-[11px] font-semibold text-slate-400">选一个县 = 看该县全部城市。</p>
+        <div className="mt-3 border-t border-kx-stroke/50 pt-3">
+          <p className="text-xs font-black text-kx-muted">都道府县</p>
+          <p className="mt-0.5 text-[11px] font-semibold text-kx-subtle">选一个县 = 看该县全部城市。</p>
           <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
             {JP_METRO_CIRCLES.map((circle) => (
-              <div key={circle.code} className="rounded-2xl bg-slate-50/80 p-2">
-                <p className="px-1 pb-1 text-[11px] font-black text-slate-400">{circle.name}</p>
+              <div key={circle.code} className="rounded-2xl bg-kx-surface/80 p-2">
+                <p className="px-1 pb-1 text-[11px] font-black text-kx-subtle">{circle.name}</p>
                 <div className="flex flex-wrap gap-1.5">
                   {circle.provinceCodes.map((pc) => {
                     const prov = provincesFor("jp").find((p) => p.code === pc);
@@ -4282,7 +4282,7 @@ function ListingFilterPanel({
                         type="button"
                         onClick={() => setScopeProvince(pc)}
                         data-active={filters.scope_province === pc}
-                        className="h-8 rounded-full px-2.5 text-xs font-black text-slate-500 transition hover:bg-white hover:text-blue-700 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
+                        className="h-8 rounded-full px-2.5 text-xs font-black text-kx-muted transition hover:bg-kx-card hover:text-kx-accent data-[active=true]:bg-kx-accent data-[active=true]:text-white"
                       >
                         {prov.name}
                       </button>
@@ -4368,7 +4368,7 @@ function MiniListingCard({ listing }: { listing: KXCityListing }) {
         ) : cover ? (
           <Image src={cover} alt={title} fill sizes="176px" className="object-cover" unoptimized />
         ) : (
-          <span className="absolute inset-0 grid place-items-center text-slate-400"><PlaceholderIcon className="h-5 w-5" /></span>
+          <span className="absolute inset-0 grid place-items-center text-kx-subtle"><PlaceholderIcon className="h-5 w-5" /></span>
         )}
         {coverIsVideo ? (
           <span className="absolute inset-0 grid place-items-center">
@@ -4473,24 +4473,24 @@ function SellerBox({ item }: { item: KXCityListing }) {
   const isNew = publisherIsNew(seller);
   const profileHref = seller?.handle ? `/u/${seller.handle}` : undefined;
   return (
-    <section className="mt-5 rounded-2xl border border-slate-200 bg-slate-50/70 p-4">
+    <section className="mt-5 rounded-2xl border border-kx-stroke/60 bg-kx-surface/70 p-4">
       <div className="flex items-center gap-3">
-        {seller ? <Avatar user={seller} size={42} href={profileHref} /> : <span className="grid h-11 w-11 place-items-center rounded-full bg-slate-200 font-black text-slate-600">M</span>}
+        {seller ? <Avatar user={seller} size={42} href={profileHref} /> : <span className="grid h-11 w-11 place-items-center rounded-full bg-kx-soft font-black text-kx-muted">M</span>}
         <div className="min-w-0 flex-1">
           {profileHref ? (
-            <Link href={profileHref} className="flex items-center gap-1 font-black text-slate-950 hover:underline">{seller?.display_name || "Machi 用户"}{showOfficialBadge(seller) ? <OfficialBadge /> : showVerifiedBadge(seller) ? <VerifiedBadge /> : null}</Link>
+            <Link href={profileHref} className="flex items-center gap-1 font-black text-kx-text hover:underline">{seller?.display_name || "Machi 用户"}{showOfficialBadge(seller) ? <OfficialBadge /> : showVerifiedBadge(seller) ? <VerifiedBadge /> : null}</Link>
           ) : (
-            <p className="flex items-center gap-1 font-black text-slate-950">{seller?.display_name || "Machi 用户"}{showOfficialBadge(seller) ? <OfficialBadge /> : showVerifiedBadge(seller) ? <VerifiedBadge /> : null}</p>
+            <p className="flex items-center gap-1 font-black text-kx-text">{seller?.display_name || "Machi 用户"}{showOfficialBadge(seller) ? <OfficialBadge /> : showVerifiedBadge(seller) ? <VerifiedBadge /> : null}</p>
           )}
-          <p className="text-xs font-semibold text-slate-500">发布者认证：{verificationLabel(item.verification_status)}</p>
+          <p className="text-xs font-semibold text-kx-muted">发布者认证：{verificationLabel(item.verification_status)}</p>
         </div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 text-xs font-bold">
-        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 ring-1 ${verified ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-slate-100 text-slate-500 ring-slate-200"}`}>
+        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-1 ring-1 ${verified ? "bg-emerald-50 text-emerald-700 ring-emerald-200" : "bg-kx-surface text-kx-muted ring-kx-stroke/60"}`}>
           <BadgeCheck className="h-3.5 w-3.5" /> {verified ? "已实名认证" : "未认证"}
         </span>
         {joinLabel ? (
-          <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-slate-600 ring-1 ring-slate-200">
+          <span className="inline-flex items-center gap-1 rounded-full bg-kx-surface px-2 py-1 text-kx-muted ring-1 ring-kx-stroke/60">
             <CalendarDays className="h-3.5 w-3.5" /> {joinLabel}
           </span>
         ) : null}
@@ -4522,9 +4522,9 @@ function AttributeGrid({ item }: { item: KXCityListing }) {
   return (
     <dl className="mt-5 grid gap-2 sm:grid-cols-2">
       {rows.map(([label, value]) => (
-        <div key={label} className="rounded-2xl bg-slate-50 p-3">
-          <dt className="text-xs font-bold text-slate-400">{label}</dt>
-          <dd className="mt-1 text-sm font-black text-slate-800">{value}</dd>
+        <div key={label} className="rounded-2xl bg-kx-surface p-3">
+          <dt className="text-xs font-bold text-kx-subtle">{label}</dt>
+          <dd className="mt-1 text-sm font-black text-kx-text">{value}</dd>
         </div>
       ))}
     </dl>
@@ -4629,12 +4629,12 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
     setFormOpen(true);
   };
   return (
-    <section className="mt-5 rounded-2xl border border-slate-200/80 bg-white p-4">
+    <section className="mt-5 rounded-2xl border border-kx-stroke/60 bg-kx-card p-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h3 className="flex items-center gap-2 text-base font-black text-slate-950">
+        <h3 className="flex items-center gap-2 text-base font-black text-kx-text">
           <Star className="h-4.5 w-4.5 fill-amber-400 text-amber-400" />
           用户点评
-          {ratingCount ? <span className="text-sm font-bold text-slate-400">({ratingCount})</span> : null}
+          {ratingCount ? <span className="text-sm font-bold text-kx-subtle">({ratingCount})</span> : null}
         </h3>
         {!isOwner ? (
           <button type="button" onClick={openForm} className="inline-flex h-9 items-center gap-1.5 rounded-full bg-amber-500 px-3.5 text-xs font-black text-white shadow-[0_10px_22px_-14px_rgba(245,158,11,0.95)] transition hover:bg-amber-600">
@@ -4649,36 +4649,36 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
           <div className="flex flex-col items-center justify-center rounded-2xl bg-amber-50/80 px-6 py-4 ring-1 ring-amber-100">
             <p className="text-4xl font-black text-amber-600">{ratingAvg.toFixed(1)}</p>
             <RatingStars value={ratingAvg} showValue={false} />
-            <p className="mt-1 text-xs font-bold text-slate-500">{ratingCount} 条点评</p>
+            <p className="mt-1 text-xs font-bold text-kx-muted">{ratingCount} 条点评</p>
           </div>
           <div className="space-y-1.5">
             {[5, 4, 3, 2, 1].map((star) => {
               const count = Number(histogram[String(star)] || 0);
               return (
                 <div key={star} className="flex items-center gap-2">
-                  <span className="w-8 shrink-0 text-right text-xs font-black text-slate-500">{star} 星</span>
-                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100">
+                  <span className="w-8 shrink-0 text-right text-xs font-black text-kx-muted">{star} 星</span>
+                  <div className="h-2 flex-1 overflow-hidden rounded-full bg-kx-surface">
                     <div className="h-full rounded-full bg-amber-400" style={{ width: `${(count / histogramMax) * 100}%` }} />
                   </div>
-                  <span className="w-8 shrink-0 text-xs font-bold text-slate-400">{count}</span>
+                  <span className="w-8 shrink-0 text-xs font-bold text-kx-subtle">{count}</span>
                 </div>
               );
             })}
           </div>
         </div>
       ) : (
-        <p className="mt-3 rounded-2xl bg-slate-50 p-4 text-sm font-semibold text-slate-500">
+        <p className="mt-3 rounded-2xl bg-kx-surface p-4 text-sm font-semibold text-kx-muted">
           还没有人点评过{listing.type === "local_service" ? "这项服务" : "这条信息"}。体验过的话，写下第一条点评帮助大家做决定。
         </p>
       )}
 
       {formOpen ? (
         <div className="mt-4 rounded-2xl border border-amber-200/80 bg-amber-50/60 p-4">
-          <p className="text-sm font-black text-slate-900">{myReview ? "修改点评" : "你的体验如何？"}</p>
+          <p className="text-sm font-black text-kx-text">{myReview ? "修改点评" : "你的体验如何？"}</p>
           <div className="mt-2 flex items-center gap-1.5">
             {[1, 2, 3, 4, 5].map((star) => (
               <button key={star} type="button" onClick={() => setRating(star)} aria-label={`${star} 星`}>
-                <Star className={`h-7 w-7 transition ${star <= rating ? "fill-amber-400 text-amber-400" : "fill-slate-200 text-slate-200 hover:fill-amber-200 hover:text-amber-200"}`} />
+                <Star className={`h-7 w-7 transition ${star <= rating ? "fill-amber-400 text-amber-400" : "fill-kx-stroke/50 text-kx-subtle hover:fill-amber-200 hover:text-amber-200"}`} />
               </button>
             ))}
             <span className="ml-1 text-sm font-black text-amber-600">{["很差", "较差", "一般", "不错", "超赞"][rating - 1]}</span>
@@ -4691,11 +4691,11 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
             className="kx-input mt-3 min-h-24 w-full p-3 text-sm"
           />
           <div className="mt-3 flex gap-2">
-            <button type="button" disabled={submit.isPending} onClick={() => submit.mutate()} className="inline-flex h-10 items-center gap-2 rounded-full bg-slate-950 px-5 text-sm font-black text-white disabled:opacity-60">
+            <button type="button" disabled={submit.isPending} onClick={() => submit.mutate()} className="inline-flex h-10 items-center gap-2 rounded-full bg-kx-accent px-5 text-sm font-black text-white disabled:opacity-60">
               <Send className="h-4 w-4" />
               {submit.isPending ? "发布中…" : "发布点评"}
             </button>
-            <button type="button" onClick={() => setFormOpen(false)} className="inline-flex h-10 items-center rounded-full border border-slate-200 bg-white px-4 text-sm font-bold text-slate-600">
+            <button type="button" onClick={() => setFormOpen(false)} className="inline-flex h-10 items-center rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-sm font-bold text-kx-muted">
               取消
             </button>
           </div>
@@ -4705,28 +4705,28 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
       {items.length ? (
         <div className="mt-4 space-y-4">
           {items.map((review) => (
-            <article key={review.id} className="border-t border-slate-100 pt-4 first:border-0 first:pt-0">
+            <article key={review.id} className="border-t border-kx-stroke/40 pt-4 first:border-0 first:pt-0">
               <div className="flex items-center gap-2.5">
                 <Avatar user={review.author || undefined} size={36} />
                 <div className="min-w-0 flex-1">
-                  <p className="truncate text-sm font-black text-slate-900">{review.author?.display_name || review.author?.handle || "Machi 用户"}</p>
-                  <p className="flex items-center gap-2 text-xs text-slate-400">
+                  <p className="truncate text-sm font-black text-kx-text">{review.author?.display_name || review.author?.handle || "Machi 用户"}</p>
+                  <p className="flex items-center gap-2 text-xs text-kx-subtle">
                     <RatingStars value={review.rating} showValue={false} />
                     <span className="font-bold">{(review.created_at || "").slice(0, 10)}</span>
                     {review.visit_date ? <span className="font-bold">体验于 {review.visit_date}</span> : null}
                   </p>
                 </div>
                 {user && review.user_id === user.id ? (
-                  <button type="button" onClick={() => remove.mutate(review.id)} className="shrink-0 text-xs font-bold text-slate-400 transition hover:text-rose-500">
+                  <button type="button" onClick={() => remove.mutate(review.id)} className="shrink-0 text-xs font-bold text-kx-subtle transition hover:text-rose-500">
                     删除
                   </button>
                 ) : null}
               </div>
-              {review.content ? <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{review.content}</p> : null}
+              {review.content ? <p className="mt-2 whitespace-pre-line text-sm leading-6 text-kx-text">{review.content}</p> : null}
               {review.owner_reply ? (
-                <div className="mt-2.5 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-100">
-                  <p className="flex items-center gap-1 text-xs font-black text-slate-500"><Store className="h-3.5 w-3.5" /> 商家回复</p>
-                  <p className="mt-1 text-sm leading-6 text-slate-600">{review.owner_reply}</p>
+                <div className="mt-2.5 rounded-xl bg-kx-surface p-3 ring-1 ring-kx-stroke/40">
+                  <p className="flex items-center gap-1 text-xs font-black text-kx-muted"><Store className="h-3.5 w-3.5" /> 商家回复</p>
+                  <p className="mt-1 text-sm leading-6 text-kx-muted">{review.owner_reply}</p>
                 </div>
               ) : isOwner ? (
                 replyFor === review.id ? (
@@ -4742,13 +4742,13 @@ export function ListingReviewsSection({ listing }: { listing: KXCityListing }) {
                       type="button"
                       disabled={reply.isPending || !replyText.trim()}
                       onClick={() => reply.mutate({ reviewId: review.id, content: replyText.trim() })}
-                      className="inline-flex h-10 shrink-0 items-center rounded-full bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50"
+                      className="inline-flex h-10 shrink-0 items-center rounded-full bg-kx-accent px-4 text-xs font-black text-white disabled:opacity-50"
                     >
                       回复
                     </button>
                   </div>
                 ) : (
-                  <button type="button" onClick={() => { setReplyFor(review.id); setReplyText(""); }} className="mt-2 text-xs font-black text-blue-600 transition hover:text-blue-700">
+                  <button type="button" onClick={() => { setReplyFor(review.id); setReplyText(""); }} className="mt-2 text-xs font-black text-blue-600 transition hover:text-kx-accent">
                     回复点评
                   </button>
                 )
@@ -4788,7 +4788,7 @@ function ListingAttributeEditor({
   };
   if (type === "local_service" && !fields.length) {
     return (
-      <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-4 py-5 text-sm font-semibold text-slate-500">
+      <div className="rounded-2xl border border-dashed border-kx-stroke/60 bg-kx-card px-4 py-5 text-sm font-semibold text-kx-muted">
         请先在基础信息里选择一个标准服务细分类。选择后这里只显示该行业需要填写的字段。
       </div>
     );
@@ -4802,10 +4802,10 @@ function ListingAttributeEditor({
               type="button"
               onClick={() => set(field.key, value[field.key] === "true" ? "false" : "true")}
               data-active={value[field.key] === "true"}
-              className="flex h-11 w-full items-center justify-between rounded-2xl border border-slate-200 bg-white px-3 text-sm font-bold text-slate-600 transition data-[active=true]:border-emerald-200 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-800"
+              className="flex h-11 w-full items-center justify-between rounded-2xl border border-kx-stroke/60 bg-kx-card px-3 text-sm font-bold text-kx-muted transition data-[active=true]:border-emerald-200 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-800"
             >
               <span>{value[field.key] === "true" ? "是" : "否"}</span>
-              <span className="grid h-6 w-6 place-items-center rounded-full bg-slate-100 text-[11px] data-[active=true]:bg-emerald-600 data-[active=true]:text-white" data-active={value[field.key] === "true"}>{value[field.key] === "true" ? "✓" : ""}</span>
+              <span className="grid h-6 w-6 place-items-center rounded-full bg-kx-surface text-[11px] data-[active=true]:bg-emerald-600 data-[active=true]:text-white" data-active={value[field.key] === "true"}>{value[field.key] === "true" ? "✓" : ""}</span>
             </button>
           ) : field.kind === "select" ? (
             <select value={value[field.key] || ""} onChange={(e) => set(field.key, e.target.value)} className="kx-input h-11">
@@ -4826,7 +4826,7 @@ function ListingAttributeEditor({
 function Field({ field, label, children, required, error }: { field?: string; label: string; children: React.ReactNode; required?: boolean; error?: string }) {
   return (
     <label className="block min-w-0" data-field={field}>
-      <span className="mb-1.5 flex items-center gap-1 text-xs font-black text-slate-500">
+      <span className="mb-1.5 flex items-center gap-1 text-xs font-black text-kx-muted">
         {label}
         {required ? <span className="text-rose-500">*</span> : null}
       </span>
@@ -4894,12 +4894,12 @@ function StatusBadge({ item }: { item: KXCityListing }) {
     ? "border-blue-100 bg-blue-50 text-blue-700"
     : item.status === "pending_review"
       ? "border-amber-100 bg-amber-50 text-amber-700"
-      : "border-slate-200 bg-slate-100 text-slate-600";
+      : "border-kx-stroke/60 bg-kx-surface text-kx-muted";
   const verificationTone = item.verification_status === "verified"
     ? "border-sky-100 bg-sky-50 text-sky-700"
     : item.verification_status === "pending" || item.verification_status === "needs_review"
       ? "border-amber-100 bg-amber-50 text-amber-700"
-      : "border-slate-200 bg-slate-100 text-slate-500";
+      : "border-kx-stroke/60 bg-kx-surface text-kx-muted";
   const showVerification = item.verification_status && item.verification_status !== "unverified";
   const verificationText = item.verification_status === "verified" ? "认证" : verificationLabel(item.verification_status);
   return (
@@ -5051,7 +5051,7 @@ function DetailGallery({ media, title }: { media: KXListingMedia[]; title: strin
     return (
       <div className="kx-living-detail-gallery p-2">
         <div className="relative aspect-[16/10] overflow-hidden rounded-[20px] bg-[rgb(var(--kx-living-soft))] sm:aspect-[16/9]">
-          <span className="absolute inset-0 bg-slate-100" />
+          <span className="absolute inset-0 bg-kx-surface" />
         </div>
       </div>
     );
@@ -5086,15 +5086,15 @@ function DetailGallery({ media, title }: { media: KXListingMedia[]; title: strin
               preload="metadata"
               controls
               playsInline
-              className="h-full w-full bg-slate-950 object-contain"
+              className="h-full w-full bg-black object-contain"
             />
           ) : (
-            <span className="absolute inset-0 grid place-items-center bg-slate-950 text-white"><Play className="h-8 w-8 fill-current" /></span>
+            <span className="absolute inset-0 grid place-items-center bg-black text-white"><Play className="h-8 w-8 fill-current" /></span>
           )
         ) : heroImage ? (
           <Image src={heroImage} alt={title} fill sizes="(max-width: 768px) 100vw, 760px" className="object-cover" unoptimized priority />
         ) : (
-          <span className="absolute inset-0 bg-slate-100" />
+          <span className="absolute inset-0 bg-kx-surface" />
         )}
 
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-24 bg-gradient-to-t from-black/42 via-black/12 to-transparent" />
@@ -5128,7 +5128,7 @@ function DetailGallery({ media, title }: { media: KXListingMedia[]; title: strin
                 {items.map((m, i) => (
                   <span
                     key={m.id || i}
-                    className={`h-1.5 rounded-full transition-all ${i === safeIndex ? "w-4 bg-white" : "w-1.5 bg-white/55"}`}
+                    className={`h-1.5 rounded-full transition-all ${i === safeIndex ? "w-4 bg-kx-card" : "w-1.5 bg-kx-card/55"}`}
                   />
                 ))}
               </div>
@@ -5149,11 +5149,11 @@ function DetailGallery({ media, title }: { media: KXListingMedia[]; title: strin
               className={`relative h-14 w-20 shrink-0 overflow-hidden rounded-xl border-2 transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[rgb(var(--kx-living-accent))] focus-visible:ring-offset-2 ${i === safeIndex ? "border-[rgb(var(--kx-living-accent))] opacity-100 shadow-sm" : "border-transparent opacity-70 hover:opacity-100"}`}
             >
               {isVideoMedia(m) ? (
-                <span className="absolute inset-0 grid place-items-center bg-slate-900 text-white"><Play className="h-4 w-4 fill-current" /></span>
+                <span className="absolute inset-0 grid place-items-center bg-black text-white"><Play className="h-4 w-4 fill-current" /></span>
               ) : mediaPreviewImageUrl(m) || mediaSourceUrl(m) ? (
                 <Image src={mediaPreviewImageUrl(m) || mediaSourceUrl(m)} alt="" fill sizes="80px" className="object-cover" unoptimized />
               ) : (
-                <span className="absolute inset-0 bg-slate-100" />
+                <span className="absolute inset-0 bg-kx-surface" />
               )}
             </button>
           ))}
