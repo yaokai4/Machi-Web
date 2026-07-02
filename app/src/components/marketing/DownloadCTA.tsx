@@ -18,7 +18,7 @@ type FormState =
 const EMAIL_RE = /^[^\s@]+@[^\s@.]+\.[^\s@.]+$/;
 
 export function DownloadCTA() {
-  const { copy } = useMarketingI18n();
+  const { copy, locale } = useMarketingI18n();
   const [email, setEmail] = useState("");
   const [city, setCity] = useState(copy.download.cityOptions[0]);
   const [language, setLanguage] = useState(copy.download.languageOptions[0]);
@@ -46,11 +46,12 @@ export function DownloadCTA() {
     }
     setState({ kind: "sending" });
     try {
-      const payload = { email: value, city, language, intent };
-      void payload;
-      // Mock submit. Wire to a real endpoint when ready — the shape is
-      // intentionally minimal so it's a drop-in for any waitlist backend.
-      await new Promise((resolve) => setTimeout(resolve, 720));
+      const response = await fetch("/api/waitlist", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: value, city, language, intent, locale }),
+      });
+      if (!response.ok) throw new Error(`waitlist ${response.status}`);
       setState({ kind: "success" });
     } catch {
       setState({ kind: "error", message: copy.download.errorSubmit });

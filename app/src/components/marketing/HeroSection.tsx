@@ -1,13 +1,12 @@
 "use client";
 
 import clsx from "clsx";
-import { ArrowRight, BookOpen, Building2, ChevronDown, MonitorSmartphone, Sparkles } from "lucide-react";
-import { usePathname } from "next/navigation";
+import { BookOpen, ChevronDown, MonitorSmartphone, Sparkles } from "lucide-react";
 import { AppMockup } from "./AppMockup";
 import { BrandPhrase, BrandText } from "./BrandText";
 import { Button } from "./Button";
 import { StoreButton, APP_STORE_URL } from "./StoreButtons";
-import { useMarketingI18n } from "./MarketingI18n";
+import { useMarketingI18n, localizedMarketingHref } from "./MarketingI18n";
 
 // CJK text wraps between any two characters, so at display sizes the
 // slogan can split mid-word (在每一座城市，找/到…). Cutting the line into
@@ -31,27 +30,16 @@ function splitDisplayLines(text: string): string[] {
 export function HeroSection() {
   const { copy, locale } = useMarketingI18n();
   const isJapanese = locale === "ja";
-  const pathname = usePathname();
-  const explicitLocale = pathname === "/zh" || pathname.startsWith("/zh/")
-    ? "zh"
-    : pathname === "/en" || pathname.startsWith("/en/")
-      ? "en"
-      : pathname === "/ja" || pathname.startsWith("/ja/")
-        ? "ja"
-        : null;
-  const aboutPath = explicitLocale || locale !== "zh" ? `/${explicitLocale ?? locale}/about` : "/about";
-  const aboutHref = `${aboutPath}#founder`;
   const headlineSizeClass = isJapanese
     ? "text-[clamp(1.95rem,7.2vw,2.3rem)] sm:text-[clamp(2.25rem,3.25vw,3rem)] lg:text-[clamp(2.35rem,3vw,3.1rem)] xl:text-[clamp(2.55rem,3vw,3.25rem)]"
     : "text-[clamp(1.7rem,7.4vw,1.95rem)] sm:text-[clamp(2.1rem,3.6vw,3.3rem)]";
   const subtitleClass = isJapanese
     ? "max-w-[22rem] text-[1rem] leading-[1.9] sm:max-w-2xl sm:text-[1.0625rem] sm:leading-8"
     : "max-w-[21rem] text-[1.0625rem] leading-[1.8] sm:max-w-xl sm:text-xl sm:leading-9";
-  const supportingClass = isJapanese
-    ? "max-w-[22rem] text-[15px] leading-7 sm:max-w-2xl sm:text-base sm:leading-8"
-    : "max-w-[21rem] text-[15px] leading-7 sm:max-w-xl sm:text-base";
   const ctaWidthClass = isJapanese ? "max-w-[560px]" : "max-w-[460px]";
-  const ctaButtonClass = isJapanese ? "h-14 px-6 text-base font-black whitespace-nowrap" : "h-14 px-7 text-base font-black";
+  const ctaButtonClass = isJapanese
+    ? "h-14 px-6 text-base font-bold tracking-[-0.01em] whitespace-nowrap"
+    : "h-14 px-7 text-base font-bold tracking-[-0.01em]";
 
   return (
     <section className="relative overflow-hidden px-5 pb-16 pt-4 sm:px-8 sm:pt-6 lg:px-16 lg:pb-24 lg:pt-10 xl:px-20">
@@ -91,26 +79,42 @@ export function HeroSection() {
           <p className={clsx("mx-auto mt-6 text-slate-600 [overflow-wrap:anywhere] lg:mx-0 dark:text-slate-300", subtitleClass)}>
             <BrandPhrase text={copy.hero.subtitle} />
           </p>
-          <p className={clsx("mx-auto mt-3 text-slate-500 [overflow-wrap:anywhere] lg:mx-0 dark:text-slate-400", supportingClass)}>
+          <p className="mx-auto mt-3 max-w-[21rem] text-[15px] leading-7 text-slate-500 sm:max-w-xl dark:text-slate-400">
             {copy.hero.supporting}
           </p>
 
+          {/* The download IS the hero ask: official-style store badges
+              first (iOS live, Android in development), then one gradient
+              pill for the web app beside the founder-story entrance. */}
+          <div className="mx-auto mt-9 flex w-full flex-wrap items-end justify-center gap-x-4 gap-y-3 lg:mx-0 lg:justify-start">
+            <StoreButton
+              kind="app-store"
+              caption={copy.hero.appStoreCaption}
+              href={APP_STORE_URL}
+              className="items-center sm:items-start"
+            />
+            <StoreButton
+              kind="google-play"
+              caption={copy.hero.googlePlayCaption}
+              href="/download#waitlist-form"
+              className="items-center sm:items-start"
+            />
+          </div>
+
           {/* Grid, not flex-col: `flex-1` children inside a column flexbox
-              take their size from the flex algorithm (basis 0), which
-              silently discards h-14 and collapses the pills to text
-              height on phones. Grid rows always honour the height. */}
-          <div className={clsx("mx-auto mt-9 grid w-full grid-cols-1 gap-3 sm:grid-cols-2 lg:mx-0", ctaWidthClass)}>
+              collapse h-14 on phones — grid rows always honour the height. */}
+          <div className={clsx("mx-auto mt-5 grid w-full grid-cols-1 gap-3 sm:grid-cols-2 lg:mx-0", ctaWidthClass)}>
             <Button
               href="/home"
               variant="brand"
               size="lg"
               className={ctaButtonClass}
-              iconRight={<ArrowRight className="h-5 w-5" />}
+              iconLeft={<MonitorSmartphone className="h-5 w-5" />}
             >
               {copy.hero.primary}
             </Button>
             <Button
-              href={aboutHref}
+              href={`${localizedMarketingHref("/about", locale)}#founder`}
               variant="secondary"
               size="lg"
               className={ctaButtonClass}
@@ -120,57 +124,13 @@ export function HeroSection() {
             </Button>
           </div>
 
-          <div className="mx-auto mt-4 flex w-full max-w-[460px] flex-wrap items-center justify-center gap-x-5 gap-y-2 lg:mx-0 lg:justify-start">
-            <a
-              href="#guide"
-              className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-600 underline-offset-4 transition hover:text-slate-950 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:text-slate-300 dark:hover:text-white"
-            >
-              <Sparkles className="h-4 w-4 text-orange-500/80" aria-hidden="true" />
-              {copy.hero.tertiary}
-            </a>
-            <span className="hidden text-slate-300 sm:inline dark:text-white/20" aria-hidden="true">·</span>
-            <a
-              href="#business"
-              className="inline-flex items-center gap-1.5 text-sm font-semibold text-slate-600 underline-offset-4 transition hover:text-slate-950 hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-500 dark:text-slate-300 dark:hover:text-white"
-            >
-              <Building2 className="h-4 w-4 text-indigo-500/80" aria-hidden="true" />
-              {copy.hero.quaternary}
-              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
-            </a>
-          </div>
-
-          <div className="mx-auto mt-6 flex w-full max-w-[460px] flex-col items-center gap-3 sm:flex-row sm:flex-wrap sm:items-end sm:gap-4 lg:mx-0">
-            <StoreButton
-              kind="app-store"
-              label={copy.hero.appStore}
-              caption={copy.hero.appStoreCaption}
-              href={APP_STORE_URL}
-              className="items-center sm:items-start"
-            />
-            <StoreButton
-              kind="google-play"
-              label={copy.hero.googlePlay}
-              caption={copy.hero.googlePlayCaption}
-              href="/download#waitlist-form"
-              className="items-center sm:items-start"
-            />
-            <a
-              href="/home"
-              className="inline-flex min-h-11 items-center gap-2 rounded-2xl border border-stone-200/80 bg-white/86 px-4 py-3 text-sm font-black text-stone-700 shadow-sm transition hover:-translate-y-0.5 hover:border-orange-200 hover:text-orange-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-500 dark:border-white/10 dark:bg-white/[0.06] dark:text-stone-200"
-            >
-              <MonitorSmartphone className="h-4 w-4" aria-hidden="true" />
-              {copy.hero.webBetaCaption}
-            </a>
-          </div>
-
-          <div className="mx-auto mt-8 grid w-full max-w-[420px] grid-cols-3 gap-3 sm:max-w-lg lg:mx-0">
+          {/* Quiet proof strip — one hairline row instead of three cards,
+              so the hero keeps a single visual centre of gravity. */}
+          <div className="mx-auto mt-8 flex w-full max-w-[520px] items-start justify-center divide-x divide-slate-900/10 border-t border-slate-900/10 pt-5 text-left lg:mx-0 lg:justify-start dark:divide-white/10 dark:border-white/10">
             {copy.hero.stats.map(([value, label]) => (
-              <div
-                key={label}
-                className="rounded-2xl border border-white/70 bg-white/72 px-3 py-3 text-left shadow-[0_8px_24px_-18px_rgba(15,23,42,0.4)] backdrop-blur dark:border-white/10 dark:bg-white/[0.05]"
-              >
-                <p className="text-base font-black text-slate-950 sm:text-lg dark:text-white">{value}</p>
-                <p className="mt-1 text-[11px] font-semibold leading-4 text-slate-500 dark:text-slate-400">{label}</p>
+              <div key={label} className="min-w-0 flex-1 px-3 first:pl-0 last:pr-0">
+                <p className="text-[15px] font-black leading-5 text-slate-950 sm:text-base dark:text-white">{value}</p>
+                <p className="mt-1 text-[12px] font-semibold leading-4 text-slate-500 dark:text-slate-400">{label}</p>
               </div>
             ))}
           </div>
@@ -183,7 +143,7 @@ export function HeroSection() {
       </div>
 
       <a
-        href="#story"
+        href="#why"
         aria-label={copy.hero.scrollLabel}
         className="mc-scroll-cue absolute bottom-5 left-1/2 hidden h-11 w-7 -translate-x-1/2 items-center justify-center rounded-full border border-slate-200/80 bg-white/70 text-slate-500 shadow-sm backdrop-blur transition hover:text-indigo-600 md:inline-flex dark:border-white/10 dark:bg-white/5 dark:text-slate-400 dark:hover:text-sky-300"
       >

@@ -344,6 +344,9 @@ RATE_LIMITS = {
     # generic "write" bucket.
     "comment": (60, 40),
     "follow":  (60, 30),
+    # Signed-out Machi AI taster calls, keyed by IP — a small bucket so one
+    # address can't farm extra daily slots by minting fresh guest UUIDs.
+    "ai_guest": (10, 5),
 }
 HTTP_REQUEST_QUEUE_SIZE = max(
     64,
@@ -577,6 +580,13 @@ VERIFIED_BOOST_SCORE = float(_env("MEMBERSHIP_VERIFIED_BOOST", "1.05"))
 # cannot exceed them. Member daily limit is never echoed back to members.
 MACHI_AI_FREE_DAILY_LIMIT = int(_env("MACHI_AI_FREE_DAILY_LIMIT", "10"))
 MACHI_AI_MEMBER_DAILY_LIMIT = int(_env("MACHI_AI_MEMBER_DAILY_LIMIT", "30"))
+# Tiered on top of free: accounts registered within the last
+# MACHI_AI_NEW_USER_WINDOW_DAYS days get a taster bump over the free cap, and
+# signed-out guests (stable client UUID in X-Machi-Guest-Id) get a single
+# try per JST day. All enforced server-side like the caps above.
+MACHI_AI_NEW_USER_DAILY_LIMIT = int(_env("MACHI_AI_NEW_USER_DAILY_LIMIT", "15"))
+MACHI_AI_NEW_USER_WINDOW_DAYS = int(_env("MACHI_AI_NEW_USER_WINDOW_DAYS", "30"))
+MACHI_AI_GUEST_DAILY_LIMIT = int(_env("MACHI_AI_GUEST_DAILY_LIMIT", "1"))
 MACHI_AI_MODEL = _env("MACHI_AI_MODEL", "deepseek-v4-flash")
 MACHI_AI_PRO_MODEL = _env("MACHI_AI_PRO_MODEL", "deepseek-v4-pro")
 MACHI_AI_TIMEOUT_SEC = float(_env("MACHI_AI_TIMEOUT_SEC", "35"))

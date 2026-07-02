@@ -91,6 +91,22 @@ class ListingFilterTests(unittest.TestCase):
         handler.api_listings(self.conn, query)
         return [item["id"] for item in handler.payloads[-1]["items"]]
 
+    def fetch_payload(self, query: dict[str, str]) -> dict:
+        handler = CapturingHandler()
+        handler.api_listings(self.conn, query)
+        return handler.payloads[-1]
+
+    @classmethod
+    def _regional_listing(cls, lid: str, region_code: str, ltype: str = "for_sale") -> None:
+        # 带完整三段 region_code 的房源(都道府县过滤/都市圈回退用)。
+        ts = now()
+        cls.conn.execute(
+            "INSERT INTO city_listings (id, country_code, city_slug, region_code, type, category,"
+            " title, status, seller_user_id, created_at, updated_at)"
+            " VALUES (?, 'jp', ?, ?, ?, '公寓', ?, 'published', 'u-seller', ?, ?)",
+            (lid, region_code.split(".")[-1], region_code, ltype, f"房{lid}", ts, ts),
+        )
+
     def test_attr_filter_matches_exact_value(self) -> None:
         ids = self.fetch({"type": "secondhand", "city_slug": "tokyo", "attr_condition": "like_new"})
         self.assertEqual(ids, ["l-new"])
@@ -130,6 +146,31 @@ class ListingFilterTests(unittest.TestCase):
         # 空 region_code 在「全国」范围仍可见（country_code 过滤不依赖 region_code）。
         nationwide = self.fetch({"type": "rental", "country_code": "jp"})
         self.assertIn("pv-empty", nationwide)
+
+    def test_empty_province_falls_back_to_metro_circle(self) -> None:
+        # 无房源的县(神奈川)第一页查空时,自动放宽到所属都市圈(关东)并标注
+        # data.filters.fallback / fallback_label;回退页不发 next_cursor。
+        self._regional_listing("fb-tokyo", "jp.tokyo.tokyo")
+        self._regional_listing("fb-osaka", "jp.osaka.osaka")
+        payload = self.fetch_payload({"type": "for_sale", "province_codes": "kanagawa"})
+        ids = [item["id"] for item in payload["items"]]
+        self.assertIn("fb-tokyo", ids)      # 关东圈内的东京房源被兜底展示
+        self.assertNotIn("fb-osaka", ids)   # 关西的大阪不在关东圈,不该混入
+        filters = payload["data"]["filters"]
+        self.assertEqual(filters["fallback"], "metro_circle")
+        self.assertEqual(filters["fallback_label"], "关东")
+        self.assertIsNone(payload["next_cursor"])
+        self.assertIsNone(payload["data"]["pagination"]["next_cursor"])
+
+    def test_province_with_listings_has_no_fallback_marker(self) -> None:
+        # 有房源时行为零变化:不重查、响应里没有 fallback 字段。
+        self._regional_listing("fb-hachioji", "jp.tokyo.hachioji")
+        payload = self.fetch_payload({"type": "for_sale", "province_codes": "tokyo"})
+        ids = [item["id"] for item in payload["items"]]
+        self.assertIn("fb-hachioji", ids)
+        filters = payload["data"]["filters"]
+        self.assertNotIn("fallback", filters)
+        self.assertNotIn("fallback_label", filters)
 
     def test_bool_attr_filter_accepts_truthy_spellings(self) -> None:
         ids = self.fetch({"type": "secondhand", "city_slug": "tokyo", "attr_price_negotiable": "true"})

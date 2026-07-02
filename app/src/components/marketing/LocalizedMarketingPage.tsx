@@ -10,7 +10,8 @@ import { BrandPhrase } from "./BrandText";
 import { MarketingLocaleProvider, useMarketingI18n } from "./MarketingI18n";
 import { MarketingCmsBlocks } from "./MarketingCmsBlocks";
 import { MarketingCard, MarketingPageFrame } from "./PageShell";
-import { StoreButton } from "./StoreButtons";
+import { StoreButton, APP_STORE_URL } from "./StoreButtons";
+import { BrandStorySection } from "./BrandStorySection";
 import { DownloadCTA } from "./DownloadCTA";
 import { FounderSection } from "./FounderSection";
 
@@ -48,6 +49,9 @@ function LocalizedMarketingPageInner({ pageId }: { pageId: MarketingPageId }) {
           {pageId === "about" && index === 0 ? <FounderSection variant="full" inFrame /> : null}
         </Fragment>
       ))}
+      {/* The brand story closes the about page — it moved here from the
+          landing page so the home stays tight and the story keeps a stage. */}
+      {pageId === "about" ? <BrandStorySection inFrame /> : null}
       {pageId === "download" ? <DownloadCTA /> : null}
       <MarketingCmsBlocks pageId={pageId} />
     </MarketingPageFrame>
@@ -61,8 +65,8 @@ function MarketingBlock({ block, openLabel }: { block: MarketingPageBlock; openL
     return (
       <MarketingCard title={block.title} subtitle={block.body} className="mc-reveal">
         <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-          <StoreButton kind="app-store" label="App Store" href="/register" className="justify-center sm:min-w-64" />
-          <StoreButton kind="google-play" label="Google Play" href="/register" className="justify-center sm:min-w-64" />
+          <StoreButton kind="app-store" href={APP_STORE_URL} showCaption={false} className="justify-center sm:min-w-64" />
+          <StoreButton kind="google-play" href="/download#waitlist-form" className="justify-center sm:min-w-64" />
         </div>
       </MarketingCard>
     );

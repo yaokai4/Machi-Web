@@ -18,6 +18,9 @@ export const metadata: Metadata = {
   applicationName: "Machi",
   appleWebApp: { capable: true, title: "Machi", statusBarStyle: "default" },
   manifest: "/manifest.webmanifest",
+  // Emits <meta name="apple-itunes-app"> so Safari on iOS shows the native
+  // Smart App Banner pointing at the Machi App Store listing.
+  itunes: { appId: "6781900781" },
   icons: {
     icon: [{ url: "/icon.svg", type: "image/svg+xml" }],
     apple: [{ url: "/icon.svg" }],
@@ -29,7 +32,12 @@ export const metadata: Metadata = {
 };
 
 export const viewport: Viewport = {
-  themeColor: "#f4f5f7",
+  // Match the marketing page's warm light gradient and the near-black
+  // indigo dark surface so browser chrome blends instead of clashing.
+  themeColor: [
+    { media: "(prefers-color-scheme: dark)", color: "#0e1026" },
+    { color: "#fff2e8" },
+  ],
   width: "device-width",
   initialScale: 1,
   viewportFit: "cover",
@@ -51,8 +59,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                 }
                 var stored=null;
                 try{stored=safeParse(localStorage.getItem('machi-theme')||localStorage.getItem('machi_theme'));}catch(_){}
-                var target=stored==='dark'?'dark':'light';
-                try{localStorage.setItem('machi-theme',target);localStorage.removeItem('machi_theme');}catch(_){}
+                // No explicit choice yet → follow the system. Only an
+                // explicit toggle persists to storage, so system-theme
+                // users keep following OS changes across visits.
+                var target=stored||(window.matchMedia&&window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');
+                if(stored){try{localStorage.setItem('machi-theme',stored);localStorage.removeItem('machi_theme');}catch(_){}}
                 try{localStorage.removeItem('machi-appearance');localStorage.removeItem('kaix-appearance');}catch(_){}
                 document.documentElement.classList.toggle('dark',target==='dark');
                 document.documentElement.dataset.theme=target;

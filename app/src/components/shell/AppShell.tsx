@@ -43,6 +43,7 @@ import { useRealtime } from "@/lib/realtime";
 import { useGlobalShortcuts } from "@/lib/keyboard";
 import { ErrorBoundary } from "@/components/design/ErrorBoundary";
 import { AppShellSkeleton, shellVariantForPath } from "@/components/shell/AppShellSkeleton";
+import { SmartAppBanner } from "@/components/shell/SmartAppBanner";
 import { useI18n, type I18nKey } from "@/lib/i18n";
 import type { KXUser } from "@/lib/types";
 
@@ -167,6 +168,9 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
       <Toaster />
       <Composer />
       <AuthRequiredDialog />
+      {/* Web→App handoff strip — iOS mobile browsers only, renders nothing
+          on desktop / Android / installed PWAs (see SmartAppBanner). */}
+      <SmartAppBanner />
       <div className="relative z-[1] mx-auto flex w-full max-w-kx-shell">
         <Sidebar pathname={pathname} redirectPath={redirectPath} user={user} />
         <main id="main-content" className={clsx(

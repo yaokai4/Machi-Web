@@ -6,6 +6,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ArrowLeft,
   BadgeCheck,
+  BellRing,
   Bookmark,
   BriefcaseBusiness,
   CalendarClock,
@@ -43,6 +44,7 @@ const WORK_ITEMS: { href: string; titleKey: WorkbenchKey; subtitleKey: Workbench
   { href: "/listings/create", titleKey: "workbench_item_create_title", subtitleKey: "workbench_item_create_sub", icon: BriefcaseBusiness, tone: "text-blue-600 bg-blue-50", badge: "" },
   { href: "/my/listings", titleKey: "workbench_item_listings_title", subtitleKey: "workbench_item_listings_sub", icon: ClipboardList, tone: "text-slate-700 bg-slate-100", badge: "" },
   { href: "/my/saved-listings", titleKey: "workbench_item_saved_title", subtitleKey: "workbench_item_saved_sub", icon: Bookmark, tone: "text-emerald-600 bg-emerald-50", badge: "" },
+  { href: "/my/saved-searches", titleKey: "workbench_item_saved_search_title", subtitleKey: "workbench_item_saved_search_sub", icon: BellRing, tone: "text-indigo-600 bg-indigo-50", badge: "" },
   { href: "/my/inquiries", titleKey: "workbench_item_inquiries_title", subtitleKey: "workbench_item_inquiries_sub", icon: MessageSquare, tone: "text-cyan-600 bg-cyan-50", badge: "leads" },
   { href: "/my/applications", titleKey: "workbench_item_applications_title", subtitleKey: "workbench_item_applications_sub", icon: ListChecks, tone: "text-violet-600 bg-violet-50", badge: "" },
   { href: "/my/reservations", titleKey: "workbench_item_reservations_title", subtitleKey: "workbench_item_reservations_sub", icon: CalendarClock, tone: "text-orange-600 bg-orange-50", badge: "" },

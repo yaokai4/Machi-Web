@@ -66,7 +66,7 @@ export const useToasts = create<ToastState>((set) => ({
   dismiss: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 }));
 
-export type AuthPromptKind = "generic" | "like" | "bookmark" | "comment" | "follow" | "message" | "publish";
+export type AuthPromptKind = "generic" | "like" | "bookmark" | "comment" | "follow" | "message" | "publish" | "saveSearch";
 
 export interface AuthPromptCopy {
   title: string;
@@ -101,6 +101,10 @@ export const AUTH_PROMPT_COPY: Record<AuthPromptKind, AuthPromptCopy> = {
   publish: {
     title: "登录后发布",
     body: "登录后可以发布本地动态、租房、二手、工作、本地小组和生活经验。",
+  },
+  saveSearch: {
+    title: "登录后订阅搜索",
+    body: "登录后可以订阅当前搜索条件，有匹配的新发布时第一时间通知你。",
   },
 };
 

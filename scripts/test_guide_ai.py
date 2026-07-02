@@ -3,10 +3,10 @@
 
 Exercises the real Handler.api_guide_ai_* methods against a throwaway SQLite DB
 with a stubbed session. DeepSeek is ALWAYS mocked — no real network call. The
-suite verifies auth, the daily quota (free vs member), conversation/message
-persistence, cross-user isolation, the AI_UNAVAILABLE fallback, the JST usage
-date, and — critically — that no provider / model / key / reasoning_content
-ever leaks into a client response.
+suite verifies auth, the tiered daily quota (member / new user / free / guest
+via X-Machi-Guest-Id), conversation/message persistence, cross-user isolation,
+the AI_UNAVAILABLE fallback, the JST usage date, and — critically — that no
+provider / model / key / reasoning_content ever leaks into a client response.
 
 Run:  cd web && python3 scripts/test_guide_ai.py
 """
@@ -71,30 +71,38 @@ def _assert_no_leak(obj) -> None:
 
 # --- helpers ----------------------------------------------------------------
 
-def _make_user(conn) -> str:
+def _make_user(conn, *, created_days_ago: int = 0) -> str:
     uid = str(uuid.uuid4())
     handle = "u" + uuid.uuid4().hex[:8]
     now = server.now_iso()
+    # Back-dating created_at makes an "old" account (past the new-user window).
+    created = now
+    if created_days_ago:
+        created = (server.datetime.now(server.timezone.utc)
+                   - server.timedelta(days=created_days_ago)).isoformat()
     conn.execute(
         "INSERT INTO users (id, handle, display_name, email, password_hash, joined_at, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (uid, handle, handle, f"{handle}@example.com", "x", now, now, now),
+        (uid, handle, handle, f"{handle}@example.com", "x", now, created, now),
     )
     return uid
 
 
-def _handler(uid):
+def _handler(uid, *, guest_id=None):
     """A bare Handler with session + body stubbed. send_json captures output;
-    send_error_json runs for real (through the real _error_envelope)."""
+    send_error_json runs for real (through the real _error_envelope).
+    guest_id (with uid=None) simulates a signed-out X-Machi-Guest-Id caller."""
     h = server.Handler.__new__(server.Handler)
     captured: dict = {}
     h.send_json = lambda data, status=200: captured.update(data=data, status=status)  # type: ignore[method-assign]
     h.current_session = (lambda c: ({"user_id": uid} if uid else None))  # type: ignore[method-assign]
+    h.headers = {"X-Machi-Guest-Id": guest_id} if guest_id else {}
+    h.client_address = ("127.0.0.1", 0)
     return h, captured
 
 
-def _chat(conn, uid, message, *, conversation_id=None, language="zh-CN"):
-    h, captured = _handler(uid)
+def _chat(conn, uid, message, *, conversation_id=None, language="zh-CN", guest_id=None):
+    h, captured = _handler(uid, guest_id=guest_id)
     h.read_json = lambda: {  # type: ignore[method-assign]
         "message": message, "conversationId": conversation_id, "language": language, "country": "jp",
     }
@@ -117,12 +125,13 @@ def main() -> None:
             assert exc.code == "AUTH_REQUIRED", exc.code
             assert exc.status == 401, exc.status
 
-        # 2) Free user: first 3 succeed, remaining decrements by one each time
-        #    (computed from the configured cap, not hardcoded).
+        # 2) Fresh free user (inside the new-user window → new-user tier):
+        #    first 3 succeed, remaining decrements by one each time (computed
+        #    from the configured new-user cap, not hardcoded).
         free_uid = _make_user(conn)
         conn.commit()
-        free_limit = server.MACHI_AI_FREE_DAILY_LIMIT
-        expected_remaining = [free_limit - 1 - i for i in range(3)]
+        new_user_limit = server.MACHI_AI_NEW_USER_DAILY_LIMIT
+        expected_remaining = [new_user_limit - 1 - i for i in range(3)]
         last_conv = None
         for i in range(3):
             # Continue the same thread so we end with one conversation of 6 msgs.
@@ -137,12 +146,13 @@ def main() -> None:
             _assert_no_leak(data)
             last_conv = data["conversationId"]
 
-        # 3) Free user exceeding the daily cap → 429 AI_QUOTA_EXCEEDED + upgrade hint.
-        #    Uses a fresh user (and the configured cap) so the test-#6 conversation
-        #    above stays at exactly 3 turns regardless of the limit value.
+        # 3) New user exceeding the new-user daily cap (15) → 429
+        #    AI_QUOTA_EXCEEDED + upgrade hint. Uses a fresh user (and the
+        #    configured cap) so the test-#6 conversation above stays at exactly
+        #    3 turns regardless of the limit value.
         quota_uid = _make_user(conn)
         conn.commit()
-        for i in range(free_limit):
+        for i in range(new_user_limit):
             cap = _chat(conn, quota_uid, f"额度测试 {i}")
             assert cap["status"] == 200, (i, cap)
         cap = _chat(conn, quota_uid, "再问一个问题")
@@ -150,6 +160,22 @@ def main() -> None:
         assert cap["data"]["error"]["code"] == "AI_QUOTA_EXCEEDED", cap["data"]
         assert cap["data"]["upgradeSuggested"] is True, cap["data"]
         _assert_no_leak(cap["data"])
+
+        # 3b) Old user (registered past the new-user window) gets the plain
+        #     free cap (10): remaining starts at FREE-1 and the FREE+1-th call
+        #     is refused.
+        old_uid = _make_user(conn, created_days_ago=server.MACHI_AI_NEW_USER_WINDOW_DAYS + 30)
+        conn.commit()
+        free_limit = server.MACHI_AI_FREE_DAILY_LIMIT
+        cap = _chat(conn, old_uid, "老用户第一问")
+        assert cap["status"] == 200, cap
+        assert cap["data"]["usage"]["remainingFreeUses"] == free_limit - 1, cap["data"]["usage"]
+        for i in range(free_limit - 1):
+            cap = _chat(conn, old_uid, f"老用户追问 {i}")
+            assert cap["status"] == 200, (i, cap)
+        cap = _chat(conn, old_uid, "老用户超额")
+        assert cap["status"] == 429, cap
+        assert cap["data"]["error"]["code"] == "AI_QUOTA_EXCEEDED", cap["data"]
 
         # 6) Conversation + messages persisted; reload via the messages API.
         rows = conn.execute(
@@ -189,7 +215,7 @@ def main() -> None:
         )
         conn.commit()
         assert server.has_active_membership(conn, member_uid) is True
-        for i in range(server.MACHI_AI_FREE_DAILY_LIMIT + 2):  # 5 > free limit (3)
+        for i in range(server.MACHI_AI_FREE_DAILY_LIMIT + 2):  # past the free cap; member keeps going
             cap = _chat(conn, member_uid, f"会员问题 {i}")
             assert cap["status"] == 200, (i, cap)
             assert cap["data"]["usage"]["membershipActive"] is True
@@ -243,6 +269,7 @@ def main() -> None:
         _MOCK_MODE["mode"] = "ok"
 
         # 9) Bootstrap surfaces remaining + suggestions without provider leakage.
+        #    A fresh registrant sits in the new-user tier.
         boot_uid = _make_user(conn)
         conn.commit()
         h, captured = _handler(boot_uid)
@@ -250,10 +277,53 @@ def main() -> None:
         assert captured["status"] == 200, captured
         boot = captured["data"]
         assert boot["membershipActive"] is False
-        assert boot["remainingFreeUses"] == server.MACHI_AI_FREE_DAILY_LIMIT
+        assert boot["remainingFreeUses"] == server.MACHI_AI_NEW_USER_DAILY_LIMIT
         assert boot["suggestions"], "bootstrap must return starter suggestions"
         assert boot["disclaimer"], "bootstrap must return a disclaimer"
         _assert_no_leak(boot)
+
+        # 12) Tier resolution itself: member 30 > new user 15 > old user 10 > guest 1.
+        boot_row = dict(conn.execute("SELECT * FROM users WHERE id = ?", (boot_uid,)).fetchone())
+        assert server.machi_ai_daily_limit(boot_row, True) == server.MACHI_AI_MEMBER_DAILY_LIMIT
+        assert server.machi_ai_daily_limit(boot_row, False) == server.MACHI_AI_NEW_USER_DAILY_LIMIT
+        old_row = dict(conn.execute("SELECT * FROM users WHERE id = ?", (old_uid,)).fetchone())
+        assert server.machi_ai_daily_limit(old_row, False) == server.MACHI_AI_FREE_DAILY_LIMIT
+        assert server.machi_ai_daily_limit(None, False) == server.MACHI_AI_GUEST_DAILY_LIMIT
+
+        # 13) Guest (no session, stable UUID in X-Machi-Guest-Id): the 1st
+        #     question of the JST day succeeds, the 2nd is refused — and the
+        #     ledger stores only the hashed guest key, never the raw UUID.
+        guest_id = str(uuid.uuid4())
+        cap = _chat(conn, None, "游客第一问", guest_id=guest_id)
+        assert cap["status"] == 200, cap
+        assert cap["data"]["usage"]["membershipActive"] is False
+        assert cap["data"]["usage"]["remainingFreeUses"] == server.MACHI_AI_GUEST_DAILY_LIMIT - 1
+        _assert_no_leak(cap["data"])
+        gkey = server.machi_ai_guest_key(guest_id)
+        assert gkey and gkey.startswith("guest:") and guest_id not in gkey
+        assert machi_usage(conn, gkey) == server.MACHI_AI_GUEST_DAILY_LIMIT
+        assert conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_ai_usage WHERE user_id = ?", (guest_id,)
+        ).fetchone()["c"] == 0, "raw guest UUID must never hit the ledger"
+
+        cap = _chat(conn, None, "游客第二问", guest_id=guest_id)
+        assert cap["status"] == 429, cap
+        assert cap["data"]["error"]["code"] == "AI_QUOTA_EXCEEDED", cap["data"]
+        quota_msg = cap["data"]["error"]["message"]
+        assert not any(ch.isdigit() for ch in quota_msg), f"guest quota text leaked a number: {quota_msg}"
+        _assert_no_leak(cap["data"])
+
+        # Guest bootstrap is legal too: spent guest sees 0, a fresh guest 1.
+        h, captured = _handler(None, guest_id=guest_id)
+        h.api_guide_ai_bootstrap(conn, {"language": "zh-CN", "country": "jp"})
+        assert captured["status"] == 200, captured
+        assert captured["data"]["membershipActive"] is False
+        assert captured["data"]["remainingFreeUses"] == 0, captured["data"]
+        _assert_no_leak(captured["data"])
+        h, captured = _handler(None, guest_id=str(uuid.uuid4()))
+        h.api_guide_ai_bootstrap(conn, {"language": "zh-CN", "country": "jp"})
+        assert captured["status"] == 200, captured
+        assert captured["data"]["remainingFreeUses"] == server.MACHI_AI_GUEST_DAILY_LIMIT, captured["data"]
 
         # Feedback + soft delete round-trip.
         h, captured = _handler(free_uid)
@@ -280,8 +350,9 @@ def main() -> None:
         #     and all start together so the gate/increment windows overlap.
         burst_uid = _make_user(conn)
         conn.commit()
-        free_limit = server.MACHI_AI_FREE_DAILY_LIMIT  # 3
-        n_threads = free_limit + 5  # comfortably more requests than the cap
+        # A fresh registrant sits in the new-user tier — that's the burst cap.
+        burst_limit = server.MACHI_AI_NEW_USER_DAILY_LIMIT
+        n_threads = burst_limit + 5  # comfortably more requests than the cap
 
         upstream_calls = {"n": 0}
         call_lock = threading.Lock()
@@ -332,16 +403,16 @@ def main() -> None:
             assert not errors, f"concurrent workers raised: {errors}"
             ok = sum(1 for s in statuses if s == 200)
             denied = sum(1 for s in statuses if s == 429)
-            assert ok == free_limit, f"exactly {free_limit} may pass under a burst, got {ok}: {statuses}"
-            assert denied == n_threads - free_limit, f"the rest must be 429'd: {statuses}"
+            assert ok == burst_limit, f"exactly {burst_limit} may pass under a burst, got {ok}: {statuses}"
+            assert denied == n_threads - burst_limit, f"the rest must be 429'd: {statuses}"
             # The money invariant: a paid call happens at most once per allowed
             # slot. (Reservation precedes the upstream call, so over-claimers are
-            # rejected before ever reaching it — exactly `free_limit` calls.)
-            assert upstream_calls["n"] <= free_limit, (
-                f"paid upstream called {upstream_calls['n']}x but cap is {free_limit} — a burst burned money"
+            # rejected before ever reaching it — exactly `burst_limit` calls.)
+            assert upstream_calls["n"] <= burst_limit, (
+                f"paid upstream called {upstream_calls['n']}x but cap is {burst_limit} — a burst burned money"
             )
             # Ledger settled at exactly the cap; refunds returned every over-claim.
-            assert machi_usage(conn, burst_uid) == free_limit, machi_usage(conn, burst_uid)
+            assert machi_usage(conn, burst_uid) == burst_limit, machi_usage(conn, burst_uid)
         finally:
             seed_llm.machi_ai_chat_completion = _mock_completion  # type: ignore[assignment]
             server.seed_llm.machi_ai_chat_completion = _mock_completion  # type: ignore[assignment]

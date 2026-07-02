@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -132,6 +132,10 @@ function RegisterForm() {
     if (state.code) setCaptchaNote("");
   }, []);
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
+  // Fresh signups detour through /welcome (first-open arrival-stage question)
+  // before landing on the original target.
+  const welcomeUrl = useMemo(() => `/welcome?redirect=${encodeURIComponent(redirect)}`, [redirect]);
+  const sentToWelcome = useRef(false);
   const c = AUTH_COPY[locale];
 
   const changeLocale = (next: AuthLocale) => {
@@ -144,7 +148,9 @@ function RegisterForm() {
   };
 
   useEffect(() => {
-    if (status === "authed") router.replace(redirect);
+    // Already-authed visitors bounce to their target — but not right after a
+    // successful registration here, which navigates to /welcome itself.
+    if (status === "authed" && !sentToWelcome.current) router.replace(redirect);
   }, [status, router, redirect]);
 
   useEffect(() => {
@@ -270,7 +276,9 @@ function RegisterForm() {
     setGoogleLoading(true);
     setServerError(null);
     try {
-      const result = await api.googleAuthStart("web", redirect);
+      // Route the OAuth return through /welcome too, so Google signups get the
+      // same first-open question (existing users pass straight through there).
+      const result = await api.googleAuthStart("web", welcomeUrl);
       window.location.href = result.authorization_url || result.url || "";
     } catch {
       setServerError({ message: c.googleError });
@@ -302,9 +310,10 @@ function RegisterForm() {
           : {}),
       };
       const { user } = await api.register(payload);
+      sentToWelcome.current = true;
       setUser(user);
       pushToast({ kind: "success", message: c.welcomeJoin(user.display_name) });
-      router.replace(redirect);
+      router.replace(welcomeUrl);
     } catch (err) {
       setServerError(mapRegisterError(err, c));
     } finally {

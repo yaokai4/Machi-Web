@@ -28,7 +28,9 @@ export function FeatureChannelGrid() {
         <div className="mt-12 grid gap-6 lg:grid-cols-3">
           {copy.featureSection.groups.map((group) => {
             const channels = group.channels.map((key) => byKey[key]).filter(Boolean);
-            const socialGroup = group.title.toLowerCase().includes("social") || group.title.includes("线下") || group.title.includes("つながり");
+            // Stable data key, not display-text matching — copy edits can
+            // never silently drop the dark treatment again.
+            const socialGroup = group.key === "social";
             return (
               <section
                 key={group.title}

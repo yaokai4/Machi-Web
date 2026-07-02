@@ -6,16 +6,12 @@ import { useMarketingI18n } from "./MarketingI18n";
 
 const highlightIcons = [MessageCircle, Sparkles, MapPinned];
 
-export function BrandStorySection() {
+export function BrandStorySection({ inFrame = false }: { inFrame?: boolean }) {
   const { copy } = useMarketingI18n();
 
-  return (
-    <section id="story" className="relative overflow-hidden px-5 py-14 sm:px-6 lg:py-20">
-      <div className="absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(248,250,252,0)_0%,rgba(239,246,255,0.9)_42%,rgba(248,250,252,0)_100%)] dark:bg-[linear-gradient(180deg,rgba(11,13,18,0)_0%,rgba(15,23,42,0.72)_48%,rgba(11,13,18,0)_100%)]" />
-      <div className="absolute left-[8%] top-16 -z-10 h-40 w-40 rounded-full bg-indigo-300/25 blur-3xl dark:bg-indigo-500/15" />
-      <div className="absolute right-[6%] bottom-12 -z-10 h-44 w-44 rounded-full bg-sky-300/25 blur-3xl dark:bg-sky-500/15" />
-
-      <div className="mx-auto max-w-[1120px]">
+  // Inside MarketingPageFrame (the /about page) the frame already owns
+  // horizontal padding and width, so the full-bleed chrome is skipped.
+  const body = (
         <div className="grid gap-8 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
           <div className="mc-reveal lg:py-8">
             <div className="inline-flex items-center gap-2 rounded-full bg-white/80 px-3 py-1.5 text-xs font-black text-[#76576f] ring-1 ring-rose-100 backdrop-blur dark:bg-white/10 dark:text-rose-200 dark:ring-white/10">
@@ -93,7 +89,22 @@ export function BrandStorySection() {
             </div>
           </div>
         </div>
+  );
+
+  if (inFrame) {
+    return (
+      <div id="story" className="scroll-mt-24">
+        {body}
       </div>
+    );
+  }
+
+  return (
+    <section id="story" className="relative overflow-hidden px-5 py-14 sm:px-6 lg:py-20">
+      <div className="absolute inset-0 -z-10 bg-[linear-gradient(180deg,rgba(248,250,252,0)_0%,rgba(239,246,255,0.9)_42%,rgba(248,250,252,0)_100%)] dark:bg-[linear-gradient(180deg,rgba(11,13,18,0)_0%,rgba(15,23,42,0.72)_48%,rgba(11,13,18,0)_100%)]" />
+      <div className="absolute left-[8%] top-16 -z-10 h-40 w-40 rounded-full bg-indigo-300/25 blur-3xl dark:bg-indigo-500/15" />
+      <div className="absolute right-[6%] bottom-12 -z-10 h-44 w-44 rounded-full bg-sky-300/25 blur-3xl dark:bg-sky-500/15" />
+      <div className="mx-auto max-w-[1120px]">{body}</div>
     </section>
   );
 }

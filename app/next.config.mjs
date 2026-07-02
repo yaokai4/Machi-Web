@@ -82,6 +82,14 @@ const nextConfig = {
         headers: securityHeaders,
       },
       {
+        // Universal Links: Apple's CDN requires the AASA file to be served
+        // as application/json; the extensionless file under public/ would
+        // otherwise go out as application/octet-stream and the app/site
+        // association could fail (deep links falling back to Safari).
+        source: "/.well-known/apple-app-site-association",
+        headers: [{ key: "Content-Type", value: "application/json" }],
+      },
+      {
         // service worker MUST NOT be cached. If the old buggy SW
         // sticks around because of an intermediary cache, users are
         // trapped in the second-visit crash loop.

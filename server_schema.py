@@ -4506,6 +4506,33 @@ MIGRATIONS: list[tuple[int, str, str]] = [
            AND city_slug IN (SELECT city FROM region_map);
         """,
     ),
+    (
+        90,
+        "apns: per-user daily push ledger (delivery cap)",
+        # Counts APNs sends of reminder-type notifications (saved_search /
+        # system) per user per JST day so server_apns can enforce a small
+        # daily budget. SQLite also creates it via
+        # ensure_apns_push_ledger_schema; both sides are IF NOT EXISTS.
+        """
+        CREATE TABLE IF NOT EXISTS apns_push_ledger (
+            user_id TEXT NOT NULL,
+            jst_date TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, jst_date)
+        );
+        """,
+    ),
+    (
+        91,
+        "guide_user_profiles: add arrival_stage (来日阶段)",
+        # 'pre_arrival' | 'just_arrived' | 'first_year' | 'long_term'
+        # (NULL/'' = unset). Postgres-only because SQLite lacks ADD COLUMN
+        # IF NOT EXISTS; SQLite gets the column via _ensure_columns at boot.
+        """
+        -- backend: postgres
+        ALTER TABLE guide_user_profiles ADD COLUMN IF NOT EXISTS arrival_stage TEXT;
+        """,
+    ),
 ]
 
 

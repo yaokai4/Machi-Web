@@ -200,6 +200,8 @@ from server_serializers import (
     serialize_wallet_ledger_entry, serialize_wallet_topup_order,
 )
 from server_regions import (
+    JP_METRO_CIRCLES,
+    JP_METRO_CIRCLE_LABELS,
     POPULAR_CITIES,
     REGION_COUNTRIES,
     REGION_PROVINCES,
@@ -209,6 +211,7 @@ from server_regions import (
     _cities_for_parent,
     _country_lookup,
     _detect_region_code_from_geo,
+    _jp_circle_for_province,
     _parse_region_code,
     _region_payload_for_code,
     _resolve_region_code,
@@ -256,9 +259,11 @@ from server_config import (
     LISTING_TYPES_DEFAULT_REVIEW, LISTING_TYPES_REQUIRING_MEMBERSHIP,
     LISTING_UPLOAD_PURPOSES, LISTING_VERIFICATION_STATUSES, LISTING_VERIFICATION_TYPES,
     LISTING_VIDEO_PURPOSE_BY_TYPE, LOGIN_LOCKOUT_THRESHOLD, LOGIN_LOCKOUT_WINDOW_SEC,
-    LOGIN_REQUIRE_CODE, MACHI_AI_FREE_DAILY_LIMIT, MACHI_AI_MAX_CONTEXT_ITEMS,
+    LOGIN_REQUIRE_CODE, MACHI_AI_FREE_DAILY_LIMIT, MACHI_AI_GUEST_DAILY_LIMIT,
+    MACHI_AI_MAX_CONTEXT_ITEMS,
     MACHI_AI_MAX_HISTORY_MESSAGES, MACHI_AI_MAX_INPUT_CHARS, MACHI_AI_MEMBER_DAILY_LIMIT,
-    MACHI_AI_MODEL, MACHI_AI_PRO_MODEL, MACHI_AI_TIMEOUT_SEC, MAX_JSON_BYTES,
+    MACHI_AI_MODEL, MACHI_AI_NEW_USER_DAILY_LIMIT, MACHI_AI_NEW_USER_WINDOW_DAYS,
+    MACHI_AI_PRO_MODEL, MACHI_AI_TIMEOUT_SEC, MAX_JSON_BYTES,
     MAX_UPLOAD_BYTES, MEDIA_DIR, MEMBERSHIP_BILLING_CYCLE, MEMBERSHIP_CURRENCY,
     MEMBERSHIP_DAILY_LIMIT_FREE, MEMBERSHIP_DAILY_LIMIT_VERIFIED,
     MEMBERSHIP_LEGACY_PLAN_KEY, MEMBERSHIP_PLAN_KEY, MEMBERSHIP_PLAN_MONTHLY_KEY,
@@ -678,6 +683,11 @@ _CACHE: dict[str, tuple[float, Any]] = {}
 # data). Keeps /guide fast and the DB calm under traffic spikes; admin edits
 # show up within this window. Override via env for tuning without a redeploy.
 GUIDE_HOME_CACHE_TTL = float(os.environ.get("KAIX_GUIDE_HOME_CACHE_TTL", "30"))
+
+# Public /api/guide/sitemap payload (slug + updated_at of every published
+# school/company/article, for SEO sitemaps / client prefetch). Content changes
+# rarely, so a longer window than guide-home is fine.
+GUIDE_SITEMAP_CACHE_TTL = float(os.environ.get("KAIX_GUIDE_SITEMAP_CACHE_TTL", "600"))
 
 # Anonymous feed pages are identical for every guest with the same filters —
 # the landing surfaces (web /home, iOS guest mode, crawlers) hammer them the
@@ -2019,6 +2029,11 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         )
     """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_guide_user_profiles_user ON guide_user_profiles(user_id)")
+    _ensure_columns(conn, "guide_user_profiles", {
+        # 来日阶段: 'pre_arrival' | 'just_arrived' | 'first_year' | 'long_term'
+        # (NULL/'' = unset). Postgres additionally gets this via migration 91.
+        "arrival_stage": "TEXT",
+    })
     conn.execute("""
         CREATE TABLE IF NOT EXISTS guide_plans (
             id TEXT PRIMARY KEY,
@@ -2872,6 +2887,22 @@ def ensure_saved_search_schema(conn: sqlite3.Connection) -> None:
     )
 
 
+def ensure_apns_push_ledger_schema(conn: sqlite3.Connection) -> None:
+    """Idempotent: per-user / per-JST-day APNs send counter backing the daily
+    cap on reminder-type pushes in server_apns. New table for existing SQLite
+    DBs; PostgreSQL gets it via migration 90."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS apns_push_ledger (
+            user_id TEXT NOT NULL,
+            jst_date TEXT NOT NULL,
+            count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (user_id, jst_date)
+        );
+        """
+    )
+
+
 def serialize_saved_search(row: dict[str, Any]) -> dict[str, Any]:
     d = dict(row)
     try:
@@ -2912,12 +2943,30 @@ def saved_search_auto_label(vertical: str, city_slug: str, region_code: str, key
     return label or "我的订阅"
 
 
+def _saved_search_category_set(s: dict[str, Any]) -> set[str]:
+    """Optional `categories` (comma-separated string or list) inside
+    filter_json — used when a channel tab queries by a category SET (web
+    homestay tab, services sections) instead of a single `category`. Empty
+    set = no constraint."""
+    try:
+        filters = json.loads(s.get("filter_json") or "{}")
+    except (TypeError, ValueError):
+        return set()
+    if not isinstance(filters, dict):
+        return set()
+    raw = filters.get("categories")
+    if isinstance(raw, list):
+        return {str(c).strip() for c in raw if str(c).strip()}
+    return {c.strip() for c in str(raw or "").split(",") if c.strip()}
+
+
 def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any]) -> int:
     """Best-effort: notify every user whose saved search matches this freshly
     published listing. NEVER raises — a saved-search bug must not break listing
     publishing. Returns the number of users notified. Filter-level (attribute)
     matching is intentionally deferred to v2; v1 matches on vertical + location
-    (metro-circle aware) + keyword + category."""
+    (metro-circle aware) + keyword + category (+ an optional `categories` set
+    inside filter_json, used by the web homestay/services-section tabs)."""
     try:
         listing_id = listing.get("id")
         if not listing_id:
@@ -2931,15 +2980,19 @@ def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any
         haystack = " ".join(
             str(listing.get(k) or "") for k in ("title", "description", "category")
         ).lower()
+        # job/hiring are one family: the jobs channel on both clients merges
+        # both streams, and historically Web subscribed 'job' while iOS
+        # subscribed 'hiring' — either row must match either listing type.
+        ltype_alias = {"job": "hiring", "hiring": "job"}.get(ltype, ltype)
         rows = list(conn.execute(
             """
             SELECT * FROM saved_searches
              WHERE cadence = 'instant'
-               AND (vertical = '' OR vertical = ?)
+               AND (vertical = '' OR vertical = ? OR vertical = ?)
              ORDER BY created_at DESC
              LIMIT 1000
             """,
-            (ltype,),
+            (ltype, ltype_alias),
         ))
         notified = 0
         now = now_iso()
@@ -2970,6 +3023,9 @@ def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any
             cat = str(s.get("category") or "").strip()
             if cat and cat != l_category:
                 continue
+            cat_set = _saved_search_category_set(s)
+            if cat_set and l_category not in cat_set:
+                continue
             # Dedupe: at most one saved-search notification per (user, listing).
             if conn.execute(
                 "SELECT 1 FROM notifications WHERE user_id = ? AND type = 'saved_search' "
@@ -2991,7 +3047,8 @@ def notify_saved_search_matches(conn: sqlite3.Connection, listing: dict[str, Any
                 (now, now, s.get("id")),
             )
             # Push banner (N1) — no-op until APNs is configured; never raises.
-            server_apns.enqueue(uid, ntype="saved_search", actor_id=seller_id or "", content=content)
+            server_apns.enqueue(uid, ntype="saved_search", actor_id=seller_id or "", content=content,
+                                listing_id=listing_id)
             notified += 1
         return notified
     except Exception as exc:  # pragma: no cover - defensive: must not break publish
@@ -3036,6 +3093,9 @@ def _saved_search_matches_listing(s: dict[str, Any], listing: dict[str, Any]) ->
     cat = str(s.get("category") or "").strip()
     if cat and cat != str(listing.get("category") or "").strip():
         return False
+    cat_set = _saved_search_category_set(s)
+    if cat_set and str(listing.get("category") or "").strip() not in cat_set:
+        return False
     return True
 
 
@@ -3073,7 +3133,10 @@ def run_saved_search_digests(conn: sqlite3.Connection) -> int:
                 "COALESCE(NULLIF(published_at, ''), created_at) > ?",
             ]
             params: list[Any] = [since]
-            if vertical:
+            if vertical in ("job", "hiring"):
+                # job/hiring are one family (jobs channel merges both streams).
+                where.append("type IN ('job', 'hiring')")
+            elif vertical:
                 where.append("type = ?")
                 params.append(vertical)
             cands = list(conn.execute(
@@ -3113,7 +3176,11 @@ def run_saved_search_digests(conn: sqlite3.Connection) -> int:
                 "updated_at = ? WHERE id = ?",
                 (count, now, now, s.get("id")),
             )
-            server_apns.enqueue(uid, ntype="saved_search", actor_id="", content=content)
+            # Same deep-link target as the in-app row above: tapping the push
+            # opens the digest's top match (instant path at
+            # notify_saved_search_matches does the same).
+            server_apns.enqueue(uid, ntype="saved_search", actor_id="", content=content,
+                                listing_id=top["id"])
             sent += 1
         return sent
     except Exception as exc:  # pragma: no cover - defensive: must not break the janitor
@@ -4373,6 +4440,16 @@ def _guide_bool_value(raw: Any, default: bool = False) -> bool:
     return str(raw).strip().lower() in {"1", "true", "yes", "y", "是", "需要", "on"}
 
 
+GUIDE_ARRIVAL_STAGES = ("pre_arrival", "just_arrived", "first_year", "long_term")
+
+
+def _guide_arrival_stage_value(raw: Any) -> str:
+    # Whitelisted 来日阶段 enum; anything else is treated as unset ('') in the
+    # handler's usual coerce-don't-400 style.
+    text = str(raw or "").strip().lower()
+    return text if text in GUIDE_ARRIVAL_STAGES else ""
+
+
 def _guide_date_value(raw: Any) -> str | None:
     text = str(raw or "").strip()
     if not text:
@@ -4383,7 +4460,10 @@ def _guide_date_value(raw: Any) -> str | None:
 
 
 def _guide_today_date() -> datetime:
-    return datetime.now(timezone.utc)
+    # The workbench (todos/calendar/finance) is a Japan-life tool: "today" must
+    # mean today in JST, not UTC — with UTC every user between 00:00 and 09:00
+    # JST saw yesterday as "today" (todo grouping, overdue, calendar highlight).
+    return datetime.now(timezone(timedelta(hours=9)))
 
 
 def _guide_date_add(days: int, base: datetime | None = None) -> str:
@@ -6450,6 +6530,7 @@ def init_db() -> None:
         ensure_wallet_schema(conn)
         ensure_moderation_schema(conn)
         ensure_saved_search_schema(conn)
+        ensure_apns_push_ledger_schema(conn)
         ensure_guide_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
@@ -9155,8 +9236,36 @@ def machi_ai_usage_count(conn: sqlite3.Connection, user_id: str, usage_date: str
     return int(row["total_count"]) if row else 0
 
 
-def machi_ai_daily_limit(is_member: bool) -> int:
-    return MACHI_AI_MEMBER_DAILY_LIMIT if is_member else MACHI_AI_FREE_DAILY_LIMIT
+def machi_ai_daily_limit(user: dict[str, Any] | None, is_member: bool) -> int:
+    """Tiered daily quota: member > newly registered > free > guest.
+
+    `user` is the users row (created_at decides the new-user taster window);
+    None means a signed-out guest identified via X-Machi-Guest-Id."""
+    if user is None:
+        return MACHI_AI_GUEST_DAILY_LIMIT
+    if is_member:
+        return MACHI_AI_MEMBER_DAILY_LIMIT
+    created = parse_iso(str(user.get("created_at") or ""))
+    if created is not None:
+        if created.tzinfo is None:
+            created = created.replace(tzinfo=timezone.utc)
+        age_days = (datetime.now(timezone.utc) - created.astimezone(timezone.utc)).days
+        if 0 <= age_days < MACHI_AI_NEW_USER_WINDOW_DAYS:
+            return MACHI_AI_NEW_USER_DAILY_LIMIT
+    return MACHI_AI_FREE_DAILY_LIMIT
+
+
+def machi_ai_guest_key(raw_guest_id: str | None) -> str | None:
+    """Usage-ledger identity for a signed-out caller.
+
+    Contract: the client sends its stable UUID in X-Machi-Guest-Id; the ledger
+    key is 'guest:' + sha256(uuid)[:16], so the raw device id is never stored
+    (guide_ai_usage.user_id has no FK). Missing/oversized header → None → the
+    caller falls back to the ordinary 401."""
+    raw = (raw_guest_id or "").strip()
+    if not raw or len(raw) > 64:
+        return None
+    return "guest:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
 def _machi_ai_title_from_message(message: str) -> str:
@@ -9824,10 +9933,13 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
                     provider_user_id: str = "", expected_provider: str | None = None,
                     paid_amount_cents: int | None = None,
                     provider_subscription_id: str = "",
-                    provider_price_id: str = "") -> dict[str, Any]:
+                    provider_price_id: str = "",
+                    notify_email: bool = True) -> dict[str, Any]:
     """Idempotent settlement. A pending order transitions to paid exactly
     once and opens/extends membership. Re-invoked for an already-paid
-    order → returns existing state without double-extending."""
+    order → returns existing state without double-extending.
+    notify_email=False settles without the "payment succeeded" email —
+    Apple Sandbox/TestFlight/Xcode transactions are test traffic, not money."""
     row = conn.execute("SELECT * FROM payment_orders WHERE order_no = ?", (order_no,)).fetchone()
     if not row:
         raise APIError("订单不存在", 404, "order_not_found")
@@ -9872,7 +9984,8 @@ def mark_order_paid(conn: sqlite3.Connection, order_no: str, provider_trade_no: 
             "provider_price_id = COALESCE(NULLIF(?, ''), provider_price_id), provider = ?, updated_at = ? WHERE id = ?",
             (provider_subscription_id or "", provider_price_id or "", source, now_iso(), status.get("membership_id") or ""),
         )
-    queue_membership_payment_email(conn, fresh)
+    if notify_email:
+        queue_membership_payment_email(conn, fresh)
     return fresh
 
 
@@ -12564,7 +12677,11 @@ def run_guide_reminder_dispatch() -> int:
                 if due and days_left is None:
                     content += f"（{due} 截止）"
                 try:
-                    server_apns.enqueue(d["user_id"], ntype="system", content=content)
+                    # Dedicated ntype: a deadline alert is fire-once (the
+                    # guide_reminders row rolls forward regardless of delivery),
+                    # so it must not compete with saved_search/system for the
+                    # shared daily push cap. Still quiet-hours muted.
+                    server_apns.enqueue(d["user_id"], ntype="guide_reminder", content=content)
                     HUB.publish(d["user_id"], {"type": "notification", "kind": "guide_reminder", "todoId": d["todo_id"]})
                 except Exception:
                     pass
@@ -13533,7 +13650,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
         self.send_header(
             "Access-Control-Allow-Headers",
-            "Authorization, Content-Type, Idempotency-Key, X-Device-Name, X-Requested-With",
+            "Authorization, Content-Type, Idempotency-Key, X-Device-Name, X-Machi-Guest-Id, X-Requested-With",
         )
         self.send_header("Access-Control-Expose-Headers", "ETag, X-Machi-Version, X-KaiX-Version, X-Request-Id")
         self.send_header("Access-Control-Max-Age", "600")
@@ -14470,6 +14587,29 @@ class Handler(BaseHTTPRequestHandler):
         _cache_put(cache_key, payload, GUIDE_HOME_CACHE_TTL)
         self.send_json(payload)
 
+    def api_guide_sitemap(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """公开站点地图: 已发布学校/公司/文章的 slug + updated_at(SEO 站点地图 /
+        客户端预取用)。全公开、无个人数据,同 guide-home 一样走进程内 TTL 缓存。"""
+        cached = _cache_get("guide_sitemap")
+        if cached is not None:
+            return self.send_json(cached)
+
+        def _entries(table: str) -> list[dict[str, str]]:
+            return [
+                {"slug": r["slug"], "updated_at": r["updated_at"]}
+                for r in conn.execute(
+                    f"SELECT slug, updated_at FROM {table} WHERE status = 'published' ORDER BY updated_at DESC"
+                ).fetchall()
+            ]
+
+        payload = {"ok": True, "data": {
+            "schools": _entries("guide_schools"),
+            "companies": _entries("guide_companies"),
+            "articles": _entries("guide_articles"),
+        }}
+        _cache_put("guide_sitemap", payload, GUIDE_SITEMAP_CACHE_TTL)
+        self.send_json(payload)
+
     def api_guide_jlpt_zone(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         """JLPT 备考专区: a curated public prep hub aggregating JLPT roadmap
         articles, resources (free/member/paid), FAQ, an N5–N1 level structure and
@@ -14912,13 +15052,24 @@ class Handler(BaseHTTPRequestHandler):
         return out
 
     def api_guide_ai_bootstrap(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
-        user = self.require_user(conn)
+        # Signed-out guests with a stable X-Machi-Guest-Id get a legal
+        # bootstrap too — same payload, remaining computed from the guest cap.
+        user: dict[str, Any] | None
+        guest_key: str | None = None
+        try:
+            user = self.require_user(conn)
+        except APIError:
+            guest_key = machi_ai_guest_key(self.headers.get("X-Machi-Guest-Id"))
+            if not guest_key:
+                raise
+            user = None
         country = self._guide_country(query)
         language = (query.get("language") or "zh-CN").strip() or "zh-CN"
-        is_member = has_active_membership(conn, user["id"])
-        used = machi_ai_usage_count(conn, user["id"], machi_ai_usage_date())
-        # Members don't get a number; free users see how many remain today.
-        remaining = None if is_member else max(0, MACHI_AI_FREE_DAILY_LIMIT - used)
+        is_member = bool(user) and has_active_membership(conn, user["id"])
+        used = machi_ai_usage_count(conn, user["id"] if user else guest_key, machi_ai_usage_date())
+        # Members don't get a number; free users (and guests) see how many
+        # remain today under their tier (member / new user / free / guest).
+        remaining = None if is_member else max(0, machi_ai_daily_limit(user, is_member) - used)
         self.send_json({
             "status": "ok",
             "membershipActive": is_member,
@@ -14968,10 +15119,19 @@ class Handler(BaseHTTPRequestHandler):
             "items": [self._guide_ai_message_dto(r) for r in rows],
         })
 
-    def _guide_ai_quota_response(self, language: str, is_member: bool) -> None:
+    def _guide_ai_quota_response(self, language: str, is_member: bool, *,
+                                 is_guest: bool = False) -> None:
         # Free users learn it's a daily free cap (and may upgrade). Members are
-        # only told "that's all for today" — never the internal number.
-        if is_member:
+        # only told "that's all for today" — never the internal number. Guests
+        # are nudged to register (still no number).
+        if is_guest:
+            msg = machi_ai_text(
+                language,
+                "今天的体验次数已用完，注册登录后每天可以使用更多次。",
+                "本日のお試し回数を使い切りました。登録・ログインすると毎日もっとご利用いただけます。",
+                "You've used today's trial question. Sign up or log in to ask more every day.",
+            )
+        elif is_member:
             msg = machi_ai_text(
                 language,
                 "今天的 Machi AI 使用次数已用完，明天可以继续咨询。",
@@ -15076,8 +15236,25 @@ class Handler(BaseHTTPRequestHandler):
         )
 
     def api_guide_ai_chat(self, conn: sqlite3.Connection) -> None:
-        user = self.require_user(conn)
-        self._enforce_not_muted(user)
+        # Signed-out taster: a stable client UUID in X-Machi-Guest-Id buys the
+        # (tiny) guest daily quota; without the header the original 401 stands.
+        # Guests also ride the shared IP limiter so one address can't farm
+        # extra slots by minting fresh UUIDs.
+        user: dict[str, Any] | None
+        guest_key: str | None = None
+        try:
+            user = self.require_user(conn)
+        except APIError:
+            guest_key = machi_ai_guest_key(self.headers.get("X-Machi-Guest-Id"))
+            if not guest_key:
+                raise
+            if not rate_check(self._client_ip(), "ai_guest"):
+                raise APIError("操作过于频繁，请稍后再试", 429, "rate_limited")
+            user = None
+        if user is not None:
+            self._enforce_not_muted(user)
+        # The usage ledger / conversation owner key: real user id or guest hash.
+        subject_id = user["id"] if user else guest_key
         body = self.read_json()
         country = (str(body.get("country") or "").strip().lower()) or GUIDE_DEFAULT_COUNTRY
         country = _normalize_country_code(country) or GUIDE_DEFAULT_COUNTRY
@@ -15096,8 +15273,8 @@ class Handler(BaseHTTPRequestHandler):
             )
 
         usage_date = machi_ai_usage_date()
-        is_member = has_active_membership(conn, user["id"])
-        limit = machi_ai_daily_limit(is_member)
+        is_member = bool(user) and has_active_membership(conn, user["id"])
+        limit = machi_ai_daily_limit(user, is_member)
         # Specialized member-only abilities (resume polish / mock interview).
         # An unknown/empty ability falls back to general chat. A member-only
         # ability requested by a non-member returns an upgrade prompt BEFORE any
@@ -15109,8 +15286,8 @@ class Handler(BaseHTTPRequestHandler):
         # caller before doing any retrieval work. This read alone is racy (N
         # concurrent requests all see the same stale count), so the real gate is
         # the atomic reservation just before the upstream call below.
-        if machi_ai_usage_count(conn, user["id"], usage_date) >= limit:
-            return self._guide_ai_quota_response(language, is_member)
+        if machi_ai_usage_count(conn, subject_id, usage_date) >= limit:
+            return self._guide_ai_quota_response(language, is_member, is_guest=user is None)
 
         # Resolve (but don't yet create) the conversation, and pull recent
         # history. Persisting is deferred until the AI call succeeds, so a hard
@@ -15120,7 +15297,7 @@ class Handler(BaseHTTPRequestHandler):
         if conv_id:
             conv_row = conn.execute(
                 "SELECT * FROM guide_ai_conversations WHERE id = ? AND user_id = ? AND deleted_at = ''",
-                (conv_id, user["id"]),
+                (conv_id, subject_id),
             ).fetchone()
             if not conv_row:
                 return self.send_error_json(
@@ -15157,10 +15334,10 @@ class Handler(BaseHTTPRequestHandler):
         # that let a burst exceed the free/member cap and burn real tokens. A
         # failed AI call refunds the slot below, preserving "quota is only ever
         # spent on a real answer".
-        reserved = self._machi_ai_reserve_usage(conn, user["id"], usage_date, is_member)
+        reserved = self._machi_ai_reserve_usage(conn, subject_id, usage_date, is_member)
         if reserved > limit:
-            self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
-            return self._guide_ai_quota_response(language, is_member)
+            self._machi_ai_refund_usage(conn, subject_id, usage_date, is_member)
+            return self._guide_ai_quota_response(language, is_member, is_guest=user is None)
         completion = None
         # 会员用 Pro 深度模型,免费用户用基础模型 —— 这是会员的核心价值之一。
         # 若 Pro 模型上游异常,下方 try/except 会优雅降级为 AI_UNAVAILABLE 并退还
@@ -15180,7 +15357,7 @@ class Handler(BaseHTTPRequestHandler):
         if not completion or not str(completion.get("content") or "").strip():
             # No answer was produced — refund the reserved slot so a provider
             # failure never costs the user a quota slot.
-            self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
+            self._machi_ai_refund_usage(conn, subject_id, usage_date, is_member)
             return self.send_json(
                 self._error_envelope("AI_UNAVAILABLE", machi_ai_text(
                     language,
@@ -15207,14 +15384,14 @@ class Handler(BaseHTTPRequestHandler):
                 "INSERT INTO guide_ai_conversations (id, user_id, title, country, language, "
                 "last_message_preview, message_count, created_at, updated_at, deleted_at) "
                 "VALUES (?, ?, ?, ?, ?, '', 0, ?, ?, '')",
-                (conv_id, user["id"], _machi_ai_title_from_message(message), country, language, now, now),
+                (conv_id, subject_id, _machi_ai_title_from_message(message), country, language, now, now),
             )
         # User turn.
         conn.execute(
             "INSERT INTO guide_ai_messages (id, conversation_id, user_id, role, content, source_count, "
             "sources_json, model_internal, finish_reason, prompt_tokens, completion_tokens, total_tokens, "
             "latency_ms, created_at) VALUES (?, ?, ?, 'user', ?, 0, '', '', '', 0, 0, 0, 0, ?)",
-            (str(uuid.uuid4()), conv_id, user["id"], message, now),
+            (str(uuid.uuid4()), conv_id, subject_id, message, now),
         )
         # Assistant turn. model_internal is for diagnostics only; never returned.
         assistant_msg_id = str(uuid.uuid4())
@@ -15223,7 +15400,7 @@ class Handler(BaseHTTPRequestHandler):
             "INSERT INTO guide_ai_messages (id, conversation_id, user_id, role, content, source_count, "
             "sources_json, model_internal, finish_reason, prompt_tokens, completion_tokens, total_tokens, "
             "latency_ms, created_at) VALUES (?, ?, ?, 'assistant', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (assistant_msg_id, conv_id, user["id"], assistant_content, len(client_sources),
+            (assistant_msg_id, conv_id, subject_id, assistant_content, len(client_sources),
              json.dumps(client_sources, ensure_ascii=False), str(completion.get("model") or ""),
              str(completion.get("finish_reason") or ""), int(usage.get("prompt_tokens") or 0),
              int(usage.get("completion_tokens") or 0), int(usage.get("total_tokens") or 0),
@@ -15237,7 +15414,7 @@ class Handler(BaseHTTPRequestHandler):
         )
         # The quota slot was reserved before the call; only the token tallies
         # remain to be recorded.
-        self._machi_ai_record_usage_tokens(conn, user["id"], usage_date, usage)
+        self._machi_ai_record_usage_tokens(conn, subject_id, usage_date, usage)
 
         remaining = None if is_member else max(0, limit - reserved)
         self.send_json({
@@ -15404,11 +15581,20 @@ class Handler(BaseHTTPRequestHandler):
         body = self.read_json()
         now = now_iso()
         existing = self._guide_user_profile_row(conn, user["id"])
+        # arrival_stage: absent key = "leave unchanged". iOS's reminder-settings
+        # save (GuideProfileSetupView) posts a payload without arrivalStage, so
+        # full-replace semantics would silently wipe the stage picked during
+        # onboarding. An explicit value (even junk, coerced to '') still writes.
+        if "arrivalStage" in body or "arrival_stage" in body:
+            arrival_stage = _guide_arrival_stage_value(body.get("arrivalStage") or body.get("arrival_stage"))
+        else:
+            arrival_stage = _guide_arrival_stage_value(existing["arrival_stage"]) if existing else ""
         values = {
             "identity_type": str(body.get("identityType") or body.get("identity_type") or "").strip()[:80],
             "country": str(body.get("country") or "jp").strip().lower()[:20] or "jp",
             "city": str(body.get("city") or "").strip()[:120],
             "is_in_japan": 1 if _guide_bool_value(body.get("isInJapan") or body.get("is_in_japan")) else 0,
+            "arrival_stage": arrival_stage,
             "visa_status": str(body.get("visaStatus") or body.get("visa_status") or "").strip()[:120],
             "visa_expires_at": _guide_date_value(body.get("visaExpiresAt") or body.get("visa_expires_at")),
             "japanese_level": str(body.get("japaneseLevel") or body.get("japanese_level") or "").strip()[:40],
@@ -15424,11 +15610,12 @@ class Handler(BaseHTTPRequestHandler):
         if existing:
             conn.execute(
                 "UPDATE guide_user_profiles SET identity_type = ?, country = ?, city = ?, is_in_japan = ?, "
-                "visa_status = ?, visa_expires_at = ?, japanese_level = ?, target_japanese_level = ?, "
+                "arrival_stage = ?, visa_status = ?, visa_expires_at = ?, japanese_level = ?, target_japanese_level = ?, "
                 "graduation_date = ?, target_entry_term = ?, target_industry = ?, target_school_type = ?, "
                 "weekly_available_minutes = ?, needs_materials = ?, needs_services = ?, updated_at = ? WHERE id = ?",
                 (
                     values["identity_type"], values["country"], values["city"], values["is_in_japan"],
+                    values["arrival_stage"],
                     values["visa_status"], values["visa_expires_at"], values["japanese_level"], values["target_japanese_level"],
                     values["graduation_date"], values["target_entry_term"], values["target_industry"], values["target_school_type"],
                     values["weekly_available_minutes"], values["needs_materials"], values["needs_services"], now, existing["id"],
@@ -15436,12 +15623,13 @@ class Handler(BaseHTTPRequestHandler):
             )
         else:
             conn.execute(
-                "INSERT INTO guide_user_profiles (id, user_id, identity_type, country, city, is_in_japan, visa_status, "
+                "INSERT INTO guide_user_profiles (id, user_id, identity_type, country, city, is_in_japan, arrival_stage, visa_status, "
                 "visa_expires_at, japanese_level, target_japanese_level, graduation_date, target_entry_term, target_industry, "
                 "target_school_type, weekly_available_minutes, needs_materials, needs_services, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     str(uuid.uuid4()), user["id"], values["identity_type"], values["country"], values["city"], values["is_in_japan"],
+                    values["arrival_stage"],
                     values["visa_status"], values["visa_expires_at"], values["japanese_level"], values["target_japanese_level"],
                     values["graduation_date"], values["target_entry_term"], values["target_industry"], values["target_school_type"],
                     values["weekly_available_minutes"], values["needs_materials"], values["needs_services"], now, now,
@@ -22011,6 +22199,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_export(conn)
         if path == "/api/feedback" and method == "POST":
             return self.api_feedback(conn)
+        if path == "/api/waitlist" and method == "POST":
+            return self.api_waitlist(conn)
         if path == "/api/marketing-copy" and method == "GET":
             return self.api_marketing_copy(conn, query)
         if path == "/api/marketing-copy-overrides" and method == "GET":
@@ -22029,6 +22219,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_journey_detail(conn, unquote(path[len("/api/guide/journeys/"):]).strip("/"), query)
         if path == "/api/guide/search" and method == "GET":
             return self.api_guide_search(conn, query)
+        if path == "/api/guide/sitemap" and method == "GET":
+            return self.api_guide_sitemap(conn, query)
         # Machi AI (原创 in-app assistant)
         if path == "/api/guide/ai/bootstrap" and method == "GET":
             return self.api_guide_ai_bootstrap(conn, query)
@@ -23424,6 +23616,19 @@ class Handler(BaseHTTPRequestHandler):
                                    str(notification.get("notificationUUID") or secrets.token_hex(12)), "",
                                    json.dumps(notification, ensure_ascii=False)[:8000], signature_valid)
             return self._webhook_fail("apple_iap", "bundle mismatch")
+        # Sandbox notifications must never mutate production state: a sandbox
+        # REFUND/REVOKE would match a real membership row whose
+        # provider_subscription_id is empty and cancel it immediately. Recorded
+        # for audit, answered 2xx so Apple stops retrying, processed no further.
+        # (Non-production servers still process sandbox notifications — that is
+        # what staging/QA test against.)
+        apple_env = str(apple_data.get("environment") or "").strip().lower()
+        if PRODUCTION and apple_env and apple_env != "production":
+            record_payment_webhook(conn, "apple_iap",
+                                   str(notification.get("notificationType") or "sandbox_ignored"),
+                                   str(notification.get("notificationUUID") or secrets.token_hex(12)), "",
+                                   json.dumps(notification, ensure_ascii=False)[:8000], signature_valid)
+            return self.send_json({"received": True, "processed": False, "reason": "sandbox_environment"})
 
         signed_tx = str(apple_data.get("signedTransactionInfo") or "").strip()
         transaction = verify_apple_transaction(signed_tx) if signed_tx else None
@@ -23526,16 +23731,28 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
         previous_status = get_user_membership_status(conn, user["id"])
         previous_until = previous_status.get("current_period_end") or ""
+        # Sandbox / TestFlight / Xcode transactions still open membership (so
+        # testers can exercise member features), but they are NOT money: no
+        # "payment succeeded" email — merely opening the paywall in TestFlight
+        # re-delivers old sandbox (auto-renew) transactions via
+        # Transaction.updates and used to mail a purchase receipt per renewal —
+        # and the order is tagged ios_sandbox so finance can filter it out.
+        # The environment field is read from the (production: Apple-signed)
+        # payload and is never used to GRANT anything, only to mute noise.
+        txn_environment = str(payload.get("environment") or data.get("environment") or "").strip().lower()
+        is_sandbox_txn = txn_environment in ("sandbox", "xcode")
         dedup_key = "apple:" + (txn_id or orig_id or signed[:40])
         existing = conn.execute(
             "SELECT status FROM payment_orders WHERE provider_trade_no = ? AND payment_provider = 'apple_iap'",
             (dedup_key,),
         ).fetchone()
         if not (existing and existing["status"] == "paid"):
-            order = create_payment_order(conn, user["id"], plan_key, "apple_iap", "ios")
+            order = create_payment_order(conn, user["id"], plan_key, "apple_iap",
+                                         "ios_sandbox" if is_sandbox_txn else "ios")
             mark_order_paid(conn, order["order_no"], provider_trade_no=dedup_key,
                             provider_user_id=orig_id, expected_provider="apple_iap",
-                            provider_subscription_id=orig_id, provider_price_id=product_id)
+                            provider_subscription_id=orig_id, provider_price_id=product_id,
+                            notify_email=not is_sandbox_txn)
         expires_at = apple_payload_expiry_iso(payload)
         if expires_at:
             sync_apple_membership_expiry(conn, user["id"], plan_key, expires_at, orig_id, product_id,
@@ -23713,7 +23930,12 @@ class Handler(BaseHTTPRequestHandler):
         if app_account_token and app_account_token.lower() != user["id"].lower():
             raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
         dedup = "apple:" + (txn_id or orig_id or signed[:40])
-        result = wallet_credit_iap_topup(conn, user["id"], pack, "apple_iap", "ios", dedup,
+        # Same sandbox treatment as the membership verify: Sandbox/TestFlight
+        # consumables still credit points (testers need the flow) but the order
+        # is tagged ios_sandbox so wallet revenue aggregates can exclude it.
+        txn_environment = str(payload.get("environment") or data.get("environment") or "").strip().lower()
+        client_type = "ios_sandbox" if txn_environment in ("sandbox", "xcode") else "ios"
+        result = wallet_credit_iap_topup(conn, user["id"], pack, "apple_iap", client_type, dedup,
                                          provider_product_id=product_id, provider_user_id=orig_id)
         self.send_json({
             "wallet": result.get("wallet") or get_wallet_snapshot(conn, user["id"]),
@@ -23764,16 +23986,20 @@ class Handler(BaseHTTPRequestHandler):
             "COALESCE(SUM(lifetime_purchased_points),0) AS purchased, "
             "COALESCE(SUM(lifetime_bonus_points),0) AS bonus, "
             "COALESCE(SUM(lifetime_spent_points),0) AS spent FROM wallet_accounts").fetchone())
+        # ios_sandbox = Apple Sandbox/TestFlight top-ups (test traffic, not
+        # money) — excluded from gross/conversion the same way api_admin_stats
+        # excludes sandbox membership orders.
         topups = dict(conn.execute(
             "SELECT COUNT(*) AS paid_orders, COALESCE(SUM(amount_cents),0) AS gross_cents "
-            "FROM wallet_topup_orders WHERE status IN ('paid','fulfilled')").fetchone())
+            "FROM wallet_topup_orders WHERE status IN ('paid','fulfilled') "
+            "AND COALESCE(client_type, '') <> 'ios_sandbox'").fetchone())
         # Order pipeline (for conversion) + refunds/chargebacks.
         pipeline = dict(conn.execute(
             "SELECT COUNT(*) AS total_orders, "
             "SUM(CASE WHEN status='pending' THEN 1 ELSE 0 END) AS pending_orders, "
             "SUM(CASE WHEN status='refunded' OR refunded_at IS NOT NULL THEN 1 ELSE 0 END) AS refunded_orders, "
             "COALESCE(SUM(CASE WHEN status='refunded' OR refunded_at IS NOT NULL THEN amount_cents ELSE 0 END),0) AS refunded_cents "
-            "FROM wallet_topup_orders").fetchone())
+            "FROM wallet_topup_orders WHERE COALESCE(client_type, '') <> 'ios_sandbox'").fetchone())
         restricted = int(conn.execute(
             "SELECT COUNT(*) AS c FROM wallet_accounts WHERE status = 'restricted'").fetchone()["c"])
         total_orders = int(pipeline["total_orders"] or 0)
@@ -23781,7 +24007,8 @@ class Handler(BaseHTTPRequestHandler):
         # Revenue by provider (paid only).
         provider_rows = conn.execute(
             "SELECT payment_provider AS provider, COUNT(*) AS orders, COALESCE(SUM(amount_cents),0) AS cents "
-            "FROM wallet_topup_orders WHERE status IN ('paid','fulfilled') GROUP BY payment_provider "
+            "FROM wallet_topup_orders WHERE status IN ('paid','fulfilled') "
+            "AND COALESCE(client_type, '') <> 'ios_sandbox' GROUP BY payment_provider "
             "ORDER BY cents DESC").fetchall()
         provider_breakdown = [
             {"provider": (r["provider"] or "unknown"), "paidOrders": int(r["orders"]),
@@ -26414,21 +26641,27 @@ class Handler(BaseHTTPRequestHandler):
             circle = metro_circle_city_slugs_for_city(country_code or "jp", city_slug)
             if len(circle) > 1:
                 city_slugs = circle
+        # 空结果回退用:记录地域条件在 clauses/params 里的位置(下标, 参数起点, 参数个数),
+        # 第一页查空时可原位替换成都市圈/全国条件重查一次(见主查询后的 fallback 块)。
+        fallback_geo_slot: tuple[int, int, int] | None = None
         if province_codes:
             prefix_country = country_code or "jp"
             like_clauses = " OR ".join(["region_code LIKE ?"] * len(province_codes))
+            fallback_geo_slot = (len(clauses), len(params), len(province_codes))
             clauses.append("(%s)" % like_clauses)
             params.extend(f"{prefix_country}.{prov}.%" for prov in province_codes)
         elif city_slugs:
             clauses.append("city_slug IN (%s)" % ",".join("?" * len(city_slugs)))
             params.extend(city_slugs)
         elif city_slug:
+            fallback_geo_slot = (len(clauses), len(params), 1)
             clauses.append("city_slug = ?")
             params.append(city_slug)
         elif region_codes:
             clauses.append("region_code IN (%s)" % ",".join("?" * len(region_codes)))
             params.extend(region_codes)
         elif region_code:
+            fallback_geo_slot = (len(clauses), len(params), 1)
             clauses.append("region_code = ?")
             params.append(region_code)
         elif country_code:
@@ -26564,6 +26797,56 @@ class Handler(BaseHTTPRequestHandler):
 
         sql = f"SELECT * FROM city_listings WHERE {' AND '.join(clauses)} ORDER BY {order} LIMIT ?"
         rows = list(conn.execute(sql, [*params, limit + 1]))
+        # 空结果回退:第一页在都道府县(province_codes)或精确城市筛选下一条都查不到时,
+        # 放宽到该地区所属都市圈(生活圈)重查一次;不属任何都市圈则放宽到全国。命中时
+        # 通过 data.filters.fallback / fallback_label 告知客户端「该地区暂无,已为你展示
+        # {fallback_label}的内容」。回退页是一次性快照,不发 next_cursor(与 price/popular
+        # 排序不给 cursor 的先例一致)。有结果时不重查、响应零变化。
+        fallback_kind = ""
+        fallback_label = ""
+        if not rows and not cursor and fallback_geo_slot and (province_codes or exact_city):
+            fb_country = (country_code or "jp").lower()
+            fb_clause = ""
+            fb_params: list[Any] = []
+            circle = None
+            if province_codes:
+                circle = _jp_circle_for_province(province_codes[0]) if fb_country == "jp" else None
+                if circle:
+                    # 与 province_codes 本身一致,用 region_code 前缀覆盖圈内县的全部城市。
+                    circle_provs = JP_METRO_CIRCLES[circle]
+                    fb_clause = "(%s)" % " OR ".join(["region_code LIKE ?"] * len(circle_provs))
+                    fb_params = [f"jp.{prov}.%" for prov in circle_provs]
+            elif city_slug:
+                # 与上方地域条件链同序:city_slug 优先于 region_code。
+                circle_slugs = metro_circle_city_slugs_for_city(fb_country, city_slug)
+                if len(circle_slugs) > 1:
+                    circle = _jp_circle_for_province(_parse_region_code(region_code_for_city_slug(fb_country, city_slug))[1])
+                    fb_clause = "city_slug IN (%s)" % ",".join("?" * len(circle_slugs))
+                    fb_params = list(circle_slugs)
+            elif region_code:
+                circle_codes = metro_circle_region_codes(region_code)
+                if len(circle_codes) > 1:
+                    circle = _jp_circle_for_province(_parse_region_code(region_code)[1])
+                    fb_clause = "region_code IN (%s)" % ",".join("?" * len(circle_codes))
+                    fb_params = list(circle_codes)
+            if circle and fb_clause:
+                fallback_kind = "metro_circle"
+                fallback_label = JP_METRO_CIRCLE_LABELS.get(circle, circle)
+            else:
+                fb_clause = "country_code = ?"
+                fb_params = [fb_country]
+                fallback_kind = "country"
+                fallback_label = str((_country_lookup(fb_country) or {}).get("name") or fb_country.upper())
+            fb_clauses = list(clauses)
+            fb_all_params = list(params)
+            clause_at, param_at, param_n = fallback_geo_slot
+            fb_clauses[clause_at] = fb_clause
+            fb_all_params[param_at:param_at + param_n] = fb_params
+            fb_sql = f"SELECT * FROM city_listings WHERE {' AND '.join(fb_clauses)} ORDER BY {order} LIMIT ?"
+            rows = list(conn.execute(fb_sql, [*fb_all_params, limit]))
+            if not rows:
+                fallback_kind = ""
+                fallback_label = ""
         next_cursor = None
         has_more = len(rows) > limit
         if has_more:
@@ -26587,6 +26870,21 @@ class Handler(BaseHTTPRequestHandler):
             next_cursor = cursor_encode(anchor["updated_at"], anchor["id"])
         items = fetch_listings_with_extras(conn, [dict(r) for r in rows], viewer_id)
         viewer_payload = {"id": viewer_id} if viewer_id else None
+        filters_payload: dict[str, Any] = {
+            "type": listing_type,
+            "city_slug": city_slug,
+            "city_slugs": city_slugs,
+            "region_code": region_code,
+            "region_codes": region_codes,
+            "province_codes": province_codes,
+            "country_code": country_code,
+            "category": category,
+            "sort": sort,
+        }
+        if fallback_kind:
+            # 命中空结果回退才带,客户端据此提示「该地区暂无,已为你展示{fallback_label}的内容」。
+            filters_payload["fallback"] = fallback_kind
+            filters_payload["fallback_label"] = fallback_label
         self.send_json({
             "ok": True,
             "items": items,
@@ -26596,17 +26894,7 @@ class Handler(BaseHTTPRequestHandler):
             "data": {
                 "items": items,
                 "pagination": {"next_cursor": next_cursor},
-                "filters": {
-                    "type": listing_type,
-                    "city_slug": city_slug,
-                    "city_slugs": city_slugs,
-                    "region_code": region_code,
-                    "region_codes": region_codes,
-                    "province_codes": province_codes,
-                    "country_code": country_code,
-                    "category": category,
-                    "sort": sort,
-                },
+                "filters": filters_payload,
             },
         })
 
@@ -27891,8 +28179,16 @@ class Handler(BaseHTTPRequestHandler):
         for r in conn.execute("SELECT user_id FROM listing_bookings WHERE slot_id = ? AND status = 'confirmed'", (slot_id,)):
             uid = r["user_id"]
             if uid and uid != user["id"]:
+                content = f"「{listing.get('title') or '预约'}」的一个时段已被取消"
                 HUB.publish(uid, {"type": "notification", "kind": "booking_cancelled"})
-                server_apns.enqueue(uid, ntype="system", actor_id=user["id"], content=f"「{listing.get('title') or '预约'}」的一个时段已被取消")
+                # In-app row so the event survives a dropped/undeliverable push
+                # ("booking" = transactional ntype: no quiet hours / daily cap).
+                conn.execute(
+                    "INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, content, created_at) "
+                    "VALUES (?, ?, ?, 'system', ?, ?, ?)",
+                    (str(uuid.uuid4()), uid, uid, listing_id, content, now),
+                )
+                server_apns.enqueue(uid, ntype="booking", actor_id=user["id"], content=content)
         conn.execute("UPDATE listing_bookings SET status = 'cancelled', updated_at = ? WHERE slot_id = ? AND status = 'confirmed'", (now, slot_id))
         self.send_json({"ok": True})
 
@@ -27934,8 +28230,16 @@ class Handler(BaseHTTPRequestHandler):
         )
         owner_id = listing["seller_user_id"]
         if owner_id and owner_id != user["id"]:
+            content = f"有人预约了「{listing.get('title') or '你的发布'}」"
             HUB.publish(owner_id, {"type": "notification", "kind": "booking"})
-            server_apns.enqueue(owner_id, ntype="system", actor_id=user["id"], content=f"有人预约了「{listing.get('title') or '你的发布'}」")
+            # In-app row so the event survives a dropped/undeliverable push
+            # ("booking" = transactional ntype: no quiet hours / daily cap).
+            conn.execute(
+                "INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, content, created_at) "
+                "VALUES (?, ?, ?, 'system', ?, ?, ?)",
+                (str(uuid.uuid4()), owner_id, owner_id, listing_id, content, now),
+            )
+            server_apns.enqueue(owner_id, ntype="booking", actor_id=user["id"], content=content)
         booking = dict(conn.execute("SELECT * FROM listing_bookings WHERE id = ?", (booking_id,)).fetchone())
         self.send_json({"ok": True, "booking": serialize_booking(booking, slot=slot)})
 
@@ -27953,8 +28257,16 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute("UPDATE listing_booking_slots SET booked_count = MAX(0, booked_count - 1) WHERE id = ?", (booking["slot_id"],))
             other = booking["owner_id"] if user["id"] == booking["user_id"] else booking["user_id"]
             if other and other != user["id"]:
+                content = "一个预约已被取消"
                 HUB.publish(other, {"type": "notification", "kind": "booking_cancelled"})
-                server_apns.enqueue(other, ntype="system", actor_id=user["id"], content="一个预约已被取消")
+                # In-app row so the event survives a dropped/undeliverable push
+                # ("booking" = transactional ntype: no quiet hours / daily cap).
+                conn.execute(
+                    "INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, content, created_at) "
+                    "VALUES (?, ?, ?, 'system', ?, ?, ?)",
+                    (str(uuid.uuid4()), other, other, booking["listing_id"], content, now),
+                )
+                server_apns.enqueue(other, ntype="booking", actor_id=user["id"], content=content)
         self.send_json({"ok": True})
 
     def api_my_reservations(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -34430,6 +34742,35 @@ class Handler(BaseHTTPRequestHandler):
         )
         self.send_json({"ok": True})
 
+    def api_waitlist(self, conn: sqlite3.Connection) -> None:
+        """Android-launch waitlist from the public marketing site.
+
+        Anonymous on purpose — marketing visitors are not signed in, so this
+        reuses the feedback table with an empty user_id and a reserved
+        category instead of requiring auth. The generic per-IP write bucket
+        already throttles it; one row per email address."""
+        data = self.read_json()
+        email = str(data.get("email") or "").strip().lower()
+        if not email or len(email) > 254 or not re.match(r"^[^\s@]+@[^\s@.]+(\.[^\s@.]+)+$", email):
+            raise APIError("邮箱格式不正确", 400, "invalid_email")
+        payload = {
+            "email": email,
+            "city": str(data.get("city") or "")[:80],
+            "language": str(data.get("language") or "")[:40],
+            "intent": str(data.get("intent") or "")[:80],
+            "locale": str(data.get("locale") or "")[:8],
+        }
+        existing = conn.execute(
+            "SELECT id FROM feedback WHERE category = 'android_waitlist' AND content LIKE ?",
+            (f'%"email": "{email}"%',),
+        ).fetchone()
+        if existing is None:
+            conn.execute(
+                "INSERT INTO feedback (id, user_id, category, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), "", "android_waitlist", json.dumps(payload, ensure_ascii=False), now_iso()),
+            )
+        self.send_json({"ok": True})
+
     def api_register_push_token(self, conn: sqlite3.Connection) -> None:
         """Bind this device's APNs token to the logged-in account. Called
         by iOS after the user grants notification permission. Re-binding a
@@ -34895,11 +35236,13 @@ class Handler(BaseHTTPRequestHandler):
             "listings_total":          one("SELECT COUNT(*) FROM city_listings WHERE deleted_at IS NULL"),
             "listings_pending_review": one("SELECT COUNT(*) FROM city_listings WHERE deleted_at IS NULL AND status = 'pending_review'"),
             "listing_reports_open":    one("SELECT COUNT(*) FROM listing_reports WHERE status = 'open'"),
-            "orders_paid_total":       one("SELECT COUNT(*) FROM payment_orders WHERE status = 'paid'"),
+            # ios_sandbox = Apple Sandbox/TestFlight settlements (test traffic,
+            # not money) — excluded from paid-order and revenue aggregates.
+            "orders_paid_total":       one("SELECT COUNT(*) FROM payment_orders WHERE status = 'paid' AND COALESCE(client_type, '') <> 'ios_sandbox'"),
             "orders_pending":          one("SELECT COUNT(*) FROM payment_orders WHERE status = 'pending'"),
-            "revenue_cents_total":     one("SELECT COALESCE(SUM(amount_cents), 0) FROM payment_orders WHERE status = 'paid'"),
-            "revenue_cents_24h":       one("SELECT COALESCE(SUM(amount_cents), 0) FROM payment_orders WHERE status = 'paid' AND paid_at > ?", cutoff_24h),
-            "revenue_cents_7d":        one("SELECT COALESCE(SUM(amount_cents), 0) FROM payment_orders WHERE status = 'paid' AND paid_at > ?", cutoff_7d),
+            "revenue_cents_total":     one("SELECT COALESCE(SUM(amount_cents), 0) FROM payment_orders WHERE status = 'paid' AND COALESCE(client_type, '') <> 'ios_sandbox'"),
+            "revenue_cents_24h":       one("SELECT COALESCE(SUM(amount_cents), 0) FROM payment_orders WHERE status = 'paid' AND COALESCE(client_type, '') <> 'ios_sandbox' AND paid_at > ?", cutoff_24h),
+            "revenue_cents_7d":        one("SELECT COALESCE(SUM(amount_cents), 0) FROM payment_orders WHERE status = 'paid' AND COALESCE(client_type, '') <> 'ios_sandbox' AND paid_at > ?", cutoff_7d),
             "active_memberships":      one("SELECT COUNT(*) FROM user_memberships WHERE status = 'active'"),
             "db_size_bytes":       (DB_PATH.stat().st_size if DB_PATH.exists() else 0),
             # Walking media/ on every admin stats request can be tens
@@ -35725,6 +36068,190 @@ def start_stareal_daily_scheduler() -> None:
     threading.Thread(target=_loop, name="stareal-daily-sync", daemon=True).start()
 
 
+# ── 夜间指标邮件(默认每天 09:00 JST)──────────────────────────────────────────
+# 每天早上把昨日(JST)的核心增长指标——新注册/新用户激活率/vWAU/W1 回访率/保存
+# 搜索/Machi AI 用量——汇总成一封纯文本邮件发给 KAIX_REPORT_EMAIL(未配置则整个
+# 任务不启动)。不建事件埋点表:直接读六个价值行为域表,所有指标都排除种子/官方
+# 账号(content_pack_users ∪ machi_assistant_*),只反映真实用户行为。
+KAIX_REPORT_EMAIL = _env("KAIX_REPORT_EMAIL", "").strip()
+KAIX_REPORT_HOUR_JST = max(0, min(23, int(_env("KAIX_REPORT_HOUR_JST", "9"))))
+# 昨日 Machi AI user 消息量超过该阈值时在报告里标注异常(疑似滥用或爆量)。0=不标。
+KAIX_REPORT_AI_MSG_ALERT = max(0, int(_env("KAIX_REPORT_AI_MSG_ALERT", "500")))
+_NIGHTLY_REPORT_STARTED = False
+
+
+def analytics_seed_user_ids(conn: sqlite3.Connection) -> set[str]:
+    """报表要排除的种子/官方账号全集: 内容包 persona ∪ machi_assistant_* 助手号。"""
+    _ensure_content_pack_users_table(conn)
+    ids = {str(r["user_id"]) for r in conn.execute("SELECT user_id FROM content_pack_users").fetchall()}
+    ids |= {str(r["id"]) for r in conn.execute("SELECT id FROM users WHERE handle LIKE 'machi_assistant_%'").fetchall()}
+    return ids
+
+
+# (uid, at) 抽取 SQL: 六个价值行为域(Machi AI 单独算,见 _nightly_active_days)。
+_NIGHTLY_VALUE_EVENT_SQL = (
+    "SELECT user_id AS uid, created_at AS at FROM listing_bookings WHERE created_at >= ? AND created_at < ?",
+    "SELECT sender_id AS uid, created_at AS at FROM messages WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ?",
+    "SELECT user_id AS uid, created_at AS at FROM saved_searches WHERE created_at >= ? AND created_at < ?",
+    "SELECT user_id AS uid, completed_at AS at FROM guide_user_progress WHERE status = 'done' AND completed_at >= ? AND completed_at < ?",
+    "SELECT author_id AS uid, created_at AS at FROM posts WHERE deleted_at IS NULL AND COALESCE(is_seed_content, 0) = 0 AND created_at >= ? AND created_at < ?",
+    "SELECT author_id AS uid, created_at AS at FROM comments WHERE deleted_at IS NULL AND created_at >= ? AND created_at < ?",
+)
+
+
+def _nightly_active_days(conn: sqlite3.Connection, start_iso: str, end_iso: str,
+                         seed_ids: set[str]) -> dict[str, set[str]]:
+    """uid → 该窗口内有价值行为的 JST 日期集合。价值行为=预约/发DM/建保存搜索/
+    journey 步骤 done/发帖(非种子)/评论;Machi AI 按「当日 user 消息 ≥2 条」记一天。"""
+    days: dict[str, set[str]] = {}
+
+    def _mark(uid: Any, at: Any) -> None:
+        key = str(uid or "")
+        if not key or key in seed_ids or key.startswith("guest:"):
+            return
+        dt = parse_iso(str(at or ""))
+        if dt is None:
+            return
+        days.setdefault(key, set()).add(dt.astimezone(_MACHI_AI_JST).date().isoformat())
+
+    for sql in _NIGHTLY_VALUE_EVENT_SQL:
+        for r in conn.execute(sql, (start_iso, end_iso)).fetchall():
+            _mark(r["uid"], r["at"])
+    ai_per_day: dict[tuple[str, str], int] = {}
+    for r in conn.execute(
+        "SELECT user_id, created_at FROM guide_ai_messages WHERE role = 'user' AND created_at >= ? AND created_at < ?",
+        (start_iso, end_iso),
+    ).fetchall():
+        uid = str(r["user_id"] or "")
+        if not uid or uid in seed_ids or uid.startswith("guest:"):
+            continue
+        dt = parse_iso(str(r["created_at"] or ""))
+        if dt is None:
+            continue
+        day = dt.astimezone(_MACHI_AI_JST).date().isoformat()
+        ai_per_day[(uid, day)] = ai_per_day.get((uid, day), 0) + 1
+    for (uid, day), n in ai_per_day.items():
+        if n >= 2:
+            days.setdefault(uid, set()).add(day)
+    return days
+
+
+def run_nightly_report(conn: sqlite3.Connection, jst_day: str | None = None) -> dict[str, Any]:
+    """算某个 JST 日(默认昨天)的核心指标。纯读、可单测;返回结构化数字 + 纯文本报告。"""
+    if jst_day:
+        day0 = datetime.fromisoformat(jst_day).replace(tzinfo=_MACHI_AI_JST)
+    else:
+        day0 = (datetime.now(_MACHI_AI_JST) - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    day_label = day0.date().isoformat()
+
+    def _utc(dt: datetime) -> str:
+        return dt.astimezone(timezone.utc).isoformat()
+
+    day_start, day_end = _utc(day0), _utc(day0 + timedelta(days=1))
+    seed_ids = analytics_seed_user_ids(conn)
+
+    # 昨日新注册(排除种子/官方账号)。
+    new_user_ids = [
+        str(r["id"]) for r in conn.execute(
+            "SELECT id FROM users WHERE created_at >= ? AND created_at < ?", (day_start, day_end)
+        ).fetchall() if str(r["id"]) not in seed_ids
+    ]
+    # 激活 = 注册当天(JST)完成任一价值行为。
+    day_active = _nightly_active_days(conn, day_start, day_end, seed_ids)
+    activated = [uid for uid in new_user_ids if day_label in day_active.get(uid, set())]
+    activation_rate = (len(activated) / len(new_user_ids)) if new_user_ids else 0.0
+
+    # vWAU: 报告日起往前 7 个 JST 日内完成任一价值行为的去重用户数。
+    week_start = _utc(day0 - timedelta(days=6))
+    vwau = len(_nightly_active_days(conn, week_start, day_end, seed_ids))
+
+    # W1 回访: 8–14 天前注册的 cohort 中,注册后首周(第 0–6 天)活跃 ≥2 个 JST 日的占比。
+    cohort_start, cohort_end = _utc(day0 - timedelta(days=13)), _utc(day0 - timedelta(days=6))
+    cohort = [
+        (str(r["id"]), parse_iso(str(r["created_at"])))
+        for r in conn.execute(
+            "SELECT id, created_at FROM users WHERE created_at >= ? AND created_at < ?",
+            (cohort_start, cohort_end),
+        ).fetchall() if str(r["id"]) not in seed_ids
+    ]
+    w1_retained = 0
+    if cohort:
+        cohort_active = _nightly_active_days(conn, cohort_start, day_end, seed_ids)
+        for uid, reg_at in cohort:
+            if reg_at is None:
+                continue
+            reg_day = reg_at.astimezone(_MACHI_AI_JST).date()
+            week = {(reg_day + timedelta(days=i)).isoformat() for i in range(7)}
+            if len(cohort_active.get(uid, set()) & week) >= 2:
+                w1_retained += 1
+    w1_rate = (w1_retained / len(cohort)) if cohort else 0.0
+
+    saved_total = int(conn.execute("SELECT COUNT(*) AS c FROM saved_searches").fetchone()["c"])
+    saved_new = int(conn.execute(
+        "SELECT COUNT(*) AS c FROM saved_searches WHERE created_at >= ? AND created_at < ?",
+        (day_start, day_end),
+    ).fetchone()["c"])
+
+    # 昨日 Machi AI user 消息量(含游客,排除种子);超阈值标注异常。
+    ai_user_messages = sum(
+        1 for r in conn.execute(
+            "SELECT user_id FROM guide_ai_messages WHERE role = 'user' AND created_at >= ? AND created_at < ?",
+            (day_start, day_end),
+        ).fetchall() if str(r["user_id"] or "") not in seed_ids
+    )
+    ai_alert = KAIX_REPORT_AI_MSG_ALERT > 0 and ai_user_messages > KAIX_REPORT_AI_MSG_ALERT
+
+    lines = [
+        f"Machi 夜间指标 — {day_label}(JST)",
+        "",
+        f"新注册: {len(new_user_ids)}",
+        f"新用户激活率: {activation_rate * 100:.1f}% ({len(activated)}/{len(new_user_ids)})",
+        f"vWAU(近7日价值行为用户): {vwau}",
+        f"W1 回访率: {w1_rate * 100:.1f}% ({w1_retained}/{len(cohort)},cohort=8–14 天前注册)",
+        f"保存搜索: 共 {saved_total}(昨日 +{saved_new})",
+        f"Machi AI user 消息: {ai_user_messages} 条" + (f"(⚠ 异常: 超过阈值 {KAIX_REPORT_AI_MSG_ALERT})" if ai_alert else ""),
+        "",
+        "口径: 价值行为=预约/发DM/建保存搜索/journey步骤done/发帖/评论/当日AI消息≥2条;已排除种子与官方账号。",
+    ]
+    return {
+        "date": day_label,
+        "new_users": len(new_user_ids),
+        "activated": len(activated),
+        "activation_rate": activation_rate,
+        "vwau": vwau,
+        "w1_cohort": len(cohort),
+        "w1_retained": w1_retained,
+        "w1_retention_rate": w1_rate,
+        "saved_search_total": saved_total,
+        "saved_search_new": saved_new,
+        "ai_user_messages": ai_user_messages,
+        "ai_alert": ai_alert,
+        "text": "\n".join(lines),
+    }
+
+
+def start_nightly_report_dispatcher() -> None:
+    global _NIGHTLY_REPORT_STARTED
+    if _NIGHTLY_REPORT_STARTED or not KAIX_REPORT_EMAIL:
+        return
+    _NIGHTLY_REPORT_STARTED = True
+
+    def _loop() -> None:
+        while True:
+            delay = _seconds_until_jst_hour(KAIX_REPORT_HOUR_JST)
+            time.sleep(delay)
+            try:
+                with DB_LOCK, db() as conn:
+                    report = run_nightly_report(conn)
+                send_email_async(KAIX_REPORT_EMAIL, f"Machi 夜间指标 {report['date']}", report["text"])
+                ACCESS_LOG.info("nightly report sent date=%s hour=%s jst", report["date"], KAIX_REPORT_HOUR_JST)
+            except Exception:
+                ERR_LOG.exception("nightly report loop failed")
+            time.sleep(90)  # 跨过整分,避免同一时刻重复触发
+
+    threading.Thread(target=_loop, name="machi-nightly-report", daemon=True).start()
+
+
 def run() -> None:
     if PRODUCTION and AWS_S3_BUCKET:
         try:
@@ -35751,6 +36278,7 @@ def run() -> None:
         start_engagement_simulator()
         start_hot_score_refresher()
         start_stareal_daily_scheduler()
+        start_nightly_report_dispatcher()
     else:
         ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor + guide reminders + engagement sim + hot-score refresher disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")

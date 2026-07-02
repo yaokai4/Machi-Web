@@ -1,0 +1,15 @@
+{
+  "applinks": {
+    "details": [
+      {
+        "appIDs": ["P22K8NF89K.com.yaokai.kaizi"],
+        "components": [
+          { "/": "/p/*" },
+          { "/": "/listings/*" },
+          { "/": "/cities/*" },
+          { "/": "/guide/*" }
+        ]
+      }
+    ]
+  }
+}

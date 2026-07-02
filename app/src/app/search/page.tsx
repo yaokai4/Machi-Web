@@ -5,7 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery, useQueryClient, keepPreviousData } from "@tanstack/react-query";
-import { Flame, History, Hash, Search as SearchIcon, X, Trash2, TrendingUp, Loader2, BookOpen, Package } from "lucide-react";
+import { Bell, BellRing, Flame, History, Hash, Search as SearchIcon, X, Trash2, TrendingUp, Loader2, BookOpen, Package } from "lucide-react";
 import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading, PostSkeleton } from "@/components/design/States";
@@ -13,7 +13,7 @@ import { PostCard } from "@/components/feed/PostCard";
 import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 import { NavTabs } from "@/components/design/NavTabs";
-import { useToasts } from "@/lib/store";
+import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { appLocaleToMarketingLocale, useI18n } from "@/lib/i18n";
 import { compactNumber } from "@/lib/format";
 import { getCityBySlug } from "@/config/cities";
@@ -109,6 +109,29 @@ function SearchPageInner() {
       queryClient.invalidateQueries({ queryKey: ["search-history"] });
     } catch (e) {
       pushToast({ kind: "error", message: (e as APIError).message });
+    }
+  };
+
+  // 订阅当前关键词(保存搜索):换一个关键词后按钮回到可订阅态。
+  const user = useSession((s) => s.user);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
+  const [savedSearchFor, setSavedSearchFor] = useState("");
+  const [savingSearch, setSavingSearch] = useState(false);
+  const searchSaved = !!submitted && savedSearchFor === submitted;
+  const saveCurrentSearch = async () => {
+    if (!user) {
+      openAuthPrompt("saveSearch");
+      return;
+    }
+    if (searchSaved || savingSearch || !submitted) return;
+    setSavingSearch(true);
+    try {
+      await api.createSavedSearch({ keyword: submitted });
+      setSavedSearchFor(submitted);
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setSavingSearch(false);
     }
   };
 
@@ -215,7 +238,18 @@ function SearchPageInner() {
 
               {(kind === "all" || kind === "listing") && (search.data!.listings || []).length > 0 ? (
                 <section className="space-y-3">
-                  <h3 className="kx-section-title px-1">{t("search_listing_label")}</h3>
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="kx-section-title px-0">{t("search_listing_label")}</h3>
+                    <button
+                      type="button"
+                      onClick={saveCurrentSearch}
+                      disabled={savingSearch}
+                      className="inline-flex items-center gap-1.5 rounded-full border border-kx-stroke/60 bg-kx-card px-3 py-1 text-xs font-bold text-kx-subtle transition hover:border-kx-accent/40 hover:text-kx-accent disabled:opacity-60"
+                    >
+                      {searchSaved ? <BellRing className="h-3.5 w-3.5" /> : <Bell className="h-3.5 w-3.5" />}
+                      {searchSaved ? t("search_save_search_done") : t("search_save_search")}
+                    </button>
+                  </div>
                   {search.data!.listings.map((listing) => <SearchListingCard key={listing.id} listing={listing} locale={listingLocale} localFallback={t("search_local_city")} />)}
                 </section>
               ) : null}

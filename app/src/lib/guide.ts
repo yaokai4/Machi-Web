@@ -681,6 +681,8 @@ export interface GuideProfile {
   id: string;
   userId: string;
   identityType: string;
+  // First-open onboarding answer: 'pre_arrival' | 'just_arrived' | 'first_year' | 'long_term'.
+  arrivalStage?: string;
   country: string;
   city: string;
   isInJapan: boolean;

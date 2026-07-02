@@ -804,6 +804,25 @@ export type KXCaptcha = {
 };
 export type KXCaptchaAnswer = { captcha_id: string; captcha_code: string };
 
+// Saved-search subscription row (/api/saved_searches). The server also emits
+// camelCase aliases; we type the snake_case fields the web client reads.
+export type KXSavedSearch = {
+  id: string;
+  vertical: string;
+  city_slug: string;
+  region_code: string;
+  country_code: string;
+  keyword: string;
+  category: string;
+  filters: Record<string, unknown>;
+  label: string;
+  cadence: "instant" | "daily" | "off";
+  match_count: number;
+  last_notified_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
 export const api = {
   async fetchCaptcha(scene: "login" | "register" = "register"): Promise<KXCaptcha> {
     return request("POST", "/api/auth/captcha", { scene });
@@ -1163,7 +1182,13 @@ export const api = {
     exclude?: string;
     /** 属性级服务端筛选，键为属性名（如 condition），值支持逗号多选。 */
     attrs?: Record<string, string>;
-  }): Promise<{ items: KXCityListing[]; next_cursor: string | null; type: KXListingType }> {
+  }): Promise<{
+    items: KXCityListing[];
+    next_cursor: string | null;
+    type: KXListingType;
+    /** 空结果回退契约：命中回退时 data.filters.fallback = "metro_circle" | "country"，fallback_label = 展示名。 */
+    data?: { filters?: { fallback?: string; fallback_label?: string } };
+  }> {
     const params = new URLSearchParams({ type: opts.type });
     for (const [key, value] of Object.entries(opts)) {
       if (key === "type" || key === "attrs" || value == null || value === "") continue;
@@ -1285,6 +1310,28 @@ export const api = {
   async savedListings(type: KXListingType = "secondhand"): Promise<KXCityListing[]> {
     const { items } = await request<{ items: KXCityListing[] }>("GET", `/api/my/saved-listings?type=${encodeURIComponent(type)}`);
     return items;
+  },
+  // ---- saved searches (订阅搜索条件,新发布匹配时通知) ----
+  async savedSearches(): Promise<KXSavedSearch[]> {
+    const { items } = await request<{ items: KXSavedSearch[] }>("GET", "/api/saved_searches");
+    return items;
+  },
+  async createSavedSearch(payload: {
+    vertical?: string;
+    city_slug?: string;
+    region_code?: string;
+    country_code?: string;
+    keyword?: string;
+    category?: string;
+    filters?: Record<string, string>;
+    cadence?: "instant" | "daily" | "off";
+    label?: string;
+  }): Promise<KXSavedSearch> {
+    const { item } = await request<{ item: KXSavedSearch }>("POST", "/api/saved_searches", payload);
+    return item;
+  },
+  async deleteSavedSearch(id: string): Promise<void> {
+    await request<void>("DELETE", `/api/saved_searches/${encodeURIComponent(id)}`);
   },
   async myListingInquiries(opts: { role?: "all" | "sent" | "received"; type?: KXListingType | string; status?: string; bucket?: "consultation" | "reservation" | "application" } = {}): Promise<KXListingInquiry[]> {
     const params = new URLSearchParams();

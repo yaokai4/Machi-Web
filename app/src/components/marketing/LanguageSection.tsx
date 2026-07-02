@@ -7,12 +7,12 @@ export function LanguageSection() {
   const { copy } = useMarketingI18n();
 
   return (
-    <section className="px-5 py-14 sm:px-6 lg:py-20">
+    <section id="language" className="px-5 py-14 sm:px-6 lg:py-20">
       <div className="mx-auto grid max-w-[1180px] gap-10 lg:grid-cols-[0.9fr_1.1fr] lg:items-center">
         {/* ─────────── LEFT — copy ─────────── */}
         <div className="mc-reveal">
-          <p className="mc-eyebrow" style={{ color: "rgb(15 118 110)" }}>{copy.languageSection.label}</p>
-          <h2 className="mt-4 text-3xl font-black leading-tight text-slate-950 sm:text-5xl dark:text-white">
+          <p className="mc-eyebrow mc-eyebrow--teal">{copy.languageSection.label}</p>
+          <h2 className="mt-4 text-3xl font-black leading-tight tracking-[-0.015em] text-slate-950 sm:text-5xl dark:text-white">
             {copy.languageSection.title}
           </h2>
           <p className="mt-5 text-base leading-8 text-slate-600 sm:text-lg dark:text-slate-300">

@@ -455,6 +455,18 @@ JP_METRO_CIRCLES: dict[str, list[str]] = {
     "kyushu_okinawa":  ["fukuoka", "saga", "nagasaki", "kumamoto", "oita", "miyazaki", "kagoshima", "okinawa"],
 }
 
+# 都市圈中文显示名 — 与 iOS RegionDirectory.jpMetroCircles / web JP_METRO_CIRCLES
+# 的 name 逐字一致,供 api_listings 空结果回退提示(fallback_label)等展示场景复用。
+JP_METRO_CIRCLE_LABELS: dict[str, str] = {
+    "hokkaido_tohoku": "北海道・东北",
+    "kanto":           "关东",
+    "chubu":           "中部",
+    "kansai":          "近畿・关西",
+    "chugoku":         "中国地区",
+    "shikoku":         "四国",
+    "kyushu_okinawa":  "九州・冲绳",
+}
+
 
 def _jp_circle_for_province(province_code: str) -> str | None:
     p = (province_code or "").lower()
@@ -638,12 +650,14 @@ __all__ = [
     "REGION_COUNTRIES",
     "REGION_PROVINCES",
     "JP_METRO_CIRCLES",
+    "JP_METRO_CIRCLE_LABELS",
     "metro_circle_city_slugs",
     "metro_circle_city_slugs_for_city",
     "metro_circle_region_codes",
     "_cities_for_parent",
     "_country_lookup",
     "_detect_region_code_from_geo",
+    "_jp_circle_for_province",
     "_parse_region_code",
     "_region_payload_for_code",
     "_resolve_region_code",

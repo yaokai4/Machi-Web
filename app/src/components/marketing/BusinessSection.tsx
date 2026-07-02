@@ -17,7 +17,7 @@ export function BusinessSection() {
       <div className="mx-auto grid max-w-[1180px] gap-10 lg:grid-cols-[0.95fr_1.05fr] lg:items-center">
         {/* ─────────── LEFT — pitch ─────────── */}
         <div className="mc-reveal">
-          <p className="mc-eyebrow" style={{ color: "rgb(124 58 237)" }}>{copy.businessSection.label}</p>
+          <p className="mc-eyebrow mc-eyebrow--violet">{copy.businessSection.label}</p>
           <h2 className="mt-4 text-3xl font-black leading-tight text-slate-950 sm:text-5xl dark:text-white">
             <BrandPhrase text={copy.businessSection.title} />
           </h2>
@@ -39,7 +39,7 @@ export function BusinessSection() {
 
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
             <Button
-              href="#waitlist-form"
+              href={localizedMarketingHref("/business", locale)}
               size="md"
               className="h-12 sm:w-auto"
               iconLeft={<Building2 className="h-4 w-4" />}
@@ -47,7 +47,7 @@ export function BusinessSection() {
               {copy.businessSection.primary}
             </Button>
             <Button
-              href="#business"
+              href={localizedMarketingHref("/ads", locale)}
               variant="secondary"
               size="md"
               className="h-12 sm:w-auto"

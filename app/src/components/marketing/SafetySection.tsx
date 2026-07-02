@@ -1,23 +1,21 @@
 "use client";
 
 import {
-  AlertTriangle,
+  ArrowRight,
   BadgeCheck,
-  Ban,
-  EyeOff,
   Flag,
-  LockKeyhole,
+  Home,
+  Repeat2,
   ShieldCheck,
-  Siren,
   UsersRound,
 } from "lucide-react";
 import { BrandPhrase } from "./BrandText";
-import { useMarketingI18n } from "./MarketingI18n";
+import { useMarketingI18n, localizedMarketingHref } from "./MarketingI18n";
 
 // Each safety item gets a calm slate / emerald icon — no red panels,
 // no danger-style alerts. The goal is "trustworthy and mature", not
 // "scared of the platform".
-const icons = [UsersRound, ShieldCheck, AlertTriangle, EyeOff, Flag, LockKeyhole, Siren, BadgeCheck, Ban, ShieldCheck];
+const icons = [UsersRound, ShieldCheck, Home, Repeat2, BadgeCheck, Flag];
 const flowByLocale = {
   zh: ["举报", "审核", "拉黑", "下架", "账号限制"],
   en: ["Report", "Review", "Block", "Remove", "Limit"],
@@ -35,8 +33,8 @@ export function SafetySection() {
 
       <div className="mx-auto max-w-[1180px]">
         <div className="mc-reveal max-w-3xl">
-          <p className="mc-eyebrow" style={{ color: "rgb(15 118 110)" }}>{copy.safetySection.label}</p>
-          <h2 className="mt-4 text-3xl font-black leading-tight text-slate-950 sm:text-5xl dark:text-white">
+          <p className="mc-eyebrow mc-eyebrow--teal">{copy.safetySection.label}</p>
+          <h2 className="mt-4 text-3xl font-black leading-tight tracking-[-0.015em] text-slate-950 sm:text-5xl dark:text-white">
             <BrandPhrase text={copy.safetySection.title} />
           </h2>
           <p className="mt-5 text-base leading-8 text-slate-600 sm:text-lg dark:text-slate-300">
@@ -44,7 +42,7 @@ export function SafetySection() {
           </p>
         </div>
 
-        <div className="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="mt-10 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {copy.safetyItems.map((item, index) => {
             const Icon = icons[index] ?? ShieldCheck;
             return (
@@ -58,7 +56,7 @@ export function SafetySection() {
                 <h3 className="mt-4 text-base font-black leading-snug text-slate-950 dark:text-white">
                   {item.title}
                 </h3>
-                <p className="mt-2 text-xs leading-5 text-slate-600 dark:text-slate-400">{item.body}</p>
+                <p className="mt-2 text-sm leading-6 text-slate-600 dark:text-slate-400">{item.body}</p>
               </article>
             );
           })}
@@ -76,6 +74,16 @@ export function SafetySection() {
               </div>
             ))}
           </div>
+        </div>
+
+        <div className="mc-reveal mt-6 text-center sm:text-left">
+          <a
+            href={localizedMarketingHref("/safety", locale)}
+            className="inline-flex min-h-11 items-center gap-1.5 text-sm font-bold text-emerald-800 underline-offset-4 transition hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-600 dark:text-emerald-300"
+          >
+            {copy.safetySection.more}
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </a>
         </div>
       </div>
     </section>

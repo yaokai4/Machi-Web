@@ -6,9 +6,20 @@ import { useMarketingI18n } from "./MarketingI18n";
 
 export function FAQSection() {
   const { copy } = useMarketingI18n();
+  // Free SEO surface: mirror the visible accordion as FAQPage JSON-LD.
+  const faqLd = {
+    "@context": "https://schema.org",
+    "@type": "FAQPage",
+    mainEntity: copy.faqs.map(([question, answer]) => ({
+      "@type": "Question",
+      name: question,
+      acceptedAnswer: { "@type": "Answer", text: answer },
+    })),
+  };
 
   return (
-    <section className="px-5 py-14 sm:px-6 lg:py-20">
+    <section id="faq" className="px-5 py-14 sm:px-6 lg:py-20">
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(faqLd) }} />
       <div className="mx-auto max-w-[920px]">
         <div className="mc-reveal text-center">
           <p className="mc-eyebrow">{copy.faqSection.label}</p>

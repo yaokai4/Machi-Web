@@ -148,6 +148,33 @@ def main() -> None:
                                  region="jp-27", title="駅近の良いお部屋")
         assert server.notify_saved_search_matches(conn, listing3) == 0, "osaka listing must not match a tokyo search"
 
+        # --- job/hiring are one family: the jobs channel on web/iOS merges
+        # both streams, so a 'job' subscription must fire on a 'hiring'
+        # listing (and vice versa) ---
+        hiring_listing = _make_listing(conn, seller_id=seller, ltype="hiring", city="tokyo",
+                                       title="ラーメン店スタッフ募集")
+        assert server.notify_saved_search_matches(conn, hiring_listing) == 1, \
+            "the 'job' subscription must match a 'hiring' listing"
+        assert _count_notifs(conn, other, hiring_listing["id"]) == 1
+
+        # --- filters.categories set: a homestay subscription (vertical
+        # local_service + categories={民宿}) must not fire on other services ---
+        homestay_user = _make_user(conn)
+        hcat = _handler(homestay_user, body={
+            "vertical": "local_service", "city": "tokyo",
+            "filters": {"categories": "民宿"},
+        })
+        hcat.api_create_saved_search(conn)
+        restaurant = _make_listing(conn, seller_id=seller, ltype="local_service", city="tokyo",
+                                   category="美食餐厅", title="四川料理の店")
+        assert server.notify_saved_search_matches(conn, restaurant) == 0, \
+            "categories set must exclude non-homestay local_service listings"
+        minshuku = _make_listing(conn, seller_id=seller, ltype="local_service", city="tokyo",
+                                 category="民宿", title="浅草の民宿")
+        assert server.notify_saved_search_matches(conn, minshuku) == 1, \
+            "a 民宿 listing must fire the homestay subscription"
+        assert _count_notifs(conn, homestay_user, minshuku["id"]) == 1
+
         # --- delete: ownership enforced ---
         hbad = _handler(other)
         try:

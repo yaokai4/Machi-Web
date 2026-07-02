@@ -155,6 +155,7 @@ def serialize_guide_profile(row: sqlite3.Row | dict[str, Any] | None) -> dict[st
         "country": d.get("country") or "jp",
         "city": d.get("city") or "",
         "isInJapan": bool(d.get("is_in_japan") or 0),
+        "arrivalStage": d.get("arrival_stage") or "",
         "visaStatus": d.get("visa_status") or "",
         "visaExpiresAt": d.get("visa_expires_at"),
         "japaneseLevel": d.get("japanese_level") or "",

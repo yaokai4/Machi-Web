@@ -29,6 +29,7 @@ import subprocess
 import threading
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
 APNS_TEAM_ID = (os.environ.get("APNS_TEAM_ID") or "").strip()
@@ -41,6 +42,20 @@ APNS_HOST = (
     if (os.environ.get("APNS_ENVIRONMENT") or "production").strip().lower() == "sandbox"
     else "https://api.push.apple.com"
 )
+
+# Delivery-policy knobs (env-overridable, same read-at-import style as the
+# APNS_* credentials above). Quiet hours mute non-transactional pushes during
+# the JST night; the daily cap budgets reminder-type pushes per user. Both
+# gates only skip the APNs send — the in-app notification row is written by
+# the caller before enqueue() and is never affected.
+APNS_QUIET_HOURS_ENABLED = (os.environ.get("APNS_QUIET_HOURS_ENABLED") or "1").strip() != "0"
+APNS_QUIET_START_HOUR = int((os.environ.get("APNS_QUIET_START_HOUR") or "22").strip() or "22")
+APNS_QUIET_END_HOUR = int((os.environ.get("APNS_QUIET_END_HOUR") or "9").strip() or "9")
+APNS_DAILY_CAP_ENABLED = (os.environ.get("APNS_DAILY_CAP_ENABLED") or "1").strip() != "0"
+APNS_DAILY_CAP_PER_USER = int((os.environ.get("APNS_DAILY_CAP_PER_USER") or "1").strip() or "1")
+
+# Japan-market product: recipient-local night == JST night.
+_JST = timezone(timedelta(hours=9))
 
 _log = logging.getLogger("kaix.error")
 
@@ -140,6 +155,30 @@ _PREF_COLUMN = {
     "listing_inquiry": "push_inquiries",
     "listing_review": "push_inquiries",
     "listing_review_reply": "push_inquiries",
+    # v55 declared push_inquiries as the "inquiries/applications/bookings"
+    # toggle, so booking pushes honour the same switch.
+    "booking": "push_inquiries",
+}
+
+# Delivery-policy classes. Transactional pushes answer something the recipient
+# is actively waiting on (DMs, listing inquiries + their status changes, review
+# activity on their listings, booking confirmations/cancellations) — they
+# deliver day and night, uncapped. Capped types are reminder/digest-flavoured
+# (saved-search matches; "system" carries announcements, badges and budget
+# reminders today) and share one small daily budget per user. Everything else
+# ("guide_reminder" deadline alerts, social like/comment/reply/follow/repost/
+# mention/bookmark) is in neither set: uncapped, but muted in quiet hours.
+_TRANSACTIONAL_TYPES = {
+    "message",
+    "listing_inquiry",
+    "listing_inquiry_status",
+    "listing_review",
+    "listing_review_reply",
+    "booking",
+}
+_CAPPED_TYPES = {
+    "saved_search",
+    "system",
 }
 
 
@@ -161,6 +200,7 @@ def enqueue(
     post_id: str | None = None,
     conversation_id: str | None = None,
     message_id: str | None = None,
+    listing_id: str | None = None,
 ) -> None:
     """Queue one push. No-op when APNs isn't configured or the queue is
     saturated — push delivery is best-effort by design."""
@@ -177,6 +217,7 @@ def enqueue(
             "post_id": post_id or "",
             "conversation_id": conversation_id or "",
             "message_id": message_id or "",
+            "listing_id": listing_id or "",
         })
     except queue.Full:
         pass
@@ -189,6 +230,43 @@ def _worker() -> None:
             _deliver(job)
         except Exception:
             _log.warning("apns: delivery worker error", exc_info=True)
+
+
+def _now_jst() -> datetime:
+    """Current JST time; a seam so tests can pin the clock."""
+    return datetime.now(_JST)
+
+
+def _in_quiet_hours() -> bool:
+    """True inside the JST quiet window [APNS_QUIET_START_HOUR,
+    APNS_QUIET_END_HOUR) — with the defaults, [22:00, 09:00)."""
+    if not APNS_QUIET_HOURS_ENABLED:
+        return False
+    hour = _now_jst().hour
+    start, end = APNS_QUIET_START_HOUR, APNS_QUIET_END_HOUR
+    if start == end:
+        return False
+    if start < end:
+        return start <= hour < end
+    return hour >= start or hour < end  # window wraps midnight (22 → 9)
+
+
+def _consume_daily_cap(conn: Any, recipient_id: str) -> bool:
+    """Atomically claim one slot of today's per-user push budget; False means
+    the budget is spent and this send must be skipped. Same UPSERT+RETURNING
+    shape as guide_ai_usage, so concurrent workers can never both land under
+    the cap. Ledger trouble (e.g. table not migrated yet) fails open — a
+    policy gate must never break delivery outright."""
+    try:
+        row = conn.execute(
+            "INSERT INTO apns_push_ledger (user_id, jst_date, count) VALUES (?, ?, 1) "
+            "ON CONFLICT(user_id, jst_date) DO UPDATE SET count = apns_push_ledger.count + 1 "
+            "RETURNING count",
+            (recipient_id, _now_jst().strftime("%Y-%m-%d")),
+        ).fetchone()
+        return int(row["count"] if row else 1) <= APNS_DAILY_CAP_PER_USER
+    except Exception:
+        return True
 
 
 def _deliver(job: dict[str, Any]) -> None:
@@ -212,6 +290,17 @@ def _deliver(job: dict[str, Any]) -> None:
         # whole delivery if this category is turned off.
         pref_col = _PREF_COLUMN.get(job["ntype"])
         if pref_col is not None and not bool(sdict.get(pref_col, 1)):
+            return
+        # Gate 1 — JST quiet hours: non-transactional pushes never buzz a
+        # phone at night; the in-app notification row is still there in the
+        # morning. Transactional types (someone is waiting) always go out.
+        if job["ntype"] not in _TRANSACTIONAL_TYPES and _in_quiet_hours():
+            return
+        # Gate 2 — daily budget: reminder-type pushes share one small
+        # per-user per-JST-day allowance so saved-search / system nudges
+        # can't stack up into spam.
+        if (APNS_DAILY_CAP_ENABLED and job["ntype"] in _CAPPED_TYPES
+                and not _consume_daily_cap(conn, recipient_id)):
             return
         actor_name = ""
         if job["actor_id"]:
@@ -253,6 +342,8 @@ def _deliver(job: dict[str, Any]) -> None:
         payload["conversationId"] = job["conversation_id"]
     if job.get("message_id"):
         payload["messageId"] = job["message_id"]
+    if job.get("listing_id"):
+        payload["listingId"] = job["listing_id"]
     blob = json.dumps(payload, ensure_ascii=False)
 
     jwt = _provider_jwt()

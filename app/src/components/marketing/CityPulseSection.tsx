@@ -5,6 +5,9 @@ import type { MarketingLocale } from "@/data/machi-home";
 import { BrandPhrase } from "./BrandText";
 import { useMarketingI18n } from "./MarketingI18n";
 
+// Community section: local Q&A plus groups, merged into one story.
+// Sample content deliberately differs from the hero mockup (Osaka /
+// Kyoto / Yokohama scenes) so the page reads as breadth, not template.
 const copyByLocale: Record<
   MarketingLocale,
   {
@@ -16,37 +19,73 @@ const copyByLocale: Record<
     liveLabel: string;
     cities: Array<[string, string]>;
     echoes: Array<[string, string]>;
+    groupsLabel: string;
+    groups: string[];
+    topics: Array<[string, string]>;
   }
 > = {
   zh: {
-    label: "同城问答",
-    title: "你遇到的问题，也许这座城市里已经有人走过。",
+    label: "同城社区",
+    title: "你遇到的问题，这座城市里也许已经有人走过。",
     body: "租房合同怎么看，手续先办哪一项，周末附近有什么活动。问题落在具体的城市里，回答才有真正可用的背景。",
     pulse: "同一座城市，让经验离需要它的人更近。",
-    panelTitle: "城市动态",
+    panelTitle: "本周话题",
     liveLabel: "正在发生",
-    cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
-    echoes: [["有人发问", "新宿租房有哪些坑要避开？"], ["有人回应", "我去年住过这个区，可以分享合同注意点。"], ["有人连接", "周五涩谷拉面局，还有两个位置。"]],
+    cities: [["东京", "美食 · 语言交换"], ["大阪", "租房 · 工作"], ["京都", "住宿 · 漫步"]],
+    echoes: [
+      ["有人发问", "大阪梅田上班，一个人住哪个区通勤方便？"],
+      ["有人回应", "我在福岛区住了两年，房租和通勤都可以细说。"],
+      ["有人约起", "周日鸭川边散步，慢走闲聊，还差三个人。"],
+    ],
+    groupsLabel: "本地小组",
+    groups: ["一起吃饭", "咖啡与聊天", "周末活动", "运动小组", "语言交换", "城市漫步", "本地互助", "新住民支持"],
+    topics: [
+      ["横滨有推荐的日语教室吗？", "12 条回应"],
+      ["搬家前，大件家具怎么处理？", "9 条回应"],
+      ["三月末退税，需要准备什么？", "7 条回应"],
+    ],
   },
   en: {
-    label: "Local Q&A",
+    label: "Local community",
     title: "Someone in the city has probably faced the same question.",
-    body: "How to read a lease, which paperwork comes first, what is happening nearby this weekend: an answer becomes useful when it comes with a real place and context.",
+    body: "How to read a lease, which paperwork comes first, what is happening nearby this weekend. An answer becomes useful when it comes with a real place and context.",
     pulse: "Keep local experience close to the people who need it.",
-    panelTitle: "City activity",
+    panelTitle: "This week",
     liveLabel: "Happening now",
-    cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
-    echoes: [["Someone asks", "What should I avoid when renting in Shinjuku?"], ["Someone answers", "I lived there last year. Here is what to check in the contract."], ["Someone connects", "Friday ramen in Shibuya. Two seats left."]],
+    cities: [["Tokyo", "Dining · Languages"], ["Osaka", "Housing · Jobs"], ["Kyoto", "Stays · Walks"]],
+    echoes: [
+      ["Someone asks", "Working near Umeda, Osaka — which area is easy to commute from?"],
+      ["Someone answers", "Two years in Fukushima ward. Happy to break down rent and the commute."],
+      ["Someone connects", "Sunday walk along the Kamo river. Slow pace, good talk — three spots left."],
+    ],
+    groupsLabel: "Local groups",
+    groups: ["Dinner together", "Coffee & chat", "Weekend plans", "Sports", "Language exchange", "City walks", "Mutual help", "Newcomer support"],
+    topics: [
+      ["Any good Japanese classes in Yokohama?", "12 replies"],
+      ["Moving out — what to do with big furniture?", "9 replies"],
+      ["Tax refund in March: what do I prepare?", "7 replies"],
+    ],
   },
   ja: {
-    label: "街のQ&A",
-    title: "その困りごとを、同じ街で先に経験した人がいるかもしれません。",
-    body: "賃貸契約の見方、手続きの順番、週末に参加できる催し。具体的な街と背景がわかるからこそ、回答は実際の暮らしに役立ちます。",
+    label: "街のコミュニティ",
+    title: "その困りごと、同じ街で先に経験した人がいるかもしれません。",
+    body: "賃貸契約の見方、手続きの順番、週末に参加できる催し。具体的な街と背景があってこそ、回答は実際の暮らしに役立ちます。",
     pulse: "街の経験を、必要としている人の近くに。",
-    panelTitle: "街の動き",
+    panelTitle: "今週の話題",
     liveLabel: "いま",
-    cities: [["Tokyo", "Dining · Language Exchange"], ["Los Angeles", "Jobs · Events"], ["Toronto", "Housing · Q&A"]],
-    echoes: [["誰かが聞く", "新宿で部屋を借りる時の注意点は？"], ["誰かが答える", "去年そのエリアに住んでいました。契約で見る点を共有できます。"], ["誰かとつながる", "金曜の渋谷ラーメン会、あと二席あります。"]],
+    cities: [["東京", "食事 · 言語交換"], ["大阪", "住まい · 仕事"], ["京都", "宿 · 街歩き"]],
+    echoes: [
+      ["誰かが聞く", "梅田で働く予定です。一人暮らしにおすすめのエリアは？"],
+      ["誰かが答える", "福島区に2年住んでいました。家賃と通勤事情、詳しくお伝えできます。"],
+      ["誰かとつながる", "日曜、鴨川沿いをゆっくり歩きませんか。あと三人入れます。"],
+    ],
+    groupsLabel: "地域グループ",
+    groups: ["ごはん会", "コーヒーと雑談", "週末の予定", "スポーツ", "言語交換", "街歩き", "助け合い", "新生活サポート"],
+    topics: [
+      ["横浜でおすすめの日本語教室は？", "回答 12 件"],
+      ["引っ越し前、大きな家具はどうする？", "回答 9 件"],
+      ["3月の還付申告、何を準備すればいい？", "回答 7 件"],
+    ],
   },
 };
 
@@ -67,15 +106,29 @@ export function CityPulseSection() {
       <div className="mx-auto grid max-w-[1180px] gap-8 lg:grid-cols-[0.92fr_1.08fr] lg:items-center">
         <div className="mc-reveal">
           <p className="mc-eyebrow">{copy.label}</p>
-          <h2 className="mt-4 text-3xl font-black leading-tight text-slate-950 sm:text-5xl dark:text-white">
+          <h2 className="mt-4 text-3xl font-black leading-tight tracking-[-0.015em] text-slate-950 sm:text-5xl dark:text-white">
             <BrandPhrase text={copy.title} />
           </h2>
           <p className="mt-5 max-w-2xl text-base leading-8 text-slate-700 sm:text-lg dark:text-slate-300">
             <BrandPhrase text={copy.body} />
           </p>
-          <p className="mt-6 inline-flex rounded-full bg-[#151515] px-4 py-2 text-sm font-black text-white shadow-[0_18px_44px_-28px_rgba(21,21,21,0.7)]">
+          <p className="mt-6 inline-flex rounded-full bg-[#151515] px-4 py-2 text-sm font-bold text-white shadow-[0_18px_44px_-28px_rgba(21,21,21,0.7)]">
             {copy.pulse}
           </p>
+
+          <p className="mt-8 text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400">
+            {copy.groupsLabel}
+          </p>
+          <div className="mt-3 flex max-w-xl flex-wrap gap-2">
+            {copy.groups.map((group) => (
+              <span
+                key={group}
+                className="rounded-full border border-white/70 bg-white/80 px-3.5 py-1.5 text-[13px] font-bold text-slate-700 shadow-[0_8px_22px_-18px_rgba(15,23,42,0.5)] backdrop-blur dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-200"
+              >
+                {group}
+              </span>
+            ))}
+          </div>
         </div>
 
         <div className="mc-reveal relative rounded-[32px] border border-white/80 bg-white/82 p-4 shadow-[0_28px_90px_-58px_rgba(28,25,23,0.55)] backdrop-blur-xl dark:border-white/10 dark:bg-white/[0.05] sm:p-6">
@@ -93,14 +146,14 @@ export function CityPulseSection() {
 
             <div className="grid gap-3">
               {copy.echoes.map(([title, body], index) => (
-                <article key={title} className="rounded-[24px] bg-white/92 p-4 shadow-[0_18px_46px_-40px_rgba(28,25,23,0.65)] ring-1 ring-stone-200/70 dark:bg-white/[0.07] dark:ring-white/10">
+                <article key={title} className={`mc-reveal mc-reveal-${index + 1} rounded-[24px] bg-white/92 p-4 shadow-[0_18px_46px_-40px_rgba(28,25,23,0.65)] ring-1 ring-stone-200/70 dark:bg-white/[0.07] dark:ring-white/10`}>
                   <div className="flex items-center gap-2">
                     <span className="inline-flex h-9 w-9 items-center justify-center rounded-2xl bg-orange-50 text-orange-600 ring-1 ring-orange-100 dark:bg-orange-500/10 dark:text-orange-200 dark:ring-orange-300/20">
                       {index === 0 ? <MessageCircle className="h-4 w-4" /> : index === 1 ? <Sparkles className="h-4 w-4" /> : <UsersRound className="h-4 w-4" />}
                     </span>
                     <p className="text-xs font-black uppercase text-stone-500 dark:text-stone-400">{title}</p>
                   </div>
-                  <p className="mt-3 text-base font-black leading-7 text-stone-950 dark:text-white">{body}</p>
+                  <p className="mt-3 text-base font-bold leading-7 text-stone-950 dark:text-white">{body}</p>
                 </article>
               ))}
             </div>
@@ -114,14 +167,14 @@ export function CityPulseSection() {
                   {copy.liveLabel}
                 </span>
               </p>
-              <div className="mt-4 grid grid-cols-3 gap-2">
-                {[72, 48, 64].map((height) => (
-                  <span key={height} className="rounded-xl bg-white/[0.07] p-2 ring-1 ring-white/10">
-                    <span className="block rounded-lg bg-gradient-to-t from-orange-400/85 to-indigo-400/85" style={{ height }} />
-                    <span className="mt-2 block h-2 rounded-full bg-white/20" />
-                  </span>
+              <ul className="mt-3 divide-y divide-white/[0.08]">
+                {copy.topics.map(([topic, meta]) => (
+                  <li key={topic} className="flex items-baseline justify-between gap-3 py-2.5">
+                    <span className="min-w-0 flex-1 truncate text-sm font-bold text-white/90">{topic}</span>
+                    <span className="shrink-0 text-[11px] font-semibold text-white/40">{meta}</span>
+                  </li>
                 ))}
-              </div>
+              </ul>
             </div>
           </div>
         </div>

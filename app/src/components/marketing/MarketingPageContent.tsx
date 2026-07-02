@@ -1,9 +1,8 @@
 "use client";
 
-import { AnnouncementSection } from "./AnnouncementSection";
-import { BrandStorySection } from "./BrandStorySection";
 import { BusinessSection } from "./BusinessSection";
 import { CityPulseSection } from "./CityPulseSection";
+import { ClosingCtaSection } from "./ClosingCtaSection";
 import { FAQSection } from "./FAQSection";
 import { FeatureChannelGrid } from "./FeatureChannelGrid";
 import { Footer } from "./Footer";
@@ -15,7 +14,6 @@ import { LanguageSection } from "./LanguageSection";
 import { MachiAISection } from "./MachiAISection";
 import { MarketingMotion } from "./MarketingMotion";
 import { SafetySection } from "./SafetySection";
-import { SocialConnectionSection } from "./SocialConnectionSection";
 import { WhyMachiSection } from "./WhyMachiSection";
 
 export function MarketingPageContent() {
@@ -24,21 +22,22 @@ export function MarketingPageContent() {
       <MarketingMotion />
       <Header />
       <HeroSection />
-      {/* Narrative flow: value → product signal → founder → channels →
-          guide → community → trust → business → brand story → updates. */}
+      {/* Narrative arc, one idea per section:
+          value (why) → community proof (pulse) → product inventory
+          (channels) → depth (guide, AI, languages) → the person behind
+          it (founder) → trust (safety) → business → FAQ → one closing
+          ask. Brand story lives on /about; announcements on /updates. */}
       <WhyMachiSection />
       <CityPulseSection />
-      <FounderSection />
       <FeatureChannelGrid />
       <GuideSection />
       <MachiAISection />
-      <SocialConnectionSection />
+      <LanguageSection />
+      <FounderSection />
       <SafetySection />
       <BusinessSection />
-      <LanguageSection />
-      <BrandStorySection />
-      <AnnouncementSection />
       <FAQSection />
+      <ClosingCtaSection />
       <Footer />
     </>
   );

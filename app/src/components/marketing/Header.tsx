@@ -115,11 +115,14 @@ export function Header() {
 
   return (
     <header className="mc-site-header fixed inset-x-0 top-0 z-[80] px-4 sm:px-5">
+      {/* Fade-out scrim: content dissolves before it reaches the pill,
+          instead of visibly colliding with the floating capsule. */}
+      <div aria-hidden="true" className={clsx("mc-header-scrim", scrolled && "mc-header-scrim--on")} />
       {open ? (
         <button
           type="button"
           aria-label={copy.nav.closeMenu}
-          className="fixed inset-0 z-10 bg-slate-950/10 backdrop-blur-[2px] md:hidden dark:bg-black/30"
+          className="fixed inset-0 z-10 bg-slate-950/10 backdrop-blur-[2px] lg:hidden dark:bg-black/30"
           onClick={() => setOpen(false)}
         />
       ) : null}
@@ -169,7 +172,7 @@ export function Header() {
             ))}
           </nav>
 
-          <div className="ml-auto hidden shrink-0 items-center gap-2 md:flex">
+          <div className="ml-auto hidden shrink-0 items-center gap-2 lg:flex">
             <LocaleMenu locale={locale} options={localeOptions} onSelect={switchLocale} label={copy.nav.language} />
             <ThemeToggle compact />
             <Button href="/register" variant="text" size="sm" className="shrink-0 whitespace-nowrap">
@@ -180,13 +183,13 @@ export function Header() {
             </Button>
           </div>
 
-          <div className="ml-auto flex shrink-0 items-center gap-1.5 md:hidden">
+          <div className="ml-auto flex shrink-0 items-center gap-1.5 lg:hidden">
             <span className="inline-flex">
               <ThemeToggle compact />
             </span>
             <Link
               href="/login"
-              className="hidden h-9 items-center justify-center whitespace-nowrap rounded-full bg-slate-950 px-3 text-xs font-black text-white shadow-sm min-[420px]:inline-flex dark:bg-white dark:text-slate-950"
+              className="hidden h-10 items-center justify-center whitespace-nowrap rounded-full bg-slate-950 px-3.5 text-xs font-black text-white shadow-sm min-[420px]:inline-flex dark:bg-white dark:text-slate-950"
             >
               {copy.nav.signIn}
             </Link>
@@ -208,12 +211,12 @@ export function Header() {
 
       <div
         className={clsx(
-          "absolute left-4 right-4 top-[calc(100%+0.55rem)] z-40 mx-auto max-w-[1180px] md:hidden",
+          "absolute left-4 right-4 top-[calc(100%+0.55rem)] z-40 mx-auto max-w-[1180px] lg:hidden",
           "origin-top transform-gpu transition duration-[240ms] ease-out",
           open ? "pointer-events-auto translate-y-0 scale-100 opacity-100" : "pointer-events-none -translate-y-2 scale-[0.985] opacity-0",
         )}
       >
-        <nav className="rounded-[28px] border border-white/75 bg-white/[0.94] p-2 shadow-[0_30px_90px_-58px_rgba(15,23,42,0.9)] backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/[0.9]">
+        <nav className="max-h-[calc(100dvh-8.5rem)] overflow-y-auto overscroll-contain rounded-[28px] border border-white/75 bg-white/[0.94] p-2 shadow-[0_30px_90px_-58px_rgba(15,23,42,0.9)] backdrop-blur-2xl dark:border-white/10 dark:bg-slate-950/[0.9]">
           {copy.nav.items.map(([label, href], index) => (
             <Link
               key={href}

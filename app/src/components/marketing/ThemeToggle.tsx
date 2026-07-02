@@ -23,10 +23,12 @@ function readStored(): Mode {
       localStorage.removeItem(LEGACY_STORAGE_KEY);
       return raw;
     }
-    localStorage.setItem(STORAGE_KEY, "light");
+    // No explicit choice → mirror the OS, and don't persist, so the
+    // site keeps following system changes until the user picks one.
     localStorage.removeItem(LEGACY_STORAGE_KEY);
     localStorage.removeItem("machi-appearance");
     localStorage.removeItem("kaix-appearance");
+    if (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) return "dark";
   } catch {}
   return "light";
 }
@@ -67,7 +69,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
         type="button"
         aria-label="切换主题"
         onClick={() => change(mode === "light" ? "dark" : "light")}
-        className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-slate-950/5 text-slate-700 ring-1 ring-slate-900/10 transition hover:bg-slate-950/10 dark:bg-white/10 dark:text-slate-100 dark:ring-white/15 dark:hover:bg-white/20"
+        className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-950/5 text-slate-700 ring-1 ring-slate-900/10 transition hover:bg-slate-950/10 dark:bg-white/10 dark:text-slate-100 dark:ring-white/15 dark:hover:bg-white/20"
       >
         <Icon className="h-4 w-4" />
       </button>

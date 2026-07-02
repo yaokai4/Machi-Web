@@ -16,6 +16,7 @@ import {
   BedDouble,
   Beer,
   Bell,
+  BellRing,
   BookOpen,
   Briefcase,
   Building2,
@@ -769,6 +770,8 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
         items: [...jobs.items, ...hiring.items].sort(sortListings),
         next_cursor: nextPair.job || nextPair.hiring ? JSON.stringify(nextPair) : null,
         type: spec.type,
+        // 双流合并口径下服务端回退提示不适用,显式置空保持分页类型一致。
+        data: undefined,
       };
     },
     staleTime: 30_000,
@@ -780,6 +783,54 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
       return;
     }
     listings.refetch();
+  };
+  // 订阅当前搜索条件（保存搜索,新发布匹配时服务端推通知）。payload 与查询分支
+  // 同一份口径:城市 > 都市圈(取圈内主城,服务端按都市圈扩展) > 都道府县 > 全国。
+  // 条件一变 key 失配,按钮自动回到「订阅此搜索」态。
+  const pushToast = useToasts((s) => s.push);
+  // 民宿 tab / 服务分区查询按类目集合(categories)收窄,单一 category 字段表达不了;
+  // 集合随 filters.categories 存进 filter_json,服务端匹配时按集合过滤,否则订阅
+  // 「民宿」会命中所有 local_service 新发布。
+  const savedSearchCategories = lodgingActive && category === "全部"
+    ? HOMESTAY_CATEGORIES.join(",")
+    : kind === "services"
+      ? sectionCategoriesParam
+      : "";
+  const savedSearchPayload = useMemo(() => ({
+    vertical: lodgingActive ? "local_service" : forSaleActive ? "for_sale" : spec.type,
+    city_slug: scopedCity
+      ? scopedCity.slug
+      : scopedArea
+        ? (scopedArea.cities[0] || "")
+        : !nationwide && scope === "city" && !scopedProvince
+          ? city.slug
+          : "",
+    region_code: scopedProvince,
+    country_code: !scopedCity && !scopedArea && !scopedProvince && scope === "country" ? scopeCountry : "",
+    keyword: query,
+    category: category === "全部" ? "" : category,
+    filters: savedSearchCategories ? { ...serverAttrs, categories: savedSearchCategories } : serverAttrs,
+  }), [lodgingActive, forSaleActive, spec.type, scopedCity, scopedArea, scopedProvince, nationwide, scope, city.slug, scopeCountry, query, category, serverAttrs, savedSearchCategories]);
+  const savedSearchKey = JSON.stringify(savedSearchPayload);
+  const [subscribedKey, setSubscribedKey] = useState("");
+  const [subscribing, setSubscribing] = useState(false);
+  const searchSubscribed = subscribedKey === savedSearchKey;
+  const subscribeSearch = async () => {
+    if (!user) {
+      openAuthPrompt("saveSearch");
+      return;
+    }
+    if (searchSubscribed || subscribing) return;
+    setSubscribing(true);
+    try {
+      await api.createSavedSearch(savedSearchPayload);
+      setSubscribedKey(savedSearchKey);
+      pushToast({ kind: "success", message: pickText(locale, "已订阅，有匹配的新发布会通知你", "購読しました。条件に合う新着があれば通知します", "Subscribed — we'll notify you when new posts match") });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally {
+      setSubscribing(false);
+    }
   };
   const sectionSpec = SERVICE_SECTIONS.find((section) => section.key === serviceSection);
   // 属性筛选已由服务端完成（serverAttrs），这里只保留服务页的类目归组规则。
@@ -802,6 +853,9 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
     return true;
   });
   const activeFilterCount = Object.values(filters).filter((value) => String(value || "").trim()).length;
+  // 空态回退契约:该地区没有结果时服务端回退到都市圈/全国(data.filters.fallback +
+  // fallback_label),在结果上方用一行说明当前展示的范围。
+  const fallbackFilters = listings.data?.pages?.[0]?.data?.filters;
   const { hasNextPage, isFetchingNextPage, fetchNextPage } = listings;
 
   useEffect(() => {
@@ -1001,6 +1055,18 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
                   <option value="rating">{pickText(locale, "评分优先", "評価が高い順", "Top rated")}</option>
                 ) : null}
               </select>
+              <button
+                type="button"
+                onClick={subscribeSearch}
+                disabled={subscribing}
+                data-active={searchSubscribed}
+                className="kx-filter-button"
+              >
+                {searchSubscribed ? <BellRing className="h-4 w-4" /> : <Bell className="h-4 w-4" />}
+                {searchSubscribed
+                  ? pickText(locale, "已订阅", "購読中", "Subscribed")
+                  : pickText(locale, "订阅此搜索", "この検索を購読", "Save this search")}
+              </button>
               <p className="ml-auto hidden text-xs font-bold text-slate-400 sm:block">
                 {visibleItems.length
                   ? pickText(locale, `${visibleItems.length}${listings.hasNextPage ? "+" : ""} 条结果`, `${visibleItems.length}${listings.hasNextPage ? "+" : ""} 件`, `${visibleItems.length}${listings.hasNextPage ? "+" : ""} results`)
@@ -1079,6 +1145,17 @@ export function CityListingChannelPage({ citySlug, kind }: { citySlug?: string; 
           </section>
 
           {kind === "services" && !nationwide ? <VerifiedMerchantsStrip citySlug={city.slug} locale={locale} /> : null}
+
+          {fallbackFilters?.fallback && fallbackFilters.fallback_label && visibleItems.length ? (
+            <p className="mb-3 rounded-xl bg-slate-100/80 px-4 py-2.5 text-sm font-semibold text-slate-500">
+              {pickText(
+                locale,
+                `该地区暂无，已为你展示${fallbackFilters.fallback_label}的内容`,
+                `該当エリアの掲載はまだありません。${fallbackFilters.fallback_label}の内容を表示しています`,
+                `Nothing in this area yet — showing listings from ${fallbackFilters.fallback_label}`,
+              )}
+            </p>
+          ) : null}
 
           {listings.isLoading ? (
             <div className="space-y-3">
