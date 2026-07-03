@@ -281,6 +281,22 @@ def backfill_partner_seller_avatars(conn) -> int:
     return filled
 
 
+def backfill_partner_sellers_as_merchants(conn) -> int:
+    """Idempotent: mark every partner seller 公司账号 as a verified merchant so it
+    is treated as a normal 商家账号 everywhere (higher upload quota, merchant
+    badges/console) and stays stable. These are trusted, admin-provisioned
+    business accounts — never personas or deregistered users."""
+    now = _iso(None)
+    cur = conn.execute(
+        "UPDATE users SET is_merchant = 1, merchant_verified = 1, is_verified = 1, updated_at = ? "
+        "WHERE id IN (SELECT seller_user_id FROM partners WHERE COALESCE(seller_user_id, '') != '') "
+        "AND deleted_at IS NULL "
+        "AND (COALESCE(is_merchant, 0) = 0 OR COALESCE(merchant_verified, 0) = 0)",
+        (now,),
+    )
+    return int(getattr(cur, "rowcount", 0) or 0)
+
+
 _PARTNER_EDITABLE = {
     "name": "name", "name_ja": "name_ja", "name_en": "name_en", "website": "website",
     "default_city_slug": "default_city_slug", "default_region_code": "default_region_code",

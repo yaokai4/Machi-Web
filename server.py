@@ -7305,6 +7305,9 @@ def init_db() -> None:
                 filled = partners.backfill_partner_seller_avatars(conn)
                 if filled:
                     ACCESS_LOG.info("partner seller-avatar backfill filled=%s", filled)
+                promoted = partners.backfill_partner_sellers_as_merchants(conn)
+                if promoted:
+                    ACCESS_LOG.info("partner seller merchant-flag backfill promoted=%s", promoted)
             except Exception:
                 ERR_LOG.exception("partner seller-avatar backfill failed (non-fatal)")
             # Remove listings still lingering under deregistered ('已注销用户')
@@ -7338,9 +7341,11 @@ def init_db() -> None:
         # Reconcile post_tags with #hashtags written into post bodies so the
         # topic pages list every post that actually carries a tag (one-time).
         ensure_post_tags_backfill(conn)
-        # Mirror partner logos onto their 公司账号 avatars (only fills empty ones).
+        # Mirror partner logos onto their 公司账号 avatars (only fills empty ones)
+        # and mark partner seller accounts as verified merchants (stable 商家账号).
         try:
             partners.backfill_partner_seller_avatars(conn)
+            partners.backfill_partner_sellers_as_merchants(conn)
         except Exception:
             ERR_LOG.exception("partner seller-avatar backfill failed (non-fatal)")
         # Purge marketplace listings still lingering under deregistered sellers.
@@ -36171,6 +36176,29 @@ class Handler(BaseHTTPRequestHandler):
         if not row or row["user_id"] != user_id:
             raise APIError("无权给该 Guide 项目上传附件", 403, "forbidden")
 
+    # Identity images (a profile/company avatar & cover) are single, low-abuse
+    # assets — they must NOT share the bulk daily upload budget. Otherwise a
+    # business account (e.g. a 星域 partner 公司账号) that rehosts hundreds of
+    # listing photos on its daily sync exhausts the cap and then can't even
+    # change its own avatar. So they get their own separate, generous daily
+    # bucket keyed only on identity uploads.
+    _IDENTITY_UPLOAD_PURPOSES = ("avatar", "profile_cover", "business_logo", "business_cover")
+
+    def _is_business_uploader(self, conn: sqlite3.Connection, user_id: str) -> bool:
+        """Partner seller 公司账号 + verified merchants + official accounts upload
+        high volumes legitimately (listing photo sync), so they get a much higher
+        daily upload ceiling — they are trusted business accounts, not abuse."""
+        row = conn.execute(
+            "SELECT COALESCE(is_merchant,0) AS m, COALESCE(merchant_verified,0) AS v, "
+            "COALESCE(is_official,0) AS o FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if row and (int(row["m"]) or int(row["v"]) or int(row["o"])):
+            return True
+        return bool(conn.execute(
+            "SELECT 1 FROM partners WHERE seller_user_id = ? LIMIT 1", (user_id,)
+        ).fetchone())
+
     def _check_upload_quota(
         self,
         conn: sqlite3.Connection,
@@ -36181,14 +36209,29 @@ class Handler(BaseHTTPRequestHandler):
         entity_id: str,
     ) -> None:
         since = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+        if purpose in self._IDENTITY_UPLOAD_PURPOSES:
+            # Count ONLY identity uploads — listing/post photos never block an
+            # avatar/cover change. Generous but bounded (anti-abuse for storage).
+            placeholders = ",".join(["?"] * len(self._IDENTITY_UPLOAD_PURPOSES))
+            id_daily = conn.execute(
+                f"SELECT COUNT(*) AS c FROM uploaded_files WHERE user_id = ? AND created_at >= ? "
+                f"AND deleted_at IS NULL AND purpose IN ({placeholders})",
+                (user_id, since, *self._IDENTITY_UPLOAD_PURPOSES),
+            ).fetchone()["c"]
+            if int(id_daily or 0) >= 40:
+                raise APIError("今日上传次数已达上限", 429, "daily_upload_limit")
+            return  # identity purposes carry no per-entity count limit
+        # Bulk content (listing/post/message media): trusted business accounts get
+        # a far higher ceiling so a legitimate high-volume seller is never blocked.
+        cap = 5000 if self._is_business_uploader(conn, user_id) else 120
         daily = conn.execute(
             "SELECT COUNT(*) AS c FROM uploaded_files WHERE user_id = ? AND created_at >= ? AND deleted_at IS NULL",
             (user_id, since),
         ).fetchone()["c"]
-        if int(daily or 0) >= 120:
+        if int(daily or 0) >= cap:
             raise APIError("今日上传次数已达上限", 429, "daily_upload_limit")
         limit = int(UPLOAD_PURPOSES[purpose].get("count") or 0)
-        if limit <= 0 or purpose in {"avatar", "profile_cover", "business_logo", "business_cover"}:
+        if limit <= 0:
             return
         if not (entity_type and entity_id):
             return
@@ -37269,9 +37312,9 @@ class Handler(BaseHTTPRequestHandler):
             """
             INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
                                avatar_symbol, avatar_color, avatar_url, cover_url, membership_tier,
-                               is_verified, role, country, province, city, current_region_code,
-                               recent_region_codes, joined_at, created_at, updated_at)
-            VALUES (?, ?, ?, '', ?, '', '', 'building.2.fill', 'teal', '', '', 'free', 1, 'member', 'jp', '', '', '', '', ?, ?, ?)
+                               is_verified, is_merchant, merchant_verified, role, country, province, city,
+                               current_region_code, recent_region_codes, joined_at, created_at, updated_at)
+            VALUES (?, ?, ?, '', ?, '', '', 'building.2.fill', 'teal', '', '', 'free', 1, 1, 1, 'member', 'jp', '', '', '', '', ?, ?, ?)
             """,
             (uid, handle, name or key, hash_password(uuid.uuid4().hex + uuid.uuid4().hex), now, now, now),
         )
