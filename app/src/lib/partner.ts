@@ -456,6 +456,22 @@ export function uploadPartnerImage(key: string, file: File): Promise<PartnerUplo
   return partnerRequest<PartnerUploadResult>(key, "POST", "/uploads", fd);
 }
 
+// PATCH /branding — self-service branding save (token-gated). Setting `logo_url`
+// mirrors the company logo onto the 公司账号's avatar server-side, so the partner
+// can change their own account avatar (that account can never log in normally).
+export interface PartnerBrandingPatch {
+  logo_url?: string;
+  intro?: string;
+  brand_color?: string;
+  accent_color?: string;
+  website?: string;
+  name_ja?: string;
+  name_en?: string;
+}
+export function savePartnerBranding(key: string, patch: PartnerBrandingPatch): Promise<{ partner: PartnerBranding }> {
+  return partnerRequest<{ partner: PartnerBranding }>(key, "PATCH", "/branding", patch);
+}
+
 // POST /import/parse — multipart FormData with field `file` (.xlsx / .csv).
 export function parsePartnerImport(key: string, file: File): Promise<PartnerParseResult> {
   const fd = new FormData();

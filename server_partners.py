@@ -236,7 +236,49 @@ def create_partner(
             intro, created_by_admin_id, now, now,
         ),
     )
+    # The partner's company logo IS the avatar of its seller account (the
+    # 星域东京-style公司账号 that publishes/syncs listings). That account is
+    # provisioned with a discarded random password so it can never log in —
+    # nobody can open "edit profile" to set an avatar. So the only way its
+    # avatar can ever change is by mirroring the partner logo here.
+    sync_seller_avatar(conn, seller_user_id, logo_url, now=now)
     return get_partner(conn, key), token
+
+
+def sync_seller_avatar(conn, seller_user_id: str, logo_url: str, *, now: str | None = None) -> bool:
+    """Mirror a partner's logo_url onto its seller account's ``avatar_url`` so the
+    公司账号 shows the company logo instead of a letter placeholder. No-op when
+    there is no seller account or no logo. Returns True when a row was updated."""
+    seller_user_id = str(seller_user_id or "").strip()
+    logo = str(logo_url or "").strip()
+    if not seller_user_id or not logo:
+        return False
+    cur = conn.execute(
+        "UPDATE users SET avatar_url = ?, updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+        (logo, _iso(now), seller_user_id),
+    )
+    return bool(getattr(cur, "rowcount", 0))
+
+
+def backfill_partner_seller_avatars(conn) -> int:
+    """Idempotent boot-time sync: for every active partner with a logo whose
+    seller account still has no avatar_url, copy the logo across. Fixes existing
+    公司账号 (e.g. 星域东京) that predate the logo→avatar wiring, with zero manual
+    action on deploy. Only fills empty avatars — never overwrites a real one."""
+    rows = conn.execute(
+        "SELECT seller_user_id, logo_url FROM partners "
+        "WHERE COALESCE(seller_user_id, '') != '' AND COALESCE(logo_url, '') != ''"
+    ).fetchall()
+    filled = 0
+    now = _iso(None)
+    for r in rows:
+        cur = conn.execute(
+            "UPDATE users SET avatar_url = ?, updated_at = ? "
+            "WHERE id = ? AND COALESCE(avatar_url, '') = '' AND deleted_at IS NULL",
+            (str(r["logo_url"]).strip(), now, str(r["seller_user_id"]).strip()),
+        )
+        filled += int(getattr(cur, "rowcount", 0) or 0)
+    return filled
 
 
 _PARTNER_EDITABLE = {
@@ -274,6 +316,11 @@ def update_partner(conn, key: str, fields: dict[str, Any], *, now: str | None = 
     params.append(_iso(now))
     params.append(partner["partner_key"])
     conn.execute(f"UPDATE partners SET {', '.join(sets)} WHERE partner_key = ?", params)
+    # Keep the seller 公司账号's avatar in lockstep with the logo whenever it is
+    # edited (admin backend or partner self-service). This is the only path by
+    # which that non-loginable account's avatar can change.
+    if "logo_url" in fields:
+        sync_seller_avatar(conn, partner.get("seller_user_id") or "", str(fields["logo_url"] or "").strip(), now=now)
     return get_partner(conn, key)
 
 

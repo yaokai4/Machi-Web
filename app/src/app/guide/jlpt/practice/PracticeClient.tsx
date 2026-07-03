@@ -15,6 +15,11 @@ import {
   JlptDisclaimer,
   LevelPicker,
   SectionPicker,
+  JlptNarrow,
+  JlptPageHeader,
+  JlptPanel,
+  JlptFieldLabel,
+  JlptStateCard,
   JLPT_LEVELS,
   type Tri,
 } from "../JlptKit";
@@ -89,87 +94,84 @@ export function PracticeClient() {
 
   return (
     <GuideShell back={{ href: "/guide/jlpt", label: t("JLPT 备考", "JLPT 対策", "JLPT prep") }}>
-      <header className="kx-guide-channel-header">
-        <p className="text-[11px] font-black uppercase tracking-[0.18em] text-[rgb(var(--kx-living-accent))]">
-          JLPT · {t("刷题", "演習", "Practice")}
-        </p>
-        <h1 className="mt-1 text-xl font-black leading-tight text-[rgb(var(--kx-living-ink))] sm:text-2xl">
-          {t("刷题练习", "問題演習", "Practice questions")}
-        </h1>
-      </header>
+      <JlptNarrow>
+        <JlptPageHeader
+          eyebrow={`JLPT · ${t("刷题", "演習", "Practice")}`}
+          title={t("刷题练习", "問題演習", "Practice questions")}
+          subtitle={t("按等级与题型抽题,答完即时判分与解析。", "レベル・分野で出題、回答後すぐに採点と解説。", "Drill by level & section — instant grading and explanations.")}
+        />
 
-      <div className="mt-4 space-y-3 rounded-2xl border border-[rgb(var(--kx-living-ink))]/[0.08] bg-[rgb(var(--kx-living-surface))] p-4">
-        <div>
-          <p className="mb-1.5 text-[11px] font-black uppercase tracking-wide text-[rgb(var(--kx-living-muted))]">
-            {t("等级", "レベル", "Level")}
-          </p>
-          <LevelPicker value={level} onChange={setLevel} />
-        </div>
-        <div>
-          <p className="mb-1.5 text-[11px] font-black uppercase tracking-wide text-[rgb(var(--kx-living-muted))]">
-            {t("题型", "分野", "Section")}
-          </p>
-          <SectionPicker t={t} value={section} onChange={setSection} />
-        </div>
-        <button
-          type="button"
-          onClick={() => load.mutate()}
-          disabled={load.isPending}
-          className="inline-flex items-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white transition hover:opacity-90 disabled:opacity-60"
-        >
-          {load.isPending ? <Loader className="h-4 w-4 animate-spin" /> : <ListChecks className="h-4 w-4" />}
-          {t("换一组题", "問題を取得", "Get a set")}
-        </button>
-      </div>
-
-      {started && questions.length > 0 ? (
-        <div className="mt-4 flex items-center justify-between">
-          <p className="text-xs font-bold text-[rgb(var(--kx-living-muted))]">
-            {t(`本组 ${questions.length} 题,已答 ${answeredCount}`, `${questions.length} 問中 ${answeredCount} 回答`, `${answeredCount} of ${questions.length} answered`)}
-          </p>
-          {answeredCount === questions.length ? (
+        <div className="mt-6">
+          <JlptPanel className="space-y-4">
+            <div>
+              <JlptFieldLabel>{t("等级", "レベル", "Level")}</JlptFieldLabel>
+              <LevelPicker value={level} onChange={setLevel} />
+            </div>
+            <div>
+              <JlptFieldLabel>{t("题型", "分野", "Section")}</JlptFieldLabel>
+              <SectionPicker t={t} value={section} onChange={setSection} />
+            </div>
             <button
               type="button"
               onClick={() => load.mutate()}
-              className="inline-flex items-center gap-1.5 text-xs font-black text-[rgb(var(--kx-living-accent))]"
+              disabled={load.isPending}
+              className="inline-flex items-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-2.5 text-sm font-black text-white shadow-[0_14px_28px_-16px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-60"
             >
-              <RefreshCw className="h-3.5 w-3.5" /> {t("再来一组", "次のセット", "Next set")}
+              {load.isPending ? <Loader className="h-4 w-4 animate-spin" /> : <ListChecks className="h-4 w-4" />}
+              {t("换一组题", "問題を取得", "Get a set")}
             </button>
-          ) : null}
+          </JlptPanel>
         </div>
-      ) : null}
 
-      <div className="mt-3 space-y-3">
-        {questions.map((q, i) => {
-          const g = graded[q.id];
-          return (
-            <div key={q.id}>
-              <QuestionCard
-                t={t}
-                question={q}
-                index={i}
-                total={questions.length}
-                selectedIndex={selected[q.id]}
-                onSelect={(sel) => {
-                  if (!graded[q.id]) grade(q, sel);
-                }}
-                gradedCorrectIndex={g?.correctIndex}
-              />
-              {g ? <ExplainButton t={t} questionId={q.id} language={language} /> : null}
-            </div>
-          );
-        })}
-      </div>
+        {started && questions.length > 0 ? (
+          <div className="mt-5 flex items-center justify-between gap-3">
+            <p className="text-xs font-bold text-[rgb(var(--kx-living-muted))]">
+              {t(`本组 ${questions.length} 题 · 已答 ${answeredCount}`, `${questions.length} 問中 ${answeredCount} 回答`, `${answeredCount} of ${questions.length} answered`)}
+            </p>
+            {answeredCount === questions.length ? (
+              <button
+                type="button"
+                onClick={() => load.mutate()}
+                className="inline-flex items-center gap-1.5 rounded-full bg-[rgb(var(--kx-living-accent))]/[0.1] px-3 py-1.5 text-xs font-black text-[rgb(var(--kx-living-accent))] transition hover:bg-[rgb(var(--kx-living-accent))]/[0.16]"
+              >
+                <RefreshCw className="h-3.5 w-3.5" /> {t("再来一组", "次のセット", "Next set")}
+              </button>
+            ) : null}
+          </div>
+        ) : null}
 
-      {started && questions.length === 0 && !load.isPending ? (
-        <div className="mt-8 flex min-h-[30vh] flex-col items-center justify-center text-center">
-          <p className="text-sm font-semibold text-[rgb(var(--kx-living-muted))]">
-            {t("该组合暂无题目,换个等级或题型。", "この条件では問題がありません。レベルや分野を変えてみてください。", "No questions for this filter — try another level or section.")}
-          </p>
+        <div className="mt-3 space-y-3">
+          {questions.map((q, i) => {
+            const g = graded[q.id];
+            return (
+              <div key={q.id}>
+                <QuestionCard
+                  t={t}
+                  question={q}
+                  index={i}
+                  total={questions.length}
+                  selectedIndex={selected[q.id]}
+                  onSelect={(sel) => {
+                    if (!graded[q.id]) grade(q, sel);
+                  }}
+                  gradedCorrectIndex={g?.correctIndex}
+                />
+                {g ? <ExplainButton t={t} questionId={q.id} language={language} /> : null}
+              </div>
+            );
+          })}
         </div>
-      ) : null}
 
-      <JlptDisclaimer t={t} />
+        {started && questions.length === 0 && !load.isPending ? (
+          <JlptStateCard
+            icon={ListChecks}
+            title={t("该组合暂无题目", "この条件では問題がありません", "No questions for this filter")}
+            body={t("换个等级或题型再试一次。", "レベルや分野を変えてみてください。", "Try another level or section.")}
+          />
+        ) : null}
+
+        <JlptDisclaimer t={t} />
+      </JlptNarrow>
     </GuideShell>
   );
 }

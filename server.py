@@ -7299,6 +7299,22 @@ def init_db() -> None:
             conn.execute("SELECT 1").fetchone()
             # One-time, guarded data reconciliation (no DDL) — safe on prod.
             ensure_post_tags_backfill(conn)
+            # Mirror partner logos onto their 公司账号 avatars (fixes 星域东京-style
+            # accounts whose avatar_url was empty; only fills empty avatars).
+            try:
+                filled = partners.backfill_partner_seller_avatars(conn)
+                if filled:
+                    ACCESS_LOG.info("partner seller-avatar backfill filled=%s", filled)
+            except Exception:
+                ERR_LOG.exception("partner seller-avatar backfill failed (non-fatal)")
+            # Remove listings still lingering under deregistered ('已注销用户')
+            # sellers so a deleted person's items never stay on the marketplace.
+            try:
+                removed = reconcile_deleted_user_listings(conn)
+                if removed:
+                    ACCESS_LOG.info("deleted-user listing reconcile removed=%s", removed)
+            except Exception:
+                ERR_LOG.exception("deleted-user listing reconcile failed (non-fatal)")
         return
     with DB_LOCK, db() as conn:
         conn.executescript(SCHEMA)
@@ -7322,6 +7338,16 @@ def init_db() -> None:
         # Reconcile post_tags with #hashtags written into post bodies so the
         # topic pages list every post that actually carries a tag (one-time).
         ensure_post_tags_backfill(conn)
+        # Mirror partner logos onto their 公司账号 avatars (only fills empty ones).
+        try:
+            partners.backfill_partner_seller_avatars(conn)
+        except Exception:
+            ERR_LOG.exception("partner seller-avatar backfill failed (non-fatal)")
+        # Purge marketplace listings still lingering under deregistered sellers.
+        try:
+            reconcile_deleted_user_listings(conn)
+        except Exception:
+            ERR_LOG.exception("deleted-user listing reconcile failed (non-fatal)")
         # Always ensure the default admin exists (prod + dev). This never
         # touches or downgrades any other account, so existing admins are
         # preserved exactly as-is.
@@ -14768,7 +14794,12 @@ def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
     # abort the already-applied user-row scrub.
     for stmt, params in (
         ("UPDATE messages SET content = '', deleted_at = COALESCE(deleted_at, ?) WHERE sender_id = ?", (now, user_id)),
-        ("UPDATE city_listings SET status = 'closed', contact_method = '', updated_at = ? WHERE seller_user_id = ?", (now, user_id)),
+        # Fully soft-delete the person's classifieds (not merely 'closed'): a
+        # deregistered/erased user's listings must vanish from the marketplace
+        # entirely, exactly like their posts above. deleted_at IS NULL is the
+        # universal visibility filter, so this removes them from every list +
+        # detail query on both SQLite and Postgres.
+        ("UPDATE city_listings SET status = 'deleted', deleted_at = COALESCE(deleted_at, ?), contact_method = '', updated_at = ? WHERE seller_user_id = ? AND deleted_at IS NULL", (now, now, user_id)),
         # Buyer-side inquiry PII (the contact info + message the user sent to sellers).
         ("UPDATE listing_inquiries SET message = '', contact_value = '' WHERE sender_user_id = ?", (user_id,)),
         ("UPDATE guide_service_requests SET contact_method = '', contact_value = '', message = '', updated_at = ? WHERE user_id = ?", (now, user_id)),
@@ -14792,6 +14823,28 @@ def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
             conn.execute(stmt, params)
         except Exception:
             ERR_LOG.warning("anonymize: extended PII scrub statement failed (continuing)")
+
+
+def reconcile_deleted_user_listings(conn: sqlite3.Connection) -> int:
+    """One-time, idempotent boot reconciliation: soft-delete any still-live
+    classifieds whose seller account has been deregistered (users.deleted_at set).
+
+    Historically some accounts were removed via bulk/older paths that set the
+    user row's deleted_at + '已注销用户' display name but never closed the
+    listings, so a deleted person's items lingered in the marketplace under
+    「已注销用户」. anonymize_user_account now fully soft-deletes listings going
+    forward; this heals the existing rows. Only touches listings that are still
+    visible (deleted_at IS NULL) AND whose seller is genuinely deleted — a
+    fallback-reassigned seed listing (now owned by a live account) is untouched.
+    Backend-agnostic (correlated subquery works on SQLite + Postgres)."""
+    now = now_iso()
+    cur = conn.execute(
+        "UPDATE city_listings SET status = 'deleted', deleted_at = ?, updated_at = ? "
+        "WHERE deleted_at IS NULL AND COALESCE(seller_user_id, '') != '' "
+        "AND seller_user_id IN (SELECT id FROM users WHERE deleted_at IS NOT NULL)",
+        (now, now),
+    )
+    return int(getattr(cur, "rowcount", 0) or 0)
 
 
 def _settings_int(settings: dict[str, str], key: str, default: int, low: int, high: int) -> int:
@@ -25670,6 +25723,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.api_partner_branding(conn, pkey)
                 if sub == "session" and method == "POST":
                     return self.api_partner_session(conn, pkey)
+                if sub == "branding" and method in ("PATCH", "PUT", "POST"):
+                    return self.api_partner_branding_save(conn, pkey)
                 if sub == "template.csv" and method == "GET":
                     return self.api_partner_template(conn, pkey)
                 if sub == "contacts" and method == "GET":
@@ -37446,6 +37501,26 @@ class Handler(BaseHTTPRequestHandler):
         if not p or p.get("status") != "active":
             raise APIError("后台不存在", 404, "not_found")
         self.send_json({"partner": partners.serialize_partner(p, public=True)})
+
+    def api_partner_branding_save(self, conn: sqlite3.Connection, key: str) -> None:
+        """Token-gated self-service: let the partner set their own 公司头像/logo
+        (and light branding). The logo is mirrored onto the seller 公司账号's
+        avatar via update_partner → sync_seller_avatar, which is the only way that
+        non-loginable account's avatar can change. Partners upload the image bytes
+        first via POST /uploads, then save the returned URL here."""
+        partner = self.require_partner(conn, key)
+        data = self.read_json()
+        fields: dict[str, Any] = {}
+        # Only branding-safe fields — never let a partner flip status/seller/etc.
+        for f in ("logo_url", "intro", "brand_color", "accent_color", "website", "name_ja", "name_en"):
+            if f in data and data[f] is not None:
+                fields[f] = str(data[f])
+        if not fields:
+            raise APIError("没有可保存的内容", 400, "invalid")
+        p = partners.update_partner(conn, partner["partner_key"], fields, now=now_iso())
+        if not p:
+            raise APIError("后台不存在", 404, "not_found")
+        self.send_json({"partner": partners.serialize_partner(p)})
 
     def api_partner_session(self, conn: sqlite3.Connection, key: str) -> None:
         body = self.read_json()

@@ -39,6 +39,7 @@ import {
   updatePartnerContact,
   deletePartnerContact,
   uploadPartnerImage,
+  savePartnerBranding,
   parsePartnerImport,
   commitPartnerImport,
   previewStarealImport,
@@ -394,6 +395,7 @@ function PartnerDashboard({
       </header>
 
       <main className="mx-auto max-w-5xl px-4 py-5">
+        <BrandingCard partnerKey={partnerKey} name={name} logoUrl={branding?.logoUrl} accent={accent} brand={brand} onAuthDrop={onAuthDrop} />
         {tab === "import" ? (
           <ImportTab partnerKey={partnerKey} session={session} accent={accent} onError={onError} onCommitted={() => setTab("listings")} />
         ) : tab === "contacts" ? (
@@ -403,6 +405,112 @@ function PartnerDashboard({
         )}
       </main>
     </div>
+  );
+}
+
+// Company avatar / logo self-service. The 公司账号 (star-domain-style seller
+// account that publishes & syncs listings) is provisioned with a discarded
+// password and can NEVER log into the app to edit its profile — so the ONLY way
+// its avatar can change is here: upload a logo, and the server mirrors it onto
+// the account's avatar_url. Fixes "这个账号不能更换头像".
+function BrandingCard({
+  partnerKey,
+  name,
+  logoUrl,
+  accent,
+  brand,
+  onAuthDrop,
+}: {
+  partnerKey: string;
+  name: string;
+  logoUrl?: string;
+  accent: string;
+  brand: string;
+  onAuthDrop: () => void;
+}) {
+  const pushToast = useToasts((s) => s.push);
+  const queryClient = useQueryClient();
+  const fileRef = useRef<HTMLInputElement | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [preview, setPreview] = useState<string | undefined>(logoUrl);
+
+  useEffect(() => {
+    setPreview(logoUrl);
+  }, [logoUrl]);
+
+  const pick = () => fileRef.current?.click();
+
+  const onFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      pushToast({ kind: "error", message: "请选择图片文件（PNG / JPG）" });
+      return;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      pushToast({ kind: "error", message: "图片过大，请压缩到 8MB 以内" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const up = await uploadPartnerImage(partnerKey, file);
+      await savePartnerBranding(partnerKey, { logo_url: up.url });
+      setPreview(up.url);
+      await queryClient.invalidateQueries({ queryKey: ["partner", partnerKey, "branding"] });
+      pushToast({ kind: "success", message: "公司头像已更新，账号头像会同步显示" });
+    } catch (err) {
+      if (isPartnerAuthError(err)) {
+        onAuthDrop();
+        return;
+      }
+      pushToast({ kind: "error", message: (err as PartnerAPIError).message || "上传失败，请重试" });
+    } finally {
+      setBusy(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  };
+
+  return (
+    <section className="mb-4 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4 sm:p-5">
+      <div className="flex items-center gap-4">
+        <div className="relative shrink-0">
+          {preview ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={preview} alt={name} className="h-16 w-16 rounded-kx-lg object-cover ring-1 ring-kx-stroke/50" />
+          ) : (
+            <span className="grid h-16 w-16 place-items-center rounded-kx-lg text-white" style={{ background: brand }}>
+              <Building2 className="h-7 w-7" />
+            </span>
+          )}
+          {busy ? (
+            <span className="absolute inset-0 grid place-items-center rounded-kx-lg bg-black/40">
+              <Loader2 className="h-5 w-5 animate-spin text-white" />
+            </span>
+          ) : null}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-black text-kx-text">公司头像</p>
+          <p className="mt-0.5 text-xs leading-5 text-kx-muted">
+            上传公司 logo，将同步显示为「{name}」账号头像（房源发布人 / 同步账号）。建议正方形、512×512 以上。
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={pick}
+          disabled={busy}
+          className="kx-button-primary h-9 shrink-0 px-4 disabled:opacity-60"
+          style={{ background: accent, borderColor: accent }}
+        >
+          <ImageIcon className="h-4 w-4" /> {preview ? "更换头像" : "上传头像"}
+        </button>
+      </div>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => onFile(e.target.files?.[0])}
+      />
+    </section>
   );
 }
 
