@@ -57,5 +57,69 @@ class BackendTests(unittest.TestCase):
         s.get_event_bus().publish("u1", {"type": "x"})  # no-op, must not raise
 
 
+class RankingCacheTests(unittest.TestCase):
+    """In-process (L1-only, no redis) behaviour — the production redis L2 path
+    is exercised by KAIX_REDIS_URL in staging."""
+
+    def test_put_then_get_hits(self):
+        c = s.RankingCache()
+        payload = {"posts": [{"id": "p1", "tags": ["东京", "租房"]}], "n": 3, "ok": True}
+        c.put("explore:posts:abc", payload, ttl_seconds=30)
+        self.assertEqual(c.get("explore:posts:abc"), payload)
+
+    def test_miss_on_unknown_key(self):
+        c = s.RankingCache()
+        self.assertIsNone(c.get("explore:posts:never"))
+
+    def test_ttl_expiry_is_a_miss(self):
+        c = s.RankingCache()
+        c.put("trending:jp:post_ids", ["a", "b"], ttl_seconds=0.05)
+        self.assertEqual(c.get("trending:jp:post_ids"), ["a", "b"])
+        time.sleep(0.08)
+        self.assertIsNone(c.get("trending:jp:post_ids"))
+
+    def test_invalidate_prefix_clears_matching_only(self):
+        c = s.RankingCache()
+        c.put("trending:jp:post_ids", [1], ttl_seconds=30)
+        c.put("explore:posts:x", [2], ttl_seconds=30)
+        c.invalidate_prefixes(("trending:",))
+        self.assertIsNone(c.get("trending:jp:post_ids"))
+        self.assertEqual(c.get("explore:posts:x"), [2])
+
+    def test_invalidate_empty_prefix_clears_all(self):
+        c = s.RankingCache()
+        c.put("trending:jp:post_ids", [1], ttl_seconds=30)
+        c.put("guide_home:jp:zh", {"a": 1}, ttl_seconds=30)
+        c.invalidate_prefixes(("",))
+        self.assertIsNone(c.get("trending:jp:post_ids"))
+        self.assertIsNone(c.get("guide_home:jp:zh"))
+
+    def test_local_only_keys_never_serialised_and_keep_full_ttl(self):
+        # recprofile carries a `set` (non-JSON); it must stay L1-only and round
+        # trip unchanged without json.dumps blowing up.
+        c = s.RankingCache()
+        profile = {"seen": {"p1", "p2"}, "weights": {"东京": 1.0}}
+        c.put("recprofile:u42", profile, ttl_seconds=600)
+        got = c.get("recprofile:u42")
+        self.assertEqual(got["seen"], {"p1", "p2"})  # set preserved (no JSON hop)
+        self.assertTrue(s._is_local_only("recprofile:u42"))
+        self.assertTrue(s._is_local_only("view:p1:ip"))
+        self.assertTrue(s._is_local_only("media_size_bytes"))
+        self.assertFalse(s._is_local_only("explore:posts:x"))
+
+    def test_l1_max_eviction_bounds_size(self):
+        c = s.RankingCache()
+        c._l1_max = 20
+        for i in range(60):
+            c.put(f"explore:posts:{i}", [i], ttl_seconds=30)
+        self.assertLessEqual(len(c._l1), 20)
+
+    def test_singleton_is_stable(self):
+        self.assertIs(s.get_ranking_cache(), s.get_ranking_cache())
+
+    def test_start_is_safe_without_redis(self):
+        s.get_ranking_cache().start()  # no-op, must not raise
+
+
 if __name__ == "__main__":
     unittest.main()

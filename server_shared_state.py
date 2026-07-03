@@ -18,7 +18,8 @@ Backends:
   KAIX_REDIS_URL   redis://host:6379/0  -> shared backend (requires `redis`).
                    unset / redis import missing -> in-process backend.
 
-Exposed singletons: get_rate_limiter(), get_failure_tracker(), get_event_bus().
+Exposed singletons: get_rate_limiter(), get_failure_tracker(), get_event_bus(),
+get_ranking_cache().
 """
 from __future__ import annotations
 
@@ -270,9 +271,202 @@ class EventBus:
                 time.sleep(1.0)  # reconnect after a transient redis hiccup
 
 
+# ---------------------------------------------------------------------------
+# Ranking / recommendation cache — public feed / trending / explore / guide
+# payloads shared across worker processes when on redis.
+#
+# Two layers:
+#   L1  a tiny in-process dict with ABSOLUTE wall-clock (time.time()) deadlines
+#       so a redis round-trip is skipped for hot keys within a ~2s window. This
+#       is also the sole layer when redis is unconfigured/down (degrades to the
+#       old in-process cache behaviour, just with a shorter TTL — reads never
+#       fail because of a redis hiccup).
+#   L2  redis SET ... EX (TTL owned by redis), values serialised as JSON. Only
+#       PUBLIC payloads land here (feed/trending/explore/discover/topics/guide/
+#       membership_plan). Per-user or per-host keys (recprofile:/view:/
+#       media_size_bytes) stay L1-only — see _is_local_only.
+#
+# CRITICAL: never store time.monotonic() deadlines. monotonic is a per-process
+# clock, so a (deadline, value) tuple copied to another worker via redis would
+# have a meaningless expiry. L1 uses time.time(); L2 lets redis own the TTL.
+#
+# Invalidation is broadcast over redis pub/sub (channel machi:cache_inval) so
+# EVERY worker drops the matching L1 entries — not just the one that mutated —
+# giving删帖/admin下架 second-level cross-worker consistency instead of waiting
+# for the L1 TTL to lapse. The matching L2 keys are also SCAN-deleted so the
+# next reader on any worker rebuilds from the DB.
+
+# Namespace + version prefix for all L2 keys. Bump the version to invalidate the
+# entire ranking cache at once on a breaking payload-shape change.
+_CACHE_NS = "mc1:"
+_CACHE_INVAL_CHANNEL = "machi:cache_inval"
+
+# Keys with these prefixes never touch redis: recprofile:{viewer} carries a
+# non-JSON `set` payload and is per-user + high-cardinality; view:{post} is a
+# per-viewer dedup lock (high cardinality, cross-worker sharing not worth the
+# memory); media_size_bytes is a per-host disk figure meaningless off-box.
+_CACHE_LOCAL_ONLY_PREFIXES = ("recprofile:", "view:", "media_size_bytes")
+
+
+def _is_local_only(key: str) -> bool:
+    return key.startswith(_CACHE_LOCAL_ONLY_PREFIXES)
+
+
+class RankingCache:
+    def __init__(self) -> None:
+        self._l1: dict[str, tuple[float, Any]] = {}
+        self._l1_lock = threading.Lock()
+        # L1 is deliberately short: it only collapses the within-window fan-out
+        # of concurrent reads into a single redis GET (or single DB hit when
+        # redis is off). Cross-worker freshness comes from the pub/sub bust.
+        self._l1_ttl = float(os.environ.get("KAIX_CACHE_L1_TTL", "2.0"))
+        self._l1_max = int(os.environ.get("KAIX_CACHE_L1_MAX", "5000"))
+        self._started = False
+        self._start_lock = threading.Lock()
+
+    # -- L1 helpers ---------------------------------------------------------
+    def _l1_put(self, key: str, value: Any, ttl_seconds: float) -> None:
+        deadline = time.time() + max(0.0, ttl_seconds)
+        with self._l1_lock:
+            if len(self._l1) >= self._l1_max:
+                now = time.time()
+                # Sweep expired first; if still full, evict ~10% nearest expiry.
+                for k in [k for k, v in list(self._l1.items()) if v[0] <= now]:
+                    self._l1.pop(k, None)
+                if len(self._l1) >= self._l1_max:
+                    for k in sorted(self._l1, key=lambda k: self._l1[k][0])[: max(1, len(self._l1) // 10)]:
+                        self._l1.pop(k, None)
+            self._l1[key] = (deadline, value)
+
+    def _l1_get(self, key: str) -> Any | None:
+        now = time.time()
+        with self._l1_lock:
+            entry = self._l1.get(key)
+            if entry and entry[0] > now:
+                return entry[1]
+            if entry:
+                self._l1.pop(key, None)
+        return None
+
+    def _l1_invalidate(self, prefixes: Iterable[str]) -> None:
+        prefs = tuple(prefixes)
+        with self._l1_lock:
+            for k in list(self._l1):
+                if any((not p) or k.startswith(p) for p in prefs):
+                    self._l1.pop(k, None)
+
+    # -- public API ---------------------------------------------------------
+    def get(self, key: str) -> Any | None:
+        hit = self._l1_get(key)
+        if hit is not None:
+            return hit
+        if _is_local_only(key):
+            return None
+        client = _client_or_none()
+        if client is not None:
+            try:
+                raw = client.get(_CACHE_NS + key)
+                if raw is not None:
+                    val = json.loads(raw)
+                    # Backfill L1 so the next few reads skip redis entirely.
+                    self._l1_put(key, val, self._l1_ttl)
+                    return val
+            except Exception:
+                pass  # any redis error -> treat as a miss, never raise
+        return None
+
+    def put(self, key: str, value: Any, ttl_seconds: float) -> None:
+        # Local-only keys live entirely in L1 with their full TTL.
+        if _is_local_only(key):
+            self._l1_put(key, value, ttl_seconds)
+            return
+        # Public keys: L1 gets the short window, redis owns the real TTL.
+        self._l1_put(key, value, min(self._l1_ttl, ttl_seconds))
+        client = _client_or_none()
+        if client is not None:
+            try:
+                # JSON only — never pickle (cross-language safety, no RCE
+                # surface on a shared store). Floor TTL at 1s for redis EX.
+                client.set(_CACHE_NS + key, json.dumps(value, ensure_ascii=False),
+                           ex=max(1, int(round(ttl_seconds))))
+            except Exception:
+                pass  # L1 still serves this worker; others miss -> rebuild
+
+    def invalidate_prefixes(self, prefixes: Iterable[str]) -> None:
+        prefs = tuple(prefixes)
+        # 1) Clear our own L1 immediately.
+        self._l1_invalidate(prefs)
+        client = _client_or_none()
+        if client is None:
+            return
+        # 2) Delete matching L2 keys (SCAN, non-blocking) so the next reader on
+        #    any worker rebuilds from the DB. Skip local-only prefixes: they
+        #    never entered redis.
+        try:
+            for p in prefs:
+                if _is_local_only(p):
+                    continue
+                cursor = 0
+                match = _CACHE_NS + p + "*" if p else _CACHE_NS + "*"
+                while True:
+                    cursor, keys = client.scan(cursor, match=match, count=500)
+                    if keys:
+                        client.delete(*keys)
+                    if cursor == 0:
+                        break
+        except Exception:
+            pass
+        # 3) Broadcast so every OTHER worker drops its L1 too (L1 TTL is short
+        #    but guide_sitemap L2 is 600s — without this a peer's L1 could serve
+        #    up to L1_TTL of stale data after a delete). Failure is silent.
+        try:
+            client.publish(_CACHE_INVAL_CHANNEL,
+                           json.dumps({"o": WORKER_ID, "p": list(prefs)}, ensure_ascii=False))
+        except Exception:
+            pass
+
+    # -- cross-worker invalidation subscriber -------------------------------
+    def start(self) -> None:
+        """On redis, start a subscriber thread that drops this worker's L1 when
+        another worker broadcasts an invalidation. No-op in-process."""
+        client = _client_or_none()
+        if client is None:
+            return
+        with self._start_lock:
+            if self._started:
+                return
+            self._started = True
+        t = threading.Thread(target=self._subscribe_loop, name="machi-cacheinval", daemon=True)
+        t.start()
+
+    def _subscribe_loop(self) -> None:  # pragma: no cover - needs redis
+        while True:
+            try:
+                client = _client_or_none()
+                if client is None:
+                    return
+                pubsub = client.pubsub(ignore_subscribe_messages=True)
+                pubsub.subscribe(_CACHE_INVAL_CHANNEL)
+                for msg in pubsub.listen():
+                    if msg.get("type") != "message":
+                        continue
+                    try:
+                        data = json.loads(msg["data"])
+                    except Exception:
+                        continue
+                    if data.get("o") == WORKER_ID:
+                        continue  # our own broadcast — L1 already cleared
+                    prefs = data.get("p") or []
+                    if isinstance(prefs, list):
+                        self._l1_invalidate(prefs)
+            except Exception:
+                time.sleep(1.0)  # reconnect after a transient redis hiccup
+
+
 _rate_limiter = RateLimiter()
 _failure_tracker = FailureTracker()
 _event_bus = EventBus()
+_ranking_cache = RankingCache()
 
 
 def get_rate_limiter() -> RateLimiter:
@@ -285,3 +479,7 @@ def get_failure_tracker() -> FailureTracker:
 
 def get_event_bus() -> EventBus:
     return _event_bus
+
+
+def get_ranking_cache() -> RankingCache:
+    return _ranking_cache

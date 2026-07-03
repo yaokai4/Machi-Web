@@ -138,7 +138,11 @@ import seed_avatars
 import seed_content_library as seedlib
 import seed_llm
 import seed_listings_library as seedpacks
+import jlpt_seed
 import seed_post_images
+# Semantic-RAG embedding abstraction (BE5). Provider-neutral; no key ⇒ every
+# call returns None and the retrieval layer stays on pure LIKE (zero regression).
+import embeddings
 try:
     from seed_comments_pack import COMMENTS as SEED_COMMENTS
 except Exception:
@@ -190,9 +194,12 @@ import server_apns
 import server_shared_state as shared_state
 import server_lifehub as lifehub
 import server_partners as partners
+import server_jlpt as jlpt
+import server_referral as referral
 import server_stareal
 from server_serializers import (
     serialize_guide_category, serialize_guide_article_progress, serialize_guide_company_position, serialize_guide_company_review,
+    serialize_guide_review,
     serialize_guide_faq, serialize_guide_tag, serialize_guide_home_module, serialize_guide_journey,
     serialize_guide_progress, serialize_guide_profile, serialize_guide_plan, serialize_guide_reminder,
     serialize_guide_application_stage, serialize_guide_transaction, serialize_guide_life_item, serialize_guide_life_payment,
@@ -679,8 +686,27 @@ def _consume_sse_token(token: str) -> str | None:
 
 # Generic TTL cache shared by hot feed / trending / admin stats — these
 # endpoints are expensive but tolerate small staleness.
-_CACHE_LOCK = threading.Lock()
-_CACHE: dict[str, tuple[float, Any]] = {}
+#
+# Backed by server_shared_state.RankingCache: an in-process L1 (short absolute
+# wall-clock TTL) fronting an optional redis L2 (SET EX + pub/sub invalidation)
+# when KAIX_REDIS_URL is set, so the public rankings are shared across worker
+# processes/hosts. Unconfigured/down redis degrades transparently to L1-only —
+# reads never fail on a redis hiccup. Per-user/per-host keys (recprofile:/view:/
+# media_size_bytes) are auto-routed L1-only inside RankingCache. The _cache_*
+# helpers below keep their old signatures so no call site changes.
+
+# Public ranking payload prefixes that 删帖 / admin下架 / hot_score edits must
+# invalidate cluster-wide. topics:/discover:hot: were previously missing here
+# (they could only self-heal on TTL); feed: covers feed:hot + feed:anon:.
+_RANKING_INVAL_PREFIXES = (
+    "feed:", "trending:", "explore:", "discover:hot:", "topics:",
+)
+# Public Guide payload prefixes. Guide content changes rarely but must go dark
+# fast on 下架 (compliance), so guide write paths invalidate these cluster-wide
+# instead of waiting out the 30–600s TTLs.
+_GUIDE_INVAL_PREFIXES = (
+    "guide_home:", "guide_jlpt:", "guide_journeys:", "guide_sitemap",
+)
 
 # Short TTL for the public Guide home payload (~8 read queries, no per-user
 # data). Keeps /guide fast and the DB calm under traffic spikes; admin edits
@@ -704,45 +730,26 @@ KAIX_RECPROFILE_TTL_SEC = float(os.environ.get("KAIX_RECPROFILE_TTL_SEC", "600")
 
 
 def _cache_get(key: str) -> Any | None:
-    now = time.monotonic()
-    with _CACHE_LOCK:
-        entry = _CACHE.get(key)
-        if entry and entry[0] > now:
-            return entry[1]
-        if entry:
-            _CACHE.pop(key, None)
-    return None
-
-
-_CACHE_MAX_ENTRIES = int(os.environ.get("KAIX_CACHE_MAX_ENTRIES", "5000"))
+    return shared_state.get_ranking_cache().get(key)
 
 
 def _cache_put(key: str, value: Any, ttl_seconds: float) -> None:
-    now = time.monotonic()
-    with _CACHE_LOCK:
-        # Bound the in-process cache so it can't grow without limit. Sweep
-        # expired entries first; if still at the cap, evict the ~10% nearest
-        # expiry. (Previously this dict had no size cap or background sweep.)
-        if len(_CACHE) >= _CACHE_MAX_ENTRIES:
-            for k in [k for k, v in list(_CACHE.items()) if v[0] <= now]:
-                _CACHE.pop(k, None)
-            if len(_CACHE) >= _CACHE_MAX_ENTRIES:
-                for k in sorted(_CACHE, key=lambda k: _CACHE[k][0])[: max(1, len(_CACHE) // 10)]:
-                    _CACHE.pop(k, None)
-        _CACHE[key] = (now + ttl_seconds, value)
+    shared_state.get_ranking_cache().put(key, value, ttl_seconds)
 
 
 def _cache_invalidate(prefix: str = "") -> None:
-    with _CACHE_LOCK:
-        for k in list(_CACHE.keys()):
-            if not prefix or k.startswith(prefix):
-                _CACHE.pop(k, None)
+    shared_state.get_ranking_cache().invalidate_prefixes((prefix,) if prefix else ("",))
 
 
 def invalidate_public_ranking_caches() -> None:
-    _cache_invalidate("feed:hot")
-    _cache_invalidate("trending:")
-    _cache_invalidate("explore:")
+    shared_state.get_ranking_cache().invalidate_prefixes(_RANKING_INVAL_PREFIXES)
+
+
+def invalidate_guide_caches() -> None:
+    """Bust the public Guide payloads (home/jlpt/journeys/sitemap) cluster-wide.
+    Called from guide content write paths so 下架/编辑 goes dark fast rather than
+    waiting out the 30–600s TTLs."""
+    shared_state.get_ranking_cache().invalidate_prefixes(_GUIDE_INVAL_PREFIXES)
 
 
 # ---------------------------------------------------------------------------
@@ -1145,6 +1152,87 @@ def bump_post_counter_for_kind(conn: sqlite3.Connection, post_id: str, kind: str
     column = _POST_COUNTER_COLUMNS.get(kind)
     if column:
         bump_post_counter(conn, post_id, column, delta)
+
+
+def apply_review_to_aggregate(conn: sqlite3.Connection, product_id: str,
+                              delta_count: int, delta_sum: int) -> None:
+    """Incrementally maintain guide_products' denormalized review aggregate.
+
+    Only 'published' reviews contribute. A review crossing INTO published adds
+    (+1, +rating); crossing OUT of published subtracts (-1, -rating); a score
+    change while staying published is (0, new-old). We never AVG the whole
+    guide_reviews table on read — this CAS-friendly increment keeps rating_count
+    / rating_sum authoritative and derives rating = sum/count in the same UPDATE.
+
+    Both deltas are clamped at 0 via CASE (backend-agnostic — Postgres `MAX` is
+    an aggregate, not the 2-arg function SQLite has), so a drift never produces a
+    negative aggregate. Best-effort: a miss here is reconciled by
+    reconcile_product_rating, it never blocks the review write."""
+    if delta_count == 0 and delta_sum == 0:
+        return
+    dc, ds = int(delta_count), int(delta_sum)
+    try:
+        conn.execute(
+            "UPDATE guide_products SET "
+            "rating_count = CASE WHEN rating_count + ? < 0 THEN 0 ELSE rating_count + ? END, "
+            "rating_sum = CASE WHEN rating_sum + ? < 0 THEN 0 ELSE rating_sum + ? END, "
+            "rating = CASE WHEN (CASE WHEN rating_count + ? < 0 THEN 0 ELSE rating_count + ? END) > 0 "
+            "  THEN CAST((CASE WHEN rating_sum + ? < 0 THEN 0 ELSE rating_sum + ? END) AS REAL) "
+            "       / (CASE WHEN rating_count + ? < 0 THEN 0 ELSE rating_count + ? END) "
+            "  ELSE 0 END, "
+            "updated_at = ? WHERE id = ?",
+            (dc, dc, ds, ds, dc, dc, ds, ds, dc, dc, now_iso(), product_id),
+        )
+    except Exception:
+        ERR_LOG.warning("apply_review_to_aggregate failed product=%s dc=%s ds=%s", product_id, dc, ds)
+
+
+def reconcile_product_rating(conn: sqlite3.Connection, product_id: str) -> dict[str, Any]:
+    """Recompute a product's review aggregate from scratch (published rows only)
+    and write it back. The audit/repair counterpart to the incremental
+    apply_review_to_aggregate — run from admin or a nightly task to correct any
+    drift. Returns the reconciled {count, sum, avg}."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS c, COALESCE(SUM(rating), 0) AS s "
+        "FROM guide_reviews WHERE product_id = ? AND status = 'published'",
+        (product_id,)).fetchone()
+    count = int(row["c"] or 0)
+    total = int(row["s"] or 0)
+    avg = (float(total) / count) if count > 0 else 0.0
+    conn.execute(
+        "UPDATE guide_products SET rating_count = ?, rating_sum = ?, rating = ?, updated_at = ? WHERE id = ?",
+        (count, total, avg, now_iso(), product_id))
+    return {"count": count, "sum": total, "avg": avg}
+
+
+def maybe_autohide_guide_review(conn: sqlite3.Connection, review_id: str) -> bool:
+    """Auto-hide a review once DISTINCT reports reach the threshold, pending human
+    review — the guide-review analogue of maybe_autohide_post. If the review was
+    'published' it is also withdrawn from the product's rating aggregate. CAS on
+    status so concurrent reports don't double-subtract."""
+    if REPORT_AUTOHIDE_THRESHOLD <= 0:
+        return False
+    row = conn.execute(
+        "SELECT product_id, user_id, rating, status, report_count FROM guide_reviews WHERE id = ?",
+        (review_id,)).fetchone()
+    if not row:
+        return False
+    r = dict(row)
+    if int(r.get("report_count") or 0) < REPORT_AUTOHIDE_THRESHOLD:
+        return False
+    if r.get("status") not in ("published", "pending"):
+        return False  # already hidden / rejected / withdrawn
+    was_published = r.get("status") == "published"
+    cur = conn.execute(
+        "UPDATE guide_reviews SET status = 'hidden', updated_at = ? WHERE id = ? AND status = ?",
+        (now_iso(), review_id, r.get("status")))
+    if cur.rowcount != 1:
+        return False  # another writer moved it first
+    if was_published:
+        apply_review_to_aggregate(conn, r["product_id"], -1, -int(r.get("rating") or 0))
+    record_moderation_action(conn, "", "guide_review", review_id, "auto_hide",
+                             reason=f"reached {REPORT_AUTOHIDE_THRESHOLD} distinct reports")
+    return True
 
 
 def retire_reposts_of_deleted_post(conn: sqlite3.Connection, post_id: str) -> None:
@@ -1906,6 +1994,18 @@ def set_content_hidden(conn: sqlite3.Connection, target_kind: str, target_id: st
         invalidate_public_ranking_caches()
     elif target_kind == "comment":
         conn.execute("UPDATE comments SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ?", (now, target_id))
+    elif target_kind == "guide_review":
+        # hide → 'hidden' (community/temporary), remove → 'rejected' (admin final).
+        # If the review was counting toward the product rating, retract it (CAS on
+        # the published→other move so we subtract at most once).
+        new_status = "rejected" if removed else "hidden"
+        gr = conn.execute("SELECT product_id, rating, status FROM guide_reviews WHERE id = ?", (target_id,)).fetchone()
+        if gr:
+            cur = conn.execute(
+                "UPDATE guide_reviews SET status = ?, updated_at = ? WHERE id = ? AND status != ?",
+                (new_status, now, target_id, new_status))
+            if cur.rowcount == 1 and gr["status"] == "published":
+                apply_review_to_aggregate(conn, gr["product_id"], -1, -int(gr["rating"] or 0))
 
 
 def restore_auto_hidden_content(conn: sqlite3.Connection, target_kind: str, target_id: str) -> None:
@@ -1918,6 +2018,16 @@ def restore_auto_hidden_content(conn: sqlite3.Connection, target_kind: str, targ
             (now_iso(), target_id, _MODERATION_HIDDEN_POST_STATUS),
         )
         invalidate_public_ranking_caches()
+    elif target_kind == "guide_review":
+        # Only resurrect a review that was auto-hidden by reports ('hidden'), never
+        # one an admin explicitly rejected. Re-publishing re-adds it to the rating.
+        gr = conn.execute("SELECT product_id, rating, status FROM guide_reviews WHERE id = ?", (target_id,)).fetchone()
+        if gr and gr["status"] == "hidden":
+            cur = conn.execute(
+                "UPDATE guide_reviews SET status = 'published', report_count = 0, updated_at = ? WHERE id = ? AND status = 'hidden'",
+                (now_iso(), target_id))
+            if cur.rowcount == 1:
+                apply_review_to_aggregate(conn, gr["product_id"], 1, int(gr["rating"] or 0))
 
 
 def maybe_autohide_post(conn: sqlite3.Connection, post_id: str) -> bool:
@@ -2532,6 +2642,12 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "tips": "TEXT NOT NULL DEFAULT ''",
     })
     _ensure_columns(conn, "guide_products", {
+        # Denormalized review aggregate (BE4 / guide_reviews). rating (an existing
+        # column) is sum/count; these two feed the CAS in apply_review_to_aggregate
+        # so we never AVG the whole review table on read. Backend-aware ALTER here
+        # (not a migration) keeps PG/SQLite from forking on ALTER dialect.
+        "rating_count": "INTEGER NOT NULL DEFAULT 0",
+        "rating_sum": "INTEGER NOT NULL DEFAULT 0",
         "preview_content": "TEXT NOT NULL DEFAULT ''",
         "purchase_content": "TEXT NOT NULL DEFAULT ''",
         "file_url": "TEXT NOT NULL DEFAULT ''",
@@ -4397,6 +4513,10 @@ def serialize_guide_product(row: sqlite3.Row | dict[str, Any], *, include_privat
             and not bool(d.get("is_appointment_only"))
         ),
         "purchaseCount": int(d.get("purchase_count") or 0), "rating": float(d.get("rating") or 0),
+        # BE4 review aggregate (published reviews only). The detail endpoint adds
+        # the full ratingSummary (5-bucket distribution); lists carry avg + count.
+        "ratingCount": int(d.get("rating_count") or 0),
+        "ratingSummary": {"ratingAvg": round(float(d.get("rating") or 0), 2), "ratingCount": int(d.get("rating_count") or 0)},
         "sortOrder": int(d.get("sort_order") or 0), "isFeatured": bool(d.get("is_featured")),
         "refundPolicy": d.get("refund_policy") or "", "notes": d.get("notes") or "",
         "publishedAt": d.get("published_at"),
@@ -7193,6 +7313,7 @@ def init_db() -> None:
         ensure_saved_search_schema(conn)
         ensure_apns_push_ledger_schema(conn)
         ensure_guide_seed(conn)
+        jlpt_seed.ensure_jlpt_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
             # first registered user is the founder.
@@ -10066,6 +10187,370 @@ def _machi_ai_like_rows(conn: sqlite3.Connection, table: str, columns: list[str]
     return conn.execute(sql, params).fetchall()
 
 
+# ---------------------------------------------------------------------------
+# Semantic RAG (BE5): a hybrid retrieval layer that ADDS a vector-similarity
+# path on top of the LIKE path above and fuses the two rankings with RRF.
+#
+# HARD INVARIANT: the semantic path is purely additive and defensive. With no
+# embedding key (default), an empty index, a failed query embedding, or any
+# exception, retrieval degrades — layer by layer, silently — to the exact pure
+# LIKE result it returns today. The feature is gated behind MACHI_RAG_ENABLED
+# (default off) so it stays dark until explicitly switched on with a key.
+#
+# The stored vectors are already L2-normalized (see embed_build / embeddings),
+# so "cosine" is a plain dot product. 414 rows × 1536 dims < 3MB — loaded once
+# per process into an in-memory index and matched with a matrix·vector product.
+# ---------------------------------------------------------------------------
+
+# Feature flag: OFF by default. When off, guide_ai_retrieve_context behaves byte
+# for byte like the pure-LIKE version. Requires an embedding key to do anything.
+MACHI_RAG_ENABLED = _env("MACHI_RAG_ENABLED", "0").strip().lower() in ("1", "true", "yes", "on")
+# RRF constant and the lexical/semantic weights. RRF score for a doc = Σ w /
+# (k + rank). Higher w_sem leans on meaning; higher w_lex leans on exact terms.
+MACHI_RAG_RRF_K = max(1, int(_env("MACHI_RAG_RRF_K", "60")))
+MACHI_RAG_W_SEM = float(_env("MACHI_RAG_W_SEM", "0.6"))
+MACHI_RAG_W_LEX = float(_env("MACHI_RAG_W_LEX", "0.4"))
+# How many semantic candidates to pull per query before fusion. Kept small — the
+# fusion caps the final list at `limit` anyway.
+MACHI_RAG_SEM_TOPK = max(1, int(_env("MACHI_RAG_SEM_TOPK", "12")))
+# Query-embedding timeout. A slow provider must degrade to LIKE fast, not stall
+# the chat — 1.5s by default.
+MACHI_RAG_QUERY_TIMEOUT = float(_env("MACHI_RAG_QUERY_TIMEOUT", "1.5"))
+# Refresher cadence (seconds) for the background self-heal build. No-op without
+# a key. Rebuilds are incremental (content_hash) so this is cheap.
+MACHI_RAG_REFRESH_SEC = max(60, int(_env("MACHI_RAG_REFRESH_INTERVAL_SEC", "900")))
+
+
+class _SemanticIndex:
+    """Process-local, lazily-loaded snapshot of guide_embeddings.
+
+    Holds parallel arrays: ``rows`` (entity metadata) and ``vectors`` (list of
+    L2-normalized float lists) plus, when NumPy is importable, a stacked matrix
+    for a fast matrix·vector similarity. A read/write lock guards a swap-in
+    rebuild so query threads always see a consistent snapshot. Everything here
+    is best-effort: a load failure leaves the index empty (⇒ pure LIKE)."""
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._loaded = False
+        self._rows: list[dict[str, Any]] = []
+        self._vectors: list[list[float]] = []
+        self._matrix = None  # numpy.ndarray | None
+        self._model = ""
+        self._dim = 0
+
+    def _reset_locked(self) -> None:
+        self._rows = []
+        self._vectors = []
+        self._matrix = None
+        self._model = ""
+        self._dim = 0
+
+    def reload(self) -> None:
+        """Rebuild the snapshot from guide_embeddings. Safe to call anytime."""
+        rows: list[dict[str, Any]] = []
+        vectors: list[list[float]] = []
+        model = ""
+        dim = 0
+        try:
+            with DB_LOCK:
+                conn = db()
+                try:
+                    fetched = conn.execute(
+                        "SELECT entity_type, entity_id, country, model, dim, vector "
+                        "FROM guide_embeddings"
+                    ).fetchall()
+                finally:
+                    conn.close()
+            for raw in fetched:
+                r = dict(raw)
+                try:
+                    vec = json.loads(r.get("vector") or "[]")
+                except Exception:
+                    continue
+                if not isinstance(vec, list) or not vec:
+                    continue
+                # Skip vectors whose width disagrees with the majority `dim` so a
+                # stale/mixed model row can't corrupt the matrix stack.
+                d = int(r.get("dim") or len(vec))
+                if dim == 0:
+                    dim = d
+                    model = str(r.get("model") or "")
+                elif d != dim:
+                    continue
+                rows.append({
+                    "entity_type": r.get("entity_type"),
+                    "entity_id": str(r.get("entity_id")),
+                    "country": (str(r.get("country") or "jp").strip().lower() or "jp"),
+                })
+                vectors.append([float(x) for x in vec])
+        except Exception:
+            ERR_LOG.exception("semantic index reload failed")
+            rows, vectors, model, dim = [], [], "", 0
+
+        matrix = None
+        if rows:
+            try:  # NumPy is optional; pure-Python cosine is the fallback.
+                import numpy as _np  # noqa: PLC0415
+                matrix = _np.asarray(vectors, dtype=_np.float32)
+            except Exception:
+                matrix = None
+
+        with self._lock:
+            self._rows = rows
+            self._vectors = vectors
+            self._matrix = matrix
+            self._model = model
+            self._dim = dim
+            self._loaded = True
+
+    def ensure_loaded(self) -> None:
+        if self._loaded:
+            return
+        with self._lock:
+            if self._loaded:
+                return
+        # Reload outside the short lock check (reload takes its own DB lock).
+        self.reload()
+
+    def is_empty(self) -> bool:
+        return not self._rows
+
+    def query(self, query_vec: list[float], top_k: int) -> list[tuple[dict[str, Any], float]]:
+        """Return up to ``top_k`` (row, score) pairs by descending similarity.
+
+        ``query_vec`` must be L2-normalized (cosine ⇒ dot product). Returns an
+        empty list on any problem — the caller then relies on LIKE alone."""
+        with self._lock:
+            rows = self._rows
+            vectors = self._vectors
+            matrix = self._matrix
+        if not rows or not query_vec:
+            return []
+        try:
+            if matrix is not None:
+                import numpy as _np  # noqa: PLC0415
+                q = _np.asarray(query_vec, dtype=_np.float32)
+                if q.shape[0] != matrix.shape[1]:
+                    return []
+                sims = matrix @ q  # (N,) cosine similarities
+                k = min(top_k, sims.shape[0])
+                # argpartition for the top-k, then sort just those descending.
+                idx = _np.argpartition(-sims, k - 1)[:k] if k < sims.shape[0] else _np.arange(sims.shape[0])
+                order = idx[_np.argsort(-sims[idx])]
+                return [(rows[int(i)], float(sims[int(i)])) for i in order]
+            # Pure-Python fallback (no NumPy): dot products in a comprehension.
+            dim = len(query_vec)
+            scored: list[tuple[int, float]] = []
+            for i, vec in enumerate(vectors):
+                if len(vec) != dim:
+                    continue
+                s = 0.0
+                for a, b in zip(vec, query_vec):
+                    s += a * b
+                scored.append((i, s))
+            scored.sort(key=lambda t: t[1], reverse=True)
+            return [(rows[i], s) for i, s in scored[:top_k]]
+        except Exception:
+            ERR_LOG.exception("semantic index query failed")
+            return []
+
+
+_SEMANTIC_INDEX = _SemanticIndex()
+
+
+def _machi_ai_semantic_candidates(conn: sqlite3.Connection, *, user_message: str,
+                                  country: str) -> list[dict[str, Any]]:
+    """Semantic-path candidates for the given query, as normalized context items.
+
+    Returns [] on ANY degradation (feature off / no key / empty index / query
+    embedding failure / no visible hits / exception). The returned items carry
+    the SAME shape and pass through the SAME visibility filter as the LIKE path,
+    so a stale index can never surface an unpublished/low-quality row."""
+    if not MACHI_RAG_ENABLED:
+        return []
+    try:
+        _SEMANTIC_INDEX.ensure_loaded()
+        if _SEMANTIC_INDEX.is_empty():
+            return []
+        # Embed the query under a short timeout; a slow/failed provider ⇒ [] ⇒
+        # LIKE-only. The key never leaks (embeddings module owns the transport).
+        prev_timeout = embeddings.EMBED_TIMEOUT
+        embeddings.EMBED_TIMEOUT = min(prev_timeout, MACHI_RAG_QUERY_TIMEOUT)
+        try:
+            vecs = embeddings.embed_texts([user_message])
+        finally:
+            embeddings.EMBED_TIMEOUT = prev_timeout
+        if not vecs:
+            return []
+        hits = _SEMANTIC_INDEX.query(vecs[0], MACHI_RAG_SEM_TOPK)
+        if not hits:
+            return []
+        # Group hit ids by entity_type, keeping the semantic order, then re-fetch
+        # from the live tables with the LIKE-path visibility filter. This is the
+        # security-critical step: the vector index is untrusted for visibility.
+        by_type: dict[str, list[str]] = {}
+        rank_of: dict[tuple[str, str], int] = {}
+        for pos, (row, _score) in enumerate(hits):
+            etype = str(row.get("entity_type") or "")
+            # Country-scope the semantic path exactly like LIKE (country = ?).
+            if (row.get("country") or "jp") != country:
+                continue
+            eid = str(row.get("entity_id") or "")
+            if not etype or not eid:
+                continue
+            by_type.setdefault(etype, []).append(eid)
+            rank_of[(etype, eid)] = pos
+
+        items: list[dict[str, Any]] = []
+
+        def _clip(value: Any, n: int) -> str:
+            return " ".join(str(value or "").split())[:n]
+
+        def _fetch(etype: str, sql: str, id_col: str, make) -> None:
+            ids = by_type.get(etype) or []
+            if not ids:
+                return
+            placeholders = ",".join("?" for _ in ids)
+            try:
+                rows = conn.execute(sql.format(ph=placeholders), [country] + ids).fetchall()
+            except Exception:
+                return
+            for raw in rows:
+                try:
+                    r = dict(raw)
+                except Exception:
+                    continue
+                it = make(r)
+                if it is not None:
+                    it["_sem_rank"] = rank_of.get((etype, str(r.get(id_col))), 999)
+                    items.append(it)
+
+        # Each SELECT below re-applies the SAME WHERE the LIKE branch uses, so a
+        # since-unpublished/low-quality row is filtered out here even if the
+        # index still has it. {ph} is a bound-param placeholder list (ids are
+        # bound, never interpolated).
+        _fetch("guide_article",
+                "SELECT id, title, summary, slug FROM guide_articles "
+                "WHERE country = ? AND status = 'published' AND id IN ({ph})",
+                "id",
+                lambda r: {"_kind": "guide_article", "title": _clip(r["title"], 60),
+                           "subtitle": _clip(r["summary"], 80),
+                           "route": {"kind": "article", "slug": r["slug"]},
+                           "modelLine": f"【指南文章】{_clip(r['title'], 60)} — {_clip(r['summary'], 120)}"})
+        _fetch("guide_school",
+                "SELECT id, school_name, prefecture, city, school_type FROM guide_schools "
+                "WHERE country = ? AND status = 'published' AND id IN ({ph})",
+                "id",
+                lambda r: {"_kind": "guide_school", "title": _clip(r["school_name"], 60),
+                           "subtitle": _clip(" · ".join(x for x in [r["prefecture"], r["city"]] if x), 80) or _clip(r["school_type"], 80),
+                           "route": {"kind": "school", "id": r["id"]},
+                           "modelLine": f"【学校】{_clip(r['school_name'], 60)}（{_clip(r['prefecture'], 20)} {_clip(r['school_type'], 20)}）"})
+        _fetch("guide_company",
+                "SELECT id, company_name, industry, prefecture FROM guide_companies "
+                "WHERE country = ? AND status = 'published' AND data_quality_score >= 15 AND id IN ({ph})",
+                "id",
+                lambda r: {"_kind": "guide_company", "title": _clip(r["company_name"], 60),
+                           "subtitle": _clip(" · ".join(x for x in [r["industry"], r["prefecture"]] if x), 80),
+                           "route": {"kind": "company", "id": r["id"]},
+                           "modelLine": f"【公司】{_clip(r['company_name'], 60)}（{_clip(r['industry'], 30)}）"})
+        # NOTE: products are indexed by `id` (the PK, matching embed_build), so
+        # re-fetch by id; the route still uses `slug` like the LIKE branch.
+        _fetch("guide_product",
+                "SELECT id, slug, title, subtitle, description FROM guide_products "
+                "WHERE country = ? AND status IN ('published','coming_soon') AND id IN ({ph})",
+                "id",
+                lambda r: {"_kind": "guide_product", "title": _clip(r["title"], 60),
+                           "subtitle": _clip(r["subtitle"] or r["description"], 80),
+                           "route": {"kind": "product", "slug": r["slug"]},
+                           "modelLine": f"【资料/服务】{_clip(r['title'], 60)} — {_clip(r['subtitle'] or r['description'], 100)}"})
+        _fetch("guide_faq",
+                "SELECT id, question, answer FROM guide_faq "
+                "WHERE country = ? AND status = 'published' AND id IN ({ph})",
+                "id",
+                lambda r: {"_kind": "guide_faq", "title": _clip(r["question"], 60),
+                           "subtitle": _clip(r["answer"], 80),
+                           "route": {"kind": "faq", "id": r["id"]},
+                           "modelLine": f"【常见问题】{_clip(r['question'], 60)} — {_clip(r['answer'], 120)}"})
+
+        # Preserve semantic order (the vector rank), best first.
+        items.sort(key=lambda it: it.get("_sem_rank", 999))
+        return items
+    except Exception:
+        ERR_LOG.exception("semantic candidate retrieval failed")
+        return []
+
+
+def _machi_ai_item_key(it: dict[str, Any]) -> tuple:
+    route = it.get("route") or {}
+    return (it.get("_kind") or it.get("type"),
+            route.get("slug") or route.get("id") or it.get("title"))
+
+
+def _machi_ai_rrf_fuse(lexical: list[dict[str, Any]], semantic: list[dict[str, Any]],
+                       limit: int) -> list[dict[str, Any]]:
+    """Reciprocal Rank Fusion of the two ranked lists into up to ``limit`` items.
+
+    score(doc) = w_lex/(k+rank_lex) + w_sem/(k+rank_sem). A doc present in only
+    one list is scored on that list alone. Ties break toward the better lexical
+    rank (exact-term matches are trustworthy). The output items are the canonical
+    {type,title,subtitle,route,modelLine} shape."""
+    k = MACHI_RAG_RRF_K
+    scores: dict[tuple, float] = {}
+    lex_rank: dict[tuple, int] = {}
+    payload: dict[tuple, dict[str, Any]] = {}
+
+    for rank, it in enumerate(lexical):
+        key = _machi_ai_item_key(it)
+        scores[key] = scores.get(key, 0.0) + MACHI_RAG_W_LEX / (k + rank)
+        lex_rank.setdefault(key, rank)
+        payload.setdefault(key, it)
+    for rank, it in enumerate(semantic):
+        key = _machi_ai_item_key(it)
+        scores[key] = scores.get(key, 0.0) + MACHI_RAG_W_SEM / (k + rank)
+        payload.setdefault(key, it)
+
+    ordered = sorted(scores.keys(),
+                     key=lambda ky: (-scores[ky], lex_rank.get(ky, 1_000_000)))
+    out: list[dict[str, Any]] = []
+    for key in ordered:
+        it = payload[key]
+        route = it.get("route") or {}
+        out.append({"type": it.get("_kind") or it.get("type"), "title": it.get("title"),
+                    "subtitle": it.get("subtitle"), "route": route,
+                    "modelLine": it.get("modelLine")})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def start_semantic_index_refresher() -> None:
+    """Background self-heal for the semantic index (mirrors the hot-score refresher).
+
+    No-op unless the feature is enabled AND an embedding key is present. Runs an
+    incremental embed_build pass, then reloads the in-process index so new/edited
+    Guide content becomes semantically retrievable without a redeploy. Every step
+    is best-effort; a failure never crashes the loop."""
+    if not (MACHI_RAG_ENABLED and embeddings.embeddings_available()):
+        ACCESS_LOG.info("semantic index refresher disabled (MACHI_RAG_ENABLED=%s, key=%s)",
+                        MACHI_RAG_ENABLED, embeddings.embeddings_available())
+        return
+
+    def _loop() -> None:
+        # Warm the index once shortly after boot so the first queries can use it.
+        time.sleep(20)
+        while True:
+            try:
+                import embed_build  # noqa: PLC0415  (deferred: build script imports server)
+                embed_build.build(force=False)
+                _SEMANTIC_INDEX.reload()
+            except Exception:
+                ERR_LOG.exception("semantic index refresh failed")
+            time.sleep(MACHI_RAG_REFRESH_SEC)
+
+    threading.Thread(target=_loop, name="semantic-index-refresher", daemon=True).start()
+
+
 def guide_ai_retrieve_context(conn: sqlite3.Connection, *, user_message: str, country: str,
                               language: str, limit: int = MACHI_AI_MAX_CONTEXT_ITEMS) -> list[dict[str, Any]]:
     """Best-effort keyword/LIKE retrieval over PUBLIC Guide content.
@@ -10156,11 +10641,15 @@ def guide_ai_retrieve_context(conn: sqlite3.Connection, *, user_message: str, co
                                      "sort_order", 2)
     ])
 
-    # Round-robin merge so the context is a mix of types, not all one table.
-    out: list[dict[str, Any]] = []
+    # Round-robin merge so the LEXICAL context is a mix of types, not all one
+    # table. This is the pure-LIKE ranking — the zero-regression baseline. We
+    # produce it in full (a little longer than `limit`) so RRF has ranks to fuse;
+    # the final list is capped to `limit` either by RRF or by the plain slice.
+    lexical: list[dict[str, Any]] = []
     seen: set[tuple] = set()
+    lex_cap = max(limit, MACHI_RAG_SEM_TOPK)
     idx = 0
-    while len(out) < limit and any(idx < len(b) for b in buckets):
+    while len(lexical) < lex_cap and any(idx < len(b) for b in buckets):
         for bucket in buckets:
             if idx >= len(bucket):
                 continue
@@ -10170,12 +10659,24 @@ def guide_ai_retrieve_context(conn: sqlite3.Connection, *, user_message: str, co
             if key in seen:
                 continue
             seen.add(key)
-            out.append({"type": it["_kind"], "title": it["title"], "subtitle": it["subtitle"],
-                        "route": route, "modelLine": it["modelLine"]})
-            if len(out) >= limit:
+            lexical.append({"type": it["_kind"], "title": it["title"], "subtitle": it["subtitle"],
+                            "route": route, "modelLine": it["modelLine"]})
+            if len(lexical) >= lex_cap:
                 break
         idx += 1
-    return out
+
+    # Semantic path (BE5): additive + defensive. Returns [] whenever the feature
+    # is off / no key / index empty / query embedding fails / no visible hits, in
+    # which case we return the pure-LIKE list unchanged (byte-for-byte today's
+    # behaviour). Only when there ARE semantic hits do we RRF-fuse the two.
+    semantic: list[dict[str, Any]] = []
+    try:
+        semantic = _machi_ai_semantic_candidates(conn, user_message=user_message, country=country)
+    except Exception:
+        semantic = []
+    if not semantic:
+        return lexical[:limit]
+    return _machi_ai_rrf_fuse(lexical, semantic, limit)
 
 
 # The brand system prompt lives on the server only — never on the client. It
@@ -10998,7 +11499,7 @@ def wallet_post_ledger(conn: sqlite3.Connection, user_id: str, entry_type: str, 
                     "applied": False, "duplicate": False, "insufficient": True}
     elif points_delta > 0:
         purchased_inc = points_delta if entry_type == "topup" else 0
-        bonus_inc = points_delta if entry_type in ("bonus", "membership_bonus") else 0
+        bonus_inc = points_delta if entry_type in ("bonus", "membership_bonus", "referral_bonus") else 0
         conn.execute(
             "UPDATE wallet_accounts SET balance_points = balance_points + ?, "
             "lifetime_purchased_points = lifetime_purchased_points + ?, "
@@ -11020,6 +11521,23 @@ def wallet_post_ledger(conn: sqlite3.Connection, user_id: str, entry_type: str, 
     return {"entry": serialize_wallet_ledger_entry(entry),
             "wallet": get_wallet_snapshot(conn, user_id),
             "applied": True, "duplicate": False, "insufficient": False}
+
+
+@money_atomic
+def qualify_referral_atomic(conn: sqlite3.Connection, invitee_id: str) -> dict[str, Any]:
+    """@money_atomic boundary for referral.qualify_referral: the CAS on the
+    referral status plus BOTH ledger writes commit as one transaction (or roll
+    back together). The pure logic lives in server_referral.py; we inject the
+    wallet ledger so that module never imports server. Nested money_atomic calls
+    (wallet_post_ledger is itself decorated) just join this outer tx."""
+    return referral.qualify_referral(conn, invitee_id, post_ledger=wallet_post_ledger, now=now_iso())
+
+
+@money_atomic
+def admin_review_referral_atomic(conn: sqlite3.Connection, referral_id: str, action: str) -> dict[str, Any]:
+    """@money_atomic boundary for admin approve/reject of a held referral."""
+    return referral.admin_review_referral(conn, referral_id, action,
+                                          post_ledger=wallet_post_ledger, now=now_iso())
 
 
 def create_wallet_topup_order(conn: sqlite3.Connection, user_id: str, pack: dict[str, Any], provider: str,
@@ -11204,6 +11722,23 @@ def refund_guide_points_order(conn: sqlite3.Connection, order_id_or_no: str, *, 
     prod = conn.execute("SELECT * FROM guide_products WHERE id = ?", (order["product_id"],)).fetchone()
     resource_type = _guide_product_resource_type(dict(prod)) if prod else "guide_product"
     revoke_user_entitlement(conn, order["user_id"], resource_type, order["product_id"], reason=reason or "refund")
+    # BE4: a refunded buyer no longer stands behind the product — retract their
+    # published review from the aggregate (score no longer counts) and mark it
+    # withdrawn so it drops off the product page. CAS so a double refund callback
+    # subtracts at most once. Non-published reviews just get marked, no aggregate
+    # touch. Best-effort — a review-reclaim miss never blocks the money refund.
+    try:
+        rev = conn.execute(
+            "SELECT id, rating, status FROM guide_reviews WHERE user_id = ? AND product_id = ?",
+            (order["user_id"], order["product_id"])).fetchone()
+        if rev and rev["status"] not in ("withdrawn", "rejected"):
+            cur2 = conn.execute(
+                "UPDATE guide_reviews SET status = 'withdrawn', updated_at = ? WHERE id = ? AND status != 'withdrawn'",
+                (now, rev["id"]))
+            if cur2.rowcount == 1 and rev["status"] == "published":
+                apply_review_to_aggregate(conn, order["product_id"], -1, -int(rev["rating"] or 0))
+    except Exception:
+        ERR_LOG.warning("refund review reclaim failed order=%s", order.get("id"))
     points = int(order["price_points"] or 0)
     if points > 0:
         wallet_post_ledger(conn, order["user_id"], "refund_credit", points, source_type="refund",
@@ -11659,6 +12194,10 @@ def guide_stripe_checkout_url(order_no: str, amount_cents: int, currency: str, p
 
 WALLET_STRIPE_SUCCESS_URL = _env("WALLET_STRIPE_SUCCESS_URL", "https://machicity.com/wallet?topup=1")
 WALLET_STRIPE_CANCEL_URL = _env("WALLET_STRIPE_CANCEL_URL", "https://machicity.com/wallet")
+
+# Public site origin used to build shareable invite links (https://<base>/i/<code>).
+# The invite landing page lives on the marketing/Web site, not the API host.
+REFERRAL_SHARE_BASE = _env("REFERRAL_SHARE_BASE", "https://machicity.com").rstrip("/")
 
 
 def wallet_stripe_checkout_url(order_no: str, amount_cents: int, currency: str, pack_title: str,
@@ -13639,6 +14178,12 @@ def start_hot_score_refresher() -> None:
         while True:
             try:
                 run_hot_score_refresh()
+                # New hot_scores (incl. recency decay) just landed — bust the
+                # public ranking caches so they surface within the refresh
+                # cadence instead of an extra ~30s TTL. On redis this is one
+                # pub/sub broadcast that refreshes every worker's board at once;
+                # in-process it just clears this (scheduler) instance's L1.
+                invalidate_public_ranking_caches()
             except Exception:
                 ERR_LOG.exception("hot_score refresh failed")
             # Piggyback the 热搜/热榜 rank snapshot on the refresher, but on its own
@@ -14124,6 +14669,21 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "explore_exclude_reported": "1",
     "explore_exclude_low_quality": "1",
     "explore_exclude_banned_users": "1",
+    # --- Recommend-feed MMR diversity (BE2) ---
+    # Maximal Marginal Relevance re-rank of the personalized recommend pool. It
+    # replaces the old "no 3 same-author in a row / ≤3 same content_type" hard
+    # rules with a continuous relevance-vs-similarity trade-off, so the page
+    # can't collapse onto one topic/author/type. Turn `enabled` off to fall back
+    # to the legacy hard rules. λ is how much weight goes to relevance (higher =
+    # more relevant / less diverse); clamped to [0.3, 0.95] in code. The w_* are
+    # the per-signal weights inside pairwise similarity (tag jaccard / same
+    # author / same type).
+    "recommend_mmr_enabled": "1",
+    "recommend_mmr_lambda": "0.72",
+    "recommend_mmr_lambda_coldstart": "0.6",
+    "recommend_mmr_w_tag": "0.6",
+    "recommend_mmr_w_author": "0.25",
+    "recommend_mmr_w_type": "0.15",
     # --- Engagement simulation (seed personas gradually like/收藏/comment/follow) ---
     "engagement_sim_enabled": "1",
     "engagement_sim_max_days": "3",        # only grow a post/user for its first N days
@@ -14269,6 +14829,219 @@ def _explore_rank_config(conn: sqlite3.Connection) -> dict[str, Any]:
         "exclude_reported": settings.get("explore_exclude_reported", "1") != "0",
         "exclude_low_quality": settings.get("explore_exclude_low_quality", "1") != "0",
         "exclude_banned_users": settings.get("explore_exclude_banned_users", "1") != "0",
+    }
+
+
+def _recommend_mmr_config(conn: sqlite3.Connection) -> dict[str, Any]:
+    """Admin-tunable knobs for the recommend-feed MMR diversity re-rank (BE2).
+
+    Mirrors `_explore_rank_config` (hot-editable via site settings, no restart).
+    λ is clamped to [0.3, 0.95]: below 0.3 the feed would chase diversity so hard
+    it stops being personalized; above 0.95 MMR is a no-op (pure relevance)."""
+    settings = _site_settings(conn)
+    return {
+        "enabled": settings.get("recommend_mmr_enabled", "1") != "0",
+        "lambda": _settings_float(settings, "recommend_mmr_lambda", 0.72, 0.3, 0.95),
+        "lambda_coldstart": _settings_float(settings, "recommend_mmr_lambda_coldstart", 0.6, 0.3, 0.95),
+        "w_tag": _settings_float(settings, "recommend_mmr_w_tag", 0.6, 0.0, 1.0),
+        "w_author": _settings_float(settings, "recommend_mmr_w_author", 0.25, 0.0, 1.0),
+        "w_type": _settings_float(settings, "recommend_mmr_w_type", 0.15, 0.0, 1.0),
+    }
+
+
+def _post_tag_set(row: dict[str, Any]) -> frozenset[str]:
+    """Frozenset of a pool post's topic slugs (from the comma-joined topic_slugs
+    the pool query attaches). Empty set when a post carries no tags."""
+    raw = row.get("topic_slugs") or ""
+    return frozenset(s.strip() for s in raw.split(",") if s.strip())
+
+
+def _pair_sim(
+    a: dict[str, Any],
+    b: dict[str, Any],
+    w_tag: float,
+    w_author: float,
+    w_type: float,
+    tags_a: frozenset[str] | None = None,
+    tags_b: frozenset[str] | None = None,
+) -> float:
+    """Pairwise similarity of two posts in [0, w_tag+w_author+w_type]:
+    w_tag·jaccard(tags) + w_author·[same author] + w_type·[same content_type].
+    Callers pass precomputed tag sets (tags_a/tags_b) to avoid re-splitting the
+    same post O(pool) times inside the MMR loop."""
+    ta = _post_tag_set(a) if tags_a is None else tags_a
+    tb = _post_tag_set(b) if tags_b is None else tags_b
+    sim = 0.0
+    if ta and tb:
+        inter = len(ta & tb)
+        if inter:
+            sim += w_tag * (inter / len(ta | tb))
+    aid_a, aid_b = a.get("author_id") or "", b.get("author_id") or ""
+    if aid_a and aid_a == aid_b:
+        sim += w_author
+    ct_a, ct_b = a.get("content_type") or "", b.get("content_type") or ""
+    if ct_a and ct_a == ct_b:
+        sim += w_type
+    return sim
+
+
+def _mmr_rerank(
+    scored: list[tuple[float, dict[str, Any]]],
+    limit: int,
+    lam: float,
+    w_tag: float,
+    w_author: float,
+    w_type: float,
+) -> list[dict[str, Any]]:
+    """Greedy Maximal Marginal Relevance re-rank. `scored` is (relevance, row)
+    already ordered best-first; each pick maximizes
+        λ·rel_norm − (1−λ)·max_sim(candidate, already_selected)
+    where rel_norm is the relevance min-max normalized to [0, 1] (so it shares a
+    scale with similarity). max_sim is maintained incrementally, so the whole
+    pass is O(limit·pool), not O(pool²). When λ ≥ its clamp ceiling or the pool
+    has no diversity signal this degenerates to pure relevance order."""
+    pool = list(scored)
+    if not pool:
+        return []
+    rels = [s for s, _ in pool]
+    lo, hi = min(rels), max(rels)
+    span = hi - lo
+    # Precompute each candidate's tag set once (not per comparison).
+    tag_sets = [_post_tag_set(row) for _, row in pool]
+    norm = [((s - lo) / span) if span > 0 else 1.0 for s in rels]
+
+    n = len(pool)
+    remaining = list(range(n))
+    max_sim = [0.0] * n  # similarity of pool[i] to the best already-selected pick
+    out: list[dict[str, Any]] = []
+    target = min(limit, n)
+    while remaining and len(out) < target:
+        best_pos = 0
+        best_val = None
+        for pos, i in enumerate(remaining):
+            val = lam * norm[i] - (1.0 - lam) * max_sim[i]
+            if best_val is None or val > best_val:
+                best_val = val
+                best_pos = pos
+        chosen = remaining.pop(best_pos)
+        out.append(pool[chosen][1])
+        # Incrementally fold the chosen pick into every remaining candidate's
+        # running max similarity to the selected set.
+        for i in remaining:
+            sim = _pair_sim(
+                pool[chosen][1], pool[i][1], w_tag, w_author, w_type,
+                tags_a=tag_sets[chosen], tags_b=tag_sets[i],
+            )
+            if sim > max_sim[i]:
+                max_sim[i] = sim
+    return out
+
+
+def _break_runs(rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Final anti-clustering safety net over an already-ordered list: never emit
+    three of the same author in a row, nor more than three of the same
+    content_type in the trailing window of 3. Defers (does not drop) an
+    offending row so it re-enters later — identical semantics to the legacy
+    diversity pass, just applied on top of the MMR order. This makes the
+    'no 同作者三连 / 同类型>3' invariant hold regardless of how relevance-heavy the
+    admin sets λ (a large relevance gap can otherwise keep MMR from breaking a
+    dominant author's opening run)."""
+    out: list[dict[str, Any]] = []
+    recent_authors: list[str] = []
+    recent_types: list[str] = []
+    pending = list(rows)
+
+    def _fits(aid: str, ct: str) -> bool:
+        if aid and recent_authors[-2:].count(aid) >= 2:
+            return False
+        if ct and recent_types[-3:].count(ct) >= 3:
+            return False
+        return True
+
+    def _place(i: int) -> None:
+        row = pending.pop(i)
+        out.append(row)
+        recent_authors.append(row.get("author_id") or "")
+        recent_types.append(row.get("content_type") or "")
+
+    # Earliest-fitting greedy: at each slot take the highest-priority remaining
+    # row that doesn't extend a same-author triple / same-type run. Best-effort
+    # under saturation — when the pool is dominated by one author/type and lacks
+    # enough separators (which the caller avoids by over-fetching past `limit`),
+    # a run can remain; we then fill in priority order rather than under-serve.
+    while pending and len(out) < limit:
+        pick = next(
+            (i for i, r in enumerate(pending)
+             if _fits(r.get("author_id") or "", r.get("content_type") or "")),
+            None,
+        )
+        if pick is None:
+            while pending and len(out) < limit:
+                _place(0)
+            break
+        _place(pick)
+    return out[:limit]
+
+
+def _diversity_metrics(rows: list[dict[str, Any]]) -> dict[str, float]:
+    """Aggregate-only diversity metrics for eval logging (BE2): content-type
+    entropy, tag entropy, author Gini, and mean intra-list dissimilarity (ILD).
+    Never touches post text / ids / any sensitive field — only the coarse
+    type / tag / author distribution of the ranked page."""
+    import math as _math
+
+    def _entropy(counts: list[int]) -> float:
+        total = sum(counts)
+        if total <= 0:
+            return 0.0
+        ent = 0.0
+        for c in counts:
+            if c > 0:
+                p = c / total
+                ent -= p * _math.log(p, 2)
+        return round(ent, 3)
+
+    types: dict[str, int] = {}
+    tags: dict[str, int] = {}
+    authors: dict[str, int] = {}
+    for r in rows:
+        types[r.get("content_type") or ""] = types.get(r.get("content_type") or "", 0) + 1
+        authors[r.get("author_id") or ""] = authors.get(r.get("author_id") or "", 0) + 1
+        for t in _post_tag_set(r):
+            tags[t] = tags.get(t, 0) + 1
+
+    # Gini of the author frequency distribution (0 = every post a distinct
+    # author, →1 = one author dominates).
+    counts = sorted(authors.values())
+    gini = 0.0
+    if counts and sum(counts) > 0:
+        cum = 0
+        for idx, c in enumerate(counts, start=1):
+            cum += idx * c
+        gini = round((2 * cum) / (len(counts) * sum(counts)) - (len(counts) + 1) / len(counts), 3)
+
+    # Mean pairwise dissimilarity (1 - jaccard-based sim on tag/author/type, unit
+    # weights) across the ranked page — higher = more varied.
+    ild = 0.0
+    if len(rows) > 1:
+        tag_sets = [_post_tag_set(r) for r in rows]
+        pairs = 0
+        acc = 0.0
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                sim = _pair_sim(
+                    rows[i], rows[j], 1 / 3, 1 / 3, 1 / 3,
+                    tags_a=tag_sets[i], tags_b=tag_sets[j],
+                )
+                acc += 1.0 - sim
+                pairs += 1
+        if pairs:
+            ild = round(acc / pairs, 3)
+    return {
+        "type_entropy": _entropy(list(types.values())),
+        "tag_entropy": _entropy(list(tags.values())),
+        "author_gini": gini,
+        "ild": ild,
     }
 
 
@@ -15727,7 +16500,7 @@ class Handler(BaseHTTPRequestHandler):
         cache_key = f"guide_jlpt:{country}:{language}"
         cached = _cache_get(cache_key)
         if cached is not None:
-            return self.send_json(cached)
+            return self.send_json(self._jlpt_zone_with_dynamic(conn, dict(cached)))
         articles = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND category_key = 'jlpt' "
             "ORDER BY is_featured DESC, sort_order, published_at DESC LIMIT 12", (country,)).fetchall()]
@@ -15773,7 +16546,433 @@ class Handler(BaseHTTPRequestHandler):
                 "Machi's JLPT materials are original summaries (no unauthorized past-paper text). Verify with official JLPT announcements."),
         }
         _cache_put(cache_key, payload, GUIDE_HOME_CACHE_TTL)
-        self.send_json(payload)
+        self.send_json(self._jlpt_zone_with_dynamic(conn, dict(payload)))
+
+    def _jlpt_zone_with_dynamic(self, conn: sqlite3.Connection, payload: dict[str, Any]) -> dict[str, Any]:
+        """Overlay the JLPT core (BE6) dynamic fields onto the cached zone
+        payload: hasPractice/hasPlacement/hasVocab/hasExams + examCountdown are
+        cheap counts; streak is per-user (only when signed in), so it stays out
+        of the cache key. Best-effort — never breaks the zone landing page."""
+        try:
+            viewer = self.current_session(conn)
+            uid = viewer["user_id"] if viewer else None
+            payload["jlptCore"] = jlpt.zone_dynamic_fields(conn, user_id=uid, region="jp", now=now_iso())
+        except Exception:
+            payload.setdefault("jlptCore", {
+                "hasPractice": False, "hasPlacement": False, "hasVocab": False,
+                "hasExams": False, "examCountdown": None,
+            })
+        return payload
+
+    # ========================================================================
+    # JLPT 备考核心 (BE6) — 题库 / 定级 / 打卡 / 单词 / 在线考试 / 考试日历.
+    # Thin handlers: auth + membership + envelopes here; the pure logic lives in
+    # server_jlpt.py. Compliance: study content is original/imported, never
+    # unauthorized past-paper text; the AI 讲解 prompt forbids claiming真题.
+    # ========================================================================
+
+    _JLPT_DISCLAIMER = (
+        "Machi 的 JLPT 题库为原创/授权导入内容，不含未授权官方历年真题原文；"
+        "请以 JLPT 官方最新公告为准。"
+    )
+
+    def _jlpt_optional_user(self, conn: sqlite3.Connection) -> dict[str, Any] | None:
+        """Resolve the signed-in user without raising (JLPT practice allows a
+        signed-out taster for free questions)."""
+        session = self.current_session(conn)
+        if not session:
+            return None
+        row = conn.execute(
+            "SELECT * FROM users WHERE id = ? AND deleted_at IS NULL", (session["user_id"],)
+        ).fetchone()
+        return dict(row) if row else None
+
+    def api_guide_jlpt_practice(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Sample practice questions. Signed-out callers get free questions only;
+        members additionally see is_member_only questions."""
+        user = self._jlpt_optional_user(conn)
+        is_member = bool(user) and has_active_membership(conn, user["id"])
+        level = jlpt.normalize_level(query.get("level"), default="N5")
+        section = jlpt.normalize_section(query.get("section"))
+        count = query.get("count")
+        questions = jlpt.pick_practice_questions(
+            conn, level=level, section=section, count=count,
+            user_id=(user["id"] if user else None), is_member=is_member, now=now_iso(),
+        )
+        self.send_json({
+            "status": "ok", "level": level, "section": section or "all",
+            "membershipActive": is_member, "questions": questions,
+            "disclaimer": self._JLPT_DISCLAIMER,
+        })
+
+    def api_guide_jlpt_attempt(self, conn: sqlite3.Connection) -> None:
+        """Grade + record one answer. Requires auth (attempts are per-user)."""
+        user = self.require_user(conn)
+        body = self.read_json()
+        question_id = str(body.get("questionId") or body.get("question_id") or "").strip()
+        if not question_id:
+            return self.send_error_json("questionId required", 400, "invalid_body")
+        question = jlpt.get_question(conn, question_id)
+        if not question:
+            return self.send_error_json("question not found", 404, "not_found")
+        try:
+            selected = int(body.get("selectedIndex", body.get("selected_index", -1)))
+        except (TypeError, ValueError):
+            return self.send_error_json("selectedIndex required", 400, "invalid_body")
+        result = jlpt.record_attempt(
+            conn, user_id=user["id"], question=question, selected_index=selected,
+            session_id=str(body.get("sessionId") or body.get("session_id") or ""),
+            source_kind=str(body.get("sourceKind") or body.get("source_kind") or "practice"),
+            now=now_iso(),
+        )
+        conn.commit()
+        self.send_json({"status": "ok", **result})
+
+    def api_guide_jlpt_review(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """错题本 — questions whose latest attempt was wrong."""
+        user = self.require_user(conn)
+        level = query.get("level") or ""
+        count = query.get("count")
+        questions = jlpt.review_questions(
+            conn, user_id=user["id"], level=level, count=count if count is not None else 20,
+        )
+        self.send_json({"status": "ok", "questions": questions, "disclaimer": self._JLPT_DISCLAIMER})
+
+    def api_guide_jlpt_stats(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        self.send_json({"status": "ok", **jlpt.stats(conn, user_id=user["id"], level=query.get("level") or "")})
+
+    def api_guide_jlpt_streak(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        self.send_json({"status": "ok", **jlpt.streak(conn, user_id=user["id"], now=now_iso())})
+
+    def api_guide_jlpt_exam_dates(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        region = (query.get("region") or "jp").strip().lower() or "jp"
+        self.send_json({
+            "status": "ok", "region": region,
+            "examDates": jlpt.exam_dates(conn, region=region),
+            "countdown": jlpt.next_exam_countdown(conn, region=region, now=now_iso()),
+        })
+
+    # ---- placement (定级) --------------------------------------------------
+    def api_guide_jlpt_placement_start(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self._jlpt_optional_user(conn)
+        is_member = bool(user) and has_active_membership(conn, user["id"])
+        questions = jlpt.placement_questions(conn, is_member=is_member)
+        self.send_json({
+            "status": "ok", "questions": questions,
+            "note": machi_ai_text("zh-CN",
+                                  "根据作答自动推荐适合的备考等级，仅供参考。",
+                                  "回答からおすすめの学習レベルを提案します（参考）。",
+                                  "We recommend a level from your answers (guidance only)."),
+        })
+
+    def api_guide_jlpt_placement_submit(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        answers = body.get("answers")
+        if not isinstance(answers, list):
+            return self.send_error_json("answers array required", 400, "invalid_body")
+        # Record the placement answers as attempts too (so定级 counts for streak).
+        now = now_iso()
+        for a in answers:
+            if not isinstance(a, dict):
+                continue
+            qid = str(a.get("questionId") or a.get("question_id") or "").strip()
+            q = jlpt.get_question(conn, qid) if qid else None
+            if not q:
+                continue
+            try:
+                sel = int(a.get("selectedIndex", a.get("selected_index", -1)))
+            except (TypeError, ValueError):
+                sel = -1
+            jlpt.record_attempt(conn, user_id=user["id"], question=q, selected_index=sel,
+                                source_kind="placement", now=now)
+        result = jlpt.score_placement(conn, answers)
+        conn.commit()
+        self.send_json({
+            "status": "ok", **result,
+            "studyPlanRoute": "guidePlan",
+            "studyPlanPrefill": {"targetLevel": result["recommendedLevel"],
+                                 "dailyMinutes": result["suggestedDailyMinutes"]},
+        })
+
+    # ---- vocab (单词) ------------------------------------------------------
+    def api_guide_jlpt_vocab_decks(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.send_json({"status": "ok", "decks": jlpt.vocab_decks(conn, level=query.get("level") or "")})
+
+    def api_guide_jlpt_vocab_deck(self, conn: sqlite3.Connection, deck_id: str) -> None:
+        """Deck detail. Member-only decks are gated to members (free users get an
+        upgrade prompt)."""
+        user = self._jlpt_optional_user(conn)
+        is_member = bool(user) and has_active_membership(conn, user["id"])
+        detail = jlpt.deck_words(conn, deck_id=deck_id, user_id=(user["id"] if user else None))
+        if not detail:
+            return self.send_error_json("deck not found", 404, "not_found")
+        if detail["deck"]["isMemberOnly"] and not is_member:
+            env = self._error_envelope(
+                "MEMBER_REQUIRED",
+                "该词表为会员专属，开通会员即可解锁全部单词与「考单词」测验。")
+            env["upgradeSuggested"] = True
+            return self.send_json(env, 403)
+        self.send_json({"status": "ok", **detail})
+
+    def api_guide_jlpt_vocab_mark(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        word_id = str(body.get("wordId") or body.get("word_id") or "").strip()
+        if not word_id:
+            return self.send_error_json("wordId required", 400, "invalid_body")
+        state = str(body.get("state") or "mastered").strip()
+        result = jlpt.mark_vocab(conn, user_id=user["id"], word_id=word_id, state=state, now=now_iso())
+        conn.commit()
+        self.send_json({"status": "ok", **result})
+
+    def api_guide_jlpt_vocab_progress(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        self.send_json({"status": "ok", **jlpt.vocab_progress(conn, user_id=user["id"], level=query.get("level") or "")})
+
+    def api_guide_jlpt_vocab_quiz_start(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """考单词 online quiz — generates a MCQ set from the word bank."""
+        user = self.require_user(conn)
+        is_member = has_active_membership(conn, user["id"])
+        level = jlpt.normalize_level(query.get("level"), default="N5")
+        deck_id = str(query.get("deckId") or query.get("deck_id") or "").strip()
+        quiz = jlpt.build_vocab_quiz(
+            conn, user_id=user["id"], level=level, deck_id=deck_id,
+            count=query.get("count") or jlpt.VOCAB_QUIZ_DEFAULT_COUNT,
+            is_member=is_member, now=now_iso(),
+        )
+        if not quiz:
+            return self.send_error_json("该等级词汇不足，暂时无法生成测验。", 409, "not_enough_words")
+        conn.commit()
+        self.send_json({"status": "ok", **quiz})
+
+    def api_guide_jlpt_vocab_quiz_submit(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        session_id = str(body.get("sessionId") or body.get("session_id") or "").strip()
+        answers = body.get("answers")
+        if not session_id or not isinstance(answers, list):
+            return self.send_error_json("sessionId + answers required", 400, "invalid_body")
+        session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
+        if not session:
+            return self.send_error_json("session not found", 404, "not_found")
+        try:
+            answer_ints = [int(x) for x in answers]
+        except (TypeError, ValueError):
+            return self.send_error_json("answers must be integers", 400, "invalid_body")
+        result = jlpt.submit_vocab_quiz(conn, session=session, answers=answer_ints, now=now_iso())
+        if result is None:
+            return self.send_error_json("已提交或非单词测验会话", 409, "already_submitted")
+        conn.commit()
+        self.send_json({"status": "ok", **result})
+
+    # ---- online exams (在线考试) -------------------------------------------
+    def api_guide_jlpt_exams(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self._jlpt_optional_user(conn)
+        is_member = bool(user) and has_active_membership(conn, user["id"])
+        self.send_json({
+            "status": "ok",
+            "exams": jlpt.list_exams(conn, level=query.get("level") or "", is_member=is_member),
+        })
+
+    def api_guide_jlpt_exam_start(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        is_member = has_active_membership(conn, user["id"])
+        body = self.read_json()
+        exam_id = str(body.get("examId") or body.get("exam_id") or "").strip()
+        exam = jlpt.get_exam(conn, exam_id) if exam_id else None
+        if not exam or exam.get("status") != "published":
+            return self.send_error_json("exam not found", 404, "not_found")
+        if exam.get("is_member_only") and not is_member:
+            env = self._error_envelope("MEMBER_REQUIRED", "该模考为会员专属，开通会员即可参加。")
+            env["upgradeSuggested"] = True
+            return self.send_json(env, 403)
+        started = jlpt.start_exam_session(conn, user_id=user["id"], exam=exam, is_member=is_member, now=now_iso())
+        if not started:
+            return self.send_error_json("该模考暂无可用题目。", 409, "no_questions")
+        conn.commit()
+        self.send_json({"status": "ok", **started, "disclaimer": self._JLPT_DISCLAIMER})
+
+    def api_guide_jlpt_exam_answer(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        session_id = str(body.get("sessionId") or body.get("session_id") or "").strip()
+        question_id = str(body.get("questionId") or body.get("question_id") or "").strip()
+        if not session_id or not question_id:
+            return self.send_error_json("sessionId + questionId required", 400, "invalid_body")
+        session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
+        if not session:
+            return self.send_error_json("session not found", 404, "not_found")
+        try:
+            selected = int(body.get("selectedIndex", body.get("selected_index", -1)))
+        except (TypeError, ValueError):
+            return self.send_error_json("selectedIndex required", 400, "invalid_body")
+        result = jlpt.save_exam_answer(conn, session=session, question_id=question_id, selected_index=selected)
+        if result is None:
+            return self.send_error_json("无法保存作答（会话已结束或题目不属于本卷）。", 409, "answer_rejected")
+        conn.commit()
+        self.send_json({"status": "ok", **result})
+
+    def api_guide_jlpt_exam_submit(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        body = self.read_json()
+        session_id = str(body.get("sessionId") or body.get("session_id") or "").strip()
+        if not session_id:
+            return self.send_error_json("sessionId required", 400, "invalid_body")
+        session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
+        if not session:
+            return self.send_error_json("session not found", 404, "not_found")
+        exam = jlpt.get_exam(conn, session.get("exam_id") or "")
+        result = jlpt.submit_exam_session(conn, session=session, exam=exam, now=now_iso())
+        if result is None:
+            return self.send_error_json("该考试已提交。", 409, "already_submitted")
+        conn.commit()
+        self.send_json({"status": "ok", **result, "disclaimer": self._JLPT_DISCLAIMER})
+
+    def api_guide_jlpt_exam_history(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        user = self.require_user(conn)
+        self.send_json({
+            "status": "ok",
+            "sessions": jlpt.exam_history(conn, user_id=user["id"], level=query.get("level") or ""),
+        })
+
+    def api_guide_jlpt_exam_session(self, conn: sqlite3.Connection, session_id: str) -> None:
+        user = self.require_user(conn)
+        session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
+        if not session:
+            return self.send_error_json("session not found", 404, "not_found")
+        self.send_json({"status": "ok", **jlpt.session_review(conn, session=session),
+                        "disclaimer": self._JLPT_DISCLAIMER})
+
+    # ---- AI 逐题讲解 (会员权益) ---------------------------------------------
+    def api_guide_jlpt_explain(self, conn: sqlite3.Connection) -> None:
+        """Member-only per-question AI explanation via the Machi AI Pro model.
+        Free/guest callers spend their normal Machi AI daily quota (or 403 when
+        exhausted); members always use the Pro model. The prompt forbids the
+        model from claiming the question is an official past paper."""
+        user = self.require_user(conn)
+        body = self.read_json()
+        language = (str(body.get("language") or "zh-CN").strip()) or "zh-CN"
+        question_id = str(body.get("questionId") or body.get("question_id") or "").strip()
+        question = jlpt.get_question(conn, question_id) if question_id else None
+        if not question:
+            return self.send_error_json("question not found", 404, "not_found")
+
+        is_member = has_active_membership(conn, user["id"])
+        usage_date = machi_ai_usage_date()
+        limit = machi_ai_daily_limit(user, is_member)
+        if machi_ai_usage_count(conn, user["id"], usage_date) >= limit:
+            return self._guide_ai_quota_response(language, is_member, is_guest=False)
+
+        # Build a tight, self-contained explanation prompt from the question.
+        choices = jlpt._loads_choices(question.get("choices_json"))
+        answer_index = int(question.get("answer_index") or 0)
+        correct_text = choices[answer_index] if 0 <= answer_index < len(choices) else ""
+        options_block = "\n".join(f"{i+1}. {c}" for i, c in enumerate(choices))
+        sys_prompt = (
+            "你是 Machi 的日语学习讲解助手。请用简洁清晰的中文，针对给定的 JLPT 练习题讲解："
+            "为什么正确答案正确、其它选项为什么不对，并给出相关词汇/语法点与记忆建议。"
+            "这是 Machi 原创/整理的练习题，绝对不要声称它是官方历年真题，也不要编造出处或年份。"
+        )
+        user_prompt = (
+            f"级别：{question.get('level')}  题型：{question.get('section')}\n"
+            f"题目：{question.get('stem')}\n"
+            + (f"篇章：{question.get('passage')}\n" if question.get('passage') else "")
+            + f"选项：\n{options_block}\n"
+            f"正确答案：第{answer_index+1}项「{correct_text}」\n"
+            "请讲解。"
+        )
+        messages = [{"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": user_prompt}]
+
+        reserved = self._machi_ai_reserve_usage(conn, user["id"], usage_date, is_member)
+        if reserved > limit:
+            self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
+            return self._guide_ai_quota_response(language, is_member, is_guest=False)
+        chat_model = MACHI_AI_PRO_MODEL if (is_member and MACHI_AI_PRO_MODEL) else MACHI_AI_MODEL
+        completion = None
+        try:
+            completion = seed_llm.machi_ai_chat_completion(
+                messages, model=chat_model, thinking=False, max_tokens=900,
+                timeout=MACHI_AI_TIMEOUT_SEC,
+            )
+        except Exception:
+            completion = None
+        if not completion or not str(completion.get("content") or "").strip():
+            self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
+            return self.send_json(
+                self._error_envelope("AI_UNAVAILABLE", machi_ai_text(
+                    language,
+                    "Machi AI 暂时无法讲解，请稍后再试。",
+                    "Machi AI は現在解説できません。しばらくしてから再度お試しください。",
+                    "Machi AI is temporarily unavailable. Please try again shortly.",
+                )),
+                503,
+            )
+        content = str(completion.get("content") or "").strip()
+        self._machi_ai_record_usage_tokens(conn, user["id"], usage_date, completion.get("usage") or {})
+        conn.commit()
+        remaining = None if is_member else max(0, limit - machi_ai_usage_count(conn, user["id"], usage_date))
+        self.send_json({
+            "status": "ok",
+            "questionId": question_id,
+            "explanation": content,
+            "usage": {"membershipActive": is_member, "remainingFreeUses": remaining},
+            "disclaimer": self._JLPT_DISCLAIMER,
+        })
+
+    # ---- admin import (供用户灌真题/词表) ----------------------------------
+    def api_admin_jlpt_questions_import(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        body = self.read_json()
+        items = body.get("items") if isinstance(body.get("items"), list) else body.get("questions")
+        if not isinstance(items, list):
+            return self.send_error_json("items array required", 400, "invalid_body")
+        result = jlpt.import_questions(conn, items, now=now_iso())
+        conn.commit()
+        self.send_json({"status": "ok", **result})
+
+    def api_admin_jlpt_vocab_import(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        body = self.read_json()
+        items = body.get("items") if isinstance(body.get("items"), list) else body.get("words")
+        if not isinstance(items, list):
+            return self.send_error_json("items array required", 400, "invalid_body")
+        result = jlpt.import_vocab(conn, items, now=now_iso())
+        conn.commit()
+        self.send_json({"status": "ok", **result})
+
+    def api_admin_jlpt_exam_dates_upsert(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        body = self.read_json()
+        items = body.get("items") if isinstance(body.get("items"), list) else body.get("examDates")
+        if not isinstance(items, list):
+            return self.send_error_json("items array required", 400, "invalid_body")
+        result = jlpt.upsert_exam_dates(conn, items, now=now_iso())
+        conn.commit()
+        self.send_json({"status": "ok", **result})
+
+    def api_admin_jlpt_deck_upsert(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        body = self.read_json()
+        deck = body.get("deck") if isinstance(body.get("deck"), dict) else body
+        if not isinstance(deck, dict):
+            return self.send_error_json("deck object required", 400, "invalid_body")
+        result = jlpt.upsert_deck(conn, deck, now=now_iso())
+        conn.commit()
+        self.send_json({"status": "ok", **result})
+
+    def api_admin_jlpt_exam_upsert(self, conn: sqlite3.Connection) -> None:
+        self.require_admin(conn)
+        body = self.read_json()
+        exam = body.get("exam") if isinstance(body.get("exam"), dict) else body
+        if not isinstance(exam, dict):
+            return self.send_error_json("exam object required", 400, "invalid_body")
+        result = jlpt.upsert_exam(conn, exam, now=now_iso())
+        conn.commit()
+        self.send_json({"status": "ok", **result})
 
     def api_guide_categories(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         country = self._guide_country(query)
@@ -19361,6 +20560,16 @@ class Handler(BaseHTTPRequestHandler):
             product["canBuyWithPoints"] = False
         else:
             product["canBuyWithPoints"] = bool(base_points_eligible and int(row["wallet_price_points"] or 0) > 0)
+        # BE4: review summary (5-bucket distribution + avg/count over published
+        # reviews) so the detail page shows the social-proof signal in one request.
+        # canReview reflects ownership/unlock for the signed-in viewer; the review
+        # list itself is lazy-loaded via the paginated /reviews endpoint.
+        product["ratingSummary"] = self._guide_review_distribution(conn, row["id"])
+        if session:
+            can_review, _order = self._guide_user_owns_product(conn, session["user_id"], dict(row))
+            product["canReview"] = bool(can_review)
+        else:
+            product["canReview"] = False
         self.send_json({"status": "ok", "product": product})
 
     def api_entitlement_resolve(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -19937,6 +21146,289 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"status": "pending_review", "id": review_id,
                         "message": "已提交，将在审核通过后展示。请勿发布个人隐私或未经证实的指控。"}, 201)
 
+    # ---- Guide product reviews (BE4 / guide_reviews) ----
+
+    def _guide_lookup_product(self, conn: sqlite3.Connection, raw_id: str) -> sqlite3.Row:
+        row = conn.execute(
+            "SELECT * FROM guide_products WHERE id = ? OR slug = ? LIMIT 1", (raw_id, raw_id)).fetchone()
+        if not row:
+            raise APIError("资料/服务不存在", 404, "guide_product_not_found")
+        return row
+
+    def _guide_user_owns_product(self, conn: sqlite3.Connection, user_id: str,
+                                 product_row: dict[str, Any]) -> tuple[bool, str]:
+        """Purchase check for reviewing: a paid/fulfilled order, or a generic
+        entitlement (points purchase), counts as owned. A member-included DIGITAL
+        resource an active member can open also counts (they've consumed it) — but
+        a SERVICE always requires a real fulfilled order, since a membership never
+        actually delivers the service. Returns (owned, order_id) — order_id is the
+        anchoring order when there is one (used to reclaim the review on refund)."""
+        product_id = product_row["id"]
+        order = conn.execute(
+            "SELECT id FROM guide_orders WHERE user_id = ? AND product_id = ? "
+            "AND status IN ('paid','fulfilled') ORDER BY created_at DESC LIMIT 1",
+            (user_id, product_id)).fetchone()
+        if order:
+            return True, order["id"]
+        if user_has_entitlement(conn, user_id, _guide_product_resource_type(dict(product_row)), product_id):
+            return True, ""
+        if bool(product_row.get("is_member_included")) and not bool(product_row.get("is_service")):
+            if has_active_membership(conn, user_id):
+                return True, ""
+        return False, ""
+
+    def _guide_review_author_summary(self, conn: sqlite3.Connection, user_id: str) -> dict[str, Any] | None:
+        row = conn.execute(
+            "SELECT id, handle, display_name, avatar_url FROM users WHERE id = ? AND deleted_at IS NULL",
+            (user_id,)).fetchone()
+        if not row:
+            return None
+        d = dict(row)
+        return {
+            "id": d.get("id"), "handle": d.get("handle") or "",
+            "displayName": d.get("display_name") or d.get("handle") or "",
+            "avatarUrl": d.get("avatar_url") or "",
+        }
+
+    def _guide_review_distribution(self, conn: sqlite3.Connection, product_id: str) -> dict[str, Any]:
+        """One GROUP BY query → 5-bucket star distribution + avg/count over
+        published reviews only. Used by the list endpoint and the product detail."""
+        buckets = {5: 0, 4: 0, 3: 0, 2: 0, 1: 0}
+        for r in conn.execute(
+            "SELECT rating, COUNT(*) AS c FROM guide_reviews "
+            "WHERE product_id = ? AND status = 'published' GROUP BY rating",
+            (product_id,)):
+            star = int(r["rating"] or 0)
+            if star in buckets:
+                buckets[star] = int(r["c"] or 0)
+        count = sum(buckets.values())
+        total = sum(star * n for star, n in buckets.items())
+        avg = round(float(total) / count, 2) if count > 0 else 0.0
+        return {
+            "ratingAvg": avg, "ratingCount": count,
+            "distribution": [{"star": s, "count": buckets[s]} for s in (5, 4, 3, 2, 1)],
+        }
+
+    def api_guide_create_or_update_review(self, conn: sqlite3.Connection, product_id_or_slug: str) -> None:
+        """Create or update the caller's review of a product. Buy-gated + one per
+        (user, product) via UNIQUE. A re-submit UPSERTs the same row; if it was
+        published, it first withdraws from the rating aggregate and returns to
+        pending for re-moderation. Default status is pending — reviews are never
+        shown before an admin approves (App Store 1.2)."""
+        user = self.require_user(conn)
+        if not rate_check("review:" + user["id"], "review"):
+            raise APIError("评价过于频繁，请稍后再试", 429, "rate_limited")
+        product = self._guide_lookup_product(conn, product_id_or_slug)
+        product_id = product["id"]
+        owned, order_id = self._guide_user_owns_product(conn, user["id"], dict(product))
+        if not owned:
+            raise APIError("购买或解锁后才能评价", 403, "not_purchased")
+        data = self.read_json()
+        rating = max(1, min(5, _guide_int(data.get("rating"), 0, lo=0, hi=5)))
+        body = _clean_text(data.get("body"), 2000)
+        anonymous = 1 if _guide_payload_bool(data, "anonymous", default=0) == 1 else 0
+        enforce_content_policy(body)
+        now = now_iso()
+        existing = conn.execute(
+            "SELECT id, status, rating FROM guide_reviews WHERE user_id = ? AND product_id = ?",
+            (user["id"], product_id)).fetchone()
+        if existing:
+            e = dict(existing)
+            # If the current row is published it is counted in the aggregate;
+            # withdraw it before re-moderation so a stale score never lingers.
+            if e.get("status") == "published":
+                apply_review_to_aggregate(conn, product_id, -1, -int(e.get("rating") or 0))
+            conn.execute(
+                "UPDATE guide_reviews SET rating = ?, body = ?, anonymous = ?, order_id = ?, "
+                "status = 'pending', report_count = 0, updated_at = ? WHERE id = ?",
+                (rating, body, anonymous, order_id or e.get("order_id") or "", now, e["id"]))
+            review_id = e["id"]
+        else:
+            review_id = str(uuid.uuid4())
+            conn.execute(
+                "INSERT INTO guide_reviews (id, product_id, user_id, order_id, rating, body, status, "
+                "helpful_count, report_count, anonymous, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, 0, ?, ?, ?)",
+                (review_id, product_id, user["id"], order_id, rating, body, anonymous, now, now))
+        self.send_json({"status": "pending_review", "id": review_id,
+                        "message": "评价已提交，将在审核通过后展示。请勿发布个人隐私或未经证实的指控。"}, 201)
+
+    def api_guide_delete_review(self, conn: sqlite3.Connection, review_id: str) -> None:
+        """Author withdraws their own review. CAS so a published→withdrawn move
+        subtracts from the aggregate exactly once."""
+        user = self.require_user(conn)
+        row = conn.execute(
+            "SELECT id, product_id, user_id, status, rating FROM guide_reviews WHERE id = ?",
+            (review_id,)).fetchone()
+        if not row or row["user_id"] != user["id"]:
+            raise APIError("评价不存在", 404, "guide_review_not_found")
+        r = dict(row)
+        if r.get("status") == "withdrawn":
+            return self.send_json({"status": "ok", "id": review_id, "reviewStatus": "withdrawn"})
+        cur = conn.execute(
+            "UPDATE guide_reviews SET status = 'withdrawn', updated_at = ? WHERE id = ? AND status != 'withdrawn'",
+            (now_iso(), review_id))
+        if cur.rowcount == 1 and r.get("status") == "published":
+            apply_review_to_aggregate(conn, r["product_id"], -1, -int(r.get("rating") or 0))
+        self.send_json({"status": "ok", "id": review_id, "reviewStatus": "withdrawn"})
+
+    def api_guide_product_reviews(self, conn: sqlite3.Connection, product_id_or_slug: str,
+                                  query: dict[str, str]) -> None:
+        """Public paginated list of PUBLISHED reviews + the 5-bucket distribution
+        summary. Author is attached only for non-anonymous reviews; viewerVoted /
+        isMine are filled for a signed-in viewer."""
+        product = self._guide_lookup_product(conn, product_id_or_slug)
+        product_id = product["id"]
+        limit = max(1, min(int(query.get("limit") or 20), 50))
+        offset = max(0, int(query.get("offset") or 0))
+        session = self.current_session(conn)
+        viewer_id = session["user_id"] if session else None
+        rows = list(conn.execute(
+            "SELECT * FROM guide_reviews WHERE product_id = ? AND status = 'published' "
+            "ORDER BY helpful_count DESC, created_at DESC LIMIT ? OFFSET ?",
+            (product_id, limit + 1, offset)))
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        voted: set[str] = set()
+        if viewer_id and rows:
+            ids = [r["id"] for r in rows]
+            placeholders = ",".join("?" for _ in ids)
+            for v in conn.execute(
+                f"SELECT review_id FROM guide_review_votes WHERE user_id = ? AND review_id IN ({placeholders})",
+                [viewer_id, *ids]):
+                voted.add(v["review_id"])
+        items = []
+        for r in rows:
+            d = dict(r)
+            author = None if bool(d.get("anonymous")) else self._guide_review_author_summary(conn, d["user_id"])
+            items.append(serialize_guide_review(
+                d, viewer_id=viewer_id, author=author, viewer_voted=(d["id"] in voted)))
+        self.send_json({
+            "status": "ok", "productId": product_id,
+            "summary": self._guide_review_distribution(conn, product_id),
+            "items": items, "hasMore": has_more,
+        })
+
+    def api_guide_product_review_me(self, conn: sqlite3.Connection, product_id_or_slug: str) -> None:
+        """The caller's own review of a product (any status, incl. pending/rejected)
+        so the client can render '审核中' / edit affordances. canReview reflects
+        whether they're allowed to write one at all."""
+        user = self.require_user(conn)
+        product = self._guide_lookup_product(conn, product_id_or_slug)
+        product_id = product["id"]
+        owned, _order = self._guide_user_owns_product(conn, user["id"], dict(product))
+        row = conn.execute(
+            "SELECT * FROM guide_reviews WHERE user_id = ? AND product_id = ?",
+            (user["id"], product_id)).fetchone()
+        review = None
+        if row:
+            d = dict(row)
+            author = None if bool(d.get("anonymous")) else self._guide_review_author_summary(conn, d["user_id"])
+            review = serialize_guide_review(d, viewer_id=user["id"], author=author)
+        self.send_json({"status": "ok", "productId": product_id, "canReview": bool(owned), "review": review})
+
+    def api_guide_review_helpful(self, conn: sqlite3.Connection, review_id: str, on: bool) -> None:
+        """Idempotent '有帮助' vote. One vote per (review, user) via UNIQUE; the
+        denormalized helpful_count is bumped only when the row set actually changed
+        (CAS by rowcount). You can't vote your own review."""
+        user = self.require_user(conn)
+        row = conn.execute(
+            "SELECT id, user_id, status, helpful_count FROM guide_reviews WHERE id = ?",
+            (review_id,)).fetchone()
+        if not row or row["status"] != "published":
+            raise APIError("评价不存在", 404, "guide_review_not_found")
+        if row["user_id"] == user["id"]:
+            raise APIError("不能给自己的评价投票", 400, "cannot_vote_own_review")
+        now = now_iso()
+        if on:
+            # INSERT OR IGNORE → rowcount 1 only when the vote is new.
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO guide_review_votes (review_id, user_id, created_at) VALUES (?, ?, ?)",
+                (review_id, user["id"], now))
+            if cur.rowcount == 1:
+                conn.execute(
+                    "UPDATE guide_reviews SET helpful_count = helpful_count + 1, updated_at = ? WHERE id = ?",
+                    (now, review_id))
+        else:
+            cur = conn.execute(
+                "DELETE FROM guide_review_votes WHERE review_id = ? AND user_id = ?",
+                (review_id, user["id"]))
+            if cur.rowcount == 1:
+                conn.execute(
+                    "UPDATE guide_reviews SET helpful_count = CASE WHEN helpful_count >= 1 THEN helpful_count - 1 ELSE 0 END, "
+                    "updated_at = ? WHERE id = ?",
+                    (now, review_id))
+        count = int(conn.execute(
+            "SELECT helpful_count FROM guide_reviews WHERE id = ?", (review_id,)).fetchone()["helpful_count"])
+        self.send_json({"status": "ok", "id": review_id, "helpfulCount": count, "viewerVoted": bool(on)})
+
+    def api_admin_guide_reviews_queue(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Moderation queue for product reviews (default: pending). Each item
+        carries the product title + author handle so the moderator has context."""
+        self.require_admin(conn)
+        status = (query.get("status") or "pending").strip() or "pending"
+        limit = max(1, min(int(query.get("limit") or 50), 200))
+        rows = list(conn.execute(
+            "SELECT gr.*, gp.title AS product_title, gp.slug AS product_slug, u.handle AS author_handle "
+            "FROM guide_reviews gr "
+            "LEFT JOIN guide_products gp ON gp.id = gr.product_id "
+            "LEFT JOIN users u ON u.id = gr.user_id "
+            "WHERE gr.status = ? ORDER BY gr.created_at ASC LIMIT ?",
+            (status, limit)))
+        items = []
+        for r in rows:
+            d = dict(r)
+            payload = serialize_guide_review(d, viewer_id=None,
+                                             author=self._guide_review_author_summary(conn, d["user_id"]))
+            payload["productTitle"] = d.get("product_title") or ""
+            payload["productSlug"] = d.get("product_slug") or ""
+            payload["authorHandle"] = d.get("author_handle") or ""
+            items.append(payload)
+        self.send_json({"status": "ok", "items": items})
+
+    def api_admin_guide_review_moderate(self, conn: sqlite3.Connection, review_id: str, action: str) -> None:
+        """Admin approve / reject / hide / restore a product review, keeping the
+        rating aggregate consistent. approve is CAS (status != 'published') so two
+        moderators approving the same row only add the score once."""
+        admin = self.require_admin(conn)
+        row = conn.execute(
+            "SELECT id, product_id, user_id, rating, status FROM guide_reviews WHERE id = ?",
+            (review_id,)).fetchone()
+        if not row:
+            raise APIError("评价不存在", 404, "guide_review_not_found")
+        r = dict(row)
+        product_id = r["product_id"]
+        old_status = r.get("status")
+        old_rating = int(r.get("rating") or 0)
+        new_status = {"approve": "published", "restore": "published",
+                      "reject": "rejected", "hide": "hidden"}.get(action)
+        if not new_status:
+            raise APIError("未知操作", 400, "invalid_action")
+        if new_status == "published":
+            # CAS: only the writer that actually flips it into published adds score.
+            cur = conn.execute(
+                "UPDATE guide_reviews SET status = 'published', report_count = 0, updated_at = ? "
+                "WHERE id = ? AND status != 'published'",
+                (now_iso(), review_id))
+            if cur.rowcount == 1:
+                apply_review_to_aggregate(conn, product_id, 1, old_rating)
+        else:
+            cur = conn.execute(
+                "UPDATE guide_reviews SET status = ?, updated_at = ? WHERE id = ? AND status != ?",
+                (new_status, now_iso(), review_id, new_status))
+            # Only subtract if we actually moved it OUT of published.
+            if cur.rowcount == 1 and old_status == "published":
+                apply_review_to_aggregate(conn, product_id, -1, -old_rating)
+        record_moderation_action(conn, admin["id"], "guide_review", review_id, action)
+        self.send_json({"status": "ok", "id": review_id, "reviewStatus": new_status})
+
+    def api_admin_guide_reconcile_rating(self, conn: sqlite3.Connection, product_id_or_slug: str) -> None:
+        """Admin trigger: recompute a product's review aggregate from scratch."""
+        self.require_admin(conn)
+        product = self._guide_lookup_product(conn, product_id_or_slug)
+        result = reconcile_product_rating(conn, product["id"])
+        self.send_json({"status": "ok", "productId": product["id"], **result})
+
     def api_guide_create_interview_review(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
         data = self.read_json()
@@ -20144,8 +21636,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def _guide_clear_public_cache(self) -> None:
-        _cache_invalidate("guide_home:")
-        _cache_invalidate("guide_journeys:")
+        # Bust every public Guide payload (home/jlpt/journeys/sitemap) across all
+        # workers. Previously this only cleared guide_home:/guide_journeys: on the
+        # local process, so guide_jlpt:/guide_sitemap and peer workers went stale
+        # until their TTLs lapsed.
+        invalidate_guide_caches()
 
     def api_admin_guide_overview(self, conn: sqlite3.Connection) -> None:
         self.require_admin(conn)
@@ -23366,6 +24861,49 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_home(conn, query)
         if path == "/api/guide/jlpt" and method == "GET":
             return self.api_guide_jlpt_zone(conn, query)
+        # --- JLPT 备考核心 (BE6): 题库 / 定级 / 打卡 / 单词 / 在线考试 / 日历 ---
+        if path == "/api/guide/jlpt/practice" and method == "GET":
+            return self.api_guide_jlpt_practice(conn, query)
+        if path == "/api/guide/jlpt/attempt" and method == "POST":
+            return self.api_guide_jlpt_attempt(conn)
+        if path == "/api/guide/jlpt/review" and method == "GET":
+            return self.api_guide_jlpt_review(conn, query)
+        if path == "/api/guide/jlpt/stats" and method == "GET":
+            return self.api_guide_jlpt_stats(conn, query)
+        if path == "/api/guide/jlpt/streak" and method == "GET":
+            return self.api_guide_jlpt_streak(conn, query)
+        if path == "/api/guide/jlpt/exam-dates" and method == "GET":
+            return self.api_guide_jlpt_exam_dates(conn, query)
+        if path == "/api/guide/jlpt/explain" and method == "POST":
+            return self.api_guide_jlpt_explain(conn)
+        if path == "/api/guide/jlpt/placement/start" and method == "GET":
+            return self.api_guide_jlpt_placement_start(conn, query)
+        if path == "/api/guide/jlpt/placement/submit" and method == "POST":
+            return self.api_guide_jlpt_placement_submit(conn)
+        if path == "/api/guide/jlpt/vocab/decks" and method == "GET":
+            return self.api_guide_jlpt_vocab_decks(conn, query)
+        if path.startswith("/api/guide/jlpt/vocab/deck/") and method == "GET":
+            return self.api_guide_jlpt_vocab_deck(conn, unquote(path[len("/api/guide/jlpt/vocab/deck/"):]).strip("/"))
+        if path == "/api/guide/jlpt/vocab/mark" and method == "POST":
+            return self.api_guide_jlpt_vocab_mark(conn)
+        if path == "/api/guide/jlpt/vocab/progress" and method == "GET":
+            return self.api_guide_jlpt_vocab_progress(conn, query)
+        if path == "/api/guide/jlpt/vocab/quiz/start" and method == "GET":
+            return self.api_guide_jlpt_vocab_quiz_start(conn, query)
+        if path == "/api/guide/jlpt/vocab/quiz/submit" and method == "POST":
+            return self.api_guide_jlpt_vocab_quiz_submit(conn)
+        if path == "/api/guide/jlpt/exams" and method == "GET":
+            return self.api_guide_jlpt_exams(conn, query)
+        if path == "/api/guide/jlpt/exam/start" and method == "POST":
+            return self.api_guide_jlpt_exam_start(conn)
+        if path == "/api/guide/jlpt/exam/answer" and method == "POST":
+            return self.api_guide_jlpt_exam_answer(conn)
+        if path == "/api/guide/jlpt/exam/submit" and method == "POST":
+            return self.api_guide_jlpt_exam_submit(conn)
+        if path == "/api/guide/jlpt/exam/history" and method == "GET":
+            return self.api_guide_jlpt_exam_history(conn, query)
+        if path.startswith("/api/guide/jlpt/exam/session/") and method == "GET":
+            return self.api_guide_jlpt_exam_session(conn, unquote(path[len("/api/guide/jlpt/exam/session/"):]).strip("/"))
         if path == "/api/guide/categories" and method == "GET":
             return self.api_guide_categories(conn, query)
         if path == "/api/guide/journeys" and method == "GET":
@@ -23579,6 +25117,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_guide_purchase_product(conn, product_id)
             if tail == "download-url" and method == "POST":
                 return self.api_guide_product_download_url(conn, product_id)
+            # Product reviews (BE4). List is public; me/create/update require auth.
+            if tail == "reviews" and method == "GET":
+                return self.api_guide_product_reviews(conn, product_id, query)
+            if tail == "reviews" and method == "POST":
+                return self.api_guide_create_or_update_review(conn, product_id)
+            if tail == "reviews/me" and method == "GET":
+                return self.api_guide_product_review_me(conn, product_id)
         if path == "/api/guide/companies" and method == "GET":
             return self.api_guide_companies(conn, query)
         if path.startswith("/api/guide/companies/") and method == "GET":
@@ -23609,10 +25154,35 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_create_interview_review(conn)
         if path == "/api/guide/company-reviews" and method == "POST":
             return self.api_guide_create_company_review(conn)
+        # Product reviews (BE4): withdraw own review, helpful vote toggle, report.
+        if path.startswith("/api/guide/reviews/"):
+            parts = path[len("/api/guide/reviews/"):].split("/")
+            review_id = unquote(parts[0])
+            tail = "/".join(parts[1:])
+            if not tail and method == "DELETE":
+                return self.api_guide_delete_review(conn, review_id)
+            if tail == "helpful" and method == "POST":
+                return self.api_guide_review_helpful(conn, review_id, True)
+            if tail == "helpful" and method == "DELETE":
+                return self.api_guide_review_helpful(conn, review_id, False)
+            if tail == "report" and method == "POST":
+                return self.api_report(conn, "guide_review", review_id)
         if path == "/api/guide/service-requests" and method == "POST":
             return self.api_guide_create_service_request(conn)
         if path == "/api/guide/corrections" and method == "POST":
             return self.api_guide_create_correction(conn)
+
+        # JLPT 备考核心 — admin 批量导入 (供用户灌真题/词表; admin 鉴权)
+        if path == "/api/admin/jlpt/questions/import" and method == "POST":
+            return self.api_admin_jlpt_questions_import(conn)
+        if path == "/api/admin/jlpt/vocab/import" and method == "POST":
+            return self.api_admin_jlpt_vocab_import(conn)
+        if path == "/api/admin/jlpt/exam-dates/upsert" and method == "POST":
+            return self.api_admin_jlpt_exam_dates_upsert(conn)
+        if path == "/api/admin/jlpt/deck/upsert" and method == "POST":
+            return self.api_admin_jlpt_deck_upsert(conn)
+        if path == "/api/admin/jlpt/exam/upsert" and method == "POST":
+            return self.api_admin_jlpt_exam_upsert(conn)
 
         # Machi Guide — admin write + moderation (API only this round; UI later)
         if path == "/api/admin/guide/uploads" and method == "POST":
@@ -23775,6 +25345,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_guide_reviews(conn, "interview", query)
         if path == "/api/admin/guide/company-reviews" and method == "GET":
             return self.api_admin_guide_reviews(conn, "company", query)
+        if path == "/api/admin/guide/product-reviews" and method == "GET":
+            return self.api_admin_guide_reviews_queue(conn, query)
         if path == "/api/admin/guide/corrections" and method == "GET":
             return self.api_admin_guide_corrections(conn, query)
         if path == "/api/admin/guide/products" and method == "POST":
@@ -23837,6 +25409,12 @@ class Handler(BaseHTTPRequestHandler):
             parts = path[len("/api/admin/guide/interview-reviews/"):].split("/")
             if len(parts) == 2:
                 return self.api_admin_guide_review_action(conn, "interview", unquote(parts[0]), parts[1])
+        if path.startswith("/api/admin/guide/product-reviews/") and method in ("PATCH", "POST"):
+            parts = path[len("/api/admin/guide/product-reviews/"):].split("/")
+            if len(parts) == 2:
+                if parts[1] == "reconcile":
+                    return self.api_admin_guide_reconcile_rating(conn, unquote(parts[0]))
+                return self.api_admin_guide_review_moderate(conn, unquote(parts[0]), parts[1])
         if path.startswith("/api/admin/guide/corrections/") and method == "PATCH":
             correction_id = unquote(path[len("/api/admin/guide/corrections/"):])
             return self.api_admin_guide_update_correction(conn, correction_id)
@@ -24165,6 +25743,17 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_wallet_topup_apple_verify(conn)
         if path == "/api/wallet/topups/google/verify" and method == "POST":
             return self.api_wallet_topup_google_verify(conn)
+
+        # 邀请裂变 (referral / invite growth loop)
+        if path == "/api/referral/me" and method == "GET":
+            return self.api_referral_me(conn, query)
+        if path == "/api/referral/bind" and method == "POST":
+            return self.api_referral_bind(conn)
+        if path == "/api/admin/referrals" and method == "GET":
+            return self.api_admin_referrals(conn, query)
+        if path.startswith("/api/admin/referrals/") and path.endswith("/review") and method == "POST":
+            ref_id = path[len("/api/admin/referrals/"):-len("/review")]
+            return self.api_admin_referral_review(conn, ref_id)
 
         # membership + payments
         if path == "/api/membership/me" and method == "GET":
@@ -25007,6 +26596,49 @@ class Handler(BaseHTTPRequestHandler):
             "page": page, "pageSize": page_size, "hasMore": has_more,
         })
 
+    # ── 邀请裂变 (referral) ──────────────────────────────────────────────────
+
+    def api_referral_me(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """战绩页 data: this user's stable invite code + share URL + counts +
+        recent invitees. Lazily mints the code on first read."""
+        user = self.require_user(conn)
+        summary = referral.referral_summary(
+            conn, user["id"], share_base=REFERRAL_SHARE_BASE, now=now_iso()
+        )
+        self.send_json({"referral": summary})
+
+    def api_referral_bind(self, conn: sqlite3.Connection) -> None:
+        """Late-bind an invite for an already-registered user who clicked a link
+        after signing up. Still capped by UNIQUE(invitee_id) — if they were ever
+        bound (even to a different inviter) this is a no-op. No payout here."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        code = (data.get("referral_code") or data.get("code") or data.get("ref") or "").strip()
+        if not code:
+            raise APIError("缺少邀请码", 400, "missing_code")
+        outcome = referral.bind_referral(conn, code, user["id"], self._client_ip(), now=now_iso())
+        self.send_json({"bound": bool(outcome.get("bound")), "reason": outcome.get("reason") or ""})
+
+    def api_admin_referrals(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Admin: the human-review queue of rejected referrals."""
+        self.require_admin(conn)
+        limit = max(1, min(int(query.get("limit") or 100), 500))
+        offset = max(0, int(query.get("offset") or 0))
+        items = referral.list_review_queue(conn, limit=limit, offset=offset)
+        self.send_json({"referrals": items, "limit": limit, "offset": offset})
+
+    def api_admin_referral_review(self, conn: sqlite3.Connection, referral_id: str) -> None:
+        """Admin: approve (pay both sides) or reject a held referral."""
+        self.require_admin(conn)
+        data = self.read_json()
+        action = (data.get("action") or "").strip().lower()
+        if action not in ("approve", "reject"):
+            raise APIError("action 必须是 approve 或 reject", 400, "bad_action")
+        outcome = admin_review_referral_atomic(conn, referral_id, action)
+        if not outcome.get("ok"):
+            raise APIError("邀请记录不存在或无法处理", 404, outcome.get("reason") or "review_failed")
+        self.send_json(outcome)
+
     def api_wallet_topup_products(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_user(conn)
         platform = (query.get("platform") or "web").strip().lower()
@@ -25824,6 +27456,16 @@ class Handler(BaseHTTPRequestHandler):
             reputation_apply_event(conn, user_id, "email_verified", target_kind="user", target_id=user_id, reviewed=True)
         if region_code or settings_language:
             reputation_apply_event(conn, user_id, "city_language_set", target_kind="user", target_id=user_id)
+        # 邀请裂变: bind the invite (if any) as a *pending* referral — no payout
+        # happens here (registration-time rewards are a bot magnet). A bad/blank/
+        # self code is silently ignored so it never blocks sign-up.
+        referral_code = (data.get("referral_code") or data.get("ref") or "").strip()
+        if referral_code:
+            try:
+                referral.bind_referral(conn, referral_code, user_id, self._client_ip(), now=now_iso())
+            except Exception:
+                # Referral binding must never break registration.
+                pass
         token = self._create_session(conn, user_id)
         user_row = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
         self._set_session_cookie(token)
@@ -27401,6 +29043,11 @@ class Handler(BaseHTTPRequestHandler):
             # Proactively pull community-flagged content once enough DISTINCT
             # reporters agree, so objectionable posts disappear pending review.
             maybe_autohide_post(conn, target_id)
+        elif kind == "guide_review":
+            conn.execute("UPDATE guide_reviews SET report_count = report_count + 1, updated_at = ? WHERE id = ?", (now_iso(), target_id))
+            # Same community auto-hide as posts: enough distinct reporters pulls the
+            # review pending review, and withdraws it from the rating aggregate.
+            maybe_autohide_guide_review(conn, target_id)
         self.send_json({"ok": True})
 
     def api_reputation_me(self, conn: sqlite3.Connection) -> None:
@@ -31751,11 +33398,26 @@ class Handler(BaseHTTPRequestHandler):
         _cache_put(cache_key, profile, ttl_seconds=KAIX_RECPROFILE_TTL_SEC)
         return profile
 
-    def _recommend_rank(self, rows: list[dict[str, Any]], profile: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    def _recommend_rank(
+        self,
+        rows: list[dict[str, Any]],
+        profile: dict[str, Any],
+        limit: int,
+        mmr_config: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
         """Re-rank a recency-ordered candidate pool by interest match while
         keeping freshness and diversity. Pure function over the pool — does not
         hit the DB. Weights are deliberately gentle so a brand-new post still
-        surfaces and the feed never collapses onto one author/type."""
+        surfaces and the feed never collapses onto one author/type.
+
+        Diversity: when `mmr_config` is provided and enabled, the ordering is
+        produced by a Maximal Marginal Relevance re-rank (relevance vs. pairwise
+        tag/author/type similarity — see `_mmr_rerank`) which absorbs the old
+        same-author / same-type constraints as continuous penalties. When it's
+        None or disabled, we fall back to the legacy hard rules (no 3 same-author
+        in a row / ≤3 same content_type in a sliding window). Either way the hard
+        constraints — dismiss hard-drop and the freshness floor — bracket the
+        re-rank and never participate in the trade-off."""
         types = profile.get("types") or {}
         topics = profile.get("topics") or {}
         authors = profile.get("authors") or {}
@@ -31796,50 +33458,80 @@ class Handler(BaseHTTPRequestHandler):
                 score -= 2.5  # already engaged: down-weight hard, don't exclude
             scored.append((score, idx, row))
         scored.sort(key=lambda t: (-t[0], t[1]))
-        # Diversity pass: avoid three in a row from the same author AND more than
-        # three of the same content_type in a sliding window of the last 3 — so
-        # the page doesn't collapse into e.g. six rants back-to-back. Both defer
-        # (not drop) the offending row so it re-enters later in the ordering.
-        out: list[dict[str, Any]] = []
-        recent_authors: list[str] = []
-        recent_types: list[str] = []
-        deferred: list[dict[str, Any]] = []
-        for _, _, row in scored:
-            aid = row.get("author_id") or ""
-            ct = row.get("content_type") or ""
-            if aid and recent_authors[-2:].count(aid) >= 2:
-                deferred.append(row)
-                continue
-            if ct and recent_types[-3:].count(ct) >= 3:
-                deferred.append(row)
-                continue
-            out.append(row)
-            recent_authors.append(aid)
-            recent_types.append(ct)
-            if len(out) >= limit:
-                break
-        # Overflow continuation: keep the same author/type windows honest when
-        # topping up from the deferred queue so a run of same-type posts can't
-        # sneak back in at the tail.
-        if len(out) < limit:
-            for row in deferred:
-                if len(out) >= limit:
-                    break
+
+        mmr_on = bool(mmr_config and mmr_config.get("enabled"))
+        if mmr_on:
+            # MMR diversity re-rank (BE2): trade relevance against pairwise
+            # tag/author/type similarity over the WHOLE scored pool, then trim to
+            # `limit`. This subsumes the old "no 3 same-author in a row / ≤3
+            # same-type" hard rules — a run of near-identical posts is now
+            # penalized continuously (by the w_tag/w_author/w_type similarity)
+            # instead of via brittle window counters. Passing the full pool
+            # (not just the top `limit`) is what gives MMR room to swap a
+            # slightly-less-relevant but more diverse post onto the page.
+            lam = float(mmr_config.get("lambda", 0.72))
+            # Rerank a little past `limit` so the run-breaker below has spare rows
+            # to pull forward when it defers a clustered one (bounded by pool).
+            mmr_take = min(len(scored), limit + max(4, limit // 4))
+            mmr_ranked = _mmr_rerank(
+                [(s, row) for s, _, row in scored],
+                mmr_take,
+                lam,
+                float(mmr_config.get("w_tag", 0.6)),
+                float(mmr_config.get("w_author", 0.25)),
+                float(mmr_config.get("w_type", 0.15)),
+            )
+            # Final hard safety net: MMR is a soft trade-off, so a large relevance
+            # gap can still leave a dominant author's opening run intact at a
+            # relevance-heavy λ. Enforce the no-同作者三连 / 同类型>3 invariant on top.
+            ranked = _break_runs(mmr_ranked, limit)
+        else:
+            # Legacy diversity pass (fallback when MMR is disabled): avoid three
+            # in a row from the same author AND more than three of the same
+            # content_type in a sliding window of the last 3 — so the page
+            # doesn't collapse into e.g. six rants back-to-back. Both defer (not
+            # drop) the offending row so it re-enters later in the ordering.
+            out: list[dict[str, Any]] = []
+            recent_authors: list[str] = []
+            recent_types: list[str] = []
+            deferred: list[dict[str, Any]] = []
+            for _, _, row in scored:
                 aid = row.get("author_id") or ""
                 ct = row.get("content_type") or ""
                 if aid and recent_authors[-2:].count(aid) >= 2:
+                    deferred.append(row)
                     continue
                 if ct and recent_types[-3:].count(ct) >= 3:
+                    deferred.append(row)
                     continue
                 out.append(row)
                 recent_authors.append(aid)
                 recent_types.append(ct)
-            # Last resort: if constraints still leave us short (tiny pool), fill
-            # with whatever deferred rows remain so the page isn't under-filled.
+                if len(out) >= limit:
+                    break
+            # Overflow continuation: keep the same author/type windows honest when
+            # topping up from the deferred queue so a run of same-type posts can't
+            # sneak back in at the tail.
             if len(out) < limit:
-                already = {id(r) for r in out}
-                out.extend(r for r in deferred if id(r) not in already)
-        ranked = out[:limit]
+                for row in deferred:
+                    if len(out) >= limit:
+                        break
+                    aid = row.get("author_id") or ""
+                    ct = row.get("content_type") or ""
+                    if aid and recent_authors[-2:].count(aid) >= 2:
+                        continue
+                    if ct and recent_types[-3:].count(ct) >= 3:
+                        continue
+                    out.append(row)
+                    recent_authors.append(aid)
+                    recent_types.append(ct)
+                # Last resort: if constraints still leave us short (tiny pool),
+                # fill with whatever deferred rows remain so the page isn't
+                # under-filled.
+                if len(out) < limit:
+                    already = {id(r) for r in out}
+                    out.extend(r for r in deferred if id(r) not in already)
+            ranked = out[:limit]
 
         # Freshness floor — guarantees newly-posted content is actually seen.
         # The interest score can let a strongly-matched older post outrank a
@@ -31853,7 +33545,39 @@ class Handler(BaseHTTPRequestHandler):
         if missing_fresh:
             keep = ranked[: max(1, limit - len(missing_fresh))]
             ranked = (keep[:1] + missing_fresh + keep[1:])[:limit]
-        return ranked[:limit]
+        ranked = ranked[:limit]
+
+        # Eval instrumentation (BE2): sample ~1% of rankings (or all when a debug
+        # flag is set) and emit aggregate diversity metrics as a structured log
+        # line — category/tag entropy, author Gini, mean intra-list
+        # dissimilarity. Aggregate-only: never logs ids or any post content.
+        # Best-effort; a metrics hiccup must never affect the served feed.
+        try:
+            if self._recommend_eval_sampled():
+                m = _diversity_metrics(ranked)
+                ACCESS_LOG.info(
+                    "recommend_diversity mmr=%s limit=%s n=%s "
+                    "type_entropy=%s tag_entropy=%s author_gini=%s ild=%s",
+                    1 if mmr_on else 0, limit, len(ranked),
+                    m["type_entropy"], m["tag_entropy"], m["author_gini"], m["ild"],
+                )
+        except Exception:
+            pass
+        return ranked
+
+    def _recommend_eval_sampled(self) -> bool:
+        """True when this ranking should emit an eval-metrics log line: always
+        when the viewer sent an X-Machi-Debug header, else ~1% sampled. Isolated
+        so it can't throw into the ranking path (headers may be absent on the
+        synthetic requests used by tests)."""
+        try:
+            hdr = getattr(self, "headers", None)
+            if hdr is not None and (hdr.get("X-Machi-Debug") or "").strip():
+                return True
+        except Exception:
+            pass
+        import random as _random
+        return _random.random() < 0.01
 
     def _recommend_coldstart_mix(
         self,
@@ -31868,6 +33592,7 @@ class Handler(BaseHTTPRequestHandler):
         blocked_clause: str,
         blocked_params: list[Any],
         dismissed: set[str] | None = None,
+        mmr_config: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Cold-start home page (item B3.3): a viewer with no interest profile
         gets an interleave of the hot top-10 and the recency top-10 instead of a
@@ -31879,7 +33604,14 @@ class Handler(BaseHTTPRequestHandler):
 
         A cold-start viewer can still have 不感兴趣 dismisses (dismisses alone don't
         make a profile 'active'); honor them here too so a dismissed post never
-        reappears via the hot/recency mix."""
+        reappears via the hot/recency mix.
+
+        When `mmr_config` is enabled the interleave is passed once through the MMR
+        re-rank with the (smaller) cold-start λ, so even a first feed avoids
+        clustering the same author/type/topic. Cold start has no relevance
+        signal, so we feed MMR a synthetic descending relevance (interleave
+        position) — that keeps the hot/recency ordering as the tie-breaker while
+        MMR spreads out near-duplicates."""
         dismissed = dismissed or set()
         hot_rows: list[dict[str, Any]] = []
         try:
@@ -31928,6 +33660,20 @@ class Handler(BaseHTTPRequestHandler):
                     out.append(cand)
                     if len(out) >= limit:
                         break
+        out = out[:limit]
+        if mmr_config and mmr_config.get("enabled") and len(out) > 1:
+            # Synthetic relevance = interleave position (descending) so MMR keeps
+            # the hot/recency order as its relevance signal, then diversifies.
+            n_out = len(out)
+            scored = [(float(n_out - i), row) for i, row in enumerate(out)]
+            out = _mmr_rerank(
+                scored,
+                limit,
+                float(mmr_config.get("lambda_coldstart", 0.6)),
+                float(mmr_config.get("w_tag", 0.6)),
+                float(mmr_config.get("w_author", 0.25)),
+                float(mmr_config.get("w_type", 0.15)),
+            )
         return out[:limit]
 
     def api_feed(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -32129,10 +33875,11 @@ class Handler(BaseHTTPRequestHandler):
             pool_params = [*base_params, *region_params, *type_params, *blocked_params, pool_size + 1]
             pool_rows = [dict(r) for r in conn.execute(pool_sql, pool_params)]
             profile = self._recommend_interest_profile(conn, viewer_id)
+            mmr_config = _recommend_mmr_config(conn)
             if profile.get("active") and len(pool_rows) > limit:
                 has_more = len(pool_rows) > pool_size
                 pool = pool_rows[:pool_size]
-                ranked = self._recommend_rank(pool, profile, limit)
+                ranked = self._recommend_rank(pool, profile, limit, mmr_config=mmr_config)
                 next_cursor = None
                 if has_more or len(pool) > limit:
                     # Resume below the recency pool to avoid re-showing pool posts.
@@ -32156,6 +33903,7 @@ class Handler(BaseHTTPRequestHandler):
                     region_clause, region_params, type_clause, type_params,
                     blocked_clause, blocked_params,
                     dismissed=profile.get("dismissed") or set(),
+                    mmr_config=mmr_config,
                 )
                 if mixed:
                     tail = pool_rows[: pool_size][-1]
@@ -32318,6 +34066,15 @@ class Handler(BaseHTTPRequestHandler):
                 target_id=post_id,
                 metadata={"content_type": content_type},
             )
+        # 邀请裂变: posting is the invitee's first *valuable* action — the moment
+        # a pending referral qualifies and both sides are paid. Idempotent (only
+        # a still-pending referral for THIS user advances; everyone else's lookup
+        # is a cheap indexed miss), and self-contained inside its own money_atomic
+        # so a payout failure can never roll back the already-committed post.
+        try:
+            qualify_referral_atomic(conn, user["id"])
+        except Exception:
+            pass
         # Track anyone already pinged for this post so @mentions don't double-notify.
         mention_skip: set[str] = set()
         if repost_of_id:
@@ -37581,6 +39338,14 @@ class Handler(BaseHTTPRequestHandler):
                 u = fetch_users_by_ids(conn, [d["target_id"]]).get(d["target_id"])
                 if u:
                     preview = {"content": u.get("bio") or "", "author": u}
+            elif d["target_kind"] == "guide_review":
+                gr = conn.execute(
+                    "SELECT body, user_id, status, report_count FROM guide_reviews WHERE id = ?",
+                    (d["target_id"],)).fetchone()
+                if gr:
+                    preview = {"content": gr["body"], "author": fetch_users_by_ids(conn, [gr["user_id"]]).get(gr["user_id"]),
+                               "report_count": gr["report_count"]}
+                    content_status = gr["status"]
             items.append({
                 "id": d["id"],
                 "reporter": reporters.get(d["reporter_id"]),
@@ -38066,6 +39831,8 @@ def run() -> None:
     start_email_workers()
     # Cross-worker SSE fan-out (no-op single-process / without KAIX_REDIS_URL).
     shared_state.get_event_bus().start(HUB._publish_local)
+    # Cross-worker ranking-cache L1 invalidation subscriber (same degradation).
+    shared_state.get_ranking_cache().start()
     ACCESS_LOG.info("shared-state backend=%s worker=%s", shared_state.backend_name(), shared_state.WORKER_ID)
     start_listing_fallback_warmup()
     # Singleton background jobs (time-based, not per-request). When running
@@ -38077,6 +39844,7 @@ def run() -> None:
         start_guide_reminder_dispatcher()
         start_engagement_simulator()
         start_hot_score_refresher()
+        start_semantic_index_refresher()
         start_stareal_daily_scheduler()
         start_nightly_report_dispatcher()
     else:

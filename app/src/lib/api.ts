@@ -855,6 +855,28 @@ export type KXSavedSearch = {
   updated_at: string;
 };
 
+// 邀请裂变 (referral / invite growth loop). Mirrors server_referral.referral_summary.
+export type KXReferralInvitee = {
+  referralId: string;
+  status: string; // pending | qualified | rewarded | rejected | held
+  handle: string;
+  displayName: string;
+  avatarUrl: string;
+  createdAt: string;
+  rewardedAt: string;
+};
+
+export type KXReferralSummary = {
+  code: string;
+  shareUrl: string;
+  invitedCount: number;
+  qualifiedCount: number;
+  pointsEarned: number;
+  inviterReward: number;
+  inviteeReward: number;
+  recentInvitees: KXReferralInvitee[];
+};
+
 export const api = {
   async fetchCaptcha(scene: "login" | "register" = "register"): Promise<KXCaptcha> {
     return request("POST", "/api/auth/captcha", { scene });
@@ -893,11 +915,27 @@ export const api = {
     province?: string;
     city?: string;
     current_region_code?: string;
+    // 邀请裂变: the inviter's code from ?ref= / /i/{code}. Bound as a *pending*
+    // referral server-side (no payout at signup); a bad/blank/self code is
+    // silently ignored and never blocks registration.
+    referral_code?: string;
   }) {
     const data = await request<{ token: string; user: KXUser }>("POST", "/api/auth/register", payload);
     writeToken(data.token);
     bumpSessionSignal();
     return data;
+  },
+  // 邀请裂变 战绩页 data: this user's stable invite code + share URL + counts +
+  // recent invitees. Lazily mints the code on first read (server-side).
+  async referralMe(): Promise<KXReferralSummary> {
+    const data = await request<{ referral: KXReferralSummary }>("GET", "/api/referral/me");
+    return data.referral;
+  },
+  // Late-bind an invite for an already-registered user who clicked a link after
+  // signing up. Capped by UNIQUE(invitee_id) server-side — a no-op if they were
+  // ever bound. No payout here.
+  async referralBind(code: string): Promise<{ bound: boolean; reason: string }> {
+    return request("POST", "/api/referral/bind", { referral_code: code });
   },
   async checkUsername(username: string): Promise<{ available: boolean; message: string; code?: string }> {
     return request("GET", `/api/auth/check-username?username=${encodeURIComponent(username)}`);

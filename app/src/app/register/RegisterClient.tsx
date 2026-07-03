@@ -132,6 +132,12 @@ function RegisterForm() {
     if (state.code) setCaptchaNote("");
   }, []);
   const redirect = useMemo(() => safeRedirectPath(search.get("redirect") || search.get("next")), [search]);
+  // 邀请裂变: the inviter's code from ?ref= (set by the /i/{code} landing page or
+  // a shared link). Sanitize to the same alphabet the backend mints codes with.
+  const referralCode = useMemo(() => {
+    const raw = (search.get("ref") || search.get("referral") || search.get("referral_code") || "").trim();
+    return raw.replace(/[^A-Za-z0-9]/g, "").slice(0, 24);
+  }, [search]);
   // Fresh signups detour through /welcome (first-open arrival-stage question)
   // before landing on the original target.
   const welcomeUrl = useMemo(() => `/welcome?redirect=${encodeURIComponent(redirect)}`, [redirect]);
@@ -308,6 +314,7 @@ function RegisterForm() {
               current_region_code: selectedRegion.region_code,
             }
           : {}),
+        ...(referralCode ? { referral_code: referralCode } : {}),
       };
       const { user } = await api.register(payload);
       sentToWelcome.current = true;
@@ -409,6 +416,14 @@ function RegisterForm() {
               {c.registerSubtitle}
             </p>
           </header>
+
+          {/* 邀请裂变: friend's invite banner (only when ?ref= is present) */}
+          {referralCode ? (
+            <div className="mb-4 flex items-start gap-2 rounded-2xl bg-kx-accent/10 px-3 py-2.5 text-sm font-bold text-kx-accent ring-1 ring-kx-accent/20">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>{c.referralBanner(referralCode)}</span>
+            </div>
+          ) : null}
 
           {/* Top-of-form banner for non-field errors */}
           {serverError && !serverError.field ? (

@@ -3,15 +3,16 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
-import { BadgeCheck, CheckCircle2, Coins, Download, FileText, Lock, ShieldCheck, Wrench } from "lucide-react";
-import { guide, GUIDE_PRODUCT_TYPE_LABELS, type GuideProduct } from "@/lib/guide";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { BadgeCheck, CheckCircle2, Coins, Download, FileText, Flag, Lock, Pencil, ShieldCheck, Star, ThumbsUp, Trash2, Wrench } from "lucide-react";
+import { guide, GUIDE_PRODUCT_TYPE_LABELS, type GuideProduct, type GuideReview } from "@/lib/guide";
 import { GuideComingSoon, GuideShell, useGuideCountry } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useSession, useAuthPrompt, useToasts } from "@/lib/store";
 import { formatPrice } from "@/lib/format";
 import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
 import { guideUi } from "@/lib/guide-ui";
+import { APIError } from "@/lib/api";
 
 const SERVICE_CITIES = ["Tokyo", "Osaka", "Kyoto", "Yokohama", "Kobe", "Nagoya", "Fukuoka", "Other"];
 
@@ -305,8 +306,414 @@ export default function GuideProductPage() {
           {purchaseNote}
           {p.notes ? <span className="mt-1 block">{p.notes}</span> : null}
         </div>
+
+        <ProductReviews slug={p.slug} signedIn={!!user} onNeedAuth={() => openAuthPrompt("generic")} />
       </div>
     </GuideShell>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Reviews (BE4 UGC) — rating bar + 5-bucket distribution + paginated list +
+// owner/member "write review" form + helpful vote / report.
+// ---------------------------------------------------------------------------
+
+function Stars({ value, size = 14, className = "" }: { value: number; size?: number; className?: string }) {
+  return (
+    <span className={`inline-flex items-center gap-0.5 ${className}`} aria-hidden>
+      {[1, 2, 3, 4, 5].map((s) => (
+        <Star
+          key={s}
+          style={{ width: size, height: size }}
+          className={s <= Math.round(value) ? "fill-amber-400 text-amber-400" : "fill-transparent text-kx-stroke"}
+        />
+      ))}
+    </span>
+  );
+}
+
+function ProductReviews({ slug, signedIn, onNeedAuth }: { slug: string; signedIn: boolean; onNeedAuth: () => void }) {
+  const { locale } = useI18n();
+  const qc = useQueryClient();
+  const pushToast = useToasts((s) => s.push);
+  const [page, setPage] = useState(0);
+  const [editing, setEditing] = useState(false);
+  const tt = (zh: string, en: string, ja: string) => (locale === "en" ? en : locale === "ja" ? ja : zh);
+  const PAGE = 10;
+
+  const list = useQuery({
+    queryKey: ["guide", "product-reviews", slug, page],
+    queryFn: () => guide.productReviews(slug, { limit: PAGE, offset: page * PAGE }),
+    enabled: slug.length > 0,
+    staleTime: 15_000,
+  });
+
+  const mine = useQuery({
+    queryKey: ["guide", "product-review-me", slug],
+    queryFn: () => guide.myProductReview(slug),
+    enabled: slug.length > 0 && signedIn,
+    staleTime: 15_000,
+  });
+
+  const refetchAll = () => {
+    qc.invalidateQueries({ queryKey: ["guide", "product-reviews", slug] });
+    qc.invalidateQueries({ queryKey: ["guide", "product-review-me", slug] });
+  };
+
+  const summary = list.data?.summary;
+  const items = list.data?.items || [];
+  const total = summary?.ratingCount || 0;
+  const maxBucket = Math.max(1, ...(summary?.distribution || []).map((d) => d.count));
+  // A withdrawn review is a soft-delete: the server still returns the row so the
+  // aggregate can be reconciled, but for the UI it means "no review" — otherwise
+  // MyReviewCard re-renders after a withdraw (mislabeled 审核中) and the write
+  // form never comes back. Treat withdrawn as absent so we fall through to the
+  // ReviewForm / canReview branch.
+  const raw = mine.data?.review || null;
+  const myReview = raw && raw.status !== "withdrawn" ? raw : null;
+  const canReview = !!mine.data?.canReview;
+
+  return (
+    <section className="mt-3 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-5">
+      <h2 className="text-base font-black text-kx-text">
+        {tt("用户评价", "Reviews", "レビュー")}
+        {total > 0 ? <span className="ml-2 text-sm font-semibold text-kx-muted">{total}</span> : null}
+      </h2>
+
+      {/* Summary: average + distribution */}
+      {list.isLoading ? (
+        <div className="mt-3"><InlineLoading /></div>
+      ) : list.isError ? (
+        <p className="mt-3 text-sm text-kx-muted">{tt("评价加载失败，请稍后再试。", "Failed to load reviews. Please try again later.", "レビューの読み込みに失敗しました。")}</p>
+      ) : (
+        <>
+          {total > 0 ? (
+            <div className="mt-3 flex flex-col gap-4 border-t border-kx-stroke/40 pt-4 sm:flex-row sm:items-center">
+              <div className="flex shrink-0 flex-col items-center justify-center sm:w-32">
+                <span className="text-4xl font-black leading-none text-kx-text">{(summary?.ratingAvg ?? 0).toFixed(1)}</span>
+                <Stars value={summary?.ratingAvg ?? 0} size={16} className="mt-1.5" />
+                <span className="mt-1 text-xs text-kx-muted">{tt(`${total} 条评价`, `${total} review${total === 1 ? "" : "s"}`, `${total} 件のレビュー`)}</span>
+              </div>
+              <div className="flex-1 space-y-1.5">
+                {(summary?.distribution || []).map((d) => (
+                  <div key={d.star} className="flex items-center gap-2 text-xs text-kx-muted">
+                    <span className="inline-flex w-8 shrink-0 items-center gap-0.5 tabular-nums">{d.star}<Star className="h-3 w-3 fill-amber-400 text-amber-400" /></span>
+                    <span className="h-2 flex-1 overflow-hidden rounded-full bg-kx-soft">
+                      <span className="block h-full rounded-full bg-amber-400" style={{ width: `${Math.round((d.count / maxBucket) * 100)}%` }} />
+                    </span>
+                    <span className="w-8 shrink-0 text-right tabular-nums">{d.count}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="mt-3 border-t border-kx-stroke/40 pt-4 text-sm text-kx-muted">{tt("还没有评价，成为第一个评价的人。", "No reviews yet — be the first to leave one.", "まだレビューはありません。最初のレビューを投稿しましょう。")}</p>
+          )}
+
+          {/* My review / write form */}
+          <div className="mt-4 border-t border-kx-stroke/40 pt-4">
+            {!signedIn ? (
+              canReview ? null : (
+                <button type="button" onClick={onNeedAuth} className="kx-button-ghost h-9 px-4 text-sm">
+                  {tt("登录后评价", "Log in to review", "ログインしてレビュー")}
+                </button>
+              )
+            ) : myReview && !editing ? (
+              <MyReviewCard
+                review={myReview}
+                onEdit={() => setEditing(true)}
+                onDeleted={() => { refetchAll(); pushToast({ kind: "success", message: tt("评价已撤回。", "Review withdrawn.", "レビューを取り消しました。") }); }}
+                onError={(m) => pushToast({ kind: "error", message: m })}
+              />
+            ) : canReview ? (
+              <ReviewForm
+                slug={slug}
+                initial={editing ? myReview : null}
+                onCancel={editing ? () => setEditing(false) : undefined}
+                onSubmitted={(m) => { setEditing(false); refetchAll(); pushToast({ kind: "success", message: m }); }}
+                onError={(m) => pushToast({ kind: "error", message: m })}
+              />
+            ) : (
+              <p className="text-sm text-kx-muted">{tt("购买或解锁后可写评价。", "Purchase or unlock this resource to write a review.", "購入または解放後にレビューを書けます。")}</p>
+            )}
+          </div>
+
+          {/* Published list */}
+          {items.length > 0 ? (
+            <ul className="mt-4 space-y-4 border-t border-kx-stroke/40 pt-4">
+              {items.map((r) => (
+                <ReviewRow
+                  key={r.id}
+                  review={r}
+                  signedIn={signedIn}
+                  onNeedAuth={onNeedAuth}
+                  onChanged={refetchAll}
+                  onError={(m) => pushToast({ kind: "error", message: m })}
+                  onInfo={(m) => pushToast({ kind: "info", message: m })}
+                />
+              ))}
+            </ul>
+          ) : null}
+
+          {/* Pagination */}
+          {(page > 0 || list.data?.hasMore) ? (
+            <div className="mt-4 flex items-center justify-between border-t border-kx-stroke/40 pt-4">
+              <button type="button" disabled={page === 0} onClick={() => setPage((n) => Math.max(0, n - 1))} className="kx-button-ghost h-9 px-4 text-sm disabled:opacity-40">
+                {tt("上一页", "Previous", "前へ")}
+              </button>
+              <span className="text-xs text-kx-muted">{tt(`第 ${page + 1} 页`, `Page ${page + 1}`, `${page + 1} ページ`)}</span>
+              <button type="button" disabled={!list.data?.hasMore} onClick={() => setPage((n) => n + 1)} className="kx-button-ghost h-9 px-4 text-sm disabled:opacity-40">
+                {tt("下一页", "Next", "次へ")}
+              </button>
+            </div>
+          ) : null}
+        </>
+      )}
+    </section>
+  );
+}
+
+function reviewerName(review: GuideReview, locale: string): string {
+  if (review.anonymous || !review.author) return locale === "en" ? "Anonymous" : locale === "ja" ? "匿名ユーザー" : "匿名用户";
+  return review.author.displayName || review.author.handle || (locale === "en" ? "User" : locale === "ja" ? "ユーザー" : "用户");
+}
+
+function formatReviewDate(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString();
+}
+
+function ReviewRow({
+  review, signedIn, onNeedAuth, onChanged, onError, onInfo,
+}: {
+  review: GuideReview;
+  signedIn: boolean;
+  onNeedAuth: () => void;
+  onChanged: () => void;
+  onError: (m: string) => void;
+  onInfo: (m: string) => void;
+}) {
+  const { locale } = useI18n();
+  const tt = (zh: string, en: string, ja: string) => (locale === "en" ? en : locale === "ja" ? ja : zh);
+  const [voted, setVoted] = useState(review.viewerVoted);
+  const [helpful, setHelpful] = useState(review.helpfulCount);
+  const [reported, setReported] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const name = reviewerName(review, locale);
+
+  const toggleHelpful = async () => {
+    if (!signedIn) return onNeedAuth();
+    if (review.isMine) return;
+    const next = !voted;
+    setBusy(true);
+    // Optimistic; reconcile from the authoritative count the server returns.
+    setVoted(next);
+    setHelpful((n) => Math.max(0, n + (next ? 1 : -1)));
+    try {
+      const r = await guide.voteHelpful(review.id, next);
+      setVoted(r.viewerVoted);
+      setHelpful(r.helpfulCount);
+    } catch (err) {
+      setVoted(!next);
+      setHelpful((n) => Math.max(0, n + (next ? -1 : 1)));
+      const code = err instanceof APIError ? err.code : "";
+      onError(code === "cannot_vote_own_review"
+        ? tt("不能给自己的评价投票。", "You can't vote on your own review.", "自分のレビューには投票できません。")
+        : tt("操作失败，请稍后再试。", "Action failed. Please try again later.", "操作に失敗しました。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const report = async () => {
+    if (!signedIn) return onNeedAuth();
+    setBusy(true);
+    try {
+      const r = await guide.reportReview(review.id, { reason: "other" });
+      setReported(true);
+      onInfo(r.deduped
+        ? tt("你已举报过该评价。", "You have already reported this review.", "このレビューは既に通報済みです。")
+        : tt("已举报，感谢反馈。", "Reported. Thanks for the feedback.", "通報しました。ご協力ありがとうございます。"));
+    } catch {
+      onError(tt("举报失败，请稍后再试。", "Report failed. Please try again later.", "通報に失敗しました。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <li className="flex gap-3">
+      <span className="grid h-9 w-9 shrink-0 place-items-center overflow-hidden rounded-full bg-kx-soft text-xs font-bold text-kx-muted">
+        {!review.anonymous && review.author?.avatarUrl ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img src={review.author.avatarUrl} alt="" className="h-full w-full object-cover" />
+        ) : (
+          name.slice(0, 1).toUpperCase()
+        )}
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-bold text-kx-text">{name}</span>
+          {review.isMine ? <span className="rounded-full bg-kx-accentSoft px-1.5 py-0.5 text-[10px] font-bold text-kx-accent">{tt("我", "You", "あなた")}</span> : null}
+          <Stars value={review.rating} size={12} />
+          <span className="text-[11px] text-kx-muted">{formatReviewDate(review.createdAt)}</span>
+        </div>
+        {review.body ? <p className="mt-1 whitespace-pre-line text-sm leading-6 text-kx-text/90">{review.body}</p> : null}
+        <div className="mt-1.5 flex items-center gap-4 text-xs text-kx-muted">
+          <button
+            type="button"
+            onClick={toggleHelpful}
+            disabled={busy || review.isMine}
+            className={`inline-flex items-center gap-1 disabled:opacity-50 ${voted ? "font-semibold text-kx-accent" : "hover:text-kx-text"}`}
+            title={review.isMine ? tt("不能给自己的评价投票", "You can't vote on your own review", "自分のレビューには投票できません") : undefined}
+          >
+            <ThumbsUp className="h-3.5 w-3.5" /> {tt("有帮助", "Helpful", "参考になった")}{helpful > 0 ? ` (${helpful})` : ""}
+          </button>
+          {!review.isMine ? (
+            <button type="button" onClick={report} disabled={busy || reported} className="inline-flex items-center gap-1 hover:text-kx-text disabled:opacity-50">
+              <Flag className="h-3.5 w-3.5" /> {reported ? tt("已举报", "Reported", "通報済み") : tt("举报", "Report", "通報")}
+            </button>
+          ) : null}
+        </div>
+      </div>
+    </li>
+  );
+}
+
+function MyReviewCard({
+  review, onEdit, onDeleted, onError,
+}: {
+  review: GuideReview;
+  onEdit: () => void;
+  onDeleted: () => void;
+  onError: (m: string) => void;
+}) {
+  const { locale } = useI18n();
+  const tt = (zh: string, en: string, ja: string) => (locale === "en" ? en : locale === "ja" ? ja : zh);
+  const [busy, setBusy] = useState(false);
+  const statusLabel =
+    review.status === "published" ? tt("已发布", "Published", "公開中")
+    : review.status === "rejected" ? tt("未通过审核", "Not approved", "審査に通りませんでした")
+    : review.status === "hidden" ? tt("已隐藏", "Hidden", "非表示")
+    : review.status === "withdrawn" ? tt("已撤回", "Withdrawn", "取り消し済み")
+    : tt("审核中", "Pending review", "審査中");
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      await guide.deleteMyReview(review.id);
+      onDeleted();
+    } catch {
+      onError(tt("撤回失败，请稍后再试。", "Failed to withdraw. Please try again later.", "取り消しに失敗しました。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="rounded-kx border border-kx-stroke/50 bg-kx-soft/40 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-bold text-kx-text">{tt("我的评价", "My review", "自分のレビュー")}</span>
+        <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">{statusLabel}</span>
+        <Stars value={review.rating} size={13} />
+      </div>
+      {review.body ? <p className="mt-1.5 whitespace-pre-line text-sm leading-6 text-kx-text/90">{review.body}</p> : null}
+      {review.status !== "published" ? (
+        <p className="mt-1.5 text-xs text-kx-muted">{tt("评价将在审核通过后公开展示。", "Your review will be shown publicly after it is approved.", "レビューは審査通過後に公開されます。")}</p>
+      ) : null}
+      <div className="mt-2.5 flex items-center gap-2">
+        <button type="button" onClick={onEdit} disabled={busy} className="kx-button-ghost inline-flex h-8 items-center gap-1 px-3 text-xs disabled:opacity-60">
+          <Pencil className="h-3.5 w-3.5" /> {tt("修改", "Edit", "編集")}
+        </button>
+        <button type="button" onClick={remove} disabled={busy} className="inline-flex h-8 items-center gap-1 rounded-kx px-3 text-xs font-semibold text-red-500 hover:bg-red-500/10 disabled:opacity-60">
+          <Trash2 className="h-3.5 w-3.5" /> {tt("撤回", "Withdraw", "取り消し")}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ReviewForm({
+  slug, initial, onCancel, onSubmitted, onError,
+}: {
+  slug: string;
+  initial: GuideReview | null;
+  onCancel?: () => void;
+  onSubmitted: (m: string) => void;
+  onError: (m: string) => void;
+}) {
+  const { locale } = useI18n();
+  const tt = (zh: string, en: string, ja: string) => (locale === "en" ? en : locale === "ja" ? ja : zh);
+  const [rating, setRating] = useState(initial?.rating || 0);
+  const [hover, setHover] = useState(0);
+  const [body, setBody] = useState(initial?.body || "");
+  const [anonymous, setAnonymous] = useState(initial?.anonymous ?? false);
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (rating < 1) return onError(tt("请先选择评分。", "Please pick a rating.", "評価を選択してください。"));
+    setBusy(true);
+    try {
+      const r = await guide.submitReview(slug, { rating, body: body.trim(), anonymous });
+      onSubmitted(r.message || tt("评价已提交，将在审核通过后展示。", "Review submitted — it will appear after approval.", "レビューを送信しました。審査通過後に表示されます。"));
+    } catch (err) {
+      const code = err instanceof APIError ? err.code : "";
+      onError(code === "rate_limited"
+        ? tt("评价过于频繁，请稍后再试。", "Too many reviews — please try again later.", "レビューの送信が多すぎます。しばらくしてからお試しください。")
+        : code === "not_purchased"
+        ? tt("购买或解锁后才能评价。", "Purchase or unlock this resource to review it.", "購入または解放後にレビューできます。")
+        : tt("提交失败，请稍后再试。", "Submission failed. Please try again later.", "送信に失敗しました。"));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const display = hover || rating;
+
+  return (
+    <div className="rounded-kx border border-kx-stroke/50 bg-kx-soft/40 p-4">
+      <p className="text-sm font-bold text-kx-text">{initial ? tt("修改评价", "Edit your review", "レビューを編集") : tt("写评价", "Write a review", "レビューを書く")}</p>
+      <div className="mt-2 flex items-center gap-1" onMouseLeave={() => setHover(0)}>
+        {[1, 2, 3, 4, 5].map((s) => (
+          <button
+            key={s}
+            type="button"
+            onClick={() => setRating(s)}
+            onMouseEnter={() => setHover(s)}
+            aria-label={tt(`${s} 星`, `${s} star${s === 1 ? "" : "s"}`, `${s} つ星`)}
+            className="p-0.5"
+          >
+            <Star className={`h-6 w-6 ${s <= display ? "fill-amber-400 text-amber-400" : "fill-transparent text-kx-stroke"}`} />
+          </button>
+        ))}
+      </div>
+      <textarea
+        className="kx-input mt-2 min-h-20 w-full px-3 py-2 text-sm"
+        value={body}
+        maxLength={2000}
+        onChange={(e) => setBody(e.target.value)}
+        placeholder={tt("分享你的使用体验（可选）", "Share your experience (optional)", "感想を書いてください（任意）")}
+      />
+      <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs text-kx-muted">
+        <input type="checkbox" checked={anonymous} onChange={(e) => setAnonymous(e.target.checked)} className="h-3.5 w-3.5 accent-kx-accent" />
+        {tt("匿名发布", "Post anonymously", "匿名で投稿")}
+      </label>
+      <p className="mt-2 text-[11px] leading-5 text-kx-muted">
+        {tt("请勿发布个人隐私或未经证实的指控；评价将在审核通过后展示。", "Do not post private information or unverified accusations; reviews appear after approval.", "個人情報や未確認の告発は投稿しないでください。レビューは審査通過後に表示されます。")}
+      </p>
+      <div className="mt-2.5 flex items-center gap-2">
+        <button type="button" onClick={submit} disabled={busy} className="kx-button-primary h-9 px-5 text-sm disabled:opacity-60">
+          {busy ? tt("提交中...", "Submitting...", "送信中...") : initial ? tt("更新评价", "Update review", "レビューを更新") : tt("提交评价", "Submit review", "レビューを送信")}
+        </button>
+        {onCancel ? (
+          <button type="button" onClick={onCancel} disabled={busy} className="kx-button-ghost h-9 px-4 text-sm disabled:opacity-60">
+            {tt("取消", "Cancel", "キャンセル")}
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

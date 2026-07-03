@@ -331,6 +331,10 @@ RATE_LIMITS = {
     # H5: per-account report velocity — stops a single account mass-reporting to
     # suppress content. Keyed by user id (not IP) in api_report.
     "report": (20, 10),
+    # Product reviews are a low-frequency, buy-gated write; keep the bucket tight
+    # so a bot with a batch of orders can't flood the review queue. Keyed by user
+    # id in api_guide_create_or_update_review.
+    "review": (10, 5),
     # A 9-image post uses presign + local PUT + complete for every item.
     # Keep uploads in their own bucket so a legitimate album does not
     # exhaust the generic media quota before the post can be created. The

@@ -71,6 +71,30 @@ def serialize_guide_company_review(row: sqlite3.Row | dict[str, Any]) -> dict[st
     }
 
 
+def serialize_guide_review(row: sqlite3.Row | dict[str, Any], *, viewer_id: str | None = None,
+                           author: dict[str, Any] | None = None, viewer_voted: bool = False) -> dict[str, Any]:
+    """A product review. `author` is a pre-built light summary (id/displayName/
+    handle/avatar) the caller attaches when the review is non-anonymous — the
+    server is the sole authority on the anonymous gate, so an anonymous review
+    never leaks its author. isMine lets the client render the edit/withdraw
+    affordance; viewerVoted drives the '有帮助' toggle state."""
+    d = dict(row)
+    anonymous = bool(d.get("anonymous"))
+    is_mine = bool(viewer_id and d.get("user_id") == viewer_id)
+    out = {
+        "id": d.get("id"), "productId": d.get("product_id"),
+        "rating": int(d.get("rating") or 0), "body": d.get("body") or "",
+        "status": d.get("status") or "pending",
+        "helpfulCount": int(d.get("helpful_count") or 0),
+        "reportCount": int(d.get("report_count") or 0),
+        "anonymous": anonymous,
+        "createdAt": d.get("created_at"), "updatedAt": d.get("updated_at"),
+        "isMine": is_mine, "viewerVoted": bool(viewer_voted),
+        "author": None if anonymous else author,
+    }
+    return out
+
+
 def serialize_guide_faq(row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
     d = dict(row)
     return {

@@ -221,6 +221,52 @@ export interface GuideProduct {
   access?: { owned: boolean; memberUnlocked: boolean; canAccess: boolean; signedIn: boolean };
 }
 
+// UGC product review (BE4). Server is the sole authority on the anonymous gate,
+// so `author` is null for anonymous reviews and never leaks identity.
+export interface GuideReviewAuthor {
+  id: string;
+  handle: string;
+  displayName: string;
+  avatarUrl: string;
+}
+
+export interface GuideReview {
+  id: string;
+  productId: string;
+  rating: number;
+  body: string;
+  status: string; // pending | published | rejected | hidden | withdrawn
+  helpfulCount: number;
+  reportCount: number;
+  anonymous: boolean;
+  createdAt: string | null;
+  updatedAt: string | null;
+  isMine: boolean;
+  viewerVoted: boolean;
+  author: GuideReviewAuthor | null;
+}
+
+export interface GuideReviewSummary {
+  ratingAvg: number;
+  ratingCount: number;
+  distribution: Array<{ star: number; count: number }>;
+}
+
+export interface GuideProductReviewsResponse {
+  status: string;
+  productId: string;
+  summary: GuideReviewSummary;
+  items: GuideReview[];
+  hasMore: boolean;
+}
+
+export interface GuideMyReviewResponse {
+  status: string;
+  productId: string;
+  canReview: boolean;
+  review: GuideReview | null;
+}
+
 export interface GuideCompanyScores {
   foreignerFriendly: number;
   visaSupport?: number;
@@ -1264,6 +1310,56 @@ export interface GuideJlptLevel {
   label: string;
   summary: string;
 }
+// ── JLPT 备考核心 (BE6) — 题库 / 定级 / 打卡 / 单词 / 在线考试 / 考试日历 ──
+// The server hides answerIndex/explanation on live questions; they only appear
+// on review-book, exam回看, and after grading an attempt.
+export interface GuideJlptQuestion {
+  id: string;
+  level: string;
+  section: string;
+  sectionLabel: string;
+  questionType: string;
+  stem: string;
+  passage: string;
+  audioMediaId: string;
+  choices: string[];
+  difficulty: number;
+  isMemberOnly: boolean;
+  // Only present on review / exam-review / post-grade shapes.
+  answerIndex?: number;
+  explanation?: string;
+  // Only present in exam回看 / submit breakdown.
+  selectedIndex?: number;
+  correct?: boolean;
+}
+
+export interface GuideJlptStreakDay {
+  date: string;
+  done: boolean;
+}
+export interface GuideJlptStreak {
+  currentStreak: number;
+  longestStreak: number;
+  todayDone: boolean;
+  totalDays: number;
+  last7days: GuideJlptStreakDay[];
+}
+
+export interface GuideJlptExamCountdown {
+  sessionLabel: string;
+  examDate: string;
+  daysRemaining: number;
+}
+
+export interface GuideJlptCore {
+  hasPractice: boolean;
+  hasPlacement: boolean;
+  hasVocab: boolean;
+  hasExams: boolean;
+  examCountdown: GuideJlptExamCountdown | null;
+  streak?: GuideJlptStreak;
+}
+
 export interface GuideJlptZone {
   status?: string;
   country?: string;
@@ -1274,6 +1370,203 @@ export interface GuideJlptZone {
   faq?: GuideFaq[];
   studyPlan?: { title?: string; subtitle?: string; route?: string };
   disclaimer?: string;
+  jlptCore?: GuideJlptCore;
+}
+
+export interface GuideJlptPracticeResponse {
+  status: string;
+  level: string;
+  section: string;
+  membershipActive: boolean;
+  questions: GuideJlptQuestion[];
+  disclaimer: string;
+}
+export interface GuideJlptAttemptResult {
+  status: string;
+  questionId: string;
+  correct: boolean;
+  correctIndex: number;
+  selectedIndex: number;
+  explanation: string;
+}
+export interface GuideJlptSectionStat {
+  section: string;
+  label: string;
+  total: number;
+  correct: number;
+  accuracy: number;
+}
+export interface GuideJlptStats {
+  status: string;
+  level: string;
+  total: number;
+  correct: number;
+  accuracy: number;
+  sections: GuideJlptSectionStat[];
+}
+export interface GuideJlptExamDate {
+  id: string;
+  region: string;
+  sessionLabel: string;
+  examDate: string;
+  regOpenDate: string;
+  regCloseDate: string;
+  note: string;
+}
+export interface GuideJlptExamDatesResponse {
+  status: string;
+  region: string;
+  examDates: GuideJlptExamDate[];
+  countdown: GuideJlptExamCountdown | null;
+}
+export interface GuideJlptPlacementStart {
+  status: string;
+  questions: GuideJlptQuestion[];
+  note: string;
+}
+export interface GuideJlptPlacementResult {
+  status: string;
+  recommendedLevel: string;
+  confidence: number;
+  sectionBreakdown: GuideJlptSectionStat[];
+  weakSections: string[];
+  suggestedDailyMinutes: number;
+  answered: number;
+  studyPlanRoute?: string;
+  studyPlanPrefill?: { targetLevel: string; dailyMinutes: number };
+}
+export interface GuideJlptVocabDeck {
+  id: string;
+  level: string;
+  title: string;
+  description: string;
+  wordCount: number;
+  isMemberOnly: boolean;
+}
+export interface GuideJlptVocabWord {
+  id: string;
+  level: string;
+  word: string;
+  reading: string;
+  meaningZh: string;
+  meaningEn: string;
+  pos: string;
+  example: string;
+  exampleZh: string;
+  mastered: boolean;
+}
+export interface GuideJlptVocabDeckDetail {
+  status: string;
+  deck: GuideJlptVocabDeck;
+  words: GuideJlptVocabWord[];
+}
+export interface GuideJlptVocabProgress {
+  status: string;
+  level: string;
+  total: number;
+  mastered: number;
+  learning: number;
+  progress: number;
+}
+export interface GuideJlptVocabQuizQuestion {
+  wordId: string;
+  word: string;
+  reading: string;
+  stem: string;
+  choices: string[];
+}
+export interface GuideJlptVocabQuizStart {
+  status: string;
+  sessionId: string;
+  level: string;
+  kind: string;
+  total: number;
+  questions: GuideJlptVocabQuizQuestion[];
+}
+export interface GuideJlptVocabQuizResultRow {
+  index: number;
+  selectedIndex: number;
+  correctIndex: number;
+  correct: boolean;
+}
+export interface GuideJlptVocabQuizResult {
+  status: string;
+  sessionId: string;
+  total: number;
+  correct: number;
+  score: number;
+  passed: boolean;
+  durationSeconds: number;
+  results: GuideJlptVocabQuizResultRow[];
+}
+export interface GuideJlptExam {
+  id: string;
+  level: string;
+  title: string;
+  kind: string;
+  section: string;
+  questionCount: number;
+  durationSeconds: number;
+  passScore: number;
+  isMemberOnly: boolean;
+}
+export interface GuideJlptExamStart {
+  status: string;
+  sessionId: string;
+  examId: string;
+  level: string;
+  title: string;
+  durationSeconds: number;
+  passScore: number;
+  total: number;
+  questions: GuideJlptQuestion[];
+  disclaimer: string;
+}
+export interface GuideJlptExamSubmit {
+  status: string;
+  sessionId: string;
+  total: number;
+  correct: number;
+  score: number;
+  passed: boolean;
+  passScore: number;
+  durationSeconds: number;
+  questions: GuideJlptQuestion[];
+  disclaimer: string;
+}
+export interface GuideJlptExamHistoryItem {
+  sessionId: string;
+  examId: string;
+  title: string;
+  kind: string;
+  level: string;
+  total: number;
+  correct: number;
+  score: number;
+  passed: boolean;
+  durationSeconds: number;
+  startedAt: string;
+  submittedAt: string;
+}
+export interface GuideJlptExamSession {
+  status: string;
+  sessionId: string;
+  examId: string;
+  level: string;
+  total: number;
+  correct: number;
+  score: number;
+  passed: boolean;
+  durationSeconds: number;
+  questions: GuideJlptQuestion[];
+  disclaimer: string;
+}
+export interface GuideJlptExplainResult {
+  status: string;
+  questionId: string;
+  explanation: string;
+  usage?: { membershipActive: boolean; remainingFreeUses: number | null };
+  disclaimer: string;
 }
 
 export const guide = {
@@ -1499,6 +1792,75 @@ export const guide = {
   confirmCheckout: (sessionId: string) =>
     greq<{ status: string; orderNo?: string }>(
       "POST", `/api/payments/stripe/guide-confirm`, { sessionId }),
+
+  // ---- Product reviews (BE4 UGC). List is public; the rest require auth and
+  // are buy/member-gated server-side. Submitting always returns pending_review
+  // (App Store 1.2 — nothing is shown before an admin approves). ----
+  productReviews: (idOrSlug: string, p: { limit?: number; offset?: number } = {}) =>
+    greq<GuideProductReviewsResponse>(
+      "GET", `/api/guide/products/${encodeURIComponent(idOrSlug)}/reviews${qs({ ...p })}`),
+  myProductReview: (idOrSlug: string) =>
+    greq<GuideMyReviewResponse>(
+      "GET", `/api/guide/products/${encodeURIComponent(idOrSlug)}/reviews/me`),
+  submitReview: (idOrSlug: string, body: { rating: number; body?: string; anonymous?: boolean }) =>
+    greq<{ status: string; id: string; message: string }>(
+      "POST", `/api/guide/products/${encodeURIComponent(idOrSlug)}/reviews`, body),
+  deleteMyReview: (reviewId: string) =>
+    greq<{ status: string; id: string; reviewStatus: string }>(
+      "DELETE", `/api/guide/reviews/${encodeURIComponent(reviewId)}`),
+  voteHelpful: (reviewId: string, on: boolean) =>
+    greq<{ status: string; id: string; helpfulCount: number; viewerVoted: boolean }>(
+      on ? "POST" : "DELETE", `/api/guide/reviews/${encodeURIComponent(reviewId)}/helpful`),
+  reportReview: (reviewId: string, body: { reason?: string; note?: string } = {}) =>
+    greq<{ ok: boolean; deduped?: boolean }>(
+      "POST", `/api/guide/reviews/${encodeURIComponent(reviewId)}/report`, body),
+
+  // ---- JLPT 备考核心 (题库/定级/打卡/单词/在线考试/日历). Free callers get a
+  // taster of non-member questions; member-only content 403s with
+  // upgradeSuggested. Answers are only revealed after grading / in review. ----
+  jlptPractice: (p: { level?: string; section?: string; count?: number } = {}) =>
+    greq<GuideJlptPracticeResponse>("GET", `/api/guide/jlpt/practice${qs({ ...p })}`),
+  jlptAttempt: (body: { questionId: string; selectedIndex: number; sessionId?: string; sourceKind?: string }) =>
+    greq<GuideJlptAttemptResult>("POST", "/api/guide/jlpt/attempt", body),
+  jlptReview: (p: { level?: string; count?: number } = {}) =>
+    greq<{ status: string; questions: GuideJlptQuestion[]; disclaimer: string }>(
+      "GET", `/api/guide/jlpt/review${qs({ ...p })}`),
+  jlptStats: (level = "") =>
+    greq<GuideJlptStats>("GET", `/api/guide/jlpt/stats${qs({ level })}`),
+  jlptStreak: () =>
+    greq<GuideJlptStreak & { status: string }>("GET", "/api/guide/jlpt/streak"),
+  jlptExamDates: (region = "jp") =>
+    greq<GuideJlptExamDatesResponse>("GET", `/api/guide/jlpt/exam-dates${qs({ region })}`),
+  jlptExplain: (body: { questionId: string; language?: string }) =>
+    greq<GuideJlptExplainResult>("POST", "/api/guide/jlpt/explain", body, 90_000),
+  jlptPlacementStart: () =>
+    greq<GuideJlptPlacementStart>("GET", "/api/guide/jlpt/placement/start"),
+  jlptPlacementSubmit: (answers: Array<{ questionId: string; selectedIndex: number }>) =>
+    greq<GuideJlptPlacementResult>("POST", "/api/guide/jlpt/placement/submit", { answers }),
+  jlptVocabDecks: (level = "") =>
+    greq<{ status: string; decks: GuideJlptVocabDeck[] }>("GET", `/api/guide/jlpt/vocab/decks${qs({ level })}`),
+  jlptVocabDeck: (deckId: string) =>
+    greq<GuideJlptVocabDeckDetail>("GET", `/api/guide/jlpt/vocab/deck/${encodeURIComponent(deckId)}`),
+  jlptVocabMark: (body: { wordId: string; state: "learning" | "mastered" }) =>
+    greq<{ status: string; wordId: string; state: string }>("POST", "/api/guide/jlpt/vocab/mark", body),
+  jlptVocabProgress: (level = "") =>
+    greq<GuideJlptVocabProgress>("GET", `/api/guide/jlpt/vocab/progress${qs({ level })}`),
+  jlptVocabQuizStart: (p: { level?: string; deckId?: string; count?: number } = {}) =>
+    greq<GuideJlptVocabQuizStart>("GET", `/api/guide/jlpt/vocab/quiz/start${qs({ ...p })}`),
+  jlptVocabQuizSubmit: (body: { sessionId: string; answers: number[] }) =>
+    greq<GuideJlptVocabQuizResult>("POST", "/api/guide/jlpt/vocab/quiz/submit", body),
+  jlptExams: (level = "") =>
+    greq<{ status: string; exams: GuideJlptExam[] }>("GET", `/api/guide/jlpt/exams${qs({ level })}`),
+  jlptExamStart: (examId: string) =>
+    greq<GuideJlptExamStart>("POST", "/api/guide/jlpt/exam/start", { examId }),
+  jlptExamAnswer: (body: { sessionId: string; questionId: string; selectedIndex: number }) =>
+    greq<{ status: string; saved: boolean; questionId: string }>("POST", "/api/guide/jlpt/exam/answer", body),
+  jlptExamSubmit: (sessionId: string) =>
+    greq<GuideJlptExamSubmit>("POST", "/api/guide/jlpt/exam/submit", { sessionId }),
+  jlptExamHistory: (level = "") =>
+    greq<{ status: string; sessions: GuideJlptExamHistoryItem[] }>("GET", `/api/guide/jlpt/exam/history${qs({ level })}`),
+  jlptExamSession: (sessionId: string) =>
+    greq<GuideJlptExamSession>("GET", `/api/guide/jlpt/exam/session/${encodeURIComponent(sessionId)}`),
 
   // Machi AI (原创 in-app assistant)
   aiBootstrap: (country = "jp", language = "zh-CN") =>

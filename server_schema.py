@@ -157,6 +157,35 @@ CREATE TABLE IF NOT EXISTS topic_follows (
 CREATE INDEX IF NOT EXISTS idx_topic_follows_user ON topic_follows(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_topic_follows_tag ON topic_follows(tag);
 
+-- 邀请裂变 (referral growth loop). One stable code per user; each invite
+-- relationship is one referrals row with a small status machine. Rewards ride
+-- the wallet ledger (entry_type='referral_bonus'), so no money table is added
+-- here. See server_referral.py. Types stay INTEGER/TEXT so migration v99 is
+-- byte-identical on SQLite and Postgres.
+CREATE TABLE IF NOT EXISTS referral_codes (
+    user_id TEXT PRIMARY KEY,
+    code TEXT UNIQUE NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_referral_codes_code ON referral_codes(code);
+
+CREATE TABLE IF NOT EXISTS referrals (
+    id TEXT PRIMARY KEY,
+    inviter_id TEXT NOT NULL,
+    invitee_id TEXT NOT NULL UNIQUE,          -- a user can only be invited once
+    code TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',   -- pending → qualified → rewarded / rejected
+    reward_state TEXT NOT NULL DEFAULT 'none',-- none → both_paid / invitee_paid / blocked
+    signup_ip TEXT NOT NULL DEFAULT '',
+    qualified_at TEXT NOT NULL DEFAULT '',
+    rewarded_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON referrals(inviter_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_referrals_status ON referrals(status, reward_state);
+CREATE INDEX IF NOT EXISTS idx_referrals_ip ON referrals(signup_ip, created_at);
+
 CREATE TABLE IF NOT EXISTS blocks (
     id TEXT PRIMARY KEY,
     blocker_id TEXT NOT NULL,
@@ -678,6 +707,11 @@ CREATE TABLE IF NOT EXISTS guide_products (
     status TEXT NOT NULL DEFAULT 'coming_soon',
     purchase_count INTEGER NOT NULL DEFAULT 0,
     rating REAL NOT NULL DEFAULT 0,
+    -- Denormalized review aggregate. `rating` is sum/count (avg); the count/sum
+    -- feed the CAS increment in apply_review_to_aggregate so we never AVG the
+    -- whole review table on read. Only 'published' reviews contribute.
+    rating_count INTEGER NOT NULL DEFAULT 0,
+    rating_sum INTEGER NOT NULL DEFAULT 0,
     sort_order INTEGER NOT NULL DEFAULT 0,
     is_featured INTEGER NOT NULL DEFAULT 0,
     refund_policy TEXT NOT NULL DEFAULT '',
@@ -738,6 +772,40 @@ CREATE TABLE IF NOT EXISTS guide_orders (
 );
 CREATE INDEX IF NOT EXISTS idx_guide_orders_user ON guide_orders(user_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_guide_orders_product ON guide_orders(product_id, status);
+
+-- Buyer product reviews (1-5 stars + body). One review per (user, product) via
+-- the UNIQUE — a re-submit UPSERTs the same row. Only status='published' counts
+-- toward guide_products.rating / rating_count / rating_sum (maintained by the
+-- CAS in apply_review_to_aggregate). status: pending / published / rejected /
+-- hidden / withdrawn.
+CREATE TABLE IF NOT EXISTS guide_reviews (
+    id TEXT PRIMARY KEY,
+    product_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    order_id TEXT NOT NULL DEFAULT '',
+    rating INTEGER NOT NULL DEFAULT 0,
+    body TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    helpful_count INTEGER NOT NULL DEFAULT 0,
+    report_count INTEGER NOT NULL DEFAULT 0,
+    anonymous INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE(user_id, product_id),
+    FOREIGN KEY(product_id) REFERENCES guide_products(id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_reviews_product ON guide_reviews(product_id, status, created_at);
+CREATE INDEX IF NOT EXISTS idx_guide_reviews_user ON guide_reviews(user_id, created_at);
+
+-- "有帮助" votes on a review. One vote per (review, user) via the UNIQUE; the
+-- denormalized helpful_count on guide_reviews is bumped by CAS from row presence.
+CREATE TABLE IF NOT EXISTS guide_review_votes (
+    review_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    UNIQUE(review_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_review_votes_review ON guide_review_votes(review_id);
 
 CREATE TABLE IF NOT EXISTS guide_service_requests (
     id TEXT PRIMARY KEY,
@@ -1423,6 +1491,181 @@ CREATE INDEX IF NOT EXISTS idx_topic_rank_snapshots_lookup
     ON topic_rank_snapshots(scope, "window", captured_at);
 CREATE INDEX IF NOT EXISTS idx_topic_rank_snapshots_tag
     ON topic_rank_snapshots(scope, "window", tag, captured_at);
+
+-- Semantic-RAG index for Machi AI Guide retrieval (BE5). One row per public
+-- Guide entity (article/school/company/product/faq). `vector` is a JSON array
+-- of L2-normalized floats stored as TEXT so the DDL is SQLite/Postgres-identical
+-- (no vector type, no _pg_xlate change). `content_hash` drives incremental
+-- rebuilds — only rows whose source text changed are re-embedded. `model`/`dim`
+-- let a model swap force a full rebuild. Empty/degraded (no embedding key) means
+-- this table stays empty and retrieval runs pure LIKE, exactly as today.
+CREATE TABLE IF NOT EXISTS guide_embeddings (
+    entity_type TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    country TEXT NOT NULL DEFAULT 'jp',
+    content_hash TEXT NOT NULL DEFAULT '',
+    model TEXT NOT NULL DEFAULT '',
+    dim INTEGER NOT NULL DEFAULT 0,
+    vector TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (entity_type, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_guide_embeddings_country ON guide_embeddings(country, entity_type);
+
+-- JLPT 备考核心 (BE6/BE7): 题库 + 定级 + 打卡 + 单词 + 在线考试 + 考试日历.
+-- Original / imported study content only — never unauthorized past-paper text
+-- (source column keeps provenance auditable so 'imported'真题 can be pulled).
+-- All types are TEXT/INTEGER so this DDL is byte-identical on SQLite / Postgres.
+CREATE TABLE IF NOT EXISTS jlpt_questions (
+    id TEXT PRIMARY KEY,
+    level TEXT NOT NULL DEFAULT 'N5',
+    section TEXT NOT NULL DEFAULT 'vocab',
+    question_type TEXT NOT NULL DEFAULT 'single',
+    stem TEXT NOT NULL DEFAULT '',
+    passage TEXT NOT NULL DEFAULT '',
+    audio_media_id TEXT NOT NULL DEFAULT '',
+    choices_json TEXT NOT NULL DEFAULT '[]',
+    answer_index INTEGER NOT NULL DEFAULT 0,
+    explanation TEXT NOT NULL DEFAULT '',
+    difficulty INTEGER NOT NULL DEFAULT 3,
+    tags TEXT NOT NULL DEFAULT '',
+    is_member_only INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL DEFAULT 'original',
+    review_status TEXT NOT NULL DEFAULT 'approved',
+    status TEXT NOT NULL DEFAULT 'published',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_questions_pick ON jlpt_questions(level, section, status, review_status, is_member_only);
+
+CREATE TABLE IF NOT EXISTS jlpt_attempts (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    level TEXT NOT NULL DEFAULT '',
+    section TEXT NOT NULL DEFAULT '',
+    selected_index INTEGER NOT NULL DEFAULT -1,
+    is_correct INTEGER NOT NULL DEFAULT 0,
+    session_id TEXT NOT NULL DEFAULT '',
+    source_kind TEXT NOT NULL DEFAULT 'practice',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_attempts_user ON jlpt_attempts(user_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_jlpt_attempts_user_q ON jlpt_attempts(user_id, question_id);
+CREATE INDEX IF NOT EXISTS idx_jlpt_attempts_user_correct ON jlpt_attempts(user_id, is_correct);
+
+CREATE TABLE IF NOT EXISTS jlpt_vocab_words (
+    id TEXT PRIMARY KEY,
+    level TEXT NOT NULL DEFAULT 'N5',
+    word TEXT NOT NULL DEFAULT '',
+    reading TEXT NOT NULL DEFAULT '',
+    meaning_zh TEXT NOT NULL DEFAULT '',
+    meaning_en TEXT NOT NULL DEFAULT '',
+    pos TEXT NOT NULL DEFAULT '',
+    example TEXT NOT NULL DEFAULT '',
+    example_zh TEXT NOT NULL DEFAULT '',
+    tags TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'original',
+    status TEXT NOT NULL DEFAULT 'published',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_vocab_words_level ON jlpt_vocab_words(level, status);
+
+CREATE TABLE IF NOT EXISTS jlpt_vocab_decks (
+    id TEXT PRIMARY KEY,
+    level TEXT NOT NULL DEFAULT 'N5',
+    title TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    word_count INTEGER NOT NULL DEFAULT 0,
+    is_member_only INTEGER NOT NULL DEFAULT 0,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'published',
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_vocab_decks_level ON jlpt_vocab_decks(level, status);
+
+CREATE TABLE IF NOT EXISTS jlpt_vocab_deck_words (
+    deck_id TEXT NOT NULL,
+    word_id TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(deck_id, word_id)
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_vocab_deck_words_deck ON jlpt_vocab_deck_words(deck_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS jlpt_user_vocab (
+    user_id TEXT NOT NULL,
+    word_id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'learning',
+    review_count INTEGER NOT NULL DEFAULT 0,
+    last_seen_at TEXT NOT NULL DEFAULT '',
+    UNIQUE(user_id, word_id)
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_user_vocab_state ON jlpt_user_vocab(user_id, state);
+
+CREATE TABLE IF NOT EXISTS jlpt_exams (
+    id TEXT PRIMARY KEY,
+    level TEXT NOT NULL DEFAULT 'N5',
+    title TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'mock',
+    section TEXT NOT NULL DEFAULT '',
+    question_count INTEGER NOT NULL DEFAULT 0,
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    pass_score INTEGER NOT NULL DEFAULT 60,
+    is_member_only INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'published',
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_exams_level ON jlpt_exams(level, status);
+
+CREATE TABLE IF NOT EXISTS jlpt_exam_questions (
+    exam_id TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(exam_id, question_id)
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_exam_questions_exam ON jlpt_exam_questions(exam_id, sort_order);
+
+CREATE TABLE IF NOT EXISTS jlpt_exam_sessions (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL,
+    exam_id TEXT NOT NULL,
+    level TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'in_progress',
+    started_at TEXT NOT NULL,
+    submitted_at TEXT NOT NULL DEFAULT '',
+    duration_seconds INTEGER NOT NULL DEFAULT 0,
+    total INTEGER NOT NULL DEFAULT 0,
+    correct INTEGER NOT NULL DEFAULT 0,
+    score INTEGER NOT NULL DEFAULT 0,
+    passed INTEGER NOT NULL DEFAULT 0,
+    question_ids_json TEXT NOT NULL DEFAULT '[]'
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_exam_sessions_user ON jlpt_exam_sessions(user_id, started_at);
+
+CREATE TABLE IF NOT EXISTS jlpt_exam_answers (
+    session_id TEXT NOT NULL,
+    question_id TEXT NOT NULL,
+    selected_index INTEGER NOT NULL DEFAULT -1,
+    is_correct INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(session_id, question_id)
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_exam_answers_session ON jlpt_exam_answers(session_id);
+
+CREATE TABLE IF NOT EXISTS jlpt_exam_dates (
+    id TEXT PRIMARY KEY,
+    region TEXT NOT NULL DEFAULT 'jp',
+    session_label TEXT NOT NULL DEFAULT '',
+    exam_date TEXT NOT NULL DEFAULT '',
+    reg_open_date TEXT NOT NULL DEFAULT '',
+    reg_close_date TEXT NOT NULL DEFAULT '',
+    note TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'published'
+);
+CREATE INDEX IF NOT EXISTS idx_jlpt_exam_dates_region ON jlpt_exam_dates(region, exam_date);
 
 CREATE TABLE IF NOT EXISTS schema_migrations (
     version INTEGER PRIMARY KEY,
@@ -4722,6 +4965,272 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         );
         CREATE INDEX IF NOT EXISTS idx_topic_follows_user ON topic_follows(user_id, created_at);
         CREATE INDEX IF NOT EXISTS idx_topic_follows_tag ON topic_follows(tag);
+        """,
+    ),
+    (
+        99,
+        "referral_codes / referrals: 邀请裂变 (invite growth loop)",
+        # One stable invite code per user + one referrals row per invite
+        # relationship (pending → qualified → rewarded / rejected). Rewards ride
+        # the existing wallet ledger (entry_type='referral_bonus') so NO money
+        # table is introduced here. Only INTEGER/TEXT are used so this DDL is
+        # identical on SQLite and Postgres (_pg_xlate does not translate types);
+        # FKs are omitted in the PG migration path per the wallet_* precedent.
+        # IF NOT EXISTS everywhere so a fresh DB (already got these from SCHEMA)
+        # records this as a clean no-op.
+        """
+        CREATE TABLE IF NOT EXISTS referral_codes (
+            user_id TEXT PRIMARY KEY,
+            code TEXT UNIQUE NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_referral_codes_code ON referral_codes(code);
+
+        CREATE TABLE IF NOT EXISTS referrals (
+            id TEXT PRIMARY KEY,
+            inviter_id TEXT NOT NULL,
+            invitee_id TEXT NOT NULL UNIQUE,
+            code TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reward_state TEXT NOT NULL DEFAULT 'none',
+            signup_ip TEXT NOT NULL DEFAULT '',
+            qualified_at TEXT NOT NULL DEFAULT '',
+            rewarded_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON referrals(inviter_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_referrals_status ON referrals(status, reward_state);
+        CREATE INDEX IF NOT EXISTS idx_referrals_ip ON referrals(signup_ip, created_at);
+        """,
+    ),
+    (
+        100,
+        "guide_reviews / guide_review_votes: 产品 UGC 评价 + 反范式均分",
+        # Buyer product reviews (1-5 stars). One review per (user, product); only
+        # 'published' rows feed guide_products.rating via apply_review_to_aggregate.
+        # The rating_count / rating_sum columns on guide_products are added by
+        # _ensure_columns (backend-aware ALTER) at boot — NOT here — so this DDL
+        # stays SQLite/Postgres-identical (only CREATE TABLE/INDEX IF NOT EXISTS,
+        # only INTEGER/TEXT types; _pg_xlate leaves these untouched). FKs omitted
+        # in the PG migration path per the guide_orders / wallet_* precedent. A
+        # fresh DB already has these tables from SCHEMA, so this records as a
+        # clean no-op there.
+        """
+        CREATE TABLE IF NOT EXISTS guide_reviews (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            order_id TEXT NOT NULL DEFAULT '',
+            rating INTEGER NOT NULL DEFAULT 0,
+            body TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'pending',
+            helpful_count INTEGER NOT NULL DEFAULT 0,
+            report_count INTEGER NOT NULL DEFAULT 0,
+            anonymous INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(user_id, product_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_reviews_product ON guide_reviews(product_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_guide_reviews_user ON guide_reviews(user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS guide_review_votes (
+            review_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(review_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_review_votes_review ON guide_review_votes(review_id);
+        """,
+    ),
+    (
+        101,
+        "guide_embeddings: 语义 RAG 向量索引 (semantic retrieval, graceful LIKE degrade)",
+        # One row per public Guide entity (article/school/company/product/faq).
+        # The vector is a JSON array of L2-normalized floats stored as TEXT so
+        # this DDL is byte-identical on SQLite and Postgres — no vector type, no
+        # _pg_xlate change. content_hash drives incremental rebuilds; model/dim
+        # force a full rebuild on a model swap. Without an embedding key the
+        # table simply stays empty and retrieval runs pure LIKE (zero regression
+        # vs today). Only TEXT/INTEGER types + CREATE ... IF NOT EXISTS, so a
+        # fresh DB (already got this from SCHEMA) records a clean no-op. FKs
+        # omitted per the wallet_* / guide_reviews migration precedent.
+        """
+        CREATE TABLE IF NOT EXISTS guide_embeddings (
+            entity_type TEXT NOT NULL,
+            entity_id TEXT NOT NULL,
+            country TEXT NOT NULL DEFAULT 'jp',
+            content_hash TEXT NOT NULL DEFAULT '',
+            model TEXT NOT NULL DEFAULT '',
+            dim INTEGER NOT NULL DEFAULT 0,
+            vector TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (entity_type, entity_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_guide_embeddings_country ON guide_embeddings(country, entity_type);
+        """,
+    ),
+    (
+        102,
+        "jlpt_*: JLPT 备考核心 (题库/定级/打卡/单词/在线考试/考试日历)",
+        # BE6/BE7. Original + admin-imported study content (source column keeps
+        # provenance auditable — never unauthorized past-paper text). One
+        # migration builds ALL JLPT tables so BE7 只加 handler/种子, 不再新建迁移.
+        # Only TEXT/INTEGER + CREATE ... IF NOT EXISTS, so this DDL is byte-
+        # identical on SQLite / Postgres (no _pg_xlate change) and records as a
+        # clean no-op on a fresh DB (SCHEMA already built these). FKs omitted per
+        # the wallet_* / guide_reviews migration precedent.
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_questions (
+            id TEXT PRIMARY KEY,
+            level TEXT NOT NULL DEFAULT 'N5',
+            section TEXT NOT NULL DEFAULT 'vocab',
+            question_type TEXT NOT NULL DEFAULT 'single',
+            stem TEXT NOT NULL DEFAULT '',
+            passage TEXT NOT NULL DEFAULT '',
+            audio_media_id TEXT NOT NULL DEFAULT '',
+            choices_json TEXT NOT NULL DEFAULT '[]',
+            answer_index INTEGER NOT NULL DEFAULT 0,
+            explanation TEXT NOT NULL DEFAULT '',
+            difficulty INTEGER NOT NULL DEFAULT 3,
+            tags TEXT NOT NULL DEFAULT '',
+            is_member_only INTEGER NOT NULL DEFAULT 0,
+            source TEXT NOT NULL DEFAULT 'original',
+            review_status TEXT NOT NULL DEFAULT 'approved',
+            status TEXT NOT NULL DEFAULT 'published',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_questions_pick ON jlpt_questions(level, section, status, review_status, is_member_only);
+
+        CREATE TABLE IF NOT EXISTS jlpt_attempts (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            question_id TEXT NOT NULL,
+            level TEXT NOT NULL DEFAULT '',
+            section TEXT NOT NULL DEFAULT '',
+            selected_index INTEGER NOT NULL DEFAULT -1,
+            is_correct INTEGER NOT NULL DEFAULT 0,
+            session_id TEXT NOT NULL DEFAULT '',
+            source_kind TEXT NOT NULL DEFAULT 'practice',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_attempts_user ON jlpt_attempts(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_jlpt_attempts_user_q ON jlpt_attempts(user_id, question_id);
+        CREATE INDEX IF NOT EXISTS idx_jlpt_attempts_user_correct ON jlpt_attempts(user_id, is_correct);
+
+        CREATE TABLE IF NOT EXISTS jlpt_vocab_words (
+            id TEXT PRIMARY KEY,
+            level TEXT NOT NULL DEFAULT 'N5',
+            word TEXT NOT NULL DEFAULT '',
+            reading TEXT NOT NULL DEFAULT '',
+            meaning_zh TEXT NOT NULL DEFAULT '',
+            meaning_en TEXT NOT NULL DEFAULT '',
+            pos TEXT NOT NULL DEFAULT '',
+            example TEXT NOT NULL DEFAULT '',
+            example_zh TEXT NOT NULL DEFAULT '',
+            tags TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'original',
+            status TEXT NOT NULL DEFAULT 'published',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_vocab_words_level ON jlpt_vocab_words(level, status);
+
+        CREATE TABLE IF NOT EXISTS jlpt_vocab_decks (
+            id TEXT PRIMARY KEY,
+            level TEXT NOT NULL DEFAULT 'N5',
+            title TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            word_count INTEGER NOT NULL DEFAULT 0,
+            is_member_only INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'published',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_vocab_decks_level ON jlpt_vocab_decks(level, status);
+
+        CREATE TABLE IF NOT EXISTS jlpt_vocab_deck_words (
+            deck_id TEXT NOT NULL,
+            word_id TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(deck_id, word_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_vocab_deck_words_deck ON jlpt_vocab_deck_words(deck_id, sort_order);
+
+        CREATE TABLE IF NOT EXISTS jlpt_user_vocab (
+            user_id TEXT NOT NULL,
+            word_id TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'learning',
+            review_count INTEGER NOT NULL DEFAULT 0,
+            last_seen_at TEXT NOT NULL DEFAULT '',
+            UNIQUE(user_id, word_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_user_vocab_state ON jlpt_user_vocab(user_id, state);
+
+        CREATE TABLE IF NOT EXISTS jlpt_exams (
+            id TEXT PRIMARY KEY,
+            level TEXT NOT NULL DEFAULT 'N5',
+            title TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL DEFAULT 'mock',
+            section TEXT NOT NULL DEFAULT '',
+            question_count INTEGER NOT NULL DEFAULT 0,
+            duration_seconds INTEGER NOT NULL DEFAULT 0,
+            pass_score INTEGER NOT NULL DEFAULT 60,
+            is_member_only INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'published',
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exams_level ON jlpt_exams(level, status);
+
+        CREATE TABLE IF NOT EXISTS jlpt_exam_questions (
+            exam_id TEXT NOT NULL,
+            question_id TEXT NOT NULL,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(exam_id, question_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_questions_exam ON jlpt_exam_questions(exam_id, sort_order);
+
+        CREATE TABLE IF NOT EXISTS jlpt_exam_sessions (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            exam_id TEXT NOT NULL,
+            level TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'in_progress',
+            started_at TEXT NOT NULL,
+            submitted_at TEXT NOT NULL DEFAULT '',
+            duration_seconds INTEGER NOT NULL DEFAULT 0,
+            total INTEGER NOT NULL DEFAULT 0,
+            correct INTEGER NOT NULL DEFAULT 0,
+            score INTEGER NOT NULL DEFAULT 0,
+            passed INTEGER NOT NULL DEFAULT 0,
+            question_ids_json TEXT NOT NULL DEFAULT '[]'
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_sessions_user ON jlpt_exam_sessions(user_id, started_at);
+
+        CREATE TABLE IF NOT EXISTS jlpt_exam_answers (
+            session_id TEXT NOT NULL,
+            question_id TEXT NOT NULL,
+            selected_index INTEGER NOT NULL DEFAULT -1,
+            is_correct INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(session_id, question_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_answers_session ON jlpt_exam_answers(session_id);
+
+        CREATE TABLE IF NOT EXISTS jlpt_exam_dates (
+            id TEXT PRIMARY KEY,
+            region TEXT NOT NULL DEFAULT 'jp',
+            session_label TEXT NOT NULL DEFAULT '',
+            exam_date TEXT NOT NULL DEFAULT '',
+            reg_open_date TEXT NOT NULL DEFAULT '',
+            reg_close_date TEXT NOT NULL DEFAULT '',
+            note TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'published'
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_dates_region ON jlpt_exam_dates(region, exam_date);
         """,
     ),
 ]

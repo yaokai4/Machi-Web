@@ -113,6 +113,7 @@ export const AUTH_COPY = {
     invalidCaptcha: "图形验证码不正确，请重试。",
     captchaVerified: "图形验证已通过",
     captchaRefreshed: "图形验证码已刷新，请重新输入。",
+    referralBanner: (code: string) => `你正通过好友的邀请码 ${code} 加入，注册后双方都会获得积分奖励。`,
     registerFootnote: "注册成功后 Web 与 iOS 会共享同一套账号、城市、会员和内容数据。",
     leftLoginItems: [
       ["城市优先", "按当前城市展示新闻、活动、租房、二手和招聘。"],
@@ -209,6 +210,7 @@ export const AUTH_COPY = {
     invalidCaptcha: "画像認証コードが正しくありません。",
     captchaVerified: "画像認証クリア",
     captchaRefreshed: "画像認証を更新しました。もう一度入力してください。",
+    referralBanner: (code: string) => `友だちの招待コード ${code} で参加します。登録すると双方にポイント特典があります。`,
     registerFootnote: "登録後、Web と iOS で同じアカウント、都市、会員情報、コンテンツを利用できます。",
     leftLoginItems: [
       ["都市優先", "現在の都市に合わせてニュース、イベント、住まい、中古、仕事を表示します。"],
@@ -305,6 +307,7 @@ export const AUTH_COPY = {
     invalidCaptcha: "The captcha is incorrect. Please try again.",
     captchaVerified: "Captcha verified",
     captchaRefreshed: "Captcha refreshed — please re-enter it.",
+    referralBanner: (code: string) => `You're joining with a friend's invite code ${code}. Both of you earn points after you sign up.`,
     registerFootnote: "After sign-up, Web and iOS share the same account, city, membership, and content data.",
     leftLoginItems: [
       ["City-first", "See news, events, housing, secondhand, and jobs for your current city."],
