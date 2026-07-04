@@ -2128,8 +2128,45 @@ export const api = {
   async adminSeedGenerate(payload: {
     country?: string; city?: string; regionCode?: string; language: string;
     contentType: string; count: number; tone: string; publishNow: boolean; engine?: string; model?: string;
-  }): Promise<{ batch: SeedBatch; requested: number; created: number; engine?: string; model?: string }> {
-    return request("POST", `/api/admin/seed-content/generate`, payload, { timeoutMs: 90_000 });
+    regionMode?: "single" | "random" | "spread"; regionCodes?: string[]; spreadCities?: number;
+  }): Promise<{
+    batch?: SeedBatch; requested: number; created: number; engine?: string; model?: string;
+    mode?: string; region_code?: string; city_name?: string; spread_group_id?: string;
+    cities?: { region_code: string; city_name: string; batch_id: string; created: number }[];
+    batches?: SeedBatch[];
+  }> {
+    return request("POST", `/api/admin/seed-content/generate`, payload, { timeoutMs: 180_000 });
+  },
+  // 一键铺城: personas -> spotlight drafts -> follower curve -> engagement tick.
+  async adminSeedCityMacro(payload: {
+    regionMode?: "single" | "random" | "spread"; regionCode?: string; country?: string; province?: string; city?: string;
+    regionCodes?: string[]; spreadCities?: number;
+    language: string; contentType: string; count: number; tone: string;
+    engine?: string; model?: string; publishNow?: boolean;
+  }): Promise<{
+    ok: boolean; mode: string; spread_group_id: string;
+    personas_imported: number; personas_total: number; followers_granted: number;
+    engagement: Record<string, number>;
+    cities: { region_code: string; city_name: string; batch_id: string; created: number }[];
+    batches: SeedBatch[]; requested: number; created: number; engine?: string; publishNow: boolean;
+  }> {
+    return request("POST", `/api/admin/seed-content/seed-city`, payload, { timeoutMs: 300_000 });
+  },
+  // Set a user's follower count to a target by materializing REAL follows from
+  // imported persona accounts (real followers untouched; target floors at real).
+  async adminSetFollowerCount(id: string, target: number): Promise<{
+    ok: boolean; follower_count: number; seed_followers: number; real_followers: number;
+    added: number; removed: number; pool_exhausted: boolean; pool_size: number;
+  }> {
+    return request("POST", `/api/admin/users/${encodeURIComponent(id)}/follower-count`,
+      { target: Math.max(0, Math.floor(target)) }, { timeoutMs: 60_000 });
+  },
+  // Give every imported persona a believable, log-skewed follower count.
+  async adminRandomizeFollowers(opts: { min?: number; max?: number } = {}): Promise<{
+    ok: boolean; updated: number; added: number; total_follows: number;
+  }> {
+    return request("POST", `/api/admin/engagement/randomize-followers`,
+      { min: opts.min ?? 20, max: opts.max ?? 300 }, { timeoutMs: 120_000 });
   },
   async adminSeedEngines(): Promise<{
     default: string; configured: string[]; engine_a: boolean; engine_b: boolean;

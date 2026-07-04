@@ -40,8 +40,13 @@ import {
   Pencil,
   Eye,
   EyeOff,
+  Dice5,
+  Layers,
+  Wand2,
+  UserPlus,
 } from "lucide-react";
 import { api, APIError } from "@/lib/api";
+import { provincesFor, citiesFor, composeRegionCode, JP_METRO_CIRCLES, regionsForMetroCircle } from "@/lib/regions";
 import { AppShell } from "@/components/shell/AppShell";
 import { MasterCopyEditorCard } from "@/components/admin/MasterCopyEditorCard";
 import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
@@ -304,6 +309,35 @@ function UsersPanel() {
       pushToast({ kind: "success", message: "已更新" });
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
   };
+  // Set a user's follower count to a target — materializes real follows from AI
+  // persona accounts (real followers untouched; target floors at real count).
+  const [followerBusy, setFollowerBusy] = useState<string | null>(null);
+  const [followerDraft, setFollowerDraft] = useState<Record<string, string>>({});
+  const [randomBusy, setRandomBusy] = useState(false);
+  const setFollowers = async (id: string) => {
+    const raw = followerDraft[id];
+    const target = Math.floor(Number(raw));
+    if (raw === undefined || raw === "" || Number.isNaN(target) || target < 0) {
+      pushToast({ kind: "error", message: "请输入有效的粉丝数" }); return;
+    }
+    setFollowerBusy(id);
+    try {
+      const r = await api.adminSetFollowerCount(id, target);
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      setFollowerDraft((d) => { const n = { ...d }; delete n[id]; return n; });
+      pushToast({ kind: "success", message: `粉丝已设为 ${r.follower_count}${r.pool_exhausted ? "（城市用户已全部用上，达到上限）" : ""}${r.real_followers ? ` · 含真实粉丝 ${r.real_followers}` : ""}` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+    finally { setFollowerBusy(null); }
+  };
+  const randomizeFollowers = async () => {
+    setRandomBusy(true);
+    try {
+      const r = await api.adminRandomizeFollowers({});
+      queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      pushToast({ kind: "success", message: `已为 ${r.updated} 个生成用户随机铺粉丝（新增关注 ${r.added}）` });
+    } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+    finally { setRandomBusy(false); }
+  };
   const suspend = async (id: string) => {
     try {
       await api.adminSuspendUser(id);
@@ -383,6 +417,11 @@ function UsersPanel() {
           <input type="checkbox" checked={seedOnly} onChange={(e) => { setSeedOnly(e.target.checked); setPage(0); }} />
           只看生成的用户{seedTotal ? `（${seedTotal}）` : ""}
         </label>
+        <button className="kx-button-ghost h-9 px-3 text-xs disabled:opacity-40"
+                disabled={!seedTotal || randomBusy} onClick={randomizeFollowers}
+                title="为所有生成用户随机分配可信的粉丝数（用其他城市用户当粉丝，时间打散）">
+          <UserPlus className="w-3.5 h-3.5" /> {randomBusy ? "铺粉中…" : "随机铺粉丝"}
+        </button>
         <button className="kx-button-ghost h-9 px-3 text-xs text-kx-danger disabled:opacity-40"
                 disabled={!seedTotal} onClick={() => setPendingClearSeed(true)}>
           <Trash2 className="w-3.5 h-3.5" /> 一键删除生成用户
@@ -435,7 +474,20 @@ function UsersPanel() {
                         <option value="admin">admin</option>
                       </select>
                     </td>
-                    <td className="px-3 py-2.5 text-right tabular-nums">{compactNumber(u.follower_count || 0)}</td>
+                    <td className="px-3 py-2.5">
+                      <div className="flex items-center justify-end gap-1">
+                        <input className="kx-input h-7 w-16 px-1.5 text-right text-xs tabular-nums"
+                               type="number" min={0}
+                               value={followerDraft[u.id] ?? String(u.follower_count || 0)}
+                               onChange={(e) => setFollowerDraft((d) => ({ ...d, [u.id]: e.target.value }))}
+                               onKeyDown={(e) => { if (e.key === "Enter") setFollowers(u.id); }} />
+                        <button className="kx-button-ghost h-7 px-2 text-xs disabled:opacity-40"
+                                disabled={followerBusy === u.id || (followerDraft[u.id] ?? String(u.follower_count || 0)) === String(u.follower_count || 0)}
+                                onClick={() => setFollowers(u.id)}>
+                          {followerBusy === u.id ? "…" : "设为"}
+                        </button>
+                      </div>
+                    </td>
                     <td className="px-3 py-2.5 text-right tabular-nums">{compactNumber(u.post_count || 0)}</td>
                     <td className="px-3 py-2.5 text-xs text-kx-muted whitespace-nowrap">{u.joined_at ? fullDateTime(u.joined_at).split(" ")[0] : ""}</td>
                     <td className="px-3 py-2.5 text-right">
@@ -505,6 +557,15 @@ function UsersPanel() {
                       <span>{u.joined_at ? fullDateTime(u.joined_at).split(" ")[0] : ""}</span>
                     </div>
                   </div>
+                </div>
+                <div className="mt-2 flex items-center gap-1.5">
+                  <span className="text-xs text-kx-muted">粉丝</span>
+                  <input className="kx-input h-7 w-20 px-1.5 text-xs tabular-nums" type="number" min={0}
+                         value={followerDraft[u.id] ?? String(u.follower_count || 0)}
+                         onChange={(e) => setFollowerDraft((d) => ({ ...d, [u.id]: e.target.value }))} />
+                  <button className="kx-button-ghost h-7 px-2 text-xs disabled:opacity-40"
+                          disabled={followerBusy === u.id || (followerDraft[u.id] ?? String(u.follower_count || 0)) === String(u.follower_count || 0)}
+                          onClick={() => setFollowers(u.id)}>{followerBusy === u.id ? "…" : "设为"}</button>
                 </div>
                 <div className="mt-2.5 flex flex-wrap items-center gap-2">
                   <select className="kx-input h-8 px-2 text-xs flex-1 min-w-[7rem]"
@@ -1216,33 +1277,34 @@ function SiteCopyPanel() {
   );
 }
 
-const SEED_CITY_PRESETS = [
-  { value: "jp.tokyo.tokyo", label: "东京 Tokyo" },
-  { value: "jp.osaka.osaka", label: "大阪 Osaka" },
-  { value: "cn.shanghai.shanghai", label: "上海 Shanghai" },
-  { value: "cn.zhejiang.hangzhou", label: "杭州 Hangzhou" },
-  { value: "us.ca.la", label: "洛杉矶 Los Angeles" },
-  { value: "ca.quebec.montreal", label: "蒙特利尔 Montreal" },
-];
 const SEED_LANG_OPTIONS = [
   { value: "zh", label: "中文" }, { value: "en", label: "English" }, { value: "ja", label: "日本語" },
 ];
+// 现役 5 类（全部有信息量）+ 综合。旧的 12 类已退役（老帖照常显示，不再生成）。
 const SEED_TYPE_OPTIONS = [
-  { value: "spotlight", label: "精选攻略（日本生活·玩乐）⭐" },
-  { value: "mixed", label: "综合（推荐分布）" },
-  { value: "city_square", label: "城市广场" }, { value: "qa", label: "本地问答" },
-  { value: "guide", label: "城市指南" }, { value: "housing_tip", label: "租房提醒" },
-  { value: "secondhand", label: "二手" }, { value: "jobs_tip", label: "工作/兼职" },
-  { value: "food", label: "美食发现" }, { value: "meetup", label: "本地小组" },
-  { value: "event", label: "活动推荐" }, { value: "local_service", label: "本地服务" },
-  { value: "alert", label: "本地提醒" }, { value: "daily_life", label: "生活日常" },
+  { value: "spotlight", label: "精选攻略 ⭐" },
+  { value: "qa", label: "新人真问" },
+  { value: "pitfall", label: "亲测避坑 ⚠️" },
+  { value: "checklist", label: "实用清单" },
+  { value: "experience", label: "经验分享" },
+  { value: "mixed", label: "综合分布（推荐）" },
 ];
+// 语气 = 6 个「角度」，每个都真正改变 AI 产出（旧语气是死代码，已重做）。
 const SEED_TONE_OPTIONS = [
-  { value: "natural", label: "城市日常" }, { value: "helpful", label: "经验提醒" },
-  { value: "local", label: "本地口吻" }, { value: "newcomer", label: "新来者问题" },
-  { value: "editorial", label: "编辑部整理" }, { value: "casual", label: "轻松互动" },
-  { value: "question", label: "真实提问" }, { value: "warning", label: "风险提醒" },
+  { value: "practical", label: "实用清单" },
+  { value: "pitfall", label: "亲测避坑" },
+  { value: "deep", label: "深度攻略" },
+  { value: "compare", label: "对比测评" },
+  { value: "newbie", label: "新手必看" },
+  { value: "thrifty", label: "省钱攻略" },
 ];
+// 城市发布模式。
+const SEED_REGION_MODES = [
+  { value: "single", label: "指定城市", icon: MapPin },
+  { value: "random", label: "随机一城", icon: Dice5 },
+  { value: "spread", label: "多城铺开", icon: Layers },
+] as const;
+const JP_PREFECTURES = provincesFor("jp");
 const SEED_ENGINE_OPTIONS = [
   { value: "auto", label: "自动（优先 AI · 回退离线）" },
   { value: "engine_a", label: "AI 引擎 A" },
@@ -1277,13 +1339,15 @@ function SeedBotPanel() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
   const [form, setForm] = useState({
-    regionCode: "jp.tokyo.tokyo", language: "zh", contentType: "spotlight", count: 20, tone: "natural", publishNow: true, engine: "auto", model: "think",
+    regionCode: "jp.tokyo.tokyo", language: "zh", contentType: "spotlight", count: 20, tone: "practical", publishNow: true, engine: "auto", model: "think",
+    regionMode: "single" as "single" | "random" | "spread", spreadCities: 8, spreadCircles: [] as string[],
   });
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   const [pendingClear, setPendingClear] = useState<string | null>(null);
   const [cityForm, setCityForm] = useState({ regionCode: "", language: "", contentType: "" });
   const [pendingCityClear, setPendingCityClear] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [macroBusy, setMacroBusy] = useState(false);
   const [packCities, setPackCities] = useState<string[]>(["tokyo", "osaka", "yokohama", "kyoto"]);
   const [packBusy, setPackBusy] = useState(false);
   const [pendingPackClear, setPendingPackClear] = useState(false);
@@ -1318,22 +1382,71 @@ function SeedBotPanel() {
     if (selectedBatchId) await queryClient.invalidateQueries({ queryKey: ["admin-seed-batch", selectedBatchId] });
   };
 
+  // Explicit city codes for 多城铺开 when the operator hand-picks 都市圈;
+  // empty => the server randomly samples `spreadCities` cities instead.
+  const spreadRegionCodes = () =>
+    Array.from(new Set(form.spreadCircles.flatMap((c) => regionsForMetroCircle(c).map((r) => r.region_code))));
+
+  // Build the shared region part of a generate / macro payload.
+  const regionPayload = () => {
+    const p: {
+      regionMode: "single" | "random" | "spread"; regionCode?: string; regionCodes?: string[]; spreadCities?: number;
+    } = { regionMode: form.regionMode };
+    if (form.regionMode === "single") {
+      p.regionCode = form.regionCode;
+    } else if (form.regionMode === "spread") {
+      const codes = spreadRegionCodes();
+      if (codes.length) p.regionCodes = codes; else p.spreadCities = form.spreadCities;
+    }
+    return p;
+  };
+
+  const engModeLabel = (engine?: string, model?: string) => {
+    const engineLabel = engine === "offline" ? "离线模板"
+      : (SEED_ENGINE_OPTIONS.find((o) => o.value === engine)?.label || engine || form.engine);
+    const modeLabel = model ? (SEED_MODEL_OPTIONS.find((m) => m.id === model)?.label || model) : "";
+    return `引擎 ${engineLabel}${modeLabel ? " · " + modeLabel : ""}`;
+  };
+
   const generate = async () => {
     setBusy(true);
     try {
       const r = await api.adminSeedGenerate({
-        regionCode: form.regionCode, language: form.language, contentType: form.contentType,
+        ...regionPayload(), language: form.language, contentType: form.contentType,
         count: form.count, tone: form.tone, publishNow: form.publishNow, engine: form.engine, model: form.model,
       });
-      setSelectedBatchId(r.batch.id);
+      const firstBatch = r.batch?.id || r.cities?.[0]?.batch_id || r.batches?.[0]?.id || null;
+      if (firstBatch) setSelectedBatchId(firstBatch);
       await refresh();
-      const engineLabel = r.engine === "offline" ? "离线模板"
-        : (SEED_ENGINE_OPTIONS.find((o) => o.value === r.engine)?.label || r.engine || form.engine);
-      const modeLabel = r.model ? (SEED_MODEL_OPTIONS.find((m) => m.id === r.model)?.label || r.model) : "";
-      pushToast({ kind: "success", message: `已生成 ${r.created} 条 · 引擎 ${engineLabel}${modeLabel ? " · " + modeLabel : ""}（请求 ${r.requested}${r.created < r.requested ? "，去重后库存不足" : ""}）` });
+      const where = r.mode === "spread"
+        ? `${r.cities?.length || 0} 城铺开`
+        : (r.city_name || form.regionCode);
+      pushToast({ kind: "success", message: `已生成 ${r.created} 条 · ${where} · ${engModeLabel(r.engine, r.model)}（请求 ${r.requested}${r.created < r.requested ? "，去重后库存不足" : ""}）` });
     } catch (e) {
       pushToast({ kind: "error", message: (e as APIError).message });
     } finally { setBusy(false); }
+  };
+
+  // 一键铺城: personas -> spotlight drafts -> follower curve -> engagement.
+  // Always draft-first so the operator reviews before the region goes live.
+  const seedCity = async () => {
+    setMacroBusy(true);
+    try {
+      const r = await api.adminSeedCityMacro({
+        ...regionPayload(), language: form.language, contentType: form.contentType,
+        count: form.count, tone: form.tone, engine: form.engine, model: form.model, publishNow: false,
+      });
+      const firstBatch = r.cities?.[0]?.batch_id || r.batches?.[0]?.id || null;
+      if (firstBatch) setSelectedBatchId(firstBatch);
+      await refresh();
+      await queryClient.invalidateQueries({ queryKey: ["admin-content-pack-users"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-users"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-engagement"] });
+      const e = r.engagement || {};
+      pushToast({ kind: "success", message: `铺城完成 · ${r.cities.length} 城 · 草稿 ${r.created} 帖 · 新增用户 ${r.personas_imported} · 粉丝 +${r.followers_granted} · 互动 赞${e.likes || 0}/评${e.comments || 0}/关${e.follows || 0}（审阅后发布）` });
+    } catch (e) {
+      pushToast({ kind: "error", message: (e as APIError).message });
+    } finally { setMacroBusy(false); }
   };
 
   const importPack = async () => {
@@ -1439,9 +1552,9 @@ function SeedBotPanel() {
         <div className="flex items-start gap-2">
           <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-kx-accent" />
           <p className="text-xs leading-5 text-kx-subtle">
-            城市内容助手用于给新城市铺第一层城市生活底稿：问答、租房提醒、办事经验、活动线索、本地服务和日常动态。
+            城市内容助手给新城市铺第一层<b>精选</b>底稿：精选攻略（干货长帖）、新人真问、亲测避坑、实用清单、经验分享——五类都有信息量，一看就实用。
             <b>已导入城市用户时，帖子会随机分配到这些用户名下发布（看起来像真实用户）</b>，没有则回退到官方账号；全部标记为 <code className="rounded bg-kx-soft px-1">seed_content</code>。
-            建议先导入城市用户，再小批量生成、逐条预览，最后发布或按批次回滚。清除只影响系统生成内容，<b>永远不会删除真实用户内容</b>。
+            最快路径：直接<b>「一键铺城」</b>（用户+草稿+粉丝+互动一步到位，默认进草稿）；或分步小批量生成、逐条预览，最后发布或按批次回滚。清除只影响系统生成内容，<b>永远不会删除真实用户内容</b>。
           </p>
         </div>
       </div>
@@ -1549,17 +1662,83 @@ function SeedBotPanel() {
         <section className="kx-card">
           <h2 className="text-base font-bold">生成城市底稿</h2>
           <div className="mt-4 grid gap-3">
-            <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+            <div className="grid gap-1 text-xs font-semibold text-kx-muted">
               城市
-              <select className="kx-input h-10" value={SEED_CITY_PRESETS.some((p) => p.value === form.regionCode) ? form.regionCode : ""}
-                      onChange={(e) => e.target.value && setForm((f) => ({ ...f, regionCode: e.target.value }))}>
-                {SEED_CITY_PRESETS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                <option value="">自定义…</option>
-              </select>
-            </label>
-            <input className="kx-input h-9 text-xs" value={form.regionCode}
-                   onChange={(e) => setForm((f) => ({ ...f, regionCode: e.target.value.trim() }))}
-                   placeholder="region_code，例如 cn.beijing.beijing" />
+              <div className="flex gap-1.5">
+                {SEED_REGION_MODES.map((m) => {
+                  const on = form.regionMode === m.value;
+                  return (
+                    <button key={m.value} type="button" onClick={() => setForm((f) => ({ ...f, regionMode: m.value }))}
+                      className={clsx("flex-1 inline-flex items-center justify-center gap-1 rounded-lg border px-2 py-1.5 text-xs font-semibold transition",
+                        on ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : "border-kx-soft text-kx-muted")}>
+                      <m.icon className="h-3.5 w-3.5" /> {m.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            {form.regionMode === "single" ? (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+                    都道府县
+                    <select className="kx-input h-10" value={form.regionCode.startsWith("jp.") ? form.regionCode.split(".")[1] : ""}
+                            onChange={(e) => {
+                              const prov = e.target.value;
+                              const first = citiesFor("jp", prov)[0]?.code || prov;
+                              setForm((f) => ({ ...f, regionCode: composeRegionCode("jp", prov, first) }));
+                            }}>
+                      {!form.regionCode.startsWith("jp.") ? <option value="">（自定义）</option> : null}
+                      {JP_PREFECTURES.map((p) => <option key={p.code} value={p.code}>{p.name}</option>)}
+                    </select>
+                  </label>
+                  <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+                    城市
+                    <select className="kx-input h-10" value={form.regionCode.split(".")[2] || ""}
+                            disabled={!form.regionCode.startsWith("jp.")}
+                            onChange={(e) => {
+                              const prov = form.regionCode.split(".")[1];
+                              setForm((f) => ({ ...f, regionCode: composeRegionCode("jp", prov, e.target.value) }));
+                            }}>
+                      {citiesFor("jp", form.regionCode.split(".")[1]).map((c) => <option key={c.code} value={c.code}>{c.name}</option>)}
+                    </select>
+                  </label>
+                </div>
+                <input className="kx-input h-9 text-xs" value={form.regionCode}
+                       onChange={(e) => setForm((f) => ({ ...f, regionCode: e.target.value.trim() }))}
+                       placeholder="高级：直接填 region_code（如 jp.tokyo.tokyo）" />
+              </>
+            ) : form.regionMode === "random" ? (
+              <p className="rounded-lg bg-kx-soft/60 px-3 py-2 text-xs leading-5 text-kx-muted">
+                <Dice5 className="mr-1 inline h-3.5 w-3.5" /> 系统从全部 <b>109 个</b>日本城市随机抽一个；生成后 toast 会告诉你抽到了哪座城。
+              </p>
+            ) : (
+              <div className="grid gap-1.5">
+                <p className="text-[11px] leading-4 text-kx-subtle">选都市圈＝在这些地区铺开；不选则从全日本随机抽 N 城。数量按城市均分。</p>
+                <div className="flex flex-wrap gap-1.5">
+                  {JP_METRO_CIRCLES.map((c) => {
+                    const on = form.spreadCircles.includes(c.code);
+                    return (
+                      <button key={c.code} type="button"
+                        onClick={() => setForm((f) => ({ ...f, spreadCircles: on ? f.spreadCircles.filter((x) => x !== c.code) : [...f.spreadCircles, c.code] }))}
+                        className={clsx("rounded-full border px-2.5 py-1 text-xs font-semibold transition",
+                          on ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : "border-kx-soft text-kx-muted")}>
+                        {c.name}
+                      </button>
+                    );
+                  })}
+                </div>
+                {form.spreadCircles.length === 0 ? (
+                  <label className="grid gap-1 text-xs font-semibold text-kx-muted">
+                    随机铺开城市数
+                    <input className="kx-input h-9" type="number" min={2} max={40} value={form.spreadCities}
+                           onChange={(e) => setForm((f) => ({ ...f, spreadCities: Math.max(2, Math.min(40, Number(e.target.value) || 2)) }))} />
+                  </label>
+                ) : (
+                  <span className="text-[11px] text-kx-muted">已选 {form.spreadCircles.length} 个都市圈 · 约 {spreadRegionCodes().length} 城</span>
+                )}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-2">
               <label className="grid gap-1 text-xs font-semibold text-kx-muted">
                 语言
@@ -1615,9 +1794,17 @@ function SeedBotPanel() {
               <input type="checkbox" checked={form.publishNow} onChange={(e) => setForm((f) => ({ ...f, publishNow: e.target.checked }))} />
               生成后直接发布（否则进入 draft 草稿）
             </label>
-            <button className="kx-button-primary h-10 inline-flex items-center justify-center gap-1.5" disabled={busy || !form.regionCode} onClick={generate}>
-              <Sparkles className="h-4 w-4" /> {busy ? "生成中…" : "一键生成"}
-            </button>
+            <div className="grid gap-2">
+              <button className="kx-button-primary h-10 inline-flex items-center justify-center gap-1.5 disabled:opacity-40"
+                      disabled={busy || macroBusy || (form.regionMode === "single" && !form.regionCode)} onClick={generate}>
+                <Sparkles className="h-4 w-4" /> {busy ? "生成中…" : "一键生成"}
+              </button>
+              <button className="h-10 inline-flex items-center justify-center gap-1.5 rounded-xl border border-kx-accent bg-kx-accentSoft/40 text-sm font-semibold text-kx-accent transition hover:bg-kx-accentSoft disabled:opacity-40"
+                      disabled={busy || macroBusy || (form.regionMode === "single" && !form.regionCode)} onClick={seedCity}>
+                <Wand2 className="h-4 w-4" /> {macroBusy ? "铺城中…" : "一键铺城（用户+粉丝+互动）"}
+              </button>
+              <p className="text-[11px] leading-4 text-kx-subtle">「一键铺城」= 导入城市用户 → 生成精选草稿 → 铺可信粉丝曲线 → 跑一轮互动，一步越过冷启动；<b>默认进草稿</b>，审阅后再发布。</p>
+            </div>
           </div>
         </section>
 

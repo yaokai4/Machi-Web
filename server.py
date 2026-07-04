@@ -6881,6 +6881,11 @@ def clear_seed_users(conn: sqlite3.Connection) -> int:
         )
         conn.execute("UPDATE posts SET author_id = ?, updated_at = ? WHERE author_id = ?",
                      (post_fallback, now, uid))
+        # Delete this persona's follow edges in BOTH directions, otherwise
+        # follower_count (a live COUNT over follows, no JOIN to users) keeps
+        # counting phantom followers after the account is gone — an
+        # un-rollback-able inflation on whoever the persona was seeded to follow.
+        conn.execute("DELETE FROM follows WHERE follower_id = ? OR following_id = ?", (uid, uid))
         conn.execute("DELETE FROM settings WHERE user_id = ?", (uid,))
         conn.execute("DELETE FROM users WHERE id = ?", (uid,))
         conn.execute("DELETE FROM content_pack_users WHERE user_id = ?", (uid,))
@@ -15337,6 +15342,131 @@ _SEED_OP_TIMES: dict[str, list[float]] = {}
 _SEED_OP_LOCK = threading.Lock()
 
 
+@functools.lru_cache(maxsize=1)
+def _all_jp_region_codes() -> tuple[str, ...]:
+    """Every Japanese city region_code (jp.<prefecture>.<city>) from the region
+    directory — 47 prefectures × their cities (~109). Used by the seed tool's
+    random / spread modes. Cached: the directory is a static Python literal."""
+    out: list[str] = []
+    for p in REGION_PROVINCES.get("jp", []):
+        for c in _cities_for_parent("jp", p.get("code")):
+            rc = _resolve_region_code("jp", p.get("code"), c.get("code"))
+            if rc:
+                out.append(rc)
+    return tuple(out)
+
+
+SEED_SPREAD_TOTAL_CAP = 400
+
+
+def _build_seed_region_plan(data: dict[str, Any], count: int) -> tuple[str, list[tuple[str, int]]]:
+    """Resolve a seed op's (region_code, count) plan by regionMode. Shared by the
+    generate endpoint and the 一键铺城 macro so their city semantics never drift.
+
+    - single : [(resolved_region, count)] from regionCode or country+province+city.
+    - random : one uniformly-random Japanese city (of ~109).
+    - spread : several JP cities (explicit `regionCodes` or a random sample of
+               `spreadCities`), with `count` split evenly across them.
+    Raises APIError on invalid input."""
+    region_mode = (data.get("regionMode") or data.get("region_mode") or "single").strip().lower()
+    if region_mode in ("random", "spread"):
+        all_jp = list(_all_jp_region_codes())
+        if not all_jp:
+            raise APIError("城市目录为空", 500, "region_directory_empty")
+        rng = secrets.SystemRandom()
+        if region_mode == "random":
+            if count > seedlib.MAX_BATCH_COUNT:
+                raise APIError(f"单批最多 {seedlib.MAX_BATCH_COUNT} 条", 400, "count_too_large")
+            return region_mode, [(rng.choice(all_jp), count)]
+        # spread
+        allowed = set(all_jp)
+        picks = [rc.strip().lower() for rc in (data.get("regionCodes") or []) if rc]
+        picks = [rc for rc in picks if rc in allowed]
+        if not picks:
+            try:
+                n_cities = int(data.get("spreadCities") or 8)
+            except (TypeError, ValueError):
+                n_cities = 8
+            n_cities = max(2, min(n_cities, len(all_jp)))
+            picks = rng.sample(all_jp, n_cities)
+        total = min(count, SEED_SPREAD_TOTAL_CAP)
+        base, extra = divmod(total, len(picks))
+        plan: list[tuple[str, int]] = []
+        for i, rc in enumerate(picks):
+            c = base + (1 if i < extra else 0)
+            if c > 0:
+                plan.append((rc, min(c, seedlib.MAX_BATCH_COUNT)))
+        if not plan:
+            raise APIError("每城分配数为 0，请增大数量或减少城市", 400, "spread_zero_each")
+        return region_mode, plan
+    # single
+    if count > seedlib.MAX_BATCH_COUNT:
+        raise APIError(f"单批最多 {seedlib.MAX_BATCH_COUNT} 条", 400, "count_too_large")
+    country = (data.get("country") or "").strip().lower()
+    province = (data.get("province") or "").strip().lower()
+    city = (data.get("city") or "").strip().lower()
+    region_code = (data.get("regionCode") or data.get("region_code") or "").strip().lower()
+    if not region_code:
+        region_code = _resolve_region_code(country, province, city)
+    if not region_code:
+        raise APIError("请选择城市（region_code 或 country+city）", 400, "city_required")
+    return region_mode, [(region_code, count)]
+
+
+def _apply_seed_follower_target(
+    conn: sqlite3.Connection, *, user_id: str, target: int,
+    personas: set[str], persona_created: dict[str, str], rng: Any, now: datetime,
+) -> dict[str, Any]:
+    """Materialize/trim persona follows so ``user_id`` reaches ``target`` followers.
+
+    Only ever adds or removes follows whose follower is an imported persona — a
+    real user's follows are NEVER touched, and the effective goal floors at the
+    real-follower count (you can't delete a real follower). New follow timestamps
+    are spread across the last ~30 days and never predate the persona's own
+    signup, so the growth curve looks gradual. Returns a result dict for the UI.
+    """
+    pool = [p for p in personas if p != user_id]  # never self-follow
+    rows = conn.execute(
+        "SELECT id, follower_id, created_at FROM follows WHERE following_id = ?", (user_id,)
+    ).fetchall()
+    seed_rows = [r for r in rows if r["follower_id"] in personas]
+    real_followers = len(rows) - len(seed_rows)
+    existing_follower_ids = {r["follower_id"] for r in rows}
+    goal = max(real_followers, min(max(0, int(target)), 200_000))
+    seed_goal = goal - real_followers  # persona-followers wanted
+    added = 0
+    removed = 0
+    pool_exhausted = False
+    window_start = now - timedelta(days=30)
+    if seed_goal > len(seed_rows):
+        avail = [p for p in pool if p not in existing_follower_ids]
+        need = seed_goal - len(seed_rows)
+        if need > len(avail):
+            need = len(avail)
+            pool_exhausted = True
+        for pid in (rng.sample(avail, need) if need > 0 else []):
+            pc = parse_iso(persona_created.get(pid) or "") or window_start
+            start = pc if pc > window_start else window_start
+            conn.execute(
+                "INSERT OR IGNORE INTO follows (id, follower_id, following_id, created_at) VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), pid, user_id, _eng_spread_ts(start, now, rng)),
+            )
+            added += 1
+    elif seed_goal < len(seed_rows):
+        drop = len(seed_rows) - seed_goal
+        # Newest persona follows go first; real follows are excluded by construction.
+        for r in sorted(seed_rows, key=lambda r: r["created_at"], reverse=True)[:drop]:
+            conn.execute("DELETE FROM follows WHERE id = ?", (r["id"],))
+            removed += 1
+    live = int(conn.execute(
+        "SELECT COUNT(*) FROM follows WHERE following_id = ?", (user_id,)).fetchone()[0])
+    return {
+        "user_id": user_id, "requested_target": int(target), "follower_count": live,
+        "seed_followers": live - real_followers, "real_followers": real_followers,
+        "added": added, "removed": removed, "pool_exhausted": pool_exhausted, "pool_size": len(pool),
+    }
+
+
 def seed_throttle(admin_id: str, limit: int = 30, window: float = 300.0) -> None:
     """Per-admin frequency guard for seed write ops (generate/publish/clear).
     Best-effort, in-memory; pairs with the existing IP rate limiter."""
@@ -15932,44 +16062,16 @@ class Handler(BaseHTTPRequestHandler):
             ]
         return out
 
-    def api_admin_seed_generate(self, conn: sqlite3.Connection) -> None:
-        admin = self.require_admin(conn)
-        data = self.read_json()
-        country = (data.get("country") or "").strip().lower()
-        province = (data.get("province") or "").strip().lower()
-        city = (data.get("city") or "").strip().lower()
-        region_code = (data.get("regionCode") or data.get("region_code") or "").strip().lower()
-        language = (data.get("language") or "zh").strip().lower()
-        content_type = (data.get("contentType") or data.get("content_type") or "mixed").strip()
-        tone = (data.get("tone") or "natural").strip()
-        engine = (data.get("engine") or "auto").strip().lower()
-        if engine not in seed_llm.ENGINES:
-            engine = "auto"
-        model = (data.get("model") or "").strip()  # neutral generation mode: fast/think/pro
-        publish_now = bool(data.get("publishNow") if data.get("publishNow") is not None else data.get("publish_now"))
-        try:
-            count = int(data.get("count") or 0)
-        except (TypeError, ValueError):
-            raise APIError("count 无效", 400, "invalid_count")
-        if count <= 0:
-            raise APIError("count 需要大于 0", 400, "invalid_count")
-        if count > seedlib.MAX_BATCH_COUNT:
-            raise APIError(f"单批最多 {seedlib.MAX_BATCH_COUNT} 条", 400, "count_too_large")
-        if language not in seedlib.SUPPORTED_LANGUAGES:
-            raise APIError("不支持的语言", 400, "invalid_language")
-        if content_type not in (("mixed", "all", "") + seedlib.SUPPORTED_CONTENT_TYPES):
-            raise APIError("不支持的内容类型", 400, "invalid_content_type")
-        if not region_code:
-            region_code = _resolve_region_code(country, province, city)
-        elif not country:
-            country, province, city = _parse_region_code(region_code)
-        if not region_code:
-            raise APIError("请选择城市（region_code 或 country+city）", 400, "city_required")
-
-        seed_throttle(admin["id"])
-        # Try the LLM engine first (DeepSeek primary / Claude reserved); on any
-        # failure or when offline is requested, fall back to the curated pool so
-        # generation never hard-fails.
+    def _seed_generate_city(
+        self, conn: sqlite3.Connection, *, admin_id: str, region_code: str,
+        country: str, province: str, city: str, language: str, content_type: str,
+        count: int, tone: str, engine: str, model: str, publish_now: bool,
+        spread_group_id: str = "",
+    ) -> dict[str, Any]:
+        """Generate + insert one city's seed batch. Shared by single/random/spread
+        and the 一键铺城 macro. Tries the LLM engine first (DeepSeek primary /
+        Claude reserved) then falls back to the curated offline pool so it never
+        hard-fails. Returns a small result dict (never the full item list)."""
         items: list[dict[str, Any]] | None = None
         engine_used = "offline"
         model_used = ""
@@ -15998,7 +16100,7 @@ class Handler(BaseHTTPRequestHandler):
                cleared_count, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)""",
             (batch_id, country, province, city, region_code, language, content_type, tone, count,
-             ("published" if publish_now else "draft"), admin["id"], len(items),
+             ("published" if publish_now else "draft"), admin_id, len(items),
              (len(items) if publish_now else 0), now, now),
         )
         # Author the posts as imported personas so the feed looks like many real
@@ -16036,14 +16138,257 @@ class Handler(BaseHTTPRequestHandler):
                 batch_id=batch_id, status=status, image_ratio=image_ratio,
             )
         log_seed_action(
-            conn, admin_id=admin["id"], action="generate", batch_id=batch_id, country=country,
+            conn, admin_id=admin_id, action="generate", batch_id=batch_id, country=country,
             city=city, region_code=region_code, language=language, content_type=content_type,
-            count=len(items), metadata={"tone": tone, "publishNow": publish_now, "requested": count, "engine": engine_used, "model": model_used},
+            count=len(items), metadata={"tone": tone, "publishNow": publish_now, "requested": count,
+                                        "engine": engine_used, "model": model_used,
+                                        **({"spread_group_id": spread_group_id} if spread_group_id else {})},
         )
+        return {"batch_id": batch_id, "region_code": region_code,
+                "city_name": seedlib._city_name(region_code, language) or region_code,
+                "created": len(items), "requested": count,
+                "engine": engine_used, "model": model_used}
+
+    def api_admin_seed_generate(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        language = (data.get("language") or "zh").strip().lower()
+        content_type = (data.get("contentType") or data.get("content_type") or "mixed").strip()
+        tone = (data.get("tone") or "practical").strip()
+        if tone not in seedlib.TONES:
+            tone = "practical"  # don't silently accept a retired legacy tone
+        engine = (data.get("engine") or "auto").strip().lower()
+        if engine not in seed_llm.ENGINES:
+            engine = "auto"
+        model = (data.get("model") or "").strip()  # neutral generation mode: fast/think/pro
+        publish_now = bool(data.get("publishNow") if data.get("publishNow") is not None else data.get("publish_now"))
+        try:
+            count = int(data.get("count") or 0)
+        except (TypeError, ValueError):
+            raise APIError("count 无效", 400, "invalid_count")
+        if count <= 0:
+            raise APIError("count 需要大于 0", 400, "invalid_count")
+        if language not in seedlib.SUPPORTED_LANGUAGES:
+            raise APIError("不支持的语言", 400, "invalid_language")
+        # Only the current live types (+ mixed) can be generated; retired legacy
+        # keys still render old posts but are no longer produced.
+        if content_type not in (("mixed", "all", "") + seedlib.ACTIVE_CONTENT_TYPES):
+            raise APIError("不支持的内容类型", 400, "invalid_content_type")
+
+        # single keeps the original single-city contract; random picks one JP
+        # city; spread fans across several JP cities entirely server-side — ONE
+        # throttle check, and the returned batch ids give atomic rollback.
+        region_mode, plan_cities = _build_seed_region_plan(data, count)
+        seed_throttle(admin["id"])  # exactly once, even for a multi-city spread
+        spread_group_id = secrets.token_hex(8) if region_mode == "spread" else ""
+        results: list[dict[str, Any]] = []
+        for rc, c in plan_cities:
+            cc, pp, ci = _parse_region_code(rc)
+            results.append(self._seed_generate_city(
+                conn, admin_id=admin["id"], region_code=rc, country=cc, province=pp, city=ci,
+                language=language, content_type=content_type, count=c, tone=tone,
+                engine=engine, model=model, publish_now=publish_now,
+                spread_group_id=spread_group_id,
+            ))
         if publish_now:
             invalidate_public_ranking_caches()
-        self.send_json({"batch": self._seed_batch_dict(conn, batch_id, include_items=True),
-                        "requested": count, "created": len(items), "engine": engine_used, "model": model_used})
+
+        if region_mode == "spread":
+            self.send_json({
+                "mode": "spread", "spread_group_id": spread_group_id,
+                "cities": [{"region_code": r["region_code"], "city_name": r["city_name"],
+                            "batch_id": r["batch_id"], "created": r["created"]} for r in results],
+                "batches": [self._seed_batch_dict(conn, r["batch_id"], include_items=False) for r in results],
+                "requested": sum(r["requested"] for r in results),
+                "created": sum(r["created"] for r in results),
+                "engine": results[0]["engine"] if results else engine,
+                "model": results[0]["model"] if results else "",
+            })
+            return
+        # single / random: original single-batch response shape (back-compat) plus
+        # mode + resolved city so the client can toast where random landed.
+        r0 = results[0]
+        self.send_json({
+            "mode": region_mode, "region_code": r0["region_code"], "city_name": r0["city_name"],
+            "batch": self._seed_batch_dict(conn, r0["batch_id"], include_items=True),
+            "requested": r0["requested"], "created": r0["created"],
+            "engine": r0["engine"], "model": r0["model"],
+        })
+
+    def api_admin_set_user_followers(self, conn: sqlite3.Connection, user_id: str) -> None:
+        """Set a user's follower count to a target by materializing REAL follows
+        from imported persona (content_pack_users) accounts. Real followers are
+        never removed and the target floors at the real-follower count."""
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        target_raw = data.get("target")
+        if target_raw is None:
+            raise APIError("缺少 target", 400, "missing_target")
+        try:
+            target = int(target_raw)
+        except (TypeError, ValueError):
+            raise APIError("target 无效", 400, "invalid_target")
+        target = max(0, target)
+        if not conn.execute("SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,)).fetchone():
+            raise APIError("用户不存在", 404, "user_not_found")
+        personas = set(seed_user_ids(conn))
+        if not personas:
+            raise APIError("请先导入城市用户（AI 粉丝来源）", 400, "no_personas")
+        persona_created = {r["user_id"]: r["created_at"] for r in conn.execute(
+            "SELECT cpu.user_id, u.created_at FROM content_pack_users cpu JOIN users u ON u.id = cpu.user_id "
+            "WHERE u.deleted_at IS NULL").fetchall()}
+        result = _apply_seed_follower_target(
+            conn, user_id=user_id, target=target, personas=personas,
+            persona_created=persona_created, rng=secrets.SystemRandom(), now=datetime.now(timezone.utc))
+        invalidate_public_ranking_caches()
+        log_seed_action(conn, admin_id=admin["id"], action="set_followers",
+                        count=result["follower_count"],
+                        metadata={"target": target, "added": result["added"], "removed": result["removed"],
+                                  "pool_exhausted": result["pool_exhausted"]})
+        self.send_json({"ok": True, **result})
+
+    def api_admin_randomize_seed_followers(self, conn: sqlite3.Connection) -> None:
+        """Give every imported persona a believable, log-skewed follower count
+        (most small, a few large) sourced from the persona pool — a one-click way
+        to make a fresh community look inhabited. Only ever touches seed users."""
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        try:
+            lo = max(0, int(data.get("min", 20)))
+            hi = max(lo, int(data.get("max", 300)))
+        except (TypeError, ValueError):
+            raise APIError("min/max 无效", 400, "invalid_range")
+        personas_list = seed_user_ids(conn)
+        if not personas_list:
+            raise APIError("请先导入城市用户", 400, "no_personas")
+        personas = set(personas_list)
+        hi = min(hi, max(0, len(personas_list) - 1))  # can't exceed pool size
+        lo = min(lo, hi)
+        persona_created = {r["user_id"]: r["created_at"] for r in conn.execute(
+            "SELECT cpu.user_id, u.created_at FROM content_pack_users cpu JOIN users u ON u.id = cpu.user_id "
+            "WHERE u.deleted_at IS NULL").fetchall()}
+        rng = secrets.SystemRandom()
+        now = datetime.now(timezone.utc)
+        span = max(1, hi - lo)
+        TOTAL_EDGE_CAP = 40_000
+        updated = 0
+        total_added = 0
+        order = list(personas_list)
+        rng.shuffle(order)
+        for pid in order:
+            if total_added >= TOTAL_EDGE_CAP:
+                break
+            target = lo + int(span * (rng.random() ** 2.2))  # long tail toward lo
+            res = _apply_seed_follower_target(conn, user_id=pid, target=target, personas=personas,
+                                              persona_created=persona_created, rng=rng, now=now)
+            updated += 1
+            total_added += res["added"]
+        invalidate_public_ranking_caches()
+        total_follows = int(conn.execute(
+            "SELECT COUNT(*) FROM follows WHERE following_id IN (SELECT user_id FROM content_pack_users)"
+        ).fetchone()[0])
+        log_seed_action(conn, admin_id=admin["id"], action="randomize_followers", count=total_follows,
+                        metadata={"updated": updated, "added": total_added, "min": lo, "max": hi})
+        self.send_json({"ok": True, "updated": updated, "added": total_added, "total_follows": total_follows})
+
+    def api_admin_seed_city_macro(self, conn: sqlite3.Connection) -> None:
+        """一键铺城 (cross cold-start in one action): (1) ensure city personas
+        exist, (2) generate spotlight-dominant drafts for the chosen/random/spread
+        city, (3) grant believable persona-follower curves, (4) run one engagement
+        tick. ONE throttle check; every row is is_seed_content and reversible via
+        the existing clear tools. Defaults to draft-first (publishNow=false)."""
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        language = (data.get("language") or "zh").strip().lower()
+        if language not in seedlib.SUPPORTED_LANGUAGES:
+            language = "zh"
+        content_type = (data.get("contentType") or data.get("content_type") or "mixed").strip()
+        if content_type not in (("mixed", "all", "") + seedlib.ACTIVE_CONTENT_TYPES):
+            content_type = "mixed"
+        tone = (data.get("tone") or "practical").strip()
+        if tone not in seedlib.TONES:
+            tone = "practical"
+        engine = (data.get("engine") or "auto").strip().lower()
+        if engine not in seed_llm.ENGINES:
+            engine = "auto"
+        model = (data.get("model") or "").strip()
+        publish_now = bool(data.get("publishNow"))  # default draft-first
+        try:
+            count = int(data.get("count") or 30)
+        except (TypeError, ValueError):
+            count = 30
+        count = max(1, min(count, SEED_SPREAD_TOTAL_CAP))
+
+        region_mode, plan_cities = _build_seed_region_plan(data, count)
+        seed_throttle(admin["id"])  # one check for the whole macro chain
+
+        # 1) personas — idempotent by handle (creates missing, refreshes ours).
+        imp = import_seed_users(conn, seedpacks.PERSONAS)
+
+        # 2) generate drafts across the plan's cities.
+        spread_group_id = secrets.token_hex(8)
+        results: list[dict[str, Any]] = []
+        for rc, c in plan_cities:
+            cc, pp, ci = _parse_region_code(rc)
+            results.append(self._seed_generate_city(
+                conn, admin_id=admin["id"], region_code=rc, country=cc, province=pp, city=ci,
+                language=language, content_type=content_type, count=c, tone=tone,
+                engine=engine, model=model, publish_now=publish_now, spread_group_id=spread_group_id,
+            ))
+
+        # 3) grant believable follower curves to personas in the seeded cities.
+        personas = set(seed_user_ids(conn))
+        persona_created = {r["user_id"]: r["created_at"] for r in conn.execute(
+            "SELECT cpu.user_id, u.created_at FROM content_pack_users cpu JOIN users u ON u.id = cpu.user_id "
+            "WHERE u.deleted_at IS NULL").fetchall()}
+        region_codes = list({rc for rc, _ in plan_cities})
+        targets: list[str] = []
+        if region_codes:
+            ph = ",".join("?" for _ in region_codes)
+            targets = [r["id"] for r in conn.execute(
+                "SELECT u.id FROM content_pack_users cpu JOIN users u ON u.id = cpu.user_id "
+                f"WHERE u.deleted_at IS NULL AND u.current_region_code IN ({ph})", tuple(region_codes)
+            ).fetchall()]
+        rng = secrets.SystemRandom()
+        now = datetime.now(timezone.utc)
+        rng.shuffle(targets)
+        targets = targets[:80]  # bound the follower seeding per macro run
+        hi = min(300, max(0, len(personas) - 1))
+        lo = min(20, hi)
+        span = max(1, hi - lo)
+        followers_granted = 0
+        for pid in targets:
+            res = _apply_seed_follower_target(
+                conn, user_id=pid, target=lo + int(span * (rng.random() ** 2.2)),
+                personas=personas, persona_created=persona_created, rng=rng, now=now)
+            followers_granted += res["added"]
+
+        # 4) one engagement tick (gradual likes/bookmarks/comments among seeds;
+        #    no-op if the engagement simulator is disabled in settings).
+        eng = run_engagement_simulation_tick(conn)
+
+        if publish_now:
+            invalidate_public_ranking_caches()
+        log_seed_action(conn, admin_id=admin["id"], action="seed_city_macro",
+                        region_code=(plan_cities[0][0] if plan_cities else ""),
+                        count=sum(r["created"] for r in results),
+                        metadata={"mode": region_mode, "cities": len(plan_cities),
+                                  "personas_imported": imp.get("created", 0),
+                                  "followers_granted": followers_granted, "engagement": eng,
+                                  "spread_group_id": spread_group_id, "publishNow": publish_now})
+        self.send_json({
+            "ok": True, "mode": region_mode, "spread_group_id": spread_group_id,
+            "personas_imported": imp.get("created", 0), "personas_total": imp.get("total", 0),
+            "followers_granted": followers_granted, "engagement": eng,
+            "cities": [{"region_code": r["region_code"], "city_name": r["city_name"],
+                        "batch_id": r["batch_id"], "created": r["created"]} for r in results],
+            "batches": [self._seed_batch_dict(conn, r["batch_id"], include_items=(region_mode != "spread"))
+                        for r in results],
+            "requested": sum(r["requested"] for r in results),
+            "created": sum(r["created"] for r in results),
+            "engine": results[0]["engine"] if results else engine,
+            "publishNow": publish_now,
+        })
 
     def api_admin_seed_batches(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
@@ -25598,6 +25943,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_erase_user(conn, path.split("/")[4])
         if path.startswith("/api/admin/users/") and path.endswith("/mute") and method in ("POST", "PATCH"):
             return self.api_admin_mute_user(conn, path.split("/")[4])
+        if path.startswith("/api/admin/users/") and path.endswith("/follower-count") and method == "POST":
+            return self.api_admin_set_user_followers(conn, path.split("/")[4])
         if path == "/api/admin/appeals" and method == "GET":
             return self.api_admin_appeals(conn, query)
         if path.startswith("/api/admin/appeals/") and method == "PATCH":
@@ -25680,6 +26027,8 @@ class Handler(BaseHTTPRequestHandler):
         # admin: City Seed Bot (城市内容助手) — all behind require_admin
         if path == "/api/admin/seed-content/generate" and method == "POST":
             return self.api_admin_seed_generate(conn)
+        if path == "/api/admin/seed-content/seed-city" and method == "POST":
+            return self.api_admin_seed_city_macro(conn)
         if path == "/api/admin/seed-content/batches" and method == "GET":
             return self.api_admin_seed_batches(conn, query)
         if path == "/api/admin/seed-content/clear-city" and method == "POST":
@@ -25707,6 +26056,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_engagement_status(conn)
         if path == "/api/admin/engagement/run" and method == "POST":
             return self.api_admin_engagement_run(conn)
+        if path == "/api/admin/engagement/randomize-followers" and method == "POST":
+            return self.api_admin_randomize_seed_followers(conn)
         if path.startswith("/api/admin/seed-content/batches/"):
             parts = path.split("/")  # ['', 'api', 'admin', 'seed-content', 'batches', '{id}', '{action}'?]
             batch_id = parts[5] if len(parts) > 5 else ""

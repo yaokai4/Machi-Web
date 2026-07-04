@@ -163,20 +163,20 @@ def main() -> int:
         print("\n[7] clear-city (safety)")
         # New batch, publish-now, then clear the whole city.
         kind, payload = call("api_admin_seed_generate", admin, conn,
-                             {"regionCode": RC, "language": "en", "contentType": "city_square",
-                              "count": 6, "tone": "editorial", "publishNow": True})
+                             {"regionCode": RC, "language": "zh", "contentType": "mixed",
+                              "count": 6, "tone": "practical", "publishNow": True})
         bid2 = (payload or {}).get("batch", {}).get("id", "") if kind == "ok" else ""
         n2 = conn.execute("SELECT COUNT(*) c FROM posts WHERE seed_batch_id=?", (bid2,)).fetchone()["c"]
-        check("editorial 批次生成成功", kind == "ok" and n2 > 0, f"n2={n2}")
-        # A Tokyo editorial batch intentionally uses the city-specific
-        # identity instead of the generic "Machi Local Desk" identity.
+        check("published 批次生成成功", kind == "ok" and n2 > 0, f"n2={n2}")
+        # With no personas imported the author is an official (labelled) seed desk,
+        # never a fabricated personal identity.
         ed_author = conn.execute(
-            "SELECT u.display_name dn FROM posts p JOIN users u ON u.id=p.author_id WHERE p.seed_batch_id=? LIMIT 1", (bid2,)
+            "SELECT u.is_official io FROM posts p JOIN users u ON u.id=p.author_id WHERE p.seed_batch_id=? LIMIT 1", (bid2,)
         ).fetchone()
         check(
-            "editorial 语气来自东京编辑部账号",
-            ed_author and ed_author["dn"] == "Machi Tokyo Desk",
-            f"author={ed_author['dn'] if ed_author else None}",
+            "seed 帖作者是官方账号（非真人身份）",
+            bool(ed_author and ed_author["io"] == 1),
+            f"is_official={ed_author['io'] if ed_author else None}",
         )
         kind, code = call("api_admin_seed_clear_city", admin, conn, {"regionCode": RC})  # no confirm
         check("按城市清除缺少 confirm 被拒绝", kind == "err" and code == "confirm_required", f"got {kind}/{code}")

@@ -23,6 +23,15 @@ from __future__ import annotations
 import random
 from typing import Any
 
+# server_regions is a leaf module (imports only re/typing — never server.py or
+# this file), so importing it here creates no cycle. It gives real city display
+# names for ALL 109 Japanese cities (and CN/US/…), so seed content for any city
+# gets a real anchor instead of the generic "市中心/车站附近" fallback.
+try:
+    import server_regions as _regions
+except Exception:  # pragma: no cover - keep the offline library importable alone
+    _regions = None  # type: ignore
+
 # --- taxonomy ---------------------------------------------------------------
 
 SUPPORTED_LANGUAGES: tuple[str, ...] = ("zh", "en", "ja")
@@ -31,8 +40,9 @@ SUPPORTED_LANGUAGES: tuple[str, ...] = ("zh", "en", "ja")
 # discriminator, so seeded rows render through the normal typed cards without
 # any new client rendering path.
 APP_CONTENT_TYPE: dict[str, str] = {
+    # --- 保留兼容：不再进默认 mix、下拉里也隐藏，但老帖/老批次照常渲染，
+    #     端点校验对旧键仍接受，seed_content_batches 历史行不会坏 ---
     "city_square": "dynamic",
-    "qa": "question",
     "guide": "guide",
     "housing_tip": "housing",
     "secondhand": "secondhand",
@@ -43,19 +53,58 @@ APP_CONTENT_TYPE: dict[str, str] = {
     "local_service": "service",
     "alert": "warning",
     "daily_life": "dynamic",
-    "spotlight": "guide",  # 精选攻略：日本生活/玩乐干货长帖（渲染为指南卡片）
+    # --- 现役分类（5 类，全部复用已有 app 渲染类型，零客户端改动）---
+    "spotlight":  "guide",       # 精选攻略：日本生活/玩乐干货长帖（渲染为指南卡片）
+    "qa":         "question",     # 新人真问
+    "pitfall":    "warning",      # 亲测避坑（复用 warning 卡）
+    "checklist":  "guide",        # 实用清单（复用 guide 卡）
+    "experience": "dynamic",      # 经验分享（复用 dynamic 卡）
 }
 
 SUPPORTED_CONTENT_TYPES: tuple[str, ...] = tuple(APP_CONTENT_TYPE.keys())
 
-TONES: tuple[str, ...] = (
-    "natural", "helpful", "local", "newcomer",
-    "editorial", "casual", "question", "warning",
+# 现役可生成类型：端点只允许这些 + mixed/all；旧键仅供老帖渲染，不再主动生成。
+# 综合分布（_DEFAULT_MIX）也只从这些键里取。
+ACTIVE_CONTENT_TYPES: tuple[str, ...] = (
+    "spotlight", "qa", "pitfall", "checklist", "experience",
 )
 
-# Tones that should be attributed to the editorial desk rather than the
-# city-assistant account. Everything else uses the assistant identity.
-EDITORIAL_TONES: frozenset[str] = frozenset({"editorial"})
+# 语气 = 6 个「角度」(angle)。与作者身份正交，安全；每个都真正注入 LLM 提示词
+# （见 TONE_DIRECTIVE）——这才是让 tone 不再是死代码的关键。
+TONES: tuple[str, ...] = (
+    "practical", "pitfall", "deep", "compare", "newbie", "thrifty",
+)
+
+# 角度 → 注入到 LLM system 提示词末尾的确切中文指令。同一主题换角度 → 产出明显不同。
+TONE_DIRECTIVE: dict[str, str] = {
+    "practical": (
+        "【本批角度=实用清单】每条都要能直接照着做：多用「先…再…最后…」步骤或「①②③」要点，"
+        "每个要点带一个具体动作/地点/材料名，读者看完就知道下一步干什么。少抒情、多干货。"
+    ),
+    "pitfall": (
+        "【本批角度=亲测避坑】以「过来人踩过坑」的口气写：先说我当初错在哪、亏了多少钱/时间，"
+        "再说正确做法。带具体金额(日元)、具体环节(签约/面接/交易时)，让人一看就想收藏转发。"
+    ),
+    "deep": (
+        "【本批角度=深度攻略】把一个主题真正讲透：覆盖前提条件、分情况、时间线、费用区间、"
+        "常见误区。允许写长，但每段都要有信息增量，不许车轱辘话、不许泛泛而谈。"
+    ),
+    "compare": (
+        "【本批角度=对比测评】用「A vs B 怎么选」框架：UR vs 普通租房、派遣 vs 正社员、"
+        "JR Pass vs IC卡、docomo vs 楽天…列各自适合谁、大概价位、优缺点，最后给一句「我会选…因为…」。"
+    ),
+    "newbie": (
+        "【本批角度=新手必看】默认读者刚落地什么都不懂：不用行话、每个日语词第一次出现给中文解释，"
+        "从最基础的「第一步该干嘛」讲起，像老乡手把手带你。"
+    ),
+    "thrifty": (
+        "【本批角度=省钱】通篇围绕「怎么花更少的钱办成同一件事」：业务超市/二手/午市/回数券/减免制度/"
+        "自己办 vs 找中介，给出能省多少、在哪省，数字要具体。"
+    ),
+}
+
+# 保留符号（_author_type_for_seed 仍引用）；新角度不再做编辑部路由，故为空集。
+EDITORIAL_TONES: frozenset[str] = frozenset()
 
 
 def _author_type_for_seed(*, content_type: str, tone: str, country: str, city: str) -> str:
@@ -65,33 +114,30 @@ def _author_type_for_seed(*, content_type: str, tone: str, country: str, city: s
     everything, while still avoiding fake personal identities.
     """
     is_tokyo = country == "jp" and city == "tokyo"
-    if content_type == "qa":
+    # Interactive / first-person voices read best from the neutral assistant desk.
+    if content_type in {"qa", "experience", "city_square", "daily_life", "secondhand", "meetup"}:
         return "official_bot"
     if content_type == "local_service":
         return "local_life_editorial"
     if content_type == "event":
         return "tokyo_editorial" if is_tokyo else "japan_life_editorial"
-    if content_type in {"guide", "housing_tip", "jobs_tip", "alert"}:
+    # Long-form guides / checklists / warnings read as an editorial desk.
+    if content_type in {"spotlight", "checklist", "pitfall",
+                        "guide", "housing_tip", "jobs_tip", "alert", "food"}:
         return "japan_life_editorial"
     if tone in EDITORIAL_TONES:
         return "tokyo_editorial" if is_tokyo else "japan_life_editorial"
     return "official_bot"
 
 # Default mix when the admin asks for a whole-city batch ("mixed"). Scaled to
-# the requested count. Matches the spec's suggested 100-item distribution.
+# the requested count. Spotlight-dominant: the flagship 精选 long-form carries
+# the batch, the rest are high-signal interactive types (no low-value filler).
 _DEFAULT_MIX: dict[str, int] = {
-    "city_square": 22,
-    "qa": 16,
-    "guide": 14,
-    "housing_tip": 12,
-    "jobs_tip": 10,
-    "local_service": 8,
-    "event": 7,
-    "secondhand": 4,
-    "spotlight": 4,
-    "meetup": 3,
-    "food": 2,
-    "alert": 2,
+    "spotlight":  40,   # 精选攻略 — 价值锚
+    "qa":         18,   # 新人真问 — 对话面
+    "pitfall":    15,   # 亲测避坑 — 信任/转发
+    "checklist":  15,   # 实用清单 — 高密度可用
+    "experience": 12,   # 经验分享 — feed 节奏
 }
 
 MAX_BATCH_COUNT = 100
@@ -551,6 +597,23 @@ GENERIC: dict[tuple[str, str], list[str]] = {
     ("spotlight", "ja"): [
         "{city}に来た最初の1ヶ月でやることリスト：住所登録、SIM、銀行口座、ICカード、よく行くスーパーと薬局の確認。焦らず順番に。",
     ],
+    # --- 现役新键的离线兜底（DeepSeek 挂了时 mixed 也能产出这些类型）---
+    ("pitfall", "zh"): [
+        "在{city}租房被中介多收过钱，签约前一定逐项问清礼金敷金更新料、清扫费，别嫌麻烦，白纸黑字比口头靠谱。",
+        "第一次在{place}面接兼职，对方上来就要交「制服押金」——这种直接跑，正规店不会先收钱。",
+        "二手交易别先转账，约在{place}这种人多的地方面交，验完货再付；一直催你打钱的基本有问题。",
+        "刚来{city}办手机卡踩过坑：两年缚约+高额解约金那种别急着签，先看有没有短约或副牌，一年能省不少。",
+    ],
+    ("checklist", "zh"): [
+        "刚落地{city}第一周清单：①住民登录 ②办手机卡 ③开银行账户 ④办交通IC卡 ⑤记住最近的药妆和业务超市。别贪多，先把日常跑通。",
+        "在{city}租房签约前对照一遍：初期费用明细、退租清算规则、隔音朝向、最近车站步行几分、周边有没有超市。少一项都可能后悔。",
+        "{city}省钱清单：午市比晚市便宜、业务超市囤货、药妆比价、二手店淘家电、交通用IC卡回数券。攒下来够多吃几顿好的。",
+    ],
+    ("experience", "zh"): [
+        "在{city}第一次去区役所办手续，带齐在留卡和护照基本一次过，没预约也行但上午人少、别赶午休。",
+        "在{place}附近找到家便宜又干净的业务超市，囤货一次能省不少，推荐刚来的去踩个点。",
+        "{city}看病挂号第一次一头雾水，后来发现先在诊所官网确认受付时间、带上保险证就顺很多。",
+    ],
 }
 
 # A couple of natural tag seeds per content type (kept short, no spam).
@@ -559,6 +622,8 @@ _TAG_BASE: dict[str, list[str]] = {
     "secondhand": ["二手"], "jobs_tip": ["找工作"], "food": ["美食"],
     "meetup": ["搭子"], "event": ["活动"], "local_service": ["本地服务"],
     "alert": ["避坑"], "daily_life": [], "spotlight": ["攻略", "精选"],
+    # 现役新键
+    "pitfall": ["避坑"], "checklist": ["清单", "攻略"], "experience": ["经验"],
 }
 
 
@@ -569,18 +634,45 @@ def _canonical_region(region_code: str) -> str:
     return CITY_ALIASES.get(rc, rc)
 
 
+def _directory_city_name(region_code: str) -> str:
+    """Real city display name (zh) from the region directory for any of the 109
+    JP cities not in the curated CITY dict. Returns "" if unresolvable."""
+    if _regions is None:
+        return ""
+    try:
+        country, province, city = _regions._parse_region_code(region_code)
+        if not city:
+            return ""
+        for c in _regions._cities_for_parent(country, province or None):
+            if c.get("code") == city:
+                return str(c.get("name") or "")
+    except Exception:
+        return ""
+    return ""
+
+
 def _city_name(region_code: str, language: str) -> str:
     prof = CITY.get(_canonical_region(region_code))
     if prof:
         return str(prof.get(language) or prof.get("zh") or "")
-    return ""
+    # Non-curated city: fall back to the directory's real name (all 109 JP cities).
+    return _directory_city_name(region_code)
 
 
 def _places(region_code: str, language: str) -> list[str]:
     prof = CITY.get(_canonical_region(region_code))
     if prof:
         places = prof.get("places", {})
-        return list(places.get(language) or places.get("zh") or []) or list(_DEFAULT_PLACES[language])
+        picked = list(places.get(language) or places.get("zh") or [])
+        if picked:
+            return picked
+    # Non-curated city: anchor on the real city name + a 站/駅 landmark, then
+    # top up with the generic fallbacks so the LLM still has variety.
+    name = _directory_city_name(region_code)
+    if name:
+        suffix = {"ja": "駅", "en": " Station"}.get(language, "站")
+        base = list(_DEFAULT_PLACES.get(language, _DEFAULT_PLACES["zh"]))[:4]
+        return [name, f"{name}{suffix}", *base]
     return list(_DEFAULT_PLACES.get(language, _DEFAULT_PLACES["zh"]))
 
 
@@ -631,6 +723,16 @@ def default_distribution(count: int) -> dict[str, int]:
     if drift and out:
         biggest = max(out, key=lambda k: out[k])
         out[biggest] = max(0, out[biggest] + drift)
+    # Floor: once the batch is at least as large as the number of types, no
+    # requested type should round away to 0 — borrow one from the largest bucket
+    # so the tail types (experience/pitfall…) always show up.
+    if count >= len(_DEFAULT_MIX):
+        for ctype in _DEFAULT_MIX:
+            if out.get(ctype, 0) <= 0:
+                biggest = max(out, key=lambda k: out[k])
+                if out[biggest] > 1:
+                    out[biggest] -= 1
+                    out[ctype] = 1
     return {k: v for k, v in out.items() if v > 0}
 
 
@@ -652,7 +754,7 @@ def generate(
     real ``created_count``).
     """
     lang = language if language in SUPPORTED_LANGUAGES else "zh"
-    tone = tone if tone in TONES else "natural"
+    tone = tone if tone in TONES else "practical"
     count = max(0, min(int(count), MAX_BATCH_COUNT))
 
     if content_type in ("mixed", "all", ""):
