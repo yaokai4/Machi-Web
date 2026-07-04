@@ -186,6 +186,34 @@ def main() -> int:
         rids = [r["id"] for r in ranked]
         check("兴趣匹配的种子帖仍排在真人帖之后", rids.index("realp") < rids.index("seedp"), str(rids))
 
+        print("\n[H] soft-deleted persona never becomes a phantom follower")
+        from datetime import datetime, timezone
+        import secrets
+        tgt = mkuser(conn, "follow_target")
+        live = [mkuser(conn, f"live_p{i}", persona=True) for i in range(4)]
+        dead = mkuser(conn, "dead_p", persona=True)
+        server.anonymize_user_account(conn, dead)  # sets deleted_at, keeps content_pack_users row
+        personas = set(server.seed_user_ids(conn))  # unfiltered (includes dead)
+        pc = {r["user_id"]: r["created_at"] for r in conn.execute(
+            "SELECT cpu.user_id, u.created_at FROM content_pack_users cpu JOIN users u ON u.id=cpu.user_id WHERE u.deleted_at IS NULL")}
+        res = server._apply_seed_follower_target(conn, user_id=tgt, target=999, personas=personas,
+              persona_created=pc, rng=secrets.SystemRandom(), now=datetime.now(timezone.utc))
+        dead_follows = conn.execute("SELECT 1 FROM follows WHERE follower_id=? AND following_id=?", (dead, tgt)).fetchone()
+        # Robust vs shared DB state: no follower may be a deleted account, and the
+        # 4 live personas we just made must be included.
+        followers = [r[0] for r in conn.execute("SELECT follower_id FROM follows WHERE following_id=?", (tgt,))]
+        none_deleted = all(conn.execute("SELECT deleted_at FROM users WHERE id=?", (f,)).fetchone()[0] is None for f in followers)
+        check("已注销 persona 不会被加成粉丝（幻影粉丝修复）",
+              not dead_follows and none_deleted and set(live).issubset(set(followers)),
+              f"added={res['added']} dead_follows={bool(dead_follows)} none_deleted={none_deleted}")
+        # anonymize clears the account's own follow edges (no phantom count on others)
+        other = mkuser(conn, "followed_by_erased")
+        conn.execute("INSERT INTO follows (id, follower_id, following_id, created_at) VALUES (?, ?, ?, ?)",
+                     (str(uuid.uuid4()), live[0], other, server.now_iso()))
+        server.anonymize_user_account(conn, live[0])
+        check("注销账号会清掉其关注边（不再虚增他人粉丝数）",
+              conn.execute("SELECT COUNT(*) FROM follows WHERE following_id=?", (other,)).fetchone()[0] == 0)
+
     print(f"\n==== {PASS} passed, {FAIL} failed ====")
     return 1 if FAIL else 0
 

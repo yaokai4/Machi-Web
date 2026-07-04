@@ -14919,6 +14919,12 @@ def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
         ("UPDATE guide_service_requests SET contact_method = '', contact_value = '', message = '', updated_at = ? WHERE user_id = ?", (now, user_id)),
         ("DELETE FROM device_push_tokens WHERE user_id = ?", (user_id,)),
         ("DELETE FROM drafts WHERE user_id = ?", (user_id,)),
+        # Drop the account's follow edges in BOTH directions: an anonymized account
+        # keeps no social graph, and this stops a phantom follow (from a now-deleted
+        # account) inflating another user's follower_count — a raw COUNT over
+        # follows that has no deleted_at filter, so the edge would otherwise count
+        # while being hidden from the deleted_at-guarded followers list.
+        ("DELETE FROM follows WHERE follower_id = ? OR following_id = ?", (user_id, user_id)),
         # Guide personal-workbench tables hold the MOST sensitive PII a user
         # entrusts to Machi — personal finances, budgets, contract/visa/job
         # application details, document-expiry reminders, calendar and todos.
@@ -15574,7 +15580,13 @@ def _apply_seed_follower_target(
     pool_exhausted = False
     window_start = now - timedelta(days=30)
     if seed_goal > len(seed_rows):
-        avail = [p for p in pool if p not in existing_follower_ids]
+        # Only ADD living personas as new followers: persona_created is built from
+        # content_pack_users JOIN users WHERE deleted_at IS NULL, so gating on it
+        # keeps a soft-deleted/erased persona from becoming a phantom follower that
+        # inflates the raw follower_count but never renders in the followers list.
+        # (seed_rows above stays on the unfiltered `personas` set so any already-
+        # materialized dead-persona edge is still recognized as seed and trimmable.)
+        avail = [p for p in pool if p in persona_created and p not in existing_follower_ids]
         need = seed_goal - len(seed_rows)
         if need > len(avail):
             need = len(avail)
