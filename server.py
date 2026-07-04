@@ -1068,7 +1068,7 @@ HEAT_RECENCY_WINDOW_H = 48.0
 HEAT_RECENCY_PEAK = 24.0
 
 
-def _heat_score_sql(alias: str = "p") -> str:
+def _heat_score_sql(alias: str = "p", config: dict[str, Any] | None = None) -> str:
     # Reads the denormalized engagement counters on `posts` (migration v85)
     # instead of four correlated COUNT subqueries — the heat of every candidate
     # post is now plain arithmetic over the row, so ranking scans are O(N) index
@@ -1096,8 +1096,16 @@ def _heat_score_sql(alias: str = "p") -> str:
         f"THEN 1.05 ELSE 1.0 END)"
     )
     # Seed suppression (kept in lock-step with refresh_hot_scores): curated/seed
-    # content rides at 0.6× so real UGC out-ranks it on heat-sorted surfaces.
-    seed_mult = f"(CASE WHEN COALESCE({alias}.is_seed_content, 0) = 1 THEN {HOT_SCORE_SEED_MULT} ELSE 1.0 END)"
+    # content rides at 0.6× (legacy) or the lowered real_first multiplier so real
+    # UGC out-ranks it on heat-sorted surfaces. When real_first + seed_boost_off,
+    # the +boost applies to real posts only. No REAL_FIRST_FLOOR band here — this
+    # live path is used by tag/topic aggregation, not the banded post rails (those
+    # ride the precomputed posts.hot_score column), so a band would double-count.
+    real_first = bool(config.get("real_first")) if config else False
+    seed_mult_val = float(config.get("seed_score_mult", HOT_SCORE_SEED_MULT)) if (config and real_first) else HOT_SCORE_SEED_MULT
+    seed_boost_off = bool(config.get("seed_boost_off")) if (config and real_first) else False
+    seed_mult = f"(CASE WHEN COALESCE({alias}.is_seed_content, 0) = 1 THEN {seed_mult_val} ELSE 1.0 END)"
+    boost_guard = f"COALESCE({alias}.is_seed_content, 0) = 0 AND " if seed_boost_off else ""
     return f"""
       ((COALESCE({alias}.like_count, 0) * 1
        + COALESCE({alias}.comment_count, 0) * 3
@@ -1105,7 +1113,7 @@ def _heat_score_sql(alias: str = "p") -> str:
        + COALESCE({alias}.bookmark_count, 0) * 4
        - COALESCE({alias}.report_count, 0) * 10
        + CASE
-           WHEN COALESCE({alias}.is_boosted, 0) = 1
+           WHEN {boost_guard}COALESCE({alias}.is_boosted, 0) = 1
              AND (COALESCE({alias}.boosted_until, '') = '' OR {boost_cmp})
            THEN COALESCE({alias}.boost_weight, 0)
            ELSE 0
@@ -13082,7 +13090,7 @@ def queue_guide_payment_email(conn: sqlite3.Connection, order: dict[str, Any]) -
     send_email_async(user["email"], subject, body)
 
 
-EMAIL_CAMPAIGN_AUDIENCES = {"all", "verified_members", "active_30d"}
+EMAIL_CAMPAIGN_AUDIENCES = {"all", "verified_members", "active_30d", "selected"}
 
 
 def normalize_email_campaign_audience(value: Any) -> str:
@@ -13090,28 +13098,69 @@ def normalize_email_campaign_audience(value: Any) -> str:
     return audience if audience in EMAIL_CAMPAIGN_AUDIENCES else "all"
 
 
-def campaign_recipient_rows(conn: sqlite3.Connection, audience: str) -> list[dict[str, Any]]:
-    base = "SELECT id, email FROM users WHERE deleted_at IS NULL AND email IS NOT NULL AND email <> ''"
-    if audience == "verified_members":
-        rows = conn.execute(base + " AND is_verified_member = 1 ORDER BY created_at DESC").fetchall()
+def campaign_recipient_rows(
+    conn: sqlite3.Connection, audience: str, selected_ids: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Resolve the deliverable recipients for a campaign audience.
+
+    Invariants for EVERY audience (safety): never email AI/seed personas (they
+    have undeliverable @seed.machi.local addresses) nor deleted/banned accounts.
+    `deleted_at IS NULL` covers the latter; the persona exclusion covers the
+    former. `selected` targets an explicit admin-chosen id list, still filtered
+    through the same exclusions."""
+    _ensure_content_pack_users_table(conn)
+    base = (
+        "SELECT u.id AS id, u.email AS email FROM users u "
+        "WHERE u.deleted_at IS NULL AND u.email IS NOT NULL AND u.email <> '' "
+        "AND u.id NOT IN (SELECT user_id FROM content_pack_users) "
+        "AND lower(u.email) NOT LIKE '%@seed.machi.local'"
+    )
+    if audience == "selected":
+        ids = [str(x).strip() for x in (selected_ids or []) if str(x).strip()]
+        if not ids:
+            return []
+        ph = ",".join("?" * len(ids))
+        rows = conn.execute(base + f" AND u.id IN ({ph}) ORDER BY u.created_at DESC", ids).fetchall()
+    elif audience == "verified_members":
+        rows = conn.execute(base + " AND u.is_verified_member = 1 ORDER BY u.created_at DESC").fetchall()
     elif audience == "active_30d":
         cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         rows = conn.execute(
-            """
-            SELECT DISTINCT u.id, u.email
-              FROM users u
-              JOIN sessions s ON s.user_id = u.id
-             WHERE u.deleted_at IS NULL
-               AND u.email IS NOT NULL
-               AND u.email <> ''
-               AND s.revoked_at IS NULL
-               AND s.last_seen_at >= ?
-            """,
+            base + " AND EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id "
+            "AND s.revoked_at IS NULL AND s.last_seen_at >= ?) ORDER BY u.created_at DESC",
             (cutoff,),
         ).fetchall()
-    else:
-        rows = conn.execute(base + " ORDER BY created_at DESC").fetchall()
+    else:  # all (deliverable real users)
+        rows = conn.execute(base + " ORDER BY u.created_at DESC").fetchall()
     return [dict(row) for row in rows if is_valid_email(row["email"] or "")]
+
+
+def _campaign_selected_ids(campaign: dict[str, Any]) -> list[str]:
+    """Parse the stored JSON id list for a 'selected' campaign (safe on empty)."""
+    raw = campaign.get("audience_user_ids") or ""
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+        return [str(x) for x in val] if isinstance(val, list) else []
+    except (ValueError, TypeError):
+        return []
+
+
+def _normalize_campaign_user_ids(raw: Any) -> str:
+    """Dedupe + cap an admin-supplied recipient id list, stored as a JSON string."""
+    if isinstance(raw, str):
+        raw = [p for p in raw.replace("，", ",").split(",")]
+    ids: list[str] = []
+    seen: set[str] = set()
+    for x in (raw or []):
+        s = str(x).strip()
+        if s and s not in seen:
+            seen.add(s)
+            ids.append(s)
+        if len(ids) >= 5000:
+            break
+    return json.dumps(ids, ensure_ascii=False) if ids else ""
 
 
 def start_email_campaign_worker(campaign_id: str) -> None:
@@ -13129,7 +13178,8 @@ def start_email_campaign_worker(campaign_id: str) -> None:
                     return
                 subject = campaign["subject"]
                 body = campaign["body"]
-                recipients = campaign_recipient_rows(conn, campaign["audience"])
+                recipients = campaign_recipient_rows(
+                    conn, campaign["audience"], _campaign_selected_ids(campaign))
                 now = now_iso()
                 conn.execute(
                     "UPDATE email_campaigns SET status = 'sending', recipient_count = ?, sent_count = 0, failed_count = 0, started_at = ?, updated_at = ? WHERE id = ?",
@@ -13805,6 +13855,12 @@ HOT_SCORE_FRESH_WINDOW_H = 12.0   # new-post visibility bonus fades over 12h
 HOT_SCORE_FRESH_PEAK = 30.0       # peak freshness bonus (~30 like-points) for a brand-new post
 HOT_SCORE_REPORT_PENALTY_CAP = 30.0  # max heat a report barrage can subtract (≈3 reports)
 HOT_SCORE_SEED_MULT = 0.6         # seed/simulated content rides below genuine UGC
+# Real-first: an additive band that lifts EVERY real post (is_seed_content=0)
+# above EVERY seed post on hot_score-sorted surfaces. A seed post's raw score is
+# bounded (engagement + boost 45 + freshness peak, all × ≤1.05) well under 1e4,
+# so 1e6 is an absolute floor no amount of simulated likes can cross. Applied to
+# posts.hot_score ONLY (never hot_score_engaged, which feeds 热搜 tag SUMs).
+REAL_FIRST_FLOOR = 1_000_000.0
 # 正在发生: a revival counts as "live" (uncapped recency) only while its reviving
 # comment is this fresh; past it the revived post's recency is capped at 70 so a
 # stale late comment can't pin an ancient thread to the top (see _happening_score_sql).
@@ -13812,7 +13868,7 @@ HAPPENING_LIVE_WINDOW_H = 6.0
 _HOT_SCORE_STARTED = False
 
 
-def refresh_hot_scores(conn: sqlite3.Connection) -> int:
+def refresh_hot_scores(conn: sqlite3.Connection, force_full: bool = False) -> int:
     """Recompute posts.hot_score for the active window in one bounded UPDATE:
 
         hot_score = engagement * (DECAY / (age_h + DECAY))     # rational decay
@@ -13824,6 +13880,14 @@ def refresh_hot_scores(conn: sqlite3.Connection) -> int:
     newly-posted content be seen. Portable arithmetic only (no exp/pow), backend
     -branched exactly like the heat SQL. Returns rows touched."""
     now = datetime.now(timezone.utc)
+    # Real-first config (one read; conn is already held). When ON: seed rides a
+    # lowered multiplier, its +boost is zeroed cross-tier, and every real post
+    # gets an absolute +REAL_FIRST_FLOOR band on hot_score. When OFF: legacy.
+    cfg = _explore_rank_config(conn)
+    real_first = cfg["real_first"]
+    seed_mult_val = cfg["seed_score_mult"] if real_first else HOT_SCORE_SEED_MULT
+    seed_boost_off = real_first and cfg["seed_boost_off"]
+    real_floor = REAL_FIRST_FLOOR if real_first else 0.0
     cutoff = (now - timedelta(days=KAIX_HOT_SCORE_WINDOW_DAYS)).isoformat()
     # Rows created more than ~13h ago no longer have a freshness bonus to update
     # (the bonus fades to 0 over FRESH_WINDOW = 12h); a 1h margin covers the
@@ -13871,7 +13935,22 @@ def refresh_hot_scores(conn: sqlite3.Connection) -> int:
     # Seed suppression: curated/simulated seed content (is_seed_content=1) rides
     # at 0.6× so genuine UGC out-ranks it on the boards over time. Kept in sync
     # with the same multiplier in _heat_score_sql (the live explore path).
-    seed_mult = f"(CASE WHEN COALESCE(is_seed_content, 0) = 1 THEN {HOT_SCORE_SEED_MULT} ELSE 1.0 END)"
+    seed_mult = f"(CASE WHEN COALESCE(is_seed_content, 0) = 1 THEN {seed_mult_val} ELSE 1.0 END)"
+    # Boost fragment: when seed_boost_off, the +boost_weight applies to REAL posts
+    # only (seed's +45 is what let simulated content out-rank real UGC).
+    if seed_boost_off:
+        boost_add = (
+            f" + CASE WHEN COALESCE(is_seed_content, 0) = 0"
+            f"          AND COALESCE(is_boosted, 0) = 1"
+            f"          AND (COALESCE(boosted_until, '') = '' OR {boost_cmp})"
+            f"         THEN COALESCE(boost_weight, 0) ELSE 0 END"
+        )
+    else:
+        boost_add = (
+            f" + CASE WHEN COALESCE(is_boosted, 0) = 1"
+            f"          AND (COALESCE(boosted_until, '') = '' OR {boost_cmp})"
+            f"         THEN COALESCE(boost_weight, 0) ELSE 0 END"
+        )
     # Engagement-only heat (× decay), WITHOUT the freshness "曝光分". This is what
     # tag heat (热搜) sums, so a flood of brand-new posts under a tag can't inflate
     # it on freshness alone. hot_score adds the freshness term on top; both share
@@ -13889,36 +13968,44 @@ def refresh_hot_scores(conn: sqlite3.Connection) -> int:
         f"((COALESCE(weighted_interaction_score, 0) * 1.0"
         f" + COALESCE(comment_count, 0) * 3.0"
         f" - {min2}({HOT_SCORE_REPORT_PENALTY_CAP}, COALESCE(report_count, 0) * 10.0)"
-        f" + CASE WHEN COALESCE(is_boosted, 0) = 1"
-        f"          AND (COALESCE(boosted_until, '') = '' OR {boost_cmp})"
-        f"         THEN COALESCE(boost_weight, 0) ELSE 0 END)"
+        f"{boost_add})"
         f" * ({HOT_SCORE_DECAY_H} / ({max2}(0.0, {hours_since}) + {HOT_SCORE_DECAY_H})))"
     )
     freshness_term = (
         f"({HOT_SCORE_FRESH_PEAK} * {max2}(0.0, {HOT_SCORE_FRESH_WINDOW_H} - ({hours_since}))"
         f" / {HOT_SCORE_FRESH_WINDOW_H} * {fresh_author_mult})"
     )
+    # Band on hot_score ONLY — hot_score_engaged feeds the 热搜 tag SUM and must
+    # NOT be banded (else every tag gets +N_real×1e6 and rank becomes post-count).
+    band = f" + (CASE WHEN COALESCE(is_seed_content, 0) = 0 THEN {real_floor} ELSE 0.0 END)"
+    # Write reduction: normally only recompute rows whose score can still MOVE
+    # this pass. On a real_first FLIP the band must land on/clear from EVERY active
+    # row (incl. quiet ones with hot_score≈0), so the admin handler calls with
+    # force_full=True to drop the skip predicate for one full re-band pass.
+    if force_full:
+        skip_clause = ""
+        params: tuple[Any, ...] = (fresh_cutoff, cutoff)
+    else:
+        skip_clause = (
+            "\n          AND (COALESCE(like_count, 0) + COALESCE(comment_count, 0)"
+            " + COALESCE(repost_count, 0) + COALESCE(bookmark_count, 0)"
+            " + COALESCE(report_count, 0) > 0"
+            " OR created_at >= ?"
+            " OR COALESCE(hot_score, 0) > 0.1)"
+        )
+        params = (fresh_cutoff, cutoff, fresh_cutoff)
     sql = f"""
         UPDATE posts SET
-            hot_score = ({engaged_decayed} + {freshness_term}) * {member_mult} * {seed_mult},
+            hot_score = ({engaged_decayed} + {freshness_term}) * {member_mult} * {seed_mult}{band},
             hot_score_engaged = {engaged_decayed} * {member_mult} * {seed_mult}
         WHERE deleted_at IS NULL
           AND status IN ('published', 'active')
-          AND created_at >= ?
-          -- Write reduction: only recompute rows whose score can still MOVE this
-          -- pass. A row with no engagement, no active freshness bonus, and an
-          -- already-negligible hot_score would just be re-written to (nearly) the
-          -- same value every minute — pure write amplification on a growing table.
-          -- Skip those; they stay at their last value until something engages them.
-          AND (COALESCE(like_count, 0) + COALESCE(comment_count, 0)
-               + COALESCE(repost_count, 0) + COALESCE(bookmark_count, 0)
-               + COALESCE(report_count, 0) > 0
-               OR created_at >= ?
-               OR COALESCE(hot_score, 0) > 0.1)
+          AND created_at >= ?{skip_clause}
     """
     # Param order follows textual position: the fresh-author-rank subquery in the
-    # SET clause (fresh_cutoff) precedes the two WHERE bounds (cutoff, fresh_cutoff).
-    cur = conn.execute(sql, (fresh_cutoff, cutoff, fresh_cutoff))
+    # SET clause (fresh_cutoff) precedes the WHERE created_at bound (cutoff), then
+    # the fresh_cutoff again inside the skip clause (only when not force_full).
+    cur = conn.execute(sql, params)
     return cur.rowcount or 0
 
 
@@ -14705,6 +14792,17 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "explore_exclude_reported": "1",
     "explore_exclude_low_quality": "1",
     "explore_exclude_banned_users": "1",
+    # --- Real-first: genuine UGC ranks above AI/seed on 推荐/热搜/热榜/正在发生 ---
+    # "1" (default) applies the additive band + seed boost-off below. "0" reverts
+    # to legacy (seed rides the old 0.6× and keeps its +45 boost). Cold-start safe:
+    # seed is only reordered below real, never filtered — boards still fill.
+    "explore_real_first": "1",
+    # Seed hot_score multiplier while real_first is ON (within-seed shaping only;
+    # the band already guarantees cross-tier order). Legacy value is 0.6.
+    "explore_seed_score_mult": "0.35",
+    # "1" = drop the additive +boost_weight for seed rows while real_first is ON
+    # (the DB keeps is_boosted=1, so flipping back is instant).
+    "explore_seed_boost_off": "1",
     # --- Recommend-feed MMR diversity (BE2) ---
     # Maximal Marginal Relevance re-rank of the personalized recommend pool. It
     # replaces the old "no 3 same-author in a row / ≤3 same content_type" hard
@@ -14731,6 +14829,12 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "engagement_sim_follow_max": "1000",   # per-persona follower ceiling (varied; bounded by user count)
     "engagement_sim_halflife_hours": "18", # growth curve half-life (smaller = faster early)
     "seed_post_image_ratio": "0.72",       # share of generated posts that get a cover image (0–1)
+    # "1" (default) = a brand-new signup (or an OAuth account with no provider
+    # picture) gets a deterministic face-free avatar instead of a blank one.
+    # "0" = keep blank. Only ever fills a blank avatar; a user's own upload always
+    # wins; existing users are never touched. NOT explore_-prefixed (must not bust
+    # ranking caches).
+    "auto_avatar_new_users": "1",
 }
 SITE_SETTING_KEYS = set(SITE_SETTING_DEFAULTS)
 
@@ -14892,7 +14996,33 @@ def _explore_rank_config(conn: sqlite3.Connection) -> dict[str, Any]:
         "exclude_reported": settings.get("explore_exclude_reported", "1") != "0",
         "exclude_low_quality": settings.get("explore_exclude_low_quality", "1") != "0",
         "exclude_banned_users": settings.get("explore_exclude_banned_users", "1") != "0",
+        # Real-first knobs (real UGC above AI/seed). seed_score_mult clamped [0,1].
+        "real_first": settings.get("explore_real_first", "1") != "0",
+        "seed_score_mult": _settings_float(settings, "explore_seed_score_mult", HOT_SCORE_SEED_MULT, 0.0, 1.0),
+        "seed_boost_off": settings.get("explore_seed_boost_off", "1") != "0",
     }
+
+
+def _real_first_enabled(conn: sqlite3.Connection) -> bool:
+    """Thin accessor for the two callers that only need the boolean flag
+    (refresh_hot_scores / api_feed) without building the whole rank config."""
+    return _site_settings(conn).get("explore_real_first", "1") != "0"
+
+
+def _auto_avatar_enabled(conn: sqlite3.Connection) -> bool:
+    return _site_settings(conn).get("auto_avatar_new_users", "1") != "0"
+
+
+def assigned_default_avatar(conn: sqlite3.Connection, handle: str, gender: str = "") -> str:
+    """Face-free avatar URL for a NEW real account, or '' when the feature is off.
+    MUST NEVER raise into the signup path — any failure degrades to a blank
+    avatar (the client then renders initials)."""
+    if not _auto_avatar_enabled(conn):
+        return ""
+    try:
+        return seed_avatars.default_avatar(handle, gender)
+    except Exception:
+        return ""
 
 
 def _recommend_mmr_config(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -15169,10 +15299,15 @@ def _happening_score_sql(alias: str, config: dict[str, Any]) -> str:
         f" + COALESCE({alias}.repost_count, 0) * 3.0"
         f" + COALESCE({alias}.bookmark_count, 0) * 2.0)"
     )
+    # Real-first band: 正在发生 sorts by this live expression (no precomputed
+    # column), so add the floor here too when enabled. Cold-start safe: an
+    # all-seed window adds 0 to every row → today's order.
+    band = (f" + (CASE WHEN COALESCE({alias}.is_seed_content, 0) = 0 THEN {REAL_FIRST_FLOOR} ELSE 0.0 END)"
+            if config.get("real_first") else "")
     return f"""
       ({recency_term}
        + {engagement_nudge}
-       - COALESCE({alias}.report_count, 0) * {report_penalty})
+       - COALESCE({alias}.report_count, 0) * {report_penalty}{band})
     """
 
 
@@ -16669,7 +16804,8 @@ class Handler(BaseHTTPRequestHandler):
     def api_admin_engagement_status(self, conn: sqlite3.Connection) -> None:
         self.require_admin(conn)
         s = _site_settings(conn)
-        keys = [k for k in sorted(SITE_SETTING_KEYS) if k.startswith("engagement_sim_")] + ["seed_post_image_ratio"]
+        keys = ([k for k in sorted(SITE_SETTING_KEYS) if k.startswith("engagement_sim_")]
+                + ["seed_post_image_ratio", "explore_real_first", "auto_avatar_new_users"])
         settings = {k: s.get(k) for k in keys}
         _ensure_content_pack_users_table(conn)
         q = lambda sql: int(conn.execute(sql).fetchone()[0])
@@ -25923,6 +26059,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_visitors(conn, query)
         if path == "/api/admin/email-campaigns" and method == "GET":
             return self.api_admin_email_campaigns(conn, query)
+        if path == "/api/admin/email-campaigns/preview" and method == "POST":
+            return self.api_admin_email_campaign_preview(conn)
         if path == "/api/admin/email-campaigns" and method == "POST":
             return self.api_admin_create_email_campaign(conn)
         if path.startswith("/api/admin/email-campaigns/"):
@@ -27849,16 +27987,20 @@ class Handler(BaseHTTPRequestHandler):
         else:
             role = "admin" if existing_count == 0 else "member"
         user_id = str(uuid.uuid4())
+        # Auto-assign a face-free avatar (unless the admin toggle is off) so a new
+        # real account looks like a person, not an empty bot. '' when disabled →
+        # client renders the person.fill/indigo initials fallback. Never raises.
+        assigned_avatar = assigned_default_avatar(conn, handle)
         conn.execute(
             """
             INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
                                avatar_symbol, avatar_color, avatar_url, cover_url, membership_tier,
                                is_verified, role, country, province, city, current_region_code,
                                recent_region_codes, joined_at, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, '', ?, 'person.fill', 'indigo', '', '', 'free', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, '', ?, 'person.fill', 'indigo', ?, '', 'free', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (user_id, handle, display_name, email, hash_password(password),
-             city_label, role, country, province, city, region_code, region_code,
+             city_label, assigned_avatar, role, country, province, city, region_code, region_code,
              now_iso(), now_iso(), now_iso()),
         )
         conn.execute("INSERT INTO settings (user_id, language, updated_at) VALUES (?, ?, ?)", (user_id, settings_language, now_iso()))
@@ -28088,6 +28230,8 @@ class Handler(BaseHTTPRequestHandler):
         user_id = str(uuid.uuid4())
         handle = self._unique_google_handle(conn, email, name)
         country, province, city, region_code, city_label = ("jp", "tokyo", "tokyo", "jp.tokyo.tokyo", "东京")
+        # Google's real picture always wins; only auto-assign when it sent none.
+        avatar_url = picture or assigned_default_avatar(conn, handle)
         conn.execute(
             """
             INSERT INTO users (id, handle, display_name, email, password_hash, bio, location,
@@ -28100,7 +28244,7 @@ class Handler(BaseHTTPRequestHandler):
             """,
             (
                 user_id, handle, name, email, hash_password(secrets.token_urlsafe(32)),
-                city_label, picture, country, province, city, region_code, region_code,
+                city_label, avatar_url, country, province, city, region_code, region_code,
                 google_sub, 1 if email_verified else 0, now_iso(), now_iso(), now_iso(),
             ),
         )
@@ -31669,6 +31813,17 @@ class Handler(BaseHTTPRequestHandler):
         ))
         self.send_json({"items": [serialize_email_campaign(dict(r)) for r in rows]})
 
+    def api_admin_email_campaign_preview(self, conn: sqlite3.Connection) -> None:
+        """How many deliverable recipients an audience resolves to — so the admin
+        can confirm AI/seed and deleted/banned accounts are excluded BEFORE send."""
+        self.require_admin(conn)
+        data = self.read_json()
+        audience = normalize_email_campaign_audience(data.get("audience"))
+        selected = _campaign_selected_ids({"audience_user_ids": _normalize_campaign_user_ids(
+            data.get("user_ids") if data.get("user_ids") is not None else data.get("userIds"))})
+        recipients = campaign_recipient_rows(conn, audience, selected)
+        self.send_json({"audience": audience, "count": len(recipients)})
+
     def api_admin_create_email_campaign(self, conn: sqlite3.Connection) -> None:
         admin = self.require_admin(conn)
         data = self.read_json()
@@ -31683,6 +31838,12 @@ class Handler(BaseHTTPRequestHandler):
         if len(body) > 20000:
             raise APIError("邮件正文过长", 400, "email_body_too_long")
         audience = normalize_email_campaign_audience(data.get("audience"))
+        audience_user_ids = (
+            _normalize_campaign_user_ids(data.get("user_ids") if data.get("user_ids") is not None else data.get("userIds"))
+            if audience == "selected" else ""
+        )
+        if audience == "selected" and not audience_user_ids:
+            raise APIError("请至少选择一个收件用户", 400, "email_recipients_required")
         send_now = bool(data.get("sendNow") or data.get("send_now"))
         campaign_id = "mail_" + uuid.uuid4().hex
         now = now_iso()
@@ -31690,10 +31851,10 @@ class Handler(BaseHTTPRequestHandler):
         conn.execute(
             """
             INSERT INTO email_campaigns
-                (id, admin_id, subject, body, audience, status, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (id, admin_id, subject, body, audience, audience_user_ids, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (campaign_id, admin["id"], subject, body, audience, status, now, now),
+            (campaign_id, admin["id"], subject, body, audience, audience_user_ids, status, now, now),
         )
         campaign = dict(conn.execute("SELECT * FROM email_campaigns WHERE id = ?", (campaign_id,)).fetchone())
         if send_now:
@@ -31732,8 +31893,19 @@ class Handler(BaseHTTPRequestHandler):
             if len(body) > 20000:
                 raise APIError("邮件正文过长", 400, "email_body_too_long")
             updates["body"] = body
-        if "audience" in data:
-            updates["audience"] = normalize_email_campaign_audience(data.get("audience"))
+        if "audience" in data or "user_ids" in data or "userIds" in data:
+            new_aud = normalize_email_campaign_audience(
+                data.get("audience") if "audience" in data else current.get("audience"))
+            updates["audience"] = new_aud
+            if new_aud == "selected":
+                if "user_ids" in data or "userIds" in data:
+                    updates["audience_user_ids"] = _normalize_campaign_user_ids(
+                        data.get("user_ids") if data.get("user_ids") is not None else data.get("userIds"))
+                effective = updates.get("audience_user_ids", current.get("audience_user_ids") or "")
+                if not effective:
+                    raise APIError("请至少选择一个收件用户", 400, "email_recipients_required")
+            else:
+                updates["audience_user_ids"] = ""
         if updates:
             updates["updated_at"] = now_iso()
             cols = ", ".join(f"{key} = ?" for key in updates)
@@ -33208,6 +33380,11 @@ class Handler(BaseHTTPRequestHandler):
             region_params = []
         score_config = dict(config)
         score_config["hot_days"] = days
+        # Thread the real-first knobs so the Python re-rank (below) and
+        # _happening_score_sql both see them.
+        score_config["real_first"] = config.get("real_first", True)
+        score_config["seed_score_mult"] = config.get("seed_score_mult", HOT_SCORE_SEED_MULT)
+        score_config["seed_boost_off"] = config.get("seed_boost_off", True)
         # 正在发生 (happening) and 热榜 (hot) are now genuinely different boards:
         # happening ranks by recency-of-activity (resurfaces posts being discussed
         # right now) and windows on that activity; hot ranks by accumulated,
@@ -33288,7 +33465,7 @@ class Handler(BaseHTTPRequestHandler):
                     reorder_in_python = True
                 ranked_rows = list(conn.execute(
                     f"""
-                    SELECT p.id, {score_sql} AS explore_score
+                    SELECT p.id, p.is_seed_content AS is_seed, {score_sql} AS explore_score
                       FROM posts p
                       {user_join}
                      WHERE p.deleted_at IS NULL
@@ -33302,12 +33479,19 @@ class Handler(BaseHTTPRequestHandler):
                     """,
                     params,
                 ))
-                cached_rank = [{"id": r["id"], "score": float(r["explore_score"] or 0)} for r in ranked_rows]
+                cached_rank = [{"id": r["id"], "seed": int(r["is_seed"] or 0), "score": float(r["explore_score"] or 0)} for r in ranked_rows]
                 # Re-rank the hot candidates by the config-weighted score so the
                 # admin weights still decide final order within the index-selected
                 # pool. Stable sort preserves the hot_score tiebreak for equal scores.
                 if reorder_in_python:
-                    cached_rank.sort(key=lambda item: item["score"], reverse=True)
+                    if score_config.get("real_first"):
+                        # Real-first OUTER key: real (seed=0) before seed (1);
+                        # stable within each tier by score. This is what guarantees
+                        # a simulated-like seed post can't out-rank real UGC even
+                        # though the candidate pool was selected by hot_score.
+                        cached_rank.sort(key=lambda it: (it["seed"], -it["score"]))
+                    else:
+                        cached_rank.sort(key=lambda item: item["score"], reverse=True)
                 _cache_put(cache_key, cached_rank, ttl_seconds=30)
             if not cached_rank:
                 return []
@@ -33958,6 +34142,13 @@ class Handler(BaseHTTPRequestHandler):
             ranked = (keep[:1] + missing_fresh + keep[1:])[:limit]
         ranked = ranked[:limit]
 
+        # Real-first OUTER partition — applied AFTER MMR/freshness so MMR only
+        # diversifies WITHIN each tier and can never lift a seed post above a real
+        # one. Cold-start safe (all-seed pool → real tier empty → seed unchanged).
+        if getattr(self, "_real_first_flag", False):
+            ranked = ([r for r in ranked if not r.get("is_seed_content")]
+                      + [r for r in ranked if r.get("is_seed_content")])[:limit]
+
         # Eval instrumentation (BE2): sample ~1% of rankings (or all when a debug
         # flag is set) and emit aggregate diversity metrics as a structured log
         # line — category/tag entropy, author Gini, mean intra-list
@@ -34085,6 +34276,11 @@ class Handler(BaseHTTPRequestHandler):
                 float(mmr_config.get("w_author", 0.25)),
                 float(mmr_config.get("w_type", 0.15)),
             )
+        # Real-first: real posts lead the first feed too (partition after MMR so
+        # diversity holds within-tier). Cold-start safe: all-seed → seed unchanged.
+        if getattr(self, "_real_first_flag", False) and out:
+            out = ([r for r in out if not r.get("is_seed_content")]
+                   + [r for r in out if r.get("is_seed_content")])
         return out[:limit]
 
     def api_feed(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -34092,6 +34288,9 @@ class Handler(BaseHTTPRequestHandler):
         viewer_id = viewer["user_id"] if viewer else None
         viewer_payload = {"id": viewer_id} if viewer_id else None
         can_interact = bool(viewer_id)
+        # Real-first flag for this request; the recommend/coldstart re-rankers read
+        # it off self so real UGC leads 推荐 (which sorts by interest, not hot_score).
+        self._real_first_flag = _real_first_enabled(conn)
         mode = (query.get("mode") or "recommend").strip().lower()
         if mode not in {"recommend", "plaza", "local", "following", "hot"}:
             mode = "recommend"
@@ -34285,6 +34484,19 @@ class Handler(BaseHTTPRequestHandler):
             pool_sql = _pool_base + region_clause + type_clause + blocked_clause + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?"
             pool_params = [*base_params, *region_params, *type_params, *blocked_params, pool_size + 1]
             pool_rows = [dict(r) for r in conn.execute(pool_sql, pool_params)]
+            # Real-first: the newest-N recency window can be entirely seed right
+            # after a seeding / 一键铺城 run, so partitioning it alone still yields
+            # all-seed. Union in a real-only recency slice AND PREPEND it — appending
+            # would be truncated back out by pool_rows[:pool_size] below, defeating
+            # the fix. Prepending guarantees real posts survive into the ranked pool.
+            if self._real_first_flag:
+                real_sql = (_pool_base + region_clause + type_clause + blocked_clause
+                            + " AND COALESCE(p.is_seed_content, 0) = 0"
+                            + " ORDER BY p.created_at DESC, p.id DESC LIMIT ?")
+                real_params = [*base_params, *region_params, *type_params, *blocked_params, pool_size]
+                real_rows = [dict(r) for r in conn.execute(real_sql, real_params)]
+                seen = {r["id"] for r in real_rows}
+                pool_rows = real_rows + [r for r in pool_rows if r["id"] not in seen]
             profile = self._recommend_interest_profile(conn, viewer_id)
             mmr_config = _recommend_mmr_config(conn)
             if profile.get("active") and len(pool_rows) > limit:
@@ -34340,6 +34552,17 @@ class Handler(BaseHTTPRequestHandler):
             rows = rows[:limit]
             last = rows[-1]
             next_cursor = cursor_encode(last["created_at"], last["id"])
+        # Real-first: partition the DISPLAY of page 1 only (real posts first). The
+        # recency cursor above is computed from the pre-partition order, so
+        # pagination stays a plain created_at walk (no page-seam drift). page 2+
+        # (cursor set) and local/following modes are left as recency by design.
+        if self._real_first_flag and cursor is None and mode in ("recommend", "plaza") and rows:
+            def _is_seed(r: Any) -> int:
+                try:
+                    return int(r["is_seed_content"] or 0)
+                except (KeyError, IndexError, TypeError):
+                    return 0
+            rows = [r for r in rows if not _is_seed(r)] + [r for r in rows if _is_seed(r)]
         posts = fetch_posts_with_extras(conn, [dict(r) for r in rows], viewer_id)
         payload = {"items": posts, "next_cursor": next_cursor, "mode": mode, "viewer": viewer_payload, "canInteract": can_interact, "can_interact": can_interact}
         if anon_cache_key is not None:
@@ -39254,6 +39477,16 @@ class Handler(BaseHTTPRequestHandler):
             if key in data:
                 updates[key] = str(data.get(key) or "").strip()
         settings = _upsert_site_settings(conn, updates)
+        # Flipping real_first (or its shaping knobs) must re-band/clear the WHOLE
+        # active window in one pass — the 60s refresher's write-skip would strand
+        # quiet rows, so force a full recompute BEFORE busting caches. Deterministic
+        # flip, no eventual-consistency window.
+        if updates.keys() & {"explore_real_first", "explore_seed_score_mult", "explore_seed_boost_off"}:
+            try:
+                refresh_hot_scores(conn, force_full=True)
+                conn.commit()
+            except Exception:
+                ERR_LOG.warning("real_first re-band on settings change failed", exc_info=True)
         if any(key.startswith("explore_") for key in updates):
             invalidate_public_ranking_caches()
         self.send_json({"settings": settings})
@@ -39373,6 +39606,15 @@ class Handler(BaseHTTPRequestHandler):
             offset = 0
         q = (query.get("q") or "").strip()
         seed_only = (query.get("seed") or "").strip().lower() in ("1", "true", "yes")
+        # filter = all | real | seed | deleted. `real` = genuine registered humans
+        # (excludes the imported AI/城市 personas, active only); `seed` = only those
+        # personas; `deleted` = banned/erased accounts. Back-compat: the old
+        # ?seed=1 maps to filter=seed.
+        filt = (query.get("filter") or "").strip().lower()
+        if not filt and seed_only:
+            filt = "seed"
+        if filt not in ("all", "real", "seed", "deleted"):
+            filt = "all"
         _ensure_content_pack_users_table(conn)
         where = ["1 = 1"]
         params: list[Any] = []
@@ -39380,7 +39622,15 @@ class Handler(BaseHTTPRequestHandler):
             like = f"%{q}%"
             where.append("(u.handle LIKE ? OR u.display_name LIKE ? OR u.email LIKE ?)")
             params += [like, like, like]
-        join = "JOIN content_pack_users cpu ON cpu.user_id = u.id" if seed_only else ""
+        join = ""
+        if filt == "seed":
+            join = "JOIN content_pack_users cpu ON cpu.user_id = u.id"
+        elif filt == "real":
+            join = "LEFT JOIN content_pack_users cpu ON cpu.user_id = u.id"
+            where.append("cpu.user_id IS NULL")
+            where.append("u.deleted_at IS NULL")
+        elif filt == "deleted":
+            where.append("u.deleted_at IS NOT NULL")
         where_sql = " AND ".join(where)
         total = int(conn.execute(
             f"SELECT COUNT(*) FROM users u {join} WHERE {where_sql}", params
@@ -39398,6 +39648,11 @@ class Handler(BaseHTTPRequestHandler):
                 f"SELECT user_id FROM content_pack_users WHERE user_id IN ({placeholders})", ids
             ).fetchall()}
         seed_total = int(conn.execute("SELECT COUNT(*) FROM content_pack_users").fetchone()[0])
+        deleted_total = int(conn.execute(
+            "SELECT COUNT(*) FROM users WHERE deleted_at IS NOT NULL").fetchone()[0])
+        real_total = int(conn.execute(
+            "SELECT COUNT(*) FROM users u LEFT JOIN content_pack_users cpu ON cpu.user_id = u.id "
+            "WHERE cpu.user_id IS NULL AND u.deleted_at IS NULL").fetchone()[0])
         items = []
         for r in rows:
             d = dict(r)
@@ -39412,7 +39667,9 @@ class Handler(BaseHTTPRequestHandler):
                 "SELECT COUNT(*) FROM posts WHERE author_id = ? AND deleted_at IS NULL", (d["id"],)
             ).fetchone()[0])
             items.append(base)
-        self.send_json({"items": items, "total": total, "limit": limit, "offset": offset, "seedTotal": seed_total})
+        self.send_json({"items": items, "total": total, "limit": limit, "offset": offset,
+                        "filter": filt, "seedTotal": seed_total, "realTotal": real_total,
+                        "deletedTotal": deleted_total})
 
     def api_admin_update_user(self, conn: sqlite3.Connection, user_id: str) -> None:
         admin = self.require_admin(conn)

@@ -5233,6 +5233,13 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_jlpt_exam_dates_region ON jlpt_exam_dates(region, exam_date);
         """,
     ),
+    (
+        103,
+        "email_campaigns.audience_user_ids: 指定用户群发 (选定收件人)",
+        """
+        ALTER TABLE email_campaigns ADD COLUMN audience_user_ids TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 ]
 
 

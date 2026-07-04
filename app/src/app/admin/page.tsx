@@ -287,19 +287,21 @@ function UsersPanel() {
   const [q, setQ] = useState("");
   const dq = useDebounce(q, 250);
   const [page, setPage] = useState(0);
-  const [seedOnly, setSeedOnly] = useState(false);
+  const [filter, setFilter] = useState<"all" | "real" | "seed" | "deleted">("all");
   const [pendingBan, setPendingBan] = useState<string | null>(null);
   const [manageUser, setManageUser] = useState<KXUser | null>(null);
   const [pendingErase, setPendingErase] = useState<KXUser | null>(null);
   const [pendingClearSeed, setPendingClearSeed] = useState(false);
   const PAGE = 30;
   const list = useQuery({
-    queryKey: ["admin-users", dq, page, seedOnly],
-    queryFn: () => api.adminUsers({ q: dq || undefined, limit: PAGE, offset: page * PAGE, seed: seedOnly }),
+    queryKey: ["admin-users", dq, page, filter],
+    queryFn: () => api.adminUsers({ q: dq || undefined, limit: PAGE, offset: page * PAGE, filter }),
   });
   const users = list.data?.items ?? [];
   const total = list.data?.total ?? 0;
   const seedTotal = list.data?.seedTotal ?? 0;
+  const realTotal = list.data?.realTotal ?? 0;
+  const deletedTotal = list.data?.deletedTotal ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / PAGE));
 
   const update = async (id: string, patch: Parameters<typeof api.adminUpdateUser>[1]) => {
@@ -413,10 +415,15 @@ function UsersPanel() {
         <Search className="w-4 h-4 text-kx-muted" />
         <input className="kx-input h-9 flex-1 min-w-[180px]" placeholder="搜用户名 / 显示名 / 邮箱" value={q}
                onChange={(e) => { setQ(e.target.value); setPage(0); }} />
-        <label className="inline-flex items-center gap-1.5 text-xs text-kx-muted whitespace-nowrap">
-          <input type="checkbox" checked={seedOnly} onChange={(e) => { setSeedOnly(e.target.checked); setPage(0); }} />
-          只看生成的用户{seedTotal ? `（${seedTotal}）` : ""}
-        </label>
+        <div className="inline-flex items-center gap-1">
+          {([["all", "全部", total], ["real", "真实用户", realTotal], ["seed", "生成用户", seedTotal], ["deleted", "已封禁", deletedTotal]] as const).map(([v, lab, n]) => (
+            <button key={v} type="button" onClick={() => { setFilter(v); setPage(0); }}
+              className={clsx("rounded-full border px-2.5 py-1 text-xs font-semibold transition whitespace-nowrap",
+                filter === v ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : "border-kx-soft text-kx-muted")}>
+              {lab}{filter === v && n ? ` ${compactNumber(n)}` : ""}
+            </button>
+          ))}
+        </div>
         <button className="kx-button-ghost h-9 px-3 text-xs disabled:opacity-40"
                 disabled={!seedTotal || randomBusy} onClick={randomizeFollowers}
                 title="为所有生成用户随机分配可信的粉丝数（用其他城市用户当粉丝，时间打散）">
@@ -1644,6 +1651,12 @@ function SeedBotPanel() {
           </label>
           <label className="flex items-center gap-1.5 text-sm">
             <input type="checkbox" checked={engVal("engagement_sim_comment_ai") === "1"} onChange={(e) => setEng("engagement_sim_comment_ai", e.target.checked ? "1" : "0")} /> 评论用 AI 生成
+          </label>
+          <label className="flex items-center gap-1.5 text-sm" title="真人发布的内容在 推荐/热搜/热榜 里排在 AI/生成内容之前；关掉恢复旧排序">
+            <input type="checkbox" checked={engVal("explore_real_first") === "1"} onChange={(e) => setEng("explore_real_first", e.target.checked ? "1" : "0")} /> 真人内容优先
+          </label>
+          <label className="flex items-center gap-1.5 text-sm" title="新注册账号自动分配一个头像（无人脸的实拍/插画），看起来像真人；关掉则空白默认">
+            <input type="checkbox" checked={engVal("auto_avatar_new_users") === "1"} onChange={(e) => setEng("auto_avatar_new_users", e.target.checked ? "1" : "0")} /> 新用户自动头像
           </label>
           {([["engagement_sim_max_days", "增长天数"], ["engagement_sim_like_max", "单帖最高赞"], ["engagement_sim_follow_max", "单人最高粉"], ["engagement_sim_comment_max", "单帖最多评论"], ["seed_post_image_ratio", "配图比例0-1"]] as const).map(([k, lab]) => (
             <label key={k} className="grid gap-0.5 text-[11px] font-semibold text-kx-muted">

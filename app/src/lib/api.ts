@@ -220,8 +220,10 @@ export type AdminEmailCampaign = {
   adminId?: string;
   subject: string;
   body: string;
-  audience: "all" | "verified_members" | "active_30d" | string;
+  audience: "all" | "verified_members" | "active_30d" | "selected" | string;
   status: "draft" | "queued" | "sending" | "sent" | "partial" | "failed" | string;
+  audienceUserIds?: string[];
+  audienceUserCount?: number;
   recipient_count: number;
   recipientCount?: number;
   sent_count: number;
@@ -1835,13 +1837,18 @@ export const api = {
     const { items } = await request<{ items: AdminEmailCampaign[] }>("GET", `/api/admin/email-campaigns?limit=${encodeURIComponent(String(limit))}`);
     return items;
   },
-  async adminCreateEmailCampaign(payload: { subject: string; body: string; audience?: string; sendNow?: boolean }): Promise<AdminEmailCampaign> {
+  async adminCreateEmailCampaign(payload: { subject: string; body: string; audience?: string; user_ids?: string[]; sendNow?: boolean }): Promise<AdminEmailCampaign> {
     const { campaign } = await request<{ campaign: AdminEmailCampaign }>("POST", "/api/admin/email-campaigns", payload);
     return campaign;
   },
-  async adminUpdateEmailCampaign(id: string, payload: { subject?: string; body?: string; audience?: string; action?: "send" }): Promise<AdminEmailCampaign> {
+  async adminUpdateEmailCampaign(id: string, payload: { subject?: string; body?: string; audience?: string; user_ids?: string[]; action?: "send" }): Promise<AdminEmailCampaign> {
     const { campaign } = await request<{ campaign: AdminEmailCampaign }>("PATCH", `/api/admin/email-campaigns/${encodeURIComponent(id)}`, payload);
     return campaign;
+  },
+  // Preview how many deliverable recipients an audience resolves to (AI/seed +
+  // deleted/banned are always excluded server-side).
+  async adminEmailCampaignPreview(payload: { audience?: string; user_ids?: string[] }): Promise<{ audience: string; count: number }> {
+    return request("POST", "/api/admin/email-campaigns/preview", payload);
   },
   async adminSendEmailCampaign(id: string): Promise<AdminEmailCampaign> {
     const { campaign } = await request<{ campaign: AdminEmailCampaign }>("POST", `/api/admin/email-campaigns/${encodeURIComponent(id)}/send`);
@@ -1885,13 +1892,15 @@ export const api = {
     const { reputation } = await request<{ reputation: KXReputationProfile }>("POST", `/api/reputation/admin/unfreeze`, payload);
     return reputation;
   },
-  async adminUsers(opts: { q?: string; limit?: number; offset?: number; seed?: boolean } = {}): Promise<{
-    items: (KXUser & { isSeed?: boolean })[]; total: number; limit: number; offset: number; seedTotal: number;
+  async adminUsers(opts: { q?: string; limit?: number; offset?: number; seed?: boolean; filter?: "all" | "real" | "seed" | "deleted" } = {}): Promise<{
+    items: (KXUser & { isSeed?: boolean })[]; total: number; limit: number; offset: number;
+    filter?: string; seedTotal: number; realTotal?: number; deletedTotal?: number;
   }> {
     const usp = new URLSearchParams();
     if (opts.q) usp.set("q", opts.q);
     if (opts.limit) usp.set("limit", String(opts.limit));
     if (opts.offset) usp.set("offset", String(opts.offset));
+    if (opts.filter) usp.set("filter", opts.filter);
     if (opts.seed) usp.set("seed", "1");
     return request("GET", `/api/admin/users?${usp.toString()}`);
   },

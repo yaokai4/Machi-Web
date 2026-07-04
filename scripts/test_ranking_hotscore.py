@@ -192,8 +192,22 @@ def main() -> None:
         seed_hs = conn.execute("SELECT hot_score FROM posts WHERE id = ?", (p_seed,)).fetchone()["hot_score"]
         ugc_hs = conn.execute("SELECT hot_score FROM posts WHERE id = ?", (p_ugc,)).fetchone()["hot_score"]
         check("seed post suppressed below matched UGC post", seed_hs < ugc_hs, f"seed={seed_hs} ugc={ugc_hs}")
-        check("seed multiplier ≈ 0.6", abs(seed_hs / ugc_hs - 0.6) < 0.01 if ugc_hs else False,
-              f"ratio={seed_hs / ugc_hs if ugc_hs else 'n/a'}")
+        # 真人内容优先 (default ON): the matched UGC post also rides the absolute
+        # REAL_FIRST_FLOOR band, so no simulated-like seed post can cross it.
+        check("real-first: matched UGC rides the absolute floor",
+              ugc_hs >= server.REAL_FIRST_FLOOR and seed_hs < server.REAL_FIRST_FLOOR,
+              f"ugc={ugc_hs} seed={seed_hs}")
+        # Legacy path: with real_first OFF, seed rides at exactly the 0.6× mult.
+        server._upsert_site_settings(conn, {"explore_real_first": "0"})
+        server.refresh_hot_scores(conn, force_full=True)
+        seed_hs0 = conn.execute("SELECT hot_score FROM posts WHERE id = ?", (p_seed,)).fetchone()["hot_score"]
+        ugc_hs0 = conn.execute("SELECT hot_score FROM posts WHERE id = ?", (p_ugc,)).fetchone()["hot_score"]
+        check("legacy seed multiplier ≈ 0.6 (toggle off)",
+              abs(seed_hs0 / ugc_hs0 - server.HOT_SCORE_SEED_MULT) < 0.01 if ugc_hs0 else False,
+              f"ratio={seed_hs0 / ugc_hs0 if ugc_hs0 else 'n/a'}")
+        # Restore default so the remaining steps run in the shipped config.
+        server._upsert_site_settings(conn, {"explore_real_first": "1"})
+        server.refresh_hot_scores(conn, force_full=True)
 
         # 11) B2 item 3b — report penalty is capped at -30 in hot_score. A post
         #     with 100 reports should lose 30, not 1000, of engagement heat.

@@ -37,15 +37,19 @@ import urllib.parse
 # --------------------------------------------------------------------------
 _DICEBEAR = "https://api.dicebear.com/9.x"
 # Solid pastel backgrounds (小红书 / ins vibe). Picked deterministically.
-_BG = ["ffd5dc", "ffdfbf", "d1f4e0", "c0e8ff", "e8dcff", "fdf0c9", "ffe0ec", "d7f0ff", "e7f7d8"]
+# 18 tones → far fewer repeats across a growing user base.
+_BG = ["ffd5dc", "ffdfbf", "d1f4e0", "c0e8ff", "e8dcff", "fdf0c9", "ffe0ec",
+       "d7f0ff", "e7f7d8", "ffe8d6", "d6f5f0", "efe1ff", "fef3d7", "dcefff",
+       "f7dede", "e2f0d9", "d9e8ff", "fce1f0"]
 # adventurer renders skin + hair; lock both to East-Asian-leaning tones so it
 # never produces a Western/blonde cartoon. (lorelei / notionists are line-art
 # with black hair and no skin fill, so they need no lock.)
 _ADV_LOCK = "skinColor=f2d3b1,edb98a,ecc19c&hairColor=0e0e0e,2c1b18,3a2a1a,4a312c"
 # Styles that read East-Asian / 小红书. lorelei skews feminine, so it's offered
 # to women only; men and unknowns stay on the more neutral notionists/adventurer.
-_STYLES_F = ["lorelei", "notionists", "adventurer"]
-_STYLES_M = ["notionists", "adventurer"]
+# thumbs/shapes are faceless abstract styles (safe for anyone, non-Western).
+_STYLES_F = ["lorelei", "notionists", "adventurer", "thumbs", "shapes"]
+_STYLES_M = ["notionists", "adventurer", "thumbs", "shapes"]
 
 
 def _h(text: str, mod: int) -> int:
@@ -189,11 +193,34 @@ def avatar_for(handle: str, gender: str = "", bio: str = "", display_name: str =
     return illustrated_avatar(handle, gender)
 
 
+# Face-free categories from the verified PHOTOS pool that read as a real person's
+# chosen avatar for a bio-less new account (no interest signal). Every id here is
+# already HTTP-200 + content-checked and contains NO identifiable face.
+_GENERIC_PHOTO_CATS = ("coffee", "sea", "outdoor", "flower", "plant", "cat",
+                       "dessert", "ramen", "beauty", "book", "camera")
+_DEFAULT_PHOTO_PROB = 55   # ~55% photo, else illustration — a real-feed mix
+
+
+def default_avatar(handle: str, gender: str = "") -> str:
+    """Avatar for a NO-bio account (a brand-new real signup). Deterministic per
+    handle. ~55% a face-free aesthetic photo from the verified PHOTOS pool, else
+    an East-Asian illustration. Reads like a real person, never a bot; never an
+    identifiable face; the user can replace it anytime. Used by register /
+    OAuth-create only — does NOT change avatar_for (existing persona rendering
+    stays byte-for-byte identical)."""
+    handle = (handle or "").strip() or "machi"
+    if _h(handle + "|defcoin", 100) < _DEFAULT_PHOTO_PROB:
+        cat = _GENERIC_PHOTO_CATS[_h(handle + "|defcat", len(_GENERIC_PHOTO_CATS))]
+        ids = PHOTOS[cat]
+        return _U.format(ids[_h(handle + "|" + cat, len(ids))])
+    return illustrated_avatar(handle, gender)
+
+
 def is_legacy_avatar(url: str) -> bool:
     """True for the old Western stock portraits we are replacing."""
     u = (url or "").lower()
     return ("randomuser.me" in u) or (not u)
 
 
-__all__ = ["avatar_for", "illustrated_avatar", "match_interest", "is_legacy_avatar",
-           "PHOTOS", "is_legacy_avatar"]
+__all__ = ["avatar_for", "default_avatar", "illustrated_avatar", "match_interest",
+           "is_legacy_avatar", "PHOTOS"]

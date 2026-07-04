@@ -4,17 +4,21 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Mail, RefreshCw, Send } from "lucide-react";
+import clsx from "clsx";
+import { ArrowLeft, Mail, RefreshCw, Search, Send, X } from "lucide-react";
 import { api, APIError, type AdminEmailCampaign } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { useSession, useToasts } from "@/lib/store";
 import { fullDateTime } from "@/lib/format";
+import { useDebounce } from "@/lib/hooks";
 
+// AI/生成用户、已注销、已封禁账号在服务端一律自动排除——所有范围都不会发给假邮箱。
 const AUDIENCES = [
-  { value: "all", label: "全部有邮箱用户" },
+  { value: "all", label: "全部真实用户（自动排除AI/注销/封禁）" },
   { value: "verified_members", label: "认证会员" },
   { value: "active_30d", label: "最近 30 天活跃" },
+  { value: "selected", label: "指定用户（自己挑）" },
 ];
 
 export default function AdminEmailPage() {
@@ -39,13 +43,35 @@ export default function AdminEmailPage() {
     refetchInterval: 8000,
   });
 
+  // 指定用户 picker state.
+  const [userIds, setUserIds] = useState<string[]>([]);
+  const [selectedLabels, setSelectedLabels] = useState<Record<string, string>>({});
+  const [userSearch, setUserSearch] = useState("");
+  const dUserSearch = useDebounce(userSearch, 250);
+  const userResults = useQuery({
+    queryKey: ["admin-email-user-search", dUserSearch],
+    queryFn: () => api.adminUsers({ q: dUserSearch || undefined, filter: "real", limit: 20 }),
+    enabled: status === "authed" && user?.role === "admin" && audience === "selected",
+  });
+  // Live recipient count — reassures the operator that AI/注销/封禁 are excluded.
+  const preview = useQuery({
+    queryKey: ["admin-email-preview", audience, userIds],
+    queryFn: () => api.adminEmailCampaignPreview({ audience, user_ids: userIds }),
+    enabled: status === "authed" && user?.role === "admin" && (audience !== "selected" || userIds.length > 0),
+  });
+  const toggleUser = (u: { id: string; display_name?: string; handle?: string }) => {
+    setUserIds((cur) => (cur.includes(u.id) ? cur.filter((x) => x !== u.id) : [...cur, u.id]));
+    setSelectedLabels((m) => ({ ...m, [u.id]: u.display_name || u.handle || u.id }));
+  };
+
   const save = useMutation({
     mutationFn: async (sendNow: boolean) => {
+      const payload = { subject, body, audience, user_ids: audience === "selected" ? userIds : undefined };
       if (editingId) {
-        const campaign = await api.adminUpdateEmailCampaign(editingId, { subject, body, audience });
+        const campaign = await api.adminUpdateEmailCampaign(editingId, payload);
         return sendNow ? api.adminSendEmailCampaign(campaign.id) : campaign;
       }
-      return api.adminCreateEmailCampaign({ subject, body, audience, sendNow });
+      return api.adminCreateEmailCampaign({ ...payload, sendNow });
     },
     onSuccess: (campaign) => {
       pushToast({ kind: "success", message: campaign.status === "draft" ? "邮件草稿已保存" : "邮件任务已提交" });
@@ -54,6 +80,8 @@ export default function AdminEmailPage() {
         setSubject("");
         setBody("");
         setAudience("all");
+        setUserIds([]);
+        setSelectedLabels({});
       }
       qc.invalidateQueries({ queryKey: ["admin-email-campaigns"] });
     },
@@ -73,7 +101,8 @@ export default function AdminEmailPage() {
   if (!user) return null;
   if (user.role !== "admin") return <AppShell><main className="px-6 py-16 text-center font-bold">无权访问</main></AppShell>;
 
-  const canSubmit = subject.trim().length > 0 && body.trim().length > 0 && !save.isPending;
+  const canSubmit = subject.trim().length > 0 && body.trim().length > 0 && !save.isPending
+    && (audience !== "selected" || userIds.length > 0);
 
   return (
     <AppShell right={null} wide>
@@ -102,6 +131,8 @@ export default function AdminEmailPage() {
                   setSubject("");
                   setBody("");
                   setAudience("all");
+                  setUserIds([]);
+                  setSelectedLabels({});
                 }}
               >
                 新建邮件
@@ -116,6 +147,56 @@ export default function AdminEmailPage() {
                 {AUDIENCES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
               </select>
             </label>
+
+            {audience === "selected" ? (
+              <div className="rounded-xl border border-kx-soft bg-kx-soft/30 p-3">
+                <div className="text-xs font-bold text-kx-muted">选择收件用户（只列真实用户，自动排除 AI/注销/封禁）</div>
+                {/* Selected chips */}
+                {userIds.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {userIds.map((id) => (
+                      <span key={id} className="inline-flex items-center gap-1 rounded-full bg-kx-accentSoft px-2 py-0.5 text-xs font-semibold text-kx-accent">
+                        {selectedLabels[id] || id}
+                        <button type="button" onClick={() => setUserIds((c) => c.filter((x) => x !== id))} className="hover:text-kx-danger"><X className="h-3 w-3" /></button>
+                      </span>
+                    ))}
+                    <button type="button" className="text-xs text-kx-muted underline" onClick={() => setUserIds([])}>清空</button>
+                  </div>
+                ) : null}
+                {/* Search */}
+                <div className="mt-2 flex items-center gap-1.5 rounded-lg border border-kx-soft bg-kx-bg px-2">
+                  <Search className="h-3.5 w-3.5 text-kx-muted" />
+                  <input className="h-9 flex-1 bg-transparent text-sm outline-none" placeholder="搜用户名 / 显示名 / 邮箱"
+                         value={userSearch} onChange={(e) => setUserSearch(e.target.value)} />
+                </div>
+                {userSearch ? (
+                  <div className="mt-1.5 max-h-52 overflow-y-auto rounded-lg border border-kx-soft">
+                    {!userResults.data ? <div className="p-2 text-xs text-kx-muted">搜索中…</div> : userResults.data.items.length === 0 ? (
+                      <div className="p-2 text-xs text-kx-muted">没有匹配的真实用户</div>
+                    ) : userResults.data.items.map((u) => {
+                      const on = userIds.includes(u.id);
+                      return (
+                        <button key={u.id} type="button" onClick={() => toggleUser(u)}
+                          className={clsx("flex w-full items-center justify-between gap-2 px-2.5 py-1.5 text-left text-sm hover:bg-kx-soft/60", on && "bg-kx-accentSoft/50")}>
+                          <span className="min-w-0 truncate">
+                            {u.display_name} <span className="text-xs text-kx-muted">@{u.handle}{u.email ? ` · ${u.email}` : ""}</span>
+                          </span>
+                          <span className={clsx("text-xs font-semibold", on ? "text-kx-accent" : "text-kx-muted")}>{on ? "已选" : "选"}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            <p className="text-xs text-kx-muted">
+              {audience === "selected" && userIds.length === 0
+                ? "请先选择至少一个收件用户。"
+                : preview.data
+                  ? <>预计送达 <b className="text-kx-text">{preview.data.count}</b> 个真实用户（已排除 AI 生成、已注销、已封禁账号）。</>
+                  : "正在计算收件人数…"}
+            </p>
             <label className="text-xs font-bold text-kx-muted">
               邮件标题
               <input className="kx-input mt-1 h-10" value={subject} onChange={(e) => setSubject(e.target.value)} maxLength={180} />
@@ -163,7 +244,7 @@ export default function AdminEmailPage() {
                         <div className="flex gap-1">
                           {campaign.status === "draft" ? (
                             <>
-                              <button className="kx-button-ghost h-8 px-2 text-xs" onClick={() => loadDraft(campaign, setEditingId, setSubject, setBody, setAudience)}>编辑</button>
+                              <button className="kx-button-ghost h-8 px-2 text-xs" onClick={() => loadDraft(campaign, setEditingId, setSubject, setBody, setAudience, setUserIds, setSelectedLabels)}>编辑</button>
                               <button className="kx-button-primary h-8 px-2 text-xs" disabled={sendExisting.isPending} onClick={() => sendExisting.mutate(campaign.id)}>发送</button>
                             </>
                           ) : <span className="text-xs text-kx-muted">-</span>}
@@ -187,11 +268,17 @@ function loadDraft(
   setSubject: (value: string) => void,
   setBody: (value: string) => void,
   setAudience: (value: string) => void,
+  setUserIds: (value: string[]) => void,
+  setSelectedLabels: (value: Record<string, string>) => void,
 ) {
   setEditingId(campaign.id);
   setSubject(campaign.subject);
   setBody(campaign.body);
   setAudience(campaign.audience || "all");
+  const ids = campaign.audienceUserIds || [];
+  setUserIds(ids);
+  // Labels aren't stored server-side; show ids until the admin re-searches.
+  setSelectedLabels(Object.fromEntries(ids.map((id) => [id, id])));
 }
 
 function audienceLabel(value: string) {

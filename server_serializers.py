@@ -709,7 +709,22 @@ def serialize_email_campaign(row: dict[str, Any]) -> dict[str, Any]:
         "startedAt": row.get("started_at"),
         "finished_at": row.get("finished_at"),
         "finishedAt": row.get("finished_at"),
+        # For the 指定用户 audience: echo the chosen ids (so the editor can
+        # re-populate) + a count for the list view. Never the recipients' emails.
+        "audienceUserIds": _email_campaign_ids(row),
+        "audienceUserCount": len(_email_campaign_ids(row)),
     }
+
+
+def _email_campaign_ids(row: dict[str, Any]) -> list[str]:
+    raw = row.get("audience_user_ids") or ""
+    if not raw:
+        return []
+    try:
+        val = json.loads(raw)
+        return [str(x) for x in val] if isinstance(val, list) else []
+    except (ValueError, TypeError):
+        return []
 
 
 def serialize_listing_taxonomy_category(row: dict[str, Any]) -> dict[str, Any]:
