@@ -195,6 +195,8 @@ import server_shared_state as shared_state
 import server_lifehub as lifehub
 import server_partners as partners
 import server_jlpt as jlpt
+import server_rooms as rooms_mod
+import server_events as events_mod
 import server_referral as referral
 import server_stareal
 from server_serializers import (
@@ -25183,6 +25185,56 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/businesses/") and path.endswith("/public") and method == "GET":
             return self.api_business_public(conn, unquote(path[len("/api/businesses/"):-len("/public")]))
 
+        # 社交房间(交友 · 约局 · 约饭)
+        if path == "/api/rooms" and method == "GET":
+            return self.api_rooms_list(conn, query)
+        if path == "/api/rooms" and method == "POST":
+            return self.api_rooms_create(conn)
+        if path.startswith("/api/rooms/"):
+            room_parts = path[len("/api/rooms/"):].split("/")
+            room_id = unquote(room_parts[0])
+            room_tail = "/".join(room_parts[1:])
+            if not room_tail and method == "GET":
+                return self.api_room_detail(conn, room_id)
+            if not room_tail and method == "PATCH":
+                return self.api_room_update(conn, room_id)
+            if not room_tail and method == "DELETE":
+                return self.api_room_delete(conn, room_id)
+            if room_tail == "join" and method == "POST":
+                return self.api_room_join(conn, room_id)
+            if room_tail == "leave" and method == "POST":
+                return self.api_room_leave(conn, room_id)
+            if room_tail == "messages" and method == "GET":
+                return self.api_room_messages(conn, room_id, query)
+            if room_tail == "messages" and method == "POST":
+                return self.api_room_post_message(conn, room_id)
+
+        # Machi 活动(Events, Luma 式)
+        if path == "/api/events" and method == "GET":
+            return self.api_events_list(conn, query)
+        if path == "/api/events" and method == "POST":
+            return self.api_events_create(conn)
+        if path == "/api/admin/events" and method == "GET":
+            return self.api_admin_events(conn, query)
+        if path.startswith("/api/events/"):
+            event_parts = path[len("/api/events/"):].split("/")
+            event_key = unquote(event_parts[0])
+            event_tail = "/".join(event_parts[1:])
+            if not event_tail and method == "GET":
+                return self.api_event_detail(conn, event_key)
+            if not event_tail and method == "PATCH":
+                return self.api_event_update(conn, event_key)
+            if not event_tail and method == "DELETE":
+                return self.api_event_delete(conn, event_key)
+            if event_tail == "register" and method == "POST":
+                return self.api_event_register(conn, event_key)
+            if event_tail == "register" and method == "DELETE":
+                return self.api_event_cancel_registration(conn, event_key)
+            if event_tail == "attendees" and method == "GET":
+                return self.api_event_attendees(conn, event_key)
+            if event_tail == "form-fields" and method == "PUT":
+                return self.api_event_form_fields_put(conn, event_key)
+
         # structured city listings (marketplace / rentals / jobs / services)
         if path == "/api/listing-taxonomy" and method == "GET":
             return self.api_listing_taxonomy(conn, query)
@@ -29975,6 +30027,18 @@ class Handler(BaseHTTPRequestHandler):
         listing_type = normalize_listing_type(query.get("type"))
         limit = max(1, min(int(query.get("limit") or 24), 60))
         cursor = cursor_decode(query.get("cursor"))
+        # 价格/人气/评分排序的翻页游标（"__off__:{sort}" + 下一页偏移）。这些
+        # 排序此前完全不发 next_cursor,客户端在第一页(24/60条)被硬截断——
+        # 300+ 房源的频道按价格排序只能看到 24 套。排序页按确定性 ORDER BY +
+        # OFFSET 翻页;写入并发下可能轻微跳/重,浏览场景可接受。latest 仍走
+        # 原 (updated_at, id) 键集游标,行为零变化。
+        sort_cursor: tuple[str, int] | None = None
+        if cursor and str(cursor[0]).startswith("__off__:"):
+            try:
+                sort_cursor = (str(cursor[0])[len("__off__:"):], max(0, int(cursor[1])))
+            except (TypeError, ValueError):
+                sort_cursor = ("", 0)
+            cursor = None
         status = (query.get("status") or "").strip().lower()
         include_private = (query.get("owner") == "me" or query.get("mine") == "1") and bool(viewer_id)
 
@@ -30158,6 +30222,10 @@ class Handler(BaseHTTPRequestHandler):
             clauses.append("is_promoted = 0")
 
         sort = (query.get("sort") or "latest").strip().lower()
+        if sort_cursor and sort_cursor[0]:
+            # 偏移游标里编码的排序优先——第 2+ 页必须沿用第一页的顺序,
+            # 即便客户端漏传 sort 参数也不会错页。
+            sort = sort_cursor[0]
         if cursor:
             # Follow-up pages must order by exactly the keyset the cursor
             # encodes — (updated_at, id). Keeping the is_promoted /
@@ -30166,19 +30234,25 @@ class Handler(BaseHTTPRequestHandler):
             # same. Promotion pinning and sort flavors are page-1 concerns.
             order = "updated_at DESC, id DESC"
         elif sort in {"price_low", "price_asc"}:
-            order = "CASE WHEN price IS NULL THEN 1 ELSE 0 END ASC, price ASC, updated_at DESC"
+            # 末尾补 id 断点:OFFSET 翻页要求全序确定,否则同价行会跨页跳/重。
+            order = "CASE WHEN price IS NULL THEN 1 ELSE 0 END ASC, price ASC, updated_at DESC, id DESC"
         elif sort in {"price_high", "price_desc"}:
-            order = "price DESC, updated_at DESC"
+            order = "price DESC, updated_at DESC, id DESC"
         elif sort in {"popular", "favorite", "favorites"}:
-            order = "(favorite_count + inquiry_count + promotion_weight) DESC, updated_at DESC"
+            order = "(favorite_count + inquiry_count + promotion_weight) DESC, updated_at DESC, id DESC"
         elif sort in {"rating", "top_rated"}:
             # 有评分的排前面（按分数、再按评价数），无评分的按时间垫底。
-            order = "CASE WHEN rating_count > 0 THEN 0 ELSE 1 END ASC, rating_avg DESC, rating_count DESC, updated_at DESC"
+            order = "CASE WHEN rating_count > 0 THEN 0 ELSE 1 END ASC, rating_avg DESC, rating_count DESC, updated_at DESC, id DESC"
         else:
             order = "is_promoted DESC, promotion_weight DESC, updated_at DESC, id DESC"
 
+        page_offset = sort_cursor[1] if sort_cursor else 0
         sql = f"SELECT * FROM city_listings WHERE {' AND '.join(clauses)} ORDER BY {order} LIMIT ?"
-        rows = list(conn.execute(sql, [*params, limit + 1]))
+        sql_params: list[Any] = [*params, limit + 1]
+        if page_offset:
+            sql += " OFFSET ?"
+            sql_params.append(page_offset)
+        rows = list(conn.execute(sql, sql_params))
         # 空结果回退:第一页在都道府县(province_codes)或精确城市筛选下一条都查不到时,
         # 放宽到该地区所属都市圈(生活圈)重查一次;不属任何都市圈则放宽到全国。命中时
         # 通过 data.filters.fallback / fallback_label 告知客户端「该地区暂无,已为你展示
@@ -30233,10 +30307,10 @@ class Handler(BaseHTTPRequestHandler):
         has_more = len(rows) > limit
         if has_more:
             rows = rows[:limit]
-        # Cursor pagination only makes sense along the (updated_at, id)
-        # keyset. For price/popular sorts the page is a one-shot ranked
-        # snapshot (limit up to 60) — advertising a cursor there invites
-        # clients into inconsistent pages that skip/repeat rows.
+        # latest 走 (updated_at, id) 键集游标;价格/人气/评分排序走
+        # "__off__:{sort}" 偏移游标(见上),回退快照页仍是一次性、不发游标。
+        if has_more and not fallback_kind and sort not in {"latest"} and not cursor:
+            next_cursor = cursor_encode(f"__off__:{sort}", str(page_offset + limit))
         if has_more and (sort == "latest" or cursor):
             # The cursor must encode the LAST ROW SHOWN — the strict `<`
             # predicate then resumes at limit+1 exactly. Encoding the probe
@@ -30267,6 +30341,22 @@ class Handler(BaseHTTPRequestHandler):
                     ).fetchone()
                     anchor = max_row if max_row else rows[-1]
             next_cursor = cursor_encode(anchor["updated_at"], anchor["id"])
+        # 满足当前筛选的总条数,只在第一页计算(翻页时客户端已持有)。
+        # 频道头部此前显示「已加载条数 条结果」,首屏永远是「24 条结果」——
+        # 用户把它读成"总共只有 24 套"。真实 COUNT 让 311 套从第一屏就可见。
+        total_count: int | None = None
+        if not cursor and not sort_cursor:
+            if fallback_kind:
+                count_row = conn.execute(
+                    f"SELECT COUNT(*) AS n FROM city_listings WHERE {' AND '.join(fb_clauses)}",
+                    fb_all_params,
+                ).fetchone()
+            else:
+                count_row = conn.execute(
+                    f"SELECT COUNT(*) AS n FROM city_listings WHERE {' AND '.join(clauses)}",
+                    params,
+                ).fetchone()
+            total_count = int(count_row["n"] if count_row else 0)
         items = fetch_listings_with_extras(conn, [dict(r) for r in rows], viewer_id)
         viewer_payload = {"id": viewer_id} if viewer_id else None
         filters_payload: dict[str, Any] = {
@@ -30288,14 +30378,236 @@ class Handler(BaseHTTPRequestHandler):
             "ok": True,
             "items": items,
             "next_cursor": next_cursor,
+            "total": total_count,
             "type": listing_type,
             "viewer": viewer_payload,
             "data": {
                 "items": items,
-                "pagination": {"next_cursor": next_cursor},
+                "pagination": {"next_cursor": next_cursor, "total": total_count},
                 "filters": filters_payload,
             },
         })
+
+    # ── 社交房间(交友 · 约局 · 约饭)— thin handlers over server_rooms ──────
+
+    def api_rooms_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        payload = rooms_mod.list_rooms(
+            conn,
+            viewer_id=viewer_id,
+            country_code=(query.get("country_code") or query.get("country") or "").strip(),
+            city_slug=(query.get("city_slug") or query.get("city") or "").strip(),
+            region_code=(query.get("region_code") or "").strip(),
+            room_type=(query.get("type") or query.get("room_type") or "").strip().lower(),
+            include_closed=(query.get("include_closed") or "") in ("1", "true"),
+            mine=(query.get("mine") or "") in ("1", "true"),
+            limit=int(query.get("limit") or 20),
+            offset=int(query.get("offset") or 0),
+        )
+        payload["ok"] = True
+        payload["room_types"] = [
+            {"key": key, "label": rooms_mod.ROOM_TYPE_LABELS_ZH.get(key, key)} for key in rooms_mod.ROOM_TYPES
+        ]
+        self.send_json(payload)
+
+    def api_rooms_create(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        self._enforce_not_muted(user)
+        data = self.read_json()
+        title = str(data.get("title") or "").strip()
+        description = str(data.get("description") or "").strip()
+        enforce_content_policy(title, description)
+        room = rooms_mod.create_room(
+            conn,
+            host_user_id=user["id"],
+            title=title,
+            description=description,
+            room_type=str(data.get("room_type") or data.get("roomType") or "hangout"),
+            country_code=str(data.get("country_code") or data.get("countryCode") or "jp"),
+            city_slug=str(data.get("city_slug") or data.get("citySlug") or ""),
+            region_code=str(data.get("region_code") or data.get("regionCode") or ""),
+            location_hint=str(data.get("location_hint") or data.get("locationHint") or ""),
+            starts_at=str(data.get("starts_at") or data.get("startsAt") or ""),
+            capacity=data.get("capacity") or 0,
+        )
+        self.send_json({"ok": True, "room": rooms_mod.serialize_room(conn, room, user["id"], include_members=True)}, 201)
+
+    def api_room_detail(self, conn: sqlite3.Connection, room_id: str) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        room = rooms_mod.get_room(conn, room_id)
+        self.send_json({"ok": True, "room": rooms_mod.serialize_room(conn, room, viewer_id, include_members=True)})
+
+    def api_room_update(self, conn: sqlite3.Connection, room_id: str) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        enforce_content_policy(str(data.get("title") or ""), str(data.get("description") or ""))
+        payload = rooms_mod.update_room(
+            conn, room_id, user["id"], data,
+            actor_is_admin=(user.get("role") or "") == "admin",
+        )
+        self.send_json({"ok": True, "room": payload})
+
+    def api_room_delete(self, conn: sqlite3.Connection, room_id: str) -> None:
+        user = self.require_user(conn)
+        rooms_mod.delete_room(conn, room_id, user["id"], actor_is_admin=(user.get("role") or "") == "admin")
+        self.send_json({"ok": True})
+
+    def api_room_join(self, conn: sqlite3.Connection, room_id: str) -> None:
+        user = self.require_user(conn)
+        self._enforce_not_muted(user)
+        payload = rooms_mod.join_room(conn, room_id, user["id"], display_name=user.get("display_name") or "")
+        self.send_json({"ok": True, "room": payload})
+
+    def api_room_leave(self, conn: sqlite3.Connection, room_id: str) -> None:
+        user = self.require_user(conn)
+        payload = rooms_mod.leave_room(conn, room_id, user["id"], display_name=user.get("display_name") or "")
+        if payload.get("disbanded"):
+            self.send_json({"ok": True, "disbanded": True})
+        else:
+            self.send_json({"ok": True, "room": payload})
+
+    def api_room_messages(self, conn: sqlite3.Connection, room_id: str, query: dict[str, str]) -> None:
+        payload = rooms_mod.list_messages(
+            conn, room_id,
+            before=(query.get("before") or "").strip(),
+            limit=int(query.get("limit") or 50),
+        )
+        payload["ok"] = True
+        self.send_json(payload)
+
+    def api_room_post_message(self, conn: sqlite3.Connection, room_id: str) -> None:
+        user = self.require_user(conn)
+        self._enforce_not_muted(user)
+        data = self.read_json()
+        content = str(data.get("content") or "").strip()
+        enforce_content_policy(content)
+        message = rooms_mod.post_message(conn, room_id, user["id"], content)
+        self.send_json({"ok": True, "message": message}, 201)
+
+    # ── Machi 活动(Events, Luma 式)— thin handlers over server_events ─────
+
+    def api_events_list(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        mine = (query.get("mine") or "") in ("1", "true")
+        organizer_id = (query.get("organizer_id") or "").strip()
+        include_drafts_for = ""
+        if mine and viewer_id:
+            organizer_id = viewer_id
+            include_drafts_for = viewer_id
+        payload = events_mod.list_events(
+            conn,
+            viewer_id=viewer_id,
+            country_code=(query.get("country_code") or query.get("country") or "").strip(),
+            city_slug=(query.get("city_slug") or query.get("city") or "").strip(),
+            region_code=(query.get("region_code") or "").strip(),
+            category=(query.get("category") or "").strip().lower(),
+            when=(query.get("when") or "upcoming").strip().lower(),
+            featured_only=(query.get("featured") or "") in ("1", "true"),
+            organizer_id=organizer_id,
+            include_drafts_for=include_drafts_for,
+            limit=int(query.get("limit") or 20),
+            offset=int(query.get("offset") or 0),
+        )
+        payload["ok"] = True
+        payload["categories"] = [
+            {"key": key, "label": events_mod.EVENT_CATEGORY_LABELS_ZH.get(key, key)} for key in events_mod.EVENT_CATEGORIES
+        ]
+        self.send_json(payload)
+
+    def api_events_create(self, conn: sqlite3.Connection) -> None:
+        user = self.require_user(conn)
+        self._enforce_not_muted(user)
+        data = self.read_json()
+        enforce_content_policy(str(data.get("title") or ""), str(data.get("description") or ""))
+        event = events_mod.create_event(conn, organizer_user_id=user["id"], data=data)
+        self.send_json({
+            "ok": True,
+            "event": events_mod.serialize_event(conn, event, user["id"], include_form=True, include_description=True),
+        }, 201)
+
+    def api_event_detail(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        event = events_mod.get_event(conn, id_or_slug)
+        # 草稿/取消的活动:公开只读页只放出 published;主办方和管理员可预览。
+        if event["status"] != "published":
+            role = ""
+            if viewer_id:
+                actor = conn.execute("SELECT role FROM users WHERE id = ?", (viewer_id,)).fetchone()
+                role = (actor["role"] if actor else "") or ""
+            if viewer_id != event["organizer_user_id"] and role != "admin" and event["status"] == "draft":
+                raise APIError("活动不存在或已下线", 404, "event_not_found")
+        self.send_json({
+            "ok": True,
+            "event": events_mod.serialize_event(conn, event, viewer_id, include_form=True, include_description=True),
+        })
+
+    def api_event_update(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        enforce_content_policy(str(data.get("title") or ""), str(data.get("description") or ""))
+        event = events_mod.update_event(
+            conn, id_or_slug, user["id"], data,
+            actor_is_admin=(user.get("role") or "") == "admin",
+        )
+        self.send_json({
+            "ok": True,
+            "event": events_mod.serialize_event(conn, event, user["id"], include_form=True, include_description=True),
+        })
+
+    def api_event_delete(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        events_mod.delete_event(conn, id_or_slug, user["id"], actor_is_admin=(user.get("role") or "") == "admin")
+        self.send_json({"ok": True})
+
+    def api_event_register(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        self._enforce_not_muted(user)
+        data = self.read_json()
+        payload = events_mod.register(conn, id_or_slug, user["id"], data.get("answers"))
+        self.send_json({"ok": True, **payload})
+
+    def api_event_cancel_registration(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        payload = events_mod.cancel_registration(conn, id_or_slug, user["id"])
+        self.send_json({"ok": True, **payload})
+
+    def api_event_attendees(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        payload = events_mod.list_attendees(
+            conn, id_or_slug, user["id"],
+            actor_is_admin=(user.get("role") or "") == "admin",
+        )
+        payload["ok"] = True
+        self.send_json(payload)
+
+    def api_event_form_fields_put(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        event = events_mod.get_event(conn, id_or_slug)
+        if event["organizer_user_id"] != user["id"] and (user.get("role") or "") != "admin":
+            raise APIError("只有主办方可以编辑报名字段", 403, "not_event_organizer")
+        data = self.read_json()
+        fields = events_mod.replace_form_fields(conn, event["id"], data.get("fields") or data.get("form_fields") or [])
+        self.send_json({"ok": True, "form_fields": fields, "formFields": fields})
+
+    def api_admin_events(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        admin = self.require_admin(conn)
+        payload = events_mod.list_events(
+            conn,
+            viewer_id=admin["id"],
+            when=(query.get("when") or "all").strip().lower(),
+            city_slug=(query.get("city_slug") or "").strip(),
+            category=(query.get("category") or "").strip().lower(),
+            organizer_id=(query.get("organizer_id") or "").strip(),
+            admin_all=True,
+            limit=int(query.get("limit") or 50),
+            offset=int(query.get("offset") or 0),
+        )
+        payload["ok"] = True
+        self.send_json(payload)
 
     def api_listing_detail(self, conn: sqlite3.Connection, listing_id: str) -> None:
         viewer = self.current_session(conn)
@@ -35345,11 +35657,15 @@ class Handler(BaseHTTPRequestHandler):
             ))
             listings = fetch_listings_with_extras(conn, [dict(r) for r in rows], viewer_id)
         if kind in ("all", "user"):
-            country_clause = "AND country = ?" if viewer_country else ""
-            params = (like, like, viewer_country) if viewer_country else (like, like)
+            # User search is GLOBAL by handle + display_name — never country-scoped.
+            # A person's account is a person, not local content: the old
+            # `AND country = viewer_country` clause hid every user whose `country`
+            # was empty or differed from the viewer's, which is why searching a
+            # display name (e.g.「井墨墨」) returned no users even though the name
+            # matched exactly. Match handle + display_name and stop there.
             rows = list(conn.execute(
-                f"SELECT * FROM users WHERE (handle LIKE ? OR display_name LIKE ?) AND deleted_at IS NULL {country_clause} LIMIT 30",
-                params,
+                "SELECT * FROM users WHERE (handle LIKE ? OR display_name LIKE ?) AND deleted_at IS NULL LIMIT 30",
+                (like, like),
             ))
             users = [serialize_user(dict(r)) for r in rows]
         if kind in ("all", "topic"):

@@ -55,6 +55,13 @@ import type {
   KXReputationPrivilege,
   KXReputationProfile,
   KXReputationReward,
+  KXRoom,
+  KXRoomMessage,
+  KXRoomsPage,
+  KXEvent,
+  KXEventFormField,
+  KXEventsPage,
+  KXEventAttendee,
 } from "./types";
 
 const TOKEN_KEY = "machi.token";
@@ -2395,6 +2402,110 @@ export const api = {
     if (opts.limit) params.set("limit", String(opts.limit));
     const { items } = await request<{ items: AdminPaymentOrderRow[] }>("GET", `/api/admin/payment-orders?${params.toString()}`);
     return items;
+  },
+
+  // ---- 社交房间(交友 · 约局 · 约饭) ----
+
+  async rooms(opts: { city_slug?: string; region_code?: string; country_code?: string; type?: string; mine?: boolean; offset?: number; limit?: number } = {}): Promise<KXRoomsPage> {
+    const params = new URLSearchParams();
+    if (opts.city_slug) params.set("city_slug", opts.city_slug);
+    if (opts.region_code) params.set("region_code", opts.region_code);
+    if (opts.country_code) params.set("country_code", opts.country_code);
+    if (opts.type) params.set("type", opts.type);
+    if (opts.mine) params.set("mine", "1");
+    if (opts.offset) params.set("offset", String(opts.offset));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    return request("GET", `/api/rooms?${params.toString()}`);
+  },
+  async createRoom(payload: {
+    title: string; description?: string; room_type?: string; country_code?: string;
+    city_slug?: string; region_code?: string; location_hint?: string; starts_at?: string; capacity?: number;
+  }): Promise<KXRoom> {
+    const data = await request<{ room: KXRoom }>("POST", "/api/rooms", payload);
+    return data.room;
+  },
+  async room(roomId: string): Promise<KXRoom> {
+    const data = await request<{ room: KXRoom }>("GET", `/api/rooms/${encodeURIComponent(roomId)}`);
+    return data.room;
+  },
+  async joinRoom(roomId: string): Promise<KXRoom> {
+    const data = await request<{ room: KXRoom }>("POST", `/api/rooms/${encodeURIComponent(roomId)}/join`, {});
+    return data.room;
+  },
+  /** Returns null when the host left and the room disbanded. */
+  async leaveRoom(roomId: string): Promise<KXRoom | null> {
+    const data = await request<{ room?: KXRoom; disbanded?: boolean }>("POST", `/api/rooms/${encodeURIComponent(roomId)}/leave`, {});
+    return data.disbanded ? null : (data.room ?? null);
+  },
+  async deleteRoom(roomId: string): Promise<void> {
+    await request("DELETE", `/api/rooms/${encodeURIComponent(roomId)}`);
+  },
+  async roomMessages(roomId: string, opts: { before?: string; limit?: number } = {}): Promise<{ items: KXRoomMessage[]; next_before?: string | null }> {
+    const params = new URLSearchParams();
+    if (opts.before) params.set("before", opts.before);
+    if (opts.limit) params.set("limit", String(opts.limit));
+    return request("GET", `/api/rooms/${encodeURIComponent(roomId)}/messages?${params.toString()}`);
+  },
+  async sendRoomMessage(roomId: string, content: string): Promise<KXRoomMessage> {
+    const data = await request<{ message: KXRoomMessage }>("POST", `/api/rooms/${encodeURIComponent(roomId)}/messages`, { content });
+    return data.message;
+  },
+
+  // ---- Machi 活动(Events, Luma 式) ----
+
+  async events(opts: {
+    city_slug?: string; region_code?: string; country_code?: string; category?: string;
+    when?: string; featured?: boolean; mine?: boolean; offset?: number; limit?: number;
+  } = {}): Promise<KXEventsPage> {
+    const params = new URLSearchParams();
+    if (opts.city_slug) params.set("city_slug", opts.city_slug);
+    if (opts.region_code) params.set("region_code", opts.region_code);
+    if (opts.country_code) params.set("country_code", opts.country_code);
+    if (opts.category) params.set("category", opts.category);
+    if (opts.when) params.set("when", opts.when);
+    if (opts.featured) params.set("featured", "1");
+    if (opts.mine) params.set("mine", "1");
+    if (opts.offset) params.set("offset", String(opts.offset));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    return request("GET", `/api/events?${params.toString()}`);
+  },
+  async event(idOrSlug: string): Promise<KXEvent> {
+    const data = await request<{ event: KXEvent }>("GET", `/api/events/${encodeURIComponent(idOrSlug)}`);
+    return data.event;
+  },
+  async createEvent(payload: Record<string, unknown>): Promise<KXEvent> {
+    const data = await request<{ event: KXEvent }>("POST", "/api/events", payload);
+    return data.event;
+  },
+  async updateEvent(idOrSlug: string, payload: Record<string, unknown>): Promise<KXEvent> {
+    const data = await request<{ event: KXEvent }>("PATCH", `/api/events/${encodeURIComponent(idOrSlug)}`, payload);
+    return data.event;
+  },
+  async deleteEvent(idOrSlug: string): Promise<void> {
+    await request("DELETE", `/api/events/${encodeURIComponent(idOrSlug)}`);
+  },
+  async registerForEvent(idOrSlug: string, answers: Record<string, string> = {}): Promise<{ status: string; event: KXEvent }> {
+    return request("POST", `/api/events/${encodeURIComponent(idOrSlug)}/register`, { answers });
+  },
+  async cancelEventRegistration(idOrSlug: string): Promise<{ status: string; event: KXEvent }> {
+    return request("DELETE", `/api/events/${encodeURIComponent(idOrSlug)}/register`);
+  },
+  async eventAttendees(idOrSlug: string): Promise<{ items: KXEventAttendee[]; form_fields: KXEventFormField[]; total: number }> {
+    return request("GET", `/api/events/${encodeURIComponent(idOrSlug)}/attendees`);
+  },
+  async replaceEventFormFields(idOrSlug: string, fields: Partial<KXEventFormField>[]): Promise<KXEventFormField[]> {
+    const data = await request<{ form_fields: KXEventFormField[] }>("PUT", `/api/events/${encodeURIComponent(idOrSlug)}/form-fields`, { fields });
+    return data.form_fields;
+  },
+  async adminEvents(opts: { when?: string; city_slug?: string; category?: string; organizer_id?: string; offset?: number; limit?: number } = {}): Promise<KXEventsPage> {
+    const params = new URLSearchParams();
+    if (opts.when) params.set("when", opts.when);
+    if (opts.city_slug) params.set("city_slug", opts.city_slug);
+    if (opts.category) params.set("category", opts.category);
+    if (opts.organizer_id) params.set("organizer_id", opts.organizer_id);
+    if (opts.offset) params.set("offset", String(opts.offset));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    return request("GET", `/api/admin/events?${params.toString()}`);
   },
 };
 

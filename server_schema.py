@@ -5240,6 +5240,116 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE email_campaigns ADD COLUMN audience_user_ids TEXT NOT NULL DEFAULT '';
         """,
     ),
+    (
+        104,
+        "social_rooms / members / messages: 交友·约局·约饭 社交房间 (server_rooms.py)",
+        """
+        CREATE TABLE IF NOT EXISTS social_rooms (
+            id TEXT PRIMARY KEY,
+            host_user_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            room_type TEXT NOT NULL DEFAULT 'hangout',
+            country_code TEXT NOT NULL DEFAULT 'jp',
+            city_slug TEXT NOT NULL DEFAULT '',
+            region_code TEXT NOT NULL DEFAULT '',
+            location_hint TEXT NOT NULL DEFAULT '',
+            starts_at TEXT NOT NULL DEFAULT '',
+            capacity INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'open',
+            member_count INTEGER NOT NULL DEFAULT 1,
+            message_count INTEGER NOT NULL DEFAULT 0,
+            last_activity_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_social_rooms_city ON social_rooms(city_slug, status, last_activity_at);
+        CREATE INDEX IF NOT EXISTS idx_social_rooms_region ON social_rooms(region_code, status, last_activity_at);
+        CREATE INDEX IF NOT EXISTS idx_social_rooms_host ON social_rooms(host_user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS social_room_members (
+            room_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            joined_at TEXT NOT NULL,
+            UNIQUE(room_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_social_room_members_room ON social_room_members(room_id, joined_at);
+        CREATE INDEX IF NOT EXISTS idx_social_room_members_user ON social_room_members(user_id, joined_at);
+
+        CREATE TABLE IF NOT EXISTS social_room_messages (
+            id TEXT PRIMARY KEY,
+            room_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            content TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'text',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_social_room_messages_room ON social_room_messages(room_id, created_at);
+        """,
+    ),
+    (
+        105,
+        "events / event_form_fields / event_registrations: Machi 活动 (Luma 式, server_events.py)",
+        """
+        CREATE TABLE IF NOT EXISTS events (
+            id TEXT PRIMARY KEY,
+            slug TEXT NOT NULL UNIQUE,
+            organizer_user_id TEXT NOT NULL,
+            partner_name TEXT NOT NULL DEFAULT '',
+            title TEXT NOT NULL,
+            subtitle TEXT NOT NULL DEFAULT '',
+            description TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT 'social',
+            cover_url TEXT NOT NULL DEFAULT '',
+            starts_at TEXT NOT NULL,
+            ends_at TEXT NOT NULL DEFAULT '',
+            timezone TEXT NOT NULL DEFAULT 'Asia/Tokyo',
+            venue_name TEXT NOT NULL DEFAULT '',
+            address TEXT NOT NULL DEFAULT '',
+            country_code TEXT NOT NULL DEFAULT 'jp',
+            city_slug TEXT NOT NULL DEFAULT '',
+            region_code TEXT NOT NULL DEFAULT '',
+            capacity INTEGER NOT NULL DEFAULT 0,
+            price_text TEXT NOT NULL DEFAULT '',
+            external_url TEXT NOT NULL DEFAULT '',
+            status TEXT NOT NULL DEFAULT 'published',
+            is_featured INTEGER NOT NULL DEFAULT 0,
+            going_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            deleted_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_events_status_starts ON events(status, starts_at);
+        CREATE INDEX IF NOT EXISTS idx_events_city ON events(city_slug, status, starts_at);
+        CREATE INDEX IF NOT EXISTS idx_events_organizer ON events(organizer_user_id, created_at);
+
+        CREATE TABLE IF NOT EXISTS event_form_fields (
+            id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            label TEXT NOT NULL,
+            field_type TEXT NOT NULL DEFAULT 'text',
+            options_json TEXT NOT NULL DEFAULT '[]',
+            required INTEGER NOT NULL DEFAULT 0,
+            sort_order INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE INDEX IF NOT EXISTS idx_event_form_fields_event ON event_form_fields(event_id, sort_order);
+
+        CREATE TABLE IF NOT EXISTS event_registrations (
+            id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'going',
+            answers_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(event_id, user_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_event_registrations_event ON event_registrations(event_id, status, created_at);
+        CREATE INDEX IF NOT EXISTS idx_event_registrations_user ON event_registrations(user_id, created_at);
+        """,
+    ),
 ]
 
 

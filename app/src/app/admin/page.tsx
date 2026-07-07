@@ -170,6 +170,7 @@ const ADMIN_MODULES: {
   { href: "/admin/guide", label: "Guide 内容管理", desc: "文章 · 商品 · 服务 · 学校 · 公司", icon: BookOpen },
   { href: "/admin/guide/orders", label: "Guide 订单", desc: "数字资料购买订单", icon: ClipboardList },
   { href: "/admin/guide/service-requests", label: "服务预约", desc: "人工服务预约与处理", icon: CalendarClock },
+  { href: "/admin/events", label: "活动管理", desc: "Machi 活动:精选、编辑报名字段、下线", icon: CalendarClock },
   { href: "/admin/memberships", label: "会员管理", desc: "认证会员开通与到期", icon: BadgeCheck },
   { href: "/admin/payments", label: "支付与订单", desc: "Stripe 支付与对账", icon: CreditCard },
   { href: "/admin/settings", label: "站点设置", desc: "系统与运营配置", icon: Settings },

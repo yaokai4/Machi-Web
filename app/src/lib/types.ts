@@ -1409,3 +1409,103 @@ export interface APIErrorPayload {
   code: string;
   message: string;
 }
+
+// ---- 社交房间(交友 · 约局 · 约饭)+ Machi 活动(Luma 式) ----
+// Mirrors web/server_rooms.py + web/server_events.py serializers; the iOS
+// app decodes the same payloads (KaiXAPIClient+Social.swift).
+
+export interface KXRoom {
+  id: string;
+  title: string;
+  description?: string;
+  room_type?: string;
+  room_type_label?: string;
+  host_user_id?: string;
+  country_code?: string;
+  city_slug?: string;
+  region_code?: string;
+  location_hint?: string;
+  starts_at?: string;
+  capacity?: number;
+  member_count?: number;
+  is_full?: boolean;
+  status?: string;
+  message_count?: number;
+  last_activity_at?: string;
+  created_at?: string;
+  members?: KXUser[];
+  viewer_joined?: boolean;
+  viewer_role?: string;
+}
+
+export interface KXRoomMessage {
+  id: string;
+  content: string;
+  kind?: string;
+  created_at?: string;
+  user?: KXUser;
+}
+
+export interface KXRoomsPage {
+  items: KXRoom[];
+  total?: number;
+  next_offset?: number | null;
+  room_types?: { key: string; label: string }[];
+}
+
+export interface KXEventFormField {
+  id: string;
+  label: string;
+  field_type?: string;
+  options?: string[];
+  required?: boolean;
+  sort_order?: number;
+}
+
+export interface KXEvent {
+  id: string;
+  slug?: string;
+  title: string;
+  subtitle?: string;
+  description?: string;
+  category?: string;
+  category_label?: string;
+  cover_url?: string;
+  starts_at?: string;
+  ends_at?: string;
+  timezone?: string;
+  venue_name?: string;
+  address?: string;
+  country_code?: string;
+  city_slug?: string;
+  region_code?: string;
+  capacity?: number;
+  price_text?: string;
+  external_url?: string;
+  partner_name?: string;
+  status?: string;
+  is_featured?: boolean;
+  going_count?: number;
+  is_full?: boolean;
+  organizer_user_id?: string;
+  organizer?: KXUser | null;
+  attendees_preview?: KXUser[];
+  viewer_status?: string;
+  form_fields?: KXEventFormField[];
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface KXEventsPage {
+  items: KXEvent[];
+  total?: number;
+  next_offset?: number | null;
+  categories?: { key: string; label: string }[];
+}
+
+export interface KXEventAttendee {
+  user: KXUser;
+  status: string;
+  created_at?: string;
+  answers?: Record<string, string>;
+}

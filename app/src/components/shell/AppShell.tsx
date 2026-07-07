@@ -28,6 +28,8 @@ import {
   Hash,
   Plus,
   X,
+  CalendarDays,
+  UsersRound,
   type LucideIcon,
 } from "lucide-react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -79,6 +81,9 @@ interface AppShellProps {
 const NAV_ITEMS = [
   { href: "/home", labelKey: "nav_home" as I18nKey, icon: Home, key: "home", badgeKey: undefined as undefined | "notifications" | "messages" },
   { href: "/explore", labelKey: "nav_explore" as I18nKey, icon: Compass, key: "explore", badgeKey: undefined },
+  // 与 iOS 发现页的两个社交入口对齐:活动(Luma 式)+ 交友·约局·约饭。
+  { href: "/events", labelKey: "nav_events" as I18nKey, icon: CalendarDays, key: "events", badgeKey: undefined },
+  { href: "/rooms", labelKey: "nav_rooms" as I18nKey, icon: UsersRound, key: "rooms", badgeKey: undefined },
   { href: "/guide", labelKey: "nav_machi_ai" as I18nKey, icon: MachiAIGlyph, key: "guide", badgeKey: undefined },
   // /wallet was demoted out of the primary content nav — it now sits in the
   // "账户与额度 / Account & balance" cluster at the sidebar footer, next to
