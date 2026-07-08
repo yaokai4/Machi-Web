@@ -2109,6 +2109,20 @@ body::before {
 }
 :root.dark .mc-section-lead { color: rgb(148 163 184); }
 
+/* ── Japanese display weight ──────────────────────────────────────────
+   Japanese gothic faces (Hiragino / Noto Sans JP) render visually much
+   heavier than Latin at the same numeric weight, so the site's black
+   (900) display type looks blocky on the JA pages. Apple's Japanese
+   marketing uses noticeably lighter display weights; mirror that by
+   softening the heaviest weights when the document is in Japanese,
+   while keeping the Latin "Machi" wordmark strong. Applies to both the
+   SEO /ja route and the in-page language toggle (both set html lang). */
+html[lang="ja"] .machi-site .font-black { font-weight: 600; }
+html[lang="ja"] .machi-site .font-extrabold { font-weight: 600; }
+html[lang="ja"] .machi-site .mc-section-title { font-weight: 600; letter-spacing: -0.01em; }
+/* The Latin wordmark stays heavy — it is the one deliberate anchor. */
+html[lang="ja"] .machi-site .mc-brand-gradient { font-weight: 900; }
+
 /* Soft pill used for "Coming soon" availability badges, channel tags,
    region chips, etc. Token-driven so the pill style stays consistent
    across the page. */

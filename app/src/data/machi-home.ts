@@ -96,8 +96,8 @@ export const marketingCopy = {
       titleTop: "Machi",
       titleBottom: "",
       headline: "在每一座城市，找到生活的回声。",
-      subtitle: "陌生的城市，难的从来不是地图，而是没人告诉你的事——哪间房别碰，手续先办哪一步，谁的话可以信。Machi 把这些经验按城市和语言收在一处。",
-      supporting: "我们从日本开始，把每一件事做扎实，再一座城市、一座城市地往外走——韩国、澳洲、加拿大、美国、英国，慢慢来。",
+      subtitle: "每座城市，都有人比你早到一步。哪间房别碰，手续从哪儿起，谁的话可以信——这些攻略里没有的答案，Machi 替你按城市和语言，收在一处。",
+      supporting: "从日本开始，一件事一件事做扎实；再一座城市接一座城市，慢慢走到韩国、澳洲、加拿大、美国和英国。",
       primary: "打开网页版",
       secondary: "查看创始人故事",
       appStoreCaption: "iOS 现已上线",
@@ -337,7 +337,6 @@ export const marketingCopy = {
     common: { open: "进入" },
     footer: {
       tagline: "在每一座城市，找到生活的回声。",
-      description: "一座城市的经验，值得被好好保存。",
       groups: [
         ["导航", ["关于", "功能", "指南", "商家合作", "安全", "FAQ", "城市", "下载"]],
         ["合作", ["商家合作", "广告投放", "招聘推广", "租房推广", "系统合作"]],
@@ -413,8 +412,8 @@ export const marketingCopy = {
       titleTop: "Machi",
       titleBottom: "",
       headline: "Find the echoes of real life in every city.",
-      subtitle: "In a new city, the hard part is never the map. It's what nobody tells you — which apartment to avoid, what paperwork comes first, whose advice to trust. Machi keeps that knowledge in one place, by city and by language.",
-      supporting: "We start with Japan and get the details right, then move outward one city at a time — Korea, Australia, Canada, the US, the UK. No rush.",
+      subtitle: "In every city, someone got there a little before you. Which place to skip, which form to file first, whose word to trust — Machi gathers the answers no guidebook holds, by city and by language.",
+      supporting: "We start in Japan and get the small things right, then move on one city at a time — Korea, Australia, Canada, the US, the UK. No rush.",
       primary: "Open the web app",
       secondary: "Read the founder's story",
       appStoreCaption: "Available now",
@@ -650,7 +649,6 @@ export const marketingCopy = {
     common: { open: "Open" },
     footer: {
       tagline: "Find the echoes of real life in every city.",
-      description: "A city's experience deserves to be kept well.",
       groups: [["Navigation", ["About", "Features", "Guide", "Business", "Safety", "FAQ", "Cities", "Download"]], ["Partnership", ["Business", "Advertising", "Hiring promotion", "Housing promotion", "System partnership"]], ["Legal", ["Privacy Policy", "Terms of Service", "Membership Terms", "Service Terms", "Refund Policy", "Community Guidelines", "Commercial Disclosure", "Cookie Policy", "Contact"]]],
     },
     cities: withCityTone([
@@ -715,8 +713,8 @@ export const marketingCopy = {
       titleTop: "Machi",
       titleBottom: "",
       headline: "どの街でも、暮らしの声を見つける。",
-      subtitle: "新しい街でいちばん難しいのは、地図ではありません。誰も教えてくれないこと——避けたい物件、手続きの順番、信じていい相手。Machi はその経験を、街と言語ごとに一か所へ残します。",
-      supporting: "まずは日本から、一つずつ確かめながら。そして韓国、オーストラリア、カナダ、米国、英国へ、街ごとに少しずつ広げていきます。",
+      subtitle: "どの街にも、あなたより少し先に暮らし始めた人がいます。避けたい部屋、先に済ませる手続き、信じていい相手——ガイドには載らないその答えを、Machi は街と言語ごとに集めています。",
+      supporting: "まずは日本から、一つずつ確かめながら。そして韓国、オーストラリア、カナダ、米国、英国へと、街ごとに少しずつ広げていきます。",
       primary: "Web 版を開く",
       secondary: "創設者の物語へ",
       appStoreCaption: "iOS 配信中",
@@ -948,7 +946,6 @@ export const marketingCopy = {
     common: { open: "開く" },
     footer: {
       tagline: "どの街でも、暮らしの声を見つける。",
-      description: "街の経験は、きちんと残す価値があります。",
       groups: [["ナビ", ["概要", "機能", "ガイド", "ビジネス", "安全", "FAQ", "街", "ダウンロード"]], ["提携", ["店舗提携", "広告掲載", "採用プロモーション", "住まいプロモーション", "システム提携"]], ["法務", ["プライバシー", "利用規約", "会員規約", "サービス予約規約", "返金ポリシー", "コミュニティ規範", "特定商取引法に基づく表記", "Cookie ポリシー", "お問い合わせ"]]],
     },
     cities: withCityTone([
@@ -1068,7 +1065,7 @@ export const marketingCopy = {
   closingCta: { eyebrow: string; title: string; body: string; appStore: string; web: string; note: string };
   faqSection: { label: string; title: string };
   common: { open: string };
-  footer: { tagline: string; description: string; groups: Array<[string, string[]]> };
+  footer: { tagline: string; description?: string; groups: Array<[string, string[]]> };
   cities: City[];
   features: FeatureChannel[];
   safetyItems: SafetyItem[];

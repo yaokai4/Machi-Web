@@ -18,8 +18,8 @@ const whyCopy: Record<
 > = {
   zh: {
     label: "Why Machi",
-    title: "答案很多，难的是找到仍然适合此时、此地、此刻的那一个。",
-    body: "一条经验有没有用，往往取决于它发生在哪里、什么时候、适合什么样的人。Machi 把这些上下文保留下来，让本地信息更容易判断，也更容易行动。",
+    title: "同样一条经验，换座城市、换个时候，未必还算数。",
+    body: "一条经验有没有用，常常要看它出自哪座城市、什么时候、对什么样的人。Machi 把这些背景一并留着，你就能自己判断，也更容易照着做。",
     machi: "Machi 按城市、语言和生活场景整理信息与人。你可以找到具体的本地内容，也能看见来自同一座城市、有真实背景的回答。",
     comparisons: [
       ["群聊里的经验", "来得快，也容易沉下去。过几天再想找，往往已经翻不到了。"],
@@ -32,8 +32,8 @@ const whyCopy: Record<
   },
   en: {
     label: "Why Machi",
-    title: "There are plenty of answers. The hard part is knowing which one still fits your place and situation.",
-    body: "Local advice only makes sense with context: where it happened, when it was true, and who it was useful for. Machi keeps that context close, making information easier to judge and act on.",
+    title: "The same advice, in another city or another year, may no longer hold.",
+    body: "Local advice only makes sense with context — where it happened, when it was true, who it helped. Machi keeps that context attached, so you can judge it for yourself.",
     machi: "Machi organizes information and people by city, language, and everyday need. You can find specific local content and answers grounded in real experience nearby.",
     comparisons: [
       ["Advice in group chats", "It arrives quickly and disappears just as fast. A few days later, the useful message can be nearly impossible to find."],
@@ -46,8 +46,8 @@ const whyCopy: Record<
   },
   ja: {
     label: "Why Machi",
-    title: "答えはたくさんあります。難しいのは、今の自分に合う情報を見分けることです。",
-    body: "地域の情報は、いつ、どこで、どんな人に役立ったのかがわかって初めて判断できます。Machi は、その背景を残しながら、次の行動につながる形で整理します。",
+    title: "同じ経験でも、街が変われば、時期が変われば、当てはまらないこともあります。",
+    body: "地域の情報は、いつ・どこで・どんな人に役立ったのかがわかって、はじめて判断できます。Machi はその背景ごと残すので、自分の目で見きわめられます。",
     machi: "Machi は、街・言語・暮らしの目的ごとに情報と人をつなぎます。具体的な地域情報と、同じ街で得られた実体験にもとづく回答を探せます。",
     comparisons: [
       ["グループチャットの情報", "すぐ届く一方で、すぐに流れてしまいます。数日後に探し直すのは簡単ではありません。"],

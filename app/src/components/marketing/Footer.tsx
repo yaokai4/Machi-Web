@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { BrandMark, BrandPhrase, BrandText } from "./BrandText";
+import { BrandMark, BrandText } from "./BrandText";
 import { useMarketingI18n } from "./MarketingI18n";
 import { SocialBrandIcon, type SocialBrand } from "./SocialBrandIcon";
 import { api, type SiteSettings } from "@/lib/api";
@@ -79,9 +79,6 @@ export function Footer() {
               <span className="mt-1 block text-sm font-semibold text-slate-500 dark:text-slate-400">{copy.footer.tagline}</span>
             </span>
           </Link>
-          <p className="mt-6 max-w-sm text-sm leading-6 text-slate-600 dark:text-slate-400">
-            <BrandPhrase text={copy.footer.description} />
-          </p>
           {activeSocialChannels.length > 0 ? (
             <ul className="mt-6 flex flex-wrap gap-2" aria-label="Machi social channels">
               {activeSocialChannels.map((social) => (
