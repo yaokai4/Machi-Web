@@ -96,8 +96,8 @@ export const marketingCopy = {
       titleTop: "Machi",
       titleBottom: "",
       headline: "在每一座城市，找到生活的回声。",
-      subtitle: "每座城市，都有人比你早到一步。哪间房别碰，手续从哪儿起，谁的话可以信——这些攻略里没有的答案，Machi 替你按城市和语言，收在一处。",
-      supporting: "从日本开始，一件事一件事做扎实；再一座城市接一座城市，慢慢走到韩国、澳洲、加拿大、美国和英国。",
+      subtitle: "懂一座城市，从住在这里的人开始。Machi 把他们的经验，按城市和语言，收在一处。",
+      supporting: "先把日本做到最好。然后，一座城市，接着一座城市。",
       primary: "打开网页版",
       secondary: "查看创始人故事",
       appStoreCaption: "iOS 现已上线",
@@ -233,7 +233,7 @@ export const marketingCopy = {
     },
     featureSection: {
       label: "城市频道",
-      title: "找住处、找工作、问问题，都从你所在的城市开始。",
+      title: "你需要的一切，都从你所在的城市开始。",
       body: "租房、二手、工作、活动、问答、本地服务，各自有清楚的频道，再按城市和语言呈现。不用翻聊天记录，也不会把不同地方的信息混在一起。",
       groups: [
         {
@@ -272,7 +272,7 @@ export const marketingCopy = {
     },
     businessSection: {
       label: "商家合作",
-      title: "让可靠的本地服务，在需要的时候被找到。",
+      title: "可靠的本地服务，在你需要时，正好出现。",
       body: "通过认证的商家与服务者，可以在对应城市、频道和语言中发布服务、优惠、招聘与活动。用户看得见是谁在提供、能解决什么问题。",
       primary: "申请合作",
       secondary: "查看广告方案",
@@ -289,7 +289,7 @@ export const marketingCopy = {
     },
     safetySection: {
       label: "安全",
-      title: "人与人靠近之前，先把边界说明白。",
+      title: "靠近之前，先让人安心。",
       body: "从公开讨论到线下活动，从租房、二手到招聘。风险提醒、举报、屏蔽、审核与账号处置，让每一次互动都更有依据。",
       more: "了解更多安全措施",
     },
@@ -412,8 +412,8 @@ export const marketingCopy = {
       titleTop: "Machi",
       titleBottom: "",
       headline: "Find the echoes of real life in every city.",
-      subtitle: "In every city, someone got there a little before you. Which place to skip, which form to file first, whose word to trust — Machi gathers the answers no guidebook holds, by city and by language.",
-      supporting: "We start in Japan and get the small things right, then move on one city at a time — Korea, Australia, Canada, the US, the UK. No rush.",
+      subtitle: "To know a city, start with the people who live there. Machi brings their experience together — by city, by language.",
+      supporting: "Japan first. Done right. Then, one city at a time.",
       primary: "Open the web app",
       secondary: "Read the founder's story",
       appStoreCaption: "Available now",
@@ -549,7 +549,7 @@ export const marketingCopy = {
     },
     featureSection: {
       label: "City channels",
-      title: "Housing, work, questions, and plans all begin with where you live.",
+      title: "Everything you need begins where you live.",
       body: "Housing, secondhand, jobs, events, Q&A, and local services each have a clear channel, organized by city and language. No digging through chat history. No mixing cities.",
       groups: [
         {
@@ -588,7 +588,7 @@ export const marketingCopy = {
     },
     businessSection: {
       label: "Business",
-      title: "Local services, found at the moment they're needed.",
+      title: "Trusted local services, right when you need them.",
       body: "Verified businesses and service providers publish services, offers, jobs, and events in the right city, channel, and language. People can see who is behind a listing and what it solves.",
       primary: "Apply for partnership",
       secondary: "View ad plans",
@@ -601,7 +601,7 @@ export const marketingCopy = {
     },
     safetySection: {
       label: "Safety",
-      title: "Clear boundaries come before closer connections.",
+      title: "Trust comes before closeness.",
       body: "From public conversations to in-person meetups, from housing and secondhand to hiring. Risk prompts, reporting, blocking, review, and account action give every interaction firmer ground.",
       more: "See how Machi handles safety",
     },
@@ -713,8 +713,8 @@ export const marketingCopy = {
       titleTop: "Machi",
       titleBottom: "",
       headline: "どの街でも、暮らしの声を見つける。",
-      subtitle: "どの街にも、あなたより少し先に暮らし始めた人がいます。避けたい部屋、先に済ませる手続き、信じていい相手——ガイドには載らないその答えを、Machi は街と言語ごとに集めています。",
-      supporting: "まずは日本から、一つずつ確かめながら。そして韓国、オーストラリア、カナダ、米国、英国へと、街ごとに少しずつ広げていきます。",
+      subtitle: "その街を知る近道は、そこで暮らす人です。その経験を、Machi が街ごと、言語ごとに集めます。",
+      supporting: "まずは日本から、しっかりと。そして、一つずつ次の街へ。",
       primary: "Web 版を開く",
       secondary: "創設者の物語へ",
       appStoreCaption: "iOS 配信中",
@@ -846,7 +846,7 @@ export const marketingCopy = {
     },
     featureSection: {
       label: "街のチャンネル",
-      title: "住まいも仕事も相談も、いま暮らす街から探せるように。",
+      title: "必要なものはすべて、いま暮らす街から。",
       body: "住まい、中古、仕事、イベント、Q&A、地域サービス。それぞれに専用のチャンネルがあり、街と言語ごとに分かれています。チャットをさかのぼる必要も、別の街の情報が混ざることもありません。",
       groups: [
         {
@@ -885,7 +885,7 @@ export const marketingCopy = {
     },
     businessSection: {
       label: "ビジネス",
-      title: "信頼できる地域サービスを、必要な人が探しているときに。",
+      title: "信頼できる地域サービスが、必要なときに、すぐそばに。",
       body: "認証された店舗や事業者は、街、チャンネル、言語に合わせて、サービス、特典、求人、イベントを掲載できます。誰が提供しているのか、何を解決できるのかが、利用する人に伝わります。",
       primary: "提携を申し込む",
       secondary: "広告プランを見る",
@@ -898,7 +898,7 @@ export const marketingCopy = {
     },
     safetySection: {
       label: "安全",
-      title: "人と近づく前に、守るべき境界を明確に。",
+      title: "近づく前に、まず安心を。",
       body: "公開のやり取りから対面の活動、住まい、中古取引、求人まで。注意喚起、通報、ブロック、審査、アカウント対応が、判断の手がかりになります。",
       more: "安全への取り組みを見る",
     },

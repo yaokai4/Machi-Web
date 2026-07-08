@@ -18,8 +18,8 @@ const whyCopy: Record<
 > = {
   zh: {
     label: "Why Machi",
-    title: "同样一条经验，换座城市、换个时候，未必还算数。",
-    body: "一条经验有没有用，常常要看它出自哪座城市、什么时候、对什么样的人。Machi 把这些背景一并留着，你就能自己判断，也更容易照着做。",
+    title: "经验，只在对的地方、对的时候，才算数。",
+    body: "一条经验，连着它的城市、时间和人，才真正有用。Machi 把这些背景一起留下，让它用在对的地方。",
     machi: "Machi 按城市、语言和生活场景整理信息与人。你可以找到具体的本地内容，也能看见来自同一座城市、有真实背景的回答。",
     comparisons: [
       ["群聊里的经验", "来得快，也容易沉下去。过几天再想找，往往已经翻不到了。"],
@@ -32,8 +32,8 @@ const whyCopy: Record<
   },
   en: {
     label: "Why Machi",
-    title: "The same advice, in another city or another year, may no longer hold.",
-    body: "Local advice only makes sense with context — where it happened, when it was true, who it helped. Machi keeps that context attached, so you can judge it for yourself.",
+    title: "Experience only counts in the right place, at the right time.",
+    body: "A piece of advice means something only with its city, its moment, its people attached. Machi keeps all of that together.",
     machi: "Machi organizes information and people by city, language, and everyday need. You can find specific local content and answers grounded in real experience nearby.",
     comparisons: [
       ["Advice in group chats", "It arrives quickly and disappears just as fast. A few days later, the useful message can be nearly impossible to find."],
@@ -46,8 +46,8 @@ const whyCopy: Record<
   },
   ja: {
     label: "Why Machi",
-    title: "同じ経験でも、街が変われば、時期が変われば、当てはまらないこともあります。",
-    body: "地域の情報は、いつ・どこで・どんな人に役立ったのかがわかって、はじめて判断できます。Machi はその背景ごと残すので、自分の目で見きわめられます。",
+    title: "経験が生きるのは、ふさわしい場所と、ふさわしい時だけ。",
+    body: "一つの経験は、その街、その時、その相手とともにあって、はじめて役立ちます。Machi は、その背景ごと残します。",
     machi: "Machi は、街・言語・暮らしの目的ごとに情報と人をつなぎます。具体的な地域情報と、同じ街で得られた実体験にもとづく回答を探せます。",
     comparisons: [
       ["グループチャットの情報", "すぐ届く一方で、すぐに流れてしまいます。数日後に探し直すのは簡単ではありません。"],
