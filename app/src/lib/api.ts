@@ -2467,34 +2467,34 @@ export const api = {
     if (opts.mine) params.set("mine", "1");
     if (opts.offset) params.set("offset", String(opts.offset));
     if (opts.limit) params.set("limit", String(opts.limit));
-    return request("GET", `/api/events?${params.toString()}`);
+    return request("GET", `/api/machi-events?${params.toString()}`);
   },
   async event(idOrSlug: string): Promise<KXEvent> {
-    const data = await request<{ event: KXEvent }>("GET", `/api/events/${encodeURIComponent(idOrSlug)}`);
+    const data = await request<{ event: KXEvent }>("GET", `/api/machi-events/${encodeURIComponent(idOrSlug)}`);
     return data.event;
   },
   async createEvent(payload: Record<string, unknown>): Promise<KXEvent> {
-    const data = await request<{ event: KXEvent }>("POST", "/api/events", payload);
+    const data = await request<{ event: KXEvent }>("POST", "/api/machi-events", payload);
     return data.event;
   },
   async updateEvent(idOrSlug: string, payload: Record<string, unknown>): Promise<KXEvent> {
-    const data = await request<{ event: KXEvent }>("PATCH", `/api/events/${encodeURIComponent(idOrSlug)}`, payload);
+    const data = await request<{ event: KXEvent }>("PATCH", `/api/machi-events/${encodeURIComponent(idOrSlug)}`, payload);
     return data.event;
   },
   async deleteEvent(idOrSlug: string): Promise<void> {
-    await request("DELETE", `/api/events/${encodeURIComponent(idOrSlug)}`);
+    await request("DELETE", `/api/machi-events/${encodeURIComponent(idOrSlug)}`);
   },
   async registerForEvent(idOrSlug: string, answers: Record<string, string> = {}): Promise<{ status: string; event: KXEvent }> {
-    return request("POST", `/api/events/${encodeURIComponent(idOrSlug)}/register`, { answers });
+    return request("POST", `/api/machi-events/${encodeURIComponent(idOrSlug)}/register`, { answers });
   },
   async cancelEventRegistration(idOrSlug: string): Promise<{ status: string; event: KXEvent }> {
-    return request("DELETE", `/api/events/${encodeURIComponent(idOrSlug)}/register`);
+    return request("DELETE", `/api/machi-events/${encodeURIComponent(idOrSlug)}/register`);
   },
   async eventAttendees(idOrSlug: string): Promise<{ items: KXEventAttendee[]; form_fields: KXEventFormField[]; total: number }> {
-    return request("GET", `/api/events/${encodeURIComponent(idOrSlug)}/attendees`);
+    return request("GET", `/api/machi-events/${encodeURIComponent(idOrSlug)}/attendees`);
   },
   async replaceEventFormFields(idOrSlug: string, fields: Partial<KXEventFormField>[]): Promise<KXEventFormField[]> {
-    const data = await request<{ form_fields: KXEventFormField[] }>("PUT", `/api/events/${encodeURIComponent(idOrSlug)}/form-fields`, { fields });
+    const data = await request<{ form_fields: KXEventFormField[] }>("PUT", `/api/machi-events/${encodeURIComponent(idOrSlug)}/form-fields`, { fields });
     return data.form_fields;
   },
   async adminEvents(opts: { when?: string; city_slug?: string; category?: string; organizer_id?: string; offset?: number; limit?: number } = {}): Promise<KXEventsPage> {

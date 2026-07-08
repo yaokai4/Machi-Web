@@ -25210,14 +25210,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_room_post_message(conn, room_id)
 
         # Machi 活动(Events, Luma 式)
-        if path == "/api/events" and method == "GET":
+        # 路径必须是 /api/machi-events 而非 /api/events：后者是既有 SSE 实时端点
+        # (见下方 api_events)，本路由链是线性 if，先匹配者会遮蔽 SSE、打死
+        # Web 实时通道并诱发 EventSource 重连风暴(0629 事故同款)。勿改回。
+        if path == "/api/machi-events" and method == "GET":
             return self.api_events_list(conn, query)
-        if path == "/api/events" and method == "POST":
+        if path == "/api/machi-events" and method == "POST":
             return self.api_events_create(conn)
         if path == "/api/admin/events" and method == "GET":
             return self.api_admin_events(conn, query)
-        if path.startswith("/api/events/"):
-            event_parts = path[len("/api/events/"):].split("/")
+        if path.startswith("/api/machi-events/"):
+            event_parts = path[len("/api/machi-events/"):].split("/")
             event_key = unquote(event_parts[0])
             event_tail = "/".join(event_parts[1:])
             if not event_tail and method == "GET":
