@@ -81,7 +81,7 @@ class RoomsEventsTests(unittest.TestCase):
     def test_room_lifecycle(self) -> None:
         room = rooms_mod.create_room(
             self.conn, host_user_id="u-host", title="周五新宿约饭",
-            description="随便吃点", room_type="dining", city_slug="tokyo",
+            description="随便吃点", room_type="meal", city_slug="tokyo",
             region_code="jp.tokyo.tokyo", capacity=3, starts_at=future(48),
         )
         room_id = room["id"]
@@ -93,7 +93,7 @@ class RoomsEventsTests(unittest.TestCase):
         payload = h.payloads[-1]
         self.assertGreaterEqual(payload["total"], 1)
         listed = next(r for r in payload["items"] if r["id"] == room_id)
-        self.assertEqual(listed["room_type_label"], "约饭")
+        self.assertEqual(listed["room_type_label"], "饭搭子")
         self.assertEqual(len(listed["members"]), 1)
         self.assertFalse(listed["viewer_joined"])
 
@@ -126,8 +126,21 @@ class RoomsEventsTests(unittest.TestCase):
         with self.assertRaises(server.APIError):
             rooms_mod.get_room(self.conn, room_id)
 
+    def test_legacy_category_aliases_resolve(self) -> None:
+        # 旧数据(0708 首发 key)不应全掉到「其他」;新 key 也要正常。
+        self.assertEqual(rooms_mod.room_type_label("boardgame"), "玩乐")
+        self.assertEqual(rooms_mod.room_type_label("dining"), "饭搭子")
+        self.assertEqual(rooms_mod.room_type_label("play"), "玩乐")
+        self.assertEqual(events_mod.category_label("art"), "展览")
+        self.assertEqual(events_mod.category_label("music"), "演出")
+        self.assertEqual(events_mod.category_label("reading"), "读书会")
+        # 用旧 key 建的房间,按新分类筛选也能命中(play 兼容 boardgame)。
+        rooms_mod.create_room(self.conn, host_user_id="u-b", title="旧桌游局", room_type="boardgame", city_slug="nagoya")
+        got = rooms_mod.list_rooms(self.conn, city_slug="nagoya", room_type="play")
+        self.assertTrue(any(r["title"] == "旧桌游局" for r in got["items"]))
+
     def test_room_update_permission_and_cap(self) -> None:
-        room = rooms_mod.create_room(self.conn, host_user_id="u-host", title="桌游局", room_type="boardgame", city_slug="osaka")
+        room = rooms_mod.create_room(self.conn, host_user_id="u-host", title="桌游局", room_type="play", city_slug="osaka")
         with self.assertRaises(server.APIError):
             rooms_mod.update_room(self.conn, room["id"], "u-a", {"title": "被篡改"})
         updated = rooms_mod.update_room(self.conn, room["id"], "u-host", {"title": "周末桌游局", "capacity": 6})

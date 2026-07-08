@@ -27,23 +27,30 @@ from server_errors import APIError
 
 # ── constants ──────────────────────────────────────────────────────────────
 
+# 活动 = 正式策划、发海报、报名参加。分类按「活动的形式」(名词,你去参加的东西),
+# 与约局(按「一起做什么」的搭子动作)彻底区分,避免两个系统看起来一样。
 EVENT_CATEGORIES: tuple[str, ...] = (
-    "drinks",    # 酒局 / bar night
-    "food",      # 美食 / 饭局
-    "art",       # 展览 / 艺术
-    "reading",   # 读书会
-    "music",     # 音乐 / 演出
-    "outdoor",   # 户外 / 徒步
-    "market",    # 市集
-    "talk",      # 讲座 / 分享会
-    "sports",    # 运动
-    "social",    # 交友 / 社群
+    "exhibition", # 展览
+    "show",       # 演出 / Live
+    "talk",       # 讲座 / 沙龙
+    "workshop",   # 工作坊
+    "market",     # 市集
+    "party",      # 派对
+    "sports",     # 运动赛事
+    "reading",    # 读书会
+    "film",       # 观影
+    "outdoor",    # 户外
     "other",
 )
 EVENT_CATEGORY_LABELS_ZH = {
-    "drinks": "酒局小聚", "food": "美食饭局", "art": "展览艺术", "reading": "读书会",
-    "music": "音乐演出", "outdoor": "户外徒步", "market": "市集", "talk": "讲座分享",
-    "sports": "运动", "social": "交友社群", "other": "其他",
+    "exhibition": "展览", "show": "演出", "talk": "讲座沙龙", "workshop": "工作坊",
+    "market": "市集", "party": "派对", "sports": "运动赛事", "reading": "读书会",
+    "film": "观影", "outdoor": "户外", "other": "其他",
+}
+# 旧数据(0708 首发的分类)→新分类,只用于显示与筛选归并,不改库里存的原值。
+_EVENT_CATEGORY_ALIASES = {
+    "art": "exhibition", "music": "show", "food": "party", "drinks": "party",
+    "social": "party",
 }
 
 EVENT_STATUSES = ("draft", "published", "cancelled")
@@ -71,9 +78,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def normalize_category(raw: Any, default: str = "social") -> str:
+def normalize_category(raw: Any, default: str = "party") -> str:
     value = str(raw or "").strip().lower()
+    value = _EVENT_CATEGORY_ALIASES.get(value, value)
     return value if value in EVENT_CATEGORIES else default
+
+
+def category_label(raw: Any) -> str:
+    """Display label that also resolves legacy aliases so old rows don't all
+    fall through to 「其他」."""
+    value = str(raw or "").strip().lower()
+    value = _EVENT_CATEGORY_ALIASES.get(value, value)
+    return EVENT_CATEGORY_LABELS_ZH.get(value, "其他")
 
 
 def _slugify(title: str) -> str:
@@ -112,7 +128,7 @@ def _brief_user(row: dict[str, Any]) -> dict[str, Any]:
 
 def list_form_fields(conn, event_id: str) -> list[dict[str, Any]]:
     rows = conn.execute(
-        "SELECT * FROM event_form_fields WHERE event_id = ? ORDER BY sort_order ASC, rowid ASC",
+        "SELECT * FROM event_form_fields WHERE event_id = ? ORDER BY sort_order ASC, id ASC",
         (event_id,),
     )
     fields = []
@@ -224,8 +240,8 @@ def serialize_event(
         "title": row.get("title", ""),
         "subtitle": row.get("subtitle", ""),
         "category": row.get("category", "social"),
-        "category_label": EVENT_CATEGORY_LABELS_ZH.get(row.get("category", ""), "其他"),
-        "categoryLabel": EVENT_CATEGORY_LABELS_ZH.get(row.get("category", ""), "其他"),
+        "category_label": category_label(row.get("category", "")),
+        "categoryLabel": category_label(row.get("category", "")),
         "cover_url": row.get("cover_url", ""),
         "coverUrl": row.get("cover_url", ""),
         "starts_at": row.get("starts_at", ""),
@@ -324,8 +340,11 @@ def list_events(
             clauses.append("e.organizer_user_id = ?")
             params.append(organizer_id)
     if category and category in EVENT_CATEGORIES:
-        clauses.append("e.category = ?")
-        params.append(category)
+        # 也匹配归并到该分类的旧 key(如 party 兼容旧 food/drinks/social)。
+        legacy = [old for old, new in _EVENT_CATEGORY_ALIASES.items() if new == category]
+        keys = [category, *legacy]
+        clauses.append("e.category IN (%s)" % ",".join("?" * len(keys)))
+        params.extend(keys)
     if featured_only:
         clauses.append("e.is_featured = 1")
     if city_slug:

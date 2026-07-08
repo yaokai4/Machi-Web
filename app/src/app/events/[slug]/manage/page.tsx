@@ -114,17 +114,17 @@ export default function EventManagePage() {
 
   if (eventQuery.isError) {
     return (
-      <AppShell requireAuth>
+      <AppShell requireAuth right={null}>
         <div className="px-4 py-10"><ErrorState onRetry={() => eventQuery.refetch()} /></div>
       </AppShell>
     );
   }
   if (eventQuery.isLoading || !event) {
-    return <AppShell requireAuth><InlineLoading /></AppShell>;
+    return <AppShell requireAuth right={null}><InlineLoading /></AppShell>;
   }
   if (!canManage) {
     return (
-      <AppShell requireAuth>
+      <AppShell requireAuth right={null}>
         <div className="px-4 py-16 text-center text-sm font-bold text-kx-muted">只有主办方或管理员可以管理这场活动。</div>
       </AppShell>
     );
@@ -133,7 +133,7 @@ export default function EventManagePage() {
   const attendees = attendeesQuery.data;
 
   return (
-    <AppShell requireAuth wide>
+    <AppShell requireAuth wide right={null}>
       <header className="kx-glass-bar sticky top-0 z-30 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
           <Link href={`/events/${encodeURIComponent(slug)}`} className="inline-flex items-center gap-1 rounded-full bg-kx-soft px-3 py-1.5 text-xs font-black text-kx-muted hover:text-kx-text">

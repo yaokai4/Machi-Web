@@ -11,9 +11,8 @@ import { CalendarPlus, ImagePlus, Loader2, Plus, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { api } from "@/lib/api";
 import { sameOriginApiUrl } from "@/lib/media";
-import { eventStyle } from "@/components/social/socialStyle";
+import { eventStyle, EVENT_CATEGORY_KEYS } from "@/components/social/socialStyle";
 
-const CATEGORY_KEYS = ["drinks", "food", "art", "reading", "music", "outdoor", "market", "talk", "sports", "social", "other"];
 
 interface DraftField {
   key: number;
@@ -30,7 +29,7 @@ export default function CreateEventPage() {
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
   const [description, setDescription] = useState("");
-  const [category, setCategory] = useState("social");
+  const [category, setCategory] = useState("party");
   const [startsAt, setStartsAt] = useState("");
   const [endsAt, setEndsAt] = useState("");
   const [venueName, setVenueName] = useState("");
@@ -93,7 +92,7 @@ export default function CreateEventPage() {
   const canSubmit = title.trim() && startsAt && !create.isPending && !coverUploading;
 
   return (
-    <AppShell requireAuth>
+    <AppShell requireAuth right={null}>
       <header className="kx-glass-bar sticky top-0 z-30 px-4 py-3">
         <div className="flex items-center gap-2">
           <CalendarPlus className="h-5 w-5 text-kx-accent" />
@@ -128,7 +127,7 @@ export default function CreateEventPage() {
 
         {/* 分类 */}
         <div className="flex flex-wrap gap-1.5">
-          {CATEGORY_KEYS.map((key) => {
+          {[...EVENT_CATEGORY_KEYS, "other"].map((key) => {
             const style = eventStyle(key);
             const Icon = style.icon;
             const active = category === key;

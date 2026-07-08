@@ -1,22 +1,20 @@
 "use client";
 
-// Machi 活动 —— Luma 式活动发现页。大标题 hero + 分类胶囊 + 活动卡瀑布:
-// 每张卡是「封面(带日期块) + 标题 + 时间地点 + 参加者头像墙」。
-// 新页面、全新路由,不动任何既有页面的样式。
+// Machi 活动 —— Luma 式活动发现页(海报画廊)。与约局(搭子·聊天大厅)在视觉与
+// 概念上彻底区分:活动是「正式策划、发海报、报名参加」的东西,大封面 + 日期块 +
+// 报名。全新路由,不动任何既有页面样式。
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { CalendarPlus, Check, Grid2x2, MapPin, Clock3, Star } from "lucide-react";
+import { CalendarPlus, Check, Clock3, MapPin, Star } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { Avatar } from "@/components/design/Avatar";
 import { api } from "@/lib/api";
 import { sameOriginApiUrl } from "@/lib/media";
 import type { KXEvent } from "@/lib/types";
-import { dateBadge, eventStyle, eventTimeLine } from "@/components/social/socialStyle";
-
-const CATEGORY_KEYS = ["drinks", "food", "art", "reading", "music", "outdoor", "market", "talk", "sports", "social"];
+import { dateBadge, eventStyle, eventTimeLine, EVENT_CATEGORY_KEYS } from "@/components/social/socialStyle";
 
 function AvatarWall({ users, total }: { users: KXEvent["attendees_preview"]; total: number }) {
   const shown = (users ?? []).slice(0, 5);
@@ -25,7 +23,7 @@ function AvatarWall({ users, total }: { users: KXEvent["attendees_preview"]; tot
       <div className="flex -space-x-2">
         {shown.map((user) => (
           <div key={user.id} className="rounded-full ring-2 ring-kx-card">
-            <Avatar user={user} size={24} />
+            <Avatar user={user} size={22} />
           </div>
         ))}
       </div>
@@ -44,7 +42,7 @@ function EventCard({ event }: { event: KXEvent }) {
   return (
     <Link
       href={`/events/${encodeURIComponent(event.slug || event.id)}`}
-      className="group kx-card overflow-hidden transition-transform duration-200 hover:-translate-y-0.5 hover:shadow-lg"
+      className="group flex flex-col overflow-hidden rounded-2xl border border-kx-stroke/45 bg-kx-card transition-all duration-200 hover:-translate-y-0.5 hover:shadow-[0_18px_44px_-24px_rgb(var(--kx-shadow)/0.5)]"
     >
       <div className="relative aspect-[16/9] overflow-hidden">
         {event.cover_url ? (
@@ -52,18 +50,18 @@ function EventCard({ event }: { event: KXEvent }) {
           <img
             src={sameOriginApiUrl(event.cover_url)}
             alt=""
-            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.03]"
+            className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.04]"
             loading="lazy"
           />
         ) : (
           <div className={`flex h-full w-full items-center justify-center bg-gradient-to-br ${style.gradient}`}>
-            <Icon className="h-12 w-12 text-white/85" />
+            <Icon className="h-11 w-11 text-white/85" />
           </div>
         )}
         {badge ? (
-          <div className="absolute left-3 top-3 flex w-12 flex-col items-center rounded-xl bg-white/92 py-1.5 shadow-md backdrop-blur dark:bg-black/70">
-            <span className="text-[10px] font-black leading-none text-red-500">{badge.month}</span>
-            <span className="mt-0.5 text-lg font-black leading-none">{badge.day}</span>
+          <div className="absolute left-3 top-3 flex w-11 flex-col items-center rounded-xl bg-white/95 py-1 shadow-md backdrop-blur dark:bg-black/75">
+            <span className="text-[10px] font-black uppercase leading-tight text-red-500">{badge.month}</span>
+            <span className="text-lg font-black leading-none">{badge.day}</span>
           </div>
         ) : null}
         {event.is_featured ? (
@@ -72,21 +70,21 @@ function EventCard({ event }: { event: KXEvent }) {
           </div>
         ) : null}
       </div>
-      <div className="space-y-2 p-4">
-        <div className="flex items-center gap-1.5">
-          <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-black ${style.softBg} ${style.text}`}>
+      <div className="flex flex-1 flex-col gap-2 p-4">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-black ${style.softBg} ${style.text}`}>
             <Icon className="h-3 w-3" />
             {event.category_label || style.labelZh}
           </span>
           {event.price_text ? (
-            <span className="ml-auto text-xs font-black text-kx-heat">{event.price_text}</span>
+            <span className="ml-auto shrink-0 truncate text-xs font-black text-kx-heat">{event.price_text}</span>
           ) : null}
         </div>
-        <h3 className="line-clamp-2 text-base font-black leading-snug">{event.title}</h3>
-        <div className="space-y-1 text-xs font-semibold text-kx-muted">
-          <p className="inline-flex items-center gap-1.5">
+        <h3 className="line-clamp-2 text-[15px] font-black leading-snug">{event.title}</h3>
+        <div className="mt-auto space-y-1 text-xs font-semibold text-kx-muted">
+          <p className="flex items-center gap-1.5">
             <Clock3 className="h-3.5 w-3.5 shrink-0" />
-            {eventTimeLine(event.starts_at, event.ends_at)}
+            <span className="truncate">{eventTimeLine(event.starts_at, event.ends_at)}</span>
           </p>
           {event.venue_name ? (
             <p className="flex items-center gap-1.5">
@@ -105,7 +103,7 @@ function EventCard({ event }: { event: KXEvent }) {
             <span className="text-xs font-semibold text-kx-muted/70">等你来报名</span>
           )}
           {event.viewer_status === "going" ? (
-            <span className="inline-flex items-center gap-1 text-xs font-black text-kx-accent">
+            <span className="inline-flex shrink-0 items-center gap-1 text-xs font-black text-kx-accent">
               <Check className="h-3.5 w-3.5" /> 已报名
             </span>
           ) : null}
@@ -127,11 +125,11 @@ export default function EventsPage() {
 
   const categories = useMemo(() => {
     const server = events.data?.categories ?? [];
-    return server.length ? server.filter((c) => c.key !== "other") : CATEGORY_KEYS.map((key) => ({ key, label: eventStyle(key).labelZh }));
+    return server.length ? server.filter((c) => c.key !== "other") : EVENT_CATEGORY_KEYS.map((key) => ({ key, label: eventStyle(key).labelZh }));
   }, [events.data?.categories]);
 
   return (
-    <AppShell requireAuth={false} wide>
+    <AppShell requireAuth={false} wide right={null}>
       {/* Hero */}
       <header className="relative overflow-hidden px-4 pb-6 pt-8 sm:px-6">
         <div className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-kx-accent/15 blur-3xl" />
@@ -139,12 +137,12 @@ export default function EventsPage() {
         <div className="relative">
           <p className="text-xs font-black uppercase tracking-[0.2em] text-kx-accent">Machi Events</p>
           <h1 className="mt-2 text-3xl font-black leading-tight sm:text-4xl">
-            线下见面,
+            办一场活动,
             <br className="sm:hidden" />
-            认识真的朋友
+            让对的人聚过来
           </h1>
           <p className="mt-2 max-w-xl text-sm font-semibold text-kx-muted">
-            酒局、展览、读书会、市集……每周都有新的活动。任何人都能创建活动,拉上同城的人一起玩。
+            展览、演出、读书会、市集、工作坊……正式策划的线下活动,发布即生成专属活动页,一键报名。
           </p>
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Link href="/events/create" className="kx-button-primary inline-flex h-11 items-center gap-2 rounded-full px-5 text-sm font-black">
@@ -176,12 +174,11 @@ export default function EventsPage() {
         <button
           type="button"
           onClick={() => setCategory("")}
-          className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-xs font-black transition ${
+          className={`inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3.5 text-xs font-black transition ${
             category === "" ? "bg-kx-accent text-white shadow" : "bg-kx-accent/10 text-kx-accent hover:bg-kx-accent/15"
           }`}
         >
-          <Grid2x2 className="h-3.5 w-3.5" />
-          全部
+          全部活动
         </button>
         {categories.map((entry) => {
           const style = eventStyle(entry.key);
@@ -192,7 +189,7 @@ export default function EventsPage() {
               key={entry.key}
               type="button"
               onClick={() => setCategory(active ? "" : entry.key)}
-              className={`inline-flex h-9 shrink-0 items-center gap-1.5 rounded-full px-3.5 text-xs font-black transition ${
+              className={`inline-flex h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3.5 text-xs font-black transition ${
                 active ? "bg-kx-accent text-white shadow" : `${style.softBg} ${style.text} hover:opacity-80`
               }`}
             >

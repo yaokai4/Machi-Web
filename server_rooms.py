@@ -23,23 +23,30 @@ from server_errors import APIError
 
 # ── constants ──────────────────────────────────────────────────────────────
 
+# 约局 = 搭子 / 即兴组队。分类按「想一起做什么」,和活动(按活动形式)彻底区分:
+# 约局是"现在/最近找人一起做件小事,进来就聊",活动是"正式策划、发海报、报名参加"。
 ROOM_TYPES: tuple[str, ...] = (
-    "dining",     # 约饭
-    "drinks",     # 约酒
-    "coffee",     # 咖啡 / 闲聊
-    "boardgame",  # 桌游 / 电玩
-    "sports",     # 运动
-    "study",      # 自习 / 学习
+    "meal",       # 饭搭子
+    "drink",      # 酒搭子
+    "coffee",     # 咖啡
+    "sport",      # 运动搭子
+    "study",      # 学习搭子
+    "play",       # 玩乐(桌游 / KTV / 电玩)
+    "carpool",    # 拼车拼单
+    "outing",     # 出行搭子
     "language",   # 语言交换
-    "karaoke",    # 唱K
-    "outing",     # 出行 / 城市散步 / 展览
-    "hangout",    # 交友 / 随便聊聊
+    "chat",       # 随便聊
     "other",
 )
 ROOM_TYPE_LABELS_ZH = {
-    "dining": "约饭", "drinks": "约酒", "coffee": "咖啡闲聊", "boardgame": "桌游电玩",
-    "sports": "运动", "study": "自习学习", "language": "语言交换", "karaoke": "唱K",
-    "outing": "出行看展", "hangout": "交友闲聊", "other": "其他",
+    "meal": "饭搭子", "drink": "酒搭子", "coffee": "咖啡", "sport": "运动搭子",
+    "study": "学习搭子", "play": "玩乐", "carpool": "拼车拼单", "outing": "出行搭子",
+    "language": "语言交换", "chat": "随便聊", "other": "其他",
+}
+# 旧数据(0708 首发的分类)→新分类,只用于显示与筛选归并,不改库里存的原值。
+_ROOM_TYPE_ALIASES = {
+    "dining": "meal", "drinks": "drink", "boardgame": "play", "karaoke": "play",
+    "sports": "sport", "hangout": "chat",
 }
 
 ROOM_STATUSES = ("open", "full", "closed", "cancelled")
@@ -58,9 +65,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def normalize_room_type(raw: Any, default: str = "hangout") -> str:
+def normalize_room_type(raw: Any, default: str = "chat") -> str:
     value = str(raw or "").strip().lower()
+    value = _ROOM_TYPE_ALIASES.get(value, value)
     return value if value in ROOM_TYPES else default
+
+
+def room_type_label(raw: Any) -> str:
+    """Display label that also resolves legacy aliases so old rows don't all
+    fall through to 「其他」."""
+    value = str(raw or "").strip().lower()
+    value = _ROOM_TYPE_ALIASES.get(value, value)
+    return ROOM_TYPE_LABELS_ZH.get(value, "其他")
 
 
 def _brief_user(row: dict[str, Any]) -> dict[str, Any]:
@@ -127,9 +143,9 @@ def serialize_room(
         "id": room_id,
         "title": row.get("title", ""),
         "description": row.get("description", ""),
-        "room_type": row.get("room_type", "hangout"),
-        "roomType": row.get("room_type", "hangout"),
-        "room_type_label": ROOM_TYPE_LABELS_ZH.get(row.get("room_type", ""), "其他"),
+        "room_type": row.get("room_type", "chat"),
+        "roomType": row.get("room_type", "chat"),
+        "room_type_label": room_type_label(row.get("room_type", "")),
         "host_user_id": row.get("host_user_id", ""),
         "hostUserId": row.get("host_user_id", ""),
         "country_code": row.get("country_code", ""),
@@ -186,8 +202,11 @@ def list_rooms(
     elif not include_closed:
         clauses.append("r.status IN ('open', 'full')")
     if room_type and room_type in ROOM_TYPES:
-        clauses.append("r.room_type = ?")
-        params.append(room_type)
+        # 也匹配归并到该分类的旧 key(如 play 兼容旧 boardgame/karaoke)。
+        legacy = [old for old, new in _ROOM_TYPE_ALIASES.items() if new == room_type]
+        keys = [room_type, *legacy]
+        clauses.append("r.room_type IN (%s)" % ",".join("?" * len(keys)))
+        params.extend(keys)
     if city_slug:
         clauses.append("r.city_slug = ?")
         params.append(city_slug.strip().lower())
@@ -235,7 +254,7 @@ def create_room(
     host_user_id: str,
     title: str,
     description: str = "",
-    room_type: str = "hangout",
+    room_type: str = "chat",
     country_code: str = "jp",
     city_slug: str = "",
     region_code: str = "",

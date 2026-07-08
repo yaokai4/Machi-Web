@@ -19,6 +19,7 @@ import { useRouter } from "next/navigation";
 import { BrandPhrase } from "@/components/marketing/BrandText";
 import { regionDisplayName, regionFromUser } from "@/lib/regions";
 import { useI18n } from "@/lib/i18n";
+import { ShareButton } from "@/components/social/ShareButton";
 
 interface ProfileViewProps {
   user: KXUser;
@@ -209,6 +210,12 @@ export function ProfileView({ user: baseUser, isSelf }: ProfileViewProps) {
               <Avatar user={user} size={72} className="sm:!w-[88px] sm:!h-[88px]" />
             </div>
             <div className="flex items-center gap-2 mb-2">
+              <ShareButton
+                url={`/u/${user.handle}`}
+                title={`${user.display_name} · Machi`}
+                compact
+                className="grid h-11 w-11 place-items-center rounded-full border border-slate-200/90 bg-white text-slate-700 shadow-[0_10px_30px_rgba(15,23,42,0.08)] transition hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+              />
               {isSelf ? (
                 <>
                   <Link

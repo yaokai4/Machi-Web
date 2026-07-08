@@ -10,8 +10,8 @@ import { useParams, useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft, ArrowUpRight, CalendarDays, Check, Copy, Hourglass, MapPin,
-  Settings2, Share2, Sparkles, Star, Ticket, Users2, X,
+  ArrowLeft, ArrowUpRight, CalendarDays, Check, Hourglass, MapPin,
+  Settings2, Sparkles, Star, Ticket, Trash2, Users2, X,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
@@ -21,6 +21,7 @@ import { sameOriginApiUrl } from "@/lib/media";
 import { useSessionUser } from "@/lib/session";
 import type { KXEvent, KXEventFormField } from "@/lib/types";
 import { dateBadge, eventStyle, eventTimeLine } from "@/components/social/socialStyle";
+import { ShareButton } from "@/components/social/ShareButton";
 
 function RegistrationModal({
   event, onClose, onDone,
@@ -138,7 +139,6 @@ export default function EventDetailPage() {
   const queryClient = useQueryClient();
   const viewer = useSessionUser();
   const [modalOpen, setModalOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const query = useQuery({
     queryKey: ["event", slug],
@@ -155,6 +155,10 @@ export default function EventDetailPage() {
     mutationFn: () => api.registerForEvent(slug, {}),
     onSuccess: (data) => queryClient.setQueryData(["event", slug], data.event),
   });
+  const removeEvent = useMutation({
+    mutationFn: () => api.deleteEvent(slug),
+    onSuccess: () => router.push("/events"),
+  });
 
   function handleRegister() {
     if (!viewer) {
@@ -168,29 +172,16 @@ export default function EventDetailPage() {
     }
   }
 
-  async function handleShare() {
-    const url = typeof window !== "undefined" ? window.location.href : "";
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: event?.title, url });
-        return;
-      } catch { /* 用户取消,落回复制 */ }
-    }
-    await navigator.clipboard.writeText(url);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1800);
-  }
-
   if (query.isError) {
     return (
-      <AppShell requireAuth={false} wide>
+      <AppShell requireAuth={false} wide right={null}>
         <div className="px-4 py-10"><ErrorState onRetry={() => query.refetch()} /></div>
       </AppShell>
     );
   }
   if (query.isLoading || !event) {
     return (
-      <AppShell requireAuth={false} wide>
+      <AppShell requireAuth={false} wide right={null}>
         <InlineLoading />
       </AppShell>
     );
@@ -211,9 +202,10 @@ export default function EventDetailPage() {
     return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
   })();
   const coverSrc = event.cover_url ? sameOriginApiUrl(event.cover_url) : null;
+  const shareUrl = typeof window !== "undefined" ? window.location.href : `/events/${slug}`;
 
   return (
-    <AppShell requireAuth={false} wide>
+    <AppShell requireAuth={false} wide right={null}>
       {/* Luma 签名式:封面做整页模糊氛围底 */}
       <div className="relative">
         {coverSrc ? (
@@ -226,7 +218,7 @@ export default function EventDetailPage() {
           <div className={`pointer-events-none absolute inset-x-0 top-0 -z-10 h-[420px] overflow-hidden opacity-25 blur-3xl bg-gradient-to-br ${style.gradient}`} />
         )}
 
-        <div className="px-4 pb-16 pt-4 sm:px-6">
+        <div className="mx-auto max-w-5xl px-4 pb-16 pt-4 sm:px-6">
           <div className="mb-4 flex items-center justify-between">
             <Link href="/events" className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black shadow-sm backdrop-blur hover:bg-kx-card">
               <ArrowLeft className="h-3.5 w-3.5" />
@@ -234,22 +226,25 @@ export default function EventDetailPage() {
             </Link>
             <div className="flex items-center gap-2">
               {canManage ? (
-                <Link
-                  href={`/events/${encodeURIComponent(event.slug || event.id)}/manage`}
-                  className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black shadow-sm backdrop-blur hover:bg-kx-card"
-                >
-                  <Settings2 className="h-3.5 w-3.5" />
-                  管理
-                </Link>
+                <>
+                  <Link
+                    href={`/events/${encodeURIComponent(event.slug || event.id)}/manage`}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black shadow-sm backdrop-blur hover:bg-kx-card"
+                  >
+                    <Settings2 className="h-3.5 w-3.5" />
+                    管理
+                  </Link>
+                  <button
+                    type="button"
+                    onClick={() => { if (confirm(`删除活动「${event.title}」?已报名的人会看到活动已取消。`)) removeEvent.mutate(); }}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black text-kx-heat shadow-sm backdrop-blur hover:bg-kx-heat/10"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    删除
+                  </button>
+                </>
               ) : null}
-              <button
-                type="button"
-                onClick={handleShare}
-                className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black shadow-sm backdrop-blur hover:bg-kx-card"
-              >
-                {copied ? <Copy className="h-3.5 w-3.5 text-kx-accent" /> : <Share2 className="h-3.5 w-3.5" />}
-                {copied ? "已复制链接" : "分享"}
-              </button>
+              <ShareButton url={shareUrl} title={event.title} text={event.subtitle || undefined} />
             </div>
           </div>
 

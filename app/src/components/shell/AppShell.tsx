@@ -121,7 +121,10 @@ export function AppShell({ children, right, requireAuth = true, wide = false, hi
   const status = useSession((s) => s.status);
   const router = useRouter();
   const pathname = usePathname();
-  const ownsViewportBottom = pathname?.startsWith("/messages/");
+  // Chat-style pages own the full viewport height (bottom too) so their
+  // internal message list scrolls independently instead of growing the page:
+  // DM threads and a single room (/rooms/{id}).
+  const ownsViewportBottom = pathname?.startsWith("/messages/") || /^\/rooms\/[^/]+$/.test(pathname ?? "");
   const isAdminPath = pathname?.startsWith("/admin") ?? false;
   const useWideLayout = wide || isAdminPath;
   const showRightSidebar = !isAdminPath && right !== null;
