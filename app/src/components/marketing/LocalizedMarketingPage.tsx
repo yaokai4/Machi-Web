@@ -17,6 +17,26 @@ import { FounderSection } from "./FounderSection";
 
 const CONTACT_EMAIL = "hi@machicity.com";
 
+// Pages that are dated legal documents — they carry a "last updated"
+// line under the intro so readers can see how current the terms are.
+// Adjust LEGAL_LAST_UPDATED whenever the clauses are substantively revised.
+const LEGAL_PAGE_IDS = new Set<MarketingPageId>([
+  "terms",
+  "privacy",
+  "membership-terms",
+  "service-terms",
+  "refund-policy",
+  "community-guidelines",
+  "commercial-disclosure",
+  "cookie-policy",
+]);
+
+const LEGAL_LAST_UPDATED: Record<MarketingLocale, string> = {
+  zh: "最后更新：2026 年 7 月",
+  en: "Last updated: July 2026",
+  ja: "最終更新：2026 年 7 月",
+};
+
 export function LocalizedMarketingPage({
   pageId,
   initialLocale,
@@ -41,8 +61,15 @@ function LocalizedMarketingPageInner({ pageId }: { pageId: MarketingPageId }) {
     [locale, overrides, pageId],
   );
 
+  const legalMeta = LEGAL_PAGE_IDS.has(pageId) ? (
+    <span className="inline-flex items-center gap-2 rounded-full border border-slate-900/10 bg-white/70 px-3.5 py-1.5 text-xs font-bold text-slate-500 backdrop-blur dark:border-white/10 dark:bg-white/[0.06] dark:text-slate-300">
+      <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/80" aria-hidden="true" />
+      {LEGAL_LAST_UPDATED[locale] ?? LEGAL_LAST_UPDATED.zh}
+    </span>
+  ) : null;
+
   return (
-    <MarketingPageFrame eyebrow={page.eyebrow} title={page.title} intro={page.intro}>
+    <MarketingPageFrame eyebrow={page.eyebrow} title={page.title} intro={page.intro} meta={legalMeta}>
       {page.blocks.map((block, index) => (
         <Fragment key={block.title}>
           <MarketingBlock block={block} openLabel={copy.common.open} />
@@ -102,7 +129,7 @@ function MarketingBlock({ block, openLabel }: { block: MarketingPageBlock; openL
           {block.items.map((item) => (
             <article
               key={item.title}
-              className="group rounded-[22px] bg-white/[0.62] p-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.78),0_18px_46px_-42px_rgba(15,23,42,0.65)] transition duration-300 hover:-translate-y-0.5 hover:bg-white/80 dark:bg-white/[0.05] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.09)]"
+              className="mc-spot group rounded-[22px] bg-white/[0.62] p-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.78),0_18px_46px_-42px_rgba(15,23,42,0.65)] transition duration-300 hover:-translate-y-0.5 hover:bg-white/80 dark:bg-white/[0.05] dark:shadow-[inset_0_0_0_1px_rgba(255,255,255,0.09)]"
             >
               {item.meta ? <p className="text-[11px] font-black uppercase text-[#9a536f] dark:text-rose-200">{item.meta}</p> : null}
               <h3 className="text-base font-black text-slate-950 dark:text-white">

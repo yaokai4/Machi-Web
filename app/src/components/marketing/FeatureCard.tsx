@@ -61,7 +61,7 @@ export function FeatureCard({ feature }: FeatureCardProps) {
   const Icon = iconMap[feature.icon] ?? Newspaper;
 
   return (
-    <article className="group h-full rounded-[20px] border border-slate-200/60 bg-white/85 p-4 shadow-[0_10px_30px_-26px_rgba(15,23,42,0.5)] transition duration-300 ease-out hover:-translate-y-0.5 hover:bg-white hover:shadow-[0_14px_36px_-24px_rgba(15,23,42,0.6)] dark:border-white/[0.08] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]">
+    <article className="mc-spot group h-full rounded-[20px] border border-slate-200/60 bg-white/85 p-4 shadow-[0_10px_30px_-26px_rgba(15,23,42,0.5)] transition duration-300 ease-out hover:-translate-y-0.5 hover:bg-white hover:shadow-[0_14px_36px_-24px_rgba(15,23,42,0.6)] dark:border-white/[0.08] dark:bg-white/[0.04] dark:hover:bg-white/[0.07]">
       <div className="flex items-center gap-3">
         <span
           className={clsx(

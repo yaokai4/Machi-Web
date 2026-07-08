@@ -2203,6 +2203,89 @@ body::before {
   .mc-hero-glow { animation: none; }
 }
 
+/* ============================================================
+   Pointer-reactive elevation — the site's only cursor-driven
+   effect. MarketingMotion.tsx writes two channels on .machi-site:
+     --mc-px / --mc-py   viewport pointer, normalised -1..1
+     --mc-cx / --mc-cy   per-card spotlight origin (on .mc-spot)
+   Everything here is transform/opacity only (GPU-composited, no
+   layout), and the easing lives in these transitions so the JS
+   never runs a per-frame loop. Hard-gated to fine pointers +
+   desktop widths + motion-allowed, so touch / reduced-motion
+   users get a completely static page.
+   ============================================================ */
+.machi-site { --mc-px: 0; --mc-py: 0; }
+
+@media (pointer: fine) and (min-width: 1024px) {
+  /* Depth: foreground atmosphere drifts with the cursor, the faint
+     map grid drifts against it, so the hero gains real parallax on
+     mouse move instead of sitting flat. */
+  .mc-echo-field {
+    transform: translate3d(calc(var(--mc-px) * 22px), calc(var(--mc-py) * 18px), 0);
+    transition: transform 480ms cubic-bezier(.16, 1, .3, 1);
+  }
+  .mc-map-grid {
+    transform: translate3d(calc(var(--mc-px) * -10px), calc(var(--mc-py) * -8px), 0);
+    transition: transform 560ms cubic-bezier(.16, 1, .3, 1);
+  }
+  .mc-device-halo {
+    transform: translate3d(calc(var(--mc-px) * 16px), calc(var(--mc-py) * 16px), 0);
+    transition: transform 420ms cubic-bezier(.16, 1, .3, 1);
+  }
+  /* The hero mock tilts a few degrees toward the cursor. The tilt
+     lives on the wrapper; the float keyframe stays on the inner
+     .mc-float, so the two transforms never fight. */
+  .mc-hero-device {
+    transform: perspective(1500px)
+      rotateX(calc(var(--mc-py) * -2.4deg))
+      rotateY(calc(var(--mc-px) * 3.2deg));
+    transition: transform 400ms cubic-bezier(.16, 1, .3, 1);
+    transform-style: preserve-3d;
+    will-change: transform;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-echo-field,
+  .mc-map-grid,
+  .mc-device-halo,
+  .mc-hero-device {
+    transform: none !important;
+  }
+}
+
+/* Card spotlight — a soft light that tracks the cursor across the
+   card. It only ADDS light (soft-light / screen blend, contained by
+   `isolation`), is pointer-events:none, and fades in on hover, so it
+   reads as premium glass without disturbing the card's own copy. */
+.mc-spot { position: relative; isolation: isolate; }
+.mc-spot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 300ms ease;
+  background: radial-gradient(
+    18rem 18rem at var(--mc-cx, 50%) var(--mc-cy, 50%),
+    rgba(255, 255, 255, 0.14),
+    transparent 56%
+  );
+  mix-blend-mode: soft-light;
+}
+:root.dark .mc-spot::after {
+  background: radial-gradient(
+    18rem 18rem at var(--mc-cx, 50%) var(--mc-cy, 50%),
+    rgba(255, 255, 255, 0.10),
+    transparent 56%
+  );
+  mix-blend-mode: screen;
+}
+@media (pointer: fine) {
+  .mc-spot:hover::after { opacity: 1; }
+}
+
 .mc-city-dot {
   position: absolute;
   width: 7px;

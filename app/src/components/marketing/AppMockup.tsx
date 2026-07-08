@@ -84,7 +84,7 @@ export function AppMockup() {
   const copy = pulseCopy[locale];
 
   return (
-    <div className="relative mx-auto w-full max-w-[520px]">
+    <div className="mc-hero-device relative mx-auto w-full max-w-[520px]">
       <div className="mc-echo-field absolute inset-0 -z-10" aria-hidden="true">
         <span className="mc-echo-ring mc-echo-ring-a" />
         <span className="mc-echo-ring mc-echo-ring-b" />

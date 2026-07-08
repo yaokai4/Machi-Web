@@ -34,11 +34,14 @@ export function MarketingPageFrame({
   eyebrow,
   title,
   intro,
+  meta,
   children,
 }: {
   eyebrow?: string;
   title: string;
   intro?: string;
+  /** Optional slot under the intro — used for legal "last updated" lines. */
+  meta?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -61,6 +64,7 @@ export function MarketingPageFrame({
                 <BrandPhrase text={intro} />
               </p>
             ) : null}
+            {meta ? <div className="mt-6">{meta}</div> : null}
           </div>
         </section>
 
