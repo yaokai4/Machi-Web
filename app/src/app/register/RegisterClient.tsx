@@ -209,11 +209,17 @@ function RegisterForm() {
   }, [touched, handle, displayName, email, password, confirmPassword, code, acceptedTerms, selectedRegion, locale]);
 
   const isValid = isRegisterValid({ handle, displayName, email, password, confirmPassword, code, acceptedTerms, hasRegion: !!selectedRegion });
+  // 可用性检查【失败】(网络抖动/5xx/限流)时其 catch 把状态重置为 'idle'。若把它
+  // 当硬阻断,一个信息完全有效的用户就会永远点不了注册。改为:只在【明确已占用】
+  // 或【正在检查中】时阻断;检查未定论(idle/出错)时放行,交由服务端(注册接口
+  // 会返回 handle_taken/email_taken)作为唯一真相。
   const canSubmit =
     !loading &&
     isValid &&
-    handleAvailability.status === "available" &&
-    emailAvailability.status === "available";
+    handleAvailability.status !== "unavailable" &&
+    handleAvailability.status !== "checking" &&
+    emailAvailability.status !== "unavailable" &&
+    emailAvailability.status !== "checking";
 
   const fieldError = (k: keyof Errors): string | undefined => {
     if (errors[k]) return errors[k];

@@ -9,6 +9,7 @@ import { useToasts } from "@/lib/store";
 import { useI18n, appLocaleToMarketingLocale } from "@/lib/i18n";
 import { PASSWORD_MIN } from "@/lib/authValidation";
 import { PasswordStrength } from "@/components/design/FieldShell";
+import { CaptchaBox, EMPTY_CAPTCHA, type CaptchaState } from "@/components/auth/CaptchaBox";
 
 export default function ForgotPage() {
   const router = useRouter();
@@ -62,19 +63,41 @@ export default function ForgotPage() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [busy, setBusy] = useState(false);
+  // 后端 api_forgot_password 在默认配置(CAPTCHA_ENABLED=1)下强制图形验证码。
+  // 此前本页从不渲染验证码框、也不回传验证码 → 每个用户点「发送重置码」都返回
+  // captcha_required、账号找回彻底不可用。这里补上与注册/登录同款的 CaptchaBox。
+  const [captcha, setCaptcha] = useState<CaptchaState>(EMPTY_CAPTCHA);
+  const [captchaRefresh, setCaptchaRefresh] = useState(0);
+  const [captchaError, setCaptchaError] = useState("");
 
   const requestCode = async () => {
     if (!email.trim() || busy) return;
+    if (captcha.enabled && captcha.captchaId && !captcha.code) {
+      setCaptchaError(L("请先完成图形验证", "Please complete the verification", "画像認証を完了してください"));
+      return;
+    }
     setBusy(true);
+    setCaptchaError("");
     try {
-      await api.forgotPassword(email.trim(), appLocaleToMarketingLocale(locale));
+      await api.forgotPassword(
+        email.trim(),
+        appLocaleToMarketingLocale(locale),
+        captcha.enabled && captcha.captchaId ? { captcha_id: captcha.captchaId, captcha_code: captcha.code } : undefined,
+      );
       // The server responds generically (no account enumeration), so we
       // always advance to the reset step regardless of whether the email
       // is registered.
       pushToast({ kind: "success", message: L("验证码已发送到邮箱，请查收。", "A reset code has been sent to your email.", "確認コードをメールに送信しました。") });
       setStep("reset");
     } catch (err) {
-      pushToast({ kind: "error", message: mapForgotError(err) });
+      // 验证码类错误:图片已被服务端消费,刷新一张并把提示挂到验证码行,而不是
+      // 把用户引到不存在的「回登录页」死路。
+      if (err instanceof APIError && ["captcha_required", "invalid_captcha", "captcha_expired"].includes(err.code)) {
+        setCaptchaRefresh((n) => n + 1);
+        setCaptchaError(L("图形验证失败，请重新输入。", "Verification failed, please try again.", "画像認証に失敗しました。もう一度入力してください。"));
+      } else {
+        pushToast({ kind: "error", message: mapForgotError(err) });
+      }
     } finally {
       setBusy(false);
     }
@@ -140,6 +163,20 @@ export default function ForgotPage() {
                 onKeyDown={(e) => { if (e.key === "Enter") requestCode(); }}
               />
             </label>
+            <CaptchaBox
+              scene="register"
+              idPrefix="forgot"
+              error={captchaError || undefined}
+              refreshSignal={captchaRefresh}
+              onState={setCaptcha}
+              labels={{
+                label: L("图形验证", "Verification", "画像認証"),
+                placeholder: L("输入图中字符", "Enter the characters", "画像の文字を入力"),
+                hint: L("请输入图片中的字符", "Type the characters shown", "画像に表示された文字を入力してください"),
+                refresh: L("换一张", "Refresh", "更新"),
+                loadFailed: L("加载失败，点此重试", "Failed to load, tap to retry", "読み込み失敗、タップで再試行"),
+              }}
+            />
             <button className="kx-button-primary w-full h-11 disabled:opacity-60" onClick={requestCode} disabled={busy || !email.trim()}>
               {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
               {L("发送重置验证码", "Send reset code", "確認コードを送信")}
