@@ -27477,16 +27477,17 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
         txn_environment = str(payload.get("environment") or data.get("environment") or "").strip().lower()
         is_sandbox_txn = txn_environment in ("sandbox", "xcode")
-        # 与会员 Apple 验证路径完全对齐的两道护栏(此前只在会员路径有):
-        # ① 生产环境的真实购买必须携带 appAccountToken 把收据绑定到归属者,否则
-        #    持他人「无 token 的合法签名收据」者可换到点数(收据未绑定)。
-        # ② 生产环境拒绝沙盒/Xcode 收据换真实可花点数——否则任何测试/众测账号的
-        #    沙盒收据(仍由 Apple 根 CA 签名、生产签名校验通过)都能白嫖真实点数、
-        #    进而购买指南数字商品,污染点数经济与营收核算。
+        # 与会员 Apple 验证路径对齐:生产环境的真实购买必须携带 appAccountToken 把收据
+        # 绑定到归属者,否则持他人「无 token 的合法签名收据」者可换到点数(收据未绑定)。
+        # 沙盒 txn 天然跳过本校验(is_sandbox_txn=True 时 `not is_sandbox_txn` 为假)。
         if PRODUCTION and not is_sandbox_txn and not app_account_token:
             raise APIError("交易缺少账号凭证", 403, "apple_account_token_required")
-        if PRODUCTION and is_sandbox_txn:
-            raise APIError("沙盒交易不能在生产环境充值", 403, "sandbox_not_allowed_in_production")
+        # 沙盒 / TestFlight / Xcode 收据【绝不拒绝】—— App Review 审核员正是在沙盒环境
+        # 下对生产构建 / 生产后端测试内购,一旦拒绝沙盒 = 内购必被拒审(会员路径从不拒
+        # 沙盒,点数路径必须同策略)。照常入账让审核员走通购买流程,但打上
+        # client_type='ios_sandbox' 标记——后台营收核算(api_admin_wallet_overview)已
+        # 排除该标记,不计入真实营收。沙盒测试账号只能由本开发者在 ASC 内创建、外部攻击
+        # 者无法自助生成,白嫖面被限制在受控测试者范围内,与会员沙盒授权同等风险。
         dedup = "apple:" + (txn_id or orig_id or signed[:40])
         client_type = "ios_sandbox" if is_sandbox_txn else "ios"
         result = wallet_credit_iap_topup(conn, user["id"], pack, "apple_iap", client_type, dedup,
