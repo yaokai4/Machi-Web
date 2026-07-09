@@ -17,13 +17,23 @@ policy / media resolution).
 from __future__ import annotations
 
 import json
+import os
 import re
 import secrets
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+import server_apns
 from server_errors import APIError
+
+# Production runs Postgres with multiple workers, where the process-wide
+# DB_LOCK is intentionally disabled (server.py). SQLite (local/dev) is a single
+# writer serialized by that lock. Registration takes a per-event row lock on
+# Postgres to make the going/waitlist decision race-free; SQLite neither needs
+# nor supports ``SELECT ... FOR UPDATE``. Read straight from the environment so
+# this module stays free of any ``server`` import (mirrors server_config._env).
+_IS_POSTGRES = (os.environ.get("KAIX_DB_BACKEND") or "sqlite").strip().lower() == "postgres"
 
 # ── constants ──────────────────────────────────────────────────────────────
 
@@ -234,14 +244,18 @@ def serialize_event(
             viewer_status = reg["status"]
     going = int(row.get("going_count") or 0)
     capacity = int(row.get("capacity") or 0)
+    # 同一活动只查一次预览名单 + 只算一次分类标签，两组键(snake / camel)复用，
+    # 避免列表页每条活动重复往返 DB(list_events 对每条 serialize)。
+    attendees = _attendee_rows(conn, event_id)
+    cat_label = category_label(row.get("category", ""))
     payload: dict[str, Any] = {
         "id": event_id,
         "slug": row.get("slug", ""),
         "title": row.get("title", ""),
         "subtitle": row.get("subtitle", ""),
         "category": row.get("category", "social"),
-        "category_label": category_label(row.get("category", "")),
-        "categoryLabel": category_label(row.get("category", "")),
+        "category_label": cat_label,
+        "categoryLabel": cat_label,
         "cover_url": row.get("cover_url", ""),
         "coverUrl": row.get("cover_url", ""),
         "starts_at": row.get("starts_at", ""),
@@ -274,8 +288,8 @@ def serialize_event(
         "organizer_user_id": row.get("organizer_user_id", ""),
         "organizerUserId": row.get("organizer_user_id", ""),
         "organizer": _brief_user(dict(organizer)) if organizer else None,
-        "attendees_preview": _attendee_rows(conn, event_id),
-        "attendeesPreview": _attendee_rows(conn, event_id),
+        "attendees_preview": attendees,
+        "attendeesPreview": attendees,
         "viewer_status": viewer_status,
         "viewerStatus": viewer_status,
         "created_at": row.get("created_at", ""),
@@ -470,6 +484,13 @@ def update_event(
         raise APIError("活动名称不能为空", 400, "title_required")
     if not payload["starts_at"]:
         raise APIError("请填写活动开始时间", 400, "starts_at_required")
+    # 分类原值保留:_EVENT_CATEGORY_ALIASES 只做显示/筛选归并,不改库里存的原值。
+    # 只有主办方在本次编辑里明确带了 category 才写该列,否则任意无关编辑都会把
+    # 存量的旧 key(如 'social')静默归一化改写成 'party',违背模块约定。
+    if "category" not in data:
+        payload.pop("category", None)
+    old_capacity = int(event.get("capacity") or 0)
+    new_capacity = int(payload.get("capacity", old_capacity) or 0)
     sets = [f"{key} = ?" for key in payload]
     params: list[Any] = list(payload.values())
     if "status" in data:
@@ -486,9 +507,17 @@ def update_event(
     params.append(ts)
     params.append(event["id"])
     conn.execute(f"UPDATE events SET {', '.join(sets)} WHERE id = ?", params)
-    fields = data.get("form_fields") or data.get("formFields")
-    if isinstance(fields, list):
-        replace_form_fields(conn, event["id"], fields)
+    # 扩容即放人进来:主办方把 capacity 调大(或改为 0 = 不限)后,把仍卡在候补名单
+    # 的报名者按顺序顶为正式参加,并发通知——否则候补者永远进不来(此前只有『有人
+    # 取消释放名额』才晋补)。缩容不做降级(不把已确认的人踢出),对用户更友好。
+    if new_capacity != old_capacity and (new_capacity == 0 or new_capacity > old_capacity):
+        _promote_waitlist(conn, event["id"], ts)
+        _recount_going(conn, event["id"], ts)
+    # 用哨兵区分『未提供 form_fields』与『提供了空数组(= 清空全部字段)』:
+    # 传 form_fields=[] 时 [] 为 falsy,旧写法 `or` 会把它折叠成『未提供』而静默忽略,
+    # 主办方无法把报名表清空为『无字段』。只要键出现就执行替换(空数组即清空)。
+    if "form_fields" in data or "formFields" in data:
+        replace_form_fields(conn, event["id"], data.get("form_fields") or data.get("formFields") or [])
     conn.commit()
     return get_event(conn, event["id"])
 
@@ -528,12 +557,33 @@ def register(conn, id_or_slug: str, user_id: str, answers: Any = None, *, now: O
             raise APIError(f"请填写「{field['label']}」", 400, "answer_required")
         if raw:
             clean_answers[field["id"]] = raw
+    # Serialize concurrent registrations for the SAME event so the going /
+    # waitlist decision below is race-free. On Postgres (production, multi
+    # worker) the process-wide DB_LOCK is disabled, so two registrations racing
+    # for an event's final slot could both read a stale ``going_count`` and both
+    # be admitted as 'going', pushing confirmed attendees over the stated cap.
+    # A row lock on the event row makes registrations for one event run one at a
+    # time; we then count 'going' fresh (same JOIN-users, non-deleted count as
+    # _recount_going) under the lock, so the decision reflects freshly-committed
+    # state. This mirrors the room-join hardening (server_rooms.join_room). The
+    # lock is held until conn.commit() below. SQLite (dev) has no FOR UPDATE and
+    # its single-writer DB_LOCK already serializes writes, so it reuses the
+    # pre-read going_count — the prior behaviour, unchanged.
+    if _IS_POSTGRES:
+        conn.execute("SELECT id FROM events WHERE id = ? FOR UPDATE", (event["id"],))
     existing = conn.execute(
         "SELECT id, status FROM event_registrations WHERE event_id = ? AND user_id = ?",
         (event["id"], user_id),
     ).fetchone()
     capacity = int(event.get("capacity") or 0)
-    going = int(event.get("going_count") or 0)
+    if _IS_POSTGRES:
+        going = int(conn.execute(
+            "SELECT COUNT(*) AS n FROM event_registrations reg JOIN users u ON u.id = reg.user_id"
+            " WHERE reg.event_id = ? AND reg.status = 'going' AND u.deleted_at IS NULL",
+            (event["id"],),
+        ).fetchone()["n"])
+    else:
+        going = int(event.get("going_count") or 0)
     already_going = bool(existing and existing["status"] == "going")
     status = "going"
     if capacity and going >= capacity and not already_going:
@@ -545,9 +595,17 @@ def register(conn, id_or_slug: str, user_id: str, answers: Any = None, *, now: O
             (status, answers_json, ts, existing["id"]),
         )
     else:
+        # Idempotent insert: a same-user double-click / concurrent double-submit
+        # both read existing=None and both attempt the INSERT; without ON
+        # CONFLICT the second violates UNIQUE(event_id, user_id) and surfaces as
+        # an unhandled IntegrityError → HTTP 500. DO UPDATE converges duplicates
+        # onto the single existing row (id + created_at preserved so waitlist
+        # FIFO ordering is intact), matching the existing-row UPDATE branch.
         conn.execute(
             "INSERT INTO event_registrations (id, event_id, user_id, status, answers_json, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " VALUES (?, ?, ?, ?, ?, ?, ?)"
+            " ON CONFLICT(event_id, user_id) DO UPDATE SET status = excluded.status,"
+            " answers_json = excluded.answers_json, updated_at = excluded.updated_at",
             (str(uuid.uuid4()), event["id"], user_id, status, answers_json, ts, ts),
         )
     _recount_going(conn, event["id"], ts)
@@ -569,36 +627,82 @@ def cancel_registration(conn, id_or_slug: str, user_id: str, *, now: Optional[st
 
 
 def _recount_going(conn, event_id: str, ts: str) -> None:
+    # 只数「可见的」going(JOIN users 且 deleted_at IS NULL),与头像墙 / attendees 口径
+    # 一致:注销用户的报名行不再计入 going_count,避免『显示 10 人却只有 8 个头像』、
+    # 也避免 is_full 因幽灵报名虚高而把没满的活动错锁为满。
     going = conn.execute(
-        "SELECT COUNT(*) AS n FROM event_registrations WHERE event_id = ? AND status = 'going'",
+        "SELECT COUNT(*) AS n FROM event_registrations reg JOIN users u ON u.id = reg.user_id"
+        " WHERE reg.event_id = ? AND reg.status = 'going' AND u.deleted_at IS NULL",
         (event_id,),
     ).fetchone()["n"]
     conn.execute("UPDATE events SET going_count = ?, updated_at = ? WHERE id = ?", (int(going), ts, event_id))
 
 
-def _promote_waitlist(conn, event_id: str, ts: str) -> None:
-    """有人取消后,按报名顺序把候补顶上(容量 0 = 不限,不会有候补)。"""
-    event = conn.execute("SELECT capacity FROM events WHERE id = ?", (event_id,)).fetchone()
-    capacity = int(event["capacity"] or 0) if event else 0
-    if not capacity:
-        return
+def _promote_waitlist(conn, event_id: str, ts: str) -> list[str]:
+    """有人取消 / 主办方扩容后,按报名顺序把候补顶为正式参加,并给被顶上的人发通知。
+    容量 0 = 不限,候补全部转正(此前存量候补也一并放进来)。已注销用户不占名额、
+    也不晋补。返回被晋补的 user_id 列表。"""
+    event = conn.execute(
+        "SELECT capacity, title, organizer_user_id FROM events WHERE id = ?", (event_id,)
+    ).fetchone()
+    if not event:
+        return []
+    capacity = int(event["capacity"] or 0)
+    # going 与 _recount_going 同口径(排除注销),否则 slots 会算错。
     going = conn.execute(
-        "SELECT COUNT(*) AS n FROM event_registrations WHERE event_id = ? AND status = 'going'",
+        "SELECT COUNT(*) AS n FROM event_registrations reg JOIN users u ON u.id = reg.user_id"
+        " WHERE reg.event_id = ? AND reg.status = 'going' AND u.deleted_at IS NULL",
         (event_id,),
     ).fetchone()["n"]
-    slots = capacity - int(going)
-    if slots <= 0:
-        return
-    waiting = list(conn.execute(
-        "SELECT id FROM event_registrations WHERE event_id = ? AND status = 'waitlist'"
-        " ORDER BY created_at ASC LIMIT ?",
-        (event_id, slots),
-    ))
+    query = (
+        "SELECT reg.id, reg.user_id FROM event_registrations reg JOIN users u ON u.id = reg.user_id"
+        " WHERE reg.event_id = ? AND reg.status = 'waitlist' AND u.deleted_at IS NULL"
+        " ORDER BY reg.created_at ASC"
+    )
+    params: list[Any] = [event_id]
+    if capacity > 0:
+        slots = capacity - int(going)
+        if slots <= 0:
+            return []
+        query += " LIMIT ?"
+        params.append(slots)
+    # capacity <= 0 → 不限,候补全部转正(不加 LIMIT)。
+    waiting = list(conn.execute(query, params))
+    promoted: list[str] = []
     for row in waiting:
         conn.execute(
             "UPDATE event_registrations SET status = 'going', updated_at = ? WHERE id = ?",
             (ts, row["id"]),
         )
+        if row["user_id"]:
+            promoted.append(row["user_id"])
+    if promoted:
+        _notify_promoted(conn, event["title"] or "", event["organizer_user_id"] or "", promoted, ts)
+    return promoted
+
+
+def _notify_promoted(conn, title: str, organizer_id: str, user_ids: list[str], ts: str) -> None:
+    """候补转正是『你进了』的关键时刻——写一条站内通知(铃铛)+ 尽力推送(APNs)。
+    对齐私信/预约等路径:关键状态变化不再对用户完全静默。"""
+    content = f"🎉 你已从候补转为正式参加「{title}」" if title else "🎉 你已从候补转为正式参加该活动"
+    for uid in user_ids:
+        if not uid:
+            continue
+        # notifications.actor_id NOT NULL:优先用主办方(铃铛里显示主办方头像更有意义),
+        # 无主办方(如后台加的合作商活动)则退回本人。
+        actor_id = organizer_id or uid
+        try:
+            conn.execute(
+                "INSERT INTO notifications (id, user_id, actor_id, type, content, created_at)"
+                " VALUES (?, ?, ?, 'event_promoted', ?, ?)",
+                (str(uuid.uuid4()), uid, actor_id, content, ts),
+            )
+        except Exception:
+            pass
+        try:
+            server_apns.enqueue(uid, ntype="event_promoted", actor_id=organizer_id or "", content=content)
+        except Exception:
+            pass
 
 
 def list_attendees(

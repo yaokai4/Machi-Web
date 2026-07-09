@@ -7,6 +7,7 @@ import { guide, type GuideCalendarItem, type GuideTodo } from "@/lib/guide";
 import { GuideTodoCard } from "@/components/guide/GuideOS";
 import { GuideCalendarEventCard } from "@/components/guide/GuideCalendarEventCard";
 import { useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 // Google Calendar-style week board + an agenda list, complementing the month
 // grid (GuideCalendarMonth). Guide todos are date-granular (no time-of-day), so
@@ -47,6 +48,7 @@ function labelDate(date: string): string {
 export function GuideCalendarWeek({ todos, events }: { todos: GuideTodo[]; events: GuideCalendarItem[] }) {
   const queryClient = useQueryClient();
   const pushToast = useToasts((state) => state.push);
+  const { t } = useI18n();
   const move = useMutation({
     mutationFn: ({ id, date }: { id: string; date: string }) => guide.updateTodo(id, { plannedDate: date }),
     onSuccess: () => {
@@ -90,9 +92,9 @@ export function GuideCalendarWeek({ todos, events }: { todos: GuideTodo[]; event
       <div className="mb-3 flex items-center justify-between">
         <h2 className="text-lg font-black text-kx-text">{rangeLabel}</h2>
         <div className="flex gap-1">
-          <button type="button" aria-label="上一周" onClick={() => shiftWeek(-1)} className="grid h-8 w-8 place-items-center rounded-xl border border-kx-stroke/60 text-kx-muted hover:text-kx-accent"><ChevronLeft className="h-4 w-4" /></button>
+          <button type="button" aria-label={t("aria_prev_week")} onClick={() => shiftWeek(-1)} className="grid h-8 w-8 place-items-center rounded-xl border border-kx-stroke/60 text-kx-muted hover:text-kx-accent"><ChevronLeft className="h-4 w-4" /></button>
           <button type="button" onClick={() => setCursor(new Date())} className="rounded-xl border border-kx-stroke/60 px-2.5 text-xs font-bold text-kx-muted hover:text-kx-accent">本周</button>
-          <button type="button" aria-label="下一周" onClick={() => shiftWeek(1)} className="grid h-8 w-8 place-items-center rounded-xl border border-kx-stroke/60 text-kx-muted hover:text-kx-accent"><ChevronRight className="h-4 w-4" /></button>
+          <button type="button" aria-label={t("aria_next_week")} onClick={() => shiftWeek(1)} className="grid h-8 w-8 place-items-center rounded-xl border border-kx-stroke/60 text-kx-muted hover:text-kx-accent"><ChevronRight className="h-4 w-4" /></button>
         </div>
       </div>
       <div className="overflow-x-auto">

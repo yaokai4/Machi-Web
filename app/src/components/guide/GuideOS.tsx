@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { guide, type GuideActivePlanResponse, type GuideNextAction, type GuideProduct, type GuideProfile, type GuideTodo, type GuideTodoStep } from "@/lib/guide";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 import { GuideAttachmentManager } from "@/components/guide/GuideAttachmentManager";
 
 export function GuideIdentityCard({ profile }: { profile?: GuideProfile | null }) {
@@ -188,10 +189,22 @@ export function GuideNextActions({ actions = [] }: { actions?: GuideNextAction[]
   );
 }
 
+// Guide date math runs in Asia/Tokyo (the audience is in Japan). Deriving
+// "today" from UTC (new Date().toISOString()) or the machine clock reads as
+// yesterday during the JST 00:00–09:00 window, which would shift quick-add
+// chips, agenda labels, the month-grid highlight, countdowns and overdue flags
+// by a full day. Compute the JST calendar date, then do whole-day arithmetic in
+// UTC (Japan has no DST) to keep the result a stable YYYY-MM-DD.
 function isoShift(days: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() + days);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  const todayJst = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+  const [y, m, d] = todayJst.split("-").map(Number);
+  const shifted = new Date(Date.UTC(y, m - 1, d + days));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}-${String(shifted.getUTCDate()).padStart(2, "0")}`;
 }
 
 export function GuideQuickAddTodo({ defaultDate, compact = false, planId }: { defaultDate?: string; compact?: boolean; planId?: string }) {
@@ -275,6 +288,7 @@ export function GuideQuickAddTodo({ defaultDate, compact = false, planId }: { de
 export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; compact?: boolean }) {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const [showReschedule, setShowReschedule] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
   const [detailTitle, setDetailTitle] = useState(todo.title);
@@ -404,7 +418,7 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
     <article
       className="kx-card cursor-pointer p-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/60"
       tabIndex={0}
-      aria-label={`打开 Todo 详情：${todo.title}`}
+      aria-label={t("aria_open_todo").replace("{title}", todo.title)}
       onClick={(event) => {
         if ((event.target as HTMLElement).closest("button,input,textarea,a,select")) return;
         openDetail();
@@ -422,7 +436,7 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
           onClick={() => !done && complete.mutate()}
           disabled={done || complete.isPending}
           className="mt-0.5 shrink-0 text-kx-accent disabled:opacity-60"
-          aria-label={done ? "已完成" : "标记完成"}
+          aria-label={done ? t("aria_completed") : t("aria_mark_done")}
         >
           {done ? <CheckCircle2 className="h-6 w-6" /> : <Circle className="h-6 w-6" />}
         </button>
@@ -447,11 +461,11 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
               ) : null}
               {steps.map((s) => (
                 <div key={s.id} className="group flex items-center gap-2">
-                  <button type="button" onClick={() => toggleStep(s.id)} disabled={stepsMut.isPending} className="shrink-0" aria-label={s.done ? "取消完成" : "完成步骤"}>
+                  <button type="button" onClick={() => toggleStep(s.id)} disabled={stepsMut.isPending} className="shrink-0" aria-label={s.done ? t("aria_unmark_done") : t("aria_complete_step")}>
                     {s.done ? <CheckCircle2 className="h-[18px] w-[18px] text-kx-accent" /> : <Circle className="h-[18px] w-[18px] text-kx-muted" />}
                   </button>
                   <span className={"flex-1 text-sm leading-6 " + (s.done ? "text-kx-muted line-through" : "text-kx-text")}>{s.text}</span>
-                  <button type="button" onClick={() => removeStep(s.id)} className="shrink-0 text-kx-muted opacity-0 transition hover:text-kx-danger group-hover:opacity-100" aria-label="删除步骤">
+                  <button type="button" onClick={() => removeStep(s.id)} className="shrink-0 text-kx-muted opacity-0 transition hover:text-kx-danger group-hover:opacity-100" aria-label={t("aria_delete_step")}>
                     <X className="h-3.5 w-3.5" />
                   </button>
                 </div>
@@ -532,7 +546,7 @@ export function GuideTodoCard({ todo, compact = false }: { todo: GuideTodo; comp
               <p className="text-xs font-black uppercase tracking-[0.12em] text-kx-muted">Todo Detail</p>
               <h2 id={`todo-detail-${todo.id}`} className="mt-1 text-xl font-black text-kx-text">Todo 详情</h2>
             </div>
-            <button type="button" onClick={() => setDetailOpen(false)} className="grid min-h-11 min-w-11 place-items-center rounded-full text-kx-muted hover:bg-kx-soft" aria-label="关闭">
+            <button type="button" onClick={() => setDetailOpen(false)} className="grid min-h-11 min-w-11 place-items-center rounded-full text-kx-muted hover:bg-kx-soft" aria-label={t("aria_close")}>
               <X className="h-5 w-5" />
             </button>
           </div>
@@ -703,10 +717,8 @@ export function GuideCalendarPanel({ todos }: { todos: GuideTodo[] }) {
   if (!dateKeys.length) {
     return <EmptyPanel title="日历还没有任务" body="开始一个计划，或添加学校/公司截止日期和生活账单。" />;
   }
-  const today = new Date().toISOString().slice(0, 10);
-  const tomorrowDate = new Date();
-  tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-  const tomorrow = tomorrowDate.toISOString().slice(0, 10);
+  const today = isoShift(0);
+  const tomorrow = isoShift(1);
   const labelDate = (d: string) => (d === "未安排" ? d : d === today ? "今天" : d === tomorrow ? "明天" : d);
   const datedKeys = dateKeys.filter((d) => d !== "未安排");
   const countdowns = datedKeys
@@ -758,26 +770,26 @@ export function GuideCalendarPanel({ todos }: { todos: GuideTodo[] }) {
 }
 
 function MonthGrid({ groups }: { groups: Record<string, GuideTodo[]> }) {
-  const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth();
-  const first = new Date(year, month, 1);
-  const last = new Date(year, month + 1, 0);
+  // Anchor the grid on the JST calendar month so the "today" highlight lines up
+  // with the cells even during the JST 00:00–09:00 window (see isoShift).
+  const today = isoShift(0);
+  const [year, month] = today.split("-").map(Number); // month is 1-based
+  const first = new Date(year, month - 1, 1);
+  const last = new Date(year, month, 0);
   const cells: Array<{ key: string; label: string; muted?: boolean; iso?: string; count?: number; urgent?: boolean }> = [];
   const startOffset = first.getDay();
   for (let i = 0; i < startOffset; i += 1) {
     cells.push({ key: `blank-${i}`, label: "", muted: true });
   }
   for (let day = 1; day <= last.getDate(); day += 1) {
-    const iso = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    const iso = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
     const items = groups[iso] || [];
     cells.push({ key: iso, label: String(day), iso, count: items.length, urgent: items.some((t) => t.priority === "high" || t.dueAt) });
   }
-  const today = new Date().toISOString().slice(0, 10);
   return (
     <div className="kx-card p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h2 className="text-lg font-black text-kx-text">{year} 年 {month + 1} 月</h2>
+        <h2 className="text-lg font-black text-kx-text">{year} 年 {month} 月</h2>
         <span className="rounded-full bg-kx-soft px-2.5 py-1 text-xs font-bold text-kx-muted">Guide 日历</span>
       </div>
       <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-bold text-kx-muted">
@@ -788,8 +800,8 @@ function MonthGrid({ groups }: { groups: Record<string, GuideTodo[]> }) {
           <div
             key={cell.key}
             className={
-              "relative flex aspect-square items-start justify-start rounded-kx-sm border p-1.5 text-xs font-black " +
-              (cell.iso === today ? "border-kx-accent bg-kx-accentSoft text-kx-accent" : cell.count ? "border-kx-accent/25 bg-kx-card text-kx-text" : "border-transparent bg-kx-soft/45 text-kx-muted")
+              "relative flex aspect-square items-start justify-start rounded-kx-sm border p-1.5 text-xs font-black transition " +
+              (cell.iso === today ? "border-kx-accent bg-kx-accentSoft text-kx-accent ring-1 ring-kx-accent/40" : cell.count ? "border-kx-accent/25 bg-kx-card text-kx-text" : "border-transparent bg-kx-soft/45 text-kx-muted")
             }
           >
             {cell.label}
@@ -804,7 +816,9 @@ function MonthGrid({ groups }: { groups: Record<string, GuideTodo[]> }) {
 }
 
 function daysUntil(date: string) {
-  const start = new Date(new Date().toISOString().slice(0, 10)).getTime();
+  // Both operands are UTC-midnight-parsed YYYY-MM-DD strings; isoShift(0) is the
+  // JST "today" so the day delta stays correct across the JST 00:00–09:00 window.
+  const start = new Date(isoShift(0)).getTime();
   const end = new Date(date).getTime();
   return Math.ceil((end - start) / 86_400_000);
 }
@@ -838,5 +852,5 @@ function TodoTag({ text, icon, tone = "muted" }: { text: string; icon?: React.Re
 function isOverdue(todo: GuideTodo) {
   const raw = todo.dueAt || todo.plannedDate;
   if (!raw || todo.status === "done") return false;
-  return raw.slice(0, 10) < new Date().toISOString().slice(0, 10);
+  return raw.slice(0, 10) < isoShift(0);
 }

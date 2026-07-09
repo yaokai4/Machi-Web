@@ -66,8 +66,16 @@ export async function generateMetadata({ params }: PageProps): Promise<Metadata>
   const pageId = pageIdForParams(resolved);
   if (!pageId) return {};
   const pathSuffix = pageIdToPath.get(pageId) ?? resolved.slug.join("/");
+  // `guide` is special: the real Guide product lives at the prefix-less
+  // /guide (app/guide/page.tsx → GuideHomeClient) and declares its language
+  // versions as /{locale}/guide. This localized marketing intro renders on
+  // those same URLs, so it must NOT self-canonicalize as a separate page —
+  // that produced two competing canonicals for the Guide cluster. Point its
+  // canonical (and OG url) at /guide so every /{locale}/guide consolidates
+  // into the one product page, matching the hreflang set /guide already emits.
+  const canonicalPath = pageId === "guide" ? "/guide" : `/${resolved.locale}/${pathSuffix}`;
   return buildSubPageMetadata(pageId, pathSuffix, {
-    canonicalPath: `/${resolved.locale}/${pathSuffix}`,
+    canonicalPath,
   });
 }
 

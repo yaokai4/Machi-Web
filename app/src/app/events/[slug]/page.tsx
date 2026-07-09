@@ -16,11 +16,13 @@ import {
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { Avatar } from "@/components/design/Avatar";
-import { api } from "@/lib/api";
+import { api, type APIError } from "@/lib/api";
 import { sameOriginApiUrl } from "@/lib/media";
 import { useSessionUser } from "@/lib/session";
+import { useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 import type { KXEvent, KXEventFormField } from "@/lib/types";
-import { dateBadge, eventStyle, eventTimeLine } from "@/components/social/socialStyle";
+import { dateBadge, eventStyle, eventTimeLine, kindLabel, parseISO, socialCopy } from "@/components/social/socialStyle";
 import { ShareButton } from "@/components/social/ShareButton";
 
 function RegistrationModal({
@@ -30,6 +32,9 @@ function RegistrationModal({
   onClose: () => void;
   onDone: (updated: KXEvent) => void;
 }) {
+  const { locale } = useI18n();
+  const copy = socialCopy(locale);
+  const c = copy.events;
   const fields = useMemo(() => event.form_fields ?? [], [event.form_fields]);
   const [answers, setAnswers] = useState<Record<string, string>>({});
   const [error, setError] = useState("");
@@ -40,7 +45,7 @@ function RegistrationModal({
       return api.registerForEvent(event.slug || event.id, cleaned);
     },
     onSuccess: (data) => onDone(data.event),
-    onError: (err: Error) => setError(err.message || "报名失败,稍后再试"),
+    onError: (err: Error) => setError(err.message || c.registerError),
   });
 
   const missingRequired = fields.some((f) => f.required && !(answers[f.id] ?? "").trim());
@@ -78,7 +83,7 @@ function RegistrationModal({
           }`}
         >
           <Check className={`h-3.5 w-3.5 ${on ? "" : "opacity-30"}`} />
-          {on ? "是" : "否"}
+          {on ? c.yes : c.no}
         </button>
       );
     }
@@ -100,10 +105,10 @@ function RegistrationModal({
       >
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h2 className="text-lg font-black">报名信息</h2>
+            <h2 className="text-lg font-black">{c.modalTitle}</h2>
             <p className="mt-0.5 line-clamp-1 text-xs font-semibold text-kx-muted">{event.title}</p>
           </div>
-          <button type="button" onClick={onClose} className="rounded-full p-2 text-kx-muted hover:bg-kx-soft" aria-label="关闭">
+          <button type="button" onClick={onClose} className="rounded-full p-2 text-kx-muted transition hover:bg-kx-soft" aria-label={copy.common.close}>
             <X className="h-4 w-4" />
           </button>
         </div>
@@ -124,7 +129,7 @@ function RegistrationModal({
             onClick={() => register.mutate()}
             className="kx-button-primary h-12 w-full rounded-full text-sm font-black disabled:opacity-50"
           >
-            {register.isPending ? "提交中…" : event.is_full ? "加入候补" : "确认报名"}
+            {register.isPending ? c.submitting : event.is_full ? c.joinWaitlist : c.confirmReg}
           </button>
         </div>
       </div>
@@ -138,6 +143,10 @@ export default function EventDetailPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const viewer = useSessionUser();
+  const pushToast = useToasts((s) => s.push);
+  const { locale } = useI18n();
+  const copy = socialCopy(locale);
+  const c = copy.events;
   const [modalOpen, setModalOpen] = useState(false);
 
   const query = useQuery({
@@ -150,14 +159,17 @@ export default function EventDetailPage() {
   const cancelRegistration = useMutation({
     mutationFn: () => api.cancelEventRegistration(slug),
     onSuccess: (data) => queryClient.setQueryData(["event", slug], data.event),
+    onError: (err: Error) => pushToast({ kind: "error", message: (err as APIError).message || c.cancelError }),
   });
   const quickRegister = useMutation({
     mutationFn: () => api.registerForEvent(slug, {}),
     onSuccess: (data) => queryClient.setQueryData(["event", slug], data.event),
+    onError: (err: Error) => pushToast({ kind: "error", message: (err as APIError).message || c.registerError }),
   });
   const removeEvent = useMutation({
     mutationFn: () => api.deleteEvent(slug),
     onSuccess: () => router.push("/events"),
+    onError: (err: Error) => pushToast({ kind: "error", message: (err as APIError).message || c.deleteError }),
   });
 
   function handleRegister() {
@@ -189,17 +201,21 @@ export default function EventDetailPage() {
 
   const style = eventStyle(event.category);
   const Icon = style.icon;
-  const badge = dateBadge(event.starts_at);
+  const badge = dateBadge(event.starts_at, locale);
   const going = event.going_count ?? 0;
   const capacity = event.capacity ?? 0;
   const spotsLeft = capacity > 0 ? Math.max(0, capacity - going) : null;
   const isOrganizer = viewer && viewer.id === event.organizer_user_id;
   const canManage = isOrganizer || viewer?.role === "admin";
   const ended = (() => {
-    const anchor = event.ends_at || event.starts_at;
-    if (!anchor) return false;
-    const date = new Date(anchor);
-    return !Number.isNaN(date.getTime()) && date.getTime() < Date.now();
+    // 有结束时间才据其判「已结束」;没有结束时间时(创建页 ends_at 可选),按开始时间
+    // 给 4 小时宽限——否则一到开场时刻,正在进行、可现场报名的活动会被判结束、报名按钮
+    // 被置灰。时间为绝对瞬时(ISO 带时区),与展示锚定的 JST 无关,直接比较即可。
+    const end = parseISO(event.ends_at);
+    if (end) return end.getTime() < Date.now();
+    const start = parseISO(event.starts_at);
+    if (start) return start.getTime() + 4 * 60 * 60 * 1000 < Date.now();
+    return false;
   })();
   const coverSrc = event.cover_url ? sameOriginApiUrl(event.cover_url) : null;
   const shareUrl = typeof window !== "undefined" ? window.location.href : `/events/${slug}`;
@@ -220,27 +236,27 @@ export default function EventDetailPage() {
 
         <div className="mx-auto max-w-5xl px-4 pb-16 pt-4 sm:px-6">
           <div className="mb-4 flex items-center justify-between">
-            <Link href="/events" className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black shadow-sm backdrop-blur hover:bg-kx-card">
+            <Link href="/events" className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black shadow-sm backdrop-blur transition hover:bg-kx-card">
               <ArrowLeft className="h-3.5 w-3.5" />
-              全部活动
+              {c.all}
             </Link>
             <div className="flex items-center gap-2">
               {canManage ? (
                 <>
                   <Link
                     href={`/events/${encodeURIComponent(event.slug || event.id)}/manage`}
-                    className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black shadow-sm backdrop-blur hover:bg-kx-card"
+                    className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black shadow-sm backdrop-blur transition hover:bg-kx-card"
                   >
                     <Settings2 className="h-3.5 w-3.5" />
-                    管理
+                    {c.manage}
                   </Link>
                   <button
                     type="button"
-                    onClick={() => { if (confirm(`删除活动「${event.title}」?已报名的人会看到活动已取消。`)) removeEvent.mutate(); }}
-                    className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black text-kx-heat shadow-sm backdrop-blur hover:bg-kx-heat/10"
+                    onClick={() => { if (confirm(c.deleteConfirm(event.title))) removeEvent.mutate(); }}
+                    className="inline-flex items-center gap-1.5 rounded-full bg-kx-card/85 px-3.5 py-2 text-xs font-black text-kx-heat shadow-sm backdrop-blur transition hover:bg-kx-heat/10"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
-                    删除
+                    {c.delete}
                   </button>
                 </>
               ) : null}
@@ -270,7 +286,7 @@ export default function EventDetailPage() {
 
               {event.description ? (
                 <section className="kx-card p-5 sm:p-6">
-                  <h2 className="text-sm font-black uppercase tracking-wider text-kx-muted">活动详情</h2>
+                  <h2 className="text-sm font-black uppercase tracking-wider text-kx-muted">{c.about}</h2>
                   <div className="mt-3 whitespace-pre-wrap text-[15px] leading-7">{event.description}</div>
                 </section>
               ) : null}
@@ -281,11 +297,11 @@ export default function EventDetailPage() {
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[11px] font-black ${style.softBg} ${style.text}`}>
                   <Icon className="h-3 w-3" />
-                  {event.category_label || style.labelZh}
+                  {kindLabel(event.category_label, style, locale)}
                 </span>
                 {event.is_featured ? (
                   <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/20 px-2.5 py-1 text-[11px] font-black text-amber-600">
-                    <Star className="h-3 w-3" /> Machi 精选
+                    <Star className="h-3 w-3" /> {c.featured}
                   </span>
                 ) : null}
                 {event.partner_name ? (
@@ -304,7 +320,7 @@ export default function EventDetailPage() {
                     <CalendarDays className={`h-5 w-5 ${style.text}`} />
                   </div>
                   <div className="min-w-0">
-                    <p className="text-sm font-black">{eventTimeLine(event.starts_at, event.ends_at)}</p>
+                    <p className="text-sm font-black">{eventTimeLine(event.starts_at, event.ends_at, locale)}</p>
                     <p className="mt-0.5 text-xs font-semibold text-kx-muted">{event.timezone || "Asia/Tokyo"}</p>
                   </div>
                 </div>
@@ -332,7 +348,7 @@ export default function EventDetailPage() {
                   <div className="flex items-center gap-3 p-4">
                     <Avatar user={event.organizer} size={44} href={`/u/${event.organizer.handle}`} />
                     <div className="min-w-0">
-                      <p className="text-[11px] font-black uppercase tracking-wider text-kx-muted">主办方</p>
+                      <p className="text-[11px] font-black uppercase tracking-wider text-kx-muted">{c.organizer}</p>
                       <p className="truncate text-sm font-black">{event.organizer.display_name}</p>
                     </div>
                   </div>
@@ -342,24 +358,24 @@ export default function EventDetailPage() {
               {/* 报名卡 */}
               <div className="kx-card p-4 sm:p-5">
                 <div className="flex items-center justify-between">
-                  <p className="text-xs font-black uppercase tracking-wider text-kx-muted">报名</p>
+                  <p className="text-xs font-black uppercase tracking-wider text-kx-muted">{c.register}</p>
                   {event.price_text ? <p className="text-sm font-black text-kx-heat">{event.price_text}</p> : null}
                 </div>
                 <div className="mt-2">
                   {event.viewer_status === "going" ? (
                     <p className="inline-flex items-center gap-1.5 text-sm font-black text-kx-accent">
-                      <Check className="h-4 w-4" /> 你已报名这场活动
+                      <Check className="h-4 w-4" /> {c.registered}
                     </p>
                   ) : event.viewer_status === "waitlist" ? (
                     <p className="inline-flex items-center gap-1.5 text-sm font-black text-amber-600">
-                      <Hourglass className="h-4 w-4" /> 已进入候补,有空位自动顶上
+                      <Hourglass className="h-4 w-4" /> {c.waitlisted}
                     </p>
                   ) : spotsLeft !== null ? (
                     <p className={`text-sm font-black ${spotsLeft > 0 ? "text-kx-accent" : "text-kx-heat"}`}>
-                      {spotsLeft > 0 ? `还剩 ${spotsLeft} 个名额` : "名额已满,可加入候补"}
+                      {spotsLeft > 0 ? c.spotsLeft(spotsLeft) : c.fullWaitlist}
                     </p>
                   ) : (
-                    <p className="text-sm font-semibold text-kx-muted">名额不限,来就完事了</p>
+                    <p className="text-sm font-semibold text-kx-muted">{c.unlimited}</p>
                   )}
                 </div>
 
@@ -373,18 +389,18 @@ export default function EventDetailPage() {
                       ))}
                     </div>
                     <span className="inline-flex items-center gap-1 text-xs font-bold text-kx-muted">
-                      <Users2 className="h-3.5 w-3.5" /> {going} 人参加
+                      <Users2 className="h-3.5 w-3.5" /> {c.going(going)}
                     </span>
                   </div>
                 ) : null}
 
                 <div className="mt-4 space-y-2">
                   {event.status === "cancelled" ? (
-                    <div className="grid h-12 place-items-center rounded-full bg-kx-soft text-sm font-black text-kx-muted">活动已取消</div>
+                    <div className="grid h-12 place-items-center rounded-full bg-kx-soft text-sm font-black text-kx-muted">{c.cancelled}</div>
                   ) : ended ? (
-                    <div className="grid h-12 place-items-center rounded-full bg-kx-soft text-sm font-black text-kx-muted">活动已结束</div>
+                    <div className="grid h-12 place-items-center rounded-full bg-kx-soft text-sm font-black text-kx-muted">{c.ended}</div>
                   ) : isOrganizer ? (
-                    <div className="grid h-12 place-items-center rounded-full bg-kx-soft text-sm font-black text-kx-muted">你是这场活动的主办方</div>
+                    <div className="grid h-12 place-items-center rounded-full bg-kx-soft text-sm font-black text-kx-muted">{c.youOrganizer}</div>
                   ) : event.viewer_status === "going" || event.viewer_status === "waitlist" ? (
                     <button
                       type="button"
@@ -392,7 +408,7 @@ export default function EventDetailPage() {
                       disabled={cancelRegistration.isPending}
                       className="h-12 w-full rounded-full bg-kx-soft text-sm font-black text-kx-heat transition hover:bg-kx-heat/10 disabled:opacity-50"
                     >
-                      {cancelRegistration.isPending ? "取消中…" : "取消报名"}
+                      {cancelRegistration.isPending ? c.cancelling : c.cancelReg}
                     </button>
                   ) : (
                     <button
@@ -401,7 +417,7 @@ export default function EventDetailPage() {
                       disabled={quickRegister.isPending}
                       className="kx-button-primary h-12 w-full rounded-full text-sm font-black disabled:opacity-60"
                     >
-                      {quickRegister.isPending ? "报名中…" : event.is_full ? "加入候补" : "报名参加"}
+                      {quickRegister.isPending ? c.registering : event.is_full ? c.joinWaitlist : c.registerJoin}
                     </button>
                   )}
                   {event.external_url ? (
@@ -412,13 +428,13 @@ export default function EventDetailPage() {
                       className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-full border border-kx-stroke/70 text-xs font-black text-kx-text transition hover:bg-kx-soft"
                     >
                       <Ticket className="h-3.5 w-3.5" />
-                      合作方售票 / 详情页
+                      {c.external}
                       <ArrowUpRight className="h-3.5 w-3.5" />
                     </a>
                   ) : null}
                 </div>
                 <p className="mt-3 text-center text-[11px] font-semibold text-kx-muted/80">
-                  Machi 不代收任何费用;付费活动请以合作方页面为准。
+                  {c.disclaimer}
                 </p>
               </div>
             </div>

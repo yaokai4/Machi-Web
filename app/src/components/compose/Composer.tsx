@@ -709,7 +709,7 @@ export function Composer() {
                       type="button"
                       className="absolute top-1.5 right-1.5 bg-black/65 hover:bg-black/85 text-white rounded-full p-1 transition"
                       onClick={() => removeMedia(m.id)}
-                      aria-label="移除"
+                      aria-label={t("aria_remove")}
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>
@@ -766,13 +766,13 @@ export function Composer() {
             ) : null}
             {tags.length ? (
               <div className="flex flex-wrap gap-1.5 mt-3">
-                {tags.map((t) => (
-                  <span key={t} className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-kx-accentSoft text-kx-accent">
-                    #{t}
-                    {!inlineTags.includes(t) ? (
+                {tags.map((tag) => (
+                  <span key={tag} className="inline-flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded-full bg-kx-accentSoft text-kx-accent">
+                    #{tag}
+                    {!inlineTags.includes(tag) ? (
                       <button
-                        onClick={() => setExtraTags((prev) => prev.filter((x) => x !== t))}
-                        aria-label="移除标签"
+                        onClick={() => setExtraTags((prev) => prev.filter((x) => x !== tag))}
+                        aria-label={t("aria_remove_tag")}
                       >
                         <X className="w-3 h-3" />
                       </button>
@@ -1172,6 +1172,7 @@ function PollAttributeFields({
   attributes: Record<string, string | boolean>;
   onChange: (key: string, value: string | boolean) => void;
 }) {
+  const { t } = useI18n();
   const options = parsePollOptions(attributes.options);
   const rows = options.length >= POLL_MIN_OPTIONS ? options : ["", ""];
   const setOptions = (next: string[]) => onChange("options", JSON.stringify(next.slice(0, POLL_MAX_OPTIONS)));
@@ -1214,7 +1215,7 @@ function PollAttributeFields({
                 type="button"
                 className="kx-button-ghost h-9 w-9 p-0"
                 onClick={() => setOptions(rows.filter((_, i) => i !== index))}
-                aria-label="删除选项"
+                aria-label={t("aria_delete_option")}
               >
                 <X className="h-4 w-4" />
               </button>

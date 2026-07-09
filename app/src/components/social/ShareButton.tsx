@@ -2,9 +2,11 @@
 
 // 通用分享按钮:优先系统分享面板(navigator.share),不支持则复制链接。
 // 全站复用——活动、房间、帖子、个人主页都用它,链接打开即 web 端。
+// 文案随 locale 走(useI18n),ja/en 查看者不会再看到写死的中文。
 
 import { useState } from "react";
 import { Check, Share2 } from "lucide-react";
+import { useI18n } from "@/lib/i18n";
 
 interface ShareButtonProps {
   /** Absolute or relative URL to share. Relative is resolved against the current origin. */
@@ -13,6 +15,7 @@ interface ShareButtonProps {
   text?: string;
   /** Icon-only round button (for toolbars). Otherwise a labelled pill. */
   compact?: boolean;
+  /** Overrides the default localized “Share” label. */
   label?: string;
   className?: string;
 }
@@ -26,8 +29,10 @@ function absolute(url: string): string {
   }
 }
 
-export function ShareButton({ url, title, text, compact = false, label = "分享", className }: ShareButtonProps) {
+export function ShareButton({ url, title, text, compact = false, label, className }: ShareButtonProps) {
+  const { t } = useI18n();
   const [copied, setCopied] = useState(false);
+  const shareLabel = label ?? t("action_share");
 
   async function handleShare() {
     const link = absolute(url);
@@ -44,7 +49,7 @@ export function ShareButton({ url, title, text, compact = false, label = "分享
       await navigator.clipboard.writeText(link);
     } catch {
       // 极端环境(无 clipboard 权限)兜底:选中提示
-      window.prompt("复制此链接分享:", link);
+      window.prompt(t("share_copy_prompt"), link);
       return;
     }
     setCopied(true);
@@ -56,7 +61,7 @@ export function ShareButton({ url, title, text, compact = false, label = "分享
       <button
         type="button"
         onClick={handleShare}
-        aria-label={label}
+        aria-label={shareLabel}
         className={
           className ??
           "rounded-full p-2 text-kx-muted transition hover:bg-kx-soft hover:text-kx-text"
@@ -77,7 +82,7 @@ export function ShareButton({ url, title, text, compact = false, label = "分享
       }
     >
       {copied ? <Check className="h-3.5 w-3.5 text-kx-accent" /> : <Share2 className="h-3.5 w-3.5" />}
-      {copied ? "已复制链接" : label}
+      {copied ? t("post_share_copied") : shareLabel}
     </button>
   );
 }

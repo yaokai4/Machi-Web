@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Globe, Save } from "lucide-react";
 import { api, APIError } from "@/lib/api";
@@ -56,13 +56,25 @@ export function MasterCopyEditorCard() {
       .sort(([a], [b]) => a.localeCompare(b, "en"));
   }, [defaults, draft, search]);
 
+  // The draft must be rebuilt when the admin intentionally switches page/locale,
+  // and once the server overrides for that selection first arrive — but NEVER on
+  // a background refetch. refetchOnReconnect is on (queryClient default), so a
+  // wifi blip mid-edit would otherwise swap overridesQuery.data's reference and
+  // silently overwrite dozens of unsaved 中/日/英 edits with the old server copy.
+  // `hydratedRef` records the selection whose overrides are already applied, so a
+  // reconnect refetch of that same selection is ignored.
+  const signature = `${pageKey}|${locale}`;
+  const hydratedRef = useRef<string>("");
   useEffect(() => {
+    const overridesReady = !overridesQuery.isLoading;
+    if (hydratedRef.current === signature && overridesReady) return;
     const next: Record<string, string> = {};
     for (const [path, value] of Object.entries(defaults)) {
       next[path] = scopedOverrides[path] ?? value;
     }
     setDraft(next);
-  }, [defaults, scopedOverrides]);
+    if (overridesReady) hydratedRef.current = signature;
+  }, [signature, defaults, scopedOverrides, overridesQuery.isLoading]);
 
   const save = async () => {
     setBusy(true);

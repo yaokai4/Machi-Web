@@ -5,6 +5,7 @@ import Image from "next/image";
 import clsx from "clsx";
 import { ImageIcon, Play } from "lucide-react";
 import { isVideoMedia, mediaCardAspectRatio, mediaDurationLabel, mediaPreviewImageUrl } from "@/lib/media";
+import { useI18n } from "@/lib/i18n";
 import type { KXMedia } from "@/lib/types";
 import { Lightbox } from "./Lightbox";
 
@@ -12,16 +13,26 @@ interface MediaGridProps {
   items: KXMedia[];
   onOpen?: (media: KXMedia, index: number) => void;
   rounded?: boolean;
+  /** Optional context (e.g. post author / title) woven into each image's alt
+   *  text so screen-reader users get more than a bare "image N/M". */
+  alt?: string;
 }
 
 /**
  * Grid layout for 1-9 images/videos with a built-in lightbox.
  * Provide `onOpen` to override the default open-in-lightbox behaviour.
  */
-function MediaGridImpl({ items, onOpen, rounded = true }: MediaGridProps) {
+function MediaGridImpl({ items, onOpen, rounded = true, alt }: MediaGridProps) {
+  const { t } = useI18n();
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
   if (!items?.length) return null;
   const count = items.length;
+  const shown = Math.min(count, 9);
+  const describe = (isVideo: boolean, index: number) => {
+    const kind = isVideo ? t("media_video_alt") : t("media_image_alt");
+    const position = shown > 1 ? ` ${index + 1}/${shown}` : "";
+    return alt ? `${alt} — ${kind}${position}` : `${kind}${position}`;
+  };
   const open = (media: KXMedia, index: number) => {
     if (onOpen) onOpen(media, index);
     else setLightboxIndex(index);
@@ -57,9 +68,9 @@ function MediaGridImpl({ items, onOpen, rounded = true }: MediaGridProps) {
                 count === 1 ? "w-full max-h-[540px]" : "aspect-square",
               )}
               style={count === 1 ? { aspectRatio: mediaCardAspectRatio(media) } : undefined}
-              aria-label={isVideo ? "播放视频" : "查看图片"}
+              aria-label={isVideo ? t("media_play_video") : t("media_view_image")}
             >
-              {previewUrl ? <MediaImage src={previewUrl} /> : <MediaFallback isVideo={isVideo} />}
+              {previewUrl ? <MediaImage src={previewUrl} alt={describe(isVideo, index)} /> : <MediaFallback isVideo={isVideo} />}
               {isVideo ? (
                 <span className="absolute inset-0 flex items-center justify-center bg-black/10 transition group-hover/media:bg-black/22">
                   <span className="grid h-12 w-12 place-items-center rounded-full bg-black/65 text-white shadow-lg backdrop-blur transition-transform group-hover/media:scale-110">
@@ -111,16 +122,22 @@ function MediaFallback({ isVideo }: { isVideo: boolean }) {
   );
 }
 
-/** next/image (AVIF/WebP + responsive srcset, lazy by default) with a
- *  blur-up reveal: starts blurred + slightly scaled over the bg-kx-soft
- *  placeholder, then sharpens in on load. */
-function MediaImage({ src }: { src: string }) {
+/** next/image with a blur-up reveal: starts blurred + slightly scaled over the
+ *  bg-kx-soft placeholder, then sharpens in on load.
+ *
+ *  `unoptimized`: the backend already returns sized thumbnails; routing the
+ *  highest-traffic surface (feed) through Next's self-hosted sharp optimizer on
+ *  the 2-core prod box is a net CPU loss for ~no byte savings — see the note in
+ *  next.config.mjs. Every other <Image> in the app already opts out; the feed
+ *  grid was the lone omission. */
+function MediaImage({ src, alt }: { src: string; alt: string }) {
   const [loaded, setLoaded] = useState(false);
   return (
     <Image
       src={src}
-      alt=""
+      alt={alt}
       fill
+      unoptimized
       sizes="(max-width: 768px) 100vw, 640px"
       onLoad={() => setLoaded(true)}
       className={clsx(

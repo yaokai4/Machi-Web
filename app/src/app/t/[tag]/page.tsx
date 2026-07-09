@@ -8,13 +8,19 @@ import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { PostCard } from "@/components/feed/PostCard";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type Locale } from "@/lib/i18n";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+
+function pick(locale: Locale, zh: string, ja: string, en: string): string {
+  if (locale === "ja") return ja;
+  if (locale === "en") return en;
+  return zh;
+}
 
 export default function TopicPage() {
   const params = useParams<{ tag: string }>();
   const router = useRouter();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
@@ -64,7 +70,7 @@ export default function TopicPage() {
   return (
     <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
-        <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label="返回">
+        <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label={pick(locale, "返回", "戻る", "Back")}>
           <ArrowLeft className="w-4 h-4" />
         </button>
         <div className="flex min-w-0 flex-1 items-center gap-1 font-semibold text-lg">
@@ -100,7 +106,10 @@ export default function TopicPage() {
         ) : topic.isError ? (
           <ErrorState onRetry={() => topic.refetch()} />
         ) : !topic.data?.items.length ? (
-          <EmptyState title="这个话题还没有帖子" subtitle="成为第一个发布的人。" />
+          <EmptyState
+            title={pick(locale, "这个话题还没有帖子", "この話題にはまだ投稿がありません", "No posts in this topic yet")}
+            subtitle={pick(locale, "成为第一个发布的人。", "最初の投稿者になりましょう。", "Be the first to post.")}
+          />
         ) : (
           topic.data.items.map((p) => <PostCard key={p.id} post={p} />)
         )}

@@ -14,7 +14,7 @@ import { Dialog } from "@/components/design/Dialog";
 import { relativeTime } from "@/lib/format";
 import { useToasts } from "@/lib/store";
 import { useDebounce } from "@/lib/hooks";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type Locale } from "@/lib/i18n";
 
 export default function MessagesPage() {
   const router = useRouter();
@@ -84,7 +84,7 @@ export default function MessagesPage() {
                   <Avatar user={peer || undefined} size={44} />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-1.5">
-                      <span className="font-semibold truncate">{peer?.display_name || "用户"}</span>
+                      <span className="font-semibold truncate">{peer?.display_name || SOMEONE[msgLang(locale)]}</span>
                       {showOfficialBadge(peer) ? <OfficialBadge /> : showVerifiedBadge(peer) ? <VerifiedBadge /> : null}
                       <span className="text-kx-muted text-xs truncate">@{peer?.handle}</span>
                       {conv.last_message ? (
@@ -94,7 +94,7 @@ export default function MessagesPage() {
                       ) : null}
                     </div>
                     <div className="text-sm text-kx-subtle truncate mt-0.5">
-                      {conversationPreview(conv.last_message)}
+                      {conversationPreview(conv.last_message, locale, t("msg_no_message"))}
                     </div>
                   </div>
                   {conv.unread_count > 0 ? (
@@ -107,9 +107,9 @@ export default function MessagesPage() {
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
-                      if (window.confirm("删除整个会话？")) deleteConv(conv.id);
+                      if (window.confirm(t("msg_delete_confirm"))) deleteConv(conv.id);
                     }}
-                    aria-label="删除"
+                    aria-label={t("action_delete")}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -161,16 +161,35 @@ export default function MessagesPage() {
   );
 }
 
-function conversationPreview(message?: { content?: string; media?: Array<{ type?: string }>; attachments?: Array<{ type?: string; attachment_type?: string }> } | null): string {
-  if (!message) return "开始对话…";
+// 会话预览里的媒体占位与「用户」兜底,随语言切换(私信页已三语化,别再漏中文)。
+type MsgLang = "zh" | "ja" | "en";
+function msgLang(locale: Locale): MsgLang {
+  if (locale === "en") return "en";
+  if (locale === "ja") return "ja";
+  return "zh";
+}
+const MEDIA_LABELS: Record<MsgLang, { video: string; image: string; file: string }> = {
+  zh: { video: "[视频]", image: "[图片]", file: "[附件]" },
+  ja: { video: "[動画]", image: "[画像]", file: "[添付ファイル]" },
+  en: { video: "[Video]", image: "[Photo]", file: "[Attachment]" },
+};
+const SOMEONE: Record<MsgLang, string> = { zh: "用户", ja: "ユーザー", en: "User" };
+
+function conversationPreview(
+  message: { content?: string; media?: Array<{ type?: string }>; attachments?: Array<{ type?: string; attachment_type?: string }> } | null | undefined,
+  locale: Locale,
+  noneLabel: string,
+): string {
+  if (!message) return noneLabel;
   if (message.content?.trim()) return message.content;
+  const m = MEDIA_LABELS[msgLang(locale)];
   const attachment = message.attachments?.[0];
   const kind = attachment?.type || attachment?.attachment_type;
-  if (kind === "video") return "[视频]";
-  if (kind === "image") return "[图片]";
-  if (message.attachments?.length) return "[附件]";
+  if (kind === "video") return m.video;
+  if (kind === "image") return m.image;
+  if (message.attachments?.length) return m.file;
   const mediaKind = message.media?.[0]?.type;
-  if (mediaKind === "video") return "[视频]";
-  if (message.media?.length) return "[图片]";
-  return "开始对话…";
+  if (mediaKind === "video") return m.video;
+  if (message.media?.length) return m.image;
+  return noneLabel;
 }

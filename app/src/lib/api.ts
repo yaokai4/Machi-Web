@@ -107,6 +107,64 @@ export function isAuthRequiredError(err: unknown): err is APIError {
   return err instanceof APIError && (err.status === 401 || err.code === "AUTH_REQUIRED");
 }
 
+// Localised copy for CLIENT-GENERATED APIErrors (network / timeout / 401 /
+// parse / http fallback / upload). The I18nProvider registers a localizer that
+// maps an error code + status to the viewer's language; until it does (SSR,
+// first paint) we fall back to the zh-Hans strings passed at each throw site.
+// Server-provided error messages never route through here — they keep the
+// backend's own three-language text.
+export type ApiErrorLocalizer = (code: string, status: number) => string | null | undefined;
+let errorLocalizer: ApiErrorLocalizer | null = null;
+export function registerErrorLocalizer(fn: ApiErrorLocalizer | null): void {
+  errorLocalizer = fn;
+}
+function localizedError(code: string, status: number, fallback: string): string {
+  if (errorLocalizer) {
+    try {
+      const msg = errorLocalizer(code, status);
+      if (msg) return msg;
+    } catch {
+      // never let a localizer bug swallow the real error
+    }
+  }
+  return fallback;
+}
+
+// Merge our own timeout AbortSignal with any signal the caller (or React Query's
+// queryFn) hands in, so an unmount / query-key change cancels the in-flight
+// request just like a timeout does. Prefers the native AbortSignal.any and
+// degrades to a manual relay where it isn't available.
+function combineSignals(
+  a: AbortSignal | null | undefined,
+  b: AbortSignal | null | undefined,
+): AbortSignal | undefined {
+  if (!a) return b ?? undefined;
+  if (!b) return a;
+  const anyFn = (AbortSignal as unknown as { any?: (s: AbortSignal[]) => AbortSignal }).any;
+  if (typeof anyFn === "function") {
+    try {
+      return anyFn([a, b]);
+    } catch {
+      // fall through to the manual relay
+    }
+  }
+  if (typeof AbortController === "undefined") return a;
+  const controller = new AbortController();
+  const onAbort = () => {
+    try {
+      controller.abort();
+    } catch {
+      // ignore
+    }
+  };
+  if (a.aborted || b.aborted) controller.abort();
+  else {
+    a.addEventListener("abort", onAbort, { once: true });
+    b.addEventListener("abort", onAbort, { once: true });
+  }
+  return controller.signal;
+}
+
 export function readToken(): string | null {
   if (typeof window === "undefined") return null;
   try {
@@ -599,7 +657,6 @@ export type AdminPartnerStarealJob = {
 };
 
 const DEFAULT_TIMEOUT_MS = 12_000;
-const RETRYABLE_METHODS = new Set(["GET", "HEAD"]);
 
 function idempotencyKey(prefix: string): string {
   const id = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
@@ -609,7 +666,7 @@ function idempotencyKey(prefix: string): string {
 }
 
 async function request<T>(method: string, path: string, body?: unknown, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
-  const { timeoutMs, ...fetchInit } = init ?? {};
+  const { timeoutMs, signal: externalSignal, ...fetchInit } = init ?? {};
   const timeoutVal = timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const headers: Record<string, string> = {
     Accept: "application/json",
@@ -621,76 +678,77 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
   const token = readToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
 
-  const upperMethod = method.toUpperCase();
-  const maxAttempts = RETRYABLE_METHODS.has(upperMethod) ? 2 : 1;
+  // Single attempt only. Retrying transient failures is owned by React Query
+  // (queryClient.shouldRetry); stacking an inner retry on top of it let one
+  // network-stalled GET fan out to four long-hanging fetches — the exact
+  // amplification behind the 0629 realtime / rate-limit incident.
+  const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => {
+        try {
+          controller.abort();
+        } catch {
+          // ignore
+        }
+      }, timeoutVal)
+    : null;
+  // `...fetchInit` is spread FIRST and method/headers/body/signal are set
+  // explicitly last, so a caller passing `{ headers: { "Idempotency-Key": … } }`
+  // (uploads, listing-create, booking, message-send, …) no longer clobbers the
+  // merged Content-Type / Authorization, and its signal is combined — not
+  // replaced — with our timeout signal.
+  const signal = combineSignals(controller?.signal, externalSignal);
 
-  let lastError: unknown = null;
-  let res: Response | null = null;
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timer = controller
-      ? setTimeout(() => {
-          try {
-            controller.abort();
-          } catch {
-            // ignore
-          }
-        }, timeoutVal)
-      : null;
-    try {
-      res = await fetch(`${apiBase}${path}`, {
-        method,
-        headers,
-        body:
-          body === undefined
-            ? undefined
-            : body instanceof FormData
-              ? body
-              : JSON.stringify(body),
-        credentials: "same-origin",
-        cache: "no-store",
-        signal: controller?.signal,
-        ...fetchInit,
-      });
-      break;
-    } catch (err) {
-      lastError = err;
-      res = null;
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-    if (attempt < maxAttempts - 1) {
-      await new Promise((r) => setTimeout(r, 400));
-    }
-  }
-
-  if (!res) {
-    const aborted = lastError instanceof DOMException && lastError.name === "AbortError";
+  let res: Response;
+  try {
+    res = await fetch(`${apiBase}${path}`, {
+      ...fetchInit,
+      method,
+      headers,
+      body:
+        body === undefined
+          ? undefined
+          : body instanceof FormData
+            ? body
+            : JSON.stringify(body),
+      credentials: "same-origin",
+      cache: "no-store",
+      signal,
+    });
+  } catch (err) {
+    const aborted = err instanceof DOMException && err.name === "AbortError";
+    const code = aborted ? "timeout" : "network_error";
     throw new APIError(
       {
-        code: aborted ? "timeout" : "network_error",
-        message: aborted ? "请求超时，请稍后重试。" : "无法连接服务器，请检查网络后重试。",
+        code,
+        message: localizedError(
+          code,
+          0,
+          aborted ? "请求超时，请稍后重试。" : "无法连接服务器，请检查网络后重试。",
+        ),
       },
       0,
     );
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 
   const ct = res.headers.get("Content-Type") || "";
   if (!res.ok) {
-    let payload: APIErrorPayload = { code: "http_error", message: `请求失败 (${res.status})` };
+    let payload: APIErrorPayload = { code: "http_error", message: localizedError("http_error", res.status, `请求失败（${res.status}）`) };
     if (ct.includes("application/json")) {
       try {
         const data = await res.json();
         if (data?.error) payload = data.error;
         else if (data?.message || data?.code) {
-          payload = { code: data.code || "http_error", message: data.message || `请求失败 (${res.status})` };
+          payload = { code: data.code || "http_error", message: data.message || localizedError("http_error", res.status, `请求失败（${res.status}）`) };
         }
       } catch {
         // fallthrough
       }
     }
     if (res.status === 401) {
-      payload = { code: "AUTH_REQUIRED", message: "请登录后继续" };
+      payload = { code: "AUTH_REQUIRED", message: localizedError("AUTH_REQUIRED", res.status, "请登录后继续") };
       writeToken(null);
       // Drop the in-memory user too, so guarded UI reacts immediately instead of
       // waiting for the next session probe. Best-effort; never let it mask the
@@ -708,7 +766,7 @@ async function request<T>(method: string, path: string, body?: unknown, init?: R
     try {
       return (await res.json()) as T;
     } catch {
-      throw new APIError({ code: "parse_error", message: "服务器响应格式异常。" }, res.status);
+      throw new APIError({ code: "parse_error", message: localizedError("parse_error", res.status, "服务器响应格式异常。") }, res.status);
     }
   }
   return (await res.text()) as unknown as T;
@@ -747,11 +805,11 @@ function uploadWithProgress(
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve({ etag: xhr.getResponseHeader("ETag")?.replaceAll("\"", "") || "" });
       } else {
-        reject(new APIError({ code: "upload_failed", message: `上传失败 (${xhr.status})` }, xhr.status));
+        reject(new APIError({ code: "upload_failed", message: localizedError("upload_failed", xhr.status, `上传失败（${xhr.status}）`) }, xhr.status));
       }
     };
-    xhr.onerror = () => reject(new APIError({ code: "network_error", message: "上传失败，请检查网络后重试。" }, 0));
-    xhr.onabort = () => reject(new APIError({ code: "upload_aborted", message: "上传已取消。" }, 0));
+    xhr.onerror = () => reject(new APIError({ code: "network_error", message: localizedError("network_error", 0, "上传失败，请检查网络后重试。") }, 0));
+    xhr.onabort = () => reject(new APIError({ code: "upload_aborted", message: localizedError("upload_aborted", 0, "上传已取消。") }, 0));
     xhr.send(file);
   });
 }
@@ -826,7 +884,7 @@ async function uploadFileViaPresignedUrl(
     media: completed.data?.media || completed.media,
   };
   if (!result.file || !result.media) {
-    throw new APIError({ code: "upload_complete_malformed", message: "上传确认响应异常，请重试。" }, 502);
+    throw new APIError({ code: "upload_complete_malformed", message: localizedError("upload_complete_malformed", 502, "上传确认响应异常，请重试。") }, 502);
   }
   options.onProgress?.({ stage: "success", progress: 1, file });
   return result as { file: UploadedFile; media: KXMedia };

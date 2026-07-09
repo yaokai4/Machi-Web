@@ -10,6 +10,7 @@ import { EmptyPanel, GuideTodoCard } from "@/components/guide/GuideOS";
 import { GuideAttachmentManager } from "@/components/guide/GuideAttachmentManager";
 import { InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 const lifeTypes = [
   ["rent", "房租"],
@@ -197,6 +198,7 @@ export default function GuideLifePage() {
 // A saved life item with its amount + due day and a delete affordance. Deleting
 // removes the item AND its generated payment todos + reminders.
 function LifeItemCard({ item, onDelete, deleting }: { item: GuideLifeItem; onDelete: () => void; deleting: boolean }) {
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [paidAt, setPaidAt] = useState(() => new Date().toISOString().slice(0, 10));
   const [amountInput, setAmountInput] = useState(String(item.amount || ""));
@@ -252,7 +254,7 @@ function LifeItemCard({ item, onDelete, deleting }: { item: GuideLifeItem; onDel
             ) : null}
           </div>
         </button>
-        <button type="button" onClick={() => setOpen((value) => !value)} className="grid min-h-11 min-w-11 place-items-center rounded-xl text-kx-muted hover:bg-kx-soft" aria-label={open ? "收起支付详情" : "展开支付详情"}>
+        <button type="button" onClick={() => setOpen((value) => !value)} className="grid min-h-11 min-w-11 place-items-center rounded-xl text-kx-muted hover:bg-kx-soft" aria-label={open ? t("aria_collapse_payment") : t("aria_expand_payment")}>
           <ChevronDown className={"h-4 w-4 transition " + (open ? "rotate-180" : "")} />
         </button>
         <button
@@ -261,7 +263,7 @@ function LifeItemCard({ item, onDelete, deleting }: { item: GuideLifeItem; onDel
             if (window.confirm(`删除「${item.title}」及其待办和支付历史？`)) onDelete();
           }}
           disabled={deleting}
-          aria-label="删除生活事项"
+          aria-label={t("aria_delete_life_item")}
           className="grid min-h-11 min-w-11 place-items-center rounded-xl text-kx-muted transition hover:bg-rose-500/10 hover:text-rose-500 disabled:opacity-50"
         >
           <Trash2 className="h-4 w-4" />

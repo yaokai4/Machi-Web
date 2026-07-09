@@ -11,7 +11,8 @@ import { CalendarPlus, ImagePlus, Loader2, Plus, Trash2 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { api } from "@/lib/api";
 import { sameOriginApiUrl } from "@/lib/media";
-import { eventStyle, EVENT_CATEGORY_KEYS } from "@/components/social/socialStyle";
+import { useI18n } from "@/lib/i18n";
+import { eventStyle, socialCopy, socialLabel, EVENT_CATEGORY_KEYS } from "@/components/social/socialStyle";
 
 
 interface DraftField {
@@ -25,6 +26,8 @@ interface DraftField {
 export default function CreateEventPage() {
   const router = useRouter();
   const fileInput = useRef<HTMLInputElement>(null);
+  const { locale } = useI18n();
+  const c = socialCopy(locale).events;
 
   const [title, setTitle] = useState("");
   const [subtitle, setSubtitle] = useState("");
@@ -71,7 +74,7 @@ export default function CreateEventPage() {
       });
     },
     onSuccess: (event) => router.push(`/events/${encodeURIComponent(event.slug || event.id)}`),
-    onError: (err: Error) => setError(err.message || "发布失败,请稍后再试"),
+    onError: (err: Error) => setError(err.message || c.publishError),
   });
 
   async function handleCover(file: File | undefined) {
@@ -83,7 +86,7 @@ export default function CreateEventPage() {
       const media = uploaded.media as { publicUrl?: string; url?: string };
       setCoverUrl(media.publicUrl || media.url || "");
     } catch (err) {
-      setError((err as Error).message || "封面上传失败");
+      setError((err as Error).message || c.coverUploadError);
     } finally {
       setCoverUploading(false);
     }
@@ -96,9 +99,9 @@ export default function CreateEventPage() {
       <header className="kx-glass-bar sticky top-0 z-30 px-4 py-3">
         <div className="flex items-center gap-2">
           <CalendarPlus className="h-5 w-5 text-kx-accent" />
-          <h1 className="text-xl font-black">创建活动</h1>
+          <h1 className="text-xl font-black">{c.create}</h1>
         </div>
-        <p className="mt-1 text-sm text-kx-muted">发布后会生成专属活动页和分享链接,和 App 端完全同步。</p>
+        <p className="mt-1 text-sm text-kx-muted">{c.createSubtitle}</p>
       </header>
 
       <main className="mx-auto max-w-2xl space-y-5 px-4 py-5">
@@ -110,11 +113,11 @@ export default function CreateEventPage() {
         >
           {coverUrl ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={sameOriginApiUrl(coverUrl)} alt="封面" className="aspect-[16/9] w-full object-cover" />
+            <img src={sameOriginApiUrl(coverUrl)} alt={c.coverAlt} className="aspect-[16/9] w-full object-cover" />
           ) : (
             <div className="flex aspect-[16/9] w-full flex-col items-center justify-center gap-2 text-kx-muted">
               <ImagePlus className="h-8 w-8" />
-              <span className="text-xs font-black">添加封面(推荐 16:9)</span>
+              <span className="text-xs font-black">{c.addCover}</span>
             </div>
           )}
           {coverUploading ? (
@@ -141,7 +144,7 @@ export default function CreateEventPage() {
                 }`}
               >
                 <Icon className="h-3.5 w-3.5" />
-                {style.labelZh}
+                {socialLabel(style, locale)}
               </button>
             );
           })}
@@ -150,20 +153,20 @@ export default function CreateEventPage() {
         {/* 基本信息 */}
         <div className="kx-card space-y-4 p-4 sm:p-5">
           <label className="block space-y-1.5">
-            <span className="text-xs font-black text-kx-muted">活动名称 <span className="text-red-500">*</span></span>
-            <input className="kx-input text-base font-bold" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如 涩谷读书会 × Machi" maxLength={120} />
+            <span className="text-xs font-black text-kx-muted">{c.fName} <span className="text-red-500">*</span></span>
+            <input className="kx-input text-base font-bold" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={c.fNamePlaceholder} maxLength={120} />
           </label>
           <label className="block space-y-1.5">
-            <span className="text-xs font-black text-kx-muted">一句话副标题(可选)</span>
-            <input className="kx-input" value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder="例如 本月主题:村上春树" maxLength={200} />
+            <span className="text-xs font-black text-kx-muted">{c.fSubtitle}</span>
+            <input className="kx-input" value={subtitle} onChange={(e) => setSubtitle(e.target.value)} placeholder={c.fSubtitlePlaceholder} maxLength={200} />
           </label>
           <label className="block space-y-1.5">
-            <span className="text-xs font-black text-kx-muted">活动详情</span>
+            <span className="text-xs font-black text-kx-muted">{c.fDesc}</span>
             <textarea
               className="kx-input min-h-[140px] resize-y py-3"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="流程、费用说明、要带什么、适合谁来…"
+              placeholder={c.fDescPlaceholder}
             />
           </label>
         </div>
@@ -172,61 +175,61 @@ export default function CreateEventPage() {
         <div className="kx-card space-y-4 p-4 sm:p-5">
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <label className="block space-y-1.5">
-              <span className="text-xs font-black text-kx-muted">开始时间 <span className="text-red-500">*</span></span>
+              <span className="text-xs font-black text-kx-muted">{c.fStart} <span className="text-red-500">*</span></span>
               <input type="datetime-local" className="kx-input" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
             </label>
             <label className="block space-y-1.5">
-              <span className="text-xs font-black text-kx-muted">结束时间(可选)</span>
+              <span className="text-xs font-black text-kx-muted">{c.fEnd}</span>
               <input type="datetime-local" className="kx-input" value={endsAt} min={startsAt} onChange={(e) => setEndsAt(e.target.value)} />
             </label>
           </div>
           <label className="block space-y-1.5">
-            <span className="text-xs font-black text-kx-muted">场地名</span>
-            <input className="kx-input" value={venueName} onChange={(e) => setVenueName(e.target.value)} placeholder="例如 SHIBUYA BOOK LOUNGE" maxLength={160} />
+            <span className="text-xs font-black text-kx-muted">{c.fVenue}</span>
+            <input className="kx-input" value={venueName} onChange={(e) => setVenueName(e.target.value)} placeholder={c.fVenuePlaceholder} maxLength={160} />
           </label>
           <label className="block space-y-1.5">
-            <span className="text-xs font-black text-kx-muted">详细地址(可选)</span>
-            <input className="kx-input" value={address} onChange={(e) => setAddress(e.target.value)} placeholder="东京都涩谷区…" maxLength={300} />
+            <span className="text-xs font-black text-kx-muted">{c.fAddress}</span>
+            <input className="kx-input" value={address} onChange={(e) => setAddress(e.target.value)} placeholder={c.fAddressPlaceholder} maxLength={300} />
           </label>
         </div>
 
         {/* 更多设置 */}
         <div className="kx-card space-y-4 p-4 sm:p-5">
-          <p className="text-xs font-black uppercase tracking-wider text-kx-muted">更多设置(都是可选)</p>
+          <p className="text-xs font-black uppercase tracking-wider text-kx-muted">{c.moreSettings}</p>
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <label className="block space-y-1.5">
-              <span className="text-xs font-black text-kx-muted">名额上限(空 = 不限)</span>
-              <input type="number" min={0} className="kx-input" value={capacity} onChange={(e) => setCapacity(e.target.value)} placeholder="例如 30" />
+              <span className="text-xs font-black text-kx-muted">{c.fCapacity}</span>
+              <input type="number" min={0} className="kx-input" value={capacity} onChange={(e) => setCapacity(e.target.value)} placeholder={c.fCapacityPlaceholder} />
             </label>
             <label className="block space-y-1.5">
-              <span className="text-xs font-black text-kx-muted">费用展示</span>
-              <input className="kx-input" value={priceText} onChange={(e) => setPriceText(e.target.value)} placeholder="例如 免费 / ¥1,500(现场付)" maxLength={60} />
+              <span className="text-xs font-black text-kx-muted">{c.fPrice}</span>
+              <input className="kx-input" value={priceText} onChange={(e) => setPriceText(e.target.value)} placeholder={c.fPricePlaceholder} maxLength={60} />
             </label>
           </div>
           <label className="block space-y-1.5">
-            <span className="text-xs font-black text-kx-muted">合作方售票/详情链接</span>
+            <span className="text-xs font-black text-kx-muted">{c.fExternal}</span>
             <input className="kx-input" value={externalUrl} onChange={(e) => setExternalUrl(e.target.value)} placeholder="https://…" maxLength={500} />
           </label>
-          <p className="text-[11px] font-semibold text-kx-muted/80">Machi 不代收任何费用;需要售票请使用合作方链接。</p>
+          <p className="text-[11px] font-semibold text-kx-muted/80">{c.feeHint}</p>
         </div>
 
         {/* 报名表单字段 */}
         <div className="kx-card space-y-4 p-4 sm:p-5">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-xs font-black uppercase tracking-wider text-kx-muted">报名表单字段</p>
-              <p className="mt-0.5 text-[11px] font-semibold text-kx-muted/80">让报名者填写称呼、联系方式等;发布后仍可在「管理」里修改。</p>
+              <p className="text-xs font-black uppercase tracking-wider text-kx-muted">{c.formFieldsTitle}</p>
+              <p className="mt-0.5 text-[11px] font-semibold text-kx-muted/80">{c.formFieldsHintCreate}</p>
             </div>
             <button
               type="button"
               onClick={() => setFields((prev) => [...prev, { key: Date.now(), label: "", field_type: "text", optionsText: "", required: false }])}
               className="inline-flex h-9 items-center gap-1 rounded-full bg-kx-accent/10 px-3 text-xs font-black text-kx-accent hover:bg-kx-accent/15"
             >
-              <Plus className="h-3.5 w-3.5" /> 加一个
+              <Plus className="h-3.5 w-3.5" /> {c.addField}
             </button>
           </div>
           {fields.length === 0 ? (
-            <p className="text-xs font-semibold text-kx-muted">不加字段 = 一键报名。</p>
+            <p className="text-xs font-semibold text-kx-muted">{c.noFieldsCreate}</p>
           ) : (
             <div className="space-y-3">
               {fields.map((field, index) => (
@@ -236,14 +239,14 @@ export default function CreateEventPage() {
                       className="kx-input h-10 flex-1"
                       value={field.label}
                       onChange={(e) => setFields((prev) => prev.map((f, i) => (i === index ? { ...f, label: e.target.value } : f)))}
-                      placeholder="字段名,例如 怎么称呼你"
+                      placeholder={c.fieldNamePlaceholderCreate}
                       maxLength={120}
                     />
                     <button
                       type="button"
                       onClick={() => setFields((prev) => prev.filter((_, i) => i !== index))}
                       className="rounded-full p-2 text-kx-muted hover:bg-kx-soft hover:text-kx-heat"
-                      aria-label="删除字段"
+                      aria-label={c.removeField}
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>
@@ -256,7 +259,7 @@ export default function CreateEventPage() {
                         onClick={() => setFields((prev) => prev.map((f, i) => (i === index ? { ...f, field_type: kind } : f)))}
                         className={`rounded-full px-3 py-1.5 transition ${field.field_type === kind ? "bg-kx-accent text-white" : "bg-kx-soft text-kx-muted hover:text-kx-text"}`}
                       >
-                        {kind === "text" ? "文本" : kind === "select" ? "单选" : "勾选"}
+                        {kind === "text" ? c.ftText : kind === "select" ? c.ftSelect : c.ftCheckbox}
                       </button>
                     ))}
                     <label className="ml-auto inline-flex cursor-pointer items-center gap-1.5">
@@ -266,7 +269,7 @@ export default function CreateEventPage() {
                         onChange={(e) => setFields((prev) => prev.map((f, i) => (i === index ? { ...f, required: e.target.checked } : f)))}
                         className="h-3.5 w-3.5 accent-[rgb(var(--kx-accent))]"
                       />
-                      必填
+                      {c.required}
                     </label>
                   </div>
                   {field.field_type === "select" ? (
@@ -274,7 +277,7 @@ export default function CreateEventPage() {
                       className="kx-input h-10"
                       value={field.optionsText}
                       onChange={(e) => setFields((prev) => prev.map((f, i) => (i === index ? { ...f, optionsText: e.target.value } : f)))}
-                      placeholder="选项,用逗号分隔:小说, 随笔, 都行"
+                      placeholder={c.optionsPlaceholderCreate}
                     />
                   ) : null}
                 </div>
@@ -291,7 +294,7 @@ export default function CreateEventPage() {
           onClick={() => create.mutate()}
           className="kx-button-primary h-12 w-full rounded-full text-sm font-black disabled:opacity-50"
         >
-          {create.isPending ? "发布中…" : "发布活动"}
+          {create.isPending ? c.publishing : c.publish}
         </button>
       </main>
     </AppShell>

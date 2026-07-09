@@ -15,13 +15,21 @@ import { api, APIError } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
 import { useI18n } from "@/lib/i18n";
+import { safeRedirectPath } from "@/lib/safeRedirect";
 import type { KXWalletTopupProduct } from "@/lib/types";
 
 // A safe in-app return target carried across the Stripe round trip, so a topup
-// started from a product page lands the user back on that product.
+// started from a product page lands the user back on that product. Reuses the
+// project-wide open-redirect guard (safeRedirectPath) — which rejects
+// backslash / whitespace / control-char smuggling and protocol-relative
+// `//host` that a naive startsWith("/") check would let through — but keeps the
+// null semantics this page relies on: only a valid same-origin path returns a
+// value, otherwise null (so we never force-redirect to /home when there was no
+// returnTo). safeRedirectPath returns the input unchanged when it is valid, so
+// an equality check cleanly distinguishes "valid" from "rewritten to /home".
 function safeReturnTo(value: string | null): string | null {
   if (!value) return null;
-  return value.startsWith("/") && !value.startsWith("//") ? value : null;
+  return safeRedirectPath(value) === value ? value : null;
 }
 
 export default function WalletPage() {

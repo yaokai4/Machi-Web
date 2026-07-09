@@ -6,9 +6,11 @@
 import Link from "next/link";
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { CalendarDays, ExternalLink, Loader2, Search, Settings2, Star, XCircle } from "lucide-react";
+import { ArrowLeft, CalendarDays, ExternalLink, Loader2, Search, Settings2, Star, XCircle } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
+import { AdminGuard } from "@/components/admin/AdminGuard";
 import { ErrorState, InlineLoading } from "@/components/design/States";
+import { ConfirmDialog } from "@/components/design/Dialog";
 import { Avatar } from "@/components/design/Avatar";
 import { api } from "@/lib/api";
 import type { KXEvent } from "@/lib/types";
@@ -25,6 +27,7 @@ function AdminEventRow({ event }: { event: KXEvent }) {
   const style = eventStyle(event.category);
   const Icon = style.icon;
   const slug = event.slug || event.id;
+  const [confirmCancel, setConfirmCancel] = useState(false);
 
   const toggleFeatured = useMutation({
     mutationFn: () => api.updateEvent(slug, { is_featured: !event.is_featured }),
@@ -32,11 +35,14 @@ function AdminEventRow({ event }: { event: KXEvent }) {
   });
   const cancel = useMutation({
     mutationFn: () => api.updateEvent(slug, { status: "cancelled" }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["admin-events"] }),
+    onSuccess: () => {
+      setConfirmCancel(false);
+      queryClient.invalidateQueries({ queryKey: ["admin-events"] });
+    },
   });
 
   return (
-    <li className="kx-card flex flex-wrap items-center gap-3 p-3.5">
+    <li className="kx-card flex flex-wrap items-center gap-3 p-3.5 transition hover:border-kx-accent/30 hover:shadow-kx">
       <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl ${style.softBg}`}>
         <Icon className={`h-5 w-5 ${style.text}`} />
       </div>
@@ -83,19 +89,28 @@ function AdminEventRow({ event }: { event: KXEvent }) {
         {event.status !== "cancelled" ? (
           <button
             type="button"
-            onClick={() => { if (confirm(`下线活动「${event.title}」?`)) cancel.mutate(); }}
+            onClick={() => setConfirmCancel(true)}
             disabled={cancel.isPending}
             className="inline-flex h-8 items-center gap-1 rounded-full bg-kx-heat/10 px-3 text-[11px] font-black text-kx-heat hover:bg-kx-heat/15 disabled:opacity-50"
           >
-            <XCircle className="h-3 w-3" /> 下线
+            {cancel.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <XCircle className="h-3 w-3" />} 下线
           </button>
         ) : null}
       </div>
+      <ConfirmDialog
+        open={confirmCancel}
+        title={`下线活动「${event.title}」?`}
+        description="下线后该活动会从活动页和 App 端隐藏,已报名的用户名单仍会保留。可稍后重新发布。"
+        destructive
+        confirmLabel="确认下线"
+        onConfirm={() => cancel.mutate()}
+        onCancel={() => setConfirmCancel(false)}
+      />
     </li>
   );
 }
 
-export default function AdminEventsPage() {
+function AdminEventsContent() {
   const [when, setWhen] = useState("all");
   const [keyword, setKeyword] = useState("");
 
@@ -111,7 +126,10 @@ export default function AdminEventsPage() {
   return (
     <AppShell requireAuth wide>
       <header className="kx-glass-bar sticky top-0 z-30 px-4 py-3">
-        <div className="flex items-center gap-2">
+        <Link href="/admin" className="inline-flex items-center gap-1 text-xs font-bold text-kx-muted hover:text-kx-accent">
+          <ArrowLeft className="h-4 w-4" /> 管理后台
+        </Link>
+        <div className="mt-1 flex items-center gap-2">
           <CalendarDays className="h-5 w-5 text-kx-accent" />
           <h1 className="text-xl font-black">活动管理</h1>
         </div>
@@ -158,5 +176,15 @@ export default function AdminEventsPage() {
         )}
       </main>
     </AppShell>
+  );
+}
+
+export default function AdminEventsPage() {
+  // AdminGuard 未授权时不会挂载 AdminEventsContent —— 其内部的 admin 活动
+  // 请求也就不会对普通用户发出,和 admin/page.tsx、settings 走同一套角色门控。
+  return (
+    <AdminGuard redirect="/admin/events">
+      <AdminEventsContent />
+    </AdminGuard>
   );
 }

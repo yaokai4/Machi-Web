@@ -86,16 +86,19 @@ export async function generateMetadata(): Promise<Metadata> {
     description: meta.description,
     keywords: meta.keywords,
     alternates: {
-      canonical: locale === "zh" ? "/" : `/${locale}`,
+      // Self-canonicalize to the LOCALE-PREFIXED URL (/zh, /en, /ja) so the
+      // canonical is always a member of this page's own hreflang cluster
+      // (which lists /zh, /en, /ja + x-default) and stays stable per URL
+      // instead of shifting with Accept-Language. This mirrors the sub-page
+      // strategy in buildSubPageMetadata and de-dupes "/" ⇄ /zh|/en|/ja.
+      canonical: `/${locale}`,
       languages: localeAlternates(""),
     },
     openGraph: {
       title: meta.title,
       description: meta.description,
-      url:
-        locale === "zh"
-          ? "https://www.machicity.com/zh"
-          : `https://www.machicity.com/${locale}`,
+      // Match the canonical: one stable locale-prefixed URL per language.
+      url: `https://www.machicity.com/${locale}`,
       siteName: "Machi",
       images: [
         {

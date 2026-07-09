@@ -278,7 +278,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "カナダ", body: "多言語で暮らす街、住まい、仕事、Q&A、新生活のサポート。" },
       { title: "オーストラリア", body: "地域コミュニティ、サービス、イベント、中古・ゆずり、暮らしの手続き。" },
       { title: "英国", body: "学び、仕事、住まい、地域サービスに関する情報。" },
-      { title: "France", body: "多言語の生活ガイド、イベント、地域サービス。" },
+      { title: "フランス", body: "多言語の生活ガイド、イベント、地域サービス。" },
       { title: "ドイツ", body: "暮らしの手続き、仕事、住まい、街の Q&A。" },
 	      { title: "韓国", body: "生活情報、言語交換、イベント、地域コミュニティ。" },
       { title: "米国", body: "実際の需要とコミュニティの育ち方を見ながら、対応する街を広げます。" },
@@ -771,8 +771,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     zh: { eyebrow: "商业披露", title: "商业披露（特定商取引法に基づく表記）", intro: "本页面列出 Machi Web 支付、会员、数字资料和服务预约相关的商业披露信息。此页面用于满足日本支付审核与网站披露要求，不构成法律意见。", blocks: [
       { title: "商家基本信息", variant: "legal", items: [
         { title: "法定名称", body: "Machi / 运营者：姚凱（如依法或经合理要求需要更完整的法定名称，将立即披露）。" },
-        { title: "地址", body: "如经要求将立即披露。请通过 hi@machicity.com 联系并说明订单号、请求目的和联系方式。" },
-        { title: "电话号码", body: "如经要求将立即披露。客服优先通过电子邮件处理，必要时安排日语沟通。" },
+        { title: "地址", body: "运营者为个人事业者。根据日本《特定商取引法》关于通信销售广告的表示规定，本页面不公开列明详细地址；在用户提出请求时，将通过电子邮件等不产生延迟的方式立即（遅滞なく）开示。请通过 hi@machicity.com 联系并说明订单号、请求目的与联系方式。" },
+        { title: "电话号码", body: "运营者为个人事业者。根据日本《特定商取引法》的表示规定，本页面不公开列明电话号码；在用户提出请求时，将通过电子邮件等方式立即开示。客服原则上通过电子邮件处理，必要时安排日语沟通。" },
         { title: "邮箱地址", body: "hi@machicity.com" },
         { title: "运营主管", body: "Yao Kai / YAOKAI" },
       ] },
@@ -799,8 +799,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     en: { eyebrow: "Commercial Disclosure", title: "Commercial Disclosure", intro: "This page provides commercial disclosure information for Machi Web payments, memberships, digital resources and service bookings. It is prepared for Japanese payment review and website disclosure purposes and is not legal advice.", blocks: [
       { title: "Business Information", variant: "legal", items: [
         { title: "Legal name", body: "Machi / Operator: Yao Kai. Additional legal name details will be disclosed without delay upon lawful or reasonable request." },
-        { title: "Address", body: "Will be disclosed without delay upon request. Contact hi@machicity.com with the relevant order number, request purpose and contact details." },
-        { title: "Phone number", body: "Will be disclosed without delay upon request. Customer support is primarily handled by email, with Japanese communication arranged when necessary." },
+        { title: "Address", body: "The operator is an individual business. In line with the mail-order advertising disclosure rules of Japan's Act on Specified Commercial Transactions, the full address is not published here and will be disclosed without delay upon request through a no-delay method such as email. Contact hi@machicity.com with the relevant order number, request purpose and contact details." },
+        { title: "Phone number", body: "The operator is an individual business. In line with the disclosure rules of Japan's Act on Specified Commercial Transactions, the phone number is not published here and will be disclosed without delay upon request, typically by email. Customer support is primarily handled by email, with Japanese communication arranged when necessary." },
         { title: "Email address", body: "hi@machicity.com" },
         { title: "Operations manager", body: "Yao Kai / YAOKAI" },
       ] },
@@ -827,8 +827,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     ja: { eyebrow: "特定商取引法に基づく表記", title: "特定商取引法に基づく表記", intro: "本ページは、Machi Web の決済、会員、デジタル資料、サービス予約に関する商取引上の表示事項をまとめたものです。日本の決済審査およびサイト表示のために作成しており、法的助言ではありません。", blocks: [
       { title: "事業者情報", variant: "legal", items: [
         { title: "販売事業者の名称", body: "Machi / 運営者：Yao Kai。法令上または合理的な請求がある場合、追加の法定名称情報を遅滞なく開示します。" },
-        { title: "所在地", body: "請求があれば遅滞なく開示します。hi@machicity.com へ、注文番号、請求目的、連絡先をご記入ください。" },
-        { title: "電話番号", body: "請求があれば遅滞なく開示します。お問い合わせは原則メールで受け付け、必要に応じて日本語での連絡を調整します。" },
+        { title: "所在地", body: "運営者は個人事業主です。特定商取引法の通信販売広告に関する表示規定に基づき、本ページでは所在地を公開せず、ご請求があった場合はメール等の遅滞のない方法で遅滞なく開示します。hi@machicity.com へ、注文番号、請求目的、連絡先をご記入のうえご連絡ください。" },
+        { title: "電話番号", body: "運営者は個人事業主です。特定商取引法の表示規定に基づき、本ページでは電話番号を公開せず、ご請求があった場合はメール等により遅滞なく開示します。お問い合わせは原則メールで受け付け、必要に応じて日本語での連絡を調整します。" },
         { title: "メールアドレス", body: "hi@machicity.com" },
         { title: "運営責任者", body: "Yao Kai / YAOKAI" },
       ] },

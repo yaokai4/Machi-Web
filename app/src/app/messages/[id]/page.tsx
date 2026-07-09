@@ -3,17 +3,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Image as ImageIcon, Loader2, MessageCircle, Play, Send, Smile, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowDown, Flag, Image as ImageIcon, Loader2, MessageCircle, MoreHorizontal, Play, Send, Shield, Smile, Trash2, X } from "lucide-react";
 import clsx from "clsx";
-import { api, APIError, isUploadImageFile, isUploadVideoFile } from "@/lib/api";
+import { api, APIError, isAuthRequiredError, isUploadImageFile, isUploadVideoFile } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
+import { ConfirmDialog, Dialog } from "@/components/design/Dialog";
 import { MediaGrid } from "@/components/design/MediaGrid";
 import { Lightbox } from "@/components/design/Lightbox";
 import { relativeTime } from "@/lib/format";
 import { useSession, useToasts } from "@/lib/store";
-import { useI18n, type I18nKey } from "@/lib/i18n";
+import { useI18n, type I18nKey, type Locale } from "@/lib/i18n";
 import { fallbackVideoPoster, isVideoMedia, mediaCardAspectRatio, mediaPreviewImageUrl, sameOriginApiUrl } from "@/lib/media";
 import type { KXMedia, KXMessage, KXMessageAttachment, KXUser } from "@/lib/types";
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
@@ -38,6 +39,109 @@ const EMOJI_GROUPS: { labelKey: I18nKey; items: string[] }[] = [
 ];
 
 const QUICK_REPLY_KEYS: I18nKey[] = ["msg_quick_reply_1", "msg_quick_reply_2", "msg_quick_reply_3"];
+
+// 私信页里没有进主词表的零星文案(附件占位/安全动作/输入提示),就地三语化。
+type MsgLang = "zh" | "ja" | "en";
+function msgLang(locale: Locale): MsgLang {
+  if (locale === "en") return "en";
+  if (locale === "ja") return "ja";
+  return "zh";
+}
+interface ChatCopy {
+  emoji: string;
+  attLoadFailed: string;
+  attRetry: string;
+  attVideo: string;
+  attImage: string;
+  attFile: string;
+  viewImage: string;
+  inputPlaceholder: string;
+  newMessages: (n: number) => string;
+  more: string;
+  report: string;
+  block: string;
+  reportTitle: string;
+  reportBody: string;
+  reportDone: string;
+  submit: string;
+  cancel: string;
+  blockTitle: string;
+  blockBody: string;
+  blockConfirm: string;
+  blockDone: string;
+}
+const CHAT_COPY: Record<MsgLang, ChatCopy> = {
+  zh: {
+    emoji: "表情",
+    attLoadFailed: "加载失败，点击重试",
+    attRetry: "加载失败",
+    attVideo: "视频",
+    attImage: "图片",
+    attFile: "附件",
+    viewImage: "查看图片",
+    inputPlaceholder: "输入消息，Enter 发送，Shift + Enter 换行",
+    newMessages: (n) => (n > 1 ? `${n} 条新消息` : "有新消息"),
+    more: "更多",
+    report: "举报",
+    block: "拉黑该用户",
+    reportTitle: "举报这个用户",
+    reportBody: "举报会发送给 Machi 审核团队，匿名处理。",
+    reportDone: "举报已提交",
+    submit: "提交",
+    cancel: "取消",
+    blockTitle: "拉黑这个用户？",
+    blockBody: "对方将无法和你互动，你也将不再看到对方的内容。",
+    blockConfirm: "拉黑",
+    blockDone: "已拉黑",
+  },
+  ja: {
+    emoji: "絵文字",
+    attLoadFailed: "読み込みに失敗しました。タップで再試行",
+    attRetry: "読み込み失敗",
+    attVideo: "動画",
+    attImage: "画像",
+    attFile: "添付ファイル",
+    viewImage: "画像を表示",
+    inputPlaceholder: "メッセージを入力、Enter で送信、Shift + Enter で改行",
+    newMessages: (n) => (n > 1 ? `新着メッセージ${n}件` : "新着メッセージ"),
+    more: "その他",
+    report: "通報",
+    block: "このユーザーをブロック",
+    reportTitle: "このユーザーを通報",
+    reportBody: "通報内容は Machi の審査チームに匿名で送信されます。",
+    reportDone: "通報を送信しました",
+    submit: "送信",
+    cancel: "キャンセル",
+    blockTitle: "このユーザーをブロックしますか?",
+    blockBody: "相手はあなたと交流できなくなり、相手の投稿も表示されなくなります。",
+    blockConfirm: "ブロック",
+    blockDone: "ブロックしました",
+  },
+  en: {
+    emoji: "Emoji",
+    attLoadFailed: "Failed to load — tap to retry",
+    attRetry: "Failed to load",
+    attVideo: "Video",
+    attImage: "Photo",
+    attFile: "Attachment",
+    viewImage: "View image",
+    inputPlaceholder: "Message — Enter to send, Shift + Enter for a new line",
+    newMessages: (n) => (n > 1 ? `${n} new messages` : "New message"),
+    more: "More",
+    report: "Report",
+    block: "Block user",
+    reportTitle: "Report this user",
+    reportBody: "Reports are sent to the Machi moderation team and handled anonymously.",
+    reportDone: "Report submitted",
+    submit: "Submit",
+    cancel: "Cancel",
+    blockTitle: "Block this user?",
+    blockBody: "They won't be able to interact with you, and you'll no longer see their content.",
+    blockConfirm: "Block",
+    blockDone: "Blocked",
+  },
+};
+
 const MESSAGE_IMAGE_LIMIT = 9;
 const MESSAGE_VIDEO_LIMIT = 1;
 const MESSAGE_IMAGE_MAX_BYTES = 10 * 1024 * 1024;
@@ -81,7 +185,8 @@ export default function ConversationPage() {
   const me = useSession((s) => s.user);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
+  const chat = CHAT_COPY[msgLang(locale)];
   const id = params?.id as string;
 
   const [draft, setDraft] = useState("");
@@ -89,9 +194,16 @@ export default function ConversationPage() {
   const [uploading, setUploading] = useState(false);
   const [sending, setSending] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [reportOpen, setReportOpen] = useState(false);
+  const [blockOpen, setBlockOpen] = useState(false);
+  const [newCount, setNewCount] = useState(0);
   const fileInput = useRef<HTMLInputElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const didInitialScroll = useRef(false);
+  const prevLen = useRef(0);
 
   const convQuery = useQuery({
     queryKey: ["conversations"],
@@ -111,13 +223,54 @@ export default function ConversationPage() {
   const hasVideo = attachments.some((item) => item.type === "video");
   const attachmentLimitReached = hasVideo || imageCount >= MESSAGE_IMAGE_LIMIT;
 
+  // 切换到另一个会话时,滚动状态与浮层要重置 —— 同一路由复用组件,ref 不会自动清。
+  useEffect(() => {
+    didInitialScroll.current = false;
+    prevLen.current = 0;
+    setNewCount(0);
+    setMenuOpen(false);
+    setReportOpen(false);
+    setBlockOpen(false);
+  }, [id]);
+
   useEffect(() => {
     if (id) api.markConversationRead(id).catch(() => undefined);
   }, [id, messagesQuery.data?.length]);
 
+  // 首帧无条件贴底;之后只有在用户本就贴近底部时才跟随新消息,否则冒一个「N 条新
+  // 消息」提示条,不把正在翻历史的人拽下去(#4)。自己刚发的消息由 send() 单独滚底。
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    const el = scrollRef.current;
+    const len = messagesQuery.data?.length ?? 0;
+    if (!el || len === 0) return;
+    if (!didInitialScroll.current) {
+      didInitialScroll.current = true;
+      prevLen.current = len;
+      requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ block: "end" }));
+      return;
+    }
+    const grew = len > prevLen.current;
+    prevLen.current = len;
+    if (!grew) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+    if (nearBottom) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    } else {
+      setNewCount((n) => n + 1);
+    }
   }, [messagesQuery.data?.length]);
+
+  const scrollToBottom = () => {
+    setNewCount(0);
+    bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  };
+
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
+    if (nearBottom && newCount) setNewCount(0);
+  };
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -204,6 +357,7 @@ export default function ConversationPage() {
       setEmojiOpen(false);
       queryClient.invalidateQueries({ queryKey: ["messages", id] });
       queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      setNewCount(0);
       requestAnimationFrame(() => bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }));
     } catch (err) {
       pushToast({ kind: "error", message: (err as APIError).message });
@@ -238,9 +392,35 @@ export default function ConversationPage() {
     }
   };
 
+  // 会话内的安全动作:第一现场就能拉黑 / 举报,不必绕去对方主页(#9)。
+  const submitReport = async () => {
+    if (!peer?.id) return;
+    try {
+      await api.reportUser(peer.id, "inappropriate");
+      setReportOpen(false);
+      pushToast({ kind: "success", message: chat.reportDone });
+    } catch (err) {
+      pushToast({ kind: "error", message: (err as APIError).message });
+    }
+  };
+
+  const submitBlock = async () => {
+    if (!peer?.id) return;
+    try {
+      await api.block(peer.id, true);
+      setBlockOpen(false);
+      pushToast({ kind: "success", message: chat.blockDone });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      router.push("/messages");
+    } catch (err) {
+      if (isAuthRequiredError(err)) return;
+      pushToast({ kind: "error", message: (err as APIError).message });
+    }
+  };
+
   return (
     <AppShell>
-      <section className="kx-chat-page flex flex-col">
+      <section className="kx-chat-page relative flex flex-col">
         <header className="z-30 kx-glass-bar flex shrink-0 items-center gap-2 px-3 py-2">
           <button
             type="button"
@@ -270,9 +450,46 @@ export default function ConversationPage() {
           <span className="ml-auto hidden rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-bold text-emerald-700 ring-1 ring-emerald-100 dark:bg-kx-accentSoft dark:text-kx-accent dark:ring-kx-accent/20 sm:inline-flex">
             {t("msg_dm_badge")}
           </span>
+          {peer ? (
+            <div className="relative ml-auto sm:ml-2">
+              <button
+                type="button"
+                onClick={() => setMenuOpen((v) => !v)}
+                className="grid h-10 w-10 place-items-center rounded-full border border-white/70 bg-white/70 text-slate-700 shadow-[0_8px_22px_rgba(15,23,42,0.08)] transition hover:bg-white dark:border-white/10 dark:bg-kx-card dark:text-kx-subtle dark:hover:bg-kx-soft"
+                aria-label={chat.more}
+                aria-haspopup="menu"
+                aria-expanded={menuOpen}
+              >
+                <MoreHorizontal className="h-5 w-5" />
+              </button>
+              {menuOpen ? (
+                <>
+                  <button type="button" className="fixed inset-0 z-40 cursor-default" aria-hidden onClick={() => setMenuOpen(false)} tabIndex={-1} />
+                  <div role="menu" className="absolute right-0 top-12 z-50 w-48 overflow-hidden rounded-2xl border border-white/70 bg-white/95 p-1.5 shadow-kx-float backdrop-blur dark:border-white/10 dark:bg-kx-card/95">
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => { setMenuOpen(false); setReportOpen(true); }}
+                      className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-kx-text transition hover:bg-kx-soft"
+                    >
+                      <Flag className="h-4 w-4 text-kx-muted" /> {chat.report}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => { setMenuOpen(false); setBlockOpen(true); }}
+                      className="flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-semibold text-kx-danger transition hover:bg-kx-danger/10"
+                    >
+                      <Shield className="h-4 w-4" /> {chat.block}
+                    </button>
+                  </div>
+                </>
+              ) : null}
+            </div>
+          ) : null}
         </header>
 
-        <div className="kx-chat-scroll flex-1 space-y-3 px-3 py-4 sm:px-4 sm:py-5">
+        <div ref={scrollRef} onScroll={onScroll} className="kx-chat-scroll relative flex-1 space-y-3 px-3 py-4 sm:px-4 sm:py-5">
           {messagesQuery.isLoading ? (
             <InlineLoading />
           ) : messagesQuery.isError ? (
@@ -286,6 +503,17 @@ export default function ConversationPage() {
           )}
           <div ref={bottomRef} />
         </div>
+
+        {newCount > 0 ? (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className="pointer-events-auto absolute inset-x-0 bottom-24 z-20 mx-auto flex w-max items-center gap-1.5 rounded-full bg-kx-accent px-4 py-2 text-xs font-black text-white shadow-kx-float transition hover:brightness-105"
+          >
+            <ArrowDown className="h-3.5 w-3.5" />
+            {chat.newMessages(newCount)}
+          </button>
+        ) : null}
 
         <div className="kx-chat-composer shrink-0 px-3 pt-2 sm:px-4" style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.55rem)" }}>
           {attachments.length ? (
@@ -317,7 +545,7 @@ export default function ConversationPage() {
                       if (m.url?.startsWith("blob:")) URL.revokeObjectURL(m.url);
                       setAttachments((prev) => prev.filter((x) => x.id !== m.id));
                     }}
-                    aria-label="移除"
+                    aria-label={t("aria_remove")}
                   >
                     <X className="h-3.5 w-3.5" />
                   </button>
@@ -356,20 +584,22 @@ export default function ConversationPage() {
               type="button"
               className={clsx("kx-chat-tool-button", emojiOpen && "bg-kx-accentSoft text-kx-accent")}
               onClick={() => setEmojiOpen((v) => !v)}
-              aria-label="表情"
+              aria-label={chat.emoji}
             >
               <Smile className="h-5 w-5" />
             </button>
             <textarea
               ref={textareaRef}
               className="kx-chat-textarea"
-              placeholder={t("msg_input_placeholder")}
+              placeholder={chat.inputPlaceholder}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               rows={1}
               onFocus={() => setTimeout(() => bottomRef.current?.scrollIntoView({ block: "end" }), 120)}
               onKeyDown={(e) => {
-                if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                // Enter 发送 / Shift+Enter 换行(桌面聊天习惯)。IME 组字中的 Enter
+                // 只用于选字,绝不发送 —— 这对中日文输入是硬要求。
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
                   send();
                 }
@@ -380,12 +610,36 @@ export default function ConversationPage() {
               className="kx-chat-send-button"
               onClick={send}
               disabled={sending || uploading || (!draft.trim() && attachments.length === 0)}
-              aria-label="发送"
+              aria-label={t("action_send")}
             >
               {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
             </button>
           </div>
         </div>
+
+        <Dialog
+          open={reportOpen}
+          onClose={() => setReportOpen(false)}
+          title={chat.reportTitle}
+          footer={
+            <>
+              <button className="kx-button-ghost" onClick={() => setReportOpen(false)}>{chat.cancel}</button>
+              <button className="kx-button-primary" onClick={submitReport}>{chat.submit}</button>
+            </>
+          }
+        >
+          <p className="text-sm text-kx-subtle">{chat.reportBody}</p>
+        </Dialog>
+
+        <ConfirmDialog
+          open={blockOpen}
+          title={chat.blockTitle}
+          description={chat.blockBody}
+          destructive
+          confirmLabel={chat.blockConfirm}
+          onConfirm={submitBlock}
+          onCancel={() => setBlockOpen(false)}
+        />
       </section>
     </AppShell>
   );
@@ -510,6 +764,8 @@ function PrivateAttachmentGrid({ messageId, attachments, mine }: { messageId: st
 }
 
 function SignedMessageAttachment({ messageId, attachment }: { messageId: string; attachment: KXMessageAttachment }) {
+  const { locale } = useI18n();
+  const chat = CHAT_COPY[msgLang(locale)];
   const [url, setUrl] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -528,7 +784,7 @@ function SignedMessageAttachment({ messageId, attachment }: { messageId: string;
       // through the page origin instead.
       setUrl(sameOriginApiUrl(result.url));
     } catch (err) {
-      setError((err as APIError).message || "加载失败");
+      setError((err as APIError).message || chat.attRetry);
     } finally {
       setLoading(false);
     }
@@ -560,7 +816,7 @@ function SignedMessageAttachment({ messageId, attachment }: { messageId: string;
           onClick={() => setViewerOpen(true)}
           className="block w-full overflow-hidden rounded-2xl bg-kx-soft"
           style={{ aspectRatio: mediaCardAspectRatio(attachment) }}
-          aria-label="查看图片"
+          aria-label={chat.viewImage}
         >
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img src={url} alt="" className="h-full w-full object-cover" loading="lazy" decoding="async" />
@@ -585,13 +841,13 @@ function SignedMessageAttachment({ messageId, attachment }: { messageId: string;
       {loading ? (
         <Loader2 className="h-5 w-5 animate-spin" />
       ) : error ? (
-        <span>加载失败，点击重试</span>
+        <span>{chat.attLoadFailed}</span>
       ) : isVideo ? (
-        <span className="grid gap-2 place-items-center"><Play className="h-6 w-6" />视频</span>
+        <span className="grid gap-2 place-items-center"><Play className="h-6 w-6" />{chat.attVideo}</span>
       ) : isImage ? (
-        <span className="grid gap-2 place-items-center"><ImageIcon className="h-6 w-6" />图片</span>
+        <span className="grid gap-2 place-items-center"><ImageIcon className="h-6 w-6" />{chat.attImage}</span>
       ) : (
-        <span>{attachment.file_name || "附件"}</span>
+        <span>{attachment.file_name || chat.attFile}</span>
       )}
     </button>
   );

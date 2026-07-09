@@ -49,15 +49,15 @@ const LEAD_TYPE_FILTERS: Array<[string, string]> = [
 ];
 
 const LEAD_STATUS_TONES: Record<string, string> = {
-  submitted: "bg-orange-50 text-orange-700",
-  new: "bg-orange-50 text-orange-700",
-  reviewing: "bg-blue-50 text-blue-700",
-  contacted: "bg-cyan-50 text-cyan-700",
-  confirmed: "bg-emerald-50 text-emerald-700",
-  rescheduled: "bg-violet-50 text-violet-700",
-  completed: "bg-slate-950 text-white",
-  rejected: "bg-rose-50 text-rose-700",
-  closed: "bg-slate-100 text-slate-500",
+  submitted: "bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300",
+  new: "bg-orange-50 text-orange-700 dark:bg-orange-500/15 dark:text-orange-300",
+  reviewing: "bg-blue-50 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300",
+  contacted: "bg-cyan-50 text-cyan-700 dark:bg-cyan-500/15 dark:text-cyan-300",
+  confirmed: "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300",
+  rescheduled: "bg-violet-50 text-violet-700 dark:bg-violet-500/15 dark:text-violet-300",
+  completed: "bg-kx-text text-kx-bg",
+  rejected: "bg-rose-50 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300",
+  closed: "bg-kx-soft text-kx-muted",
 };
 
 /// 商家服务管理面板：本地服务 + 优惠的上下架与状态流转。
@@ -87,22 +87,22 @@ export function MerchantListingsPanel() {
   if (listings.isError) return <ErrorState title="服务列表暂时无法加载" onRetry={() => listings.refetch()} />;
   const items = listings.data || [];
   return (
-    <section className="rounded-[28px] border border-slate-200/70 bg-white/95 p-5 shadow-[0_18px_58px_-42px_rgba(15,23,42,0.5)]">
+    <section className="rounded-[28px] border border-kx-stroke/60 bg-kx-card p-5 shadow-kx-card">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-black text-slate-950">服务管理</h2>
-          <p className="mt-1 text-sm font-semibold text-slate-500">上下架、标记满约、维护价格与库存状态。</p>
+          <h2 className="text-xl font-black text-kx-text">服务管理</h2>
+          <p className="mt-1 text-sm font-semibold text-kx-subtle">上下架、标记满约、维护价格与库存状态。</p>
         </div>
         <div className="flex flex-wrap gap-2">
           <Link href="/listings/create?type=local_service" className="inline-flex h-10 items-center gap-1.5 rounded-full bg-orange-500 px-4 text-xs font-black text-white shadow-sm transition hover:bg-orange-600">
             <Plus className="h-3.5 w-3.5" />
             发布服务
           </Link>
-          <Link href="/listings/create?type=local_service&category=日本料理" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 transition hover:border-rose-300 hover:text-rose-600">
+          <Link href="/listings/create?type=local_service&category=日本料理" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-xs font-black text-kx-subtle transition hover:border-rose-300 hover:text-rose-600">
             <Utensils className="h-3.5 w-3.5" />
             发布餐厅
           </Link>
-          <Link href="/listings/create?type=discount" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 text-xs font-black text-slate-700 transition hover:border-orange-300">
+          <Link href="/listings/create?type=discount" className="inline-flex h-10 items-center gap-1.5 rounded-full border border-kx-stroke/60 bg-kx-card px-4 text-xs font-black text-kx-subtle transition hover:border-orange-300 hover:text-orange-600">
             <Tag className="h-3.5 w-3.5" />
             发布优惠
           </Link>
@@ -118,7 +118,7 @@ export function MerchantListingsPanel() {
           />
         ))}
         {!items.length ? (
-          <p className="rounded-2xl bg-slate-50 p-5 text-sm font-semibold text-slate-500">
+          <p className="rounded-2xl bg-kx-soft p-5 text-sm font-semibold text-kx-subtle">
             还没有发布服务。从「发布服务」开始，支持餐厅（在线订座）、景点门票、一日游、接送交通、翻译手续、搬家清洁、生活开通等类目。
           </p>
         ) : null}
@@ -131,8 +131,8 @@ function MerchantListingRow({ listing, pending, onStatus }: { listing: KXCityLis
   const cover = listing.card?.coverUrl || listing.coverUrl || listing.cover_url || "";
   const published = listing.status === "published";
   return (
-    <div className="grid gap-3 rounded-2xl border border-slate-200/70 bg-white p-3 sm:grid-cols-[96px_1fr_auto] sm:items-center">
-      <Link href={`/listings/${encodeURIComponent(listing.id)}`} className="relative block aspect-[4/3] overflow-hidden rounded-xl bg-slate-100 sm:aspect-square">
+    <div className="grid gap-3 rounded-2xl border border-kx-stroke/60 bg-kx-card p-3 sm:grid-cols-[96px_1fr_auto] sm:items-center">
+      <Link href={`/listings/${encodeURIComponent(listing.id)}`} className="relative block aspect-[4/3] overflow-hidden rounded-xl bg-kx-soft sm:aspect-square">
         {cover ? (
           <Image src={cover} alt={listing.title} fill sizes="96px" className="object-cover" unoptimized />
         ) : (
@@ -141,12 +141,12 @@ function MerchantListingRow({ listing, pending, onStatus }: { listing: KXCityLis
       </Link>
       <div className="min-w-0">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="truncate text-sm font-black text-slate-950">{cleanListingText(listing.title) || "服务"}</h3>
-          <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${published ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>
+          <h3 className="truncate text-sm font-black text-kx-text">{cleanListingText(listing.title) || "服务"}</h3>
+          <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${published ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300" : "bg-kx-soft text-kx-subtle"}`}>
             {formatListingStatus(listing.status, listing.type)}
           </span>
         </div>
-        <p className="mt-1 text-xs font-bold text-slate-400">
+        <p className="mt-1 text-xs font-bold text-kx-muted">
           {listing.category || "服务"} · {formatPrice(listing.price ?? null, listing.currency || "JPY")} · 浏览 {listing.view_count || 0} · 咨询 {listing.inquiry_count || 0}
         </p>
         {Number(listing.rating_count || 0) > 0 ? (
@@ -155,7 +155,7 @@ function MerchantListingRow({ listing, pending, onStatus }: { listing: KXCityLis
       </div>
       <div className="flex flex-wrap gap-1.5 sm:flex-col">
         {published ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("hidden")} className="inline-flex h-8 items-center justify-center rounded-full border border-slate-200 px-3 text-[11px] font-black text-slate-600 transition hover:border-amber-300 hover:text-amber-700 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("hidden")} className="inline-flex h-8 items-center justify-center rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-subtle transition hover:border-amber-300 hover:text-amber-700 disabled:opacity-50">
             下架
           </button>
         ) : (
@@ -163,7 +163,7 @@ function MerchantListingRow({ listing, pending, onStatus }: { listing: KXCityLis
             上架
           </button>
         )}
-        <Link href={`/listings/${encodeURIComponent(listing.id)}`} className="inline-flex h-8 items-center justify-center gap-1 rounded-full border border-slate-200 px-3 text-[11px] font-black text-slate-600 transition hover:border-blue-300 hover:text-blue-700">
+        <Link href={`/listings/${encodeURIComponent(listing.id)}`} className="inline-flex h-8 items-center justify-center gap-1 rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-subtle transition hover:border-blue-300 hover:text-blue-700">
           查看
           <ExternalLink className="h-3 w-3" />
         </Link>
@@ -193,11 +193,11 @@ export function MerchantLeadsPanel() {
   });
   const items = leads.data || [];
   return (
-    <section className="rounded-[28px] border border-slate-200/70 bg-white/95 p-5 shadow-[0_18px_58px_-42px_rgba(15,23,42,0.5)]">
+    <section className="rounded-[28px] border border-kx-stroke/60 bg-kx-card p-5 shadow-kx-card">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-black text-slate-950">线索与预订</h2>
-          <p className="mt-1 text-sm font-semibold text-slate-500">申请、预约和咨询集中处理；私信只作为补充沟通。</p>
+          <h2 className="text-xl font-black text-kx-text">线索与预订</h2>
+          <p className="mt-1 text-sm font-semibold text-kx-subtle">申请、预约和咨询集中处理；私信只作为补充沟通。</p>
         </div>
         <div className="flex max-w-full flex-col gap-2 sm:items-end">
           <div className="flex max-w-full gap-1.5 overflow-x-auto pb-0.5">
@@ -207,7 +207,7 @@ export function MerchantLeadsPanel() {
                 type="button"
                 onClick={() => setTypeFilter(value)}
                 data-active={typeFilter === value}
-                className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition data-[active=true]:border-emerald-600 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-700"
+                className="h-9 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-subtle transition data-[active=true]:border-emerald-600 data-[active=true]:bg-emerald-50 data-[active=true]:text-emerald-700 dark:data-[active=true]:bg-emerald-500/15 dark:data-[active=true]:text-emerald-300"
               >
                 {label}
               </button>
@@ -220,7 +220,7 @@ export function MerchantLeadsPanel() {
                 type="button"
                 onClick={() => setStatusFilter(value)}
                 data-active={statusFilter === value}
-                className="h-9 shrink-0 rounded-full border border-slate-200 bg-white px-3 text-xs font-black text-slate-600 transition data-[active=true]:border-slate-950 data-[active=true]:bg-slate-950 data-[active=true]:text-white"
+                className="h-9 shrink-0 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-subtle transition data-[active=true]:border-kx-text data-[active=true]:bg-kx-text data-[active=true]:text-kx-bg"
               >
                 {label}
               </button>
@@ -238,7 +238,7 @@ export function MerchantLeadsPanel() {
             <MerchantLeadRow key={inquiry.id} inquiry={inquiry} pending={update.isPending} onStatus={(status) => update.mutate({ id: inquiry.id, status })} />
           ))}
           {!items.length ? (
-            <p className="rounded-2xl bg-slate-50 p-5 text-sm font-semibold text-slate-500">
+            <p className="rounded-2xl bg-kx-soft p-5 text-sm font-semibold text-kx-subtle">
               暂无{statusFilter ? formatInquiryStatus(statusFilter) : ""}记录。用户提交的申请、预约和咨询会出现在这里，私信只用于后续补充沟通。
             </p>
           ) : null}
@@ -253,93 +253,93 @@ function MerchantLeadRow({ inquiry, pending, onStatus }: { inquiry: KXListingInq
   const conversation = inquiry.conversation_id || inquiry.conversationId;
   const details = Array.isArray(inquiry.details) ? inquiry.details : Array.isArray((inquiry.metadata || {}).details) ? ((inquiry.metadata || {}).details as { label: string; value: string }[]) : [];
   const status = inquiry.status || "submitted";
-  const statusTone = LEAD_STATUS_TONES[status] || "bg-slate-100 text-slate-500";
+  const statusTone = LEAD_STATUS_TONES[status] || "bg-kx-soft text-kx-muted";
   const listing = inquiry.listing;
   const listingTitle = (listing && cleanListingText(listing.title)) || "城市信息";
   return (
-    <div className="rounded-kx-sheet border border-slate-200/70 bg-white p-3.5 shadow-[0_12px_34px_-28px_rgba(15,23,42,0.55)]">
+    <div className="rounded-kx-sheet border border-kx-stroke/60 bg-kx-card p-3.5 shadow-kx-card">
       <div className="flex items-center gap-2.5">
         <Avatar user={fromUser || undefined} size={36} />
         <div className="min-w-0 flex-1">
-          <p className="flex flex-wrap items-center gap-2 text-sm font-black text-slate-950">
+          <p className="flex flex-wrap items-center gap-2 text-sm font-black text-kx-text">
             <span className="truncate">{fromUser?.display_name || fromUser?.handle || "Machi 用户"}</span>
-            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-600">{formatInquiryType(inquiry.type)}</span>
-            <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-black text-slate-600">正式记录</span>
+            <span className="rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-black text-blue-600 dark:bg-blue-500/15 dark:text-blue-300">{formatInquiryType(inquiry.type)}</span>
+            <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[10px] font-black text-kx-subtle">正式记录</span>
             <span className={`rounded-full px-2 py-0.5 text-[10px] font-black ${statusTone}`}>
               {formatInquiryStatus(status)}
             </span>
           </p>
-          <p className="mt-0.5 truncate text-xs font-bold text-slate-400">
+          <p className="mt-0.5 truncate text-xs font-bold text-kx-muted">
             {listingTitle} · {(inquiry.created_at || "").slice(0, 16).replace("T", " ")}
           </p>
         </div>
       </div>
-      {inquiry.message ? <p className="mt-2.5 whitespace-pre-line rounded-xl bg-slate-50 p-3 text-sm leading-6 text-slate-700">{inquiry.message}</p> : null}
+      {inquiry.message ? <p className="mt-2.5 whitespace-pre-line rounded-xl bg-kx-soft p-3 text-sm leading-6 text-kx-subtle">{inquiry.message}</p> : null}
       {details.length ? (
         <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
           {details.map((d) => (
-            <p key={d.label} className="rounded-lg bg-amber-50/70 px-2.5 py-1.5 text-xs font-bold text-amber-900 ring-1 ring-amber-100">
-              <span className="text-amber-600">{d.label}：</span>{d.value}
+            <p key={d.label} className="rounded-lg bg-amber-50/70 px-2.5 py-1.5 text-xs font-bold text-amber-900 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:text-amber-200 dark:ring-amber-500/20">
+              <span className="text-amber-600 dark:text-amber-300">{d.label}：</span>{d.value}
             </p>
           ))}
         </div>
       ) : null}
       <div className="mt-3 flex flex-wrap gap-1.5">
         {listing ? (
-          <Link href={`/listings/${encodeURIComponent(listing.id)}`} className="inline-flex h-8 items-center gap-1 rounded-full border border-slate-200 bg-white px-3 text-[11px] font-black text-slate-600 transition hover:border-slate-400">
+          <Link href={`/listings/${encodeURIComponent(listing.id)}`} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-[11px] font-black text-kx-subtle transition hover:border-kx-stroke">
             <ExternalLink className="h-3 w-3" />
             查看信息
           </Link>
         ) : null}
         {conversation ? (
-          <Link href={`/messages/${encodeURIComponent(conversation)}`} className="inline-flex h-8 items-center gap-1 rounded-full bg-slate-950 px-3 text-[11px] font-black text-white">
+          <Link href={`/messages/${encodeURIComponent(conversation)}`} className="inline-flex h-8 items-center gap-1 rounded-full bg-kx-text px-3 text-[11px] font-black text-kx-bg">
             <MessageSquare className="h-3 w-3" />
             补充沟通
           </Link>
         ) : null}
         {status !== "reviewing" && status !== "confirmed" && status !== "completed" && status !== "closed" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("reviewing")} className="inline-flex h-8 items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-3 text-[11px] font-black text-blue-700 transition hover:bg-blue-100 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("reviewing")} className="inline-flex h-8 items-center gap-1 rounded-full border border-blue-200 bg-blue-50 px-3 text-[11px] font-black text-blue-700 transition hover:bg-blue-100 disabled:opacity-50 dark:border-blue-500/30 dark:bg-blue-500/15 dark:text-blue-300 dark:hover:bg-blue-500/25">
             <CalendarClock className="h-3 w-3" />
             标记处理中
           </button>
         ) : null}
         {status !== "contacted" && status !== "confirmed" && status !== "completed" && status !== "closed" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("contacted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 px-3 text-[11px] font-black text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("contacted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-cyan-200 bg-cyan-50 px-3 text-[11px] font-black text-cyan-700 transition hover:bg-cyan-100 disabled:opacity-50 dark:border-cyan-500/30 dark:bg-cyan-500/15 dark:text-cyan-300 dark:hover:bg-cyan-500/25">
             <Send className="h-3 w-3" />
             已联系
           </button>
         ) : null}
         {status !== "confirmed" && status !== "completed" && status !== "closed" && status !== "rejected" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("confirmed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("confirmed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-[11px] font-black text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-50 dark:border-emerald-500/30 dark:bg-emerald-500/15 dark:text-emerald-300 dark:hover:bg-emerald-500/25">
             <CheckCircle2 className="h-3 w-3" />
             确认
           </button>
         ) : null}
         {status !== "rescheduled" && status !== "completed" && status !== "closed" && status !== "rejected" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("rescheduled")} className="inline-flex h-8 items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-3 text-[11px] font-black text-violet-700 transition hover:bg-violet-100 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("rescheduled")} className="inline-flex h-8 items-center gap-1 rounded-full border border-violet-200 bg-violet-50 px-3 text-[11px] font-black text-violet-700 transition hover:bg-violet-100 disabled:opacity-50 dark:border-violet-500/30 dark:bg-violet-500/15 dark:text-violet-300 dark:hover:bg-violet-500/25">
             <CalendarClock className="h-3 w-3" />
             改期
           </button>
         ) : null}
         {status !== "rejected" && status !== "completed" && status !== "closed" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("rejected")} className="inline-flex h-8 items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-3 text-[11px] font-black text-rose-700 transition hover:bg-rose-100 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("rejected")} className="inline-flex h-8 items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-3 text-[11px] font-black text-rose-700 transition hover:bg-rose-100 disabled:opacity-50 dark:border-rose-500/30 dark:bg-rose-500/15 dark:text-rose-300 dark:hover:bg-rose-500/25">
             <XCircle className="h-3 w-3" />
             拒绝
           </button>
         ) : null}
         {status !== "completed" && status !== "closed" && status !== "rejected" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("completed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-slate-200 bg-slate-950 px-3 text-[11px] font-black text-white transition hover:bg-slate-800 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("completed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-text px-3 text-[11px] font-black text-kx-bg transition hover:bg-kx-text/90 disabled:opacity-50">
             <Flag className="h-3 w-3" />
             完成
           </button>
         ) : null}
         {status !== "closed" ? (
-          <button type="button" disabled={pending} onClick={() => onStatus("closed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-slate-200 px-3 text-[11px] font-black text-slate-500 transition hover:border-slate-400 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("closed")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-muted transition hover:border-kx-stroke disabled:opacity-50">
             <XCircle className="h-3 w-3" />
             关闭
           </button>
         ) : (
-          <button type="button" disabled={pending} onClick={() => onStatus("submitted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-slate-200 px-3 text-[11px] font-black text-slate-500 transition hover:border-blue-300 hover:text-blue-600 disabled:opacity-50">
+          <button type="button" disabled={pending} onClick={() => onStatus("submitted")} className="inline-flex h-8 items-center gap-1 rounded-full border border-kx-stroke/60 px-3 text-[11px] font-black text-kx-muted transition hover:border-blue-300 hover:text-blue-600 disabled:opacity-50">
             <CalendarClock className="h-3 w-3" />
             重新打开
           </button>
@@ -375,19 +375,19 @@ export function MerchantReviewsPanel() {
   const items = reviews.data?.items || [];
   const summary = reviews.data?.summary;
   return (
-    <section className="rounded-[28px] border border-slate-200/70 bg-white/95 p-5 shadow-[0_18px_58px_-42px_rgba(15,23,42,0.5)]">
+    <section className="rounded-[28px] border border-kx-stroke/60 bg-kx-card p-5 shadow-kx-card">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-xl font-black text-slate-950">点评管理</h2>
-          <p className="mt-1 text-sm font-semibold text-slate-500">认真回复每条点评能显著提升转化与信任。</p>
+          <h2 className="text-xl font-black text-kx-text">点评管理</h2>
+          <p className="mt-1 text-sm font-semibold text-kx-subtle">认真回复每条点评能显著提升转化与信任。</p>
         </div>
         {summary && summary.count > 0 ? (
-          <div className="flex items-center gap-3 rounded-2xl bg-amber-50 px-4 py-2 ring-1 ring-amber-100">
-            <span className="flex items-center gap-1 text-lg font-black text-amber-600">
+          <div className="flex items-center gap-3 rounded-2xl bg-amber-50 px-4 py-2 ring-1 ring-amber-100 dark:bg-amber-500/10 dark:ring-amber-500/20">
+            <span className="flex items-center gap-1 text-lg font-black text-amber-600 dark:text-amber-300">
               <Star className="h-4.5 w-4.5 fill-amber-400 text-amber-400" />
               {summary.rating_avg.toFixed(1)}
             </span>
-            <span className="text-xs font-bold text-slate-500">{summary.count} 条点评 · {summary.unreplied} 条待回复</span>
+            <span className="text-xs font-bold text-kx-subtle">{summary.count} 条点评 · {summary.unreplied} 条待回复</span>
           </div>
         ) : null}
       </div>
@@ -408,7 +408,7 @@ export function MerchantReviewsPanel() {
           />
         ))}
         {!items.length ? (
-          <p className="rounded-2xl bg-slate-50 p-5 text-sm font-semibold text-slate-500">
+          <p className="rounded-2xl bg-kx-soft p-5 text-sm font-semibold text-kx-subtle">
             还没有收到点评。服务成交后引导用户在详情页留下体验点评。
           </p>
         ) : null}
@@ -435,12 +435,12 @@ function MerchantReviewRow({
   onSubmitReply: () => void;
 }) {
   return (
-    <article className="rounded-2xl border border-slate-200/70 bg-white p-3.5">
+    <article className="rounded-2xl border border-kx-stroke/60 bg-kx-card p-3.5">
       <div className="flex items-center gap-2.5">
         <Avatar user={review.author || undefined} size={36} />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-sm font-black text-slate-900">{review.author?.display_name || review.author?.handle || "Machi 用户"}</p>
-          <p className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+          <p className="truncate text-sm font-black text-kx-text">{review.author?.display_name || review.author?.handle || "Machi 用户"}</p>
+          <p className="flex flex-wrap items-center gap-2 text-xs text-kx-muted">
             <RatingStars value={review.rating} showValue={false} />
             <span className="font-bold">{(review.created_at || "").slice(0, 10)}</span>
             {review.listing_title ? (
@@ -452,11 +452,11 @@ function MerchantReviewRow({
           </p>
         </div>
       </div>
-      {review.content ? <p className="mt-2 whitespace-pre-line text-sm leading-6 text-slate-700">{review.content}</p> : null}
+      {review.content ? <p className="mt-2 whitespace-pre-line text-sm leading-6 text-kx-subtle">{review.content}</p> : null}
       {review.owner_reply ? (
-        <div className="mt-2.5 rounded-xl bg-emerald-50/60 p-3 ring-1 ring-emerald-100">
-          <p className="flex items-center gap-1 text-xs font-black text-emerald-700"><Store className="h-3.5 w-3.5" /> 我的回复</p>
-          <p className="mt-1 text-sm leading-6 text-slate-600">{review.owner_reply}</p>
+        <div className="mt-2.5 rounded-xl bg-emerald-50/60 p-3 ring-1 ring-emerald-100 dark:bg-emerald-500/10 dark:ring-emerald-500/20">
+          <p className="flex items-center gap-1 text-xs font-black text-emerald-700 dark:text-emerald-300"><Store className="h-3.5 w-3.5" /> 我的回复</p>
+          <p className="mt-1 text-sm leading-6 text-kx-subtle">{review.owner_reply}</p>
         </div>
       ) : replying ? (
         <div className="mt-2.5 flex gap-2">
@@ -471,7 +471,7 @@ function MerchantReviewRow({
             type="button"
             disabled={pending || !replyText.trim()}
             onClick={onSubmitReply}
-            className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-slate-950 px-4 text-xs font-black text-white disabled:opacity-50"
+            className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-full bg-kx-text px-4 text-xs font-black text-kx-bg disabled:opacity-50"
           >
             <Send className="h-3.5 w-3.5" />
             回复

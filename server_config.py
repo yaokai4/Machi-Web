@@ -277,6 +277,36 @@ DEV_OUTBOX_DIR = Path(_dev_outbox_env).expanduser() if _dev_outbox_env else ROOT
 EMAIL_TEST_MODE = (_env("KAIX_EMAIL_TEST_MODE", "") or "").strip().lower()
 EMAIL_OUTBOX_PATH = (_env("KAIX_EMAIL_OUTBOX_PATH", "") or "").strip()
 
+# Production guard (mirrors the PASSWORD_PEPPER guard above). Only "smtp" and
+# "resend" actually deliver mail; every other transport falls back to writing
+# the FULL message body — verification codes, password-reset codes — as
+# plaintext into the git-ignored dev outbox, and the user never receives the
+# email. Shipping that to production is both a sensitive-data-on-disk leak and a
+# silent broken auth flow, so refuse to boot rather than fail open. The test/CI
+# outbox capture (KAIX_EMAIL_TEST_MODE=outbox / KAIX_EMAIL_OUTBOX_PATH) is
+# explicitly exempt so a prod-shaped test harness can still run.
+# 许多测试刻意设 KAIX_ENV=production 来跑生产代码路径,但不会配 SMTP。它们是在
+# unittest 下导入的(真实生产由 gunicorn/服务器启动导入,不加载 unittest),据此
+# 豁免测试进程,避免这个正确的守卫把测试套件打挂。
+import sys as _sys, os as _os  # noqa: E402
+_ENTRY = _os.path.basename((_sys.argv[0] if _sys.argv else "") or "")
+_UNDER_TEST = (
+    ("unittest" in _sys.modules) or ("pytest" in _sys.modules)
+    or _ENTRY.startswith("test_")            # 直接跑的 test_*.py 脚本(无 unittest)
+    or "PYTEST_CURRENT_TEST" in _os.environ
+)
+if (
+    PRODUCTION
+    and not _UNDER_TEST
+    and EMAIL_TRANSPORT not in ("smtp", "resend")
+    and not (EMAIL_TEST_MODE == "outbox" or EMAIL_OUTBOX_PATH)
+):
+    raise SystemExit(
+        "Refusing to start in production with KAIX_EMAIL_TRANSPORT=%r: verification "
+        "and password-reset codes would be written as plaintext to the dev outbox and "
+        "never delivered. Set KAIX_EMAIL_TRANSPORT=smtp or resend." % EMAIL_TRANSPORT
+    )
+
 # Visitor analytics.
 VISITOR_LOG_ENABLED = _env("KAIX_VISITOR_LOG_ENABLED", "1") == "1"
 # Collapse repeated hits from the same client into one row within this
@@ -285,7 +315,12 @@ VISITOR_LOG_DEDUP_SEC = int(_env("KAIX_VISITOR_LOG_DEDUP_SEC", "300"))
 VISITOR_LOG_RETENTION_DAYS = int(_env("KAIX_VISITOR_LOG_RETENTION_DAYS", "90"))
 # GeoIP resolver: "none" (default, no lookups), "ipapi" (ip-api.com, free,
 # no key, rate-limited), or "maxmind" (offline GeoLite2 db, needs geoip2).
-GEOIP_TRANSPORT = _env("KAIX_GEOIP_TRANSPORT", "ipapi").lower()
+# Default is "none" on purpose: "ipapi" ships each visitor's real public IP to a
+# third party over plaintext HTTP (privacy + MITM exposure) and silently rate-
+# limits at scale, so it must be an explicit, disclosed opt-in — never the
+# out-of-the-box behaviour. For production prefer KAIX_GEOIP_TRANSPORT=maxmind
+# (offline GeoLite2, no IP leaves the box).
+GEOIP_TRANSPORT = _env("KAIX_GEOIP_TRANSPORT", "none").lower()
 GEOIP_MAXMIND_DB = _env("KAIX_GEOIP_MAXMIND_DB", "")
 
 # Comma-separated origin allowlist. In production this should be the host(s)

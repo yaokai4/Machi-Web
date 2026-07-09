@@ -14,6 +14,8 @@ import { ErrorState, InlineLoading } from "@/components/design/States";
 import { Avatar } from "@/components/design/Avatar";
 import { api } from "@/lib/api";
 import { useSessionUser } from "@/lib/session";
+import { useI18n } from "@/lib/i18n";
+import { socialCopy } from "@/components/social/socialStyle";
 import type { KXEventFormField } from "@/lib/types";
 
 interface DraftField {
@@ -31,6 +33,8 @@ export default function EventManagePage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const viewer = useSessionUser();
+  const { locale } = useI18n();
+  const c = socialCopy(locale).events;
 
   const eventQuery = useQuery({ queryKey: ["event", slug], queryFn: () => api.event(slug) });
   const event = eventQuery.data;
@@ -96,10 +100,10 @@ export default function EventManagePage() {
     onSuccess: (updated) => {
       queryClient.setQueryData(["event", slug], updated);
       queryClient.invalidateQueries({ queryKey: ["event-attendees", slug] });
-      setMessage("已保存");
+      setMessage(c.saved);
       setTimeout(() => setMessage(""), 2000);
     },
-    onError: (err: Error) => setMessage(err.message || "保存失败"),
+    onError: (err: Error) => setMessage(err.message || c.saveError),
   });
 
   const toggleFeatured = useMutation({
@@ -125,7 +129,7 @@ export default function EventManagePage() {
   if (!canManage) {
     return (
       <AppShell requireAuth right={null}>
-        <div className="px-4 py-16 text-center text-sm font-bold text-kx-muted">只有主办方或管理员可以管理这场活动。</div>
+        <div className="px-4 py-16 text-center text-sm font-bold text-kx-muted">{c.manageNoPermission}</div>
       </AppShell>
     );
   }
@@ -137,12 +141,12 @@ export default function EventManagePage() {
       <header className="kx-glass-bar sticky top-0 z-30 px-4 py-3">
         <div className="flex flex-wrap items-center gap-2">
           <Link href={`/events/${encodeURIComponent(slug)}`} className="inline-flex items-center gap-1 rounded-full bg-kx-soft px-3 py-1.5 text-xs font-black text-kx-muted hover:text-kx-text">
-            <ArrowLeft className="h-3.5 w-3.5" /> 返回活动页
+            <ArrowLeft className="h-3.5 w-3.5" /> {c.backToEvent}
           </Link>
           <Settings2 className="h-5 w-5 text-kx-accent" />
           <h1 className="truncate text-lg font-black">{event.title}</h1>
           <span className={`rounded-full px-2 py-0.5 text-[11px] font-black ${event.status === "published" ? "bg-emerald-500/10 text-emerald-600" : "bg-kx-soft text-kx-muted"}`}>
-            {event.status === "published" ? "已发布" : event.status === "draft" ? "草稿" : "已取消"}
+            {event.status === "published" ? c.statusPublished : event.status === "draft" ? c.statusDraft : c.statusCancelled}
           </span>
           <div className="ml-auto flex items-center gap-2">
             {isAdmin ? (
@@ -154,7 +158,7 @@ export default function EventManagePage() {
                 }`}
               >
                 <Star className="h-3.5 w-3.5" />
-                {event.is_featured ? "已精选" : "设为精选"}
+                {event.is_featured ? c.featuredOn : c.featuredSet}
               </button>
             ) : null}
             <button
@@ -164,7 +168,7 @@ export default function EventManagePage() {
               className="kx-button-primary inline-flex h-9 items-center gap-1.5 rounded-full px-4 text-xs font-black disabled:opacity-50"
             >
               {save.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
-              保存
+              {c.save}
             </button>
           </div>
         </div>
@@ -175,34 +179,34 @@ export default function EventManagePage() {
         {/* 左:编辑 */}
         <div className="space-y-5">
           <section className="kx-card space-y-4 p-4 sm:p-5">
-            <p className="text-xs font-black uppercase tracking-wider text-kx-muted">基本信息</p>
+            <p className="text-xs font-black uppercase tracking-wider text-kx-muted">{c.basicInfo}</p>
             <label className="block space-y-1.5">
-              <span className="text-xs font-black text-kx-muted">活动名称</span>
+              <span className="text-xs font-black text-kx-muted">{c.fName}</span>
               <input className="kx-input font-bold" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} />
             </label>
             <label className="block space-y-1.5">
-              <span className="text-xs font-black text-kx-muted">副标题</span>
+              <span className="text-xs font-black text-kx-muted">{c.mSubtitle}</span>
               <input className="kx-input" value={subtitle} onChange={(e) => setSubtitle(e.target.value)} maxLength={200} />
             </label>
             <label className="block space-y-1.5">
-              <span className="text-xs font-black text-kx-muted">详情</span>
+              <span className="text-xs font-black text-kx-muted">{c.mDesc}</span>
               <textarea className="kx-input min-h-[120px] resize-y py-3" value={description} onChange={(e) => setDescription(e.target.value)} />
             </label>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <label className="block space-y-1.5">
-                <span className="text-xs font-black text-kx-muted">场地名</span>
+                <span className="text-xs font-black text-kx-muted">{c.fVenue}</span>
                 <input className="kx-input" value={venueName} onChange={(e) => setVenueName(e.target.value)} maxLength={160} />
               </label>
               <label className="block space-y-1.5">
-                <span className="text-xs font-black text-kx-muted">地址</span>
+                <span className="text-xs font-black text-kx-muted">{c.mAddress}</span>
                 <input className="kx-input" value={address} onChange={(e) => setAddress(e.target.value)} maxLength={300} />
               </label>
               <label className="block space-y-1.5">
-                <span className="text-xs font-black text-kx-muted">名额(空/0 = 不限)</span>
+                <span className="text-xs font-black text-kx-muted">{c.mCapacity}</span>
                 <input type="number" min={0} className="kx-input" value={capacity} onChange={(e) => setCapacity(e.target.value)} />
               </label>
               <label className="block space-y-1.5">
-                <span className="text-xs font-black text-kx-muted">费用展示</span>
+                <span className="text-xs font-black text-kx-muted">{c.fPrice}</span>
                 <input className="kx-input" value={priceText} onChange={(e) => setPriceText(e.target.value)} maxLength={60} />
               </label>
             </div>
@@ -211,19 +215,19 @@ export default function EventManagePage() {
           <section className="kx-card space-y-4 p-4 sm:p-5">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-xs font-black uppercase tracking-wider text-kx-muted">报名表单字段</p>
-                <p className="mt-0.5 text-[11px] font-semibold text-kx-muted/80">改字段名不影响已有答案;删除字段会同时隐藏对应答案。</p>
+                <p className="text-xs font-black uppercase tracking-wider text-kx-muted">{c.formFieldsTitle}</p>
+                <p className="mt-0.5 text-[11px] font-semibold text-kx-muted/80">{c.formFieldsHintManage}</p>
               </div>
               <button
                 type="button"
                 onClick={() => setFields((prev) => [...prev, { key: Date.now(), label: "", field_type: "text", optionsText: "", required: false }])}
                 className="inline-flex h-9 items-center gap-1 rounded-full bg-kx-accent/10 px-3 text-xs font-black text-kx-accent hover:bg-kx-accent/15"
               >
-                <Plus className="h-3.5 w-3.5" /> 加一个
+                <Plus className="h-3.5 w-3.5" /> {c.addField}
               </button>
             </div>
             {fields.length === 0 ? (
-              <p className="text-xs font-semibold text-kx-muted">当前是一键报名(不收集任何信息)。</p>
+              <p className="text-xs font-semibold text-kx-muted">{c.noFieldsManage}</p>
             ) : (
               <div className="space-y-3">
                 {fields.map((field, index) => (
@@ -233,14 +237,14 @@ export default function EventManagePage() {
                         className="kx-input h-10 flex-1"
                         value={field.label}
                         onChange={(e) => setFields((prev) => prev.map((f, i) => (i === index ? { ...f, label: e.target.value } : f)))}
-                        placeholder="字段名"
+                        placeholder={c.fieldNamePlaceholderManage}
                         maxLength={120}
                       />
                       <button
                         type="button"
                         onClick={() => setFields((prev) => prev.filter((_, i) => i !== index))}
                         className="rounded-full p-2 text-kx-muted hover:bg-kx-soft hover:text-kx-heat"
-                        aria-label="删除字段"
+                        aria-label={c.removeField}
                       >
                         <Trash2 className="h-4 w-4" />
                       </button>
@@ -253,7 +257,7 @@ export default function EventManagePage() {
                           onClick={() => setFields((prev) => prev.map((f, i) => (i === index ? { ...f, field_type: kind } : f)))}
                           className={`rounded-full px-3 py-1.5 transition ${field.field_type === kind ? "bg-kx-accent text-white" : "bg-kx-soft text-kx-muted hover:text-kx-text"}`}
                         >
-                          {kind === "text" ? "文本" : kind === "select" ? "单选" : "勾选"}
+                          {kind === "text" ? c.ftText : kind === "select" ? c.ftSelect : c.ftCheckbox}
                         </button>
                       ))}
                       <label className="ml-auto inline-flex cursor-pointer items-center gap-1.5">
@@ -263,7 +267,7 @@ export default function EventManagePage() {
                           onChange={(e) => setFields((prev) => prev.map((f, i) => (i === index ? { ...f, required: e.target.checked } : f)))}
                           className="h-3.5 w-3.5 accent-[rgb(var(--kx-accent))]"
                         />
-                        必填
+                        {c.required}
                       </label>
                     </div>
                     {field.field_type === "select" ? (
@@ -271,7 +275,7 @@ export default function EventManagePage() {
                         className="kx-input h-10"
                         value={field.optionsText}
                         onChange={(e) => setFields((prev) => prev.map((f, i) => (i === index ? { ...f, optionsText: e.target.value } : f)))}
-                        placeholder="选项,用逗号分隔"
+                        placeholder={c.optionsPlaceholderManage}
                       />
                     ) : null}
                   </div>
@@ -283,10 +287,10 @@ export default function EventManagePage() {
           {event.status !== "cancelled" ? (
             <button
               type="button"
-              onClick={() => { if (confirm("确定取消这场活动吗?报名者将看到活动已取消。")) cancelEvent.mutate(); }}
+              onClick={() => { if (confirm(c.cancelEventConfirm)) cancelEvent.mutate(); }}
               className="inline-flex h-11 w-full items-center justify-center gap-1.5 rounded-full border border-kx-heat/40 text-sm font-black text-kx-heat transition hover:bg-kx-heat/10"
             >
-              <XCircle className="h-4 w-4" /> 取消活动
+              <XCircle className="h-4 w-4" /> {c.cancelEvent}
             </button>
           ) : null}
         </div>
@@ -295,13 +299,13 @@ export default function EventManagePage() {
         <section className="kx-card self-start p-4 sm:p-5">
           <div className="flex items-center gap-2">
             <Users2 className="h-4 w-4 text-kx-accent" />
-            <h2 className="text-sm font-black">报名名单</h2>
-            {attendees ? <span className="text-xs font-bold text-kx-muted">{attendees.total} 人</span> : null}
+            <h2 className="text-sm font-black">{c.attendeeList}</h2>
+            {attendees ? <span className="text-xs font-bold text-kx-muted">{c.peopleCount(attendees.total)}</span> : null}
           </div>
           {attendeesQuery.isLoading ? (
             <InlineLoading />
           ) : !attendees || attendees.items.length === 0 ? (
-            <p className="mt-4 text-sm font-semibold text-kx-muted">还没有人报名。</p>
+            <p className="mt-4 text-sm font-semibold text-kx-muted">{c.noAttendees}</p>
           ) : (
             <ul className="mt-4 space-y-3">
               {attendees.items.map((entry) => (
@@ -314,11 +318,11 @@ export default function EventManagePage() {
                     </div>
                     {entry.status === "going" ? (
                       <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/10 px-2 py-1 text-[11px] font-black text-emerald-600">
-                        <Check className="h-3 w-3" /> 参加
+                        <Check className="h-3 w-3" /> {c.statusGoing}
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 rounded-full bg-amber-400/15 px-2 py-1 text-[11px] font-black text-amber-600">
-                        <Hourglass className="h-3 w-3" /> 候补
+                        <Hourglass className="h-3 w-3" /> {c.statusWaitlist}
                       </span>
                     )}
                   </div>
@@ -328,7 +332,7 @@ export default function EventManagePage() {
                         entry.answers?.[field.id] ? (
                           <div key={field.id} className="flex gap-2">
                             <dt className="shrink-0 font-black text-kx-muted">{field.label}:</dt>
-                            <dd className="font-semibold">{entry.answers[field.id] === "true" ? "是" : entry.answers[field.id]}</dd>
+                            <dd className="font-semibold">{entry.answers[field.id] === "true" ? c.yes : entry.answers[field.id]}</dd>
                           </div>
                         ) : null,
                       )}

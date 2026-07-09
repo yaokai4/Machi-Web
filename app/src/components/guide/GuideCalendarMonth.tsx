@@ -7,6 +7,7 @@ import { guide, type GuideCalendarItem, type GuideTodo } from "@/lib/guide";
 import { GuideCalendarEventCard } from "@/components/guide/GuideCalendarEventCard";
 import { GuideQuickAddTodo, GuideTodoCard } from "@/components/guide/GuideOS";
 import { useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 // Spec P2 desktop calendar: left month grid (dots on days with tasks) + right
 // panel showing the selected day's todos. Mobile keeps the grouped list
@@ -19,6 +20,7 @@ const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
 export function GuideCalendarMonth({ todos, events }: { todos: GuideTodo[]; events: GuideCalendarItem[] }) {
   const queryClient = useQueryClient();
   const pushToast = useToasts((state) => state.push);
+  const { t } = useI18n();
   const move = useMutation({
     mutationFn: ({ id, date }: { id: string; date: string }) => guide.updateTodo(id, { plannedDate: date }),
     onSuccess: () => {
@@ -76,9 +78,9 @@ export function GuideCalendarMonth({ todos, events }: { todos: GuideTodo[]; even
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-black text-kx-text">{monthLabel}</h2>
           <div className="flex gap-1">
-            <button type="button" aria-label="上个月" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))} className="grid h-8 w-8 place-items-center rounded-xl border border-kx-stroke/60 text-kx-muted hover:text-kx-accent"><ChevronLeft className="h-4 w-4" /></button>
-            <button type="button" aria-label="今天" onClick={() => { setCursor(new Date()); setSelected(todayIso); }} className="rounded-xl border border-kx-stroke/60 px-2.5 text-xs font-bold text-kx-muted hover:text-kx-accent">今天</button>
-            <button type="button" aria-label="下个月" onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))} className="grid h-8 w-8 place-items-center rounded-xl border border-kx-stroke/60 text-kx-muted hover:text-kx-accent"><ChevronRight className="h-4 w-4" /></button>
+            <button type="button" aria-label={t("aria_prev_month")} onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() - 1, 1))} className="grid h-8 w-8 place-items-center rounded-xl border border-kx-stroke/60 text-kx-muted hover:text-kx-accent"><ChevronLeft className="h-4 w-4" /></button>
+            <button type="button" aria-label={t("aria_today")} onClick={() => { setCursor(new Date()); setSelected(todayIso); }} className="rounded-xl border border-kx-stroke/60 px-2.5 text-xs font-bold text-kx-muted hover:text-kx-accent">今天</button>
+            <button type="button" aria-label={t("aria_next_month")} onClick={() => setCursor(new Date(cursor.getFullYear(), cursor.getMonth() + 1, 1))} className="grid h-8 w-8 place-items-center rounded-xl border border-kx-stroke/60 text-kx-muted hover:text-kx-accent"><ChevronRight className="h-4 w-4" /></button>
           </div>
         </div>
         <div className="grid grid-cols-7 gap-1 text-center text-[11px] font-bold text-kx-muted">

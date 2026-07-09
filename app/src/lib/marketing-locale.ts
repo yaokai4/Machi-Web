@@ -101,7 +101,16 @@ export async function buildSubPageMetadata(
   // Strip trailing punctuation for a tighter page title and pair with brand.
   const cleanTitle = titleText.replace(/[。.!？？！]+$/, "");
   const description = page?.intro || titleText;
-  const path = options.canonicalPath ?? `/${pathSuffix.replace(/^\/+/, "")}`;
+  // Canonicalize to the LOCALE-PREFIXED URL (/zh/about, /en/about, …) rather
+  // than the prefix-less path. The prefix-less page serves all three languages
+  // by content negotiation on one URL, so canonicalizing to it left the hreflang
+  // cluster (which only lists /zh, /en, /ja + x-default) with no member equal to
+  // the canonical — hreflang requires the canonical URL to appear in its own set.
+  // Pointing canonical at /{locale}{slash} makes each language self-reference a
+  // single stable URL that IS in the cluster, de-duping /about ⇄ /{locale}/about.
+  const suffix = pathSuffix.replace(/^\/+/, "");
+  const slash = suffix ? `/${suffix}` : "";
+  const path = options.canonicalPath ?? `/${locale}${slash}`;
   // `title.absolute` bypasses the root layout's `%s | Machi`
   // template — without it, the page title would double-up to
   // "X | Machi | Machi".

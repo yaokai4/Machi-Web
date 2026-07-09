@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { Moon, Sun } from "lucide-react";
 import clsx from "clsx";
+import { useI18n } from "@/lib/i18n";
 
 type Mode = "light" | "dark";
 const STORAGE_KEY = "machi-theme";
@@ -37,6 +38,7 @@ function readStored(): Mode {
 /// `machi-theme` key the inline head script reads so there's no
 /// flash of incorrect theme on cold load.
 export function ThemeToggle({ compact = false }: { compact?: boolean }) {
+  const { t } = useI18n();
   const [mode, setMode] = useState<Mode>("light");
 
   useEffect(() => {
@@ -67,7 +69,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
     return (
       <button
         type="button"
-        aria-label="切换主题"
+        aria-label={t("aria_toggle_theme")}
         onClick={() => change(mode === "light" ? "dark" : "light")}
         className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-slate-950/5 text-slate-700 ring-1 ring-slate-900/10 transition hover:bg-slate-950/10 dark:bg-white/10 dark:text-slate-100 dark:ring-white/15 dark:hover:bg-white/20"
       >
@@ -80,7 +82,7 @@ export function ThemeToggle({ compact = false }: { compact?: boolean }) {
     <div
       className="inline-flex items-center gap-0.5 rounded-full bg-slate-950/5 p-1 ring-1 ring-slate-900/10 dark:bg-white/10 dark:ring-white/15"
       role="group"
-      aria-label="主题"
+      aria-label={t("aria_theme")}
     >
       {options.map(({ value, Icon, label }) => (
         <button

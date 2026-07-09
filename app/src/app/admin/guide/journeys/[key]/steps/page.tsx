@@ -10,6 +10,7 @@ import { adminGuide, type GuideJourneyStep } from "@/lib/guide";
 import { GuideAdminShell } from "@/components/guide/GuideAdminKit";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 type StepForm = {
   title: string;
@@ -81,6 +82,7 @@ export default function GuideJourneyStepsAdminPage() {
   const journeyKey = String(params?.key || "");
   const qc = useQueryClient();
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<StepForm>(EMPTY);
   const [dragIndex, setDragIndex] = useState<number | null>(null);
@@ -218,8 +220,8 @@ export default function GuideJourneyStepsAdminPage() {
                     onDragStart={() => setDragIndex(index)}
                     onDragEnd={() => { setDragIndex(null); setDragOverIndex(null); }}
                     className="cursor-grab text-kx-muted hover:text-kx-accent active:cursor-grabbing"
-                    title="拖拽排序"
-                    aria-label="拖拽排序"
+                    title={t("aria_drag_sort")}
+                    aria-label={t("aria_drag_sort")}
                   >
                     <GripVertical className="h-4 w-4" />
                   </div>

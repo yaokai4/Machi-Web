@@ -196,7 +196,7 @@ export default function MyBusinessPage() {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const queryClient = useQueryClient();
-  const { locale } = useI18n();
+  const { t, locale } = useI18n();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [form, setForm] = useState<BusinessFormState>(blankForm);
   const [draftFileIds, setDraftFileIds] = useState<string[]>([]);
@@ -475,7 +475,7 @@ export default function MyBusinessPage() {
                         }
                       }}
                       className="grid h-8 w-8 place-items-center rounded-full text-kx-muted transition hover:bg-rose-50 hover:text-rose-600 disabled:cursor-not-allowed disabled:opacity-40"
-                      aria-label="撤回认证材料"
+                      aria-label={t("aria_withdraw_verification")}
                     >
                       <Trash2 className="h-4 w-4" />
                     </button>

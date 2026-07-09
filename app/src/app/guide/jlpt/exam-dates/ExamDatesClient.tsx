@@ -27,7 +27,15 @@ export function ExamDatesClient() {
   });
 
   const back = { href: "/guide/jlpt", label: t("JLPT 备考", "JLPT 対策", "JLPT prep") };
-  const today = new Date().toISOString().slice(0, 10);
+  // Compare against the JST calendar date (audience is in Japan): a UTC "today"
+  // reads as yesterday during the JST 00:00–09:00 window, off-by-one'ing the
+  // upcoming/past split for a session held that very day.
+  const today = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
 
   return (
     <GuideShell back={back}>

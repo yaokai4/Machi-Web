@@ -6,6 +6,7 @@ import { ExternalLink, FileText, Loader2, Paperclip, Trash2, Upload } from "luci
 import { api, type UploadedFile } from "@/lib/api";
 import { guide } from "@/lib/guide";
 import { useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 type GuideAttachmentEntity =
   | "guide_task"
@@ -29,6 +30,7 @@ export function GuideAttachmentManager({
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [progress, setProgress] = useState("");
   const queryKey = ["guide", "attachments", entityType, entityId];
@@ -140,7 +142,7 @@ export function GuideAttachmentManager({
                 <span className="block truncate text-sm font-black text-kx-text">{file.fileName || file.originalFileName || file.objectKey.split("/").pop() || "附件"}</span>
                 <span className="block text-xs text-kx-muted">{formatBytes(file.fileSize)} · {file.contentType || file.fileType}</span>
               </button>
-              <button type="button" onClick={() => openFile(file)} className="grid h-11 w-11 place-items-center rounded-2xl text-kx-accent hover:bg-kx-accentSoft" aria-label="查看附件">
+              <button type="button" onClick={() => openFile(file)} className="grid h-11 w-11 place-items-center rounded-2xl text-kx-accent hover:bg-kx-accentSoft" aria-label={t("aria_view_attachment")}>
                 <ExternalLink className="h-4 w-4" />
               </button>
               <button
@@ -150,7 +152,7 @@ export function GuideAttachmentManager({
                 }}
                 disabled={remove.isPending && remove.variables === file.id}
                 className="grid h-11 w-11 place-items-center rounded-2xl text-red-500 hover:bg-red-50 disabled:opacity-60"
-                aria-label="删除附件"
+                aria-label={t("aria_delete_attachment")}
               >
                 {remove.isPending && remove.variables === file.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
               </button>

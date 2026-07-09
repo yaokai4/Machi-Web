@@ -206,7 +206,12 @@ export interface TextSegment {
   value: string;
 }
 
-const SEGMENT_RE = /(#[\w一-鿿]+|@[a-z0-9_]{2,24}|https?:\/\/[^\s]+)/giu;
+// Hashtag class uses Unicode property escapes (\p{L}\p{N}) so kana, hangul and
+// accented-Latin tags (#さくら / #カフェ / #café) tokenize as links — not just
+// ASCII + CJK ideographs. Kept in sync with PostCard's inline-tag extraction
+// (/#([\p{L}\p{N}_]+)/gu); a narrower class here made those tags un-clickable
+// AND dropped them from the chip row, so they vanished entirely.
+const SEGMENT_RE = /(#[\p{L}\p{N}_]+|@[a-z0-9_]{2,24}|https?:\/\/[^\s]+)/giu;
 
 export function tokenizeContent(content: string): TextSegment[] {
   if (!content) return [];

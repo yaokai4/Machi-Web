@@ -13,8 +13,9 @@ import { EmptyState, ErrorState, InlineLoading } from "@/components/design/State
 import { Avatar } from "@/components/design/Avatar";
 import { api } from "@/lib/api";
 import { sameOriginApiUrl } from "@/lib/media";
+import { useI18n } from "@/lib/i18n";
 import type { KXEvent } from "@/lib/types";
-import { dateBadge, eventStyle, eventTimeLine, EVENT_CATEGORY_KEYS } from "@/components/social/socialStyle";
+import { dateBadge, eventStyle, eventTimeLine, kindLabel, socialCopy, EVENT_CATEGORY_KEYS } from "@/components/social/socialStyle";
 
 function AvatarWall({ users, total }: { users: KXEvent["attendees_preview"]; total: number }) {
   const shown = (users ?? []).slice(0, 5);
@@ -35,9 +36,11 @@ function AvatarWall({ users, total }: { users: KXEvent["attendees_preview"]; tot
 }
 
 function EventCard({ event }: { event: KXEvent }) {
+  const { locale } = useI18n();
+  const c = socialCopy(locale).events;
   const style = eventStyle(event.category);
   const Icon = style.icon;
-  const badge = dateBadge(event.starts_at);
+  const badge = dateBadge(event.starts_at, locale);
   const going = event.going_count ?? 0;
   return (
     <Link
@@ -66,7 +69,7 @@ function EventCard({ event }: { event: KXEvent }) {
         ) : null}
         {event.is_featured ? (
           <div className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-amber-400/95 px-2 py-1 text-[10px] font-black text-amber-950 shadow">
-            <Star className="h-3 w-3" /> 精选
+            <Star className="h-3 w-3" /> {c.featuredBadge}
           </div>
         ) : null}
       </div>
@@ -74,7 +77,7 @@ function EventCard({ event }: { event: KXEvent }) {
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-black ${style.softBg} ${style.text}`}>
             <Icon className="h-3 w-3" />
-            {event.category_label || style.labelZh}
+            {kindLabel(event.category_label, style, locale)}
           </span>
           {event.price_text ? (
             <span className="ml-auto shrink-0 truncate text-xs font-black text-kx-heat">{event.price_text}</span>
@@ -84,7 +87,7 @@ function EventCard({ event }: { event: KXEvent }) {
         <div className="mt-auto space-y-1 text-xs font-semibold text-kx-muted">
           <p className="flex items-center gap-1.5">
             <Clock3 className="h-3.5 w-3.5 shrink-0" />
-            <span className="truncate">{eventTimeLine(event.starts_at, event.ends_at)}</span>
+            <span className="truncate">{eventTimeLine(event.starts_at, event.ends_at, locale)}</span>
           </p>
           {event.venue_name ? (
             <p className="flex items-center gap-1.5">
@@ -97,14 +100,14 @@ function EventCard({ event }: { event: KXEvent }) {
           {going > 0 ? (
             <div className="flex items-center gap-2">
               <AvatarWall users={event.attendees_preview} total={going} />
-              <span className="text-xs font-semibold text-kx-muted">{going} 人参加</span>
+              <span className="text-xs font-semibold text-kx-muted">{c.going(going)}</span>
             </div>
           ) : (
-            <span className="text-xs font-semibold text-kx-muted/70">等你来报名</span>
+            <span className="text-xs font-semibold text-kx-muted/70">{c.beFirst}</span>
           )}
           {event.viewer_status === "going" ? (
             <span className="inline-flex shrink-0 items-center gap-1 text-xs font-black text-kx-accent">
-              <Check className="h-3.5 w-3.5" /> 已报名
+              <Check className="h-3.5 w-3.5" /> {c.registeredBadge}
             </span>
           ) : null}
         </div>
@@ -114,6 +117,8 @@ function EventCard({ event }: { event: KXEvent }) {
 }
 
 export default function EventsPage() {
+  const { locale } = useI18n();
+  const c = socialCopy(locale).events;
   const [category, setCategory] = useState("");
   const [when, setWhen] = useState<"upcoming" | "past">("upcoming");
 
@@ -136,18 +141,12 @@ export default function EventsPage() {
         <div className="pointer-events-none absolute -left-16 top-10 h-48 w-48 rounded-full bg-orange-400/15 blur-3xl" />
         <div className="relative">
           <p className="text-xs font-black uppercase tracking-[0.2em] text-kx-accent">Machi Events</p>
-          <h1 className="mt-2 text-3xl font-black leading-tight sm:text-4xl">
-            办一场活动,
-            <br className="sm:hidden" />
-            让对的人聚过来
-          </h1>
-          <p className="mt-2 max-w-xl text-sm font-semibold text-kx-muted">
-            展览、演出、读书会、市集、工作坊……正式策划的线下活动,发布即生成专属活动页,一键报名。
-          </p>
+          <h1 className="mt-2 text-3xl font-black leading-tight sm:text-4xl">{c.heroTitle}</h1>
+          <p className="mt-2 max-w-xl text-sm font-semibold text-kx-muted">{c.heroDesc}</p>
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <Link href="/events/create" className="kx-button-primary inline-flex h-11 items-center gap-2 rounded-full px-5 text-sm font-black">
               <CalendarPlus className="h-4 w-4" />
-              创建活动
+              {c.create}
             </Link>
             <div className="inline-flex rounded-full border border-kx-stroke/60 bg-kx-card/70 p-1 text-xs font-black">
               <button
@@ -155,14 +154,14 @@ export default function EventsPage() {
                 onClick={() => setWhen("upcoming")}
                 className={`rounded-full px-3.5 py-1.5 transition ${when === "upcoming" ? "bg-kx-accent text-white shadow" : "text-kx-muted hover:text-kx-text"}`}
               >
-                即将开始
+                {c.upcoming}
               </button>
               <button
                 type="button"
                 onClick={() => setWhen("past")}
                 className={`rounded-full px-3.5 py-1.5 transition ${when === "past" ? "bg-kx-accent text-white shadow" : "text-kx-muted hover:text-kx-text"}`}
               >
-                往期
+                {c.past}
               </button>
             </div>
           </div>
@@ -178,7 +177,7 @@ export default function EventsPage() {
             category === "" ? "bg-kx-accent text-white shadow" : "bg-kx-accent/10 text-kx-accent hover:bg-kx-accent/15"
           }`}
         >
-          全部活动
+          {c.all}
         </button>
         {categories.map((entry) => {
           const style = eventStyle(entry.key);
@@ -194,7 +193,7 @@ export default function EventsPage() {
               }`}
             >
               <Icon className="h-3.5 w-3.5" />
-              {entry.label || style.labelZh}
+              {kindLabel(entry.label, style, locale)}
             </button>
           );
         })}
@@ -207,10 +206,10 @@ export default function EventsPage() {
           <InlineLoading />
         ) : events.data.items.length === 0 ? (
           <EmptyState
-            title={when === "past" ? "还没有往期活动" : "还没有即将开始的活动"}
-            subtitle="第一个把活动办起来的人就是你。"
+            title={when === "past" ? c.emptyPast : c.emptyUpcoming}
+            subtitle={c.emptySubtitle}
             icon={CalendarPlus}
-            action={{ label: "创建活动", href: "/events/create" }}
+            action={{ label: c.create, href: "/events/create" }}
           />
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">

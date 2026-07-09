@@ -10,17 +10,12 @@ import { GuideCalendarMonth } from "@/components/guide/GuideCalendarMonth";
 import { GuideCalendarWeek, GuideCalendarAgenda } from "@/components/guide/GuideCalendarWeek";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 export default function GuideCalendarPage() {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
-  const range = useMemo(() => {
-    const start = new Date();
-    start.setDate(start.getDate() - 90);
-    const end = new Date();
-    end.setDate(end.getDate() + 365);
-    return { from: isoDate(start), to: isoDate(end) };
-  }, []);
+  const range = useMemo(() => ({ from: jstShift(-90), to: jstShift(365) }), []);
   const q = useQuery({
     queryKey: ["guide", "calendar", user?.id || "guest", range.from, range.to],
     queryFn: () => guide.calendar({ ...range, limit: 200 }),
@@ -53,6 +48,7 @@ type CalScope = "all" | "7" | "30" | "overdue";
 const VIEW_LABELS: Record<CalView, string> = { month: "月", week: "周", agenda: "日程" };
 
 function CalendarBody({ todos, events, loading, error, onRetry }: { todos: GuideTodo[]; events: GuideCalendarItem[]; loading: boolean; error: boolean; onRetry: () => void }) {
+  const { t } = useI18n();
   const [view, setView] = useState<CalView>("month");
   const [scope, setScope] = useState<CalScope>("all");
   // Auto-generated journey-template steps (todoType === "guide_step") used to
@@ -88,7 +84,7 @@ function CalendarBody({ todos, events, loading, error, onRetry }: { todos: Guide
             ))}
           </div>
         </div>
-        <div className="flex flex-wrap gap-2" role="tablist" aria-label="日期范围">
+        <div className="flex flex-wrap gap-2" role="tablist" aria-label={t("aria_date_range")}>
           {([
             ["all", "全部"],
             ["7", "未来 7 天"],
@@ -119,7 +115,7 @@ function CalendarBody({ todos, events, loading, error, onRetry }: { todos: Guide
         ) : null}
 
         <div className="lg:hidden">
-          <GuideQuickAddTodo defaultDate={isoDate(new Date())} />
+          <GuideQuickAddTodo defaultDate={jstToday()} />
         </div>
         <CalendarEventComposer />
 
@@ -144,7 +140,7 @@ function CalendarEventComposer() {
   const pushToast = useToasts((state) => state.push);
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState("");
-  const [date, setDate] = useState(() => isoDate(new Date()));
+  const [date, setDate] = useState(() => jstToday());
   const [time, setTime] = useState("");
   const [allDay, setAllDay] = useState(true);
   const [notes, setNotes] = useState("");
@@ -188,16 +184,14 @@ function CalendarEventComposer() {
 
 function filterCalendarTodos(todos: GuideTodo[], scope: CalScope) {
   if (scope === "all") return todos;
-  const today = isoDate(new Date());
+  const today = jstToday();
   if (scope === "overdue") {
     return todos.filter((todo) => {
       const date = (todo.plannedDate || todo.dueAt || todo.reminderAt || "").slice(0, 10);
       return date && date < today && todo.status !== "done";
     });
   }
-  const end = new Date();
-  end.setDate(end.getDate() + Number(scope));
-  const endDate = isoDate(end);
+  const endDate = jstShift(Number(scope));
   return todos.filter((todo) => {
     const date = (todo.plannedDate || todo.dueAt || todo.reminderAt || "").slice(0, 10);
     return date >= today && date <= endDate;
@@ -206,17 +200,30 @@ function filterCalendarTodos(todos: GuideTodo[], scope: CalScope) {
 
 function filterCalendarEvents(events: GuideCalendarItem[], scope: CalScope) {
   if (scope === "all") return events;
-  const today = isoDate(new Date());
+  const today = jstToday();
   if (scope === "overdue") return events.filter((event) => Boolean(event.date && event.date.slice(0, 10) < today));
-  const end = new Date();
-  end.setDate(end.getDate() + Number(scope));
-  const endDate = isoDate(end);
+  const endDate = jstShift(Number(scope));
   return events.filter((event) => {
     const date = (event.date || "").slice(0, 10);
     return date >= today && date <= endDate;
   });
 }
 
-function isoDate(date: Date) {
-  return date.toISOString().slice(0, 10);
+// Guide date math runs in Asia/Tokyo (users are in Japan). Deriving "today" from
+// UTC (Date#toISOString) or a non-JST machine clock reads as yesterday during
+// the JST 00:00–09:00 window — silently defaulting new todos/events to the wrong
+// day and misaligning the "today" range chips. Compute the JST calendar date,
+// then shift by whole days in UTC (Japan has no DST) for a stable YYYY-MM-DD.
+function jstToday(): string {
+  return new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date());
+}
+function jstShift(days: number): string {
+  const [y, m, d] = jstToday().split("-").map(Number);
+  const shifted = new Date(Date.UTC(y, m - 1, d + days));
+  return `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, "0")}-${String(shifted.getUTCDate()).padStart(2, "0")}`;
 }

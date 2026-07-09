@@ -87,6 +87,15 @@ export default function HomeClient() {
     return { country: regionOpts.country };
   }, [mode, regionOpts]);
 
+  // A mode is "disabled" when it can't meaningfully fetch: 关注 for guests,
+  // 同城 with no city/region selected. When disabled we must NOT reuse the
+  // previous mode's cached pages (keepPreviousData) — otherwise the empty-
+  // state conversion funnels below (guest sign-up, city picker) get masked
+  // by stale posts from another tab. Kept as one source of truth for both
+  // the query's `enabled` and the derived `items`.
+  const feedEnabled =
+    (mode !== "following" || !!user) && (mode !== "local" || !!(regionOpts.region_code || regionOpts.city));
+
   const feed = useInfiniteQuery<Paginated<KXPost> & { mode: FeedMode }>({
     queryKey: [
       "feed",
@@ -97,7 +106,7 @@ export default function HomeClient() {
     initialPageParam: undefined as string | undefined,
     queryFn: ({ pageParam }) => api.feed(mode, pageParam as string | undefined, feedRegionOpts),
     getNextPageParam: (last) => last?.next_cursor ?? undefined,
-    enabled: (mode !== "following" || !!user) && (mode !== "local" || !!(regionOpts.region_code || regionOpts.city)),
+    enabled: feedEnabled,
     // Show the old feed while a new mode is being fetched — no flash to
     // blank skeleton when switching 推荐 / 关注 / 热度.
     placeholderData: keepPreviousData,
@@ -129,7 +138,11 @@ export default function HomeClient() {
     return () => io.disconnect();
   }, [feedHasNextPage, feedIsFetching, feedFetchNextPage]);
 
-  const items = feed.data?.pages.flatMap((p) => (Array.isArray(p.items) ? p.items : [])) ?? [];
+  // Ignore keepPreviousData residue for a disabled mode so the empty-state
+  // branch (and its CTA) renders instead of the previous tab's posts.
+  const items = feedEnabled
+    ? feed.data?.pages.flatMap((p) => (Array.isArray(p.items) ? p.items : [])) ?? []
+    : [];
 
   const persistRegion = async (region: RegionInfo) => {
     try {
@@ -297,7 +310,21 @@ export default function HomeClient() {
         )}
         <div ref={sentinelRef} />
         {feed.isFetchingNextPage ? <PostSkeleton /> : null}
-        {!feed.hasNextPage && items.length > 0 ? (
+        {feed.isFetchNextPageError && items.length > 0 ? (
+          // Pagination failed mid-scroll: surface it with a retry instead of
+          // silently truncating the feed (user would think "no more posts").
+          <div className="flex flex-col items-center gap-2 py-6 text-center">
+            <p className="text-sm text-kx-muted">{copy.loadMoreError}</p>
+            <button
+              type="button"
+              className="kx-button-secondary h-9 px-4 text-sm"
+              onClick={() => feed.fetchNextPage()}
+            >
+              {copy.retry}
+            </button>
+          </div>
+        ) : null}
+        {!feed.hasNextPage && !feed.isFetchNextPageError && items.length > 0 ? (
           <div className="text-center text-kx-muted text-xs py-6">{t("no_more")}</div>
         ) : null}
       </div>
@@ -324,6 +351,8 @@ function homeCopy(locale: Locale) {
         switched: (region: string) => `Switched to ${region}`,
         loadErrorTitle: "This page cannot load right now",
         loadErrorSubtitle: "The home feed cannot load at the moment. Please try again later.",
+        loadMoreError: "Couldn't load more posts.",
+        retry: "Retry",
         pickCityTitle: "Choose your current city",
         pickCitySubtitle: "The local feed uses your current region to show local updates, lived experience, Q&A, guide snippets, and event discussions.",
         pickCityAction: "Choose City",
@@ -336,6 +365,8 @@ function homeCopy(locale: Locale) {
         switched: (region: string) => `${region}に切り替えました`,
         loadErrorTitle: "ページを読み込めません",
         loadErrorSubtitle: "ホームフィードを現在読み込めません。時間を置いてもう一度お試しください。",
+        loadMoreError: "これ以上読み込めませんでした。",
+        retry: "再試行",
         pickCityTitle: "現在の街を選択",
         pickCitySubtitle: "地域フィードは現在の地域をもとに、ローカル情報、体験談、Q&A、ガイド、イベントの会話を表示します。",
         pickCityAction: "街を選択",
@@ -348,6 +379,8 @@ function homeCopy(locale: Locale) {
         switched: (region: string) => `已切換到 ${region}`,
         loadErrorTitle: "頁面暫時無法載入",
         loadErrorSubtitle: "首頁內容暫時無法載入，請稍後再試。",
+        loadMoreError: "無法載入更多貼文。",
+        retry: "重試",
         pickCityTitle: "選擇目前城市",
         pickCitySubtitle: "同城流會根據你的目前地區展示本地動態、經驗分享、問答、攻略片段和活動討論。",
         pickCityAction: "選擇城市",
@@ -360,6 +393,8 @@ function homeCopy(locale: Locale) {
         switched: (region: string) => `已切换到 ${region}`,
         loadErrorTitle: "页面暂时无法加载",
         loadErrorSubtitle: "首页内容暂时无法加载，请稍后再试。",
+        loadMoreError: "无法加载更多帖子。",
+        retry: "重试",
         pickCityTitle: "选择当前城市",
         pickCitySubtitle: "同城流会根据你的当前地区展示本地动态、经验分享、问答、攻略片段和活动讨论。",
         pickCityAction: "选择城市",

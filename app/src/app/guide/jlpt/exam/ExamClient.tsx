@@ -314,6 +314,15 @@ function ExamRunner({
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [remaining, setRemaining] = useState<number>(session.durationSeconds || 0);
 
+  // Wall-clock start, captured once at mount. The countdown is derived from the
+  // real elapsed time rather than a per-second decrement, so a backgrounded
+  // (throttled) tab can't let the timer drift slow.
+  const startedAt = useRef<number>(Date.now());
+  // The most recent answer-save promise. Auto-submit waits on this so a
+  // last-second pick isn't dropped by the server's saved-rows scoring.
+  const lastAnswerSave = useRef<Promise<unknown>>(Promise.resolve());
+  const submitting = useRef(false);
+
   const submit = useMutation({
     mutationFn: () => guide.jlptExamSubmit(session.sessionId),
     onSuccess: (res) => onSubmitted(res),
@@ -326,6 +335,10 @@ function ExamRunner({
       }
       pushToast({ kind: "error", message: ae.message });
     },
+    // Allow a retry if a submit fails — clear the in-flight guard.
+    onSettled: () => {
+      submitting.current = false;
+    },
   });
 
   const submitRef = useRef(submit.mutate);
@@ -335,7 +348,7 @@ function ExamRunner({
   const pick = useCallback(
     (questionId: string, sel: number) => {
       setAnswers((prev) => ({ ...prev, [questionId]: sel }));
-      guide
+      lastAnswerSave.current = guide
         .jlptExamAnswer({ sessionId: session.sessionId, questionId, selectedIndex: sel })
         .catch(() => {
           /* best-effort; the answer is still submitted at the end via saved rows */
@@ -344,21 +357,30 @@ function ExamRunner({
     [session.sessionId],
   );
 
+  // Single submit path (manual + auto). Flush the last answer save first, then
+  // grade — and guard against a double submit (e.g. clicking as the timer hits 0).
+  const doSubmit = useCallback(() => {
+    if (submitting.current) return;
+    submitting.current = true;
+    Promise.resolve(lastAnswerSave.current).finally(() => submitRef.current());
+  }, []);
+
   // Countdown timer (only when the exam is timed). Auto-submits at zero.
   useEffect(() => {
     if (!session.durationSeconds) return;
-    const id = window.setInterval(() => {
-      setRemaining((r) => {
-        if (r <= 1) {
-          window.clearInterval(id);
-          submitRef.current();
-          return 0;
-        }
-        return r - 1;
-      });
-    }, 1000);
+    const total = session.durationSeconds;
+    const tick = () => {
+      const left = Math.max(0, Math.ceil(total - (Date.now() - startedAt.current) / 1000));
+      setRemaining(left);
+      if (left <= 0) {
+        window.clearInterval(id);
+        doSubmit();
+      }
+    };
+    const id = window.setInterval(tick, 500);
+    tick();
     return () => window.clearInterval(id);
-  }, [session.durationSeconds]);
+  }, [session.durationSeconds, doSubmit]);
 
   const answeredCount = Object.keys(answers).length;
   const lowTime = session.durationSeconds > 0 && remaining <= 60;
@@ -417,7 +439,7 @@ function ExamRunner({
 
       <button
         type="button"
-        onClick={() => submit.mutate()}
+        onClick={doSubmit}
         disabled={submit.isPending}
         className="mt-5 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-3.5 text-sm font-black text-white shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-60"
       >
@@ -449,17 +471,29 @@ function SessionReview({
     queryFn: () => guide.jlptExamSession(sessionId),
     retry: false,
   });
+  // The session response carries no pass threshold, so we look it up from the
+  // exam catalog to keep the "合格线 N" line consistent with the post-submit
+  // result view. Shares the list view's "All" cache (level ""); best-effort — if
+  // the exam is no longer in the catalog the line is simply omitted (no change
+  // from before).
+  const examsQ = useQuery({
+    queryKey: ["guide", "jlpt-exams", ""],
+    queryFn: () => guide.jlptExams(""),
+    staleTime: 300_000,
+  });
 
   if (sessionQ.isLoading) return <InlineLoading />;
   if (sessionQ.isError || !sessionQ.data) return <ErrorState />;
 
   const s = sessionQ.data;
+  const passScore = examsQ.data?.exams?.find((e) => e.id === s.examId)?.passScore;
   return (
     <ExamResult
       t={t}
       language={language}
       score={s.score}
       passed={s.passed}
+      passScore={passScore}
       correct={s.correct}
       total={s.total}
       durationSeconds={s.durationSeconds}

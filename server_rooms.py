@@ -389,18 +389,45 @@ def join_room(conn, room_id: str, user_id: str, *, display_name: str = "", now: 
     ).fetchone()
     if existing:
         return serialize_room(conn, get_room(conn, room_id), user_id, include_members=True)
-    capacity = int(room["capacity"] or 0)
-    if capacity and int(room["member_count"] or 0) >= capacity:
-        raise APIError("房间已满员", 400, "room_full")
     ts = now or _now()
-    conn.execute(
-        "INSERT INTO social_room_members (room_id, user_id, role, joined_at) VALUES (?, ?, 'member', ?)",
+    # Reserve the membership row first. The UNIQUE(room_id, user_id) constraint
+    # turns a concurrent duplicate join (same user, two workers) into a no-op
+    # instead of a double count, so we never inflate member_count.
+    ins = conn.execute(
+        "INSERT INTO social_room_members (room_id, user_id, role, joined_at) VALUES (?, ?, 'member', ?) "
+        "ON CONFLICT(room_id, user_id) DO NOTHING",
         (room_id, user_id, ts),
     )
-    conn.execute(
-        "UPDATE social_rooms SET member_count = member_count + 1, last_activity_at = ?, updated_at = ? WHERE id = ?",
-        (ts, ts, room_id),
-    )
+    if getattr(ins, "rowcount", 0) != 1:
+        # Someone already inserted us (a retry / concurrent duplicate) — join is
+        # idempotent, so just return the current room without touching counters.
+        return serialize_room(conn, get_room(conn, room_id), user_id, include_members=True)
+    capacity = int(room["capacity"] or 0)
+    if capacity:
+        # Atomic capacity check: increment ONLY while there is still room. On
+        # Postgres with multiple workers the per-process DB_LOCK doesn't apply, so
+        # a read-then-write ("if member_count < capacity") could let two joins both
+        # pass a stale check and overflow. A single conditional UPDATE is race-free
+        # — the row lock serializes concurrent increments and the WHERE re-checks
+        # the freshly-committed count.
+        cur = conn.execute(
+            "UPDATE social_rooms SET member_count = member_count + 1, last_activity_at = ?, updated_at = ? "
+            "WHERE id = ? AND member_count < capacity",
+            (ts, ts, room_id),
+        )
+        if getattr(cur, "rowcount", 0) != 1:
+            # Filled between our reservation and the increment — undo the
+            # reservation so the members table and member_count stay consistent.
+            conn.execute(
+                "DELETE FROM social_room_members WHERE room_id = ? AND user_id = ?", (room_id, user_id)
+            )
+            conn.commit()
+            raise APIError("房间已满员", 400, "room_full")
+    else:
+        conn.execute(
+            "UPDATE social_rooms SET member_count = member_count + 1, last_activity_at = ?, updated_at = ? WHERE id = ?",
+            (ts, ts, room_id),
+        )
     _post_system_message(conn, room_id, user_id, f"{display_name or '有人'} 加入了房间", ts)
     _sync_full_status(conn, room_id)
     conn.commit()
@@ -435,6 +462,48 @@ def leave_room(conn, room_id: str, user_id: str, *, display_name: str = "", now:
     _sync_full_status(conn, room_id)
     conn.commit()
     return serialize_room(conn, get_room(conn, room_id), user_id, include_members=True)
+
+
+# ── account deletion (注销 / GDPR 5.1.1(v)) ──────────────────────────────────
+
+def scrub_user_rooms(conn, user_id: str, *, now: Optional[str] = None) -> None:
+    """Account-deletion hook for the social-room surface. Mirrors the DM-body
+    scrub in ``anonymize_user_account`` (server.py): the person's data must leave
+    nothing readable after a 注销/erase.
+
+      1. Blank the text the user wrote in ANY room — the room chat正文 is public
+         to every member, so it's PII that must be erased (the row is kept so the
+         thread doesn't renumber; a blanked body renders as a removed bubble).
+      2. Disband every room they host (an ownerless room can't be moderated),
+         exactly like the host-leaves path in ``leave_room``.
+      3. Drop their memberships from rooms they merely joined and keep those
+         counters honest (never below the host's 1).
+
+    Backend-agnostic, idempotent, and defensive so it can run inside the
+    anonymize try-loop. It does NOT commit — it participates in the caller's
+    transaction (the anonymize flow commits once at the end).
+    """
+    ts = now or _now()
+    conn.execute(
+        "UPDATE social_room_messages SET content = '' WHERE user_id = ? AND kind = 'text'",
+        (user_id,),
+    )
+    conn.execute(
+        "UPDATE social_rooms SET deleted_at = COALESCE(deleted_at, ?), status = 'cancelled', "
+        "updated_at = ? WHERE host_user_id = ? AND deleted_at IS NULL",
+        (ts, ts, user_id),
+    )
+    joined = conn.execute(
+        "SELECT room_id FROM social_room_members WHERE user_id = ? AND role != 'host'",
+        (user_id,),
+    ).fetchall()
+    conn.execute("DELETE FROM social_room_members WHERE user_id = ?", (user_id,))
+    for r in joined:
+        conn.execute(
+            "UPDATE social_rooms SET member_count = MAX(member_count - 1, 1) "
+            "WHERE id = ? AND deleted_at IS NULL",
+            (dict(r)["room_id"],),
+        )
 
 
 # ── room chat ────────────────────────────────────────────────────────────────
@@ -508,16 +577,29 @@ def list_messages(conn, room_id: str, *, before: str = "", limit: int = 50) -> d
     clauses = ["m.room_id = ?"]
     params: list[Any] = [room_id]
     if before:
-        clauses.append("m.created_at < ?")
-        params.append(before)
+        # Compound cursor "<created_at>|<id>" (same idea as the DM列表). A plain
+        # created_at < ? cursor silently drops every OTHER message sharing the
+        # boundary row's timestamp — join/leave system rows and rapid-fire text
+        # collide on _now() at the same微秒. The (created_at, id) tie-break makes
+        # paging lossless. A legacy cursor with no "|" (old client) still works as
+        # the timestamp-only form.
+        cur_at, sep, cur_id = before.partition("|")
+        if sep:
+            clauses.append("(m.created_at < ? OR (m.created_at = ? AND m.id < ?))")
+            params.extend([cur_at, cur_at, cur_id])
+        else:
+            clauses.append("m.created_at < ?")
+            params.append(before)
     rows = list(conn.execute(
         "SELECT m.*, u.handle, u.display_name, u.avatar_url, u.avatar_symbol, u.avatar_color, u.is_verified_member"
         f" FROM social_room_messages m JOIN users u ON u.id = m.user_id WHERE {' AND '.join(clauses)}"
-        " ORDER BY m.created_at DESC LIMIT ?",
+        " ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
         [*params, limit + 1],
     ))
     has_more = len(rows) > limit
     rows = rows[:limit]
     items = [_serialize_message(dict(r)) for r in reversed(rows)]  # oldest→newest for chat UI
-    next_before = rows[-1]["created_at"] if has_more and rows else None
+    next_before = (
+        f"{rows[-1]['created_at']}|{rows[-1]['id']}" if has_more and rows else None
+    )
     return {"items": items, "has_more": has_more, "hasMore": has_more, "next_before": next_before, "nextBefore": next_before}

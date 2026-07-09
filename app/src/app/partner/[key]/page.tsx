@@ -30,6 +30,7 @@ import {
 } from "lucide-react";
 import { Toaster } from "@/components/design/Toaster";
 import { useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 import {
   getPartnerBranding,
   startPartnerSession,
@@ -1131,6 +1132,7 @@ function ContactsTab({
   onError: (err: unknown) => void;
 }) {
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<PartnerContactPayload>(EMPTY_CONTACT_FORM);
@@ -1229,7 +1231,7 @@ function ContactsTab({
           {editingId ? <Pencil className="h-5 w-5" style={{ color: accent }} /> : <Plus className="h-5 w-5" style={{ color: accent }} />}
           <h2 className="text-base font-black text-kx-text">{editingId ? "编辑联系人" : "新增联系人"}</h2>
           {editingId ? (
-            <button className="ml-auto text-kx-muted hover:text-kx-text" onClick={resetForm} aria-label="取消编辑">
+            <button className="ml-auto text-kx-muted hover:text-kx-text" onClick={resetForm} aria-label={t("aria_cancel_edit")}>
               <X className="h-4 w-4" />
             </button>
           ) : null}
@@ -1349,14 +1351,14 @@ function ContactsTab({
                 <div className="flex flex-col gap-1.5">
                   <button
                     className="rounded-full bg-kx-accentSoft p-2 text-kx-accent"
-                    aria-label="编辑"
+                    aria-label={t("action_edit")}
                     onClick={() => startEdit(c)}
                   >
                     <Pencil className="h-4 w-4" />
                   </button>
                   <button
                     className="rounded-full bg-kx-danger/10 p-2 text-kx-danger"
-                    aria-label="删除"
+                    aria-label={t("action_delete")}
                     disabled={remove.isPending}
                     onClick={() => {
                       if (typeof window !== "undefined" && window.confirm(`确定删除联系人「${c.name}」？`)) {
@@ -1499,6 +1501,7 @@ function ListingsTab({
   accent: string;
   onError: (err: unknown) => void;
 }) {
+  const { t } = useI18n();
   const pageSizeOptions = [
     { label: "30 / 页", value: "30" },
     { label: "60 / 页", value: "60" },
@@ -1603,7 +1606,7 @@ function ListingsTab({
               setPageSize(e.target.value);
               setPage(0);
             }}
-            aria-label="每页显示数量"
+            aria-label={t("aria_page_size")}
           >
             {pageSizeOptions.map((item) => (
               <option key={item.value} value={item.value}>{item.label}</option>
@@ -1765,6 +1768,7 @@ function ListingEditor({
   onSaved: () => void;
 }) {
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const imageInputRef = useRef<HTMLInputElement>(null);
   const isEdit = !!listingId;
 
@@ -1916,7 +1920,7 @@ function ListingEditor({
             {isEdit ? <Pencil className="h-5 w-5" style={{ color: accent }} /> : <Plus className="h-5 w-5" style={{ color: accent }} />}
             {isEdit ? "编辑房源" : "新增房源"}
           </h2>
-          <button className="text-kx-muted hover:text-kx-text" onClick={onClose} aria-label="关闭">
+          <button className="text-kx-muted hover:text-kx-text" onClick={onClose} aria-label={t("aria_close")}>
             <X className="h-5 w-5" />
           </button>
         </div>
@@ -2151,7 +2155,7 @@ function ListingEditor({
                     type="button"
                     onClick={() => removePhoto(i)}
                     className="absolute right-1 top-1 rounded-full bg-black/60 p-1 text-white"
-                    aria-label="移除图片"
+                    aria-label={t("aria_remove_image")}
                   >
                     <X className="h-3 w-3" />
                   </button>
@@ -2162,7 +2166,7 @@ function ListingEditor({
                 onClick={() => imageInputRef.current?.click()}
                 disabled={uploadImages.isPending}
                 className="grid h-20 w-20 place-items-center rounded-kx-md border-2 border-dashed border-kx-stroke/70 bg-kx-soft/40 text-kx-muted transition hover:border-kx-accent/60 disabled:opacity-50"
-                aria-label="添加图片"
+                aria-label={t("aria_add_image")}
               >
                 {uploadImages.isPending ? <Loader2 className="h-5 w-5 animate-spin" /> : <ImageIcon className="h-5 w-5" />}
               </button>

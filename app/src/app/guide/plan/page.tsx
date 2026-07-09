@@ -8,12 +8,14 @@ import { GuideShell } from "@/components/guide/GuideKit";
 import { EmptyPanel, GuideQuickAddTodo, GuideTodoCard } from "@/components/guide/GuideOS";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 type TodoView = "my_day" | "important" | "planned" | "all" | "completed";
 
 export default function GuidePlanPage() {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
+  const { t } = useI18n();
   const [view, setView] = useState<TodoView>("my_day");
   const [search, setSearch] = useState("");
   const [listFilter, setListFilter] = useState("");
@@ -72,7 +74,7 @@ export default function GuidePlanPage() {
             </div>
           </div>
           <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-wrap gap-2" role="tablist" aria-label="待办筛选">
+            <div className="flex flex-wrap gap-2" role="tablist" aria-label={t("aria_todo_filter")}>
             {[
               ["my_day", "我的一天"],
               ["important", "重要"],

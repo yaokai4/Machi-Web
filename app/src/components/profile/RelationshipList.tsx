@@ -10,6 +10,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 import type { KXUser } from "@/lib/types";
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 
@@ -23,6 +24,7 @@ export function RelationshipList({ handle, kind }: RelationshipListProps) {
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const router = useRouter();
+  const { t } = useI18n();
 
   const target = useQuery({
     queryKey: ["user", handle],
@@ -66,7 +68,7 @@ export function RelationshipList({ handle, kind }: RelationshipListProps) {
   return (
     <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 flex items-center gap-2">
-        <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label="返回">
+        <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label={t("msg_back")}>
           <ArrowLeft className="w-4 h-4" />
         </button>
         <div>

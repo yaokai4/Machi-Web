@@ -5,6 +5,7 @@ import { CalendarClock, Plus, Check, X, Info } from "lucide-react";
 import { api } from "@/lib/api";
 import type { KXBookingSlot } from "@/lib/types";
 import { useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 /**
  * Reservation calendar on a listing detail (no money). Renders nothing until
@@ -23,6 +24,7 @@ const INK = "rgb(var(--kx-living-ink))";
 
 export function ListingBookingSection({ listingId, listingType }: { listingId: string; listingType?: string }) {
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const [slots, setSlots] = useState<KXBookingSlot[]>([]);
   const [isOwner, setIsOwner] = useState(false);
   const [loaded, setLoaded] = useState(false);
@@ -224,7 +226,7 @@ export function ListingBookingSection({ listingId, listingType }: { listingId: s
                     <button
                       type="button"
                       onClick={() => removeSlot(slot)}
-                      aria-label="删除时段"
+                      aria-label={t("aria_delete_slot")}
                       className="-ml-1 rounded-full p-1 text-slate-400 transition hover:text-rose-500"
                     >
                       <X className="h-4 w-4" />

@@ -54,19 +54,51 @@ function newId() {
   return `m_${Math.random().toString(36).slice(2)}_${Date.now().toString(36)}`;
 }
 
+// Only http(s) and in-app (/...) links are allowed through; anything else
+// (javascript:, data:, protocol-relative //) renders as plain text. Mirrors the
+// safeHref allow-list used by the article MarkdownLite renderer.
+function safeHref(raw: string): string | null {
+  const href = raw.trim();
+  if (/^https?:\/\//i.test(href)) return href;
+  if (href.startsWith("/") && !href.startsWith("//")) return href;
+  return null;
+}
+
 // Lightweight Markdown render for Machi AI answers (no deps): headings,
-// bullet / numbered lists, and inline **bold**. Anything else renders as a
-// paragraph, so raw `###` / `**` markers never leak into the bubble.
+// bullet / numbered lists, inline **bold**, and [text](url) links. Anything else
+// renders as a paragraph, so raw `###` / `**` / `[..](..)` markers never leak
+// into the bubble.
 function inlineMd(s: string): React.ReactNode[] {
-  return s.split(/(\*\*[^*]+\*\*)/g).map((part, i) =>
-    /^\*\*[^*]+\*\*$/.test(part) ? (
-      <strong key={i} className="font-bold">
-        {part.slice(2, -2)}
-      </strong>
-    ) : (
-      <span key={i}>{part}</span>
-    ),
-  );
+  return s.split(/(\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\))/g).map((part, i) => {
+    if (!part) return null;
+    if (/^\*\*[^*]+\*\*$/.test(part)) {
+      return (
+        <strong key={i} className="font-bold">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(part);
+    if (link) {
+      const href = safeHref(link[2]);
+      if (href) {
+        const external = /^https?:\/\//i.test(href);
+        return (
+          <a
+            key={i}
+            href={href}
+            {...(external ? { target: "_blank", rel: "noreferrer" } : {})}
+            className="font-bold text-kx-accent underline decoration-kx-accent/40 underline-offset-2 hover:decoration-kx-accent"
+          >
+            {link[1]}
+          </a>
+        );
+      }
+      // Unsafe URL: show the visible text only.
+      return <span key={i}>{link[1]}</span>;
+    }
+    return <span key={i}>{part}</span>;
+  });
 }
 
 function MachiMarkdown({ content }: { content: string }) {
@@ -200,8 +232,13 @@ export default function GuideAIChatClient() {
   const [showHistory, setShowHistory] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  const topRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const lastFailedText = useRef<string | null>(null);
+  // When a whole conversation is loaded at once (opening history), we want to
+  // land at its *start*, not have a long smooth-scroll yank the view to the end.
+  // This flag lets the scroll effect tell "bulk load" apart from "new message".
+  const scrollToTopNext = useRef(false);
 
   const country = "jp";
 
@@ -256,8 +293,16 @@ export default function GuideAIChatClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-scroll to the latest message.
+  // Follow the latest message as the conversation grows — but when a full
+  // history is loaded at once, jump to its beginning instead of smooth-scrolling
+  // all the way down (which would hide the start of a long thread).
   useEffect(() => {
+    if (messages.length === 0) return;
+    if (scrollToTopNext.current) {
+      scrollToTopNext.current = false;
+      topRef.current?.scrollIntoView({ block: "start" });
+      return;
+    }
     bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [messages]);
 
@@ -415,6 +460,8 @@ export default function GuideAIChatClient() {
     try {
       const res = await guide.aiMessages(id);
       setConversationId(res.conversation?.id || id);
+      // Bulk load — land at the top of the thread, not smooth-scrolled to the end.
+      scrollToTopNext.current = true;
       setMessages(
         (res.items || []).map((dto) => ({
           id: dto.id,
@@ -547,6 +594,9 @@ export default function GuideAIChatClient() {
             onNew={startNew}
           />
         ) : null}
+
+        {/* Scroll anchor for the top of the thread (used when opening history). */}
+        <div ref={topRef} className="scroll-mt-24" aria-hidden />
 
         {/* Messages */}
         <div

@@ -258,7 +258,12 @@ export function formatArea(value?: unknown, locale: ListingLocale = "zh"): strin
     if (numeric <= 0) return "";
     return `${numeric.toLocaleString(locale === "en" ? "en-US" : "ja-JP", { maximumFractionDigits: 1 })} m²`;
   }
-  return clean.includes("㎡") || clean.toLowerCase().includes("m²") ? clean : clean;
+  // Non-numeric strings: keep a unit-bearing value as-is (㎡ / m² / 畳 / 帖 / 坪 /
+  // sqm), but append m² when the value is a bare number-like measure missing one.
+  const lower = clean.toLowerCase();
+  const hasUnit = /㎡|m²|畳|帖|坪|sqm|平米|平方/.test(clean) || lower.includes("m2");
+  if (hasUnit || !/\d/.test(clean)) return clean;
+  return `${clean} m²`;
 }
 
 export function formatStationDistance(value?: unknown, locale: ListingLocale = "zh"): string {
@@ -550,6 +555,18 @@ const DETAIL_FIELD_LABELS: Record<string, LabelSet> = {
   "配件费": { ja: "部品代", en: "Parts fee" },
   "保修说明": { ja: "保証", en: "Warranty" },
   "不可服务范围": { ja: "対応不可範囲", en: "Unavailable scope" },
+  // 生活开通 / 美容健康 / 宠物家庭 垂类专用行标签(ja/en 兜底防中文泄漏)。
+  "服务区域": { ja: "対応エリア", en: "Service area" },
+  "预计耗时": { ja: "所要時間", en: "Estimated time" },
+  "服务方式": { ja: "サービス方法", en: "Service method" },
+  "不可承诺事项": { ja: "保証できない事項", en: "What we can't guarantee" },
+  "价格说明": { ja: "料金について", en: "Pricing" },
+  "服务项目": { ja: "施術メニュー", en: "Services" },
+  "服务时长": { ja: "所要時間", en: "Duration" },
+  "注意事项": { ja: "注意事項", en: "Notes" },
+  "医疗免责声明": { ja: "医療免責事項", en: "Medical disclaimer" },
+  "服务对象": { ja: "対象", en: "For" },
+  "安全/资质说明": { ja: "安全・資格について", en: "Safety & credentials" },
   "商家": { ja: "店舗", en: "Merchant" },
   "优惠内容": { ja: "特典内容", en: "Deal" },
   "有效期": { ja: "有効期限", en: "Valid until" },
@@ -566,6 +583,7 @@ const DETAIL_FIELD_LABELS: Record<string, LabelSet> = {
   "瑕疵说明": { ja: "傷・不具合", en: "Defects note" },
   "交易地点": { ja: "受け渡し場所", en: "Meetup location" },
   "交易方式": { ja: "受け渡し方法", en: "Delivery method" },
+  "取货说明": { ja: "受け渡しについて", en: "Pickup notes" },
   "品牌": { ja: "ブランド", en: "Brand" },
   "物件类型": { ja: "物件種別", en: "Property type" },
   "土地面积": { ja: "土地面積", en: "Land area" },

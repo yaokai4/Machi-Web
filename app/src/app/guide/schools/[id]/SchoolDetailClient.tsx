@@ -15,20 +15,26 @@ import {
 } from "@/components/guide/GuideKit";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
-import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
+import { appLocaleToGuideLanguage, useI18n, type Locale } from "@/lib/i18n";
 import { guideUi, schoolTypeLabel } from "@/lib/guide-ui";
 
 /** Full detail payload from GET /api/guide/schools/:idOrSlug — also used by the
  * server component to seed React Query (SSR for SEO, UI unchanged). */
 export type SchoolDetailData = Awaited<ReturnType<typeof guide.school>>;
 
-const SUPPORT_LABELS: Array<{ key: keyof GuideSchool; label: string }> = [
-  { key: "isAcceptingInternationalStudents", label: "留学生可申请" },
-  { key: "hasEnglishProgram", label: "英文项目" },
-  { key: "hasScholarship", label: "奖学金" },
-  { key: "hasDormitory", label: "宿舍" },
-  { key: "hasCareerSupport", label: "就职支持" },
-  { key: "hasLanguageSupport", label: "语言支持" },
+function pick(locale: Locale, zh: string, ja: string, en: string): string {
+  if (locale === "ja") return ja;
+  if (locale === "en") return en;
+  return zh;
+}
+
+const SUPPORT_LABELS: Array<{ key: keyof GuideSchool; zh: string; ja: string; en: string }> = [
+  { key: "isAcceptingInternationalStudents", zh: "留学生可申请", ja: "留学生の応募可", en: "Open to international students" },
+  { key: "hasEnglishProgram", zh: "英文项目", ja: "英語プログラム", en: "English program" },
+  { key: "hasScholarship", zh: "奖学金", ja: "奨学金", en: "Scholarship" },
+  { key: "hasDormitory", zh: "宿舍", ja: "寮", en: "Dormitory" },
+  { key: "hasCareerSupport", zh: "就职支持", ja: "就職支援", en: "Career support" },
+  { key: "hasLanguageSupport", zh: "语言支持", ja: "語学サポート", en: "Language support" },
 ];
 
 export default function SchoolDetailClient({
@@ -48,6 +54,9 @@ export default function SchoolDetailClient({
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
   const [showCorrection, setShowCorrection] = useState(false);
+
+  // Shared value word reused across the support grid and info lines.
+  const tbd = pick(locale, "待补充", "未記載", "Not listed");
 
   // Seed the query from the server prefetch so SSR emits real content. When
   // the client language differs from the prefetch language, mark the seed as
@@ -112,7 +121,7 @@ export default function SchoolDetailClient({
             <div className="min-w-0 flex-1">
               <div className="mb-1 flex flex-wrap gap-1.5">
                 <span className="rounded-full bg-kx-soft px-2 py-0.5 text-[11px] font-bold text-kx-muted">{typeLabel}</span>
-                <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">Japan only</span>
+                <span className="rounded-full bg-kx-accentSoft px-2 py-0.5 text-[11px] font-bold text-kx-accent">{pick(locale, "仅限日本", "日本のみ", "Japan only")}</span>
               </div>
               <h1 className="text-xl font-black leading-tight text-kx-text sm:text-2xl">{school.schoolName}</h1>
               <p className="mt-0.5 text-sm text-kx-muted">{school.schoolNameJp || school.schoolNameEn}</p>
@@ -126,13 +135,13 @@ export default function SchoolDetailClient({
           <p className="mt-4 text-[15px] leading-7 text-kx-subtle">{school.description}</p>
 
           <div className="mt-4 flex flex-wrap gap-2">
-            {school.website ? <ExternalButton href={school.website} label="学校官网" /> : null}
-            {school.internationalAdmissionUrl ? <ExternalButton href={school.internationalAdmissionUrl} label="留学生招生" /> : null}
-            {school.applicationUrl ? <ExternalButton href={school.applicationUrl} label="申请入口" /> : null}
-            {school.scholarshipUrl ? <ExternalButton href={school.scholarshipUrl} label="奖学金" /> : null}
-            {school.careerSupportUrl ? <ExternalButton href={school.careerSupportUrl} label="就职支持" /> : null}
-            {school.languageSupportUrl ? <ExternalButton href={school.languageSupportUrl} label="语言支持" /> : null}
-            {school.dormitoryUrl ? <ExternalButton href={school.dormitoryUrl} label="宿舍" /> : null}
+            {school.website ? <ExternalButton href={school.website} label={pick(locale, "学校官网", "公式サイト", "Official site")} /> : null}
+            {school.internationalAdmissionUrl ? <ExternalButton href={school.internationalAdmissionUrl} label={pick(locale, "留学生招生", "留学生募集", "International admissions")} /> : null}
+            {school.applicationUrl ? <ExternalButton href={school.applicationUrl} label={pick(locale, "申请入口", "出願ページ", "Apply")} /> : null}
+            {school.scholarshipUrl ? <ExternalButton href={school.scholarshipUrl} label={pick(locale, "奖学金", "奨学金", "Scholarship")} /> : null}
+            {school.careerSupportUrl ? <ExternalButton href={school.careerSupportUrl} label={pick(locale, "就职支持", "就職支援", "Career support")} /> : null}
+            {school.languageSupportUrl ? <ExternalButton href={school.languageSupportUrl} label={pick(locale, "语言支持", "語学サポート", "Language support")} /> : null}
+            {school.dormitoryUrl ? <ExternalButton href={school.dormitoryUrl} label={pick(locale, "宿舍", "寮", "Dormitory")} /> : null}
           </div>
 
           <div className="mt-4 flex flex-wrap gap-2 border-t border-kx-stroke/40 pt-4">
@@ -172,26 +181,29 @@ export default function SchoolDetailClient({
         ) : null}
 
         <section className="mt-3 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-5">
-          <GuideSectionTitle title="留学生支持" subtitle="未知项会保持空白，不强行推断" />
+          <GuideSectionTitle
+            title={pick(locale, "留学生支持", "留学生サポート", "Support for international students")}
+            subtitle={pick(locale, "未知项会保持空白，不强行推断", "不明な項目は空欄のままにし、無理に推測しません", "Unknown items are left blank rather than guessed")}
+          />
           <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
-            {SUPPORT_LABELS.map(({ key, label }) => {
-              const value = school[key];
+            {SUPPORT_LABELS.map((support) => {
+              const value = school[support.key];
               return (
-                <div key={key} className="rounded-kx-md bg-kx-soft/70 px-3 py-2">
-                  <p className="text-xs font-bold text-kx-muted">{label}</p>
-                  <p className="mt-0.5 text-sm font-black text-kx-text">{value === true ? "有" : value === false ? "未确认支持" : "待补充"}</p>
+                <div key={support.key} className="rounded-kx-md bg-kx-soft/70 px-3 py-2">
+                  <p className="text-xs font-bold text-kx-muted">{pick(locale, support.zh, support.ja, support.en)}</p>
+                  <p className="mt-0.5 text-sm font-black text-kx-text">{value === true ? pick(locale, "有", "あり", "Yes") : value === false ? pick(locale, "未确认支持", "未確認", "Not confirmed") : tbd}</p>
                 </div>
               );
             })}
           </div>
           <div className="mt-4 grid gap-2 sm:grid-cols-2">
-            <InfoLine label="地址" value={[school.postalCode, school.prefecture, school.city, school.ward, school.address].filter(Boolean).join(" ") || "待补充"} />
-            <InfoLine label="语言要求" value={`日语 ${unknownLabel(school.requiredJapaneseLevel)} / 英语 ${unknownLabel(school.requiredEnglishLevel)}`} />
-            <InfoLine label="考试要求" value={`JLPT ${unknownLabel(school.jlptRequired)} / EJU ${unknownLabel(school.ejuRequired)} / TOEFL ${unknownLabel(school.toeflRequired)} / IELTS ${unknownLabel(school.ieltsRequired)}`} />
-            <InfoLine label="学费范围" value={school.tuitionMin || school.tuitionMax ? `${school.currency} ${school.tuitionMin || "-"} - ${school.tuitionMax || "-"}` : "待补充"} />
-            <InfoLine label="入学月份" value={school.admissionMonths.length ? school.admissionMonths.join(" / ") : "待补充"} />
-            <InfoLine label="数据完整度" value={`${school.dataQualityScore ?? 0} / 100`} />
-            <InfoLine label="最后核验" value={school.sourceLastCheckedAt || "待补充"} />
+            <InfoLine label={pick(locale, "地址", "住所", "Address")} value={[school.postalCode, school.prefecture, school.city, school.ward, school.address].filter(Boolean).join(" ") || tbd} />
+            <InfoLine label={pick(locale, "语言要求", "言語要件", "Language requirements")} value={`${pick(locale, "日语", "日本語", "Japanese")} ${unknownLabel(locale, school.requiredJapaneseLevel)} / ${pick(locale, "英语", "英語", "English")} ${unknownLabel(locale, school.requiredEnglishLevel)}`} />
+            <InfoLine label={pick(locale, "考试要求", "試験要件", "Exam requirements")} value={`JLPT ${unknownLabel(locale, school.jlptRequired)} / EJU ${unknownLabel(locale, school.ejuRequired)} / TOEFL ${unknownLabel(locale, school.toeflRequired)} / IELTS ${unknownLabel(locale, school.ieltsRequired)}`} />
+            <InfoLine label={pick(locale, "学费范围", "学費レンジ", "Tuition range")} value={school.tuitionMin || school.tuitionMax ? `${school.currency} ${school.tuitionMin || "-"} - ${school.tuitionMax || "-"}` : tbd} />
+            <InfoLine label={pick(locale, "入学月份", "入学月", "Enrollment months")} value={school.admissionMonths.length ? school.admissionMonths.join(" / ") : tbd} />
+            <InfoLine label={pick(locale, "数据完整度", "データ完全度", "Data completeness")} value={`${school.dataQualityScore ?? 0} / 100`} />
+            <InfoLine label={pick(locale, "最后核验", "最終確認", "Last verified")} value={school.sourceLastCheckedAt || tbd} />
           </div>
           {school.fieldsOfStudy.length ? (
             <div className="mt-4 flex flex-wrap gap-1.5">
@@ -202,52 +214,64 @@ export default function SchoolDetailClient({
           ) : null}
           {(school.faculties?.length || school.graduateSchools?.length || school.departments.length) ? (
             <div className="mt-4 grid gap-2 sm:grid-cols-3">
-              <InfoLine label="学部" value={school.faculties?.length ? school.faculties.join(" / ") : "待补充"} />
-              <InfoLine label="研究科" value={school.graduateSchools?.length ? school.graduateSchools.join(" / ") : "待补充"} />
-              <InfoLine label="部门" value={school.departments.length ? school.departments.join(" / ") : "待补充"} />
+              <InfoLine label={pick(locale, "学部", "学部", "Faculties")} value={school.faculties?.length ? school.faculties.join(" / ") : tbd} />
+              <InfoLine label={pick(locale, "研究科", "研究科", "Graduate schools")} value={school.graduateSchools?.length ? school.graduateSchools.join(" / ") : tbd} />
+              <InfoLine label={pick(locale, "部门", "学科", "Departments")} value={school.departments.length ? school.departments.join(" / ") : tbd} />
             </div>
           ) : null}
         </section>
 
         <section className="mt-5">
-          <GuideSectionTitle title="专业 / 项目" subtitle="由管理员按官方资料逐步补充" />
+          <GuideSectionTitle
+            title={pick(locale, "专业 / 项目", "専攻・プログラム", "Programs")}
+            subtitle={pick(locale, "由管理员按官方资料逐步补充", "管理者が公式資料に基づき順次追記します", "Added gradually by editors from official sources")}
+          />
           {q.data.programs.length ? (
             <div className="grid gap-3 sm:grid-cols-2">
               {q.data.programs.map((program) => (
                 <article key={program.id} className="rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4">
                   <h3 className="font-black text-kx-text">{program.programName}</h3>
-                  <p className="mt-1 text-xs text-kx-muted">{program.degreeLevel} · {program.field || "领域待补充"}</p>
-                  <p className="mt-2 text-sm leading-6 text-kx-subtle">{program.description || "项目介绍待管理员根据官方资料补充。"}</p>
+                  <p className="mt-1 text-xs text-kx-muted">{program.degreeLevel} · {program.field || pick(locale, "领域待补充", "分野は未記載", "Field not listed")}</p>
+                  <p className="mt-2 text-sm leading-6 text-kx-subtle">{program.description || pick(locale, "项目介绍待管理员根据官方资料补充。", "プログラム概要は公式資料に基づき管理者が追記します。", "Program details will be added by an editor from official sources.")}</p>
                 </article>
               ))}
             </div>
           ) : (
-            <EmptyState title="项目资料待补充" subtitle="请先以学校官网和招生简章为准。" />
+            <EmptyState
+              title={pick(locale, "项目资料待补充", "プログラム情報は準備中", "Programs not listed yet")}
+              subtitle={pick(locale, "请先以学校官网和招生简章为准。", "まずは学校の公式サイトと募集要項をご確認ください。", "Refer to the school's official site and admission guidelines first.")}
+            />
           )}
         </section>
 
         <section className="mt-5">
-          <GuideSectionTitle title="申请信息" subtitle="出愿时间、材料和选考方式" />
+          <GuideSectionTitle
+            title={pick(locale, "申请信息", "出願情報", "Admissions")}
+            subtitle={pick(locale, "出愿时间、材料和选考方式", "出願時期、必要書類、選考方法", "Application periods, documents, and selection")}
+          />
           {q.data.admissions.length ? (
             <div className="space-y-3">
               {q.data.admissions.map((admission) => (
                 <article key={admission.id} className="rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4">
                   <h3 className="font-black text-kx-text">{admission.admissionType}</h3>
-                  <p className="mt-1 text-xs text-kx-muted">入学月份：{admission.enrollmentMonth || "待补充"}</p>
+                  <p className="mt-1 text-xs text-kx-muted">{pick(locale, "入学月份：", "入学月：", "Enrollment month: ")}{admission.enrollmentMonth || tbd}</p>
                   {admission.requiredDocuments.length ? (
-                    <p className="mt-2 text-sm leading-6 text-kx-subtle">材料：{admission.requiredDocuments.join(" / ")}</p>
+                    <p className="mt-2 text-sm leading-6 text-kx-subtle">{pick(locale, "材料：", "必要書類：", "Documents: ")}{admission.requiredDocuments.join(" / ")}</p>
                   ) : null}
                 </article>
               ))}
             </div>
           ) : (
-            <EmptyState title="申请信息待补充" subtitle="申请前请直接确认学校官网和最新募集要项。" />
+            <EmptyState
+              title={pick(locale, "申请信息待补充", "出願情報は準備中", "Admissions not listed yet")}
+              subtitle={pick(locale, "申请前请直接确认学校官网和最新募集要项。", "出願前に学校の公式サイトと最新の募集要項を直接ご確認ください。", "Before applying, check the school's official site and the latest admission guidelines directly.")}
+            />
           )}
         </section>
 
         {q.data.relatedArticles.length ? (
           <section className="mt-5">
-            <GuideSectionTitle title="相关指南" />
+            <GuideSectionTitle title={pick(locale, "相关指南", "関連ガイド", "Related guides")} />
             <div className="grid gap-3 sm:grid-cols-2">
               {q.data.relatedArticles.map((article) => <ArticleCard key={article.id} article={article} compact />)}
             </div>
@@ -256,7 +280,7 @@ export default function SchoolDetailClient({
 
         {q.data.relatedProducts.length ? (
           <section className="mt-5">
-            <GuideSectionTitle title="相关资料与服务" />
+            <GuideSectionTitle title={pick(locale, "相关资料与服务", "関連する資料とサービス", "Related resources and services")} />
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {q.data.relatedProducts.map((product) => <ProductCard key={product.id} product={product} />)}
             </div>
@@ -264,12 +288,15 @@ export default function SchoolDetailClient({
         ) : null}
 
         <section className="mt-5 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4">
-          <GuideSectionTitle title="数据来源" subtitle="不确定信息不会被强行推断" />
+          <GuideSectionTitle
+            title={pick(locale, "数据来源", "データソース", "Data sources")}
+            subtitle={pick(locale, "不确定信息不会被强行推断", "不確かな情報は無理に推測しません", "Uncertain information is never guessed")}
+          />
           <div className="grid gap-2 sm:grid-cols-2">
-            <InfoLine label="来源名称" value={school.sourceName || "待补充"} />
-            <InfoLine label="核验状态" value={school.verificationStatus || "needs_review"} />
-            <InfoLine label="来源链接" value={school.sourceUrl || "待补充"} />
-            <InfoLine label="最后检查" value={school.sourceLastCheckedAt || "待补充"} />
+            <InfoLine label={pick(locale, "来源名称", "情報ソース名", "Source name")} value={school.sourceName || tbd} />
+            <InfoLine label={pick(locale, "核验状态", "確認ステータス", "Verification status")} value={school.verificationStatus || "needs_review"} />
+            <InfoLine label={pick(locale, "来源链接", "情報ソースURL", "Source URL")} value={school.sourceUrl || tbd} />
+            <InfoLine label={pick(locale, "最后检查", "最終確認", "Last checked")} value={school.sourceLastCheckedAt || tbd} />
           </div>
           <p className="mt-3 text-[11px] leading-5 text-kx-muted">{q.data.disclaimer}</p>
         </section>
@@ -295,11 +322,12 @@ function InfoLine({ label, value }: { label: string; value: string }) {
   );
 }
 
-function unknownLabel(value?: string) {
-  return value && value !== "unknown" ? value : "待补充";
+function unknownLabel(locale: Locale, value?: string) {
+  return value && value !== "unknown" ? value : pick(locale, "待补充", "未記載", "Not listed");
 }
 
 function CorrectionBox({ targetType, targetId, onDone }: { targetType: string; targetId: string; onDone: () => void }) {
+  const { locale } = useI18n();
   const [message, setMessage] = useState("");
   const [sourceUrl, setSourceUrl] = useState("");
   const [busy, setBusy] = useState(false);
@@ -313,7 +341,7 @@ function CorrectionBox({ targetType, targetId, onDone }: { targetType: string; t
       await guide.submitCorrection({ targetType, targetId, message, sourceUrl });
       onDone();
     } catch {
-      pushToast({ kind: "error", message: "提交失败，请稍后再试" });
+      pushToast({ kind: "error", message: pick(locale, "提交失败，请稍后再试", "送信に失敗しました。しばらくしてからお試しください。", "Submission failed. Please try again later.") });
     } finally {
       setBusy(false);
     }
@@ -321,23 +349,23 @@ function CorrectionBox({ targetType, targetId, onDone }: { targetType: string; t
 
   return (
     <section className="mt-3 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-4">
-      <h2 className="text-base font-black text-kx-text">纠错 / 补充信息</h2>
+      <h2 className="text-base font-black text-kx-text">{pick(locale, "纠错 / 补充信息", "修正・補足", "Suggest a correction")}</h2>
       <textarea
         value={message}
         onChange={(event) => setMessage(event.target.value)}
         rows={4}
-        placeholder="说明需要修正或补充的内容。"
+        placeholder={pick(locale, "说明需要修正或补充的内容。", "修正または補足したい内容をご記入ください。", "Describe what should be corrected or added.")}
         className="mt-3 w-full resize-none rounded-kx-md border border-kx-stroke/70 bg-kx-soft/40 px-3 py-2 text-sm leading-6 text-kx-text outline-none focus:border-kx-accent"
       />
       <input
         value={sourceUrl}
         onChange={(event) => setSourceUrl(event.target.value)}
-        placeholder="可选：官方来源链接"
+        placeholder={pick(locale, "可选：官方来源链接", "任意：公式ソースのURL", "Optional: official source link")}
         className="mt-2 h-10 w-full rounded-kx-md border border-kx-stroke/70 bg-kx-soft/40 px-3 text-sm text-kx-text outline-none focus:border-kx-accent"
       />
       <div className="mt-3 flex justify-end">
         <button type="button" onClick={submit} disabled={!canSubmit || busy} className="kx-button-primary h-10 px-5 text-sm disabled:opacity-50">
-          {busy ? "提交中" : "提交审核"}
+          {busy ? pick(locale, "提交中", "送信中", "Submitting") : pick(locale, "提交审核", "確認に送信", "Submit for review")}
         </button>
       </div>
     </section>

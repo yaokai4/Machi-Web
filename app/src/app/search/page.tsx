@@ -14,7 +14,7 @@ import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 import { NavTabs } from "@/components/design/NavTabs";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
-import { appLocaleToMarketingLocale, useI18n } from "@/lib/i18n";
+import { appLocaleToMarketingLocale, useI18n, type Locale } from "@/lib/i18n";
 import { compactNumber } from "@/lib/format";
 import { getCityBySlug } from "@/config/cities";
 import {
@@ -26,6 +26,12 @@ import {
 import type { KXCityListing, KXPost } from "@/lib/types";
 
 type Kind = "all" | "post" | "listing" | "user" | "topic" | "guide";
+
+function pick(locale: Locale, zh: string, ja: string, en: string): string {
+  if (locale === "ja") return ja;
+  if (locale === "en") return en;
+  return zh;
+}
 
 /// Same Suspense gating as /login — Next.js 15 wants the boundary.
 export default function SearchPage() {
@@ -69,7 +75,15 @@ function SearchPageInner() {
   const [kind, setKind] = useState<Kind>(initialKind);
   const [submitted, setSubmitted] = useState(initialQuery);
 
-  useEffect(() => setQuery(initialQuery), [initialQuery]);
+  // The URL is the single source of truth for both the query word and the kind
+  // tab. Keep the input box AND the submitted term in sync when the URL changes
+  // externally (back/forward, deep link, share) — otherwise pressing Back would
+  // rewind the address bar + input while the results kept using the previous
+  // `submitted`, showing a mismatched result set.
+  useEffect(() => {
+    setQuery(initialQuery);
+    setSubmitted(initialQuery);
+  }, [initialQuery]);
   // Keep the active tab in sync when the URL changes externally (back/forward,
   // deep link, share). The URL is the source of truth for the kind tab.
   useEffect(() => {
@@ -161,6 +175,29 @@ function SearchPageInner() {
     }
   };
 
+  const saveSearchButton = () => (
+    <button
+      type="button"
+      onClick={saveCurrentSearch}
+      disabled={savingSearch}
+      className={
+        "inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-bold transition disabled:opacity-60 " +
+        (searchSaved
+          ? "border-kx-accent/40 bg-kx-accentSoft text-kx-accent"
+          : "border-kx-stroke/60 bg-kx-card text-kx-subtle hover:border-kx-accent/40 hover:text-kx-accent")
+      }
+    >
+      {searchSaved ? <BellRing className="h-3.5 w-3.5" /> : <Bell className="h-3.5 w-3.5" />}
+      {searchSaved ? t("search_save_search_done") : t("search_save_search")}
+    </button>
+  );
+
+  // The subscribe control is offered whenever a keyword search is active and the
+  // listings tab is in scope — including when it currently returns zero listings,
+  // which is exactly when a user most wants to be pinged as new rentals /
+  // second-hand items / jobs appear.
+  const showSubscribe = !!submitted && (kind === "all" || kind === "listing");
+
   return (
     <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-3">
@@ -224,6 +261,48 @@ function SearchPageInner() {
                   <Loader2 className="h-3.5 w-3.5 animate-spin" /> {t("search_searching")}
                 </div>
               ) : null}
+
+              {/* keepPreviousData keeps the last successful results on screen while
+                  a new query is in flight — but if that new query *fails*, the
+                  stale results would otherwise masquerade as the new answer with
+                  no signal. Surface an inline, retryable error instead. */}
+              {search.isError && !searchRefreshing ? (
+                <div className="flex items-center justify-between gap-2 rounded-xl border border-rose-400/30 bg-rose-500/10 px-3 py-2 text-xs font-semibold text-rose-600 dark:text-rose-300" role="alert">
+                  <span className="min-w-0 flex-1 truncate">
+                    {pick(
+                      locale,
+                      "搜索失败，下面仍是上一次的结果。",
+                      "検索に失敗しました。以下は前回の結果です。",
+                      "Search failed — the results below are from your previous query.",
+                    )}
+                  </span>
+                  <button type="button" onClick={() => search.refetch()} className="shrink-0 font-black hover:underline">
+                    {pick(locale, "重试", "再試行", "Retry")}
+                  </button>
+                </div>
+              ) : null}
+
+              {showSubscribe ? (
+                <div className="flex items-center justify-between gap-3 rounded-2xl border border-kx-stroke/50 bg-kx-card/70 px-4 py-2.5">
+                  <span className="min-w-0 flex-1 text-xs font-semibold text-kx-muted">
+                    {searchSaved
+                      ? pick(
+                          locale,
+                          "已订阅：有新房源、二手或工作匹配时通知你。",
+                          "登録済み：新しい物件・中古・求人が一致すると通知します。",
+                          "Subscribed — we'll notify you when new listings match.",
+                        )
+                      : pick(
+                          locale,
+                          "订阅此搜索：有新房源、二手或工作匹配时通知你。",
+                          "この検索を登録：新しい物件・中古・求人が一致すると通知します。",
+                          "Subscribe to this search — get notified when new listings match.",
+                        )}
+                  </span>
+                  {saveSearchButton()}
+                </div>
+              ) : null}
+
               {(kind === "all" || kind === "user") && search.data!.users.length > 0 ? (
                 <section className="kx-card p-0 overflow-hidden">
                   <h3 className="kx-section-title px-4 pt-3">{t("search_users")}</h3>
@@ -264,18 +343,7 @@ function SearchPageInner() {
 
               {(kind === "all" || kind === "listing") && (search.data!.listings || []).length > 0 ? (
                 <section className="space-y-3">
-                  <div className="flex items-center justify-between px-1">
-                    <h3 className="kx-section-title px-0">{t("search_listing_label")}</h3>
-                    <button
-                      type="button"
-                      onClick={saveCurrentSearch}
-                      disabled={savingSearch}
-                      className="inline-flex items-center gap-1.5 rounded-full border border-kx-stroke/60 bg-kx-card px-3 py-1 text-xs font-bold text-kx-subtle transition hover:border-kx-accent/40 hover:text-kx-accent disabled:opacity-60"
-                    >
-                      {searchSaved ? <BellRing className="h-3.5 w-3.5" /> : <Bell className="h-3.5 w-3.5" />}
-                      {searchSaved ? t("search_save_search_done") : t("search_save_search")}
-                    </button>
-                  </div>
+                  <h3 className="kx-section-title px-1">{t("search_listing_label")}</h3>
                   {search.data!.listings.map((listing) => <SearchListingCard key={listing.id} listing={listing} locale={listingLocale} localFallback={t("search_local_city")} />)}
                 </section>
               ) : null}

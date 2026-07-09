@@ -52,9 +52,10 @@ import { MasterCopyEditorCard } from "@/components/admin/MasterCopyEditorCard";
 import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { ConfirmDialog, Dialog } from "@/components/design/Dialog";
-import type { KXUser } from "@/lib/types";
+import type { KXUser, KXPost } from "@/lib/types";
 import { NavTabs } from "@/components/design/NavTabs";
 import { useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 import { fullDateTime, relativeTime, compactNumber } from "@/lib/format";
 import { useDebounce } from "@/lib/hooks";
 import { CONTENT_TYPE_LABELS, CONTENT_TYPES, showOfficialBadge, showVerifiedBadge, type ContentType } from "@/lib/types";
@@ -293,6 +294,7 @@ function UsersPanel() {
   const [manageUser, setManageUser] = useState<KXUser | null>(null);
   const [pendingErase, setPendingErase] = useState<KXUser | null>(null);
   const [pendingClearSeed, setPendingClearSeed] = useState(false);
+  const [pendingRole, setPendingRole] = useState<{ user: KXUser; role: string } | null>(null);
   const PAGE = 30;
   const list = useQuery({
     queryKey: ["admin-users", dq, page, filter],
@@ -311,6 +313,14 @@ function UsersPanel() {
       queryClient.invalidateQueries({ queryKey: ["admin-users"] });
       pushToast({ kind: "success", message: "已更新" });
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
+  // 授予 / 撤销「全站管理员」是权限最敏感的操作,却是在密集表格的下拉里一选即
+  // 生效。授予或撤销 admin 时先弹二次确认;member ↔ creator 仍保持即时。
+  const changeRole = (u: KXUser, role: string) => {
+    const current = u.role || "member";
+    if (role === current) return;
+    if (role === "admin" || current === "admin") { setPendingRole({ user: u, role }); return; }
+    update(u.id, { role });
   };
   // Set a user's follower count to a target — materializes real follows from AI
   // persona accounts (real followers untouched; target floors at real count).
@@ -476,7 +486,7 @@ function UsersPanel() {
                     <td className="px-3 py-2.5">
                       <select className="kx-input h-7 px-2 text-xs"
                               value={u.role || "member"}
-                              onChange={(e) => update(u.id, { role: e.target.value })}>
+                              onChange={(e) => changeRole(u, e.target.value)}>
                         <option value="member">member</option>
                         <option value="creator">creator</option>
                         <option value="admin">admin</option>
@@ -578,7 +588,7 @@ function UsersPanel() {
                 <div className="mt-2.5 flex flex-wrap items-center gap-2">
                   <select className="kx-input h-8 px-2 text-xs flex-1 min-w-[7rem]"
                           value={u.role || "member"}
-                          onChange={(e) => update(u.id, { role: e.target.value })}>
+                          onChange={(e) => changeRole(u, e.target.value)}>
                     <option value="member">member</option>
                     <option value="creator">creator</option>
                     <option value="admin">admin</option>
@@ -660,6 +670,25 @@ function UsersPanel() {
         onConfirm={() => pendingErase && erase(pendingErase)}
         onCancel={() => setPendingErase(null)}
       />
+      <ConfirmDialog
+        open={!!pendingRole}
+        title={
+          pendingRole?.role === "admin"
+            ? `授予 @${pendingRole.user.handle} 全站管理员？`
+            : pendingRole
+              ? `撤销 @${pendingRole.user.handle} 的管理员？`
+              : "更改用户角色？"
+        }
+        description={
+          pendingRole?.role === "admin"
+            ? "管理员可访问全部后台，并执行封禁、删除、清空、群发等毁灭性操作。请确认该账号可信,授予后立即生效。"
+            : "该用户将失去全站管理员权限与后台访问能力,改动立即生效。"
+        }
+        destructive
+        confirmLabel={pendingRole?.role === "admin" ? "确认授予管理员" : "确认撤销"}
+        onConfirm={() => { if (pendingRole) { update(pendingRole.user.id, { role: pendingRole.role }); setPendingRole(null); } }}
+        onCancel={() => setPendingRole(null)}
+      />
     </div>
   );
 }
@@ -681,6 +710,7 @@ function UserManageDialog({
   onSaveTags: (id: string, tags: string[]) => Promise<void>;
   onErase: (user: KXUser) => void;
 }) {
+  const { t } = useI18n();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
@@ -817,7 +847,7 @@ function UserManageDialog({
                 type="button"
                 onClick={() => setShowPw((v) => !v)}
                 className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-kx-muted hover:bg-kx-soft hover:text-kx-text"
-                aria-label={showPw ? "隐藏密码" : "显示密码"}
+                aria-label={showPw ? t("aria_hide_password") : t("aria_show_password")}
                 tabIndex={-1}
               >
                 {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
@@ -880,6 +910,28 @@ function UserManageDialog({
   );
 }
 
+// Shared client-side pager for the admin panels that receive a full list from
+// the backend (posts / reports / feedback). We can't page on the server without
+// a backend change, but we can cap how many rows hit the DOM at once so a busy
+// production list doesn't render thousands of nodes and stall — matching the
+// paged feel of the users panel.
+const ADMIN_PAGE_SIZE = 30;
+
+function Pager({ page, totalPages, total, unit, onPage }: {
+  page: number; totalPages: number; total: number; unit: string; onPage: (p: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+  return (
+    <div className="flex items-center justify-center gap-3 py-2 text-sm">
+      <button className="kx-button-ghost h-8 px-3 disabled:opacity-40" disabled={page <= 0}
+              onClick={() => onPage(Math.max(0, page - 1))}>上一页</button>
+      <span className="text-kx-muted">第 {page + 1} / {totalPages} 页 · 共 {total} {unit}</span>
+      <button className="kx-button-ghost h-8 px-3 disabled:opacity-40" disabled={page >= totalPages - 1}
+              onClick={() => onPage(page + 1)}>下一页</button>
+    </div>
+  );
+}
+
 function PostsPanel() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
@@ -888,6 +940,7 @@ function PostsPanel() {
   const [status, setStatus] = useState("");
   const [contentType, setContentType] = useState<ContentType | "">("");
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [page, setPage] = useState(0);
   const list = useQuery({
     queryKey: ["admin-posts", dq, status, contentType],
     queryFn: () => api.adminPosts(dq || undefined, {
@@ -895,6 +948,12 @@ function PostsPanel() {
       content_type: contentType || undefined,
     }),
   });
+  // Reset to the first page whenever the filters change the result set.
+  useEffect(() => { setPage(0); }, [dq, status, contentType]);
+  const allPosts = list.data ?? [];
+  const totalPages = Math.max(1, Math.ceil(allPosts.length / ADMIN_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pagePosts = allPosts.slice(safePage * ADMIN_PAGE_SIZE, safePage * ADMIN_PAGE_SIZE + ADMIN_PAGE_SIZE);
 
   const updatePost = async (id: string, patch: Parameters<typeof api.adminUpdatePost>[1]) => {
     try {
@@ -912,6 +971,14 @@ function PostsPanel() {
       queryClient.invalidateQueries({ queryKey: ["admin-posts"] });
       pushToast({ kind: "success", message: "已删除" });
     } catch (e) { pushToast({ kind: "error", message: (e as APIError).message }); }
+  };
+
+  // 状态下拉里选 deleted 会静默软删,与旁边刻意加了确认弹窗的「删除」按钮自相
+  // 矛盾。把 deleted 统一导向同一个带确认的删除路径;其余状态仍即时切换。
+  const changeStatus = (p: KXPost, status: string) => {
+    if (status === (p.status || "published")) return;
+    if (status === "deleted") { setPendingDelete(p.id); return; }
+    updatePost(p.id, { status });
   };
 
   return (
@@ -936,7 +1003,7 @@ function PostsPanel() {
       </div>
       {list.isError ? <ErrorState onRetry={() => list.refetch()} /> : !list.data ? <InlineLoading /> : (
         <ul className="space-y-2">
-          {list.data.map((p) => (
+          {pagePosts.map((p) => (
             <li key={p.id} className={clsx("kx-card", p.deleted_at && "opacity-60")}>
               <div className="flex items-start gap-2.5">
                 <Avatar user={p.author || undefined} size={32} />
@@ -969,7 +1036,7 @@ function PostsPanel() {
                   <select
                     className="kx-input h-8 px-2 text-xs"
                     value={p.status || "published"}
-                    onChange={(e) => updatePost(p.id, { status: e.target.value })}
+                    onChange={(e) => changeStatus(p, e.target.value)}
                   >
                     <option value="published">published</option>
                     <option value="active">active</option>
@@ -996,9 +1063,10 @@ function PostsPanel() {
               </div>
             </li>
           ))}
-          {list.data.length === 0 ? <li className="text-center text-kx-muted py-8">没有结果</li> : null}
+          {allPosts.length === 0 ? <li className="text-center text-kx-muted py-8">没有结果</li> : null}
         </ul>
       )}
+      {list.data ? <Pager page={safePage} totalPages={totalPages} total={allPosts.length} unit="条" onPage={setPage} /> : null}
       <ConfirmDialog
         open={!!pendingDelete}
         title="删除这条帖子？"
@@ -1015,6 +1083,7 @@ function PostsPanel() {
 function ReportsPanel() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
+  const [page, setPage] = useState(0);
   const list = useQuery({ queryKey: ["admin-reports"], queryFn: () => api.adminReports() });
   const resolve = async (id: string) => {
     try {
@@ -1027,9 +1096,13 @@ function ReportsPanel() {
   if (list.isError) return <ErrorState onRetry={() => list.refetch()} />;
   if (!list.data) return <InlineLoading />;
   if (list.data.length === 0) return <div className="kx-card text-center py-10 text-kx-subtle">暂无待处理举报</div>;
+  const totalPages = Math.max(1, Math.ceil(list.data.length / ADMIN_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageReports = list.data.slice(safePage * ADMIN_PAGE_SIZE, safePage * ADMIN_PAGE_SIZE + ADMIN_PAGE_SIZE);
   return (
+    <div className="space-y-2">
     <ul className="space-y-2">
-      {list.data.map((r) => (
+      {pageReports.map((r) => (
         <li key={r.id} className="kx-card">
           <div className="flex items-start gap-3">
             <Flag className="w-4 h-4 text-kx-danger mt-1" />
@@ -1065,17 +1138,24 @@ function ReportsPanel() {
         </li>
       ))}
     </ul>
+      <Pager page={safePage} totalPages={totalPages} total={list.data.length} unit="条" onPage={setPage} />
+    </div>
   );
 }
 
 function FeedbackPanel() {
+  const [page, setPage] = useState(0);
   const list = useQuery({ queryKey: ["admin-feedback"], queryFn: () => api.adminFeedback() });
   if (list.isError) return <ErrorState onRetry={() => list.refetch()} />;
   if (!list.data) return <InlineLoading />;
   if (list.data.length === 0) return <div className="kx-card text-center py-10 text-kx-subtle">暂无反馈</div>;
+  const totalPages = Math.max(1, Math.ceil(list.data.length / ADMIN_PAGE_SIZE));
+  const safePage = Math.min(page, totalPages - 1);
+  const pageFeedback = list.data.slice(safePage * ADMIN_PAGE_SIZE, safePage * ADMIN_PAGE_SIZE + ADMIN_PAGE_SIZE);
   return (
+    <div className="space-y-2">
     <ul className="space-y-2">
-      {list.data.map((f) => (
+      {pageFeedback.map((f) => (
         <li key={f.id} className="kx-card">
           <div className="flex items-start gap-2">
             <MessageCircle className="w-4 h-4 text-kx-accent mt-1" />
@@ -1091,6 +1171,8 @@ function FeedbackPanel() {
         </li>
       ))}
     </ul>
+      <Pager page={safePage} totalPages={totalPages} total={list.data.length} unit="条" onPage={setPage} />
+    </div>
   );
 }
 
@@ -1098,6 +1180,7 @@ function VisitorsPanel() {
   const [q, setQ] = useState("");
   const dq = useDebounce(q, 250);
   const [days, setDays] = useState(7);
+  const [page, setPage] = useState(0);
   const list = useQuery({
     queryKey: ["admin-visitors", dq, days],
     queryFn: () => api.adminVisitors({ q: dq || undefined, days, limit: 300 }),
@@ -1105,6 +1188,14 @@ function VisitorsPanel() {
   });
   const region = (v: { country: string; region: string; city: string }) =>
     zhGeoParts(v).join(" / ");
+  // Up to 300 rows come back at once; page them client-side so the table/cards
+  // don't paint hundreds of DOM nodes on every 30s auto-refresh. Summary cards
+  // above stay on the full window.
+  useEffect(() => { setPage(0); }, [dq, days]);
+  const allVisits = list.data?.items ?? [];
+  const visitorPages = Math.max(1, Math.ceil(allVisits.length / ADMIN_PAGE_SIZE));
+  const visitorPage = Math.min(page, visitorPages - 1);
+  const pageVisits = allVisits.slice(visitorPage * ADMIN_PAGE_SIZE, visitorPage * ADMIN_PAGE_SIZE + ADMIN_PAGE_SIZE);
 
   return (
     <div className="space-y-3">
@@ -1172,7 +1263,7 @@ function VisitorsPanel() {
                 </tr>
               </thead>
               <tbody>
-                {list.data.items.map((v) => (
+                {pageVisits.map((v) => (
                   <tr key={v.id} className="border-t border-kx-stroke/30 hover:bg-kx-soft/40">
                     <td className="px-4 py-2.5 text-xs text-kx-muted whitespace-nowrap" title={fullDateTime(v.created_at)}>{relativeTime(v.created_at)}</td>
                     <td className="px-3 py-2.5 font-mono text-xs whitespace-nowrap">{v.ip || "—"}</td>
@@ -1193,7 +1284,7 @@ function VisitorsPanel() {
                     </td>
                   </tr>
                 ))}
-                {list.data.items.length === 0 ? (
+                {allVisits.length === 0 ? (
                   <tr><td colSpan={6} className="px-4 py-8 text-center text-kx-muted">暂无访问记录</td></tr>
                 ) : null}
               </tbody>
@@ -1202,7 +1293,7 @@ function VisitorsPanel() {
 
           {/* Mobile card stack */}
           <ul className="md:hidden space-y-2">
-            {list.data.items.map((v) => (
+            {pageVisits.map((v) => (
               <li key={v.id} className="kx-card">
                 <div className="flex items-center justify-between gap-2">
                   <span className="font-mono text-xs">{v.ip || "—"}</span>
@@ -1216,8 +1307,9 @@ function VisitorsPanel() {
                 </div>
               </li>
             ))}
-            {list.data.items.length === 0 ? <li className="text-center text-kx-muted py-8">暂无访问记录</li> : null}
+            {allVisits.length === 0 ? <li className="text-center text-kx-muted py-8">暂无访问记录</li> : null}
           </ul>
+          <Pager page={visitorPage} totalPages={visitorPages} total={allVisits.length} unit="条" onPage={setPage} />
         </>
       )}
     </div>

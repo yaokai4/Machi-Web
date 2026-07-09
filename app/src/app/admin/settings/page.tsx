@@ -19,6 +19,7 @@ import {
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 import { fullDateTime } from "@/lib/format";
 import type { MarketingLocale } from "@/data/machi-home";
 import { marketingPageLabels, type MarketingPageId } from "@/data/marketing-pages";
@@ -108,16 +109,24 @@ function ServerMetricsCard() {
 function SiteBrandSettingsCard() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const logoInputRef = useRef<HTMLInputElement | null>(null);
   const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
   const media = useQuery({ queryKey: ["admin-media", "image"], queryFn: () => api.adminMedia({ type: "image", limit: 60 }) });
   const [form, setForm] = useState<Partial<SiteSettings>>({});
+  const initialized = useRef(false);
   const [busy, setBusy] = useState(false);
   const [uploadingLogo, setUploadingLogo] = useState(false);
   const [logoDesign, setLogoDesign] = useState({ letter: "M", bg: "#2563eb", accent: "#f97316" });
 
+  // 只初始化一次:这六张站点设置卡片共享同一 ['admin-site-settings'] query,
+  // 任一兄弟卡片保存后都会 invalidate 触发 refetch。若这里无守卫地整体覆盖
+  // 本地表单,管理员在本卡未保存的标题 / 描述 / Logo 会被服务端旧值静默冲掉。
   useEffect(() => {
-    if (q.data) setForm(q.data);
+    if (q.data && !initialized.current) {
+      setForm(q.data);
+      initialized.current = true;
+    }
   }, [q.data]);
 
   const update = (key: keyof SiteSettings, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
@@ -206,7 +215,7 @@ function SiteBrandSettingsCard() {
               />
             </div>
             <div className="grid gap-2 sm:grid-cols-[7rem_1fr_1fr_auto]">
-              <input className="kx-input h-10" maxLength={2} value={logoDesign.letter} onChange={(e) => setLogoDesign({ ...logoDesign, letter: e.target.value || "M" })} aria-label="Logo 字母" />
+              <input className="kx-input h-10" maxLength={2} value={logoDesign.letter} onChange={(e) => setLogoDesign({ ...logoDesign, letter: e.target.value || "M" })} aria-label={t("aria_logo_letter")} />
               <ColorField label="主色" value={logoDesign.bg} onChange={(bg) => setLogoDesign({ ...logoDesign, bg })} />
               <ColorField label="强调色" value={logoDesign.accent} onChange={(accent) => setLogoDesign({ ...logoDesign, accent })} />
               <div className="relative grid h-10 w-10 place-items-center overflow-hidden rounded-xl border border-kx-stroke bg-white">
@@ -224,7 +233,7 @@ function SiteBrandSettingsCard() {
                     onClick={() => update("logo_url", item.url)}
                     data-active={form.logo_url === item.url}
                     className="group relative aspect-square overflow-hidden rounded-xl border border-kx-stroke bg-white transition hover:border-kx-accent data-[active=true]:border-kx-accent data-[active=true]:ring-2 data-[active=true]:ring-kx-accent/20"
-                    aria-label="选择这张图片作为 Logo"
+                    aria-label={t("aria_select_as_logo")}
                   >
                     <Image src={item.thumb_url || item.url} alt="媒体图片" fill sizes="64px" className="object-cover" unoptimized />
                   </button>
@@ -270,10 +279,16 @@ function SocialLinksCard() {
   const pushToast = useToasts((s) => s.push);
   const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
   const [form, setForm] = useState<Partial<SiteSettings>>({});
+  const initialized = useRef(false);
   const [busy, setBusy] = useState(false);
 
+  // 一次性初始化,原因同 SiteBrandSettingsCard:共享 query 的兄弟卡片保存触发
+  // refetch 时,不能用服务端旧值覆盖本卡未保存的 SNS 链接编辑。
   useEffect(() => {
-    if (q.data) setForm(q.data);
+    if (q.data && !initialized.current) {
+      setForm(q.data);
+      initialized.current = true;
+    }
   }, [q.data]);
 
   const update = (key: keyof SiteSettings, value: string) => setForm((prev) => ({ ...prev, [key]: value }));
@@ -482,6 +497,7 @@ function MarketingCoverageCard() {
 function DiscoverEntrancesCard() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
   const [entries, setEntries] = useState<DiscoverEntrance[] | null>(null);
   const [addKey, setAddKey] = useState("");
@@ -547,8 +563,8 @@ function DiscoverEntrancesCard() {
             <div key={entry.channel} className="rounded-kx-md border border-kx-stroke/60 bg-kx-soft/30 p-3">
               <div className="flex items-center gap-2">
                 <div className="flex flex-col">
-                  <button type="button" aria-label="上移" className="grid h-5 w-6 place-items-center rounded text-kx-muted transition hover:bg-kx-card hover:text-kx-text disabled:opacity-30" onClick={() => move(i, -1)} disabled={i === 0}><ArrowUp className="h-3.5 w-3.5" /></button>
-                  <button type="button" aria-label="下移" className="grid h-5 w-6 place-items-center rounded text-kx-muted transition hover:bg-kx-card hover:text-kx-text disabled:opacity-30" onClick={() => move(i, 1)} disabled={i === entries.length - 1}><ArrowDown className="h-3.5 w-3.5" /></button>
+                  <button type="button" aria-label={t("aria_move_up")} className="grid h-5 w-6 place-items-center rounded text-kx-muted transition hover:bg-kx-card hover:text-kx-text disabled:opacity-30" onClick={() => move(i, -1)} disabled={i === 0}><ArrowUp className="h-3.5 w-3.5" /></button>
+                  <button type="button" aria-label={t("aria_move_down")} className="grid h-5 w-6 place-items-center rounded text-kx-muted transition hover:bg-kx-card hover:text-kx-text disabled:opacity-30" onClick={() => move(i, 1)} disabled={i === entries.length - 1}><ArrowDown className="h-3.5 w-3.5" /></button>
                 </div>
                 <span className="grid h-9 w-9 shrink-0 place-items-center rounded-kx-md bg-kx-accentSoft text-kx-accent"><spec.Icon className="h-4 w-4" /></span>
                 <div className="min-w-0 flex-1">
@@ -560,7 +576,7 @@ function DiscoverEntrancesCard() {
                   <option value="secondary">次入口</option>
                 </select>
                 <button type="button" onClick={() => update(i, { enabled: !entry.enabled })} className={`h-9 shrink-0 rounded-full px-3 text-xs font-black transition ${entry.enabled ? "bg-emerald-500/10 text-emerald-700" : "bg-kx-soft text-kx-muted"}`}>{entry.enabled ? "已启用" : "已停用"}</button>
-                <button type="button" aria-label="删除" onClick={() => remove(i)} className="grid h-9 w-9 shrink-0 place-items-center rounded-kx-md text-kx-muted transition hover:bg-kx-danger/10 hover:text-kx-danger"><Trash2 className="h-4 w-4" /></button>
+                <button type="button" aria-label={t("action_delete")} onClick={() => remove(i)} className="grid h-9 w-9 shrink-0 place-items-center rounded-kx-md text-kx-muted transition hover:bg-kx-danger/10 hover:text-kx-danger"><Trash2 className="h-4 w-4" /></button>
               </div>
               <div className="mt-2 grid gap-2 sm:grid-cols-2">
                 <input className="kx-input h-9 text-xs" value={entry.title || ""} placeholder={`标题（默认：${spec.title}）`} onChange={(e) => update(i, { title: e.target.value })} />
@@ -588,6 +604,7 @@ function DiscoverEntrancesCard() {
 function ContentModerationCard() {
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const q = useQuery({ queryKey: ["admin-site-settings"], queryFn: () => api.adminSiteSettings() });
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
@@ -625,7 +642,7 @@ function ContentModerationCard() {
           type="button"
           role="switch"
           aria-checked={enabled}
-          aria-label="内容审核开关"
+          aria-label={t("aria_moderation_toggle")}
           disabled={saving}
           onClick={() => save(!enabled)}
           className={`relative h-9 w-16 shrink-0 rounded-full transition disabled:opacity-60 ${enabled ? "bg-kx-accent" : "bg-kx-soft ring-1 ring-inset ring-kx-stroke/60"}`}

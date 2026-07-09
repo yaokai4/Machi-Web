@@ -838,8 +838,12 @@ def rate_check(ip: str, group: str) -> bool:
 
 def _rate_group_for(path: str, method: str) -> str:
     # Code-sending endpoints get the tightest bucket so an attacker can't
-    # spray verification emails or probe which addresses exist.
-    if path in ("/api/auth/email/send-code", "/api/auth/send-verification-code", "/api/auth/forgot-password", "/api/auth/login/start"):
+    # spray verification emails or probe which addresses exist. check-email /
+    # check-username 明文回答账号是否存在(注册 UX 需要),同样归入这个最紧的桶,
+    # 使批量枚举不可行(单点 UX 查询不受影响)。
+    if path in ("/api/auth/email/send-code", "/api/auth/send-verification-code",
+                "/api/auth/forgot-password", "/api/auth/login/start",
+                "/api/auth/check-email", "/api/auth/check-username"):
         return "email"
     # Session probe is lenient (read-shaped, hit on every navigation); its
     # mutations (PATCH profile / DELETE account) fall through to the strict bucket.
@@ -1308,6 +1312,12 @@ def verify_password(password: str, stored: str) -> bool:
         return False
 
 
+# 一个不对应任何真实账号、无已知原像的哑 hash(启动时算一次)。登录时账号不存在
+# 也对它跑一次等价的 verify_password,使「账号不存在」与「密码错误」两条路径都跑满
+# 一次 PBKDF2 再统一返回同一 401,消除计时侧信道(否则响应时延差可枚举用户名/邮箱)。
+_DUMMY_PW_HASH = hash_password(secrets.token_urlsafe(32))
+
+
 def normalize_handle(value: str) -> str:
     return (value or "").strip().lstrip("@").lower()
 
@@ -1540,6 +1550,14 @@ def _pg_xlate(sql: str, has_params: bool) -> str:
 # when saturated instead of queueing unboundedly.
 KAIX_PG_POOL_MAX = max(1, int(_env("KAIX_PG_POOL_MAX", "20")))
 KAIX_PG_POOL_ACQUIRE_TIMEOUT_SEC = float(_env("KAIX_PG_POOL_ACQUIRE_TIMEOUT_SEC", "5"))
+# Machi AI / JLPT 讲解会在【持有一个池连接】期间发起 35~70s 的上游 LLM 阻塞调用。
+# 不设限的话 ~pool_max 个并发 AI 请求即握光整个连接池,其余所有请求(feed/登录/
+# 支付)在 acquire 处超时统一 503。用信号量把【同时在飞的 LLM 调用】上限压到
+# 「池大小 - 预留」,始终为正常流量保留几条连接;超额请求 fail-fast(下方退还额度
+# + 503),不排队堆积(排队会一边等一边占着连接,反而更糟)。默认预留 4 条,既够
+# 挡住 AI 风暴打空整个池,又不低于日额度上限而误伤正常突发。
+MACHI_AI_MAX_INFLIGHT = max(8, int(_env("MACHI_AI_MAX_INFLIGHT", str(max(8, KAIX_PG_POOL_MAX - 4)))))
+_MACHI_AI_INFLIGHT = threading.BoundedSemaphore(MACHI_AI_MAX_INFLIGHT)
 # Bound any single query so a runaway statement frees its thread + pool slot
 # instead of pinning them forever (the real "request timeout" for a DB-bound
 # request). 0 disables. Generous default — only kills genuinely stuck queries.
@@ -13126,10 +13144,12 @@ def campaign_recipient_rows(
     elif audience == "verified_members":
         rows = conn.execute(base + " AND u.is_verified_member = 1 ORDER BY u.created_at DESC").fetchall()
     elif audience == "active_30d":
+        # sessions 表没有 revoked_at 列(会话失效由 expires_at + DELETE 表达),
+        # 原查询引用不存在的列 → 预览 500、发送静默失败。改用 last_seen_at 判活跃。
         cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
         rows = conn.execute(
             base + " AND EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id "
-            "AND s.revoked_at IS NULL AND s.last_seen_at >= ?) ORDER BY u.created_at DESC",
+            "AND s.last_seen_at >= ?) ORDER BY u.created_at DESC",
             (cutoff,),
         ).fetchall()
     else:  # all (deliverable real users)
@@ -14921,6 +14941,16 @@ def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
         ("UPDATE guide_service_requests SET contact_method = '', contact_value = '', message = '', updated_at = ? WHERE user_id = ?", (now, user_id)),
         ("DELETE FROM device_push_tokens WHERE user_id = ?", (user_id,)),
         ("DELETE FROM drafts WHERE user_id = ?", (user_id,)),
+        # 社交房间/活动:擦除本人在房间聊天里的正文(仍对其他成员可见),并解散/取消
+        # 本人开的局与组织的活动——注销后不该在广场留下带其身份的房间/活动死卡。
+        ("UPDATE social_room_messages SET content = '' WHERE user_id = ?", (user_id,)),
+        ("UPDATE social_rooms SET status = 'cancelled', deleted_at = COALESCE(deleted_at, ?) WHERE host_user_id = ? AND deleted_at IS NULL", (now, user_id)),
+        # 退出注销用户加入的所有房间:先按其成员身份把这些房间的反范式 member_count
+        # 各 -1(否则计数虚高、满员房间可能被永久锁死无法再加人),再删成员行(消除
+        # 幽灵成员)。顺序:先 decrement(成员行还在)再 DELETE。
+        ("UPDATE social_rooms SET member_count = MAX(0, member_count - 1) WHERE id IN (SELECT room_id FROM social_room_members WHERE user_id = ?) AND host_user_id <> ?", (user_id, user_id)),
+        ("DELETE FROM social_room_members WHERE user_id = ?", (user_id,)),
+        ("UPDATE events SET status = 'cancelled', deleted_at = COALESCE(deleted_at, ?) WHERE organizer_user_id = ? AND deleted_at IS NULL", (now, user_id)),
         # Drop the account's follow edges in BOTH directions: an anonymized account
         # keeps no social graph, and this stops a phantom follow (from a now-deleted
         # account) inflating another user's follower_count — a raw COUNT over
@@ -17172,9 +17202,17 @@ class Handler(BaseHTTPRequestHandler):
             selected = int(body.get("selectedIndex", body.get("selected_index", -1)))
         except (TypeError, ValueError):
             return self.send_error_json("selectedIndex required", 400, "invalid_body")
+        session_id = str(body.get("sessionId") or body.get("session_id") or "")
+        # record_attempt 会在响应里揭示正确答案+解析(练习模式合理)。但若把在线模考
+        # 的 in_progress sessionId 传进来,就成了考试中拉答案的作弊面(与 exam-session
+        # review 已封堵的是同一面)。在线模考必须走不揭示答案的 /exam/answer 端点。
+        if session_id:
+            exam_sess = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
+            if exam_sess and (exam_sess.get("status") or "") == "in_progress":
+                return self.send_error_json("exam answers go through the exam endpoint", 409, "exam_in_progress")
         result = jlpt.record_attempt(
             conn, user_id=user["id"], question=question, selected_index=selected,
-            session_id=str(body.get("sessionId") or body.get("session_id") or ""),
+            session_id=session_id,
             source_kind=str(body.get("sourceKind") or body.get("source_kind") or "practice"),
             now=now_iso(),
         )
@@ -17396,6 +17434,11 @@ class Handler(BaseHTTPRequestHandler):
         session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
         if not session:
             return self.send_error_json("session not found", 404, "not_found")
+        # session_review 以 reveal_answer=True 组装每题的正确答案 + 解析。只能在
+        # 【已交卷】后回看,否则任何登录用户用自己的 sessionId 即可在考试进行中拉全
+        # 部答案后满分交卷,污染通过率/打卡/定级。未交卷的会话拒绝回看。
+        if (session.get("status") or "") != "submitted":
+            return self.send_error_json("exam not submitted yet", 409, "exam_in_progress")
         self.send_json({"status": "ok", **jlpt.session_review(conn, session=session),
                         "disclaimer": self._JLPT_DISCLAIMER})
 
@@ -17446,6 +17489,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._guide_ai_quota_response(language, is_member, is_guest=False)
         chat_model = MACHI_AI_PRO_MODEL if (is_member and MACHI_AI_PRO_MODEL) else MACHI_AI_MODEL
         completion = None
+        # 同 AI 聊天:限流慢 LLM 调用保护连接池,超额 fail-fast 退还额度 + 503。
+        if not _MACHI_AI_INFLIGHT.acquire(blocking=False):
+            self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
+            return self.send_json(
+                self._error_envelope("AI_BUSY", machi_ai_text(
+                    language,
+                    "Machi AI 正忙，请稍后再试。",
+                    "Machi AI が混み合っています。しばらくしてから再度お試しください。",
+                    "Machi AI is busy right now. Please try again shortly.",
+                )),
+                503,
+            )
         try:
             completion = seed_llm.machi_ai_chat_completion(
                 messages, model=chat_model, thinking=False, max_tokens=900,
@@ -17453,6 +17508,8 @@ class Handler(BaseHTTPRequestHandler):
             )
         except Exception:
             completion = None
+        finally:
+            _MACHI_AI_INFLIGHT.release()
         if not completion or not str(completion.get("content") or "").strip():
             self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
             return self.send_json(
@@ -18201,6 +18258,19 @@ class Handler(BaseHTTPRequestHandler):
         # 若 Pro 模型上游异常,下方 try/except 会优雅降级为 AI_UNAVAILABLE 并退还
         # 额度,不会影响会员正常使用其它功能。
         chat_model = MACHI_AI_PRO_MODEL if (is_member and MACHI_AI_PRO_MODEL) else MACHI_AI_MODEL
+        # 限流:同时在飞的 LLM 调用不得超过池的一半,超额 fail-fast 退还额度 + 503,
+        # 保护连接池不被慢 AI 请求耗尽(见 _MACHI_AI_INFLIGHT 定义处注释)。
+        if not _MACHI_AI_INFLIGHT.acquire(blocking=False):
+            self._machi_ai_refund_usage(conn, subject_id, usage_date, is_member)
+            return self.send_json(
+                self._error_envelope("AI_BUSY", machi_ai_text(
+                    language,
+                    "Machi AI 正忙，请稍后再试。",
+                    "Machi AI が混み合っています。しばらくしてから再度お試しください。",
+                    "Machi AI is busy right now. Please try again shortly.",
+                )),
+                503,
+            )
         try:
             completion = seed_llm.machi_ai_chat_completion(
                 messages,
@@ -18212,6 +18282,8 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             # Never surface the provider's raw error — degrade to "unavailable".
             completion = None
+        finally:
+            _MACHI_AI_INFLIGHT.release()
         if not completion or not str(completion.get("content") or "").strip():
             # No answer was produced — refund the reserved slot so a provider
             # failure never costs the user a quota slot.
@@ -24746,8 +24818,29 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    # 私密上传(DM 媒体/KYC 商家认证件/付费资料/会员资料/Guide 私密附件)的对象键
+    # 前缀。这些绝不能经无鉴权的 /media/ 直接公开服务——必须走带一次性签名 token
+    # 的 /api/uploads/<id>/download(_verify_local_download_token)。否则任何人只要
+    # 知道对象键即可读到他人的身份证件/私信图片/已付费资料,且被 1 年强缓存放大。
+    _PRIVATE_MEDIA_PREFIXES = ("messages/", "member/resources/", "guide/user-attachments/")
+
+    @classmethod
+    def _is_private_media_path(cls, relative: str) -> bool:
+        rel = relative.lstrip("/")
+        if rel.startswith(cls._PRIVATE_MEDIA_PREFIXES):
+            return True
+        if "/verification/" in rel:                       # businesses/<id>/verification/…（KYC）
+            return True
+        if rel.startswith("guide/products/") and "/files/" in rel:  # 付费资料文件
+            return True
+        return False
+
     def _serve_media(self) -> None:
         relative = self.path.split("?", 1)[0].lstrip("/")
+        # 私密对象一律拒绝直服务:必须走签名下载端点(见上方前缀注释)。
+        if self._is_private_media_path(relative):
+            self.send_error(403)
+            return
         candidate = (ROOT / relative).resolve()
         try:
             candidate.relative_to(MEDIA_DIR.resolve())
@@ -24819,9 +24912,13 @@ class Handler(BaseHTTPRequestHandler):
             ACCESS_LOG.info('%s "GET %s" 200 ip=%s', self._request_id, path, ip)
             return
 
-        # Rate limit before doing any real work.
+        # Rate limit before doing any real work. SSE 实时握手/流(/api/events GET)
+        # 刻意豁免普通 per-IP read 限流:它是长驻连接,浏览器 EventSource 断线会自动
+        # 重连,一旦被普通 read 桶 429 就会触发「重连→429→再重连」的风暴(正是 0629
+        # 事故根因)。SSE 自身另有连接数/token 层面的约束,不走这个通用限流桶。
+        is_sse_handshake = (path == "/api/events" and method == "GET")
         group = _rate_group_for(path, method)
-        if not rate_check(ip, group):
+        if not is_sse_handshake and not rate_check(ip, group):
             status_code = 429
             self.send_response(429)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -24912,7 +25009,10 @@ class Handler(BaseHTTPRequestHandler):
                 self._request_id, method, path, status_code, ip, duration_ms,
             )
             # Surface slow endpoints (with pool saturation) without an APM.
-            if KAIX_SLOW_REQUEST_MS and duration_ms >= KAIX_SLOW_REQUEST_MS:
+            # SSE 实时端点(/api/events GET)是刻意长驻的流,连接可开几分钟——它必然
+            # 超过慢请求阈值,但那是设计而非病态,排除它避免日志被 SSE 假阳性刷屏。
+            is_sse_stream = (path == "/api/events" and method == "GET")
+            if KAIX_SLOW_REQUEST_MS and duration_ms >= KAIX_SLOW_REQUEST_MS and not is_sse_stream:
                 ERR_LOG.warning(
                     'SLOW %s "%s %s" %d ms=%.0f ip=%s%s',
                     self._request_id, method, path, status_code, duration_ms, ip, _pg_pool_stat_suffix(),
@@ -26856,6 +26956,15 @@ class Handler(BaseHTTPRequestHandler):
             if order_no and str(obj.get("payment_status") or "") == "paid":
                 def _settle_stripe(c: sqlite3.Connection) -> None:
                     if kind == "wallet_topup" or order_no.startswith("WT"):
+                        # 金额篡改校验(与会员 mark_order_paid / 指南 settle_guide_order /
+                        # 钱包 confirm-redirect 三兄弟路径对齐,补齐 webhook 这条主结算
+                        # 路径此前独缺的纵深防御):Stripe 实付额必须等于本订单应收额。
+                        wt_row = c.execute("SELECT amount_cents, currency FROM wallet_topup_orders WHERE order_no = ?", (order_no,)).fetchone()
+                        if wt_row:
+                            expected = _stripe_minor_units(int(wt_row["amount_cents"] or 0), str(wt_row["currency"] or "usd"))
+                            if expected and amount_total and amount_total != expected:
+                                ERR_LOG.warning("wallet topup webhook amount mismatch order=%s got=%s want=%s", order_no, amount_total, expected)
+                                raise APIError("支付金额与订单不一致", 400, "amount_mismatch")
                         # Machi Points top-up — credit points exactly once.
                         wallet_credit_topup(c, order_no, provider_trade_no=payment_intent, source_type="stripe")
                     elif order_no.startswith("GP"):
@@ -26894,29 +27003,38 @@ class Handler(BaseHTTPRequestHandler):
             # intent we recorded as the WT order's provider_trade_no. Claw back
             # the granted points (never forcing the balance negative).
             payment_intent = str(obj.get("payment_intent") or "")
-            first = record_payment_webhook(conn, "stripe", event_type, event_id, payment_intent,
-                                           json.dumps(event, ensure_ascii=False), True)
-            if first and payment_intent:
+            if payment_intent:
                 # MS-6: resolve the refunded/disputed charge across ALL three
                 # rails (wallet top-up, membership, guide product) — previously
                 # only wallet top-ups were clawed back, so a refunded membership
                 # or guide purchase silently kept its benefits.
-                wt = conn.execute(
-                    "SELECT order_no FROM wallet_topup_orders WHERE payment_provider = 'stripe' AND provider_trade_no = ? LIMIT 1",
-                    (payment_intent,)).fetchone()
-                po = conn.execute(
-                    "SELECT order_no FROM payment_orders WHERE payment_provider = 'stripe' AND provider_trade_no = ? LIMIT 1",
-                    (payment_intent,)).fetchone()
-                gp = conn.execute(
-                    "SELECT order_no FROM guide_orders WHERE payment_provider = 'stripe' AND provider_trade_no = ? LIMIT 1",
-                    (payment_intent,)).fetchone()
-                if wt:
-                    entry = "chargeback_debit" if event_type != "charge.refunded" else "refund_debit"
-                    wallet_refund_topup(conn, wt["order_no"], reason=event_type, entry_type=entry)
-                if po:
-                    refund_order(conn, po["order_no"])          # mark refunded + revoke membership
-                if gp:
-                    refund_guide_points_order(conn, gp["order_no"], reason=event_type)  # revoke entitlement
+                # 原实现先写 dedup 行、再执行回收(非原子):若两者之间崩溃,事件已被
+                # 记为"已处理",Stripe 重投被去重跳过 → 回收永久丢失(退了钱没收回货)。
+                # 改用 process_payment_webhook,把【dedup 记录 + 回收】放进同一事务:
+                # 要么都成功,要么都回滚(不留 dedup 行)让 Stripe 重投重试。
+                def _clawback(c: sqlite3.Connection) -> None:
+                    wt = c.execute(
+                        "SELECT order_no FROM wallet_topup_orders WHERE payment_provider = 'stripe' AND provider_trade_no = ? LIMIT 1",
+                        (payment_intent,)).fetchone()
+                    po = c.execute(
+                        "SELECT order_no FROM payment_orders WHERE payment_provider = 'stripe' AND provider_trade_no = ? LIMIT 1",
+                        (payment_intent,)).fetchone()
+                    # 指南订单结算写的是 stripe_payment_intent_id(见 settle_guide_order),
+                    # 原查询却查 provider_trade_no → 恒查不到,退款后买家仍留已付资料(资损)。
+                    # 按结算实际写入列匹配,并兼容历史 provider_trade_no。
+                    gp = c.execute(
+                        "SELECT order_no FROM guide_orders WHERE payment_provider = 'stripe' "
+                        "AND (stripe_payment_intent_id = ? OR provider_trade_no = ?) LIMIT 1",
+                        (payment_intent, payment_intent)).fetchone()
+                    if wt:
+                        entry = "chargeback_debit" if event_type != "charge.refunded" else "refund_debit"
+                        wallet_refund_topup(c, wt["order_no"], reason=event_type, entry_type=entry)
+                    if po:
+                        refund_order(c, po["order_no"])          # mark refunded + revoke membership
+                    if gp:
+                        refund_guide_points_order(c, gp["order_no"], reason=event_type)  # revoke entitlement
+                process_payment_webhook(conn, "stripe", event_type, event_id, payment_intent,
+                                        json.dumps(event, ensure_ascii=False), _clawback)
         else:
             # Record-but-ignore other event types (still 2xx so Stripe stops retrying).
             record_payment_webhook(conn, "stripe", event_type, event_id, "", "", True)
@@ -27106,6 +27224,12 @@ class Handler(BaseHTTPRequestHandler):
         # payload and is never used to GRANT anything, only to mute noise.
         txn_environment = str(payload.get("environment") or data.get("environment") or "").strip().lower()
         is_sandbox_txn = txn_environment in ("sandbox", "xcode")
+        # 生产环境的真实购买一律携带 appAccountToken(iOS 端购买时注入)。若缺失就
+        # 无法把交易绑定到归属者——否则持有他人「无 token 的合法签名收据」者,可靠
+        # 后面对【当前调用者】无条件执行的 expiry sync 给自己白开会员(订单唯一索引
+        # 只挡再次结算、挡不住 per-caller 的会员延期)。故生产非沙盒且无 token 直接拒。
+        if PRODUCTION and not is_sandbox_txn and not app_account_token:
+            raise APIError("交易缺少账号凭证", 403, "apple_account_token_required")
         dedup_key = "apple:" + (txn_id or orig_id or signed[:40])
         existing = conn.execute(
             "SELECT status FROM payment_orders WHERE provider_trade_no = ? AND payment_provider = 'apple_iap'",
@@ -27308,8 +27432,14 @@ class Handler(BaseHTTPRequestHandler):
             # Defense-in-depth amount check (parity with mark_order_paid /
             # settle_guide_order): the paid Stripe amount must equal what we
             # charged for this top-up order before any points are credited.
-            wt = conn.execute("SELECT amount_cents, currency FROM wallet_topup_orders WHERE order_no = ?", (order_no,)).fetchone()
+            wt = conn.execute("SELECT amount_cents, currency, user_id FROM wallet_topup_orders WHERE order_no = ?", (order_no,)).fetchone()
             if wt:
+                # 订单归属校验(与会员 confirm 的 api_stripe_confirm 一致):只有订单
+                # 本人(或 admin)能 confirm。否则任意持有他人 session_id 者能拿回其
+                # 钱包余额快照(跨用户信息泄露)。结算按订单自身 user_id 记账不会错记,
+                # 但响应绝不能把他人余额回给调用者。
+                if str(wt["user_id"]) != str(user["id"]) and (user.get("role") or "") != "admin":
+                    raise APIError("无权操作该订单", 403, "forbidden")
                 expected = _stripe_minor_units(int(wt["amount_cents"] or 0), str(wt["currency"] or "usd"))
                 paid = int(session.get("amount_total") or 0)
                 if expected and paid and paid != expected:
@@ -27345,12 +27475,20 @@ class Handler(BaseHTTPRequestHandler):
         app_account_token = str(payload.get("appAccountToken") or "").strip()
         if app_account_token and app_account_token.lower() != user["id"].lower():
             raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
-        dedup = "apple:" + (txn_id or orig_id or signed[:40])
-        # Same sandbox treatment as the membership verify: Sandbox/TestFlight
-        # consumables still credit points (testers need the flow) but the order
-        # is tagged ios_sandbox so wallet revenue aggregates can exclude it.
         txn_environment = str(payload.get("environment") or data.get("environment") or "").strip().lower()
-        client_type = "ios_sandbox" if txn_environment in ("sandbox", "xcode") else "ios"
+        is_sandbox_txn = txn_environment in ("sandbox", "xcode")
+        # 与会员 Apple 验证路径完全对齐的两道护栏(此前只在会员路径有):
+        # ① 生产环境的真实购买必须携带 appAccountToken 把收据绑定到归属者,否则
+        #    持他人「无 token 的合法签名收据」者可换到点数(收据未绑定)。
+        # ② 生产环境拒绝沙盒/Xcode 收据换真实可花点数——否则任何测试/众测账号的
+        #    沙盒收据(仍由 Apple 根 CA 签名、生产签名校验通过)都能白嫖真实点数、
+        #    进而购买指南数字商品,污染点数经济与营收核算。
+        if PRODUCTION and not is_sandbox_txn and not app_account_token:
+            raise APIError("交易缺少账号凭证", 403, "apple_account_token_required")
+        if PRODUCTION and is_sandbox_txn:
+            raise APIError("沙盒交易不能在生产环境充值", 403, "sandbox_not_allowed_in_production")
+        dedup = "apple:" + (txn_id or orig_id or signed[:40])
+        client_type = "ios_sandbox" if is_sandbox_txn else "ios"
         result = wallet_credit_iap_topup(conn, user["id"], pack, "apple_iap", client_type, dedup,
                                          provider_product_id=product_id, provider_user_id=orig_id)
         self.send_json({
@@ -28129,7 +28267,9 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("尝试次数过多，请稍后再试", 429, "too_many_attempts")
         password = data.get("password") or ""
         row = self._resolve_login_user(conn, raw_identifier)
-        if not row or not verify_password(password, row["password_hash"]):
+        # 账号不存在时也对哑 hash 跑一次 PBKDF2,消除计时侧信道(见 _DUMMY_PW_HASH)。
+        ok = verify_password(password, row["password_hash"]) if row else verify_password(password, _DUMMY_PW_HASH)
+        if not row or not ok:
             record_login_failure(self._client_ip(), fail_key)
             raise APIError("用户名/邮箱或密码不正确", 401, "invalid_credentials")
         clear_login_failures(self._client_ip(), fail_key)
@@ -28280,7 +28420,14 @@ class Handler(BaseHTTPRequestHandler):
         # victim's address; without this gate that login would seize the victim's
         # pre-existing account. Unverified -> fall through to a fresh account.
         if email and email_verified:
-            existing = conn.execute("SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email,)).fetchone()
+            # 额外要求既存账号的邮箱本身也是【已验证】的才自动合并。否则攻击者用
+            # 受害者邮箱免验证抢注一个本地账号(email_verified=0),受害者日后用 Google
+            # 登录同邮箱会被静默并入攻击者账号 → 账号接管。只匹配已验证邮箱的账号,
+            # 未验证的抢注账号不参与自动合并,走新建账号(或后续手动绑定)。
+            existing = conn.execute(
+                "SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL "
+                "AND (email_verified = 1 OR auth_provider IN ('google','apple')) LIMIT 1",
+                (email,)).fetchone()
             if existing:
                 conn.execute(
                     """
@@ -28429,7 +28576,12 @@ class Handler(BaseHTTPRequestHandler):
             return dict(conn.execute("SELECT * FROM users WHERE id = ?", (row["id"],)).fetchone())
 
         if email:
-            existing = conn.execute("SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email,)).fetchone()
+            # 同 Google:只自动合并到邮箱已验证(或本身由 OAuth 创建)的既存账号,
+            # 防止攻击者用受害者邮箱免验证抢注的账号被 Apple 登录并入 → 账号接管。
+            existing = conn.execute(
+                "SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL "
+                "AND (email_verified = 1 OR auth_provider IN ('google','apple')) LIMIT 1",
+                (email,)).fetchone()
             if existing:
                 conn.execute("UPDATE users SET apple_sub = ?, email_verified = 1, updated_at = ? WHERE id = ?",
                              (sub, now_iso(), existing["id"]))
@@ -28475,7 +28627,12 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.URLError:
             raise APIError("无法连接 Apple 验证服务，请稍后重试", 503, "apple_verify_unavailable")
         sub = str(claims.get("sub") or "")
-        email = str(claims.get("email") or data.get("email") or "")
+        # 账号合并锚点【只用】Apple identity token 里密码学签名验证过的 email。
+        # 绝不回退到 data.get("email")(客户端可控):攻击者出示自己合法但无 email
+        # claim 的 Apple token(复次登录/隐藏邮箱常无 email),再在 body 里塞受害者
+        # 邮箱,就会把自己的 apple_sub 绑到受害者账号 → 账号接管。body email 仅可
+        # 作首登显示名兜底,绝不参与 existing 查询与 apple_sub 绑定。
+        email = str(claims.get("email") or "")
         full_name = str(data.get("full_name") or data.get("fullName") or "")
         user = self._upsert_apple_user(conn, sub, email, full_name)
         token = self._create_session(conn, user["id"])
@@ -28848,6 +29005,11 @@ class Handler(BaseHTTPRequestHandler):
         raw_identifier = (data.get("handle") or data.get("username") or "").strip()
         fail_key = raw_identifier.lower() if "@" in raw_identifier else normalize_handle(raw_identifier)
         self._enforce_captcha(conn, data, "login", handle=fail_key)
+        # 与 api_login 一致的硬锁定(此前只在 api_login 有):两步式登录用同一密码
+        # oracle,不加这道检查的话按 handle 的分布式撞库改走 /login/start 即可绕过
+        # 「达到阈值直接拒绝」的防护。置于 captcha 之后、密码校验之前。
+        if login_locked_out(self._client_ip(), fail_key):
+            raise APIError("尝试次数过多，请稍后再试", 429, "too_many_attempts")
         email_in = (data.get("email") or "").strip()
         password = data.get("password") or ""
         locale = self._norm_locale(data.get("locale"))
@@ -28856,7 +29018,9 @@ class Handler(BaseHTTPRequestHandler):
         # Legacy clients that send a separate explicit email field still work.
         if not row and email_in:
             row = conn.execute("SELECT * FROM users WHERE lower(email) = ? AND deleted_at IS NULL", (email_in.lower(),)).fetchone()
-        if not row or not verify_password(password, row["password_hash"]):
+        # 同 api_login:账号不存在也跑一次哑 PBKDF2,消除计时侧信道。
+        ok = verify_password(password, row["password_hash"]) if row else verify_password(password, _DUMMY_PW_HASH)
+        if not row or not ok:
             record_login_failure(self._client_ip(), fail_key)
             raise APIError("用户名/邮箱或密码不正确", 401, "invalid_credentials")
         clear_login_failures(self._client_ip(), fail_key)
@@ -30028,7 +30192,12 @@ class Handler(BaseHTTPRequestHandler):
         viewer = self.current_session(conn)
         viewer_id = viewer["user_id"] if viewer else None
         listing_type = normalize_listing_type(query.get("type"))
-        limit = max(1, min(int(query.get("limit") or 24), 60))
+        try:
+            limit = max(1, min(int(query.get("limit") or 24), 60))
+        except (TypeError, ValueError):
+            # 公开端点:畸形 limit(?limit=abc)不应 int() 抛错→兜底 500+错误告警邮件,
+            # 与本函数 min/max_price/attr_gte 已有的容错一致,静默回默认值。
+            limit = 24
         cursor = cursor_decode(query.get("cursor"))
         # 价格/人气/评分排序的翻页游标（"__off__:{sort}" + 下一页偏移）。这些
         # 排序此前完全不发 next_cursor,客户端在第一页(24/60条)被硬截断——
@@ -30048,12 +30217,17 @@ class Handler(BaseHTTPRequestHandler):
         clauses = ["deleted_at IS NULL", "type = ?"]
         params: list[Any] = [listing_type]
         if include_private:
+            # 「我的发布」视图:限定本人,且允许本人按任意状态过滤自己的房源
+            # (含草稿/待审/被拒/隐藏)。status 过滤在此分支内叠加,不再被静默丢弃。
             clauses.append("seller_user_id = ?")
             params.append(viewer_id)
-        elif status and status in LISTING_STATUSES:
-            clauses.append("status = ?")
-            params.append(status)
+            if status and status in LISTING_STATUSES:
+                clauses.append("status = ?")
+                params.append(status)
         else:
+            # 公开视图(未登录或未带 owner=me):恒只返回公开状态,完全忽略客户端
+            # 传入的 status。否则任意游客可用 ?status=draft 枚举全体卖家的草稿/
+            # 待审/被拒/隐藏房源(含联系方式/媒体)——OWASP A01 破损访问控制。
             clauses.append("status IN (%s)" % ",".join("?" * len(PUBLIC_LISTING_STATUSES)))
             params.extend(PUBLIC_LISTING_STATUSES)
 
@@ -30911,6 +31085,9 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("标题过长", 400, "title_too_long")
         if len(next_description) > 3000:
             raise APIError("描述过长", 400, "description_too_long")
+        # H4 违禁词/CSAM/诈骗自动闸门:创建时跑了 enforce_content_policy,编辑时必须
+        # 同样跑,否则可「先建后改」把违规内容改进来绕过审核(CSAM 招揽词零容忍)。
+        enforce_content_policy(next_title, next_description)
         forbidden = listing_policy_violation(next_title, next_description, next_category)
         if forbidden:
             reputation_apply_event(
@@ -31116,8 +31293,11 @@ class Handler(BaseHTTPRequestHandler):
                     metadata={"listing_type": row["type"]},
                 )
         elif not on and existing:
-            conn.execute("DELETE FROM listing_favorites WHERE id = ?", (existing["id"],))
-            conn.execute("UPDATE city_listings SET favorite_count = MAX(0, favorite_count - 1), updated_at = ? WHERE id = ?", (now_iso(), listing_id))
+            # 只有真正删掉了这行(rowcount==1)才 -1,防并发双击取消收藏各删一次却
+            # 都 -1 造成计数双减。与帖子删除的 CAS 计数一致。
+            cur = conn.execute("DELETE FROM listing_favorites WHERE id = ?", (existing["id"],))
+            if cur.rowcount:
+                conn.execute("UPDATE city_listings SET favorite_count = MAX(0, favorite_count - 1), updated_at = ? WHERE id = ?", (now_iso(), listing_id))
         self.send_json({"ok": True, "favorited": on})
 
     def api_my_saved_listings(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -31128,10 +31308,11 @@ class Handler(BaseHTTPRequestHandler):
             SELECT l.* FROM listing_favorites f
             JOIN city_listings l ON l.id = f.listing_id
             WHERE f.user_id = ? AND l.deleted_at IS NULL AND l.type = ?
+              AND (l.status IN (%s) OR l.seller_user_id = ?)
             ORDER BY f.created_at DESC
             LIMIT 80
-            """,
-            (user["id"], listing_type),
+            """ % ",".join("?" * len(PUBLIC_LISTING_STATUSES)),
+            (user["id"], listing_type, *PUBLIC_LISTING_STATUSES, user["id"]),
         ))
         items = fetch_listings_with_extras(conn, [dict(r) for r in rows], user["id"])
         self.send_json({"ok": True, "items": items, "data": {"items": items, "filters": {"type": listing_type}}})
@@ -31413,6 +31594,10 @@ class Handler(BaseHTTPRequestHandler):
         row = conn.execute("SELECT * FROM city_listings WHERE id = ? AND deleted_at IS NULL", (listing_id,)).fetchone()
         if not row:
             raise APIError("信息不存在", 404, "listing_not_found")
+        # 只有对外可见(已发布/预留中)的房源才能被咨询;已下架/待审/被拒/隐藏的
+        # 不该还能被联系(否则等于绕过下架继续接洽)。卖家本人另有 self_inquiry 拦截。
+        if row["seller_user_id"] != user["id"] and (row["status"] or "") not in PUBLIC_LISTING_STATUSES:
+            raise APIError("该信息已下架", 404, "listing_not_available")
         if row["seller_user_id"] == user["id"]:
             raise APIError("不能咨询自己发布的信息", 400, "self_inquiry")
         if conn.execute(
@@ -31932,6 +32117,9 @@ class Handler(BaseHTTPRequestHandler):
     def api_book_listing_slot(self, conn: sqlite3.Connection, listing_id: str, slot_id: str) -> None:
         user = self.require_user(conn)
         listing = self._booking_listing_or_404(conn, listing_id)
+        # 已下架/待审/被拒/隐藏的房源不能再被预约(卖家本人下方另有拦截)。
+        if listing["seller_user_id"] != user["id"] and (listing.get("status") or "") not in PUBLIC_LISTING_STATUSES:
+            raise APIError("该内容已下架", 404, "listing_not_available")
         if listing["seller_user_id"] == user["id"]:
             raise APIError("不能预约自己发布的内容", 400, "own_listing")
         slot_row = conn.execute(
@@ -31990,7 +32178,11 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("无权操作此预约", 403, "forbidden")
         if booking["status"] == "confirmed":
             now = now_iso()
-            conn.execute("UPDATE listing_bookings SET status = 'cancelled', updated_at = ? WHERE id = ?", (now, booking_id))
+            # CAS:只有本次真的把 confirmed→cancelled(rowcount==1)才回补名额,防
+            # 并发双击取消对同一预约各自 booked_count-1 造成双减(名额虚增/超订)。
+            cur = conn.execute("UPDATE listing_bookings SET status = 'cancelled', updated_at = ? WHERE id = ? AND status = 'confirmed'", (now, booking_id))
+            if not cur.rowcount:
+                return self.send_json({"ok": True})
             conn.execute("UPDATE listing_booking_slots SET booked_count = MAX(0, booked_count - 1) WHERE id = ?", (booking["slot_id"],))
             other = booking["owner_id"] if user["id"] == booking["user_id"] else booking["user_id"]
             if other and other != user["id"]:
@@ -32423,7 +32615,15 @@ class Handler(BaseHTTPRequestHandler):
             if key in data:
                 updates[key] = str(data.get(key) or "").strip()
         if "price" in data:
-            updates["price"] = None if data.get("price") in (None, "") else float(data.get("price"))
+            # 与 owner 版发布/编辑一致:非数字 price 报 400(而非 float() 抛 →500),
+            # 且拒绝负价(负价会污染排序/展示)。
+            try:
+                price = None if data.get("price") in (None, "") else float(data.get("price"))
+            except (TypeError, ValueError):
+                raise APIError("价格格式不正确", 400, "invalid_price")
+            if price is not None and price < 0:
+                raise APIError("价格不能为负", 400, "invalid_price")
+            updates["price"] = price
         if "is_promoted" in data:
             updates["is_promoted"] = 1 if bool(data.get("is_promoted")) else 0
         if "promotion_weight" in data:
@@ -34713,6 +34913,10 @@ class Handler(BaseHTTPRequestHandler):
             anon_cache_key = "feed:anon:" + ":".join([
                 mode, str(limit), req_region_code, req_country, req_province,
                 req_city, ",".join(content_types),
+                # exact 决定按都市圈聚合还是单城过滤,直接改变返回集合;漏了它会让
+                # ?city=osaka 与 ?city=osaka&exact=1 在 20s TTL 内命中同一 key、拿到
+                # 对方错误范围的结果。必须纳入缓存键。
+                "1" if exact_city else "0",
             ])
             cached_payload = _cache_get(anon_cache_key)
             if cached_payload is not None:
@@ -34833,7 +35037,11 @@ class Handler(BaseHTTPRequestHandler):
                 next_cursor = None
                 if has_more or len(pool) > limit:
                     # Resume below the recency pool to avoid re-showing pool posts.
-                    tail = pool[-1]
+                    # real_first 前置重排后 pool[-1] 不再是最旧行,续页游标必须取
+                    # 【展示集合里最旧的 (created_at,id)】,否则第2页的 `< cursor`
+                    # 会把被前置到 pool 后段、但 created_at 更早、已在第1页展示的
+                    # 真实帖再次取回(real_first 目标场景=真实帖稀疏时几乎整页重复)。
+                    tail = min(pool, key=lambda r: (r["created_at"], r["id"]))
                     next_cursor = cursor_encode(tail["created_at"], tail["id"])
                 posts = fetch_posts_with_extras(conn, ranked, viewer_id)
                 self.send_json({
@@ -34856,8 +35064,13 @@ class Handler(BaseHTTPRequestHandler):
                     mmr_config=mmr_config,
                 )
                 if mixed:
-                    tail = pool_rows[: pool_size][-1]
-                    next_cursor = cursor_encode(tail["created_at"], tail["id"])
+                    # 冷启动 mixed 里可能含数天前的热门帖/被前置的旧真实帖,其
+                    # created_at 早于 recency 池最旧行。续页游标必须覆盖【真正展示
+                    # 出去的 mixed 集合】的最旧 (created_at,id),否则第2页 `< cursor`
+                    # 会把这些更旧的已展示帖再取回,与第1页重复(命中新注册用户)。
+                    displayed = [r for r in mixed if r.get("created_at") and r.get("id")]
+                    anchor = min(displayed, key=lambda r: (r["created_at"], r["id"])) if displayed else pool_rows[:pool_size][-1]
+                    next_cursor = cursor_encode(anchor["created_at"], anchor["id"])
                     posts = fetch_posts_with_extras(conn, mixed, viewer_id)
                     self.send_json({
                         "items": posts, "next_cursor": next_cursor, "mode": mode,
@@ -34989,11 +35202,16 @@ class Handler(BaseHTTPRequestHandler):
         )
         for tag in extract_tags(content):
             conn.execute("INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (post_id, tag))
+        # 显式 tags 与正文 #hashtag 一致处理:前 10 条、单条 ≤80 字符、经与
+        # extract_tags 相同的字符白名单清洗(丢弃含空格/非允许字符者)。否则客户端
+        # 可注入海量/超长任意 tag 写爆 post_tags 并污染话题/热搜聚合。
         explicit_tags = data.get("tags") or []
-        for tag in explicit_tags:
-            normalized = str(tag).strip().lstrip("#").lower()
-            if normalized:
-                conn.execute("INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (post_id, normalized))
+        if isinstance(explicit_tags, list):
+            for tag in explicit_tags[:10]:
+                normalized = str(tag).strip().lstrip("#").lower()[:80]
+                # 只接受清洗后仍是「单个合法 tag」的(含空格/非允许字符者被丢弃)。
+                if normalized and extract_tags("#" + normalized) == [normalized]:
+                    conn.execute("INSERT OR IGNORE INTO post_tags VALUES (?, ?)", (post_id, normalized))
         for index, media_item in enumerate(valid_media):
             media_id = media_item["id"]
             media_type = media_item.get("type") or "image"
@@ -35085,6 +35303,12 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         if "content" in data:
             content = (data["content"] or "").strip()
+            # 与创建帖子一致的守卫:禁言拦截 + H4 违禁词/CSAM/诈骗审核 + 长度上限。
+            # 否则可「先建后改」把违规内容编辑进来,或被禁言用户绕过发言限制。
+            self._enforce_not_muted(user)
+            enforce_content_policy(content)
+            if len(content) > 2000:
+                raise APIError("内容过长", 400, "content_too_long")
             conn.execute("UPDATE posts SET content = ?, updated_at = ? WHERE id = ?", (content, now_iso(), post_id))
             conn.execute("DELETE FROM post_tags WHERE post_id = ?", (post_id,))
             for tag in extract_tags(content):
@@ -35098,6 +35322,11 @@ class Handler(BaseHTTPRequestHandler):
             ct = current_type["content_type"] if current_type else "dynamic"
             attrs = normalize_post_attributes(ct, data["attributes"])
             conn.execute("UPDATE posts SET attributes = ?, updated_at = ? WHERE id = ?", (attrs, now_iso(), post_id))
+        # 编辑改了正文/#话题标签,必须像发帖/删帖一样失效公共排行与 Feed 缓存,
+        # 否则 /api/topics、/trending、/discover/hot、匿名 Feed 在 TTL 内仍返回编辑前
+        # 的标签归属与正文。
+        invalidate_public_ranking_caches()
+        _cache_invalidate("feed:")
         fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
         posts = fetch_posts_with_extras(conn, [fresh], user["id"])
         self.send_json({"post": posts[0]})
@@ -35227,16 +35456,32 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(attrs.get("people_limit") or attrs.get("capacity") or 0)
             except (TypeError, ValueError):
                 limit = 0
-            going = conn.execute(
-                "SELECT COUNT(*) AS c FROM interactions WHERE target_id = ? AND kind = 'meetup_join'",
-                (post_id,),
-            ).fetchone()["c"]
-            if limit > 0 and int(going) >= limit:
-                raise APIError("名额已满", 409, "meetup_full")
-            conn.execute(
-                "INSERT INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, 'meetup_join', ?)",
-                (str(uuid.uuid4()), post_id, user["id"], now_iso()),
-            )
+            if limit > 0:
+                # 原子容量控制:把容量判断与插入合成【一条】条件写(单语句在
+                # SQLite 写锁 / PG 内均原子),消除「先 COUNT 后 INSERT」的 TOCTOU
+                # ——否则跨 worker 进程两名不同用户可同时通过 going<limit 各自插入,
+                # 使限额约局超额报名。OR IGNORE 兼作同用户双击的幂等。
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO interactions (id, target_id, user_id, kind, created_at) "
+                    "SELECT ?, ?, ?, 'meetup_join', ? "
+                    "WHERE (SELECT COUNT(*) FROM interactions WHERE target_id = ? AND kind = 'meetup_join') < ?",
+                    (str(uuid.uuid4()), post_id, user["id"], now_iso(), post_id, limit),
+                )
+                if not cur.rowcount:
+                    # 没插入既可能是「满员」也可能是「同用户并发双击、被 UNIQUE OR IGNORE
+                    # 挡下但其实已报名」。先复查本人是否已在名单,已在则幂等返回成功,
+                    # 仅确实因容量未插入才报满员,避免把重复提交误报成「名额已满」。
+                    already = conn.execute(
+                        "SELECT 1 FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'meetup_join' LIMIT 1",
+                        (post_id, user["id"]),
+                    ).fetchone()
+                    if not already:
+                        raise APIError("名额已满", 409, "meetup_full")
+            else:
+                conn.execute(
+                    "INSERT OR IGNORE INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, 'meetup_join', ?)",
+                    (str(uuid.uuid4()), post_id, user["id"], now_iso()),
+                )
         elif not on and existing:
             conn.execute("DELETE FROM interactions WHERE id = ?", (existing["id"],))
         fresh = dict(conn.execute("SELECT * FROM posts WHERE id = ?", (post_id,)).fetchone())
@@ -35277,7 +35522,11 @@ class Handler(BaseHTTPRequestHandler):
                     (str(uuid.uuid4()), post_id, user["id"], now_iso()),
                 )
                 changed = True
-                bump_post_counter(conn, post_id, "repost_count", +1)
+                # 自转发不计入 repost_count:与全局「自互动永不计入热度」不变量对齐
+                # (reconcile_post_counters 与 weighted_interaction_score 都按
+                # user_id<>author_id 排除自身);否则作者自转发会瞬时抬高热度直到 reconcile。
+                if post["author_id"] != user["id"]:
+                    bump_post_counter(conn, post_id, "repost_count", +1)
             except sqlite3.IntegrityError:
                 pass
             existing_repost_post = conn.execute(
@@ -35319,7 +35568,8 @@ class Handler(BaseHTTPRequestHandler):
                 "DELETE FROM interactions WHERE target_id = ? AND user_id = ? AND kind = 'repost'",
                 (post_id, user["id"]),
             )
-            if (removed.rowcount or 0) > 0:
+            # 对称:自转发当初没 +1,撤销时也不 -1(否则会把别人的转发数减没)。
+            if (removed.rowcount or 0) > 0 and post["author_id"] != user["id"]:
                 bump_post_counter(conn, post_id, "repost_count", -1)
             conn.execute(
                 """
@@ -35575,8 +35825,12 @@ class Handler(BaseHTTPRequestHandler):
             (comment_id, user["id"]),
         ).fetchone()
         if on and not existing:
+            # INSERT OR IGNORE:与主互动路径(赞/藏)一致的幂等写。多 worker 下同一用户
+            # 快速双击评论赞,两请求落到两进程都读到 existing=None 时,第二条裸 INSERT
+            # 会撞 UNIQUE(target_id,user_id,kind) 抛 IntegrityError → 500;OR IGNORE 让
+            # 被抢跑的重复插入成为无操作。
             conn.execute(
-                "INSERT INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, 'commentLike', ?)",
+                "INSERT OR IGNORE INTO interactions (id, target_id, user_id, kind, created_at) VALUES (?, ?, ?, 'commentLike', ?)",
                 (str(uuid.uuid4()), comment_id, user["id"], now_iso()),
             )
         elif not on and existing:
@@ -39318,6 +39572,12 @@ class Handler(BaseHTTPRequestHandler):
         token = str(data.get("token") or "").strip()
         if not token:
             raise APIError("缺少推送 token", 400, "missing_token")
+        # 强校验 token 只含十六进制:APNs device token 是 Apple 下发的十六进制串。
+        # 发送侧(server_apns._post_one)会把 token 拼进 curl -K 配置文件,若放任
+        # 任意字符,恶意 token(含引号/换行)可注入 curl 指令窃取 APNs provider JWT
+        # 或任意写文件。此处按格式拒绝,发送侧再做二次断言(纵深防御)。
+        if not re.fullmatch(r"[0-9a-fA-F]{16,200}", token):
+            raise APIError("推送 token 格式无效", 400, "invalid_token")
         server_apns.register_token(conn, user["id"], token, str(data.get("platform") or "ios"), now_iso())
         self.send_json({"ok": True, "apnsEnabled": server_apns.apns_configured()})
 

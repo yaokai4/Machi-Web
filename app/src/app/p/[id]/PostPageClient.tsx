@@ -174,7 +174,7 @@ export default function PostPageClient() {
   return (
     <AppShell requireAuth={false}>
       <header className="sticky top-0 z-30 kx-glass-bar px-3 py-2 grid grid-cols-[2.25rem_1fr_2.25rem] items-center gap-2">
-        <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label="返回">
+        <button onClick={() => router.back()} className="kx-button-ghost h-9 w-9 p-0" aria-label={t("msg_back")}>
           <ArrowLeft className="w-4 h-4" />
         </button>
         <h1 className="text-center font-semibold">帖子详情</h1>

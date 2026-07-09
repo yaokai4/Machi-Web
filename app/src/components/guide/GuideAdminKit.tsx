@@ -33,6 +33,7 @@ import {
   type GuideSchool,
 } from "@/lib/guide";
 import { useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 type LibraryKind = "schools" | "companies";
 type AdminRow = Record<string, unknown> & { id?: string; slug?: string; status?: string; verificationStatus?: string };
@@ -207,6 +208,7 @@ export function GuideAdminHomePage() {
 }
 
 export function GuideAdminListPage({ kind }: { kind: LibraryKind }) {
+  const { t } = useI18n();
   const [keyword, setKeyword] = useState("");
   const [status, setStatus] = useState("");
   const [regionGroup, setRegionGroup] = useState("");
@@ -331,8 +333,8 @@ export function GuideAdminListPage({ kind }: { kind: LibraryKind }) {
                       <td className="px-3 py-2 text-right font-bold">{valueToText(row.dataQualityScore) || "0"}</td>
                       <td className="px-3 py-2">
                         <div className="flex justify-end gap-1.5">
-                          <Link className="rounded-full bg-kx-soft p-2 text-kx-muted hover:text-kx-accent" href={publicHref} target="_blank" aria-label="前台查看"><ExternalLink className="h-4 w-4" /></Link>
-                          <Link className="rounded-full bg-kx-accentSoft p-2 text-kx-accent" href={href} aria-label="编辑"><Pencil className="h-4 w-4" /></Link>
+                          <Link className="rounded-full bg-kx-soft p-2 text-kx-muted hover:text-kx-accent" href={publicHref} target="_blank" aria-label={t("aria_view_public")}><ExternalLink className="h-4 w-4" /></Link>
+                          <Link className="rounded-full bg-kx-accentSoft p-2 text-kx-accent" href={href} aria-label={t("action_edit")}><Pencil className="h-4 w-4" /></Link>
                         </div>
                       </td>
                     </tr>

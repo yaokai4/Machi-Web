@@ -6,18 +6,20 @@
 
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  ArrowLeft, CalendarClock, ChevronDown, Crown, LogOut, MapPin, MessageCircle,
-  SendHorizonal, Share2, Trash2, UserPlus, Users,
+  ArrowLeft, CalendarClock, ChevronDown, ChevronUp, Crown, Loader2, LogOut, MapPin, MessageCircle,
+  SendHorizonal, Trash2, UserPlus, Users,
 } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { Avatar } from "@/components/design/Avatar";
 import { api } from "@/lib/api";
+import type { KXRoomMessage } from "@/lib/types";
 import { useSessionUser } from "@/lib/session";
-import { parseISO, relativeTime, roomStyle } from "@/components/social/socialStyle";
+import { useI18n } from "@/lib/i18n";
+import { kindLabel, longDayTime, relativeTime, roomStyle, socialCopy } from "@/components/social/socialStyle";
 import { ShareButton } from "@/components/social/ShareButton";
 
 export default function RoomDetailPage() {
@@ -26,11 +28,23 @@ export default function RoomDetailPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
   const viewer = useSessionUser();
+  const { locale } = useI18n();
+  const copy = socialCopy(locale);
+  const c = copy.rooms;
   const [draft, setDraft] = useState("");
   const [actionError, setActionError] = useState("");
   const [showInfo, setShowInfo] = useState(false);
+  // 向上翻历史:earlierPages 累积「加载更早」拉到的历史页(都比实时窗口更旧);
+  // earlierBefore 是下一次要用的游标(undefined = 未开始,沿用实时窗口的 next_before;
+  // null = 没有更早的了)。
+  const [earlierPages, setEarlierPages] = useState<KXRoomMessage[]>([]);
+  const [earlierBefore, setEarlierBefore] = useState<string | null | undefined>(undefined);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const messagesRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const didInitialScroll = useRef(false);
+  // 预记录 scrollHeight,prepend 更早消息后据此把用户锚回原来看的位置(不跳顶)。
+  const restoreScrollRef = useRef<number | null>(null);
 
   const roomQuery = useQuery({
     queryKey: ["room", roomId],
@@ -44,16 +58,98 @@ export default function RoomDetailPage() {
   });
 
   const room = roomQuery.data;
-  const messages = useMemo(() => messagesQuery.data?.items ?? [], [messagesQuery.data]);
+  const liveItems = useMemo(() => messagesQuery.data?.items ?? [], [messagesQuery.data]);
+  const liveNextBefore = messagesQuery.data?.next_before ?? null;
+  // 实时窗口(最新 80 条)+ 已加载的更早历史,按 (created_at, id) 升序去重合并。
+  const messages = useMemo(() => {
+    const map = new Map<string, KXRoomMessage>();
+    for (const m of earlierPages) map.set(m.id, m);
+    for (const m of liveItems) map.set(m.id, m);
+    return Array.from(map.values()).sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+      if (ta !== tb) return ta - tb;
+      return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    });
+  }, [earlierPages, liveItems]);
+  // 未翻过历史时沿用实时窗口给的游标;翻过之后用最后一页的游标。null = 到头了。
+  const effectiveBefore = earlierBefore === undefined ? liveNextBefore : earlierBefore;
+  const canLoadEarlier = !!effectiveBefore;
   const joined = !!room?.viewer_joined;
   const isHost = room?.viewer_role === "host";
 
-  // 只滚动消息容器自身(不滚整页)。新消息到达时贴到底部。
-  useEffect(() => {
+  const earlierCopy = {
+    load:
+      locale === "ja" ? "以前のメッセージを表示"
+      : locale === "en" ? "Load earlier messages"
+      : locale === "zh-Hant" ? "載入更早的訊息"
+      : "加载更早的消息",
+    loading:
+      locale === "ja" ? "読み込み中…"
+      : locale === "en" ? "Loading…"
+      : locale === "zh-Hant" ? "載入中…"
+      : "加载中…",
+  };
+
+  async function loadEarlier() {
+    if (loadingEarlier) return;
+    const before = effectiveBefore;
+    if (!before) return;
+    const el = messagesRef.current;
+    if (el) restoreScrollRef.current = el.scrollHeight;
+    setLoadingEarlier(true);
+    try {
+      const page = await api.roomMessages(roomId, { before, limit: 40 });
+      setEarlierPages((prev) => {
+        const seen = new Set(prev.map((m) => m.id));
+        const fresh = (page.items ?? []).filter((m) => !seen.has(m.id));
+        return [...fresh, ...prev];
+      });
+      setEarlierBefore(page.next_before ?? null);
+    } catch (err) {
+      restoreScrollRef.current = null;
+      setActionError((err as Error).message || c.opError);
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }
+
+  function onMessagesScroll() {
     const el = messagesRef.current;
     if (!el) return;
+    if (el.scrollTop < 120 && canLoadEarlier && !loadingEarlier) void loadEarlier();
+  }
+
+  // 切换房间时重置首帧滚动标记 + 历史分页状态(同一路由复用组件,ref/state 不自动清)。
+  useEffect(() => {
+    didInitialScroll.current = false;
+    restoreScrollRef.current = null;
+    setEarlierPages([]);
+    setEarlierBefore(undefined);
+    setLoadingEarlier(false);
+  }, [roomId]);
+
+  // prepend 更早消息后,把滚动位置锚回原处(内容在上方增长,scrollTop 要相应下移)。
+  useLayoutEffect(() => {
+    const el = messagesRef.current;
+    if (el && restoreScrollRef.current != null) {
+      el.scrollTop += el.scrollHeight - restoreScrollRef.current;
+      restoreScrollRef.current = null;
+    }
+  }, [messages]);
+
+  // 只滚动消息容器自身(不滚整页)。首帧无条件贴底,之后仅当用户本就贴近底部时
+  // 才跟随新消息 —— 否则打开有历史的房间会停在最旧消息处(#1),翻历史也会被拽下去。
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (!el || messages.length === 0) return;
+    if (!didInitialScroll.current) {
+      didInitialScroll.current = true;
+      bottomRef.current?.scrollIntoView({ block: "end" });
+      return;
+    }
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 200;
-    if (nearBottom) bottomRef.current?.scrollIntoView({ block: "nearest" });
+    if (nearBottom) bottomRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
   }, [messages.length]);
 
   const join = useMutation({
@@ -62,7 +158,7 @@ export default function RoomDetailPage() {
       queryClient.setQueryData(["room", roomId], updated);
       queryClient.invalidateQueries({ queryKey: ["room-messages", roomId] });
     },
-    onError: (err: Error) => setActionError(err.message || "加入失败"),
+    onError: (err: Error) => setActionError(err.message || c.joinError),
   });
   const leave = useMutation({
     mutationFn: () => api.leaveRoom(roomId),
@@ -71,12 +167,12 @@ export default function RoomDetailPage() {
       queryClient.setQueryData(["room", roomId], updated);
       queryClient.invalidateQueries({ queryKey: ["room-messages", roomId] });
     },
-    onError: (err: Error) => setActionError(err.message || "操作失败"),
+    onError: (err: Error) => setActionError(err.message || c.opError),
   });
   const remove = useMutation({
     mutationFn: () => api.deleteRoom(roomId),
     onSuccess: () => router.push("/rooms"),
-    onError: (err: Error) => setActionError(err.message || "删除失败"),
+    onError: (err: Error) => setActionError(err.message || c.deleteError),
   });
   const send = useMutation({
     mutationFn: (content: string) => api.sendRoomMessage(roomId, content),
@@ -84,7 +180,7 @@ export default function RoomDetailPage() {
       setDraft("");
       queryClient.invalidateQueries({ queryKey: ["room-messages", roomId] });
     },
-    onError: (err: Error) => setActionError(err.message || "发送失败"),
+    onError: (err: Error) => setActionError(err.message || c.sendError),
   });
 
   function handleJoin() {
@@ -109,7 +205,7 @@ export default function RoomDetailPage() {
   const memberCount = room.member_count ?? room.members?.length ?? 1;
   const capacity = room.capacity ?? 0;
   const isOpen = (room.status ?? "open") === "open" || room.status === "full";
-  const startsAt = parseISO(room.starts_at);
+  const hasStart = !!room.starts_at && !Number.isNaN(new Date(room.starts_at).getTime());
   const shareUrl = typeof window !== "undefined" ? window.location.href : `/rooms/${roomId}`;
 
   return (
@@ -119,7 +215,7 @@ export default function RoomDetailPage() {
         {/* 头部:紧凑局信息 */}
         <header className="kx-glass-bar shrink-0 px-3 py-2.5">
           <div className="flex items-center gap-2.5">
-            <Link href="/rooms" className="rounded-full p-2 text-kx-muted transition hover:bg-kx-soft hover:text-kx-text" aria-label="返回">
+            <Link href="/rooms" className="rounded-full p-2 text-kx-muted transition hover:bg-kx-soft hover:text-kx-text" aria-label={copy.common.back}>
               <ArrowLeft className="h-4 w-4" />
             </Link>
             <button type="button" onClick={() => setShowInfo((v) => !v)} className="flex min-w-0 flex-1 items-center gap-2.5 text-left">
@@ -129,7 +225,7 @@ export default function RoomDetailPage() {
               <div className="min-w-0 flex-1">
                 <h1 className="truncate text-[15px] font-black leading-tight">{room.title}</h1>
                 <p className="truncate text-xs font-semibold text-kx-muted">
-                  {room.room_type_label || style.labelZh} · {memberCount} 人{capacity > 0 ? ` / ${capacity}` : ""}在房间里
+                  {kindLabel(room.room_type_label, style, locale)} · {c.inRoom(memberCount, capacity)}
                 </p>
               </div>
               <ChevronDown className={`h-4 w-4 shrink-0 text-kx-muted transition ${showInfo ? "rotate-180" : ""}`} />
@@ -139,18 +235,18 @@ export default function RoomDetailPage() {
               isHost ? (
                 <button
                   type="button"
-                  onClick={() => { if (confirm("解散这个局?房间和聊天都会被删除。")) remove.mutate(); }}
+                  onClick={() => { if (confirm(c.dissolveConfirm)) remove.mutate(); }}
                   className="rounded-full p-2 text-kx-muted transition hover:bg-kx-heat/10 hover:text-kx-heat"
-                  aria-label="解散房间"
+                  aria-label={c.dissolveAria}
                 >
                   <Trash2 className="h-4 w-4" />
                 </button>
               ) : (
                 <button
                   type="button"
-                  onClick={() => { if (confirm("退出这个局?")) leave.mutate(); }}
+                  onClick={() => { if (confirm(c.leaveConfirm)) leave.mutate(); }}
                   className="rounded-full p-2 text-kx-muted transition hover:bg-kx-soft hover:text-kx-text"
-                  aria-label="退出房间"
+                  aria-label={c.leaveAria}
                 >
                   <LogOut className="h-4 w-4" />
                 </button>
@@ -163,11 +259,10 @@ export default function RoomDetailPage() {
             <div className="mt-2.5 space-y-2 rounded-2xl border border-kx-stroke/45 bg-kx-card/60 p-3">
               {room.description ? <p className="text-sm font-semibold leading-6">{room.description}</p> : null}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold text-kx-muted">
-                {startsAt ? (
+                {hasStart ? (
                   <span className="inline-flex items-center gap-1">
                     <CalendarClock className="h-3.5 w-3.5" />
-                    {startsAt.toLocaleDateString("zh-CN", { month: "long", day: "numeric", weekday: "short" })}{" "}
-                    {startsAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}
+                    {longDayTime(room.starts_at, locale)}
                   </span>
                 ) : null}
                 {room.location_hint ? (
@@ -176,7 +271,7 @@ export default function RoomDetailPage() {
               </div>
               <div>
                 <p className="mb-1.5 inline-flex items-center gap-1 text-[11px] font-black uppercase tracking-wider text-kx-muted">
-                  <Users className="h-3.5 w-3.5" /> 在房间里的人
+                  <Users className="h-3.5 w-3.5" /> {c.peopleHere}
                 </p>
                 <div className="flex flex-wrap gap-2.5">
                   {(room.members ?? []).map((member) => (
@@ -184,7 +279,7 @@ export default function RoomDetailPage() {
                       <div className="relative">
                         <Avatar user={member} size={40} />
                         {member.id === room.host_user_id ? (
-                          <span className="absolute -bottom-0.5 -right-0.5 grid h-4 w-4 place-items-center rounded-full bg-amber-400 ring-2 ring-kx-card">
+                          <span className="absolute -bottom-0.5 -right-0.5 grid h-4 w-4 place-items-center rounded-full bg-amber-400 ring-2 ring-kx-card" title={c.host}>
                             <Crown className="h-2.5 w-2.5 text-amber-900" />
                           </span>
                         ) : null}
@@ -199,14 +294,28 @@ export default function RoomDetailPage() {
         </header>
 
         {/* 定高、内部滚动的消息区 */}
-        <div ref={messagesRef} className="flex-1 space-y-3 overflow-y-auto px-3 py-4">
+        <div ref={messagesRef} onScroll={onMessagesScroll} className="flex-1 space-y-3 overflow-y-auto px-3 py-4">
           {messages.length === 0 ? (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-kx-muted">
               <MessageCircle className="h-8 w-8 opacity-40" />
-              <p className="text-sm font-semibold">{joined ? "还没人说话,来开个头。" : "还没人说话。加入后可以聊天。"}</p>
+              <p className="text-sm font-semibold">{joined ? c.emptyJoined : c.emptyGuest}</p>
             </div>
           ) : (
-            messages.map((message) =>
+            <>
+              {canLoadEarlier ? (
+                <div className="flex justify-center pb-1">
+                  <button
+                    type="button"
+                    onClick={() => void loadEarlier()}
+                    disabled={loadingEarlier}
+                    className="inline-flex items-center gap-1.5 rounded-full border border-kx-stroke/45 bg-kx-card/70 px-3.5 py-1.5 text-xs font-bold text-kx-muted transition hover:bg-kx-soft hover:text-kx-text disabled:opacity-50 dark:border-white/10 dark:bg-kx-card/60"
+                  >
+                    {loadingEarlier ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ChevronUp className="h-3.5 w-3.5" />}
+                    {loadingEarlier ? earlierCopy.loading : earlierCopy.load}
+                  </button>
+                </div>
+              ) : null}
+              {messages.map((message) =>
               message.kind === "system" ? (
                 <p key={message.id} className="text-center text-[11px] font-bold text-kx-muted/70">{message.content}</p>
               ) : (
@@ -219,11 +328,12 @@ export default function RoomDetailPage() {
                     <div className={`inline-block rounded-2xl px-3.5 py-2 text-sm font-medium leading-relaxed ${message.user?.id === viewer?.id ? "bg-kx-accent text-white" : "bg-kx-soft"}`}>
                       {message.content}
                     </div>
-                    <p className="mt-0.5 text-[10px] font-semibold text-kx-muted/70">{relativeTime(message.created_at)}</p>
+                    <p className="mt-0.5 text-[10px] font-semibold text-kx-muted/70">{relativeTime(message.created_at, locale)}</p>
                   </div>
                 </div>
               ),
-            )
+              )}
+            </>
           )}
           <div ref={bottomRef} />
         </div>
@@ -244,7 +354,7 @@ export default function RoomDetailPage() {
                 className="kx-input h-11 flex-1 rounded-full"
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}
-                placeholder={isOpen ? "说点什么…" : "这个局已经结束了"}
+                placeholder={isOpen ? c.sayPlaceholder : c.ended}
                 maxLength={1000}
                 disabled={!isOpen}
               />
@@ -252,7 +362,7 @@ export default function RoomDetailPage() {
                 type="submit"
                 disabled={!draft.trim() || send.isPending || !isOpen}
                 className="kx-button-primary grid h-11 w-11 shrink-0 place-items-center rounded-full disabled:opacity-40"
-                aria-label="发送"
+                aria-label={copy.common.send}
               >
                 <SendHorizonal className="h-4 w-4" />
               </button>
@@ -265,10 +375,10 @@ export default function RoomDetailPage() {
               className="kx-button-primary inline-flex h-12 w-full items-center justify-center gap-2 rounded-full text-sm font-black disabled:opacity-50"
             >
               <UserPlus className="h-4 w-4" />
-              {room.status === "full" ? "房间已满员" : join.isPending ? "加入中…" : "加入这个局"}
+              {room.status === "full" ? c.fullLabel : join.isPending ? c.joining : c.join}
             </button>
           ) : (
-            <p className="py-2 text-center text-sm font-semibold text-kx-muted">这个局已经结束了</p>
+            <p className="py-2 text-center text-sm font-semibold text-kx-muted">{c.ended}</p>
           )}
         </div>
       </div>

@@ -5350,6 +5350,168 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_event_registrations_user ON event_registrations(user_id, created_at);
         """,
     ),
+    (
+        106,
+        "saved_searches: 订阅提醒表纳入迁移链 (PG 端此前缺表)",
+        # N4 saved-search alerts. Historically this table was created only by
+        # ensure_saved_search_schema() — which runs in the SQLite boot path but
+        # NOT on Postgres (init_db returns early on PG; apply_postgres_migrations
+        # never called it). Result: production Postgres was missing the table
+        # entirely, so /api/saved_searches + the digest job errored. Fold it into
+        # the migration chain (mirrors apns_push_ledger / migration 90) so every
+        # backend gets it. DDL is byte-identical to ensure_saved_search_schema
+        # (only TEXT/INTEGER + IF NOT EXISTS) → SQLite/Postgres-identical, and a
+        # DB that already has it (fresh SQLite via the ensure_ helper) records a
+        # clean no-op. Runs on BOTH backends (no -- backend marker).
+        """
+        CREATE TABLE IF NOT EXISTS saved_searches (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            vertical TEXT NOT NULL DEFAULT '',
+            city_slug TEXT NOT NULL DEFAULT '',
+            region_code TEXT NOT NULL DEFAULT '',
+            country_code TEXT NOT NULL DEFAULT '',
+            keyword TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT '',
+            filter_json TEXT NOT NULL DEFAULT '{}',
+            label TEXT NOT NULL DEFAULT '',
+            cadence TEXT NOT NULL DEFAULT 'instant',
+            last_notified_at TEXT NOT NULL DEFAULT '',
+            match_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_saved_searches_user ON saved_searches(user_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_saved_searches_match ON saved_searches(vertical, cadence);
+        """,
+    ),
+    (
+        107,
+        "users: restore UNIQUE(handle) lost in the PG port (postgres)",
+        # SCHEMA declares users.handle UNIQUE inline; the SQLite→PG port
+        # (migrate_sqlite_to_postgres.build_ddl) historically dropped inline
+        # UNIQUE, so production Postgres could race two registrations onto the
+        # same handle. Postgres-only because fresh SQLite still enforces the
+        # inline constraint. Handles are provably unique in practice — the app
+        # rejects taken handles, and anonymize_user_account rewrites a deleted
+        # user's handle to a unique `deleted_<hex>` — so this dedup is a defensive
+        # no-op. Crucially it is NON-DESTRUCTIVE: rather than DELETE a duplicate
+        # (which would erase a real person + orphan their content), it RENAMES the
+        # higher-id duplicate to a guaranteed-unique value (handle||'__dupe_'||id,
+        # id being the unique PK) so CREATE UNIQUE INDEX can never abort the
+        # deploy. Index name matches migrate_restore_pg_constraints.py so an
+        # operator who already ran that supervised script converges to a no-op.
+        """
+        -- backend: postgres
+        UPDATE users
+           SET handle = handle || '__dupe_' || id
+         WHERE EXISTS (
+             SELECT 1 FROM users d
+              WHERE d.handle = users.handle
+                AND d.id < users.id
+         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_handle_unique ON users(handle);
+        """,
+    ),
+    (
+        108,
+        "users: partial UNIQUE(lower(email)) among active accounts (both backends)",
+        # Email uniqueness was only ever enforced at the app layer
+        # (SELECT ... WHERE lower(email)=? AND deleted_at IS NULL), never by the
+        # DB — on NEITHER backend (email has no inline UNIQUE in SCHEMA). A
+        # concurrent register/change-email pair (DB_LOCK is a no-op on PG) could
+        # therefore bind one email to two accounts. Add a PARTIAL, FUNCTIONAL
+        # unique index that mirrors the app invariant exactly: unique on
+        # lower(email) but only over rows with a non-empty email that aren't
+        # soft-deleted (anonymize_user_account blanks email to '', and many
+        # accounts legitimately share email='' — a plain UNIQUE would collide on
+        # them). Both SQLite (≥3.9) and Postgres support partial + expression
+        # indexes, so this DDL is portable and runs on BOTH backends. The dedup
+        # is NON-DESTRUCTIVE (never deletes an account): it blanks the email of
+        # the higher-id duplicate only, keeping the earliest account's email, so
+        # the index can never fail the deploy. Idempotent: a second run finds no
+        # duplicates and touches nothing.
+        """
+        UPDATE users
+           SET email = ''
+         WHERE email <> ''
+           AND deleted_at IS NULL
+           AND EXISTS (
+             SELECT 1 FROM users d
+              WHERE d.email <> ''
+                AND d.deleted_at IS NULL
+                AND lower(d.email) = lower(users.email)
+                AND d.id < users.id
+         );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_unique
+            ON users(lower(email)) WHERE email <> '' AND deleted_at IS NULL;
+        """,
+    ),
+    (
+        109,
+        "conversations/blocks/miniapp: restore inline UNIQUE lost in the PG port (postgres)",
+        # SCHEMA declares three creation-time UNIQUEs that the PG port dropped:
+        # blocks(blocker_id,blocked_id), miniapp_openid_bindings(platform,openid),
+        # conversations(participant_a,participant_b). On Postgres this let silent
+        # data corruption accumulate — duplicate blocks, one WeChat openid bound
+        # to several Machi users (login account confusion), and duplicate DM
+        # conversations that split a chat's history across rows and scramble unread
+        # counts. Postgres-only: fresh SQLite still enforces all three inline.
+        # Index names match migrate_restore_pg_constraints.py so re-running is a
+        # no-op. Every statement is idempotent, so a partial-failure retry on the
+        # next deploy is safe.
+        #
+        #  * blocks — a duplicate is pure redundancy; keep the earliest (ctid).
+        #  * miniapp — one openid must map to ONE user; keep the most recently
+        #    active binding (max last_login_at, ties by ctid) so the account the
+        #    user actually signs into survives.
+        #  * conversations — must NOT lose messages: re-point every message from a
+        #    duplicate conversation onto the canonical (lowest-id) row for that
+        #    participant pair, delete the emptied duplicates, THEN enforce UNIQUE.
+        """
+        -- backend: postgres
+        DELETE FROM blocks a USING blocks b
+         WHERE a.ctid > b.ctid
+           AND a.blocker_id = b.blocker_id
+           AND a.blocked_id = b.blocked_id;
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_blocks_unique ON blocks(blocker_id, blocked_id);
+
+        DELETE FROM miniapp_openid_bindings a USING miniapp_openid_bindings b
+         WHERE a.platform = b.platform
+           AND a.openid = b.openid
+           AND ( COALESCE(a.last_login_at, '') < COALESCE(b.last_login_at, '')
+              OR ( COALESCE(a.last_login_at, '') = COALESCE(b.last_login_at, '')
+                   AND a.ctid > b.ctid ) );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_miniapp_openid_unique
+            ON miniapp_openid_bindings(platform, openid);
+
+        UPDATE messages m
+           SET conversation_id = keep.keep_id
+          FROM conversations dup
+          JOIN (
+                SELECT participant_a, participant_b, MIN(id) AS keep_id
+                  FROM conversations
+                 GROUP BY participant_a, participant_b
+          ) keep
+            ON dup.participant_a = keep.participant_a
+           AND dup.participant_b = keep.participant_b
+         WHERE m.conversation_id = dup.id
+           AND dup.id <> keep.keep_id;
+
+        DELETE FROM conversations dup
+         USING (
+                SELECT participant_a, participant_b, MIN(id) AS keep_id
+                  FROM conversations
+                 GROUP BY participant_a, participant_b
+         ) keep
+         WHERE dup.participant_a = keep.participant_a
+           AND dup.participant_b = keep.participant_b
+           AND dup.id <> keep.keep_id;
+
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_pair_unique
+            ON conversations(participant_a, participant_b);
+        """,
+    ),
 ]
 
 

@@ -7,6 +7,7 @@ import { Bell, FileText, Megaphone, Newspaper, Plus, Send, Smartphone, Trash2, A
 import clsx from "clsx";
 import { AppShell } from "@/components/shell/AppShell";
 import { useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 import { ConfirmDialog } from "@/components/design/Dialog";
 
 // Categories that can be published from the admin CMS. The 公告 /
@@ -50,6 +51,7 @@ export default function AdminAnnouncementsPage() {
   const me = useSession((s) => s.user);
   const router = useRouter();
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
 
   const isAdmin = me?.role === "admin";
 
@@ -141,7 +143,7 @@ export default function AdminAnnouncementsPage() {
   return (
     <AppShell right={null} wide>
       <header className="sticky top-0 z-30 kx-glass-bar px-4 py-3 flex items-center gap-3">
-        <Link href="/admin" className="kx-button-ghost h-8 w-8 inline-flex items-center justify-center" aria-label="返回">
+        <Link href="/admin" className="kx-button-ghost h-8 w-8 inline-flex items-center justify-center" aria-label={t("msg_back")}>
           <ArrowLeft className="w-4 h-4" />
         </Link>
         <div className="flex-1 min-w-0">

@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import threading
 import time
@@ -67,6 +68,22 @@ _queue: "queue.Queue[dict[str, Any]]" = queue.Queue(maxsize=512)
 _worker_started = False
 _jwt_cache: tuple[str, float] = ("", 0.0)
 _jwt_lock = threading.Lock()
+
+# An iOS APNs device token is lowercase hexadecimal (32 bytes → 64 hex chars
+# today; Apple reserves the right to lengthen it). We pin that exact shape and
+# re-check it at BOTH ends of the pipe — when a token is registered, and again
+# the instant before it is placed in a curl request. This is the load-bearing
+# guard against config-file injection: hostile input embedding a `"` or newline
+# (aiming to break out of curl's `-K` config to exfiltrate the ES256 provider
+# JWT or write arbitrary files via `-o`) simply is not hex, so it is refused at
+# every layer. `fullmatch` also rejects a trailing newline, which `$` would not.
+_DEVICE_TOKEN_RE = re.compile(r"[0-9a-f]{16,200}")
+
+
+def _is_valid_device_token(token: str) -> bool:
+    """Defense-in-depth predicate: True only for a well-formed lowercase-hex
+    APNs device token. Called at registration and again before every send."""
+    return bool(token) and _DEVICE_TOKEN_RE.fullmatch(token) is not None
 
 
 def _load_private_key_pem() -> str:
@@ -383,6 +400,12 @@ def _deliver(job: dict[str, Any]) -> None:
         collapse_id = f"machi.{job['ntype']}.{job['post_id']}"
     dead: list[str] = []
     for entry in tokens:
+        # Skip (and purge) any row whose token isn't well-formed hex. New tokens
+        # are validated at registration, so this only catches legacy/corrupt
+        # rows — but it guarantees nothing malformed is ever handed to curl.
+        if not _is_valid_device_token(entry["token"]):
+            dead.append(entry["id"])
+            continue
         status, response = _post_one(entry["token"], blob, jwt, collapse_id=collapse_id)
         if status in (400, 410) and ("BadDeviceToken" in response or "Unregistered" in response or status == 410):
             dead.append(entry["id"])
@@ -404,10 +427,21 @@ def _post_one(device_token: str, payload: str, jwt: str, *, collapse_id: str = "
     """One HTTP/2 POST via system curl. The JWT travels through stdin
     (`-K -`) so it never appears in the process list. An optional
     `collapse_id` sets apns-collapse-id so repeated pushes about the same
-    entity replace each other on the device instead of stacking up."""
+    entity replace each other on the device instead of stacking up.
+
+    Injection hardening: the device token is the only externally-influenced
+    value here, so it is (1) asserted to be strict hex before use and (2) passed
+    as an explicit ``--url`` command-line argument rather than interpolated into
+    the ``-K`` config text. The config file therefore contains ONLY
+    server-controlled values (the ES256 provider JWT, the bundle id, a sanitized
+    collapse id), closing the config-directive injection surface entirely."""
+    # (2nd) assertion — a malformed token must never reach curl. Registration
+    # already enforces this shape; refusing again here is defense in depth.
+    if not _is_valid_device_token(device_token):
+        _log.warning("apns: refusing to send to malformed device token")
+        return 0, ""
     url = f"{APNS_HOST}/3/device/{device_token}"
     config = (
-        f'url = "{url}"\n'
         f'header = "authorization: bearer {jwt}"\n'
         f'header = "apns-topic: {APNS_BUNDLE_ID}"\n'
         'header = "apns-push-type: alert"\n'
@@ -415,12 +449,15 @@ def _post_one(device_token: str, payload: str, jwt: str, *, collapse_id: str = "
         'header = "content-type: application/json"\n'
     )
     if collapse_id:
-        # APNs caps apns-collapse-id at 64 bytes; our ids (machi.<type>.<uuid>)
-        # are well under, but truncate defensively so a long id can't 400.
-        config += f'header = "apns-collapse-id: {collapse_id[:64]}"\n'
+        # Server-generated (machi.<type>.<id>), but strip to a strict allowlist
+        # and cap at APNs' 64-byte limit so nothing but [A-Za-z0-9._-] can ever
+        # land in the config directive — no quote/newline can escape the header.
+        safe_collapse = re.sub(r"[^A-Za-z0-9._-]", "", collapse_id)[:64]
+        if safe_collapse:
+            config += f'header = "apns-collapse-id: {safe_collapse}"\n'
     try:
         proc = subprocess.run(
-            ["curl", "--http2", "-sS", "-K", "-", "-X", "POST",
+            ["curl", "--http2", "-sS", "-K", "-", "--url", url, "-X", "POST",
              "--data-binary", payload, "-w", "\n%{http_code}", "--max-time", "10"],
             input=config.encode("utf-8") + b"\n",
             capture_output=True,
@@ -437,7 +474,12 @@ def register_token(conn: Any, user_id: str, token: str, platform: str, now_iso: 
     """Upsert a device token. A token moving between accounts re-binds to
     the latest login (shared devices)."""
     token = (token or "").strip().lower()
-    if not token or len(token) > 200:
+    # Reject anything that is not a well-formed hex device token. This subsumes
+    # the old length guard (the regex bounds length to 16–200) and, crucially,
+    # blocks tokens carrying quotes/newlines that could later break out of the
+    # curl `-K` config on the send path. Silently drop — a bad token is either a
+    # client bug or an attack, and push is best-effort anyway.
+    if not _is_valid_device_token(token):
         return
     conn.execute("DELETE FROM device_push_tokens WHERE token = ?", (token,))
     conn.execute(

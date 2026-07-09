@@ -181,11 +181,12 @@ function ExplorePageClient() {
   const goToSearch = (value: string) => {
     const q = value.trim();
     if (!q) return;
-    const params = new URLSearchParams();
-    params.set("q", q);
-    if (currentRegion?.city_code) params.set("city", currentRegion.city_code);
-    if (selectedChannel) params.set("channel", selectedChannel);
-    router.push(`/search?${params.toString()}`);
+    // /search (and /api/search) honor only q + kind — the search endpoint has no
+    // city or channel scope (posts are already limited to the viewer's own
+    // country server-side). Appending city/channel here would be silently
+    // dropped and would promise a scope the results can't deliver, so we send
+    // just the query and keep the URL honest.
+    router.push(`/search?q=${encodeURIComponent(q)}`);
   };
 
   const submitSearch = (event?: FormEvent<HTMLFormElement>) => {
@@ -253,6 +254,7 @@ function ExplorePageClient() {
             <Search className="h-5 w-5 shrink-0 text-kx-accent" />
             <input
               name="q"
+              aria-label={copy.search}
               value={searchDraft}
               onChange={(event) => setSearchDraft(event.target.value)}
               onKeyDown={(event) => {
@@ -260,7 +262,7 @@ function ExplorePageClient() {
                 event.preventDefault();
                 goToSearch(event.currentTarget.value);
               }}
-              placeholder={searchPlaceholder(cityName, selectedChannel, locale)}
+              placeholder={searchPlaceholder(selectedChannel, locale)}
               className="min-w-0 flex-1 bg-transparent text-[15px] font-semibold text-kx-text placeholder:text-kx-muted focus:outline-none"
             />
           </label>
@@ -958,24 +960,27 @@ function regionFromExploreParams(params: { get(name: string): string | null }): 
   return allPopularRegions().find((region) => region.city_code === candidate || region.city_name.toLowerCase() === candidate);
 }
 
-function searchPlaceholder(cityName: string, selectedChannel: ExploreChannelSlug | undefined, locale: Locale) {
+// Channel-flavored search hints guide *what terms* to type. They intentionally
+// carry no city name: /api/search is not city-scoped, so promising "in {city}"
+// results would be misleading. The hints stay locale-aware and generic-scope.
+function searchPlaceholder(selectedChannel: ExploreChannelSlug | undefined, locale: Locale) {
   const copy = exploreCopy(locale);
   const channelName = selectedChannel ? getChannelTitle(selectedChannel, locale) : "";
   switch (selectedChannel) {
     case "housing":
-      return copy.searchHousing(cityName);
+      return copy.searchHousing();
     case "jobs":
-      return copy.searchJobs(cityName);
+      return copy.searchJobs();
     case "market":
-      return copy.searchMarket(cityName);
+      return copy.searchMarket();
     case "services":
-      return copy.searchServices(cityName);
+      return copy.searchServices();
     case "groups":
-      return copy.searchGroups(cityName);
+      return copy.searchGroups();
     case "guide":
-      return copy.searchGuide(cityName);
+      return copy.searchGuide();
     default:
-      return channelName ? copy.searchChannel(cityName, channelName) : copy.searchDefault;
+      return channelName ? copy.searchChannel(channelName) : copy.searchDefault;
   }
 }
 
@@ -1047,13 +1052,13 @@ function exploreCopy(locale: Locale) {
         railUserEmpty: "Recommended active people will appear here.",
         postCount: (count: string) => `${count} posts`,
         searchDefault: "Search people, topics, and local posts...",
-        searchHousing: (city: string) => `Search housing, rooms, listings, and areas in ${city}...`,
-        searchJobs: (city: string) => `Search part-time, full-time, hiring, and referrals in ${city}...`,
-        searchMarket: (city: string) => `Search secondhand, moving sales, free items, and wanted posts in ${city}...`,
-        searchServices: (city: string) => `Search translation, paperwork, pickup, and local services in ${city}...`,
-        searchGroups: (city: string) => `Search food meetups, language exchange, and groups in ${city}...`,
-        searchGuide: (city: string) => `Search guides, paperwork, banking, and local tips in ${city}...`,
-        searchChannel: (city: string, channel: string) => `Search ${channel} in ${city}...`,
+        searchHousing: () => "Search housing, rooms, listings, and areas...",
+        searchJobs: () => "Search part-time, full-time, hiring, and referrals...",
+        searchMarket: () => "Search secondhand, moving sales, free items, and wanted posts...",
+        searchServices: () => "Search translation, paperwork, pickup, and local services...",
+        searchGroups: () => "Search food meetups, language exchange, and groups...",
+        searchGuide: () => "Search guides, paperwork, banking, and local tips...",
+        searchChannel: (channel: string) => `Search ${channel}...`,
       };
     case "ja":
       return {
@@ -1103,13 +1108,13 @@ function exploreCopy(locale: Locale) {
         railUserEmpty: "アクティブなおすすめユーザーがここに表示されます。",
         postCount: (count: string) => `${count}件`,
         searchDefault: "ユーザー、話題、地域投稿を検索...",
-        searchHousing: (city: string) => `${city}の住まい、シェア、物件、エリアを検索...`,
-        searchJobs: (city: string) => `${city}のアルバイト、正社員、求人、紹介を検索...`,
-        searchMarket: (city: string) => `${city}の中古品、引っ越し処分、無料譲渡、探し物を検索...`,
-        searchServices: (city: string) => `${city}の通訳、手続き、送迎、ローカルサービスを検索...`,
-        searchGroups: (city: string) => `${city}の食事会、言語交換、地域グループを検索...`,
-        searchGuide: (city: string) => `${city}の攻略、手続き、銀行、生活情報を検索...`,
-        searchChannel: (city: string, channel: string) => `${city}の${channel}を検索...`,
+        searchHousing: () => "住まい、シェア、物件、エリアを検索...",
+        searchJobs: () => "アルバイト、正社員、求人、紹介を検索...",
+        searchMarket: () => "中古品、引っ越し処分、無料譲渡、探し物を検索...",
+        searchServices: () => "通訳、手続き、送迎、ローカルサービスを検索...",
+        searchGroups: () => "食事会、言語交換、地域グループを検索...",
+        searchGuide: () => "攻略、手続き、銀行、生活情報を検索...",
+        searchChannel: (channel: string) => `${channel}を検索...`,
       };
     case "zh-Hant":
       return {
@@ -1159,13 +1164,13 @@ function exploreCopy(locale: Locale) {
         railUserEmpty: "活躍用戶出現後，這裡會給出推薦。",
         postCount: (count: string) => `${count} 帖`,
         searchDefault: "搜尋用戶、話題和本地動態...",
-        searchHousing: (city: string) => `搜尋${city}租房、合租、房源、區域...`,
-        searchJobs: (city: string) => `搜尋${city}兼職、全職、招聘、內推...`,
-        searchMarket: (city: string) => `搜尋${city}二手、搬家出清、免費送、求購...`,
-        searchServices: (city: string) => `搜尋${city}翻譯、手續、接機、本地服務...`,
-        searchGroups: (city: string) => `搜尋${city}Food meetup、語言交換、本地小組...`,
-        searchGuide: (city: string) => `搜尋${city}攻略、手續、銀行卡、生活經驗...`,
-        searchChannel: (city: string, channel: string) => `搜尋${city}${channel}...`,
+        searchHousing: () => "搜尋租房、合租、房源、區域...",
+        searchJobs: () => "搜尋兼職、全職、招聘、內推...",
+        searchMarket: () => "搜尋二手、搬家出清、免費送、求購...",
+        searchServices: () => "搜尋翻譯、手續、接機、本地服務...",
+        searchGroups: () => "搜尋Food meetup、語言交換、本地小組...",
+        searchGuide: () => "搜尋攻略、手續、銀行卡、生活經驗...",
+        searchChannel: (channel: string) => `搜尋${channel}...`,
       };
     default:
       return {
@@ -1215,13 +1220,13 @@ function exploreCopy(locale: Locale) {
         railUserEmpty: "活跃用户出现后，这里会给出推荐。",
         postCount: (count: string) => `${count} 帖`,
         searchDefault: "搜索用户、话题和本地动态...",
-        searchHousing: (city: string) => `搜索${city}租房、合租、房源、区域...`,
-        searchJobs: (city: string) => `搜索${city}兼职、正社员、招聘、内推...`,
-        searchMarket: (city: string) => `搜索${city}二手、搬家出清、免费送、求购...`,
-        searchServices: (city: string) => `搜索${city}翻译、手续、接机、本地服务...`,
-        searchGroups: (city: string) => `搜索${city}Food meetup、语言交换、本地小组...`,
-        searchGuide: (city: string) => `搜索${city}攻略、手续、银行卡、生活经验...`,
-        searchChannel: (city: string, channel: string) => `搜索${city}${channel}...`,
+        searchHousing: () => "搜索租房、合租、房源、区域...",
+        searchJobs: () => "搜索兼职、正社员、招聘、内推...",
+        searchMarket: () => "搜索二手、搬家出清、免费送、求购...",
+        searchServices: () => "搜索翻译、手续、接机、本地服务...",
+        searchGroups: () => "搜索Food meetup、语言交换、本地小组...",
+        searchGuide: () => "搜索攻略、手续、银行卡、生活经验...",
+        searchChannel: (channel: string) => `搜索${channel}...`,
       };
   }
 }

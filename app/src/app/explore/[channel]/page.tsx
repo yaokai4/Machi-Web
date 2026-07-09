@@ -127,10 +127,17 @@ function ExploreChannelClient() {
     event?.preventDefault();
     const q = searchDraft.trim();
     if (!q || !spec) return;
+    // /search (and /api/search) honor ONLY `q` + `kind` — there is no city or
+    // channel scope on the search endpoint. Appending `city`/`channel` (as we
+    // used to) is silently dropped and promises a scope the results can't
+    // deliver, exactly the misleading URL /explore's goToSearch deliberately
+    // avoids. Instead map the channel to the closest search `kind` so the query
+    // lands on the right result category, and keep the URL to params /search
+    // actually reads.
     const params = new URLSearchParams();
     params.set("q", q);
-    if (currentRegion?.city_code) params.set("city", currentRegion.city_code);
-    params.set("channel", spec.slug);
+    const kind = channelSearchKind(spec.slug);
+    if (kind !== "all") params.set("kind", kind);
     router.push(`/search?${params.toString()}`);
   };
 
@@ -435,6 +442,25 @@ function exploreHref(region?: RegionInfo) {
   if (!region) return "/explore";
   const params = new URLSearchParams({ city: region.city_code, region: region.region_code });
   return `/explore?${params.toString()}`;
+}
+
+// Map a discover channel to the closest /search `kind` so a search started from
+// the channel lands on the right result category. The transactional channels
+// (market/housing/jobs/services/deals) are city listings; guide is the guide
+// library; everything else (news/groups/qa) is post content.
+function channelSearchKind(slug: ExploreChannelSlug): "all" | "post" | "listing" | "guide" {
+  switch (slug) {
+    case "market":
+    case "housing":
+    case "jobs":
+    case "services":
+    case "deals":
+      return "listing";
+    case "guide":
+      return "guide";
+    default:
+      return "post";
+  }
 }
 
 function channelHeroTitle(placeLabel: string, channelLabel: string, locale: Locale) {

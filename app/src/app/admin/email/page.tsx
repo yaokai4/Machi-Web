@@ -9,6 +9,7 @@ import { ArrowLeft, Mail, RefreshCw, Search, Send, X } from "lucide-react";
 import { api, APIError, type AdminEmailCampaign } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
+import { ConfirmDialog } from "@/components/design/Dialog";
 import { useSession, useToasts } from "@/lib/store";
 import { fullDateTime } from "@/lib/format";
 import { useDebounce } from "@/lib/hooks";
@@ -31,6 +32,13 @@ export default function AdminEmailPage() {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [audience, setAudience] = useState("all");
+  // 群发是不可逆的批量动作,发送前统一走二次确认。pendingSend 记录待确认的发送
+  // 意图:新编辑邮件(new)或收件记录里的草稿(existing)。
+  const [pendingSend, setPendingSend] = useState<
+    | { kind: "new"; count: number | null }
+    | { kind: "existing"; id: string; subject: string; audience: string; count: number | null }
+    | null
+  >(null);
 
   useEffect(() => {
     if (status === "unauthed") router.replace("/login?redirect=/admin/email");
@@ -209,7 +217,7 @@ export default function AdminEmailPage() {
               <button className="kx-button-ghost h-10" disabled={!canSubmit} onClick={() => save.mutate(false)}>
                 保存草稿
               </button>
-              <button className="kx-button-primary h-10" disabled={!canSubmit} onClick={() => save.mutate(true)}>
+              <button className="kx-button-primary h-10" disabled={!canSubmit} onClick={() => setPendingSend({ kind: "new", count: preview.data?.count ?? null })}>
                 <Send className="h-4 w-4" /> 立即发送
               </button>
             </div>
@@ -245,7 +253,7 @@ export default function AdminEmailPage() {
                           {campaign.status === "draft" ? (
                             <>
                               <button className="kx-button-ghost h-8 px-2 text-xs" onClick={() => loadDraft(campaign, setEditingId, setSubject, setBody, setAudience, setUserIds, setSelectedLabels)}>编辑</button>
-                              <button className="kx-button-primary h-8 px-2 text-xs" disabled={sendExisting.isPending} onClick={() => sendExisting.mutate(campaign.id)}>发送</button>
+                              <button className="kx-button-primary h-8 px-2 text-xs" disabled={sendExisting.isPending} onClick={() => setPendingSend({ kind: "existing", id: campaign.id, subject: campaign.subject, audience: campaign.audience || "all", count: campaign.recipient_count ?? campaign.recipientCount ?? null })}>发送</button>
                             </>
                           ) : <span className="text-xs text-kx-muted">-</span>}
                         </div>
@@ -258,6 +266,29 @@ export default function AdminEmailPage() {
           )}
         </section>
       </main>
+
+      <ConfirmDialog
+        open={!!pendingSend}
+        title="立即群发这封邮件？"
+        description={
+          pendingSend?.kind === "new"
+            ? pendingSend.count != null
+              ? `将向约 ${pendingSend.count} 位真实用户立即群发（已排除 AI 生成、已注销、已封禁账号）。发送后不可撤回。`
+              : "将向所选范围的全部真实用户立即群发（已排除 AI 生成、已注销、已封禁账号）。发送后不可撤回。"
+            : pendingSend
+              ? `草稿「${pendingSend.subject}」将立即群发到「${audienceLabel(pendingSend.audience)}」${pendingSend.count ? `（约 ${pendingSend.count} 位收件人）` : ""}。发送后不可撤回。`
+              : undefined
+        }
+        destructive
+        confirmLabel="确认发送"
+        onConfirm={() => {
+          if (!pendingSend) return;
+          if (pendingSend.kind === "new") save.mutate(true);
+          else sendExisting.mutate(pendingSend.id);
+          setPendingSend(null);
+        }}
+        onCancel={() => setPendingSend(null)}
+      />
     </AppShell>
   );
 }

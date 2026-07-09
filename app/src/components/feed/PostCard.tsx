@@ -21,7 +21,7 @@ import {
 import { api, APIError, isAuthRequiredError } from "@/lib/api";
 import { compactNumber, relativeTime, tokenizeContent } from "@/lib/format";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
-import { useI18n } from "@/lib/i18n";
+import { useI18n, type Locale } from "@/lib/i18n";
 import type { KXPost } from "@/lib/types";
 import { showOfficialBadge, showVerifiedBadge } from "@/lib/types";
 import { makeRegion, regionHeaderLabel, resolveRegion } from "@/lib/regions";
@@ -30,6 +30,7 @@ import { Avatar, OfficialBadge, VerifiedBadge } from "@/components/design/Avatar
 import { MediaGrid } from "@/components/design/MediaGrid";
 import { Dialog, ConfirmDialog } from "@/components/design/Dialog";
 import { CONTENT_TYPE_LABELS } from "@/lib/types";
+import { contentTypeLabel } from "@/lib/contentTypes";
 
 interface PostCardProps {
   post: KXPost;
@@ -37,6 +38,127 @@ interface PostCardProps {
   onDeleted?: (post: KXPost) => void;
   compact?: boolean;
   showOriginal?: boolean;
+}
+
+// Query keys whose caches can contain KXPost objects. Optimistic
+// interaction updates only need to reconcile these — not every query in
+// the client (admin tables, settings, guide, wallet, …).
+const POST_BEARING_QUERY_KEYS = new Set<string>([
+  "feed",
+  "post",
+  "trending",
+  "trending-page",
+  "trending-weekly-likes",
+  "profile-segment",
+  "city-feed",
+  "comments",
+  "bookmarks",
+  "search",
+  "topic",
+  "topics-page",
+  "explore-happening",
+  "explore-channel-page",
+]);
+
+// Tiny locale switch for the handful of strings that need parameters or
+// are too incidental to warrant a shared i18n key (project uses the same
+// local-copy pattern in HomeClient's homeCopy()).
+function localize(locale: Locale, zhHans: string, zhHant: string, en: string, ja: string): string {
+  switch (locale) {
+    case "en":
+      return en;
+    case "ja":
+      return ja;
+    case "zh-Hant":
+      return zhHant;
+    default:
+      return zhHans;
+  }
+}
+
+function emptyContentError(locale: Locale): string {
+  return localize(locale, "内容不能为空", "內容不能為空", "Content can't be empty", "内容を入力してください");
+}
+
+function shareCopyFailed(locale: Locale): string {
+  return localize(
+    locale,
+    "复制失败，请手动复制链接",
+    "複製失敗，請手動複製連結",
+    "Couldn't copy — copy the link manually",
+    "コピーできません。リンクを手動でコピーしてください",
+  );
+}
+
+function openPostLabel(locale: Locale): string {
+  return localize(locale, "打开帖子", "開啟貼文", "Open post", "投稿を開く");
+}
+
+function peopleLabel(count: string, locale: Locale): string {
+  const value = count.trim();
+  if (!value) return "";
+  return localize(locale, `${value} 人`, `${value} 人`, `${value} people`, `${value}人`);
+}
+
+function pollVotesLabel(total: number, locale: Locale): string {
+  return localize(
+    locale,
+    `${total} 票`,
+    `${total} 票`,
+    `${total} ${total === 1 ? "vote" : "votes"}`,
+    `${total}票`,
+  );
+}
+
+// The backend hands us `poll.expires_at` as a raw ISO string
+// (e.g. "2026-07-15T09:00:00+00:00"). Render it as a short, human "MM-DD HH:mm"
+// deadline. Pinned to Asia/Tokyo (the app's canonical timezone for JP-first
+// users) so SSR and client agree and no machine-timezone leaks in. Returns ""
+// for a missing / unparseable value so the caller can fall back gracefully
+// instead of printing a machine string.
+function formatPollDeadline(iso: string): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  try {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+      timeZone: "Asia/Tokyo",
+    }).formatToParts(d);
+    const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+    const mm = get("month");
+    const dd = get("day");
+    const hh = get("hour");
+    const mi = get("minute");
+    if (!mm || !dd || !hh || !mi) return "";
+    return `${mm}-${dd} ${hh}:${mi}`;
+  } catch {
+    return "";
+  }
+}
+
+function reportReasons(locale: Locale): { value: string; label: string }[] {
+  return [
+    { value: "inappropriate", label: localize(locale, "包含不当内容", "包含不當內容", "Inappropriate content", "不適切な内容") },
+    { value: "harassment", label: localize(locale, "辱骂或骚扰", "辱罵或騷擾", "Abuse or harassment", "暴言・嫌がらせ") },
+    { value: "spam", label: localize(locale, "广告 / 垃圾信息", "廣告 / 垃圾訊息", "Ads / spam", "広告・スパム") },
+    { value: "misinfo", label: localize(locale, "虚假信息", "虛假資訊", "Misinformation", "虚偽の情報") },
+    {
+      value: "prohibited_offline_service",
+      label: localize(
+        locale,
+        "禁止线下高风险服务 / 成人或性内容",
+        "禁止線下高風險服務 / 成人或性內容",
+        "Prohibited high-risk offline service / adult content",
+        "禁止された高リスクの対面サービス / アダルト内容",
+      ),
+    },
+    { value: "other", label: localize(locale, "其他", "其他", "Other", "その他") },
+  ];
 }
 
 type BusyInteraction = "like" | "bookmark" | "repost" | null;
@@ -64,6 +186,11 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
   }, [editOpen, post.content]);
   const [reportOpen, setReportOpen] = useState(false);
   const [reportReason, setReportReason] = useState("inappropriate");
+  // Single in-flight guard for the menu/dialog actions (quote / edit / delete /
+  // report). These dialogs are mutually exclusive, so one flag is enough to
+  // stop a fast double-click from firing the API call twice (duplicate
+  // quote-reposts, double reports, a redundant delete 404).
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     setPost(incomingPost);
@@ -109,7 +236,14 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
       return isPostLike(replaced) ? replaced : current;
     });
     onUpdate?.(next);
-    queryClient.setQueriesData<unknown>({}, (data: unknown) => replacePostInQueryData(data, next));
+    // Only walk caches that actually hold posts (feed / detail / profile /
+    // trending / search …) instead of every query in the client. An empty
+    // {} filter deep-traversed unrelated caches (admin tables, settings,
+    // guide, wallet…) on every optimistic like/bookmark/repost.
+    queryClient.setQueriesData<unknown>(
+      { predicate: (query) => POST_BEARING_QUERY_KEYS.has(String(query.queryKey?.[0] ?? "")) },
+      (data: unknown) => replacePostInQueryData(data, next),
+    );
     queryClient.setQueryData(["post", next.id], next);
   };
 
@@ -203,6 +337,8 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
     if (!currentUser) return openAuthPrompt("generic");
     const trimmed = quoteText.trim();
     if (!trimmed) return;
+    if (submitting) return;
+    setSubmitting(true);
     api
       .quoteRepost(interactionPost.id, trimmed)
       .then(() => {
@@ -218,10 +354,13 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
           return;
         }
         pushToast({ kind: "error", message: (err as APIError).message });
-      });
+      })
+      .finally(() => setSubmitting(false));
   };
 
   const handleDelete = () => {
+    if (submitting) return;
+    setSubmitting(true);
     api
       .deletePost(post.id)
       .then(() => {
@@ -236,15 +375,18 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
           return;
         }
         pushToast({ kind: "error", message: (err as APIError).message });
-      });
+      })
+      .finally(() => setSubmitting(false));
   };
 
   const handleEdit = () => {
     const trimmed = editText.trim();
     if (!trimmed) {
-      pushToast({ kind: "error", message: "内容不能为空" });
+      pushToast({ kind: "error", message: emptyContentError(locale) });
       return;
     }
+    if (submitting) return;
+    setSubmitting(true);
     api
       .editPost(post.id, trimmed)
       .then((next) => {
@@ -255,7 +397,8 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
         setEditOpen(false);
         pushToast({ kind: "success", message: t("post_updated") });
       })
-      .catch((err) => pushToast({ kind: "error", message: (err as APIError).message }));
+      .catch((err) => pushToast({ kind: "error", message: (err as APIError).message }))
+      .finally(() => setSubmitting(false));
   };
 
   const handleReport = () => {
@@ -263,27 +406,49 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
       openAuthPrompt("generic");
       return;
     }
+    if (submitting) return;
+    setSubmitting(true);
     api
       .reportPost(post.id, reportReason)
       .then(() => {
         setReportOpen(false);
         pushToast({ kind: "success", message: t("post_report_done") });
       })
-      .catch((err) => pushToast({ kind: "error", message: (err as APIError).message }));
+      .catch((err) => pushToast({ kind: "error", message: (err as APIError).message }))
+      .finally(() => setSubmitting(false));
   };
 
   const handleShare = async () => {
     const sharePost = isPureRepost && displayPost ? displayPost : post;
     const url = `${window.location.origin}/p/${sharePost.id}`;
-    try {
-      if (navigator.share) {
+    if (navigator.share) {
+      try {
         await navigator.share({ url, text: (displayPost.content ?? "").slice(0, 80) });
-      } else {
-        await navigator.clipboard.writeText(url);
-        pushToast({ kind: "success", message: t("post_share_copied") });
+        return;
+      } catch (err) {
+        // Dismissing the native share sheet throws AbortError — that's a
+        // deliberate cancel, not a failure, so stay silent. Any other error
+        // falls through to the clipboard path below.
+        if ((err as Error)?.name === "AbortError") return;
       }
+    }
+    try {
+      // NB: don't optional-chain the call — if navigator.clipboard is
+      // undefined (insecure http context / old browser), `?.` would resolve
+      // to undefined and we'd falsely toast "copied". Throw into the manual
+      // fallback instead.
+      if (!navigator.clipboard) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(url);
+      pushToast({ kind: "success", message: t("post_share_copied") });
     } catch {
-      // user cancelled
+      // Clipboard blocked (insecure http context / permission denied / old
+      // browser): don't fail silently — surface the link so the user can
+      // copy it by hand instead of thinking it worked.
+      if (typeof window !== "undefined" && typeof window.prompt === "function") {
+        window.prompt(shareCopyFailed(locale), url);
+      } else {
+        pushToast({ kind: "error", message: shareCopyFailed(locale) });
+      }
     }
   };
 
@@ -296,9 +461,21 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
         compact && "p-3",
         busyInteraction && "opacity-90",
       )}
+      // Deliberately NOT a role="link"/tabIndex element: the card contains real
+      // links and buttons (author, region, tags, "more", the interaction bar),
+      // and nesting interactive descendants inside an interactive ARIA role is
+      // invalid — a screen reader announces the whole card as one link yet still
+      // exposes several focusable controls, and Tab order becomes inconsistent
+      // across browsers/AT. Mouse users keep click-to-open via the handler
+      // below (which bails on nested links/buttons and on an active text
+      // selection); keyboard & screen-reader users get a real permalink on the
+      // timestamp in the header.
       onClick={(e) => {
         const target = e.target as HTMLElement;
         if (target.closest("button, a, .kx-stop")) return;
+        // Don't hijack an in-progress text selection into a navigation — let
+        // the user finish selecting / copying body text on the card.
+        if (window.getSelection()?.toString()) return;
         openPost();
       }}
     >
@@ -318,7 +495,22 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
               {showOfficialBadge(displayAuthor) ? <OfficialBadge /> : showVerifiedBadge(displayAuthor) ? <VerifiedBadge /> : null}
             </div>
             <span className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-kx-muted text-kx-meta">
-              <span className="truncate">@{displayAuthor?.handle || "machi"} · <time dateTime={displayPost.created_at} suppressHydrationWarning>{relativeTime(displayPost.created_at, locale)}</time></span>
+              <span className="truncate">
+                @{displayAuthor?.handle || "machi"} ·{" "}
+                {/* The timestamp is the post permalink — the keyboard- and
+                    screen-reader-accessible "open post" affordance now that the
+                    card itself is no longer a link. */}
+                <Link
+                  href={`/p/${displayPost.id}`}
+                  aria-label={openPostLabel(locale)}
+                  className="rounded-sm transition-colors hover:text-kx-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kx-accent/45"
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <time dateTime={displayPost.created_at} suppressHydrationWarning>
+                    {relativeTime(displayPost.created_at, locale)}
+                  </time>
+                </Link>
+              </span>
               {displayRegion ? (
                 <>
                   <span aria-hidden="true">·</span>
@@ -440,7 +632,7 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
         footer={
           <>
             <button className="kx-button-ghost" onClick={() => setQuoteOpen(false)}>{t("action_cancel")}</button>
-            <button className="kx-button-primary" onClick={handleQuote} disabled={!quoteText.trim()}>{t("action_publish")}</button>
+            <button className="kx-button-primary" onClick={handleQuote} disabled={!quoteText.trim() || submitting}>{t("action_publish")}</button>
           </>
         }
       >
@@ -464,7 +656,7 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
         footer={
           <>
             <button className="kx-button-ghost" onClick={() => setEditOpen(false)}>{t("action_cancel")}</button>
-            <button className="kx-button-primary" onClick={handleEdit} disabled={!editText.trim()}>{t("action_save")}</button>
+            <button className="kx-button-primary" onClick={handleEdit} disabled={!editText.trim() || submitting}>{t("action_save")}</button>
           </>
         }
       >
@@ -483,23 +675,25 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
         footer={
           <>
             <button className="kx-button-ghost" onClick={() => setReportOpen(false)}>{t("action_cancel")}</button>
-            <button className="kx-button-primary" onClick={handleReport}>{t("action_confirm")}</button>
+            <button className="kx-button-primary" onClick={handleReport} disabled={submitting}>{t("action_confirm")}</button>
           </>
         }
       >
-        <div className="space-y-2">
-          {([
-            ["inappropriate", "包含不当内容"],
-            ["harassment", "辱骂或骚扰"],
-            ["spam", "广告 / 垃圾信息"],
-            ["misinfo", "虚假信息"],
-            ["prohibited_offline_service", "禁止线下高风险服务 / 成人或性内容"],
-            ["other", "其他"],
-          ] as const).map(([value, label]) => (
-            <label key={value} className="flex items-center gap-2 cursor-pointer">
+        <div className="space-y-1">
+          {reportReasons(locale).map(({ value, label }) => (
+            <label
+              key={value}
+              className={clsx(
+                "flex cursor-pointer items-center gap-2.5 rounded-kx-md border px-3 py-2.5 text-sm transition",
+                reportReason === value
+                  ? "border-kx-accent/50 bg-kx-accentSoft text-kx-text"
+                  : "border-kx-stroke/60 hover:border-kx-accent/30 hover:bg-kx-soft/60",
+              )}
+            >
               <input
                 type="radio"
                 name="report"
+                className="accent-kx-accent"
                 value={value}
                 checked={reportReason === value}
                 onChange={() => setReportReason(value)}
@@ -531,6 +725,7 @@ function redundantContentTags(post: KXPost) {
 }
 
 function PostMetadata({ post }: { post: KXPost }) {
+  const { locale } = useI18n();
   const type = post.content_type || "dynamic";
   if (type === "dynamic" && !post.is_boosted) return null;
   const style = contentTypeStyle(type);
@@ -538,7 +733,7 @@ function PostMetadata({ post }: { post: KXPost }) {
     <div className="mt-2 flex flex-wrap gap-1.5">
       {type !== "dynamic" ? (
         <span className={clsx("px-2.5 py-1 rounded-full text-xs font-bold", style)}>
-          {CONTENT_TYPE_LABELS[type as keyof typeof CONTENT_TYPE_LABELS] || type}
+          {contentTypeLabel(type, locale)}
         </span>
       ) : null}
       {post.is_boosted ? (
@@ -551,6 +746,7 @@ function PostMetadata({ post }: { post: KXPost }) {
 }
 
 function TypedSummary({ post }: { post: KXPost }) {
+  const { locale } = useI18n();
   const attrs = post.attributes || {};
   const pick = (...keys: string[]) => {
     for (const key of keys) {
@@ -575,9 +771,9 @@ function TypedSummary({ post }: { post: KXPost }) {
   if (type === "roommate") chips.push(pick("rent_range"), pick("area"), pick("move_in_date"));
   if (type === "job_seek") chips.push(pick("desired_job"), pick("skills"), pick("visa_status"));
   if (type === "job_post") chips.push(pick("job_title"), pick("salary"), pick("job_type"), pick("work_location"));
-  if (type === "meetup") chips.push(pick("meetup_type"), pick("meetup_time"), pick("location"), pick("people_limit") ? `${pick("people_limit")} 人` : "");
-  if (type === "dining") chips.push(pick("restaurant_or_area"), pick("meetup_time"), pick("people_limit") ? `${pick("people_limit")} 人` : "", pick("budget"));
-  if (type === "event") chips.push(pick("event_time"), pick("location"), pick("fee"), pick("capacity") ? `${pick("capacity")} 人` : "");
+  if (type === "meetup") chips.push(pick("meetup_type"), pick("meetup_time"), pick("location"), peopleLabel(pick("people_limit"), locale));
+  if (type === "dining") chips.push(pick("restaurant_or_area"), pick("meetup_time"), peopleLabel(pick("people_limit"), locale), pick("budget"));
+  if (type === "event") chips.push(pick("event_time"), pick("location"), pick("fee"), peopleLabel(pick("capacity"), locale));
   if (type === "guide") chips.push(pick("title"), pick("summary"));
   if (type === "news" || type === "local_info") chips.push(pick("source"), pick("summary"));
   if (type === "service") chips.push(pick("service_type"), pick("price_range"), pick("verified_status"));
@@ -587,7 +783,7 @@ function TypedSummary({ post }: { post: KXPost }) {
     const category = pick("category");
     const tagSet = new Set((post.tags || []).map(normalizeTagLabel));
     chips.push(category && !tagSet.has(normalizeTagLabel(category)) ? category : "");
-    chips.push(formatWarningReviewStatus(pick("review_status")));
+    chips.push(formatWarningReviewStatus(pick("review_status"), locale));
   }
   if (type === "poll") return null;
   const visible = chips.filter(Boolean).slice(0, 5);
@@ -606,12 +802,16 @@ function TypedSummary({ post }: { post: KXPost }) {
   );
 }
 
-function formatWarningReviewStatus(value: string) {
+function formatWarningReviewStatus(value: string, locale: Locale) {
   const raw = value.trim();
   const normalized = raw.toLowerCase();
   if (!raw || normalized === "active" || normalized === "approved" || normalized === "published") return "";
-  if (normalized === "under_review" || normalized === "pending" || normalized === "reviewing") return "待审核";
-  if (normalized === "rejected" || normalized === "blocked") return "未通过";
+  if (normalized === "under_review" || normalized === "pending" || normalized === "reviewing") {
+    return localize(locale, "待审核", "審核中", "Under review", "審査中");
+  }
+  if (normalized === "rejected" || normalized === "blocked") {
+    return localize(locale, "未通过", "未通過", "Rejected", "非承認");
+  }
   return raw;
 }
 
@@ -663,6 +863,7 @@ function PostPoll({ post, onVoted }: { post: KXPost; onVoted?: (post: KXPost) =>
   const currentUser = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
+  const { locale } = useI18n();
   const [busyIndex, setBusyIndex] = useState<number | null>(null);
   const [localPost, setLocalPost] = useState(post);
 
@@ -705,7 +906,7 @@ function PostPoll({ post, onVoted }: { post: KXPost; onVoted?: (post: KXPost) =>
     <div className="kx-stop mt-3 rounded-kx-md border border-kx-stroke/60 bg-kx-soft/60 p-3" onClick={(e) => e.stopPropagation()}>
       <div className="mb-2 flex items-center gap-2 text-sm font-bold text-kx-text">
         <BarChart3 className="h-4 w-4 text-kx-accent" />
-        <span className="line-clamp-2">{poll.question || "投票"}</span>
+        <span className="line-clamp-2">{poll.question || localize(locale, "投票", "投票", "Poll", "投票")}</span>
       </div>
       <div className="space-y-2">
         {poll.options.map((option, index) => {
@@ -752,8 +953,23 @@ function PostPoll({ post, onVoted }: { post: KXPost; onVoted?: (post: KXPost) =>
         })}
       </div>
       <div className="mt-2 flex items-center justify-between text-[11px] font-semibold text-kx-muted">
-        <span>{poll.total} 票</span>
-        {poll.closed ? <span>已截止</span> : poll.expires_at ? <span>截止 {poll.expires_at}</span> : <span>可更改选择</span>}
+        <span>{pollVotesLabel(poll.total, locale)}</span>
+        {(() => {
+          if (poll.closed) {
+            return <span>{localize(locale, "已截止", "已截止", "Closed", "締め切り")}</span>;
+          }
+          const deadline = formatPollDeadline(poll.expires_at);
+          if (deadline) {
+            return (
+              <span>
+                {localize(locale, "截止", "截止", "Closes", "締切")} {deadline}
+              </span>
+            );
+          }
+          return (
+            <span>{localize(locale, "可更改选择", "可更改選擇", "You can change your vote", "投票は変更できます")}</span>
+          );
+        })()}
       </div>
     </div>
   );
@@ -915,8 +1131,10 @@ function ContentText({ content }: { content: string }) {
           );
         }
         if (seg.kind === "mention") {
+          // Mentions link to the profile route /u/<handle> (matching the
+          // author links). `/@handle` has no route and 404s.
           return (
-            <Link key={i} href={`/${seg.value}`} className="kx-mention" onClick={(e) => e.stopPropagation()}>
+            <Link key={i} href={`/u/${seg.value.replace(/^@/, "")}`} className="kx-mention" onClick={(e) => e.stopPropagation()}>
               {seg.value}
             </Link>
           );
@@ -936,6 +1154,7 @@ function ContentText({ content }: { content: string }) {
 
 function QuotedPreview({ post }: { post: KXPost }) {
   const router = useRouter();
+  const { t } = useI18n();
   const author = post.author;
   return (
     <div
@@ -947,7 +1166,7 @@ function QuotedPreview({ post }: { post: KXPost }) {
     >
       <div className="flex items-center gap-1.5 min-w-0">
         <Avatar user={author || undefined} size={20} />
-        <span className="font-semibold text-sm text-kx-text truncate">{author?.display_name || "未知用户"}</span>
+        <span className="font-semibold text-sm text-kx-text truncate">{author?.display_name || t("unknown_user")}</span>
         {showOfficialBadge(author) ? <OfficialBadge /> : showVerifiedBadge(author) ? <VerifiedBadge /> : null}
         <span className="text-kx-muted text-xs truncate">@{author?.handle || "machi"}</span>
       </div>
@@ -978,7 +1197,7 @@ function InteractionBar({
   onComment: () => void;
   busyInteraction?: BusyInteraction;
 }) {
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const [repostMenu, setRepostMenu] = useState(false);
   // Heart-pop is keyed to the click (not the liked attribute) so hearts
   // never animate when already-liked cards simply mount during scroll.
@@ -1016,7 +1235,8 @@ function InteractionBar({
         <button
           className="kx-metric"
           data-active={post.reposted ? "repost" : undefined}
-          aria-label={t("action_repost")}
+          aria-label={post.reposted ? t("action_undo_repost") : t("action_repost")}
+          aria-pressed={!!post.reposted}
           disabled={busyInteraction === "repost"}
           onClick={(e) => {
             e.preventDefault();
@@ -1059,7 +1279,8 @@ function InteractionBar({
           }
           onLike();
         }}
-        aria-label={t("action_like")}
+        aria-label={post.liked ? localize(locale, "取消赞", "取消讚", "Unlike", "いいねを取り消す") : t("action_like")}
+        aria-pressed={!!post.liked}
       >
         <Heart className={clsx("w-4 h-4", post.liked && "fill-kx-like", likePop && "kx-heart-pop")} /> {compactNumber(post.like_count)}
       </button>
@@ -1072,7 +1293,8 @@ function InteractionBar({
           e.stopPropagation();
           onBookmark();
         }}
-        aria-label={t("action_bookmark")}
+        aria-label={post.bookmarked ? localize(locale, "取消收藏", "取消收藏", "Remove bookmark", "ブックマークを外す") : t("action_bookmark")}
+        aria-pressed={!!post.bookmarked}
       >
         <Bookmark className={clsx("w-4 h-4", post.bookmarked && "fill-kx-bookmark")} /> {compactNumber(post.bookmark_count)}
       </button>

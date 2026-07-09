@@ -59,7 +59,6 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ["updates", "weekly", 0.6],
     ["faq", "monthly", 0.6],
     ["contact", "monthly", 0.5],
-    ["help", "monthly", 0.5],
     ["legal/privacy", "yearly", 0.4],
     ["legal/terms", "yearly", 0.4],
     ["legal/membership-terms", "yearly", 0.35],
@@ -118,10 +117,9 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     },
   ];
 
-  const utilEntries: MetadataRoute.Sitemap = [
-    { url: `${SITE}/login`, lastModified: now, changeFrequency: "monthly", priority: 0.4 },
-    { url: `${SITE}/register`, lastModified: now, changeFrequency: "monthly", priority: 0.4 },
-  ];
+  // /login and /register are intentionally NOT listed: they are utility
+  // pages (Disallow-ed in robots.ts) and should not compete with the
+  // marketing pages for crawl budget or index weight.
 
   // Guide entity detail pages, appended after the static list.
   const guideData = await loadGuideEntities();
@@ -145,5 +143,5 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     pushEntities(guideData.articles, "articles");
   }
 
-  return [...baseEntries, ...localeRoots, ...utilEntries, ...guideEntries];
+  return [...baseEntries, ...localeRoots, ...guideEntries];
 }

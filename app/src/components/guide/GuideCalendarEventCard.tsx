@@ -5,10 +5,12 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { CalendarDays, Clock3, Trash2, X } from "lucide-react";
 import { guide, type GuideCalendarItem } from "@/lib/guide";
 import { useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 export function GuideCalendarEventCard({ event, compact = false }: { event: GuideCalendarItem; compact?: boolean }) {
   const queryClient = useQueryClient();
   const pushToast = useToasts((state) => state.push);
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(event.title);
   const [date, setDate] = useState((event.date || "").slice(0, 10));
@@ -69,10 +71,10 @@ export function GuideCalendarEventCard({ event, compact = false }: { event: Guid
       </button>
       {open ? (
         <div className="fixed inset-0 z-[85] grid place-items-end bg-black/30 sm:place-items-center sm:p-5" onMouseDown={(e) => e.target === e.currentTarget && setOpen(false)}>
-          <section role="dialog" aria-modal="true" aria-label="日程详情" className="max-h-[92dvh] w-full overflow-y-auto rounded-t-[24px] bg-kx-card p-5 shadow-2xl sm:max-w-xl sm:rounded-kx-sheet">
+          <section role="dialog" aria-modal="true" aria-label={t("aria_event_detail")} className="max-h-[92dvh] w-full overflow-y-auto rounded-t-[24px] bg-kx-card p-5 shadow-2xl sm:max-w-xl sm:rounded-kx-sheet">
             <div className="flex items-center justify-between">
               <h2 className="text-xl font-black text-kx-text">日程详情</h2>
-              <button type="button" onClick={() => setOpen(false)} className="grid min-h-11 min-w-11 place-items-center rounded-full text-kx-muted hover:bg-kx-soft" aria-label="关闭"><X className="h-5 w-5" /></button>
+              <button type="button" onClick={() => setOpen(false)} className="grid min-h-11 min-w-11 place-items-center rounded-full text-kx-muted hover:bg-kx-soft" aria-label={t("aria_close")}><X className="h-5 w-5" /></button>
             </div>
             <div className="mt-4 grid gap-4">
               <label className="grid gap-1 text-xs font-bold text-kx-muted">标题<input value={title} onChange={(e) => setTitle(e.target.value)} className="min-h-11 rounded-xl border border-kx-stroke/60 bg-kx-bg px-3 text-sm text-kx-text" /></label>

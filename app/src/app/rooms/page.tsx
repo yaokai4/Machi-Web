@@ -14,39 +14,42 @@ import { EmptyState, ErrorState, InlineLoading } from "@/components/design/State
 import { Avatar } from "@/components/design/Avatar";
 import { api } from "@/lib/api";
 import { useSessionUser } from "@/lib/session";
+import { useI18n } from "@/lib/i18n";
 import type { KXRoom } from "@/lib/types";
-import { parseISO, roomStyle, ROOM_TYPE_KEYS } from "@/components/social/socialStyle";
+import { kindLabel, roomStyle, ROOM_TYPE_KEYS, shortDayTime, socialCopy, socialLabel } from "@/components/social/socialStyle";
 
 function RoomRow({ room }: { room: KXRoom }) {
+  const { locale } = useI18n();
+  const c = socialCopy(locale).rooms;
   const style = roomStyle(room.room_type);
   const Icon = style.icon;
   const memberCount = room.member_count ?? room.members?.length ?? 1;
   const capacity = room.capacity ?? 0;
-  const startsAt = parseISO(room.starts_at);
+  const hasStart = !!room.starts_at && !Number.isNaN(new Date(room.starts_at).getTime());
   const spotsLeft = capacity > 0 ? Math.max(0, capacity - memberCount) : null;
   return (
     <Link
       href={`/rooms/${encodeURIComponent(room.id)}`}
-      className="group flex items-start gap-3.5 rounded-2xl border border-kx-stroke/45 bg-kx-card p-3.5 transition-all duration-200 hover:border-kx-accent/30 hover:shadow-[0_14px_34px_-24px_rgb(var(--kx-shadow)/0.5)]"
+      className="group flex items-start gap-3.5 rounded-2xl border border-kx-stroke/45 bg-kx-card p-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-kx-accent/30 hover:shadow-[0_14px_34px_-24px_rgb(var(--kx-shadow)/0.5)]"
     >
-      <div className={`relative grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br text-white ${style.gradient}`}>
+      <div className={`relative grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br text-white shadow-sm ${style.gradient}`}>
         <Icon className="h-5 w-5" />
         {room.status === "open" ? (
-          <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-kx-card bg-emerald-400" title="进行中" />
+          <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-kx-card bg-emerald-400" title={c.live} />
         ) : null}
       </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] font-black ${style.softBg} ${style.text}`}>
-            {room.room_type_label || style.labelZh}
+            {kindLabel(room.room_type_label, style, locale)}
           </span>
           {room.viewer_joined ? (
-            <span className="shrink-0 rounded-full bg-kx-accent/10 px-2 py-0.5 text-[11px] font-black text-kx-accent">已加入</span>
+            <span className="shrink-0 rounded-full bg-kx-accent/10 px-2 py-0.5 text-[11px] font-black text-kx-accent">{c.joined}</span>
           ) : null}
           <span className="ml-auto shrink-0 text-xs font-black text-kx-muted">
             {capacity > 0 ? (
-              spotsLeft && spotsLeft > 0 ? <span className="text-kx-accent">还差 {spotsLeft} 人</span> : <span className="text-kx-heat">已满</span>
-            ) : `${memberCount} 人`}
+              spotsLeft && spotsLeft > 0 ? <span className="text-kx-accent">{c.spotsLeft(spotsLeft)}</span> : <span className="text-kx-heat">{c.full}</span>
+            ) : c.people(memberCount)}
           </span>
         </div>
         <h3 className="mt-1 line-clamp-1 text-[15px] font-black leading-snug">{room.title}</h3>
@@ -61,13 +64,12 @@ function RoomRow({ room }: { room: KXRoom }) {
           </div>
           <span className="inline-flex items-center gap-1 text-xs font-semibold text-kx-muted">
             <MessageCircle className="h-3.5 w-3.5" />
-            {(room.message_count ?? 0) > 0 ? `${room.message_count} 条消息` : "进来开个头"}
+            {(room.message_count ?? 0) > 0 ? c.messagesCount(room.message_count ?? 0) : c.startChat}
           </span>
-          {startsAt ? (
+          {hasStart ? (
             <span className="ml-auto inline-flex items-center gap-1 text-xs font-semibold text-kx-muted/80">
               <CalendarClock className="h-3.5 w-3.5" />
-              {startsAt.toLocaleDateString("zh-CN", { month: "numeric", day: "numeric" })}{" "}
-              {startsAt.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false })}
+              {shortDayTime(room.starts_at, locale)}
             </span>
           ) : room.location_hint ? (
             <span className="ml-auto inline-flex items-center gap-1 text-xs font-semibold text-kx-muted/80">
@@ -82,6 +84,9 @@ function RoomRow({ room }: { room: KXRoom }) {
 }
 
 function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreated: (room: KXRoom) => void }) {
+  const { locale } = useI18n();
+  const copy = socialCopy(locale);
+  const c = copy.rooms;
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [roomType, setRoomType] = useState("meal");
@@ -101,7 +106,7 @@ function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreate
       capacity: capacity ? Math.max(0, parseInt(capacity, 10) || 0) : 0,
     }),
     onSuccess: onCreated,
-    onError: (err: Error) => setError(err.message || "开局失败,稍后再试"),
+    onError: (err: Error) => setError(err.message || c.createError),
   });
 
   return (
@@ -109,16 +114,16 @@ function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreate
       <div className="max-h-[88vh] w-full overflow-y-auto rounded-t-3xl bg-kx-bg p-5 shadow-2xl sm:max-w-md sm:rounded-3xl" onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between">
           <div>
-            <h2 className="text-lg font-black">开个局</h2>
-            <p className="mt-0.5 text-xs font-semibold text-kx-muted">想找人一起做点什么?发出来,同城的人进来就能聊。</p>
+            <h2 className="text-lg font-black">{c.modalTitle}</h2>
+            <p className="mt-0.5 text-xs font-semibold text-kx-muted">{c.modalSubtitle}</p>
           </div>
-          <button type="button" onClick={onClose} className="rounded-full p-2 text-kx-muted hover:bg-kx-soft" aria-label="关闭">
+          <button type="button" onClick={onClose} className="rounded-full p-2 text-kx-muted transition hover:bg-kx-soft" aria-label={copy.common.close}>
             <X className="h-4 w-4" />
           </button>
         </div>
         <div className="mt-4 space-y-4">
           <div>
-            <p className="mb-1.5 text-xs font-black text-kx-muted">想找什么搭子?</p>
+            <p className="mb-1.5 text-xs font-black text-kx-muted">{c.kindQuestion}</p>
             <div className="flex flex-wrap gap-1.5">
               {[...ROOM_TYPE_KEYS, "other"].map((key) => {
                 const style = roomStyle(key);
@@ -134,33 +139,33 @@ function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreate
                     }`}
                   >
                     <Icon className="h-3.5 w-3.5" />
-                    {style.labelZh}
+                    {socialLabel(style, locale)}
                   </button>
                 );
               })}
             </div>
           </div>
           <label className="block space-y-1.5">
-            <span className="text-xs font-black text-kx-muted">局的名字 <span className="text-red-500">*</span></span>
-            <input className="kx-input font-bold" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="例如 周五晚新宿吃烤肉,来仨人" maxLength={80} />
+            <span className="text-xs font-black text-kx-muted">{c.name} <span className="text-red-500">*</span></span>
+            <input className="kx-input font-bold" value={title} onChange={(e) => setTitle(e.target.value)} placeholder={c.namePlaceholder} maxLength={80} />
           </label>
           <label className="block space-y-1.5">
-            <span className="text-xs font-black text-kx-muted">想说的话</span>
-            <textarea className="kx-input min-h-[80px] resize-y py-2.5" value={description} onChange={(e) => setDescription(e.target.value)} placeholder="预算、口味、见面方式…随便写" maxLength={1000} />
+            <span className="text-xs font-black text-kx-muted">{c.desc}</span>
+            <textarea className="kx-input min-h-[80px] resize-y py-2.5" value={description} onChange={(e) => setDescription(e.target.value)} placeholder={c.descPlaceholder} maxLength={1000} />
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block space-y-1.5">
-              <span className="text-xs font-black text-kx-muted">约定时间(可选)</span>
+              <span className="text-xs font-black text-kx-muted">{c.time}</span>
               <input type="datetime-local" className="kx-input" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} />
             </label>
             <label className="block space-y-1.5">
-              <span className="text-xs font-black text-kx-muted">人数上限(0 = 不限)</span>
+              <span className="text-xs font-black text-kx-muted">{c.capacity}</span>
               <input type="number" min={0} max={200} className="kx-input" value={capacity} onChange={(e) => setCapacity(e.target.value)} />
             </label>
           </div>
           <label className="block space-y-1.5">
-            <span className="text-xs font-black text-kx-muted">大概位置(可选)</span>
-            <input className="kx-input" value={locationHint} onChange={(e) => setLocationHint(e.target.value)} placeholder="例如 新宿站东口 / 涩谷附近" maxLength={120} />
+            <span className="text-xs font-black text-kx-muted">{c.location}</span>
+            <input className="kx-input" value={locationHint} onChange={(e) => setLocationHint(e.target.value)} placeholder={c.locationPlaceholder} maxLength={120} />
           </label>
           {error ? <p className="text-xs font-bold text-red-500">{error}</p> : null}
           <button
@@ -169,7 +174,7 @@ function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreate
             onClick={() => create.mutate()}
             className="kx-button-primary h-12 w-full rounded-full text-sm font-black disabled:opacity-50"
           >
-            {create.isPending ? "创建中…" : "开局"}
+            {create.isPending ? c.creating : c.createSubmit}
           </button>
         </div>
       </div>
@@ -180,6 +185,8 @@ function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreate
 export default function RoomsPage() {
   const router = useRouter();
   const viewer = useSessionUser();
+  const { locale } = useI18n();
+  const c = socialCopy(locale).rooms;
   const [type, setType] = useState("");
   const [mine, setMine] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
@@ -193,7 +200,9 @@ export default function RoomsPage() {
 
   const typeChips = useMemo(() => {
     const server = rooms.data?.room_types ?? [];
-    return server.length ? server.filter((t) => t.key !== "other") : ROOM_TYPE_KEYS.map((key) => ({ key, label: roomStyle(key).labelZh }));
+    return server.length
+      ? server.filter((t) => t.key !== "other")
+      : ROOM_TYPE_KEYS.map((key) => ({ key, label: "" as string }));
   }, [rooms.data?.room_types]);
 
   function openCreate() {
@@ -210,15 +219,13 @@ export default function RoomsPage() {
         <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-indigo-500/15 blur-3xl" />
         <div className="pointer-events-none absolute -left-14 top-6 h-44 w-44 rounded-full bg-kx-accent/15 blur-3xl" />
         <div className="relative">
-          <p className="text-xs font-black uppercase tracking-[0.2em] text-kx-accent">Machi Rooms</p>
-          <h1 className="mt-2 text-3xl font-black leading-tight sm:text-4xl">找个搭子,现在就约</h1>
-          <p className="mt-2 max-w-xl text-sm font-semibold text-kx-muted">
-            饭搭子、酒搭子、学习搭子、拼车……开一个局就像开一个游戏房间:进来就能看到有谁、聊到哪,直接说话约起来。
-          </p>
+          <p className="text-xs font-black uppercase tracking-[0.2em] text-kx-accent">{c.heroKicker}</p>
+          <h1 className="mt-2 text-3xl font-black leading-tight sm:text-4xl">{c.heroTitle}</h1>
+          <p className="mt-2 max-w-xl text-sm font-semibold text-kx-muted">{c.heroDesc}</p>
           <div className="mt-4 flex flex-wrap items-center gap-2">
             <button type="button" onClick={openCreate} className="kx-button-primary inline-flex h-11 items-center gap-2 rounded-full px-5 text-sm font-black">
               <Plus className="h-4 w-4" />
-              开个局
+              {c.create}
             </button>
             <button
               type="button"
@@ -228,7 +235,7 @@ export default function RoomsPage() {
               }`}
             >
               <Users className="h-3.5 w-3.5" />
-              我加入的
+              {c.joinedFilter}
             </button>
           </div>
         </div>
@@ -242,7 +249,7 @@ export default function RoomsPage() {
             type === "" ? "bg-kx-accent text-white shadow" : "bg-kx-accent/10 text-kx-accent hover:bg-kx-accent/15"
           }`}
         >
-          全部
+          {c.all}
         </button>
         {typeChips.map((entry) => {
           const style = roomStyle(entry.key);
@@ -258,7 +265,7 @@ export default function RoomsPage() {
               }`}
             >
               <Icon className="h-3.5 w-3.5" />
-              {entry.label || style.labelZh}
+              {kindLabel(entry.label, style, locale)}
             </button>
           );
         })}
@@ -271,10 +278,10 @@ export default function RoomsPage() {
           <InlineLoading />
         ) : rooms.data.items.length === 0 ? (
           <EmptyState
-            title={mine ? "你还没有加入任何局" : "还没有进行中的局"}
-            subtitle="开一个局,喊大家一起吃饭、喝酒、打桌游。"
+            title={mine ? c.emptyMineTitle : c.emptyTitle}
+            subtitle={c.emptySubtitle}
             icon={Users}
-            action={{ label: "开个局", onClick: openCreate }}
+            action={{ label: c.create, onClick: openCreate }}
           />
         ) : (
           <div className="space-y-2.5">

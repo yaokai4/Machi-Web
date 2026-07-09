@@ -18,6 +18,8 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+from server_errors import APIError
+
 # ── constants ──────────────────────────────────────────────────────────────
 
 LEVELS: tuple[str, ...] = ("N5", "N4", "N3", "N2", "N1")
@@ -41,6 +43,11 @@ VOCAB_QUIZ_DEFAULT_COUNT = 10
 VOCAB_QUIZ_MAX_COUNT = 20
 IMPORT_MAX_ROWS = 2000
 EXAM_DYNAMIC_MAX = 60             # cap on dynamically-sampled mock exam size
+# Grace window (seconds) added to a timed exam's deadline before the server stops
+# accepting answer saves, so an answer in-flight at the buzzer isn't lost to
+# network latency. Grading + recorded duration are still clamped to the hard
+# limit in submit_exam_session.
+EXAM_SAVE_GRACE_SEC = 5
 
 _VALID_SOURCE_KINDS = ("practice", "placement", "review", "exam", "vocab")
 _VALID_VOCAB_STATES = ("learning", "mastered")
@@ -665,8 +672,36 @@ def start_exam_session(
     conn: Any, *, user_id: str, exam: dict[str, Any], is_member: bool, now: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Create an in-progress session with a resolved question list; returns the
-    session + answer-hidden questions. None if the exam has no usable questions."""
+    session + answer-hidden questions. None if the exam has no usable questions.
+
+    Resume (B15-D): if the user already has an un-submitted session for this exam
+    that hasn't run out of time (server clock is authoritative: started_at +
+    exam duration), that session is returned instead of a fresh one — with
+    ``resumed: true``, the previously saved ``answers`` and the server-computed
+    ``remainingSeconds`` — so a killed/relaunched client continues instead of
+    silently restarting with a full clock. A stale session that IS past its
+    deadline is finalized through the existing submit path (graded on whatever
+    was answered, clocked at the deadline) before a new session is created —
+    no new status value is introduced."""
     now = _iso(now)
+    duration = int(exam.get("duration_seconds") or 0)
+    stale = conn.execute(
+        "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
+        "AND status = 'in_progress' ORDER BY started_at DESC LIMIT 1",
+        (user_id, exam["id"]),
+    ).fetchone()
+    if stale:
+        session = dict(stale)
+        elapsed = _seconds_between(session.get("started_at") or now, now)
+        if duration <= 0 or elapsed < duration:
+            return _resume_exam_payload(
+                conn, session=session, exam=exam,
+                remaining=(max(0, duration - elapsed) if duration > 0 else 0),
+            )
+        # Timed out un-submitted: settle it with the existing semantics (grade
+        # the answers saved so far; duration clamps to the exam limit).
+        submit_exam_session(conn, session=session, exam=exam,
+                            now=_add_seconds_iso(session.get("started_at") or now, duration))
     q_ids = _resolve_exam_question_ids(conn, exam, is_member=is_member)
     if not q_ids:
         return None
@@ -688,6 +723,42 @@ def start_exam_session(
         "passScore": int(exam.get("pass_score") or 60),
         "total": len(q_ids),
         "questions": questions,
+        "resumed": False,
+    }
+
+
+def _resume_exam_payload(
+    conn: Any, *, session: dict[str, Any], exam: dict[str, Any], remaining: int,
+) -> dict[str, Any]:
+    """Same shape as a fresh start (old clients keep working — they just ignore
+    the extra keys) + the resume overlay. Only questionId/selectedIndex of the
+    saved answers are exposed: is_correct would leak grading mid-exam."""
+    q_ids = _loads_json_list(session.get("question_ids_json"))
+    known = set(q_ids)
+    ans_rows = conn.execute(
+        "SELECT question_id, selected_index FROM jlpt_exam_answers WHERE session_id = ?",
+        (session["id"],),
+    ).fetchall()
+    answers = [
+        {"questionId": d["question_id"], "selectedIndex": int(d["selected_index"])}
+        for d in (dict(r) for r in ans_rows)
+        if d["question_id"] in known
+    ]
+    return {
+        "sessionId": session["id"],
+        "examId": exam["id"],
+        "level": session.get("level") or exam.get("level") or "",
+        "title": exam.get("title") or "",
+        "durationSeconds": int(exam.get("duration_seconds") or 0),
+        "passScore": int(exam.get("pass_score") or 60),
+        "total": len(q_ids),
+        "questions": _questions_by_ids(conn, q_ids, reveal_answer=False),
+        "resumed": True,
+        "answers": answers,
+        # Dual-key on purpose: camelCase matches this module's contract, the
+        # snake_case twin keeps loosely-typed clients tolerant.
+        "remainingSeconds": remaining,
+        "remaining_seconds": remaining,
     }
 
 
@@ -713,12 +784,48 @@ def get_session(conn: Any, *, session_id: str, user_id: str) -> Optional[dict[st
     return dict(row) if row else None
 
 
+def _exam_time_limit_seconds(conn: Any, session: dict[str, Any]) -> int:
+    """Hard time limit (seconds) for a session's exam; 0 = untimed. Read from the
+    exam row — the session row's ``duration_seconds`` stores the ELAPSED time
+    (filled at submit), NOT the limit, so the limit must come from jlpt_exams."""
+    exam_id = str(session.get("exam_id") or "")
+    if not exam_id:
+        return 0
+    row = conn.execute(
+        "SELECT duration_seconds FROM jlpt_exams WHERE id = ?", (exam_id,)
+    ).fetchone()
+    if not row:
+        return 0
+    try:
+        return max(0, int(dict(row).get("duration_seconds") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _exam_session_expired(
+    conn: Any, session: dict[str, Any], *, now: Optional[str] = None, grace: int = 0
+) -> bool:
+    """Whether the (server) wall clock is past started_at + time limit (+ grace).
+    Untimed exams (limit 0) never expire. The client clock is never trusted."""
+    limit = _exam_time_limit_seconds(conn, session)
+    if limit <= 0:
+        return False
+    elapsed = _seconds_between(session.get("started_at") or _iso(now), _iso(now))
+    return elapsed > limit + max(0, grace)
+
+
 def save_exam_answer(
     conn: Any, *, session: dict[str, Any], question_id: str, selected_index: int,
+    now: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
     """Persist one in-progress exam answer (no grading revealed). Rejects if the
-    question isn't in the session or the session is already submitted."""
+    question isn't in the session, the session is already submitted, OR the exam's
+    server-authoritative time limit has elapsed — otherwise the countdown is a
+    mere client-side suggestion that devtools/replay can ignore to keep answering
+    an expired paper."""
     if (session.get("status") or "") != "in_progress":
+        return None
+    if _exam_session_expired(conn, session, now=now, grace=EXAM_SAVE_GRACE_SEC):
         return None
     q_ids = _loads_json_list(session.get("question_ids_json"))
     if question_id not in q_ids:
@@ -763,7 +870,13 @@ def submit_exam_session(
     pass_score = int((exam or {}).get("pass_score") or 60)
     passed = 1 if score >= pass_score else 0
     started = session.get("started_at") or now
-    duration = _seconds_between(started, now)
+    # Clamp the recorded time to the exam's hard limit. A session left
+    # in_progress and submitted long after the buzzer would otherwise persist an
+    # absurd elapsed time (and any post-deadline answers are already refused by
+    # save_exam_answer), so the stored duration must never exceed the limit.
+    elapsed = _seconds_between(started, now)
+    time_limit = int((exam or {}).get("duration_seconds") or 0)
+    duration = min(elapsed, time_limit) if time_limit > 0 else elapsed
     conn.execute(
         "UPDATE jlpt_exam_sessions SET total = ?, correct = ?, score = ?, passed = ?, "
         "duration_seconds = ? WHERE id = ?",
@@ -862,6 +975,24 @@ def build_vocab_quiz(
     now = _iso(now)
 
     if deck_id:
+        # Enforce the SAME membership gate the deck-detail endpoint applies: a
+        # member-only deck's words + meanings must not leak to a non-member via
+        # the quiz (the quiz question面 exposes word + reading and the correct
+        # 释义 as an option, and submit returns correctIndex — that would bypass
+        # the "开通会员即可解锁全部单词与考单词测验" paywall). vocab_decks() lists
+        # member decks (with isMemberOnly) to everyone, so the id is discoverable;
+        # the gate has to live here, not just in the listing.
+        deck_row = conn.execute(
+            "SELECT is_member_only FROM jlpt_vocab_decks WHERE id = ? AND status = 'published'",
+            (deck_id,),
+        ).fetchone()
+        if not deck_row:
+            return None
+        if bool(dict(deck_row).get("is_member_only")) and not is_member:
+            raise APIError(
+                "该词表为会员专属，开通会员即可解锁全部单词与「考单词」测验。",
+                403, "MEMBER_REQUIRED", {"upgradeSuggested": True},
+            )
         pool = conn.execute(
             "SELECT w.* FROM jlpt_vocab_words w JOIN jlpt_vocab_deck_words dw ON dw.word_id = w.id "
             "WHERE dw.deck_id = ? AND w.status = 'published'",
@@ -1274,6 +1405,18 @@ def _loads_json_obj(raw: Any) -> Any:
         return json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
         return None
+
+
+def _add_seconds_iso(start_iso: str, seconds: int) -> str:
+    """start_iso + N seconds, as ISO — the exam deadline for timeout settling.
+    Falls back to 'now' when the stored timestamp is unparsable."""
+    try:
+        s = datetime.fromisoformat(str(start_iso).replace("Z", "+00:00"))
+        if s.tzinfo is None:
+            s = s.replace(tzinfo=timezone.utc)
+        return (s + timedelta(seconds=max(0, int(seconds)))).isoformat()
+    except Exception:
+        return _iso(None)
 
 
 def _seconds_between(start_iso: str, end_iso: str) -> int:

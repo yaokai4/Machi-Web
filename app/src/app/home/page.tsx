@@ -1,7 +1,42 @@
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
 import { dehydrate, HydrationBoundary, QueryClient } from "@tanstack/react-query";
 import HomeClient from "./HomeClient";
 import { prefetchRecommendFeedFirstPage } from "@/lib/server/feedPrefetch";
+
+// Server-side base URL for the Python backend (mirrors feedPrefetch.ts): a
+// Server Component must use an absolute URL because a relative fetch has no
+// origin on the server.
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8787";
+
+// Resolve the signed-in viewer's `country` server-side (best-effort, cookie
+// forwarded). HomeClient re-keys the recommend feed as
+// ["feed","recommend","",country] once the client session hydrates, so without
+// seeding that country-scoped key too, every logged-in user with a country
+// would re-fetch the identical first page right after hydration — wasting the
+// SSR prefetch. Returns "" on any error / guest so we simply skip the extra
+// seed (zero regression).
+async function prefetchViewerCountry(): Promise<string> {
+  try {
+    const cookieStore = await cookies();
+    const cookieHeader = cookieStore
+      .getAll()
+      .map((c) => `${c.name}=${c.value}`)
+      .join("; ");
+    if (!cookieHeader) return "";
+    const res = await fetch(`${API_BASE}/api/auth/me`, {
+      method: "GET",
+      headers: { Accept: "application/json", Cookie: cookieHeader },
+      cache: "no-store",
+    });
+    if (!res.ok) return "";
+    const data = (await res.json()) as { user?: { country?: unknown } | null };
+    const country = data?.user?.country;
+    return typeof country === "string" ? country : "";
+  } catch {
+    return "";
+  }
+}
 
 const title = "Machi | 在每一座城市，找到生活的回声";
 const description =
@@ -82,12 +117,21 @@ export default async function HomePage() {
   // waterfall. The query key MUST match HomeClient's default
   // (mode="recommend", no region) — see HomeClient.tsx useInfiniteQuery.
   const queryClient = new QueryClient();
-  const firstPage = await prefetchRecommendFeedFirstPage();
+  const [firstPage, viewerCountry] = await Promise.all([
+    prefetchRecommendFeedFirstPage(),
+    prefetchViewerCountry(),
+  ]);
   if (firstPage) {
-    queryClient.setQueryData(["feed", "recommend", "", ""], {
-      pages: [firstPage],
-      pageParams: [undefined],
-    });
+    const seed = { pages: [firstPage], pageParams: [undefined] };
+    // Guest / pre-hydration key.
+    queryClient.setQueryData(["feed", "recommend", "", ""], seed);
+    // Country-scoped key the hydrated client switches to for a logged-in
+    // viewer — seeding it (with the same personalised first page) means the
+    // post-hydration key change hits fresh cache instead of triggering a
+    // redundant /api/feed request.
+    if (viewerCountry) {
+      queryClient.setQueryData(["feed", "recommend", "", viewerCountry], seed);
+    }
   }
   const dehydratedState = dehydrate(queryClient);
 

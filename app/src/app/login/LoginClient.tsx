@@ -40,11 +40,17 @@ function mapLoginError(err: unknown, c: (typeof AUTH_COPY)[AuthLocale]): { field
     if (err.code === "invalid_captcha" || err.code === "captcha_expired") {
       return { field: "captcha", message: err.message || c.invalidCaptcha };
     }
-    if (err.status === 401 || err.code === "invalid_credentials") {
-      return { field: "password", message: c.loginInvalid };
-    }
-    if (err.status === 404 || err.code === "user_not_found") {
-      return { field: "handle", message: c.userNotFound };
+    // Both "no such user" (404) and "wrong password" (401) resolve to one
+    // non-attributed message so the login form can't be used to enumerate which
+    // usernames exist (OWASP A07). We deliberately don't tie it to a field —
+    // pointing at `handle` vs `password` would leak the same signal visually.
+    if (
+      err.status === 401 ||
+      err.status === 404 ||
+      err.code === "invalid_credentials" ||
+      err.code === "user_not_found"
+    ) {
+      return { message: c.loginInvalid };
     }
     if (err.status === 429 || err.code === "rate_limited") {
       return { message: c.rateLimited };

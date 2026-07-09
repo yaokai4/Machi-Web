@@ -10,6 +10,7 @@ import { api, APIError, type AdminUploadedFileItem } from "@/lib/api";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 const STATUSES = ["", "pending", "uploaded", "processing", "ready", "failed", "deleted"];
 const PURPOSES = [
@@ -73,6 +74,7 @@ export default function AdminUploadsPage() {
   const user = useSession((s) => s.user);
   const sessionStatus = useSession((s) => s.status);
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const qc = useQueryClient();
   const [q, setQ] = useState("");
   const [status, setStatus] = useState("");
@@ -229,7 +231,7 @@ export default function AdminUploadsPage() {
                             onClick={() => void openPrivateFile(f)}
                             disabled={openingFileId === f.id}
                             className="kx-button h-8 px-2"
-                            aria-label="下载私密文件"
+                            aria-label={t("aria_download_private_file")}
                             title="下载私密文件"
                           >
                             <Download className="h-3.5 w-3.5" />
@@ -240,7 +242,7 @@ export default function AdminUploadsPage() {
                             type="button"
                             onClick={() => patch.mutate({ id: f.id, body: { action: "restore" } })}
                             className="kx-button h-8 px-2"
-                            aria-label="恢复文件"
+                            aria-label={t("aria_restore_file")}
                             title="恢复文件"
                           >
                             <RotateCcw className="h-3.5 w-3.5" />
@@ -251,7 +253,7 @@ export default function AdminUploadsPage() {
                             type="button"
                             onClick={() => patch.mutate({ id: f.id, body: { action: "flag" } })}
                             className="kx-button h-8 px-2"
-                            aria-label="标记异常"
+                            aria-label={t("aria_flag_file")}
                             title="标记异常"
                           >
                             <FileWarning className="h-3.5 w-3.5" />
@@ -264,7 +266,7 @@ export default function AdminUploadsPage() {
                               if (window.confirm("确认将该文件标记为已删除？")) del.mutate(f.id);
                             }}
                             className="kx-button h-8 px-2 text-kx-danger"
-                            aria-label="删除文件"
+                            aria-label={t("aria_delete_file")}
                             title="删除文件"
                           >
                             <Trash2 className="h-3.5 w-3.5" />

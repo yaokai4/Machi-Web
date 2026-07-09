@@ -2,6 +2,7 @@
 
 import { AlertCircle, CheckCircle2 } from "lucide-react";
 import clsx from "clsx";
+import { useI18n, type I18nKey } from "@/lib/i18n";
 
 /// Wraps a form field with a label, an optional right-aligned hint and
 /// an inline error message. Centralizes the error visual so login,
@@ -58,28 +59,45 @@ export function FieldShell({
 /// Visual strength meter for password fields. Renders 4 bars that fill
 /// based on heuristic strength: length + variety. Pure presentational,
 /// the caller passes the raw value.
+const PW_STRENGTH_KEYS: I18nKey[] = [
+  "pw_strength_tooShort",
+  "pw_strength_weak",
+  "pw_strength_fair",
+  "pw_strength_good",
+  "pw_strength_strong",
+];
+
 export function PasswordStrength({ value }: { value: string }) {
+  const { t } = useI18n();
   const score = passwordScore(value);
   // 0..4
   const bars = [0, 1, 2, 3];
-  const label = ["太短", "较弱", "一般", "良好", "强"][score];
+  const label = t(PW_STRENGTH_KEYS[score]);
   const tone =
     score <= 1 ? "bg-rose-400" : score === 2 ? "bg-amber-400" : score === 3 ? "bg-sky-400" : "bg-emerald-500";
   return (
-    <div className="mt-2 flex items-center gap-2">
-      <div className="flex flex-1 gap-1">
+    // role=status + aria-label so screen readers hear the strength ("Password
+    // strength: Weak") instead of only seeing the decorative bars. Silent while
+    // empty so it doesn't announce on every keystroke of an empty field.
+    <div
+      className="mt-2 flex items-center gap-2"
+      role="status"
+      aria-live="polite"
+      aria-label={value ? `${t("pw_strength_label")}: ${label}` : undefined}
+    >
+      <div className="flex flex-1 gap-1" aria-hidden="true">
         {bars.map((i) => (
           <span
             key={i}
             className={clsx(
-              "h-1.5 flex-1 rounded-full transition-colors",
-              i < score ? tone : "bg-kx-stroke/50",
+              "h-1.5 flex-1 rounded-full transition-[background-color,transform] duration-300",
+              i < score ? `${tone} scale-y-100` : "bg-kx-stroke/40 scale-y-75",
             )}
           />
         ))}
       </div>
       {value ? (
-        <span className="text-[11px] font-bold text-kx-muted">{label}</span>
+        <span className="text-[11px] font-bold text-kx-muted tabular-nums">{label}</span>
       ) : null}
     </div>
   );

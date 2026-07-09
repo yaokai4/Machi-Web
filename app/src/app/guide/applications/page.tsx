@@ -20,6 +20,7 @@ import { GuideShell } from "@/components/guide/GuideKit";
 import { EmptyPanel } from "@/components/guide/GuideOS";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 type AppView = "board" | "list" | "timeline";
 
@@ -278,6 +279,7 @@ function ApplicationTimeline({ items }: { items: GuideApplication[] }) {
 }
 
 function ApplicationCard({ item, compact = false, onStage, onFavorite, onDelete }: { item: GuideApplication; compact?: boolean; onStage: (id: string, stage: string) => void; onFavorite?: (item: GuideApplication) => void; onDelete: (item: GuideApplication) => void }) {
+  const { t } = useI18n();
   return (
     <article className="kx-card p-4">
       <div className="flex items-start gap-3">
@@ -290,12 +292,12 @@ function ApplicationCard({ item, compact = false, onStage, onFavorite, onDelete 
             {item.interviewAt ? <Badge>{item.interviewAt.slice(0, 16).replace("T", " ")} 面试</Badge> : null}
             {item.priority === "high" ? <Badge warn>高优先级</Badge> : null}
           </div>
-          <select value={item.stage} onChange={(event) => onStage(item.id, event.target.value)} aria-label={`更新 ${item.name} 的阶段`} className="mt-3 min-h-11 w-full rounded-xl border border-kx-stroke/60 bg-kx-card px-2 text-xs font-bold text-kx-subtle">{STAGES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select>
+          <select value={item.stage} onChange={(event) => onStage(item.id, event.target.value)} aria-label={t("aria_update_stage").replace("{name}", item.name)} className="mt-3 min-h-11 w-full rounded-xl border border-kx-stroke/60 bg-kx-card px-2 text-xs font-bold text-kx-subtle">{STAGES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}</select>
           {!compact && item.stages.length ? <p className="mt-2 text-[11px] text-kx-muted">阶段记录 {item.stages.length} 条 · 最近更新 {item.updatedAt?.slice(0, 10)}</p> : null}
         </div>
         <div className="flex flex-col">
-          {onFavorite ? <button type="button" aria-label={item.favorite ? "取消收藏" : "收藏申请"} onClick={() => onFavorite(item)} className={`grid h-11 w-11 place-items-center rounded-xl ${item.favorite ? "text-amber-500" : "text-kx-muted hover:text-amber-500"}`}><Star className="h-4 w-4" fill={item.favorite ? "currentColor" : "none"} /></button> : null}
-          <button type="button" aria-label="删除申请" onClick={() => onDelete(item)} className="grid h-11 w-11 place-items-center rounded-xl text-kx-muted hover:bg-rose-500/10 hover:text-rose-500"><Trash2 className="h-4 w-4" /></button>
+          {onFavorite ? <button type="button" aria-label={item.favorite ? t("aria_unbookmark") : t("action_bookmark")} onClick={() => onFavorite(item)} className={`grid h-11 w-11 place-items-center rounded-xl ${item.favorite ? "text-amber-500" : "text-kx-muted hover:text-amber-500"}`}><Star className="h-4 w-4" fill={item.favorite ? "currentColor" : "none"} /></button> : null}
+          <button type="button" aria-label={t("aria_delete_application")} onClick={() => onDelete(item)} className="grid h-11 w-11 place-items-center rounded-xl text-kx-muted hover:bg-rose-500/10 hover:text-rose-500"><Trash2 className="h-4 w-4" /></button>
         </div>
       </div>
     </article>

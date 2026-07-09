@@ -10,10 +10,36 @@ throwaway dev DB). All identifiers are quoted. Types map
 TEXT/INTEGER/REAL/BLOB -> TEXT/BIGINT/DOUBLE PRECISION/BYTEA.
 
 SCOPE (honest): this is step 1 of the port — it moves *structure + data*.
-Foreign-key constraints and column DEFAULTs are intentionally omitted here
-(rows are copied verbatim; the app supplies values). Re-adding FKs/defaults and
-adapting server.py's SQLite-specific SQL (placeholders, INSERT OR REPLACE,
-LIKE→ILIKE, json_* ...) are the following steps.
+
+  * UNIQUE — inline ``UNIQUE(...)`` table constraints ARE now preserved (see
+    build_ddl / inline_unique_constraints). They were silently dropped in the
+    original port, which let duplicate rows accumulate on production Postgres
+    (duplicate conversations/blocks/likes, one WeChat openid on many users, a
+    handle-registration race). The live PG that was ported before this fix is
+    repaired forward by the migration chain (server_schema.py migrations
+    106–109 add the same UNIQUE indexes idempotently on the next deploy) and,
+    for a one-off manual pass, by scripts/migrate_restore_pg_constraints.py.
+
+  * FOREIGN KEY — intentionally omitted, by deliberate, standing decision (the
+    wallet_* / guide_orders / guide_reviews migrations document the same choice).
+    Rationale: SCHEMA uses NO ``ON DELETE CASCADE``, so a missing FK can at worst
+    leave a dangling child row, which every read path already filters out via
+    ``deleted_at IS NULL`` / JOIN existence — it is not silent data corruption
+    the way a lost UNIQUE is. Conversely, auto-adding a *validating* FK in the
+    deploy-time migration chain would ABORT the deploy the moment any pre-existing
+    orphan row exists (and orphans are expected on the lax-until-now PG), taking
+    the whole site down — strictly worse than the current live-but-lax state.
+    Adding FKs therefore stays a SUPERVISED, maintenance-window operation: clean
+    orphans first, then apply from the advisory list in
+    scripts/migrate_restore_pg_constraints.py (--show-fks), ideally as
+    ``ADD CONSTRAINT ... NOT VALID`` followed by a separate ``VALIDATE
+    CONSTRAINT`` to avoid a long exclusive lock. Application-layer referential
+    checks on the hard-delete paths (server.py) are the portable complement that
+    keeps the two backends' semantics aligned.
+
+Column DEFAULTs beyond literals are omitted here (rows are copied verbatim; the
+app supplies values). Adapting server.py's SQLite-specific SQL (placeholders,
+INSERT OR REPLACE, LIKE→ILIKE, json_* ...) is a following step.
 
 Usage:
   python migrate_sqlite_to_postgres.py --sqlite web/kaix.db --pg "dbname=machi_dev"
@@ -49,6 +75,37 @@ def sqlite_tables(scon: sqlite3.Connection) -> list[str]:
         "AND name NOT LIKE 'sqlite_%' ORDER BY name")]
 
 
+def inline_unique_constraints(scon: sqlite3.Connection, table: str) -> list[list[str]]:
+    """Return the table's inline ``UNIQUE(...)`` constraints as column lists.
+
+    ``PRAGMA table_info`` can't see these — SQLite implements an inline UNIQUE
+    as an auto-index (origin ``'u'``) whose ``sql`` is NULL, so it is invisible
+    to both table_info AND the "recreate indexes from sqlite_master" pass below.
+    That is exactly why the original port silently dropped uniqueness on
+    conversations / blocks / miniapp_openid_bindings / users.handle, letting
+    duplicate rows accumulate on production Postgres. We surface them here and
+    re-emit them as real PG table constraints so a fresh port keeps referential
+    uniqueness by construction.
+
+    Skipped: PRIMARY KEY (origin ``'pk'`` — already emitted from table_info) and
+    explicit ``CREATE [UNIQUE] INDEX`` (origin ``'c'`` — recreated verbatim from
+    sqlite_master, which preserves partial / expression indexes like
+    idx_users_email_unique). Partial UNIQUE constraints don't exist in SQLite, so
+    ``partial`` rows are skipped defensively.
+    """
+    out: list[list[str]] = []
+    for idx in scon.execute(f'PRAGMA index_list("{table}")'):
+        # columns: seq, name, unique, origin, partial
+        name, unique, origin = idx[1], idx[2], idx[3]
+        partial = idx[4] if len(idx) > 4 else 0
+        if not unique or origin != "u" or partial:
+            continue
+        cols = [r[2] for r in scon.execute(f'PRAGMA index_info("{name}")')]  # seqno, cid, name
+        if cols and all(c is not None for c in cols):  # skip expression columns (name is NULL)
+            out.append(cols)
+    return out
+
+
 def build_ddl(scon: sqlite3.Connection, table: str):
     cols = list(scon.execute(f'PRAGMA table_info("{table}")'))  # cid,name,type,notnull,dflt,pk
     defs = []
@@ -70,6 +127,11 @@ def build_ddl(scon: sqlite3.Connection, table: str):
     pk = sorted((c for c in cols if c[5]), key=lambda c: c[5])
     if pk:
         defs.append("PRIMARY KEY (" + ", ".join(q(c[1]) for c in pk) + ")")
+    # Preserve inline UNIQUE constraints so the port keeps referential
+    # uniqueness (see inline_unique_constraints). FOREIGN KEYs remain
+    # intentionally omitted — see the module docstring for that decision.
+    for ucols in inline_unique_constraints(scon, table):
+        defs.append("UNIQUE (" + ", ".join(q(c) for c in ucols) + ")")
     ddl = f"CREATE TABLE {q(table)} (\n  " + ",\n  ".join(defs) + "\n);"
     return ddl, [c[1] for c in cols]
 

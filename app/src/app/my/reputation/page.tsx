@@ -10,11 +10,13 @@ import type { KXReputationEvent, KXReputationLevel } from "@/lib/types";
 import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { useSession } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 import { fullDateTime } from "@/lib/format";
 
 export default function MyReputationPage() {
   const router = useRouter();
   const status = useSession((s) => s.status);
+  const { t } = useI18n();
 
   useEffect(() => {
     if (status === "unauthed") router.replace("/login?redirect=/my/reputation");
@@ -52,7 +54,7 @@ export default function MyReputationPage() {
             <button
               type="button"
               onClick={() => router.back()}
-              aria-label="返回"
+              aria-label={t("msg_back")}
               className="grid h-10 w-10 shrink-0 place-items-center rounded-full border border-kx-stroke/60 bg-kx-card text-kx-text transition hover:border-kx-accent/40 hover:text-kx-accent active:scale-95"
             >
               <ArrowLeft className="h-5 w-5" />

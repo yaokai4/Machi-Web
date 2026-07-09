@@ -9,6 +9,7 @@ import { EmptyPanel } from "@/components/guide/GuideOS";
 import { GuideAttachmentManager } from "@/components/guide/GuideAttachmentManager";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
+import { useI18n } from "@/lib/i18n";
 
 const categories = [
   ["residence_card", "在留卡"],
@@ -25,6 +26,7 @@ export default function GuideDocumentsPage() {
   const user = useSession((s) => s.user);
   const openAuthPrompt = useAuthPrompt((s) => s.open);
   const pushToast = useToasts((s) => s.push);
+  const { t } = useI18n();
   const queryClient = useQueryClient();
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
@@ -126,12 +128,12 @@ export default function GuideDocumentsPage() {
                         <GuideAttachmentManager entityType="guide_document" entityId={item.id} title="可选附件" compact />
                       </div>
                     </div>
-                    <button type="button" aria-label="编辑证件提醒" onClick={() => {
+                    <button type="button" aria-label={t("aria_edit_document_reminder")} onClick={() => {
                       setEditingId(item.id);
                       setForm({ category: item.category, title: item.title, expiresAt: item.expiresAt || "", reminderDaysBefore: String(item.reminderDaysBefore || 60), notes: item.notes });
                       window.scrollTo({ top: 0, behavior: "smooth" });
                     }} className="grid h-11 w-11 place-items-center rounded-xl text-kx-muted hover:bg-kx-accentSoft hover:text-kx-accent"><Pencil className="h-4 w-4" /></button>
-                    <button type="button" aria-label="删除证件提醒" onClick={() => {
+                    <button type="button" aria-label={t("aria_delete_document_reminder")} onClick={() => {
                       if (window.confirm(`确定删除“${item.title}”的到期提醒吗？此操作无法撤销。`)) remove.mutate(item.id);
                     }} className="grid h-11 w-11 place-items-center rounded-xl text-kx-muted hover:bg-rose-500/10 hover:text-rose-500"><Trash2 className="h-4 w-4" /></button>
                   </article>

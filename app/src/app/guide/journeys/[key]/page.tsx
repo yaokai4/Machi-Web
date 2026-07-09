@@ -9,7 +9,13 @@ import { guide, isGuideArticleStale, type GuideJourneyStep } from "@/lib/guide";
 import { GuideShell, GuideComingSoon, journeyIconFor, useGuideCountry } from "@/components/guide/GuideKit";
 import { InlineLoading, ErrorState } from "@/components/design/States";
 import { useAuthPrompt, useSession, useToasts } from "@/lib/store";
-import { appLocaleToGuideLanguage, useI18n } from "@/lib/i18n";
+import { appLocaleToGuideLanguage, useI18n, type Locale } from "@/lib/i18n";
+
+function pick(locale: Locale, zh: string, ja: string, en: string): string {
+  if (locale === "ja") return ja;
+  if (locale === "en") return en;
+  return zh;
+}
 
 export default function GuideJourneyDetailPage() {
   const params = useParams();
@@ -36,7 +42,7 @@ export default function GuideJourneyDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["guide", "journey", country, language, key] });
       queryClient.invalidateQueries({ queryKey: ["guide", "progress"] });
     },
-    onError: () => pushToast({ kind: "error", message: "进度未能保存，请稍后再试。" }),
+    onError: () => pushToast({ kind: "error", message: pick(locale, "进度未能保存，请稍后再试。", "進捗を保存できませんでした。しばらくしてから再度お試しください。", "Couldn't save your progress. Please try again shortly.") }),
   });
   const scheduleStep = useMutation({
     mutationFn: (vars: { stepKey: string; date: string }) =>
@@ -52,18 +58,18 @@ export default function GuideJourneyDetailPage() {
       queryClient.invalidateQueries({ queryKey: ["guide", "active-plan"] });
       queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
       queryClient.invalidateQueries({ queryKey: ["guide", "calendar"] });
-      pushToast({ kind: "success", message: "已安排到 Guide 日历。" });
+      pushToast({ kind: "success", message: pick(locale, "已安排到 Guide 日历。", "Guide カレンダーに追加しました。", "Added to your Guide calendar.") });
     },
-    onError: () => pushToast({ kind: "error", message: "安排失败，请稍后再试。" }),
+    onError: () => pushToast({ kind: "error", message: pick(locale, "安排失败，请稍后再试。", "追加に失敗しました。しばらくしてから再度お試しください。", "Couldn't schedule it. Please try again shortly.") }),
   });
   const startPlan = useMutation({
     mutationFn: () => guide.startPlan({ journeyKey: key, planType: data?.journey.audience || "guide" }),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["guide", "active-plan"] });
       queryClient.invalidateQueries({ queryKey: ["guide", "todos"] });
-      pushToast({ kind: "success", message: "计划已生成，Todo 已加入日历。" });
+      pushToast({ kind: "success", message: pick(locale, "计划已生成，Todo 已加入日历。", "計画を作成し、Todo をカレンダーに追加しました。", "Plan created — your to-dos are on the calendar.") });
     },
-    onError: () => pushToast({ kind: "error", message: "计划生成失败，请稍后再试。" }),
+    onError: () => pushToast({ kind: "error", message: pick(locale, "计划生成失败，请稍后再试。", "計画の作成に失敗しました。しばらくしてから再度お試しください。", "Couldn't create the plan. Please try again shortly.") }),
   });
 
   const data = q.data;
@@ -89,28 +95,35 @@ export default function GuideJourneyDetailPage() {
     scheduleStep.mutate({ stepKey: step.stepKey, date });
   };
 
+  const pathLabel = pick(locale, "路径", "パス", "Paths");
+
   if (country !== "jp") {
     return (
-      <GuideShell back={{ href: "/guide/goals", label: "路径" }}>
+      <GuideShell back={{ href: "/guide/goals", label: pathLabel }}>
         <GuideComingSoon />
       </GuideShell>
     );
   }
 
   return (
-    <GuideShell back={{ href: "/guide/goals", label: "路径" }}>
+    <GuideShell back={{ href: "/guide/goals", label: pathLabel }}>
       <div className="px-4 py-7 sm:px-7">
         {q.isLoading ? (
           <InlineLoading />
         ) : q.isError ? (
-          <ErrorState title="路径加载失败" subtitle="请稍后重试。" onRetry={() => q.refetch()} />
+          <ErrorState
+            title={pick(locale, "路径加载失败", "パスの読み込みに失敗しました", "Failed to load this path")}
+            subtitle={pick(locale, "请稍后重试。", "しばらくしてから再度お試しください。", "Please try again shortly.")}
+            onRetry={() => q.refetch()}
+          />
         ) : !data ? (
           <div className="rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-8 text-center text-sm text-kx-muted">
-            未找到该路径。
+            {pick(locale, "未找到该路径。", "このパスは見つかりませんでした。", "This path was not found.")}
           </div>
         ) : (
           <>
             <JourneyHero
+              locale={locale}
               icon={data.journey.icon}
               color={data.journey.color}
               title={data.journey.heroTitle || data.journey.title}
@@ -134,6 +147,7 @@ export default function GuideJourneyDetailPage() {
               {steps.map((step, index) => (
                 <StepRow
                   key={step.id}
+                  locale={locale}
                   step={step}
                   index={index + 1}
                   isDone={progress[step.stepKey]?.status === "done"}
@@ -155,6 +169,7 @@ export default function GuideJourneyDetailPage() {
 }
 
 function JourneyHero({
+  locale,
   icon,
   color,
   title,
@@ -168,6 +183,7 @@ function JourneyHero({
   pendingStart,
   onStart,
 }: {
+  locale: Locale;
   icon: string;
   color: string;
   title: string;
@@ -190,22 +206,22 @@ function JourneyHero({
         </span>
         <div className="min-w-0">
           <h1 className="text-2xl font-black leading-tight tracking-[-0.01em] text-kx-text">{title}</h1>
-          {estimatedDays > 0 ? <p className="mt-0.5 text-xs font-bold text-kx-muted">预计 {estimatedDays} 天</p> : null}
+          {estimatedDays > 0 ? <p className="mt-0.5 text-xs font-bold text-kx-muted">{pick(locale, `预计 ${estimatedDays} 天`, `目安 ${estimatedDays} 日`, `~${estimatedDays} days`)}</p> : null}
         </div>
       </div>
       {subtitle ? <p className="mt-3 text-sm leading-6 text-kx-subtle">{subtitle}</p> : null}
       <div className="mt-3 flex flex-wrap items-center gap-2 rounded-kx-md border border-kx-stroke/50 bg-kx-card/70 px-3 py-2 text-[11px] font-semibold leading-5 text-kx-muted">
         <span className="inline-flex items-center gap-1 text-kx-accent">
           <ShieldCheck className="h-3.5 w-3.5" />
-          可信路径
+          {pick(locale, "可信路径", "信頼できるパス", "Trusted path")}
         </span>
-        {updatedAt ? <span>更新 {compactDate(updatedAt)}</span> : null}
-        <span>政策、出愿和官方手续可能变化，执行前请确认最新公告。</span>
+        {updatedAt ? <span>{pick(locale, `更新 ${compactDate(updatedAt)}`, `更新 ${compactDate(updatedAt)}`, `Updated ${compactDate(updatedAt)}`)}</span> : null}
+        <span>{pick(locale, "政策、出愿和官方手续可能变化，执行前请确认最新公告。", "制度・出願・公的手続きは変更される場合があります。実行前に最新の公式情報をご確認ください。", "Policies, applications, and official procedures can change — confirm the latest official notices before acting.")}</span>
       </div>
       {total > 0 ? (
         <div className="mt-4">
           <div className="mb-1 flex items-center justify-between text-xs font-bold">
-            <span className="text-kx-accent">已完成 {done}/{total}</span>
+            <span className="text-kx-accent">{pick(locale, `已完成 ${done}/${total}`, `完了 ${done}/${total}`, `Done ${done}/${total}`)}</span>
             <span className="text-kx-muted">{pct}%</span>
           </div>
           <div className="h-2 w-full overflow-hidden rounded-full bg-kx-soft">
@@ -215,9 +231,9 @@ function JourneyHero({
       ) : null}
       <div className="mt-4 flex flex-wrap gap-2">
         <button type="button" onClick={onStart} disabled={pendingStart} className="kx-button-primary h-10 px-4 disabled:opacity-60">
-          <CalendarPlus className="h-4 w-4" /> {loggedIn ? "生成 Todo 计划" : "登录后生成计划"}
+          <CalendarPlus className="h-4 w-4" /> {loggedIn ? pick(locale, "生成 Todo 计划", "Todo 計画を作成", "Generate to-do plan") : pick(locale, "登录后生成计划", "ログインして計画を作成", "Sign in to generate a plan")}
         </button>
-        <Link href="/guide/plan" className="kx-button-secondary h-10 px-4">查看我的计划</Link>
+        <Link href="/guide/plan" className="kx-button-secondary h-10 px-4">{pick(locale, "查看我的计划", "自分の計画を見る", "View my plan")}</Link>
       </div>
     </header>
   );
@@ -234,6 +250,7 @@ function isoShift(days: number): string {
 }
 
 function StepRow({
+  locale,
   step,
   index,
   isDone,
@@ -242,6 +259,7 @@ function StepRow({
   onToggle,
   onSchedule,
 }: {
+  locale: Locale;
   step: GuideJourneyStep;
   index: number;
   isDone: boolean;
@@ -257,17 +275,17 @@ function StepRow({
           type="button"
           onClick={onToggle}
           disabled={pending}
-          aria-label={isDone ? "标记为未完成" : "标记为完成"}
+          aria-label={isDone ? pick(locale, "标记为未完成", "未完了にする", "Mark as not done") : pick(locale, "标记为完成", "完了にする", "Mark as done")}
           className="mt-0.5 shrink-0 text-kx-accent disabled:opacity-50"
         >
           {isDone ? <CheckCircle2 className="h-6 w-6" /> : <Circle className="h-6 w-6 text-kx-muted" />}
         </button>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] font-black text-kx-accent">第 {index} 步</span>
-            {!step.required ? <Tag text="可选" /> : null}
-            {step.estimatedMinutes > 0 ? <Tag text={`建议预留 ${Math.min(step.estimatedMinutes, 30)} 分`} icon={<Clock3 className="h-3 w-3" />} /> : null}
-            {scheduledDate ? <Tag text={`已安排 ${String(scheduledDate).slice(0, 10)}`} /> : null}
+            <span className="text-[11px] font-black text-kx-accent">{pick(locale, `第 ${index} 步`, `ステップ ${index}`, `Step ${index}`)}</span>
+            {!step.required ? <Tag text={pick(locale, "可选", "任意", "Optional")} /> : null}
+            {step.estimatedMinutes > 0 ? <Tag text={pick(locale, `建议预留 ${Math.min(step.estimatedMinutes, 30)} 分`, `目安 ${Math.min(step.estimatedMinutes, 30)} 分`, `~${Math.min(step.estimatedMinutes, 30)} min`)} icon={<Clock3 className="h-3 w-3" />} /> : null}
+            {scheduledDate ? <Tag text={pick(locale, `已安排 ${String(scheduledDate).slice(0, 10)}`, `予定 ${String(scheduledDate).slice(0, 10)}`, `Scheduled ${String(scheduledDate).slice(0, 10)}`)} /> : null}
             {step.deadlineHint ? <Tag text={step.deadlineHint} tone="warn" /> : null}
           </div>
           <h3 className={"mt-1 text-[15px] font-black " + (isDone ? "text-kx-muted line-through" : "text-kx-text")}>
@@ -290,7 +308,7 @@ function StepRow({
                     <span className="truncate">{a.title}</span>
                     {stamp ? (
                       <span className={"ml-auto shrink-0 text-[10px] font-medium " + (stale ? "text-amber-600" : "text-kx-subtle")}>
-                        {stale ? "需复核 · " : "更新于 "}{stamp}
+                        {stale ? pick(locale, "需复核 · ", "要確認 · ", "Review · ") : pick(locale, "更新于 ", "更新 ", "Updated ")}{stamp}
                       </span>
                     ) : null}
                   </Link>
@@ -316,11 +334,11 @@ function StepRow({
 
           {!isDone ? (
             <div className="mt-3 flex flex-wrap items-center gap-1.5">
-              <span className="mr-1 text-[11px] font-bold text-kx-muted">安排到日历</span>
+              <span className="mr-1 text-[11px] font-bold text-kx-muted">{pick(locale, "安排到日历", "カレンダーに追加", "Add to calendar")}</span>
               {[
-                ["今天", 0],
-                ["明天", 1],
-                ["+7 天", 7],
+                [pick(locale, "今天", "今日", "Today"), 0],
+                [pick(locale, "明天", "明日", "Tomorrow"), 1],
+                [pick(locale, "+7 天", "+7 日", "+7 days"), 7],
               ].map(([label, days]) => (
                 <button
                   key={String(label)}
@@ -340,7 +358,7 @@ function StepRow({
               href={`/guide/goals/${encodeURIComponent(step.actionTarget)}`}
               className="mt-3 inline-flex items-center gap-1.5 text-xs font-bold text-kx-accent hover:underline"
             >
-              <Signpost className="h-3.5 w-3.5" /> 查看该路径
+              <Signpost className="h-3.5 w-3.5" /> {pick(locale, "查看该路径", "このパスを見る", "View this path")}
             </Link>
           ) : null}
         </div>

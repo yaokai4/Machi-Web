@@ -34,6 +34,10 @@ export const metadata: Metadata = {
 
 export default function EnglishLandingPage() {
   const copy = marketingCopy.en;
+  // Mirror the root "/" structured data so this locale-prefixed canonical keeps
+  // its Sitelinks Searchbox (SearchAction) and Organization knowledge-panel
+  // signals — /en is an hreflang-designated canonical, so the signal must live
+  // here too, not only on "/".
   const ld = {
     "@context": "https://schema.org",
     "@type": "WebSite",
@@ -41,12 +45,35 @@ export default function EnglishLandingPage() {
     url: "https://www.machicity.com/en",
     description,
     inLanguage: "en-US",
+    potentialAction: {
+      "@type": "SearchAction",
+      target: "https://www.machicity.com/search?q={search_term_string}",
+      "query-input": "required name=search_term_string",
+    },
+  };
+  const org = {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    name: "Machi",
+    url: "https://www.machicity.com",
+    logo: "https://www.machicity.com/icon.svg",
+    slogan: copy.brandStory.title,
+    founder: {
+      "@type": "Person",
+      name: "Yao Kai / YAOKAI",
+      jobTitle: "Founder",
+    },
+    sameAs: ["https://www.machicity.com"],
   };
   return (
     <>
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(ld) }}
+      />
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(org) }}
       />
       <main
         id="top"

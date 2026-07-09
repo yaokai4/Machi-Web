@@ -375,21 +375,38 @@ function ChannelHeroInner({ spec, title, subtitle }: { spec: ExploreChannelSpec;
 }
 
 function channelHeroClass(channel: ExploreChannelSlug, active?: boolean) {
+  // Light: a bright pastel gradient. Dark: the light `via-white` stop reads as
+  // a near-white card that swallows the near-white text tokens (text-kx-text/90
+  // / text-kx-subtle) — contrast collapses to ~1–2:1. So each channel also
+  // ships a dark: gradient that flips the mid-stop to the semantic card surface
+  // (kx-card) and keeps only a faint color tint at the corners, so the
+  // near-white text stays legible in dark mode.
   const accent = {
-    market: "from-emerald-50/90 via-white to-teal-50/90 hover:border-emerald-300/70",
-    housing: "from-indigo-50/90 via-white to-sky-50/90 hover:border-indigo-300/70",
-    jobs: "from-violet-50/90 via-white to-fuchsia-50/80 hover:border-violet-300/70",
-    services: "from-orange-50/95 via-white to-rose-50/80 hover:border-orange-300/70",
-    guide: "from-emerald-50/80 via-white to-white hover:border-emerald-300/60",
-    news: "from-blue-50/80 via-white to-white hover:border-blue-300/60",
-    deals: "from-rose-50/80 via-white to-white hover:border-rose-300/60",
-    groups: "from-fuchsia-50/80 via-white to-white hover:border-fuchsia-300/60",
-    qa: "from-blue-50/80 via-white to-white hover:border-blue-300/60",
+    market:
+      "from-emerald-50/90 via-white to-teal-50/90 hover:border-emerald-300/70 dark:from-emerald-500/12 dark:via-kx-card dark:to-teal-500/12 dark:hover:border-emerald-400/45",
+    housing:
+      "from-indigo-50/90 via-white to-sky-50/90 hover:border-indigo-300/70 dark:from-indigo-500/12 dark:via-kx-card dark:to-sky-500/12 dark:hover:border-indigo-400/45",
+    jobs:
+      "from-violet-50/90 via-white to-fuchsia-50/80 hover:border-violet-300/70 dark:from-violet-500/12 dark:via-kx-card dark:to-fuchsia-500/12 dark:hover:border-violet-400/45",
+    services:
+      "from-orange-50/95 via-white to-rose-50/80 hover:border-orange-300/70 dark:from-orange-500/12 dark:via-kx-card dark:to-rose-500/12 dark:hover:border-orange-400/45",
+    guide:
+      "from-emerald-50/80 via-white to-white hover:border-emerald-300/60 dark:from-emerald-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-emerald-400/40",
+    news:
+      "from-blue-50/80 via-white to-white hover:border-blue-300/60 dark:from-blue-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-blue-400/40",
+    deals:
+      "from-rose-50/80 via-white to-white hover:border-rose-300/60 dark:from-rose-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-rose-400/40",
+    groups:
+      "from-fuchsia-50/80 via-white to-white hover:border-fuchsia-300/60 dark:from-fuchsia-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-fuchsia-400/40",
+    qa:
+      "from-blue-50/80 via-white to-white hover:border-blue-300/60 dark:from-blue-500/12 dark:via-kx-card dark:to-kx-card dark:hover:border-blue-400/40",
   } satisfies Record<ExploreChannelSlug, string>;
   return [
     "group relative flex min-h-[112px] min-w-0 flex-row items-center gap-3 overflow-hidden rounded-kx-lg border p-3 text-left sm:gap-3.5 sm:p-3.5",
     "bg-gradient-to-br shadow-[0_10px_34px_-26px_rgba(15,23,42,0.5)] transition-all duration-200 ease-out",
-    "before:absolute before:-right-12 before:-top-14 before:h-28 before:w-28 before:rounded-full before:bg-white/45 before:blur-2xl before:content-['']",
+    // The soft top-right glow is a bright white blob in light mode; dim it in
+    // dark so it doesn't punch a hot spot through the dark card.
+    "before:absolute before:-right-12 before:-top-14 before:h-28 before:w-28 before:rounded-full before:bg-white/45 before:blur-2xl before:content-[''] dark:before:bg-white/[0.04]",
     "hover:-translate-y-0.5 hover:shadow-[0_22px_52px_-32px_rgba(15,23,42,0.55)]",
     accent[channel],
     active ? "border-kx-accent/45 bg-kx-accentSoft/60 ring-2 ring-kx-accent/20" : "border-kx-stroke/45",

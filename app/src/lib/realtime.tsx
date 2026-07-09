@@ -63,6 +63,11 @@ export function useRealtime() {
         scheduleReconnect();
         return;
       }
+      // The token request is async: the component may have unmounted while it
+      // was in flight. `cleanup` already ran (closed=true) but couldn't reach
+      // the EventSource/renewTimer we're about to create — so bail here, else
+      // we'd leak a stray stream + rotation timer that nothing can close.
+      if (closed) return;
       try {
         es = new EventSource(`/api/events?token=${encodeURIComponent(sseToken)}`);
       } catch {
