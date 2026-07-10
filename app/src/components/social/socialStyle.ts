@@ -261,6 +261,10 @@ export interface SocialCopy {
     opError: string;
     deleteError: string;
     sendError: string;
+    // cover(约局封面)
+    addCover: string;
+    coverAlt: string;
+    coverUploadError: string;
   };
   events: {
     all: string;
@@ -373,6 +377,29 @@ export interface SocialCopy {
     noAttendees: string;
     statusGoing: string;
     statusWaitlist: string;
+    // ── luma 化:加日历 / 审核制 / 主办方名单工具(approve·decline·checkin·broadcast)──
+    host: {
+      addToCalendar: string;
+      pendingReview: string;
+      approvalToggle: string;
+      approvalHint: string;
+      approve: string;
+      decline: string;
+      remove: string;
+      checkIn: string;
+      undoCheckIn: string;
+      checkedIn: string;
+      broadcast: string;
+      broadcastTitle: string;
+      broadcastPlaceholder: string;
+      broadcastSend: string;
+      broadcastSent: (n: number) => string;
+      broadcastError: string;
+      statusPending: string;
+      statusCheckedIn: string;
+      guestList: string;
+      seeAll: string;
+    };
   };
 }
 
@@ -428,6 +455,9 @@ const SOCIAL_COPY: Record<CopyLang, SocialCopy> = {
       opError: "操作失败",
       deleteError: "删除失败",
       sendError: "发送失败",
+      addCover: "添加封面(可选)",
+      coverAlt: "房间封面",
+      coverUploadError: "封面上传失败,换一张试试",
     },
     events: {
       all: "全部活动",
@@ -536,6 +566,28 @@ const SOCIAL_COPY: Record<CopyLang, SocialCopy> = {
       noAttendees: "还没有人报名。",
       statusGoing: "参加",
       statusWaitlist: "候补",
+      host: {
+        addToCalendar: "添加到日历",
+        pendingReview: "待主办方审核",
+        approvalToggle: "报名需要我审核",
+        approvalHint: "开启后,报名先进入待审核,由你逐个通过或拒绝。",
+        approve: "通过",
+        decline: "拒绝",
+        remove: "移除",
+        checkIn: "签到",
+        undoCheckIn: "撤销签到",
+        checkedIn: "已签到",
+        broadcast: "群发通知",
+        broadcastTitle: "给参加者群发",
+        broadcastPlaceholder: "写点什么发给所有参加者(如场地变更、集合方式)…",
+        broadcastSend: "发送",
+        broadcastSent: (n: number) => `已发送给 ${n} 人`,
+        broadcastError: "发送失败,请重试",
+        statusPending: "待审核",
+        statusCheckedIn: "已签到",
+        guestList: "参加者",
+        seeAll: "查看全部",
+      },
     },
   },
   ja: {
@@ -589,6 +641,9 @@ const SOCIAL_COPY: Record<CopyLang, SocialCopy> = {
       opError: "操作に失敗しました",
       deleteError: "削除に失敗しました",
       sendError: "送信に失敗しました",
+      addCover: "カバー画像を追加(任意)",
+      coverAlt: "ルームのカバー",
+      coverUploadError: "カバー画像をアップロードできませんでした",
     },
     events: {
       all: "すべてのイベント",
@@ -697,6 +752,28 @@ const SOCIAL_COPY: Record<CopyLang, SocialCopy> = {
       noAttendees: "まだ参加者はいません。",
       statusGoing: "参加",
       statusWaitlist: "キャンセル待ち",
+      host: {
+        addToCalendar: "カレンダーに追加",
+        pendingReview: "主催者の承認待ち",
+        approvalToggle: "参加に承認を必須にする",
+        approvalHint: "オンにすると、申込はまず承認待ちになり、あなたが個別に承認・却下します。",
+        approve: "承認",
+        decline: "却下",
+        remove: "削除",
+        checkIn: "受付",
+        undoCheckIn: "受付を取消",
+        checkedIn: "受付済み",
+        broadcast: "一斉連絡",
+        broadcastTitle: "参加者へ一斉連絡",
+        broadcastPlaceholder: "参加者全員へ(会場変更・集合方法など)…",
+        broadcastSend: "送信",
+        broadcastSent: (n: number) => `${n}人に送信しました`,
+        broadcastError: "送信に失敗しました",
+        statusPending: "承認待ち",
+        statusCheckedIn: "受付済み",
+        guestList: "参加者",
+        seeAll: "すべて表示",
+      },
     },
   },
   en: {
@@ -750,6 +827,9 @@ const SOCIAL_COPY: Record<CopyLang, SocialCopy> = {
       opError: "Something went wrong",
       deleteError: "Couldn't delete",
       sendError: "Couldn't send",
+      addCover: "Add a cover (optional)",
+      coverAlt: "Room cover",
+      coverUploadError: "Couldn't upload the cover, try another",
     },
     events: {
       all: "All events",
@@ -858,6 +938,28 @@ const SOCIAL_COPY: Record<CopyLang, SocialCopy> = {
       noAttendees: "No one has registered yet.",
       statusGoing: "Going",
       statusWaitlist: "Waitlist",
+      host: {
+        addToCalendar: "Add to calendar",
+        pendingReview: "Pending approval",
+        approvalToggle: "Require my approval to join",
+        approvalHint: "When on, registrations wait for your approval — you approve or decline each one.",
+        approve: "Approve",
+        decline: "Decline",
+        remove: "Remove",
+        checkIn: "Check in",
+        undoCheckIn: "Undo check-in",
+        checkedIn: "Checked in",
+        broadcast: "Broadcast",
+        broadcastTitle: "Message all guests",
+        broadcastPlaceholder: "Send an update to everyone going (venue change, meeting point)…",
+        broadcastSend: "Send",
+        broadcastSent: (n: number) => `Sent to ${n} ${n === 1 ? "guest" : "guests"}`,
+        broadcastError: "Couldn't send, try again",
+        statusPending: "Pending",
+        statusCheckedIn: "Checked in",
+        guestList: "Guests",
+        seeAll: "See all",
+      },
     },
   },
 };

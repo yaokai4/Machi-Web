@@ -41,7 +41,9 @@ export default function CreateEventPage() {
   const [priceText, setPriceText] = useState("");
   const [externalUrl, setExternalUrl] = useState("");
   const [coverUrl, setCoverUrl] = useState("");
+  const [coverFileId, setCoverFileId] = useState("");
   const [coverUploading, setCoverUploading] = useState(false);
+  const [requiresApproval, setRequiresApproval] = useState(false);
   const [fields, setFields] = useState<DraftField[]>([]);
   const [error, setError] = useState("");
 
@@ -62,6 +64,8 @@ export default function CreateEventPage() {
         description: description.trim(),
         category,
         cover_url: coverUrl,
+        cover_file_id: coverFileId,
+        requires_approval: requiresApproval,
         starts_at: startsAt ? new Date(startsAt).toISOString() : "",
         ends_at: endsAt ? new Date(endsAt).toISOString() : "",
         venue_name: venueName.trim(),
@@ -82,9 +86,11 @@ export default function CreateEventPage() {
     setCoverUploading(true);
     setError("");
     try {
-      const uploaded = await api.uploadFile(file, { purpose: "post_image", entityType: "event" });
+      const uploaded = await api.uploadFile(file, { purpose: "event_cover", entityType: "event" });
       const media = uploaded.media as { publicUrl?: string; url?: string };
-      setCoverUrl(media.publicUrl || media.url || "");
+      const url = media.publicUrl || media.url || "";
+      setCoverUrl(url);
+      setCoverFileId(url ? uploaded.file.id : "");
     } catch (err) {
       setError((err as Error).message || c.coverUploadError);
     } finally {
@@ -211,6 +217,18 @@ export default function CreateEventPage() {
             <input className="kx-input" value={externalUrl} onChange={(e) => setExternalUrl(e.target.value)} placeholder="https://…" maxLength={500} />
           </label>
           <p className="text-[11px] font-semibold text-kx-muted/80">{c.feeHint}</p>
+          <div className="space-y-1.5">
+            <label className="inline-flex cursor-pointer items-center gap-1.5">
+              <input
+                type="checkbox"
+                checked={requiresApproval}
+                onChange={(e) => setRequiresApproval(e.target.checked)}
+                className="h-3.5 w-3.5 accent-[rgb(var(--kx-accent))]"
+              />
+              <span className="text-xs font-black text-kx-muted">{c.host.approvalToggle}</span>
+            </label>
+            <p className="text-[11px] font-semibold text-kx-muted/80">{c.host.approvalHint}</p>
+          </div>
         </div>
 
         {/* 报名表单字段 */}

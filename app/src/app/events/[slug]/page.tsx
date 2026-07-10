@@ -137,6 +137,26 @@ function RegistrationModal({
   );
 }
 
+// 「加到 Google 日历」的模板链接:纯客户端拼装,时间统一转 UTC yyyymmddThhmmssZ。
+// 无需登录,访客也能加日历(公开动作)。缺结束时间时按开始 +2h 兜底。
+function gcalDate(d: Date): string {
+  return d.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+}
+function googleCalendarUrl(event: KXEvent): string | null {
+  const start = parseISO(event.starts_at);
+  if (!start) return null;
+  const end = parseISO(event.ends_at) ?? new Date(start.getTime() + 2 * 60 * 60 * 1000);
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: event.title || "",
+    dates: `${gcalDate(start)}/${gcalDate(end)}`,
+  });
+  if (event.description) params.set("details", event.description);
+  const location = [event.venue_name, event.address].filter(Boolean).join(", ");
+  if (location) params.set("location", location);
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
 export default function EventDetailPage() {
   const params = useParams<{ slug: string }>();
   const slug = decodeURIComponent(params.slug);
@@ -148,6 +168,7 @@ export default function EventDetailPage() {
   const copy = socialCopy(locale);
   const c = copy.events;
   const [modalOpen, setModalOpen] = useState(false);
+  const [guestsExpanded, setGuestsExpanded] = useState(false);
 
   const query = useQuery({
     queryKey: ["event", slug],
@@ -218,6 +239,11 @@ export default function EventDetailPage() {
     return false;
   })();
   const coverSrc = event.cover_url ? sameOriginApiUrl(event.cover_url) : null;
+  // 氛围底用缩略图(WebP worker 完成前会短暂等于原图,自动升级);大图英雄区保留原图。
+  const coverThumb = event.cover_thumb_url ?? event.cover_url;
+  const coverThumbSrc = coverThumb ? sameOriginApiUrl(coverThumb) : null;
+  const gcalUrl = googleCalendarUrl(event);
+  const guests = (event.attendees_preview ?? []).filter((u) => u.display_name);
   const shareUrl = typeof window !== "undefined" ? window.location.href : `/events/${slug}`;
 
   return (
@@ -227,7 +253,7 @@ export default function EventDetailPage() {
         {coverSrc ? (
           <div className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[420px] overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={coverSrc} alt="" className="h-full w-full scale-110 object-cover opacity-30 blur-3xl" aria-hidden />
+            <img src={coverThumbSrc ?? coverSrc} alt="" className="h-full w-full scale-110 object-cover opacity-30 blur-3xl" aria-hidden />
             <div className="absolute inset-0 bg-gradient-to-b from-transparent via-kx-bg/60 to-kx-bg" />
           </div>
         ) : (
@@ -370,6 +396,10 @@ export default function EventDetailPage() {
                     <p className="inline-flex items-center gap-1.5 text-sm font-black text-amber-600">
                       <Hourglass className="h-4 w-4" /> {c.waitlisted}
                     </p>
+                  ) : event.viewer_status === "pending" ? (
+                    <p className="inline-flex items-center gap-1.5 text-sm font-black text-amber-600">
+                      <Hourglass className="h-4 w-4" /> {c.host.pendingReview}
+                    </p>
                   ) : spotsLeft !== null ? (
                     <p className={`text-sm font-black ${spotsLeft > 0 ? "text-kx-accent" : "text-kx-heat"}`}>
                       {spotsLeft > 0 ? c.spotsLeft(spotsLeft) : c.fullWaitlist}
@@ -394,6 +424,33 @@ export default function EventDetailPage() {
                   </div>
                 ) : null}
 
+                {/* 公开参加者名单(仅名字,不含答卷/隐私);已取消活动隐藏 */}
+                {event.status !== "cancelled" && guests.length > 0 ? (
+                  <div className="mt-2">
+                    <button
+                      type="button"
+                      onClick={() => setGuestsExpanded((v) => !v)}
+                      className="text-xs font-black text-kx-accent underline-offset-2 transition hover:underline"
+                      aria-expanded={guestsExpanded}
+                    >
+                      {c.host.seeAll}
+                    </button>
+                    {guestsExpanded ? (
+                      <div className="mt-2 rounded-2xl bg-kx-soft/60 p-3">
+                        <p className="text-[11px] font-black uppercase tracking-wider text-kx-muted">{c.host.guestList}</p>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {guests.map((user) => (
+                            <span key={user.id} className="inline-flex items-center gap-1.5 rounded-full bg-kx-card px-2.5 py-1 text-xs font-bold shadow-sm">
+                              <Avatar user={user} size={20} />
+                              {user.display_name}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
                 <div className="mt-4 space-y-2">
                   {event.status === "cancelled" ? (
                     <div className="grid h-12 place-items-center rounded-full bg-kx-soft text-sm font-black text-kx-muted">{c.cancelled}</div>
@@ -401,7 +458,7 @@ export default function EventDetailPage() {
                     <div className="grid h-12 place-items-center rounded-full bg-kx-soft text-sm font-black text-kx-muted">{c.ended}</div>
                   ) : isOrganizer ? (
                     <div className="grid h-12 place-items-center rounded-full bg-kx-soft text-sm font-black text-kx-muted">{c.youOrganizer}</div>
-                  ) : event.viewer_status === "going" || event.viewer_status === "waitlist" ? (
+                  ) : event.viewer_status === "going" || event.viewer_status === "waitlist" || event.viewer_status === "pending" ? (
                     <button
                       type="button"
                       onClick={() => cancelRegistration.mutate()}
@@ -431,6 +488,34 @@ export default function EventDetailPage() {
                       {c.external}
                       <ArrowUpRight className="h-3.5 w-3.5" />
                     </a>
+                  ) : null}
+
+                  {/* 加日历(公开动作,访客无需登录):Google 模板 + .ics 下载 */}
+                  {event.status !== "cancelled" ? (
+                    <div className="pt-1">
+                      <p className="mb-1.5 flex items-center gap-1.5 text-[11px] font-black uppercase tracking-wider text-kx-muted">
+                        <CalendarDays className="h-3 w-3" /> {c.host.addToCalendar}
+                      </p>
+                      <div className="flex gap-2">
+                        {gcalUrl ? (
+                          <a
+                            href={gcalUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-full border border-kx-stroke/70 text-xs font-black text-kx-text transition hover:bg-kx-soft"
+                          >
+                            Google Calendar
+                          </a>
+                        ) : null}
+                        <a
+                          href={api.eventCalendarUrl(slug)}
+                          download
+                          className="inline-flex h-10 flex-1 items-center justify-center gap-1.5 rounded-full border border-kx-stroke/70 text-xs font-black text-kx-text transition hover:bg-kx-soft"
+                        >
+                          .ics
+                        </a>
+                      </div>
+                    </div>
                   ) : null}
                 </div>
                 <p className="mt-3 text-center text-[11px] font-semibold text-kx-muted/80">

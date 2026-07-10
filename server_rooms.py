@@ -15,6 +15,7 @@ Money is never touched here.
 """
 from __future__ import annotations
 
+import json
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -96,6 +97,29 @@ def _brief_user(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def cover_thumb_url(conn, cover_file_id: str, fallback: str = "") -> str:
+    """把约局封面 cover_file_id 解析成异步生成的小缩略图 WebP,列表卡片用它而非原图。
+    未就绪前退回原图 fallback。自包含查 uploaded_files.metadata,保持模块纯净。"""
+    if not cover_file_id:
+        return fallback
+    try:
+        row = conn.execute(
+            "SELECT metadata FROM uploaded_files WHERE id = ? AND deleted_at IS NULL",
+            (cover_file_id,),
+        ).fetchone()
+    except Exception:
+        return fallback
+    if not row:
+        return fallback
+    try:
+        meta = json.loads(dict(row).get("metadata") or "{}")
+    except Exception:
+        meta = {}
+    variants = meta.get("variants") if isinstance(meta.get("variants"), dict) else {}
+    thumb = variants.get("thumbnail") if isinstance(variants, dict) else ""
+    return thumb or meta.get("thumbnail_url") or fallback
+
+
 def _member_rows(conn, room_id: str, limit: int = 0) -> list[dict[str, Any]]:
     sql = (
         "SELECT u.id, u.handle, u.display_name, u.avatar_url, u.avatar_symbol,"
@@ -139,10 +163,18 @@ def serialize_room(
             viewer_role = m["role"]
     capacity = int(row.get("capacity") or 0)
     member_count = int(row.get("member_count") or 0)
+    cover = row.get("cover_url", "") or ""
+    cover_thumb = cover_thumb_url(conn, row.get("cover_file_id", "") or "", cover)
     return {
         "id": room_id,
         "title": row.get("title", ""),
         "description": row.get("description", ""),
+        "cover_url": cover,
+        "coverUrl": cover,
+        "cover_thumb_url": cover_thumb,
+        "coverThumbUrl": cover_thumb,
+        "cover_file_id": row.get("cover_file_id", "") or "",
+        "coverFileId": row.get("cover_file_id", "") or "",
         "room_type": row.get("room_type", "chat"),
         "roomType": row.get("room_type", "chat"),
         "room_type_label": room_type_label(row.get("room_type", "")),
@@ -261,6 +293,8 @@ def create_room(
     location_hint: str = "",
     starts_at: str = "",
     capacity: int = 0,
+    cover_url: str = "",
+    cover_file_id: str = "",
     now: Optional[str] = None,
 ) -> dict[str, Any]:
     title = str(title or "").strip()[:MAX_TITLE_LEN]
@@ -269,6 +303,8 @@ def create_room(
     description = str(description or "").strip()[:MAX_DESCRIPTION_LEN]
     location_hint = str(location_hint or "").strip()[:MAX_LOCATION_LEN]
     starts_at = str(starts_at or "").strip()[:64]
+    cover_url = str(cover_url or "").strip()[:500]
+    cover_file_id = str(cover_file_id or "").strip()[:64]
     try:
         capacity = max(0, min(int(capacity or 0), MAX_CAPACITY))
     except (TypeError, ValueError):
@@ -285,13 +321,13 @@ def create_room(
     conn.execute(
         "INSERT INTO social_rooms (id, host_user_id, title, description, room_type,"
         " country_code, city_slug, region_code, location_hint, starts_at, capacity,"
-        " status, member_count, message_count, last_activity_at, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, 0, ?, ?, ?)",
+        " cover_url, cover_file_id, status, member_count, message_count, last_activity_at, created_at, updated_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 1, 0, ?, ?, ?)",
         (
             room_id, host_user_id, title, description, normalize_room_type(room_type),
             (country_code or "jp").strip().lower(), (city_slug or "").strip().lower(),
             (region_code or "").strip().lower(), location_hint, starts_at, capacity,
-            ts, ts, ts,
+            cover_url, cover_file_id, ts, ts, ts,
         ),
     )
     conn.execute(
@@ -329,6 +365,10 @@ def update_room(
         sets.append("location_hint = ?"); params.append(str(data.get("location_hint") or data.get("locationHint") or "").strip()[:MAX_LOCATION_LEN])
     if "starts_at" in data or "startsAt" in data:
         sets.append("starts_at = ?"); params.append(str(data.get("starts_at") or data.get("startsAt") or "").strip()[:64])
+    if "cover_url" in data or "coverUrl" in data:
+        sets.append("cover_url = ?"); params.append(str(data.get("cover_url") or data.get("coverUrl") or "").strip()[:500])
+    if "cover_file_id" in data or "coverFileId" in data:
+        sets.append("cover_file_id = ?"); params.append(str(data.get("cover_file_id") or data.get("coverFileId") or "").strip()[:64])
     if "capacity" in data:
         try:
             cap = max(0, min(int(data.get("capacity") or 0), MAX_CAPACITY))

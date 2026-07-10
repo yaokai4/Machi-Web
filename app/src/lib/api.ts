@@ -395,6 +395,8 @@ export type UploadPurpose =
   | "business_logo"
   | "business_cover"
   | "business_verification_file"
+  | "event_cover"
+  | "room_cover"
   | "message_image"
   | "message_video"
   | "message_file"
@@ -2478,6 +2480,7 @@ export const api = {
   async createRoom(payload: {
     title: string; description?: string; room_type?: string; country_code?: string;
     city_slug?: string; region_code?: string; location_hint?: string; starts_at?: string; capacity?: number;
+    cover_url?: string; cover_file_id?: string;
   }): Promise<KXRoom> {
     const data = await request<{ room: KXRoom }>("POST", "/api/rooms", payload);
     return data.room;
@@ -2554,6 +2557,23 @@ export const api = {
   async replaceEventFormFields(idOrSlug: string, fields: Partial<KXEventFormField>[]): Promise<KXEventFormField[]> {
     const data = await request<{ form_fields: KXEventFormField[] }>("PUT", `/api/machi-events/${encodeURIComponent(idOrSlug)}/form-fields`, { fields });
     return data.form_fields;
+  },
+  // 主办方工具(luma 式:审核 / 签到 / 群发)。均返回刷新后的活动或计数。
+  async approveRegistration(idOrSlug: string, userId: string): Promise<{ status: string; event: KXEvent }> {
+    return request("POST", `/api/machi-events/${encodeURIComponent(idOrSlug)}/approve`, { user_id: userId });
+  },
+  async declineRegistration(idOrSlug: string, userId: string): Promise<{ status: string; event: KXEvent }> {
+    return request("POST", `/api/machi-events/${encodeURIComponent(idOrSlug)}/decline`, { user_id: userId });
+  },
+  async checkInAttendee(idOrSlug: string, userId: string, checkedIn: boolean): Promise<{ checked_in: boolean; user_id: string }> {
+    return request("POST", `/api/machi-events/${encodeURIComponent(idOrSlug)}/checkin`, { user_id: userId, checked_in: checkedIn });
+  },
+  async broadcastEvent(idOrSlug: string, message: string): Promise<{ sent: number }> {
+    return request("POST", `/api/machi-events/${encodeURIComponent(idOrSlug)}/broadcast`, { message });
+  },
+  // 「添加到日历」的服务端 .ics 地址(下载即可加进日历)。
+  eventCalendarUrl(idOrSlug: string): string {
+    return `/api/machi-events/${encodeURIComponent(idOrSlug)}/calendar.ics`;
   },
   async adminEvents(opts: { when?: string; city_slug?: string; category?: string; organizer_id?: string; offset?: number; limit?: number } = {}): Promise<KXEventsPage> {
     const params = new URLSearchParams();

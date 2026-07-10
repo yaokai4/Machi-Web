@@ -16,6 +16,7 @@ import { AppShell } from "@/components/shell/AppShell";
 import { ErrorState, InlineLoading } from "@/components/design/States";
 import { Avatar } from "@/components/design/Avatar";
 import { api } from "@/lib/api";
+import { sameOriginApiUrl } from "@/lib/media";
 import type { KXRoomMessage } from "@/lib/types";
 import { useSessionUser } from "@/lib/session";
 import { useI18n } from "@/lib/i18n";
@@ -219,9 +220,18 @@ export default function RoomDetailPage() {
               <ArrowLeft className="h-4 w-4" />
             </Link>
             <button type="button" onClick={() => setShowInfo((v) => !v)} className="flex min-w-0 flex-1 items-center gap-2.5 text-left">
-              <div className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br text-white ${style.gradient}`}>
-                <Icon className="h-4 w-4" />
-              </div>
+              {room.cover_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={sameOriginApiUrl(room.cover_thumb_url || room.cover_url)}
+                  alt={c.coverAlt}
+                  className="h-9 w-9 shrink-0 rounded-xl object-cover"
+                />
+              ) : (
+                <div className={`relative grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-gradient-to-br text-white ${style.gradient}`}>
+                  <Icon className="h-4 w-4" />
+                </div>
+              )}
               <div className="min-w-0 flex-1">
                 <h1 className="truncate text-[15px] font-black leading-tight">{room.title}</h1>
                 <p className="truncate text-xs font-semibold text-kx-muted">
@@ -257,6 +267,14 @@ export default function RoomDetailPage() {
           {/* 展开的局信息 */}
           {showInfo ? (
             <div className="mt-2.5 space-y-2 rounded-2xl border border-kx-stroke/45 bg-kx-card/60 p-3">
+              {room.cover_url ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={sameOriginApiUrl(room.cover_url)}
+                  alt={c.coverAlt}
+                  className="aspect-[16/9] w-full rounded-xl object-cover"
+                />
+              ) : null}
               {room.description ? <p className="text-sm font-semibold leading-6">{room.description}</p> : null}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold text-kx-muted">
                 {hasStart ? (

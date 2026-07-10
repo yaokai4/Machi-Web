@@ -5512,6 +5512,27 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON conversations(participant_a, participant_b);
         """,
     ),
+    (
+        110,
+        "events/rooms covers + 活动 luma 化(审核制报名/签到);社交房间加封面",
+        # 两件事一次迁移(纯 ADD COLUMN,SQLite/Postgres 通用、只跑一次):
+        #  1) 照片修复 —— events.cover_file_id / social_rooms.cover_url +
+        #     cover_file_id。封面从「裸 URL 字符串」升级为「URL + 关联 uploaded_file」。
+        #     _uploaded_file_is_referenced 认这两个 cover_file_id 后,孤儿 GC 不再把
+        #     活动/房间封面当无主文件 48h 后删除(此前活动封面误走 post_image+event、
+        #     entity 为空、无引用 → 被回收,表现为「照片不在 S3、加载失败」)。
+        #     serialize 借 cover_file_id 取异步生成的缩略图 WebP,列表卡片不再拉原图。
+        #  2) 活动 luma 化 —— events.requires_approval(主办方审核制报名)+
+        #     event_registrations.checked_in_at(现场签到)。status 新增 'pending'
+        #     (待审核)语义,由应用层写入,无需改列。
+        """
+        ALTER TABLE events ADD COLUMN cover_file_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE events ADD COLUMN requires_approval INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE social_rooms ADD COLUMN cover_url TEXT NOT NULL DEFAULT '';
+        ALTER TABLE social_rooms ADD COLUMN cover_file_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE event_registrations ADD COLUMN checked_in_at TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 ]
 
 

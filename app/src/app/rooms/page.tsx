@@ -6,13 +6,14 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { CalendarClock, MapPin, MessageCircle, Plus, Users, X } from "lucide-react";
+import { CalendarClock, ImagePlus, Loader2, MapPin, MessageCircle, Plus, Users, X } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { EmptyState, ErrorState, InlineLoading } from "@/components/design/States";
 import { Avatar } from "@/components/design/Avatar";
 import { api } from "@/lib/api";
+import { sameOriginApiUrl } from "@/lib/media";
 import { useSessionUser } from "@/lib/session";
 import { useI18n } from "@/lib/i18n";
 import type { KXRoom } from "@/lib/types";
@@ -32,8 +33,19 @@ function RoomRow({ room }: { room: KXRoom }) {
       href={`/rooms/${encodeURIComponent(room.id)}`}
       className="group flex items-start gap-3.5 rounded-2xl border border-kx-stroke/45 bg-kx-card p-3.5 transition-all duration-200 hover:-translate-y-0.5 hover:border-kx-accent/30 hover:shadow-[0_14px_34px_-24px_rgb(var(--kx-shadow)/0.5)]"
     >
-      <div className={`relative grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br text-white shadow-sm ${style.gradient}`}>
-        <Icon className="h-5 w-5" />
+      <div className="relative shrink-0">
+        {room.cover_url ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={sameOriginApiUrl(room.cover_thumb_url || room.cover_url)}
+            alt={c.coverAlt}
+            className="h-12 w-12 rounded-2xl object-cover shadow-sm"
+          />
+        ) : (
+          <div className={`grid h-12 w-12 place-items-center rounded-2xl bg-gradient-to-br text-white shadow-sm ${style.gradient}`}>
+            <Icon className="h-5 w-5" />
+          </div>
+        )}
         {room.status === "open" ? (
           <span className="absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-kx-card bg-emerald-400" title={c.live} />
         ) : null}
@@ -87,12 +99,16 @@ function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreate
   const { locale } = useI18n();
   const copy = socialCopy(locale);
   const c = copy.rooms;
+  const fileInput = useRef<HTMLInputElement>(null);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [roomType, setRoomType] = useState("meal");
   const [locationHint, setLocationHint] = useState("");
   const [startsAt, setStartsAt] = useState("");
   const [capacity, setCapacity] = useState("4");
+  const [coverUrl, setCoverUrl] = useState("");
+  const [coverFileId, setCoverFileId] = useState("");
+  const [coverUploading, setCoverUploading] = useState(false);
   const [error, setError] = useState("");
 
   const create = useMutation({
@@ -104,10 +120,29 @@ function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreate
       location_hint: locationHint.trim(),
       starts_at: startsAt ? new Date(startsAt).toISOString() : "",
       capacity: capacity ? Math.max(0, parseInt(capacity, 10) || 0) : 0,
+      cover_url: coverUrl,
+      cover_file_id: coverFileId,
     }),
     onSuccess: onCreated,
     onError: (err: Error) => setError(err.message || c.createError),
   });
+
+  async function handleCover(file: File | undefined) {
+    if (!file) return;
+    setCoverUploading(true);
+    setError("");
+    try {
+      const uploaded = await api.uploadFile(file, { purpose: "room_cover", entityType: "room" });
+      const media = uploaded.media as { publicUrl?: string; url?: string };
+      const url = media.publicUrl || media.url || "";
+      setCoverUrl(url);
+      setCoverFileId(url ? uploaded.file.id : "");
+    } catch (err) {
+      setError((err as Error).message || c.coverUploadError);
+    } finally {
+      setCoverUploading(false);
+    }
+  }
 
   return (
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 backdrop-blur-sm sm:items-center sm:p-6" onClick={onClose}>
@@ -122,6 +157,27 @@ function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreate
           </button>
         </div>
         <div className="mt-4 space-y-4">
+          <button
+            type="button"
+            onClick={() => fileInput.current?.click()}
+            className="relative block w-full overflow-hidden rounded-2xl border border-dashed border-kx-stroke/80 bg-kx-soft/60 transition hover:border-kx-accent/50"
+          >
+            {coverUrl ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={sameOriginApiUrl(coverUrl)} alt={c.coverAlt} className="aspect-[16/9] w-full object-cover" />
+            ) : (
+              <div className="flex aspect-[16/9] w-full flex-col items-center justify-center gap-2 text-kx-muted">
+                <ImagePlus className="h-7 w-7" />
+                <span className="text-xs font-black">{c.addCover}</span>
+              </div>
+            )}
+            {coverUploading ? (
+              <div className="absolute inset-0 grid place-items-center bg-black/40">
+                <Loader2 className="h-6 w-6 animate-spin text-white" />
+              </div>
+            ) : null}
+          </button>
+          <input ref={fileInput} type="file" accept="image/*" hidden onChange={(e) => handleCover(e.target.files?.[0])} />
           <div>
             <p className="mb-1.5 text-xs font-black text-kx-muted">{c.kindQuestion}</p>
             <div className="flex flex-wrap gap-1.5">
@@ -170,7 +226,7 @@ function CreateRoomModal({ onClose, onCreated }: { onClose: () => void; onCreate
           {error ? <p className="text-xs font-bold text-red-500">{error}</p> : null}
           <button
             type="button"
-            disabled={!title.trim() || create.isPending}
+            disabled={!title.trim() || create.isPending || coverUploading}
             onClick={() => create.mutate()}
             className="kx-button-primary h-12 w-full rounded-full text-sm font-black disabled:opacity-50"
           >

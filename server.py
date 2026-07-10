@@ -3762,9 +3762,11 @@ def _uploaded_file_is_referenced(conn: sqlite3.Connection, file_id: str) -> bool
               (SELECT COUNT(*) FROM message_attachments WHERE (uploaded_file_id = ? OR thumbnail_file_id = ?) AND deleted_at IS NULL) +
               (SELECT COUNT(*) FROM listing_media WHERE uploaded_file_id = ? OR id = ?) +
               (SELECT COUNT(*) FROM guide_product_files WHERE uploaded_file_id = ?) +
-              (SELECT COUNT(*) FROM business_verification_documents WHERE uploaded_file_id = ?) AS c
+              (SELECT COUNT(*) FROM business_verification_documents WHERE uploaded_file_id = ?) +
+              (SELECT COUNT(*) FROM events WHERE cover_file_id = ?) +
+              (SELECT COUNT(*) FROM social_rooms WHERE cover_file_id = ?) AS c
             """,
-            (file_id, file_id, file_id, file_id, file_id, file_id, file_id, file_id, file_id),
+            (file_id, file_id, file_id, file_id, file_id, file_id, file_id, file_id, file_id, file_id, file_id),
         ).fetchone()
         return int(row["c"] if row else 1) > 0
     except Exception:
@@ -25337,6 +25339,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_event_attendees(conn, event_key)
             if event_tail == "form-fields" and method == "PUT":
                 return self.api_event_form_fields_put(conn, event_key)
+            # 主办方工具(luma 式):审核 / 签到 / 群发
+            if event_tail == "approve" and method == "POST":
+                return self.api_event_approve(conn, event_key)
+            if event_tail == "decline" and method == "POST":
+                return self.api_event_decline(conn, event_key)
+            if event_tail == "checkin" and method == "POST":
+                return self.api_event_checkin(conn, event_key)
+            if event_tail == "broadcast" and method == "POST":
+                return self.api_event_broadcast(conn, event_key)
+            # 添加到日历(公开 .ics 下载)
+            if event_tail in ("calendar.ics", "ics") and method == "GET":
+                return self.api_event_ics(conn, event_key)
 
         # structured city listings (marketplace / rentals / jobs / services)
         if path == "/api/listing-taxonomy" and method == "GET":
@@ -30608,6 +30622,8 @@ class Handler(BaseHTTPRequestHandler):
             location_hint=str(data.get("location_hint") or data.get("locationHint") or ""),
             starts_at=str(data.get("starts_at") or data.get("startsAt") or ""),
             capacity=data.get("capacity") or 0,
+            cover_url=str(data.get("cover_url") or data.get("coverUrl") or ""),
+            cover_file_id=str(data.get("cover_file_id") or data.get("coverFileId") or ""),
         )
         self.send_json({"ok": True, "room": rooms_mod.serialize_room(conn, room, user["id"], include_members=True)}, 201)
 
@@ -30770,6 +30786,86 @@ class Handler(BaseHTTPRequestHandler):
         data = self.read_json()
         fields = events_mod.replace_form_fields(conn, event["id"], data.get("fields") or data.get("form_fields") or [])
         self.send_json({"ok": True, "form_fields": fields, "formFields": fields})
+
+    def api_event_approve(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        target = str(data.get("user_id") or data.get("userId") or "").strip()
+        if not target:
+            raise APIError("缺少 user_id", 400, "user_id_required")
+        payload = events_mod.approve_registration(
+            conn, id_or_slug, user["id"], target,
+            actor_is_admin=(user.get("role") or "") == "admin",
+        )
+        self.send_json({"ok": True, **payload})
+
+    def api_event_decline(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        target = str(data.get("user_id") or data.get("userId") or "").strip()
+        if not target:
+            raise APIError("缺少 user_id", 400, "user_id_required")
+        payload = events_mod.decline_registration(
+            conn, id_or_slug, user["id"], target,
+            actor_is_admin=(user.get("role") or "") == "admin",
+        )
+        self.send_json({"ok": True, **payload})
+
+    def api_event_checkin(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        data = self.read_json()
+        target = str(data.get("user_id") or data.get("userId") or "").strip()
+        if not target:
+            raise APIError("缺少 user_id", 400, "user_id_required")
+        checked = data.get("checked_in")
+        if checked is None:
+            checked = data.get("checkedIn")
+        payload = events_mod.set_checkin(
+            conn, id_or_slug, user["id"], target, bool(True if checked is None else checked),
+            actor_is_admin=(user.get("role") or "") == "admin",
+        )
+        self.send_json({"ok": True, **payload})
+
+    def api_event_broadcast(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        user = self.require_user(conn)
+        self._enforce_not_muted(user)
+        data = self.read_json()
+        message = str(data.get("message") or data.get("content") or "").strip()
+        enforce_content_policy(message)
+        payload = events_mod.broadcast(
+            conn, id_or_slug, user["id"], message,
+            actor_is_admin=(user.get("role") or "") == "admin",
+        )
+        self.send_json({"ok": True, **payload})
+
+    def api_event_ics(self, conn: sqlite3.Connection, id_or_slug: str) -> None:
+        # 公开的"添加到日历"下载:已发布活动任何人可下。草稿必须与 api_event_detail
+        # 同门控——否则拿到草稿 slug 的人能下到未公开的标题/描述/地点(授权绕过)。
+        viewer = self.current_session(conn)
+        viewer_id = viewer["user_id"] if viewer else None
+        event = events_mod.get_event(conn, id_or_slug)  # 404 if missing/deleted
+        if event["status"] != "published":
+            role = ""
+            if viewer_id:
+                actor = conn.execute("SELECT role FROM users WHERE id = ?", (viewer_id,)).fetchone()
+                role = (actor["role"] if actor else "") or ""
+            if viewer_id != event["organizer_user_id"] and role != "admin" and event["status"] == "draft":
+                raise APIError("活动不存在或已下线", 404, "event_not_found")
+        try:
+            base = self._request_base_url()
+        except Exception:
+            base = ""
+        ics = events_mod.event_ics(conn, id_or_slug, base_url=base)
+        body = ics.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/calendar; charset=utf-8")
+        self.send_header("Content-Disposition", 'attachment; filename="machi-event.ics"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("X-Request-Id", getattr(self, "_request_id", "") or "")
+        self._set_cors()
+        self._set_security_headers()
+        self.end_headers()
+        self.wfile.write(body)
 
     def api_admin_events(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         admin = self.require_admin(conn)
@@ -37314,6 +37410,16 @@ class Handler(BaseHTTPRequestHandler):
             row = conn.execute("SELECT owner_user_id FROM business_profiles WHERE id = ?", (entity_id,)).fetchone()
             if not row or row["owner_user_id"] != user["id"]:
                 raise APIError("无权给该商家上传文件", 403, "forbidden")
+        elif entity_type == "event" and entity_id and user.get("role") != "admin":
+            # 编辑既有活动的封面:必须是主办方本人。发布前(entity_id 为空)先传封面
+            # 不落此分支——那时活动尚未创建,无属主可校验,创建时再把封面归位并盖章。
+            row = conn.execute("SELECT organizer_user_id FROM events WHERE id = ? AND deleted_at IS NULL", (entity_id,)).fetchone()
+            if not row or row["organizer_user_id"] != user["id"]:
+                raise APIError("无权给该活动上传文件", 403, "forbidden")
+        elif entity_type == "room" and entity_id and user.get("role") != "admin":
+            row = conn.execute("SELECT host_user_id FROM social_rooms WHERE id = ? AND deleted_at IS NULL", (entity_id,)).fetchone()
+            if not row or row["host_user_id"] != user["id"]:
+                raise APIError("无权给该房间上传文件", 403, "forbidden")
         elif entity_type in {"guide_article", "guide_product"} and entity_id and user.get("role") != "admin":
             raise APIError("Guide 文件只能由管理员上传", 403, "admin_required")
 
@@ -37342,7 +37448,7 @@ class Handler(BaseHTTPRequestHandler):
     # listing photos on its daily sync exhausts the cap and then can't even
     # change its own avatar. So they get their own separate, generous daily
     # bucket keyed only on identity uploads.
-    _IDENTITY_UPLOAD_PURPOSES = ("avatar", "profile_cover", "business_logo", "business_cover")
+    _IDENTITY_UPLOAD_PURPOSES = ("avatar", "profile_cover", "business_logo", "business_cover", "event_cover", "room_cover")
 
     def _is_business_uploader(self, conn: sqlite3.Connection, user_id: str) -> bool:
         """Partner seller 公司账号 + verified merchants + official accounts upload

@@ -516,7 +516,7 @@ def normalize_upload_entity_type(value: Any) -> str:
         "", "user", "post", "listing", "article", "experience", "question", "group", "message",
         "guide_article", "guide_product", "member_resource", "business", "video",
         "guide_task", "guide_application", "guide_life_item", "guide_contract", "guide_document",
-        "guide_goal", "guide_calendar_event",
+        "guide_goal", "guide_calendar_event", "event", "room",
     }
     return raw if raw in allowed else ""
 
@@ -589,6 +589,11 @@ def upload_object_key(user_id: str, purpose: str, entity_type: str, entity_id: s
     if purpose == "guide_attachment" and entity_type.startswith("guide_") and clean_entity_id:
         folder = re.sub(r"[^a-z0-9_-]", "", entity_type.replace("guide_", "")) or "item"
         return f"guide/user-attachments/{user_id}/{folder}/{clean_entity_id}/{name}"
+    if purpose == "event_cover":
+        # entity_id 可能为空(发布前先传封面):无 id 落 events/covers/,有 id 归位。
+        return f"events/{clean_entity_id}/covers/{name}" if clean_entity_id else f"events/covers/{name}"
+    if purpose == "room_cover":
+        return f"rooms/{clean_entity_id}/covers/{name}" if clean_entity_id else f"rooms/covers/{name}"
     if purpose == "business_logo" and entity_type == "business" and clean_entity_id:
         return f"businesses/{clean_entity_id}/logos/{name}"
     if purpose == "business_cover" and entity_type == "business" and clean_entity_id:

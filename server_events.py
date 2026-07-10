@@ -21,7 +21,7 @@ import os
 import re
 import secrets
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 import server_apns
@@ -134,6 +134,32 @@ def _brief_user(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def cover_thumb_url(conn, cover_file_id: str, fallback: str = "") -> str:
+    """把封面 cover_file_id 解析成异步生成的小缩略图 WebP,列表卡片用它而非原图。
+    缩略图由后台 worker 异步生成,未就绪前退回原图 fallback,永不留空图。
+    自包含:直接查 uploaded_files.metadata,不 import server_media,保持模块纯净。"""
+    if not cover_file_id:
+        return fallback
+    try:
+        row = conn.execute(
+            "SELECT metadata FROM uploaded_files WHERE id = ? AND deleted_at IS NULL",
+            (cover_file_id,),
+        ).fetchone()
+    except Exception:
+        return fallback
+    if not row:
+        return fallback
+    try:
+        meta = json.loads(dict(row).get("metadata") or "{}")
+    except Exception:
+        meta = {}
+    variants = meta.get("variants") if isinstance(meta.get("variants"), dict) else {}
+    thumb = ""
+    if isinstance(variants, dict):
+        thumb = variants.get("thumbnail") or ""
+    return thumb or meta.get("thumbnail_url") or fallback
+
+
 # ── form fields (后台可编辑的报名字段) ───────────────────────────────────────
 
 def list_form_fields(conn, event_id: str) -> list[dict[str, Any]]:
@@ -235,15 +261,19 @@ def serialize_event(
         (row.get("organizer_user_id", ""),),
     ).fetchone()
     viewer_status = ""
+    viewer_checked_in = False
     if viewer_id:
         reg = conn.execute(
-            "SELECT status FROM event_registrations WHERE event_id = ? AND user_id = ?",
+            "SELECT status, checked_in_at FROM event_registrations WHERE event_id = ? AND user_id = ?",
             (event_id, viewer_id),
         ).fetchone()
         if reg and reg["status"] != "cancelled":
             viewer_status = reg["status"]
+            viewer_checked_in = bool(dict(reg).get("checked_in_at") or "")
     going = int(row.get("going_count") or 0)
     capacity = int(row.get("capacity") or 0)
+    cover = row.get("cover_url", "") or ""
+    cover_thumb = cover_thumb_url(conn, row.get("cover_file_id", "") or "", cover)
     # 同一活动只查一次预览名单 + 只算一次分类标签，两组键(snake / camel)复用，
     # 避免列表页每条活动重复往返 DB(list_events 对每条 serialize)。
     attendees = _attendee_rows(conn, event_id)
@@ -256,8 +286,14 @@ def serialize_event(
         "category": row.get("category", "social"),
         "category_label": cat_label,
         "categoryLabel": cat_label,
-        "cover_url": row.get("cover_url", ""),
-        "coverUrl": row.get("cover_url", ""),
+        "cover_url": cover,
+        "coverUrl": cover,
+        "cover_thumb_url": cover_thumb,
+        "coverThumbUrl": cover_thumb,
+        "cover_file_id": row.get("cover_file_id", "") or "",
+        "coverFileId": row.get("cover_file_id", "") or "",
+        "requires_approval": bool(row.get("requires_approval", 0)),
+        "requiresApproval": bool(row.get("requires_approval", 0)),
         "starts_at": row.get("starts_at", ""),
         "startsAt": row.get("starts_at", ""),
         "ends_at": row.get("ends_at", ""),
@@ -292,6 +328,8 @@ def serialize_event(
         "attendeesPreview": attendees,
         "viewer_status": viewer_status,
         "viewerStatus": viewer_status,
+        "viewer_checked_in": viewer_checked_in,
+        "viewerCheckedIn": viewer_checked_in,
         "created_at": row.get("created_at", ""),
         "createdAt": row.get("created_at", ""),
         "updated_at": row.get("updated_at", ""),
@@ -299,10 +337,38 @@ def serialize_event(
     }
     if include_description:
         payload["description"] = row.get("description", "")
+        # host 仪表盘要看的分状态计数(待审核/候补/已签到)。只在详情视图算,
+        # 避免列表页每张卡片都多打两次 COUNT。
+        payload.update(_status_counts(conn, event_id))
     if include_form:
         payload["form_fields"] = list_form_fields(conn, event_id)
         payload["formFields"] = payload["form_fields"]
     return payload
+
+
+def _status_counts(conn, event_id: str) -> dict[str, Any]:
+    """分状态计数,口径与 _recount_going 一致(JOIN users 排除注销)。"""
+    rows = conn.execute(
+        "SELECT reg.status AS s, COUNT(*) AS n,"
+        " SUM(CASE WHEN COALESCE(reg.checked_in_at, '') != '' THEN 1 ELSE 0 END) AS ci"
+        " FROM event_registrations reg JOIN users u ON u.id = reg.user_id"
+        " WHERE reg.event_id = ? AND u.deleted_at IS NULL GROUP BY reg.status",
+        (event_id,),
+    )
+    pending = waitlist = checked_in = 0
+    for r in rows:
+        d = dict(r)
+        if d.get("s") == "waitlist":
+            waitlist = int(d.get("n") or 0)
+        elif d.get("s") == "pending":
+            pending = int(d.get("n") or 0)
+        elif d.get("s") == "going":
+            checked_in = int(d.get("ci") or 0)
+    return {
+        "pending_count": pending, "pendingCount": pending,
+        "waitlist_count": waitlist, "waitlistCount": waitlist,
+        "checked_in_count": checked_in, "checkedInCount": checked_in,
+    }
 
 
 # ── queries ──────────────────────────────────────────────────────────────────
@@ -415,6 +481,7 @@ def _clean_event_payload(data: dict[str, Any]) -> dict[str, Any]:
         "description": str(data.get("description") or "").strip()[:MAX_DESCRIPTION_LEN],
         "category": normalize_category(data.get("category")),
         "cover_url": text("cover_url", "coverUrl", MAX_URL_LEN),
+        "cover_file_id": text("cover_file_id", "coverFileId", 64),
         "starts_at": starts_at,
         "ends_at": text("ends_at", "endsAt", 64),
         "timezone": text("timezone", cap=48) or "Asia/Tokyo",
@@ -431,6 +498,7 @@ def _clean_event_payload(data: dict[str, Any]) -> dict[str, Any]:
         payload["capacity"] = max(0, min(int(data.get("capacity") or 0), MAX_CAPACITY))
     except (TypeError, ValueError):
         payload["capacity"] = 0
+    payload["requires_approval"] = 1 if (data.get("requires_approval") or data.get("requiresApproval")) else 0
     return payload
 
 
@@ -448,16 +516,17 @@ def create_event(conn, *, organizer_user_id: str, data: dict[str, Any], now: Opt
     slug = _unique_slug(conn, payload["title"])
     conn.execute(
         "INSERT INTO events (id, slug, organizer_user_id, partner_name, title, subtitle, description,"
-        " category, cover_url, starts_at, ends_at, timezone, venue_name, address, country_code,"
-        " city_slug, region_code, capacity, price_text, external_url, status, is_featured,"
+        " category, cover_url, cover_file_id, starts_at, ends_at, timezone, venue_name, address, country_code,"
+        " city_slug, region_code, capacity, price_text, external_url, requires_approval, status, is_featured,"
         " going_count, created_at, updated_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
         (
             event_id, slug, organizer_user_id, payload["partner_name"], payload["title"],
             payload["subtitle"], payload["description"], payload["category"], payload["cover_url"],
-            payload["starts_at"], payload["ends_at"], payload["timezone"], payload["venue_name"],
-            payload["address"], payload["country_code"], payload["city_slug"], payload["region_code"],
-            payload["capacity"], payload["price_text"], payload["external_url"], status, ts, ts,
+            payload["cover_file_id"], payload["starts_at"], payload["ends_at"], payload["timezone"],
+            payload["venue_name"], payload["address"], payload["country_code"], payload["city_slug"],
+            payload["region_code"], payload["capacity"], payload["price_text"], payload["external_url"],
+            payload["requires_approval"], status, ts, ts,
         ),
     )
     fields = data.get("form_fields") or data.get("formFields")
@@ -585,9 +654,17 @@ def register(conn, id_or_slug: str, user_id: str, answers: Any = None, *, now: O
     else:
         going = int(event.get("going_count") or 0)
     already_going = bool(existing and existing["status"] == "going")
-    status = "going"
-    if capacity and going >= capacity and not already_going:
+    requires_approval = bool(int(event.get("requires_approval") or 0))
+    if already_going:
+        # 已是正式参加(重复提交 / 改答案):保持 going,审核制也不打回。
+        status = "going"
+    elif requires_approval:
+        # 审核制:所有新报名先进「待审核」,由主办方 approve 才转正(满员则转候补)。
+        status = "pending"
+    elif capacity and going >= capacity:
         status = "waitlist"
+    else:
+        status = "going"
     answers_json = json.dumps(clean_answers, ensure_ascii=False)
     if existing:
         conn.execute(
@@ -681,10 +758,9 @@ def _promote_waitlist(conn, event_id: str, ts: str) -> list[str]:
     return promoted
 
 
-def _notify_promoted(conn, title: str, organizer_id: str, user_ids: list[str], ts: str) -> None:
-    """候补转正是『你进了』的关键时刻——写一条站内通知(铃铛)+ 尽力推送(APNs)。
-    对齐私信/预约等路径:关键状态变化不再对用户完全静默。"""
-    content = f"🎉 你已从候补转为正式参加「{title}」" if title else "🎉 你已从候补转为正式参加该活动"
+def _notify_users(conn, organizer_id: str, user_ids: list[str], ts: str, *, ntype: str, content: str) -> None:
+    """给一批用户写站内通知(铃铛)+ 尽力推送(APNs)。关键状态变化(转正/通过审核/
+    主办方群发)不再对用户静默。铃铛按 content 直接渲染,故新 type 也能正常显示。"""
     for uid in user_ids:
         if not uid:
             continue
@@ -694,15 +770,204 @@ def _notify_promoted(conn, title: str, organizer_id: str, user_ids: list[str], t
         try:
             conn.execute(
                 "INSERT INTO notifications (id, user_id, actor_id, type, content, created_at)"
-                " VALUES (?, ?, ?, 'event_promoted', ?, ?)",
-                (str(uuid.uuid4()), uid, actor_id, content, ts),
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), uid, actor_id, ntype, content, ts),
             )
         except Exception:
             pass
         try:
-            server_apns.enqueue(uid, ntype="event_promoted", actor_id=organizer_id or "", content=content)
+            server_apns.enqueue(uid, ntype=ntype, actor_id=organizer_id or "", content=content)
         except Exception:
             pass
+
+
+def _notify_promoted(conn, title: str, organizer_id: str, user_ids: list[str], ts: str) -> None:
+    """候补转正是『你进了』的关键时刻——写一条站内通知(铃铛)+ 尽力推送(APNs)。"""
+    content = f"🎉 你已从候补转为正式参加「{title}」" if title else "🎉 你已从候补转为正式参加该活动"
+    _notify_users(conn, organizer_id, user_ids, ts, ntype="event_promoted", content=content)
+
+
+# ── host management: 审核 / 签到 / 群发(luma 式主办方工具)────────────────────
+
+def _assert_organizer(conn, id_or_slug: str, actor_id: str, actor_is_admin: bool) -> dict[str, Any]:
+    event = get_event(conn, id_or_slug)
+    if event["organizer_user_id"] != actor_id and not actor_is_admin:
+        raise APIError("只有主办方可以管理报名", 403, "not_event_organizer")
+    return event
+
+
+def _count_going(conn, event_id: str) -> int:
+    return int(conn.execute(
+        "SELECT COUNT(*) AS n FROM event_registrations reg JOIN users u ON u.id = reg.user_id"
+        " WHERE reg.event_id = ? AND reg.status = 'going' AND u.deleted_at IS NULL",
+        (event_id,),
+    ).fetchone()["n"])
+
+
+def approve_registration(
+    conn, id_or_slug: str, actor_id: str, target_user_id: str,
+    *, actor_is_admin: bool = False, now: Optional[str] = None,
+) -> dict[str, Any]:
+    """主办方通过一个待审核 / 候补的报名:有名额转正(going),满员则转候补(waitlist),
+    并通知本人。审核制活动的核心动作。"""
+    event = _assert_organizer(conn, id_or_slug, actor_id, actor_is_admin)
+    ts = now or _now()
+    if _IS_POSTGRES:
+        conn.execute("SELECT id FROM events WHERE id = ? FOR UPDATE", (event["id"],))
+    reg = conn.execute(
+        "SELECT id, status FROM event_registrations WHERE event_id = ? AND user_id = ?",
+        (event["id"], target_user_id),
+    ).fetchone()
+    if not reg or reg["status"] == "cancelled":
+        raise APIError("该用户没有有效报名", 404, "registration_not_found")
+    capacity = int(event.get("capacity") or 0)
+    going = _count_going(conn, event["id"])
+    already_going = reg["status"] == "going"
+    new_status = "going" if (already_going or not capacity or going < capacity) else "waitlist"
+    conn.execute(
+        "UPDATE event_registrations SET status = ?, updated_at = ? WHERE id = ?",
+        (new_status, ts, reg["id"]),
+    )
+    _recount_going(conn, event["id"], ts)
+    if new_status == "going" and not already_going:
+        title = event.get("title") or ""
+        content = f"✅ 主办方通过了你对「{title}」的报名" if title else "✅ 你的报名已通过审核"
+        _notify_users(conn, event.get("organizer_user_id") or "", [target_user_id], ts,
+                      ntype="event_approved", content=content)
+    conn.commit()
+    return {"status": new_status,
+            "event": serialize_event(conn, get_event(conn, event["id"]), actor_id, include_form=True, include_description=True)}
+
+
+def decline_registration(
+    conn, id_or_slug: str, actor_id: str, target_user_id: str,
+    *, actor_is_admin: bool = False, now: Optional[str] = None,
+) -> dict[str, Any]:
+    """主办方拒绝 / 移除一个报名(标记 cancelled)。若被移除者原本占正式名额,顺带把
+    候补按顺序顶补上来。"""
+    event = _assert_organizer(conn, id_or_slug, actor_id, actor_is_admin)
+    ts = now or _now()
+    reg = conn.execute(
+        "SELECT id FROM event_registrations WHERE event_id = ? AND user_id = ?",
+        (event["id"], target_user_id),
+    ).fetchone()
+    if not reg:
+        raise APIError("该用户没有报名", 404, "registration_not_found")
+    conn.execute(
+        "UPDATE event_registrations SET status = 'cancelled', checked_in_at = '', updated_at = ? WHERE id = ?",
+        (ts, reg["id"]),
+    )
+    _promote_waitlist(conn, event["id"], ts)
+    _recount_going(conn, event["id"], ts)
+    conn.commit()
+    return {"status": "cancelled",
+            "event": serialize_event(conn, get_event(conn, event["id"]), actor_id, include_form=True, include_description=True)}
+
+
+def set_checkin(
+    conn, id_or_slug: str, actor_id: str, target_user_id: str, checked_in: bool,
+    *, actor_is_admin: bool = False, now: Optional[str] = None,
+) -> dict[str, Any]:
+    """主办方现场签到 / 取消签到一名正式参加者。"""
+    event = _assert_organizer(conn, id_or_slug, actor_id, actor_is_admin)
+    ts = now or _now()
+    reg = conn.execute(
+        "SELECT id, status FROM event_registrations WHERE event_id = ? AND user_id = ?",
+        (event["id"], target_user_id),
+    ).fetchone()
+    if not reg or reg["status"] != "going":
+        raise APIError("只能给正式参加者签到", 400, "not_going")
+    conn.execute(
+        "UPDATE event_registrations SET checked_in_at = ?, updated_at = ? WHERE id = ?",
+        (ts if checked_in else "", ts, reg["id"]),
+    )
+    conn.commit()
+    return {"checked_in": bool(checked_in), "user_id": target_user_id, "userId": target_user_id}
+
+
+def broadcast(
+    conn, id_or_slug: str, actor_id: str, message: str,
+    *, actor_is_admin: bool = False, now: Optional[str] = None,
+) -> dict[str, Any]:
+    """主办方给所有正式参加者群发一条公告(铃铛 + 尽力推送)。钱永不碰,这只是通知。"""
+    event = _assert_organizer(conn, id_or_slug, actor_id, actor_is_admin)
+    text = str(message or "").strip()[:MAX_ANSWER_LEN]
+    if not text:
+        raise APIError("公告内容不能为空", 400, "message_required")
+    ts = now or _now()
+    rows = conn.execute(
+        "SELECT reg.user_id FROM event_registrations reg JOIN users u ON u.id = reg.user_id"
+        " WHERE reg.event_id = ? AND reg.status = 'going' AND u.deleted_at IS NULL",
+        (event["id"],),
+    )
+    recipients = [dict(r)["user_id"] for r in rows if dict(r).get("user_id")]
+    title = event.get("title") or ""
+    content = f"📣「{title}」主办方:{text}" if title else f"📣 活动主办方:{text}"
+    _notify_users(conn, event.get("organizer_user_id") or "", recipients, ts,
+                  ntype="event_broadcast", content=content)
+    conn.commit()
+    return {"sent": len(recipients), "count": len(recipients)}
+
+
+# ── add-to-calendar (ICS) ─────────────────────────────────────────────────────
+
+def _ics_dt(value: str) -> str:
+    """ISO8601 → ICS UTC basic 'YYYYMMDDTHHMMSSZ'。best-effort,失败返回 ''。"""
+    s = str(value or "").strip()
+    if not s:
+        return ""
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    except Exception:
+        return ""
+
+
+def _ics_escape(text: str) -> str:
+    return (str(text or "").replace("\\", "\\\\").replace(";", "\\;")
+            .replace(",", "\\,").replace("\n", "\\n").replace("\r", ""))
+
+
+def event_ics(conn, id_or_slug: str, *, base_url: str = "") -> str:
+    """生成单个活动的 .ics(VCALENDAR)文本,用于"添加到日历"。"""
+    event = get_event(conn, id_or_slug)
+    start = _ics_dt(event.get("starts_at"))
+    end = _ics_dt(event.get("ends_at"))
+    if not end and start:
+        try:  # 无结束时间默认 +2 小时,避免零时长日历块。
+            dt = datetime.strptime(start, "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc)
+            end = (dt + timedelta(hours=2)).strftime("%Y%m%dT%H%M%SZ")
+        except Exception:
+            end = start
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    location = " ".join(x for x in [event.get("venue_name") or "", event.get("address") or ""] if x)
+    slug_or_id = event.get("slug") or event["id"]
+    raw_url = event.get("external_url") or (f"{base_url.rstrip('/')}/events/{slug_or_id}" if base_url else "")
+    # 剥掉换行/控制符:URL 行不走 _ics_escape,external_url 内嵌 CRLF 会注入伪造的
+    # 日历行/VEVENT 到公开下载的 .ics(iCal 注入)。SUMMARY/DESC/LOCATION 已由
+    # _ics_escape 处理,这里单独净化 URL。
+    url = re.sub(r"[\x00-\x1f\x7f]", "", raw_url)
+    desc = event.get("subtitle") or event.get("description") or ""
+    lines = [
+        "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Machi//Events//EN",
+        "CALSCALE:GREGORIAN", "METHOD:PUBLISH", "BEGIN:VEVENT",
+        f"UID:{event['id']}@machicity.com", f"DTSTAMP:{stamp}",
+    ]
+    if start:
+        lines.append(f"DTSTART:{start}")
+    if end:
+        lines.append(f"DTEND:{end}")
+    lines.append(f"SUMMARY:{_ics_escape(event.get('title') or '')}")
+    if desc:
+        lines.append(f"DESCRIPTION:{_ics_escape(desc)}")
+    if location:
+        lines.append(f"LOCATION:{_ics_escape(location)}")
+    if url:
+        lines.append(f"URL:{url}")
+    lines += ["END:VEVENT", "END:VCALENDAR"]
+    return "\r\n".join(lines) + "\r\n"
 
 
 def list_attendees(
@@ -723,7 +988,7 @@ def list_attendees(
         "SELECT reg.*, u.handle, u.display_name, u.avatar_url, u.avatar_symbol, u.avatar_color, u.is_verified_member"
         " FROM event_registrations reg JOIN users u ON u.id = reg.user_id"
         " WHERE reg.event_id = ? AND reg.status != 'cancelled' AND u.deleted_at IS NULL"
-        " ORDER BY CASE reg.status WHEN 'going' THEN 0 ELSE 1 END, reg.created_at ASC",
+        " ORDER BY CASE reg.status WHEN 'pending' THEN 0 WHEN 'going' THEN 1 ELSE 2 END, reg.created_at ASC",
         (event["id"],),
     )
     items = []
@@ -733,6 +998,7 @@ def list_attendees(
             answers = json.loads(d.get("answers_json") or "{}")
         except Exception:
             answers = {}
+        checked_in = bool(d.get("checked_in_at") or "")
         entry = {
             "user": _brief_user({
                 "id": d.get("user_id", ""), "handle": d.get("handle", ""),
@@ -740,7 +1006,13 @@ def list_attendees(
                 "avatar_symbol": d.get("avatar_symbol", ""), "avatar_color": d.get("avatar_color", ""),
                 "is_verified_member": d.get("is_verified_member", 0),
             }),
+            "user_id": d.get("user_id", ""),
+            "userId": d.get("user_id", ""),
             "status": d.get("status", "going"),
+            "checked_in": checked_in,
+            "checkedIn": checked_in,
+            "checked_in_at": d.get("checked_in_at", "") or "",
+            "checkedInAt": d.get("checked_in_at", "") or "",
             "created_at": d.get("created_at", ""),
             "createdAt": d.get("created_at", ""),
         }

@@ -514,6 +514,12 @@ UPLOAD_PURPOSES: dict[str, dict[str, Any]] = {
     "guide_attachment": {"kind": "verification_file", "max": 20 * 1024 * 1024, "count": 20, "private": True},
     "business_logo": {"kind": "image", "max": 5 * 1024 * 1024, "count": 1},
     "business_cover": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1},
+    # 活动封面 / 约局(社交房间)封面。单图,像 business_cover 一样由 URL 列
+    # (events.cover_url / social_rooms.cover_url)引用,并把 uploaded_file id 记进
+    # cover_file_id —— _uploaded_file_is_referenced 会据此判定「在用」,孤儿 GC 便
+    # 不再把它当无主文件删除(此前活动封面误用 post_image+event,48h 后被回收)。
+    "event_cover": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1},
+    "room_cover": {"kind": "image", "max": 10 * 1024 * 1024, "count": 1},
     "business_verification_file": {"kind": "verification_file", "max": 20 * 1024 * 1024, "count": 10, "private": True},
     "message_attachment": {"kind": "disabled", "max": 0, "count": 0},
     "message_image": {"kind": "image", "max": 10 * 1024 * 1024, "count": 9, "private": True},

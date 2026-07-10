@@ -1436,6 +1436,9 @@ export interface KXRoom {
   members?: KXUser[];
   viewer_joined?: boolean;
   viewer_role?: string;
+  cover_url?: string;
+  cover_thumb_url?: string;
+  cover_file_id?: string;
 }
 
 export interface KXRoomMessage {
@@ -1471,6 +1474,8 @@ export interface KXEvent {
   category?: string;
   category_label?: string;
   cover_url?: string;
+  cover_thumb_url?: string;
+  cover_file_id?: string;
   starts_at?: string;
   ends_at?: string;
   timezone?: string;
@@ -1491,6 +1496,11 @@ export interface KXEvent {
   organizer?: KXUser | null;
   attendees_preview?: KXUser[];
   viewer_status?: string;
+  viewer_checked_in?: boolean;
+  requires_approval?: boolean;
+  pending_count?: number;
+  waitlist_count?: number;
+  checked_in_count?: number;
   form_fields?: KXEventFormField[];
   created_at?: string;
   updated_at?: string;
@@ -1505,7 +1515,10 @@ export interface KXEventsPage {
 
 export interface KXEventAttendee {
   user: KXUser;
+  user_id?: string;
   status: string;
+  checked_in?: boolean;
+  checked_in_at?: string;
   created_at?: string;
   answers?: Record<string, string>;
 }
