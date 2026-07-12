@@ -65,7 +65,10 @@ function MediaGridImpl({ items, onOpen, rounded = true, alt }: MediaGridProps) {
               }}
               className={clsx(
                 "relative bg-kx-soft overflow-hidden group/media",
-                count === 1 ? "w-full max-h-[540px]" : "aspect-square",
+                // Single media: aspectRatio (mediaCardAspectRatio, square-floored
+                // for photos) governs height; the responsive max-h is a belt so a
+                // wide desktop column can't grow a square into a tower.
+                count === 1 ? "w-full max-h-[420px] md:max-h-[560px]" : "aspect-square",
               )}
               style={count === 1 ? { aspectRatio: mediaCardAspectRatio(media) } : undefined}
               aria-label={isVideo ? t("media_play_video") : t("media_view_image")}

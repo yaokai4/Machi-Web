@@ -189,6 +189,7 @@ export default function PostPageClient() {
         <div className="px-3 sm:px-4 py-3 space-y-3">
           <PostCard
             post={postQuery.data}
+            clampContent={false}
             onDeleted={() => {
               // On the detail page the only sensible thing to do after
               // delete is to leave — the post is gone.

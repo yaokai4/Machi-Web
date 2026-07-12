@@ -83,14 +83,22 @@ export function mediaPreviewImageUrl(media: AnyMedia): string {
  * panoramas/long screenshots can't blow up feed layout. Long images render
  * cropped in lists (full view lives in the Lightbox); videos keep their
  * orientation instead of being squeezed into one fixed rectangle.
+ *
+ * Photos floor at 1:1 (square) — mirroring iOS singleImageAspectRatio — so a
+ * tall portrait can't dominate the feed card; the full uncropped image is one
+ * tap away in the Lightbox. Videos keep a permissive floor so portrait reels
+ * aren't squared. The 1.91 photo ceiling unifies with iOS / IG-X-Threads.
  */
 export function mediaCardAspectRatio(media: AnyMedia): string {
   const w = Number(media?.width || 0);
   const h = Number(media?.height || 0);
-  const fallback = isVideoMedia(media) ? 16 / 9 : 4 / 3;
+  const isVideo = isVideoMedia(media);
+  const fallback = isVideo ? 16 / 9 : 4 / 3;
   let ratio = w > 0 && h > 0 ? w / h : fallback;
   if (!Number.isFinite(ratio) || ratio <= 0) ratio = fallback;
-  const clamped = Math.min(1.92, Math.max(0.62, ratio));
+  const minRatio = isVideo ? 0.62 : 1.0;
+  const maxRatio = isVideo ? 1.92 : 1.91;
+  const clamped = Math.min(maxRatio, Math.max(minRatio, ratio));
   return `${Math.round(clamped * 1000)} / 1000`;
 }
 

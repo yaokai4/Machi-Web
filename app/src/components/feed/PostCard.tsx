@@ -38,6 +38,10 @@ interface PostCardProps {
   onDeleted?: (post: KXPost) => void;
   compact?: boolean;
   showOriginal?: boolean;
+  /** Feed cards clamp the body to 4 lines with an inline 展开全文/收起 toggle
+   *  (mirrors iOS). The post-detail page passes false so the full body always
+   *  shows with no truncation — the detail view is the canonical full text. */
+  clampContent?: boolean;
 }
 
 // Query keys whose caches can contain KXPost objects. Optimistic
@@ -163,7 +167,7 @@ function reportReasons(locale: Locale): { value: string; label: string }[] {
 
 type BusyInteraction = "like" | "bookmark" | "repost" | null;
 
-function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false, showOriginal = true }: PostCardProps) {
+function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false, showOriginal = true, clampContent = true }: PostCardProps) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const pushToast = useToasts((s) => s.push);
@@ -526,7 +530,7 @@ function PostCardImpl({ post: incomingPost, onUpdate, onDeleted, compact = false
             </span>
           </div>
 
-          <ContentText content={displayPost.content ?? ""} />
+          <ContentText content={displayPost.content ?? ""} clamp={clampContent} />
 
           <PostMetadata post={displayPost} />
           <TypedSummary post={displayPost} />
@@ -1117,38 +1121,92 @@ function interactionStateKey(post?: KXPost | null): string {
   ].join(":");
 }
 
-function ContentText({ content }: { content: string }) {
+function ContentText({ content, clamp = true }: { content: string; clamp?: boolean }) {
+  const { locale } = useI18n();
+  const ref = useRef<HTMLParagraphElement>(null);
+  const [expanded, setExpanded] = useState(false);
+  // Whether the clamped body actually overflows 4 lines — measured from the DOM
+  // (scrollHeight > clientHeight), not a character heuristic, so 展开全文 appears
+  // only when text is genuinely cut. iOS uses a char heuristic and can miss CJK
+  // wrapping; the web measurement is exact.
+  const [overflowing, setOverflowing] = useState(false);
+
+  useEffect(() => {
+    if (!clamp) {
+      setOverflowing(false);
+      return;
+    }
+    const el = ref.current;
+    if (!el) return;
+    // Only measure in the clamped state. Once expanded, the clamp is dropped so
+    // scrollHeight ≈ clientHeight — re-measuring then would wrongly hide 收起, so
+    // we leave `overflowing` true and skip the measure while expanded.
+    const measure = () => {
+      if (expanded) return;
+      setOverflowing(el.scrollHeight > el.clientHeight + 1);
+    };
+    measure();
+    // Re-measure on width changes (viewport resize, sidebar toggle) and after
+    // fonts/images reflow, or the button can be stale on first paint.
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [content, clamp, expanded]);
+
   if (!content) return null;
   const segments = tokenizeContent(content);
+  const isClamped = clamp && !expanded;
   return (
-    <p className="mt-2 text-[15.5px] leading-relaxed text-kx-text whitespace-pre-wrap break-words">
-      {segments.map((seg, i) => {
-        if (seg.kind === "hashtag") {
-          return (
-            <Link key={i} href={`/t/${encodeURIComponent(seg.value.slice(1))}`} className="kx-hashtag" onClick={(e) => e.stopPropagation()}>
-              {seg.value}
-            </Link>
-          );
-        }
-        if (seg.kind === "mention") {
-          // Mentions link to the profile route /u/<handle> (matching the
-          // author links). `/@handle` has no route and 404s.
-          return (
-            <Link key={i} href={`/u/${seg.value.replace(/^@/, "")}`} className="kx-mention" onClick={(e) => e.stopPropagation()}>
-              {seg.value}
-            </Link>
-          );
-        }
-        if (seg.kind === "url") {
-          return (
-            <a key={i} href={seg.value} target="_blank" rel="noreferrer" className="kx-link" onClick={(e) => e.stopPropagation()}>
-              {seg.value}
-            </a>
-          );
-        }
-        return <span key={i}>{seg.value}</span>;
-      })}
-    </p>
+    <>
+      <p
+        ref={ref}
+        className={clsx(
+          "mt-2 text-[15.5px] leading-relaxed text-kx-text whitespace-pre-wrap break-words",
+          isClamped && "line-clamp-4",
+        )}
+      >
+        {segments.map((seg, i) => {
+          if (seg.kind === "hashtag") {
+            return (
+              <Link key={i} href={`/t/${encodeURIComponent(seg.value.slice(1))}`} className="kx-hashtag" onClick={(e) => e.stopPropagation()}>
+                {seg.value}
+              </Link>
+            );
+          }
+          if (seg.kind === "mention") {
+            // Mentions link to the profile route /u/<handle> (matching the
+            // author links). `/@handle` has no route and 404s.
+            return (
+              <Link key={i} href={`/u/${seg.value.replace(/^@/, "")}`} className="kx-mention" onClick={(e) => e.stopPropagation()}>
+                {seg.value}
+              </Link>
+            );
+          }
+          if (seg.kind === "url") {
+            return (
+              <a key={i} href={seg.value} target="_blank" rel="noreferrer" className="kx-link" onClick={(e) => e.stopPropagation()}>
+                {seg.value}
+              </a>
+            );
+          }
+          return <span key={i}>{seg.value}</span>;
+        })}
+      </p>
+      {clamp && overflowing ? (
+        <button
+          type="button"
+          className="mt-0.5 text-sm font-semibold text-kx-accent hover:underline"
+          onClick={(e) => {
+            e.stopPropagation();
+            setExpanded((v) => !v);
+          }}
+        >
+          {expanded
+            ? localize(locale, "收起", "收起", "Show less", "閉じる")
+            : localize(locale, "展开全文", "展開全文", "Show more", "続きを読む")}
+        </button>
+      ) : null}
+    </>
   );
 }
 
@@ -1399,6 +1457,7 @@ export const PostCard = memo(PostCardImpl, (prev, next) => {
     p.is_boosted === n.is_boosted &&
     p.language === n.language &&
     prev.compact === next.compact &&
-    prev.showOriginal === next.showOriginal
+    prev.showOriginal === next.showOriginal &&
+    prev.clampContent === next.clampContent
   );
 });
