@@ -5533,6 +5533,38 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE event_registrations ADD COLUMN checked_in_at TEXT NOT NULL DEFAULT '';
         """,
     ),
+    (
+        111,
+        "push_campaigns: 管理员自定义 App 推送广播;notifications.title 自定义标题",
+        # 管理员在后台/App 内编写自定义推送(标题+正文+受众+可选跳转+紧急)。
+        # 每条 campaign 记录一次群发任务;实际投递写 notifications 行(站内)+
+        # server_apns.enqueue(APNs 横幅)。notifications.title 让系统类通知能带
+        # 自定义标题(其余类型留空,标题仍按类型派生)。纯 ADD/CREATE,只跑一次,
+        # SQLite / Postgres 通用。
+        """
+        CREATE TABLE IF NOT EXISTS push_campaigns (
+            id TEXT PRIMARY KEY,
+            admin_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            audience TEXT NOT NULL DEFAULT 'all',
+            audience_user_ids TEXT NOT NULL DEFAULT '',
+            deep_link_type TEXT NOT NULL DEFAULT '',
+            deep_link_id TEXT NOT NULL DEFAULT '',
+            urgent INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'draft',
+            recipient_count INTEGER NOT NULL DEFAULT 0,
+            sent_count INTEGER NOT NULL DEFAULT 0,
+            failed_count INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_push_campaigns_status ON push_campaigns(status, created_at);
+        ALTER TABLE notifications ADD COLUMN title TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 ]
 
 

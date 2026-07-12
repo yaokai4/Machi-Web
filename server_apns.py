@@ -241,9 +241,16 @@ def enqueue(
     conversation_id: str | None = None,
     message_id: str | None = None,
     listing_id: str | None = None,
+    title: str = "",
+    force: bool = False,
 ) -> None:
     """Queue one push. No-op when APNs isn't configured or the queue is
-    saturated — push delivery is best-effort by design."""
+    saturated — push delivery is best-effort by design.
+
+    `title` overrides the type-derived banner title (used by admin broadcasts,
+    which carry their own copy). `force=True` bypasses the JST quiet-hours mute
+    and the per-user daily cap — reserved for deliberate, admin-authored urgent
+    broadcasts; it never applies to automated/social pushes."""
     if not apns_configured() or not recipient_id:
         return
     if actor_id and actor_id == recipient_id:
@@ -258,6 +265,8 @@ def enqueue(
             "conversation_id": conversation_id or "",
             "message_id": message_id or "",
             "listing_id": listing_id or "",
+            "title": (title or "").strip(),
+            "force": bool(force),
         })
     except queue.Full:
         pass
@@ -331,15 +340,17 @@ def _deliver(job: dict[str, Any]) -> None:
         pref_col = _PREF_COLUMN.get(job["ntype"])
         if pref_col is not None and not bool(sdict.get(pref_col, 1)):
             return
+        # Forced (urgent) admin broadcasts bypass both throttles below.
+        force = bool(job.get("force"))
         # Gate 1 — JST quiet hours: non-transactional pushes never buzz a
         # phone at night; the in-app notification row is still there in the
         # morning. Transactional types (someone is waiting) always go out.
-        if job["ntype"] not in _TRANSACTIONAL_TYPES and _in_quiet_hours():
+        if not force and job["ntype"] not in _TRANSACTIONAL_TYPES and _in_quiet_hours():
             return
         # Gate 2 — daily budget: reminder-type pushes share one small
         # per-user per-JST-day allowance so saved-search / system nudges
         # can't stack up into spam.
-        if (APNS_DAILY_CAP_ENABLED and job["ntype"] in _CAPPED_TYPES
+        if (not force and APNS_DAILY_CAP_ENABLED and job["ntype"] in _CAPPED_TYPES
                 and not _consume_daily_cap(conn, recipient_id)):
             return
         actor_name = ""
@@ -356,7 +367,11 @@ def _deliver(job: dict[str, Any]) -> None:
         badge = int(unread_row["c"] if unread_row else 0)
 
     idx = _lang_index(language)
-    if job["ntype"] in _TYPE_COPY and actor_name:
+    # An explicit title (admin broadcast) always wins — it carries its own copy.
+    override_title = (job.get("title") or "").strip()
+    if override_title:
+        title = override_title[:120]
+    elif job["ntype"] in _TYPE_COPY and actor_name:
         action = _TYPE_COPY[job["ntype"]][idx]
         title = f"{actor_name}{action}" if idx == 1 else f"{actor_name} {action}"
     elif job["ntype"] in _TYPE_COPY:

@@ -305,6 +305,27 @@ export type AdminEmailCampaign = {
   finishedAt?: string | null;
 };
 
+export type AdminPushCampaign = {
+  id: string;
+  adminId?: string;
+  title: string;
+  body: string;
+  audience: "all" | "verified_members" | "active_30d" | "selected" | string;
+  audienceUserIds?: string[];
+  audienceUserCount?: number;
+  deepLinkType?: string;
+  deepLinkId?: string;
+  urgent: boolean;
+  status: "draft" | "queued" | "sending" | "sent" | "partial" | "failed" | string;
+  recipientCount: number;
+  sentCount: number;
+  failedCount: number;
+  createdAt?: string;
+  updatedAt?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+};
+
 export type SiteSettings = Record<
   | "site_title"
   | "site_title_zh"
@@ -1921,6 +1942,25 @@ export const api = {
     const { campaign } = await request<{ campaign: AdminEmailCampaign }>("POST", `/api/admin/email-campaigns/${encodeURIComponent(id)}/send`);
     return campaign;
   },
+  // ---- Admin push broadcasts (custom App notifications) --------------------
+  async adminPushCampaigns(limit = 50): Promise<AdminPushCampaign[]> {
+    const { items } = await request<{ items: AdminPushCampaign[] }>("GET", `/api/admin/push-campaigns?limit=${encodeURIComponent(String(limit))}`);
+    return items;
+  },
+  async adminPushCampaignPreview(payload: { audience?: string; user_ids?: string[] }): Promise<{ audience: string; count: number }> {
+    return request("POST", "/api/admin/push-campaigns/preview", payload);
+  },
+  async adminCreatePushCampaign(payload: {
+    title: string; body: string; audience?: string; user_ids?: string[];
+    deepLinkType?: string; deepLinkId?: string; urgent?: boolean; sendNow?: boolean;
+  }): Promise<AdminPushCampaign> {
+    const { campaign } = await request<{ campaign: AdminPushCampaign }>("POST", "/api/admin/push-campaigns", payload);
+    return campaign;
+  },
+  async adminSendPushCampaign(id: string): Promise<AdminPushCampaign> {
+    const { campaign } = await request<{ campaign: AdminPushCampaign }>("POST", `/api/admin/push-campaigns/${encodeURIComponent(id)}/send`);
+    return campaign;
+  },
   async adminReputationUsers(opts: { q?: string; status?: string } = {}): Promise<Array<{ user: KXUser; reputation: KXReputationProfile }>> {
     const usp = new URLSearchParams();
     if (opts.q) usp.set("q", opts.q);
@@ -1992,7 +2032,7 @@ export const api = {
   async adminEraseUser(id: string): Promise<void> {
     await request<void>("POST", `/api/admin/users/${encodeURIComponent(id)}/erase`);
   },
-  async adminPosts(q?: string, opts: { status?: string; content_type?: ContentType; country?: string; city?: string; region_code?: string } = {}): Promise<KXPost[]> {
+  async adminPosts(q?: string, opts: { status?: string; content_type?: ContentType; country?: string; city?: string; region_code?: string; limit?: number; offset?: number } = {}): Promise<{ items: KXPost[]; total: number }> {
     const usp = new URLSearchParams();
     if (q) usp.set("q", q);
     if (opts.status) usp.set("status", opts.status);
@@ -2000,8 +2040,10 @@ export const api = {
     if (opts.country) usp.set("country", opts.country);
     if (opts.city) usp.set("city", opts.city);
     if (opts.region_code) usp.set("region_code", opts.region_code);
-    const { items } = await request<{ items: KXPost[] }>("GET", `/api/admin/posts?${usp.toString()}`);
-    return items;
+    if (opts.limit != null) usp.set("limit", String(opts.limit));
+    if (opts.offset != null) usp.set("offset", String(opts.offset));
+    const res = await request<{ items: KXPost[]; total?: number }>("GET", `/api/admin/posts?${usp.toString()}`);
+    return { items: res.items ?? [], total: res.total ?? (res.items?.length ?? 0) };
   },
   async adminUpdatePost(id: string, patch: { status?: string; is_boosted?: boolean; boost_weight?: number; boosted_until?: string }): Promise<KXPost> {
     const { post } = await request<{ post: KXPost }>("PATCH", `/api/admin/posts/${encodeURIComponent(id)}`, patch);

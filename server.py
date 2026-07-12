@@ -209,7 +209,7 @@ from server_serializers import (
     serialize_user, serialize_comment, serialize_message_attachment, serialize_notification,
     serialize_message, serialize_conversation, serialize_booking_slot, serialize_booking,
     serialize_email_campaign, serialize_listing_taxonomy_category, serialize_listing_taxonomy_field, serialize_listing_review,
-    serialize_wallet_ledger_entry, serialize_wallet_topup_order,
+    serialize_wallet_ledger_entry, serialize_wallet_topup_order, serialize_push_campaign,
 )
 from server_regions import (
     JP_METRO_CIRCLES,
@@ -13262,6 +13262,123 @@ def start_email_campaign_worker(campaign_id: str) -> None:
     threading.Thread(target=_run, name=f"machi-email-campaign-{campaign_id[:8]}", daemon=True).start()
 
 
+def push_campaign_recipient_rows(
+    conn: sqlite3.Connection, audience: str, selected_ids: list[str] | None = None
+) -> list[str]:
+    """Resolve deliverable recipient user ids for an admin push broadcast.
+
+    Same audience model as email campaigns, but keyed on user id (a push needs no
+    email address) — every matched real user gets the in-app notification row; the
+    APNs banner then reaches whichever of them have a registered device token.
+    Safety invariant on EVERY audience: never target AI/seed personas
+    (content_pack_users) nor deleted/banned accounts (deleted_at)."""
+    _ensure_content_pack_users_table(conn)
+    base = (
+        "SELECT u.id AS id FROM users u "
+        "WHERE u.deleted_at IS NULL "
+        "AND u.id NOT IN (SELECT user_id FROM content_pack_users)"
+    )
+    if audience == "selected":
+        ids = [str(x).strip() for x in (selected_ids or []) if str(x).strip()]
+        if not ids:
+            return []
+        ph = ",".join("?" * len(ids))
+        rows = conn.execute(base + f" AND u.id IN ({ph}) ORDER BY u.created_at DESC", ids).fetchall()
+    elif audience == "verified_members":
+        rows = conn.execute(base + " AND u.is_verified_member = 1 ORDER BY u.created_at DESC").fetchall()
+    elif audience == "active_30d":
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+        rows = conn.execute(
+            base + " AND EXISTS (SELECT 1 FROM sessions s WHERE s.user_id = u.id "
+            "AND s.last_seen_at >= ?) ORDER BY u.created_at DESC",
+            (cutoff,),
+        ).fetchall()
+    else:  # all (every real user)
+        rows = conn.execute(base + " ORDER BY u.created_at DESC").fetchall()
+    return [str(r["id"]) for r in rows]
+
+
+def start_push_campaign_worker(campaign_id: str) -> None:
+    """Deliver an admin push broadcast off the request thread: write one in-app
+    `notifications` row per recipient (durable; always visible in-app) and fan out
+    a best-effort APNs banner to each. `sent_count` counts the in-app rows created
+    (the authoritative delivery); the APNs banner is fire-and-forget and reaches
+    only devices with a live token."""
+    def _run() -> None:
+        try:
+            with DB_LOCK, db() as conn:
+                row = conn.execute("SELECT * FROM push_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+                if not row:
+                    return
+                campaign = dict(row)
+                if campaign["status"] not in {"draft", "queued"}:
+                    return
+                title = campaign["title"]
+                body = campaign["body"]
+                deep_link_type = campaign.get("deep_link_type") or ""
+                deep_link_id = campaign.get("deep_link_id") or ""
+                urgent = bool(campaign.get("urgent"))
+                recipient_ids = push_campaign_recipient_rows(
+                    conn, campaign["audience"], _campaign_selected_ids(campaign))
+                now = now_iso()
+                conn.execute(
+                    "UPDATE push_campaigns SET status = 'sending', recipient_count = ?, sent_count = 0, failed_count = 0, started_at = ?, updated_at = ? WHERE id = ?",
+                    (len(recipient_ids), now, now, campaign_id),
+                )
+            target_post_id = deep_link_id if deep_link_type == "post" else None
+            target_listing_id = deep_link_id if deep_link_type == "listing" else None
+            sent = 0
+            failed = 0
+            batch = 500
+            for start in range(0, len(recipient_ids), batch):
+                chunk = recipient_ids[start:start + batch]
+                with DB_LOCK, db() as conn:
+                    for uid in chunk:
+                        try:
+                            conn.execute(
+                                "INSERT INTO notifications (id, user_id, actor_id, type, title, target_post_id, target_listing_id, content, created_at) "
+                                "VALUES (?, ?, ?, 'system', ?, ?, ?, ?, ?)",
+                                (str(uuid.uuid4()), uid, uid, title, target_post_id, target_listing_id, body, now_iso()),
+                            )
+                            sent += 1
+                        except Exception:
+                            failed += 1
+                # APNs fan-out outside the DB lock (best-effort; no-ops without a
+                # device token or APNs config). actor_id is left empty so the
+                # self-push guard doesn't drop it and no actor name is prefixed.
+                for uid in chunk:
+                    try:
+                        server_apns.enqueue(
+                            uid, ntype="system", title=title, content=body,
+                            post_id=target_post_id, listing_id=target_listing_id, force=urgent,
+                        )
+                    except Exception:
+                        pass
+                with DB_LOCK, db() as conn:
+                    conn.execute(
+                        "UPDATE push_campaigns SET sent_count = ?, failed_count = ?, updated_at = ? WHERE id = ?",
+                        (sent, failed, now_iso(), campaign_id),
+                    )
+            final_status = "sent" if failed == 0 else "failed" if sent == 0 else "partial"
+            with DB_LOCK, db() as conn:
+                conn.execute(
+                    "UPDATE push_campaigns SET status = ?, sent_count = ?, failed_count = ?, finished_at = ?, updated_at = ? WHERE id = ?",
+                    (final_status, sent, failed, now_iso(), now_iso(), campaign_id),
+                )
+        except Exception:
+            ERR_LOG.warning("push campaign failed id=%s", campaign_id)
+            try:
+                with DB_LOCK, db() as conn:
+                    conn.execute(
+                        "UPDATE push_campaigns SET status = 'failed', finished_at = ?, updated_at = ? WHERE id = ?",
+                        (now_iso(), now_iso(), campaign_id),
+                    )
+            except Exception:
+                pass
+
+    threading.Thread(target=_run, name=f"machi-push-campaign-{campaign_id[:8]}", daemon=True).start()
+
+
 _CODE_EMAIL_TEMPLATES = {
     "register": {
         "zh": ("Machi 注册验证码", "你的 Machi 注册验证码是：{code}\n\n验证码 {ttl} 分钟内有效。如果不是你本人操作，请忽略本邮件。"),
@@ -26252,6 +26369,18 @@ class Handler(BaseHTTPRequestHandler):
                 return self.api_admin_update_email_campaign(conn, campaign_id)
             if tail == "send" and method == "POST":
                 return self.api_admin_send_email_campaign(conn, campaign_id)
+        if path == "/api/admin/push-campaigns" and method == "GET":
+            return self.api_admin_push_campaigns(conn, query)
+        if path == "/api/admin/push-campaigns/preview" and method == "POST":
+            return self.api_admin_push_campaign_preview(conn)
+        if path == "/api/admin/push-campaigns" and method == "POST":
+            return self.api_admin_create_push_campaign(conn)
+        if path.startswith("/api/admin/push-campaigns/"):
+            parts = path[len("/api/admin/push-campaigns/"):].split("/")
+            campaign_id = unquote(parts[0])
+            tail = "/".join(parts[1:])
+            if tail == "send" and method == "POST":
+                return self.api_admin_send_push_campaign(conn, campaign_id)
         if path == "/api/admin/users" and method == "GET":
             return self.api_admin_users(conn, query)
         if path.startswith("/api/admin/users/") and path.endswith("/restore") and method == "POST":
@@ -32542,6 +32671,94 @@ class Handler(BaseHTTPRequestHandler):
         fresh = dict(conn.execute("SELECT * FROM email_campaigns WHERE id = ?", (campaign_id,)).fetchone())
         self.send_json({"campaign": serialize_email_campaign(fresh)})
 
+    # ---- Admin push broadcasts (custom App notifications) --------------------
+
+    def api_admin_push_campaigns(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        self.require_admin(conn)
+        limit = max(1, min(int(query.get("limit") or 50), 200))
+        rows = list(conn.execute(
+            "SELECT * FROM push_campaigns ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ))
+        self.send_json({"items": [serialize_push_campaign(dict(r)) for r in rows]})
+
+    def api_admin_push_campaign_preview(self, conn: sqlite3.Connection) -> None:
+        """How many real users an audience resolves to — so the admin confirms the
+        blast size (and that seed/deleted accounts are excluded) BEFORE sending."""
+        self.require_admin(conn)
+        data = self.read_json()
+        audience = normalize_email_campaign_audience(data.get("audience"))
+        selected = _campaign_selected_ids({"audience_user_ids": _normalize_campaign_user_ids(
+            data.get("user_ids") if data.get("user_ids") is not None else data.get("userIds"))})
+        recipient_ids = push_campaign_recipient_rows(conn, audience, selected)
+        self.send_json({"audience": audience, "count": len(recipient_ids)})
+
+    def _read_push_campaign_deeplink(self, data: dict[str, Any]) -> tuple[str, str]:
+        """Validate the optional deep-link (open a post / listing on tap)."""
+        deep_link_type = str(data.get("deepLinkType") or data.get("deep_link_type") or "").strip().lower()
+        if deep_link_type not in {"", "post", "listing"}:
+            deep_link_type = ""
+        deep_link_id = str(data.get("deepLinkId") or data.get("deep_link_id") or "").strip()
+        if not deep_link_type:
+            return "", ""
+        if not deep_link_id:
+            raise APIError("请填写跳转目标 ID", 400, "push_deeplink_id_required")
+        return deep_link_type, deep_link_id[:120]
+
+    def api_admin_create_push_campaign(self, conn: sqlite3.Connection) -> None:
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        title = str(data.get("title") or "").strip()
+        body = str(data.get("body") or "").strip()
+        if not title:
+            raise APIError("通知标题不能为空", 400, "push_title_required")
+        if not body:
+            raise APIError("通知内容不能为空", 400, "push_body_required")
+        if len(title) > 120:
+            raise APIError("通知标题过长", 400, "push_title_too_long")
+        if len(body) > 500:
+            raise APIError("通知内容过长", 400, "push_body_too_long")
+        audience = normalize_email_campaign_audience(data.get("audience"))
+        audience_user_ids = (
+            _normalize_campaign_user_ids(data.get("user_ids") if data.get("user_ids") is not None else data.get("userIds"))
+            if audience == "selected" else ""
+        )
+        if audience == "selected" and not audience_user_ids:
+            raise APIError("请至少选择一个用户", 400, "push_recipients_required")
+        deep_link_type, deep_link_id = self._read_push_campaign_deeplink(data)
+        urgent = 1 if bool(data.get("urgent")) else 0
+        send_now = bool(data.get("sendNow") or data.get("send_now"))
+        campaign_id = "push_" + uuid.uuid4().hex
+        now = now_iso()
+        status = "queued" if send_now else "draft"
+        conn.execute(
+            """
+            INSERT INTO push_campaigns
+                (id, admin_id, title, body, audience, audience_user_ids,
+                 deep_link_type, deep_link_id, urgent, status, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (campaign_id, admin["id"], title, body, audience, audience_user_ids,
+             deep_link_type, deep_link_id, urgent, status, now, now),
+        )
+        campaign = dict(conn.execute("SELECT * FROM push_campaigns WHERE id = ?", (campaign_id,)).fetchone())
+        if send_now:
+            start_push_campaign_worker(campaign_id)
+        self.send_json({"campaign": serialize_push_campaign(campaign)})
+
+    def api_admin_send_push_campaign(self, conn: sqlite3.Connection, campaign_id: str) -> None:
+        self.require_admin(conn)
+        row = conn.execute("SELECT * FROM push_campaigns WHERE id = ?", (campaign_id,)).fetchone()
+        if not row:
+            raise APIError("推送任务不存在", 404, "push_campaign_not_found")
+        current = dict(row)
+        if current["status"] not in {"draft", "queued"}:
+            raise APIError("当前推送任务不能重复发送", 409, "push_campaign_not_sendable")
+        conn.execute("UPDATE push_campaigns SET status = 'queued', updated_at = ? WHERE id = ?", (now_iso(), campaign_id))
+        start_push_campaign_worker(campaign_id)
+        fresh = dict(conn.execute("SELECT * FROM push_campaigns WHERE id = ?", (campaign_id,)).fetchone())
+        self.send_json({"campaign": serialize_push_campaign(fresh)})
+
     def api_update_listing_inquiry(self, conn: sqlite3.Connection, inquiry_id: str) -> None:
         user = self.require_user(conn)
         row = conn.execute("SELECT * FROM listing_inquiries WHERE id = ?", (inquiry_id,)).fetchone()
@@ -35037,7 +35254,14 @@ class Handler(BaseHTTPRequestHandler):
                   AND p.status IN ('published', 'active')
             """
             base_params = []
-        elif mode == "hot":
+        elif mode == "hot" and cursor is None:
+            # 热搜 page 1: the ranked trending board. "Load more" (cursor set —
+            # handled by the `elif mode == "hot"` branch below) continues by plain
+            # recency, so users can keep scrolling past the trending top into the
+            # full timeline instead of hitting a hard one-page wall. Older posts
+            # (incl. a user's own history) are never "hot" but must still be
+            # reachable by scrolling — previously 热搜 returned next_cursor=None and
+            # capped at a single ranked page.
             config = _explore_rank_config(conn)
             days = int(config["hot_days"])
             ranked, fallback_used, region_scope = self._explore_ranked_posts(
@@ -35054,9 +35278,17 @@ class Handler(BaseHTTPRequestHandler):
             for post in posts:
                 post["explore_hot_score"] = scores.get(post["id"], 0)
                 post["exploreHotScore"] = post["explore_hot_score"]
+            # Resume strictly below the oldest post shown, so page 2+ is a plain
+            # created_at walk that eventually reaches every post (strict `<` on the
+            # (created_at, id) keyset → no overlap with this page).
+            hot_next_cursor = None
+            if posts:
+                oldest = min(posts, key=lambda p: (p.get("created_at") or "", p.get("id") or ""))
+                if oldest.get("created_at") and oldest.get("id"):
+                    hot_next_cursor = cursor_encode(oldest["created_at"], oldest["id"])
             payload = {
                 "items": posts,
-                "next_cursor": None,
+                "next_cursor": hot_next_cursor,
                 "mode": mode,
                 "days": days,
                 "fallbackUsed": fallback_used,
@@ -35070,6 +35302,15 @@ class Handler(BaseHTTPRequestHandler):
                 _cache_put(anon_cache_key, payload, ttl_seconds=ANON_FEED_CACHE_TTL)
             self.send_json(payload)
             return
+        elif mode == "hot":
+            # 热搜 page 2+: plain recency below the trending board (cursor set),
+            # sharing the generic keyset pagination path below.
+            base = """
+                SELECT p.* FROM posts p
+                WHERE p.deleted_at IS NULL
+                  AND p.status IN ('published', 'active')
+            """
+            base_params = []
         else:
             base = """
                 SELECT p.* FROM posts p
@@ -40587,6 +40828,10 @@ class Handler(BaseHTTPRequestHandler):
     def api_admin_posts(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
         limit = max(1, min(int(query.get("limit") or 50), 200))
+        try:
+            offset = max(0, int(query.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
         q = (query.get("q") or "").strip()
         status = (query.get("status") or "").strip()
         content_type = normalize_content_type(query.get("content_type")) if query.get("content_type") else ""
@@ -40616,15 +40861,20 @@ class Handler(BaseHTTPRequestHandler):
                 clauses.append("city = ?")
                 params.append(city)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        # Total across the whole filtered set so the admin UI can page through
+        # EVERY post (previously it fetched a flat LIMIT 50 with no offset, so the
+        # console could only ever see the newest ~50 posts — older posts, incl. a
+        # user's own history, were unreachable).
+        total = int((conn.execute(f"SELECT COUNT(*) AS c FROM posts {where}", params).fetchone())["c"] or 0)
         rows = list(conn.execute(
-            f"SELECT * FROM posts {where} ORDER BY created_at DESC LIMIT ?",
-            [*params, limit],
+            f"SELECT * FROM posts {where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            [*params, limit, offset],
         ))
         items = fetch_posts_with_extras(conn, [dict(r) for r in rows], None)
         # Surface deleted_at for the admin UI.
         for item, row in zip(items, rows):
             item["deleted_at"] = row["deleted_at"]
-        self.send_json({"items": items})
+        self.send_json({"items": items, "total": total, "limit": limit, "offset": offset})
 
     def api_admin_update_post(self, conn: sqlite3.Connection, post_id: str) -> None:
         admin = self.require_admin(conn)

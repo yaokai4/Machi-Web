@@ -23,6 +23,7 @@ import {
   MapPin,
   Sparkles,
   Send,
+  Megaphone,
   Eraser,
   Boxes,
   BookOpen,
@@ -168,6 +169,7 @@ const ADMIN_MODULES: {
   { href: "/admin/seller-verifications", label: "认证审核", desc: "卖家、房源方、招聘方和服务商", icon: BadgeCheck },
   { href: "/admin/uploads", label: "文件管理", desc: "S3 / CloudFront 文件、状态和清理", icon: HardDrive },
   { href: "/admin/email", label: "邮件系统", desc: "编辑草稿、群发邮件和广告通知", icon: Send },
+  { href: "/admin/push", label: "推送广播", desc: "向 App 用户发送自定义通知（站内 + 系统横幅）", icon: Megaphone },
   { href: "/admin/guide", label: "Guide 内容管理", desc: "文章 · 商品 · 服务 · 学校 · 公司", icon: BookOpen },
   { href: "/admin/guide/orders", label: "Guide 订单", desc: "数字资料购买订单", icon: ClipboardList },
   { href: "/admin/guide/service-requests", label: "服务预约", desc: "人工服务预约与处理", icon: CalendarClock },
@@ -942,18 +944,21 @@ function PostsPanel() {
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [page, setPage] = useState(0);
   const list = useQuery({
-    queryKey: ["admin-posts", dq, status, contentType],
+    queryKey: ["admin-posts", dq, status, contentType, page],
     queryFn: () => api.adminPosts(dq || undefined, {
       status: status || undefined,
       content_type: contentType || undefined,
+      // True server pagination: the console can now page through EVERY post,
+      // not just a client-side slice of the newest 50 (the old bug).
+      limit: ADMIN_PAGE_SIZE,
+      offset: page * ADMIN_PAGE_SIZE,
     }),
   });
   // Reset to the first page whenever the filters change the result set.
   useEffect(() => { setPage(0); }, [dq, status, contentType]);
-  const allPosts = list.data ?? [];
-  const totalPages = Math.max(1, Math.ceil(allPosts.length / ADMIN_PAGE_SIZE));
-  const safePage = Math.min(page, totalPages - 1);
-  const pagePosts = allPosts.slice(safePage * ADMIN_PAGE_SIZE, safePage * ADMIN_PAGE_SIZE + ADMIN_PAGE_SIZE);
+  const posts = list.data?.items ?? [];
+  const total = list.data?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(total / ADMIN_PAGE_SIZE));
 
   const updatePost = async (id: string, patch: Parameters<typeof api.adminUpdatePost>[1]) => {
     try {
@@ -1003,7 +1008,7 @@ function PostsPanel() {
       </div>
       {list.isError ? <ErrorState onRetry={() => list.refetch()} /> : !list.data ? <InlineLoading /> : (
         <ul className="space-y-2">
-          {pagePosts.map((p) => (
+          {posts.map((p) => (
             <li key={p.id} className={clsx("kx-card", p.deleted_at && "opacity-60")}>
               <div className="flex items-start gap-2.5">
                 <Avatar user={p.author || undefined} size={32} />
@@ -1063,10 +1068,10 @@ function PostsPanel() {
               </div>
             </li>
           ))}
-          {allPosts.length === 0 ? <li className="text-center text-kx-muted py-8">没有结果</li> : null}
+          {posts.length === 0 ? <li className="text-center text-kx-muted py-8">没有结果</li> : null}
         </ul>
       )}
-      {list.data ? <Pager page={safePage} totalPages={totalPages} total={allPosts.length} unit="条" onPage={setPage} /> : null}
+      {list.data ? <Pager page={page} totalPages={totalPages} total={total} unit="条" onPage={setPage} /> : null}
       <ConfirmDialog
         open={!!pendingDelete}
         title="删除这条帖子？"

@@ -613,6 +613,9 @@ def serialize_notification(row: dict[str, Any], extras: dict[str, Any] | None = 
         "targetListingId": row.get("target_listing_id"),
         "target_conversation_id": row.get("target_conversation_id"),
         "targetConversationId": row.get("target_conversation_id"),
+        # Custom title for admin/system broadcasts; empty for typed notifications
+        # whose title the client derives from the type. (Column added in migration 111.)
+        "title": row.get("title", "") or "",
         "content": row.get("content", ""),
         "is_read": bool(row.get("is_read", 0)),
         "created_at": row["created_at"],
@@ -725,6 +728,31 @@ def _email_campaign_ids(row: dict[str, Any]) -> list[str]:
         return [str(x) for x in val] if isinstance(val, list) else []
     except (ValueError, TypeError):
         return []
+
+
+def serialize_push_campaign(row: dict[str, Any]) -> dict[str, Any]:
+    """Admin push-broadcast task. Never leaks recipient identities — only the
+    chosen audience, the admin-authored copy, and aggregate delivery counts."""
+    return {
+        "id": row["id"],
+        "adminId": row.get("admin_id", ""),
+        "title": row.get("title", ""),
+        "body": row.get("body", ""),
+        "audience": row.get("audience", "all"),
+        "audienceUserIds": _email_campaign_ids(row),
+        "audienceUserCount": len(_email_campaign_ids(row)),
+        "deepLinkType": row.get("deep_link_type", "") or "",
+        "deepLinkId": row.get("deep_link_id", "") or "",
+        "urgent": bool(row.get("urgent", 0)),
+        "status": row.get("status", "draft"),
+        "recipientCount": int(row.get("recipient_count") or 0),
+        "sentCount": int(row.get("sent_count") or 0),
+        "failedCount": int(row.get("failed_count") or 0),
+        "createdAt": row.get("created_at", ""),
+        "updatedAt": row.get("updated_at", ""),
+        "startedAt": row.get("started_at"),
+        "finishedAt": row.get("finished_at"),
+    }
 
 
 def serialize_listing_taxonomy_category(row: dict[str, Any]) -> dict[str, Any]:
