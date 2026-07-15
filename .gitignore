@@ -41,3 +41,6 @@ media/thumbnails/
 
 # stray Finder-duplicated db sidecars
 kaix 2.db*
+
+# Local isolated Git worktrees.
+.worktrees/
