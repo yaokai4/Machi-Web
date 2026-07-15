@@ -15008,6 +15008,16 @@ def _upsert_site_settings(conn: sqlite3.Connection, updates: dict[str, str]) -> 
     return _site_settings(conn)
 
 
+def ensure_user_can_self_delete(user: dict[str, Any]) -> None:
+    """Keep privileged accounts out of the irreversible self-delete path."""
+    if (user.get("role") or "member") == "admin":
+        raise APIError(
+            "管理员账号不能自行注销，请先转移或取消管理员权限",
+            403,
+            "admin_self_delete_forbidden",
+        )
+
+
 def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
     """Scrub an account's PII, free its handle, make the password unusable,
     hide its authored content and drop its sessions. Shared by user-initiated
@@ -29494,6 +29504,7 @@ class Handler(BaseHTTPRequestHandler):
         # scrub PII, free the handle, hide content and drop sessions — not just
         # flag deleted_at. Shared with admin erase via anonymize_user_account.
         user = self.require_user(conn)
+        ensure_user_can_self_delete(user)
         anonymize_user_account(conn, user["id"])
         self._clear_session_cookie()
         ACCESS_LOG.warning("user %s self-deleted account (%s)", user["handle"], user["id"])
