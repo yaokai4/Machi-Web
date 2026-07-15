@@ -5352,7 +5352,43 @@ FUNNEL_EVENTS = {
     "compose_open",
     "compose_submit",
     "purchase_step",
+    # Store / monetization funnel (2026-07 商城激活). Unlike the legacy events
+    # these are ALSO persisted to the funnel_events table so the 30-day
+    # go/no-go criteria can be computed without a log aggregator (see
+    # scripts/report_store_funnel.py).
+    "store_view",
+    "sku_view",
+    "purchase_start",
+    "purchase_success",
+    "membership_view",
 }
+
+# The subset of FUNNEL_EVENTS persisted to the funnel_events table. Legacy
+# listing/compose events stay log-only (their volume is much higher and
+# nothing reads them from SQL yet).
+FUNNEL_EVENTS_PERSISTED = {
+    "store_view", "sku_view", "purchase_start", "purchase_success", "membership_view",
+}
+
+
+def ensure_funnel_schema(conn: sqlite3.Connection) -> None:
+    """Idempotent: monetization funnel event rows (store_view → purchase).
+    New table for existing SQLite DBs; PostgreSQL gets it via migration 112."""
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS funnel_events (
+            id TEXT PRIMARY KEY,
+            event TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT '',
+            guest_id TEXT NOT NULL DEFAULT '',
+            entity_type TEXT NOT NULL DEFAULT '',
+            entity_id TEXT NOT NULL DEFAULT '',
+            props_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_funnel_events_event_time ON funnel_events(event, created_at);
+        """
+    )
 
 
 def _funnel_log(event: str, user_id: str = "", entity_type: str = "", entity_id: str = "") -> None:
@@ -7366,8 +7402,10 @@ def init_db() -> None:
         ensure_moderation_schema(conn)
         ensure_saved_search_schema(conn)
         ensure_apns_push_ledger_schema(conn)
+        ensure_funnel_schema(conn)
         ensure_guide_seed(conn)
         _guide_refund_policy_backfill_once(conn)
+        _guide_wallet_activation_once(conn)
         jlpt_seed.ensure_jlpt_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
@@ -12039,6 +12077,55 @@ def wallet_debit_for_product(conn: sqlite3.Connection, user_id: str, product_row
             "requiredPoints": price, "currentBalance": snap["balancePoints"]}
 
 
+def _guide_iap_order_no() -> str:
+    """Order number for an Apple-IAP-paid guide purchase. 'GA' = guide Apple;
+    Apple already settled the money, so the order is born fulfilled (like GW)."""
+    return "GA" + now_iso()[:10].replace("-", "") + uuid.uuid4().hex[:8].upper()
+
+
+@money_atomic
+def guide_credit_iap_purchase(conn: sqlite3.Connection, user_id: str, product_row: dict[str, Any], *,
+                              provider_trade_no: str, sandbox: bool = False) -> dict[str, Any]:
+    """Fulfill a single-product Apple IAP purchase EXACTLY ONCE: record the
+    audit order and grant the entitlement, keyed on the store transaction id.
+    Apple has already charged the customer, so this never refuses to grant —
+    a duplicate verify (restore / retry / webhook race) returns the existing
+    order untouched. Runs as one transaction; @money_atomic's write lock makes
+    the SELECT-then-INSERT idempotency race-safe on the single-writer DB."""
+    d = dict(product_row)
+    resource_type = _guide_product_resource_type(d)
+    resource_id = str(d.get("id"))
+    existing = conn.execute(
+        "SELECT * FROM guide_orders WHERE payment_provider = 'apple_iap' AND provider_trade_no = ? LIMIT 1",
+        (provider_trade_no,)).fetchone()
+    if existing:
+        return {"status": "duplicate", "applied": False, "order": dict(existing),
+                "orderNo": existing["order_no"], "alreadyOwned": True}
+    already_owned = user_has_entitlement(conn, user_id, resource_type, resource_id)
+    now = now_iso()
+    order_id = str(uuid.uuid4())
+    order_no = _guide_iap_order_no()
+    # payment_method carries the sandbox marker (guide_orders has no
+    # client_type column); revenue reports must exclude '*_sandbox'.
+    payment_method = "apple_iap_sandbox" if sandbox else "apple_iap"
+    conn.execute(
+        "INSERT INTO guide_orders (id, user_id, product_id, order_no, price, currency, status, payment_provider, "
+        "payment_method, price_points, provider_trade_no, created_at, paid_at, fulfilled_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'fulfilled', 'apple_iap', ?, 0, ?, ?, ?, ?)",
+        (order_id, user_id, resource_id, order_no, int(d.get("price") or 0),
+         normalize_currency(d.get("currency") or "JPY"), payment_method, provider_trade_no, now, now, now),
+    )
+    ent = grant_user_entitlement(conn, user_id, resource_type, resource_id, source_type="apple_iap",
+                                 source_order_id=order_id,
+                                 metadata={"orderNo": order_no, "transactionId": provider_trade_no})
+    conn.execute("UPDATE guide_orders SET entitlement_id = ? WHERE id = ?", (ent.get("id") or "", order_id))
+    if not already_owned:
+        conn.execute("UPDATE guide_products SET purchase_count = purchase_count + 1 WHERE id = ?", (resource_id,))
+    order_row = dict(conn.execute("SELECT * FROM guide_orders WHERE id = ?", (order_id,)).fetchone())
+    return {"status": "fulfilled", "applied": True, "order": order_row, "orderId": order_id,
+            "orderNo": order_no, "entitlement": ent, "alreadyOwned": already_owned}
+
+
 def ensure_wallet_schema(conn: sqlite3.Connection) -> None:
     """Idempotently seed the default Machi Points top-up packs. The tables
     themselves come from SCHEMA (fresh SQLite, run every boot) and migration 73
@@ -12111,6 +12198,48 @@ def _guide_refund_policy_backfill_once(conn: sqlite3.Connection) -> None:
         (GUIDE_DEFAULT_REFUND_POLICY, now_iso()))
     _upsert_site_settings(conn, {"guide_refund_policy_backfill_v1": "done"})
     ACCESS_LOG.info("guide refund policy backfilled on %s paid products", cur.rowcount)
+
+
+# Hero SKUs sold as single-product Apple IAP (non-consumable) in addition to
+# wallet purchase. Each id must exist in App Store Connect (and in
+# MachiVerified.storekit for local testing) and be submitted with the next
+# app version — see the ASC checklist. slug → apple/ios product id.
+GUIDE_HERO_IAP_PRODUCTS = {
+    "jlpt-n1-past-trend-original-practice": "machi_guide_jlpt_n1_980",
+    "jlpt-n2-past-trend-original-practice": "machi_guide_jlpt_n2_980",
+    "jlpt-n3-past-trend-original-practice": "machi_guide_jlpt_n3_980",
+}
+
+
+def _guide_wallet_activation_once(conn: sqlite3.Connection) -> None:
+    """One-time activation (2026-07 商城开门): switch on wallet purchasing for
+    every PUBLISHED paid digital product at the 1 币 = 1 JPY anchor
+    (wallet_price_points = JPY price; member price mirrors member_price), and
+    assign single-product IAP ids to the hero SKUs. coming_soon products are
+    untouched — publishing those stays a deliberate admin action once their
+    content exists. Runs once; afterwards admin edits own these fields."""
+    try:
+        if _site_settings(conn).get("guide_wallet_activation_v1") == "done":
+            return
+    except Exception:
+        return
+    now = now_iso()
+    cur = conn.execute(
+        "UPDATE guide_products SET wallet_eligible = 1, wallet_price_points = price, "
+        "member_wallet_price_points = CASE WHEN COALESCE(is_member_discount,0) = 1 AND COALESCE(member_price,0) > 0 "
+        "THEN member_price ELSE COALESCE(member_wallet_price_points,0) END, updated_at = ? "
+        "WHERE status = 'published' AND COALESCE(is_coming_soon,0) = 0 AND COALESCE(is_free,0) = 0 "
+        "AND COALESCE(is_service,0) = 0 AND COALESCE(price,0) > 0 AND COALESCE(wallet_eligible,0) = 0",
+        (now,))
+    assigned = 0
+    for slug, iap_id in GUIDE_HERO_IAP_PRODUCTS.items():
+        assigned += conn.execute(
+            "UPDATE guide_products SET apple_product_id = ?, ios_iap_product_id = ?, updated_at = ? "
+            "WHERE slug = ? AND COALESCE(TRIM(apple_product_id),'') = ''",
+            (iap_id, iap_id, now, slug)).rowcount
+    _upsert_site_settings(conn, {"guide_wallet_activation_v1": "done"})
+    ACCESS_LOG.info("guide wallet purchasing activated on %s SKUs; %s hero IAP ids assigned",
+                    cur.rowcount, assigned)
 
 
 # ---- provider client params (what the client needs to start paying) ----
@@ -27016,6 +27145,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_payment_webhook_apple(conn)
         if path == "/api/payments/apple/verify" and method == "POST":
             return self.api_apple_verify(conn)
+        if path == "/api/payments/apple/guide-verify" and method == "POST":
+            return self.api_apple_guide_verify(conn)
         # Dev-only mock settlement. The handler itself refuses unless
         # PAYMENT_MOCK_ENABLED and not in production.
         if path == "/api/payments/mock/confirm" and method in ("POST", "GET"):
@@ -27682,6 +27813,16 @@ class Handler(BaseHTTPRequestHandler):
             if wt:
                 wallet_refund_topup(conn, wt["order_no"], reason=event_type, entry_type="refund_debit")
                 return self.send_json({"received": True, "processed": True, "status": "points_refunded"})
+            # A refunded single-product guide IAP must revoke the entitlement
+            # (price_points is 0 on IAP orders, so refund_guide_points_order
+            # only revokes — the money side is Apple's).
+            go = conn.execute(
+                "SELECT id FROM guide_orders WHERE payment_provider = 'apple_iap' "
+                "AND provider_trade_no IN (?, ?) AND provider_trade_no <> '' LIMIT 1",
+                ("apple:" + tx_id, "apple:" + original_id)).fetchone()
+            if go:
+                refund_guide_points_order(conn, go["id"], reason=event_type)
+                return self.send_json({"received": True, "processed": True, "status": "guide_entitlement_revoked"})
             row = _current_membership_row(conn, user_id)
             if row and ((not original_id) or row.get("provider_subscription_id") in ("", original_id)):
                 cancel_membership(conn, user_id, immediate=True, source="ios_iap")
@@ -27700,6 +27841,58 @@ class Handler(BaseHTTPRequestHandler):
                 "currentPeriodEnd": status["current_period_end"],
             })
         return self.send_json({"received": True, "processed": True})
+
+    def api_apple_guide_verify(self, conn: sqlite3.Connection) -> None:
+        """Verify a StoreKit2 single-product (non-consumable) guide purchase
+        and grant the entitlement. Mirrors the wallet top-up verify's defenses:
+        server-side JWS verification, appAccountToken binding in production,
+        sandbox never rejected (App Review tests IAP in sandbox) but marked,
+        idempotent on the transaction id. Rejects membership and points
+        product ids symmetrically — each product family has exactly one
+        verify endpoint that can grant it."""
+        user = self.require_user(conn)
+        data = self.read_json()
+        signed = str(data.get("signedTransaction") or data.get("signed_transaction") or "").strip()
+        product_id = str(data.get("productId") or data.get("product_id") or "").strip()
+        if not signed or not product_id:
+            raise APIError("缺少交易凭证", 400, "invalid_transaction")
+        if get_plan_by_apple_product(conn, product_id):
+            raise APIError("该商品是会员套餐，请走会员验证", 400, "product_is_membership")
+        if get_topup_product_by_apple(conn, product_id):
+            raise APIError("该商品是充值包，请走钱包验证", 400, "product_is_topup")
+        prod = conn.execute(
+            "SELECT * FROM guide_products WHERE ? <> '' AND (apple_product_id = ? OR ios_iap_product_id = ?) LIMIT 1",
+            (product_id, product_id, product_id)).fetchone()
+        if not prod:
+            raise APIError("商品不存在", 404, "guide_product_not_found")
+        d = dict(prod)
+        if bool(d.get("is_coming_soon")) or str(d.get("status") or "") != "published":
+            raise APIError("商品未上架", 400, "product_not_available")
+        if bool(d.get("is_service")) or str(d.get("fulfillment_type") or "") == "booking_only":
+            raise APIError("服务类商品请使用预约流程", 400, "use_booking")
+        payload = verify_apple_transaction(signed, product_id)
+        if not payload:
+            raise APIError("交易验证失败", 400, "verification_failed")
+        txn_id = str(data.get("transactionId") or data.get("transaction_id") or payload.get("transactionId") or "")
+        orig_id = str(data.get("originalTransactionId") or data.get("original_transaction_id") or payload.get("originalTransactionId") or "")
+        app_account_token = str(payload.get("appAccountToken") or "").strip()
+        if app_account_token and app_account_token.lower() != user["id"].lower():
+            raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
+        txn_environment = str(payload.get("environment") or data.get("environment") or "").strip().lower()
+        is_sandbox_txn = txn_environment in ("sandbox", "xcode")
+        # 与会员/钱包 verify 同一策略：生产真实购买必须携带 appAccountToken；
+        # 沙盒交易绝不拒绝（审核员走沙盒），仅打 sandbox 标记不计营收。
+        if PRODUCTION and not is_sandbox_txn and not app_account_token:
+            raise APIError("交易缺少账号凭证", 403, "apple_account_token_required")
+        dedup = "apple:" + (txn_id or orig_id or signed[:40])
+        result = guide_credit_iap_purchase(conn, user["id"], d, provider_trade_no=dedup,
+                                           sandbox=is_sandbox_txn)
+        self.send_json({
+            "status": result.get("status") or "fulfilled",
+            "orderNo": result.get("orderNo") or "",
+            "alreadyOwned": bool(result.get("alreadyOwned")),
+            "entitlement": result.get("entitlement"),
+        })
 
     def api_apple_verify(self, conn: sqlite3.Connection) -> None:
         """Verify a StoreKit2 transaction and open/extend membership. The
@@ -37154,6 +37347,20 @@ class Handler(BaseHTTPRequestHandler):
         entity_type = str(data.get("entityType") or data.get("entity_type") or "").strip()[:40]
         entity_id = str(data.get("entityId") or data.get("entity_id") or "").strip()[:64]
         _funnel_log(event, user_id=user_id, entity_type=entity_type, entity_id=entity_id)
+        # Monetization events additionally land in funnel_events so the 30-day
+        # go/no-go report (scripts/report_store_funnel.py) works from SQL alone.
+        # props is a small free-form dict (e.g. {"method": "wallet"}); capped and
+        # stored verbatim — no PII expected, none extracted.
+        if event in FUNNEL_EVENTS_PERSISTED:
+            props = data.get("props") if isinstance(data.get("props"), dict) else {}
+            props_json = json.dumps(props, ensure_ascii=False)[:500]
+            guest_id = str(self.headers.get("X-Machi-Guest-Id") or "").strip()[:64]
+            conn.execute(
+                "INSERT INTO funnel_events (id, event, user_id, guest_id, entity_type, entity_id, props_json, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (str(uuid.uuid4()), event, user_id or "", guest_id if not user_id else "",
+                 entity_type, entity_id, props_json, now_iso()),
+            )
         self.send_json({"ok": True})
 
     def api_topic_follow(self, conn: sqlite3.Connection, tag: str, on: bool) -> None:

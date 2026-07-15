@@ -363,6 +363,33 @@ class WalletFoundationTests(unittest.TestCase):
         again = server.admin_recover_refund_debt(self.conn, [buy["orderId"]], admin_handle="admin")
         self.assertFalse(again["results"][0]["applied"])
 
+    # 11. single-product Apple IAP purchase: grants once, idempotent on the
+    # transaction id, refund revokes the entitlement without crediting points
+    def test_guide_iap_purchase_and_refund(self):
+        uid = _make_user(self.conn)
+        prod = _make_product(self.conn, wallet_price=980)
+        dedup = "apple:txn-guide-1"
+        r1 = server.guide_credit_iap_purchase(self.conn, uid, prod, provider_trade_no=dedup)
+        self.assertEqual(r1["status"], "fulfilled")
+        self.assertTrue(server.user_has_entitlement(self.conn, uid, "guide_product", prod["id"]))
+        order = self.conn.execute("SELECT * FROM guide_orders WHERE id = ?", (r1["orderId"],)).fetchone()
+        self.assertEqual(order["payment_provider"], "apple_iap")
+        self.assertEqual(int(order["price_points"] or 0), 0)  # money side is Apple's
+        # replay (restore / webhook race) → duplicate, exactly one order
+        r2 = server.guide_credit_iap_purchase(self.conn, uid, prod, provider_trade_no=dedup)
+        self.assertEqual(r2["status"], "duplicate")
+        n = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_orders WHERE payment_provider='apple_iap' AND provider_trade_no=?",
+            (dedup,)).fetchone()
+        self.assertEqual(dict(n)["c"], 1)
+        # refund: entitlement revoked, wallet balance untouched (0 points order)
+        before = server.get_wallet_snapshot(self.conn, uid)["balancePoints"]
+        res = server.refund_guide_points_order(self.conn, r1["orderId"], reason="REFUND")
+        self.assertTrue(res["applied"])
+        self.assertEqual(res["refundedPoints"], 0)
+        self.assertFalse(server.user_has_entitlement(self.conn, uid, "guide_product", prod["id"]))
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], before)
+
     # 8. insufficient balance → no order, no entitlement, no charge
     def test_purchase_insufficient(self):
         uid = _make_user(self.conn)

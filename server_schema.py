@@ -5565,6 +5565,28 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE notifications ADD COLUMN title TEXT NOT NULL DEFAULT '';
         """,
     ),
+    (
+        112,
+        "funnel_events: 商城变现漏斗事件落表（store_view→purchase_success）",
+        # 2026-07 商城激活：商城/会员漏斗事件（store_view / sku_view /
+        # purchase_start / purchase_success / membership_view）从「仅结构化日志」
+        # 升级为落表，30 天 go/no-go 判据可直接用 SQL 计算
+        # （scripts/report_store_funnel.py）。旧 listing/compose 事件保持仅日志。
+        # SQLite 侧由 ensure_funnel_schema 建表（镜像 apns_push_ledger 模式）。
+        """
+        CREATE TABLE IF NOT EXISTS funnel_events (
+            id TEXT PRIMARY KEY,
+            event TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT '',
+            guest_id TEXT NOT NULL DEFAULT '',
+            entity_type TEXT NOT NULL DEFAULT '',
+            entity_id TEXT NOT NULL DEFAULT '',
+            props_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_funnel_events_event_time ON funnel_events(event, created_at);
+        """,
+    ),
 ]
 
 
