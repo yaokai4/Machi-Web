@@ -66,6 +66,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     ["legal/refund-policy", "yearly", 0.35],
     ["legal/community-guidelines", "yearly", 0.35],
     ["legal/commercial-disclosure", "yearly", 0.35],
+    ["legal/fund-settlement-act", "yearly", 0.35],
     ["legal/cookie-policy", "yearly", 0.3],
   ] as const;
 

@@ -36,6 +36,7 @@ const groupHrefs: string[][] = [
     "/legal/refund-policy",
     "/legal/community-guidelines",
     "/legal/commercial-disclosure",
+    "/legal/fund-settlement-act",
     "/legal/cookie-policy",
     "/contact",
   ],

@@ -23,6 +23,7 @@ export type MarketingPageId =
   | "refund-policy"
   | "community-guidelines"
   | "commercial-disclosure"
+  | "fund-settlement-act"
   | "cookie-policy";
 
 export type MarketingPageItem = {
@@ -70,6 +71,7 @@ export const marketingPageLabels: Record<MarketingPageId, string> = {
   "refund-policy": "退款政策",
   "community-guidelines": "社区规则",
   "commercial-disclosure": "商业披露",
+  "fund-settlement-act": "資金決済法表示",
   "cookie-policy": "Cookie 政策",
 };
 
@@ -850,6 +852,65 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
         { title: "販売数量", body: "デジタル資料、会員、サービス予約に数量、定員、地域、言語の制限がある場合、該当ページに表示します。" },
         { title: "動作環境", body: "Machi Web はモダンブラウザに対応します。iOS / Android アプリのシステム要件は、公開時のストア表示に従います。" },
         { title: "更新方法", body: "本ページは管理画面から更新できます。重要な変更は、公式サイト、注文画面、アプリ内通知、その他合理的な方法で案内する場合があります。" },
+      ] },
+    ] },
+  },
+  "fund-settlement-act": {
+    zh: { eyebrow: "資金決済法表示", title: "基于日本《资金决济法》的表示（前払式支払手段）", intro: "Machi 币（Machi Coins）属于日本《資金決済に関する法律》所定义的自家型前払式支払手段。本页面列出法定披露事项。本页不构成法律意见。", blocks: [
+      { title: "发行者信息", variant: "legal", items: [
+        { title: "发行者", body: "Machi / 运营者：姚凱（个人事业者）。如依法或经合理要求需要更完整的法定名称与地址，将通过 hi@machicity.com 立即（遅滞なく）开示。" },
+        { title: "咨询窗口", body: "关于 Machi 币的疑问、投诉与相谈，请联系 hi@machicity.com（邮件受理，原则上 3 个工作日内回复；必要时可安排日语沟通）。" },
+      ] },
+      { title: "Machi 币的性质与使用条件", variant: "legal", items: [
+        { title: "名称与购买方式", body: "名称：Machi 币（Machi Coins）。通过 App Store 应用内购买（iOS）或 Web 端支付购入充值包；价格以各充值包页面显示为准（1 Machi 币按 1 日元基准计价）。" },
+        { title: "使用范围", body: "仅可在 Machi App 及 machicity.com 内，用于购买数字资料、模板及平台内合规服务。不可提现、不可转让给其他用户、不可兑换现金。" },
+        { title: "有效期间", body: "Machi 币不设有效期（不会过期）。" },
+        { title: "支付可能金额等", body: "钱包余额无持有上限；单笔充值以所提供充值包面额为准（现行最大单笔 64,800 币）。" },
+        { title: "未使用残高的确认方法", body: "登录后可随时在 App「设置 → Machi 币钱包」或 Web「钱包」页面查看余额与全部收支明细。" },
+        { title: "退款", body: "除法令另有规定的情形（如发行终止）外，已购入的 Machi 币原则上不予退款。通过 App Store 购入的充值包，其退款依 Apple 的规则处理；被 Apple 退款的充值将从余额中相应扣回。" },
+      ] },
+      { title: "其他法定事项", variant: "legal", items: [
+        { title: "利用上的注意", body: "账号被注销或因违反服务条款被停用时，余额的处理依服务条款执行。系统维护期间可能暂时无法使用。" },
+        { title: "约款", body: "Machi 币的使用受《服务条款》《会员条款》《退款政策》约束，详见本站法律页面。" },
+        { title: "发行保证金", body: "当基准日（每年 3 月 31 日、9 月 30 日）未使用残高超过法定基准额（1,000 万日元）时，将依法向管辖财务局办理届出并供托发行保证金。" },
+      ] },
+    ] },
+    en: { eyebrow: "Payment Services Act", title: "Disclosure under the Japanese Payment Services Act (prepaid payment instruments)", intro: "Machi Coins are an in-house (self-issued) prepaid payment instrument as defined by Japan's Payment Services Act (資金決済法). This page lists the statutory disclosures. It is not legal advice.", blocks: [
+      { title: "Issuer", variant: "legal", items: [
+        { title: "Issuer", body: "Machi / Operator: Yao Kai (sole proprietor). Fuller legal name and address will be disclosed without delay upon lawful or reasonable request via hi@machicity.com." },
+        { title: "Inquiries", body: "For questions or complaints about Machi Coins, contact hi@machicity.com (email support; replies normally within 3 business days; Japanese support available when needed)." },
+      ] },
+      { title: "Nature and conditions of use", variant: "legal", items: [
+        { title: "Name and how to purchase", body: "Name: Machi Coins (Machi 币). Purchased as top-up packs via App Store in-app purchase (iOS) or Web checkout; prices as shown on each pack (anchored at 1 coin ≈ ¥1 JPY)." },
+        { title: "Where usable", body: "Usable only inside the Machi app and machicity.com for digital resources, templates and compliant platform services. Not redeemable for cash, not transferable, not withdrawable." },
+        { title: "Validity", body: "Machi Coins do not expire." },
+        { title: "Purchase limits", body: "No cap on held balance; per-purchase amounts follow the offered packs (currently up to 64,800 coins per pack)." },
+        { title: "Checking unused balance", body: "After signing in, the balance and full ledger are visible anytime in the app (Settings → Machi Coins Wallet) or on the Web wallet page." },
+        { title: "Refunds", body: "Purchased coins are in principle non-refundable except where required by law (e.g. discontinuation of issuance). Packs bought through the App Store follow Apple's refund rules; coins from an Apple-refunded pack are clawed back from the balance." },
+      ] },
+      { title: "Other statutory matters", variant: "legal", items: [
+        { title: "Notes", body: "Balance handling on account deletion or suspension for terms violations follows the Terms of Service. Coins may be temporarily unusable during maintenance." },
+        { title: "Terms", body: "Use of Machi Coins is governed by the Terms of Service, Membership Terms and Refund Policy on this site." },
+        { title: "Security deposit", body: "If the unused balance exceeds the statutory threshold (¥10,000,000) on a base date (March 31 / September 30), Machi will file with the competent Local Finance Bureau and deposit the statutory security as required by law." },
+      ] },
+    ] },
+    ja: { eyebrow: "資金決済法に基づく表示", title: "資金決済に関する法律に基づく表示（前払式支払手段）", intro: "Machi コイン（Machi Coins）は、資金決済に関する法律に定める自家型前払式支払手段に該当します。本ページは同法に基づく表示事項を記載するものです。", blocks: [
+      { title: "発行者", variant: "legal", items: [
+        { title: "発行者", body: "Machi / 運営者：姚凱（個人事業主）。法令上または合理的な請求がある場合、正式な氏名・住所は hi@machicity.com を通じて遅滞なく開示します。" },
+        { title: "苦情・相談窓口", body: "Machi コインに関するお問い合わせ・苦情は hi@machicity.com までご連絡ください（メール受付、原則 3 営業日以内に返信。日本語対応可）。" },
+      ] },
+      { title: "性質と利用条件", variant: "legal", items: [
+        { title: "名称・購入方法", body: "名称：Machi コイン（Machi Coins / Machi 币）。App Store のアプリ内課金（iOS）または Web 決済でチャージパックを購入します。価格は各パックの表示によります（1 コイン ≒ 1 円基準）。" },
+        { title: "利用できる範囲", body: "Machi アプリおよび machicity.com 内でのデジタル資料・テンプレート・プラットフォーム内サービスの購入にのみ利用できます。現金への払い戻し、他ユーザーへの譲渡、出金はできません。" },
+        { title: "有効期間", body: "有効期限はありません（失効しません）。" },
+        { title: "支払可能金額等", body: "保有残高の上限はありません。1 回のチャージ額は提供中のパックによります（現行最大 64,800 コイン）。" },
+        { title: "未使用残高の確認方法", body: "ログイン後、アプリ「設定 → Machi コインウォレット」または Web「ウォレット」ページで残高と履歴をいつでも確認できます。" },
+        { title: "払戻し", body: "法令に定める場合（発行の廃止等）を除き、購入済みコインの払戻しは原則行いません。App Store 経由の購入は Apple の返金規則に従い、Apple により返金されたチャージ分のコインは残高から差し引かれます。" },
+      ] },
+      { title: "その他の法定事項", variant: "legal", items: [
+        { title: "利用上の注意", body: "アカウントの削除・利用規約違反による停止時の残高の取扱いは利用規約によります。メンテナンス中は一時的に利用できない場合があります。" },
+        { title: "約款", body: "Machi コインの利用には、利用規約・会員規約・返金ポリシーが適用されます。" },
+        { title: "発行保証金", body: "基準日（毎年 3 月 31 日・9 月 30 日）の未使用残高が基準額（1,000 万円）を超える場合は、法令に従い管轄財務局への届出および発行保証金の供託を行います。" },
       ] },
     ] },
   },

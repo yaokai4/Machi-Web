@@ -7367,6 +7367,7 @@ def init_db() -> None:
         ensure_saved_search_schema(conn)
         ensure_apns_push_ledger_schema(conn)
         ensure_guide_seed(conn)
+        _guide_refund_policy_backfill_once(conn)
         jlpt_seed.ensure_jlpt_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
@@ -11414,20 +11415,29 @@ def client_config_payload() -> dict[str, Any]:
         "ts": now_iso(),
     }
 
-# Default top-up packs. amount_cents is in minor units (分/cents). Apple, iOS
-# and Google product ids default to the pack_key so StoreKit / Play SKUs line
-# up 1:1 with App Store Connect / Play Console product ids.
+# Default top-up packs. amount_cents is the app's value×100 storage (the
+# Stripe edge divides by 100 for zero-decimal currencies like JPY — see
+# _stripe_minor_units). Apple, iOS and Google product ids default to the
+# pack_key so StoreKit / Play SKUs line up 1:1 with App Store Connect /
+# Play Console product ids.
+#
+# Currency anchor (2026-07 货币白皮书): 1 Machi 币 = 1 JPY, everywhere.
+# A pack's face price IS its coin count (600 币 = ¥600); larger packs add
+# bonus coins on top instead of discounting the face price, so a product's
+# wallet_price_points can always equal its JPY price with no cross-channel
+# arbitrage. App Store Connect JPY prices must be updated to match (see the
+# ASC checklist produced by the 2026-07 activation work).
 # (pack_key, title, subtitle, points, bonus_points, amount_cents, currency)
 WALLET_TOPUP_SEED: list[tuple[str, str, str, int, int, int, str]] = [
-    ("machi_points_600", "600 Machi 币", "小资料 / 模板", 600, 0, 600, "CNY"),
-    ("machi_points_1800", "1800 Machi 币", "常用资料包 · 多送 100", 1800, 100, 1800, "CNY"),
-    ("machi_points_3000", "3000 Machi 币", "组合包 · 多送 200", 3000, 200, 2800, "CNY"),
-    ("machi_points_6800", "6800 Machi 币", "深度资料 · 多送 600", 6800, 600, 6800, "CNY"),
-    ("machi_points_9800", "9800 Machi 币", "多次购买 · 多送 1000", 9800, 1000, 9800, "CNY"),
-    ("machi_points_12800", "12800 Machi 币", "学习季囤币 · 多送 1600", 12800, 1600, 12800, "CNY"),
-    ("machi_points_19800", "19800 Machi 币", "重度使用 · 多送 3000", 19800, 3000, 19800, "CNY"),
-    ("machi_points_32800", "32800 Machi 币", "超值大包 · 多送 5800", 32800, 5800, 29800, "CNY"),
-    ("machi_points_64800", "64800 Machi 币", "顶配大包 · 多送 13000", 64800, 13000, 59800, "CNY"),
+    ("machi_points_600", "600 Machi 币", "小资料 / 模板", 600, 0, 60000, "JPY"),
+    ("machi_points_1800", "1800 Machi 币", "常用资料包 · 多送 100", 1800, 100, 180000, "JPY"),
+    ("machi_points_3000", "3000 Machi 币", "组合包 · 多送 200", 3000, 200, 300000, "JPY"),
+    ("machi_points_6800", "6800 Machi 币", "深度资料 · 多送 600", 6800, 600, 680000, "JPY"),
+    ("machi_points_9800", "9800 Machi 币", "多次购买 · 多送 1000", 9800, 1000, 980000, "JPY"),
+    ("machi_points_12800", "12800 Machi 币", "学习季囤币 · 多送 1600", 12800, 1600, 1280000, "JPY"),
+    ("machi_points_19800", "19800 Machi 币", "重度使用 · 多送 3000", 19800, 3000, 1980000, "JPY"),
+    ("machi_points_32800", "32800 Machi 币", "超值大包 · 多送 5800", 32800, 5800, 3280000, "JPY"),
+    ("machi_points_64800", "64800 Machi 币", "顶配大包 · 多送 13000", 64800, 13000, 6480000, "JPY"),
 ]
 
 
@@ -11765,6 +11775,81 @@ def wallet_refund_topup(conn: sqlite3.Connection, order_no: str, *, reason: str 
     return {"applied": True, "clawedBack": debit, "debtPoints": debt, "wallet": get_wallet_snapshot(conn, user_id)}
 
 
+def wallet_outstanding_debt(conn: sqlite3.Connection, user_id: str) -> int:
+    """Residual clawback debt for a user: debt recorded by wallet_refund_topup
+    (refund-debt:* note entries) minus what admin recovery already debited
+    (refund-recovery:* entries). Pure ledger arithmetic — no extra table."""
+    debt = 0
+    for r in conn.execute(
+            "SELECT metadata_json FROM wallet_ledger_entries WHERE user_id = ? "
+            "AND idempotency_key LIKE 'refund-debt:%'", (user_id,)):
+        try:
+            debt += int((json.loads(r["metadata_json"] or "{}") or {}).get("debtPoints") or 0)
+        except Exception:
+            continue
+    recovered = conn.execute(
+        "SELECT COALESCE(SUM(-points_delta), 0) AS p FROM wallet_ledger_entries WHERE user_id = ? "
+        "AND idempotency_key LIKE 'refund-recovery:%' AND points_delta < 0", (user_id,)).fetchone()
+    return max(0, debt - int(recovered["p"] or 0))
+
+
+@money_atomic
+def admin_recover_refund_debt(conn: sqlite3.Connection, order_ids: list[str], *, admin_handle: str = "") -> dict[str, Any]:
+    """Admin one-click follow-up for a refund-clawback debt (P0-3): revoke the
+    points-paid guide orders the user bought with the refunded coins, then
+    debit the credited-back points against the outstanding debt. All in one
+    money transaction. The wallet is temporarily flipped to 'active' so the
+    ledger debit can land (debits require active status), and flipped back to
+    'restricted' only if debt remains."""
+    results: list[dict[str, Any]] = []
+    touched_users: set[str] = set()
+    for oid in order_ids:
+        row = conn.execute(
+            "SELECT * FROM guide_orders WHERE (id = ? OR order_no = ?)", (oid, oid)).fetchone()
+        if not row:
+            results.append({"orderId": oid, "applied": False, "reason": "order_not_found"})
+            continue
+        order = dict(row)
+        user_id = order["user_id"]
+        res = refund_guide_points_order(conn, order["id"], reason="refund_debt_recovery")
+        if not res.get("applied"):
+            results.append({"orderId": oid, "applied": False,
+                            "reason": res.get("reason") or ("duplicate" if res.get("duplicate") else "failed")})
+            continue
+        touched_users.add(user_id)
+        credited = int(res.get("refundedPoints") or 0)
+        remaining = wallet_outstanding_debt(conn, user_id)
+        recover = min(credited, remaining)
+        recovered = 0
+        if recover > 0:
+            now = now_iso()
+            conn.execute("UPDATE wallet_accounts SET status = 'active', updated_at = ? "
+                         "WHERE user_id = ? AND status = 'restricted'", (now, user_id))
+            debit = wallet_post_ledger(conn, user_id, "chargeback_debit", -recover,
+                                       source_type="refund", source_order_id=order["id"],
+                                       idempotency_key=f"refund-recovery:{order['id']}",
+                                       created_by=admin_handle,
+                                       metadata={"reason": "refund_debt_recovery", "by": admin_handle,
+                                                 "revokedOrderNo": order.get("order_no") or ""})
+            if debit.get("applied"):
+                recovered = recover
+        results.append({"orderId": oid, "orderNo": order.get("order_no") or "", "applied": True,
+                        "creditedPoints": credited, "recoveredPoints": recovered})
+    summary = []
+    for user_id in touched_users:
+        remaining = wallet_outstanding_debt(conn, user_id)
+        now = now_iso()
+        if remaining > 0:
+            conn.execute("UPDATE wallet_accounts SET status = 'restricted', updated_at = ? "
+                         "WHERE user_id = ?", (now, user_id))
+        else:
+            conn.execute("UPDATE wallet_accounts SET status = 'active', updated_at = ? "
+                         "WHERE user_id = ? AND status = 'restricted'", (now, user_id))
+        summary.append({"userId": user_id, "remainingDebt": remaining,
+                        "walletStatus": "restricted" if remaining > 0 else "active"})
+    return {"results": results, "users": summary}
+
+
 @money_atomic
 def refund_guide_points_order(conn: sqlite3.Connection, order_id_or_no: str, *, reason: str = "") -> dict[str, Any]:
     """Refund a guide purchase: revoke the entitlement and (for points-paid
@@ -11969,6 +12054,63 @@ def ensure_wallet_schema(conn: sqlite3.Connection) -> None:
             (str(uuid.uuid4()), pack_key, title, subtitle, points, bonus, amount_cents, currency,
              pack_key, pack_key, pack_key, idx, now, now),
         )
+    _wallet_topup_jpy_reprice_once(conn)
+
+
+def _wallet_topup_jpy_reprice_once(conn: sqlite3.Connection) -> None:
+    """One-time data migration (2026-07 货币白皮书): re-anchor the legacy
+    CNY-denominated packs to 1 币 = 1 JPY. Only rows still carrying the old
+    CNY pricing are touched, so an operator who already re-priced a pack from
+    the admin console is never clobbered; the site_settings flag makes the
+    whole pass run exactly once per database."""
+    try:
+        if _site_settings(conn).get("wallet_topup_jpy_reprice_v1") == "done":
+            return
+    except Exception:
+        # site_settings not migrated yet on this boot path — retry next boot.
+        return
+    for _idx, (pack_key, title, subtitle, points, bonus, amount_cents, currency) in enumerate(WALLET_TOPUP_SEED):
+        conn.execute(
+            "UPDATE wallet_topup_products SET points = ?, bonus_points = ?, amount_cents = ?, currency = ?, "
+            "title = ?, subtitle = ?, updated_at = ? "
+            "WHERE pack_key = ? AND UPPER(COALESCE(currency, '')) = 'CNY'",
+            (points, bonus, amount_cents, currency, title, subtitle, now_iso(), pack_key),
+        )
+    _upsert_site_settings(conn, {"wallet_topup_jpy_reprice_v1": "done"})
+    ACCESS_LOG.info("wallet topup packs re-anchored to JPY (1 coin = 1 JPY)")
+
+
+# Default refund policy for paid digital goods (P0-3). Shown on the product
+# page (iOS renders refundPolicy in the pre-purchase notice) and doubles as
+# the consumer-law disclosure. Operators can still override per SKU in admin.
+GUIDE_DEFAULT_REFUND_POLICY = (
+    "数字商品，购买并交付后原则上不支持退款；购买后 7 日内未下载/未使用，"
+    "可联系客服退回等值 Machi 币。\n"
+    "デジタル商品のため、購入・交付後の返金は原則お受けできません。"
+    "購入後7日以内で未ダウンロード・未使用の場合は、サポートまでご連絡ください"
+    "（同額の Machi コインで返金します）。\n"
+    "Digital goods are generally non-refundable after delivery. If undownloaded "
+    "and unused within 7 days of purchase, contact support for a refund in "
+    "Machi Coins of equal value."
+)
+
+
+def _guide_refund_policy_backfill_once(conn: sqlite3.Connection) -> None:
+    """One-time backfill (P0-3): every PAID guide product must carry a
+    user-visible refund policy before any purchase channel is switched on.
+    Only fills empty refund_policy — an operator-written policy is kept."""
+    try:
+        if _site_settings(conn).get("guide_refund_policy_backfill_v1") == "done":
+            return
+    except Exception:
+        return
+    cur = conn.execute(
+        "UPDATE guide_products SET refund_policy = ?, updated_at = ? "
+        "WHERE COALESCE(TRIM(refund_policy), '') = '' AND COALESCE(is_free, 0) = 0 "
+        "AND (COALESCE(price, 0) > 0 OR COALESCE(wallet_price_points, 0) > 0 OR COALESCE(is_paid, 0) = 1)",
+        (GUIDE_DEFAULT_REFUND_POLICY, now_iso()))
+    _upsert_site_settings(conn, {"guide_refund_policy_backfill_v1": "done"})
+    ACCESS_LOG.info("guide refund policy backfilled on %s paid products", cur.rowcount)
 
 
 # ---- provider client params (what the client needs to start paying) ----
@@ -12887,6 +13029,216 @@ def _verify_apple_jws_signature(header_b64: str, payload_b64: str, sig_b64: str)
         return True
     except Exception:
         return False
+
+
+# ---- guide product free-text guardrail (App Store 3.1.1) ----
+
+# Admin-entered free text on guide products is serialized verbatim to iOS.
+# A single stray "官网购买更优惠" in a description IS a Guideline 3.1.1
+# steering-to-external-payment rejection, so it is blocked at save time
+# (fail-loud beats silent stripping: the operator sees exactly what to fix).
+# NOTE: Japan's 2025 smartphone competition act loosens external-link rules
+# ONLY via Apple's Japan-specific entitlement + mandated disclosure flow —
+# it does NOT make free-text steering copy acceptable. Do not relax this
+# check on the strength of "日本新法" alone.
+_GUIDE_EXTERNAL_PAYMENT_PATTERNS = re.compile(
+    r"(stripe|paypal|支付宝|支付寶|微信支付|官网|官網|(?:网页|網頁|网站|網站)(?:版)?(?:购买|購買|下单|下單|支付)"
+    r"|web\s*(?:で|サイトで)?\s*購入|ウェブで購入|browser\s+purchase)",
+    re.IGNORECASE)
+_GUIDE_URL_PATTERN = re.compile(r"https?://([^\s/\"'<>]+)", re.IGNORECASE)
+_GUIDE_ALLOWED_LINK_HOSTS = ("machicity.com", "www.machicity.com")
+_GUIDE_TEXT_FIELDS_TO_SCAN = (
+    "title", "subtitle", "description", "refund_policy", "notes", "preview_content",
+    "purchase_content", "price_label", "discount_label", "delivery_method",
+    "cancellation_policy", "target_audience",
+)
+
+
+def _guide_reject_external_payment_text(row: dict[str, Any]) -> None:
+    """Raise when any admin free-text field steers users to an external
+    payment channel or links off-domain (shared by product create + update)."""
+    for field in _GUIDE_TEXT_FIELDS_TO_SCAN:
+        text = str(row.get(field) or "")
+        if not text:
+            continue
+        hit = _GUIDE_EXTERNAL_PAYMENT_PATTERNS.search(text)
+        if hit:
+            raise APIError(
+                f"字段 {field} 含外部支付引导文案「{hit.group(0)}」——App 内商品文案不得引导站外购买（App Store 3.1.1）。",
+                400, "external_payment_reference")
+        for host_match in _GUIDE_URL_PATTERN.finditer(text):
+            host = host_match.group(1).lower().split(":")[0]
+            if host not in _GUIDE_ALLOWED_LINK_HOSTS:
+                raise APIError(
+                    f"字段 {field} 含站外链接 {host} ——商品文案只允许 machicity.com 链接。",
+                    400, "external_link_not_allowed")
+
+
+# ---- App Store Server API (outbound; consumption answers) ----
+
+_APPSTORE_SERVER_API_PROD = "https://api.storekit.itunes.apple.com"
+_APPSTORE_SERVER_API_SANDBOX = "https://api.storekit-sandbox.itunes.apple.com"
+
+
+def appstore_server_api_configured() -> bool:
+    """The App Store Server API reuses the IAP .p8 key trio + bundle id.
+    When any piece is missing we log-and-skip instead of raising — an
+    unanswered CONSUMPTION_REQUEST must never break webhook processing."""
+    return bool(APPLE_IAP_ISSUER_ID and APPLE_IAP_KEY_ID and APPLE_IAP_PRIVATE_KEY and APPLE_IAP_BUNDLE_ID)
+
+
+def _appstore_server_api_token() -> str | None:
+    """Mint a short-lived ES256 JWT for the App Store Server API. Mirrors the
+    RS256 pattern in _google_play_access_token; the private key never leaves
+    this function and is never logged."""
+    if not appstore_server_api_configured():
+        return None
+    try:
+        _load_cryptography()
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import ec, utils as asym_utils
+        now = int(time.time())
+        header = base64.urlsafe_b64encode(json.dumps(
+            {"alg": "ES256", "kid": APPLE_IAP_KEY_ID, "typ": "JWT"}).encode()).rstrip(b"=")
+        claim = base64.urlsafe_b64encode(json.dumps({
+            "iss": APPLE_IAP_ISSUER_ID,
+            "iat": now,
+            "exp": now + 900,
+            "aud": "appstoreconnect-v1",
+            "bid": APPLE_IAP_BUNDLE_ID,
+        }).encode()).rstrip(b"=")
+        signing_input = header + b"." + claim
+        key = serialization.load_pem_private_key(APPLE_IAP_PRIVATE_KEY.encode(), password=None)
+        der_sig = key.sign(signing_input, ec.ECDSA(hashes.SHA256()))
+        r, s = asym_utils.decode_dss_signature(der_sig)
+        size = (key.curve.key_size + 7) // 8
+        signature = base64.urlsafe_b64encode(r.to_bytes(size, "big") + s.to_bytes(size, "big")).rstrip(b"=")
+        return (signing_input + b"." + signature).decode()
+    except Exception as exc:
+        ERR_LOG.warning("appstore server api token mint failed: %s", type(exc).__name__)
+        return None
+
+
+# Coarse FX only used to pick Apple's lifetimeDollars* BUCKET (an enum with
+# $50-wide bottom steps) — never used for real money math.
+_CONSUMPTION_USD_RATES = {"JPY": 150.0, "CNY": 7.2, "USD": 1.0}
+
+
+def _consumption_usd(amount_cents: int, currency: str) -> float:
+    rate = _CONSUMPTION_USD_RATES.get((currency or "").upper(), 150.0)
+    return (int(amount_cents or 0) / 100.0) / rate
+
+
+def _consumption_dollar_bucket(amount_usd: float) -> int:
+    """Apple ConsumptionRequest lifetimeDollars* enum: 1 = $0, 2 = <$50,
+    3 = <$100, 4 = <$500, 5 = <$1000, 6 = <$2000, 7 = $2000+."""
+    if amount_usd <= 0:
+        return 1
+    for bucket, limit in ((2, 50.0), (3, 100.0), (4, 500.0), (5, 1000.0), (6, 2000.0)):
+        if amount_usd < limit:
+            return bucket
+    return 7
+
+
+def _consumption_tenure_bucket(created_at_iso: str) -> int:
+    """Apple accountTenure enum: 1 = 0-3 days … 7 = over a year; 0 = undeclared."""
+    dt = _aware(parse_iso(created_at_iso or "")) if created_at_iso else None
+    if not dt:
+        return 0
+    days = max(0, (datetime.now(timezone.utc) - dt).days)
+    for bucket, limit in ((1, 3), (2, 10), (3, 30), (4, 90), (5, 180), (6, 365)):
+        if days < limit:
+            return bucket
+    return 7
+
+
+def apple_send_consumption_info(conn: sqlite3.Connection, transaction: dict[str, Any],
+                                user_id: str | None) -> str:
+    """Answer an App Store CONSUMPTION_REQUEST (Send Consumption Information).
+
+    Apple sends CONSUMPTION_REQUEST while deciding a refund for a consumable
+    (our Machi Coins packs) and gives ~12 hours to report whether the content
+    was consumed. Left unanswered, Apple leans toward granting the refund —
+    which would make "buy coins → spend them → refund" arbitrage free. All
+    figures come from our own ledger; nothing here is user-supplied. Returns a
+    short status string for the webhook response / audit log. Never raises."""
+    if not appstore_server_api_configured():
+        ACCESS_LOG.warning("apple consumption request skipped: server api unconfigured")
+        return "unconfigured"
+    tx_id = str(transaction.get("transactionId") or transaction.get("originalTransactionId") or "").strip()
+    if not tx_id:
+        return "missing_transaction"
+    token = _appstore_server_api_token()
+    if not token:
+        return "token_failed"
+    payload: dict[str, Any] = {
+        "accountTenure": 0,
+        "appAccountToken": str(transaction.get("appAccountToken") or ""),
+        "consumptionStatus": 0,        # undeclared until computed below
+        "customerConsented": True,
+        "deliveryStatus": 0,           # delivered and working
+        "lifetimeDollarsPurchased": 0,
+        "lifetimeDollarsRefunded": 0,
+        "platform": 1,                 # Apple
+        "playTime": 0,                 # undeclared (not a game)
+        "refundPreference": 0,
+        "sampleContentProvided": False,
+        "userStatus": 1,               # active
+    }
+    try:
+        if user_id:
+            urow = conn.execute("SELECT created_at, status FROM users WHERE id = ?", (user_id,)).fetchone()
+            if urow:
+                payload["accountTenure"] = _consumption_tenure_bucket(str(urow["created_at"] or ""))
+            purchased_usd = 0.0
+            refunded_usd = 0.0
+            for r in conn.execute(
+                    "SELECT currency, status, COALESCE(SUM(amount_cents),0) AS cents FROM wallet_topup_orders "
+                    "WHERE user_id = ? AND status IN ('paid','fulfilled','refunded','chargeback') "
+                    "GROUP BY currency, status", (user_id,)):
+                usd = _consumption_usd(int(r["cents"]), r["currency"])
+                if r["status"] in ("refunded", "chargeback"):
+                    refunded_usd += usd
+                else:
+                    purchased_usd += usd
+            payload["lifetimeDollarsPurchased"] = _consumption_dollar_bucket(purchased_usd)
+            payload["lifetimeDollarsRefunded"] = _consumption_dollar_bucket(refunded_usd)
+            original_id = str(transaction.get("originalTransactionId") or "").strip()
+            order = conn.execute(
+                "SELECT total_points FROM wallet_topup_orders WHERE user_id = ? AND payment_provider = 'apple_iap' "
+                "AND provider_trade_no IN (?, ?) AND provider_trade_no <> '' LIMIT 1",
+                (user_id, tx_id, original_id)).fetchone()
+            if order:
+                granted = int(order["total_points"] or 0)
+                bal_row = conn.execute(
+                    "SELECT balance_points FROM wallet_accounts WHERE user_id = ?", (user_id,)).fetchone()
+                balance = int(bal_row["balance_points"] or 0) if bal_row else 0
+                if granted <= 0 or balance >= granted:
+                    consumption = 1   # coins still all there → not consumed
+                elif balance <= 0:
+                    consumption = 3   # fully consumed
+                else:
+                    consumption = 2   # partially consumed
+                payload["consumptionStatus"] = consumption
+                # not consumed → fine to grant; fully consumed → prefer decline.
+                payload["refundPreference"] = {1: 1, 2: 3, 3: 2}[consumption]
+        env = str(transaction.get("environment") or "").strip().lower()
+        base = _APPSTORE_SERVER_API_SANDBOX if env == "sandbox" else _APPSTORE_SERVER_API_PROD
+        url = f"{base}/inApps/v1/transactions/consumption/{urllib.parse.quote(tx_id, safe='')}"
+        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), method="PUT")
+        req.add_header("Authorization", "Bearer " + token)
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+        ACCESS_LOG.info("apple consumption info submitted tx=%s status=%s pref=%s",
+                        tx_id, payload["consumptionStatus"], payload["refundPreference"])
+        return "submitted"
+    except urllib.error.HTTPError as exc:
+        ERR_LOG.warning("apple consumption submit http %s tx=%s", exc.code, tx_id)
+        return f"http_{exc.code}"
+    except Exception as exc:
+        ERR_LOG.warning("apple consumption submit failed: %s", type(exc).__name__)
+        return "error"
 
 
 # ---- email transports (no secret ever reaches the logger) ----
@@ -24005,6 +24357,7 @@ class Handler(BaseHTTPRequestHandler):
     def _guide_validate_product(self, row: dict[str, Any]) -> None:
         """Server-side guardrails shared by create + update. Enforces the
         member/service rules and the publish-readiness checks from the spec."""
+        _guide_reject_external_payment_text(row)
         if row.get("is_service") and row.get("is_member_included"):
             raise APIError("服务类商品不能设置为会员免费内容，可设置会员折扣。", 400, "service_member_included")
         if int(row.get("price") or 0) < 0:
@@ -26672,6 +27025,10 @@ class Handler(BaseHTTPRequestHandler):
         # admin: Machi Points wallet
         if path == "/api/admin/wallet/overview" and method == "GET":
             return self.api_admin_wallet_overview(conn)
+        if path == "/api/admin/wallet/refund-followups" and method == "GET":
+            return self.api_admin_wallet_refund_followups(conn, query)
+        if path == "/api/admin/wallet/refund-followups/revoke" and method == "POST":
+            return self.api_admin_wallet_refund_followup_revoke(conn)
         if path == "/api/admin/wallet/users" and method == "GET":
             return self.api_admin_wallet_users(conn, query)
         if path.startswith("/api/admin/wallet/users/") and path.endswith("/ledger") and method == "GET":
@@ -27292,6 +27649,15 @@ class Handler(BaseHTTPRequestHandler):
         if not first:
             return self.send_json({"received": True, "duplicate": True})
 
+        if notification_type == "CONSUMPTION_REQUEST":
+            # Apple is deciding a refund for a consumable purchase and expects
+            # consumption data within ~12h; an unanswered request leans toward
+            # granting the refund (free "buy coins → spend → refund" arbitrage).
+            # Answer best-effort even when the user can't be resolved.
+            uid = self._apple_notification_user_id(conn, transaction)
+            status = apple_send_consumption_info(conn, transaction, uid)
+            return self.send_json({"received": True, "processed": True, "consumption": status})
+
         user_id = self._apple_notification_user_id(conn, transaction)
         if not user_id:
             # 2xx so Apple does not retry forever; the raw notification is
@@ -27740,11 +28106,29 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT COUNT(*) AS c FROM guide_orders WHERE status IN ('paid','fulfilled')").fetchone()["c"])
         guide_points_orders = int(conn.execute(
             "SELECT COUNT(*) AS c FROM guide_orders WHERE payment_provider = 'wallet'").fetchone()["c"])
+        # 資金決済法（前払式支払手段・自家型）monitoring: with coins anchored
+        # 1 币 = 1 JPY, the outstanding balance IS the JPY-denominated unused
+        # liability. The statutory reporting threshold is ¥10M of unused
+        # balance on the 3/31 & 9/30 base dates; warn from ¥8M so the deposit/
+        # filing obligation is never a surprise. Paid vs bonus split matters
+        # because free-granted coins (bonus/referral/membership) sit outside
+        # the prepaid-instrument definition — approximated here from lifetime
+        # counters (exact attribution would need per-coin cohorting).
+        lifetime_in = int(totals["purchased"]) + int(totals["bonus"])
+        paid_ratio = (int(totals["purchased"]) / lifetime_in) if lifetime_in > 0 else 0.0
+        outstanding = int(totals["outstanding"])
+        outstanding_paid = int(round(outstanding * paid_ratio))
         self.send_json({
             "accounts": int(totals["accounts"]),
             # outstandingPoints == platform liability (unconsumed prepaid points).
             "outstandingPoints": int(totals["outstanding"]),
             "platformLiabilityPoints": int(totals["outstanding"]),
+            "outstandingJpy": outstanding,  # 1 币 = 1 JPY anchor
+            "outstandingPaidPointsApprox": outstanding_paid,
+            "outstandingBonusPointsApprox": outstanding - outstanding_paid,
+            "shikinKessaiBaseDates": ["03-31", "09-30"],
+            "shikinKessaiThresholdJpy": 10_000_000,
+            "shikinKessaiWarning": outstanding_paid >= 8_000_000,
             "lifetimePurchasedPoints": int(totals["purchased"]),
             "lifetimeBonusPoints": int(totals["bonus"]),
             "lifetimeSpentPoints": int(totals["spent"]),
@@ -27832,6 +28216,75 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError("用户余额不足以扣减该点数", 400, "insufficient_balance")
         ACCESS_LOG.info("admin %s adjusted wallet user=%s delta=%s", admin["handle"], target_user_id, points_delta)
         self.send_json({"status": "ok", "wallet": result["wallet"], "entry": result.get("entry")})
+
+    def api_admin_wallet_refund_followups(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """Refund-clawback debt cases (P0-3). One row per refund-debt ledger
+        note whose user still owes points; each case lists the points-paid
+        guide orders made AFTER the refunded top-up was created — the concrete
+        candidates for one-click value recovery (admin_recover_refund_debt)."""
+        self.require_admin(conn)
+        rows = conn.execute(
+            "SELECT l.user_id, l.source_order_id, l.metadata_json, l.created_at, "
+            "w.status AS wallet_status, w.balance_points, u.handle AS u_handle, u.display_name AS u_display_name "
+            "FROM wallet_ledger_entries l "
+            "JOIN wallet_accounts w ON w.user_id = l.user_id "
+            "LEFT JOIN users u ON u.id = l.user_id "
+            "WHERE l.idempotency_key LIKE 'refund-debt:%' "
+            "ORDER BY l.created_at DESC LIMIT 200").fetchall()
+        items = []
+        for r in rows:
+            d = dict(r)
+            user_id = d["user_id"]
+            remaining = wallet_outstanding_debt(conn, user_id)
+            try:
+                meta = json.loads(d.get("metadata_json") or "{}") or {}
+            except Exception:
+                meta = {}
+            topup = conn.execute(
+                "SELECT created_at FROM wallet_topup_orders WHERE order_no = ?",
+                (d.get("source_order_id") or "",)).fetchone()
+            since = topup["created_at"] if topup else d.get("created_at")
+            orders = conn.execute(
+                "SELECT id, order_no, product_id, price_points, status, created_at FROM guide_orders "
+                "WHERE user_id = ? AND payment_method = 'wallet_points' AND status = 'fulfilled' "
+                "AND price_points > 0 AND created_at >= ? ORDER BY created_at DESC LIMIT 50",
+                (user_id, since or "")).fetchall()
+            items.append({
+                "userId": user_id,
+                "handle": d.get("u_handle") or "",
+                "displayName": d.get("u_display_name") or "",
+                "refundedTopupOrderNo": d.get("source_order_id") or "",
+                "debtPoints": int(meta.get("debtPoints") or 0),
+                "remainingDebt": remaining,
+                "walletStatus": d.get("wallet_status") or "active",
+                "balancePoints": int(d.get("balance_points") or 0),
+                "createdAt": d.get("created_at"),
+                "recoverableOrders": [
+                    {"orderId": o["id"], "orderNo": o["order_no"], "productId": o["product_id"],
+                     "pricePoints": int(o["price_points"] or 0), "status": o["status"],
+                     "createdAt": o["created_at"]}
+                    for o in orders
+                ],
+            })
+        # Open cases first (still owing), resolved history after.
+        items.sort(key=lambda it: (it["remainingDebt"] <= 0, it["createdAt"] or ""), reverse=False)
+        self.send_json({"items": items,
+                        "openCases": sum(1 for it in items if it["remainingDebt"] > 0)})
+
+    def api_admin_wallet_refund_followup_revoke(self, conn: sqlite3.Connection) -> None:
+        """Batch-revoke points-paid guide orders to recover refund debt. Reuses
+        refund_guide_points_order (entitlement revoked + points credited back)
+        then debits the credit against the outstanding debt — one transaction."""
+        admin = self.require_admin(conn)
+        data = self.read_json()
+        order_ids = [str(x).strip() for x in (data.get("orderIds") or data.get("order_ids") or []) if str(x).strip()]
+        if not order_ids:
+            raise APIError("缺少订单", 400, "missing_orders")
+        if len(order_ids) > 50:
+            raise APIError("单次最多回收 50 单", 400, "too_many_orders")
+        outcome = admin_recover_refund_debt(conn, order_ids, admin_handle=admin["handle"])
+        ACCESS_LOG.info("admin %s refund-debt recovery orders=%s", admin["handle"], len(order_ids))
+        self.send_json({"status": "ok", **outcome})
 
     def api_admin_wallet_topup_products(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)

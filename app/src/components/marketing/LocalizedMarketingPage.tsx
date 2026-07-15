@@ -28,6 +28,7 @@ const LEGAL_PAGE_IDS = new Set<MarketingPageId>([
   "refund-policy",
   "community-guidelines",
   "commercial-disclosure",
+  "fund-settlement-act",
   "cookie-policy",
 ]);
 

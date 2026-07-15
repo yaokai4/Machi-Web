@@ -575,10 +575,15 @@ MEMBERSHIP_PLAN_YEARLY_KEY = "machi_verified_yearly"
 MEMBERSHIP_LEGACY_PLAN_KEY = "machi_verified_monthly_cny_10"
 MEMBERSHIP_PLAN_KEY = _env("MEMBERSHIP_PLAN_KEY", MEMBERSHIP_PLAN_MONTHLY_KEY)
 # Seed values only. Operators edit membership_plans from admin after boot.
-# Membership is a NON-RENEWING one-time purchase. `billing_period`
-# (monthly/yearly) is the ACCESS-DURATION engine (monthly = 30 days of access,
-# yearly = 365) — NOT recurring billing. Clients render it as a one-time
-# "N-day pass", never "monthly/yearly subscription".
+# Subscription-type source of truth is App Store Connect. The 2026-07 App
+# Store submission ships the two membership products as AUTO-RENEWABLE
+# subscriptions (see APPSTORE_拒审修复指南_2026-07-08.md; the iOS paywall
+# renders auto-renewal disclosures accordingly). Server-side, `billing_period`
+# (monthly/yearly) remains the ACCESS-DURATION engine (monthly = 30 days of
+# access, yearly = 365): every verified Apple transaction/renewal notification
+# extends access to the expiry Apple reports, which is correct for both
+# auto-renewable and one-time passes — do NOT build recurring-billing logic
+# here. Web/Stripe checkout still sells fixed-duration passes.
 # Priced in JPY (Japan-facing product). Internal storage is value×100 for every
 # currency; the Stripe edge divides by 100 for zero-decimal currencies like JPY
 # (see _stripe_minor_units + STRIPE_ZERO_DECIMAL), so a ¥600 pass is price=600,

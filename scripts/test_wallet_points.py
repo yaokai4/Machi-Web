@@ -95,10 +95,14 @@ class WalletFoundationTests(unittest.TestCase):
         self.assertEqual(pack["bonus_points"], 100)
         serialized = server.serialize_wallet_topup_product(pack)
         self.assertEqual(serialized["totalPoints"], 1900)
-        # amount_cents 1800 -> ¥18. Wallet packs are still CNY-priced; now that
-        # membership moved to JPY, format_price_value annotates non-JPY ¥ amounts
-        # with the currency so a CNY figure can't be misread as yen.
-        self.assertEqual(serialized["priceLabel"], "¥18 (人民币)")
+        # 2026-07 货币白皮书: 1 币 = 1 JPY. A pack's face price equals its coin
+        # count (amount_cents = points × 100, JPY), so wallet_price_points can
+        # always equal a product's JPY price with no cross-channel arbitrage.
+        self.assertEqual(serialized["currency"], "JPY")
+        self.assertEqual(serialized["priceLabel"], "¥1800")
+        for p in packs:
+            self.assertEqual(p["currency"], "JPY", p["pack_key"])
+            self.assertEqual(int(p["amount_cents"]), int(p["points"]) * 100, p["pack_key"])
 
     # 4. wallet_credit_topup is idempotent — same order never double-credits
     def test_credit_topup_idempotent(self):
@@ -307,6 +311,57 @@ class WalletFoundationTests(unittest.TestCase):
         self.assertFalse(server.google_play_configured())
         self.assertIsNone(server.verify_google_play_purchase("machi_points_600", "tok-abc"))
         self.assertIsNotNone(server.get_topup_product_by_google(self.conn, "machi_points_600"))
+
+    # 9. one-time JPY reprice migration converts legacy CNY rows exactly once
+    def test_jpy_reprice_migration(self):
+        # Simulate a legacy CNY-priced row surviving from an old database.
+        self.conn.execute(
+            "UPDATE wallet_topup_products SET currency='CNY', amount_cents=1800 WHERE pack_key='machi_points_1800'")
+        server._upsert_site_settings(self.conn, {"wallet_topup_jpy_reprice_v1": ""})
+        server._wallet_topup_jpy_reprice_once(self.conn)
+        pack = server.get_topup_product(self.conn, "machi_points_1800")
+        self.assertEqual(pack["currency"], "JPY")
+        self.assertEqual(int(pack["amount_cents"]), 180000)
+        # A row an operator already re-priced by hand (non-CNY) is never touched.
+        self.conn.execute(
+            "UPDATE wallet_topup_products SET amount_cents=123400 WHERE pack_key='machi_points_600'")
+        server._upsert_site_settings(self.conn, {"wallet_topup_jpy_reprice_v1": ""})
+        server._wallet_topup_jpy_reprice_once(self.conn)
+        kept = server.get_topup_product(self.conn, "machi_points_600")
+        self.assertEqual(int(kept["amount_cents"]), 123400)
+        # Restore seed state for the other tests sharing this database.
+        self.conn.execute(
+            "UPDATE wallet_topup_products SET amount_cents=60000, currency='JPY' WHERE pack_key='machi_points_600'")
+
+    # 10. refund-debt recovery: revoke the spent order, debit the credit back
+    # against the debt, un-restrict once the debt is cleared
+    def test_refund_debt_recovery(self):
+        uid = _make_user(self.conn)
+        pack = server.get_topup_product(self.conn, "machi_points_600")
+        order = server.create_wallet_topup_order(self.conn, uid, pack, "apple_iap", "ios",
+                                                 provider_trade_no="apple:txn-debt-1")
+        server.wallet_credit_topup(self.conn, order["order_no"], provider_trade_no="apple:txn-debt-1")
+        prod = _make_product(self.conn, wallet_price=500)
+        buy = server.wallet_debit_for_product(self.conn, uid, prod)
+        self.assertEqual(buy["status"], "fulfilled")
+        # Apple refunds the top-up: 100 clawed back, 500 debt, wallet restricted.
+        server.wallet_refund_topup(self.conn, order["order_no"], reason="REFUND", entry_type="refund_debit")
+        self.assertEqual(server.wallet_outstanding_debt(self.conn, uid), 500)
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["status"], "restricted")
+        # Admin one-click recovery: revoke the 500-pt order bought with refunded coins.
+        outcome = server.admin_recover_refund_debt(self.conn, [buy["orderId"]], admin_handle="admin")
+        res = outcome["results"][0]
+        self.assertTrue(res["applied"])
+        self.assertEqual(res["creditedPoints"], 500)
+        self.assertEqual(res["recoveredPoints"], 500)
+        self.assertEqual(server.wallet_outstanding_debt(self.conn, uid), 0)
+        snap = server.get_wallet_snapshot(self.conn, uid)
+        self.assertEqual(snap["balancePoints"], 0)
+        self.assertEqual(snap["status"], "active")  # debt cleared → unrestricted
+        self.assertFalse(server.user_has_entitlement(self.conn, uid, "guide_product", prod["id"]))
+        # Idempotent: revoking the same order again recovers nothing more.
+        again = server.admin_recover_refund_debt(self.conn, [buy["orderId"]], admin_handle="admin")
+        self.assertFalse(again["results"][0]["applied"])
 
     # 8. insufficient balance → no order, no entitlement, no charge
     def test_purchase_insufficient(self):

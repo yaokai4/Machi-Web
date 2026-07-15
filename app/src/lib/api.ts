@@ -2436,6 +2436,8 @@ export const api = {
   // ---- admin: Machi Points wallet ----
   async adminWalletOverview(): Promise<{
     accounts: number; outstandingPoints: number; platformLiabilityPoints: number;
+    outstandingJpy: number; outstandingPaidPointsApprox: number; outstandingBonusPointsApprox: number;
+    shikinKessaiBaseDates: string[]; shikinKessaiThresholdJpy: number; shikinKessaiWarning: boolean;
     lifetimePurchasedPoints: number; lifetimeBonusPoints: number; lifetimeSpentPoints: number;
     paidTopupOrders: number; grossTopupCents: number; pendingTopupOrders: number;
     refundedTopupOrders: number; refundedTopupCents: number; restrictedAccounts: number;
@@ -2446,6 +2448,24 @@ export const api = {
     funnel: { guideOrdersCreated: number; guideOrdersFulfilled: number; guidePointsOrders: number; topupInitiated: number; topupPaid: number };
   }> {
     return request("GET", `/api/admin/wallet/overview`);
+  },
+  async adminWalletRefundFollowups(): Promise<{
+    items: Array<{
+      userId: string; handle: string; displayName: string; refundedTopupOrderNo: string;
+      debtPoints: number; remainingDebt: number; walletStatus: string; balancePoints: number;
+      createdAt: string;
+      recoverableOrders: Array<{ orderId: string; orderNo: string; productId: string; pricePoints: number; status: string; createdAt: string }>;
+    }>;
+    openCases: number;
+  }> {
+    return request("GET", `/api/admin/wallet/refund-followups`);
+  },
+  async adminWalletRefundFollowupRevoke(orderIds: string[]): Promise<{
+    status: string;
+    results: Array<{ orderId: string; orderNo?: string; applied: boolean; reason?: string; creditedPoints?: number; recoveredPoints?: number }>;
+    users: Array<{ userId: string; remainingDebt: number; walletStatus: string }>;
+  }> {
+    return request("POST", `/api/admin/wallet/refund-followups/revoke`, { orderIds });
   },
   async adminWalletUsers(opts: { q?: string; status?: string; limit?: number } = {}): Promise<Array<{ userId: string; handle: string; displayName: string; email: string; balancePoints: number; lifetimePurchasedPoints: number; lifetimeSpentPoints: number; status: string; updatedAt: string }>> {
     const params = new URLSearchParams();

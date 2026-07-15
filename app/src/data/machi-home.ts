@@ -339,7 +339,7 @@ export const marketingCopy = {
       groups: [
         ["导航", ["关于", "功能", "指南", "商家合作", "安全", "FAQ", "城市", "下载"]],
         ["合作", ["商家合作", "广告投放", "招聘推广", "租房推广", "系统合作"]],
-        ["法律", ["隐私政策", "服务条款", "会员条款", "服务预约条款", "退款政策", "社区规则", "商业披露", "Cookie 政策", "联系我们"]],
+        ["法律", ["隐私政策", "服务条款", "会员条款", "服务预约条款", "退款政策", "社区规则", "商业披露", "資金決済法表示", "Cookie 政策", "联系我们"]],
       ],
     },
     cities: withCityTone([
@@ -648,7 +648,7 @@ export const marketingCopy = {
     common: { open: "Open" },
     footer: {
       tagline: "Find the echoes of real life in every city.",
-      groups: [["Navigation", ["About", "Features", "Guide", "Business", "Safety", "FAQ", "Cities", "Download"]], ["Partnership", ["Business", "Advertising", "Hiring promotion", "Housing promotion", "System partnership"]], ["Legal", ["Privacy Policy", "Terms of Service", "Membership Terms", "Service Terms", "Refund Policy", "Community Guidelines", "Commercial Disclosure", "Cookie Policy", "Contact"]]],
+      groups: [["Navigation", ["About", "Features", "Guide", "Business", "Safety", "FAQ", "Cities", "Download"]], ["Partnership", ["Business", "Advertising", "Hiring promotion", "Housing promotion", "System partnership"]], ["Legal", ["Privacy Policy", "Terms of Service", "Membership Terms", "Service Terms", "Refund Policy", "Community Guidelines", "Commercial Disclosure", "Payment Services Act", "Cookie Policy", "Contact"]]],
     },
     cities: withCityTone([
       { name: "Tokyo", country: "Japan", description: "Housing warnings, food meetups, language exchange and local groups are refined here first.", posts: "Housing · Dining · Language Exchange · Groups", heat: "Live", status: "Live", sampleLabel: "Preview", languageTags: ["中文", "EN", "日本語"], sceneTags: ["Housing", "Dining", "Language Exchange", "Groups"], highlight: "Shibuya, Shinjuku and bay-area life" },
@@ -945,7 +945,7 @@ export const marketingCopy = {
     common: { open: "開く" },
     footer: {
       tagline: "どの街でも、暮らしの声を見つける。",
-      groups: [["ナビ", ["概要", "機能", "ガイド", "ビジネス", "安全", "FAQ", "街", "ダウンロード"]], ["提携", ["店舗提携", "広告掲載", "採用プロモーション", "住まいプロモーション", "システム提携"]], ["法務", ["プライバシー", "利用規約", "会員規約", "サービス予約規約", "返金ポリシー", "コミュニティ規範", "特定商取引法に基づく表記", "Cookie ポリシー", "お問い合わせ"]]],
+      groups: [["ナビ", ["概要", "機能", "ガイド", "ビジネス", "安全", "FAQ", "街", "ダウンロード"]], ["提携", ["店舗提携", "広告掲載", "採用プロモーション", "住まいプロモーション", "システム提携"]], ["法務", ["プライバシー", "利用規約", "会員規約", "サービス予約規約", "返金ポリシー", "コミュニティ規範", "特定商取引法に基づく表記", "資金決済法に基づく表示", "Cookie ポリシー", "お問い合わせ"]]],
     },
     cities: withCityTone([
       { name: "東京", country: "日本", description: "住まいの注意、食事、言語交換、地域グループをここから磨いています。", posts: "住まい · 食事 · 言語交換 · 地域グループ", heat: "公開中", status: "公開中", sampleLabel: "画面プレビュー", languageTags: ["中文", "EN", "日本語"], sceneTags: ["住まい", "食事", "言語交換", "地域グループ"], highlight: "渋谷、新宿、湾岸の暮らし" },

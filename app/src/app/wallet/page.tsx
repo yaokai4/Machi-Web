@@ -281,7 +281,12 @@ export default function WalletPage() {
             {disclaimer && (
               <section className="kx-card flex items-start gap-2 text-sm text-kx-subtle">
                 <ShieldCheck className="mt-0.5 h-4 w-4 shrink-0 text-kx-accent" />
-                <span>{disclaimer}</span>
+                <span>
+                  {disclaimer}{" "}
+                  <Link href="/legal/fund-settlement-act" className="text-kx-accent hover:underline">
+                    資金決済法に基づく表示
+                  </Link>
+                </span>
               </section>
             )}
 

@@ -40,6 +40,7 @@ export default function AdminWalletPage() {
       </header>
       <main className="space-y-3 px-3 py-3 sm:px-4">
         <OverviewCard />
+        <RefundFollowupsCard />
         <AdjustCard />
         <UserLookupCard />
         <PacksCard />
@@ -81,6 +82,20 @@ function OverviewCard() {
             <Metric label="退款金额" value={yuan(d.refundedTopupCents)} />
             <Metric label="受限钱包" value={d.restrictedAccounts.toLocaleString()} tone={d.restrictedAccounts ? "danger" : undefined} />
             <Metric label="验证失败回调" value={d.failedWebhookCount.toLocaleString()} tone={d.failedWebhookCount ? "danger" : undefined} />
+          </div>
+
+          {/* 資金決済法（前払式支払手段）未使用残高监控：基准日 3/31、9/30，
+              付费币残高超 ¥1,000万 触发届出+供托义务；≥¥800万 起黄色预警。 */}
+          <div className="mt-4">
+            <div className="mb-1 text-xs font-bold text-kx-muted">
+              資金決済法 未使用残高（基准日 {d.shikinKessaiBaseDates?.join(" / ") ?? "03-31 / 09-30"} · 届出线 ¥{(d.shikinKessaiThresholdJpy ?? 10000000).toLocaleString()}）
+            </div>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <Metric label="未使用残高（JPY）" value={`¥${(d.outstandingJpy ?? d.outstandingPoints).toLocaleString()}`} tone={d.shikinKessaiWarning ? "danger" : "warn"} />
+              <Metric label="其中付费币（约）" value={(d.outstandingPaidPointsApprox ?? 0).toLocaleString()} tone={d.shikinKessaiWarning ? "danger" : undefined} />
+              <Metric label="其中赠送币（约）" value={(d.outstandingBonusPointsApprox ?? 0).toLocaleString()} />
+              <Metric label="届出预警" value={d.shikinKessaiWarning ? "≥¥800万 需准备届出" : "未达预警线"} tone={d.shikinKessaiWarning ? "danger" : undefined} />
+            </div>
           </div>
 
           {d.providerBreakdown.length > 0 ? (
@@ -145,6 +160,94 @@ function Metric({ label, value, tone }: { label: string; value: string; tone?: "
       <div className="text-xs text-kx-muted">{label}</div>
       <div className={`mt-1 text-lg font-black ${valueClass}`}>{value}</div>
     </div>
+  );
+}
+
+function RefundFollowupsCard() {
+  // 退款债务待办（P0-3）：充值被 Apple/Stripe 退款但币已花掉的用户，列出其
+  // 退款后仍持有的币购订单，管理员勾选后一键「撤销权益并抵扣债务」。
+  const pushToast = useToasts((s) => s.push);
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: ["admin-wallet-refund-followups"], queryFn: () => api.adminWalletRefundFollowups() });
+  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [busy, setBusy] = useState(false);
+  const items = q.data?.items ?? [];
+  const openItems = items.filter((it) => it.remainingDebt > 0);
+  const selectedIds = Object.keys(selected).filter((k) => selected[k]);
+
+  const revoke = async () => {
+    if (!selectedIds.length || busy) return;
+    if (!window.confirm(`确认撤销 ${selectedIds.length} 笔币购订单的权益并抵扣债务？该操作会收回用户已购内容。`)) return;
+    setBusy(true);
+    try {
+      const r = await api.adminWalletRefundFollowupRevoke(selectedIds);
+      const done = r.results.filter((x) => x.applied).length;
+      const recovered = r.results.reduce((s, x) => s + (x.recoveredPoints ?? 0), 0);
+      pushToast({ kind: "success", message: `已撤销 ${done} 单，抵扣债务 ${recovered.toLocaleString()} 币` });
+      setSelected({});
+      qc.invalidateQueries({ queryKey: ["admin-wallet-refund-followups"] });
+      qc.invalidateQueries({ queryKey: ["admin-wallet-overview"] });
+    } catch (e) {
+      pushToast({ kind: "error", message: e instanceof Error ? e.message : "操作失败" });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (q.isLoading) return <Card title="退款债务待办"><InlineLoading /></Card>;
+  if (!openItems.length) {
+    return (
+      <Card title="退款债务待办">
+        <p className="text-sm text-kx-muted">当前没有待处理的退款债务。充值被退款但币已花掉的钱包会出现在这里。</p>
+      </Card>
+    );
+  }
+  return (
+    <Card title={`退款债务待办（${q.data?.openCases ?? openItems.length} 个未结）`}>
+      <div className="space-y-4">
+        {openItems.map((it) => (
+          <div key={`${it.userId}-${it.refundedTopupOrderNo}`} className="rounded-xl border border-kx-stroke/50 bg-kx-soft/40 p-3">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
+              <span>
+                <b className="text-kx-text">{it.displayName || it.handle || it.userId}</b>
+                <span className="ml-2 text-xs text-kx-muted">退款单 {it.refundedTopupOrderNo}</span>
+              </span>
+              <span className="text-xs">
+                欠 <b className="text-rose-600 dark:text-rose-400">{it.remainingDebt.toLocaleString()}</b> 币
+                · 余额 {it.balancePoints.toLocaleString()} · 钱包 {it.walletStatus === "restricted" ? "已冻结" : it.walletStatus}
+              </span>
+            </div>
+            {it.recoverableOrders.length ? (
+              <ul className="mt-2 divide-y divide-kx-stroke/30 text-xs">
+                {it.recoverableOrders.map((o) => (
+                  <li key={o.orderId} className="flex items-center justify-between gap-2 py-1.5">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={!!selected[o.orderId]}
+                        onChange={(e) => setSelected((s) => ({ ...s, [o.orderId]: e.target.checked }))}
+                      />
+                      <span>{o.orderNo} · {o.pricePoints.toLocaleString()} 币</span>
+                    </label>
+                    <span className="text-kx-muted">{o.createdAt?.slice(0, 19).replace("T", " ")}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="mt-2 text-xs text-kx-muted">退款后无可回收的币购订单（余额已扣尽），可用「手动调整」结案或继续观察。</p>
+            )}
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={revoke}
+          disabled={!selectedIds.length || busy}
+          className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-bold text-white disabled:opacity-40"
+        >
+          {busy ? "处理中…" : `撤销所选 ${selectedIds.length} 单并抵扣债务`}
+        </button>
+      </div>
+    </Card>
   );
 }
 

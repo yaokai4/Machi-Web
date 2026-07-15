@@ -28,6 +28,7 @@ const localizedMarketingPages: Array<{ pageId: MarketingPageId; slug: string[] }
   { pageId: "refund-policy", slug: ["legal", "refund-policy"] },
   { pageId: "community-guidelines", slug: ["legal", "community-guidelines"] },
   { pageId: "commercial-disclosure", slug: ["legal", "commercial-disclosure"] },
+  { pageId: "fund-settlement-act", slug: ["legal", "fund-settlement-act"] },
   { pageId: "cookie-policy", slug: ["legal", "cookie-policy"] },
 ];
 
