@@ -6,15 +6,15 @@
 #   bash web/deploy/deploy.sh
 #
 # 当前生产服务器：
-#   ssh -i /Users/yaokai/Desktop/IT/IOS/Machi2.pem ec2-user@35.79.109.50
+#   ssh -i /Users/yaokai/Code/IT/IOS/Machi2.pem ec2-user@35.79.109.50
 
 set -euo pipefail
 
 # ================= 彻底写死，绝不出错 =================
 EC2_IP="35.79.109.50"
 EC2_HOST="ec2-user@$EC2_IP"
-EC2_KEY="/Users/yaokai/Desktop/IT/IOS/Machi2.pem"
-LOCAL_PROJECT_DIR="/Users/yaokai/Desktop/IT/IOS/kaizi"
+EC2_KEY="/Users/yaokai/Code/IT/IOS/Machi2.pem"
+LOCAL_PROJECT_DIR="/Users/yaokai/Code/IT/IOS/kaizi"
 PROJECT_NAME="kaizi"
 TARBALL="kaizi-web.tar.gz"
 SSH_OPTS=(
