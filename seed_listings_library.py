@@ -141,8 +141,7 @@ def premium_listings(cities: Any = None) -> list[dict[str, Any]]:
             "status": "published",
             "verification_status": raw.get("verification_status") or "unverified",
             "promoted": bool(raw.get("promoted")),
-            "rating": raw.get("rating") or 0,
-            "reviews": raw.get("reviews") or 0,
+            # 不透传 rating/reviews（B1-2）：评分只能来自 listing_reviews 真实评论。
             "image_url": _image_url(category_key, idx),
             "attributes": dict(raw.get("attributes") or {}),
         }

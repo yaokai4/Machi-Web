@@ -38,8 +38,9 @@ export function BusinessSection() {
           </ul>
 
           <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+            {/* 招商降温：主 CTA 从「申请合作」降级为留资/预约洽谈，指向联系页。 */}
             <Button
-              href={localizedMarketingHref("/business", locale)}
+              href={localizedMarketingHref("/contact", locale)}
               size="md"
               className="h-12 sm:w-auto"
               iconLeft={<Building2 className="h-4 w-4" />}

@@ -3727,6 +3727,67 @@ def run_city_digests(conn: sqlite3.Connection) -> int:
             )
             server_apns.enqueue(uid, ntype="city_digest", actor_id="", content=content)
             sent += 1
+        # 游客召回（契约 C-3）：城市已知的游客 token（user_id='guest:…'）纳入同一
+        # 摘要。游客没有 sessions/notifications（notifications.user_id 带外键，写不
+        # 进 guest:*），改用 token 行自身做同款闸：last_seen_at 落在同一 [3d, 8d)
+        # 不活跃窗口（iOS 每次启动重新注册会刷新它），digest_sent_at 做 20h 防重。
+        # 推送经 server_apns.enqueue 走原管线——city_digest 属 _CAPPED_TYPES，
+        # 每日预算与 JST 静音对游客同样生效。未配置 APNs 时整段跳过（游客侧没有
+        # 站内通知可写，不该白白消耗防重闸）。
+        if server_apns.apns_configured():
+            guest_rows = [
+                dict(r) for r in conn.execute(
+                    """
+                    SELECT user_id, city_slug, digest_sent_at
+                      FROM device_push_tokens
+                     WHERE user_id LIKE 'guest:%'
+                       AND city_slug <> ''
+                       AND last_seen_at >= ? AND last_seen_at < ?
+                     ORDER BY last_seen_at DESC
+                     LIMIT 5000
+                    """,
+                    (inactive_lo, inactive_hi),
+                )
+            ]
+            seen_guests: set[str] = set()
+            city_counts: dict[str, tuple[int, int]] = {}
+            for g in guest_rows:
+                gid = str(g.get("user_id") or "")
+                if not gid or gid in seen_guests:
+                    continue  # 同一游客多 token 行只算一次（最近的行代表城市）
+                seen_guests.add(gid)
+                if (g.get("digest_sent_at") or "") >= cutoff:
+                    continue
+                city = str(g.get("city_slug") or "").strip().lower()
+                if city not in city_counts:
+                    listing_row = conn.execute(
+                        "SELECT COUNT(*) AS c FROM city_listings "
+                        "WHERE city_slug = ? AND status = 'published' AND deleted_at IS NULL "
+                        "AND COALESCE(NULLIF(published_at, ''), created_at) >= ?",
+                        (city, window_start),
+                    ).fetchone()
+                    region = region_code_for_city_slug("jp", city)
+                    post_row = conn.execute(
+                        "SELECT COUNT(*) AS c FROM posts "
+                        "WHERE region_code = ? AND status = 'active' AND deleted_at IS NULL "
+                        "AND created_at >= ? AND weighted_interaction_score > 0",
+                        (region, window_start),
+                    ).fetchone() if region else None
+                    city_counts[city] = (int(listing_row["c"] if listing_row else 0),
+                                         int(post_row["c"] if post_row else 0))
+                listings, hot_posts = city_counts[city]
+                if listings <= 0 and hot_posts <= 0:
+                    continue  # nothing real to say — don't nag
+                frags = []
+                if listings > 0:
+                    frags.append(f"新增 {listings} 条房源/信息")
+                if hot_posts > 0:
+                    frags.append(f"{hot_posts} 个热帖")
+                content = ("你的城市" + "，".join(frags))[:140]
+                conn.execute(
+                    "UPDATE device_push_tokens SET digest_sent_at = ? WHERE user_id = ?", (now, gid))
+                server_apns.enqueue(gid, ntype="city_digest", actor_id="", content=content)
+                sent += 1
         return sent
     except Exception as exc:  # pragma: no cover - defensive: must not break the janitor
         try:
@@ -4476,13 +4537,40 @@ def guide_price_label_from_row(d: dict[str, Any]) -> str:
     return ""
 
 
-def serialize_guide_product(row: sqlite3.Row | dict[str, Any], *, include_private: bool = False) -> dict[str, Any]:
+def guide_product_deliverable_ready(conn: sqlite3.Connection | None,
+                                    row: sqlite3.Row | dict[str, Any]) -> bool:
+    """交付物就绪标志（契约 C-1）。False 仅当：非 service 的付费数字商品，
+    file_url 为空且 guide_product_files 无记录——买了只能 404 的商品。免费/
+    服务/无任何可购价的商品不适用（恒 True，「免费领取不拦」）。购买入口据此
+    拒 PRODUCT_NOT_READY；客户端据 payload 的 deliverable_ready 禁用 CTA 显示
+    「内容准备中」。conn=None 时退化为只看 file_url（列表序列化的兜底路径；
+    正常调用都带 conn）。"""
+    d = dict(row)
+    if bool(d.get("is_service")) or bool(d.get("is_free")):
+        return True
+    if (int(d.get("price") or 0) <= 0 and int(d.get("wallet_price_points") or 0) <= 0
+            and int(d.get("member_wallet_price_points") or 0) <= 0):
+        return True  # 没有任何可购价 → 不存在「买到 404」的面
+    if str(d.get("file_url") or "").strip():
+        return True
+    pid = str(d.get("id") or "")
+    if not pid or conn is None:
+        return False
+    return conn.execute(
+        "SELECT 1 FROM guide_product_files WHERE product_id = ? LIMIT 1", (pid,)
+    ).fetchone() is not None
+
+
+def serialize_guide_product(row: sqlite3.Row | dict[str, Any], *, include_private: bool = False,
+                            conn: sqlite3.Connection | None = None) -> dict[str, Any]:
     """Public-safe by default. `purchase_content` + `file_url` (the actual
     paid/download payload) and Stripe/IAP routing ids are ONLY included when
     include_private=True (admin) or when the caller re-attaches them after an
     entitlement check (product detail for a buyer/member). Lists never leak the
-    paid content; non-buyers see `previewContent` + `hasPurchaseContent` only."""
+    paid content; non-buyers see `previewContent` + `hasPurchaseContent` only.
+    Pass `conn` so deliverable_ready can also consult guide_product_files."""
     d = dict(row)
+    deliverable_ready = guide_product_deliverable_ready(conn, d)
     price_label = guide_price_label_from_row(d)
     member_price = int(d.get("member_price") or 0)
     member_price_label = f"会员 {format_price_value(member_price, d.get('currency') or 'CNY')}" if member_price > 0 else ""
@@ -4545,6 +4633,8 @@ def serialize_guide_product(row: sqlite3.Row | dict[str, Any], *, include_privat
         "entitlementType": d.get("entitlement_type") or "guide_product", "entitlement_type": d.get("entitlement_type") or "guide_product",
         "platformPolicy": d.get("platform_policy") or "digital_iap_required", "platform_policy": d.get("platform_policy") or "digital_iap_required",
         "pointsPurchaseLimit": int(d.get("points_purchase_limit") or 0),
+        # 契约 C-1：客户端只认 deliverable_ready（缺省视为 true）。
+        "deliverable_ready": deliverable_ready, "deliverableReady": deliverable_ready,
         # Base eligibility (no user context); the detail endpoint refines this
         # with ownership + membership + live balance.
         "canBuyWithPoints": bool(
@@ -5373,6 +5463,19 @@ FUNNEL_EVENTS = {
     "purchase_start",
     "purchase_success",
     "membership_view",
+    # JLPT→商城漏斗（契约 C-2，2026-07 B1-7）。placement/practice/exam 五个事件
+    # 由服务端 handler 直接 _guide_funnel_log 落（这里入白名单以防客户端另有
+    # 上报被拒）；upsell_view / upsell_click / store_hero_view 由客户端经
+    # /api/funnel 落；ai_quota_exceeded 由服务端在配额拒绝处落。
+    "placement_done",
+    "jlpt_practice_start",
+    "jlpt_practice_done",
+    "jlpt_exam_start",
+    "jlpt_exam_submit",
+    "upsell_view",
+    "upsell_click",
+    "store_hero_view",
+    "ai_quota_exceeded",
 }
 
 # The subset of FUNNEL_EVENTS persisted to the funnel_events table. Legacy
@@ -5380,6 +5483,8 @@ FUNNEL_EVENTS = {
 # nothing reads them from SQL yet).
 FUNNEL_EVENTS_PERSISTED = {
     "store_view", "sku_view", "purchase_start", "purchase_success", "membership_view",
+    # C-2 客户端变现事件同样落表，30 天复盘（upsell 转化 / hero 曝光）可直接 SQL。
+    "upsell_view", "upsell_click", "store_hero_view",
 }
 
 
@@ -5530,10 +5635,72 @@ _GUIDE_PRODUCT_RELATION_DEFAULTS: dict[str, list[str]] = {
     "job_hunting": ["rirekisho-template-pack", "self-pr-motivation-template", "interview-100-questions",
                     "foreigner-company-selection-checklist", "rirekisho-review-service",
                     "japan-job-mock-interview", "es-motivation-revision"],
-    "jlpt": ["jlpt-n2-20-year-trend-analysis", "jlpt-n1-20-year-trend-analysis", "jlpt-n5-n1-roadmap",
-             "jlpt-n2-original-mock-20", "jlpt-n1-original-mock-20"],
+    # B2-1: 只挂 DB 里真实 published 的 SKU（旧配置引用的
+    # *-20-year-trend-analysis / *-original-mock-20 均为 coming_soon 占位，
+    # 推荐位点进去买不了）。注意 published 只是必要条件：付费数字商品还需
+    # 交付文件（C-1，否则购买 409 PRODUCT_NOT_READY）——文件由运营在 admin
+    # 上传，_guide_audit_recommended_slugs 启动期对存在性/发布态/交付物三者持续核查。
+    "jlpt": ["jlpt-n2-past-trend-original-practice", "jlpt-n1-past-trend-original-practice",
+             "jlpt-n5-n1-roadmap", "jlpt-n3-past-trend-original-practice",
+             "jlpt-n1-high-frequency-vocab-plan"],
     "visa": ["work-visa-change-checklist", "coe-material-guide", "japanese-document-translation"],
 }
+
+# JLPT 备考 todo 的推荐 SKU（_guide_recommended_products_for_todos 的 infer 用）。
+# B2-1：全部为 DB 中 published 的商品——挂 coming_soon/不存在的 slug 等于把人
+# 引到买不了的货架；付费 SKU 在运营传交付文件前同样不可购（C-1）。模块级常量
+# 让启动期审计能与代码同源核查（含 deliverable-ready 告警）。
+_GUIDE_JLPT_RECO_SLUGS: tuple[str, ...] = (
+    "jlpt-n5-n1-roadmap", "jlpt-n3-30-day-plan",
+    "jlpt-n2-past-trend-original-practice", "jlpt-n1-past-trend-original-practice",
+    "jlpt-n1-high-frequency-vocab-plan",
+)
+
+
+def _guide_audit_recommended_slugs(conn: sqlite3.Connection) -> None:
+    """启动期核查（B2-1）：代码里静态引用的商品 slug 必须真实存在；引用了
+    不存在/未发布商品的推荐位是「点了落空」的直接来源。published 的付费数字
+    商品还要有交付文件——否则购买入口按 C-1 拒 PRODUCT_NOT_READY，推荐位照样
+    买不了（B1-1 × B2-1 组合缺陷）。只告警不阻断启动（告警即修复信号——改
+    常量、发布商品或给商品传文件）。"""
+    try:
+        refs: dict[str, set[str]] = {}
+
+        def _ref(origin: str, slugs: Any) -> None:
+            for slug in slugs or []:
+                s = str(slug or "").strip()
+                if s:
+                    refs.setdefault(s, set()).add(origin)
+
+        for jkey, slugs in _GUIDE_PRODUCT_RELATION_DEFAULTS.items():
+            _ref(f"product_relations:{jkey}", slugs)
+        _ref("todo_reco:jlpt", _GUIDE_JLPT_RECO_SLUGS)
+        for tkey, rows in _GUIDE_TEMPLATE_DEFAULTS.items():
+            for (_offset, _title, _summary, _todo_type, products, services) in rows:
+                _ref(f"plan_template:{tkey}", _guide_split_tags(products))
+                _ref(f"plan_template:{tkey}", _guide_split_tags(services))
+
+        rows_by_slug = {
+            r["slug"]: r
+            for r in conn.execute(
+                "SELECT id, slug, status, is_service, is_free, price, wallet_price_points, "
+                "member_wallet_price_points, file_url FROM guide_products").fetchall()
+        }
+        for slug in sorted(refs):
+            origins = ",".join(sorted(refs[slug]))
+            row = rows_by_slug.get(slug)
+            if row is None:
+                ERR_LOG.warning("guide slug audit: referenced product slug does not exist: %s (from %s)",
+                                slug, origins)
+            elif (row["status"] or "") != "published":
+                ACCESS_LOG.warning("guide slug audit: referenced product slug is not published (status=%s): %s (from %s)",
+                                   row["status"] or "", slug, origins)
+            elif not guide_product_deliverable_ready(conn, row):
+                ACCESS_LOG.warning("guide slug audit: referenced product slug is not deliverable-ready "
+                                   "(paid digital, no file attached — purchase returns PRODUCT_NOT_READY): %s (from %s)",
+                                   slug, origins)
+    except Exception:
+        ERR_LOG.exception("guide slug audit failed (non-fatal)")
 
 
 def _guide_seed_product_relations(conn: sqlite3.Connection) -> int:
@@ -6158,7 +6325,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "地址仅展示到区域，具体看房请先核实发布者身份。Machi 不代收押金或房租。",
             "price": 78000, "currency": "JPY", "price_type": "monthly", "location_text": "丰岛区 · 池袋",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.86, "reviews": 38,
             "image_url": "https://images.unsplash.com/photo-1522708323590-d24dbb6b0267?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"rent": 78000, "deposit": "1个月", "key_money": "0", "management_fee": 6000, "layout": "1K", "area_sqm": 23.4, "nearest_station": "池袋站 步行8分钟", "move_in_date": "2026-07", "short_term_allowed": False, "furnished": False, "pet_allowed": False},
         },
@@ -6168,7 +6334,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "采光通透的单人公寓，步行范围内有商店街和超市。支持线上看房，初期费用会在预约后提供完整明细。",
             "price": 72000, "currency": "JPY", "price_type": "monthly", "location_text": "中野区 · 中野",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.79, "reviews": 24,
             "image_url": "https://images.unsplash.com/photo-1502672260266-1c1ef2d93688?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"rent": 72000, "deposit": "1个月", "key_money": "0", "management_fee": 5000, "layout": "1R", "area_sqm": 21.0, "nearest_station": "中野站 步行7分钟", "station_distance_minutes": 7, "move_in_date": "随时", "short_term_allowed": False, "furnished": True, "pet_allowed": False, "floor": "4层", "building_type": "钢筋混凝土", "lease_term": "2年"},
         },
@@ -6178,7 +6343,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "适合两人居住的独立卧室户型，步行可到井之头公园。房源支持宠物咨询，签约前请确认管理规则。",
             "price": 126000, "currency": "JPY", "price_type": "monthly", "location_text": "武藏野市 · 吉祥寺",
             "status": "published", "verification_status": "verified",
-            "rating": 4.93, "reviews": 41,
             "image_url": "https://images.unsplash.com/photo-1493809842364-78817add7ffb?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"rent": 126000, "deposit": "1个月", "key_money": "1个月", "management_fee": 8000, "layout": "1LDK", "area_sqm": 39.8, "nearest_station": "吉祥寺站 步行11分钟", "station_distance_minutes": 11, "move_in_date": "2026-08", "short_term_allowed": False, "furnished": False, "pet_allowed": True, "floor": "2层", "building_type": "低层公寓", "lease_term": "2年"},
         },
@@ -6188,7 +6352,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "共用厨房和客厅，房间带锁并配书桌。包含网络与公共区域清洁，适合刚到东京的学生和在职人士。",
             "price": 59000, "currency": "JPY", "price_type": "monthly", "location_text": "新宿区 · 新大久保",
             "status": "published", "verification_status": "verified",
-            "rating": 4.72, "reviews": 57,
             "image_url": "https://images.unsplash.com/photo-1560185008-b033106af5c3?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"rent": 59000, "deposit": "3万日元", "key_money": "0", "management_fee": 12000, "layout": "独立单间", "area_sqm": 12.5, "nearest_station": "新大久保站 步行6分钟", "station_distance_minutes": 6, "move_in_date": "随时", "short_term_allowed": True, "share_allowed": True, "furnished": True, "pet_allowed": False, "lease_term": "3个月起"},
         },
@@ -6198,7 +6361,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "安静街区里的简洁内装，附近有咖啡店与河边步道。浴室干湿分离，可预约工作日晚间看房。",
             "price": 94000, "currency": "JPY", "price_type": "monthly", "location_text": "江东区 · 清澄白河",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.89, "reviews": 32,
             "image_url": "https://images.unsplash.com/photo-1600566753190-17f0baa2a6c3?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"rent": 94000, "deposit": "1个月", "key_money": "0", "management_fee": 7000, "layout": "1K", "area_sqm": 26.1, "nearest_station": "清澄白河站 步行5分钟", "station_distance_minutes": 5, "move_in_date": "2026-07 下旬", "short_term_allowed": False, "furnished": False, "pet_allowed": False, "floor": "6层", "building_type": "设计公寓", "lease_term": "2年"},
         },
@@ -6208,7 +6370,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "收纳充足的家庭户型，附近有公园、保育园与大型超市。可提供停车位空位确认和学区信息。",
             "price": 148000, "currency": "JPY", "price_type": "monthly", "location_text": "练马区 · 小竹向原",
             "status": "published", "verification_status": "verified",
-            "rating": 4.84, "reviews": 19,
             "image_url": "https://images.unsplash.com/photo-1560448204-e02f11c3d0e2?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"rent": 148000, "deposit": "1个月", "key_money": "1个月", "management_fee": 10000, "layout": "2LDK", "area_sqm": 58.4, "nearest_station": "小竹向原站 步行9分钟", "station_distance_minutes": 9, "move_in_date": "2026-09", "short_term_allowed": False, "furnished": False, "pet_allowed": False, "floor": "3层", "building_type": "家庭公寓", "lease_term": "2年"},
         },
@@ -6218,7 +6379,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "配齐床、桌椅、洗衣机与基础餐具，水电网络可打包结算。适合实习、语言学校短期课程或过渡居住。",
             "price": 118000, "currency": "JPY", "price_type": "monthly", "location_text": "台东区 · 上野",
             "status": "published", "verification_status": "verified",
-            "rating": 4.77, "reviews": 63,
             "image_url": "https://images.unsplash.com/photo-1524758631624-e2822e304c36?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"rent": 118000, "deposit": "0", "key_money": "0", "management_fee": 12000, "layout": "1DK", "area_sqm": 30.2, "nearest_station": "上野站 步行8分钟", "station_distance_minutes": 8, "move_in_date": "随时", "short_term_allowed": True, "furnished": True, "pet_allowed": False, "lease_term": "1个月起"},
         },
@@ -6324,7 +6484,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "可协助联系房东、学校、银行和役所。服务前先确认范围与费用，不处理违法或高风险委托。",
             "price": 3000, "currency": "JPY", "price_type": "starting_from", "location_text": "东京 23 区 / 线上",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.92, "reviews": 126,
             "attributes": {
                 "service_type": "翻译",
                 "service_area": "东京 23 区 / 线上",
@@ -6342,7 +6501,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "新宿横丁里的烧鸟居酒屋，备长炭现烤串物，配本地清酒。支持在线订座，旺季建议提前一天。",
             "price": 3000, "currency": "JPY", "price_type": "starting_from", "location_text": "新宿区 · 思出横丁",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.88, "reviews": 214,
             "image_url": "https://images.unsplash.com/photo-1514933651103-005eec06c04b?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "Machi 横丁烧鸟",
@@ -6359,7 +6517,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "高田马场川菜馆，麻辣香锅按斤称、水煮鱼现杀现做。支持订座与包间，留学生出示学生证有优惠。",
             "price": 1500, "currency": "JPY", "price_type": "starting_from", "location_text": "新宿区 · 高田马场",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.76, "reviews": 183,
             "image_url": "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "川味小馆",
@@ -6376,7 +6533,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "下北泽安静小店，自家烘焙豆与季节限定抹茶甜品。可预约窗边座位，适合自习与小聚。",
             "price": 800, "currency": "JPY", "price_type": "starting_from", "location_text": "世田谷区 · 下北泽",
             "status": "published", "verification_status": "verified",
-            "rating": 4.91, "reviews": 98,
             "image_url": "https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "白日咖啡",
@@ -6392,7 +6548,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "整套出租的改造町屋，步行可达雷门与晴空塔观景位。适合家庭或 3-4 人小团体，含自助入住指引与中文房东支持。",
             "price": 16800, "currency": "JPY", "price_type": "per_night", "location_text": "台东区 · 浅草",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.96, "reviews": 146,
             "image_url": "https://images.unsplash.com/photo-1611892440504-42a792e24d32?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "Machi Stay 浅草",
@@ -6410,7 +6565,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "新宿三丁目站附近的独立房源，含双人早餐建议与行李寄存说明。房东支持中英文，适合初次到东京的旅客。",
             "price": 13500, "currency": "JPY", "price_type": "per_night", "location_text": "新宿区 · 新宿三丁目",
             "status": "published", "verification_status": "verified",
-            "rating": 4.82, "reviews": 309,
             "image_url": "https://images.unsplash.com/photo-1590490360182-c33d57733427?w=1400&q=84&auto=format&fit=crop",
             "attributes": {
                 "business_name": "Machi Stay 新宿",
@@ -6428,7 +6582,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "以旬味鱼介和江户蔬菜为主的小型料理店，可选择六品或八品套餐。店内安静，支持纪念日备注。",
             "price": 4800, "currency": "JPY", "price_type": "starting_from", "location_text": "新宿区 · 神乐坂",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.94, "reviews": 167,
             "image_url": "https://images.unsplash.com/photo-1414235077428-338989a2e8c0?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "旬味 神乐", "price_range": "人均 ¥4,800-8,000", "open_hours": "17:30-22:30（周二休）", "reservation_required": True, "booking_required": True, "near_station": "饭田桥站 步行7分钟", "availability": "晚餐"},
         },
@@ -6438,7 +6591,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "慢炖鸡白汤配自制细面，提供少油、少盐和素食浇头选项。午餐高峰可能排队，晚间相对轻松。",
             "price": 1100, "currency": "JPY", "price_type": "starting_from", "location_text": "台东区 · 谷中",
             "status": "published", "verification_status": "verified",
-            "rating": 4.83, "reviews": 352,
             "image_url": "https://images.unsplash.com/photo-1591814468924-caf88d1232e1?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "谷中白汤研究所", "price_range": "人均 ¥1,000-1,500", "open_hours": "11:00-15:00 / 18:00-21:30", "reservation_required": False, "near_station": "日暮里站 步行8分钟"},
         },
@@ -6448,7 +6600,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "提供国产牛双人套餐和单点菜单，排烟良好，支持生日甜点与儿童餐具。订座后可在站内确认忌口。",
             "price": 5500, "currency": "JPY", "price_type": "starting_from", "location_text": "涩谷区 · 惠比寿",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.87, "reviews": 238,
             "image_url": "https://images.unsplash.com/photo-1552566626-52f8b828add9?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "炭火 灯", "price_range": "人均 ¥5,000-7,000", "open_hours": "17:00-23:00", "reservation_required": True, "booking_required": True, "near_station": "惠比寿站 步行4分钟"},
         },
@@ -6458,7 +6609,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "自然光庭院座位与开放式烘焙区，工作日可带电脑。周末早午餐建议提前预约，宠物可坐室外席。",
             "price": 950, "currency": "JPY", "price_type": "starting_from", "location_text": "江东区 · 清澄白河",
             "status": "published", "verification_status": "verified",
-            "rating": 4.90, "reviews": 121,
             "image_url": "https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "庭与豆", "price_range": "人均 ¥900-1,800", "open_hours": "08:30-19:00", "reservation_required": False, "booking_required": True, "near_station": "清澄白河站 步行6分钟"},
         },
@@ -6468,7 +6618,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "保留木格窗与小庭院的整套町屋，适合 4-5 人家庭。提供儿童床、行李寄存和中英文入住指南。",
             "price": 21800, "currency": "JPY", "price_type": "per_night", "location_text": "台东区 · 谷中银座",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.98, "reviews": 92,
             "image_url": "https://images.unsplash.com/photo-1582719478250-c89cae4dc85b?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "Yanaka Garden Stay", "room_type": "整套町屋 2LDK", "max_guests": 5, "check_in_time": "16:00 后", "check_out_time": "10:00 前", "breakfast_included": False, "near_station": "千驮木站 步行5分钟", "amenities": "厨房、洗衣机、儿童床、庭院", "minimum_stay": "2晚", "instant_confirmation": True},
         },
@@ -6478,7 +6627,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "木质阁楼与开放厨房组成的轻松小屋，适合朋友或小家庭。附近有古着店、咖啡馆和夜间仍营业的超市。",
             "price": 14800, "currency": "JPY", "price_type": "per_night", "location_text": "杉并区 · 高圆寺",
             "status": "published", "verification_status": "verified",
-            "rating": 4.91, "reviews": 74,
             "image_url": "https://images.unsplash.com/photo-1571508601891-ca5e7a713859?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "Koenji Loft Stay", "room_type": "整套阁楼 1LDK", "max_guests": 3, "check_in_time": "15:00 后", "check_out_time": "10:00 前", "breakfast_included": False, "near_station": "高圆寺站 步行7分钟", "amenities": "厨房、投影仪、洗衣机、行李寄存", "minimum_stay": "1晚", "instant_confirmation": True},
         },
@@ -6488,7 +6636,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "离海岸步行三分钟的两层小屋，配露台和冲浪板存放区。适合周末慢住，可从东京当天轻松抵达。",
             "price": 19800, "currency": "JPY", "price_type": "per_night", "location_text": "神奈川县 · 镰仓",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.97, "reviews": 131,
             "image_url": "https://images.unsplash.com/photo-1507525428034-b723cf961d3e?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "Kamakura Shore House", "room_type": "整套小屋 2LDK", "max_guests": 4, "check_in_time": "15:00 后", "check_out_time": "10:00 前", "breakfast_included": False, "near_station": "长谷站 步行9分钟", "amenities": "露台、厨房、洗衣机、浴缸", "minimum_stay": "2晚", "instant_confirmation": True},
         },
@@ -6498,7 +6645,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "在藏造街区住进修复后的传统老屋，保留梁柱与榻榻米，并加入现代卫浴。提供附近早餐店和散步路线。",
             "price": 17600, "currency": "JPY", "price_type": "per_night", "location_text": "埼玉县 · 川越",
             "status": "published", "verification_status": "verified",
-            "rating": 4.94, "reviews": 69,
             "image_url": "https://images.unsplash.com/photo-1480796927426-f609979314bd?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "Kawagoe Kura Stay", "room_type": "整套古民家 2DK", "max_guests": 4, "check_in_time": "15:30 后", "check_out_time": "10:00 前", "breakfast_included": False, "near_station": "本川越站 步行12分钟", "amenities": "庭院、和室、厨房、浴缸", "minimum_stay": "1晚", "instant_confirmation": False},
         },
@@ -6508,7 +6654,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "带完整厨房和洗烘一体机的家庭房源，适合连续入住。步行可到新宿御苑，支持入住前行李寄存咨询。",
             "price": 19600, "currency": "JPY", "price_type": "per_night", "location_text": "涩谷区 · 代代木",
             "status": "published", "verification_status": "verified",
-            "rating": 4.89, "reviews": 174,
             "image_url": "https://images.unsplash.com/photo-1631049307264-da0ec9d70304?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "Yoyogi Family Stay", "room_type": "家庭套房 38㎡", "max_guests": 4, "check_in_time": "15:00", "check_out_time": "11:00", "breakfast_included": False, "near_station": "代代木站 步行4分钟", "amenities": "厨房、洗烘机、浴缸、行李寄存", "minimum_stay": "1晚", "instant_confirmation": True},
         },
@@ -6518,7 +6663,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "从东京出发约九十分钟的山景民宿，提供和式早餐、私汤时段咨询与小田原站接驳说明。",
             "price": 28600, "currency": "JPY", "price_type": "per_night", "location_text": "神奈川县 · 箱根",
             "status": "published", "verification_status": "verified",
-            "rating": 4.95, "reviews": 263,
             "image_url": "https://images.unsplash.com/photo-1492571350019-22de08371fd3?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"business_name": "箱根 山之音 Stay", "room_type": "和室 10叠", "max_guests": 3, "check_in_time": "15:00", "check_out_time": "10:00", "breakfast_included": True, "near_station": "箱根汤本站 巴士15分钟", "amenities": "温泉、私汤咨询、早餐、接驳咨询", "minimum_stay": "1晚", "instant_confirmation": False},
         },
@@ -6528,7 +6672,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "按房型报价，覆盖厨房、浴室、窗槽与地面。预约前提供照片即可确认范围，不临时追加未说明费用。",
             "price": 9800, "currency": "JPY", "price_type": "starting_from", "location_text": "东京 23 区",
             "status": "published", "verification_status": "verified", "promoted": True,
-            "rating": 4.93, "reviews": 207,
             "image_url": "https://images.unsplash.com/photo-1527515637462-cff94eecc1ac?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"service_type": "居家清洁", "service_area": "东京 23 区", "price_unit": "1R/1K 起", "business_name": "Machi Clean", "certified_provider": True, "availability": "每日 09:00-19:00", "service_process": "上传房间照片、确认范围与报价、选择时段、完成后验收。", "user_prepare": "收好贵重物品并确保水电可用", "cancellation_rule": "前一天 18:00 前可免费改期", "booking_required": True},
         },
@@ -6538,7 +6681,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "预约制小型工作室，可用中文沟通发型、发色和护理预算。染发前会说明所需时间与追加项目。",
             "price": 4800, "currency": "JPY", "price_type": "starting_from", "location_text": "涩谷区 · 原宿",
             "status": "published", "verification_status": "verified",
-            "rating": 4.88, "reviews": 154,
             "image_url": "https://images.unsplash.com/photo-1522337360788-8b13dee7a37e?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"service_type": "剪发 / 染发 / 护理", "service_area": "原宿店", "price_unit": "剪发起", "business_name": "Atelier Nagi", "certified_provider": True, "availability": "11:00-20:00（周三休）", "service_process": "选择项目、填写发质需求、确认报价与时长、到店服务。", "cancellation_rule": "24小时内取消可能收取席位费", "booking_required": True},
         },
@@ -6548,7 +6690,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "适合单人宿舍和 1K 房型，车型、楼层与大型物品会在报价前确认。全程通过站内记录需求与费用。",
             "price": 12000, "currency": "JPY", "price_type": "starting_from", "location_text": "东京 / 埼玉 / 千叶",
             "status": "published", "verification_status": "verified",
-            "rating": 4.85, "reviews": 119,
             "image_url": "https://images.unsplash.com/photo-1600518464441-9154a4dea21b?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"service_type": "小型搬家", "service_area": "东京 / 埼玉 / 千叶", "price_unit": "轻型车一台起", "business_name": "Machi Move", "certified_provider": True, "availability": "每日 08:00-20:00", "service_process": "填写起终点与物品清单、确认车辆与报价、预约时段、现场核对后搬运。", "user_prepare": "提前封箱并注明易碎物品", "not_included": "钢琴、大型保险柜、危险品", "booking_required": True},
         },
@@ -6558,7 +6699,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             "description": "提供喂食、换水、清理猫砂和简短陪伴，服务后发送图文记录。首次预约会先在线确认门锁和应急联系人。",
             "price": 3200, "currency": "JPY", "price_type": "starting_from", "location_text": "东京西部 8 区",
             "status": "published", "verification_status": "verified",
-            "rating": 4.97, "reviews": 88,
             "image_url": "https://images.unsplash.com/photo-1518791841217-8f162f1e1131?w=1400&q=84&auto=format&fit=crop",
             "attributes": {"service_type": "上门宠物照护", "service_area": "中野、杉并、练马、世田谷等", "price_unit": "45分钟 / 1次", "business_name": "Machi Pet Care", "certified_provider": True, "availability": "07:00-21:00", "service_process": "提交宠物信息、视频确认需求、预约时段、服务后发送记录。", "user_prepare": "准备足量食物、猫砂与兽医联系方式", "cancellation_rule": "前一天可免费改期", "booking_required": True},
         },
@@ -6580,8 +6720,8 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
             """,
             (sample["city_slug"], sample["type"], sample["title"]),
         ).fetchone()
-        rating_avg = float(sample.get("rating") or 0)
-        rating_count = int(sample.get("reviews") or 0)
+        # 评分聚合绝不由 seed 直写（B1-2）：rating_avg / rating_count 只能来自
+        # listing_reviews 的真实评论（recompute_listing_rating 是唯一写入口）。
         cover_url = str(sample.get("image_url") or listing_image_fallback(sample["type"], index))
         if exists:
             listing_id = exists["id"]
@@ -6590,14 +6730,14 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
                 UPDATE city_listings
                    SET description = ?, price = ?, currency = ?, price_type = ?, location_text = ?,
                        status = ?, verification_status = ?, is_promoted = ?, promotion_weight = ?,
-                       rating_avg = ?, rating_count = ?, updated_at = ?
+                       updated_at = ?
                  WHERE id = ?
                 """,
                 (
                     sample["description"], sample["price"], sample["currency"], sample["price_type"],
                     sample["location_text"], sample["status"], sample["verification_status"],
                     1 if sample.get("promoted") else 0, 20 if sample.get("promoted") else 0,
-                    rating_avg, rating_count, now, listing_id,
+                    now, listing_id,
                 ),
             )
             cover = conn.execute(
@@ -6627,11 +6767,10 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
                 category, title, description, price, currency, price_type, location_text,
                 status, verification_status, seller_user_id, business_id, contact_method,
                 view_count, inquiry_count, favorite_count, report_count, is_promoted,
-                promotion_weight, published_at, expires_at, created_at, updated_at,
-                rating_avg, rating_count
+                promotion_weight, published_at, expires_at, created_at, updated_at
             )
             VALUES (?, ?, ?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'app_message',
-                    0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                    0, 0, 0, 0, ?, ?, ?, ?, ?, ?)
             """,
             (
                 listing_id,
@@ -6656,8 +6795,6 @@ def ensure_city_listing_seed(conn: sqlite3.Connection) -> None:
                 (datetime.now(timezone.utc) + timedelta(days=90)).isoformat(),
                 now,
                 now,
-                rating_avg,
-                rating_count,
             ),
         )
         conn.execute(
@@ -6715,8 +6852,7 @@ def import_premium_listings(
         title = sample["title"]
         by_city[city_slug] = by_city.get(city_slug, 0) + 1
         by_type[ltype] = by_type.get(ltype, 0) + 1
-        rating_avg = float(sample.get("rating") or 0)
-        rating_count = int(sample.get("reviews") or 0)
+        # 评分聚合绝不由内容包直写（B1-2）：只认 listing_reviews 的真实评论。
         cover_url = str(sample.get("image_url") or listing_image_fallback(ltype, index))
         promoted = bool(sample.get("promoted"))
         exists = conn.execute(
@@ -6728,11 +6864,11 @@ def import_premium_listings(
             conn.execute(
                 """UPDATE city_listings SET description = ?, price = ?, currency = ?, price_type = ?,
                    location_text = ?, status = ?, verification_status = ?, is_promoted = ?,
-                   promotion_weight = ?, rating_avg = ?, rating_count = ?, updated_at = ? WHERE id = ?""",
+                   promotion_weight = ?, updated_at = ? WHERE id = ?""",
                 (sample.get("description") or "", sample.get("price"), sample.get("currency") or "JPY",
                  sample.get("price_type") or "fixed", sample.get("location_text") or "",
                  sample.get("status") or "published", sample.get("verification_status") or "unverified",
-                 1 if promoted else 0, 20 if promoted else 0, rating_avg, rating_count, now, listing_id),
+                 1 if promoted else 0, 20 if promoted else 0, now, listing_id),
             )
             cover = conn.execute(
                 "SELECT id FROM listing_media WHERE listing_id = ? AND is_cover = 1 ORDER BY sort_order ASC LIMIT 1",
@@ -6756,17 +6892,16 @@ def import_premium_listings(
                     description, price, currency, price_type, location_text, status, verification_status,
                     seller_user_id, business_id, contact_method, view_count, inquiry_count, favorite_count,
                     report_count, is_promoted, promotion_weight, published_at, expires_at, created_at,
-                    updated_at, rating_avg, rating_count)
+                    updated_at)
                    VALUES (?, ?, ?, ?, ?, 'zh-CN', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 'app_message',
-                    0, 0, 0, 0, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    0, 0, 0, 0, ?, ?, ?, ?, ?, ?)""",
                 (listing_id, sample.get("country_code") or "jp", city_slug, city_slug,
                  sample.get("region_code") or "", ltype, sample.get("category") or "", title,
                  sample.get("description") or "", sample.get("price"), sample.get("currency") or "JPY",
                  sample.get("price_type") or "fixed", sample.get("location_text") or "",
                  sample.get("status") or "published", sample.get("verification_status") or "unverified",
                  (pool[index % len(pool)] if pool else seller_id), 1 if promoted else 0, 20 if promoted else 0, now,
-                 (datetime.now(timezone.utc) + timedelta(days=120)).isoformat(), now, now,
-                 rating_avg, rating_count),
+                 (datetime.now(timezone.utc) + timedelta(days=120)).isoformat(), now, now),
             )
             conn.execute(
                 "INSERT INTO listing_media (id, listing_id, media_type, url, thumbnail_url, sort_order, is_cover, created_at)"
@@ -7401,6 +7536,8 @@ def init_db() -> None:
                     ACCESS_LOG.info("deleted-user listing reconcile removed=%s", removed)
             except Exception:
                 ERR_LOG.exception("deleted-user listing reconcile failed (non-fatal)")
+            # B2-1: 推荐位静态 slug 与商品表核对，悬空/未发布引用启动即告警。
+            _guide_audit_recommended_slugs(conn)
         return
     with DB_LOCK, db() as conn:
         conn.executescript(SCHEMA)
@@ -7420,6 +7557,8 @@ def init_db() -> None:
         _guide_wallet_activation_once(conn)
         _guide_member_price_rollout_once(conn)
         jlpt_seed.ensure_jlpt_seed(conn)
+        # B2-1: 推荐位静态 slug 与商品表核对，悬空/未发布引用启动即告警。
+        _guide_audit_recommended_slugs(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
             # first registered user is the founder.
@@ -8706,6 +8845,18 @@ def public_listing_attributes(listing_type: str, attrs: Any) -> dict[str, Any]:
     return cleaned
 
 
+def listing_seller_merchant_verified(conn: sqlite3.Connection, seller_id: str | None) -> bool:
+    """服务端认证事实：仅 users.merchant_verified = 1（管理员审核商家资质后写入）
+    才算「认证商家」。发布表单里的 merchant_verified checkbox 是卖家自助勾选，
+    绝不能直接变成徽章（B1-3）——写入与输出层都用本函数收口。"""
+    if not seller_id:
+        return False
+    row = conn.execute(
+        "SELECT COALESCE(merchant_verified, 0) AS v FROM users WHERE id = ?", (seller_id,)
+    ).fetchone()
+    return bool(row and int(row["v"] or 0))
+
+
 LISTING_FALLBACK_ART: dict[str, tuple[str, str, str, str]] = {
     "secondhand": ("#2563eb", "#f97316", "二手市场", "bag"),
     "rental": ("#0ea5e9", "#22c55e", "租房", "home"),
@@ -9190,6 +9341,52 @@ def listing_inquiry_status_message(status: str) -> str:
     }.get(status or "", status or "")
 
 
+# ── seed-seller dead-inbox routing（B1-4） ──────────────────────────────────
+# persona / kaizi / seed-bot 账号密码锁死或无人登录，发给它们的咨询与预约永远
+# 等不到回复。api_listing_inquiry 据此把收件人路由到官方收件账号，并自动回一条
+# 确认消息（明示非即时应答）。真实卖家不在判定集合里，完全不受影响。
+
+
+def listing_seller_is_dead_inbox(conn: sqlite3.Connection, seller_id: str | None) -> bool:
+    if not seller_id:
+        return False
+    _ensure_content_pack_users_table(conn)
+    if conn.execute("SELECT 1 FROM content_pack_users WHERE user_id = ?", (seller_id,)).fetchone():
+        return True
+    row = conn.execute("SELECT handle, role FROM users WHERE id = ?", (seller_id,)).fetchone()
+    if not row:
+        return False
+    if (row["role"] or "member") == "admin":
+        return False  # admin 名下的发布有真人查收
+    handle = (row["handle"] or "").strip().lower()
+    # kaizi 是 ensure_city_listing_seed / import_premium_listings 的兜底种子卖家；
+    # seed-bot 官方内容账号（machi_assistant_* / *_editorial*）同样无人查收。
+    return handle == "kaizi" or handle in {identity[0] for identity in _SEED_BOT_IDENTITY.values()}
+
+
+def listing_official_inbox_id(conn: sqlite3.Connection) -> str | None:
+    """官方收件账号：优先 KAIX_ADMIN_HANDLE 对应的 admin 主账号，其次最早创建的
+    admin。seed-bot 官方内容账号不能当收件人（密码锁死、无人登录，路由过去仍是
+    死信箱）；工作台线索与 DM 都归到能登录处理的 admin。"""
+    row = conn.execute(
+        "SELECT id FROM users WHERE handle = ? AND role = 'admin' AND deleted_at IS NULL LIMIT 1",
+        (DEFAULT_ADMIN_HANDLE,),
+    ).fetchone()
+    if not row:
+        row = conn.execute(
+            "SELECT id FROM users WHERE role = 'admin' AND deleted_at IS NULL ORDER BY created_at ASC LIMIT 1"
+        ).fetchone()
+    return row["id"] if row else None
+
+
+# 三语自动确认（不承诺即时应答；不出现任何站外联系方式/支付引导）。
+LISTING_DEAD_INBOX_AUTO_REPLY = (
+    "【Machi 官方】已收到你的咨询/预约，本条信息由 Machi 官方代为跟进。这里不是即时客服，通常 1-3 个工作日内回复，请留意站内消息。\n"
+    "【Machi 公式】お問い合わせ・ご予約を受け付けました。本件は Machi 公式が対応します。即時返信ではなく、通常 1〜3 営業日以内にご返信します。\n"
+    "[Machi Official] Your inquiry/booking has been received and will be followed up by the Machi team. Replies are not instant — please expect a response within 1-3 business days."
+)
+
+
 def listing_price_card_label(row: dict[str, Any]) -> str:
     price_type = str(row.get("price_type") or "").lower()
     price = row.get("price")
@@ -9346,6 +9543,11 @@ def serialize_listing(row: dict[str, Any], extras: dict[str, Any] | None = None)
     if not cover_url and media:
         cover_url = media_card_image_url(media[0]) or media[0].get("url", "")
     seller = extras.get("seller")
+    # B1-3 输出收口：merchant_verified 属性历史上可由卖家自勾 checkbox 写入，
+    # 客户端徽章只认这里——仅当卖家 users.merchant_verified=1 才为真（存量
+    # 假认证数据随本行自动失效，无需回填清洗）。
+    if "merchant_verified" in attrs:
+        attrs["merchant_verified"] = bool((seller or {}).get("merchant_verified"))
     liked = bool(extras.get("favorited"))
     city_label = row.get("city_slug", "") or row.get("region_code", "") or ""
     location_text = row.get("location_text", "") or ""
@@ -10843,7 +11045,12 @@ MACHI_AI_SYSTEM_PROMPT = (
     "- 如果用户问 Machi 怎么用，要结合 Machi Guide、学校库、公司库、会员资料、我的工作台、Todo、日历、"
     "资料与服务、会员权益来回答。\n"
     "- 如果用户的问题适合使用 Machi 的某个功能，可以自然建议“你可以在 Machi Guide 里打开学校库/公司库/"
-    "我的工作台/会员资料继续整理”。"
+    "我的工作台/会员资料继续整理”。\n"
+    "- Machi 内有 JLPT 备考专区（30 秒定级测试、逐题练习、在线模考、错题本、单词卡）、Guide 商城"
+    "（备考资料与实用模板等数字内容，可用日元或 Machi币购买，1 Machi币=1 日元）和 Machi 会员"
+    "（更多 AI 次数、会员资料库、部分内容会员价等权益）。\n"
+    "- 只有当用户明确聊到 JLPT/日语备考、找学习资料或模板这类需求时，才自然提一句对应的 JLPT 专区"
+    "或商城入口，一次回答最多提一次；其余话题绝不主动推销商品、商城或会员。"
 )
 
 # --- Machi AI 会员专属能力 -------------------------------------------------
@@ -10929,16 +11136,41 @@ def machi_ai_is_complex(message: str) -> bool:
     return any(hint.lower() in low for hint in _MACHI_AI_COMPLEX_HINTS)
 
 
+def machi_ai_exam_dates_note(conn: sqlite3.Connection) -> str:
+    """近期 JLPT 考期一行注入（B2-4）。复用 server_jlpt.exam_dates 的官方公开
+    日历（admin 维护），只取未来的前两场——system prompt 禁止编造实时日期，
+    这行就是它唯一可引用的考期事实源。任何失败返回空串，绝不影响聊天。"""
+    try:
+        today = jlpt.jst_date(now_iso())
+        upcoming = [d for d in jlpt.exam_dates(conn, region="jp") if (d.get("examDate") or "") >= today][:2]
+        if not upcoming:
+            return ""
+        frags = []
+        for d in upcoming:
+            frag = f"{d['sessionLabel']} 考试日 {d['examDate']}"
+            if d.get("regOpenDate") and d.get("regCloseDate"):
+                frag += f"（报名 {d['regOpenDate']} ~ {d['regCloseDate']}）"
+            frags.append(frag)
+        return ("JLPT 近期考期（官方公开日历）：" + "；".join(frags)
+                + "。仅当用户问到 JLPT 考试时间/报名/备考规划时引用，并提醒以 JLPT 官方公告为准。")
+    except Exception:
+        return ""
+
+
 def machi_ai_build_messages(*, user_message: str, language: str,
                             history: list[dict[str, Any]],
                             context_items: list[dict[str, Any]],
-                            ability: dict[str, Any] | None = None) -> list[dict[str, str]]:
+                            ability: dict[str, Any] | None = None,
+                            exam_dates_note: str = "") -> list[dict[str, str]]:
     """Assemble the stateless turn list: system (+ optional ability directive +
-    optional Guide context) + recent history + the latest user turn."""
+    optional JLPT exam-dates note + optional Guide context) + recent history +
+    the latest user turn."""
     lang = machi_ai_lang_key(language)
     system = MACHI_AI_SYSTEM_PROMPT + "\n\n" + _MACHI_AI_LANG_DIRECTIVE.get(lang, _MACHI_AI_LANG_DIRECTIVE["zh"])
     if ability and ability.get("system"):
         system += "\n\n" + ability["system"]
+    if exam_dates_note:
+        system += "\n\n" + exam_dates_note
     lines = [f"- {it.get('modelLine') or it.get('title')}" for it in (context_items or []) if (it.get("modelLine") or it.get("title"))]
     if lines:
         system += ("\n\n以下是 Machi Guide 中可能相关的资料摘要。你可以参考，但不要编造摘要以外的事实：\n"
@@ -12156,6 +12388,22 @@ def wallet_debit_for_product(conn: sqlite3.Connection, user_id: str, product_row
         snap = get_wallet_snapshot(conn, user_id)
         return {"status": "already_owned", "wallet": snap, "order": None, "entitlement": None,
                 "requiredPoints": price, "currentBalance": snap["balancePoints"]}
+
+    # 每人币购限购（B1-8）：points_purchase_limit>0 时按本人历史币购单数对比。
+    # 只数 status='fulfilled'——refund_guide_points_order 与并发 entitlement 竞态
+    # 的自动退币都会把订单翻成 'refunded'，退掉的购买不占限购名额（用户已不再
+    # 持有，允许再买）。检查在扣币之前，拒绝时钱包分文未动。
+    purchase_limit = int(d.get("points_purchase_limit") or 0)
+    if purchase_limit > 0:
+        bought = conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_orders WHERE user_id = ? AND product_id = ? "
+            "AND payment_method = 'wallet_points' AND status = 'fulfilled'",
+            (user_id, resource_id)).fetchone()
+        if int(bought["c"] if bought else 0) >= purchase_limit:
+            snap = get_wallet_snapshot(conn, user_id)
+            return {"status": "limit_reached", "wallet": snap, "order": None, "entitlement": None,
+                    "requiredPoints": price, "currentBalance": snap["balancePoints"],
+                    "purchaseLimit": purchase_limit}
 
     ledger_entry_id = ""
     if price > 0:
@@ -15187,6 +15435,188 @@ def run_guide_reminder_dispatch() -> int:
     return sent
 
 
+# ---------------------------------------------------------------------------
+# JLPT 学习类提醒（B2-2 断签 / B2-3 错题复习）。与 run_guide_reminder_dispatch
+# 同模板：sent-ledger 防重 + 挂在同一个 dispatcher 循环里周期 sweep。两者共享
+# jlpt_study_reminders（主键 user_id+jst_date）——每用户每 JST 日学习类提醒
+# ≤1 条。推送 ntype='guide_reminder'：不占每日推送预算、受 JST 静音(22-9)保护。
+# 文案三语、纯功能性、不带任何商品（4.5.4 合规）。`now` 参数是测试用的时钟
+# seam（与 server_jlpt 的函数一致），默认取真实当前时间。
+# ---------------------------------------------------------------------------
+
+def _jst_hour(now: str | None = None) -> int:
+    dt = parse_iso(now) if now else None
+    if dt is None:
+        return datetime.now(jlpt.JST).hour
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(jlpt.JST).hour
+
+
+def _jlpt_study_reminder_claim(conn: sqlite3.Connection, user_id: str, jst_day: str, kind: str) -> bool:
+    """认领当日唯一的学习类提醒名额。True=认领成功可发送；冲突（今天已发过
+    任一学习类提醒）返回 False。INSERT 即闸，天然幂等且并发安全。"""
+    try:
+        cur = conn.execute(
+            "INSERT INTO jlpt_study_reminders (user_id, jst_date, kind, created_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(user_id, jst_date) DO NOTHING",
+            (user_id, jst_day, kind, now_iso()),
+        )
+        return (getattr(cur, "rowcount", 0) or 0) > 0
+    except Exception:
+        return False
+
+
+def _jlpt_user_language(conn: sqlite3.Connection, user_id: str) -> str:
+    try:
+        row = conn.execute("SELECT language FROM settings WHERE user_id = ?", (user_id,)).fetchone()
+        return str(row["language"] or "") if row else ""
+    except Exception:
+        return ""
+
+
+def _jlpt_send_study_reminder(conn: sqlite3.Connection, user_id: str, content: str, now: str) -> None:
+    """One reminder = APNs banner + in-app notification row + SSE nudge, all
+    best-effort (mirrors run_guide_reminder_dispatch). 深链走现有推送路由：
+    payload 只带 type=guide_reminder，客户端据此进 Guide/JLPT。"""
+    try:
+        server_apns.enqueue(user_id, ntype="guide_reminder", content=content)
+        HUB.publish(user_id, {"type": "notification", "kind": "guide_reminder"})
+    except Exception:
+        pass
+    try:
+        conn.execute(
+            "INSERT INTO notifications (id, user_id, actor_id, type, content, created_at) "
+            "VALUES (?, ?, ?, 'system', ?, ?)",
+            (str(uuid.uuid4()), user_id, user_id, content, now),
+        )
+    except Exception:
+        pass
+
+
+def run_jlpt_streak_reminders(now: str | None = None) -> int:
+    """断签提醒（B2-2）：streak≥3 且当日 JST 还没有任何练习/交卷的用户，在
+    19-21 点(JST) 收到一条「连续 N 天将中断」。streak 派生复用 server_jlpt.streak
+    （唯一口径）；候选集先用「近 48h 有过活动」粗筛（streak 锚定在昨天必然满足），
+    再逐个精判，避免全表扫。"""
+    now = now or now_iso()
+    if not (19 <= _jst_hour(now) < 21):
+        return 0
+    sent = 0
+    with DB_LOCK:
+        conn = db()
+        try:
+            today = jlpt.jst_date(now)
+            base = parse_iso(now) or datetime.now(timezone.utc)
+            cutoff = (base - timedelta(hours=48)).isoformat()
+            candidates: set[str] = set()
+            for r in conn.execute(
+                "SELECT DISTINCT a.user_id AS uid FROM jlpt_attempts a "
+                "JOIN users u ON u.id = a.user_id AND u.deleted_at IS NULL "
+                "WHERE a.created_at >= ?",
+                (cutoff,),
+            ).fetchall():
+                candidates.add(dict(r)["uid"])
+            for r in conn.execute(
+                "SELECT DISTINCT s.user_id AS uid FROM jlpt_exam_sessions s "
+                "JOIN users u ON u.id = s.user_id AND u.deleted_at IS NULL "
+                "WHERE s.status = 'submitted' AND s.started_at >= ?",
+                (cutoff,),
+            ).fetchall():
+                candidates.add(dict(r)["uid"])
+            for uid in sorted(candidates)[:500]:
+                # 便宜预检：今天的学习提醒名额已被占就不必算 streak。
+                if conn.execute(
+                    "SELECT 1 FROM jlpt_study_reminders WHERE user_id = ? AND jst_date = ?",
+                    (uid, today),
+                ).fetchone():
+                    continue
+                st = jlpt.streak(conn, user_id=uid, now=now)
+                streak_days = int(st.get("currentStreak") or 0)
+                if st.get("todayDone") or streak_days < 3:
+                    continue
+                if not _jlpt_study_reminder_claim(conn, uid, today, "streak"):
+                    continue
+                content = machi_ai_text(
+                    _jlpt_user_language(conn, uid),
+                    f"🔥 你已连续学习 {streak_days} 天，今天还没打卡——做几道题保住连胜吧。",
+                    f"🔥 {streak_days}日連続で学習中。今日はまだ記録がありません。数問だけ解いて記録をつなぎましょう。",
+                    f"🔥 You're on a {streak_days}-day study streak — a few questions today keeps it alive.",
+                )
+                _jlpt_send_study_reminder(conn, uid, content, now)
+                sent += 1
+        finally:
+            conn.close()
+    return sent
+
+
+def run_jlpt_review_reminders(now: str | None = None) -> int:
+    """错题复习提醒（B2-3，穷人版间隔重复）：最后一次 JLPT 活动（练习/交卷）
+    后的第 3 / 第 5 个 JST 日各至多提醒一次——即「确定满 48h 无活跃的第一天
+    (T=最后活动日+2)」的 T+1 / T+3 两档；仍有 ≥5 道未复清错题才发，数字与
+    错题本页看到的一致（server_jlpt.review_pending_count 同一口径）。用户一旦
+    回来做题，锚点即重置。只在 10-21 点(JST) 发：静音时段 enqueue 会被直接丢
+    弃，白白消耗当日唯一的学习提醒名额。"""
+    now = now or now_iso()
+    if not (10 <= _jst_hour(now) < 21):
+        return 0
+    sent = 0
+    with DB_LOCK:
+        conn = db()
+        try:
+            today = jlpt.jst_date(now)
+            base = parse_iso(now) or datetime.now(timezone.utc)
+            window_start = (base - timedelta(days=7)).isoformat()
+            # 每人最后一次活动时间（7 天窗内的 MAX 即全局最后一次——两档都在
+            # 5 天内，更久不活跃的用户不在提醒范围）。
+            last_by_user: dict[str, str] = {}
+            for r in conn.execute(
+                "SELECT a.user_id AS uid, MAX(a.created_at) AS last_at FROM jlpt_attempts a "
+                "JOIN users u ON u.id = a.user_id AND u.deleted_at IS NULL "
+                "WHERE a.created_at >= ? GROUP BY a.user_id",
+                (window_start,),
+            ).fetchall():
+                d = dict(r)
+                last_by_user[d["uid"]] = max(last_by_user.get(d["uid"], ""), d["last_at"] or "")
+            for r in conn.execute(
+                "SELECT s.user_id AS uid, MAX(s.started_at) AS last_at FROM jlpt_exam_sessions s "
+                "JOIN users u ON u.id = s.user_id AND u.deleted_at IS NULL "
+                "WHERE s.status = 'submitted' AND s.started_at >= ? GROUP BY s.user_id",
+                (window_start,),
+            ).fetchall():
+                d = dict(r)
+                last_by_user[d["uid"]] = max(last_by_user.get(d["uid"], ""), d["last_at"] or "")
+            for uid in sorted(last_by_user)[:1000]:
+                try:
+                    gap_days = (datetime.fromisoformat(today).date()
+                                - datetime.fromisoformat(jlpt.jst_date(last_by_user[uid])).date()).days
+                except ValueError:
+                    continue
+                if gap_days not in (3, 5):
+                    continue
+                if conn.execute(
+                    "SELECT 1 FROM jlpt_study_reminders WHERE user_id = ? AND jst_date = ?",
+                    (uid, today),
+                ).fetchone():
+                    continue
+                pending = jlpt.review_pending_count(conn, user_id=uid)
+                if pending < 5:
+                    continue
+                if not _jlpt_study_reminder_claim(conn, uid, today, "review"):
+                    continue
+                content = machi_ai_text(
+                    _jlpt_user_language(conn, uid),
+                    f"📘 你有 {pending} 道错题待复习，趁记忆还在，回来过一遍效果最好。",
+                    f"📘 復習待ちの間違えた問題が{pending}問あります。記憶が薄れる前に復習しましょう。",
+                    f"📘 You have {pending} questions waiting for review — a quick pass now beats relearning later.",
+                )
+                _jlpt_send_study_reminder(conn, uid, content, now)
+                sent += 1
+        finally:
+            conn.close()
+    return sent
+
+
 def start_guide_reminder_dispatcher() -> None:
     global _GUIDE_REMINDER_STARTED
     if _GUIDE_REMINDER_STARTED:
@@ -15202,6 +15632,20 @@ def start_guide_reminder_dispatcher() -> None:
                     ACCESS_LOG.info("guide reminders dispatched: %d", n)
             except Exception:
                 ERR_LOG.exception("guide reminder dispatch failed")
+            # JLPT 学习类提醒（B2-2/B2-3）挂同一循环周期 sweep；各自带 JST
+            # 时窗闸 + 共享 sent-ledger，重复调用天然幂等。
+            try:
+                n = run_jlpt_streak_reminders()
+                if n:
+                    ACCESS_LOG.info("jlpt streak reminders dispatched: %d", n)
+            except Exception:
+                ERR_LOG.exception("jlpt streak reminder dispatch failed")
+            try:
+                n = run_jlpt_review_reminders()
+                if n:
+                    ACCESS_LOG.info("jlpt review reminders dispatched: %d", n)
+            except Exception:
+                ERR_LOG.exception("jlpt review reminder dispatch failed")
             time.sleep(KAIX_GUIDE_REMINDER_INTERVAL_SEC)
 
     threading.Thread(target=_loop, name="guide-reminders", daemon=True).start()
@@ -17782,11 +18226,11 @@ class Handler(BaseHTTPRequestHandler):
         latest_articles = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' "
             "ORDER BY published_at DESC, created_at DESC LIMIT 8", (country,)).fetchall()] if module_on("latestArticles") else []
-        featured_products = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
+        featured_products = [localize_guide_product_payload(serialize_guide_product(r, conn=conn), language) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? AND is_service = 0 AND status IN ('published','coming_soon') "
             "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()] if module_on("commerce") else []
         _svc_status = "status = 'published'" if GUIDE_HIDE_EMPTY_SERVICES else "status IN ('published','coming_soon')"
-        featured_services = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
+        featured_services = [localize_guide_product_payload(serialize_guide_product(r, conn=conn), language) for r in conn.execute(
             f"SELECT * FROM guide_products WHERE country = ? AND is_service = 1 AND {_svc_status} "
             "ORDER BY is_coming_soon ASC, sort_order LIMIT 6", (country,)).fetchall()] if module_on("commerce") else []
         featured_schools = [localize_guide_school_payload(serialize_guide_school(r), language) for r in conn.execute(
@@ -17869,7 +18313,7 @@ class Handler(BaseHTTPRequestHandler):
         # JLPT resources are content packs (not human services), so keep
         # coming_soon ones visible — they show 即将开放 and keep the roadmap whole.
         # Member-included packs sort first as the concrete membership payoff.
-        resources = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
+        resources = [localize_guide_product_payload(serialize_guide_product(r, conn=conn), language) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? AND category_key = 'jlpt' "
             "AND status IN ('published','coming_soon') "
             "ORDER BY is_coming_soon ASC, is_member_included DESC, sort_order LIMIT 24", (country,)).fetchall()]
@@ -17961,6 +18405,8 @@ class Handler(BaseHTTPRequestHandler):
             conn, level=level, section=section, count=count,
             user_id=(user["id"] if user else None), is_member=is_member, now=now_iso(),
         )
+        _guide_funnel_log("jlpt_practice_start", user_id=(user["id"] if user else ""),
+                          level=level, section=section or "all", count=len(questions))
         self.send_json({
             "status": "ok", "level": level, "section": section or "all",
             "membershipActive": is_member, "questions": questions,
@@ -17996,6 +18442,8 @@ class Handler(BaseHTTPRequestHandler):
             now=now_iso(),
         )
         conn.commit()
+        _guide_funnel_log("jlpt_practice_done", user_id=user["id"],
+                          level=question.get("level") or "", correct=result.get("correct"))
         self.send_json({"status": "ok", **result})
 
     def api_guide_jlpt_review(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -18060,6 +18508,9 @@ class Handler(BaseHTTPRequestHandler):
                                 source_kind="placement", now=now)
         result = jlpt.score_placement(conn, answers)
         conn.commit()
+        _guide_funnel_log("placement_done", user_id=user["id"],
+                          recommendedLevel=result.get("recommendedLevel") or "",
+                          answered=result.get("answered"))
         self.send_json({
             "status": "ok", **result,
             "studyPlanRoute": "guidePlan",
@@ -18163,6 +18614,8 @@ class Handler(BaseHTTPRequestHandler):
         if not started:
             return self.send_error_json("该模考暂无可用题目。", 409, "no_questions")
         conn.commit()
+        _guide_funnel_log("jlpt_exam_start", user_id=user["id"], examId=exam_id,
+                          level=exam.get("level") or "")
         self.send_json({"status": "ok", **started, "disclaimer": self._JLPT_DISCLAIMER})
 
     def api_guide_jlpt_exam_answer(self, conn: sqlite3.Connection) -> None:
@@ -18199,6 +18652,9 @@ class Handler(BaseHTTPRequestHandler):
         if result is None:
             return self.send_error_json("该考试已提交。", 409, "already_submitted")
         conn.commit()
+        _guide_funnel_log("jlpt_exam_submit", user_id=user["id"],
+                          examId=session.get("exam_id") or "", score=result.get("score"),
+                          passed=result.get("passed"))
         self.send_json({"status": "ok", **result, "disclaimer": self._JLPT_DISCLAIMER})
 
     def api_guide_jlpt_exam_history(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -18239,7 +18695,8 @@ class Handler(BaseHTTPRequestHandler):
         usage_date = machi_ai_usage_date()
         limit = machi_ai_daily_limit(user, is_member)
         if machi_ai_usage_count(conn, user["id"], usage_date) >= limit:
-            return self._guide_ai_quota_response(language, is_member, is_guest=False)
+            return self._guide_ai_quota_response(language, is_member, is_guest=False,
+                                                 conn=conn, subject_id=user["id"])
 
         # Build a tight, self-contained explanation prompt from the question.
         choices = jlpt._loads_choices(question.get("choices_json"))
@@ -18265,7 +18722,8 @@ class Handler(BaseHTTPRequestHandler):
         reserved = self._machi_ai_reserve_usage(conn, user["id"], usage_date, is_member)
         if reserved > limit:
             self._machi_ai_refund_usage(conn, user["id"], usage_date, is_member)
-            return self._guide_ai_quota_response(language, is_member, is_guest=False)
+            return self._guide_ai_quota_response(language, is_member, is_guest=False,
+                                                 conn=conn, subject_id=user["id"])
         chat_model = MACHI_AI_PRO_MODEL if (is_member and MACHI_AI_PRO_MODEL) else MACHI_AI_MODEL
         completion = None
         # 同 AI 聊天:限流慢 LLM 调用保护连接池,超额 fail-fast 退还额度 + 503。
@@ -18456,7 +18914,7 @@ class Handler(BaseHTTPRequestHandler):
                     f"SELECT * FROM guide_products WHERE country = ? AND status IN ('published','coming_soon') AND slug IN ({placeholders})",
                     (country, *pslugs),
                 ).fetchall()
-                products = [localize_guide_product_payload(serialize_guide_product(r), language) for r in rows]
+                products = [localize_guide_product_payload(serialize_guide_product(r, conn=conn), language) for r in rows]
         except Exception:
             products = []
         return {"articles": articles, "products": products}
@@ -18537,7 +18995,7 @@ class Handler(BaseHTTPRequestHandler):
             if d["id"] in seen:
                 return
             seen.add(d["id"])
-            payload = localize_guide_product_payload(serialize_guide_product(row), language)
+            payload = localize_guide_product_payload(serialize_guide_product(row, conn=conn), language)
             if int(d.get("is_service") or 0) == 1 or d.get("product_type") == "service":
                 services.append(payload)
             else:
@@ -18676,7 +19134,7 @@ class Handler(BaseHTTPRequestHandler):
                     (country, like, like, like, like, like, like, like, like, like, like, like, like)).fetchall()])
         if want("products"):
             groups["products"] = _safe(lambda: [
-                localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
+                localize_guide_product_payload(serialize_guide_product(r, conn=conn), language) for r in conn.execute(
                     "SELECT * FROM guide_products WHERE country = ? AND status IN ('published','coming_soon') "
                     "AND (title LIKE ? OR subtitle LIKE ? OR description LIKE ? OR tags LIKE ? "
                     "OR target_audience LIKE ? OR product_type LIKE ? OR category_key LIKE ? OR sub_category_key LIKE ?) "
@@ -18814,10 +19272,30 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def _guide_ai_quota_response(self, language: str, is_member: bool, *,
-                                 is_guest: bool = False) -> None:
+                                 is_guest: bool = False,
+                                 conn: sqlite3.Connection | None = None,
+                                 subject_id: str = "") -> None:
         # Free users learn it's a daily free cap (and may upgrade). Members are
         # only told "that's all for today" — never the internal number. Guests
         # are nudged to register (still no number).
+        #
+        # ai_quota_exceeded（契约 C-2）：撞墙即事件——「AI 次数加油包」是否为
+        # 真需求以「日撞墙人次稳定 >0」为重议条件，所以除日志外还落
+        # funnel_events 表，可直接 SQL 数人头。埋点失败绝不影响响应本身。
+        _guide_funnel_log("ai_quota_exceeded", user_id=subject_id,
+                          isMember=is_member, isGuest=is_guest)
+        if conn is not None:
+            try:
+                conn.execute(
+                    "INSERT INTO funnel_events (id, event, user_id, guest_id, entity_type, entity_id, props_json, created_at) "
+                    "VALUES (?, 'ai_quota_exceeded', ?, ?, '', '', ?, ?)",
+                    (str(uuid.uuid4()),
+                     "" if subject_id.startswith("guest:") else subject_id,
+                     subject_id if subject_id.startswith("guest:") else "",
+                     json.dumps({"isMember": is_member, "isGuest": is_guest}), now_iso()),
+                )
+            except Exception:
+                pass
         if is_guest:
             msg = machi_ai_text(
                 language,
@@ -18981,7 +19459,8 @@ class Handler(BaseHTTPRequestHandler):
         # concurrent requests all see the same stale count), so the real gate is
         # the atomic reservation just before the upstream call below.
         if machi_ai_usage_count(conn, subject_id, usage_date) >= limit:
-            return self._guide_ai_quota_response(language, is_member, is_guest=user is None)
+            return self._guide_ai_quota_response(language, is_member, is_guest=user is None,
+                                                 conn=conn, subject_id=subject_id)
 
         # Resolve (but don't yet create) the conversation, and pull recent
         # history. Persisting is deferred until the AI call succeeds, so a hard
@@ -19018,7 +19497,7 @@ class Handler(BaseHTTPRequestHandler):
 
         messages = machi_ai_build_messages(
             user_message=message, language=language, history=history, context_items=context_items,
-            ability=ability,
+            ability=ability, exam_dates_note=machi_ai_exam_dates_note(conn),
         )
         thinking = machi_ai_is_complex(message) or bool(ability and ability.get("force_thinking"))
         # Atomically claim a quota slot BEFORE spending money upstream. The
@@ -19031,7 +19510,8 @@ class Handler(BaseHTTPRequestHandler):
         reserved = self._machi_ai_reserve_usage(conn, subject_id, usage_date, is_member)
         if reserved > limit:
             self._machi_ai_refund_usage(conn, subject_id, usage_date, is_member)
-            return self._guide_ai_quota_response(language, is_member, is_guest=user is None)
+            return self._guide_ai_quota_response(language, is_member, is_guest=user is None,
+                                                 conn=conn, subject_id=subject_id)
         completion = None
         # 会员用 Pro 深度模型,免费用户用基础模型 —— 这是会员的核心价值之一。
         # 若 Pro 模型上游异常,下方 try/except 会优雅降级为 AI_UNAVAILABLE 并退还
@@ -19079,12 +19559,30 @@ class Handler(BaseHTTPRequestHandler):
 
         assistant_content = str(completion.get("content") or "").strip()
         usage = completion.get("usage") or {}
-        # Public sources for the client: type/title/subtitle/route only.
-        client_sources = [
-            {"type": it["type"], "title": it["title"], "subtitle": it.get("subtitle") or "",
-             "route": it.get("route") or {}}
-            for it in context_items
-        ]
+        # Public sources for the client: type/title/subtitle/route (+ 契约 C-4
+        # 导购字段：product 项带 price_points/is_free，faq 项带顶层 id，客户端
+        # 溯源卡据此渲染价签/免费标与 FAQ 跳转)。
+        client_sources = []
+        for it in context_items:
+            route = it.get("route") or {}
+            src: dict[str, Any] = {"type": it["type"], "title": it["title"],
+                                   "subtitle": it.get("subtitle") or "", "route": route}
+            if route.get("kind") == "product":
+                src["price_points"] = 0
+                src["is_free"] = False
+                try:
+                    prow = conn.execute(
+                        "SELECT wallet_price_points, is_free FROM guide_products WHERE slug = ? LIMIT 1",
+                        (str(route.get("slug") or ""),),
+                    ).fetchone()
+                    if prow:
+                        src["price_points"] = int(prow["wallet_price_points"] or 0)
+                        src["is_free"] = bool(prow["is_free"])
+                except Exception:
+                    pass
+            elif route.get("kind") == "faq" and route.get("id"):
+                src["id"] = route["id"]
+            client_sources.append(src)
 
         now = now_iso()
         if conv_row is None:
@@ -19491,10 +19989,8 @@ class Handler(BaseHTTPRequestHandler):
                     "es-motivation-revision", "japan-job-mock-interview",
                 ])
             if any(k in haystack for k in ("jlpt", "n1", "n2", "n3", "n4", "n5", "日语", "日本語")):
-                add(product_slugs, [
-                    "jlpt-n5-n1-roadmap", "jlpt-n3-30-day-plan", "n2-grammar-pack",
-                    "jlpt-n2-20-year-trend-analysis", "jlpt-n1-20-year-trend-analysis",
-                ])
+                # B2-1：常量里只有 published 可购 SKU（启动审计同源核查）。
+                add(product_slugs, list(_GUIDE_JLPT_RECO_SLUGS))
             if any(k in haystack for k in ("life_payment", "arrival", "housing", "rent", "bank", "mobile", "visa", "房租", "水电", "手机", "银行卡", "役所", "签证")):
                 add(product_slugs, [
                     "bank-account-document-checklist", "mobile-plan-comparison",
@@ -19552,7 +20048,7 @@ class Handler(BaseHTTPRequestHandler):
         products: list[dict[str, Any]] = []
         services: list[dict[str, Any]] = []
         for row in rows:
-            payload = localize_guide_product_payload(serialize_guide_product(row), language)
+            payload = localize_guide_product_payload(serialize_guide_product(row, conn=conn), language)
             if bool(row["is_service"]):
                 if len(services) < limit:
                     services.append(payload)
@@ -21692,7 +22188,7 @@ class Handler(BaseHTTPRequestHandler):
         related = [localize_guide_article_payload(serialize_guide_article(r), language) for r in conn.execute(
             "SELECT * FROM guide_articles WHERE country = ? AND status = 'published' AND category_key IN ('study_japan','study_abroad_japan') "
             "ORDER BY is_featured DESC, published_at DESC LIMIT 6", (country,)).fetchall()]
-        products = [localize_guide_product_payload(serialize_guide_product(r), language) for r in conn.execute(
+        products = [localize_guide_product_payload(serialize_guide_product(r, conn=conn), language) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? AND status IN ('published','coming_soon') AND category_key IN ('study_japan','study_abroad_japan','guide_services') "
             "ORDER BY is_coming_soon ASC, sort_order LIMIT 4", (country,)).fetchall()]
         self.send_json({
@@ -21872,7 +22368,7 @@ class Handler(BaseHTTPRequestHandler):
         total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_products WHERE {clause}", params).fetchone()["c"]
         self.send_json({
             "status": "ok", "country": country,
-            "items": [localize_guide_product_payload(serialize_guide_product(r), language) for r in rows],
+            "items": [localize_guide_product_payload(serialize_guide_product(r, conn=conn), language) for r in rows],
             "page": page, "pageSize": page_size, "total": int(total),
         })
 
@@ -21886,7 +22382,7 @@ class Handler(BaseHTTPRequestHandler):
             (id_or_slug, id_or_slug, country)).fetchone()
         if not row:
             raise APIError("资料/服务不存在", 404, "guide_product_not_found")
-        product = localize_guide_product_payload(serialize_guide_product(row), language)
+        product = localize_guide_product_payload(serialize_guide_product(row, conn=conn), language)
         file_count = conn.execute(
             "SELECT COUNT(*) AS c FROM guide_product_files WHERE product_id = ?", (row["id"],)).fetchone()["c"]
         product["fileCount"] = int(file_count)
@@ -22131,7 +22627,7 @@ class Handler(BaseHTTPRequestHandler):
             for row in conn.execute(
                 f"SELECT * FROM guide_products WHERE id IN ({ph})", tuple(product_sources.keys())):
                 d = dict(row)
-                item = localize_guide_product_payload(serialize_guide_product(d), language)
+                item = localize_guide_product_payload(serialize_guide_product(d, conn=conn), language)
                 item["entitlementSource"] = product_sources.get(d["id"], "own")
                 item["grantedAt"] = granted_at.get(d["id"], "")
                 item["hasFile"] = bool(d.get("file_url"))
@@ -22144,7 +22640,7 @@ class Handler(BaseHTTPRequestHandler):
                 d = dict(row)
                 if d["id"] in product_sources:
                     continue
-                item = localize_guide_product_payload(serialize_guide_product(d), language)
+                item = localize_guide_product_payload(serialize_guide_product(d, conn=conn), language)
                 item["entitlementSource"] = "member"
                 item["grantedAt"] = ""
                 item["hasFile"] = bool(d.get("file_url"))
@@ -22234,7 +22730,7 @@ class Handler(BaseHTTPRequestHandler):
             "status": "ok",
             "country": country,
             "membershipActive": membership_active,
-            "items": [localize_guide_product_payload(serialize_guide_product(r), language) for r in rows],
+            "items": [localize_guide_product_payload(serialize_guide_product(r, conn=conn), language) for r in rows],
             "page": page,
             "pageSize": page_size,
             "total": int(total),
@@ -22909,6 +23405,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"status": "member_unlocked", "message": "会员已可直接查看该资料。"})
         if bool(row["is_coming_soon"]) or row["status"] != "published":
             return self.send_json({"status": "coming_soon", "message": "购买功能即将开放，敬请期待。"})
+        # C-1 交付物就绪校验：文件未上传的付费数字商品拒绝新购（免费领取与
+        # 会员已含查看在上面已返回）。客户端据 deliverable_ready 已禁用 CTA，
+        # 这里是兜底；传文件即自动恢复可购。
+        if not guide_product_deliverable_ready(conn, dict(row)):
+            raise APIError("内容准备中，暂不可购买。", 409, "PRODUCT_NOT_READY")
 
         # ---- Machi Points purchase path ----
         if payment_method == "wallet":
@@ -22928,6 +23429,9 @@ class Handler(BaseHTTPRequestHandler):
                     "recommendedTopups": self._wallet_topup_products_payload(conn, "web", ""),
                     "wallet": result["wallet"],
                 }, 402)
+            if result["status"] == "limit_reached":
+                raise APIError("该商品已达每人限购数量。", 409, "purchase_limit_reached",
+                               detail={"purchaseLimit": result.get("purchaseLimit", 0)})
             if result["status"] == "already_owned":
                 return self.send_json({"status": "fulfilled", "message": "你已拥有该资料。",
                                        "wallet": result["wallet"], "alreadyOwned": True})
@@ -22959,6 +23463,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"status": "member_unlocked", "message": "会员已可直接查看该资料。"})
         if bool(row["is_coming_soon"]) or row["status"] != "published":
             return self.send_json({"status": "coming_soon", "message": "购买功能即将开放，敬请期待。"})
+        # C-1：交付物缺失的付费数字商品在创建 Checkout Session 之前就拒绝。
+        if not guide_product_deliverable_ready(conn, dict(row)):
+            raise APIError("内容准备中，暂不可购买。", 409, "PRODUCT_NOT_READY")
         if bool(row["is_price_hidden"]) or bool(row["is_appointment_only"]) or str(row["service_price_type"] or "") in {"appointment_only", "quote_required"}:
             raise APIError("该服务请使用预约咨询提交。", 400, "use_booking")
         amount = int(row["price"] or 0)
@@ -24391,7 +24898,7 @@ class Handler(BaseHTTPRequestHandler):
         total = conn.execute(f"SELECT COUNT(*) AS c FROM guide_products WHERE {clause}", params).fetchone()["c"]
         self.send_json({
             "status": "ok",
-            "items": [serialize_guide_product(r, include_private=True) for r in rows],
+            "items": [serialize_guide_product(r, include_private=True, conn=conn) for r in rows],
             "page": page,
             "pageSize": page_size,
             "total": int(total),
@@ -24650,7 +25157,7 @@ class Handler(BaseHTTPRequestHandler):
             "SELECT * FROM guide_products WHERE id = ? OR slug = ? LIMIT 1", (product_id, product_id)).fetchone()
         if not row:
             raise APIError("资料/服务不存在", 404, "guide_product_not_found")
-        self.send_json({"status": "ok", "product": serialize_guide_product(row, include_private=True)})
+        self.send_json({"status": "ok", "product": serialize_guide_product(row, include_private=True, conn=conn)})
 
     def _guide_validate_product(self, row: dict[str, Any]) -> None:
         """Server-side guardrails shared by create + update. Enforces the
@@ -26959,6 +27466,9 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_register_push_token(conn)
         if path == "/api/devices/push-token" and method == "DELETE":
             return self.api_unregister_push_token(conn)
+        # 游客推送注册（契约 C-3）:无 bearer,以 stableClientId 归属 token。
+        if path == "/api/push/register-guest" and method == "POST":
+            return self.api_register_guest_push_token(conn)
         if path.startswith("/api/devices/") and method == "DELETE":
             return self.api_revoke_device(conn, path.split("/")[3])
 
@@ -27353,6 +27863,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_admin_update_membership_plan(conn, unquote(path[len("/api/admin/membership/plans/"):]))
         if path == "/api/admin/pricing" and method == "GET":
             return self.api_admin_pricing(conn, query)
+        if path == "/api/admin/reports/nightly" and method == "GET":
+            return self.api_admin_nightly_reports(conn, query)
         if path == "/api/admin/memberships/grant" and method == "POST":
             return self.api_admin_grant_membership(conn)
         if path == "/api/admin/memberships/cancel" and method == "POST":
@@ -27423,7 +27935,7 @@ class Handler(BaseHTTPRequestHandler):
         ).fetchall()
         items = []
         for r in rows:
-            payload = localize_guide_product_payload(serialize_guide_product(r), "zh-CN")
+            payload = localize_guide_product_payload(serialize_guide_product(r, conn=conn), "zh-CN")
             payload["summary"] = payload.get("subtitle") or payload.get("summary") or ""
             items.append(payload)
         self.send_json({
@@ -28054,6 +28566,15 @@ class Handler(BaseHTTPRequestHandler):
         if PRODUCTION and not is_sandbox_txn and not app_account_token:
             raise APIError("交易缺少账号凭证", 403, "apple_account_token_required")
         dedup = "apple:" + (txn_id or orig_id or signed[:40])
+        # C-1 交付物就绪校验（兜底——客户端据 deliverable_ready 已禁用购买 CTA）。
+        # 只拦「新购」：同交易重放（恢复购买/webhook 竞速）与已持有者不拦，
+        # 否则商品文件被撤后合法买家的跨设备恢复会被卡死。
+        if not guide_product_deliverable_ready(conn, d):
+            replay = conn.execute(
+                "SELECT 1 FROM guide_orders WHERE payment_provider = 'apple_iap' "
+                "AND provider_trade_no = ? LIMIT 1", (dedup,)).fetchone()
+            if not replay and not user_has_entitlement(conn, user["id"], _guide_product_resource_type(d), str(d.get("id"))):
+                raise APIError("内容准备中，暂不可购买。", 409, "PRODUCT_NOT_READY")
         result = guide_credit_iap_purchase(conn, user["id"], d, provider_trade_no=dedup,
                                            sandbox=is_sandbox_txn)
         self.send_json({
@@ -28939,10 +29460,36 @@ class Handler(BaseHTTPRequestHandler):
         _cache_invalidate("membership_plan")  # price/plan edits show immediately
         self.send_json({"status": "ok", "plan": serialize_plan(fresh)})
 
+    def api_admin_nightly_reports(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
+        """GET /api/admin/reports/nightly?days=N — 近 N 天夜报指标序列（B1-6）。
+        只读 nightly_reports 落库结果（调度器每日 KAIX_REPORT_HOUR_JST 写入），
+        metrics 含契约 C-5 的付费口径拆分；text=1 时附纯文本报告原文。"""
+        self.require_admin(conn)
+        try:
+            days = int(query.get("days") or 14)
+        except (TypeError, ValueError):
+            days = 14
+        days = max(1, min(days, 90))
+        include_text = str(query.get("text") or "") == "1"
+        rows = conn.execute(
+            "SELECT * FROM nightly_reports ORDER BY report_date DESC LIMIT ?", (days,)).fetchall()
+        items = []
+        for r in rows:
+            d = dict(r)
+            try:
+                metrics = json.loads(d.get("metrics_json") or "{}")
+            except Exception:
+                metrics = {}
+            item = {"date": d.get("report_date"), "metrics": metrics, "updatedAt": d.get("updated_at")}
+            if include_text:
+                item["text"] = d.get("report_text") or ""
+            items.append(item)
+        self.send_json({"status": "ok", "days": days, "items": items})
+
     def api_admin_pricing(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
         self.require_admin(conn)
         country = _normalize_country_code(query.get("country") or "jp")
-        products = [serialize_guide_product(r, include_private=True) for r in conn.execute(
+        products = [serialize_guide_product(r, include_private=True, conn=conn) for r in conn.execute(
             "SELECT * FROM guide_products WHERE country = ? ORDER BY is_service ASC, category_key, sort_order, updated_at DESC",
             (country,),
         ).fetchall()]
@@ -32054,6 +32601,10 @@ class Handler(BaseHTTPRequestHandler):
             ),
         )
         attrs = normalize_listing_attributes(listing_type, data.get("attributes"), category)
+        # B1-3：自助勾选的「商家认证」不落库——仅认证卖家可保留该属性
+        # （输出层 serialize_listing 还有同规则的兜底收口）。
+        if "merchant_verified" in attrs and not listing_seller_merchant_verified(conn, user["id"]):
+            attrs.pop("merchant_verified", None)
         for key, (value, value_type) in attrs.items():
             conn.execute(
                 """
@@ -32219,6 +32770,9 @@ class Handler(BaseHTTPRequestHandler):
         if "attributes" in data:
             listing_type = row["type"]
             attrs = normalize_listing_attributes(listing_type, data.get("attributes"), next_category)
+            # B1-3：同创建路径——自封「商家认证」不落库，只认卖家的服务端认证事实。
+            if "merchant_verified" in attrs and not listing_seller_merchant_verified(conn, row["seller_user_id"]):
+                attrs.pop("merchant_verified", None)
             conn.execute("DELETE FROM listing_attributes WHERE listing_id = ?", (listing_id,))
             for key, (value, value_type) in attrs.items():
                 conn.execute(
@@ -32682,6 +33236,17 @@ class Handler(BaseHTTPRequestHandler):
         if not message:
             message = f"我想{action_word}：{title}"
         seller_id = row["seller_user_id"]
+        # B1-4 死信箱路由：seed 卖家（persona/kaizi/seed-bot）永远不会回复，
+        # 把收件人（会话对端 / to_user / 通知与推送）换成官方收件账号，并在
+        # 会话里自动回一条官方确认；listing_inquiries.seller_user_id 仍记录
+        # 真实卖家保持可溯源。真实卖家 inbox_id == seller_id，行为不变。
+        inbox_id = seller_id
+        auto_reply_from = ""
+        if listing_seller_is_dead_inbox(conn, seller_id):
+            official_id = listing_official_inbox_id(conn)
+            if official_id and official_id != user["id"]:
+                inbox_id = official_id
+                auto_reply_from = official_id
         now = now_iso()
         dedupe_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
         source_platform = str(data.get("source_platform") or data.get("sourcePlatform") or self.headers.get("X-Client-Platform") or "web").strip()[:40]
@@ -32706,6 +33271,8 @@ class Handler(BaseHTTPRequestHandler):
             "source_platform": source_platform,
             "locale": locale,
             "success_receipt_title": success_title,
+            # 死信箱路由标记：工作台/报表可据此区分官方代接待的线索。
+            "official_routed": bool(auto_reply_from),
         }
         success_message = f"{success_title}。你可以在工作台查看进度，也可以继续私信补充信息。"
         # Idempotency + atomicity (§7/§19): all of a contact's writes — inquiry,
@@ -32726,7 +33293,7 @@ class Handler(BaseHTTPRequestHandler):
                 (listing_id, user["id"], dedupe_cutoff),
             ).fetchone()
             if dup:
-                conv_id = dup["conversation_id"] or self._conversation_for(conn, user["id"], seller_id)["id"]
+                conv_id = dup["conversation_id"] or self._conversation_for(conn, user["id"], inbox_id)["id"]
                 conn.execute("COMMIT")
                 dup_meta: dict[str, Any] = {}
                 try:
@@ -32761,7 +33328,7 @@ class Handler(BaseHTTPRequestHandler):
             # a write-only form, then records the high-intent inquiry against that
             # thread. The seed message carries the listing + form context so the
             # poster never lands in an empty inbox. See §5–§8 联系/预约/申请闭环.
-            conv = self._conversation_for(conn, user["id"], seller_id)
+            conv = self._conversation_for(conn, user["id"], inbox_id)
             conv_id = conv["id"]
             inquiry_id = str(uuid.uuid4())
             conn.execute(
@@ -32773,7 +33340,7 @@ class Handler(BaseHTTPRequestHandler):
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?, ?)
                 """,
                 (
-                    inquiry_id, listing_id, user["id"], seller_id, user["id"], seller_id,
+                    inquiry_id, listing_id, user["id"], seller_id, user["id"], inbox_id,
                     inquiry_kind, message, contact_value, conv_id,
                     json.dumps({**metadata, "conversation_id": conv_id}, ensure_ascii=False), now, now,
                 ),
@@ -32795,6 +33362,13 @@ class Handler(BaseHTTPRequestHandler):
                 "INSERT INTO messages (id, conversation_id, sender_id, content, created_at, is_read) VALUES (?, ?, ?, ?, ?, 0)",
                 (message_id, conv_id, user["id"], seed_content, now),
             )
+            # 死信箱路由（B1-4）：紧跟种子消息补一条官方自动确认（同一事务、
+            # 同一 DM 播种机制），买家立刻看到「已收到 + 非即时应答」预期。
+            if auto_reply_from:
+                conn.execute(
+                    "INSERT INTO messages (id, conversation_id, sender_id, content, created_at, is_read) VALUES (?, ?, ?, ?, ?, 0)",
+                    (str(uuid.uuid4()), conv_id, auto_reply_from, LISTING_DEAD_INBOX_AUTO_REPLY, now),
+                )
             conn.execute("UPDATE conversations SET updated_at = ? WHERE id = ?", (now, conv_id))
             # Seller bell notification deep-linking to the thread.
             conn.execute(
@@ -32802,11 +33376,11 @@ class Handler(BaseHTTPRequestHandler):
                 INSERT INTO notifications (id, user_id, actor_id, type, target_listing_id, target_conversation_id, content, created_at)
                 VALUES (?, ?, ?, 'listing_inquiry', ?, ?, ?, ?)
                 """,
-                (str(uuid.uuid4()), seller_id, user["id"], listing_id, conv_id, title[:140], now),
+                (str(uuid.uuid4()), inbox_id, user["id"], listing_id, conv_id, title[:140], now),
             )
             conn.execute("COMMIT")
             # After COMMIT — a rolled-back inquiry must never push.
-            server_apns.enqueue(seller_id, ntype="listing_inquiry", actor_id=user["id"],
+            server_apns.enqueue(inbox_id, ntype="listing_inquiry", actor_id=user["id"],
                                 content=title[:140], conversation_id=conv_id)
         except Exception:
             try:
@@ -32816,8 +33390,11 @@ class Handler(BaseHTTPRequestHandler):
             raise
         # Realtime fanout + response happen after COMMIT so the write lock is not
         # held during network I/O.
-        HUB.publish(seller_id, {"type": "message", "conversation_id": conv_id, "message_id": message_id})
-        HUB.publish(seller_id, {"type": "notification", "kind": "listing_inquiry", "listing_id": listing_id, "conversation_id": conv_id})
+        HUB.publish(inbox_id, {"type": "message", "conversation_id": conv_id, "message_id": message_id})
+        HUB.publish(inbox_id, {"type": "notification", "kind": "listing_inquiry", "listing_id": listing_id, "conversation_id": conv_id})
+        if auto_reply_from:
+            # 官方自动确认对买家是一条新私信：推实时事件让会话页立即刷新。
+            HUB.publish(user["id"], {"type": "message", "conversation_id": conv_id})
         self.send_json({
             "ok": True,
             "message": success_message,
@@ -34340,6 +34917,38 @@ class Handler(BaseHTTPRequestHandler):
                 "UPDATE users SET is_merchant = 1, merchant_verified = ?, updated_at = ? WHERE id = ?",
                 (0 if next_status == "needs_review" else int(user.get("merchant_verified") or 0), now, user["id"]),
             )
+        admin_ids: list[str] = []
+        if submit and old_status != next_status and next_status in {"pending", "needs_review"}:
+            # B1-5 申请去黑洞：状态真正进入待审时（重复保存/重复提交不惊扰），
+            # ① 管理员收到站内通知 + APNs（复用 push_campaign 的 notifications +
+            # server_apns.enqueue 管线）；② 申请者收到自动站内信，明示审核周期较长。
+            admin_ids = [
+                r["id"] for r in conn.execute(
+                    "SELECT id FROM users WHERE role = 'admin' AND deleted_at IS NULL"
+                ) if r["id"] != user["id"]
+            ]
+            admin_title = "新的商家入驻申请"
+            city_label = fields["city_slug"] or fields["country_code"] or "-"
+            admin_body = f"{fields['business_name']}（{city_label}）提交了入驻申请，请到管理后台审核。"
+            for admin_id in admin_ids:
+                conn.execute(
+                    "INSERT INTO notifications (id, user_id, actor_id, type, title, content, created_at) "
+                    "VALUES (?, ?, ?, 'system', ?, ?, ?)",
+                    (str(uuid.uuid4()), admin_id, user["id"], admin_title, admin_body, now),
+                )
+            applicant_note = (
+                "你的商家入驻申请已收到。当前审核周期较长，结果会通过站内消息通知你，无需重复提交。\n"
+                "出店申請を受け付けました。現在、審査にお時間をいただいております。結果はアプリ内でお知らせします。再提出は不要です。\n"
+                "Your merchant application has been received. Reviews are currently taking longer than usual — we'll notify you in-app once there's a result. No need to resubmit."
+            )
+            conn.execute(
+                "INSERT INTO notifications (id, user_id, actor_id, type, title, content, created_at) "
+                "VALUES (?, ?, ?, 'system', ?, ?, ?)",
+                (str(uuid.uuid4()), user["id"], user["id"], "入驻申请已收到", applicant_note, now),
+            )
+            for admin_id in admin_ids:
+                # 队列投递、best-effort；无 APNs 配置时自动 no-op。
+                server_apns.enqueue(admin_id, ntype="system", title=admin_title, content=admin_body)
         fresh = dict(conn.execute("SELECT * FROM business_profiles WHERE id = ?", (business_id,)).fetchone())
         fresh_user = dict(conn.execute("SELECT * FROM users WHERE id = ?", (user["id"],)).fetchone())
         self.send_json({
@@ -40769,6 +41378,30 @@ class Handler(BaseHTTPRequestHandler):
         server_apns.register_token(conn, user["id"], token, str(data.get("platform") or "ios"), now_iso())
         self.send_json({"ok": True, "apnsEnabled": server_apns.apns_configured()})
 
+    def api_register_guest_push_token(self, conn: sqlite3.Connection) -> None:
+        """POST /api/push/register-guest（契约 C-3，body {token, stable_client_id,
+        city_slug?}）。无 bearer 的游客把 APNs token 归属到稳定客户端 id——复用
+        machi_ai_guest_key 的隐私处理（user_id = 'guest:'+sha256 前 16，原始设备
+        id 不落库）。city_slug 已知时 run_city_digests 会把该设备纳入城市召回，
+        受同一预算/静音约束。登录后 iOS 调登录版注册端点，register_token 按
+        token 唯一重绑到真实账号，游客行消失（防双发）。"""
+        data = self.read_json()
+        token = str(data.get("token") or "").strip()
+        if not token:
+            raise APIError("缺少推送 token", 400, "missing_token")
+        # 同登录版注册的十六进制强校验（防 curl 配置注入,见 api_register_push_token）。
+        if not re.fullmatch(r"[0-9a-fA-F]{16,200}", token):
+            raise APIError("推送 token 格式无效", 400, "invalid_token")
+        raw_client = (str(data.get("stableClientId") or data.get("stable_client_id") or "").strip()
+                      or str(self.headers.get("X-Machi-Guest-Id") or "").strip())
+        guest_key = machi_ai_guest_key(raw_client)
+        if not guest_key:
+            raise APIError("缺少 stableClientId", 400, "missing_client_id")
+        city_slug = _normalize_city_slug(data.get("citySlug") or data.get("city_slug"))
+        server_apns.register_token(conn, guest_key, token, str(data.get("platform") or "ios"),
+                                   now_iso(), city_slug=city_slug)
+        self.send_json({"ok": True, "apnsEnabled": server_apns.apns_configured()})
+
     def api_unregister_push_token(self, conn: sqlite3.Connection) -> None:
         """Drop a device token (logout / notification opt-out). No auth on
         purpose: logout clears the bearer before this fires, and the APNs
@@ -42278,6 +42911,37 @@ def run_nightly_report(conn: sqlite3.Connection, jst_day: str | None = None) -> 
     # Guide 过期文章数(verified_at + stale_after_days 已过):提示编辑部复核政策类内容。
     stale_articles = guide_stale_article_count(conn, "jp")
 
+    # —— 付费口径(契约 C-5):真金单 = IAP/Stripe 直购订单(+充值流水金额单列);
+    # 币购单单独计数(币无法按来源拆分)。沙盒交易(payment_method '*_sandbox'、
+    # client_type 'ios_sandbox')不计营收。金钱单按 paid_at 归日,币购/免费单
+    # 生来即 fulfilled,按 created_at。
+    money_row = conn.execute(
+        "SELECT COUNT(*) AS c, COALESCE(SUM(price), 0) AS amt FROM guide_orders "
+        "WHERE payment_provider IN ('apple_iap', 'stripe') AND status IN ('paid', 'fulfilled') "
+        "AND payment_method NOT LIKE '%_sandbox' "
+        "AND COALESCE(NULLIF(paid_at, ''), created_at) >= ? AND COALESCE(NULLIF(paid_at, ''), created_at) < ?",
+        (day_start, day_end)).fetchone()
+    points_row = conn.execute(
+        "SELECT COUNT(*) AS c, COALESCE(SUM(price_points), 0) AS pts FROM guide_orders "
+        "WHERE payment_method = 'wallet_points' AND status = 'fulfilled' AND price_points > 0 "
+        "AND created_at >= ? AND created_at < ?",
+        (day_start, day_end)).fetchone()
+    topup_row = conn.execute(
+        "SELECT COUNT(*) AS c, COALESCE(SUM(amount_cents), 0) AS cents FROM wallet_topup_orders "
+        "WHERE status IN ('paid', 'fulfilled') AND COALESCE(client_type, '') <> 'ios_sandbox' "
+        "AND COALESCE(NULLIF(paid_at, ''), created_at) >= ? AND COALESCE(NULLIF(paid_at, ''), created_at) < ?",
+        (day_start, day_end)).fetchone()
+    membership_row = conn.execute(
+        "SELECT COUNT(*) AS c FROM user_memberships WHERE started_at >= ? AND started_at < ?",
+        (day_start, day_end)).fetchone()
+    money_orders = int(money_row["c"] if money_row else 0)
+    money_amount = int(money_row["amt"] if money_row else 0)
+    points_orders = int(points_row["c"] if points_row else 0)
+    points_spent = int(points_row["pts"] if points_row else 0)
+    topup_orders = int(topup_row["c"] if topup_row else 0)
+    topup_amount_cents = int(topup_row["cents"] if topup_row else 0)
+    membership_opens = int(membership_row["c"] if membership_row else 0)
+
     lines = [
         f"Machi 夜间指标 — {day_label}(JST)",
         "",
@@ -42289,7 +42953,13 @@ def run_nightly_report(conn: sqlite3.Connection, jst_day: str | None = None) -> 
         f"Machi AI user 消息: {ai_user_messages} 条" + (f"(⚠ 异常: 超过阈值 {KAIX_REPORT_AI_MSG_ALERT})" if ai_alert else ""),
         f"Guide 过期待复核文章: {stale_articles} 篇" + ("(⚠ 请到后台 内容体检 → 过期队列 处理)" if stale_articles else ""),
         "",
+        f"真金直购单(IAP/Stripe): {money_orders} 单 / 金额 {money_amount:,}",
+        f"币购单: {points_orders} 单 / 消耗 {points_spent:,} 币",
+        f"充值单: {topup_orders} 单 / 金额 ¥{topup_amount_cents // 100:,}",
+        f"会员开通: {membership_opens}",
+        "",
         "口径: 价值行为=预约/发DM/建保存搜索/journey步骤done/发帖/评论/当日AI消息≥2条;已排除种子与官方账号。",
+        "付费口径(C-5): 真金单=IAP/Stripe 直购(排除沙盒),充值单/金额单列;币购单单独计数,不与真金混算。",
     ]
     return {
         "date": day_label,
@@ -42305,13 +42975,38 @@ def run_nightly_report(conn: sqlite3.Connection, jst_day: str | None = None) -> 
         "ai_user_messages": ai_user_messages,
         "ai_alert": ai_alert,
         "stale_articles": stale_articles,
+        # 契约 C-5 付费口径拆分。
+        "money_orders": money_orders,
+        "money_amount": money_amount,
+        "points_orders": points_orders,
+        "points_spent": points_spent,
+        "topup_orders": topup_orders,
+        "topup_amount_cents": topup_amount_cents,
+        "membership_opens": membership_opens,
         "text": "\n".join(lines),
     }
 
 
+def persist_nightly_report(conn: sqlite3.Connection, report: dict[str, Any]) -> None:
+    """把 run_nightly_report 的结果 UPSERT 进 nightly_reports(report_date 主键,
+    重跑覆盖)。落库不依赖 KAIX_REPORT_EMAIL——没有每日趋势,30 天 go/no-go
+    等于盲飞;邮件仍由调用方按原逻辑可选发送。"""
+    metrics = {k: v for k, v in report.items() if k != "text"}
+    now = now_iso()
+    conn.execute(
+        "INSERT INTO nightly_reports (report_date, metrics_json, report_text, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(report_date) DO UPDATE SET metrics_json = excluded.metrics_json, "
+        "report_text = excluded.report_text, updated_at = excluded.updated_at",
+        (report["date"], json.dumps(metrics, ensure_ascii=False), report["text"], now, now),
+    )
+
+
 def start_nightly_report_dispatcher() -> None:
+    # 落库不再以 KAIX_REPORT_EMAIL 为前提(B1-6):没配邮箱也每天算+存,
+    # 邮件仅在配置了收件人时追加发送。
     global _NIGHTLY_REPORT_STARTED
-    if _NIGHTLY_REPORT_STARTED or not KAIX_REPORT_EMAIL:
+    if _NIGHTLY_REPORT_STARTED:
         return
     _NIGHTLY_REPORT_STARTED = True
 
@@ -42322,8 +43017,12 @@ def start_nightly_report_dispatcher() -> None:
             try:
                 with DB_LOCK, db() as conn:
                     report = run_nightly_report(conn)
-                send_email_async(KAIX_REPORT_EMAIL, f"Machi 夜间指标 {report['date']}", report["text"])
-                ACCESS_LOG.info("nightly report sent date=%s hour=%s jst", report["date"], KAIX_REPORT_HOUR_JST)
+                    persist_nightly_report(conn, report)
+                if KAIX_REPORT_EMAIL:
+                    send_email_async(KAIX_REPORT_EMAIL, f"Machi 夜间指标 {report['date']}", report["text"])
+                ACCESS_LOG.info("nightly report stored date=%s hour=%s jst email=%s",
+                                report["date"], KAIX_REPORT_HOUR_JST,
+                                "sent" if KAIX_REPORT_EMAIL else "off")
             except Exception:
                 ERR_LOG.exception("nightly report loop failed")
             time.sleep(90)  # 跨过整分,避免同一时刻重复触发

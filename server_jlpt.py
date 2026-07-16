@@ -14,11 +14,14 @@ Money is never touched here.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from server_errors import APIError
+
+_log = logging.getLogger("kaix.error")
 
 # ── constants ──────────────────────────────────────────────────────────────
 
@@ -51,6 +54,11 @@ EXAM_SAVE_GRACE_SEC = 5
 
 _VALID_SOURCE_KINDS = ("practice", "placement", "review", "exam", "vocab")
 _VALID_VOCAB_STATES = ("learning", "mastered")
+
+# 听力题没有音频媒体时只剩「（音声）…」这类文字占位，混进练习/定级/动态模考
+# 严重损伤专业感（B2-6）。动态抽题一律排除；固定组卷（admin 明确指定的题单）
+# 保留但记告警，绝不因此炸掉一场考试。
+_AUDIO_READY_SQL = "(section <> 'listening' OR COALESCE(audio_media_id, '') <> '')"
 
 
 # ── small helpers ────────────────────────────────────────────────────────────
@@ -142,7 +150,7 @@ def pick_practice_questions(
     section = normalize_section(section)
     count = _clamp(count, PRACTICE_DEFAULT_COUNT, 1, PRACTICE_MAX_COUNT)
 
-    where = ["level = ?", "status = 'published'", "review_status = 'approved'"]
+    where = ["level = ?", "status = 'published'", "review_status = 'approved'", _AUDIO_READY_SQL]
     params: list[Any] = [level]
     if section:
         where.append("section = ?")
@@ -241,6 +249,23 @@ def review_questions(conn: Any, *, user_id: str, level: str, count: int) -> list
     return [public_question(r, reveal_answer=True) for r in rows]
 
 
+def review_pending_count(conn: Any, *, user_id: str) -> int:
+    """How many questions are sitting in the 错题本 (latest attempt wrong).
+    Same derivation as review_questions — the count the review-reminder push
+    (B2-3) quotes must match what the user then sees in the review book."""
+    row = conn.execute(
+        "SELECT COUNT(*) AS c FROM jlpt_questions q JOIN ("
+        "  SELECT question_id, MAX(created_at) AS last_at FROM jlpt_attempts a "
+        "  WHERE a.user_id = ? GROUP BY question_id"
+        ") last ON last.question_id = q.id "
+        "JOIN jlpt_attempts la ON la.question_id = last.question_id "
+        "  AND la.created_at = last.last_at AND la.user_id = ? "
+        "WHERE la.is_correct = 0",
+        (user_id, user_id),
+    ).fetchone()
+    return int(dict(row)["c"] or 0)
+
+
 # ── stats ────────────────────────────────────────────────────────────────────
 
 def stats(conn: Any, *, user_id: str, level: str = "") -> dict[str, Any]:
@@ -299,7 +324,7 @@ def placement_questions(conn: Any, *, is_member: bool) -> list[dict[str, Any]]:
     for lvl in LEVELS:
         rows = conn.execute(
             "SELECT * FROM jlpt_questions WHERE level = ? AND status = 'published' "
-            "AND review_status = 'approved'" + member_clause +
+            "AND review_status = 'approved' AND " + _AUDIO_READY_SQL + member_clause +
             " ORDER BY RANDOM() LIMIT ?",
             (lvl, per_level),
         ).fetchall()
@@ -649,9 +674,27 @@ def _resolve_exam_question_ids(conn: Any, exam: dict[str, Any], *, is_member: bo
         (exam["id"],),
     ).fetchall()
     if fixed:
-        return [dict(r)["question_id"] for r in fixed]
+        q_ids = [dict(r)["question_id"] for r in fixed]
+        # 固定组卷是 admin 的明确题单：无音频听力题不剔除（剔了考卷就残了），
+        # 只告警，等运营补音频或换题（B2-6）。
+        try:
+            placeholders = ",".join("?" * len(q_ids))
+            row = conn.execute(
+                f"SELECT COUNT(*) AS c FROM jlpt_questions WHERE id IN ({placeholders}) "
+                f"AND NOT {_AUDIO_READY_SQL}",
+                tuple(q_ids),
+            ).fetchone()
+            silent = int(dict(row)["c"] or 0)
+            if silent:
+                _log.warning(
+                    "jlpt exam %s fixed question set contains %d listening question(s) without audio media",
+                    exam.get("id"), silent,
+                )
+        except Exception:
+            pass
+        return q_ids
     count = _clamp(exam.get("question_count"), 20, 1, EXAM_DYNAMIC_MAX)
-    where = ["level = ?", "status = 'published'", "review_status = 'approved'"]
+    where = ["level = ?", "status = 'published'", "review_status = 'approved'", _AUDIO_READY_SQL]
     params: list[Any] = [exam.get("level") or "N5"]
     section = normalize_section(exam.get("section"))
     if section:

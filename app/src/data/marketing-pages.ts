@@ -328,7 +328,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     ] }] },
   },
   business: {
-    zh: { eyebrow: "商家合作", title: "把你的店，摆进同城居民每天在看的信息流。", intro: "餐厅、语言学校、活动主办方、本地服务商、招聘方与房产团队，提交真实资料并通过认证后，就能在对应的城市、频道和语言里发布服务卡片、优惠、招聘和活动。", blocks: [{ title: "认证后可以发布", variant: "grid", items: [
+    zh: { eyebrow: "商家合作", title: "把你的店，摆进同城居民每天在看的信息流。", intro: "餐厅、语言学校、活动主办方、本地服务商、招聘方与房产团队，提交真实资料并通过认证后，可以在对应的城市、频道和语言里发布服务卡片、优惠、招聘和活动。目前商家合作以预约洽谈的方式逐步开放，欢迎先留下你的信息。", blocks: [{ title: "认证后可以发布", variant: "grid", items: [
       { title: "服务卡片", body: "展示公司/店铺名称、服务范围、价格区间、联系方式、地址和官网，让用户知道你具体能解决什么问题。" },
       { title: "优惠与活动", body: "发布餐厅优惠、体验课、城市活动、团体报名和限时活动，和真实生活场景放在一起。" },
       { title: "招聘与岗位", body: "发布兼职、全职、实习和本地岗位，补充公司信息、工作内容、薪资范围和联系方式。" },
@@ -342,8 +342,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "先提交资料", body: "发布商家内容前必须填写公司/店铺信息、服务内容、联系方式和服务城市。" },
       { title: "清晰标记商家", body: "认证商家、推广内容和普通用户内容会有明确区分。" },
       { title: "接受复核与下架", body: "虚假服务、误导价格、风险招聘、虚假房源和骚扰行为会被复核、限制或下架。" },
-    ] }] },
-    en: { eyebrow: "For Business", title: "Put your storefront in the feed your neighbors already read.", intro: "Restaurants, language schools, event organizers, local service providers, recruiters, and housing teams submit real business details, pass verification, and then post service cards, offers, hiring, and events in the matching city, channel, and language.", blocks: [{ title: "After verification, businesses can publish", variant: "grid", items: [
+    ] }, { title: "预约洽谈", variant: "contact", body: "请把店铺 / 公司名称、所在城市、想合作的内容和方便的联系方式发送至 hi@machicity.com，我们会尽快回复并安排洽谈。" }] },
+    en: { eyebrow: "For Business", title: "Put your storefront in the feed your neighbors already read.", intro: "Restaurants, language schools, event organizers, local service providers, recruiters, and housing teams submit real business details, pass verification, and then post service cards, offers, hiring, and events in the matching city, channel, and language. Partnerships currently begin with a consultation — leave your details and we will follow up.", blocks: [{ title: "After verification, businesses can publish", variant: "grid", items: [
       { title: "Service cards", body: "Show business name, service scope, price range, contact methods, address and website so users know exactly what you provide." },
       { title: "Offers and events", body: "Publish dining offers, trial classes, city events, group signups and time-limited campaigns in real local-life contexts." },
       { title: "Hiring posts", body: "Post part-time, full-time and internship roles with company details, role content, pay range and contact information." },
@@ -357,8 +357,8 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "Submit details first", body: "Business posts require company or store information, service content, contact methods and target cities." },
       { title: "Clear business labels", body: "Verified businesses, promoted content and user posts are separated clearly." },
       { title: "Review and removal", body: "False services, misleading prices, risky hiring, fake listings and harassment can be reviewed, limited or removed." },
-    ] }] },
-    ja: { eyebrow: "ビジネス", title: "あなたの店を、近所の人が毎日見るフィードの中へ。", intro: "飲食店、語学学校、イベント主催者、地域サービス、採用担当、不動産チームは、実在する事業情報を提出して認証を受けると、対応する街・チャンネル・言語でサービスカード、特典、求人、イベントを掲載できます。", blocks: [{ title: "認証後に掲載できる内容", variant: "grid", items: [
+    ] }, { title: "Book a consultation", variant: "contact", body: "Email hi@machicity.com with your store or company name, city, what you would like to do together, and the best way to reach you. We will follow up to arrange a conversation." }] },
+    ja: { eyebrow: "ビジネス", title: "あなたの店を、近所の人が毎日見るフィードの中へ。", intro: "飲食店、語学学校、イベント主催者、地域サービス、採用担当、不動産チームは、実在する事業情報を提出して認証を受けると、対応する街・チャンネル・言語でサービスカード、特典、求人、イベントを掲載できます。現在、事業者との提携はヒアリングと商談のご予約からご案内しています。まずは情報をお寄せください。", blocks: [{ title: "認証後に掲載できる内容", variant: "grid", items: [
       { title: "サービスカード", body: "会社・店舗名、対応範囲、価格帯、連絡先、住所、公式サイトを表示し、何を提供できるかを明確にします。" },
       { title: "特典とイベント", body: "飲食店の特典、体験レッスン、地域イベント、グループ参加、期間限定企画を掲載できます。" },
       { title: "求人投稿", body: "アルバイト、正社員、インターンの求人に、会社情報、仕事内容、給与目安、連絡先を添えて掲載できます。" },
@@ -372,7 +372,7 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
       { title: "先に情報提出", body: "商用投稿には会社・店舗情報、サービス内容、連絡先、対応都市が必要です。" },
       { title: "事業者表示を明確に", body: "認証事業者、プロモーション、一般投稿は区別して表示します。" },
       { title: "審査と削除", body: "虚偽サービス、誤解を招く価格、危険な求人、偽物件、嫌がらせは審査・制限・削除の対象です。" },
-    ] }] },
+    ] }, { title: "商談のご予約", variant: "contact", body: "店舗・会社名、対象の街、ご希望の内容、ご連絡先を hi@machicity.com までお送りください。担当より折り返し日程をご案内します。" }] },
   },
   safety: {
 	    zh: { eyebrow: "安全", title: "连接可以自然发生，边界必须事先清楚。", intro: "从公开讨论和线下活动，到租房、二手、招聘与本地服务，Machi 把认证、风险提示、举报、屏蔽和审核放进对应的使用场景。这里讲我们如何设计安全；具体怎么做，见安全中心。", blocks: [{ title: "我们如何设计安全", variant: "grid", items: [
@@ -495,9 +495,9 @@ export const marketingPages: Record<MarketingPageId, Record<MarketingLocale, Mar
     ja: { eyebrow: "お問い合わせ", title: "一緒に取り組めそうなことがあれば、お聞かせください。", intro: "地域との連携、取材、事業者のお申し込み、具体的なプロダクトのご意見を受け付けています。", blocks: [{ title: "メール", variant: "contact", body: "hi@machicity.com まで、街、連絡の目的、返信先をできるだけ具体的にご記入ください。通常、2〜3営業日以内に返信いたします。" }, { title: "優先して確認する内容", variant: "list", items: [{ title: "地域との連携", body: "地域団体、学校、コミュニティ、サービス事業者。" }, { title: "事業者との提携", body: "店舗、採用担当、不動産関連事業者、地域サービス。" }, { title: "プロダクトへのご意見", body: "公式サイト、Web 版、アプリで再現できる具体的な問題。" }] }] },
   },
   partners: {
-    zh: { eyebrow: "系统合作", title: "机构、学校、媒体和中介，把内容成批接入城市。", intro: "面向本地社群、学校、服务机构、媒体、城市组织与房产中介：通过合作后台批量导入房源与信息、用联系人管理跟进客户、随时增删改自己的内容，房源和租房信息会同步到 App 里。", blocks: [{ title: "合作方向", variant: "grid", items: [{ title: "内容共建", body: "和本地社群、学校、媒体一起整理城市攻略、新闻、活动和服务目录。" }, { title: "城市共建", body: "共同完善城市频道、精选内容和线下活动的组织。" }, { title: "合作后台工具", body: "批量导入房源与信息、用联系人跟进客户、随时增删改内容，房源同步进 App。" }] }] },
-    en: { eyebrow: "Partners", title: "For teams with many listings: a backend that syncs into the app.", intro: "We work with local communities, schools, service organizations, media, city groups, and housing agencies. Partners use a backend to bulk-import listings, manage contacts and follow-ups, and create or edit their own content, with property and rental listings syncing straight into the app.", blocks: [{ title: "Ways to work together", variant: "grid", items: [{ title: "Content", body: "Build local guides, news, events, and service directories together with communities, schools, and media." }, { title: "City building", body: "Improve city channels, curated content, and the running of local events together." }, { title: "Partner backend", body: "Bulk-import listings, track clients in a contacts CRM, edit your own content, and sync properties into the app." }] }] },
-    ja: { eyebrow: "システム連携", title: "多くの掲載をまとめて管理し、アプリに同期する管理画面。", intro: "地域コミュニティ、学校、サービス事業者、メディア、地域団体、不動産事業者向け。管理画面から物件や情報を一括登録し、顧客を連絡先として管理し、自分のコンテンツを編集できます。物件・賃貸情報はアプリにそのまま同期されます。", blocks: [{ title: "連携のかたち", variant: "grid", items: [{ title: "コンテンツ共同制作", body: "地域コミュニティ、学校、メディアと、街のガイド、ニュース、イベント、サービス一覧を一緒に整えます。" }, { title: "街づくり", body: "街のチャンネル、注目コンテンツ、地域イベントの運営をともに進めます。" }, { title: "パートナー管理画面", body: "物件や情報を一括登録し、連絡先で顧客を管理し、コンテンツを編集できます。物件はアプリに同期されます。" }] }] },
+    zh: { eyebrow: "系统合作", title: "机构、学校、媒体和中介，把内容成批接入城市。", intro: "面向本地社群、学校、服务机构、媒体、城市组织与房产中介：通过合作后台批量导入房源与信息、用联系人管理跟进客户、随时增删改自己的内容，房源和租房信息会同步到 App 里。", blocks: [{ title: "合作方向", variant: "grid", items: [{ title: "内容共建", body: "和本地社群、学校、媒体一起整理城市攻略、新闻、活动和服务目录。" }, { title: "城市共建", body: "共同完善城市频道、精选内容和线下活动的组织。" }, { title: "合作后台工具", body: "批量导入房源与信息、用联系人跟进客户、随时增删改内容，房源同步进 App。" }] }, { title: "预约洽谈", variant: "contact", body: "系统合作请写明机构名称、所在城市与想接入的内容，发送至 hi@machicity.com，我们会安排洽谈并开通合作后台。" }] },
+    en: { eyebrow: "Partners", title: "For teams with many listings: a backend that syncs into the app.", intro: "We work with local communities, schools, service organizations, media, city groups, and housing agencies. Partners use a backend to bulk-import listings, manage contacts and follow-ups, and create or edit their own content, with property and rental listings syncing straight into the app.", blocks: [{ title: "Ways to work together", variant: "grid", items: [{ title: "Content", body: "Build local guides, news, events, and service directories together with communities, schools, and media." }, { title: "City building", body: "Improve city channels, curated content, and the running of local events together." }, { title: "Partner backend", body: "Bulk-import listings, track clients in a contacts CRM, edit your own content, and sync properties into the app." }] }, { title: "Book a consultation", variant: "contact", body: "Email hi@machicity.com with your organization, city, and what you would like to connect. We will follow up to arrange a conversation and set up backend access." }] },
+    ja: { eyebrow: "システム連携", title: "多くの掲載をまとめて管理し、アプリに同期する管理画面。", intro: "地域コミュニティ、学校、サービス事業者、メディア、地域団体、不動産事業者向け。管理画面から物件や情報を一括登録し、顧客を連絡先として管理し、自分のコンテンツを編集できます。物件・賃貸情報はアプリにそのまま同期されます。", blocks: [{ title: "連携のかたち", variant: "grid", items: [{ title: "コンテンツ共同制作", body: "地域コミュニティ、学校、メディアと、街のガイド、ニュース、イベント、サービス一覧を一緒に整えます。" }, { title: "街づくり", body: "街のチャンネル、注目コンテンツ、地域イベントの運営をともに進めます。" }, { title: "パートナー管理画面", body: "物件や情報を一括登録し、連絡先で顧客を管理し、コンテンツを編集できます。物件はアプリに同期されます。" }] }, { title: "商談のご予約", variant: "contact", body: "団体名、対象の街、連携したい内容を hi@machicity.com までお送りください。担当より商談と管理画面のご案内をいたします。" }] },
   },
   "jobs-promotion": {
     zh: { eyebrow: "招聘推广", title: "招同城的人，按语言和在留资格把岗位说清楚。", intro: "发布兼职、全职或实习，标明城市、语言要求、可接受的在留资格和工作内容，让看到的人一眼判断自己合不合适。", blocks: [{ title: "适用岗位", variant: "grid", items: [{ title: "兼职", body: "餐饮、零售、活动和本地服务行业。" }, { title: "全职", body: "本地企业、跨境团队与门店运营岗位。" }, { title: "实习", body: "面向学生和职业起步阶段的人群。" }] }] },

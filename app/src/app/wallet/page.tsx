@@ -6,7 +6,7 @@
 // On return from Stripe (?wallet_session=...) it confirms the top-up so a
 // missed webhook still credits the points. Reuses the kx-* design tokens only.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -53,6 +53,16 @@ export default function WalletPage() {
     enabled: !!user,
     retry: false,
   });
+
+  // Points needed for the purchase the user came from (?requiredPoints=, set by
+  // the product page alongside returnTo). Used to highlight the smallest pack
+  // that covers the shortfall — no card style changes, just a highlight state.
+  const [requiredPoints, setRequiredPoints] = useState(0);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = Number(new URLSearchParams(window.location.search).get("requiredPoints"));
+    if (Number.isFinite(raw) && raw > 0) setRequiredPoints(Math.floor(raw));
+  }, []);
 
   const refresh = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: ["wallet-me"] });
@@ -145,6 +155,14 @@ export default function WalletPage() {
   const wallet = walletQuery.data?.wallet;
   const packs = walletQuery.data?.topupProducts ?? [];
   const entries = walletQuery.data?.recentEntries ?? [];
+  // "最小够用"充值包：余额 + 包内总币 ≥ 本次所需 的最小那档。
+  const pointsDeficit = requiredPoints > 0 ? Math.max(0, requiredPoints - (wallet?.balancePoints ?? 0)) : 0;
+  const recommendedPackKey = useMemo(() => {
+    if (pointsDeficit <= 0) return null;
+    const fits = packs.filter((p) => p.purchasable && (p.totalPoints || p.points) >= pointsDeficit);
+    if (!fits.length) return null;
+    return fits.reduce((min, p) => ((p.totalPoints || p.points) < (min.totalPoints || min.points) ? p : min)).packKey;
+  }, [packs, pointsDeficit]);
   const disclaimer = walletQuery.data?.disclaimer ?? wallet?.disclaimer ?? "";
   // A 404 on /api/wallet/me means the backend predates the wallet (version
   // mismatch) — show "not available", not a generic error. Any other failure is
@@ -243,6 +261,9 @@ export default function WalletPage() {
                   {t("wallet_member_price_note")}
                 </span>
               </div>
+              {recommendedPackKey ? (
+                <p className="text-xs text-kx-subtle">{t("wallet_required_hint").replace("{n}", pointsDeficit.toLocaleString())}</p>
+              ) : null}
               {walletQuery.isLoading ? (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   {[0, 1, 2, 3].map((i) => (
@@ -259,9 +280,14 @@ export default function WalletPage() {
                       type="button"
                       disabled={!pack.purchasable || buying !== null}
                       onClick={() => onTopup(pack)}
-                      className="flex flex-col items-start rounded-xl border border-kx-stroke/60 bg-kx-card p-4 text-left transition hover:border-kx-accent/60 disabled:cursor-not-allowed disabled:opacity-60"
+                      className={`flex flex-col items-start rounded-xl border bg-kx-card p-4 text-left transition hover:border-kx-accent/60 disabled:cursor-not-allowed disabled:opacity-60 ${pack.packKey === recommendedPackKey ? "border-kx-accent ring-1 ring-kx-accent/40" : "border-kx-stroke/60"}`}
                     >
-                      <div className="text-lg font-semibold text-kx-text">{pack.displayPoints}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-lg font-semibold text-kx-text">{pack.displayPoints}</span>
+                        {pack.packKey === recommendedPackKey ? (
+                          <span className="rounded-full bg-kx-accent px-2 py-0.5 text-[11px] font-bold text-white">{t("wallet_pack_fits")}</span>
+                        ) : null}
+                      </div>
                       {pack.subtitle && <div className="text-xs text-kx-subtle">{pack.subtitle}</div>}
                       <div className="mt-2 flex w-full items-center justify-between">
                         <span className="text-base font-medium text-kx-accent">{pack.priceLabel}</span>
@@ -334,6 +360,14 @@ function ledgerLabel(entryType: string, t: ReturnType<typeof useI18n>["t"]): str
       return t("wallet_ledger_adjustment");
     case "membership_bonus":
       return t("wallet_ledger_membership_bonus");
+    case "referral_bonus":
+      return t("ledger_type_referral_bonus");
+    case "refund_debit":
+      return t("ledger_type_refund_debit");
+    case "chargeback_debit":
+      return t("ledger_type_chargeback_debit");
+    case "reversal":
+      return t("ledger_type_reversal");
     default:
       return entryType;
   }

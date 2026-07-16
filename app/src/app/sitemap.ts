@@ -122,6 +122,29 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   // pages (Disallow-ed in robots.ts) and should not compete with the
   // marketing pages for crawl budget or index weight.
 
+  // JLPT prep hub + store (W2-2/W2-3): public SEO surfaces with their own
+  // generateMetadata. No locale alternates — these routes serve all three
+  // languages on one URL by content negotiation (no /{locale} variants).
+  const jlptRoutes = [
+    ["guide/services", "weekly", 0.7],
+    ["guide/jlpt", "weekly", 0.8],
+    ["guide/jlpt/practice", "weekly", 0.7],
+    ["guide/jlpt/vocab", "weekly", 0.7],
+    ["guide/jlpt/exam", "weekly", 0.7],
+    ["guide/jlpt/placement", "weekly", 0.7],
+    ["guide/jlpt/levels/n1", "monthly", 0.7],
+    ["guide/jlpt/levels/n2", "monthly", 0.7],
+    ["guide/jlpt/levels/n3", "monthly", 0.7],
+    ["guide/jlpt/levels/n4", "monthly", 0.7],
+    ["guide/jlpt/levels/n5", "monthly", 0.7],
+  ] as const;
+  const jlptEntries: MetadataRoute.Sitemap = jlptRoutes.map(([route, changeFrequency, priority]) => ({
+    url: make(route),
+    lastModified: now,
+    changeFrequency,
+    priority,
+  }));
+
   // Guide entity detail pages, appended after the static list.
   const guideData = await loadGuideEntities();
   const guideEntries: MetadataRoute.Sitemap = [];
@@ -144,5 +167,5 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
     pushEntities(guideData.articles, "articles");
   }
 
-  return [...baseEntries, ...localeRoots, ...guideEntries];
+  return [...baseEntries, ...localeRoots, ...jlptEntries, ...guideEntries];
 }

@@ -5,8 +5,8 @@ Runs the real server_apns._deliver() with the network stubbed and the JST
 clock pinned. Verifies:
   * quiet hours [22:00, 09:00) JST drop social pushes but transactional
     types (message) still deliver; the window edges behave (08:59 vs 09:00)
-  * daily cap: the 2nd capped push in the same JST day is dropped, and
-    saved_search / system share ONE per-user budget
+  * daily cap (default 2, B1-10): the 3rd capped push in the same JST day is
+    dropped, and saved_search / system share ONE per-user budget
   * transactional and social types are never capped
   * a quiet-hour drop does NOT burn the daily budget (quiet gate runs first)
   * the ledger holds one atomically-incremented row per (user, jst_date)
@@ -102,39 +102,42 @@ def main() -> None:
         server_apns._deliver(_job(uid, "follow"))
         assert len(SENT) == 3, "09:00 JST ends the quiet window"
 
-        # --- daily cap: 2nd capped push same JST day is dropped ---
+        # --- daily cap (default 2, B1-10): 3rd capped push same JST day drops ---
         SENT.clear()
         _at(12)
+        assert server_apns.APNS_DAILY_CAP_PER_USER == 2, "B1-10: default daily cap must be 2"
         server_apns._deliver(_job(uid, "saved_search"))
         assert len(SENT) == 1, "first capped push of the day must deliver"
         server_apns._deliver(_job(uid, "saved_search"))
-        assert len(SENT) == 1, "second capped push same JST day must be dropped"
+        assert len(SENT) == 2, "second capped push fits the default budget of 2"
+        server_apns._deliver(_job(uid, "saved_search"))
+        assert len(SENT) == 2, "third capped push same JST day must be dropped"
         server_apns._deliver(_job(uid, "system"))
-        assert len(SENT) == 1, "saved_search and system share one daily budget"
+        assert len(SENT) == 2, "saved_search and system share one daily budget"
 
         # transactional + social types are exempt from the cap
         server_apns._deliver(_job(uid, "message"))
         server_apns._deliver(_job(uid, "message"))
-        assert len(SENT) == 3, "transactional pushes are never capped"
+        assert len(SENT) == 4, "transactional pushes are never capped"
         server_apns._deliver(_job(uid, "booking"))
         server_apns._deliver(_job(uid, "booking"))
-        assert len(SENT) == 5, "booking pushes are never capped"
+        assert len(SENT) == 6, "booking pushes are never capped"
         server_apns._deliver(_job(uid, "like"))
         server_apns._deliver(_job(uid, "like"))
-        assert len(SENT) == 7, "social pushes are quiet-gated but not capped"
+        assert len(SENT) == 8, "social pushes are quiet-gated but not capped"
         server_apns._deliver(_job(uid, "guide_reminder"))
         server_apns._deliver(_job(uid, "guide_reminder"))
-        assert len(SENT) == 9, "guide_reminder must not consume the shared daily cap"
+        assert len(SENT) == 10, "guide_reminder must not consume the shared daily cap"
 
         # --- ledger: one row per (user, jst_date), every attempt counted ---
         rows = _ledger(conn)
-        assert rows == [{"user_id": uid, "jst_date": "2026-07-02", "count": 3}], \
+        assert rows == [{"user_id": uid, "jst_date": "2026-07-02", "count": 4}], \
             f"unexpected ledger state: {rows}"
 
         # --- budget resets on the next JST day ---
         _at(12, day=3)
         server_apns._deliver(_job(uid, "saved_search"))
-        assert len(SENT) == 10, "budget must reset on the next JST day"
+        assert len(SENT) == 11, "budget must reset on the next JST day"
         assert len(_ledger(conn)) == 2, "next JST day gets its own ledger row"
     finally:
         conn.close()

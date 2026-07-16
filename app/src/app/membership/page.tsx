@@ -29,6 +29,7 @@ const BENEFIT_KEYS = [
   "mem_benefit_badge",
   "mem_benefit_publish",
   "mem_benefit_ai",
+  "mem_benefit_monthly_coins",
   "mem_benefit_resources",
   "mem_benefit_member_price",
   "mem_benefit_coin_price",

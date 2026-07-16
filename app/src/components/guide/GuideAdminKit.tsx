@@ -65,6 +65,7 @@ export const GUIDE_ADMIN_LINKS = [
   { href: "/admin/guide/interview-reviews", label: "面试审核" },
   { href: "/admin/guide/company-reviews", label: "工作评论" },
   { href: "/admin/guide/corrections", label: "纠错" },
+  { href: "/admin/guide/jlpt/import", label: "JLPT 题库导入" },
 ];
 
 const SCHOOL_FIELDS = [

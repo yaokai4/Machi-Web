@@ -87,6 +87,12 @@ export default function MyLibraryPage() {
           <OrdersTab data={q.data?.orders ?? []} tt={tt} />
         )}
 
+        {tab === "orders" ? (
+          <Link href="/my/orders" className="mt-3 block text-sm font-semibold text-kx-accent hover:underline">
+            {tt("会员与服务订单在「我的订单」统一查看 →", "See membership and service orders in My orders →", "会員・サービスの注文は「マイ注文」でまとめて確認 →")}
+          </Link>
+        ) : null}
+
         <p className="mt-4 rounded-kx-lg border border-kx-stroke/50 bg-kx-card p-3 text-xs text-kx-muted">
           {tt("下载失败或需要退款/售后,请前往设置中的反馈与客服。", "For download issues, refunds or support, use Feedback in Settings.", "ダウンロードの不具合・返金・サポートは設定のフィードバックからご連絡ください。")}
         </p>

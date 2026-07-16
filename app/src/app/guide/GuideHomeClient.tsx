@@ -10,6 +10,7 @@ import {
   CategoryCard,
   GuideShell,
   GuideComingSoon,
+  ProductCard,
   ResourceEntryCard,
   useGuideCountry,
 } from "@/components/guide/GuideKit";
@@ -70,6 +71,19 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
       .filter((category): category is NonNullable<typeof category> => Boolean(category));
   }, [home.data?.categories]);
 
+  // 精选商品：后端一直返回 featuredProducts / featuredServices，这里补上「最后一米」的
+  // 渲染。两组都是 GuideProduct，合并去重后复用 ProductCard；空数据不渲染整个 section。
+  const featuredProducts = useMemo(() => {
+    const seen = new Set<string>();
+    return [...(home.data?.featuredProducts || []), ...(home.data?.featuredServices || [])]
+      .filter((product) => {
+        if (!product?.slug || seen.has(product.slug)) return false;
+        seen.add(product.slug);
+        return true;
+      })
+      .slice(0, 6);
+  }, [home.data?.featuredProducts, home.data?.featuredServices]);
+
   if (home.isLoading) {
     return (
       <GuideShell>
@@ -98,6 +112,21 @@ export default function GuideHomeClient({ initialHome }: { initialHome?: GuideHo
     <GuideShell>
       <main className="space-y-8 px-4 py-6 sm:px-7">
         <MachiAIHero locale={locale} />
+
+        {featuredProducts.length ? (
+          <section>
+            <SectionHeading
+              title={t("guide_home_featured_title")}
+              subtitle={t("guide_home_featured_subtitle")}
+              href="/guide/services"
+            />
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {featuredProducts.map((product) => (
+                <ProductCard key={product.slug} product={product} />
+              ))}
+            </div>
+          </section>
+        ) : null}
 
         <section>
           <SectionHeading

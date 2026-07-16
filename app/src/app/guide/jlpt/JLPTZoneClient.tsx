@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { Target, ListChecks, BookOpenCheck, GraduationCap, NotebookPen, CalendarDays, ArrowRight } from "lucide-react";
-import { guide } from "@/lib/guide";
+import { guide, type GuideJlptZone } from "@/lib/guide";
 import {
   GuideShell,
   GuideComingSoon,
@@ -33,7 +33,7 @@ const ROUTE_HREF: Record<string, string> = { guidePlan: "/guide/plan" };
  * Layout: a focused single column (max-w-3xl) so the prep tools read as a calm,
  * premium workspace rather than a stretched full-width dashboard.
  */
-export function JLPTZoneClient() {
+export function JLPTZoneClient({ initialZone }: { initialZone?: GuideJlptZone }) {
   const country = useGuideCountry();
   const { locale } = useI18n();
   const language = appLocaleToGuideLanguage(locale);
@@ -43,6 +43,11 @@ export function JLPTZoneClient() {
   const zone = useQuery({
     queryKey: ["guide", "jlpt-zone", country, language],
     queryFn: () => guide.jlptZone(country, language),
+    // Server-prefetched (anonymous) zone → real SSR first paint for crawlers.
+    // Marked stale (updatedAt 0) so signed-in viewers refetch immediately and
+    // get their streak/countdown, which the anonymous prefetch can't carry.
+    initialData: country === "jp" ? initialZone : undefined,
+    initialDataUpdatedAt: initialZone ? 0 : undefined,
     staleTime: 60_000,
   });
 
@@ -164,6 +169,18 @@ export function JLPTZoneClient() {
               subtitle={t("选择你的目标等级", "目標レベルを選ぶ", "Pick your target level")}
             />
             <JlptLevelLadder t={t} levels={d.levels} />
+            {/* W2-3: static per-level intro pages (合格线/题型构成/词汇量/FAQ). */}
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(["n1", "n2", "n3", "n4", "n5"] as const).map((lv) => (
+                <Link
+                  key={lv}
+                  href={`/guide/jlpt/levels/${lv}`}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] bg-[rgb(var(--kx-living-surface))] px-3.5 py-2 text-xs font-bold text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40 hover:text-[rgb(var(--kx-living-accent))]"
+                >
+                  {t(`${lv.toUpperCase()} 等级介绍`, `${lv.toUpperCase()} とは`, `About ${lv.toUpperCase()}`)}
+                </Link>
+              ))}
+            </div>
           </section>
         ) : null}
 

@@ -5587,6 +5587,114 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_funnel_events_event_time ON funnel_events(event, created_at);
         """,
     ),
+    (
+        113,
+        "city_listings: 清除无真实评论支撑的 seed 假评分（rating_avg/rating_count 归零）",
+        # 2026-07 信任止血（B1-2）：历史 seed 内容包给 city_listings 直写过杜撰的
+        # rating_avg / rating_count（4.9×「88 条」这类），而 listing_reviews 里没有
+        # 任何真实评论——详情页出现「4.9·88 条」与「暂无点评」同屏。把没有已发布
+        # 真实评论支撑的评分聚合清零；有真实评论的行由 recompute_listing_rating
+        # 维护，不动。种子源头（seed_listings_packs / ensure_city_listing_seed /
+        # import_premium_listings）已同步删除评分写入防回归。幂等：清零后不再命中
+        # WHERE 条件，重复执行是 no-op。SQLite / Postgres 通用。
+        """
+        UPDATE city_listings
+           SET rating_avg = 0, rating_count = 0
+         WHERE (rating_count > 0 OR rating_avg > 0)
+           AND id NOT IN (
+                SELECT listing_id FROM listing_reviews WHERE status = 'published'
+           );
+        """,
+    ),
+    (
+        114,
+        "nightly_reports: 夜报指标落库（含契约 C-5 付费口径），趋势可查",
+        # 2026-07 B1-6：run_nightly_report 的结果从「仅邮件」升级为落表——没有
+        # 每日趋势，30 天 go/no-go 等于盲飞。report_date 为 JST 日（主键，重跑
+        # UPSERT 覆盖）；metrics_json 存全部结构化指标（含真金直购单/币购单/
+        # 充值单/会员开通的 C-5 拆分）；report_text 存纯文本报告原文。落库不依赖
+        # KAIX_REPORT_EMAIL（邮件仍按原逻辑可选）。SQLite / Postgres 通用。
+        """
+        CREATE TABLE IF NOT EXISTS nightly_reports (
+            report_date TEXT PRIMARY KEY,
+            metrics_json TEXT NOT NULL DEFAULT '{}',
+            report_text TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        """,
+    ),
+    (
+        115,
+        "device_push_tokens: 游客推送归属（city_slug + digest_sent_at，契约 C-3）",
+        # 2026-07 B1-9：游客授了推送权限却收不到任何推送。游客 token 以
+        # user_id='guest:'+sha256(stableClientId)[:16]（复用 machi_ai_guest_key
+        # 的隐私处理，原始设备 id 不落库）写进同一张表；city_slug 让
+        # run_city_digests 能把「城市已知的游客」纳入城市召回；digest_sent_at
+        # 是游客侧的 20h 防重闸（登录用户走 notifications 表的
+        # _digest_recently_sent，游客不能写 notifications——user_id 有外键）。
+        # 登录后同 token 经 register_token 的 DELETE+INSERT 重绑到真实账号，
+        # 游客行消失，天然防双发。纯 ADD COLUMN，SQLite / Postgres 通用。
+        """
+        ALTER TABLE device_push_tokens ADD COLUMN city_slug TEXT NOT NULL DEFAULT '';
+        ALTER TABLE device_push_tokens ADD COLUMN digest_sent_at TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        116,
+        "jlpt_study_reminders: 学习类提醒共享 sent-ledger（断签 B2-2 / 错题复习 B2-3）",
+        # 2026-07 B2-2/B2-3：断签提醒与错题复习提醒共享「每用户每 JST 日学习类
+        # 提醒 ≤1 条」的约束——主键 (user_id, jst_date) 就是这条约束本身，两个
+        # 调度器发送前都先 INSERT 认领，冲突即让位（防重 + 防同日双发一次解决）。
+        # kind 记录当天实际发出的是哪类（streak/review），复盘可查。推送本身走
+        # ntype='guide_reminder'（不占每日预算、受 JST 静音保护）。SQLite /
+        # Postgres 通用。
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_study_reminders (
+            user_id TEXT NOT NULL,
+            jst_date TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, jst_date)
+        );
+        """,
+    ),
+    (
+        117,
+        "guide_product_relations: 清除 jlpt 旅程的旧 seed 悬空推荐（B2-1）",
+        # 2026-07 B2-1：旧代码 seed 给 jlpt 旅程挂了 4 个 coming_soon 占位 SKU
+        # （*-20-year-trend-analysis / *-original-mock-20），推荐位点进去买不了。
+        # 仅当该旅程的推荐仍完全落在旧 seed 集合内（即 admin 从未增改过）才整组
+        # 删除；删空后 SQLite 启动路径的 _guide_seed_product_relations 会用新的
+        # published SKU 常量立即重播。admin 手工加过任何商品则一行不动（策展
+        # 优先）。幂等：重播后的新 slug 不在旧集合内，条件不再命中。
+        # SQLite / Postgres 通用（Postgres 部署需随后重跑关系 seed 或在后台补挂）。
+        # 先 CREATE IF NOT EXISTS（与 ensure_guide_schema_extensions / 迁移 58 同
+        # DDL）：SQLite 侧该表由启动扩展在迁移之后才建，全新库跑到这里表还不存在。
+        """
+        CREATE TABLE IF NOT EXISTS guide_product_relations (
+            id TEXT PRIMARY KEY,
+            product_id TEXT NOT NULL,
+            plan_type TEXT NOT NULL DEFAULT '',
+            todo_type TEXT NOT NULL DEFAULT '',
+            journey_key TEXT NOT NULL DEFAULT '',
+            step_key TEXT NOT NULL DEFAULT '',
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        DELETE FROM guide_product_relations
+         WHERE journey_key = 'jlpt'
+           AND NOT EXISTS (
+                SELECT 1 FROM guide_product_relations r2
+                JOIN guide_products p2 ON p2.id = r2.product_id
+                WHERE r2.journey_key = 'jlpt'
+                  AND p2.slug NOT IN (
+                        'jlpt-n2-20-year-trend-analysis', 'jlpt-n1-20-year-trend-analysis',
+                        'jlpt-n5-n1-roadmap', 'jlpt-n2-original-mock-20', 'jlpt-n1-original-mock-20'
+                  )
+           );
+        """,
+    ),
 ]
 
 

@@ -432,6 +432,70 @@ def main() -> None:
         assert core and core["hasPractice"] is True and core["hasVocab"] is True
         assert core["hasExams"] is True
 
+        # 17) B2-6 听力止损过滤：无音频媒体的听力题绝不进练习/定级/动态模考
+        #     （「（音声）…」文字占位毁专业感）；固定组卷保留、只告警不炸。
+        silent_id = str(uuid.uuid4())   # listening, 无 audio_media_id
+        voiced_id = str(uuid.uuid4())   # listening, 有 audio_media_id
+        now = server.now_iso()
+        for qid, media, stem in ((silent_id, "", "无音频听力题"), (voiced_id, "media-audio-1", "有音频听力题")):
+            conn.execute(
+                "INSERT INTO jlpt_questions (id, level, section, question_type, stem, passage, audio_media_id, "
+                "choices_json, answer_index, explanation, difficulty, tags, is_member_only, source, "
+                "review_status, status, sort_order, created_at, updated_at) "
+                "VALUES (?, 'N1', 'listening', 'single', ?, '', ?, ?, 0, '解析', 3, '', 0, 'original', "
+                "'approved', 'published', 0, ?, ?)",
+                (qid, stem, media, json.dumps(["A", "B", "C", "D"]), now, now),
+            )
+        conn.commit()
+        # Practice: only the audio-backed listening question is sampled.
+        cap = _get(uid, "api_guide_jlpt_practice", {"level": "N1", "section": "listening", "count": "30"})
+        pids = {q["id"] for q in cap["data"]["questions"]}
+        assert voiced_id in pids and silent_id not in pids, pids
+        assert all(q["audioMediaId"] for q in cap["data"]["questions"]), "silent listening leaked into practice"
+        # Placement ladder never contains a silent listening question.
+        for q in jlpt.placement_questions(conn, is_member=False):
+            assert q["section"] != "listening" or q["audioMediaId"], "silent listening leaked into placement"
+        # Dynamic mock exam sampling excludes silent, keeps audio-backed.
+        cap = _post(admin, "api_admin_jlpt_exam_upsert", {"exam": {
+            "id": "dyn-n1", "level": "N1", "title": "N1 动态模考", "questionCount": 30,
+        }})
+        assert cap["status"] == 200, cap
+        conn.commit()
+        cap = _post(uid, "api_guide_jlpt_exam_start", {"examId": "dyn-n1"})
+        assert cap["status"] == 200, cap
+        served = cap["data"]["questions"]
+        assert all(q["section"] != "listening" or q["audioMediaId"] for q in served), "silent listening leaked into dynamic exam"
+        assert any(q["id"] == voiced_id for q in served), "audio-backed listening should stay eligible"
+        # Fixed set containing a silent listening question still serves in full
+        # (admin's explicit paper — warn, never mutilate).
+        cap = _post(admin, "api_admin_jlpt_exam_upsert", {"exam": {
+            "id": "fixed-listen", "level": "N1", "title": "固定卷含无音频听力",
+            "questionIds": [silent_id, voiced_id],
+        }})
+        assert cap["status"] == 200, cap
+        conn.commit()
+        cap = _post(uid, "api_guide_jlpt_exam_start", {"examId": "fixed-listen"})
+        assert cap["status"] == 200, cap
+        assert [q["id"] for q in cap["data"]["questions"]] == [silent_id, voiced_id], "fixed paper must serve as authored"
+
+        # 18) review_pending_count（B2-3 提醒的数字口径）与错题本推导一致。
+        rev_uid = _make_user(conn); conn.commit()
+        qrows = [dict(r) for r in conn.execute(
+            "SELECT * FROM jlpt_questions WHERE status='published' AND review_status='approved' "
+            "AND is_member_only=0 LIMIT 6"
+        ).fetchall()]
+        assert len(qrows) == 6
+        for q in qrows:
+            wrong_sel = (int(q["answer_index"]) + 1) % len(json.loads(q["choices_json"]))
+            jlpt.record_attempt(conn, user_id=rev_uid, question=q, selected_index=wrong_sel, now=now)
+        conn.commit()
+        assert jlpt.review_pending_count(conn, user_id=rev_uid) == 6
+        # Fixing one (latest attempt correct) removes it from the pending count.
+        jlpt.record_attempt(conn, user_id=rev_uid, question=qrows[0],
+                            selected_index=int(qrows[0]["answer_index"]), now=server.now_iso())
+        conn.commit()
+        assert jlpt.review_pending_count(conn, user_id=rev_uid) == 5
+
         print("OK")
     finally:
         conn.close()

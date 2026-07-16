@@ -51,16 +51,20 @@ export function levelDifficulty(level: string): number {
 }
 
 /** The compliance line every JLPT study page must carry (original/imported,
- *  never unauthorized past-paper text). */
-export function JlptDisclaimer({ t, note }: { t: Tri; note?: string }) {
+ *  never unauthorized past-paper text). `t` is optional so server components
+ *  (which can't pass functions across the RSC boundary, e.g. the static
+ *  levels pages) can supply a pre-resolved `note` string instead. */
+export function JlptDisclaimer({ t, note }: { t?: Tri; note?: string }) {
   return (
     <p className="mt-7 rounded-2xl border border-[rgb(var(--kx-living-ink))]/[0.06] bg-[rgb(var(--kx-living-ink))]/[0.03] px-4 py-3 text-[11px] font-medium leading-relaxed text-[rgb(var(--kx-living-muted))]">
       {note ||
-        t(
-          "Machi 的 JLPT 题库为原创/授权导入内容,不含未授权官方历年真题原文;请以 JLPT 官方最新公告为准。",
-          "Machi の JLPT 問題はオリジナル/許諾済みの導入コンテンツで、無断の公式過去問原文は含みません。最新は JLPT 公式でご確認ください。",
-          "Machi's JLPT question bank is original or licensed-import content — never unauthorized official past-paper text. Verify with official JLPT announcements.",
-        )}
+        (t
+          ? t(
+              "Machi 的 JLPT 题库为原创/授权导入内容,不含未授权官方历年真题原文;请以 JLPT 官方最新公告为准。",
+              "Machi の JLPT 問題はオリジナル/許諾済みの導入コンテンツで、無断の公式過去問原文は含みません。最新は JLPT 公式でご確認ください。",
+              "Machi's JLPT question bank is original or licensed-import content — never unauthorized official past-paper text. Verify with official JLPT announcements.",
+            )
+          : "Machi 的 JLPT 题库为原创/授权导入内容,不含未授权官方历年真题原文;请以 JLPT 官方最新公告为准。")}
     </p>
   );
 }

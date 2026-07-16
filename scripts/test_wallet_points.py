@@ -41,18 +41,19 @@ def _make_user(conn, handle: str | None = None) -> str:
 
 
 def _make_product(conn, *, wallet_eligible=1, wallet_price=300, member_price=0,
-                  is_free=0, status="published", coming=0, title="测试资料") -> dict:
+                  is_free=0, status="published", coming=0, title="测试资料",
+                  purchase_limit=0, file_url="") -> dict:
     pid = str(uuid.uuid4())
     now = server.now_iso()
     conn.execute(
         "INSERT INTO guide_products (id, title, slug, category_key, product_type, price, currency, "
         "is_free, is_paid, is_digital, is_service, is_coming_soon, status, wallet_eligible, "
         "wallet_price_points, member_wallet_price_points, fulfillment_type, entitlement_type, "
-        "platform_policy, created_at, updated_at) "
+        "platform_policy, points_purchase_limit, file_url, created_at, updated_at) "
         "VALUES (?, ?, ?, 'guide_services', 'pdf_material', 0, 'CNY', ?, 1, 1, 0, ?, ?, ?, ?, ?, "
-        "'digital_unlock', 'guide_product', 'digital_iap_required', ?, ?)",
+        "'digital_unlock', 'guide_product', 'digital_iap_required', ?, ?, ?, ?)",
         (pid, title, "p-" + pid[:8], is_free, coming, status, wallet_eligible,
-         wallet_price, member_price, now, now),
+         wallet_price, member_price, purchase_limit, file_url, now, now),
     )
     return dict(conn.execute("SELECT * FROM guide_products WHERE id = ?", (pid,)).fetchone())
 
@@ -424,6 +425,83 @@ class WalletFoundationTests(unittest.TestCase):
         server.sync_user_membership_cache(self.conn, uid)
         r3 = server.grant_membership_monthly_bonus(self.conn, uid)
         self.assertFalse(r3["applied"])
+
+    # 13. points_purchase_limit (B1-8): limit reached blocks a re-purchase with
+    # zero wallet movement; the check fires before any debit
+    def test_points_purchase_limit_enforced(self):
+        uid = _make_user(self.conn)
+        server.wallet_post_ledger(self.conn, uid, "topup", 1000)
+        prod = _make_product(self.conn, wallet_price=300, purchase_limit=1)
+        r1 = server.wallet_debit_for_product(self.conn, uid, prod)
+        self.assertEqual(r1["status"], "fulfilled")
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 700)
+        # Admin revokes the entitlement WITHOUT refunding the order (e.g. abuse
+        # handling) — the fulfilled order still counts against the limit, so a
+        # second buy is refused and no points move.
+        server.revoke_user_entitlement(self.conn, uid, "guide_product", prod["id"], reason="test")
+        r2 = server.wallet_debit_for_product(self.conn, uid, prod)
+        self.assertEqual(r2["status"], "limit_reached")
+        self.assertEqual(r2["purchaseLimit"], 1)
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 700)
+        n = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_orders WHERE user_id = ? AND product_id = ?",
+            (uid, prod["id"])).fetchone()
+        self.assertEqual(dict(n)["c"], 1)
+
+    # 13b. a refunded order frees its limit slot (interacts with the concurrent
+    # entitlement-race auto-refund, which also flips the order to 'refunded')
+    def test_points_purchase_limit_refund_frees_slot(self):
+        uid = _make_user(self.conn)
+        server.wallet_post_ledger(self.conn, uid, "topup", 1000)
+        prod = _make_product(self.conn, wallet_price=300, purchase_limit=1)
+        r1 = server.wallet_debit_for_product(self.conn, uid, prod)
+        self.assertEqual(r1["status"], "fulfilled")
+        server.refund_guide_points_order(self.conn, r1["orderId"], reason="test")
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 1000)
+        # The refunded order no longer counts — the user may buy again.
+        r2 = server.wallet_debit_for_product(self.conn, uid, prod)
+        self.assertEqual(r2["status"], "fulfilled")
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 700)
+
+    # 13c. limit=0 means unlimited (the pre-B1-8 behaviour is preserved)
+    def test_points_purchase_limit_zero_unlimited(self):
+        uid = _make_user(self.conn)
+        server.wallet_post_ledger(self.conn, uid, "topup", 1000)
+        prod = _make_product(self.conn, wallet_price=300, purchase_limit=0)
+        r1 = server.wallet_debit_for_product(self.conn, uid, prod)
+        self.assertEqual(r1["status"], "fulfilled")
+        server.revoke_user_entitlement(self.conn, uid, "guide_product", prod["id"], reason="test")
+        r2 = server.wallet_debit_for_product(self.conn, uid, prod)
+        self.assertEqual(r2["status"], "fulfilled")
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], 400)
+
+    # 14. deliverable_ready (契约 C-1): a paid digital product with no file and
+    # no guide_product_files row is not ready; a file (either column or the
+    # multi-file table) or free/zero-price status makes it ready
+    def test_deliverable_ready_flag(self):
+        prod = _make_product(self.conn, wallet_price=300)  # paid, no file
+        self.assertFalse(server.guide_product_deliverable_ready(self.conn, prod))
+        s = server.serialize_guide_product(prod, conn=self.conn)
+        self.assertFalse(s["deliverable_ready"])
+        self.assertFalse(s["deliverableReady"])
+        # file_url set → ready
+        with_file = _make_product(self.conn, wallet_price=300, file_url="/media/x.pdf")
+        self.assertTrue(server.guide_product_deliverable_ready(self.conn, with_file))
+        self.assertTrue(server.serialize_guide_product(with_file, conn=self.conn)["deliverable_ready"])
+        # a guide_product_files row alone also counts
+        via_table = _make_product(self.conn, wallet_price=300)
+        self.conn.execute(
+            "INSERT INTO guide_product_files (id, product_id, file_url, file_name, file_type, file_size, "
+            "download_limit, created_at) VALUES (?, ?, '/media/y.pdf', 'y.pdf', 'pdf', 1, 0, ?)",
+            (str(uuid.uuid4()), via_table["id"], server.now_iso()))
+        self.assertTrue(server.guide_product_deliverable_ready(self.conn, via_table))
+        # free products and services are out of scope (免费领取不拦)
+        free = _make_product(self.conn, wallet_eligible=0, wallet_price=0, is_free=1)
+        self.assertTrue(server.guide_product_deliverable_ready(self.conn, free))
+        svc = _make_product(self.conn, wallet_price=300)
+        self.conn.execute("UPDATE guide_products SET is_service = 1 WHERE id = ?", (svc["id"],))
+        svc = dict(self.conn.execute("SELECT * FROM guide_products WHERE id = ?", (svc["id"],)).fetchone())
+        self.assertTrue(server.guide_product_deliverable_ready(self.conn, svc))
 
     # 8. insufficient balance → no order, no entitlement, no charge
     def test_purchase_insufficient(self):

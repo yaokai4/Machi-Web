@@ -2332,6 +2332,7 @@ export function MyOrdersPage() {
     queryFn: () => api.myOrders(),
   });
   const items = query.data?.items || [];
+  const guideOrderCount = (query.data?.guide_orders || []).length;
   return (
     <AppShell requireAuth wide right={null}>
       <main className="mx-auto max-w-5xl px-3 py-4 sm:px-4">
@@ -2348,6 +2349,18 @@ export function MyOrdersPage() {
             <section className="rounded-3xl border border-kx-stroke/50 bg-kx-card px-5 py-9 text-center">
               <p className="text-base font-black text-kx-text">暂无订单</p>
               <p className="mt-2 text-sm font-semibold text-kx-muted">购买会员、Guide 资料或提交服务订单后会显示在这里。</p>
+            </section>
+          ) : null}
+          {!query.isLoading && !query.isError ? (
+            <section className="rounded-2xl border border-kx-stroke/50 bg-kx-card p-4 shadow-kx-card">
+              <p className="text-sm font-black text-kx-text">已购资料与解锁内容</p>
+              <p className="mt-1 text-xs font-semibold text-kx-muted">
+                {guideOrderCount > 0 ? `你有 ${guideOrderCount} 笔 Guide 订单，` : ""}已购资料的阅读与下载在「我的资料库」。
+              </p>
+              <Link href="/guide/my-library" className="mt-2 inline-flex items-center gap-1 text-sm font-black text-kx-accent hover:underline">
+                前往我的资料库
+                <ChevronRight className="h-3.5 w-3.5" />
+              </Link>
             </section>
           ) : null}
         </div>
@@ -3886,6 +3899,7 @@ function GuideAppointmentCard({ item }: { item: Record<string, unknown> }) {
 function OrderCard({ item }: { item: Record<string, unknown> }) {
   const source = cleanListingText(item.source) || "order";
   const title = cleanListingText(item.title) || (source === "membership" ? "Machi 认证会员" : "Machi Guide 订单");
+  const productSlug = cleanListingText(item.product_slug) || cleanListingText(item.productSlug);
   const orderNo = cleanListingText(item.order_no) || cleanListingText(item.orderNo);
   const status = cleanListingText(item.status) || "pending";
   const created = cleanListingText(item.created_at) || cleanListingText(item.createdAt);
@@ -3920,6 +3934,20 @@ function OrderCard({ item }: { item: Record<string, unknown> }) {
         {created ? `创建于 ${new Date(created).toLocaleString("zh-CN")}` : "创建时间待同步"}
         {paid ? ` · 支付于 ${new Date(paid).toLocaleString("zh-CN")}` : ""}
       </p>
+      {source === "guide" ? (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {productSlug ? (
+            <Link href={`/guide/products/${encodeURIComponent(productSlug)}`} className="inline-flex h-9 items-center justify-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-text transition hover:border-kx-stroke">
+              查看资料
+              <ChevronRight className="h-3.5 w-3.5" />
+            </Link>
+          ) : null}
+          <Link href="/guide/my-library" className="inline-flex h-9 items-center justify-center gap-1 rounded-full border border-kx-stroke/60 bg-kx-card px-3 text-xs font-black text-kx-text transition hover:border-kx-stroke">
+            我的资料库
+            <ChevronRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+      ) : null}
     </section>
   );
 }

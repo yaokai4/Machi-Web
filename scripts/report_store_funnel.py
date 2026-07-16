@@ -5,6 +5,9 @@
 purchase_success / membership_view）+ guide_orders + wallet_topup_orders。
 判据（MACHI_商城化改造与内容规划_2026-07-16.md §七）：
   30 天付费订单 ≥ 5 单，否则暂停 Phase 2、先复盘供给/定价/信任。
+付费口径（契约 C-5）：**真金单** = IAP/Stripe 直购订单（判据以此计），
+充值单/金额单列；**币购单**单独计数——币无法按来源拆分（充值/邀请/会员赠币
+混在一个余额里），绝不与真金混算。
 
 Run:  cd web && python3 scripts/report_store_funnel.py [--days 30] [--db kaix.db]
 """
@@ -53,15 +56,24 @@ def main() -> None:
         for r in rows:
             print(f"    {r['props_json'][:60]:<60} {r['c']}")
 
-    # 订单侧真相（排除沙盒）
+    # 订单侧真相（排除沙盒），按契约 C-5 拆分：真金单 vs 币购单。
     paid_wallet = one(
         "SELECT COUNT(*) FROM guide_orders WHERE payment_method = 'wallet_points' "
+        "AND status = 'fulfilled' AND price_points > 0 AND created_at >= ?", since)
+    wallet_points_spent = one(
+        "SELECT COALESCE(SUM(price_points),0) FROM guide_orders WHERE payment_method = 'wallet_points' "
         "AND status = 'fulfilled' AND price_points > 0 AND created_at >= ?", since)
     paid_iap = one(
         "SELECT COUNT(*) FROM guide_orders WHERE payment_provider = 'apple_iap' "
         "AND status = 'fulfilled' AND payment_method != 'apple_iap_sandbox' AND created_at >= ?", since)
+    iap_amount = one(
+        "SELECT COALESCE(SUM(price),0) FROM guide_orders WHERE payment_provider = 'apple_iap' "
+        "AND status = 'fulfilled' AND payment_method != 'apple_iap_sandbox' AND created_at >= ?", since)
     paid_stripe = one(
         "SELECT COUNT(*) FROM guide_orders WHERE payment_provider = 'stripe' "
+        "AND status IN ('paid','fulfilled') AND created_at >= ?", since)
+    stripe_amount = one(
+        "SELECT COALESCE(SUM(price),0) FROM guide_orders WHERE payment_provider = 'stripe' "
         "AND status IN ('paid','fulfilled') AND created_at >= ?", since)
     free_unlocks = one(
         "SELECT COUNT(*) FROM guide_orders WHERE status = 'fulfilled' AND price_points = 0 "
@@ -73,16 +85,19 @@ def main() -> None:
         "SELECT COALESCE(SUM(amount_cents),0)/100 FROM wallet_topup_orders WHERE status IN ('paid','fulfilled') "
         "AND COALESCE(client_type,'') <> 'ios_sandbox' AND created_at >= ?", since)
 
-    paid_total = paid_wallet + paid_iap + paid_stripe
-    print(f"\n  付费订单（订单表真相，排除沙盒）：")
-    print(f"    币购 {paid_wallet} · 单品IAP {paid_iap} · Stripe {paid_stripe} → 合计 {paid_total}")
-    print(f"    免费领取 {free_unlocks} · 充值订单 {topups}（¥{topup_jpy:,} JPY）")
+    real_money_orders = paid_iap + paid_stripe
+    real_money_amount = iap_amount + stripe_amount
+    print(f"\n  付费订单（订单表真相，排除沙盒，口径=契约 C-5）：")
+    print(f"    真金单：单品IAP {paid_iap} · Stripe {paid_stripe} → 合计 {real_money_orders}（金额 {real_money_amount:,}）")
+    print(f"    充值单：{topups}（¥{topup_jpy:,} JPY）")
+    print(f"    币购单：{paid_wallet}（消耗 {wallet_points_spent:,} 币，来源不可拆分，不并入真金）")
+    print(f"    免费领取 {free_unlocks}")
 
-    print(f"\n== 判据：30 天付费订单 ≥ {KILL_CRITERIA_PAID_ORDERS} ==")
-    if paid_total >= KILL_CRITERIA_PAID_ORDERS:
-        print(f"  ✅ 达标（{paid_total} 单）——可以启动 Phase 2 会员编入")
+    print(f"\n== 判据：30 天真金单（IAP/Stripe 直购） ≥ {KILL_CRITERIA_PAID_ORDERS} ==")
+    if real_money_orders >= KILL_CRITERIA_PAID_ORDERS:
+        print(f"  ✅ 达标（{real_money_orders} 单）——可以启动 Phase 2 会员编入")
     else:
-        print(f"  ❌ 未达标（{paid_total} 单）——暂停 Phase 2，先复盘：")
+        print(f"  ❌ 未达标（{real_money_orders} 单）——暂停 Phase 2，先复盘：")
         sv = events.get("store_view", (0, 0))[0]
         kv = events.get("sku_view", (0, 0))[0]
         ps = events.get("purchase_start", (0, 0))[0]

@@ -53,7 +53,9 @@ APNS_QUIET_HOURS_ENABLED = (os.environ.get("APNS_QUIET_HOURS_ENABLED") or "1").s
 APNS_QUIET_START_HOUR = int((os.environ.get("APNS_QUIET_START_HOUR") or "22").strip() or "22")
 APNS_QUIET_END_HOUR = int((os.environ.get("APNS_QUIET_END_HOUR") or "9").strip() or "9")
 APNS_DAILY_CAP_ENABLED = (os.environ.get("APNS_DAILY_CAP_ENABLED") or "1").strip() != "0"
-APNS_DAILY_CAP_PER_USER = int((os.environ.get("APNS_DAILY_CAP_PER_USER") or "1").strip() or "1")
+# 默认 2（2026-07 B1-10）：saved_search / system / follow_digest / city_digest
+# 四类召回抢每日 1 个名额互相挤兑,提到 2 缓解;env 可覆盖。
+APNS_DAILY_CAP_PER_USER = int((os.environ.get("APNS_DAILY_CAP_PER_USER") or "2").strip() or "2")
 
 # Japan-market product: recipient-local night == JST night.
 _JST = timezone(timedelta(hours=9))
@@ -485,9 +487,14 @@ def _post_one(device_token: str, payload: str, jwt: str, *, collapse_id: str = "
         return 0, ""
 
 
-def register_token(conn: Any, user_id: str, token: str, platform: str, now_iso: str) -> None:
+def register_token(conn: Any, user_id: str, token: str, platform: str, now_iso: str,
+                   *, city_slug: str = "") -> None:
     """Upsert a device token. A token moving between accounts re-binds to
-    the latest login (shared devices)."""
+    the latest login (shared devices). `city_slug` is only meaningful for
+    guest rows (user_id = 'guest:…', C-3): it lets run_city_digests recall a
+    signed-out device whose city is known. The DELETE-then-INSERT keyed on the
+    token is also the guest→user merge: after login the same token re-binds to
+    the real account and the guest row disappears, so nothing double-sends."""
     token = (token or "").strip().lower()
     # Reject anything that is not a well-formed hex device token. This subsumes
     # the old length guard (the regex bounds length to 16–200) and, crucially,
@@ -498,9 +505,9 @@ def register_token(conn: Any, user_id: str, token: str, platform: str, now_iso: 
         return
     conn.execute("DELETE FROM device_push_tokens WHERE token = ?", (token,))
     conn.execute(
-        "INSERT INTO device_push_tokens (id, user_id, token, platform, created_at, last_seen_at) "
-        "VALUES (?, ?, ?, ?, ?, ?)",
-        (str(uuid.uuid4()), user_id, token, (platform or "ios")[:16], now_iso, now_iso),
+        "INSERT INTO device_push_tokens (id, user_id, token, platform, city_slug, created_at, last_seen_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (str(uuid.uuid4()), user_id, token, (platform or "ios")[:16], (city_slug or "")[:48], now_iso, now_iso),
     )
 
 

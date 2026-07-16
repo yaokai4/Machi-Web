@@ -114,6 +114,14 @@ function ledgerLabel(entryType: string, t: (key: I18nKey) => string): string {
       return t("ledger_type_admin");
     case "membership_bonus":
       return t("ledger_type_membership_bonus");
+    case "referral_bonus":
+      return t("ledger_type_referral_bonus");
+    case "refund_debit":
+      return t("ledger_type_refund_debit");
+    case "chargeback_debit":
+      return t("ledger_type_chargeback_debit");
+    case "reversal":
+      return t("ledger_type_reversal");
     default:
       return entryType;
   }

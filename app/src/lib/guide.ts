@@ -219,6 +219,9 @@ export interface GuideProduct {
   pointsContext?: { eligible: boolean; requiredPoints: number; currentBalance: number; sufficient: boolean; owned: boolean };
   // Per-viewer entitlement (product detail only).
   access?: { owned: boolean; memberUnlocked: boolean; canAccess: boolean; signedIn: boolean };
+  // 契约 C-1：交付物就绪标志。线上键名固定为 snake_case 的 deliverable_ready，
+  // 缺省视为 true；false 时购买入口会被服务端以 PRODUCT_NOT_READY 拒绝。
+  deliverable_ready?: boolean;
 }
 
 // UGC product review (BE4). Server is the sole authority on the anonymous gate,
@@ -2014,6 +2017,14 @@ export const adminGuide = {
   importCompanies: (body: { items?: Record<string, unknown>[]; csv?: string; content?: string }) =>
     greq<{ status: string; created: Array<{ id: string; slug: string }>; errors: string[] }>(
       "POST", "/api/admin/guide/companies/import", body),
+  // JLPT 备考核心 — 批量导入题目/词汇（服务端逐行校验，坏行跳过不致命；
+  // 返回 inserted/updated/skipped 计数，见 server_jlpt.py import_questions/import_vocab）。
+  importJlptQuestions: (items: Record<string, unknown>[]) =>
+    greq<{ status: string; inserted: number; updated: number; skipped: number; total: number }>(
+      "POST", "/api/admin/jlpt/questions/import", { items }),
+  importJlptVocab: (items: Record<string, unknown>[]) =>
+    greq<{ status: string; inserted: number; updated: number; skipped: number; total: number }>(
+      "POST", "/api/admin/jlpt/vocab/import", { items }),
   schoolPrograms: (p: { schoolId?: string; status?: string } = {}) =>
     greq<GuideAdminPaged<GuideSchoolProgram>>("GET", `/api/admin/guide/school-programs${qs({ ...p })}`),
   schoolAdmissions: (p: { schoolId?: string; status?: string } = {}) =>
