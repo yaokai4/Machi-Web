@@ -390,6 +390,41 @@ class WalletFoundationTests(unittest.TestCase):
         self.assertFalse(server.user_has_entitlement(self.conn, uid, "guide_product", prod["id"]))
         self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], before)
 
+    # 12. membership monthly bonus: instant grant on activation, idempotent
+    # within the same membership month, grants again after the month rolls over
+    def test_membership_monthly_bonus(self):
+        from datetime import datetime, timedelta, timezone
+        uid = _make_user(self.conn)
+        expires = (datetime.now(timezone.utc) + timedelta(days=400)).isoformat()
+        # Activation path (sync_apple_membership_expiry) triggers the instant grant.
+        status = server.sync_apple_membership_expiry(self.conn, uid, server.MEMBERSHIP_PLAN_KEY, expires)
+        self.assertTrue(status["is_active"])
+        bonus = server.MEMBERSHIP_MONTHLY_BONUS_POINTS
+        self.assertGreater(bonus, 0)
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], bonus)
+        # Same period: sweep + direct grant are both no-ops.
+        r = server.grant_membership_monthly_bonus(self.conn, uid)
+        self.assertFalse(r["applied"])
+        self.assertTrue(r["duplicate"])
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], bonus)
+        # Next membership month (backdate started_at by ~35 days) → one more grant.
+        backdated = (datetime.now(timezone.utc) - timedelta(days=35)).isoformat()
+        self.conn.execute("UPDATE user_memberships SET started_at = ? WHERE user_id = ?", (backdated, uid))
+        r2 = server.grant_membership_monthly_bonus(self.conn, uid)
+        self.assertTrue(r2["applied"])
+        self.assertEqual(r2["periodIndex"], 1)
+        self.assertEqual(server.get_wallet_snapshot(self.conn, uid)["balancePoints"], bonus * 2)
+        # Ledger rows carry the membership_bonus entry type (counts as bonus).
+        n = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM wallet_ledger_entries WHERE user_id = ? AND entry_type = 'membership_bonus'",
+            (uid,)).fetchone()
+        self.assertEqual(dict(n)["c"], 2)
+        # Expired membership never grants.
+        self.conn.execute("UPDATE user_memberships SET status = 'expired' WHERE user_id = ?", (uid,))
+        server.sync_user_membership_cache(self.conn, uid)
+        r3 = server.grant_membership_monthly_bonus(self.conn, uid)
+        self.assertFalse(r3["applied"])
+
     # 8. insufficient balance → no order, no entitlement, no charge
     def test_purchase_insufficient(self):
         uid = _make_user(self.conn)

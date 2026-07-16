@@ -278,7 +278,8 @@ from server_config import (
     MACHI_AI_PRO_MODEL, MACHI_AI_TIMEOUT_SEC, MAX_JSON_BYTES,
     MAX_UPLOAD_BYTES, MEDIA_DIR, MEMBERSHIP_BILLING_CYCLE, MEMBERSHIP_CURRENCY,
     MEMBERSHIP_DAILY_LIMIT_FREE, MEMBERSHIP_DAILY_LIMIT_VERIFIED,
-    MEMBERSHIP_LEGACY_PLAN_KEY, MEMBERSHIP_PLAN_KEY, MEMBERSHIP_PLAN_MONTHLY_KEY,
+    MEMBERSHIP_LEGACY_PLAN_KEY, MEMBERSHIP_MONTHLY_BONUS_POINTS, MEMBERSHIP_PLAN_KEY,
+    MEMBERSHIP_PLAN_MONTHLY_KEY,
     MEMBERSHIP_PLAN_YEARLY_KEY, MEMBERSHIP_PRICE_JPY, MEMBERSHIP_PRICE_YEARLY_JPY,
     MESSAGE_FILE_UPLOAD_ENABLED, MESSAGE_FILE_UPLOAD_MIME, NEWS_CATEGORIES,
     NEWS_COPYRIGHT_POLICIES, NEWS_CRAWL_STRATEGIES, NEWS_CREDIBILITY_LEVELS,
@@ -2892,6 +2893,12 @@ def default_membership_benefits() -> list[dict[str, Any]]:
     # 「买了发现是空的」的落差。新增 ai_member_quota 作为会员核心价值。
     titles = [
         ("ai_member_quota", "Machi AI 会员额度", "更高每日提问额度,并解锁 Pro 深度模型,升学·就职·生活问答更强更准。", "wand.and.stars"),
+        # monthly_coins 的文案与发放逻辑绑定同一个配置开关
+        # (MEMBERSHIP_MONTHLY_BONUS_POINTS):开关为 0 时文案自动消失,
+        # 权益永远不会先于兑现上线(未兑现权益 = App Review + 景表法双重暴露)。
+        *([("monthly_coins", f"每月赠 {MEMBERSHIP_MONTHLY_BONUS_POINTS} Machi 币",
+            f"会员期间每月自动到账 {MEMBERSHIP_MONTHLY_BONUS_POINTS} Machi 币,可在商城抵扣资料与服务。",
+            "circle.hexagongrid.fill")] if MEMBERSHIP_MONTHLY_BONUS_POINTS > 0 else []),
         ("verified_badge", "蓝色认证标识", "个人主页和内容卡片展示 Machi 认证标识。", "checkmark.seal.fill"),
         ("profile_verified", "个人主页认证展示", "认证状态在个人主页稳定展示。", "person.crop.circle.badge.checkmark"),
         ("card_verified", "内容卡片认证展示", "你的公开内容卡片显示认证信息。", "rectangle.badge.checkmark"),
@@ -3002,6 +3009,11 @@ MEMBERSHIP_BENEFIT_I18N: dict[str, dict[str, tuple[str, str]]] = {
         "zh": ("Machi 币会员价", "用 Machi 币购买资料时享更低会员价。"),
         "en": ("Member coin pricing", "Pay fewer Machi Coins on materials as a member."),
         "ja": ("メンバーコイン価格", "資料購入時に Machi コインのメンバー価格が適用されます。"),
+    },
+    "monthly_coins": {
+        "zh": ("每月赠 Machi 币", "会员期间每月自动到账 Machi 币,可在商城抵扣资料与服务。"),
+        "en": ("Monthly Machi Coins", "Machi Coins are credited automatically every month of your membership — spend them in the store."),
+        "ja": ("毎月の Machi コイン進呈", "会員期間中、毎月 Machi コインが自動で付与され、ストアの資料やサービスに使えます。"),
     },
     "purchase_center": {
         "zh": ("已购资料统一管理", "集中管理已购资料与会员可看内容。"),
@@ -7406,6 +7418,7 @@ def init_db() -> None:
         ensure_guide_seed(conn)
         _guide_refund_policy_backfill_once(conn)
         _guide_wallet_activation_once(conn)
+        _guide_member_price_rollout_once(conn)
         jlpt_seed.ensure_jlpt_seed(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:
             # Only seed in dev. In production the DB starts empty and the
@@ -9850,6 +9863,13 @@ def active_membership_plans(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     ]
 
 
+# Benefits the code deliberately retired because they can't be honored
+# (see default_membership_benefits: "已移除,避免「买了发现是空的」的落差").
+# Stored plan JSON from old seeds may still carry them — filter at read time
+# so a paying member is never shown an unfulfillable benefit.
+RETIRED_BENEFIT_KEYS = {"higher_quota", "priority_review", "service_priority"}
+
+
 def _plan_benefits(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
     raw = (plan or {}).get("benefits") or ""
     try:
@@ -9858,6 +9878,18 @@ def _plan_benefits(plan: dict[str, Any] | None) -> list[dict[str, Any]]:
         parsed = []
     if not isinstance(parsed, list) or not parsed:
         parsed = default_membership_benefits()
+    else:
+        # Merge in code-defined benefits missing from the stored plan JSON.
+        # Stored rows predate newer benefits (ai_member_quota, monthly_coins)
+        # and ensure_membership_plans never rewrites a non-empty benefits
+        # column — without this merge a new benefit can ship its GRANT logic
+        # but never its COPY (the monthly-coins gift would be invisible).
+        # Admin edits are preserved: existing keys keep their stored copy and
+        # is_enabled flag; only keys absent from the stored list are appended.
+        seen = {str(item.get("key") or "") for item in parsed if isinstance(item, dict)}
+        parsed = [item for item in parsed
+                  if not (isinstance(item, dict) and str(item.get("key") or "") in RETIRED_BENEFIT_KEYS)]
+        parsed = list(parsed) + [b for b in default_membership_benefits() if b["key"] not in seen]
     out: list[dict[str, Any]] = []
     for idx, item in enumerate(parsed):
         if not isinstance(item, dict):
@@ -11099,7 +11131,107 @@ def sync_apple_membership_expiry(conn: sqlite3.Connection, user_id: str, plan_ke
         "product_id": product_id,
     })
     sync_user_membership_cache(conn, user_id)
+    if status == "active":
+        # Instant first grant on purchase/renewal verify — the daily sweep
+        # (run_membership_bonus_sweep) is the safety net for everything else
+        # (web purchases, missed notifications, yearly members' months 2-12).
+        try:
+            grant_membership_monthly_bonus(conn, user_id)
+        except Exception:
+            ERR_LOG.exception("membership bonus grant failed user=%s (non-fatal)", user_id)
     return get_user_membership_status(conn, user_id)
+
+
+def _membership_period_index(started_at_iso: str, now: datetime) -> int:
+    """0-based count of full membership months elapsed since started_at.
+    Anchored to the start DAY, clamped to short months (a Jan 31 start bills
+    its 2nd month on Feb 28/29) — so a yearly member gets exactly 12 grants a
+    year and a monthly member exactly one per billed month."""
+    start = _aware(parse_iso(started_at_iso))
+    if not start or now < start:
+        return -1
+    months = (now.year - start.year) * 12 + (now.month - start.month)
+    anchor_day = min(start.day, pycalendar.monthrange(now.year, now.month)[1])
+    if now.day < anchor_day:
+        months -= 1
+    return max(-1, months)
+
+
+def grant_membership_monthly_bonus(conn: sqlite3.Connection, user_id: str) -> dict[str, Any]:
+    """Grant the CURRENT membership month's coin gift exactly once (Phase 2
+    会员飞轮). Idempotency key = membership row + 0-based period index, so
+    notification replays / verify+sweep races can never double-grant, and a
+    yearly membership still receives one grant per calendar-anchored month.
+    Deliberately does NOT back-fill months missed before this feature shipped:
+    only the current period is granted. No-op when the gift is disabled."""
+    if MEMBERSHIP_MONTHLY_BONUS_POINTS <= 0:
+        return {"applied": False, "reason": "disabled"}
+    row = _current_membership_row(conn, user_id)
+    if not row or str(row.get("status") or "") != "active":
+        return {"applied": False, "reason": "not_active"}
+    now = datetime.now(timezone.utc)
+    period_end = _aware(parse_iso(row.get("current_period_end")))
+    if not period_end or period_end <= now:
+        return {"applied": False, "reason": "expired"}
+    period_index = _membership_period_index(str(row.get("started_at") or row.get("created_at") or ""), now)
+    if period_index < 0:
+        return {"applied": False, "reason": "no_anchor"}
+    idem = f"membership_bonus:{user_id}:{row['id']}:{period_index}"
+    result = wallet_post_ledger(conn, user_id, "membership_bonus", MEMBERSHIP_MONTHLY_BONUS_POINTS,
+                                source_type="membership", source_order_id=str(row["id"]),
+                                idempotency_key=idem,
+                                metadata={"periodIndex": period_index, "planKey": row.get("plan_key") or ""})
+    return {"applied": bool(result.get("applied")), "duplicate": bool(result.get("duplicate")),
+            "periodIndex": period_index}
+
+
+def run_membership_bonus_sweep() -> int:
+    """One pass over all active memberships; grants each its current month's
+    coin gift (idempotent). Returns the number of fresh grants."""
+    if MEMBERSHIP_MONTHLY_BONUS_POINTS <= 0:
+        return 0
+    granted = 0
+    with DB_LOCK, db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT user_id FROM user_memberships WHERE status = 'active' "
+            "AND current_period_end IS NOT NULL AND current_period_end > ?",
+            (now_iso(),)).fetchall()
+        for r in rows:
+            try:
+                if grant_membership_monthly_bonus(conn, r["user_id"]).get("applied"):
+                    granted += 1
+            except Exception:
+                ERR_LOG.exception("membership bonus sweep failed user=%s", r["user_id"])
+    return granted
+
+
+_MEMBERSHIP_BONUS_DISPATCHER_STARTED = False
+
+
+def start_membership_bonus_dispatcher() -> None:
+    """Hourly sweep so a member's monthly coins land within the hour their new
+    membership month starts (yearly members have no renewal notification to
+    hook — the sweep IS their grant path). Cheap: one indexed SELECT + per-user
+    idempotent ledger writes. Gated by KAIX_ENABLE_SCHEDULERS like every other
+    singleton job."""
+    global _MEMBERSHIP_BONUS_DISPATCHER_STARTED
+    if _MEMBERSHIP_BONUS_DISPATCHER_STARTED:
+        return
+    _MEMBERSHIP_BONUS_DISPATCHER_STARTED = True
+
+    def _loop() -> None:
+        time.sleep(420)
+        while True:
+            try:
+                granted = run_membership_bonus_sweep()
+                if granted:
+                    ACCESS_LOG.info("membership bonus sweep: granted=%d x %d coins",
+                                    granted, MEMBERSHIP_MONTHLY_BONUS_POINTS)
+            except Exception:
+                ERR_LOG.exception("membership bonus sweep crashed")
+            time.sleep(3600)
+
+    threading.Thread(target=_loop, name="membership-bonus", daemon=True).start()
 
 
 def cancel_membership(conn: sqlite3.Connection, user_id: str, immediate: bool = False,
@@ -12240,6 +12372,31 @@ def _guide_wallet_activation_once(conn: sqlite3.Connection) -> None:
     _upsert_site_settings(conn, {"guide_wallet_activation_v1": "done"})
     ACCESS_LOG.info("guide wallet purchasing activated on %s SKUs; %s hero IAP ids assigned",
                     cur.rowcount, assigned)
+
+
+def _guide_member_price_rollout_once(conn: sqlite3.Connection) -> None:
+    """One-time member pricing rollout (Phase 2 会员编入): every published paid
+    digital SKU gets a member price at ~80% of list, rounded down to a clean
+    10-yen step, mirrored into the coin price (1 币 = 1 JPY). SKUs that already
+    carry an operator-set member price are untouched."""
+    try:
+        if _site_settings(conn).get("guide_member_price_v1") == "done":
+            return
+    except Exception:
+        return
+    rows = conn.execute(
+        "SELECT id, price FROM guide_products WHERE status = 'published' AND COALESCE(is_coming_soon,0) = 0 "
+        "AND COALESCE(is_free,0) = 0 AND COALESCE(is_service,0) = 0 AND COALESCE(price,0) > 0 "
+        "AND COALESCE(member_price,0) = 0").fetchall()
+    now = now_iso()
+    for r in rows:
+        member = max(10, int(int(r["price"]) * 0.8) // 10 * 10)
+        conn.execute(
+            "UPDATE guide_products SET member_price = ?, is_member_discount = 1, "
+            "member_wallet_price_points = ?, updated_at = ? WHERE id = ?",
+            (member, member, now, r["id"]))
+    _upsert_site_settings(conn, {"guide_member_price_v1": "done"})
+    ACCESS_LOG.info("member pricing rolled out on %s paid SKUs (~80%% of list)", len(rows))
 
 
 # ---- provider client params (what the client needs to start paying) ----
@@ -15459,6 +15616,18 @@ SITE_SETTING_DEFAULTS: dict[str, str] = {
     "auto_avatar_new_users": "1",
 }
 SITE_SETTING_KEYS = set(SITE_SETTING_DEFAULTS)
+# One-time data-migration markers (NOT admin-editable settings — they ride in
+# site_settings for the same reason post_tags_backfill_v1 tried to: a durable
+# per-database "already ran" flag). They must be whitelisted here or
+# _upsert_site_settings silently drops the write and the migration re-runs on
+# every boot, relying only on its WHERE-clause idempotency.
+SITE_SETTING_KEYS |= {
+    "post_tags_backfill_v1",
+    "wallet_topup_jpy_reprice_v1",
+    "guide_refund_policy_backfill_v1",
+    "guide_wallet_activation_v1",
+    "guide_member_price_v1",
+}
 
 
 def _site_settings(conn: sqlite3.Connection) -> dict[str, str]:
@@ -42192,6 +42361,7 @@ def run() -> None:
         start_semantic_index_refresher()
         start_stareal_daily_scheduler()
         start_nightly_report_dispatcher()
+        start_membership_bonus_dispatcher()
     else:
         ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor + guide reminders + engagement sim + hot-score refresher disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")

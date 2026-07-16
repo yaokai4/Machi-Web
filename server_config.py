@@ -591,6 +591,14 @@ MEMBERSHIP_PLAN_KEY = _env("MEMBERSHIP_PLAN_KEY", MEMBERSHIP_PLAN_MONTHLY_KEY)
 # historical *_JPY name — the value is denominated in MEMBERSHIP_CURRENCY.
 MEMBERSHIP_PRICE_JPY = int(_env("MEMBERSHIP_PRICE_JPY", "600"))                 # 30-day pass (JPY)
 MEMBERSHIP_PRICE_YEARLY_JPY = int(_env("MEMBERSHIP_PRICE_YEARLY_JPY", "4800"))  # 365-day pass (JPY)
+# Monthly Machi Coins gift for active members (Phase 2 会员飞轮). Sized at
+# 15-20% of the monthly fee ON PURPOSE: a small recurring voucher that feeds
+# the store, NOT a face-value rebate — at X≥600 the membership would become a
+# self-cannibalizing top-up discount (see MACHI_商城化改造与内容规划 §五).
+# Granted per membership month by the bonus dispatcher, idempotent per
+# (user, membership, period_index). 0 disables granting (the benefit copy is
+# served from the same flag, so copy and grants can never ship apart).
+MEMBERSHIP_MONTHLY_BONUS_POINTS = max(0, int(_env("MEMBERSHIP_MONTHLY_BONUS_POINTS", "100")))
 MEMBERSHIP_CURRENCY = _env("MEMBERSHIP_CURRENCY", "JPY")
 MEMBERSHIP_BILLING_CYCLE = "monthly"
 # Apple App Store product ids for the same plans. iOS buys through IAP.
