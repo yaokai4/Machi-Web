@@ -52,6 +52,93 @@ EXAM_DYNAMIC_MAX = 60             # cap on dynamically-sampled mock exam size
 # limit in submit_exam_session.
 EXAM_SAVE_GRACE_SEC = 5
 
+# ── JLPT 标准出分（全真模考）─────────────────────────────────────────────────
+# 依照官方计分结构（2010 年改定后）：N1-N3 笔试两科（言語知識〈文字・語彙・文法〉
+# 0-60 / 読解 0-60），N4·N5 笔试合并一科（言語知識・読解 0-120）。聴解(0-60)
+# 暂未提供音频，因此判定为「笔试参考判定」：各科须过基准点（19/60，合并科
+# 38/120），笔试合计须达到官方合格线按笔试满分占比 (120/180) 折算后的参考线
+# （进一法取整）。正式合格与否以含聴解的官方考试为准 —— 客户端展示时必须带
+# note 里的免责说明。raw→scaled 用线性映射（非官方 IRT 等化，命名上只称
+# 「参考」，不宣称与官方分数可比）。
+SCORE_MODES = ("percent", "jlpt_scaled")
+_JLPT_WRITTEN_SCALES_SPLIT = [
+    ("language", "言語知識（文字・語彙・文法）", ("vocab", "grammar"), 60, 19),
+    ("reading", "読解", ("reading",), 60, 19),
+]
+_JLPT_WRITTEN_SCALES_COMBINED = [
+    ("language_reading", "言語知識・読解", ("vocab", "grammar", "reading"), 120, 38),
+]
+JLPT_SCALED_CONFIG: dict[str, dict[str, Any]] = {
+    "N1": {"passTotal180": 100, "scales": _JLPT_WRITTEN_SCALES_SPLIT},
+    "N2": {"passTotal180": 90, "scales": _JLPT_WRITTEN_SCALES_SPLIT},
+    "N3": {"passTotal180": 95, "scales": _JLPT_WRITTEN_SCALES_SPLIT},
+    "N4": {"passTotal180": 90, "scales": _JLPT_WRITTEN_SCALES_COMBINED},
+    "N5": {"passTotal180": 80, "scales": _JLPT_WRITTEN_SCALES_COMBINED},
+}
+_JLPT_SCALED_NOTE = (
+    "按 JLPT 官方计分结构折算的笔试参考分（不含聴解）。正式考试的合格判定"
+    "以官方成绩为准，此处仅供备考参考。"
+)
+
+
+def normalize_score_mode(raw: Any) -> str:
+    mode = str(raw or "").strip().lower()
+    return mode if mode in SCORE_MODES else "percent"
+
+
+def compute_scaled_result(
+    conn: Any, *, level: str, q_ids: list[str], answers: dict[str, dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """JLPT 缩放分（笔试参考）。answers: question_id → jlpt_exam_answers row
+    (dict, 含 is_correct)。返回 None 表示该级别无缩放配置或卷面为空。"""
+    cfg = JLPT_SCALED_CONFIG.get(normalize_level(level, default=""))
+    if not cfg or not q_ids:
+        return None
+    placeholders = ",".join("?" * len(q_ids))
+    rows = conn.execute(
+        f"SELECT id, section FROM jlpt_questions WHERE id IN ({placeholders})",
+        tuple(q_ids),
+    ).fetchall()
+    sec_by_id = {dict(r)["id"]: (dict(r).get("section") or "vocab") for r in rows}
+    scales: list[dict[str, Any]] = []
+    total_scaled = 0
+    written_max = 0
+    all_min_ok = True
+    for key, label, sections, scale_max, scale_min in cfg["scales"]:
+        ids = [qid for qid in q_ids if sec_by_id.get(qid) in sections]
+        raw_max = len(ids)
+        raw = sum(
+            1 for qid in ids
+            if int((answers.get(qid) or {}).get("is_correct") or 0) == 1
+        )
+        scaled = int(round(raw / raw_max * scale_max)) if raw_max else 0
+        passed_min = raw_max > 0 and scaled >= scale_min
+        all_min_ok = all_min_ok and passed_min
+        total_scaled += scaled
+        written_max += scale_max
+        scales.append({
+            "key": key, "label": label,
+            "raw": raw, "rawMax": raw_max,
+            "scaled": scaled, "scaledMax": scale_max,
+            "sectionMin": scale_min, "passed": passed_min,
+        })
+    if written_max <= 0:
+        return None
+    pass_total = int(cfg["passTotal180"])
+    pass_line = (pass_total * written_max + 179) // 180  # ceil(passTotal*max/180)
+    return {
+        "mode": "jlpt_scaled",
+        "level": normalize_level(level, default=""),
+        "writtenTotal": total_scaled,
+        "writtenMax": written_max,
+        "passLineWritten": pass_line,
+        "passedWrittenReference": bool(all_min_ok and total_scaled >= pass_line),
+        "scales": scales,
+        "officialPassTotal": pass_total,
+        "officialTotalMax": 180,
+        "note": _JLPT_SCALED_NOTE,
+    }
+
 _VALID_SOURCE_KINDS = ("practice", "placement", "review", "exam", "vocab")
 _VALID_VOCAB_STATES = ("learning", "mastered")
 
@@ -320,11 +407,14 @@ def placement_questions(conn: Any, *, is_member: bool) -> list[dict[str, Any]]:
     seen: set[str] = set()
     member_clause = "" if is_member else " AND is_member_only = 0"
     # Two questions per level (easiest→hardest), rotating section for coverage.
+    # 只抽词汇/语法(秒答型):读解长文一题就要几分钟,会毁掉「30 秒定级」的
+    # 承诺;读解水平交给全真模考的分科出分去衡量。
     per_level = max(1, PLACEMENT_QUESTION_COUNT // len(LEVELS)) + 1
     for lvl in LEVELS:
         rows = conn.execute(
             "SELECT * FROM jlpt_questions WHERE level = ? AND status = 'published' "
-            "AND review_status = 'approved' AND " + _AUDIO_READY_SQL + member_clause +
+            "AND review_status = 'approved' AND section IN ('vocab', 'grammar') "
+            "AND " + _AUDIO_READY_SQL + member_clause +
             " ORDER BY RANDOM() LIMIT ?",
             (lvl, per_level),
         ).fetchall()
@@ -658,6 +748,7 @@ def _public_exam(d: dict[str, Any]) -> dict[str, Any]:
         "durationSeconds": int(d.get("duration_seconds") or 0),
         "passScore": int(d.get("pass_score") or 60),
         "isMemberOnly": bool(d.get("is_member_only")),
+        "scoreMode": normalize_score_mode(d.get("score_mode")),
     }
 
 
@@ -764,6 +855,7 @@ def start_exam_session(
         "title": exam.get("title") or "",
         "durationSeconds": int(exam.get("duration_seconds") or 0),
         "passScore": int(exam.get("pass_score") or 60),
+        "scoreMode": normalize_score_mode(exam.get("score_mode")),
         "total": len(q_ids),
         "questions": questions,
         "resumed": False,
@@ -794,6 +886,7 @@ def _resume_exam_payload(
         "title": exam.get("title") or "",
         "durationSeconds": int(exam.get("duration_seconds") or 0),
         "passScore": int(exam.get("pass_score") or 60),
+        "scoreMode": normalize_score_mode(exam.get("score_mode")),
         "total": len(q_ids),
         "questions": _questions_by_ids(conn, q_ids, reveal_answer=False),
         "resumed": True,
@@ -920,10 +1013,21 @@ def submit_exam_session(
     elapsed = _seconds_between(started, now)
     time_limit = int((exam or {}).get("duration_seconds") or 0)
     duration = min(elapsed, time_limit) if time_limit > 0 else elapsed
+    # 全真模考：JLPT 缩放分整块随会话持久化（历史/回看直接反序列化）。老字段
+    # (score 0-100 / passed) 语义不变，老客户端零感知。
+    score_mode = normalize_score_mode((exam or {}).get("score_mode"))
+    scaled: Optional[dict[str, Any]] = None
+    if score_mode == "jlpt_scaled":
+        scaled = compute_scaled_result(
+            conn,
+            level=(exam or {}).get("level") or session.get("level") or "",
+            q_ids=q_ids, answers=answers,
+        )
     conn.execute(
         "UPDATE jlpt_exam_sessions SET total = ?, correct = ?, score = ?, passed = ?, "
-        "duration_seconds = ? WHERE id = ?",
-        (total, correct, score, passed, duration, session["id"]),
+        "duration_seconds = ?, scaled_json = ? WHERE id = ?",
+        (total, correct, score, passed, duration,
+         json.dumps(scaled, ensure_ascii=False) if scaled else "", session["id"]),
     )
     # Per-question breakdown with answers revealed (post-submit teaching).
     breakdown = []
@@ -934,13 +1038,17 @@ def submit_exam_session(
             "selectedIndex": int(a.get("selected_index", -1)) if a else -1,
             "correct": bool(a.get("is_correct")) if a else False,
         })
-    return {
+    out = {
         "sessionId": session["id"],
         "total": total, "correct": correct, "score": score,
         "passed": bool(passed), "passScore": pass_score,
+        "scoreMode": score_mode,
         "durationSeconds": duration,
         "questions": breakdown,
     }
+    if scaled:
+        out["scaled"] = scaled
+    return out
 
 
 def exam_history(conn: Any, *, user_id: str, level: str = "") -> list[dict[str, Any]]:
@@ -960,7 +1068,7 @@ def exam_history(conn: Any, *, user_id: str, level: str = "") -> list[dict[str, 
     out = []
     for r in rows:
         d = dict(r)
-        out.append({
+        item = {
             "sessionId": d["id"], "examId": d.get("exam_id") or "",
             "title": d.get("exam_title") or "", "kind": d.get("exam_kind") or "",
             "level": d.get("level") or "",
@@ -968,7 +1076,12 @@ def exam_history(conn: Any, *, user_id: str, level: str = "") -> list[dict[str, 
             "score": int(d.get("score") or 0), "passed": bool(d.get("passed")),
             "durationSeconds": int(d.get("duration_seconds") or 0),
             "startedAt": d.get("started_at") or "", "submittedAt": d.get("submitted_at") or "",
-        })
+        }
+        scaled = _loads_scaled(d.get("scaled_json"))
+        if scaled:
+            item["scaled"] = scaled
+            item["scoreMode"] = "jlpt_scaled"
+        out.append(item)
     return out
 
 
@@ -988,7 +1101,7 @@ def session_review(conn: Any, *, session: dict[str, Any]) -> dict[str, Any]:
             "selectedIndex": int(a.get("selected_index", -1)) if a else -1,
             "correct": bool(a.get("is_correct")) if a else False,
         })
-    return {
+    out = {
         "sessionId": session["id"], "examId": session.get("exam_id") or "",
         "level": session.get("level") or "", "status": session.get("status") or "",
         "total": int(session.get("total") or 0), "correct": int(session.get("correct") or 0),
@@ -996,6 +1109,11 @@ def session_review(conn: Any, *, session: dict[str, Any]) -> dict[str, Any]:
         "durationSeconds": int(session.get("duration_seconds") or 0),
         "questions": breakdown,
     }
+    scaled = _loads_scaled(session.get("scaled_json"))
+    if scaled:
+        out["scaled"] = scaled
+        out["scoreMode"] = "jlpt_scaled"
+    return out
 
 
 # ── vocab quiz (考单词在线考试) ──────────────────────────────────────────────
@@ -1362,6 +1480,7 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
     is_member_only = 1 if exam.get("isMemberOnly") or exam.get("is_member_only") else 0
     status = str(exam.get("status") or "published").strip().lower()[:16] or "published"
     sort_order = _clamp(exam.get("sortOrder", exam.get("sort_order")), 0, 0, 10_000_000)
+    score_mode = normalize_score_mode(exam.get("scoreMode") or exam.get("score_mode"))
 
     raw_qids = exam.get("questionIds") or exam.get("question_ids") or []
     question_ids = [str(q).strip() for q in raw_qids if str(q).strip()] if isinstance(raw_qids, list) else []
@@ -1373,19 +1492,20 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
         question_count = _clamp(exam.get("questionCount", exam.get("question_count")), 20, 1, EXAM_DYNAMIC_MAX)
 
     row = (level, title, kind, section, question_count, duration, pass_score,
-           is_member_only, status, sort_order)
+           is_member_only, status, sort_order, score_mode)
     exists = conn.execute("SELECT id FROM jlpt_exams WHERE id = ?", (exam_id,)).fetchone()
     if exists:
         conn.execute(
             "UPDATE jlpt_exams SET level=?, title=?, kind=?, section=?, question_count=?, "
-            "duration_seconds=?, pass_score=?, is_member_only=?, status=?, sort_order=? WHERE id=?",
+            "duration_seconds=?, pass_score=?, is_member_only=?, status=?, sort_order=?, "
+            "score_mode=? WHERE id=?",
             (*row, exam_id),
         )
     else:
         conn.execute(
             "INSERT INTO jlpt_exams (id, level, title, kind, section, question_count, duration_seconds, "
-            "pass_score, is_member_only, status, sort_order, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "pass_score, is_member_only, status, sort_order, score_mode, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (exam_id, *row, now),
         )
     # Replace the fixed membership only when the caller supplied a list. Passing
@@ -1448,6 +1568,14 @@ def _loads_json_obj(raw: Any) -> Any:
         return json.loads(raw) if isinstance(raw, str) else raw
     except Exception:
         return None
+
+
+def _loads_scaled(raw: Any) -> Optional[dict[str, Any]]:
+    """scaled_json 反序列化：只接受 dict，空串/坏数据一律 None（老会话没有）。"""
+    if not raw:
+        return None
+    data = _loads_json_obj(raw)
+    return data if isinstance(data, dict) else None
 
 
 def _add_seconds_iso(start_iso: str, seconds: int) -> str:

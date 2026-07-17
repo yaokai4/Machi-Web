@@ -10,7 +10,9 @@ import {
   type GuideJlptExamSubmit,
   type GuideJlptExamHistoryItem,
   type GuideJlptQuestion,
+  type GuideJlptScaledResult,
 } from "@/lib/guide";
+import { ScaledScorePanel } from "./ScaledScorePanel";
 import { APIError, isAuthRequiredError } from "@/lib/api";
 import { useAuthPrompt, useToasts } from "@/lib/store";
 import { GuideShell, GuideSectionTitle } from "@/components/guide/GuideKit";
@@ -112,6 +114,7 @@ export function ExamClient() {
             score={result.score}
             passed={result.passed}
             passScore={result.passScore}
+            scaled={result.scaled}
             correct={result.correct}
             total={result.total}
             durationSeconds={result.durationSeconds}
@@ -237,7 +240,9 @@ function ExamCard({ t, exam, onStart, pending }: { t: Tri; exam: GuideJlptExam; 
               {exam.durationSeconds > 0 ? fmtDuration(exam.durationSeconds) : t("不限时", "時間無制限", "Untimed")}
             </span>
             <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] px-2 py-0.5 text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
-              {t(`合格线 ${exam.passScore}`, `合格 ${exam.passScore}`, `Pass ${exam.passScore}`)}
+              {exam.scoreMode === "jlpt_scaled"
+                ? t("JLPT 标准出分", "JLPT 準拠採点", "JLPT-style scoring")
+                : t(`合格线 ${exam.passScore}`, `合格 ${exam.passScore}`, `Pass ${exam.passScore}`)}
             </span>
           </div>
         </div>
@@ -259,23 +264,27 @@ function HistoryRow({ t, item, onOpen }: { t: Tri; item: GuideJlptExamHistoryIte
   // Vocab quizzes are graded but have no per-question review bank; only real
   // exam sessions (examId present) can be re-opened for逐题回看.
   const reviewable = !!item.examId;
+  // 全真卷显示缩放笔试分(0-120,按参考线判色);普通卷维持 0-100 百分比。
+  const displayScore = item.scaled ? item.scaled.writtenTotal : item.score;
+  const displayPassed = item.scaled ? item.scaled.passedWrittenReference : item.passed;
   const inner = (
     <>
       <span
         className={[
           "grid h-10 w-10 shrink-0 place-items-center rounded-xl text-sm font-black tabular-nums",
-          item.passed ? "bg-emerald-500/[0.14] text-emerald-600 dark:text-emerald-400" : "bg-[rgb(var(--kx-living-ink))]/[0.06] text-[rgb(var(--kx-living-muted))]",
+          displayPassed ? "bg-emerald-500/[0.14] text-emerald-600 dark:text-emerald-400" : "bg-[rgb(var(--kx-living-ink))]/[0.06] text-[rgb(var(--kx-living-muted))]",
         ].join(" ")}
       >
-        {item.score}
+        {displayScore}
       </span>
       <div className="min-w-0 flex-1 text-left">
         <p className="truncate text-sm font-black text-[rgb(var(--kx-living-ink))]">{item.title || item.level}</p>
         <p className="mt-0.5 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
+          {item.scaled ? `${item.scaled.writtenTotal}/${item.scaled.writtenMax} · ` : ""}
           {item.level} · {item.correct}/{item.total} · {item.startedAt.slice(0, 10)}
         </p>
       </div>
-      {item.passed ? <Trophy className="h-4 w-4 shrink-0 text-amber-500" /> : null}
+      {displayPassed ? <Trophy className="h-4 w-4 shrink-0 text-amber-500" /> : null}
       {reviewable ? <ChevronRight className="h-4 w-4 shrink-0 text-[rgb(var(--kx-living-muted))]" /> : null}
     </>
   );
@@ -494,6 +503,7 @@ function SessionReview({
       score={s.score}
       passed={s.passed}
       passScore={passScore}
+      scaled={s.scaled}
       correct={s.correct}
       total={s.total}
       durationSeconds={s.durationSeconds}
@@ -512,6 +522,7 @@ function ExamResult({
   score,
   passed,
   passScore,
+  scaled,
   correct,
   total,
   durationSeconds,
@@ -525,6 +536,8 @@ function ExamResult({
   score: number;
   passed: boolean;
   passScore?: number;
+  /** 全真卷（score_mode='jlpt_scaled'）附带的 JLPT 缩放分整块；有则替代百分比出分。 */
+  scaled?: GuideJlptScaledResult | null;
   correct: number;
   total: number;
   durationSeconds: number;
@@ -533,23 +546,36 @@ function ExamResult({
   backLabel: string;
   onBack: () => void;
 }) {
+  const headlinePassed = scaled ? scaled.passedWrittenReference : passed;
   return (
     <div>
       <JlptPageHeader
         eyebrow={`JLPT · ${t("成绩", "結果", "Result")}`}
-        title={passed ? t("恭喜通过!", "合格おめでとう!", "Passed!") : t("再接再厉", "次回に向けて", "Keep going")}
+        title={
+          scaled
+            ? headlinePassed
+              ? t("达到笔试参考线!", "筆記参考ライン到達!", "Reached the written reference line!")
+              : t("再接再厉", "次回に向けて", "Keep going")
+            : passed
+              ? t("恭喜通过!", "合格おめでとう!", "Passed!")
+              : t("再接再厉", "次回に向けて", "Keep going")
+        }
       />
 
       <div className="mt-6">
-        <JlptScoreHero
-          t={t}
-          score={score}
-          pass={passed}
-          passLabel={t("已通过", "合格", "Passed")}
-          failLabel={t("未通过", "不合格", "Not passed")}
-          metaLine={`${t(`答对 ${correct} / ${total}`, `${correct} / ${total} 正解`, `${correct} / ${total} correct`)} · ${fmtDuration(durationSeconds)}`}
-          passScore={typeof passScore === "number" ? passScore : undefined}
-        />
+        {scaled ? (
+          <ScaledScorePanel t={t} scaled={scaled} correct={correct} total={total} durationSeconds={durationSeconds} />
+        ) : (
+          <JlptScoreHero
+            t={t}
+            score={score}
+            pass={passed}
+            passLabel={t("已通过", "合格", "Passed")}
+            failLabel={t("未通过", "不合格", "Not passed")}
+            metaLine={`${t(`答对 ${correct} / ${total}`, `${correct} / ${total} 正解`, `${correct} / ${total} correct`)} · ${fmtDuration(durationSeconds)}`}
+            passScore={typeof passScore === "number" ? passScore : undefined}
+          />
+        )}
       </div>
 
       <GuideSectionTitle title={t("逐题回看", "問題ごとの復習", "Question review")} />

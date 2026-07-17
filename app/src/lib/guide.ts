@@ -1512,6 +1512,32 @@ export interface GuideJlptExam {
   durationSeconds: number;
   passScore: number;
   isMemberOnly: boolean;
+  /** 'percent'（默认）或 'jlpt_scaled'（全真卷：JLPT 官方计分结构出缩放分）。 */
+  scoreMode?: string;
+}
+/** JLPT 缩放分的单科条目（言語知識/読解，或 N4·N5 的合并科）。 */
+export interface GuideJlptScaledScale {
+  key: string;
+  label: string;
+  raw: number;
+  rawMax: number;
+  scaled: number;
+  scaledMax: number;
+  sectionMin: number;
+  passed: boolean;
+}
+/** score_mode='jlpt_scaled' 的全真卷附带的整块缩放结果（笔试参考，不含聴解）。 */
+export interface GuideJlptScaledResult {
+  mode: string;
+  level: string;
+  writtenTotal: number;
+  writtenMax: number;
+  passLineWritten: number;
+  passedWrittenReference: boolean;
+  scales: GuideJlptScaledScale[];
+  officialPassTotal: number;
+  officialTotalMax: number;
+  note: string;
 }
 export interface GuideJlptExamStart {
   status: string;
@@ -1521,6 +1547,7 @@ export interface GuideJlptExamStart {
   title: string;
   durationSeconds: number;
   passScore: number;
+  scoreMode?: string;
   total: number;
   questions: GuideJlptQuestion[];
   disclaimer: string;
@@ -1533,6 +1560,8 @@ export interface GuideJlptExamSubmit {
   score: number;
   passed: boolean;
   passScore: number;
+  scoreMode?: string;
+  scaled?: GuideJlptScaledResult | null;
   durationSeconds: number;
   questions: GuideJlptQuestion[];
   disclaimer: string;
@@ -1547,6 +1576,8 @@ export interface GuideJlptExamHistoryItem {
   correct: number;
   score: number;
   passed: boolean;
+  scoreMode?: string;
+  scaled?: GuideJlptScaledResult | null;
   durationSeconds: number;
   startedAt: string;
   submittedAt: string;
@@ -1560,6 +1591,8 @@ export interface GuideJlptExamSession {
   correct: number;
   score: number;
   passed: boolean;
+  scoreMode?: string;
+  scaled?: GuideJlptScaledResult | null;
   durationSeconds: number;
   questions: GuideJlptQuestion[];
   disclaimer: string;

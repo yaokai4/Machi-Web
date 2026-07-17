@@ -5695,6 +5695,19 @@ MIGRATIONS: list[tuple[int, str, str]] = [
            );
         """,
     ),
+    (
+        118,
+        "jlpt 全真模考：score_mode（JLPT 缩放分）+ 会话 scaled_json 结果",
+        # 2026-07 全真模考：jlpt_exams.score_mode ∈ ('percent','jlpt_scaled')。
+        # 'jlpt_scaled' 时 submit_exam_session 额外按官方计分结构输出缩放分
+        # （笔试两科各 0-60 / N4·N5 合并 0-120，含科目基准点与参考合格线），
+        # 结果整块存进会话行的 scaled_json，历史/回看直接反序列化，老客户端
+        # 只认原有 score(0-100) 字段照常工作。纯 ADD COLUMN，SQLite/Postgres 通用。
+        """
+        ALTER TABLE jlpt_exams ADD COLUMN score_mode TEXT NOT NULL DEFAULT 'percent';
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN scaled_json TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 ]
 
 

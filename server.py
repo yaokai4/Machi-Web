@@ -7557,6 +7557,9 @@ def init_db() -> None:
         _guide_wallet_activation_once(conn)
         _guide_member_price_rollout_once(conn)
         jlpt_seed.ensure_jlpt_seed(conn)
+        # 全真模考题库 v1(data/jlpt_bank_v1.json):题目 upsert + 固定整卷 +
+        # JLPT 缩放出分。文件不存在时静默跳过,不阻塞启动。
+        jlpt_seed.ensure_jlpt_mock_v1(conn)
         # B2-1: 推荐位静态 slug 与商品表核对，悬空/未发布引用启动即告警。
         _guide_audit_recommended_slugs(conn)
         if conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"] == 0 and not PRODUCTION:

@@ -171,3 +171,111 @@ def ensure_jlpt_seed(conn: Any) -> dict[str, int]:
 def _empty(conn: Any, table: str) -> bool:
     row = conn.execute(f"SELECT COUNT(*) AS c FROM {table}").fetchone()
     return int(dict(row)["c"]) == 0
+
+
+# ── 全真模考题库 v1（data/jlpt_bank_v1.json）────────────────────────────────
+# 原创全真题库由多模型生成 + 双盲对抗校验后落盘为 JSON（生成管线见工作区
+# 文档），此处只负责装载：题目走 import_questions upsert（source='mockv1'，
+# 可审计、可整体替换），整卷走 upsert_exam 固定题单（score_mode='jlpt_scaled'
+# → 提交时按 JLPT 官方计分结构出缩放分）。幂等：题目数与卷子数都对得上时
+# 跳过，避免每次启动全量 upsert。
+
+_MOCK_BANK_FILENAME = "jlpt_bank_v1.json"
+_MOCK_SOURCE = "mockv1"
+
+
+def _mock_bank_path() -> str:
+    import os
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", _MOCK_BANK_FILENAME)
+
+
+def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
+    """Idempotently install the full-length mock bank + fixed papers. No-ops
+    (quietly) when the bank file is absent — dev checkouts without the data
+    file must still boot."""
+    import os
+
+    import server_jlpt as jlpt
+
+    path = _mock_bank_path()
+    if not os.path.exists(path):
+        return {"installed": False, "reason": "bank file missing"}
+    try:
+        with open(path, encoding="utf-8") as f:
+            bank = json.load(f)
+    except Exception:
+        return {"installed": False, "reason": "bank file unreadable"}
+    questions = bank.get("questions") or []
+    papers = bank.get("papers") or {}
+    if not questions or not papers:
+        return {"installed": False, "reason": "bank file empty"}
+
+    now = _now()
+    have_q = int(dict(conn.execute(
+        "SELECT COUNT(*) AS c FROM jlpt_questions WHERE source = ?", (_MOCK_SOURCE,)
+    ).fetchone())["c"])
+    have_e = int(dict(conn.execute(
+        "SELECT COUNT(*) AS c FROM jlpt_exams WHERE id LIKE 'mockv1-%' AND status = 'published'"
+    ).fetchone())["c"])
+    if have_q == len(questions) and have_e == len(papers):
+        return {"installed": True, "skipped": True,
+                "questions": have_q, "exams": have_e}
+
+    items = []
+    for q in questions:
+        if not isinstance(q, dict):
+            continue
+        items.append({
+            "id": q.get("id"),
+            "level": q.get("level"),
+            "section": q.get("section"),
+            "questionType": q.get("qtype") or "single",
+            "stem": q.get("stem"),
+            "passage": q.get("passage") or "",
+            "choices": q.get("choices"),
+            "answerIndex": q.get("answerIndex"),
+            "explanation": q.get("explanation") or "",
+            "difficulty": q.get("difficulty") or 3,
+            "tags": q.get("tags") or "",
+            "source": _MOCK_SOURCE,
+            "sortOrder": q.get("sortOrder") or 0,
+        })
+    imported = {"total": 0}
+    # import_questions 每次调用最多 IMPORT_MAX_ROWS 行,分批喂。
+    for i in range(0, len(items), jlpt.IMPORT_MAX_ROWS):
+        r = jlpt.import_questions(conn, items[i:i + jlpt.IMPORT_MAX_ROWS], now=now)
+        imported["total"] += r["total"]
+
+    exams = 0
+    for i, (level, paper) in enumerate(sorted(papers.items())):
+        if not isinstance(paper, dict):
+            continue
+        q_ids = [str(x) for x in (paper.get("questionIds") or []) if str(x).strip()]
+        if not q_ids:
+            continue
+        jlpt.upsert_exam(conn, {
+            "id": f"mockv1-{str(level).lower()}",
+            "level": level,
+            "title": paper.get("title") or f"JLPT {level} 全真模拟（笔试卷）",
+            "kind": "mock",
+            "durationSeconds": int(paper.get("durationSeconds") or 0),
+            "passScore": 60,
+            "scoreMode": "jlpt_scaled",
+            "isMemberOnly": False,
+            "status": "published",
+            "sortOrder": i,
+            "questionIds": q_ids,
+        }, now=now)
+        exams += 1
+
+    # 样本 8 题小模考退场:全真卷上线后它们只会稀释列表。仅归档启动 seed 的
+    # 小样本(question_count<=10 的动态 mock),admin 手工建的卷不受影响。
+    if exams:
+        conn.execute(
+            "UPDATE jlpt_exams SET status = 'archived' "
+            "WHERE kind = 'mock' AND id NOT LIKE 'mockv1-%' AND question_count <= 10 "
+            "AND status = 'published' AND id NOT IN (SELECT DISTINCT exam_id FROM jlpt_exam_questions)",
+        )
+
+    return {"installed": True, "skipped": False,
+            "questions": imported["total"], "exams": exams}
