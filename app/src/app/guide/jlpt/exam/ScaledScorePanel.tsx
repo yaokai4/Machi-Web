@@ -23,6 +23,20 @@ export function ScaledScorePanel({
 }) {
   const passRef = scaled.passedWrittenReference;
   const accent = passRef ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400";
+  // JLPT 的两道门：总分达参考线 + 每科过基准点。总分够了却栽在某科基准点上是
+  // 真实且常见的落榜方式——此时必须说清是「科目」而不是「总分」不够，否则
+  // 分数明明 ≥ 参考线却写「未达参考线」，考生会以为出分算错了。
+  const totalReached = scaled.writtenTotal >= scaled.passLineWritten;
+  const failedScales = scaled.scales.filter((s) => !s.passed);
+  const verdict = passRef
+    ? t(`达到笔试参考线 ${scaled.passLineWritten}`, `筆記参考ライン ${scaled.passLineWritten} 到達`, `Reached written reference line ${scaled.passLineWritten}`)
+    : totalReached && failedScales.length > 0
+      ? t(
+          `总分达线，但「${failedScales.map((s) => s.label).join("・")}」未过基准点`,
+          `合計は到達、ただし「${failedScales.map((s) => s.label).join("・")}」が基準点未満`,
+          `Total reached, but ${failedScales.map((s) => s.label).join(" / ")} is below its section minimum`,
+        )
+      : t(`未达笔试参考线 ${scaled.passLineWritten}`, `筆記参考ライン ${scaled.passLineWritten} 未達`, `Below written reference line ${scaled.passLineWritten}`);
   return (
     <div className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-6 text-center shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]">
       <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
@@ -42,9 +56,7 @@ export function ScaledScorePanel({
             : "bg-amber-500/[0.12] text-amber-600 dark:text-amber-400",
         ].join(" ")}
       >
-        {passRef
-          ? t(`达到笔试参考线 ${scaled.passLineWritten}`, `筆記参考ライン ${scaled.passLineWritten} 到達`, `Reached written reference line ${scaled.passLineWritten}`)
-          : t(`未达笔试参考线 ${scaled.passLineWritten}`, `筆記参考ライン ${scaled.passLineWritten} 未達`, `Below written reference line ${scaled.passLineWritten}`)}
+        {verdict}
       </p>
 
       {typeof correct === "number" && typeof total === "number" && total > 0 ? (

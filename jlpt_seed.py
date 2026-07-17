@@ -177,11 +177,14 @@ def _empty(conn: Any, table: str) -> bool:
 # 原创全真题库由多模型生成 + 双盲对抗校验后落盘为 JSON（生成管线见工作区
 # 文档），此处只负责装载：题目走 import_questions upsert（source='mockv1'，
 # 可审计、可整体替换），整卷走 upsert_exam 固定题单（score_mode='jlpt_scaled'
-# → 提交时按 JLPT 官方计分结构出缩放分）。幂等：题目数与卷子数都对得上时
-# 跳过，避免每次启动全量 upsert。
+# → 提交时按 JLPT 官方计分结构出缩放分）。
 
 _MOCK_BANK_FILENAME = "jlpt_bank_v1.json"
 _MOCK_SOURCE = "mockv1"
+# 样本小模考的标题模板（见 ensure_jlpt_seed）。全真卷上线后要把它们归档，识别
+# 必须锚定这个 seed 自己写下的标题 —— 早期版本靠「question_count<=10 且没有固定
+# 题单」来猜，会误伤 admin 手工建的小题量动态卷（那种卷同样没有固定题单）。
+_SAMPLE_EXAM_TITLE_LIKE = "JLPT % 原创模考（样本）"
 
 
 def _mock_bank_path() -> str:
@@ -189,10 +192,19 @@ def _mock_bank_path() -> str:
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", _MOCK_BANK_FILENAME)
 
 
+def _bank_fingerprint(raw: bytes) -> str:
+    import hashlib
+    return hashlib.sha256(raw).hexdigest()[:32]
+
+
 def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
     """Idempotently install the full-length mock bank + fixed papers. No-ops
     (quietly) when the bank file is absent — dev checkouts without the data
-    file must still boot."""
+    file must still boot.
+
+    幂等判据是题库文件内容的指纹，不是题目条数：改题（修错答案、均衡选项位置）
+    时条数往往不变，用条数当判据会让修好的内容永远灌不进已部署的库。指纹存在
+    jlpt_questions 的一行 sentinel 里（tags 字段），不新增表。"""
     import os
 
     import server_jlpt as jlpt
@@ -201,8 +213,9 @@ def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
     if not os.path.exists(path):
         return {"installed": False, "reason": "bank file missing"}
     try:
-        with open(path, encoding="utf-8") as f:
-            bank = json.load(f)
+        with open(path, "rb") as f:
+            raw = f.read()
+        bank = json.loads(raw.decode("utf-8"))
     except Exception:
         return {"installed": False, "reason": "bank file unreadable"}
     questions = bank.get("questions") or []
@@ -211,15 +224,13 @@ def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
         return {"installed": False, "reason": "bank file empty"}
 
     now = _now()
-    have_q = int(dict(conn.execute(
-        "SELECT COUNT(*) AS c FROM jlpt_questions WHERE source = ?", (_MOCK_SOURCE,)
-    ).fetchone())["c"])
-    have_e = int(dict(conn.execute(
-        "SELECT COUNT(*) AS c FROM jlpt_exams WHERE id LIKE 'mockv1-%' AND status = 'published'"
-    ).fetchone())["c"])
-    if have_q == len(questions) and have_e == len(papers):
-        return {"installed": True, "skipped": True,
-                "questions": have_q, "exams": have_e}
+    fingerprint = _bank_fingerprint(raw)
+    sentinel_id = "mockv1-bank-fingerprint"
+    row = conn.execute(
+        "SELECT tags FROM jlpt_questions WHERE id = ?", (sentinel_id,)
+    ).fetchone()
+    if row is not None and str(dict(row).get("tags") or "") == fingerprint:
+        return {"installed": True, "skipped": True, "fingerprint": fingerprint}
 
     items = []
     for q in questions:
@@ -268,14 +279,31 @@ def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
         }, now=now)
         exams += 1
 
-    # 样本 8 题小模考退场:全真卷上线后它们只会稀释列表。仅归档启动 seed 的
-    # 小样本(question_count<=10 的动态 mock),admin 手工建的卷不受影响。
+    # 样本 8 题小模考退场:全真卷上线后它们只会稀释列表。只认 ensure_jlpt_seed
+    # 自己写下的标题,不靠「题少且无固定题单」去猜 —— admin 手工建的小题量动态
+    # 卷同样没有固定题单,猜法会把人家的卷静默归档。
     if exams:
         conn.execute(
             "UPDATE jlpt_exams SET status = 'archived' "
-            "WHERE kind = 'mock' AND id NOT LIKE 'mockv1-%' AND question_count <= 10 "
-            "AND status = 'published' AND id NOT IN (SELECT DISTINCT exam_id FROM jlpt_exam_questions)",
+            "WHERE kind = 'mock' AND status = 'published' AND id NOT LIKE 'mockv1-%' "
+            "AND title LIKE ?",
+            (_SAMPLE_EXAM_TITLE_LIKE,),
         )
 
+    # 指纹 sentinel:一行 status='archived' 的占位题(永不进任何抽题/组卷路径,
+    # 所有查询都带 status='published'),tags 存题库文件指纹。放在最后写,中途
+    # 失败下次启动会重灌。
+    conn.execute(
+        "INSERT INTO jlpt_questions (id, level, section, question_type, stem, passage, "
+        "audio_media_id, choices_json, answer_index, explanation, difficulty, tags, "
+        "is_member_only, source, review_status, status, sort_order, created_at, updated_at) "
+        "VALUES (?, 'N5', 'vocab', 'sentinel', ?, '', '', '[]', 0, '', 3, ?, 0, ?, "
+        "'approved', 'archived', 0, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET tags = ?, updated_at = ?",
+        (sentinel_id, "bank fingerprint sentinel — not a question", fingerprint,
+         _MOCK_SOURCE, now, now, fingerprint, now),
+    )
+
     return {"installed": True, "skipped": False,
-            "questions": imported["total"], "exams": exams}
+            "questions": imported["total"], "exams": exams,
+            "fingerprint": fingerprint}

@@ -111,7 +111,12 @@ def compute_scaled_result(
             1 for qid in ids
             if int((answers.get(qid) or {}).get("is_correct") or 0) == 1
         )
-        scaled = int(round(raw / raw_max * scale_max)) if raw_max else 0
+        # 四舍五入用整数运算实现 ROUND_HALF_UP,不能用内建 round():后者是银行家
+        # 舍入(round-half-to-even),恰好落在 .5 的分数一半进一半舍 —— 同一科内
+        # 规则自相矛盾,且能翻转合格判定(实例:読解 rawMax=16 时 raw=6 → 22.5,
+        # 银行家舍入得 22,考生总分 59 < N2 参考线 60 判不合格,进一法得 23 → 60
+        # 合格)。合格线本身(下方 pass_line)也是整数进一法,两处必须同规则同精度。
+        scaled = (raw * scale_max * 2 + raw_max) // (raw_max * 2) if raw_max else 0
         passed_min = raw_max > 0 and scaled >= scale_min
         all_min_ok = all_min_ok and passed_min
         total_scaled += scaled
