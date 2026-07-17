@@ -18680,6 +18680,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"status": "ok", **jlpt.session_review(conn, session=session),
                         "disclaimer": self._JLPT_DISCLAIMER})
 
+    def api_guide_jlpt_paper(self, conn: sqlite3.Connection, paper_id: str) -> None:
+        """分科整卷详情(游客可看):父卷 + 有序子科目。客户端按 sections 顺序逐段
+        调用既有 /exam/start 推进。"""
+        user = self._jlpt_optional_user(conn)
+        is_member = bool(user) and has_active_membership(conn, user["id"])
+        detail = jlpt.list_paper_sections(conn, paper_id, is_member=is_member)
+        if not detail:
+            return self.send_error_json("paper not found", 404, "not_found")
+        self.send_json({"status": "ok", **detail, "disclaimer": self._JLPT_DISCLAIMER})
+
+    def api_guide_jlpt_paper_result(self, conn: sqlite3.Connection, paper_id: str) -> None:
+        """分科整卷合并成绩(登录):聚合各子科目最近已提交会话——笔试缩放分 +
+        聴解百分比。逐段的判分/回看仍走 /exam/submit、/exam/session/{id}。"""
+        user = self.require_user(conn)
+        result = jlpt.paper_result(conn, user_id=user["id"], paper_id=paper_id)
+        if not result:
+            return self.send_error_json("paper not found", 404, "not_found")
+        self.send_json({"status": "ok", **result, "disclaimer": self._JLPT_DISCLAIMER})
+
     # ---- AI 逐题讲解 (会员权益) ---------------------------------------------
     def api_guide_jlpt_explain(self, conn: sqlite3.Connection) -> None:
         """Member-only per-question AI explanation via the Machi AI Pro model.
@@ -26141,10 +26160,16 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         mime, _ = mimetypes.guess_type(candidate.name)
+        # mimetypes 在 macOS 把 .m4a 猜成 audio/mp4a-latm(裸 AAC 流类型),不是
+        # MP4 容器类型;个别浏览器/播放器据此拒播。JLPT 听力音频统一是 MP4/AAC
+        # 容器,强制成标准 audio/mp4,让 <audio>/AVPlayer 都能识别。
+        if candidate.suffix.lower() in (".m4a", ".m4b", ".mp4a"):
+            mime = "audio/mp4"
         data = candidate.read_bytes()
         self.send_response(200)
         self.send_header("Content-Type", mime or "application/octet-stream")
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Accept-Ranges", "bytes")
         self.send_header("Cache-Control", "public, max-age=31536000")
         self._set_cors()
         self.end_headers()
@@ -26912,6 +26937,11 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_jlpt_exam_history(conn, query)
         if path.startswith("/api/guide/jlpt/exam/session/") and method == "GET":
             return self.api_guide_jlpt_exam_session(conn, unquote(path[len("/api/guide/jlpt/exam/session/"):]).strip("/"))
+        if path.startswith("/api/guide/jlpt/paper/") and path.endswith("/result") and method == "GET":
+            _pid = unquote(path[len("/api/guide/jlpt/paper/"):-len("/result")]).strip("/")
+            return self.api_guide_jlpt_paper_result(conn, _pid)
+        if path.startswith("/api/guide/jlpt/paper/") and method == "GET":
+            return self.api_guide_jlpt_paper(conn, unquote(path[len("/api/guide/jlpt/paper/"):]).strip("/"))
         if path == "/api/guide/categories" and method == "GET":
             return self.api_guide_categories(conn, query)
         if path == "/api/guide/journeys" and method == "GET":

@@ -5708,6 +5708,20 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE jlpt_exam_sessions ADD COLUMN scaled_json TEXT NOT NULL DEFAULT '';
         """,
     ),
+    (
+        119,
+        "jlpt 分科整卷：parent_exam_id 把父卷(paper)与各计时子科目(section)关联",
+        # 2026-07 全真分科：真实 JLPT 分两个独立计时块（言語知識・読解 → 聴解）。
+        # 用「父卷 kind='paper' + 子科目 kind='section' 靠 parent_exam_id 关联」建模，
+        # 每个子科目仍是一张普通 exam（独立 duration/session/续考/CAS 交卷/出分），
+        # 客户端按 sort_order 顺序推进。父卷本身不组卷、不计时，只做聚合入口。
+        # 纯 ADD COLUMN + 索引，SQLite/Postgres 通用；老的独立 mock 卷 parent 为 ''
+        # 照常工作。
+        """
+        ALTER TABLE jlpt_exams ADD COLUMN parent_exam_id TEXT NOT NULL DEFAULT '';
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exams_parent ON jlpt_exams(parent_exam_id);
+        """,
+    ),
 ]
 
 

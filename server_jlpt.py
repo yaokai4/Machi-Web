@@ -152,6 +152,16 @@ _VALID_VOCAB_STATES = ("learning", "mastered")
 # 保留但记告警，绝不因此炸掉一场考试。
 _AUDIO_READY_SQL = "(section <> 'listening' OR COALESCE(audio_media_id, '') <> '')"
 
+# 取题时 LEFT JOIN media 把听力音频的可播放 url 一并带出(键 audio_url)。裸 media
+# id 客户端无从解析,这是唯一的解析入口。media 表是服务端规范媒体存储(base DDL),
+# 生产/开发库恒有;单测需自建同名表。WHERE 里凡与 media 同名的列(仅 id)必须限定
+# 表名 jlpt_questions.id,否则 SQLite 报 ambiguous column。
+_Q_WITH_AUDIO = (
+    "jlpt_questions.*, media.url AS audio_url "
+    "FROM jlpt_questions LEFT JOIN media "
+    "ON media.id = jlpt_questions.audio_media_id AND media.deleted_at IS NULL"
+)
+
 
 # ── small helpers ────────────────────────────────────────────────────────────
 
@@ -216,6 +226,11 @@ def public_question(row: Any, *, reveal_answer: bool = False) -> dict[str, Any]:
         "stem": d.get("stem") or "",
         "passage": d.get("passage") or "",
         "audioMediaId": d.get("audio_media_id") or "",
+        # 听力音频的可播放 URL。裸 media id 客户端无从解析,故在取数处 LEFT JOIN
+        # media 表把 url 带进 row(键 audio_url);未 join 的路径(如定级只考词汇
+        # 语法)自然为空字符串,客户端据此决定是否渲染播放器。相对 /media/... 由
+        # 各端自行拼 base(web 走 Next rewrite、iOS 走 kaixMediaURL)。
+        "audioUrl": d.get("audio_url") or "",
         "choices": _loads_choices(d.get("choices_json")),
         "difficulty": int(d.get("difficulty") or 3),
         "isMemberOnly": bool(d.get("is_member_only")),
@@ -253,11 +268,11 @@ def pick_practice_questions(
     exclude_ids = _recent_correct_ids(conn, user_id, level, now=now) if user_id else []
     if exclude_ids:
         placeholders = ",".join("?" * len(exclude_ids))
-        where.append(f"id NOT IN ({placeholders})")
+        where.append(f"jlpt_questions.id NOT IN ({placeholders})")
         params.extend(exclude_ids)
 
     sql = (
-        "SELECT * FROM jlpt_questions WHERE " + " AND ".join(where)
+        "SELECT " + _Q_WITH_AUDIO + " WHERE " + " AND ".join(where)
         + " ORDER BY RANDOM() LIMIT ?"
     )
     params.append(count)
@@ -325,7 +340,9 @@ def review_questions(conn: Any, *, user_id: str, level: str, count: int) -> list
         params.append(level)
     # A question is "still wrong" if its most recent attempt was incorrect.
     sql = (
-        "SELECT q.* FROM jlpt_questions q JOIN ("
+        "SELECT q.*, m.url AS audio_url FROM jlpt_questions q "
+        "LEFT JOIN media m ON m.id = q.audio_media_id AND m.deleted_at IS NULL "
+        "JOIN ("
         "  SELECT question_id, MAX(created_at) AS last_at FROM jlpt_attempts a "
         "  WHERE a.user_id = ?" + level_clause +
         "  GROUP BY question_id"
@@ -730,7 +747,9 @@ def vocab_progress(conn: Any, *, user_id: str, level: str = "") -> dict[str, Any
 def list_exams(conn: Any, *, level: str = "", is_member: bool = False) -> list[dict[str, Any]]:
     level = normalize_level(level, default="")
     params: list[Any] = []
-    clauses = ["status = 'published'"]
+    # 目录里只出现「可开考的顶层单元」：独立 mock 卷 + 分科整卷的父卷(paper)。
+    # 子科目(kind='section', parent_exam_id 非空)不单列——它们随父卷顺序推进。
+    clauses = ["status = 'published'", "COALESCE(parent_exam_id, '') = ''", "kind <> 'section'"]
     if level:
         clauses.append("level = ?")
         params.append(level)
@@ -741,25 +760,120 @@ def list_exams(conn: Any, *, level: str = "", is_member: bool = False) -> list[d
         " ORDER BY level, sort_order",
         tuple(params),
     ).fetchall()
-    return [_public_exam(dict(r)) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        pub = _public_exam(d)
+        # 父卷把子科目的题量/时长聚合上来，目录卡直接显示「總 XX 題 · YY 分」。
+        if pub["isPaper"]:
+            secs = _paper_sections_rows(conn, d["id"], is_member=is_member)
+            pub["sectionCount"] = len(secs)
+            pub["questionCount"] = sum(int(s.get("question_count") or 0) for s in secs)
+            pub["durationSeconds"] = sum(int(s.get("duration_seconds") or 0) for s in secs)
+        out.append(pub)
+    return out
 
 
 def _public_exam(d: dict[str, Any]) -> dict[str, Any]:
+    kind = d.get("kind") or "mock"
     return {
         "id": d["id"], "level": d.get("level") or "",
-        "title": d.get("title") or "", "kind": d.get("kind") or "mock",
+        "title": d.get("title") or "", "kind": kind,
         "section": d.get("section") or "",
+        "sectionLabel": SECTION_LABELS_ZH.get(d.get("section") or "", ""),
         "questionCount": int(d.get("question_count") or 0),
         "durationSeconds": int(d.get("duration_seconds") or 0),
         "passScore": int(d.get("pass_score") or 60),
         "isMemberOnly": bool(d.get("is_member_only")),
         "scoreMode": normalize_score_mode(d.get("score_mode")),
+        "parentExamId": d.get("parent_exam_id") or "",
+        "sortOrder": int(d.get("sort_order") or 0),
+        "isPaper": kind == "paper",
+        "isSection": kind == "section",
     }
 
 
 def get_exam(conn: Any, exam_id: str) -> Optional[dict[str, Any]]:
     row = conn.execute("SELECT * FROM jlpt_exams WHERE id = ?", (exam_id,)).fetchone()
     return dict(row) if row else None
+
+
+def _paper_sections_rows(conn: Any, paper_id: str, *, is_member: bool) -> list[dict[str, Any]]:
+    """父卷下按顺序排列的子科目原始行(供聚合/组卷)。非会员不含会员专属子科目。"""
+    clauses = ["parent_exam_id = ?", "status = 'published'", "kind = 'section'"]
+    params: list[Any] = [paper_id]
+    if not is_member:
+        clauses.append("is_member_only = 0")
+    rows = conn.execute(
+        "SELECT * FROM jlpt_exams WHERE " + " AND ".join(clauses) + " ORDER BY sort_order",
+        tuple(params),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def list_paper_sections(conn: Any, paper_id: str, *, is_member: bool = False) -> Optional[dict[str, Any]]:
+    """分科整卷详情：父卷 + 有序子科目(公开壳,题量/时限/出分模式)。父卷不存在
+    或不是 paper 时返回 None。客户端据此逐段调用既有 /exam/start。"""
+    paper = get_exam(conn, paper_id)
+    if not paper or (paper.get("kind") or "") != "paper" or (paper.get("status") or "") != "published":
+        return None
+    secs = [_public_exam(r) for r in _paper_sections_rows(conn, paper_id, is_member=is_member)]
+    return {"paper": _public_exam(paper), "sections": secs}
+
+
+def paper_result(conn: Any, *, user_id: str, paper_id: str) -> Optional[dict[str, Any]]:
+    """聚合一张分科整卷的成绩：取每个子科目最近一次已提交会话，合并展示——
+    笔试子科目(含 vocab+grammar+reading)的 scaled 缩放分 + 聴解子科目的百分比。
+    submit_exam_session 保持逐段不变;这里只读不算。任一子科目未考完则该段留空。"""
+    paper = get_exam(conn, paper_id)
+    if not paper or (paper.get("kind") or "") != "paper":
+        return None
+    sections = _paper_sections_rows(conn, paper_id, is_member=True)
+    out_sections = []
+    combined_scaled = None
+    listening = None
+    all_submitted = True
+    for sec in sections:
+        row = conn.execute(
+            "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
+            "AND status = 'submitted' ORDER BY submitted_at DESC LIMIT 1",
+            (user_id, sec["id"]),
+        ).fetchone()
+        if not row:
+            all_submitted = False
+            out_sections.append({
+                "examId": sec["id"], "section": sec.get("section") or "",
+                "sectionLabel": SECTION_LABELS_ZH.get(sec.get("section") or "", ""),
+                "title": sec.get("title") or "", "done": False,
+            })
+            continue
+        s = dict(row)
+        scaled = _loads_scaled(s.get("scaled_json"))
+        out_sections.append({
+            "examId": sec["id"], "section": sec.get("section") or "",
+            "sectionLabel": SECTION_LABELS_ZH.get(sec.get("section") or "", ""),
+            "title": sec.get("title") or "", "done": True,
+            "sessionId": s["id"],
+            "total": int(s.get("total") or 0), "correct": int(s.get("correct") or 0),
+            "score": int(s.get("score") or 0), "passed": bool(s.get("passed")),
+            "durationSeconds": int(s.get("duration_seconds") or 0),
+            "scaled": scaled,
+        })
+        if scaled:
+            combined_scaled = scaled  # 笔试段本就产出完整笔试缩放分
+        if (sec.get("section") or "") == "listening":
+            listening = {
+                "score": int(s.get("score") or 0), "correct": int(s.get("correct") or 0),
+                "total": int(s.get("total") or 0), "passed": bool(s.get("passed")),
+            }
+    return {
+        "paperId": paper_id, "level": paper.get("level") or "",
+        "title": paper.get("title") or "",
+        "complete": all_submitted,
+        "sections": out_sections,
+        "scaled": combined_scaled,      # 笔试参考缩放分(不含聴解)
+        "listening": listening,          # 聴解百分比(单列)
+    }
 
 
 def _resolve_exam_question_ids(conn: Any, exam: dict[str, Any], *, is_member: bool) -> list[str]:
@@ -908,7 +1022,8 @@ def _questions_by_ids(conn: Any, q_ids: list[str], *, reveal_answer: bool) -> li
         return []
     placeholders = ",".join("?" * len(q_ids))
     rows = conn.execute(
-        f"SELECT * FROM jlpt_questions WHERE id IN ({placeholders})", tuple(q_ids)
+        "SELECT " + _Q_WITH_AUDIO + f" WHERE jlpt_questions.id IN ({placeholders})",
+        tuple(q_ids),
     ).fetchall()
     by_id = {dict(r)["id"]: dict(r) for r in rows}
     out = []
@@ -1477,7 +1592,7 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
     level = normalize_level(exam.get("level"), default="N5")
     title = str(exam.get("title") or "").strip()[:256]
     kind = str(exam.get("kind") or "mock").strip().lower()
-    if kind not in ("mock", "section", "vocab"):
+    if kind not in ("mock", "section", "vocab", "paper"):
         kind = "mock"
     section = normalize_section(exam.get("section"))
     duration = _clamp(exam.get("durationSeconds", exam.get("duration_seconds")), 0, 0, 24 * 3600)
@@ -1486,6 +1601,9 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
     status = str(exam.get("status") or "published").strip().lower()[:16] or "published"
     sort_order = _clamp(exam.get("sortOrder", exam.get("sort_order")), 0, 0, 10_000_000)
     score_mode = normalize_score_mode(exam.get("scoreMode") or exam.get("score_mode"))
+    # 分科整卷：子科目(kind='section')挂在父卷(kind='paper')下，靠 parent_exam_id
+    # 关联、sort_order 排序推进。父卷本身不组卷不计时。
+    parent_exam_id = str(exam.get("parentExamId") or exam.get("parent_exam_id") or "").strip()[:64]
 
     raw_qids = exam.get("questionIds") or exam.get("question_ids") or []
     question_ids = [str(q).strip() for q in raw_qids if str(q).strip()] if isinstance(raw_qids, list) else []
@@ -1497,20 +1615,20 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
         question_count = _clamp(exam.get("questionCount", exam.get("question_count")), 20, 1, EXAM_DYNAMIC_MAX)
 
     row = (level, title, kind, section, question_count, duration, pass_score,
-           is_member_only, status, sort_order, score_mode)
+           is_member_only, status, sort_order, score_mode, parent_exam_id)
     exists = conn.execute("SELECT id FROM jlpt_exams WHERE id = ?", (exam_id,)).fetchone()
     if exists:
         conn.execute(
             "UPDATE jlpt_exams SET level=?, title=?, kind=?, section=?, question_count=?, "
             "duration_seconds=?, pass_score=?, is_member_only=?, status=?, sort_order=?, "
-            "score_mode=? WHERE id=?",
+            "score_mode=?, parent_exam_id=? WHERE id=?",
             (*row, exam_id),
         )
     else:
         conn.execute(
             "INSERT INTO jlpt_exams (id, level, title, kind, section, question_count, duration_seconds, "
-            "pass_score, is_member_only, status, sort_order, score_mode, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "pass_score, is_member_only, status, sort_order, score_mode, parent_exam_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (exam_id, *row, now),
         )
     # Replace the fixed membership only when the caller supplied a list. Passing
@@ -1524,7 +1642,7 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
                 (exam_id, qid, i, i),
             )
     return {"examId": exam_id, "kind": kind, "questionCount": question_count,
-            "fixed": bool(question_ids)}
+            "fixed": bool(question_ids), "parentExamId": parent_exam_id}
 
 
 # ── zone summary fields (for api_guide_jlpt_zone) ────────────────────────────
