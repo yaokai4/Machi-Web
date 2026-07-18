@@ -5722,6 +5722,22 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE INDEX IF NOT EXISTS idx_jlpt_exams_parent ON jlpt_exams(parent_exam_id);
         """,
     ),
+    (
+        120,
+        "jlpt 考试消耗 Machi 币：jlpt_exams.coin_cost + 回填 v1 单卷",
+        # 2026-07 全真模考/分科整卷开考消耗 Machi 币(练习/定级/错题本免费)。
+        # coin_cost 记在被开考的 exam 行:单卷记自身;分科卷记笔试子科目(整卷第一个
+        # 开考、只扣一次),父卷卡的价由 list_exams 聚合子科目显示。会员价在读取处
+        # 按 5 折计算、不入库。开考前原子扣币(wallet_post_ledger),续考不重复扣。
+        # 回填现有 v1 单卷默认价 100~400(1币=1JPY)。纯 ADD COLUMN,SQLite/Postgres 通用。
+        """
+        ALTER TABLE jlpt_exams ADD COLUMN coin_cost INTEGER NOT NULL DEFAULT 0;
+        UPDATE jlpt_exams SET coin_cost = CASE level
+            WHEN 'N5' THEN 100 WHEN 'N4' THEN 150 WHEN 'N3' THEN 250
+            WHEN 'N2' THEN 350 WHEN 'N1' THEN 400 ELSE 200 END
+         WHERE kind = 'mock' AND id LIKE 'mockv1-%';
+        """,
+    ),
 ]
 
 

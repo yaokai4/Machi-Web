@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import { GraduationCap, Loader, Lock, Timer, ArrowLeft, History, Trophy, ChevronRight } from "lucide-react";
+import { GraduationCap, Loader, Lock, Timer, ArrowLeft, History, Trophy, ChevronRight, Coins } from "lucide-react";
 import {
   guide,
   type GuideJlptExam,
@@ -78,6 +78,10 @@ export function ExamClient() {
       const ae = err as APIError;
       if (ae.status === 403) {
         pushToast({ kind: "info", message: t("该模考为会员专属", "この模試は会員限定です", "This exam is members-only") });
+        return;
+      }
+      if (ae.status === 402 || ae.code === "EXAM_INSUFFICIENT_COINS") {
+        pushToast({ kind: "info", message: t("Machi 币不足，请到「钱包」充值后再开考。", "Machi コインが不足しています。ウォレットでチャージしてください。", "Not enough Machi Coins — top up in your wallet first.") });
         return;
       }
       pushToast({ kind: "error", message: ae.message });
@@ -287,6 +291,15 @@ function ExamCard({ t, exam, onStart, pending }: { t: Tri; exam: GuideJlptExam; 
                 ? t("JLPT 标准出分", "JLPT 準拠採点", "JLPT-style scoring")
                 : t(`合格线 ${exam.passScore}`, `合格 ${exam.passScore}`, `Pass ${exam.passScore}`)}
             </span>
+            {exam.coinCost && exam.coinCost > 0 ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-500/[0.14] px-2 py-0.5 text-[11px] font-black text-amber-600 dark:text-amber-400">
+                <Coins className="h-3 w-3" />
+                {exam.coinCost}
+                {exam.coinCostMember && exam.coinCostMember < exam.coinCost
+                  ? t(` · 会员 ${exam.coinCostMember}`, ` · 会員 ${exam.coinCostMember}`, ` · Member ${exam.coinCostMember}`)
+                  : ""}
+              </span>
+            ) : null}
           </div>
         </div>
       </div>
@@ -344,6 +357,10 @@ function PaperFlow({
       const ae = err as APIError;
       if (ae.status === 403) {
         pushToast({ kind: "info", message: t("该科目为会员专属", "この科目は会員限定です", "This section is members-only") });
+        return;
+      }
+      if (ae.status === 402 || ae.code === "EXAM_INSUFFICIENT_COINS") {
+        pushToast({ kind: "info", message: t("Machi 币不足，请到「钱包」充值后再开考。", "Machi コインが不足しています。ウォレットでチャージしてください。", "Not enough Machi Coins — top up in your wallet first.") });
         return;
       }
       pushToast({ kind: "error", message: ae.message });

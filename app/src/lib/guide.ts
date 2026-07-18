@@ -1524,6 +1524,9 @@ export interface GuideJlptExam {
   sortOrder?: number;
   /** 父卷（isPaper）聚合的子科目数（list_exams 计算）。 */
   sectionCount?: number;
+  /** 开考消耗的 Machi 币（0=免费）；会员价 5 折。 */
+  coinCost?: number;
+  coinCostMember?: number;
 }
 /** 分科整卷详情：父卷 + 有序子科目（客户端按顺序逐段推进）。 */
 export interface GuideJlptPaperDetail {

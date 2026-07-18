@@ -18616,6 +18616,29 @@ class Handler(BaseHTTPRequestHandler):
         started = jlpt.start_exam_session(conn, user_id=user["id"], exam=exam, is_member=is_member, now=now_iso())
         if not started:
             return self.send_error_json("该模考暂无可用题目。", 409, "no_questions")
+        # Machi 币扣费:仅全新开考(非续考)且该卷 coin_cost>0。会员 5 折。练习/定级/
+        # 错题本走别的端点、免费,不到这条路径。分科整卷把成本记在笔试子卷上,整卷
+        # 只在第一段扣一次。以 sessionId 作幂等键——同一会话(含 HTTP 重试经续考
+        # 命中同一 session)绝不重复扣;余额不足则作废刚建的空会话、退回未开考并
+        # 引导充值。
+        base_cost = int(exam.get("coin_cost") or 0)
+        cost = jlpt.member_coin_cost(base_cost) if is_member else base_cost
+        if cost > 0 and not started.get("resumed"):
+            debit = wallet_post_ledger(
+                conn, user["id"], "spend", -cost,
+                source_type="jlpt_exam", product_id=exam_id,
+                idempotency_key="jlpt_exam:" + str(started.get("sessionId") or ""),
+                metadata={"examId": exam_id, "level": exam.get("level") or "", "member": is_member},
+            )
+            if debit.get("insufficient"):
+                conn.execute("DELETE FROM jlpt_exam_sessions WHERE id = ?", (started.get("sessionId"),))
+                conn.commit()
+                env = self._error_envelope("EXAM_INSUFFICIENT_COINS", "Machi 币不足，充值后即可开考。")
+                env["requiredCoins"] = cost
+                env["balance"] = int((debit.get("wallet") or {}).get("balancePoints") or 0)
+                return self.send_json(env, 402)
+            started["coinCharged"] = cost
+            started["coinBalance"] = int((debit.get("wallet") or {}).get("balancePoints") or 0)
         conn.commit()
         _guide_funnel_log("jlpt_exam_start", user_id=user["id"], examId=exam_id,
                           level=exam.get("level") or "")

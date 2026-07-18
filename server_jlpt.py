@@ -764,18 +764,28 @@ def list_exams(conn: Any, *, level: str = "", is_member: bool = False) -> list[d
     for r in rows:
         d = dict(r)
         pub = _public_exam(d)
-        # 父卷把子科目的题量/时长聚合上来，目录卡直接显示「總 XX 題 · YY 分」。
+        # 父卷把子科目的题量/时长/币价聚合上来，目录卡直接显示「總 XX 題 · YY 分 · N 币」。
         if pub["isPaper"]:
             secs = _paper_sections_rows(conn, d["id"], is_member=is_member)
             pub["sectionCount"] = len(secs)
             pub["questionCount"] = sum(int(s.get("question_count") or 0) for s in secs)
             pub["durationSeconds"] = sum(int(s.get("duration_seconds") or 0) for s in secs)
+            paper_cost = sum(int(s.get("coin_cost") or 0) for s in secs)
+            pub["coinCost"] = paper_cost
+            pub["coinCostMember"] = member_coin_cost(paper_cost)
         out.append(pub)
     return out
 
 
+def member_coin_cost(base: int) -> int:
+    """会员价:5 折(向下取整)。base<=0 时免费不变。"""
+    b = int(base or 0)
+    return b // 2 if b > 0 else 0
+
+
 def _public_exam(d: dict[str, Any]) -> dict[str, Any]:
     kind = d.get("kind") or "mock"
+    base_cost = int(d.get("coin_cost") or 0)
     return {
         "id": d["id"], "level": d.get("level") or "",
         "title": d.get("title") or "", "kind": kind,
@@ -790,7 +800,28 @@ def _public_exam(d: dict[str, Any]) -> dict[str, Any]:
         "sortOrder": int(d.get("sort_order") or 0),
         "isPaper": kind == "paper",
         "isSection": kind == "section",
+        # 开考消耗的 Machi 币(0=免费)。会员价 5 折;客户端两者都显示。
+        "coinCost": base_cost,
+        "coinCostMember": member_coin_cost(base_cost),
     }
+
+
+def has_resumable_exam_session(conn: Any, *, user_id: str, exam: dict[str, Any], now: Optional[str] = None) -> bool:
+    """该用户对这张 exam 是否有「未过期的 in_progress 会话」(即开考会走续考、不该
+    再扣币)。判据与 start_exam_session 的续考逻辑一致:in_progress 且未超时限。"""
+    row = conn.execute(
+        "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
+        "AND status = 'in_progress' ORDER BY started_at DESC LIMIT 1",
+        (user_id, exam["id"]),
+    ).fetchone()
+    if not row:
+        return False
+    session = dict(row)
+    duration = int(exam.get("duration_seconds") or 0)
+    if duration <= 0:
+        return True
+    elapsed = _seconds_between(session.get("started_at") or _iso(now), _iso(now))
+    return elapsed < duration
 
 
 def get_exam(conn: Any, exam_id: str) -> Optional[dict[str, Any]]:
@@ -1604,6 +1635,8 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
     # 分科整卷：子科目(kind='section')挂在父卷(kind='paper')下，靠 parent_exam_id
     # 关联、sort_order 排序推进。父卷本身不组卷不计时。
     parent_exam_id = str(exam.get("parentExamId") or exam.get("parent_exam_id") or "").strip()[:64]
+    # 开考消耗的 Machi 币(分科卷记在笔试子科目上,整卷只扣一次)。
+    coin_cost = _clamp(exam.get("coinCost", exam.get("coin_cost")), 0, 0, 100_000)
 
     raw_qids = exam.get("questionIds") or exam.get("question_ids") or []
     question_ids = [str(q).strip() for q in raw_qids if str(q).strip()] if isinstance(raw_qids, list) else []
@@ -1615,20 +1648,20 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
         question_count = _clamp(exam.get("questionCount", exam.get("question_count")), 20, 1, EXAM_DYNAMIC_MAX)
 
     row = (level, title, kind, section, question_count, duration, pass_score,
-           is_member_only, status, sort_order, score_mode, parent_exam_id)
+           is_member_only, status, sort_order, score_mode, parent_exam_id, coin_cost)
     exists = conn.execute("SELECT id FROM jlpt_exams WHERE id = ?", (exam_id,)).fetchone()
     if exists:
         conn.execute(
             "UPDATE jlpt_exams SET level=?, title=?, kind=?, section=?, question_count=?, "
             "duration_seconds=?, pass_score=?, is_member_only=?, status=?, sort_order=?, "
-            "score_mode=?, parent_exam_id=? WHERE id=?",
+            "score_mode=?, parent_exam_id=?, coin_cost=? WHERE id=?",
             (*row, exam_id),
         )
     else:
         conn.execute(
             "INSERT INTO jlpt_exams (id, level, title, kind, section, question_count, duration_seconds, "
-            "pass_score, is_member_only, status, sort_order, score_mode, parent_exam_id, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "pass_score, is_member_only, status, sort_order, score_mode, parent_exam_id, coin_cost, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (exam_id, *row, now),
         )
     # Replace the fixed membership only when the caller supplied a list. Passing

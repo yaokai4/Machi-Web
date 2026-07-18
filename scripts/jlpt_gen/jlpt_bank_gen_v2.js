@@ -10,6 +10,9 @@ export const meta = {
 
 const LEVEL = (args && args.level) || 'N1'
 const GROUP = (args && args.group) || 'lex' // 'lex' = 文字語彙+文法, 'rc' = 読解+聴解
+// 同一 level×group 要跑很多波才能累积到 5000/级。wave 让每波用不同主题偏移 +
+// 唯一批次标签,产出新内容(跨波按 stem 去重);每波结果单独落盘,组卷时合并去重。
+const WAVE = (args && args.wave) || 1
 
 // ── 各级各题型「已校验目标数」。N1/N2 加权。overproduction 交给 request 系数。──
 const NEEDS = {
@@ -145,9 +148,15 @@ function genPrompt(level, qtype, count, themeA, themeB) {
     '【硬性要求】',
     '1. 每题恰好 4 个选项，恰好 1 个无争议正确答案；干扰项要有迷惑性但经得起母语者推敲，不得有第二个可辩护正确项。',
     '2. 词汇语法严格限制在该级别及以下（读解/听力文本可有极少量超纲词但不影响答题）。',
-    '3. stem/passage/choices 全部日语；explanation 用简体中文说明考点、正确理由、主要干扰项为何错（2-4句）。',
-    '4. 阅读/文章语法/听力：passage 完整原创；同一篇的多题 passage 一字不差重复，group 填同一短 slug；单题 passage 留空、group 留空。',
-    '5. difficulty 为该级别内部难度 1-5（3=标准）。qtype 固定填 "' + qtype + '"。',
+    '3. stem/passage/choices 全部日语。',
+    '4. 【explanation 极详细 · 每题必写全】用简体中文，面向备考者把这道题讲透，必须逐项包含：',
+    '   ①【正确答案的意思与用法】：该词/语法/表达的准确含义、词性、读音或活用、常见搭配与语感、适用场景；',
+    '   ②【涉及的知识点】：这道题考查的语法点或词汇知识（如接续、活用形、敬语层级、近义辨析、汉字音训、惯用固定用法等），点明规则；',
+    '   ③【为什么这个选项正确】：结合句意/语境说明为何该选项唯一成立；',
+    '   ④【逐一说明每个干扰项为什么错】：对其余 3 个选项各自说明它的意思是什么、为什么在此处不对（搭配不当/语义偏差/活用错误/语体不符/张冠李戴等），不要只笼统带过。',
+    '   宁详勿简，写成能让学习者真正学会的讲解（通常 4-8 句以上）。',
+    '5. 阅读/文章语法/听力：passage 完整原创；同一篇的多题 passage 一字不差重复，group 填同一短 slug；单题 passage 留空、group 留空。',
+    '6. difficulty 为该级别内部难度 1-5（3=标准）。qtype 固定填 "' + qtype + '"。',
     '直接输出结构化结果。',
   ].join('\n')
 }
@@ -176,7 +185,8 @@ function chunkCount(qtype) {
 
 function buildBatches(needs, round, suffix) {
   const batches = []
-  let t = 0
+  // 主题起点随 wave 偏移,让不同波覆盖不同主题组合,减少跨波重复。
+  let t = WAVE * 5
   const qtypes = GROUP === 'lex' ? LEX_QTYPES : RC_QTYPES
   for (const qtype of qtypes) {
     const need = (needs[LEVEL] || {})[qtype]
@@ -189,7 +199,8 @@ function buildBatches(needs, round, suffix) {
       remaining -= n
       part += 1
       const themeA = THEMES[t % THEMES.length]; const themeB = THEMES[(t + 9) % THEMES.length]; t += 1
-      batches.push({ id: LEVEL.toLowerCase() + '-' + qtype + '-' + suffix + part, level: LEVEL, qtype, count: n, themeA, themeB })
+      // 批次 id 带 wave,跨波不撞缓存(resume 只在同一 wave 内命中)。
+      batches.push({ id: LEVEL.toLowerCase() + '-' + qtype + '-w' + WAVE + suffix + part, level: LEVEL, qtype, count: n, themeA, themeB })
     }
   }
   return batches
