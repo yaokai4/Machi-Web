@@ -11,9 +11,10 @@
 // accent gradient moment, never from a rainbow of hues.
 
 import Link from "next/link";
-import { useState, type ComponentType, type ReactNode } from "react";
+import { useState, useRef, useEffect, useCallback, type ComponentType, type ReactNode } from "react";
 import {
   Flame, Timer, Check, X, Lock, Sparkles, Loader, ChevronRight, Trophy,
+  Play, Pause, RotateCcw, Headphones, ChevronDown,
 } from "lucide-react";
 import { guide, type GuideJlptStreak, type GuideJlptExamCountdown, type GuideJlptQuestion } from "@/lib/guide";
 import { APIError, isAuthRequiredError } from "@/lib/api";
@@ -687,6 +688,111 @@ export function SectionPicker({
 /** A single answerable question card. `state` drives colouring after grading:
  *  the correct index goes green, a wrong pick goes red. `revealed` locks input
  *  and shows the correct answer (review / exam回看). */
+function fmtClock(sec: number): string {
+  if (!Number.isFinite(sec) || sec < 0) sec = 0;
+  const m = Math.floor(sec / 60);
+  const s = Math.floor(sec % 60);
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** JLPT 听力音频播放器：播放/暂停 + 可拖动进度 + 时间 + 重播。用既有 kx-living-*
+ *  token，零全局 CSS。不用原生 <audio controls>（各浏览器样式不一、不够精致）,
+ *  自绘控件包一个隐藏 <audio>。 */
+export function JlptAudioPlayer({ t, src }: { t: Tri; src: string }) {
+  const ref = useRef<HTMLAudioElement | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [cur, setCur] = useState(0);
+  const [dur, setDur] = useState(0);
+  const [ready, setReady] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    // 换题时重置（同一组件被复用到不同 src）。
+    setPlaying(false); setCur(0); setDur(0); setReady(false); setFailed(false);
+  }, [src]);
+
+  const toggle = useCallback(() => {
+    const a = ref.current;
+    if (!a) return;
+    if (a.paused) { a.play().catch(() => setFailed(true)); } else { a.pause(); }
+  }, []);
+  const replay = useCallback(() => {
+    const a = ref.current;
+    if (!a) return;
+    a.currentTime = 0;
+    a.play().catch(() => setFailed(true));
+  }, []);
+  const seek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const a = ref.current;
+    if (!a || !dur) return;
+    a.currentTime = (Number(e.target.value) / 1000) * dur;
+    setCur(a.currentTime);
+  }, [dur]);
+
+  const pct = dur > 0 ? Math.min(1000, (cur / dur) * 1000) : 0;
+
+  return (
+    <div className="mt-3.5 rounded-2xl border border-[rgb(var(--kx-living-accent))]/25 bg-[rgb(var(--kx-living-accent))]/[0.05] px-4 py-3.5">
+      <audio
+        ref={ref}
+        src={src}
+        preload="metadata"
+        onLoadedMetadata={(e) => { setDur(e.currentTarget.duration || 0); setReady(true); }}
+        onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => setPlaying(false)}
+        onError={() => setFailed(true)}
+      />
+      <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-[rgb(var(--kx-living-accent))]">
+        <Headphones className="h-3.5 w-3.5" />
+        {t("听力音频", "リスニング音声", "Listening audio")}
+      </div>
+      {failed ? (
+        <p className="mt-2 text-[13px] font-semibold text-[rgb(var(--kx-living-muted))]">
+          {t("音频加载失败，请检查网络后重试。", "音声を読み込めませんでした。", "Couldn't load the audio.")}
+        </p>
+      ) : (
+        <div className="mt-2.5 flex items-center gap-3">
+          <button
+            type="button"
+            onClick={toggle}
+            aria-label={playing ? t("暂停", "一時停止", "Pause") : t("播放", "再生", "Play")}
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] text-white shadow-[0_10px_22px_-12px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 active:scale-95"
+          >
+            {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 translate-x-[1px]" />}
+          </button>
+          <div className="min-w-0 flex-1">
+            <input
+              type="range"
+              min={0}
+              max={1000}
+              value={pct}
+              onChange={seek}
+              disabled={!ready}
+              aria-label={t("音频进度", "再生位置", "Seek")}
+              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[rgb(var(--kx-living-ink))]/[0.12] accent-[rgb(var(--kx-living-accent))]"
+              style={{ background: `linear-gradient(to right, rgb(var(--kx-living-accent)) ${pct / 10}%, rgb(var(--kx-living-ink)/0.12) ${pct / 10}%)` }}
+            />
+            <div className="mt-1 flex justify-between text-[11px] font-bold tabular-nums text-[rgb(var(--kx-living-muted))]">
+              <span>{fmtClock(cur)}</span>
+              <span>{fmtClock(dur)}</span>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={replay}
+            aria-label={t("重播", "もう一度", "Replay")}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-[rgb(var(--kx-living-accent))]/30 text-[rgb(var(--kx-living-accent))] transition hover:bg-[rgb(var(--kx-living-accent))]/[0.08]"
+          >
+            <RotateCcw className="h-4 w-4" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function QuestionCard({
   t,
   question,
@@ -715,6 +821,12 @@ export function QuestionCard({
         ? question.answerIndex
         : undefined;
   const locked = disabled || revealed || correctIdx !== undefined;
+  const hasAudio = !!question.audioUrl;
+  // 听力题:答题时默认不显示脚本(听力就是要「听」);回看/已判分时或手动展开后
+  // 才显示原文脚本，便于对照学习。
+  const graded = correctIdx !== undefined;
+  const [showScript, setShowScript] = useState(false);
+  const scriptVisible = !hasAudio || graded || showScript;
 
   return (
     <div className="rounded-[24px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_22px_50px_-44px_rgb(var(--kx-shadow)/0.7)] sm:p-6">
@@ -737,7 +849,20 @@ export function QuestionCard({
         ) : null}
       </div>
 
-      {question.passage ? (
+      {hasAudio ? <JlptAudioPlayer t={t} src={question.audioUrl as string} /> : null}
+
+      {question.passage && hasAudio && !scriptVisible ? (
+        <button
+          type="button"
+          onClick={() => setShowScript(true)}
+          className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] px-3 py-1.5 text-[12px] font-bold text-[rgb(var(--kx-living-muted))] transition hover:border-[rgb(var(--kx-living-accent))]/40 hover:text-[rgb(var(--kx-living-accent))]"
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+          {t("显示听力原文", "スクリプトを表示", "Show transcript")}
+        </button>
+      ) : null}
+
+      {question.passage && scriptVisible ? (
         <p className="mt-3.5 whitespace-pre-wrap rounded-2xl bg-[rgb(var(--kx-living-ink))]/[0.03] px-4 py-3.5 text-sm font-medium leading-relaxed text-[rgb(var(--kx-living-ink))]">
           {question.passage}
         </p>

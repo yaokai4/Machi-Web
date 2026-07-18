@@ -33,7 +33,7 @@ import {
   type Tri,
 } from "../JlptKit";
 
-type View = "list" | "taking" | "result" | "review";
+type View = "list" | "taking" | "result" | "review" | "paper";
 
 export function ExamClient() {
   const { locale } = useI18n();
@@ -47,6 +47,7 @@ export function ExamClient() {
   const [session, setSession] = useState<GuideJlptExamStart | null>(null);
   const [result, setResult] = useState<GuideJlptExamSubmit | null>(null);
   const [reviewSessionId, setReviewSessionId] = useState<string | null>(null);
+  const [paperId, setPaperId] = useState<string | null>(null);
 
   const back = { href: "/guide/jlpt", label: t("JLPT 备考", "JLPT 対策", "JLPT prep") };
 
@@ -152,6 +153,30 @@ export function ExamClient() {
     );
   }
 
+  if (view === "paper" && paperId) {
+    return (
+      <GuideShell back={back}>
+        <JlptNarrow>
+          <PaperFlow
+            t={t}
+            language={language}
+            paperId={paperId}
+            onOpenReview={(sid) => {
+              setReviewSessionId(sid);
+              setView("review");
+            }}
+            onExit={() => {
+              setView("list");
+              setPaperId(null);
+              examsQ.refetch();
+              historyQ.refetch();
+            }}
+          />
+        </JlptNarrow>
+      </GuideShell>
+    );
+  }
+
   return (
     <GuideShell back={back}>
       <JlptNarrow>
@@ -188,7 +213,20 @@ export function ExamClient() {
           <section className="mt-4">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {examsQ.data.exams.map((exam) => (
-                <ExamCard key={exam.id} t={t} exam={exam} onStart={() => start.mutate(exam.id)} pending={start.isPending} />
+                <ExamCard
+                  key={exam.id}
+                  t={t}
+                  exam={exam}
+                  onStart={() => {
+                    if (exam.isPaper) {
+                      setPaperId(exam.id);
+                      setView("paper");
+                    } else {
+                      start.mutate(exam.id);
+                    }
+                  }}
+                  pending={start.isPending}
+                />
               ))}
             </div>
           </section>
@@ -232,6 +270,11 @@ function ExamCard({ t, exam, onStart, pending }: { t: Tri; exam: GuideJlptExam; 
             {exam.isMemberOnly ? <Lock className="h-3.5 w-3.5 shrink-0 text-[rgb(var(--kx-living-accent))]" /> : null}
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-1.5">
+            {exam.isPaper && exam.sectionCount ? (
+              <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--kx-living-accent))]/[0.12] px-2 py-0.5 text-[11px] font-black text-[rgb(var(--kx-living-accent))]">
+                {t(`分科整卷 · ${exam.sectionCount} 科`, `分野別 · ${exam.sectionCount} 科目`, `${exam.sectionCount} timed sections`)}
+              </span>
+            ) : null}
             <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] px-2 py-0.5 text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
               {t(`${exam.questionCount} 题`, `${exam.questionCount} 問`, `${exam.questionCount} Q`)}
             </span>
@@ -240,7 +283,7 @@ function ExamCard({ t, exam, onStart, pending }: { t: Tri; exam: GuideJlptExam; 
               {exam.durationSeconds > 0 ? fmtDuration(exam.durationSeconds) : t("不限时", "時間無制限", "Untimed")}
             </span>
             <span className="inline-flex items-center gap-1 rounded-full bg-[rgb(var(--kx-living-ink))]/[0.05] px-2 py-0.5 text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
-              {exam.scoreMode === "jlpt_scaled"
+              {exam.isPaper || exam.scoreMode === "jlpt_scaled"
                 ? t("JLPT 标准出分", "JLPT 準拠採点", "JLPT-style scoring")
                 : t(`合格线 ${exam.passScore}`, `合格 ${exam.passScore}`, `Pass ${exam.passScore}`)}
             </span>
@@ -256,6 +299,236 @@ function ExamCard({ t, exam, onStart, pending }: { t: Tri; exam: GuideJlptExam; 
         {pending ? <Loader className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
         {t("开始模考", "模試を受ける", "Start exam")}
       </button>
+    </div>
+  );
+}
+
+// ── 分科整卷流转（父卷 → 逐段独立计时 → 中间休息 → 合并成绩）──────────────────
+function PaperFlow({
+  t,
+  language,
+  paperId,
+  onExit,
+  onOpenReview,
+}: {
+  t: Tri;
+  language: string;
+  paperId: string;
+  onExit: () => void;
+  onOpenReview: (sessionId: string) => void;
+}) {
+  const pushToast = useToasts((s) => s.push);
+  const openAuthPrompt = useAuthPrompt((s) => s.open);
+  const [phase, setPhase] = useState<"intro" | "section" | "break" | "result">("intro");
+  const [idx, setIdx] = useState(0);
+  const [section, setSection] = useState<GuideJlptExamStart | null>(null);
+
+  const paperQ = useQuery({
+    queryKey: ["guide", "jlpt-paper", paperId],
+    queryFn: () => guide.jlptPaper(paperId),
+    staleTime: 60_000,
+  });
+  const sections = paperQ.data?.sections ?? [];
+
+  const startSection = useMutation({
+    mutationFn: (examId: string) => guide.jlptExamStart(examId),
+    onSuccess: (data) => {
+      setSection(data);
+      setPhase("section");
+    },
+    onError: (err) => {
+      if (isAuthRequiredError(err)) {
+        openAuthPrompt({ kind: "generic", title: t("登录后参加模考", "ログインして模試を受ける", "Log in to take the exam") });
+        return;
+      }
+      const ae = err as APIError;
+      if (ae.status === 403) {
+        pushToast({ kind: "info", message: t("该科目为会员专属", "この科目は会員限定です", "This section is members-only") });
+        return;
+      }
+      pushToast({ kind: "error", message: ae.message });
+    },
+  });
+
+  if (paperQ.isLoading) return <InlineLoading />;
+  if (paperQ.isError || !paperQ.data) return <ErrorState />;
+
+  const advance = () => {
+    if (idx + 1 < sections.length) {
+      setIdx(idx + 1);
+      setSection(null);
+      setPhase("break");
+    } else {
+      setPhase("result");
+    }
+  };
+
+  // 逐段答题：复用单卷 ExamRunner（含听力音频播放器 via QuestionCard）。
+  if (phase === "section" && section) {
+    return (
+      <ExamRunner
+        t={t}
+        session={section}
+        onExit={onExit}
+        onSubmitted={() => advance()}
+      />
+    );
+  }
+
+  const cur = sections[idx];
+  const paperTitle = paperQ.data.paper.title;
+
+  // 中间休息屏：真实 JLPT 各科之间的过渡。
+  if (phase === "break" && cur) {
+    return (
+      <div>
+        <JlptPageHeader eyebrow={paperTitle} title={t("下一科目", "次の科目", "Next section")} />
+        <div className="mt-6 rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-6 text-center shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]">
+          <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
+            {t(`第 ${idx + 1} / ${sections.length} 科`, `${idx + 1} / ${sections.length} 科目`, `Section ${idx + 1} / ${sections.length}`)}
+          </p>
+          <p className="mt-2 text-xl font-black text-[rgb(var(--kx-living-ink))]">{cur.title}</p>
+          <p className="mt-1 text-sm font-semibold text-[rgb(var(--kx-living-muted))]">
+            {cur.section === "listening"
+              ? t("聴解：音频只能顺次播放，请准备好耳机。", "聴解：音声は順に再生。イヤホンをご準備ください。", "Listening: audio plays in sequence — headphones recommended.")
+              : t(`${cur.questionCount} 题 · ${fmtDuration(cur.durationSeconds)}`, `${cur.questionCount} 問 · ${fmtDuration(cur.durationSeconds)}`, `${cur.questionCount} Q · ${fmtDuration(cur.durationSeconds)}`)}
+          </p>
+          <button
+            type="button"
+            onClick={() => startSection.mutate(cur.id)}
+            disabled={startSection.isPending}
+            className="mt-5 inline-flex items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-6 py-3 text-sm font-black text-white shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-60"
+          >
+            {startSection.isPending ? <Loader className="h-4 w-4 animate-spin" /> : null}
+            {t("开始本科目", "この科目を開始", "Start this section")}
+          </button>
+        </div>
+        <JlptDisclaimer t={t} />
+      </div>
+    );
+  }
+
+  if (phase === "result") {
+    return <PaperResult t={t} language={language} paperId={paperId} onExit={onExit} onOpenReview={onOpenReview} />;
+  }
+
+  // intro：整卷概览 + 各科目一览。
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onExit}
+        className="inline-flex items-center gap-1.5 pt-2 text-sm font-semibold text-kx-muted hover:text-kx-accent"
+      >
+        <ArrowLeft className="h-4 w-4" /> {t("返回列表", "一覧へ", "Back")}
+      </button>
+      <JlptPageHeader
+        eyebrow={`JLPT · ${paperQ.data.paper.level}`}
+        title={paperTitle}
+        subtitle={t("按官方结构分两段独立计时：言語知識・読解 → 聴解，交卷合并出分。", "本番構成で2部制：言語知識・読解 → 聴解。合算して採点。", "Two independently-timed sections like the real exam, scored together.")}
+      />
+      <div className="mt-5 space-y-2.5">
+        {sections.map((s, i) => (
+          <div
+            key={s.id}
+            className="flex items-center gap-3 rounded-2xl border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] px-4 py-3.5"
+          >
+            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[rgb(var(--kx-living-accent))]/[0.1] text-sm font-black text-[rgb(var(--kx-living-accent))]">
+              {i + 1}
+            </span>
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-sm font-black text-[rgb(var(--kx-living-ink))]">{s.title}</p>
+              <p className="mt-0.5 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
+                {s.questionCount} {t("题", "問", "Q")} · {fmtDuration(s.durationSeconds)}
+                {s.section === "listening" ? ` · ${t("含听力音频", "音声あり", "with audio")}` : ""}
+              </p>
+            </div>
+          </div>
+        ))}
+      </div>
+      <button
+        type="button"
+        onClick={() => { setIdx(0); startSection.mutate(sections[0]?.id); }}
+        disabled={startSection.isPending || !sections.length}
+        className="mt-6 inline-flex w-full items-center justify-center gap-2 rounded-full bg-[rgb(var(--kx-living-accent))] px-5 py-3.5 text-sm font-black text-white shadow-[0_16px_32px_-18px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 disabled:opacity-60"
+      >
+        {startSection.isPending ? <Loader className="h-4 w-4 animate-spin" /> : <GraduationCap className="h-4 w-4" />}
+        {t("开始考试", "受験を開始", "Start the exam")}
+      </button>
+      <JlptDisclaimer t={t} note={paperQ.data.disclaimer} />
+    </div>
+  );
+}
+
+// 分科整卷合并成绩：笔试缩放分（ScaledScorePanel）+ 聴解百分比 + 各科回看。
+function PaperResult({
+  t,
+  language,
+  paperId,
+  onExit,
+  onOpenReview,
+}: {
+  t: Tri;
+  language: string;
+  paperId: string;
+  onExit: () => void;
+  onOpenReview: (sessionId: string) => void;
+}) {
+  void language;
+  const q = useQuery({
+    queryKey: ["guide", "jlpt-paper-result", paperId],
+    queryFn: () => guide.jlptPaperResult(paperId),
+    retry: false,
+  });
+  if (q.isLoading) return <InlineLoading />;
+  if (q.isError || !q.data) return <ErrorState />;
+  const r = q.data;
+  return (
+    <div>
+      <JlptPageHeader
+        eyebrow={`JLPT · ${r.level} · ${t("成绩", "結果", "Result")}`}
+        title={r.scaled?.passedWrittenReference ? t("达到笔试参考线!", "筆記参考ライン到達!", "Reached the written reference line!") : t("再接再厉", "次回に向けて", "Keep going")}
+      />
+      <div className="mt-6 space-y-4">
+        {r.scaled ? <ScaledScorePanel t={t} scaled={r.scaled} /> : null}
+        {r.listening ? (
+          <div className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]">
+            <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
+              {t("聴解（参考）", "聴解（参考）", "Listening (reference)")}
+            </p>
+            <p className="mt-2 text-sm font-black text-[rgb(var(--kx-living-ink))]">
+              {t(`答对 ${r.listening.correct}/${r.listening.total} · 得分 ${r.listening.score}`, `正解 ${r.listening.correct}/${r.listening.total} · ${r.listening.score}点`, `${r.listening.correct}/${r.listening.total} correct · ${r.listening.score}`)}
+            </p>
+          </div>
+        ) : null}
+        <div className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-2">
+          {r.sections.map((s) => (
+            <button
+              key={s.examId}
+              type="button"
+              disabled={!s.done || !s.sessionId}
+              onClick={() => s.sessionId && onOpenReview(s.sessionId)}
+              className="flex w-full items-center gap-3 rounded-2xl px-3 py-3 text-left transition hover:bg-[rgb(var(--kx-living-accent))]/[0.05] disabled:opacity-60"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-bold text-[rgb(var(--kx-living-ink))]">{s.title || s.sectionLabel}</p>
+                <p className="mt-0.5 text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]">
+                  {s.done ? t(`答对 ${s.correct}/${s.total}`, `正解 ${s.correct}/${s.total}`, `${s.correct}/${s.total} correct`) : t("未完成", "未完了", "Not done")}
+                </p>
+              </div>
+              {s.done && s.sessionId ? <ChevronRight className="h-4 w-4 shrink-0 text-[rgb(var(--kx-living-muted))]" /> : null}
+            </button>
+          ))}
+        </div>
+      </div>
+      <button
+        type="button"
+        onClick={onExit}
+        className="mt-6 inline-flex w-full items-center justify-center gap-1.5 rounded-full border border-[rgb(var(--kx-living-ink))]/[0.1] bg-[rgb(var(--kx-living-surface))] px-5 py-3 text-sm font-black text-[rgb(var(--kx-living-ink))] transition hover:border-[rgb(var(--kx-living-accent))]/40"
+      >
+        <History className="h-4 w-4" /> {t("返回模考列表", "一覧へ戻る", "Back to exams")}
+      </button>
+      <JlptDisclaimer t={t} note={r.disclaimer} />
     </div>
   );
 }

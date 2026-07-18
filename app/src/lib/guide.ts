@@ -1325,6 +1325,8 @@ export interface GuideJlptQuestion {
   stem: string;
   passage: string;
   audioMediaId: string;
+  /** 听力题音频的可播放 URL（服务端 LEFT JOIN media 解析；非听力为空）。 */
+  audioUrl?: string;
   choices: string[];
   difficulty: number;
   isMemberOnly: boolean;
@@ -1508,12 +1510,52 @@ export interface GuideJlptExam {
   title: string;
   kind: string;
   section: string;
+  sectionLabel?: string;
   questionCount: number;
   durationSeconds: number;
   passScore: number;
   isMemberOnly: boolean;
   /** 'percent'（默认）或 'jlpt_scaled'（全真卷：JLPT 官方计分结构出缩放分）。 */
   scoreMode?: string;
+  /** 分科整卷相关：父卷/子科目标记与聚合。 */
+  parentExamId?: string;
+  isPaper?: boolean;
+  isSection?: boolean;
+  sortOrder?: number;
+  /** 父卷（isPaper）聚合的子科目数（list_exams 计算）。 */
+  sectionCount?: number;
+}
+/** 分科整卷详情：父卷 + 有序子科目（客户端按顺序逐段推进）。 */
+export interface GuideJlptPaperDetail {
+  status: string;
+  paper: GuideJlptExam;
+  sections: GuideJlptExam[];
+  disclaimer: string;
+}
+/** 分科整卷合并成绩：笔试缩放分 + 聴解百分比。 */
+export interface GuideJlptPaperResult {
+  status: string;
+  paperId: string;
+  level: string;
+  title: string;
+  complete: boolean;
+  sections: {
+    examId: string;
+    section: string;
+    sectionLabel: string;
+    title: string;
+    done: boolean;
+    sessionId?: string;
+    total?: number;
+    correct?: number;
+    score?: number;
+    passed?: boolean;
+    durationSeconds?: number;
+    scaled?: GuideJlptScaledResult | null;
+  }[];
+  scaled?: GuideJlptScaledResult | null;
+  listening?: { score: number; correct: number; total: number; passed: boolean } | null;
+  disclaimer: string;
 }
 /** JLPT 缩放分的单科条目（言語知識/読解，或 N4·N5 的合并科）。 */
 export interface GuideJlptScaledScale {
@@ -1897,6 +1939,11 @@ export const guide = {
     greq<{ status: string; sessions: GuideJlptExamHistoryItem[] }>("GET", `/api/guide/jlpt/exam/history${qs({ level })}`),
   jlptExamSession: (sessionId: string) =>
     greq<GuideJlptExamSession>("GET", `/api/guide/jlpt/exam/session/${encodeURIComponent(sessionId)}`),
+  // 分科整卷：详情（有序子科目）+ 合并成绩。逐段仍走 jlptExamStart/Answer/Submit。
+  jlptPaper: (paperId: string) =>
+    greq<GuideJlptPaperDetail>("GET", `/api/guide/jlpt/paper/${encodeURIComponent(paperId)}`),
+  jlptPaperResult: (paperId: string) =>
+    greq<GuideJlptPaperResult>("GET", `/api/guide/jlpt/paper/${encodeURIComponent(paperId)}/result`),
 
   // Machi AI (原创 in-app assistant)
   aiBootstrap: (country = "jp", language = "zh-CN") =>
