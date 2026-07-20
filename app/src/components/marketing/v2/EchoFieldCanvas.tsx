@@ -3,19 +3,24 @@
 import { useEffect, useRef } from "react";
 import { CITY_POINTS, JAPAN_POLYS, KANTO_CENTER, project } from "./city-data";
 
-// Full-page WebGL particle field: the Japanese archipelago rendered as a
-// breathing dot constellation with the 13 live Machi cities as bright
-// cores that take turns emitting "echo" rings. One fixed canvas backs the
-// whole homepage; sections influence it through data markers:
+// Full-page WebGL particle field: the Japanese archipelago as a dot
+// constellation with the 13 live Machi cities as bright cores. One fixed
+// canvas backs the whole homepage; sections steer it through data markers:
 //
 //   [data-echo-zoom]   hero — camera eases from full archipelago → Kanto
-//   [data-echo-dim]    while visible, the field dims to ~18% (JLPT act)
+//   [data-echo-dim]    dim the field to a texture while visible (value = amount)
 //   [data-echo-map]    city-map section — camera frames the archipelago
 //   [data-echo-finale] closing — every city fires one last ring together
 //
-// Enhancement-only by contract: no WebGL / reduced-motion / hidden tab all
-// degrade to a static frame or nothing, and every word of page copy lives
-// in regular DOM outside this component.
+// The palette (ink / city / strength / edge / dot size) is read from CSS
+// custom properties (--mcv2-*), so a theme is tuned in one stylesheet and
+// the field, the paper and the type all move together. Crucially light and
+// dark are different *physics*: dark is additive glow on black; light is
+// hard-edged opaque ink on paper (a soft dot on white reads as a grey
+// smudge). The theme drives uEdge / uInkStrength / dot size accordingly.
+//
+// Enhancement-only: no WebGL / reduced-motion / hidden tab all degrade to a
+// static frame or nothing, and every word of page copy lives in real DOM.
 
 const VERT = `
 attribute vec2 aPos;
@@ -25,7 +30,9 @@ uniform vec2 uRes;
 uniform float uTime;
 uniform vec3 uView;   // centerX, centerY, zoom
 uniform vec3 uMouse;  // x, y (map space), strength
-uniform float uDim;
+uniform mediump float uDim;
+uniform float uDotScale;
+uniform float uCityScale;
 uniform float uDpr;
 uniform vec4 uRing[13]; // x, y, phase(0..1 active else <0), groupBoost
 varying float vGlow;
@@ -34,12 +41,10 @@ varying float vSeed;
 
 void main() {
   vec2 p = aPos;
-  // Breathing drift, phase-hashed per particle.
   float t = uTime * 0.6 + aSeed * 6.2831;
   p += vec2(sin(t), cos(t * 0.83)) * 0.0016 * (0.4 + fract(aSeed * 7.13));
 
   float glow = 0.0;
-  // Echo rings: particles light up as a ring wavefront passes through.
   for (int i = 0; i < 13; i++) {
     vec4 ring = uRing[i];
     if (ring.z >= 0.0) {
@@ -47,12 +52,11 @@ void main() {
       float radius = ring.z * 0.16;
       float band = abs(d - radius);
       float fade = 1.0 - ring.z;
-      glow += smoothstep(0.02, 0.0, band) * fade * 1.6;
+      glow += smoothstep(0.028, 0.0, band) * fade * 2.2;
     }
     glow += ring.w * smoothstep(0.05, 0.0, distance(aPos, ring.xy)) * 0.9;
   }
 
-  // Mouse: brighten and gently repel nearby particles.
   float md = distance(aPos, uMouse.xy);
   float minfl = smoothstep(0.09, 0.0, md) * uMouse.z;
   glow += minfl * 1.2;
@@ -62,9 +66,15 @@ void main() {
   vec2 clip = vec2(view.x * (uRes.y / uRes.x) * 1.28, -view.y) * 2.0;
   gl_Position = vec4(clip, 0.0, 1.0);
 
-  float base = aKind > 0.5 ? 3.4 : 1.55;
+  float base = aKind > 1.5 ? 1.7 : (aKind > 0.5 ? 5.0 : 2.35);
+  base *= (aKind > 0.5 && aKind < 1.5) ? uCityScale : uDotScale;
   float tw = 0.75 + 0.25 * sin(uTime * (0.8 + fract(aSeed * 3.7)) + aSeed * 40.0);
-  gl_PointSize = (base + glow * 2.2) * uDpr * tw * clamp(uView.z, 0.85, 2.1);
+  // Dimmed particles also get finer, so the field reads as a delicate
+  // constellation behind copy rather than soft blobs. An echo mostly
+  // brightens; it only nudges point size (glow*1.1, not *2.6, or each ring
+  // becomes a blob sitting on the copy).
+  float fine = mix(1.0, 0.7, clamp(uDim, 0.0, 1.0));
+  gl_PointSize = (base + glow * 1.1) * uDpr * tw * fine * clamp(uView.z, 0.85, 2.1);
 
   vGlow = glow;
   vKind = aKind;
@@ -74,8 +84,11 @@ void main() {
 
 const FRAG = `
 precision mediump float;
-uniform float uDim;
-uniform float uTheme; // 0 light, 1 dark
+uniform mediump float uDim; // precision must match the vertex declaration
+uniform vec3 uInk;
+uniform vec3 uCity;
+uniform float uInkStrength;
+uniform float uEdge; // 0 = additive-style soft glow, 1 = hard printed ink
 varying float vGlow;
 varying float vKind;
 varying float vSeed;
@@ -83,22 +96,29 @@ varying float vSeed;
 void main() {
   vec2 uv = gl_PointCoord - 0.5;
   float r = length(uv);
-  float alpha = smoothstep(0.5, 0.08, r);
 
-  // Two brand families only: coral warmth and indigo cool.
-  vec3 coralDark  = vec3(1.0, 0.55, 0.38);
-  vec3 indigoDark = vec3(0.62, 0.64, 1.0);
-  vec3 coralLight  = vec3(0.93, 0.32, 0.18);
-  vec3 indigoLight = vec3(0.33, 0.30, 0.85);
-  float pick = step(0.72, fract(vSeed * 5.39));
-  vec3 dark = mix(coralDark, indigoDark, pick);
-  vec3 light = mix(coralLight, indigoLight, pick);
-  vec3 color = mix(light, dark, uTheme);
-  if (vKind > 0.5) color = mix(vec3(0.95, 0.36, 0.2), vec3(1.0, 0.62, 0.45), uTheme);
+  // Soft falloff for glow (dark) vs hard disc for ink (light).
+  float softAlpha = smoothstep(0.5, 0.08, r);
+  float inkAlpha = smoothstep(0.5, 0.42, r);
+  float alpha = mix(softAlpha, inkAlpha, uEdge);
 
-  float strength = vKind > 0.5 ? 0.95 : (uTheme > 0.5 ? 0.5 : 0.42);
+  // City cores get a paper-coloured knockout ring on print-like themes so
+  // they read as registration marks on the coast rather than bleeding in.
+  if (vKind > 0.5 && uEdge > 0.5) {
+    float ring = 1.0 - smoothstep(0.30, 0.34, r) * (1.0 - smoothstep(0.44, 0.48, r));
+    alpha *= ring;
+  }
+
+  vec3 color = uInk;
+  color *= 0.86 + 0.28 * fract(vSeed * 5.39); // slight per-particle variation
+  if (vKind > 0.5) color = uCity;
+
+  float strength = vKind > 0.5 ? 1.0 : uInkStrength;
   strength += vGlow * 0.5;
-  strength *= (1.0 - uDim * 0.82);
+  // The halo sprinkle around each core is decorative: it clumps into blobs
+  // at close zoom, so it leaves first as the field dims; the coast stays.
+  if (vKind > 1.5) strength *= max(1.0 - uDim * 1.25, 0.0);
+  strength *= max(1.0 - uDim * 0.82, 0.0);
   gl_FragColor = vec4(color, alpha * clamp(strength, 0.0, 1.0));
 }
 `;
@@ -117,7 +137,6 @@ function buildParticles(count: number) {
   const seeds: number[] = [];
   const kinds: number[] = [];
 
-  // Scatter along coastline segments with jitter that hugs the polyline.
   const segments: Array<{ ax: number; ay: number; bx: number; by: number; len: number }> = [];
   let total = 0;
   for (const poly of JAPAN_POLYS) {
@@ -138,7 +157,6 @@ function buildParticles(count: number) {
     }
     const t = seg.len > 0 ? target / seg.len : 0;
     const jitter = 0.014;
-    // Box-Muller-ish pull toward the line so the coast reads sharp.
     const j1 = (rnd() + rnd() + rnd()) / 3 - 0.5;
     const j2 = (rnd() + rnd() + rnd()) / 3 - 0.5;
     pts.push(seg.ax + (seg.bx - seg.ax) * t + j1 * jitter * 2.2, seg.ay + (seg.by - seg.ay) * t + j2 * jitter * 2.2);
@@ -146,12 +164,11 @@ function buildParticles(count: number) {
     kinds.push(0);
   }
 
-  // City cores + halo sprinkle.
   for (const city of CITY_POINTS) {
     pts.push(city.x, city.y);
     seeds.push(rnd());
     kinds.push(1);
-    const halo = 26;
+    const halo = 40;
     for (let i = 0; i < halo; i++) {
       const ang = rnd() * Math.PI * 2;
       const rad = Math.pow(rnd(), 1.6) * 0.02;
@@ -181,10 +198,7 @@ export function EchoFieldCanvas() {
 
     const gl = (canvas.getContext("webgl2", { alpha: true, antialias: false, powerPreference: "low-power" }) ||
       canvas.getContext("webgl", { alpha: true, antialias: false })) as WebGLRenderingContext | null;
-    if (!gl) {
-      canvas.style.display = "none";
-      return;
-    }
+    if (!gl) { canvas.style.display = "none"; return; }
 
     const compile = (type: number, src: string) => {
       const sh = gl.createShader(type);
@@ -192,7 +206,9 @@ export function EchoFieldCanvas() {
       gl.shaderSource(sh, src);
       gl.compileShader(sh);
       if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-        // Silent degrade: the page is fully functional without the field.
+        if (process.env.NODE_ENV === "development") {
+          console.error("[EchoField] shader compile failed:", gl.getShaderInfoLog(sh));
+        }
         return null;
       }
       return sh;
@@ -205,10 +221,18 @@ export function EchoFieldCanvas() {
     gl.attachShader(prog, vs);
     gl.attachShader(prog, fs);
     gl.linkProgram(prog);
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) { canvas.style.display = "none"; return; }
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      if (process.env.NODE_ENV === "development") {
+        console.error("[EchoField] program link failed:", gl.getProgramInfoLog(prog));
+      }
+      canvas.style.display = "none";
+      return;
+    }
     gl.useProgram(prog);
 
-    const particles = buildParticles(coarse ? 8000 : 20000);
+    // The coast reads just as well at 12k as at 20k, and each vertex runs a
+    // 13-ring loop, so count is the single biggest lever on frame cost.
+    const particles = buildParticles(coarse ? 5000 : 12000);
     const bindAttr = (name: string, data: Float32Array, size: number) => {
       const buf = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, buf);
@@ -227,7 +251,12 @@ export function EchoFieldCanvas() {
     const uMouse = gl.getUniformLocation(prog, "uMouse");
     const uDim = gl.getUniformLocation(prog, "uDim");
     const uDpr = gl.getUniformLocation(prog, "uDpr");
-    const uTheme = gl.getUniformLocation(prog, "uTheme");
+    const uInk = gl.getUniformLocation(prog, "uInk");
+    const uCity = gl.getUniformLocation(prog, "uCity");
+    const uInkStrength = gl.getUniformLocation(prog, "uInkStrength");
+    const uEdge = gl.getUniformLocation(prog, "uEdge");
+    const uDotScale = gl.getUniformLocation(prog, "uDotScale");
+    const uCityScale = gl.getUniformLocation(prog, "uCityScale");
     const uRing = gl.getUniformLocation(prog, "uRing");
 
     gl.enable(gl.BLEND);
@@ -240,6 +269,7 @@ export function EchoFieldCanvas() {
       const dpr = Math.min(window.devicePixelRatio || 1, dprCap);
       width = canvas.clientWidth;
       height = canvas.clientHeight;
+      if (width === 0 || height === 0) return; // not laid out yet
       canvas.width = Math.round(width * dpr);
       canvas.height = Math.round(height * dpr);
       gl.viewport(0, 0, canvas.width, canvas.height);
@@ -247,7 +277,37 @@ export function EchoFieldCanvas() {
       gl.uniform1f(uDpr, dpr);
     };
     resize();
+    // A plain resize listener isn't enough: this effect can run before the
+    // canvas is laid out (production mounts it once, no Strict-Mode remount
+    // to paper over the timing), and nothing would re-measure it. Observing
+    // the element covers first layout, resizes and dpr changes alike.
+    const sizeObserver = new ResizeObserver(resize);
+    sizeObserver.observe(canvas);
     window.addEventListener("resize", resize);
+
+    // ---- palette from CSS -------------------------------------------
+    const readPalette = () => {
+      const cs = getComputedStyle(canvas);
+      const triplet = (name: string, fallback: [number, number, number]) => {
+        const parts = cs.getPropertyValue(name).trim().split(/[\s,]+/).map(Number).filter((n) => !Number.isNaN(n));
+        return parts.length === 3 ? (parts.map((n) => n / 255) as [number, number, number]) : fallback;
+      };
+      const num = (name: string, fallback: number) => {
+        const v = Number.parseFloat(cs.getPropertyValue(name));
+        return Number.isNaN(v) ? fallback : v;
+      };
+      return {
+        ink: triplet("--mcv2-ink", [0.13, 0.14, 0.21]),
+        city: triplet("--mcv2-city", [0.8, 0.2, 0.05]),
+        strength: num("--mcv2-ink-strength", 0.9),
+        edge: num("--mcv2-ink-edge", 1),
+        dotScale: num("--mcv2-dot-scale", 1),
+        cityScale: num("--mcv2-city-scale", 1),
+      };
+    };
+    let palette = readPalette();
+    const themeObserver = new MutationObserver(() => { palette = readPalette(); });
+    themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["class", "data-theme", "data-mcv2-theme"] });
 
     // ---- scene state -------------------------------------------------
     const rings: RingState[] = CITY_POINTS.map(() => ({ phase: -1, active: false }));
@@ -258,43 +318,107 @@ export function EchoFieldCanvas() {
     let mouse = { x: -10, y: -10, s: 0 };
     let targetMouse = { x: -10, y: -10, s: 0 };
 
-    // Camera in map space. Wide framing shows the whole archipelago.
-    const WIDE = { x: 0.55, y: 0.5, z: 1.55 };
-    const KANTO = { x: KANTO_CENTER[0] + 0.04, y: KANTO_CENTER[1], z: 3.1 };
+    const WIDE = { x: 0.46, y: 0.47, z: 1.42 };
+    const KANTO = { x: KANTO_CENTER[0] + 0.04, y: KANTO_CENTER[1], z: 2.2 };
     const view = { ...WIDE };
+    // The field leads only in the hero; behind copy it drops to a faint
+    // constellation (glass cards are translucent — any brighter shows
+    // through). The finale sits between.
+    const TEXTURE_DIM = 0.86;
+    const FINALE_DIM = 0.62;
 
     const markers = {
       zoom: null as HTMLElement | null,
-      dim: null as HTMLElement | null,
+      dim: [] as HTMLElement[],
       map: null as HTMLElement | null,
       finale: null as HTMLElement | null,
     };
     const findMarkers = () => {
       markers.zoom = document.querySelector<HTMLElement>("[data-echo-zoom]");
-      markers.dim = document.querySelector<HTMLElement>("[data-echo-dim]");
+      markers.dim = Array.from(document.querySelectorAll<HTMLElement>("[data-echo-dim]"));
       markers.map = document.querySelector<HTMLElement>("[data-echo-map]");
       markers.finale = document.querySelector<HTMLElement>("[data-echo-finale]");
     };
     findMarkers();
+    // Sections mount after this canvas, so a marker can still be missing at
+    // mount. Stopping as soon as ONE marker showed up silently dropped the
+    // whole lighting choreography on a cold load — poll until the set is
+    // present, or give up after ~5s.
+    const markersComplete = () => !!markers.zoom && !!markers.map && !!markers.finale && markers.dim.length > 0;
+    let markerTries = 0;
+    let sceneDirty = true;
+    const markerPoll = window.setInterval(() => {
+      findMarkers();
+      sceneDirty = true;
+      if (markersComplete() || ++markerTries > 25) window.clearInterval(markerPoll);
+    }, 200);
 
-    const isDark = () => document.documentElement.classList.contains("dark");
+    const snapshotMode = process.env.NODE_ENV === "development" &&
+      new URLSearchParams(window.location.search).has("mcv2only");
 
     const onPointer = (e: PointerEvent) => {
-      // Invert the view transform: screen px → map coordinates.
       const nx = (e.clientX / width - 0.5) * 2;
       const ny = (e.clientY / height - 0.5) * 2;
       const aspect = height / width;
-      targetMouse = {
-        x: view.x + (nx / (aspect * 1.28 * 2)) / view.z * 2,
-        y: view.y + ny / view.z,
-        s: 1,
-      };
+      targetMouse = { x: view.x + (nx / (aspect * 1.28 * 2)) / view.z * 2, y: view.y + ny / view.z, s: 1 };
     };
     const onPointerLeave = () => { targetMouse = { ...targetMouse, s: 0 }; };
     if (!coarse && !reduceMotion) {
       window.addEventListener("pointermove", onPointer, { passive: true });
       window.addEventListener("pointerout", onPointerLeave, { passive: true });
     }
+
+    // Scene values derived from marker rects. Reading rects forces a sync
+    // layout, so it happens on scroll/resize only — never per frame.
+    let dim = 0;
+    let mapWeight = 0;
+    let zoomT = 0;
+
+    const readScene = () => {
+      sceneDirty = false;
+      const vh = window.innerHeight;
+      dim = 0;
+      mapWeight = 0;
+      if (markers.zoom) {
+        const r = markers.zoom.getBoundingClientRect();
+        if (r.height > 0) {
+          zoomT = Math.min(Math.max(-r.top / Math.max(r.height - vh * 0.4, 1), 0), 1);
+        } else if (snapshotMode) {
+          zoomT = 1;
+        }
+      } else if (snapshotMode) {
+        zoomT = 1;
+      }
+      // Full brightness while the hero owns the screen, easing to texture as
+      // it scrolls away.
+      dim = TEXTURE_DIM * zoomT;
+      for (const marker of markers.dim) {
+        if (marker.hidden) continue;
+        const r = marker.getBoundingClientRect();
+        if (r.height === 0) continue;
+        if (r.top < vh * 0.72 && r.bottom > vh * 0.4) {
+          dim = Math.max(dim, Number(marker.dataset.echoDim) || 1);
+        }
+      }
+      if (markers.map) {
+        const r = markers.map.getBoundingClientRect();
+        const visible = Math.min(r.bottom, vh) - Math.max(r.top, 0);
+        mapWeight = Math.min(Math.max(visible / (vh * 0.7), 0), 1);
+      }
+      if (markers.finale) {
+        const r = markers.finale.getBoundingClientRect();
+        if (!finaleFired && r.top < vh * 0.85) {
+          finaleFired = true;
+          rings.forEach((ring, i) => { ring.phase = -0.12 * (i % 5); ring.active = true; });
+        }
+        if (finaleFired && r.top > vh) finaleFired = false;
+        if (r.top < vh * 0.8) dim = Math.min(dim, FINALE_DIM);
+      }
+    };
+
+    const markScene = () => { sceneDirty = true; };
+    window.addEventListener("scroll", markScene, { passive: true });
+    window.addEventListener("resize", markScene, { passive: true });
 
     let raf = 0;
     let last = performance.now();
@@ -305,39 +429,12 @@ export function EchoFieldCanvas() {
       last = now;
       time += dt;
 
-      // --- read scene markers (a handful of rect reads per frame) -----
-      const vh = window.innerHeight;
-      let dim = 0;
-      let mapWeight = 0;
-      let zoomT = 0;
-      if (markers.zoom) {
-        const r = markers.zoom.getBoundingClientRect();
-        // 0 at top of page → 1 once the hero has fully scrolled past.
-        zoomT = Math.min(Math.max(-r.top / Math.max(r.height - vh * 0.4, 1), 0), 1);
+      if (canvas.width === 0 || canvas.height === 0) {
+        if (!reduceMotion) raf = requestAnimationFrame(frame);
+        return; // waiting on first layout; ResizeObserver will bring us back
       }
-      if (markers.dim) {
-        const r = markers.dim.getBoundingClientRect();
-        const visible = r.top < vh * 0.72 && r.bottom > vh * 0.4;
-        dim = visible ? 1 : 0;
-      }
-      if (markers.map) {
-        const r = markers.map.getBoundingClientRect();
-        const visible = Math.min(r.bottom, vh) - Math.max(r.top, 0);
-        mapWeight = Math.min(Math.max(visible / (vh * 0.7), 0), 1);
-      }
-      if (markers.finale && !finaleFired) {
-        const r = markers.finale.getBoundingClientRect();
-        if (r.top < vh * 0.85) {
-          finaleFired = true;
-          rings.forEach((ring, i) => { ring.phase = -0.12 * (i % 5); ring.active = true; });
-        }
-      }
-      if (markers.finale && finaleFired) {
-        const r = markers.finale.getBoundingClientRect();
-        if (r.top > vh) finaleFired = false; // re-arm when scrolled back up
-      }
+      if (sceneDirty || snapshotMode) readScene();
 
-      // --- camera ------------------------------------------------------
       const inMap = mapWeight > 0.02;
       const target = inMap
         ? { x: WIDE.x, y: WIDE.y - 0.02, z: WIDE.z * (1 + mapWeight * 0.12) }
@@ -346,7 +443,7 @@ export function EchoFieldCanvas() {
             y: WIDE.y + (KANTO.y - WIDE.y) * zoomT,
             z: WIDE.z + (KANTO.z - WIDE.z) * zoomT * zoomT,
           };
-      const ease = 1 - Math.exp(-dt * 3.2);
+      const ease = snapshotMode ? 1 : 1 - Math.exp(-dt * 3.2);
       view.x += (target.x - view.x) * ease;
       view.y += (target.y - view.y) * ease;
       view.z += (target.z - view.z) * ease;
@@ -355,10 +452,9 @@ export function EchoFieldCanvas() {
       mouse.y += (targetMouse.y - mouse.y) * ease;
       mouse.s += (targetMouse.s - mouse.s) * ease;
 
-      dimSmooth += (dim - dimSmooth) * ease;
+      dimSmooth += (dim - dimSmooth) * (snapshotMode ? 1 : 1 - Math.exp(-dt * 6));
 
-      // --- ring scheduler ----------------------------------------------
-      if (time > nextRingAt && !dim) {
+      if (time > nextRingAt && dim < 0.8) {
         const ring = rings[ringCursor % rings.length];
         if (!ring.active) { ring.phase = 0; ring.active = true; }
         ringCursor += 1;
@@ -383,7 +479,12 @@ export function EchoFieldCanvas() {
       gl.uniform3f(uView, view.x, view.y, view.z);
       gl.uniform3f(uMouse, mouse.x, mouse.y, mouse.s);
       gl.uniform1f(uDim, dimSmooth);
-      gl.uniform1f(uTheme, isDark() ? 1 : 0);
+      gl.uniform3f(uInk, palette.ink[0], palette.ink[1], palette.ink[2]);
+      gl.uniform3f(uCity, palette.city[0], palette.city[1], palette.city[2]);
+      gl.uniform1f(uInkStrength, palette.strength);
+      gl.uniform1f(uEdge, palette.edge);
+      gl.uniform1f(uDotScale, palette.dotScale);
+      gl.uniform1f(uCityScale, palette.cityScale);
       gl.uniform4fv(uRing, ringData);
       gl.drawArrays(gl.POINTS, 0, particles.count);
 
@@ -405,7 +506,12 @@ export function EchoFieldCanvas() {
 
     return () => {
       cancelAnimationFrame(raf);
+      window.clearInterval(markerPoll);
+      sizeObserver.disconnect();
+      themeObserver.disconnect();
       document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("scroll", markScene);
+      window.removeEventListener("resize", markScene);
       window.removeEventListener("resize", resize);
       window.removeEventListener("pointermove", onPointer);
       window.removeEventListener("pointerout", onPointerLeave);
@@ -413,11 +519,5 @@ export function EchoFieldCanvas() {
     };
   }, []);
 
-  return (
-    <canvas
-      ref={canvasRef}
-      aria-hidden="true"
-      className="mcv2-echo-canvas"
-    />
-  );
+  return <canvas ref={canvasRef} aria-hidden="true" className="mcv2-echo-canvas" />;
 }

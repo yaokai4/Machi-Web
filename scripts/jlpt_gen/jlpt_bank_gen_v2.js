@@ -8,11 +8,16 @@ export const meta = {
   ],
 }
 
-const LEVEL = (args && args.level) || 'N1'
-const GROUP = (args && args.group) || 'lex' // 'lex' = 文字語彙+文法, 'rc' = 読解+聴解
+// args 可能以对象或 JSON 字符串到达(取决于调用方)。都兼容:字符串就 parse。
+// 之前踩坑:args 是字符串时 args.group 为 undefined → 静默回退 lex,N1-rc 没跑成。
+const A = (typeof args === 'string')
+  ? (() => { try { return JSON.parse(args) } catch (e) { return {} } })()
+  : (args || {})
+const LEVEL = A.level || 'N1'
+const GROUP = A.group || 'lex' // 'lex' = 文字語彙+文法, 'rc' = 読解+聴解
 // 同一 level×group 要跑很多波才能累积到 5000/级。wave 让每波用不同主题偏移 +
 // 唯一批次标签,产出新内容(跨波按 stem 去重);每波结果单独落盘,组卷时合并去重。
-const WAVE = (args && args.wave) || 1
+const WAVE = A.wave || 1
 
 // ── 各级各题型「已校验目标数」。N1/N2 加权。overproduction 交给 request 系数。──
 const NEEDS = {
@@ -266,7 +271,8 @@ function tally(pool) {
 }
 
 phase('Generate')
-log(`${LEVEL} / ${GROUP}: 第一轮生成`)
+log(`解析 args → LEVEL=${LEVEL} GROUP=${GROUP} WAVE=${WAVE}（qtypes=${(GROUP === 'lex' ? LEX_QTYPES : RC_QTYPES).join(',')}）`)
+log(`${LEVEL} / ${GROUP} / wave${WAVE}: 第一轮生成`)
 const round1 = await runBatches(buildBatches(NEEDS, 1, 'a'), 'Generate', 'Verify')
 let pool = []
 for (const r of round1.filter(Boolean)) pool = pool.concat(r.kept || [])
