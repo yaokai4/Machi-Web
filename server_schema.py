@@ -5739,7 +5739,35 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         """,
     ),
     (
-        123,
+        125,
+        "jlpt 原子开考：价格快照、扣币状态与跨进程串行锁",
+        # 2026-07 PAY-02：开考 attempt、价格快照、钱包扣款与 payment 状态必须
+        # 在同一事务。start_locks 为 (user, exam) 提供一行稳定的数据库锁，避免
+        # 多进程 PostgreSQL 同时看见“尚无进行中会话”后各自扣款；SQLite 也沿用
+        # 同一契约。旧会话不能臆测付款事实，默认 legacy_unknown，交给对账扫描。
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_exam_start_locks (
+            user_id TEXT NOT NULL,
+            exam_id TEXT NOT NULL,
+            touched_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, exam_id)
+        );
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN base_coin_cost_snapshot INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN charged_coin_cost INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN pricing_tier TEXT NOT NULL DEFAULT 'legacy';
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'legacy_unknown';
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN wallet_ledger_entry_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN start_request_key TEXT NOT NULL DEFAULT '';
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN parent_exam_id_snapshot TEXT NOT NULL DEFAULT '';
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jlpt_exam_session_start_request
+            ON jlpt_exam_sessions(user_id, exam_id, start_request_key)
+            WHERE start_request_key <> '';
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_session_payment
+            ON jlpt_exam_sessions(payment_status, started_at);
+        """,
+    ),
+    (
+        126,
         "jlpt 作答乐观并发：会话全局 revision + 每题落盘 revision",
         # 2026-07 EXAM-01：移动端/网页连续改选、弱网重试和交卷会并发到达。
         # session.answer_revision 是服务端唯一时序；每个新写入必须声明它所基于

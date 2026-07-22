@@ -12004,6 +12004,213 @@ def wallet_post_ledger(conn: sqlite3.Connection, user_id: str, entry_type: str, 
             "applied": True, "duplicate": False, "insufficient": False}
 
 
+def _jlpt_start_request_digest(user_id: str, exam_id: str, request_key: str) -> str:
+    key = str(request_key or "").strip()[:200]
+    if not key:
+        return ""
+    return hashlib.sha256(
+        f"{user_id}\x1f{exam_id}\x1f{key}".encode("utf-8")
+    ).hexdigest()
+
+
+def _jlpt_start_payment_overlay(
+    started: dict[str, Any], session: dict[str, Any], wallet: dict[str, Any]
+) -> dict[str, Any]:
+    base = int(session.get("base_coin_cost_snapshot") or 0)
+    charged = int(session.get("charged_coin_cost") or 0)
+    tier = str(session.get("pricing_tier") or "legacy")
+    return {
+        **started,
+        "coinCharged": charged,
+        "coinBalance": int(wallet.get("balancePoints") or 0),
+        "paymentStatus": str(session.get("payment_status") or "legacy_unknown"),
+        "walletLedgerEntryId": str(session.get("wallet_ledger_entry_id") or ""),
+        "priceSnapshot": {
+            "baseCoins": base,
+            "chargedCoins": charged,
+            "pricingTier": tier,
+        },
+        "parentExamId": str(session.get("parent_exam_id_snapshot") or ""),
+        "startIdempotencyRecorded": bool(session.get("start_request_key")),
+    }
+
+
+@money_atomic
+def start_jlpt_exam_atomic(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    exam: dict[str, Any],
+    is_member: bool,
+    request_key: str = "",
+    now: str = "",
+) -> dict[str, Any]:
+    """Start/resume one JLPT exam with payment and attempt in one transaction.
+
+    The durable ``jlpt_exam_start_locks`` row is updated first.  On PostgreSQL
+    that update is a cross-process row lock; on SQLite the outer BEGIN IMMEDIATE
+    already serializes writers.  Once held, a second request can only observe
+    the first request's committed session and therefore resumes without another
+    debit—even when no Idempotency-Key was supplied.
+    """
+    user_id = str(user_id or "").strip()
+    exam_id = str((exam or {}).get("id") or "").strip()
+    if not user_id or not exam_id:
+        return {"status": "not_found"}
+    now = now or now_iso()
+
+    conn.execute(
+        "INSERT INTO jlpt_exam_start_locks (user_id, exam_id, touched_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(user_id, exam_id) DO NOTHING",
+        (user_id, exam_id, now),
+    )
+    locked = conn.execute(
+        "UPDATE jlpt_exam_start_locks SET touched_at=? WHERE user_id=? AND exam_id=?",
+        (now, user_id, exam_id),
+    )
+    if getattr(locked, "rowcount", 0) != 1:
+        raise RuntimeError("failed to acquire JLPT exam start lock")
+
+    # Lock and re-read the price/status row inside the same transaction.  An
+    # admin edit racing this request is therefore ordered before or after the
+    # immutable snapshot, never half-observed.
+    exam_lock = conn.execute(
+        "UPDATE jlpt_exams SET coin_cost=coin_cost WHERE id=? AND status='published'",
+        (exam_id,),
+    )
+    if getattr(exam_lock, "rowcount", 0) != 1:
+        return {"status": "not_found"}
+    live_exam = jlpt.get_exam(conn, exam_id)
+    if not live_exam:
+        return {"status": "not_found"}
+
+    request_digest = _jlpt_start_request_digest(user_id, exam_id, request_key)
+    if request_digest:
+        previous = conn.execute(
+            "SELECT * FROM jlpt_exam_sessions "
+            "WHERE user_id=? AND exam_id=? AND start_request_key=? LIMIT 1",
+            (user_id, exam_id, request_digest),
+        ).fetchone()
+        if previous and str(dict(previous).get("status") or "") != "in_progress":
+            prior = dict(previous)
+            return {
+                "status": "already_completed",
+                "sessionId": prior["id"],
+                "paymentStatus": prior.get("payment_status") or "legacy_unknown",
+            }
+        if previous:
+            prior = dict(previous)
+            if not jlpt.exam_session_can_resume(prior, live_exam, now=now):
+                # The original idempotent attempt reached its deadline. Settle
+                # that exact session but never turn the same start key into a
+                # second paid attempt after the cache TTL expires.
+                jlpt.submit_exam_session(
+                    conn,
+                    session=prior,
+                    exam=live_exam,
+                    now=now,
+                )
+                return {
+                    "status": "already_completed",
+                    "sessionId": prior["id"],
+                    "paymentStatus": prior.get("payment_status") or "legacy_unknown",
+                }
+
+    started = jlpt.start_exam_session(
+        conn,
+        user_id=user_id,
+        exam=live_exam,
+        is_member=is_member,
+        now=now,
+    )
+    if not started:
+        return {"status": "no_questions"}
+    session_id = str(started.get("sessionId") or "")
+
+    if started.get("resumed"):
+        row = conn.execute(
+            "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=?",
+            (session_id, user_id),
+        ).fetchone()
+        if not row:
+            raise RuntimeError("resumed JLPT session disappeared")
+        wallet = get_wallet_snapshot(conn, user_id)
+        return {
+            "status": "started",
+            "exam": _jlpt_start_payment_overlay(started, dict(row), wallet),
+        }
+
+    base_cost = max(0, int(live_exam.get("coin_cost") or 0))
+    charged_cost = jlpt.member_coin_cost(base_cost) if is_member else base_cost
+    pricing_tier = "free" if charged_cost <= 0 else ("member" if is_member else "standard")
+    payment_status = "not_required" if charged_cost <= 0 else "pending"
+    ledger_entry_id = ""
+    wallet = get_wallet_snapshot(conn, user_id)
+    if charged_cost > 0:
+        debit = wallet_post_ledger(
+            conn,
+            user_id,
+            "spend",
+            -charged_cost,
+            source_type="jlpt_exam",
+            source_order_id=session_id,
+            product_id=exam_id,
+            idempotency_key="jlpt_exam:" + session_id,
+            metadata={
+                "examId": exam_id,
+                "level": live_exam.get("level") or "",
+                "member": bool(is_member),
+                "baseCoinCost": base_cost,
+                "chargedCoinCost": charged_cost,
+            },
+        )
+        if debit.get("insufficient"):
+            # No debit row was written.  Remove the just-created attempt before
+            # committing the outer transaction so insufficient starts leave no
+            # resumable session; process crashes instead roll the whole tx back.
+            conn.execute(
+                "DELETE FROM jlpt_exam_sessions WHERE id=? AND user_id=?",
+                (session_id, user_id),
+            )
+            balance = int((debit.get("wallet") or {}).get("balancePoints") or 0)
+            return {
+                "status": "insufficient",
+                "requiredCoins": charged_cost,
+                "balance": balance,
+            }
+        ledger_entry_id = str((debit.get("entry") or {}).get("id") or "")
+        wallet = debit.get("wallet") or get_wallet_snapshot(conn, user_id)
+        payment_status = "paid"
+
+    updated = conn.execute(
+        "UPDATE jlpt_exam_sessions SET base_coin_cost_snapshot=?, charged_coin_cost=?, "
+        "pricing_tier=?, payment_status=?, wallet_ledger_entry_id=?, start_request_key=?, "
+        "parent_exam_id_snapshot=? WHERE id=? AND user_id=? AND status='in_progress'",
+        (
+            base_cost,
+            charged_cost,
+            pricing_tier,
+            payment_status,
+            ledger_entry_id,
+            request_digest,
+            str(live_exam.get("parent_exam_id") or ""),
+            session_id,
+            user_id,
+        ),
+    )
+    if getattr(updated, "rowcount", 0) != 1:
+        raise RuntimeError("failed to finalize JLPT exam payment snapshot")
+    session = dict(
+        conn.execute(
+            "SELECT * FROM jlpt_exam_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+    )
+    return {
+        "status": "started",
+        "exam": _jlpt_start_payment_overlay(started, session, wallet),
+    }
+
+
 @money_atomic
 def qualify_referral_atomic(conn: sqlite3.Connection, invitee_id: str) -> dict[str, Any]:
     """@money_atomic boundary for referral.qualify_referral: the CAS on the
@@ -18613,33 +18820,36 @@ class Handler(BaseHTTPRequestHandler):
             env = self._error_envelope("MEMBER_REQUIRED", "该模考为会员专属，开通会员即可参加。")
             env["upgradeSuggested"] = True
             return self.send_json(env, 403)
-        started = jlpt.start_exam_session(conn, user_id=user["id"], exam=exam, is_member=is_member, now=now_iso())
-        if not started:
+        outcome = start_jlpt_exam_atomic(
+            conn,
+            user_id=user["id"],
+            exam=exam,
+            is_member=is_member,
+            request_key=self._idempotency_key(),
+            now=now_iso(),
+        )
+        if outcome.get("status") == "not_found":
+            return self.send_error_json("exam not found", 404, "not_found")
+        if outcome.get("status") == "no_questions":
             return self.send_error_json("该模考暂无可用题目。", 409, "no_questions")
-        # Machi 币扣费:仅全新开考(非续考)且该卷 coin_cost>0。会员 5 折。练习/定级/
-        # 错题本走别的端点、免费,不到这条路径。分科整卷把成本记在笔试子卷上,整卷
-        # 只在第一段扣一次。以 sessionId 作幂等键——同一会话(含 HTTP 重试经续考
-        # 命中同一 session)绝不重复扣;余额不足则作废刚建的空会话、退回未开考并
-        # 引导充值。
-        base_cost = int(exam.get("coin_cost") or 0)
-        cost = jlpt.member_coin_cost(base_cost) if is_member else base_cost
-        if cost > 0 and not started.get("resumed"):
-            debit = wallet_post_ledger(
-                conn, user["id"], "spend", -cost,
-                source_type="jlpt_exam", product_id=exam_id,
-                idempotency_key="jlpt_exam:" + str(started.get("sessionId") or ""),
-                metadata={"examId": exam_id, "level": exam.get("level") or "", "member": is_member},
+        if outcome.get("status") == "insufficient":
+            env = self._error_envelope(
+                "EXAM_INSUFFICIENT_COINS", "Machi 币不足，充值后即可开考。"
             )
-            if debit.get("insufficient"):
-                conn.execute("DELETE FROM jlpt_exam_sessions WHERE id = ?", (started.get("sessionId"),))
-                conn.commit()
-                env = self._error_envelope("EXAM_INSUFFICIENT_COINS", "Machi 币不足，充值后即可开考。")
-                env["requiredCoins"] = cost
-                env["balance"] = int((debit.get("wallet") or {}).get("balancePoints") or 0)
-                return self.send_json(env, 402)
-            started["coinCharged"] = cost
-            started["coinBalance"] = int((debit.get("wallet") or {}).get("balancePoints") or 0)
-        conn.commit()
+            env["requiredCoins"] = int(outcome.get("requiredCoins") or 0)
+            env["balance"] = int(outcome.get("balance") or 0)
+            return self.send_json(env, 402)
+        if outcome.get("status") == "already_completed":
+            return self.send_error_json(
+                "该 Idempotency-Key 对应的考试已经结束。",
+                409,
+                "exam_start_already_completed",
+                {
+                    "sessionId": outcome.get("sessionId") or "",
+                    "paymentStatus": outcome.get("paymentStatus") or "legacy_unknown",
+                },
+            )
+        started = outcome["exam"]
         _guide_funnel_log("jlpt_exam_start", user_id=user["id"], examId=exam_id,
                           level=exam.get("level") or "")
         self.send_json({"status": "ok", **started, "disclaimer": self._JLPT_DISCLAIMER})

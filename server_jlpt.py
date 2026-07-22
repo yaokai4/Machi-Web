@@ -833,6 +833,19 @@ def _public_exam(d: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def exam_session_can_resume(
+    session: dict[str, Any], exam: dict[str, Any], *, now: Optional[str] = None,
+) -> bool:
+    """Use the same server-clock rule for start, preflight and idempotent replay."""
+    if str(session.get("status") or "") != "in_progress":
+        return False
+    duration = int(exam.get("duration_seconds") or 0)
+    if duration <= 0:
+        return True
+    elapsed = _seconds_between(session.get("started_at") or _iso(now), _iso(now))
+    return elapsed < duration
+
+
 def has_resumable_exam_session(conn: Any, *, user_id: str, exam: dict[str, Any], now: Optional[str] = None) -> bool:
     """该用户对这张 exam 是否有「未过期的 in_progress 会话」(即开考会走续考、不该
     再扣币)。判据与 start_exam_session 的续考逻辑一致:in_progress 且未超时限。"""
@@ -843,12 +856,7 @@ def has_resumable_exam_session(conn: Any, *, user_id: str, exam: dict[str, Any],
     ).fetchone()
     if not row:
         return False
-    session = dict(row)
-    duration = int(exam.get("duration_seconds") or 0)
-    if duration <= 0:
-        return True
-    elapsed = _seconds_between(session.get("started_at") or _iso(now), _iso(now))
-    return elapsed < duration
+    return exam_session_can_resume(dict(row), exam, now=now)
 
 
 def get_exam(conn: Any, exam_id: str) -> Optional[dict[str, Any]]:
@@ -1004,7 +1012,7 @@ def start_exam_session(
     if stale:
         session = dict(stale)
         elapsed = _seconds_between(session.get("started_at") or now, now)
-        if duration <= 0 or elapsed < duration:
+        if exam_session_can_resume(session, exam, now=now):
             return _resume_exam_payload(
                 conn, session=session, exam=exam,
                 remaining=(max(0, duration - elapsed) if duration > 0 else 0),
