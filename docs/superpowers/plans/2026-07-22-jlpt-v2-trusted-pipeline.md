@@ -50,12 +50,12 @@
 - Produces CLI subcommands `init-run`, `ingest`, and `verify`.
 - Produces atomic run artifacts `request.json`, `raw.json`, `sanitized.json`, `rejected.json`, `verified.json`, `metrics.json`, `receipt.json`, and `manifest.json`.
 
-- [ ] Add failing real-CLI tests for invalid/missing level/group/wave, empty/parser-invalid input, field failures, broken atomic groups, duplicate conflicts, immutable-source tampering, and target preservation.
-- [ ] Add failing resume tests: identical init/ingest is idempotent; changed request/source/contract/artifact fails non-zero.
-- [ ] Add failing receipt tests for missing receipt, one reviewer, duplicate reviewer, disagreement, fatal verdict, wrong answer, source/contract mismatch, and qualifying unanimous review.
-- [ ] Implement atomic manifest transitions with artifact SHA-256/count metadata and provenance/workflow/source/receipt hashes.
-- [ ] Implement strict CLI error JSON on stderr with exit code 2; never use fallback run parameters.
-- [ ] Run the entire new CLI test class and confirm every failure path preserves pre-existing bytes.
+- [x] Add failing real-CLI tests for invalid/missing level/group/wave, empty/parser-invalid input, field failures, broken atomic groups, duplicate conflicts, immutable-source tampering, and target preservation.
+- [x] Add failing resume tests: identical init/ingest is idempotent; changed request/source/contract/artifact fails non-zero.
+- [x] Add failing receipt tests for missing receipt, one reviewer, duplicate reviewer, disagreement, fatal verdict, wrong answer, source/contract mismatch, and qualifying unanimous review.
+- [x] Implement atomic manifest transitions with artifact SHA-256/count metadata and provenance/workflow/source/receipt hashes.
+- [x] Implement strict CLI error JSON on stderr with exit code 2; never use fallback run parameters.
+- [x] Run the entire new CLI test class and confirm every failure path preserves pre-existing bytes.
 
 ### Task 3: Pending staging, human signature publish, and rollback
 

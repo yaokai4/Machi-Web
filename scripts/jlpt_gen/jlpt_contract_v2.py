@@ -160,6 +160,59 @@ def validate_run_request(request: Any) -> dict[str, Any]:
     return {"level": level, "group": group, "wave": wave}
 
 
+def validate_json_schema(value: Any, schema: dict[str, Any], *, path: str = "$") -> None:
+    """Validate the strict JSON-Schema subset used by the v2 contract."""
+    expected = schema.get("type")
+    type_ok = {
+        "object": isinstance(value, dict),
+        "array": isinstance(value, list),
+        "string": isinstance(value, str),
+        "integer": type(value) is int,
+        "boolean": type(value) is bool,
+        None: True,
+    }.get(expected, False)
+    if not type_ok:
+        raise ContractError(f"{path} must be {expected}")
+    if "const" in schema and value != schema["const"]:
+        raise ContractError(f"{path} must equal {schema['const']}")
+    if "enum" in schema and value not in schema["enum"]:
+        raise ContractError(f"{path} is not an allowed value")
+    if expected == "object":
+        required = schema.get("required", [])
+        missing = [key for key in required if key not in value]
+        if missing:
+            raise ContractError(f"{path} is missing required fields: {', '.join(missing)}")
+        properties = schema.get("properties", {})
+        if schema.get("additionalProperties") is False:
+            extra = sorted(set(value) - set(properties))
+            if extra:
+                raise ContractError(f"{path} has unknown fields: {', '.join(extra)}")
+        for key, child in value.items():
+            if key in properties:
+                validate_json_schema(child, properties[key], path=f"{path}.{key}")
+    elif expected == "array":
+        if len(value) < schema.get("minItems", 0):
+            raise ContractError(f"{path} has too few items")
+        if "maxItems" in schema and len(value) > schema["maxItems"]:
+            raise ContractError(f"{path} has too many items")
+        if schema.get("uniqueItems") and len({_canonical_json(item) for item in value}) != len(value):
+            raise ContractError(f"{path} items must be unique")
+        item_schema = schema.get("items")
+        if item_schema:
+            for index, item in enumerate(value):
+                validate_json_schema(item, item_schema, path=f"{path}[{index}]")
+    elif expected == "string":
+        if len(value) < schema.get("minLength", 0):
+            raise ContractError(f"{path} is too short")
+        if "pattern" in schema and not re.fullmatch(schema["pattern"], value):
+            raise ContractError(f"{path} has invalid format")
+    elif expected == "integer":
+        if "minimum" in schema and value < schema["minimum"]:
+            raise ContractError(f"{path} is below minimum")
+        if "maximum" in schema and value > schema["maximum"]:
+            raise ContractError(f"{path} is above maximum")
+
+
 def _issue(code: str, message: str, *, field: str = "") -> dict[str, Any]:
     return {"code": code, "message": message, "field": field}
 
