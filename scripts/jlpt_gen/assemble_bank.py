@@ -13,8 +13,12 @@ from pathlib import Path
 
 from atomic_json import dump_json_atomic
 
-# 整卷构成（qtype -> 题数）与时长（秒）。必须与 jlpt_bank_gen_v2.js
-# 的生成/补题合同保持一致，组卷器不能用另一套“近似”配额。
+# 整卷构成（qtype -> 题数）与时长（秒）。题型/近似题数依据 JLPT Executive
+# Summary p.7；N1 听力以 2022-12 官方修订覆盖。时长依据当前官方网页：
+# https://www.jlpt.jp/e/reference/pdf/guidebook_s_e.pdf
+# https://www.jlpt.jp/e/topics/202208051659677223.html
+# https://www.jlpt.jp/e/guideline/testsections.html
+# 必须与 jlpt_bank_gen_v2.js 的生成/补题合同保持一致，不能使用另一套近似配额。
 PAPER = {
     "N5": {
         "kanji_reading": 7, "orthography": 5, "context": 6, "paraphrase": 3,
@@ -35,33 +39,40 @@ PAPER = {
         "listen_task": 6, "listen_point": 6, "listen_gist": 3, "listen_response": 4,
     },
     "N2": {
-        "kanji_reading": 5, "orthography": 5, "context": 7, "paraphrase": 5, "usage": 5,
+        "kanji_reading": 5, "orthography": 5, "word_formation": 5,
+        "context": 7, "paraphrase": 5, "usage": 5,
         "grammar_form": 12, "sentence_assembly": 5, "text_grammar": 5,
         "reading_short": 5, "reading_mid": 9, "reading_long": 4, "reading_info": 2,
-        "listen_task": 5, "listen_point": 6, "listen_gist": 5, "listen_response": 11,
+        "listen_task": 5, "listen_point": 6, "listen_gist": 5, "listen_response": 12,
         "listen_integrated": 4,
     },
     "N1": {
         "kanji_reading": 6, "context": 7, "paraphrase": 6, "usage": 6,
         "grammar_form": 10, "sentence_assembly": 5, "text_grammar": 5,
         "reading_short": 4, "reading_mid": 9, "reading_long": 4, "reading_info": 2,
-        "listen_task": 6, "listen_point": 6, "listen_gist": 5, "listen_response": 11,
+        "listen_task": 5, "listen_point": 6, "listen_gist": 5, "listen_response": 11,
         "listen_integrated": 3,
     },
 }
 SECTION_DURATION = {
-    "N5": {"written": 60 * 60, "listening": 30 * 60},
-    "N4": {"written": 80 * 60, "listening": 35 * 60},
-    "N3": {"written": 100 * 60, "listening": 40 * 60},
+    "N5": {"vocab": 20 * 60, "grammar_reading": 40 * 60, "listening": 30 * 60},
+    "N4": {"vocab": 25 * 60, "grammar_reading": 55 * 60, "listening": 35 * 60},
+    "N3": {"vocab": 30 * 60, "grammar_reading": 70 * 60, "listening": 40 * 60},
     "N2": {"written": 105 * 60, "listening": 50 * 60},
     "N1": {"written": 110 * 60, "listening": 55 * 60},
+}
+SECTION_TITLE = {
+    "written": "言語知識・読解",
+    "vocab": "言語知識（文字・語彙）",
+    "grammar_reading": "言語知識（文法）・読解",
+    "listening": "聴解",
 }
 DURATION = {
     level: sum(section_durations.values())
     for level, section_durations in SECTION_DURATION.items()
 }
 # 卷内题型顺序（vocab → grammar → reading → listening）
-QTYPE_ORDER = ["kanji_reading", "orthography", "context", "paraphrase", "usage",
+QTYPE_ORDER = ["kanji_reading", "orthography", "word_formation", "context", "paraphrase", "usage",
                "grammar_form", "sentence_assembly", "text_grammar",
                "reading_short", "reading_mid", "reading_long", "reading_info",
                "listen_task", "listen_point", "listen_gist", "listen_response",
@@ -77,16 +88,28 @@ GROUP_MIN_MEMBERS = {
     "reading_long": 1,
     "reading_info": 1,
 }
-ABBREV = {"kanji_reading": "kr", "orthography": "or", "context": "cx", "paraphrase": "pp",
+ABBREV = {"kanji_reading": "kr", "orthography": "or", "word_formation": "wf",
+          "context": "cx", "paraphrase": "pp",
           "usage": "us", "grammar_form": "gf", "sentence_assembly": "sa", "text_grammar": "tg",
           "reading_short": "rs", "reading_mid": "rm", "reading_long": "rl", "reading_info": "ri",
           "listen_task": "lt", "listen_point": "lp", "listen_gist": "lg",
           "listen_response": "lr", "listen_integrated": "li"}
-SECTION_OF = {"kr": "vocab", "or": "vocab", "cx": "vocab", "pp": "vocab", "us": "vocab",
+SECTION_OF = {"kr": "vocab", "or": "vocab", "wf": "vocab", "cx": "vocab", "pp": "vocab", "us": "vocab",
               "gf": "grammar", "sa": "grammar", "tg": "grammar",
               "rs": "reading", "rm": "reading", "rl": "reading", "ri": "reading",
               "lt": "listening", "lp": "listening", "lg": "listening", "lr": "listening",
               "li": "listening"}
+
+
+def _paper_section_name(level, qtype):
+    question_section = SECTION_OF[ABBREV[qtype]]
+    if question_section == "listening":
+        return "listening"
+    if level in ("N1", "N2"):
+        return "written"
+    if question_section == "vocab":
+        return "vocab"
+    return "grammar_reading"
 
 
 def norm_stem(s):
@@ -572,7 +595,9 @@ def main(src, out):
     composition_rows = []
     for lvl, spec in PAPER.items():
         ids = []
-        section_question_ids = {"written": [], "listening": []}
+        section_question_ids = {
+            section_name: [] for section_name in SECTION_DURATION[lvl]
+        }
         for qt in QTYPE_ORDER:
             want = spec.get(qt) or 0
             if want <= 0:
@@ -645,7 +670,7 @@ def main(src, out):
                     picked = ranked[:want]
             picked_ids = [it["id"] for it in picked]
             ids.extend(picked_ids)
-            section_name = "listening" if qt in LISTENING_QTYPES else "written"
+            section_name = _paper_section_name(lvl, qt)
             section_question_ids[section_name].extend(picked_ids)
             composition_rows.append(
                 {
@@ -664,17 +689,12 @@ def main(src, out):
             "questionIds": ids,
             "sections": [
                 {
-                    "section": "written",
-                    "title": "言語知識・読解",
-                    "durationSeconds": SECTION_DURATION[lvl]["written"],
-                    "questionIds": section_question_ids["written"],
-                },
-                {
-                    "section": "listening",
-                    "title": "聴解",
-                    "durationSeconds": SECTION_DURATION[lvl]["listening"],
-                    "questionIds": section_question_ids["listening"],
-                },
+                    "section": section_name,
+                    "title": SECTION_TITLE[section_name],
+                    "durationSeconds": duration,
+                    "questionIds": section_question_ids[section_name],
+                }
+                for section_name, duration in SECTION_DURATION[lvl].items()
             ],
         }
 

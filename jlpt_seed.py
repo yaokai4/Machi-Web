@@ -177,11 +177,24 @@ def _empty(conn: Any, table: str) -> bool:
 # 原创全真题库由多模型生成 + 双盲对抗校验后落盘为 JSON（生成管线见工作区
 # 文档），此处只负责装载：题目走 import_questions upsert（source='mockv1'，
 # 可审计、可整体替换）。旧清单仍装为单张固定笔试卷；full-paper v2 清单装为
-# 无计时父卷 + 独立计时的笔试/听力子卷，避免把听力塞进笔试时限。
+# 无计时父卷 + 按官方考试段独立计时的子卷，避免跨段共享倒计时。
 
 _MOCK_BANK_FILENAME = "jlpt_bank_v1.json"
 _MOCK_SOURCE = "mockv1"
 _MOCK_COIN_COST_BY_LEVEL = {"N5": 100, "N4": 150, "N3": 250, "N2": 350, "N1": 400}
+_FULL_PAPER_SECTION_NAMES = {
+    "N1": ("written", "listening"),
+    "N2": ("written", "listening"),
+    "N3": ("vocab", "grammar_reading", "listening"),
+    "N4": ("vocab", "grammar_reading", "listening"),
+    "N5": ("vocab", "grammar_reading", "listening"),
+}
+_FULL_PAPER_SECTION_TITLES = {
+    "written": "言語知識・読解",
+    "vocab": "言語知識（文字・語彙）",
+    "grammar_reading": "言語知識（文法）・読解",
+    "listening": "聴解",
+}
 # 样本小模考的标题模板（见 ensure_jlpt_seed）。全真卷上线后要把它们归档，识别
 # 必须锚定这个 seed 自己写下的标题 —— 早期版本靠「question_count<=10 且没有固定
 # 题单」来猜，会误伤 admin 手工建的小题量动态卷（那种卷同样没有固定题单）。
@@ -204,8 +217,8 @@ def _mock_paper_exam_payloads(
     """Translate one bank manifest into runtime exam rows.
 
     Legacy manifests remain one fixed ``mock`` exam.  A v2 ``full-paper``
-    manifest becomes an untimed parent plus independently timed written and
-    listening children, matching the runtime's paper/section contract.
+    manifest becomes an untimed parent plus the level's independently timed
+    official test-section children, matching the runtime paper contract.
     """
     normalized_level = str(level).strip().upper()
     parent_id = f"mockv1-{normalized_level.lower()}"
@@ -249,11 +262,16 @@ def _mock_paper_exam_payloads(
 
     if paper.get("manifestVersion") != 2:
         raise ValueError(f"{normalized_level}: full-paper requires manifestVersion=2")
+    expected_names = _FULL_PAPER_SECTION_NAMES.get(normalized_level)
+    if not expected_names:
+        raise ValueError(f"{normalized_level}: unsupported full-paper level")
     raw_sections = paper.get("sections")
-    if not isinstance(raw_sections, list) or len(raw_sections) != 2:
-        raise ValueError(f"{normalized_level}: full-paper requires written and listening sections")
+    if not isinstance(raw_sections, list) or len(raw_sections) != len(expected_names):
+        raise ValueError(
+            f"{normalized_level}: full-paper requires sections "
+            + ", ".join(expected_names)
+        )
 
-    expected_names = ("written", "listening")
     normalized_sections = []
     for index, expected_name in enumerate(expected_names):
         raw_section = raw_sections[index]
@@ -280,7 +298,7 @@ def _mock_paper_exam_payloads(
     ]
     if flattened_ids != question_ids:
         raise ValueError(
-            f"{normalized_level}: full-paper questionIds must equal written + listening order"
+            f"{normalized_level}: full-paper questionIds must equal ordered section questionIds"
         )
     if len(set(flattened_ids)) != len(flattened_ids):
         raise ValueError(f"{normalized_level}: full-paper questionIds must be unique")
@@ -313,7 +331,7 @@ def _mock_paper_exam_payloads(
     ):
         section_title = str(
             raw_section.get("title")
-            or ("言語知識・読解" if section_name == "written" else "聴解")
+            or _FULL_PAPER_SECTION_TITLES[section_name]
         )
         payloads.append(
             {
@@ -321,11 +339,16 @@ def _mock_paper_exam_payloads(
                 "level": normalized_level,
                 "title": f"{title} · {section_title}",
                 "kind": "section",
-                "section": "" if section_name == "written" else "listening",
+                "section": (
+                    section_name if section_name in ("vocab", "listening") else ""
+                ),
                 "durationSeconds": duration,
                 "passScore": 60,
+                # Only N1/N2 ``written`` contains every written scoring surface.
+                # Split N3-N5 children stay percent-based until parent aggregation
+                # can combine their raw results without double/missing scaling.
                 "scoreMode": "jlpt_scaled" if section_name == "written" else "percent",
-                "coinCost": coin_cost if section_name == "written" else 0,
+                "coinCost": coin_cost if section_order == 0 else 0,
                 "isMemberOnly": False,
                 "status": "published",
                 "sortOrder": section_order,
@@ -400,7 +423,38 @@ def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
     for i, (level, paper) in enumerate(sorted(papers.items())):
         if not isinstance(paper, dict):
             continue
-        for payload in _mock_paper_exam_payloads(level, paper, sort_order=i):
+        payloads = _mock_paper_exam_payloads(level, paper, sort_order=i)
+        # Snapshot the complete old paper shape before the parent upsert can
+        # turn a legacy paid mock into a free structural shell. This also keeps
+        # an administrator-adjusted price on an already-created charging child.
+        existing_by_id = {}
+        for payload in payloads:
+            existing = conn.execute(
+                "SELECT id, kind, coin_cost FROM jlpt_exams WHERE id = ?",
+                (payload["id"],),
+            ).fetchone()
+            if existing:
+                existing_by_id[payload["id"]] = dict(existing)
+
+        if payloads and payloads[0].get("kind") == "paper" and len(payloads) > 1:
+            parent_payload = payloads[0]
+            charging_payload = payloads[1]
+            old_parent = existing_by_id.get(parent_payload["id"])
+            old_charging = existing_by_id.get(charging_payload["id"])
+            if old_charging:
+                charging_price = int(old_charging.get("coin_cost") or 0)
+            elif old_parent and str(old_parent.get("kind") or "") == "mock":
+                charging_price = int(old_parent.get("coin_cost") or 0)
+            else:
+                charging_price = int(charging_payload.get("coinCost") or 0)
+            charging_price = max(0, min(100_000, charging_price))
+            parent_payload["coinCost"] = 0
+            for section_payload in payloads[1:]:
+                section_payload["coinCost"] = (
+                    charging_price if section_payload is charging_payload else 0
+                )
+
+        for payload in payloads:
             jlpt.upsert_exam(conn, payload, now=now)
             exams += 1
 

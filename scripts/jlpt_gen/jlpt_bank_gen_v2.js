@@ -24,7 +24,7 @@ const NEEDS = {
   N1: { kanji_reading: 110, context: 130, paraphrase: 100, usage: 100, grammar_form: 200, sentence_assembly: 100, text_grammar: 85,
         reading_short: 55, reading_mid: 120, reading_long: 90, reading_info: 40,
         listen_task: 100, listen_point: 100, listen_gist: 70, listen_response: 100, listen_integrated: 40 },
-  N2: { kanji_reading: 95, orthography: 80, context: 120, paraphrase: 95, usage: 95, grammar_form: 190, sentence_assembly: 95, text_grammar: 80,
+  N2: { kanji_reading: 95, orthography: 80, word_formation: 80, context: 120, paraphrase: 95, usage: 95, grammar_form: 190, sentence_assembly: 95, text_grammar: 80,
         reading_short: 55, reading_mid: 110, reading_long: 75, reading_info: 40,
         listen_task: 95, listen_point: 95, listen_gist: 65, listen_response: 95, listen_integrated: 35 },
   N3: { kanji_reading: 70, orthography: 60, context: 90, paraphrase: 60, usage: 60, grammar_form: 120, sentence_assembly: 55, text_grammar: 50,
@@ -37,14 +37,15 @@ const NEEDS = {
         reading_short: 30, reading_mid: 40, reading_info: 20,
         listen_task: 40, listen_point: 40, listen_gist: 25, listen_response: 40 },
 }
-// 组卷底线（缺口检查用；实际组卷在 Python 步骤）——每级每张卷所需，各 qtype。
+// 组卷底线（缺口检查用；实际组卷在 Python 步骤）。题数依据官方 Executive
+// Summary p.7，N1 听力以 2022-12 修订覆盖；必须与 assemble_bank.py 完全一致。
 const PAPER = {
   N1: { kanji_reading: 6, context: 7, paraphrase: 6, usage: 6, grammar_form: 10, sentence_assembly: 5, text_grammar: 5,
         reading_short: 4, reading_mid: 9, reading_long: 4, reading_info: 2,
-        listen_task: 6, listen_point: 6, listen_gist: 5, listen_response: 11, listen_integrated: 3 },
-  N2: { kanji_reading: 5, orthography: 5, context: 7, paraphrase: 5, usage: 5, grammar_form: 12, sentence_assembly: 5, text_grammar: 5,
+        listen_task: 5, listen_point: 6, listen_gist: 5, listen_response: 11, listen_integrated: 3 },
+  N2: { kanji_reading: 5, orthography: 5, word_formation: 5, context: 7, paraphrase: 5, usage: 5, grammar_form: 12, sentence_assembly: 5, text_grammar: 5,
         reading_short: 5, reading_mid: 9, reading_long: 4, reading_info: 2,
-        listen_task: 5, listen_point: 6, listen_gist: 5, listen_response: 11, listen_integrated: 4 },
+        listen_task: 5, listen_point: 6, listen_gist: 5, listen_response: 12, listen_integrated: 4 },
   N3: { kanji_reading: 8, orthography: 6, context: 11, paraphrase: 5, usage: 5, grammar_form: 13, sentence_assembly: 5, text_grammar: 5,
         reading_short: 4, reading_mid: 6, reading_long: 4, reading_info: 2,
         listen_task: 6, listen_point: 6, listen_gist: 3, listen_response: 4 },
@@ -56,12 +57,12 @@ const PAPER = {
         listen_task: 5, listen_point: 5, listen_gist: 2, listen_response: 4 },
 }
 
-const LEX_QTYPES = ['kanji_reading', 'orthography', 'context', 'paraphrase', 'usage', 'grammar_form', 'sentence_assembly', 'text_grammar']
+const LEX_QTYPES = ['kanji_reading', 'orthography', 'word_formation', 'context', 'paraphrase', 'usage', 'grammar_form', 'sentence_assembly', 'text_grammar']
 const RC_QTYPES = ['reading_short', 'reading_mid', 'reading_long', 'reading_info', 'listen_task', 'listen_point', 'listen_gist', 'listen_response', 'listen_integrated']
 const LISTEN_QTYPES = new Set(['listen_task', 'listen_point', 'listen_gist', 'listen_response', 'listen_integrated'])
 
 const SECTION_OF = {
-  kanji_reading: 'vocab', orthography: 'vocab', context: 'vocab', paraphrase: 'vocab', usage: 'vocab',
+  kanji_reading: 'vocab', orthography: 'vocab', word_formation: 'vocab', context: 'vocab', paraphrase: 'vocab', usage: 'vocab',
   grammar_form: 'grammar', sentence_assembly: 'grammar', text_grammar: 'grammar',
   reading_short: 'reading', reading_mid: 'reading', reading_long: 'reading', reading_info: 'reading',
   listen_task: 'listening', listen_point: 'listening', listen_gist: 'listening', listen_response: 'listening', listen_integrated: 'listening',
@@ -78,6 +79,7 @@ const LEVEL_PROFILE = {
 const QTYPE_SPEC = {
   kanji_reading: '漢字読み：自然句子，一词用【】标出（汉字书写），问读法。4个平假名选项，用长音/促音/浊音/音训混淆做干扰。',
   orthography: '表記：句子里一词用【】标出（平假名书写），问正确汉字写法。4个汉字候选（形近/同音异字干扰）。',
+  word_formation: '語形成：给出带前后语境的句子，考查接头辞、接尾辞或复合构词；4个同类候选中只有1个能构成自然且符合语境的词。',
   context: '文脈規定：句子挖空（　　），选最合适的词。4个同类词，覆盖名/动/形/副/カタカナ語/接续词。',
   paraphrase: '言い換え類義：句中一词/短语用【】标出，选意思最接近的替换项。4选项。',
   usage: '用法：stem 只写目标词（如「めったに」），4个选项各为一整句，只有1句用法自然正确；错误项须是真实常见误用（搭配/语义/位置错），非乱造。',
