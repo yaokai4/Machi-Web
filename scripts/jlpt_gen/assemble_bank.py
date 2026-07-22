@@ -45,7 +45,8 @@ def norm_stem(s):
 
 
 def main(src, out):
-    raw = json.load(open(src, encoding="utf-8"))
+    with open(src, encoding="utf-8") as source_file:
+        raw = json.load(source_file)
     root = raw.get("result", raw) if isinstance(raw, dict) else raw
     pool = root.get("pool") if isinstance(root, dict) else None
     assert isinstance(pool, list) and pool, "no pool in workflow output"
@@ -67,6 +68,11 @@ def main(src, out):
         if not str(q.get("stem") or "").strip():
             continue
         key = (lvl, qt, norm_stem(q["stem"]))
+        if qt in GROUPED:
+            # Grouped question stems intentionally repeat across passages
+            # (for example every article has a "（１）..." question).  The
+            # passage is therefore part of the question's content identity.
+            key += (norm_stem(q.get("passage")),)
         if key in seen:
             continue
         seen.add(key)
