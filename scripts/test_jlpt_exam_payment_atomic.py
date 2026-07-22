@@ -84,7 +84,14 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
             idempotency_key=f"atomic-credit:{self.user_id}",
         )
 
-    def _start(self, *, key: str = "", member: bool = False, conn=None):
+    def _start(
+        self,
+        *,
+        key: str = "",
+        member: bool = False,
+        confirmed_charge_coins: int | None = None,
+        conn=None,
+    ):
         return server.start_jlpt_exam_atomic(
             conn or self.conn,
             user_id=self.user_id,
@@ -92,6 +99,7 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
             is_member=member,
             request_key=key,
             now=server.now_iso(),
+            confirmed_charge_coins=confirmed_charge_coins,
         )
 
     def _handler_start(self, *, key: str = "") -> dict:
@@ -326,6 +334,41 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
         started = self._start(key="real-member", member=False)["exam"]
         self.assertEqual(50, started["coinCharged"])
         self.assertEqual("member", started["priceSnapshot"]["pricingTier"])
+
+    def test_stale_confirmed_price_creates_no_session_or_debit(self) -> None:
+        self._credit()
+        preflight = server.jlpt_exam_access_preflight(
+            self.conn,
+            user_id=self.user_id,
+            exam_id=self.exam_id,
+            now=server.now_iso(),
+        )
+        self.assertEqual(100, preflight["requiredCoins"])
+        self.conn.execute(
+            "UPDATE jlpt_exams SET coin_cost=120 WHERE id=?", (self.exam_id,)
+        )
+        stale = self._start(
+            key="stale-confirmation", confirmed_charge_coins=100
+        )
+        self.assertEqual("price_changed", stale["status"])
+        self.assertEqual(120, stale["requiredCoins"])
+        self.assertEqual(
+            1_000,
+            server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"],
+        )
+        self.assertEqual(
+            0,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM jlpt_exam_sessions "
+                "WHERE user_id=? AND exam_id=?",
+                (self.user_id, self.exam_id),
+            ).fetchone()["c"],
+        )
+        accepted = self._start(
+            key="fresh-confirmation", confirmed_charge_coins=120
+        )
+        self.assertEqual("started", accepted["status"])
+        self.assertEqual(120, accepted["exam"]["coinCharged"])
 
     def test_expired_membership_does_not_lock_an_already_paid_active_attempt(self) -> None:
         self._credit()

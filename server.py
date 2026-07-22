@@ -12105,6 +12105,7 @@ def _start_jlpt_single_exam_tx(
     now: str = "",
     paper_attempt_id: str = "",
     charge_override: int | None = None,
+    confirmed_charge_coins: int | None = None,
 ) -> dict[str, Any]:
     """Start/resume one JLPT exam with payment and attempt in one transaction.
 
@@ -12245,6 +12246,35 @@ def _start_jlpt_single_exam_tx(
         )
         return {"status": "member_required"}
 
+    base_cost = (
+        max(0, int(charge_override))
+        if charge_override is not None
+        else max(0, int(live_exam.get("coin_cost") or 0))
+    )
+    actual_charge = (
+        0
+        if started.get("resumed")
+        else (jlpt.member_coin_cost(base_cost) if is_member else base_cost)
+    )
+    if confirmed_charge_coins is not None and int(confirmed_charge_coins) != actual_charge:
+        if not started.get("resumed"):
+            conn.execute(
+                "DELETE FROM jlpt_exam_sessions WHERE id=? AND user_id=? "
+                "AND status='in_progress'",
+                (session_id, user_id),
+            )
+        return {
+            "status": "price_changed",
+            "confirmedCoins": int(confirmed_charge_coins),
+            "requiredCoins": actual_charge,
+            "baseCoinCost": base_cost,
+            "pricingTier": (
+                "entitled"
+                if started.get("resumed")
+                else ("free" if actual_charge <= 0 else ("member" if is_member else "standard"))
+            ),
+        }
+
     if started.get("resumed"):
         row = conn.execute(
             "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=?",
@@ -12271,12 +12301,7 @@ def _start_jlpt_single_exam_tx(
             ),
         }
 
-    base_cost = (
-        max(0, int(charge_override))
-        if charge_override is not None
-        else max(0, int(live_exam.get("coin_cost") or 0))
-    )
-    charged_cost = jlpt.member_coin_cost(base_cost) if is_member else base_cost
+    charged_cost = actual_charge
     pricing_tier = "free" if charged_cost <= 0 else ("member" if is_member else "standard")
     payment_status = "not_required" if charged_cost <= 0 else "pending"
     ledger_entry_id = ""
@@ -12715,6 +12740,7 @@ def _start_jlpt_paper_exam_tx(
     requested_exam: dict[str, Any],
     request_key: str,
     now: str,
+    confirmed_charge_coins: int | None = None,
 ) -> dict[str, Any]:
     requested_id = str(requested_exam.get("id") or "")
     requested_kind = str(requested_exam.get("kind") or "")
@@ -12930,6 +12956,7 @@ def _start_jlpt_paper_exam_tx(
         now=now,
         paper_attempt_id=str(attempt["id"]),
         charge_override=0 if not created_attempt else None,
+        confirmed_charge_coins=confirmed_charge_coins,
     )
     if outcome.get("status") != "started":
         if created_attempt:
@@ -12998,6 +13025,7 @@ def start_jlpt_exam_atomic(
     is_member: bool | None = None,
     request_key: str = "",
     now: str = "",
+    confirmed_charge_coins: int | None = None,
 ) -> dict[str, Any]:
     """Start an independent exam or a parent-authorized full-paper section."""
     user_id = str(user_id or "").strip()
@@ -13017,6 +13045,7 @@ def start_jlpt_exam_atomic(
             requested_exam=live_exam,
             request_key=request_key,
             now=now,
+            confirmed_charge_coins=confirmed_charge_coins,
         )
     return _start_jlpt_single_exam_tx(
         conn,
@@ -13025,6 +13054,7 @@ def start_jlpt_exam_atomic(
         is_member=is_member,
         request_key=request_key,
         now=now,
+        confirmed_charge_coins=confirmed_charge_coins,
     )
 
 
@@ -19840,6 +19870,22 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         body = self.read_json()
         exam_id = str(body.get("examId") or body.get("exam_id") or "").strip()
+        confirmed_present = (
+            "confirmedChargeCoins" in body or "confirmed_charge_coins" in body
+        )
+        confirmed_raw = body.get(
+            "confirmedChargeCoins", body.get("confirmed_charge_coins")
+        )
+        if confirmed_present and (
+            isinstance(confirmed_raw, bool)
+            or not isinstance(confirmed_raw, int)
+            or confirmed_raw < 0
+        ):
+            return self.send_error_json(
+                "confirmedChargeCoins 必须是非负整数。",
+                400,
+                "invalid_confirmed_charge",
+            )
         exam = jlpt.get_exam(conn, exam_id) if exam_id else None
         if not exam or exam.get("status") != "published":
             return self.send_error_json("exam not found", 404, "not_found")
@@ -19849,6 +19895,7 @@ class Handler(BaseHTTPRequestHandler):
             exam=exam,
             request_key=self._idempotency_key(),
             now=now_iso(),
+            confirmed_charge_coins=(int(confirmed_raw) if confirmed_present else None),
         )
         if outcome.get("status") == "not_found":
             return self.send_error_json("exam not found", 404, "not_found")
@@ -19867,6 +19914,18 @@ class Handler(BaseHTTPRequestHandler):
             env["requiredCoins"] = int(outcome.get("requiredCoins") or 0)
             env["balance"] = int(outcome.get("balance") or 0)
             return self.send_json(env, 402)
+        if outcome.get("status") == "price_changed":
+            return self.send_error_json(
+                "考试价格或权益状态已变化，请重新确认后开考。",
+                409,
+                "exam_price_changed",
+                {
+                    "confirmedCoins": int(outcome.get("confirmedCoins") or 0),
+                    "requiredCoins": int(outcome.get("requiredCoins") or 0),
+                    "baseCoinCost": int(outcome.get("baseCoinCost") or 0),
+                    "pricingTier": outcome.get("pricingTier") or "",
+                },
+            )
         if outcome.get("status") == "already_completed":
             return self.send_error_json(
                 "该 Idempotency-Key 对应的考试已经结束。",

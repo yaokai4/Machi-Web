@@ -113,7 +113,14 @@ class JLPTPaperAttemptTests(unittest.TestCase):
             idempotency_key=f"paper-credit:{self.user_id}",
         )
 
-    def _start(self, exam_id: str, key: str = "", *, conn=None) -> dict:
+    def _start(
+        self,
+        exam_id: str,
+        key: str = "",
+        *,
+        confirmed_charge_coins: int | None = None,
+        conn=None,
+    ) -> dict:
         connection = conn or self.conn
         return server.start_jlpt_exam_atomic(
             connection,
@@ -121,6 +128,7 @@ class JLPTPaperAttemptTests(unittest.TestCase):
             exam=jlpt.get_exam(connection, exam_id),
             request_key=key,
             now=server.now_iso(),
+            confirmed_charge_coins=confirmed_charge_coins,
         )
 
     def _submit(self, session_id: str) -> tuple[dict, dict]:
@@ -509,6 +517,44 @@ class JLPTPaperAttemptTests(unittest.TestCase):
         self.assertEqual("paper_attempt", resumed["unlockSource"])
         self.assertEqual(first["sessionId"], resumed["resumeSessionId"])
         self.assertEqual(first["paperAttempt"]["id"], resumed["paperAttempt"]["id"])
+
+    def test_parent_start_rejects_stale_confirmation_before_attempt_or_debit(self) -> None:
+        self._credit()
+        preflight = server.jlpt_exam_access_preflight(
+            self.conn,
+            user_id=self.user_id,
+            exam_id=self.paper_id,
+            now=server.now_iso(),
+        )
+        self.assertEqual(100, preflight["requiredCoins"])
+        self.conn.execute(
+            "UPDATE jlpt_exams SET coin_cost=120 WHERE id=?", (self.written_id,)
+        )
+        stale = self._start(
+            self.paper_id,
+            "stale-paper-confirmation",
+            confirmed_charge_coins=100,
+        )
+        self.assertEqual("price_changed", stale["status"])
+        self.assertEqual(120, stale["requiredCoins"])
+        self.assertEqual(
+            1_000,
+            server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"],
+        )
+        self.assertEqual(
+            0,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM jlpt_paper_attempts WHERE user_id=?",
+                (self.user_id,),
+            ).fetchone()["c"],
+        )
+        self.assertEqual(
+            0,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM jlpt_exam_sessions WHERE user_id=?",
+                (self.user_id,),
+            ).fetchone()["c"],
+        )
 
     def test_member_preflight_uses_authoritative_membership_price(self) -> None:
         server.activate_or_extend_membership(
