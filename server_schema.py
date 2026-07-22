@@ -5803,6 +5803,90 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ON CONFLICT(user_id, exam_id, request_key) DO NOTHING;
         """,
     ),
+    (
+        129,
+        "jlpt 分科整卷父级 attempt：一次付费、顺序推进与可恢复权益",
+        # 128 预留给 Apple consumption outbox。父级 attempt 固化整卷价格、
+        # 付款与当前科目；每个子科 session 明确归属同一 attempt，避免刷新、
+        # 杀进程或直接请求后续科时重复扣款/跳科。稳定 lock 行在 PostgreSQL
+        # 提供跨进程串行边界，SQLite 由外层 BEGIN IMMEDIATE 同步。
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_paper_start_locks (
+            user_id TEXT NOT NULL,
+            paper_exam_id TEXT NOT NULL,
+            touched_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, paper_exam_id)
+        );
+        CREATE TABLE IF NOT EXISTS jlpt_paper_attempts (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            paper_exam_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'in_progress',
+            current_section_index INTEGER NOT NULL DEFAULT 0,
+            current_section_exam_id TEXT NOT NULL DEFAULT '',
+            section_count INTEGER NOT NULL DEFAULT 0,
+            base_coin_cost_snapshot INTEGER NOT NULL DEFAULT 0,
+            charged_coin_cost INTEGER NOT NULL DEFAULT 0,
+            pricing_tier TEXT NOT NULL DEFAULT 'pending',
+            membership_snapshot INTEGER NOT NULL DEFAULT 0,
+            unlock_source TEXT NOT NULL DEFAULT 'pending',
+            payment_status TEXT NOT NULL DEFAULT 'pending',
+            wallet_ledger_entry_id TEXT NOT NULL DEFAULT '',
+            start_request_key TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL DEFAULT '',
+            refunded_at TEXT NOT NULL DEFAULT '',
+            refund_ledger_entry_id TEXT NOT NULL DEFAULT '',
+            refund_reason TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jlpt_paper_attempt_active
+            ON jlpt_paper_attempts(user_id, paper_exam_id)
+            WHERE status = 'in_progress';
+        CREATE INDEX IF NOT EXISTS idx_jlpt_paper_attempt_payment
+            ON jlpt_paper_attempts(payment_status, started_at);
+        CREATE TABLE IF NOT EXISTS jlpt_paper_section_attempts (
+            paper_attempt_id TEXT NOT NULL,
+            section_exam_id TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            session_id TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL DEFAULT '',
+            completed_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (paper_attempt_id, section_exam_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jlpt_paper_section_session
+            ON jlpt_paper_section_attempts(session_id)
+            WHERE session_id <> '';
+        CREATE INDEX IF NOT EXISTS idx_jlpt_paper_section_progress
+            ON jlpt_paper_section_attempts(paper_attempt_id, sort_order, status);
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN paper_attempt_id TEXT NOT NULL DEFAULT '';
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_sessions_paper_attempt
+            ON jlpt_exam_sessions(paper_attempt_id, exam_id, status);
+        """,
+    ),
+    (
+        130,
+        "jlpt 整卷对账审计：可监督修复付款、会话与账本断链",
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_paper_reconciliation_audit (
+            run_id TEXT NOT NULL,
+            case_id TEXT NOT NULL,
+            case_type TEXT NOT NULL,
+            action TEXT NOT NULL,
+            status TEXT NOT NULL,
+            actor TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            before_json TEXT NOT NULL DEFAULT '{}',
+            after_json TEXT NOT NULL DEFAULT '{}',
+            rollback_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, case_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_paper_reconciliation_case
+            ON jlpt_paper_reconciliation_audit(case_type, created_at);
+        """,
+    ),
 ]
 
 

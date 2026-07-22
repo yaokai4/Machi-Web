@@ -846,13 +846,26 @@ def exam_session_can_resume(
     return elapsed < duration
 
 
-def has_resumable_exam_session(conn: Any, *, user_id: str, exam: dict[str, Any], now: Optional[str] = None) -> bool:
+def has_resumable_exam_session(
+    conn: Any,
+    *,
+    user_id: str,
+    exam: dict[str, Any],
+    now: Optional[str] = None,
+    paper_attempt_id: Optional[str] = None,
+) -> bool:
     """该用户对这张 exam 是否有「未过期的 in_progress 会话」(即开考会走续考、不该
     再扣币)。判据与 start_exam_session 的续考逻辑一致:in_progress 且未超时限。"""
+    paper_clause = ""
+    params: list[Any] = [user_id, exam["id"]]
+    if paper_attempt_id is not None:
+        paper_clause = " AND COALESCE(paper_attempt_id, '') = ?"
+        params.append(str(paper_attempt_id or ""))
     row = conn.execute(
         "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
-        "AND status = 'in_progress' ORDER BY started_at DESC LIMIT 1",
-        (user_id, exam["id"]),
+        "AND status = 'in_progress'" + paper_clause +
+        " ORDER BY started_at DESC LIMIT 1",
+        tuple(params),
     ).fetchone()
     if not row:
         return False
@@ -887,24 +900,78 @@ def list_paper_sections(conn: Any, paper_id: str, *, is_member: bool = False) ->
     return {"paper": _public_exam(paper), "sections": secs}
 
 
-def paper_result(conn: Any, *, user_id: str, paper_id: str) -> Optional[dict[str, Any]]:
-    """聚合一张分科整卷的成绩：取每个子科目最近一次已提交会话，合并展示——
-    笔试子科目(含 vocab+grammar+reading)的 scaled 缩放分 + 聴解子科目的百分比。
-    submit_exam_session 保持逐段不变;这里只读不算。任一子科目未考完则该段留空。"""
+def paper_result(
+    conn: Any,
+    *,
+    user_id: str,
+    paper_id: str,
+    paper_attempt_id: str = "",
+) -> Optional[dict[str, Any]]:
+    """聚合一次明确父卷 attempt 的成绩，不跨 attempt 拼接子科目。
+
+    默认优先最近已完成 attempt；若从未完成，则展示当前 attempt 的进度。旧数据只
+    在完全没有父 attempt 时按未绑定会话回退。submit_exam_session 保持逐段不变。
+    """
     paper = get_exam(conn, paper_id)
     if not paper or (paper.get("kind") or "") != "paper":
         return None
     sections = _paper_sections_rows(conn, paper_id, is_member=True)
+    attempt = None
+    if paper_attempt_id:
+        attempt_row = conn.execute(
+            "SELECT * FROM jlpt_paper_attempts WHERE id=? AND user_id=? AND paper_exam_id=?",
+            (paper_attempt_id, user_id, paper_id),
+        ).fetchone()
+        if not attempt_row:
+            return None
+        attempt = dict(attempt_row)
+    else:
+        # Results default to the latest completed full-paper attempt. An active
+        # newer retry must never make us combine its written section with an
+        # older attempt's listening section. If none completed, expose the
+        # current exact attempt as an incomplete progress result.
+        attempt_row = conn.execute(
+            "SELECT * FROM jlpt_paper_attempts WHERE user_id=? AND paper_exam_id=? "
+            "ORDER BY CASE WHEN status='completed' THEN 0 ELSE 1 END, "
+            "CASE WHEN completed_at<>'' THEN completed_at ELSE started_at END DESC LIMIT 1",
+            (user_id, paper_id),
+        ).fetchone()
+        attempt = dict(attempt_row) if attempt_row else None
+    session_ids_by_exam: dict[str, str] = {}
+    if attempt:
+        for row in conn.execute(
+            "SELECT section_exam_id, session_id FROM jlpt_paper_section_attempts "
+            "WHERE paper_attempt_id=?",
+            (attempt["id"],),
+        ).fetchall():
+            session_ids_by_exam[str(row["section_exam_id"] or "")] = str(
+                row["session_id"] or ""
+            )
     out_sections = []
     combined_scaled = None
     listening = None
     all_submitted = True
     for sec in sections:
-        row = conn.execute(
-            "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
-            "AND status = 'submitted' ORDER BY submitted_at DESC LIMIT 1",
-            (user_id, sec["id"]),
-        ).fetchone()
+        linked_session_id = session_ids_by_exam.get(str(sec["id"]), "")
+        if attempt:
+            row = (
+                conn.execute(
+                    "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=? "
+                    "AND exam_id=? AND paper_attempt_id=? AND status='submitted'",
+                    (linked_session_id, user_id, sec["id"], attempt["id"]),
+                ).fetchone()
+                if linked_session_id
+                else None
+            )
+        else:
+            # Legacy fallback for sessions created before parent attempts were
+            # introduced. Never mix it with tracked attempt rows.
+            row = conn.execute(
+                "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
+                "AND status = 'submitted' AND COALESCE(paper_attempt_id, '')='' "
+                "ORDER BY submitted_at DESC LIMIT 1",
+                (user_id, sec["id"]),
+            ).fetchone()
         if not row:
             all_submitted = False
             out_sections.append({
@@ -935,6 +1002,8 @@ def paper_result(conn: Any, *, user_id: str, paper_id: str) -> Optional[dict[str
     return {
         "paperId": paper_id, "level": paper.get("level") or "",
         "title": paper.get("title") or "",
+        "paperAttemptId": str((attempt or {}).get("id") or ""),
+        "paperAttemptStatus": str((attempt or {}).get("status") or "legacy"),
         "complete": all_submitted,
         "sections": out_sections,
         "scaled": combined_scaled,      # 笔试参考缩放分(不含聴解)
@@ -988,7 +1057,13 @@ def _resolve_exam_question_ids(conn: Any, exam: dict[str, Any], *, is_member: bo
 
 
 def start_exam_session(
-    conn: Any, *, user_id: str, exam: dict[str, Any], is_member: bool, now: Optional[str] = None,
+    conn: Any,
+    *,
+    user_id: str,
+    exam: dict[str, Any],
+    is_member: bool,
+    now: Optional[str] = None,
+    paper_attempt_id: str = "",
 ) -> Optional[dict[str, Any]]:
     """Create an in-progress session with a resolved question list; returns the
     session + answer-hidden questions. None if the exam has no usable questions.
@@ -1006,8 +1081,9 @@ def start_exam_session(
     duration = int(exam.get("duration_seconds") or 0)
     stale = conn.execute(
         "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
-        "AND status = 'in_progress' ORDER BY started_at DESC LIMIT 1",
-        (user_id, exam["id"]),
+        "AND status = 'in_progress' AND COALESCE(paper_attempt_id, '') = ? "
+        "ORDER BY started_at DESC LIMIT 1",
+        (user_id, exam["id"], str(paper_attempt_id or "")),
     ).fetchone()
     if stale:
         session = dict(stale)
@@ -1027,10 +1103,18 @@ def start_exam_session(
     session_id = str(uuid.uuid4())
     conn.execute(
         "INSERT INTO jlpt_exam_sessions (id, user_id, exam_id, level, status, started_at, "
-        "submitted_at, duration_seconds, total, correct, score, passed, question_ids_json) "
-        "VALUES (?, ?, ?, ?, 'in_progress', ?, '', 0, ?, 0, 0, 0, ?)",
-        (session_id, user_id, exam["id"], exam.get("level") or "", now, len(q_ids),
-         json.dumps(q_ids)),
+        "submitted_at, duration_seconds, total, correct, score, passed, question_ids_json, "
+        "paper_attempt_id) VALUES (?, ?, ?, ?, 'in_progress', ?, '', 0, ?, 0, 0, 0, ?, ?)",
+        (
+            session_id,
+            user_id,
+            exam["id"],
+            exam.get("level") or "",
+            now,
+            len(q_ids),
+            json.dumps(q_ids),
+            str(paper_attempt_id or ""),
+        ),
     )
     questions = _questions_by_ids(conn, q_ids, reveal_answer=False)
     return {
