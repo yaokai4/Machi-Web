@@ -99,6 +99,7 @@ import email.utils
 import hashlib
 import functools
 import calendar as pycalendar
+from contextlib import closing
 import hmac
 import html
 import io
@@ -7541,7 +7542,10 @@ def init_db() -> None:
             # B2-1: 推荐位静态 slug 与商品表核对，悬空/未发布引用启动即告警。
             _guide_audit_recommended_slugs(conn)
         return
-    with DB_LOCK, db() as conn:
+    # sqlite3.Connection.__exit__ commits/rolls back but does not close the
+    # connection.  Startup owns this short-lived handle, so close it
+    # explicitly (the PostgreSQL branch above uses its pool-aware wrapper).
+    with DB_LOCK, closing(db()) as conn:
         conn.executescript(SCHEMA)
         run_migrations(conn)
         ensure_reputation_seed(conn)
@@ -13430,6 +13434,759 @@ def verify_apple_transaction(signed_transaction: str, product_id: str = "") -> d
     return payload
 
 
+_APPLE_SIGNED_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "transactionId": ("transactionId", "transaction_id"),
+    "originalTransactionId": ("originalTransactionId", "original_transaction_id"),
+    "productId": ("productId", "product_id"),
+    "environment": ("environment",),
+    "appAccountToken": ("appAccountToken", "app_account_token"),
+    "bundleId": ("bundleId", "bundle_id"),
+}
+
+
+def _apple_compare_canonical_value(field: str, value: Any) -> str:
+    text = str(value or "").strip()
+    if field in ("environment", "appAccountToken"):
+        return text.lower()
+    return text
+
+
+def _apple_canonical_purchase(
+        request_data: dict[str, Any], payload: dict[str, Any], user_id: str) -> dict[str, Any]:
+    """Return the purchase identity exclusively from Apple's signed payload.
+
+    Request copies are compatibility/audit inputs only: every copy that is sent
+    must equal the signed value and can never fill a missing signed field.  The
+    sole missing-field exception is ``appAccountToken`` for Sandbox/Xcode App
+    Review purchases; the global registry binds that first claim to one user.
+    """
+    signed: dict[str, str] = {}
+    for field in (
+            "transactionId", "originalTransactionId", "productId", "environment", "bundleId"):
+        value = str(payload.get(field) or "").strip()
+        if not value:
+            raise APIError("Apple 签名交易字段不完整", 400, "apple_signed_field_missing")
+        signed[field] = value
+
+    environment = signed["environment"].lower()
+    if environment not in ("production", "sandbox", "xcode"):
+        raise APIError("Apple 签名交易环境无效", 400, "apple_environment_invalid")
+    app_account_token = str(payload.get("appAccountToken") or "").strip()
+    is_sandbox = environment in ("sandbox", "xcode")
+    if not app_account_token and not is_sandbox:
+        raise APIError("交易缺少账号凭证", 403, "apple_account_token_required")
+
+    signed["appAccountToken"] = app_account_token
+    if APPLE_IAP_BUNDLE_ID and signed["bundleId"] != APPLE_IAP_BUNDLE_ID:
+        raise APIError("交易应用标识不匹配", 400, "apple_bundle_mismatch")
+    if app_account_token and app_account_token.lower() != str(user_id or "").lower():
+        raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
+
+    # revocationDate is Apple's canonical revocation signal for non-consumables
+    # and subscriptions.  Some controlled integrations also surface isRevoked;
+    # reject either form before a registry claim or money write.
+    if payload.get("revocationDate") not in (None, "", 0, "0") or payload.get("isRevoked") is True:
+        raise APIError("该 Apple 交易已撤销", 409, "apple_transaction_revoked")
+
+    for field, aliases in _APPLE_SIGNED_FIELD_ALIASES.items():
+        expected = _apple_compare_canonical_value(field, signed[field])
+        for alias in aliases:
+            if alias not in request_data:
+                continue
+            actual = _apple_compare_canonical_value(field, request_data.get(alias))
+            if actual != expected:
+                raise APIError("客户端交易字段与 Apple 签名不一致", 400, "apple_signed_field_mismatch")
+
+    return {
+        "transaction_id": signed["transactionId"],
+        "original_transaction_id": signed["originalTransactionId"],
+        "product_id": signed["productId"],
+        "environment": environment,
+        "app_account_token": app_account_token,
+        "bundle_id": signed["bundleId"],
+        "is_sandbox": is_sandbox,
+    }
+
+
+def _apple_product_family_mapping(
+        conn: sqlite3.Connection, product_id: str) -> dict[str, Any] | None:
+    """Resolve one signed SKU to exactly one server-side purchase family.
+
+    Multiple rows inside a family are tolerated for the legacy membership-plan
+    alias, but a SKU configured in more than one family fails closed.  This
+    prevents a cheap consumable from being routed through membership/guide (or
+    vice versa) even if a client selects a different endpoint.
+    """
+    if not product_id:
+        return None
+    family_rows: dict[str, list[dict[str, Any]]] = {
+        "membership": [
+            dict(row) for row in conn.execute(
+                "SELECT * FROM membership_plans WHERE ? <> '' "
+                "AND (apple_product_id = ? OR ios_iap_product_id = ?)",
+                (product_id, product_id, product_id),
+            ).fetchall()
+        ],
+        "wallet": [
+            dict(row) for row in conn.execute(
+                "SELECT * FROM wallet_topup_products WHERE ? <> '' "
+                "AND (apple_product_id = ? OR ios_iap_product_id = ?)",
+                (product_id, product_id, product_id),
+            ).fetchall()
+        ],
+        "guide": [
+            dict(row) for row in conn.execute(
+                "SELECT * FROM guide_products WHERE ? <> '' "
+                "AND (apple_product_id = ? OR ios_iap_product_id = ?)",
+                (product_id, product_id, product_id),
+            ).fetchall()
+        ],
+    }
+    families = [family for family, rows in family_rows.items() if rows]
+    if len(families) > 1:
+        ERR_LOG.error("Apple SKU is mapped to multiple purchase families")
+        raise APIError("Apple 商品配置冲突", 409, "apple_product_family_ambiguous")
+    if not families:
+        return None
+    family = families[0]
+    rows = family_rows[family]
+    if len(rows) > 1:
+        compatible_membership_alias = False
+        if family == "membership" and len(rows) == 2:
+            legacy = [
+                row for row in rows
+                if str(row.get("plan_key") or "") == MEMBERSHIP_LEGACY_PLAN_KEY
+            ]
+            current = [
+                row for row in rows
+                if str(row.get("plan_key") or "") != MEMBERSHIP_LEGACY_PLAN_KEY
+            ]
+            configured_ids = [
+                {
+                    str(row.get(column) or "").strip()
+                    for column in ("apple_product_id", "ios_iap_product_id")
+                    if str(row.get(column) or "").strip()
+                }
+                for row in rows
+            ]
+            periods = {
+                str(row.get("billing_period") or row.get("billing_cycle") or "monthly")
+                for row in rows
+            }
+            intervals = {int(row.get("interval_count") or 1) for row in rows}
+            compatible_membership_alias = bool(
+                len(legacy) == 1
+                and len(current) == 1
+                and all(ids == {product_id} for ids in configured_ids)
+                and len(periods) == 1
+                and len(intervals) == 1
+            )
+        if not compatible_membership_alias:
+            ERR_LOG.error("Apple SKU is mapped to multiple resources inside one purchase family")
+            raise APIError("Apple 商品配置冲突", 409, "apple_product_family_ambiguous")
+    if family == "membership":
+        rows.sort(key=lambda row: (
+            0 if int(row.get("is_active") or 0) == 1 else 1,
+            1 if str(row.get("plan_key") or "") == MEMBERSHIP_LEGACY_PLAN_KEY else 0,
+            int(row.get("sort_order") or 0),
+            str(row.get("plan_key") or ""),
+        ))
+        resource_id = str(rows[0].get("plan_key") or "")
+    elif family == "wallet":
+        rows.sort(key=lambda row: (
+            0 if int(row.get("is_active") or 0) == 1 else 1,
+            int(row.get("sort_order") or 0),
+            str(row.get("pack_key") or ""),
+        ))
+        resource_id = str(rows[0].get("pack_key") or "")
+    else:
+        rows.sort(key=lambda row: (
+            0 if str(row.get("status") or "") == "published" else 1,
+            int(bool(row.get("is_coming_soon"))),
+            str(row.get("slug") or ""),
+        ))
+        resource_id = str(rows[0].get("id") or "")
+    return {"family": family, "item": rows[0], "resource_id": resource_id}
+
+
+def _apple_registry_expected(
+        canonical: dict[str, Any], *, family: str, resource_id: str,
+        user_id: str) -> dict[str, str]:
+    return {
+        "transaction_id": str(canonical["transaction_id"]),
+        "original_transaction_id": str(canonical["original_transaction_id"]),
+        "product_id": str(canonical["product_id"]),
+        "purchase_family": family,
+        "resource_id": str(resource_id),
+        "user_id": str(user_id),
+        "environment": str(canonical["environment"]).lower(),
+        "app_account_token": str(canonical.get("app_account_token") or "").lower(),
+        "bundle_id": str(canonical["bundle_id"]),
+    }
+
+
+def _apple_assert_registry_match(row: dict[str, Any], expected: dict[str, str]) -> None:
+    claim_status = str(row.get("claim_status") or "")
+    # A verified refund may arrive before client-side verification. Its
+    # registry tombstone is global for the transaction id, so reject the later
+    # redemption explicitly even when the catalog family was not known yet.
+    if claim_status == "revoked":
+        raise APIError("该 Apple 交易已撤销", 409, "apple_transaction_revoked")
+    for field, value in expected.items():
+        actual = str(row.get(field) or "")
+        if field in ("environment", "app_account_token"):
+            actual = actual.lower()
+        if actual != value:
+            raise APIError("Apple 交易已被其他账号或商品使用", 409, "apple_transaction_conflict")
+    if claim_status != "fulfilled":
+        raise APIError("Apple 交易状态不完整，请联系客服", 409, "apple_transaction_incomplete")
+
+
+def _apple_legacy_transaction_rows(
+        conn: sqlite3.Connection, transaction_id: str) -> list[dict[str, Any]]:
+    """Find grants created before migration 134 for lazy, fail-closed binding."""
+    raw = str(transaction_id)
+    prefixed = "apple:" + raw
+    matches: list[dict[str, Any]] = []
+    for row in conn.execute(
+            "SELECT * FROM payment_orders WHERE payment_provider='apple_iap' "
+            "AND provider_trade_no IN (?, ?)", (raw, prefixed)).fetchall():
+        item = dict(row)
+        product_id = str(item.get("provider_price_id") or "")
+        if not product_id:
+            plan = conn.execute(
+                "SELECT * FROM membership_plans WHERE plan_key=?", (item.get("plan_key") or "",)
+            ).fetchone()
+            if plan:
+                product_id = str(plan["apple_product_id"] or plan["ios_iap_product_id"] or "")
+        matches.append({
+            "family": "membership", "user_id": str(item.get("user_id") or ""),
+            "resource_id": str(item.get("plan_key") or ""), "product_id": product_id,
+            "original_transaction_id": str(item.get("provider_user_id") or ""),
+            "grant_reference": str(item.get("order_no") or ""),
+            "fulfilled": str(item.get("status") or "") == "paid",
+        })
+    for row in conn.execute(
+            "SELECT * FROM wallet_topup_orders WHERE payment_provider='apple_iap' "
+            "AND provider_trade_no IN (?, ?)", (raw, prefixed)).fetchall():
+        item = dict(row)
+        product_id = str(item.get("provider_product_id") or "")
+        if not product_id:
+            pack = conn.execute(
+                "SELECT * FROM wallet_topup_products WHERE pack_key=?", (item.get("pack_key") or "",)
+            ).fetchone()
+            if pack:
+                product_id = str(pack["apple_product_id"] or pack["ios_iap_product_id"] or "")
+        matches.append({
+            "family": "wallet", "user_id": str(item.get("user_id") or ""),
+            "resource_id": str(item.get("pack_key") or ""), "product_id": product_id,
+            "original_transaction_id": str(item.get("provider_user_id") or ""),
+            "grant_reference": str(item.get("order_no") or ""),
+            "fulfilled": str(item.get("status") or "") in ("paid", "fulfilled"),
+        })
+    for row in conn.execute(
+            "SELECT * FROM guide_orders WHERE payment_provider='apple_iap' "
+            "AND provider_trade_no IN (?, ?)", (raw, prefixed)).fetchall():
+        item = dict(row)
+        product_id = str(item.get("apple_product_id_snapshot") or "")
+        if not product_id:
+            product = conn.execute(
+                "SELECT * FROM guide_products WHERE id=?", (item.get("product_id") or "",)
+            ).fetchone()
+            if product:
+                product_id = str(product["apple_product_id"] or product["ios_iap_product_id"] or "")
+        matches.append({
+            "family": "guide", "user_id": str(item.get("user_id") or ""),
+            "resource_id": str(item.get("product_id") or ""), "product_id": product_id,
+            "original_transaction_id": "",
+            "grant_reference": str(item.get("order_no") or ""),
+            "fulfilled": str(item.get("status") or "") == "fulfilled",
+        })
+    return matches
+
+
+def _apple_insert_registry(
+        conn: sqlite3.Connection, expected: dict[str, str], *,
+        claim_status: str, grant_reference: str = "") -> bool:
+    now = now_iso()
+    cur = conn.execute(
+        "INSERT INTO apple_transaction_registry "
+        "(transaction_id, original_transaction_id, product_id, purchase_family, resource_id, user_id, "
+        "environment, app_account_token, bundle_id, claim_status, grant_reference, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "ON CONFLICT(transaction_id) DO NOTHING",
+        (
+            expected["transaction_id"], expected["original_transaction_id"], expected["product_id"],
+            expected["purchase_family"], expected["resource_id"], expected["user_id"],
+            expected["environment"], expected["app_account_token"], expected["bundle_id"],
+            claim_status, grant_reference, now, now,
+        ),
+    )
+    return getattr(cur, "rowcount", 0) == 1
+
+
+def _apple_claim_transaction(
+        conn: sqlite3.Connection, canonical: dict[str, Any], *, family: str,
+        resource_id: str, user_id: str) -> tuple[bool, dict[str, Any]]:
+    """Claim one transaction inside the caller's family grant transaction."""
+    expected = _apple_registry_expected(
+        canonical, family=family, resource_id=resource_id, user_id=user_id
+    )
+    row = conn.execute(
+        "SELECT * FROM apple_transaction_registry WHERE transaction_id=?",
+        (expected["transaction_id"],),
+    ).fetchone()
+    if row:
+        existing = dict(row)
+        _apple_assert_registry_match(existing, expected)
+        return False, existing
+
+    legacy = _apple_legacy_transaction_rows(conn, expected["transaction_id"])
+    if legacy:
+        # Any duplicate/cross-table historical use is ambiguous and must be
+        # reconciled manually instead of silently choosing the first row.
+        if len(legacy) != 1:
+            raise APIError("历史 Apple 交易存在冲突", 409, "apple_transaction_conflict")
+        old = legacy[0]
+        if (not old["fulfilled"] or old["family"] != family
+                or old["user_id"] != expected["user_id"]):
+            raise APIError("Apple 交易已被其他账号或商品使用", 409, "apple_transaction_conflict")
+        if family in ("wallet", "guide") and old["resource_id"] != expected["resource_id"]:
+            raise APIError("Apple 交易商品身份不匹配", 409, "apple_transaction_conflict")
+        if old["product_id"] and old["product_id"] != expected["product_id"]:
+            raise APIError("Apple 交易商品身份不匹配", 409, "apple_transaction_conflict")
+        if (old["original_transaction_id"]
+                and old["original_transaction_id"] != expected["original_transaction_id"]):
+            raise APIError("Apple 原始交易身份不匹配", 409, "apple_transaction_conflict")
+        _apple_insert_registry(
+            conn, expected, claim_status="fulfilled",
+            grant_reference=old["grant_reference"],
+        )
+        existing_row = conn.execute(
+            "SELECT * FROM apple_transaction_registry WHERE transaction_id=?",
+            (expected["transaction_id"],),
+        ).fetchone()
+        if not existing_row:
+            raise APIError("Apple 交易登记失败", 503, "apple_registry_unavailable")
+        existing = dict(existing_row)
+        _apple_assert_registry_match(existing, expected)
+        return False, existing
+
+    inserted = _apple_insert_registry(conn, expected, claim_status="claimed")
+    if inserted:
+        row = conn.execute(
+            "SELECT * FROM apple_transaction_registry WHERE transaction_id=?",
+            (expected["transaction_id"],),
+        ).fetchone()
+        return True, dict(row) if row else expected
+
+    # PostgreSQL's ON CONFLICT waits for the winning transaction.  At READ
+    # COMMITTED this SELECT then sees its fulfilled row; SQLite's writer lock
+    # has the same effect across processes/connections.
+    row = conn.execute(
+        "SELECT * FROM apple_transaction_registry WHERE transaction_id=?",
+        (expected["transaction_id"],),
+    ).fetchone()
+    if not row:
+        raise APIError("Apple 交易登记暂不可用", 503, "apple_registry_unavailable")
+    existing = dict(row)
+    _apple_assert_registry_match(existing, expected)
+    return False, existing
+
+
+def _apple_finish_transaction_claim(
+        conn: sqlite3.Connection, transaction_id: str, grant_reference: str) -> None:
+    cur = conn.execute(
+        "UPDATE apple_transaction_registry SET claim_status='fulfilled', grant_reference=?, updated_at=? "
+        "WHERE transaction_id=? AND claim_status='claimed'",
+        (str(grant_reference or ""), now_iso(), transaction_id),
+    )
+    if getattr(cur, "rowcount", 0) != 1:
+        raise APIError("Apple 交易登记未完成", 500, "apple_registry_incomplete")
+
+
+def _apple_refund_target(
+        conn: sqlite3.Connection, transaction: dict[str, Any],
+        user_id: str) -> dict[str, str] | None:
+    """Resolve a signed refund/revoke to exactly one fulfilled local grant.
+
+    Migration 134 is authoritative for new purchases. Pre-registry orders are
+    reconciled lazily across both the historical raw transaction id and the
+    newer ``apple:`` prefix. Ambiguous, cross-user, cross-product, or partially
+    fulfilled data fails closed instead of revoking an unrelated entitlement.
+    """
+    required = {
+        "transaction_id": str(transaction.get("transactionId") or "").strip(),
+        "original_transaction_id": str(
+            transaction.get("originalTransactionId") or ""
+        ).strip(),
+        "product_id": str(transaction.get("productId") or "").strip(),
+        "environment": str(transaction.get("environment") or "").strip().lower(),
+        "bundle_id": str(transaction.get("bundleId") or "").strip(),
+    }
+    if any(not value for value in required.values()):
+        raise APIError("Apple 签名交易字段不完整", 400, "apple_signed_field_missing")
+    if required["environment"] not in ("production", "sandbox", "xcode"):
+        raise APIError("Apple 签名交易环境无效", 400, "apple_environment_invalid")
+    if APPLE_IAP_BUNDLE_ID and required["bundle_id"] != APPLE_IAP_BUNDLE_ID:
+        raise APIError("Apple 交易应用标识不匹配", 400, "apple_bundle_mismatch")
+
+    row = conn.execute(
+        "SELECT * FROM apple_transaction_registry WHERE transaction_id=?",
+        (required["transaction_id"],),
+    ).fetchone()
+    if row:
+        registered = dict(row)
+        expected = {
+            "transaction_id": required["transaction_id"],
+            "original_transaction_id": required["original_transaction_id"],
+            "product_id": required["product_id"],
+            "user_id": str(user_id),
+            "environment": required["environment"],
+            "bundle_id": required["bundle_id"],
+        }
+        for field, value in expected.items():
+            actual = str(registered.get(field) or "")
+            if field == "environment":
+                actual = actual.lower()
+            if actual != value:
+                raise APIError(
+                    "Apple 退款交易与本地发货记录冲突",
+                    409,
+                    "apple_transaction_conflict",
+                )
+        claim_status = str(registered.get("claim_status") or "")
+        if claim_status == "revoked":
+            return {
+                "family": str(registered.get("purchase_family") or ""),
+                "grant_reference": str(registered.get("grant_reference") or ""),
+                "already_revoked": "1",
+            }
+        if claim_status != "fulfilled":
+            raise APIError(
+                "Apple 交易发货状态不完整",
+                409,
+                "apple_transaction_incomplete",
+            )
+        grant_reference = str(registered.get("grant_reference") or "").strip()
+        if not grant_reference:
+            raise APIError(
+                "Apple 交易发货引用缺失",
+                409,
+                "apple_registry_inconsistent",
+            )
+        return {
+            "family": str(registered.get("purchase_family") or ""),
+            "grant_reference": grant_reference,
+            "registry_backed": "1",
+        }
+
+    # A historical client could have used transactionId or
+    # originalTransactionId as its dedup key. Inspect both and collapse the
+    # same order found through two identifiers before deciding uniqueness.
+    legacy_by_grant: dict[tuple[str, str], dict[str, Any]] = {}
+    for identifier in dict.fromkeys((
+            required["transaction_id"], required["original_transaction_id"])):
+        for old in _apple_legacy_transaction_rows(conn, identifier):
+            key = (
+                str(old.get("family") or ""),
+                str(old.get("grant_reference") or ""),
+            )
+            legacy_by_grant[key] = old
+    legacy = list(legacy_by_grant.values())
+    if not legacy:
+        return None
+    if len(legacy) != 1:
+        raise APIError("历史 Apple 退款交易存在冲突", 409, "apple_transaction_conflict")
+    old = legacy[0]
+    if not old.get("fulfilled"):
+        raise APIError("Apple 交易发货状态不完整", 409, "apple_transaction_incomplete")
+    if str(old.get("user_id") or "") != str(user_id):
+        raise APIError("Apple 退款交易账号冲突", 409, "apple_transaction_conflict")
+    old_product_id = str(old.get("product_id") or "")
+    if old_product_id and old_product_id != required["product_id"]:
+        raise APIError("Apple 退款交易商品冲突", 409, "apple_transaction_conflict")
+    old_original_id = str(old.get("original_transaction_id") or "")
+    if (old_original_id
+            and old_original_id != required["original_transaction_id"]):
+        raise APIError("Apple 原始交易身份冲突", 409, "apple_transaction_conflict")
+    grant_reference = str(old.get("grant_reference") or "").strip()
+    if not grant_reference:
+        raise APIError("Apple 历史发货引用缺失", 409, "apple_registry_inconsistent")
+    return {
+        "family": str(old.get("family") or ""),
+        "grant_reference": grant_reference,
+    }
+
+
+def _apple_record_refund_tombstone(
+        conn: sqlite3.Connection, transaction: dict[str, Any], user_id: str) -> bool:
+    """Reserve an as-yet-unredeemed refunded transaction against later grant."""
+    app_account_token = str(transaction.get("appAccountToken") or "").strip().lower()
+    if app_account_token and app_account_token != str(user_id).lower():
+        raise APIError("Apple 退款交易账号冲突", 409, "apple_transaction_conflict")
+    expected = {
+        "transaction_id": str(transaction.get("transactionId") or "").strip(),
+        "original_transaction_id": str(
+            transaction.get("originalTransactionId") or ""
+        ).strip(),
+        "product_id": str(transaction.get("productId") or "").strip(),
+        # A refund can precede catalog lookup or client verification. The
+        # transaction-id tombstone is authoritative regardless of future SKU
+        # routing, so it intentionally has no grant family/resource.
+        "purchase_family": "unknown",
+        "resource_id": "",
+        "user_id": str(user_id),
+        "environment": str(transaction.get("environment") or "").strip().lower(),
+        "app_account_token": app_account_token,
+        "bundle_id": str(transaction.get("bundleId") or "").strip(),
+    }
+    return _apple_insert_registry(conn, expected, claim_status="revoked")
+
+
+def _apple_mark_refund_registry(
+        conn: sqlite3.Connection, transaction: dict[str, Any], user_id: str) -> None:
+    transaction_id = str(transaction.get("transactionId") or "").strip()
+    cur = conn.execute(
+        "UPDATE apple_transaction_registry SET claim_status='revoked', updated_at=? "
+        "WHERE transaction_id=? AND claim_status='fulfilled'",
+        (now_iso(), transaction_id),
+    )
+    if getattr(cur, "rowcount", 0) == 1:
+        return
+    row = conn.execute(
+        "SELECT claim_status FROM apple_transaction_registry WHERE transaction_id=?",
+        (transaction_id,),
+    ).fetchone()
+    if row and str(row["claim_status"] or "") == "revoked":
+        return
+    if not row and _apple_record_refund_tombstone(conn, transaction, user_id):
+        return
+    raise APIError("Apple 退款交易登记失败", 409, "apple_registry_inconsistent")
+
+
+def _apply_apple_refund(
+        conn: sqlite3.Connection, transaction: dict[str, Any],
+        user_id: str, *, reason: str) -> dict[str, Any]:
+    target = _apple_refund_target(conn, transaction, user_id)
+    if target and target.get("already_revoked") == "1":
+        return {"status": "refund_already_recorded"}
+    if not target:
+        # Persist a global tombstone before acknowledging a refund that raced
+        # ahead of client verification. The original signed purchase JWS can
+        # never be redeemed after this transaction commits.
+        if _apple_record_refund_tombstone(conn, transaction, user_id):
+            return {"status": "refund_recorded"}
+        # A concurrent purchase may have won the transaction-id insert. Re-read
+        # after ON CONFLICT waits, then either claw it back or accept its tombstone.
+        target = _apple_refund_target(conn, transaction, user_id)
+        if not target:
+            raise APIError("Apple 退款交易登记失败", 409, "apple_registry_inconsistent")
+        if target.get("already_revoked") == "1":
+            return {"status": "refund_already_recorded"}
+    family = target["family"]
+    grant_reference = target["grant_reference"]
+    result: dict[str, Any]
+    status: str
+    if family == "wallet":
+        row = conn.execute(
+            "SELECT order_no FROM wallet_topup_orders WHERE order_no=? AND user_id=?",
+            (grant_reference, user_id),
+        ).fetchone()
+        if not row:
+            raise APIError(
+                "Apple 交易登记与钱包订单不一致",
+                409,
+                "apple_registry_inconsistent",
+            )
+        result = wallet_refund_topup(
+            conn, str(row["order_no"]), reason=reason, entry_type="refund_debit"
+        )
+        status = "points_refunded"
+    elif family == "guide":
+        row = conn.execute(
+            "SELECT id FROM guide_orders WHERE (id=? OR order_no=?) AND user_id=? LIMIT 1",
+            (grant_reference, grant_reference, user_id),
+        ).fetchone()
+        if not row:
+            raise APIError(
+                "Apple 交易登记与指南订单不一致",
+                409,
+                "apple_registry_inconsistent",
+            )
+        result = refund_guide_points_order(conn, str(row["id"]), reason=reason)
+        status = "guide_entitlement_revoked"
+    elif family == "membership":
+        row = conn.execute(
+            "SELECT order_no FROM payment_orders WHERE order_no=? AND user_id=? "
+            "AND payment_provider='apple_iap'",
+            (grant_reference, user_id),
+        ).fetchone()
+        if not row:
+            raise APIError(
+                "Apple 交易登记与会员订单不一致",
+                409,
+                "apple_registry_inconsistent",
+            )
+        refund_order(conn, str(row["order_no"]))
+        result = {}
+        status = "membership_refunded"
+    else:
+        raise APIError("Apple 交易商品类型无效", 409, "apple_registry_inconsistent")
+    _apple_mark_refund_registry(conn, transaction, user_id)
+    return {"status": status, "result": result}
+
+
+@money_atomic
+def _process_apple_refund_webhook(
+        conn: sqlite3.Connection, *, event_type: str, event_id: str,
+        order_no: str, audit_raw: str, signature_valid: bool,
+        transaction: dict[str, Any], user_id: str) -> tuple[bool, dict[str, Any]]:
+    """Commit the refund clawback and webhook dedup record atomically."""
+    if _payment_webhook_seen(conn, "apple_iap", event_id):
+        return False, {}
+    result = _apply_apple_refund(
+        conn, transaction, user_id, reason=event_type
+    )
+    inserted = record_payment_webhook(
+        conn,
+        "apple_iap",
+        event_type,
+        event_id,
+        order_no,
+        audit_raw,
+        signature_valid,
+    )
+    return inserted, result
+
+
+@money_atomic
+def _redeem_apple_wallet_purchase(
+        conn: sqlite3.Connection, user_id: str, pack: dict[str, Any],
+        canonical: dict[str, Any]) -> dict[str, Any]:
+    created, registry = _apple_claim_transaction(
+        conn, canonical, family="wallet", resource_id=str(pack.get("pack_key") or ""),
+        user_id=user_id,
+    )
+    provider_trade_no = "apple:" + str(canonical["transaction_id"])
+    if not created:
+        order_row = conn.execute(
+            "SELECT * FROM wallet_topup_orders WHERE order_no=? OR "
+            "(payment_provider='apple_iap' AND provider_trade_no IN (?, ?)) LIMIT 1",
+            (
+                str(registry.get("grant_reference") or ""),
+                str(canonical["transaction_id"]), provider_trade_no,
+            ),
+        ).fetchone()
+        if not order_row:
+            raise APIError("Apple 交易登记与钱包订单不一致", 409, "apple_registry_inconsistent")
+        order = dict(order_row)
+        return {
+            "applied": False,
+            "duplicate": True,
+            "order": serialize_wallet_topup_order(order),
+            "wallet": get_wallet_snapshot(conn, user_id),
+            "grantedPoints": int(order.get("total_points") or 0),
+        }
+    result = wallet_credit_iap_topup(
+        conn, user_id, pack, "apple_iap",
+        "ios_sandbox" if canonical["is_sandbox"] else "ios",
+        provider_trade_no,
+        provider_product_id=str(canonical["product_id"]),
+        provider_user_id=str(canonical["original_transaction_id"]),
+    )
+    order = result.get("order") or {}
+    _apple_finish_transaction_claim(
+        conn, str(canonical["transaction_id"]),
+        str(order.get("orderNo") or order.get("order_no") or ""),
+    )
+    return result
+
+
+@money_atomic
+def _redeem_apple_guide_purchase(
+        conn: sqlite3.Connection, user_id: str, product: dict[str, Any],
+        canonical: dict[str, Any]) -> dict[str, Any]:
+    resource_id = str(product.get("id") or "")
+    created, registry = _apple_claim_transaction(
+        conn, canonical, family="guide", resource_id=resource_id, user_id=user_id
+    )
+    provider_trade_no = "apple:" + str(canonical["transaction_id"])
+    if not created:
+        order_row = conn.execute(
+            "SELECT * FROM guide_orders WHERE order_no=? OR "
+            "(payment_provider='apple_iap' AND provider_trade_no IN (?, ?)) LIMIT 1",
+            (
+                str(registry.get("grant_reference") or ""),
+                str(canonical["transaction_id"]), provider_trade_no,
+            ),
+        ).fetchone()
+        if not order_row:
+            raise APIError("Apple 交易登记与指南订单不一致", 409, "apple_registry_inconsistent")
+        order = dict(order_row)
+        return {
+            "status": "duplicate", "applied": False, "order": order,
+            "orderNo": str(order.get("order_no") or ""), "alreadyOwned": True,
+        }
+    if not guide_product_deliverable_ready(conn, product):
+        raise APIError("内容准备中，暂不可购买。", 409, "PRODUCT_NOT_READY")
+    result = guide_credit_iap_purchase(
+        conn,
+        user_id,
+        product,
+        provider_trade_no=provider_trade_no,
+        sandbox=bool(canonical["is_sandbox"]),
+        provider_product_id=str(canonical["product_id"]),
+    )
+    _apple_finish_transaction_claim(
+        conn, str(canonical["transaction_id"]), str(result.get("orderNo") or "")
+    )
+    return result
+
+
+@money_atomic
+def _redeem_apple_membership_purchase(
+        conn: sqlite3.Connection, user_id: str, plan: dict[str, Any],
+        canonical: dict[str, Any], expires_at: str) -> dict[str, Any]:
+    plan_key = str(plan.get("plan_key") or "")
+    created, _ = _apple_claim_transaction(
+        conn, canonical, family="membership", resource_id=plan_key, user_id=user_id
+    )
+    if not created:
+        return get_user_membership_status(conn, user_id)
+    previous_status = get_user_membership_status(conn, user_id)
+    previous_until = str(previous_status.get("current_period_end") or "")
+    order = create_payment_order(
+        conn, user_id, plan_key, "apple_iap",
+        "ios_sandbox" if canonical["is_sandbox"] else "ios",
+    )
+    provider_trade_no = "apple:" + str(canonical["transaction_id"])
+    mark_order_paid(
+        conn,
+        order["order_no"],
+        provider_trade_no=provider_trade_no,
+        provider_user_id=str(canonical["original_transaction_id"]),
+        expected_provider="apple_iap",
+        provider_subscription_id=str(canonical["original_transaction_id"]),
+        provider_price_id=str(canonical["product_id"]),
+        notify_email=not bool(canonical["is_sandbox"]),
+    )
+    status = sync_apple_membership_expiry(
+        conn,
+        user_id,
+        plan_key,
+        expires_at,
+        str(canonical["original_transaction_id"]),
+        str(canonical["product_id"]),
+        "apple_client_verify",
+        minimum_until_iso=previous_until,
+    )
+    _apple_finish_transaction_claim(
+        conn, str(canonical["transaction_id"]), str(order["order_no"])
+    )
+    return status
+
+
 # ---- Google Play purchase verification (Android global) --------------------
 # Verifying a Play purchase needs a service account with androidpublisher
 # scope. Until the env is configured, verify returns None so the endpoint
@@ -13719,6 +14476,25 @@ def _appstore_server_api_token() -> str | None:
         return None
 
 
+def _apple_consumption_consent_lock(conn: sqlite3.Connection, user_id: str) -> int:
+    """Acquire the user+purpose transaction lock used by send and withdrawal.
+
+    PostgreSQL needs an explicit cross-process advisory transaction lock.
+    SQLite's outer ``BEGIN IMMEDIATE`` is already its database-wide writer
+    lock, so no extra statement is needed there.  The signed 64-bit key is
+    stable without exposing the user id to lock monitoring.
+    """
+    digest = hashlib.blake2b(
+        f"{user_id}\0{APPLE_CONSUMPTION_CONSENT_PURPOSE}".encode("utf-8"),
+        digest_size=8,
+        person=b"machi-consent",
+    ).digest()
+    lock_id = int.from_bytes(digest, byteorder="big", signed=True)
+    if KAIX_DB_BACKEND == "postgres":
+        conn.execute("SELECT pg_advisory_xact_lock(?)", (lock_id,)).fetchone()
+    return lock_id
+
+
 @money_atomic
 def record_apple_consumption_consent_event(
         conn: sqlite3.Connection, user_id: str, *, granted: bool,
@@ -13729,6 +14505,7 @@ def record_apple_consumption_consent_event(
     version = str(policy_version or "").strip()
     if not version:
         raise ValueError("policy_version is required")
+    _apple_consumption_consent_lock(conn, user_id)
     event_id = f"{time.time_ns():020d}-{uuid.uuid4().hex}"
     created_at = now_iso()
     conn.execute(
@@ -14229,6 +15006,41 @@ def _apple_retry_after_seconds(headers: Any, *, now: datetime | None = None) -> 
             return 0
 
 
+@money_atomic
+def _apple_consumption_submit_with_consent_lock(
+        conn: sqlite3.Connection, user_id: str, expected_event_id: str,
+        request: urllib.request.Request) -> dict[str, Any]:
+    """Linearize the final consent read with the outbound Apple PUT.
+
+    The transaction lock is held until ``urlopen`` returns.  Therefore either a
+    withdrawal commits first (this final read blocks the PUT), or the PUT wins
+    first (the withdrawal waits); there is no check-then-send gap.  Exceptions
+    escape so ``money_atomic`` rolls back and releases both SQLite and PG locks.
+    """
+    _apple_consumption_consent_lock(conn, user_id)
+    latest_consent = apple_consumption_consent_state(conn, user_id)
+    latest_event = latest_consent.get("event") or {}
+    latest_event_id = str(latest_event.get("id") or "")
+    if not latest_consent.get("granted") or latest_event_id != expected_event_id:
+        return {
+            "submitted": False,
+            "granted": bool(latest_consent.get("granted")),
+            "status": str(latest_consent.get("status") or "consent_missing"),
+            "event_id": latest_event_id,
+            "http_status": 0,
+        }
+    with urllib.request.urlopen(request, timeout=10) as response:
+        response.read()
+        http_status = int(getattr(response, "status", 0) or 200)
+    return {
+        "submitted": True,
+        "granted": True,
+        "status": "submitted",
+        "event_id": latest_event_id,
+        "http_status": http_status,
+    }
+
+
 def _apple_consumption_delivery_result(
         conn: sqlite3.Connection, transaction: dict[str, Any],
         user_id: str | None) -> dict[str, Any]:
@@ -14286,31 +15098,27 @@ def _apple_consumption_delivery_result(
         req.add_header("Authorization", "Bearer " + token)
         req.add_header("Content-Type", "application/json")
 
-        # Token minting and payload construction can take place after the first
-        # consent read.  Re-read at the last possible point before network I/O
-        # and require this attempt to still be authorized by the exact same
-        # immutable consent event.  A withdrawal/account deletion is terminal;
-        # a newer grant can be picked up by a later retry, never by this claim.
-        latest_consent = apple_consumption_consent_state(conn, resolved_user_id)
-        latest_event = latest_consent.get("event") or {}
-        latest_event_id = str(latest_event.get("id") or "")
-        if (not latest_consent.get("granted")
-                or latest_event_id != result["consent_event_id"]):
+        # Token minting/payload construction may happen after the first read.
+        # The helper takes the shared user+purpose lock, re-reads the exact event,
+        # and holds the lock through urlopen so withdrawal and PUT have one total
+        # order across threads, connections, processes, and both DB backends.
+        submission = _apple_consumption_submit_with_consent_lock(
+            conn, resolved_user_id, result["consent_event_id"], req
+        )
+        latest_event_id = str(submission.get("event_id") or "")
+        if not submission.get("submitted"):
             if latest_event_id:
                 result["consent_event_id"] = latest_event_id
-            if latest_consent.get("granted"):
+            if submission.get("granted"):
                 result.update(status="consent_event_changed", retryable=True)
             else:
                 result.update(
-                    status=str(latest_consent.get("status") or "consent_missing"),
+                    status=str(submission.get("status") or "consent_missing"),
                     retryable=False,
                 )
             return result
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            resp.read()
-            http_status = int(getattr(resp, "status", 0) or 200)
         ACCESS_LOG.info("apple consumption info submitted")
-        result.update(status="submitted", http_status=http_status)
+        result.update(status="submitted", http_status=int(submission.get("http_status") or 200))
         return result
     except urllib.error.HTTPError as exc:
         code = int(exc.code or 0)
@@ -14508,7 +15316,11 @@ def _finish_apple_consumption_outbox_attempt(
 
 def process_apple_consumption_outbox_job(
         conn: sqlite3.Connection, outbox_id: str, *, now: str = "") -> str:
-    """Claim and deliver one job. Network I/O happens outside DB transactions.
+    """Claim and deliver one job.
+
+    Claim/finalization use separate short transactions. The final consent
+    recheck deliberately holds the user-scoped consent transaction lock through
+    the outbound PUT so withdrawal and disclosure have one total order.
 
     A crash after Apple's success but before local finalization can replay the
     request after the lease expires; the API operation is a PUT keyed by the
@@ -29373,6 +30185,34 @@ class Handler(BaseHTTPRequestHandler):
                 "consumption": consumption_status,
             })
 
+        revoked = (
+            transaction.get("revocationDate") not in (None, "", 0, "0")
+            or transaction.get("isRevoked") is True
+        )
+        is_refund = revoked or notification_type in {"REFUND", "REVOKE"}
+        user_id = self._apple_notification_user_id(conn, transaction)
+        if is_refund and user_id:
+            # The local clawback and the webhook dedup row commit together. A
+            # crash cannot permanently mark a refund seen while leaving points
+            # or an entitlement active.
+            first, refund_result = _process_apple_refund_webhook(
+                conn,
+                event_type=event_type,
+                event_id=event_id,
+                order_no=original_id or str(transaction.get("transactionId") or ""),
+                audit_raw=audit_raw,
+                signature_valid=signature_valid,
+                transaction=transaction,
+                user_id=user_id,
+            )
+            if not first:
+                return self.send_json({"received": True, "duplicate": True})
+            return self.send_json({
+                "received": True,
+                "processed": True,
+                "status": str(refund_result.get("status") or "refund_unmatched"),
+            })
+
         first = record_payment_webhook(
             conn,
             "apple_iap",
@@ -29385,7 +30225,6 @@ class Handler(BaseHTTPRequestHandler):
         if not first:
             return self.send_json({"received": True, "duplicate": True})
 
-        user_id = self._apple_notification_user_id(conn, transaction)
         if not user_id:
             # 2xx so Apple does not retry forever; the raw notification is
             # audit-logged above and will become resolvable after the user opens
@@ -29393,36 +30232,45 @@ class Handler(BaseHTTPRequestHandler):
             ACCESS_LOG.warning("apple_iap notification without resolvable user event=%s original=%s", event_type, original_id)
             return self.send_json({"received": True, "processed": False, "reason": "user_not_found"})
 
-        plan = get_plan_by_apple_product(conn, product_id) or get_plan(conn, MEMBERSHIP_PLAN_KEY)
-        plan_key = plan["plan_key"] if plan else MEMBERSHIP_PLAN_KEY
+        try:
+            mapping = _apple_product_family_mapping(conn, product_id)
+        except APIError as exc:
+            if exc.code != "apple_product_family_ambiguous":
+                raise
+            # The signed notification is valid and already audit-logged, but
+            # catalog ownership is ambiguous. A deterministic 2xx prevents an
+            # endless Apple retry storm while refusing every entitlement write.
+            return self.send_json({
+                "received": True,
+                "processed": False,
+                "reason": "product_ambiguous",
+            })
+        if not mapping:
+            return self.send_json({
+                "received": True,
+                "processed": False,
+                "reason": "product_unmapped",
+            })
+        if mapping["family"] != "membership":
+            # A wallet/guide JWS may legitimately contain expiresDate-like
+            # fields in controlled integrations. It must never fall through to
+            # the default membership plan or mutate membership state.
+            return self.send_json({
+                "received": True,
+                "processed": False,
+                "reason": "non_membership_product",
+                "purchaseFamily": mapping["family"],
+            })
+        plan = dict(mapping["item"])
+        if int(plan.get("is_active") or 0) != 1:
+            return self.send_json({
+                "received": True,
+                "processed": False,
+                "reason": "membership_plan_inactive",
+            })
+        plan_key = str(plan["plan_key"])
         expires_at = apple_payload_expiry_iso(transaction)
-        revoked = bool(transaction.get("revocationDate"))
-        terminal_types = {"EXPIRED", "GRACE_PERIOD_EXPIRED", "REFUND", "REVOKE"}
-        if revoked or notification_type in {"REFUND", "REVOKE"}:
-            # MS-6: a refunded Apple CONSUMABLE points top-up must claw the points
-            # back (previously only membership was handled).
-            tx_id = str(transaction.get("transactionId") or "")
-            wt = conn.execute(
-                "SELECT order_no FROM wallet_topup_orders WHERE payment_provider = 'apple_iap' "
-                "AND provider_trade_no IN (?, ?) AND provider_trade_no <> '' LIMIT 1",
-                (tx_id, original_id)).fetchone()
-            if wt:
-                wallet_refund_topup(conn, wt["order_no"], reason=event_type, entry_type="refund_debit")
-                return self.send_json({"received": True, "processed": True, "status": "points_refunded"})
-            # A refunded single-product guide IAP must revoke the entitlement
-            # (price_points is 0 on IAP orders, so refund_guide_points_order
-            # only revokes — the money side is Apple's).
-            go = conn.execute(
-                "SELECT id FROM guide_orders WHERE payment_provider = 'apple_iap' "
-                "AND provider_trade_no IN (?, ?) AND provider_trade_no <> '' LIMIT 1",
-                ("apple:" + tx_id, "apple:" + original_id)).fetchone()
-            if go:
-                refund_guide_points_order(conn, go["id"], reason=event_type)
-                return self.send_json({"received": True, "processed": True, "status": "guide_entitlement_revoked"})
-            row = _current_membership_row(conn, user_id)
-            if row and ((not original_id) or row.get("provider_subscription_id") in ("", original_id)):
-                cancel_membership(conn, user_id, immediate=True, source="ios_iap")
-            return self.send_json({"received": True, "processed": True, "status": "revoked"})
+        terminal_types = {"EXPIRED", "GRACE_PERIOD_EXPIRED"}
         if notification_type in terminal_types and expires_at:
             expiry = _aware(parse_iso(expires_at))
             if expiry and expiry <= datetime.now(timezone.utc):
@@ -29449,60 +30297,25 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         data = self.read_json()
         signed = str(data.get("signedTransaction") or data.get("signed_transaction") or "").strip()
-        product_id = str(data.get("productId") or data.get("product_id") or "").strip()
-        if not signed or not product_id:
+        if not signed:
             raise APIError("缺少交易凭证", 400, "invalid_transaction")
-        if get_plan_by_apple_product(conn, product_id):
+        payload = verify_apple_transaction(signed)
+        if not payload:
+            raise APIError("交易验证失败", 400, "verification_failed")
+        canonical = _apple_canonical_purchase(data, payload, user["id"])
+        mapping = _apple_product_family_mapping(conn, canonical["product_id"])
+        if mapping and mapping["family"] == "membership":
             raise APIError("该商品是会员套餐，请走会员验证", 400, "product_is_membership")
-        if get_topup_product_by_apple(conn, product_id):
+        if mapping and mapping["family"] == "wallet":
             raise APIError("该商品是充值包，请走钱包验证", 400, "product_is_topup")
-        prod = conn.execute(
-            "SELECT * FROM guide_products WHERE ? <> '' AND (apple_product_id = ? OR ios_iap_product_id = ?) LIMIT 1",
-            (product_id, product_id, product_id)).fetchone()
-        if not prod:
+        if not mapping or mapping["family"] != "guide":
             raise APIError("商品不存在", 404, "guide_product_not_found")
-        d = dict(prod)
+        d = dict(mapping["item"])
         if bool(d.get("is_coming_soon")) or str(d.get("status") or "") != "published":
             raise APIError("商品未上架", 400, "product_not_available")
         if bool(d.get("is_service")) or str(d.get("fulfillment_type") or "") == "booking_only":
             raise APIError("服务类商品请使用预约流程", 400, "use_booking")
-        payload = verify_apple_transaction(signed, product_id)
-        if not payload:
-            raise APIError("交易验证失败", 400, "verification_failed")
-        verified_product_id = str(payload.get("productId") or "").strip()
-        if verified_product_id != product_id:
-            # The immutable order snapshot must come from Apple's signed JWS,
-            # never from the client request or mutable catalog routing alone.
-            raise APIError("交易商品不匹配", 400, "verification_failed")
-        txn_id = str(data.get("transactionId") or data.get("transaction_id") or payload.get("transactionId") or "")
-        orig_id = str(data.get("originalTransactionId") or data.get("original_transaction_id") or payload.get("originalTransactionId") or "")
-        app_account_token = str(payload.get("appAccountToken") or "").strip()
-        if app_account_token and app_account_token.lower() != user["id"].lower():
-            raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
-        txn_environment = str(payload.get("environment") or data.get("environment") or "").strip().lower()
-        is_sandbox_txn = txn_environment in ("sandbox", "xcode")
-        # 与会员/钱包 verify 同一策略：生产真实购买必须携带 appAccountToken；
-        # 沙盒交易绝不拒绝（审核员走沙盒），仅打 sandbox 标记不计营收。
-        if PRODUCTION and not is_sandbox_txn and not app_account_token:
-            raise APIError("交易缺少账号凭证", 403, "apple_account_token_required")
-        dedup = "apple:" + (txn_id or orig_id or signed[:40])
-        # C-1 交付物就绪校验（兜底——客户端据 deliverable_ready 已禁用购买 CTA）。
-        # 只拦「新购」：同交易重放（恢复购买/webhook 竞速）与已持有者不拦，
-        # 否则商品文件被撤后合法买家的跨设备恢复会被卡死。
-        if not guide_product_deliverable_ready(conn, d):
-            replay = conn.execute(
-                "SELECT 1 FROM guide_orders WHERE payment_provider = 'apple_iap' "
-                "AND provider_trade_no = ? LIMIT 1", (dedup,)).fetchone()
-            if not replay and not user_has_entitlement(conn, user["id"], _guide_product_resource_type(d), str(d.get("id"))):
-                raise APIError("内容准备中，暂不可购买。", 409, "PRODUCT_NOT_READY")
-        result = guide_credit_iap_purchase(
-            conn,
-            user["id"],
-            d,
-            provider_trade_no=dedup,
-            sandbox=is_sandbox_txn,
-            provider_product_id=verified_product_id,
-        )
+        result = _redeem_apple_guide_purchase(conn, user["id"], d, canonical)
         self.send_json({
             "status": result.get("status") or "fulfilled",
             "orderNo": result.get("orderNo") or "",
@@ -29518,71 +30331,36 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         data = self.read_json()
         signed = (data.get("signedTransaction") or data.get("signed_transaction") or "").strip()
-        product_id = (data.get("productId") or data.get("product_id") or APPLE_IAP_PRODUCT_ID).strip()
-        # This endpoint grants MEMBERSHIP only. A product_id that doesn't map to a
-        # membership plan (e.g. a Machi Points consumable, which shares the same
-        # bundleId so the structural JWS check passes) MUST be rejected — the old
-        # `or get_plan(MEMBERSHIP_PLAN_KEY)` fallback let a cheap points purchase be
-        # replayed here for free membership. Points have their own verify endpoint.
-        plan = get_plan_by_apple_product(conn, product_id)
-        if not plan:
-            raise APIError("该商品不是会员套餐", 400, "product_not_membership")
-        plan_key = plan["plan_key"]
-        txn_id = str(data.get("transactionId") or data.get("transaction_id") or "")
-        orig_id = str(data.get("originalTransactionId") or data.get("original_transaction_id") or "")
         if not signed:
             raise APIError("缺少交易凭证", 400, "invalid_transaction")
-        payload = verify_apple_transaction(signed, product_id)
+        payload = verify_apple_transaction(signed)
         if not payload:
             raise APIError("交易验证失败", 400, "verification_failed")
-        txn_id = txn_id or str(payload.get("transactionId") or "")
-        orig_id = orig_id or str(payload.get("originalTransactionId") or "")
-        app_account_token = str(payload.get("appAccountToken") or "").strip()
-        if app_account_token and app_account_token.lower() != user["id"].lower():
-            raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
-        previous_status = get_user_membership_status(conn, user["id"])
-        previous_until = previous_status.get("current_period_end") or ""
-        # Sandbox / TestFlight / Xcode transactions still open membership (so
-        # testers can exercise member features), but they are NOT money: no
-        # "payment succeeded" email — merely opening the paywall in TestFlight
-        # re-delivers old sandbox (auto-renew) transactions via
-        # Transaction.updates and used to mail a purchase receipt per renewal —
-        # and the order is tagged ios_sandbox so finance can filter it out.
-        # The environment field is read from the (production: Apple-signed)
-        # payload and is never used to GRANT anything, only to mute noise.
-        txn_environment = str(payload.get("environment") or data.get("environment") or "").strip().lower()
-        is_sandbox_txn = txn_environment in ("sandbox", "xcode")
-        # 生产环境的真实购买一律携带 appAccountToken(iOS 端购买时注入)。若缺失就
-        # 无法把交易绑定到归属者——否则持有他人「无 token 的合法签名收据」者,可靠
-        # 后面对【当前调用者】无条件执行的 expiry sync 给自己白开会员(订单唯一索引
-        # 只挡再次结算、挡不住 per-caller 的会员延期)。故生产非沙盒且无 token 直接拒。
-        if PRODUCTION and not is_sandbox_txn and not app_account_token:
-            raise APIError("交易缺少账号凭证", 403, "apple_account_token_required")
-        dedup_key = "apple:" + (txn_id or orig_id or signed[:40])
-        existing = conn.execute(
-            "SELECT status FROM payment_orders WHERE provider_trade_no = ? AND payment_provider = 'apple_iap'",
-            (dedup_key,),
-        ).fetchone()
-        if not (existing and existing["status"] == "paid"):
-            order = create_payment_order(conn, user["id"], plan_key, "apple_iap",
-                                         "ios_sandbox" if is_sandbox_txn else "ios")
-            mark_order_paid(conn, order["order_no"], provider_trade_no=dedup_key,
-                            provider_user_id=orig_id, expected_provider="apple_iap",
-                            provider_subscription_id=orig_id, provider_price_id=product_id,
-                            notify_email=not is_sandbox_txn)
+        canonical = _apple_canonical_purchase(data, payload, user["id"])
+        mapping = _apple_product_family_mapping(conn, canonical["product_id"])
+        if not mapping or mapping["family"] != "membership":
+            raise APIError("该商品不是会员套餐", 400, "product_not_membership")
+        plan = dict(mapping["item"])
+        if int(plan.get("is_active") or 0) != 1:
+            raise APIError("会员套餐未上架", 400, "plan_not_available")
+        plan_key = str(plan["plan_key"])
         expires_at = apple_payload_expiry_iso(payload)
+        expiry = _aware(parse_iso(expires_at))
+        now = datetime.now(timezone.utc)
+        if not expiry:
+            raise APIError("Apple 订阅缺少有效期", 400, "apple_subscription_expiry_invalid")
+        if expiry <= now:
+            raise APIError("Apple 订阅已过期", 409, "apple_subscription_expired")
         # Sandbox / Xcode transactions may carry a far-future (or auto-renew
         # accelerated) expiry; cap the membership they grant at 7 days so a
         # tester can never mint a long-lived membership from a non-money txn.
         # Production transactions are untouched. Cap only shortens, never extends.
-        if is_sandbox_txn and expires_at:
-            sandbox_ceiling = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
-            if expires_at > sandbox_ceiling:
-                expires_at = sandbox_ceiling
-        if expires_at:
-            sync_apple_membership_expiry(conn, user["id"], plan_key, expires_at, orig_id, product_id,
-                                         "apple_client_verify", minimum_until_iso=previous_until)
-        status = get_user_membership_status(conn, user["id"])
+        if canonical["is_sandbox"]:
+            expiry = min(expiry, now + timedelta(days=7))
+            expires_at = expiry.isoformat()
+        status = _redeem_apple_membership_purchase(
+            conn, user["id"], plan, canonical, expires_at
+        )
         self.send_json({
             "membershipActive": status["is_active"],
             "currentPeriodEnd": status["current_period_end"],
@@ -29789,37 +30567,25 @@ class Handler(BaseHTTPRequestHandler):
         user = self.require_user(conn)
         data = self.read_json()
         signed = str(data.get("signedTransaction") or data.get("signed_transaction") or "").strip()
-        product_id = str(data.get("productId") or data.get("product_id") or "").strip()
-        if not signed or not product_id:
+        if not signed:
             raise APIError("缺少交易凭证", 400, "invalid_transaction")
-        pack = get_topup_product_by_apple(conn, product_id)
-        if not pack:
-            raise APIError("点数包不存在", 404, "topup_pack_not_found")
-        payload = verify_apple_transaction(signed, product_id)
+        payload = verify_apple_transaction(signed)
         if not payload:
             raise APIError("交易验证失败", 400, "verification_failed")
-        txn_id = str(data.get("transactionId") or data.get("transaction_id") or payload.get("transactionId") or "")
-        orig_id = str(data.get("originalTransactionId") or data.get("original_transaction_id") or payload.get("originalTransactionId") or "")
-        app_account_token = str(payload.get("appAccountToken") or "").strip()
-        if app_account_token and app_account_token.lower() != user["id"].lower():
-            raise APIError("交易账号与当前账号不匹配", 403, "apple_account_token_mismatch")
-        txn_environment = str(payload.get("environment") or data.get("environment") or "").strip().lower()
-        is_sandbox_txn = txn_environment in ("sandbox", "xcode")
-        # 与会员 Apple 验证路径对齐:生产环境的真实购买必须携带 appAccountToken 把收据
-        # 绑定到归属者,否则持他人「无 token 的合法签名收据」者可换到点数(收据未绑定)。
-        # 沙盒 txn 天然跳过本校验(is_sandbox_txn=True 时 `not is_sandbox_txn` 为假)。
-        if PRODUCTION and not is_sandbox_txn and not app_account_token:
-            raise APIError("交易缺少账号凭证", 403, "apple_account_token_required")
+        canonical = _apple_canonical_purchase(data, payload, user["id"])
+        mapping = _apple_product_family_mapping(conn, canonical["product_id"])
+        if not mapping or mapping["family"] != "wallet":
+            raise APIError("点数包不存在", 404, "topup_pack_not_found")
+        pack = dict(mapping["item"])
+        if int(pack.get("is_active") or 0) != 1:
+            raise APIError("点数包未上架", 400, "topup_pack_not_available")
         # 沙盒 / TestFlight / Xcode 收据【绝不拒绝】—— App Review 审核员正是在沙盒环境
         # 下对生产构建 / 生产后端测试内购,一旦拒绝沙盒 = 内购必被拒审(会员路径从不拒
         # 沙盒,点数路径必须同策略)。照常入账让审核员走通购买流程,但打上
         # client_type='ios_sandbox' 标记——后台营收核算(api_admin_wallet_overview)已
         # 排除该标记,不计入真实营收。沙盒测试账号只能由本开发者在 ASC 内创建、外部攻击
         # 者无法自助生成,白嫖面被限制在受控测试者范围内,与会员沙盒授权同等风险。
-        dedup = "apple:" + (txn_id or orig_id or signed[:40])
-        client_type = "ios_sandbox" if is_sandbox_txn else "ios"
-        result = wallet_credit_iap_topup(conn, user["id"], pack, "apple_iap", client_type, dedup,
-                                         provider_product_id=product_id, provider_user_id=orig_id)
+        result = _redeem_apple_wallet_purchase(conn, user["id"], pack, canonical)
         self.send_json({
             "wallet": result.get("wallet") or get_wallet_snapshot(conn, user["id"]),
             "grantedPoints": result.get("grantedPoints", 0),

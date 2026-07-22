@@ -896,11 +896,16 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         with patch.object(
                 server,
                 "verify_apple_transaction",
-                return_value={"transactionId": "tx-missing-signed-product"},
+                return_value={
+                    "transactionId": "tx-missing-signed-product",
+                    "originalTransactionId": "orig-tx-missing-signed-product",
+                    "environment": "Sandbox",
+                    "bundleId": server.APPLE_IAP_BUNDLE_ID or "com.yaokai.kaizi",
+                },
         ), self.assertRaises(server.APIError) as raised:
             handler.api_apple_guide_verify(self.conn)
 
-        self.assertEqual(raised.exception.code, "verification_failed")
+        self.assertEqual(raised.exception.code, "apple_signed_field_missing")
         after = self.conn.execute(
             "SELECT COUNT(*) AS c FROM guide_orders WHERE user_id=? AND payment_provider='apple_iap'",
             (self.user_id,),
@@ -1207,6 +1212,118 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         ).fetchone())
         self.assertEqual(attempt["outcome"], "consent_withdrawn")
         self.assertEqual(attempt["consent_event_id"], withdrawn["id"])
+
+    def test_second_connection_withdrawal_linearizes_with_final_check_and_put(self) -> None:
+        """Once the final consent check wins, withdrawal must wait until PUT
+        returns.  If withdrawal wins first, the existing before-urlopen test
+        proves no PUT occurs.  Together they establish a total order."""
+        tx_id = "tx-consent-linearization-" + uuid.uuid4().hex
+        self._credit_topup(tx_id)
+        self._record_consent(True)
+        entered_network = threading.Event()
+        release_network = threading.Event()
+        withdrawal_done = threading.Event()
+        sender_result: dict = {}
+        thread_errors: list[BaseException] = []
+
+        def blocking_put(*_args, **_kwargs):
+            entered_network.set()
+            if not release_network.wait(timeout=5):
+                raise RuntimeError("test timed out waiting to release network")
+            return _response()
+
+        def send() -> None:
+            conn = server.db()
+            try:
+                sender_result.update(server._apple_consumption_delivery_result(
+                    conn, self._transaction(tx_id), self.user_id
+                ))
+            except BaseException as exc:
+                thread_errors.append(exc)
+            finally:
+                conn.close()
+
+        def withdraw() -> None:
+            conn = server.db()
+            try:
+                server.record_apple_consumption_consent_event(
+                    conn,
+                    self.user_id,
+                    granted=False,
+                    policy_version=server.APPLE_CONSUMPTION_CONSENT_POLICY_VERSION,
+                    locale="en",
+                    source="concurrency_test",
+                )
+            except BaseException as exc:
+                thread_errors.append(exc)
+            finally:
+                conn.close()
+                withdrawal_done.set()
+
+        with patch.object(server, "appstore_server_api_configured", return_value=True), \
+             patch.object(server, "_appstore_server_api_token", return_value="jwt"), \
+             patch.object(server.urllib.request, "urlopen", side_effect=blocking_put):
+            sender = threading.Thread(target=send)
+            sender.start()
+            self.assertTrue(entered_network.wait(timeout=5), "sender never reached PUT")
+            writer = threading.Thread(target=withdraw)
+            writer.start()
+            self.assertFalse(
+                withdrawal_done.wait(timeout=0.25),
+                "withdrawal committed inside the final-check/PUT critical section",
+            )
+            release_network.set()
+            sender.join(timeout=5)
+            writer.join(timeout=5)
+
+        self.assertFalse(sender.is_alive() or writer.is_alive(), "consent concurrency test deadlocked")
+        self.assertFalse(thread_errors, thread_errors)
+        self.assertEqual(sender_result["status"], "submitted")
+        self.assertTrue(withdrawal_done.is_set())
+        latest = server.apple_consumption_consent_state(self.conn, self.user_id)
+        self.assertEqual(latest["status"], "consent_withdrawn")
+
+    def test_consent_submission_transaction_rolls_back_and_releases_lock_on_error(self) -> None:
+        tx_id = "tx-consent-lock-rollback-" + uuid.uuid4().hex
+        self._credit_topup(tx_id)
+        self._record_consent(True)
+        with patch.object(server, "appstore_server_api_configured", return_value=True), \
+             patch.object(server, "_appstore_server_api_token", return_value="jwt"), \
+             patch.object(server.urllib.request, "urlopen", side_effect=URLError("offline")):
+            result = server._apple_consumption_delivery_result(
+                self.conn, self._transaction(tx_id), self.user_id
+            )
+        self.assertEqual(result["status"], "error")
+        withdrawn = self._record_consent(False)
+        self.assertTrue(withdrawn["id"])
+        self.assertEqual(
+            server.apple_consumption_consent_state(self.conn, self.user_id)["status"],
+            "consent_withdrawn",
+        )
+
+    def test_postgres_consent_lock_uses_stable_transaction_advisory_key(self) -> None:
+        calls: list[tuple[str, tuple]] = []
+
+        class Cursor:
+            @staticmethod
+            def fetchone():
+                return None
+
+        class FakeConnection:
+            @staticmethod
+            def execute(sql, params=()):
+                calls.append((sql, tuple(params)))
+                return Cursor()
+
+        with patch.object(server, "KAIX_DB_BACKEND", "postgres"):
+            first = server._apple_consumption_consent_lock(FakeConnection(), self.user_id)
+            second = server._apple_consumption_consent_lock(FakeConnection(), self.user_id)
+            other = server._apple_consumption_consent_lock(FakeConnection(), str(uuid.uuid4()))
+
+        self.assertEqual(first, second)
+        self.assertNotEqual(first, other)
+        self.assertTrue(all("pg_advisory_xact_lock" in sql for sql, _ in calls))
+        self.assertTrue(all(params == (key,) for (_, params), key in zip(calls, (first, second, other))))
 
     def test_account_deletion_records_withdrawal_and_cancels_pending_delivery(self) -> None:
         tx_id = "tx-delete-withdrawal"

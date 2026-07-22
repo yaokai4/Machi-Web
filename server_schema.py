@@ -5932,6 +5932,38 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE guide_orders ADD COLUMN apple_sample_content_provided INTEGER NOT NULL DEFAULT 0;
         """,
     ),
+    (
+        134,
+        "Apple IAP: global canonical transaction claim registry",
+        # 132-133 are reserved by the parallel JLPT pipeline work.  One Apple
+        # transaction id must be redeemable only once across every purchase
+        # table, user, process, and product family.  The primary key is the
+        # cross-process arbiter on both SQLite and PostgreSQL; the claim and its
+        # family-specific grant are committed in the same money transaction.
+        """
+        CREATE TABLE IF NOT EXISTS apple_transaction_registry (
+            transaction_id TEXT PRIMARY KEY,
+            original_transaction_id TEXT NOT NULL,
+            product_id TEXT NOT NULL,
+            purchase_family TEXT NOT NULL
+                CHECK (purchase_family IN ('membership', 'wallet', 'guide', 'unknown')),
+            resource_id TEXT NOT NULL,
+            user_id TEXT NOT NULL,
+            environment TEXT NOT NULL,
+            app_account_token TEXT NOT NULL DEFAULT '',
+            bundle_id TEXT NOT NULL,
+            claim_status TEXT NOT NULL DEFAULT 'claimed'
+                CHECK (claim_status IN ('claimed', 'fulfilled', 'revoked')),
+            grant_reference TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_apple_transaction_registry_user
+            ON apple_transaction_registry(user_id, purchase_family, created_at);
+        CREATE INDEX IF NOT EXISTS idx_apple_transaction_registry_original
+            ON apple_transaction_registry(original_transaction_id, product_id);
+        """,
+    ),
 ]
 
 

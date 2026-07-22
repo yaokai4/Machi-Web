@@ -24,6 +24,7 @@ import os
 import sys
 import tempfile
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 _TMP_DB = tempfile.mkstemp(prefix="machi_apple_sandbox_email_", suffix=".db")[1]
@@ -48,14 +49,19 @@ def _b64url(data: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(data).encode()).rstrip(b"=").decode()
 
 
-def _jws(txn_id: str, environment: str) -> str:
+def _jws(txn_id: str, environment: str, user_id: str) -> str:
     payload = {
         "transactionId": txn_id,
         "originalTransactionId": "orig-" + txn_id,
         "productId": PRODUCT_ID,
         "bundleId": server.APPLE_IAP_BUNDLE_ID or "com.yaokai.kaizi",
         "environment": environment,
+        "expiresDate": int(
+            (datetime.now(timezone.utc) + timedelta(days=30)).timestamp() * 1000
+        ),
     }
+    if environment.lower() == "production":
+        payload["appAccountToken"] = user_id
     return f"{_b64url({'alg': 'ES256'})}.{_b64url(payload)}.AAAA"
 
 
@@ -77,7 +83,7 @@ def _verify(conn, user: dict, txn_id: str, environment: str) -> dict:
     h.send_json = lambda data, status=200: cap.update(data=data, status=status)  # type: ignore[method-assign]
     h.require_user = lambda c: user  # type: ignore[method-assign]
     h.read_json = lambda: {  # type: ignore[method-assign]
-        "signedTransaction": _jws(txn_id, environment),
+        "signedTransaction": _jws(txn_id, environment, user["id"]),
         "productId": PRODUCT_ID,
         "transactionId": txn_id,
     }
