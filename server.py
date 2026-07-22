@@ -12256,7 +12256,21 @@ def _start_jlpt_single_exam_tx(
         if started.get("resumed")
         else (jlpt.member_coin_cost(base_cost) if is_member else base_cost)
     )
-    if confirmed_charge_coins is not None and int(confirmed_charge_coins) != actual_charge:
+    # Retrying the exact Idempotency-Key after the first paid response was lost
+    # is a replay of that original price confirmation, not a new zero-cost
+    # resume.  A different key that was later bound as a resume alias still
+    # confirms zero.  ``start_request_key`` distinguishes those two cases.
+    confirmation_charge = actual_charge
+    if (
+        previous
+        and request_digest
+        and str(previous.get("start_request_key") or "") == request_digest
+    ):
+        confirmation_charge = max(0, int(previous.get("charged_coin_cost") or 0))
+    if (
+        confirmed_charge_coins is not None
+        and int(confirmed_charge_coins) != confirmation_charge
+    ):
         if not started.get("resumed"):
             conn.execute(
                 "DELETE FROM jlpt_exam_sessions WHERE id=? AND user_id=? "
@@ -12266,10 +12280,12 @@ def _start_jlpt_single_exam_tx(
         return {
             "status": "price_changed",
             "confirmedCoins": int(confirmed_charge_coins),
-            "requiredCoins": actual_charge,
+            "requiredCoins": confirmation_charge,
             "baseCoinCost": base_cost,
             "pricingTier": (
-                "entitled"
+                str(previous.get("pricing_tier") or "entitled")
+                if previous and confirmation_charge > 0
+                else "entitled"
                 if started.get("resumed")
                 else ("free" if actual_charge <= 0 else ("member" if is_member else "standard"))
             ),
@@ -20043,8 +20059,25 @@ class Handler(BaseHTTPRequestHandler):
                 submit_args["answer_snapshot"] = snapshot
             result = jlpt.submit_exam_session(conn, **submit_args)
             if result is None:
-                conn.rollback()
-                return self.send_error_json("该考试已提交。", 409, "already_submitted")
+                # A client can lose the first successful response after the
+                # transaction commits.  Reconstruct the immutable stored
+                # result instead of stranding Web/iOS on a 409.  The retried
+                # snapshot is deliberately ignored.
+                live_session = jlpt.get_session(
+                    conn, session_id=session_id, user_id=user["id"]
+                )
+                result = (
+                    jlpt.replay_submitted_exam_result(
+                        conn, session=live_session, exam=exam
+                    )
+                    if live_session
+                    else None
+                )
+                if result is None:
+                    conn.rollback()
+                    return self.send_error_json(
+                        "该考试已提交。", 409, "already_submitted"
+                    )
             paper_progress = sync_jlpt_paper_attempt_after_submit(
                 conn,
                 session_id=session_id,
@@ -20057,9 +20090,10 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             conn.rollback()
             raise
-        _guide_funnel_log("jlpt_exam_submit", user_id=user["id"],
-                          examId=session.get("exam_id") or "", score=result.get("score"),
-                          passed=result.get("passed"))
+        if not result.get("idempotentReplay"):
+            _guide_funnel_log("jlpt_exam_submit", user_id=user["id"],
+                              examId=session.get("exam_id") or "", score=result.get("score"),
+                              passed=result.get("passed"))
         self.send_json({"status": "ok", **result, "disclaimer": self._JLPT_DISCLAIMER})
 
     def api_guide_jlpt_exam_history(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:

@@ -187,6 +187,46 @@ class JLPTExamRevisionTests(unittest.TestCase):
             {q["id"]: q["selectedIndex"] for q in result["questions"] if q["selectedIndex"] >= 0},
         )
 
+    def test_snapshot_after_deadline_is_ignored_and_saved_answers_are_settled(self) -> None:
+        """A late full snapshot must not reopen a timed paper after 00:00."""
+        self._answer(self.question_ids[0], 0, 0, 1)
+        self.conn.execute(
+            "UPDATE jlpt_exams SET duration_seconds=1 WHERE id=?", (self.exam_id,)
+        )
+        self.conn.execute(
+            "UPDATE jlpt_exam_sessions SET started_at=? WHERE id=?",
+            ("2026-01-01T00:00:00+00:00", self.session_id),
+        )
+        self.exam = jlpt.get_exam(self.conn, self.exam_id)
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        result = jlpt.submit_exam_session(
+            self.conn,
+            session=self._session(),
+            exam=self.exam,
+            now="2026-01-01T00:00:10+00:00",
+            answer_snapshot=[
+                {"questionId": self.question_ids[1], "selectedIndex": 2}
+            ],
+            base_revision=1,
+            revision=2,
+        )
+        self.conn.commit()
+
+        self.assertTrue(result["deadlineExpired"])
+        self.assertFalse(result["snapshotAccepted"])
+        self.assertEqual(1, result["answerRevision"])
+        saved = {
+            dict(row)["question_id"]: dict(row)["selected_index"]
+            for row in self.conn.execute(
+                "SELECT question_id, selected_index FROM jlpt_exam_answers "
+                "WHERE session_id=?",
+                (self.session_id,),
+            ).fetchall()
+        }
+        self.assertEqual({self.question_ids[0]: 0}, saved)
+        self.assertEqual("submitted", self._session()["status"])
+
     def test_stale_or_invalid_snapshot_rolls_back_without_partial_submit(self) -> None:
         self._answer(self.question_ids[0], 0, 0, 1)
         before = [

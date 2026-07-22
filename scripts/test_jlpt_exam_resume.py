@@ -192,15 +192,43 @@ def main() -> None:
         # 4) A second timed-out start on the NEW session's exam: submit the new
         #    session normally, then the next start is fresh again (no dangling
         #    in-progress row to resume).
-        cap = _post(uid, "api_guide_jlpt_exam_submit", {"sessionId": fresh["sessionId"]})
+        submit_body = {
+            "sessionId": fresh["sessionId"],
+            "answersSnapshot": [
+                {"questionId": n5_ids[2], "selectedIndex": 0},
+            ],
+            "baseRevision": 0,
+            "revision": 1,
+        }
+        cap = _post(uid, "api_guide_jlpt_exam_submit", submit_body)
         assert cap["status"] == 200, cap
+        first_submit = cap["data"]
+        conn.commit()
+        # The response may be lost after commit. Replaying submit must return
+        # the immutable stored result instead of a 409 that strands the client
+        # (and, for a parent paper, prevents it from advancing to the next
+        # section). The replay must not re-apply a changed snapshot.
+        replay_body = {
+            **submit_body,
+            "answersSnapshot": [
+                {"questionId": n5_ids[3], "selectedIndex": 1},
+            ],
+        }
+        cap = _post(uid, "api_guide_jlpt_exam_submit", replay_body)
+        assert cap["status"] == 200, cap
+        replay = cap["data"]
+        assert replay["idempotentReplay"] is True, replay
+        assert replay["sessionId"] == first_submit["sessionId"]
+        assert replay["score"] == first_submit["score"]
+        assert replay["questions"] == first_submit["questions"]
+        assert replay["answerRevision"] == first_submit["answerRevision"]
         conn.commit()
         cap = _post(uid, "api_guide_jlpt_exam_start", {"examId": "resume-exam-1"})
         assert cap["status"] == 200 and cap["data"]["resumed"] is False
         assert cap["data"]["sessionId"] not in (sid, fresh["sessionId"])
-        # Double-submit of the settled session is still rejected (CAS intact).
+        # An automatically settled attempt also replays its immutable result.
         cap = _post(uid, "api_guide_jlpt_exam_submit", {"sessionId": sid})
-        assert cap["status"] == 409, cap
+        assert cap["status"] == 200 and cap["data"]["idempotentReplay"] is True, cap
         conn.commit()
 
         # 5) Untimed exam (duration 0) never times out → always resumes.

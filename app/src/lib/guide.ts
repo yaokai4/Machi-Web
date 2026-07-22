@@ -1064,8 +1064,17 @@ export interface GuideSavedItem {
 
 const GUIDE_TIMEOUT_MS = 12_000;
 
-async function greq<T>(method: string, path: string, body?: unknown, timeoutMs = GUIDE_TIMEOUT_MS): Promise<T> {
-  const headers: Record<string, string> = { Accept: "application/json" };
+async function greq<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+  timeoutMs = GUIDE_TIMEOUT_MS,
+  extraHeaders: Record<string, string> = {},
+): Promise<T> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    ...extraHeaders,
+  };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   const token = readToken();
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -1535,12 +1544,65 @@ export interface GuideJlptPaperDetail {
   sections: GuideJlptExam[];
   disclaimer: string;
 }
+export interface GuideJlptPaperAttemptSection {
+  examId: string;
+  sortOrder: number;
+  status: string;
+  sessionId: string;
+  startedAt: string;
+  completedAt: string;
+}
+export interface GuideJlptPaperAttempt {
+  id: string;
+  paperExamId: string;
+  status: string;
+  currentSectionIndex: number;
+  currentSectionExamId: string;
+  sectionCount: number;
+  baseCoinCost: number;
+  chargedCoinCost: number;
+  pricingTier: string;
+  membershipSnapshot: boolean;
+  unlockSource: string;
+  paymentStatus: string;
+  walletLedgerEntryId: string;
+  startedAt: string;
+  completedAt: string;
+  sections: GuideJlptPaperAttemptSection[];
+}
+export interface GuideJlptExamPreflight {
+  status: string;
+  examId: string;
+  paperExamId: string;
+  accessDecision: "FREE_SAMPLE" | "COIN_PER_ATTEMPT" | "LOCKED" | string;
+  canStart: boolean;
+  baseCoinCost: number;
+  memberCoinCost: number;
+  requiredCoins: number;
+  pricingTier: string;
+  balance: number;
+  shortfall: number;
+  unlockSource: string;
+  oneTimePaperPayment: boolean;
+  currentSectionExamId: string;
+  resumeSessionId: string;
+  paperAttempt: GuideJlptPaperAttempt | Record<string, never>;
+  priceSnapshotSource: string;
+  refundPolicyCode: string;
+  refundPolicyCopy: string;
+  confirmationCopyKey: string;
+  confirmationCopy: string;
+  serverTime: string;
+  disclaimer: string;
+}
 /** 分科整卷合并成绩：笔试缩放分 + 聴解百分比。 */
 export interface GuideJlptPaperResult {
   status: string;
   paperId: string;
   level: string;
   title: string;
+  paperAttemptId: string;
+  paperAttemptStatus: string;
   complete: boolean;
   sections: {
     examId: string;
@@ -1595,6 +1657,15 @@ export interface GuideJlptExamStart {
   scoreMode?: string;
   total: number;
   questions: GuideJlptQuestion[];
+  resumed?: boolean;
+  answers?: Array<{ questionId: string; selectedIndex: number; revision: number }>;
+  answerRevision?: number;
+  remainingSeconds?: number;
+  coinCharged?: number;
+  coinBalance?: number;
+  paymentStatus?: string;
+  walletLedgerEntryId?: string;
+  paperAttempt?: GuideJlptPaperAttempt;
   disclaimer: string;
 }
 export interface GuideJlptExamSubmit {
@@ -1609,6 +1680,11 @@ export interface GuideJlptExamSubmit {
   scaled?: GuideJlptScaledResult | null;
   durationSeconds: number;
   questions: GuideJlptQuestion[];
+  answerRevision?: number;
+  deadlineExpired?: boolean;
+  snapshotAccepted?: boolean;
+  idempotentReplay?: boolean;
+  paperAttempt?: GuideJlptPaperAttempt;
   disclaimer: string;
 }
 export interface GuideJlptExamHistoryItem {
@@ -1932,12 +2008,51 @@ export const guide = {
     greq<GuideJlptVocabQuizResult>("POST", "/api/guide/jlpt/vocab/quiz/submit", body),
   jlptExams: (level = "") =>
     greq<{ status: string; exams: GuideJlptExam[] }>("GET", `/api/guide/jlpt/exams${qs({ level })}`),
-  jlptExamStart: (examId: string) =>
-    greq<GuideJlptExamStart>("POST", "/api/guide/jlpt/exam/start", { examId }),
-  jlptExamAnswer: (body: { sessionId: string; questionId: string; selectedIndex: number }) =>
-    greq<{ status: string; saved: boolean; questionId: string }>("POST", "/api/guide/jlpt/exam/answer", body),
-  jlptExamSubmit: (sessionId: string) =>
-    greq<GuideJlptExamSubmit>("POST", "/api/guide/jlpt/exam/submit", { sessionId }),
+  jlptExamPreflight: (examId: string) =>
+    greq<GuideJlptExamPreflight>("GET", `/api/guide/jlpt/exam/preflight${qs({ examId })}`),
+  jlptExamStart: (
+    examId: string,
+    options: { confirmedChargeCoins?: number; requestKey?: string } = {},
+  ) =>
+    greq<GuideJlptExamStart>(
+      "POST",
+      "/api/guide/jlpt/exam/start",
+      {
+        examId,
+        ...(options.confirmedChargeCoins === undefined
+          ? {}
+          : { confirmedChargeCoins: options.confirmedChargeCoins }),
+      },
+      GUIDE_TIMEOUT_MS,
+      options.requestKey ? { "Idempotency-Key": options.requestKey } : {},
+    ),
+  jlptExamAnswer: (body: {
+    sessionId: string;
+    questionId: string;
+    selectedIndex: number;
+    baseRevision?: number;
+    revision?: number;
+  }) =>
+    greq<{
+      status: string;
+      saved: boolean;
+      questionId: string;
+      revision: number;
+      answerRevision: number;
+      idempotentReplay?: boolean;
+    }>("POST", "/api/guide/jlpt/exam/answer", body),
+  jlptExamSubmit: (
+    sessionId: string,
+    contract?: {
+      answersSnapshot: Array<{ questionId: string; selectedIndex: number }>;
+      baseRevision: number;
+      revision: number;
+    },
+  ) =>
+    greq<GuideJlptExamSubmit>("POST", "/api/guide/jlpt/exam/submit", {
+      sessionId,
+      ...(contract ?? {}),
+    }),
   jlptExamHistory: (level = "") =>
     greq<{ status: string; sessions: GuideJlptExamHistoryItem[] }>("GET", `/api/guide/jlpt/exam/history${qs({ level })}`),
   jlptExamSession: (sessionId: string) =>
@@ -1945,8 +2060,11 @@ export const guide = {
   // 分科整卷：详情（有序子科目）+ 合并成绩。逐段仍走 jlptExamStart/Answer/Submit。
   jlptPaper: (paperId: string) =>
     greq<GuideJlptPaperDetail>("GET", `/api/guide/jlpt/paper/${encodeURIComponent(paperId)}`),
-  jlptPaperResult: (paperId: string) =>
-    greq<GuideJlptPaperResult>("GET", `/api/guide/jlpt/paper/${encodeURIComponent(paperId)}/result`),
+  jlptPaperResult: (paperId: string, attemptId = "") =>
+    greq<GuideJlptPaperResult>(
+      "GET",
+      `/api/guide/jlpt/paper/${encodeURIComponent(paperId)}/result${qs({ attemptId })}`,
+    ),
 
   // Machi AI (原创 in-app assistant)
   aiBootstrap: (country = "jp", language = "zh-CN") =>

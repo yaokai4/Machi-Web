@@ -183,6 +183,40 @@ class JLPTPaperAttemptTests(unittest.TestCase):
         self.assertEqual("in_progress", dict(rows[0])["status"])
         self.assertEqual("pending", dict(rows[1])["status"])
 
+    def test_lost_parent_start_response_replays_same_confirmed_price(self) -> None:
+        self._credit()
+        first = self._start(
+            self.paper_id,
+            "lost-parent-response",
+            confirmed_charge_coins=100,
+        )
+        replay = self._start(
+            self.paper_id,
+            "lost-parent-response",
+            confirmed_charge_coins=100,
+        )
+
+        self.assertEqual("started", first["status"])
+        self.assertEqual("started", replay["status"])
+        self.assertEqual(first["exam"]["sessionId"], replay["exam"]["sessionId"])
+        self.assertEqual(
+            first["exam"]["paperAttempt"]["id"],
+            replay["exam"]["paperAttempt"]["id"],
+        )
+        self.assertTrue(replay["exam"]["resumed"])
+        self.assertEqual(100, replay["exam"]["coinCharged"])
+        self.assertEqual(
+            900,
+            server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"],
+        )
+        self.assertEqual(
+            1,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM wallet_ledger_entries "
+                "WHERE user_id=? AND source_type='jlpt_exam' AND points_delta < 0",
+                (self.user_id,),
+            ).fetchone()["c"],
+        )
     def test_later_section_reuses_entitlement_and_refresh_resumes(self) -> None:
         self._credit()
         first = self._start(self.written_id, "paper-first")["exam"]

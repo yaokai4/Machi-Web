@@ -126,6 +126,7 @@ jobs:
         run: |
           npm run type-check
           npm run lint
+          npm run test:jlpt:contract
 
       - name: Build frontend
         working-directory: app

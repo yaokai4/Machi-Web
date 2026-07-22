@@ -191,6 +191,59 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
         ).fetchone()["c"]
         self.assertEqual(1, active)
 
+    def test_lost_start_response_replays_same_confirmed_charge_and_request_key(self) -> None:
+        """A retry of the exact paid start must replay the original price.
+
+        The first response may be lost after commit.  The retry is a resume at
+        the session layer, but its confirmation still refers to the immutable
+        amount charged by that same Idempotency-Key — not the zero incremental
+        charge of an unrelated resume.
+        """
+        self._credit()
+        first = self._start(
+            key="lost-paid-start-response",
+            confirmed_charge_coins=100,
+        )
+        replay = self._start(
+            key="lost-paid-start-response",
+            confirmed_charge_coins=100,
+        )
+
+        self.assertEqual("started", first["status"])
+        self.assertEqual("started", replay["status"])
+        self.assertEqual(first["exam"]["sessionId"], replay["exam"]["sessionId"])
+        self.assertTrue(replay["exam"]["resumed"])
+        self.assertEqual(100, replay["exam"]["coinCharged"])
+        self.assertEqual(
+            900,
+            server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"],
+        )
+        self.assertEqual(
+            1,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM wallet_ledger_entries "
+                "WHERE user_id=? AND source_type='jlpt_exam' AND points_delta < 0",
+                (self.user_id,),
+            ).fetchone()["c"],
+        )
+
+        # A different request key created while resuming confirms zero, and a
+        # replay of that alias must keep the zero confirmation rather than
+        # inheriting the original paid key's amount.
+        alias = self._start(
+            key="lost-response-resume-alias",
+            confirmed_charge_coins=0,
+        )
+        alias_replay = self._start(
+            key="lost-response-resume-alias",
+            confirmed_charge_coins=0,
+        )
+        self.assertEqual("started", alias["status"])
+        self.assertEqual("started", alias_replay["status"])
+        self.assertEqual(
+            first["exam"]["sessionId"], alias_replay["exam"]["sessionId"]
+        )
+
     def test_resume_alias_key_remains_bound_after_submit_and_never_recharges(self) -> None:
         self._credit()
         first = self._start(key="original-key")["exam"]

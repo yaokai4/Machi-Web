@@ -1391,7 +1391,10 @@ def submit_exam_session(
 
     The caller must hold an explicit DB transaction. Answer saves and submit
     both lock the session row, so grading observes every committed pre-submit
-    save and no answer can land after the result is final.
+    save and no answer can land after the result is final. Once the server
+    deadline has elapsed, an attached client snapshot is deliberately ignored:
+    only answers persisted by the deadline are settled, so a failed auto-submit
+    cannot reopen the paper at 00:00.
     """
     now = _iso(now)
     lock = conn.execute(
@@ -1413,7 +1416,9 @@ def submit_exam_session(
     # ``null`` is not the same as an omitted snapshot. Treating JSON null as
     # the legacy submit path would silently grade only the last persisted
     # answers even though the caller explicitly attempted a full snapshot.
-    snapshot_supplied = answer_snapshot is not _ANSWER_SNAPSHOT_UNSET
+    snapshot_requested = answer_snapshot is not _ANSWER_SNAPSHOT_UNSET
+    deadline_expired = _exam_session_expired(conn, session, now=now)
+    snapshot_supplied = snapshot_requested and not deadline_expired
     if snapshot_supplied:
         if base_revision is None or revision is None:
             raise APIError(
@@ -1445,7 +1450,7 @@ def submit_exam_session(
             (next_revision, session["id"]),
         )
         result_revision = next_revision
-    elif base_revision is not None or revision is not None:
+    elif not deadline_expired and (base_revision is not None or revision is not None):
         raise APIError(
             "未提供 answersSnapshot 时不得单独提交 revision。",
             400,
@@ -1507,6 +1512,8 @@ def submit_exam_session(
     out = {
         "sessionId": session["id"],
         "answerRevision": result_revision,
+        "deadlineExpired": deadline_expired,
+        "snapshotAccepted": bool(snapshot_requested and not deadline_expired),
         "total": total, "correct": correct, "score": score,
         "passed": bool(passed), "passScore": pass_score,
         "scoreMode": score_mode,
@@ -1580,6 +1587,25 @@ def session_review(conn: Any, *, session: dict[str, Any]) -> dict[str, Any]:
     if scaled:
         out["scaled"] = scaled
         out["scoreMode"] = "jlpt_scaled"
+    return out
+
+
+def replay_submitted_exam_result(
+    conn: Any, *, session: dict[str, Any], exam: Optional[dict[str, Any]]
+) -> Optional[dict[str, Any]]:
+    """Return the immutable stored submit result after a response was lost.
+
+    A retry never reapplies the caller's snapshot.  It only reconstructs the
+    already-persisted breakdown and score, so a changed retry cannot alter a
+    completed attempt while Web/iOS can still close the result flow.
+    """
+    if str(session.get("status") or "") != "submitted":
+        return None
+    out = session_review(conn, session=session)
+    out.pop("status", None)
+    out["passScore"] = int((exam or {}).get("pass_score") or 60)
+    out["answerRevision"] = int(session.get("answer_revision") or 0)
+    out["idempotentReplay"] = True
     return out
 
 
