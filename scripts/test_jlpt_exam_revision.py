@@ -65,6 +65,7 @@ class JLPTExamRevisionTests(unittest.TestCase):
                 "level": "N5",
                 "title": "Revision contract",
                 "kind": "mock",
+                "durationSeconds": 30 * 60,
                 "status": "published",
                 "questionIds": self.question_ids,
             },
@@ -100,6 +101,23 @@ class JLPTExamRevisionTests(unittest.TestCase):
             selected_index=selected_index,
             base_revision=base,
             revision=revision,
+        )
+
+    def _set_attempt_duration(self, seconds: int) -> None:
+        contract = json.loads(self._session()["exam_contract_snapshot_json"])
+        contract["durationSeconds"] = seconds
+        self.conn.execute(
+            "UPDATE jlpt_exam_sessions SET exam_contract_snapshot_json=? WHERE id=?",
+            (json.dumps(contract, separators=(",", ":")), self.session_id),
+        )
+
+    def _set_attempt_scoring(self, *, pass_score: int, score_mode: str) -> None:
+        contract = json.loads(self._session()["exam_contract_snapshot_json"])
+        contract["passScore"] = pass_score
+        contract["scoreMode"] = score_mode
+        self.conn.execute(
+            "UPDATE jlpt_exam_sessions SET exam_contract_snapshot_json=? WHERE id=?",
+            (json.dumps(contract, separators=(",", ":")), self.session_id),
         )
 
     def test_explicit_revision_is_monotonic_and_exact_retry_is_idempotent(self) -> None:
@@ -151,6 +169,88 @@ class JLPTExamRevisionTests(unittest.TestCase):
         self.assertEqual(1, result["answerRevision"])
         self.assertTrue(result["legacyRevisionAssigned"])
 
+    def test_strict_listening_policy_is_snapshotted_and_hides_transcript_until_submit(self) -> None:
+        """A timed mock must not leak its listening script before grading.
+
+        The policy is part of the paid attempt contract, so a later catalog edit
+        cannot turn a strict in-progress session into an unrestricted practice.
+        """
+        listening_id = self.question_ids[0]
+        original_question = dict(
+            self.conn.execute(
+                "SELECT section, passage FROM jlpt_questions WHERE id=?",
+                (listening_id,),
+            ).fetchone()
+        )
+        self.conn.execute(
+            "UPDATE jlpt_questions SET section='listening', passage=? WHERE id=?",
+            ("SECRET LISTENING TRANSCRIPT", listening_id),
+        )
+
+        resumed = jlpt.start_exam_session(
+            self.conn,
+            user_id=self.user_id,
+            exam=self.exam,
+            is_member=False,
+            now=server.now_iso(),
+        )
+        self.assertTrue(resumed["resumed"])
+        self.assertEqual(
+            {
+                "mode": "strict",
+                "allowPause": True,
+                "allowSeek": False,
+                "allowReplay": False,
+                "maxPlays": 1,
+                "showTranscriptDuringAttempt": False,
+            },
+            resumed["listeningPolicy"],
+        )
+        by_id = {question["id"]: question for question in resumed["questions"]}
+        self.assertEqual("", by_id[listening_id]["passage"])
+
+        # The live catalog is mutable; the active attempt contract is not.
+        self.conn.execute(
+            "UPDATE jlpt_exams SET duration_seconds=0, kind='practice' WHERE id=?",
+            (self.exam_id,),
+        )
+        mutated_exam = jlpt.get_exam(self.conn, self.exam_id)
+        replayed_resume = jlpt.start_exam_session(
+            self.conn,
+            user_id=self.user_id,
+            exam=mutated_exam,
+            is_member=False,
+            now=server.now_iso(),
+        )
+        self.assertEqual("strict", replayed_resume["listeningPolicy"]["mode"])
+        replayed_by_id = {
+            question["id"]: question for question in replayed_resume["questions"]
+        }
+        self.assertEqual("", replayed_by_id[listening_id]["passage"])
+
+        result = jlpt.submit_exam_session(
+            self.conn,
+            session=self._session(),
+            exam=mutated_exam,
+            now=server.now_iso(),
+            answer_snapshot=[],
+            base_revision=0,
+            revision=1,
+        )
+        submitted_by_id = {question["id"]: question for question in result["questions"]}
+        self.assertEqual(
+            "SECRET LISTENING TRANSCRIPT",
+            submitted_by_id[listening_id]["passage"],
+        )
+        self.conn.execute(
+            "UPDATE jlpt_questions SET section=?, passage=? WHERE id=?",
+            (
+                original_question["section"],
+                original_question["passage"],
+                listening_id,
+            ),
+        )
+
     def test_submit_snapshot_replaces_answers_and_grades_snapshot_atomically(self) -> None:
         self._answer(self.question_ids[0], 0, 0, 1)
         expected = {
@@ -193,6 +293,7 @@ class JLPTExamRevisionTests(unittest.TestCase):
         self.conn.execute(
             "UPDATE jlpt_exams SET duration_seconds=1 WHERE id=?", (self.exam_id,)
         )
+        self._set_attempt_duration(1)
         self.conn.execute(
             "UPDATE jlpt_exam_sessions SET started_at=? WHERE id=?",
             ("2026-01-01T00:00:00+00:00", self.session_id),
@@ -231,6 +332,7 @@ class JLPTExamRevisionTests(unittest.TestCase):
         self.conn.execute(
             "UPDATE jlpt_exams SET duration_seconds=10 WHERE id=?", (self.exam_id,)
         )
+        self._set_attempt_duration(10)
         self.conn.execute(
             "UPDATE jlpt_exam_sessions SET started_at=? WHERE id=?",
             ("2026-01-01T00:00:00+00:00", self.session_id),
@@ -281,6 +383,7 @@ class JLPTExamRevisionTests(unittest.TestCase):
             "UPDATE jlpt_exams SET pass_score=55, score_mode='jlpt_scaled' WHERE id=?",
             (self.exam_id,),
         )
+        self._set_attempt_scoring(pass_score=55, score_mode="jlpt_scaled")
         self.exam = jlpt.get_exam(self.conn, self.exam_id)
         correct_index = int(
             jlpt.get_question(self.conn, self.question_ids[0])["answer_index"]

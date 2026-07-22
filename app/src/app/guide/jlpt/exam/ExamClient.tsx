@@ -38,6 +38,8 @@ import {
   answerInputLocked,
   examDeadlineReached,
   fullAnswerSnapshot,
+  localizedScoreDivisionLabel,
+  localizedScoreReferenceNote,
   newExamStartKey,
   resolvePaperSectionIndex,
   restoreAuthoritativeJlptSession,
@@ -804,7 +806,6 @@ function PaperResult({
   onExit: () => void;
   onOpenReview: (sessionId: string) => void;
 }) {
-  void language;
   const q = useQuery({
     queryKey: ["guide", "jlpt-paper-result", paperId, attemptId],
     queryFn: () => guide.jlptPaperResult(paperId, attemptId),
@@ -838,14 +839,18 @@ function PaperResult({
             <div className="mt-4 grid gap-2 sm:grid-cols-3">
               {r.officialScore.divisions.map((division) => (
                 <div key={division.key} className="rounded-2xl bg-[rgb(var(--kx-living-canvas))] px-3 py-3">
-                  <p className="text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">{division.label}</p>
+                  <p className="text-[11px] font-bold text-[rgb(var(--kx-living-muted))]">
+                    {localizedScoreDivisionLabel(language, division.key, division.label)}
+                  </p>
                   <p className="mt-1 text-sm font-black text-[rgb(var(--kx-living-ink))]">{division.scaled} / {division.scaledMax}</p>
                 </div>
               ))}
             </div>
-            <p className="mt-4 text-[11px] leading-5 text-[rgb(var(--kx-living-muted))]">{r.officialScore.note}</p>
+            <p className="mt-4 text-[11px] leading-5 text-[rgb(var(--kx-living-muted))]">
+              {localizedScoreReferenceNote(language, "full")}
+            </p>
           </section>
-        ) : r.scaled ? <ScaledScorePanel t={t} scaled={r.scaled} /> : null}
+        ) : r.scaled ? <ScaledScorePanel t={t} language={language} scaled={r.scaled} /> : null}
         {!r.officialScore && r.listening ? (
           <div className="rounded-[22px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_20px_44px_-40px_rgb(var(--kx-shadow)/0.7)]">
             <p className="text-[11px] font-black uppercase tracking-[0.14em] text-[rgb(var(--kx-living-accent))]">
@@ -1159,6 +1164,8 @@ function ExamRunner({
             selectedIndex={answers[q.id]}
             onSelect={(sel) => pick(q.id, sel)}
             disabled={answersLocked}
+            listeningPolicy={session.listeningPolicy}
+            audioPlaybackKey={`${session.sessionId}:${q.id}`}
           />
         ))}
       </div>
@@ -1289,7 +1296,7 @@ function ExamResult({
 
       <div className="mt-6">
         {scaled ? (
-          <ScaledScorePanel t={t} scaled={scaled} correct={correct} total={total} durationSeconds={durationSeconds} />
+          <ScaledScorePanel t={t} language={language} scaled={scaled} correct={correct} total={total} durationSeconds={durationSeconds} />
         ) : (
           <JlptScoreHero
             t={t}

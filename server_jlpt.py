@@ -92,6 +92,90 @@ _JLPT_PAPER_SCORE_NOTE = (
     "线性折算仅供备考复盘，请以官方成绩为准。"
 )
 
+EXAM_CONTRACT_VERSION = 1
+_STRICT_LISTENING_POLICY: dict[str, Any] = {
+    "mode": "strict",
+    "allowPause": True,
+    "allowSeek": False,
+    "allowReplay": False,
+    "maxPlays": 1,
+    "showTranscriptDuringAttempt": False,
+}
+_PRACTICE_LISTENING_POLICY: dict[str, Any] = {
+    "mode": "practice",
+    "allowPause": True,
+    "allowSeek": True,
+    "allowReplay": True,
+    # Zero means unlimited in the public contract.
+    "maxPlays": 0,
+    "showTranscriptDuringAttempt": True,
+}
+
+
+def listening_policy_for_exam(exam: dict[str, Any]) -> dict[str, Any]:
+    """Return the server-authoritative audio controls for one exam attempt.
+
+    Timed mocks/sections are strict.  Practice, placement and untimed tools keep
+    learner-friendly seeking, replay and transcript access.
+    """
+    kind = str((exam or {}).get("kind") or "").strip().lower()
+    duration = max(0, int((exam or {}).get("duration_seconds") or 0))
+    strict = duration > 0 and kind in ("mock", "section")
+    source = _STRICT_LISTENING_POLICY if strict else _PRACTICE_LISTENING_POLICY
+    return dict(source)
+
+
+def exam_contract_for_exam(exam: dict[str, Any]) -> dict[str, Any]:
+    """Build the immutable timing/scoring/listening contract at start time."""
+    return {
+        "version": EXAM_CONTRACT_VERSION,
+        "durationSeconds": max(0, int((exam or {}).get("duration_seconds") or 0)),
+        "passScore": max(0, min(100, int((exam or {}).get("pass_score") or 60))),
+        "scoreMode": normalize_score_mode((exam or {}).get("score_mode")),
+        "listeningPolicy": listening_policy_for_exam(exam or {}),
+    }
+
+
+def _normalized_listening_policy(raw: Any, *, fallback: dict[str, Any]) -> dict[str, Any]:
+    """Accept only the two server-owned policy shapes; malformed data fails closed."""
+    if isinstance(raw, dict) and str(raw.get("mode") or "") == "practice":
+        return dict(_PRACTICE_LISTENING_POLICY)
+    if isinstance(raw, dict) and str(raw.get("mode") or "") == "strict":
+        return dict(_STRICT_LISTENING_POLICY)
+    if str((fallback or {}).get("mode") or "") == "practice":
+        return dict(_PRACTICE_LISTENING_POLICY)
+    return dict(_STRICT_LISTENING_POLICY)
+
+
+def exam_contract_for_session(
+    session: dict[str, Any], exam: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Read a v1 attempt snapshot, falling back only for pre-migration sessions."""
+    fallback = exam_contract_for_exam(exam or {})
+    raw = session.get("exam_contract_snapshot_json")
+    try:
+        stored = json.loads(raw) if isinstance(raw, str) and raw else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        stored = None
+    if not isinstance(stored, dict) or int(stored.get("version") or 0) != EXAM_CONTRACT_VERSION:
+        return fallback
+    try:
+        duration = max(0, int(stored.get("durationSeconds")))
+        pass_score = max(0, min(100, int(stored.get("passScore"))))
+    except (TypeError, ValueError):
+        return fallback
+    score_mode = normalize_score_mode(stored.get("scoreMode"))
+    policy = _normalized_listening_policy(
+        stored.get("listeningPolicy"), fallback=fallback["listeningPolicy"]
+    )
+    return {
+        "version": EXAM_CONTRACT_VERSION,
+        "durationSeconds": duration,
+        "passScore": pass_score,
+        "scoreMode": score_mode,
+        "listeningPolicy": policy,
+    }
+
 
 def normalize_score_mode(raw: Any) -> str:
     mode = str(raw or "").strip().lower()
@@ -323,7 +407,12 @@ def _loads_choices(raw: Any) -> list[str]:
 
 # ── question serialization ───────────────────────────────────────────────────
 
-def public_question(row: Any, *, reveal_answer: bool = False) -> dict[str, Any]:
+def public_question(
+    row: Any,
+    *,
+    reveal_answer: bool = False,
+    hide_listening_transcript: bool = False,
+) -> dict[str, Any]:
     """Client-facing question shape. Hides answer_index/explanation unless
     reveal_answer (only ever set after the user has answered, e.g. review book
     or exam回看)."""
@@ -335,7 +424,16 @@ def public_question(row: Any, *, reveal_answer: bool = False) -> dict[str, Any]:
         "sectionLabel": SECTION_LABELS_ZH.get(d.get("section") or "", ""),
         "questionType": d.get("question_type") or "single",
         "stem": d.get("stem") or "",
-        "passage": d.get("passage") or "",
+        # A strict timed attempt never sends the listening transcript before
+        # grading.  Hiding it in the client alone would still leak it through
+        # the API response/devtools.  Reading passages remain visible.
+        "passage": (
+            ""
+            if hide_listening_transcript
+            and not reveal_answer
+            and str(d.get("section") or "") == "listening"
+            else d.get("passage") or ""
+        ),
         "audioMediaId": d.get("audio_media_id") or "",
         # 听力音频的可播放 URL。裸 media id 客户端无从解析,故在取数处 LEFT JOIN
         # media 表把 url 带进 row(键 audio_url);未 join 的路径(如定级只考词汇
@@ -923,7 +1021,7 @@ def exam_session_can_resume(
     """Use the same server-clock rule for start, preflight and idempotent replay."""
     if str(session.get("status") or "") != "in_progress":
         return False
-    duration = int(exam.get("duration_seconds") or 0)
+    duration = int(exam_contract_for_session(session, exam)["durationSeconds"])
     if duration <= 0:
         return True
     elapsed = _seconds_between(session.get("started_at") or _iso(now), _iso(now))
@@ -1187,7 +1285,7 @@ def start_exam_session(
     was answered, clocked at the deadline) before a new session is created —
     no new status value is introduced."""
     now = _iso(now)
-    duration = int(exam.get("duration_seconds") or 0)
+    live_contract = exam_contract_for_exam(exam)
     stale = conn.execute(
         "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
         "AND status = 'in_progress' AND COALESCE(paper_attempt_id, '') = ? "
@@ -1196,6 +1294,8 @@ def start_exam_session(
     ).fetchone()
     if stale:
         session = dict(stale)
+        session_contract = exam_contract_for_session(session, exam)
+        duration = int(session_contract["durationSeconds"])
         elapsed = _seconds_between(session.get("started_at") or now, now)
         if exam_session_can_resume(session, exam, now=now):
             return _resume_exam_payload(
@@ -1210,10 +1310,14 @@ def start_exam_session(
     if not q_ids:
         return None
     session_id = str(uuid.uuid4())
+    contract_json = json.dumps(
+        live_contract, ensure_ascii=False, separators=(",", ":")
+    )
     conn.execute(
         "INSERT INTO jlpt_exam_sessions (id, user_id, exam_id, level, status, started_at, "
         "submitted_at, duration_seconds, total, correct, score, passed, question_ids_json, "
-        "paper_attempt_id) VALUES (?, ?, ?, ?, 'in_progress', ?, '', 0, ?, 0, 0, 0, ?, ?)",
+        "paper_attempt_id, exam_contract_snapshot_json) "
+        "VALUES (?, ?, ?, ?, 'in_progress', ?, '', 0, ?, 0, 0, 0, ?, ?, ?)",
         (
             session_id,
             user_id,
@@ -1223,17 +1327,24 @@ def start_exam_session(
             len(q_ids),
             json.dumps(q_ids),
             str(paper_attempt_id or ""),
+            contract_json,
         ),
     )
-    questions = _questions_by_ids(conn, q_ids, reveal_answer=False)
+    questions = _questions_by_ids(
+        conn,
+        q_ids,
+        reveal_answer=False,
+        listening_policy=live_contract["listeningPolicy"],
+    )
     return {
         "sessionId": session_id,
         "examId": exam["id"],
         "level": exam.get("level") or "",
         "title": exam.get("title") or "",
-        "durationSeconds": int(exam.get("duration_seconds") or 0),
-        "passScore": int(exam.get("pass_score") or 60),
-        "scoreMode": normalize_score_mode(exam.get("score_mode")),
+        "durationSeconds": int(live_contract["durationSeconds"]),
+        "passScore": int(live_contract["passScore"]),
+        "scoreMode": str(live_contract["scoreMode"]),
+        "listeningPolicy": dict(live_contract["listeningPolicy"]),
         "total": len(q_ids),
         "questions": questions,
         "resumed": False,
@@ -1248,6 +1359,7 @@ def _resume_exam_payload(
     the extra keys) + the resume overlay. Only questionId/selectedIndex of the
     saved answers are exposed: is_correct would leak grading mid-exam."""
     q_ids = _loads_json_list(session.get("question_ids_json"))
+    contract = exam_contract_for_session(session, exam)
     known = set(q_ids)
     ans_rows = conn.execute(
         "SELECT question_id, selected_index, revision FROM jlpt_exam_answers WHERE session_id = ?",
@@ -1267,11 +1379,17 @@ def _resume_exam_payload(
         "examId": exam["id"],
         "level": session.get("level") or exam.get("level") or "",
         "title": exam.get("title") or "",
-        "durationSeconds": int(exam.get("duration_seconds") or 0),
-        "passScore": int(exam.get("pass_score") or 60),
-        "scoreMode": normalize_score_mode(exam.get("score_mode")),
+        "durationSeconds": int(contract["durationSeconds"]),
+        "passScore": int(contract["passScore"]),
+        "scoreMode": str(contract["scoreMode"]),
+        "listeningPolicy": dict(contract["listeningPolicy"]),
         "total": len(q_ids),
-        "questions": _questions_by_ids(conn, q_ids, reveal_answer=False),
+        "questions": _questions_by_ids(
+            conn,
+            q_ids,
+            reveal_answer=False,
+            listening_policy=contract["listeningPolicy"],
+        ),
         "resumed": True,
         "answers": answers,
         "answerRevision": int(session.get("answer_revision") or 0),
@@ -1282,7 +1400,13 @@ def _resume_exam_payload(
     }
 
 
-def _questions_by_ids(conn: Any, q_ids: list[str], *, reveal_answer: bool) -> list[dict[str, Any]]:
+def _questions_by_ids(
+    conn: Any,
+    q_ids: list[str],
+    *,
+    reveal_answer: bool,
+    listening_policy: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
     if not q_ids:
         return []
     placeholders = ",".join("?" * len(q_ids))
@@ -1292,9 +1416,20 @@ def _questions_by_ids(conn: Any, q_ids: list[str], *, reveal_answer: bool) -> li
     ).fetchall()
     by_id = {dict(r)["id"]: dict(r) for r in rows}
     out = []
+    hide_transcript = bool(
+        not reveal_answer
+        and isinstance(listening_policy, dict)
+        and not bool(listening_policy.get("showTranscriptDuringAttempt", True))
+    )
     for qid in q_ids:  # preserve exam order
         if qid in by_id:
-            out.append(public_question(by_id[qid], reveal_answer=reveal_answer))
+            out.append(
+                public_question(
+                    by_id[qid],
+                    reveal_answer=reveal_answer,
+                    hide_listening_transcript=hide_transcript,
+                )
+            )
     return out
 
 
@@ -1306,21 +1441,20 @@ def get_session(conn: Any, *, session_id: str, user_id: str) -> Optional[dict[st
 
 
 def _exam_time_limit_seconds(conn: Any, session: dict[str, Any]) -> int:
-    """Hard time limit (seconds) for a session's exam; 0 = untimed. Read from the
-    exam row — the session row's ``duration_seconds`` stores the ELAPSED time
-    (filled at submit), NOT the limit, so the limit must come from jlpt_exams."""
+    """Hard time limit (seconds) snapshotted when this attempt started.
+
+    ``duration_seconds`` on the session remains elapsed time.  Pre-migration
+    sessions fall back to the live exam row; new attempts never move their
+    deadline when an administrator edits the catalog.
+    """
     exam_id = str(session.get("exam_id") or "")
     if not exam_id:
         return 0
     row = conn.execute(
-        "SELECT duration_seconds FROM jlpt_exams WHERE id = ?", (exam_id,)
+        "SELECT * FROM jlpt_exams WHERE id = ?", (exam_id,)
     ).fetchone()
-    if not row:
-        return 0
-    try:
-        return max(0, int(dict(row).get("duration_seconds") or 0))
-    except (TypeError, ValueError):
-        return 0
+    exam = dict(row) if row else None
+    return int(exam_contract_for_session(session, exam)["durationSeconds"])
 
 
 def _exam_session_expired(
@@ -1519,6 +1653,7 @@ def submit_exam_session(
     if not live:
         return None
     session = dict(live)
+    contract = exam_contract_for_session(session, exam)
     current_revision = int(session.get("answer_revision") or 0)
     result_revision = current_revision
 
@@ -1583,7 +1718,7 @@ def submit_exam_session(
     answers = {dict(r)["question_id"]: dict(r) for r in ans_rows}
     correct = sum(1 for a in answers.values() if int(a["is_correct"]) == 1)
     score = int(round(correct / total * 100)) if total else 0
-    pass_score = int((exam or {}).get("pass_score") or 60)
+    pass_score = int(contract["passScore"])
     passed = 1 if score >= pass_score else 0
     started = session.get("started_at") or now
     # Clamp the recorded time to the exam's hard limit. A session left
@@ -1591,11 +1726,11 @@ def submit_exam_session(
     # absurd elapsed time (and any post-deadline answers are already refused by
     # save_exam_answer), so the stored duration must never exceed the limit.
     elapsed = _seconds_between(started, now)
-    time_limit = int((exam or {}).get("duration_seconds") or 0)
+    time_limit = int(contract["durationSeconds"])
     duration = min(elapsed, time_limit) if time_limit > 0 else elapsed
     # 全真模考：JLPT 缩放分整块随会话持久化（历史/回看直接反序列化）。老字段
     # (score 0-100 / passed) 语义不变，老客户端零感知。
-    score_mode = normalize_score_mode((exam or {}).get("score_mode"))
+    score_mode = str(contract["scoreMode"])
     scaled: Optional[dict[str, Any]] = None
     if score_mode == "jlpt_scaled":
         scaled = compute_scaled_result(

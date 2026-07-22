@@ -16,9 +16,19 @@ import {
   Flame, Timer, Check, X, Lock, Sparkles, Loader, ChevronRight, Trophy,
   Play, Pause, RotateCcw, Headphones, ChevronDown,
 } from "lucide-react";
-import { guide, type GuideJlptStreak, type GuideJlptExamCountdown, type GuideJlptQuestion } from "@/lib/guide";
+import {
+  guide,
+  type GuideJlptStreak,
+  type GuideJlptExamCountdown,
+  type GuideJlptListeningPolicy,
+  type GuideJlptQuestion,
+} from "@/lib/guide";
 import { APIError, isAuthRequiredError } from "@/lib/api";
 import { useAuthPrompt } from "@/lib/store";
+import {
+  listeningPlaybackCanStart,
+  normalizeListeningPolicy,
+} from "./exam/examContract";
 
 export type Tri = (zh: string, ja: string, en: string) => string;
 
@@ -698,30 +708,71 @@ function fmtClock(sec: number): string {
 /** JLPT 听力音频播放器：播放/暂停 + 可拖动进度 + 时间 + 重播。用既有 kx-living-*
  *  token，零全局 CSS。不用原生 <audio controls>（各浏览器样式不一、不够精致）,
  *  自绘控件包一个隐藏 <audio>。 */
-export function JlptAudioPlayer({ t, src }: { t: Tri; src: string }) {
+export function JlptAudioPlayer({
+  t,
+  src,
+  policy: rawPolicy,
+  playbackKey,
+}: {
+  t: Tri;
+  src: string;
+  policy?: GuideJlptListeningPolicy;
+  playbackKey?: string;
+}) {
   const ref = useRef<HTMLAudioElement | null>(null);
+  const policy = normalizeListeningPolicy(rawPolicy);
   const [playing, setPlaying] = useState(false);
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [ended, setEnded] = useState(false);
+  const [playsStarted, setPlaysStarted] = useState(0);
+  const storageKey = playbackKey ? `machi:jlpt:listening-play:${playbackKey}` : "";
 
   useEffect(() => {
     // 换题时重置（同一组件被复用到不同 src）。
-    setPlaying(false); setCur(0); setDur(0); setReady(false); setFailed(false);
-  }, [src]);
+    setPlaying(false); setCur(0); setDur(0); setReady(false); setFailed(false); setEnded(false);
+    if (policy.mode === "strict" && storageKey && typeof window !== "undefined") {
+      const stored = Number(window.localStorage.getItem(storageKey) || 0);
+      setPlaysStarted(Number.isFinite(stored) ? Math.max(0, Math.trunc(stored)) : 0);
+    } else {
+      setPlaysStarted(0);
+    }
+  }, [src, storageKey, policy.mode]);
+
+  const recordPlayStart = useCallback((next: number) => {
+    setPlaysStarted(next);
+    if (policy.mode === "strict" && storageKey && typeof window !== "undefined") {
+      window.localStorage.setItem(storageKey, String(next));
+    }
+  }, [policy.mode, storageKey]);
 
   const toggle = useCallback(() => {
     const a = ref.current;
     if (!a) return;
-    if (a.paused) { a.play().catch(() => setFailed(true)); } else { a.pause(); }
-  }, []);
+    if (!a.paused) {
+      if (policy.allowPause) a.pause();
+      return;
+    }
+    if (!listeningPlaybackCanStart(policy, playsStarted, a.currentTime, ended)) return;
+    const startingNewPlay = ended || a.currentTime <= 0.05;
+    if (ended) {
+      a.currentTime = 0;
+      setCur(0);
+      setEnded(false);
+    }
+    if (startingNewPlay) recordPlayStart(playsStarted + 1);
+    a.play().catch(() => setFailed(true));
+  }, [ended, playsStarted, policy, recordPlayStart]);
   const replay = useCallback(() => {
     const a = ref.current;
-    if (!a) return;
+    if (!a || !policy.allowReplay) return;
     a.currentTime = 0;
+    setEnded(false);
+    recordPlayStart(playsStarted + 1);
     a.play().catch(() => setFailed(true));
-  }, []);
+  }, [playsStarted, policy.allowReplay, recordPlayStart]);
   const seek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const a = ref.current;
     if (!a || !dur) return;
@@ -730,6 +781,9 @@ export function JlptAudioPlayer({ t, src }: { t: Tri; src: string }) {
   }, [dur]);
 
   const pct = dur > 0 ? Math.min(1000, (cur / dur) * 1000) : 0;
+  const playBlocked = !playing && !listeningPlaybackCanStart(
+    policy, playsStarted, cur, ended,
+  );
 
   return (
     <div className="mt-3.5 rounded-2xl border border-[rgb(var(--kx-living-accent))]/25 bg-[rgb(var(--kx-living-accent))]/[0.05] px-4 py-3.5">
@@ -741,13 +795,18 @@ export function JlptAudioPlayer({ t, src }: { t: Tri; src: string }) {
         onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
         onPlay={() => setPlaying(true)}
         onPause={() => setPlaying(false)}
-        onEnded={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); setEnded(true); }}
         onError={() => setFailed(true)}
       />
       <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-[rgb(var(--kx-living-accent))]">
         <Headphones className="h-3.5 w-3.5" />
         {t("听力音频", "リスニング音声", "Listening audio")}
       </div>
+      {policy.mode === "strict" ? (
+        <p className="mt-1.5 text-[11px] font-semibold leading-relaxed text-[rgb(var(--kx-living-muted))]">
+          {t("正式模考：仅播放一次，不可拖动或重播。", "本番モード：再生は1回のみで、シーク・再生し直しはできません。", "Exam mode: one play only; seeking and replay are disabled.")}
+        </p>
+      ) : null}
       {failed ? (
         <p className="mt-2 text-[13px] font-semibold text-[rgb(var(--kx-living-muted))]">
           {t("音频加载失败，请检查网络后重试。", "音声を読み込めませんでした。", "Couldn't load the audio.")}
@@ -757,36 +816,52 @@ export function JlptAudioPlayer({ t, src }: { t: Tri; src: string }) {
           <button
             type="button"
             onClick={toggle}
-            aria-label={playing ? t("暂停", "一時停止", "Pause") : t("播放", "再生", "Play")}
+            disabled={playBlocked}
+            aria-label={playBlocked ? t("本题音频已播放", "この音声は再生済みです", "Audio already played") : playing ? t("暂停", "一時停止", "Pause") : t("播放", "再生", "Play")}
             className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[rgb(var(--kx-living-accent))] text-white shadow-[0_10px_22px_-12px_rgb(var(--kx-living-accent)/0.9)] transition hover:opacity-90 active:scale-95"
           >
             {playing ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 translate-x-[1px]" />}
           </button>
           <div className="min-w-0 flex-1">
-            <input
-              type="range"
-              min={0}
-              max={1000}
-              value={pct}
-              onChange={seek}
-              disabled={!ready}
-              aria-label={t("音频进度", "再生位置", "Seek")}
-              className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[rgb(var(--kx-living-ink))]/[0.12] accent-[rgb(var(--kx-living-accent))]"
-              style={{ background: `linear-gradient(to right, rgb(var(--kx-living-accent)) ${pct / 10}%, rgb(var(--kx-living-ink)/0.12) ${pct / 10}%)` }}
-            />
+            {policy.allowSeek ? (
+              <input
+                type="range"
+                min={0}
+                max={1000}
+                value={pct}
+                onChange={seek}
+                disabled={!ready}
+                aria-label={t("音频进度", "再生位置", "Seek")}
+                className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-[rgb(var(--kx-living-ink))]/[0.12] accent-[rgb(var(--kx-living-accent))]"
+                style={{ background: `linear-gradient(to right, rgb(var(--kx-living-accent)) ${pct / 10}%, rgb(var(--kx-living-ink)/0.12) ${pct / 10}%)` }}
+              />
+            ) : (
+              <div
+                role="progressbar"
+                aria-label={t("音频播放进度", "音声の再生進捗", "Audio playback progress")}
+                aria-valuemin={0}
+                aria-valuemax={1000}
+                aria-valuenow={Math.round(pct)}
+                className="h-1.5 w-full overflow-hidden rounded-full bg-[rgb(var(--kx-living-ink))]/[0.12]"
+              >
+                <div className="h-full bg-[rgb(var(--kx-living-accent))]" style={{ width: `${pct / 10}%` }} />
+              </div>
+            )}
             <div className="mt-1 flex justify-between text-[11px] font-bold tabular-nums text-[rgb(var(--kx-living-muted))]">
               <span>{fmtClock(cur)}</span>
               <span>{fmtClock(dur)}</span>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={replay}
-            aria-label={t("重播", "もう一度", "Replay")}
-            className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-[rgb(var(--kx-living-accent))]/30 text-[rgb(var(--kx-living-accent))] transition hover:bg-[rgb(var(--kx-living-accent))]/[0.08]"
-          >
-            <RotateCcw className="h-4 w-4" />
-          </button>
+          {policy.allowReplay ? (
+            <button
+              type="button"
+              onClick={replay}
+              aria-label={t("重播", "もう一度", "Replay")}
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-[rgb(var(--kx-living-accent))]/30 text-[rgb(var(--kx-living-accent))] transition hover:bg-[rgb(var(--kx-living-accent))]/[0.08]"
+            >
+              <RotateCcw className="h-4 w-4" />
+            </button>
+          ) : null}
         </div>
       )}
     </div>
@@ -803,6 +878,8 @@ export function QuestionCard({
   gradedCorrectIndex,
   disabled,
   revealed,
+  listeningPolicy,
+  audioPlaybackKey,
 }: {
   t: Tri;
   question: GuideJlptQuestion;
@@ -813,6 +890,8 @@ export function QuestionCard({
   gradedCorrectIndex?: number;
   disabled?: boolean;
   revealed?: boolean;
+  listeningPolicy?: GuideJlptListeningPolicy;
+  audioPlaybackKey?: string;
 }) {
   const correctIdx =
     gradedCorrectIndex !== undefined
@@ -825,8 +904,9 @@ export function QuestionCard({
   // 听力题:答题时默认不显示脚本(听力就是要「听」);回看/已判分时或手动展开后
   // 才显示原文脚本，便于对照学习。
   const graded = correctIdx !== undefined;
+  const policy = normalizeListeningPolicy(listeningPolicy);
   const [showScript, setShowScript] = useState(false);
-  const scriptVisible = !hasAudio || graded || showScript;
+  const scriptVisible = !hasAudio || graded || (policy.showTranscriptDuringAttempt && showScript);
 
   return (
     <div className="rounded-[24px] border border-[rgb(var(--kx-living-ink))]/[0.07] bg-[rgb(var(--kx-living-surface))] p-5 shadow-[0_22px_50px_-44px_rgb(var(--kx-shadow)/0.7)] sm:p-6">
@@ -849,9 +929,16 @@ export function QuestionCard({
         ) : null}
       </div>
 
-      {hasAudio ? <JlptAudioPlayer t={t} src={question.audioUrl as string} /> : null}
+      {hasAudio ? (
+        <JlptAudioPlayer
+          t={t}
+          src={question.audioUrl as string}
+          policy={graded ? undefined : policy}
+          playbackKey={audioPlaybackKey}
+        />
+      ) : null}
 
-      {question.passage && hasAudio && !scriptVisible ? (
+      {question.passage && hasAudio && !scriptVisible && policy.showTranscriptDuringAttempt ? (
         <button
           type="button"
           onClick={() => setShowScript(true)}

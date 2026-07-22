@@ -17,11 +17,50 @@ const {
   answerInputLocked,
   examDeadlineReached,
   fullAnswerSnapshot,
+  listeningPlaybackCanStart,
+  localizedScoreDivisionLabel,
+  localizedScoreReferenceNote,
+  normalizeListeningPolicy,
   resolvePaperSectionIndex,
   restoreAuthoritativeJlptSession,
   retryTransientJlptWrite,
   restoredAnswerState,
 } = await import(contractUrl);
+
+
+test("strict listening policy is fail-closed and allows only its first play", () => {
+  const strict = normalizeListeningPolicy({
+    mode: "strict",
+    allowPause: true,
+    allowSeek: false,
+    allowReplay: false,
+    maxPlays: 1,
+    showTranscriptDuringAttempt: false,
+  });
+  assert.equal(strict.mode, "strict");
+  assert.equal(strict.allowSeek, false);
+  assert.equal(strict.showTranscriptDuringAttempt, false);
+  assert.equal(listeningPlaybackCanStart(strict, 0, 0, false), true);
+  assert.equal(listeningPlaybackCanStart(strict, 1, 0, true), false);
+  // Pausing and resuming the same in-progress play is still allowed.
+  assert.equal(listeningPlaybackCanStart(strict, 1, 12.5, false), true);
+});
+
+test("practice listening keeps seek, replay and unlimited playback", () => {
+  const practice = normalizeListeningPolicy(undefined);
+  assert.equal(practice.mode, "practice");
+  assert.equal(practice.allowSeek, true);
+  assert.equal(practice.allowReplay, true);
+  assert.equal(listeningPlaybackCanStart(practice, 99, 0, true), true);
+});
+
+test("score divisions and reference disclaimer are localized, not raw server Chinese", () => {
+  assert.equal(localizedScoreDivisionLabel("ja", "reading", "fallback"), "読解");
+  assert.equal(localizedScoreDivisionLabel("en", "language_reading", "fallback"), "Language Knowledge & Reading");
+  assert.equal(localizedScoreDivisionLabel("zh-Hans", "listening", "fallback"), "听解");
+  assert.match(localizedScoreReferenceNote("en", "full"), /linear reference/i);
+  assert.match(localizedScoreReferenceNote("ja", "written"), /参考/);
+});
 
 
 test("resume state comes from the server revision and remaining clock", () => {

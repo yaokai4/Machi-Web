@@ -5897,6 +5897,17 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE jlpt_exam_sessions ADD COLUMN result_snapshot_json TEXT NOT NULL DEFAULT '';
         """,
     ),
+    (
+        133,
+        "jlpt 开考契约快照：固定时限、合格线、计分模式与严格听力策略",
+        # 新 attempt 在扣费/建会话事务内固化服务端考试契约。这样后台修改
+        # duration/passScore/scoreMode 后，正在进行的付费考试不会移动截止时间或
+        # 改判；严格听力的原文、拖动和重播规则也不会在恢复时漂移。旧会话空值
+        # 继续走兼容推断，SQLite/PostgreSQL 均为纯 ADD COLUMN。
+        """
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN exam_contract_snapshot_json TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 ]
 
 

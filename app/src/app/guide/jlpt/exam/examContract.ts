@@ -1,8 +1,106 @@
 import type {
   GuideJlptExam,
   GuideJlptExamStart,
+  GuideJlptListeningPolicy,
   GuideJlptPaperAttempt,
 } from "@/lib/guide";
+
+
+const PRACTICE_LISTENING_POLICY: GuideJlptListeningPolicy = {
+  mode: "practice",
+  allowPause: true,
+  allowSeek: true,
+  allowReplay: true,
+  maxPlays: 0,
+  showTranscriptDuringAttempt: true,
+};
+
+const STRICT_LISTENING_POLICY: GuideJlptListeningPolicy = {
+  mode: "strict",
+  allowPause: true,
+  allowSeek: false,
+  allowReplay: false,
+  maxPlays: 1,
+  showTranscriptDuringAttempt: false,
+};
+
+
+export function normalizeListeningPolicy(
+  raw?: Partial<GuideJlptListeningPolicy> | null,
+): GuideJlptListeningPolicy {
+  // Only server-owned policy modes are accepted.  Returning canonical shapes
+  // prevents a partly malformed payload from accidentally enabling one strict
+  // control while disabling another.
+  return raw?.mode === "strict"
+    ? { ...STRICT_LISTENING_POLICY }
+    : { ...PRACTICE_LISTENING_POLICY };
+}
+
+
+export function listeningPlaybackCanStart(
+  policy: GuideJlptListeningPolicy,
+  playsStarted: number,
+  currentSeconds: number,
+  ended: boolean,
+): boolean {
+  if (policy.maxPlays <= 0) return true;
+  // Pausing does not consume another play; restarting from the beginning or
+  // after the media ended does.
+  if (!ended && currentSeconds > 0.05) return true;
+  return playsStarted < policy.maxPlays;
+}
+
+
+function scoreLocale(language: string): "zh" | "ja" | "en" {
+  const normalized = String(language || "").toLowerCase();
+  if (normalized.startsWith("ja")) return "ja";
+  if (normalized.startsWith("en")) return "en";
+  return "zh";
+}
+
+
+export function localizedScoreDivisionLabel(
+  language: string,
+  key: string,
+  fallback: string,
+): string {
+  const labels: Record<string, Record<"zh" | "ja" | "en", string>> = {
+    language: {
+      zh: "语言知识（文字・词汇・语法）",
+      ja: "言語知識（文字・語彙・文法）",
+      en: "Language Knowledge",
+    },
+    reading: { zh: "读解", ja: "読解", en: "Reading" },
+    language_reading: {
+      zh: "语言知识・读解",
+      ja: "言語知識・読解",
+      en: "Language Knowledge & Reading",
+    },
+    listening: { zh: "听解", ja: "聴解", en: "Listening" },
+  };
+  return labels[key]?.[scoreLocale(language)] || fallback;
+}
+
+
+export function localizedScoreReferenceNote(
+  language: string,
+  scope: "written" | "full",
+): string {
+  const locale = scoreLocale(language);
+  if (locale === "ja") {
+    return scope === "full"
+      ? "JLPT公式の得点区分に沿った線形の参考スコアです。公式試験は等化済み尺度得点を用いるため、学習の振り返り用としてご利用ください。"
+      : "JLPT公式の得点構成に沿った筆記の参考スコアです（聴解を含みません）。正式な合否は公式結果をご確認ください。";
+  }
+  if (locale === "en") {
+    return scope === "full"
+      ? "A linear reference score following JLPT score divisions. The official test uses equated scaled scores; use this only for study review."
+      : "A written-section reference score following JLPT's score structure (listening excluded). Rely on the official result for pass/fail."
+  }
+  return scope === "full"
+    ? "按 JLPT 官方得分区分线性折算的参考分；正式考试采用等化后的尺度分，仅供备考复盘，请以官方成绩为准。"
+    : "按 JLPT 官方计分结构折算的笔试参考分（不含听解）；正式合否请以官方成绩为准。";
+}
 
 
 export function restoredAnswerState(session: GuideJlptExamStart): {

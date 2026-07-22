@@ -1592,6 +1592,7 @@ export interface GuideJlptExamPreflight {
   refundPolicyCopy: string;
   confirmationCopyKey: string;
   confirmationCopy: string;
+  listeningPolicy?: GuideJlptListeningPolicy;
   serverTime: string;
   disclaimer: string;
 }
@@ -1657,6 +1658,15 @@ export interface GuideJlptScaledResult {
   officialTotalMax: number;
   note: string;
 }
+export interface GuideJlptListeningPolicy {
+  mode: "strict" | "practice";
+  allowPause: boolean;
+  allowSeek: boolean;
+  allowReplay: boolean;
+  /** Zero means unlimited. */
+  maxPlays: number;
+  showTranscriptDuringAttempt: boolean;
+}
 export interface GuideJlptExamStart {
   status: string;
   sessionId: string;
@@ -1666,6 +1676,7 @@ export interface GuideJlptExamStart {
   durationSeconds: number;
   passScore: number;
   scoreMode?: string;
+  listeningPolicy?: GuideJlptListeningPolicy;
   total: number;
   questions: GuideJlptQuestion[];
   resumed?: boolean;

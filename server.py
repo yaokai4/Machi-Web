@@ -13233,6 +13233,21 @@ def jlpt_exam_access_preflight(
             )
         )
     )
+    policy_exam = (
+        jlpt.get_exam(conn, current_section_id)
+        if current_section_id
+        else exam
+    ) or exam
+    listening_policy = jlpt.listening_policy_for_exam(policy_exam)
+    if resume_session_id:
+        resume_row = conn.execute(
+            "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=?",
+            (resume_session_id, user_id),
+        ).fetchone()
+        if resume_row:
+            listening_policy = jlpt.exam_contract_for_session(
+                dict(resume_row), policy_exam
+            )["listeningPolicy"]
     return {
         "status": "ok",
         "examId": exam_id,
@@ -13255,6 +13270,7 @@ def jlpt_exam_access_preflight(
         "refundPolicyCopy": "开考后不自动退款；若因平台故障无法作答，可按审计记录人工冲正。",
         "confirmationCopyKey": confirmation_key,
         "confirmationCopy": confirmation_copy,
+        "listeningPolicy": listening_policy,
         "serverTime": now,
     }
 
