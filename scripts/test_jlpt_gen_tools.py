@@ -4,13 +4,19 @@
 from __future__ import annotations
 
 import contextlib
+import copy
+import hashlib
 import io
 import json
 import os
 import shutil
+import sqlite3
+import subprocess
 import sys
 import tempfile
+import types
 import unittest
+from collections import defaultdict
 from pathlib import Path
 from unittest import mock
 
@@ -18,9 +24,111 @@ from unittest import mock
 JLPT_GEN_DIR = Path(__file__).resolve().parent / "jlpt_gen"
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(JLPT_GEN_DIR))
+sys.path.insert(0, str(REPO_ROOT))
 
 import assemble_bank  # noqa: E402
 import balance_answers  # noqa: E402
+import jlpt_seed  # noqa: E402
+import server_jlpt as runtime_jlpt  # noqa: E402
+
+
+EXPECTED_PAPER = {
+    "N1": {
+        "kanji_reading": 6,
+        "context": 7,
+        "paraphrase": 6,
+        "usage": 6,
+        "grammar_form": 10,
+        "sentence_assembly": 5,
+        "text_grammar": 5,
+        "reading_short": 4,
+        "reading_mid": 9,
+        "reading_long": 4,
+        "reading_info": 2,
+        "listen_task": 6,
+        "listen_point": 6,
+        "listen_gist": 5,
+        "listen_response": 11,
+        "listen_integrated": 3,
+    },
+    "N2": {
+        "kanji_reading": 5,
+        "orthography": 5,
+        "context": 7,
+        "paraphrase": 5,
+        "usage": 5,
+        "grammar_form": 12,
+        "sentence_assembly": 5,
+        "text_grammar": 5,
+        "reading_short": 5,
+        "reading_mid": 9,
+        "reading_long": 4,
+        "reading_info": 2,
+        "listen_task": 5,
+        "listen_point": 6,
+        "listen_gist": 5,
+        "listen_response": 11,
+        "listen_integrated": 4,
+    },
+    "N3": {
+        "kanji_reading": 8,
+        "orthography": 6,
+        "context": 11,
+        "paraphrase": 5,
+        "usage": 5,
+        "grammar_form": 13,
+        "sentence_assembly": 5,
+        "text_grammar": 5,
+        "reading_short": 4,
+        "reading_mid": 6,
+        "reading_long": 4,
+        "reading_info": 2,
+        "listen_task": 6,
+        "listen_point": 6,
+        "listen_gist": 3,
+        "listen_response": 4,
+    },
+    "N4": {
+        "kanji_reading": 7,
+        "orthography": 5,
+        "context": 8,
+        "paraphrase": 4,
+        "usage": 4,
+        "grammar_form": 13,
+        "sentence_assembly": 4,
+        "text_grammar": 4,
+        "reading_short": 4,
+        "reading_mid": 4,
+        "reading_info": 2,
+        "listen_task": 6,
+        "listen_point": 6,
+        "listen_gist": 3,
+        "listen_response": 4,
+    },
+    "N5": {
+        "kanji_reading": 7,
+        "orthography": 5,
+        "context": 6,
+        "paraphrase": 3,
+        "grammar_form": 9,
+        "sentence_assembly": 4,
+        "text_grammar": 4,
+        "reading_short": 3,
+        "reading_mid": 2,
+        "reading_info": 1,
+        "listen_task": 5,
+        "listen_point": 5,
+        "listen_gist": 2,
+        "listen_response": 4,
+    },
+}
+EXPECTED_SECTION_DURATION = {
+    "N1": {"written": 110 * 60, "listening": 55 * 60},
+    "N2": {"written": 105 * 60, "listening": 50 * 60},
+    "N3": {"written": 100 * 60, "listening": 40 * 60},
+    "N4": {"written": 80 * 60, "listening": 35 * 60},
+    "N5": {"written": 60 * 60, "listening": 30 * 60},
+}
 
 
 def _text_grammar_question(
@@ -29,6 +137,7 @@ def _text_grammar_question(
     return {
         "level": "N1",
         "qtype": "text_grammar",
+        "section": "grammar",
         "stem": f"（{blank}）に入れるのに最もよいものはどれか。",
         "passage": passage,
         "group": group,
@@ -52,15 +161,107 @@ def _text_grammar_group(*, passage: str, group: str) -> list[dict[str, object]]:
 
 
 def _assemble_pool(pool: list[dict[str, object]]) -> dict[str, object]:
+    paper: dict[str, dict[str, int]] = defaultdict(dict)
+    counts: dict[tuple[str, str], int] = defaultdict(int)
+    for question in pool:
+        if not isinstance(question, dict):
+            continue
+        level = str(question.get("level") or "").upper()
+        qtype = str(question.get("qtype") or "")
+        if level in assemble_bank.PAPER and qtype in assemble_bank.ABBREV:
+            counts[(level, qtype)] += 1
+    for (level, qtype), count in counts.items():
+        paper[level][qtype] = count
+
     with tempfile.TemporaryDirectory() as tmp:
         source_path = Path(tmp) / "source.json"
         output_path = Path(tmp) / "bank.json"
         source_path.write_text(
             json.dumps({"pool": pool}, ensure_ascii=False), encoding="utf-8"
         )
-        with contextlib.redirect_stdout(io.StringIO()):
-            assemble_bank.main(str(source_path), str(output_path))
+        try:
+            with mock.patch.object(assemble_bank, "PAPER", dict(paper)):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    assemble_bank.main(str(source_path), str(output_path))
+        except Exception as error:
+            if type(error).__name__ != "AssemblyValidationError":
+                raise
+            return {"questions": [], "_report": getattr(error, "report", {})}
         return json.loads(output_path.read_text(encoding="utf-8"))
+
+
+def _canonical_pool() -> list[dict[str, object]]:
+    """Build one exact, schema-valid canonical paper for every JLPT level."""
+    pool: list[dict[str, object]] = []
+    for level, spec in assemble_bank.PAPER.items():
+        for qtype in assemble_bank.QTYPE_ORDER:
+            want = int(spec.get(qtype) or 0)
+            if want <= 0:
+                continue
+            abbreviation = assemble_bank.ABBREV[qtype]
+            section = assemble_bank.SECTION_OF[abbreviation]
+            grouped = qtype in assemble_bank.GROUPED
+            group = f"{level.lower()}-{qtype}-canonical" if grouped else ""
+            passage = (
+                f"{level} {qtype} canonical passage"
+                if grouped or section == "listening"
+                else ""
+            )
+            for index in range(want):
+                identity = f"{level}-{qtype}-{index + 1}"
+                pool.append(
+                    {
+                        "level": level,
+                        "qtype": qtype,
+                        "section": section,
+                        "stem": f"{identity} stem",
+                        "passage": passage,
+                        "group": group,
+                        "choices": [
+                            f"{identity} choice A",
+                            f"{identity} choice B",
+                            f"{identity} choice C",
+                            f"{identity} choice D",
+                        ],
+                        "answerIndex": index % 4,
+                        "explanation": f"{identity} detailed explanation",
+                        "difficulty": 3,
+                    }
+                )
+    return pool
+
+
+def _run_assembly_failure(
+    testcase: unittest.TestCase,
+    pool: list[dict[str, object]],
+) -> dict[str, object]:
+    """Run strict assembly and prove the pre-existing target is byte-identical."""
+    with tempfile.TemporaryDirectory() as tmp:
+        source_path = Path(tmp) / "source.json"
+        output_path = Path(tmp) / "bank.json"
+        original = b"pre-existing-bank-bytes-must-survive"
+        source_path.write_text(
+            json.dumps({"pool": pool}, ensure_ascii=False), encoding="utf-8"
+        )
+        output_path.write_bytes(original)
+        before_sha = hashlib.sha256(original).hexdigest()
+        error: Exception | None = None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                assemble_bank.main(str(source_path), str(output_path))
+        except Exception as caught:
+            error = caught
+
+        after = output_path.read_bytes()
+        testcase.assertEqual(original, after, "failed assembly replaced the existing bank")
+        testcase.assertEqual(before_sha, hashlib.sha256(after).hexdigest())
+        testcase.assertIsNotNone(error, "strict assembly must reject invalid input")
+        testcase.assertEqual("AssemblyValidationError", type(error).__name__)
+        report = getattr(error, "report", None)
+        testcase.assertIsInstance(report, dict)
+        testcase.assertEqual("failed", report.get("status"))
+        testcase.assertTrue(report.get("issues"), report)
+        return report
 
 
 def _balance_bank(*, explanation: str = "") -> dict[str, object]:
@@ -83,6 +284,21 @@ def _balance_bank(*, explanation: str = "") -> dict[str, object]:
 
 
 class AssembleBankTests(unittest.TestCase):
+    def test_python_paper_spec_matches_generator_contract(self) -> None:
+        self.assertEqual(EXPECTED_PAPER, assemble_bank.PAPER)
+        listening_qtypes = {
+            "listen_task",
+            "listen_point",
+            "listen_gist",
+            "listen_response",
+            "listen_integrated",
+        }
+        for qtype in listening_qtypes:
+            self.assertIn(qtype, assemble_bank.QTYPE_ORDER)
+            self.assertEqual(
+                "listening", assemble_bank.SECTION_OF[assemble_bank.ABBREV[qtype]]
+            )
+
     def test_grouped_questions_with_same_stem_in_distinct_passages_are_preserved(self) -> None:
         bank = _assemble_pool(
             _text_grammar_group(passage="最初の記事。（１）（２）続き。", group="article-a")
@@ -156,6 +372,17 @@ class AssembleBankTests(unittest.TestCase):
         source_path = REPO_ROOT / "data" / "jlpt_gen_pool" / "N1-lex.json"
         source = json.loads(source_path.read_text(encoding="utf-8"))
         source_pool = source.get("result", source)["pool"]
+        available_qtypes = {
+            question.get("qtype")
+            for question in source_pool
+            if question.get("qtype") in assemble_bank.PAPER["N1"]
+        }
+        n1_lex_spec = {
+            "N1": {
+                qtype: assemble_bank.PAPER["N1"][qtype]
+                for qtype in available_qtypes
+            }
+        }
         source_count = sum(
             question.get("level") == "N1" and question.get("qtype") == "text_grammar"
             for question in source_pool
@@ -163,8 +390,9 @@ class AssembleBankTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / "bank.json"
-            with contextlib.redirect_stdout(io.StringIO()):
-                assemble_bank.main(str(source_path), str(output_path))
+            with mock.patch.object(assemble_bank, "PAPER", n1_lex_spec):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    assemble_bank.main(str(source_path), str(output_path))
             bank = json.loads(output_path.read_text(encoding="utf-8"))
 
         assembled_count = sum(
@@ -189,8 +417,11 @@ class AssembleBankTests(unittest.TestCase):
                 assemble_bank.json, "dump", side_effect=OSError("simulated write failure")
             ):
                 with self.assertRaisesRegex(OSError, "simulated write failure"):
-                    with contextlib.redirect_stdout(io.StringIO()):
-                        assemble_bank.main(str(source_path), str(output_path))
+                    with mock.patch.object(
+                        assemble_bank, "PAPER", {"N1": {"text_grammar": 2}}
+                    ):
+                        with contextlib.redirect_stdout(io.StringIO()):
+                            assemble_bank.main(str(source_path), str(output_path))
 
             self.assertEqual(original, output_path.read_bytes())
 
@@ -221,11 +452,477 @@ class AssembleBankTests(unittest.TestCase):
             with mock.patch.object(os, "fsync", side_effect=record_fsync), mock.patch.object(
                 os, "replace", side_effect=record_replace
             ):
-                with contextlib.redirect_stdout(io.StringIO()):
-                    assemble_bank.main(str(source_path), str(output_path))
+                with mock.patch.object(
+                    assemble_bank, "PAPER", {"N1": {"text_grammar": 2}}
+                ):
+                    with contextlib.redirect_stdout(io.StringIO()):
+                        assemble_bank.main(str(source_path), str(output_path))
 
             self.assertEqual(["fsync", "replace"], events)
             self.assertTrue(output_path.exists())
+
+    def test_canonical_pool_builds_every_qtype_to_the_exact_target(self) -> None:
+        pool = _canonical_pool()
+        with tempfile.TemporaryDirectory() as tmp:
+            source_path = Path(tmp) / "source.json"
+            output_path = Path(tmp) / "bank.json"
+            source_path.write_text(
+                json.dumps({"pool": pool}, ensure_ascii=False), encoding="utf-8"
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                assemble_bank.main(str(source_path), str(output_path))
+            bank = json.loads(output_path.read_text(encoding="utf-8"))
+
+        by_id = {question["id"]: question for question in bank["questions"]}
+        for level, spec in assemble_bank.PAPER.items():
+            paper_questions = [by_id[qid] for qid in bank["papers"][level]["questionIds"]]
+            for qtype, want in spec.items():
+                self.assertEqual(
+                    want,
+                    sum(question["qtype"] == qtype for question in paper_questions),
+                    f"{level} {qtype} must exactly match canonical paper spec",
+                )
+
+    def test_full_paper_manifest_keeps_written_and_listening_timers_separate(self) -> None:
+        pool = _canonical_pool()
+        with tempfile.TemporaryDirectory() as tmp:
+            source_path = Path(tmp) / "source.json"
+            output_path = Path(tmp) / "bank.json"
+            source_path.write_text(
+                json.dumps({"pool": pool}, ensure_ascii=False), encoding="utf-8"
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                assemble_bank.main(str(source_path), str(output_path))
+            bank = json.loads(output_path.read_text(encoding="utf-8"))
+
+        by_id = {question["id"]: question for question in bank["questions"]}
+        for level, paper in bank["papers"].items():
+            self.assertEqual("full-paper", paper.get("kind"))
+            self.assertEqual(2, paper.get("manifestVersion"))
+            self.assertNotIn("笔试卷", paper.get("title", ""))
+            sections = paper.get("sections") or []
+            self.assertEqual(["written", "listening"], [s.get("section") for s in sections])
+            self.assertEqual(
+                sum(EXPECTED_SECTION_DURATION[level].values()),
+                paper.get("durationSeconds"),
+            )
+            self.assertEqual(
+                EXPECTED_SECTION_DURATION[level],
+                {s["section"]: s["durationSeconds"] for s in sections},
+            )
+            self.assertEqual(
+                paper["questionIds"],
+                [qid for section in sections for qid in section["questionIds"]],
+            )
+            written, listening = sections
+            self.assertTrue(written["questionIds"])
+            self.assertTrue(listening["questionIds"])
+            self.assertTrue(
+                all(by_id[qid]["section"] != "listening" for qid in written["questionIds"])
+            )
+            self.assertTrue(
+                all(by_id[qid]["section"] == "listening" for qid in listening["questionIds"])
+            )
+
+    def test_seed_installs_full_paper_as_parent_and_independently_timed_sections(self) -> None:
+        bank = {
+            "version": 2,
+            "questions": [
+                {
+                    "id": "mockv1-n1-gf-001",
+                    "level": "N1",
+                    "section": "grammar",
+                    "qtype": "grammar_form",
+                    "stem": "written",
+                    "passage": "",
+                    "choices": ["a", "b", "c", "d"],
+                    "answerIndex": 0,
+                    "explanation": "written explanation",
+                    "difficulty": 3,
+                },
+                {
+                    "id": "mockv1-n1-lt-001",
+                    "level": "N1",
+                    "section": "listening",
+                    "qtype": "listen_task",
+                    "stem": "listening",
+                    "passage": "script",
+                    "choices": ["a", "b", "c", "d"],
+                    "answerIndex": 0,
+                    "explanation": "listening explanation",
+                    "difficulty": 3,
+                },
+            ],
+            "papers": {
+                "N1": {
+                    "kind": "full-paper",
+                    "manifestVersion": 2,
+                    "title": "JLPT N1 全真模拟（完整卷）",
+                    "durationSeconds": 9900,
+                    "questionIds": ["mockv1-n1-gf-001", "mockv1-n1-lt-001"],
+                    "sections": [
+                        {
+                            "section": "written",
+                            "title": "言語知識・読解",
+                            "durationSeconds": 6600,
+                            "questionIds": ["mockv1-n1-gf-001"],
+                        },
+                        {
+                            "section": "listening",
+                            "title": "聴解",
+                            "durationSeconds": 3300,
+                            "questionIds": ["mockv1-n1-lt-001"],
+                        },
+                    ],
+                }
+            },
+        }
+
+        class FakeCursor:
+            def fetchone(self):
+                return None
+
+        class FakeConnection:
+            def execute(self, *_args, **_kwargs):
+                return FakeCursor()
+
+        upserts: list[dict[str, object]] = []
+        fake_jlpt = types.SimpleNamespace(
+            IMPORT_MAX_ROWS=100,
+            import_questions=lambda _conn, items, now=None: {"total": len(items)},
+            upsert_exam=lambda _conn, payload, now=None: upserts.append(copy.deepcopy(payload)),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bank_path = Path(tmp) / "jlpt_bank_v1.json"
+            bank_path.write_text(json.dumps(bank, ensure_ascii=False), encoding="utf-8")
+            with mock.patch.object(jlpt_seed, "_mock_bank_path", return_value=str(bank_path)):
+                with mock.patch.dict(sys.modules, {"server_jlpt": fake_jlpt}):
+                    result = jlpt_seed.ensure_jlpt_mock_v1(FakeConnection())
+
+        self.assertEqual(3, len(upserts))
+        self.assertEqual(3, result["exams"])
+        parent, written, listening = upserts
+        self.assertEqual("paper", parent["kind"])
+        self.assertEqual(0, parent["durationSeconds"])
+        self.assertEqual([], parent["questionIds"])
+        self.assertEqual(2, parent["questionCount"])
+        self.assertNotIn("笔试卷", parent["title"])
+        self.assertEqual("section", written["kind"])
+        self.assertEqual(parent["id"], written["parentExamId"])
+        self.assertEqual(6600, written["durationSeconds"])
+        self.assertEqual(["mockv1-n1-gf-001"], written["questionIds"])
+        self.assertEqual("jlpt_scaled", written["scoreMode"])
+        self.assertEqual(400, written["coinCost"])
+        self.assertEqual("section", listening["kind"])
+        self.assertEqual(parent["id"], listening["parentExamId"])
+        self.assertEqual("listening", listening["section"])
+        self.assertEqual(3300, listening["durationSeconds"])
+        self.assertEqual(["mockv1-n1-lt-001"], listening["questionIds"])
+        self.assertEqual("percent", listening["scoreMode"])
+        self.assertEqual(0, listening["coinCost"])
+
+    def test_legacy_written_only_manifest_does_not_invent_a_new_price(self) -> None:
+        payloads = jlpt_seed._mock_paper_exam_payloads(
+            "N5",
+            {
+                "title": "JLPT N5 全真模拟（笔试卷）",
+                "durationSeconds": 3600,
+                "questionIds": ["legacy-question"],
+            },
+            sort_order=0,
+        )
+
+        self.assertEqual(1, len(payloads))
+        self.assertEqual("mock", payloads[0]["kind"])
+        self.assertEqual(0, payloads[0]["coinCost"])
+
+    def test_full_paper_payloads_round_trip_through_runtime_section_contract(self) -> None:
+        written_ids = [f"written-question-{index}" for index in range(64)]
+        listening_ids = [f"listening-question-{index}" for index in range(31)]
+        payloads = jlpt_seed._mock_paper_exam_payloads(
+            "N1",
+            {
+                "kind": "full-paper",
+                "manifestVersion": 2,
+                "title": "JLPT N1 全真模拟（完整卷）",
+                "durationSeconds": 9900,
+                "questionIds": written_ids + listening_ids,
+                "sections": [
+                    {
+                        "section": "written",
+                        "title": "言語知識・読解",
+                        "durationSeconds": 6600,
+                        "questionIds": written_ids,
+                    },
+                    {
+                        "section": "listening",
+                        "title": "聴解",
+                        "durationSeconds": 3300,
+                        "questionIds": listening_ids,
+                    },
+                ],
+            },
+            sort_order=0,
+        )
+        connection = sqlite3.connect(":memory:")
+        connection.row_factory = sqlite3.Row
+        connection.executescript(
+            """
+            CREATE TABLE jlpt_exams (
+                id TEXT PRIMARY KEY, level TEXT, title TEXT, kind TEXT, section TEXT,
+                question_count INTEGER, duration_seconds INTEGER, pass_score INTEGER,
+                is_member_only INTEGER, status TEXT, sort_order INTEGER, score_mode TEXT,
+                parent_exam_id TEXT, coin_cost INTEGER, created_at TEXT
+            );
+            CREATE TABLE jlpt_exam_questions (
+                exam_id TEXT, question_id TEXT, sort_order INTEGER,
+                PRIMARY KEY (exam_id, question_id)
+            );
+            """
+        )
+        try:
+            for payload in payloads:
+                runtime_jlpt.upsert_exam(connection, payload, now="2026-07-22T00:00:00+00:00")
+            catalog = runtime_jlpt.list_exams(connection, is_member=False)
+            detail = runtime_jlpt.list_paper_sections(
+                connection, "mockv1-n1", is_member=False
+            )
+        finally:
+            connection.close()
+
+        self.assertEqual(1, len(catalog))
+        parent = catalog[0]
+        self.assertTrue(parent["isPaper"])
+        self.assertEqual(2, parent["sectionCount"])
+        self.assertEqual(95, parent["questionCount"])
+        self.assertEqual(9900, parent["durationSeconds"])
+        self.assertEqual(400, parent["coinCost"])
+        self.assertIsNotNone(detail)
+        self.assertEqual(95, detail["paper"]["questionCount"])
+        sections = detail["sections"]
+        self.assertEqual([6600, 3300], [section["durationSeconds"] for section in sections])
+        self.assertEqual([400, 0], [section["coinCost"] for section in sections])
+
+    def test_invalid_group_cli_is_nonzero_reports_context_and_preserves_target(self) -> None:
+        pool = _canonical_pool()
+        invalid_group = _text_grammar_group(
+            passage="invalid group passage", group="invalid-group"
+        )
+        for question in invalid_group:
+            question["section"] = "grammar"
+        invalid_group[1]["choices"] = ["only", "three", "choices"]
+        first_invalid_index = len(pool)
+        pool.extend(invalid_group)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            source_path = Path(tmp) / "source.json"
+            output_path = Path(tmp) / "bank.json"
+            report_path = Path(tmp) / "failure-report.json"
+            original = b"existing-target-must-not-be-replaced"
+            source_path.write_text(
+                json.dumps({"pool": pool}, ensure_ascii=False), encoding="utf-8"
+            )
+            output_path.write_bytes(original)
+            before_sha = hashlib.sha256(original).hexdigest()
+            process = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(assemble_bank.__file__).resolve()),
+                    str(source_path),
+                    str(output_path),
+                    "--report",
+                    str(report_path),
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertNotEqual(0, process.returncode, process.stdout + process.stderr)
+            self.assertEqual(original, output_path.read_bytes())
+            self.assertEqual(before_sha, hashlib.sha256(output_path.read_bytes()).hexdigest())
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual("failed", report["status"])
+        issue = next(item for item in report["issues"] if item["group"] == "invalid-group")
+        self.assertTrue(issue["reason"])
+        self.assertEqual("N1", issue["level"])
+        self.assertEqual("text_grammar", issue["qtype"])
+        self.assertIn(issue["sourceIndex"], {first_invalid_index, first_invalid_index + 1})
+
+    def test_schema_bad_members_fail_closed_with_source_context(self) -> None:
+        cases = [
+            ("invalid_level", lambda q: q.__setitem__("level", "N0"), "level_invalid"),
+            ("invalid_qtype", lambda q: q.__setitem__("qtype", "unknown"), "qtype_invalid"),
+            (
+                "qtype_not_allowed_for_level",
+                lambda q: (
+                    q.__setitem__("level", "N1"),
+                    q.__setitem__("qtype", "orthography"),
+                    q.__setitem__("section", "vocab"),
+                ),
+                "qtype_level_mismatch",
+            ),
+            ("wrong_section", lambda q: q.__setitem__("section", "reading"), "section_mismatch"),
+            ("blank_stem", lambda q: q.__setitem__("stem", "  "), "stem_required"),
+            (
+                "non_string_choice",
+                lambda q: q.__setitem__("choices", ["a", "b", "c", 4]),
+                "choices_not_strings",
+            ),
+            (
+                "duplicate_choices",
+                lambda q: q.__setitem__("choices", ["same", "same ", "c", "d"]),
+                "choices_not_unique",
+            ),
+            ("boolean_answer", lambda q: q.__setitem__("answerIndex", True), "answer_index_invalid"),
+            ("blank_explanation", lambda q: q.__setitem__("explanation", "  "), "explanation_required"),
+            ("boolean_difficulty", lambda q: q.__setitem__("difficulty", False), "difficulty_invalid"),
+        ]
+        for name, mutate, expected_code in cases:
+            with self.subTest(case=name):
+                pool = _canonical_pool()
+                mutate(pool[0])
+                report = _run_assembly_failure(self, pool)
+                matches = [item for item in report["issues"] if item["code"] == expected_code]
+                self.assertTrue(matches, report)
+                issue = matches[0]
+                self.assertEqual(0, issue["sourceIndex"])
+                self.assertIn("reason", issue)
+                self.assertIn("level", issue)
+                self.assertIn("qtype", issue)
+                self.assertIn("group", issue)
+
+    def test_listening_requires_a_script_and_forbids_atomic_reading_groups(self) -> None:
+        for name, mutate, expected_code in (
+            (
+                "missing_script",
+                lambda question: question.__setitem__("passage", ""),
+                "passage_required",
+            ),
+            (
+                "unexpected_group",
+                lambda question: question.__setitem__("group", "listening-group"),
+                "unexpected_group",
+            ),
+        ):
+            with self.subTest(case=name):
+                pool = _canonical_pool()
+                source_index, question = next(
+                    (index, item)
+                    for index, item in enumerate(pool)
+                    if item["level"] == "N1" and item["qtype"] == "listen_task"
+                )
+                mutate(question)
+                report = _run_assembly_failure(self, pool)
+                issue = next(item for item in report["issues"] if item["code"] == expected_code)
+                self.assertEqual(source_index, issue["sourceIndex"])
+                self.assertEqual("N1", issue["level"])
+                self.assertEqual("listen_task", issue["qtype"])
+
+    def test_empty_short_duplicate_and_conflicting_groups_fail_closed(self) -> None:
+        def text_grammar_members(pool: list[dict[str, object]]) -> list[dict[str, object]]:
+            return [
+                question
+                for question in pool
+                if question["level"] == "N1" and question["qtype"] == "text_grammar"
+            ]
+
+        cases: list[tuple[str, list[dict[str, object]], str]] = []
+
+        empty_group_pool = _canonical_pool()
+        text_grammar_members(empty_group_pool)[0]["group"] = ""
+        cases.append(("empty_group", empty_group_pool, "group_required"))
+
+        short_group_pool = _canonical_pool()
+        short_members = text_grammar_members(short_group_pool)
+        short_group_pool = [question for question in short_group_pool if question not in short_members[1:]]
+        cases.append(("short_group", short_group_pool, "group_too_short"))
+
+        duplicate_group_pool = _canonical_pool()
+        duplicate_members = text_grammar_members(duplicate_group_pool)
+        duplicate_group_pool.extend(copy.deepcopy(duplicate_members))
+        cases.append(("duplicate_group", duplicate_group_pool, "group_member_duplicate"))
+
+        conflict_group_pool = _canonical_pool()
+        conflict = copy.deepcopy(text_grammar_members(conflict_group_pool)[0])
+        conflict["choices"] = ["new A", "new B", "new C", "new D"]
+        conflict["answerIndex"] = 3
+        conflict_group_pool.append(conflict)
+        cases.append(("conflicting_member", conflict_group_pool, "group_member_conflict"))
+
+        mixed_passage_pool = _canonical_pool()
+        text_grammar_members(mixed_passage_pool)[1]["passage"] = "different passage"
+        cases.append(("mixed_passage", mixed_passage_pool, "group_passage_conflict"))
+
+        for name, pool, expected_code in cases:
+            with self.subTest(case=name):
+                report = _run_assembly_failure(self, pool)
+                issue = next(item for item in report["issues"] if item["code"] == expected_code)
+                self.assertEqual("N1", issue["level"])
+                self.assertEqual("text_grammar", issue["qtype"])
+                self.assertTrue(issue["reason"])
+                self.assertTrue(issue["sourceIndexes"])
+
+    def test_ordinary_duplicate_question_fails_closed(self) -> None:
+        pool = _canonical_pool()
+        duplicate = copy.deepcopy(pool[0])
+        duplicate_index = len(pool)
+        pool.append(duplicate)
+
+        report = _run_assembly_failure(self, pool)
+        issue = next(item for item in report["issues"] if item["code"] == "duplicate_question")
+        self.assertEqual(duplicate_index, issue["sourceIndex"])
+        self.assertEqual([0, duplicate_index], issue["sourceIndexes"])
+
+    def test_shortfall_and_atomic_overfill_fail_closed(self) -> None:
+        shortfall_pool = _canonical_pool()[1:]
+        shortfall_report = _run_assembly_failure(self, shortfall_pool)
+        shortfall = next(
+            item for item in shortfall_report["issues"] if item["code"] == "paper_shortfall"
+        )
+        self.assertEqual("N5", shortfall["level"])
+        self.assertEqual("kanji_reading", shortfall["qtype"])
+
+        overfill_pool = _canonical_pool()
+        original_group = [
+            question
+            for question in overfill_pool
+            if question["level"] == "N1" and question["qtype"] == "text_grammar"
+        ]
+        overfill_pool = [question for question in overfill_pool if question not in original_group]
+        template = original_group[0]
+        for index in range(6):
+            question = copy.deepcopy(template)
+            question["group"] = "n1-text-grammar-overfill"
+            question["passage"] = "six-member passage cannot fit a five-question target"
+            question["stem"] = f"overfill blank {index + 1}"
+            question["choices"] = [f"{index}-{letter}" for letter in "ABCD"]
+            question["answerIndex"] = index % 4
+            overfill_pool.append(question)
+
+        overfill_report = _run_assembly_failure(self, overfill_pool)
+        overfill = next(
+            item
+            for item in overfill_report["issues"]
+            if item["code"] == "paper_atomic_overfill"
+        )
+        self.assertEqual("N1", overfill["level"])
+        self.assertEqual("text_grammar", overfill["qtype"])
+        self.assertEqual("n1-text-grammar-overfill", overfill["group"])
+
+    def test_default_n1_only_source_fails_closed_instead_of_writing_empty_levels(self) -> None:
+        source_path = REPO_ROOT / "data" / "jlpt_gen_pool" / "N1-lex.json"
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+        source_pool = source.get("result", source)["pool"]
+
+        report = _run_assembly_failure(self, source_pool)
+        missing = [item for item in report["issues"] if item["code"] == "paper_shortfall"]
+        self.assertTrue(missing)
+        self.assertTrue(any(item["level"] == "N1" and item["qtype"].startswith("reading_") for item in missing))
+        self.assertTrue(any(item["level"] == "N1" and item["qtype"].startswith("listen_") for item in missing))
+        self.assertTrue(any(item["level"] == "N2" for item in missing))
 
 
 class BalanceAnswersTests(unittest.TestCase):
@@ -296,6 +993,74 @@ class BalanceAnswersTests(unittest.TestCase):
         self.assertIn(
             f"第{chinese_positions[first_choice_new_position]}项“甲”", explanation
         )
+
+    def test_common_numeric_circled_and_letter_position_references_are_remapped(self) -> None:
+        original_choices = ["甲", "乙", "丙", "丁"]
+        bank = {
+            "version": 1,
+            "source": "fixture",
+            "note": "fixture",
+            "questions": [
+                {
+                    "id": "common-position-refs",
+                    "level": "N1",
+                    "section": "vocab",
+                    "choices": original_choices,
+                    "answerIndex": 2,
+                    "explanation": (
+                        "答案是第3个选项“丙”；选项③正确；選択肢③が正しい。"
+                        "选项C与C选项都指向“丙”，Option C is correct."
+                    ),
+                }
+            ],
+            "papers": {"N1": {"questionIds": ["common-position-refs"]}},
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bank_path = Path(tmp) / "bank.json"
+            bank_path.write_text(json.dumps(bank, ensure_ascii=False), encoding="utf-8")
+            with contextlib.redirect_stdout(io.StringIO()):
+                balance_answers.main(str(bank_path))
+            first_run = bank_path.read_bytes()
+            with contextlib.redirect_stdout(io.StringIO()):
+                balance_answers.main(str(bank_path))
+            second_run = bank_path.read_bytes()
+            question = json.loads(second_run)["questions"][0]
+
+        self.assertEqual(first_run, second_run)
+        self.assertEqual("丙", question["choices"][question["answerIndex"]])
+        new_position = question["choices"].index("丙") + 1
+        new_letter = "ABCD"[new_position - 1]
+        new_circled = "①②③④"[new_position - 1]
+        explanation = question["explanation"]
+        self.assertIn(f"第{new_position}个选项“丙”", explanation)
+        self.assertIn(f"选项{new_circled}正确", explanation)
+        self.assertIn(f"選択肢{new_circled}が正しい", explanation)
+        self.assertIn(f"选项{new_letter}", explanation)
+        self.assertIn(f"{new_letter}选项", explanation)
+        self.assertIn(f"Option {new_letter}", explanation)
+
+    def test_unparsed_suspected_position_reference_rejects_without_replacing_bank(self) -> None:
+        bank = _balance_bank(explanation="答案是选项（5）“正解”，这个位置无法映射到四个选项。")
+        bank["questions"][0]["choices"] = ["误答A", "误答B", "正解", "误答C"]
+        bank["questions"][0]["answerIndex"] = 2
+
+        with tempfile.TemporaryDirectory() as tmp:
+            bank_path = Path(tmp) / "bank.json"
+            bank_path.write_text(json.dumps(bank, ensure_ascii=False), encoding="utf-8")
+            original = bank_path.read_bytes()
+            error: Exception | None = None
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    balance_answers.main(str(bank_path))
+            except Exception as caught:
+                error = caught
+
+            self.assertEqual(original, bank_path.read_bytes())
+            self.assertIsNotNone(error)
+            self.assertEqual("BalanceValidationError", type(error).__name__)
+            self.assertIn("q-1", str(error))
+            self.assertIn("选项（5）", str(error))
 
     def test_second_run_is_byte_identical(self) -> None:
         bank = _balance_bank()

@@ -173,14 +173,15 @@ def _empty(conn: Any, table: str) -> bool:
     return int(dict(row)["c"]) == 0
 
 
-# ── 全真模考题库 v1（data/jlpt_bank_v1.json）────────────────────────────────
+# ── 全真模考题库（data/jlpt_bank_v1.json）───────────────────────────────────
 # 原创全真题库由多模型生成 + 双盲对抗校验后落盘为 JSON（生成管线见工作区
 # 文档），此处只负责装载：题目走 import_questions upsert（source='mockv1'，
-# 可审计、可整体替换），整卷走 upsert_exam 固定题单（score_mode='jlpt_scaled'
-# → 提交时按 JLPT 官方计分结构出缩放分）。
+# 可审计、可整体替换）。旧清单仍装为单张固定笔试卷；full-paper v2 清单装为
+# 无计时父卷 + 独立计时的笔试/听力子卷，避免把听力塞进笔试时限。
 
 _MOCK_BANK_FILENAME = "jlpt_bank_v1.json"
 _MOCK_SOURCE = "mockv1"
+_MOCK_COIN_COST_BY_LEVEL = {"N5": 100, "N4": 150, "N3": 250, "N2": 350, "N1": 400}
 # 样本小模考的标题模板（见 ensure_jlpt_seed）。全真卷上线后要把它们归档，识别
 # 必须锚定这个 seed 自己写下的标题 —— 早期版本靠「question_count<=10 且没有固定
 # 题单」来猜，会误伤 admin 手工建的小题量动态卷（那种卷同样没有固定题单）。
@@ -197,8 +198,146 @@ def _bank_fingerprint(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()[:32]
 
 
+def _mock_paper_exam_payloads(
+    level: str, paper: dict[str, Any], *, sort_order: int
+) -> list[dict[str, Any]]:
+    """Translate one bank manifest into runtime exam rows.
+
+    Legacy manifests remain one fixed ``mock`` exam.  A v2 ``full-paper``
+    manifest becomes an untimed parent plus independently timed written and
+    listening children, matching the runtime's paper/section contract.
+    """
+    normalized_level = str(level).strip().upper()
+    parent_id = f"mockv1-{normalized_level.lower()}"
+    question_ids = [
+        str(value).strip()
+        for value in (paper.get("questionIds") or [])
+        if str(value).strip()
+    ]
+    if not question_ids:
+        return []
+
+    is_full_paper = paper.get("kind") == "full-paper"
+    default_coin_cost = (
+        _MOCK_COIN_COST_BY_LEVEL.get(normalized_level, 0) if is_full_paper else 0
+    )
+    try:
+        coin_cost = max(
+            0,
+            int(paper.get("coinCost", default_coin_cost)),
+        )
+    except (TypeError, ValueError):
+        coin_cost = default_coin_cost
+
+    if not is_full_paper:
+        return [
+            {
+                "id": parent_id,
+                "level": normalized_level,
+                "title": paper.get("title") or f"JLPT {normalized_level} 全真模拟（笔试卷）",
+                "kind": "mock",
+                "durationSeconds": int(paper.get("durationSeconds") or 0),
+                "passScore": 60,
+                "scoreMode": "jlpt_scaled",
+                "coinCost": coin_cost,
+                "isMemberOnly": False,
+                "status": "published",
+                "sortOrder": sort_order,
+                "questionIds": question_ids,
+            }
+        ]
+
+    if paper.get("manifestVersion") != 2:
+        raise ValueError(f"{normalized_level}: full-paper requires manifestVersion=2")
+    raw_sections = paper.get("sections")
+    if not isinstance(raw_sections, list) or len(raw_sections) != 2:
+        raise ValueError(f"{normalized_level}: full-paper requires written and listening sections")
+
+    expected_names = ("written", "listening")
+    normalized_sections = []
+    for index, expected_name in enumerate(expected_names):
+        raw_section = raw_sections[index]
+        if not isinstance(raw_section, dict) or raw_section.get("section") != expected_name:
+            raise ValueError(
+                f"{normalized_level}: full-paper section {index} must be {expected_name}"
+            )
+        section_ids = [
+            str(value).strip()
+            for value in (raw_section.get("questionIds") or [])
+            if str(value).strip()
+        ]
+        duration = raw_section.get("durationSeconds")
+        if not section_ids:
+            raise ValueError(f"{normalized_level} {expected_name}: questionIds must not be empty")
+        if type(duration) is not int or duration <= 0:
+            raise ValueError(f"{normalized_level} {expected_name}: durationSeconds must be positive")
+        normalized_sections.append((expected_name, raw_section, section_ids, duration))
+
+    flattened_ids = [
+        question_id
+        for _, _, section_ids, _ in normalized_sections
+        for question_id in section_ids
+    ]
+    if flattened_ids != question_ids:
+        raise ValueError(
+            f"{normalized_level}: full-paper questionIds must equal written + listening order"
+        )
+    if len(set(flattened_ids)) != len(flattened_ids):
+        raise ValueError(f"{normalized_level}: full-paper questionIds must be unique")
+    total_duration = sum(duration for _, _, _, duration in normalized_sections)
+    if paper.get("durationSeconds") != total_duration:
+        raise ValueError(
+            f"{normalized_level}: full-paper durationSeconds must equal section durations"
+        )
+
+    title = str(paper.get("title") or f"JLPT {normalized_level} 全真模拟（完整卷）")
+    payloads = [
+        {
+            "id": parent_id,
+            "level": normalized_level,
+            "title": title,
+            "kind": "paper",
+            "durationSeconds": 0,
+            "questionCount": len(question_ids),
+            "passScore": 60,
+            "scoreMode": "percent",
+            "coinCost": 0,
+            "isMemberOnly": False,
+            "status": "published",
+            "sortOrder": sort_order,
+            "questionIds": [],
+        }
+    ]
+    for section_order, (section_name, raw_section, section_ids, duration) in enumerate(
+        normalized_sections
+    ):
+        section_title = str(
+            raw_section.get("title")
+            or ("言語知識・読解" if section_name == "written" else "聴解")
+        )
+        payloads.append(
+            {
+                "id": f"{parent_id}-{section_name}",
+                "level": normalized_level,
+                "title": f"{title} · {section_title}",
+                "kind": "section",
+                "section": "" if section_name == "written" else "listening",
+                "durationSeconds": duration,
+                "passScore": 60,
+                "scoreMode": "jlpt_scaled" if section_name == "written" else "percent",
+                "coinCost": coin_cost if section_name == "written" else 0,
+                "isMemberOnly": False,
+                "status": "published",
+                "sortOrder": section_order,
+                "parentExamId": parent_id,
+                "questionIds": section_ids,
+            }
+        )
+    return payloads
+
+
 def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
-    """Idempotently install the full-length mock bank + fixed papers. No-ops
+    """Idempotently install the full-length mock bank + paper manifests. No-ops
     (quietly) when the bank file is absent — dev checkouts without the data
     file must still boot.
 
@@ -261,31 +400,24 @@ def ensure_jlpt_mock_v1(conn: Any) -> dict[str, Any]:
     for i, (level, paper) in enumerate(sorted(papers.items())):
         if not isinstance(paper, dict):
             continue
-        q_ids = [str(x) for x in (paper.get("questionIds") or []) if str(x).strip()]
-        if not q_ids:
-            continue
-        exam_id = f"mockv1-{str(level).lower()}"
-        exam_payload = {
-            "id": exam_id,
-            "level": level,
-            "title": paper.get("title") or f"JLPT {level} 全真模拟（笔试卷）",
-            "kind": "mock",
-            "durationSeconds": int(paper.get("durationSeconds") or 0),
-            "passScore": 60,
-            "scoreMode": "jlpt_scaled",
-            "isMemberOnly": False,
-            "status": "published",
-            "sortOrder": i,
-            "questionIds": q_ids,
-        }
-        # Migration 120 runs before startup seeds on a fresh database, so its
-        # UPDATE cannot price rows that do not exist yet. New canonical rows
-        # receive an explicit seed price. A fingerprint refresh of an existing
-        # row deliberately omits it so upsert_exam preserves the admin value.
-        if conn.execute("SELECT id FROM jlpt_exams WHERE id = ?", (exam_id,)).fetchone() is None:
-            exam_payload["coinCost"] = jlpt.MOCK_V1_COIN_COSTS.get(str(level).upper(), 0)
-        jlpt.upsert_exam(conn, exam_payload, now=now)
-        exams += 1
+        for payload in _mock_paper_exam_payloads(level, paper, sort_order=i):
+            existing = conn.execute(
+                "SELECT id FROM jlpt_exams WHERE id = ?", (payload["id"],)
+            ).fetchone()
+            # Fresh canonical rows receive the approved default price. On a
+            # fingerprint refresh, preserve an admin's explicit price instead
+            # of silently resetting it from the bundled manifest. The parent
+            # shell and listening child are structural/non-charging rows and
+            # therefore remain zero even when upgrading a formerly paid mock
+            # row into the full-paper parent.
+            if existing and payload.get("kind") not in ("paper",):
+                if not (
+                    payload.get("kind") == "section"
+                    and payload.get("section") == "listening"
+                ):
+                    payload.pop("coinCost", None)
+            jlpt.upsert_exam(conn, payload, now=now)
+            exams += 1
 
     # 样本 8 题小模考退场:全真卷上线后它们只会稀释列表。只认 ensure_jlpt_seed
     # 自己写下的标题,不靠「题少且无固定题单」去猜 —— admin 手工建的小题量动态

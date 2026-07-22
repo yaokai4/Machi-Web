@@ -1888,9 +1888,15 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
     raw_qids = exam.get("questionIds") or exam.get("question_ids") or []
     question_ids = [str(q).strip() for q in raw_qids if str(q).strip()] if isinstance(raw_qids, list) else []
     # Fixed set → count is its length; else honor a caller-supplied count (for
-    # dynamic mocks), clamped to a sane sampling ceiling.
+    # dynamic mocks), clamped to a sane sampling ceiling. A paper parent never
+    # samples questions itself, so its manifest total must not be truncated by
+    # the dynamic-exam cap (full N1 currently contains 95 questions).
     if question_ids:
         question_count = len(question_ids)
+    elif kind == "paper":
+        question_count = _clamp(
+            exam.get("questionCount", exam.get("question_count")), 0, 0, IMPORT_MAX_ROWS
+        )
     else:
         question_count = _clamp(exam.get("questionCount", exam.get("question_count")), 20, 1, EXAM_DYNAMIC_MAX)
 
