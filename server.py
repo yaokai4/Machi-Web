@@ -13618,6 +13618,13 @@ _APPSTORE_SERVER_API_SANDBOX = "https://api.storekit-sandbox.apple.com"
 
 APPLE_CONSUMPTION_CONSENT_PURPOSE = "apple_refund_consumption_information"
 APPLE_CONSUMPTION_CONSENT_POLICY_VERSION = "2026-07-22.v1"
+APPLE_CONSUMPTION_RESPONSE_WINDOW_SECONDS = 12 * 60 * 60
+APPLE_CONSUMPTION_OUTBOX_LEASE_SECONDS = 2 * 60
+APPLE_CONSUMPTION_OUTBOX_BATCH_SIZE = 20
+APPLE_CONSUMPTION_OUTBOX_INTERVAL_SECONDS = max(
+    15, int(_env("KAIX_APPLE_CONSUMPTION_OUTBOX_INTERVAL_SEC", "60"))
+)
+_APPLE_CONSUMPTION_OUTBOX_WORKER_STARTED = False
 
 # RELEASE GATE (not completed by this server change): the iOS UI must present a
 # separate, informed Apple-consumption-data consent in zh-Hans / ja / en and
@@ -13628,8 +13635,8 @@ APPLE_CONSUMPTION_CONSENT_POLICY_VERSION = "2026-07-22.v1"
 
 def appstore_server_api_configured() -> bool:
     """The App Store Server API reuses the IAP .p8 key trio + bundle id.
-    When any piece is missing we log-and-skip instead of raising — an
-    unanswered CONSUMPTION_REQUEST must never break webhook processing."""
+    Missing pieces are reported as a retryable outbox outcome instead of
+    breaking webhook processing or silently discarding the 12-hour window."""
     return bool(APPLE_IAP_ISSUER_ID and APPLE_IAP_KEY_ID and APPLE_IAP_PRIVATE_KEY and APPLE_IAP_BUNDLE_ID)
 
 
@@ -13665,6 +13672,7 @@ def _appstore_server_api_token() -> str | None:
         return None
 
 
+@money_atomic
 def record_apple_consumption_consent_event(
         conn: sqlite3.Connection, user_id: str, *, granted: bool,
         policy_version: str, locale: str = "", source: str = "") -> dict[str, Any]:
@@ -13691,6 +13699,13 @@ def record_apple_consumption_consent_event(
             created_at,
         ),
     )
+    if not granted:
+        conn.execute(
+            "UPDATE apple_consumption_outbox SET status='cancelled', "
+            "lease_expires_at='', last_status='consent_withdrawn', cancelled_at=?, updated_at=? "
+            "WHERE user_id=? AND status IN ('pending','sending')",
+            (created_at, created_at, user_id),
+        )
     row = conn.execute(
         "SELECT * FROM user_privacy_consent_events WHERE id = ?", (event_id,)
     ).fetchone()
@@ -13785,37 +13800,61 @@ def _apple_consumption_v2_payload(
     return payload
 
 
-def apple_send_consumption_info(conn: sqlite3.Connection, transaction: dict[str, Any],
-                                user_id: str | None) -> str:
-    """Answer an App Store CONSUMPTION_REQUEST (Send Consumption Information).
+def _apple_retry_after_seconds(headers: Any, *, now: datetime | None = None) -> int:
+    """Parse Apple's Retry-After as either delta-seconds or an HTTP date."""
+    raw = str((headers.get("Retry-After") if headers else "") or "").strip()
+    if not raw:
+        return 0
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        try:
+            retry_at = email.utils.parsedate_to_datetime(raw)
+            if retry_at.tzinfo is None:
+                retry_at = retry_at.replace(tzinfo=timezone.utc)
+            base = now or datetime.now(timezone.utc)
+            return max(0, int((retry_at - base).total_seconds() + 0.999))
+        except (TypeError, ValueError, OverflowError):
+            return 0
 
-    Apple sends CONSUMPTION_REQUEST while deciding a refund for a consumable
-    (our Machi Coins packs) and gives ~12 hours to report whether the content
-    was consumed. Left unanswered, Apple leans toward granting the refund —
-    which would make "buy coins → spend them → refund" arbitrage free. All
-    figures come from our own ledger; nothing here is user-supplied. Returns a
-    short status string for the webhook response / audit log. Never raises."""
-    # Apple says not to respond at all without a separate, explicit customer
-    # consent.  This gate intentionally precedes config inspection, JWT minting,
-    # payload construction, and every outbound network path.
+
+def _apple_consumption_delivery_result(
+        conn: sqlite3.Connection, transaction: dict[str, Any],
+        user_id: str | None) -> dict[str, Any]:
+    """One consent-gated delivery attempt with retry metadata for the outbox."""
+    result: dict[str, Any] = {
+        "status": "error",
+        "retryable": False,
+        "http_status": 0,
+        "retry_after_seconds": 0,
+        "consent_event_id": "",
+    }
     consent = apple_consumption_consent_state(conn, user_id)
+    event = consent.get("event") or {}
+    result["consent_event_id"] = str(event.get("id") or "")
     if not consent.get("granted"):
-        return str(consent.get("status") or "consent_missing")
+        result["status"] = str(consent.get("status") or "consent_missing")
+        return result
     tx_id = str(transaction.get("transactionId") or transaction.get("originalTransactionId") or "").strip()
     if not tx_id:
-        return "missing_transaction"
+        result["status"] = "missing_transaction"
+        return result
     order = _apple_consumption_wallet_order(conn, str(user_id), transaction)
     if not order:
-        return "purchase_unresolved"
+        result["status"] = "purchase_unresolved"
+        return result
     payload = _apple_consumption_v2_payload(conn, str(user_id), order)
     if not payload:
-        return "purchase_unresolved"
+        result["status"] = "purchase_unresolved"
+        return result
     if not appstore_server_api_configured():
         ACCESS_LOG.warning("apple consumption request skipped: server api unconfigured")
-        return "unconfigured"
+        result.update(status="unconfigured", retryable=True)
+        return result
     token = _appstore_server_api_token()
     if not token:
-        return "token_failed"
+        result.update(status="token_failed", retryable=True)
+        return result
     try:
         env = str(transaction.get("environment") or "").strip().lower()
         base = _APPSTORE_SERVER_API_SANDBOX if env in ("sandbox", "xcode") else _APPSTORE_SERVER_API_PROD
@@ -13826,13 +13865,299 @@ def apple_send_consumption_info(conn: sqlite3.Connection, transaction: dict[str,
         with urllib.request.urlopen(req, timeout=10) as resp:
             resp.read()
         ACCESS_LOG.info("apple consumption info submitted")
-        return "submitted"
+        result["status"] = "submitted"
+        return result
     except urllib.error.HTTPError as exc:
-        ERR_LOG.warning("apple consumption submit http %s", exc.code)
-        return f"http_{exc.code}"
+        code = int(exc.code or 0)
+        retry_after = _apple_retry_after_seconds(exc.headers)
+        try:
+            exc.close()
+        except Exception:
+            pass
+        ERR_LOG.warning("apple consumption submit http %s", code)
+        result.update(
+            status=f"http_{code}",
+            http_status=code,
+            retry_after_seconds=retry_after,
+            retryable=(code in (401, 403, 408, 425, 429) or 500 <= code <= 599),
+        )
+        return result
     except Exception as exc:
         ERR_LOG.warning("apple consumption submit failed: %s", type(exc).__name__)
-        return "error"
+        result.update(status="error", retryable=True)
+        return result
+
+
+def apple_send_consumption_info(conn: sqlite3.Connection, transaction: dict[str, Any],
+                                user_id: str | None) -> str:
+    """Answer an App Store CONSUMPTION_REQUEST (Send Consumption Information).
+
+    Apple sends CONSUMPTION_REQUEST while deciding a refund for a consumable
+    (our Machi Coins packs) and gives ~12 hours to report whether the content
+    was consumed. Left unanswered, Apple leans toward granting the refund —
+    which would make "buy coins → spend them → refund" arbitrage free. All
+    figures come from our own ledger; nothing here is user-supplied. Returns a
+    short status string for the webhook response / audit log. Never raises."""
+    return str(_apple_consumption_delivery_result(conn, transaction, user_id)["status"])
+
+
+def _apple_consumption_outbox_time(raw: str = "") -> datetime:
+    return _aware(parse_iso(raw)) or datetime.now(timezone.utc)
+
+
+def _apple_consumption_backoff_seconds(attempt_no: int) -> int:
+    return (60, 300, 900, 1800, 3600)[min(max(1, attempt_no), 5) - 1]
+
+
+@money_atomic
+def _record_and_enqueue_apple_consumption(
+        conn: sqlite3.Connection, *, event_type: str, event_id: str,
+        order_no: str, audit_raw: str, transaction: dict[str, Any],
+        user_id: str, signature_valid: bool) -> tuple[bool, dict[str, Any] | None]:
+    """Commit webhook dedup and its delivery job as one durable unit."""
+    first = record_payment_webhook(
+        conn, "apple_iap", event_type, event_id, order_no, audit_raw, signature_valid
+    )
+    if not first:
+        row = conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE event_id=?", (event_id,)
+        ).fetchone()
+        return False, (dict(row) if row else None)
+    created_at = now_iso()
+    deadline_at = (
+        _apple_consumption_outbox_time(created_at)
+        + timedelta(seconds=APPLE_CONSUMPTION_RESPONSE_WINDOW_SECONDS)
+    ).isoformat()
+    outbox_id = str(uuid.uuid4())
+    transaction_id = str(
+        transaction.get("transactionId")
+        or transaction.get("originalTransactionId")
+        or ""
+    ).strip()
+    conn.execute(
+        "INSERT INTO apple_consumption_outbox "
+        "(id, event_id, transaction_id, user_id, transaction_json, status, attempt_count, "
+        "next_attempt_at, deadline_at, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?)",
+        (
+            outbox_id,
+            event_id,
+            transaction_id,
+            str(user_id or ""),
+            json.dumps(transaction, ensure_ascii=False, separators=(",", ":")),
+            created_at,
+            deadline_at,
+            created_at,
+            created_at,
+        ),
+    )
+    row = conn.execute(
+        "SELECT * FROM apple_consumption_outbox WHERE id=?", (outbox_id,)
+    ).fetchone()
+    return True, (dict(row) if row else None)
+
+
+@money_atomic
+def _claim_apple_consumption_outbox_job(
+        conn: sqlite3.Connection, outbox_id: str, now: str) -> dict[str, Any] | None:
+    lease_until = (
+        _apple_consumption_outbox_time(now)
+        + timedelta(seconds=APPLE_CONSUMPTION_OUTBOX_LEASE_SECONDS)
+    ).isoformat()
+    cur = conn.execute(
+        "UPDATE apple_consumption_outbox SET status='sending', "
+        "attempt_count=attempt_count+1, lease_expires_at=?, updated_at=? "
+        "WHERE id=? AND deadline_at>? AND "
+        "((status='pending' AND next_attempt_at<=?) OR "
+        " (status='sending' AND lease_expires_at<>'' AND lease_expires_at<=?))",
+        (lease_until, now, outbox_id, now, now, now),
+    )
+    if getattr(cur, "rowcount", 0) != 1:
+        return None
+    row = conn.execute(
+        "SELECT * FROM apple_consumption_outbox WHERE id=?", (outbox_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+@money_atomic
+def _finish_apple_consumption_outbox_attempt(
+        conn: sqlite3.Connection, job: dict[str, Any], result: dict[str, Any],
+        *, started_at: str, finished_at: str) -> str:
+    attempt_no = int(job.get("attempt_count") or 0)
+    outcome = str(result.get("status") or "error")
+    http_status = int(result.get("http_status") or 0)
+    retry_after = max(0, int(result.get("retry_after_seconds") or 0))
+    consent_event_id = str(result.get("consent_event_id") or "")
+    deadline = _apple_consumption_outbox_time(str(job.get("deadline_at") or ""))
+    finished = _apple_consumption_outbox_time(finished_at)
+
+    if outcome == "submitted":
+        status = "submitted"
+        next_attempt_at = finished_at
+        submitted_at = finished_at
+        cancelled_at = ""
+    elif outcome in {
+        "unresolved_user", "consent_missing", "consent_withdrawn",
+        "consent_version_mismatch",
+    }:
+        status = "cancelled"
+        next_attempt_at = finished_at
+        submitted_at = ""
+        cancelled_at = finished_at
+    elif bool(result.get("retryable")):
+        delay = max(retry_after, _apple_consumption_backoff_seconds(attempt_no))
+        retry_at = finished + timedelta(seconds=delay)
+        if retry_at >= deadline:
+            status = "expired"
+            next_attempt_at = str(job.get("deadline_at") or finished_at)
+        else:
+            status = "pending"
+            next_attempt_at = retry_at.isoformat()
+        submitted_at = ""
+        cancelled_at = ""
+    else:
+        status = "failed"
+        next_attempt_at = finished_at
+        submitted_at = ""
+        cancelled_at = ""
+
+    conn.execute(
+        "INSERT INTO apple_consumption_delivery_attempts "
+        "(id, outbox_id, attempt_no, outcome, http_status, retry_after_seconds, "
+        "consent_event_id, started_at, finished_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            str(uuid.uuid4()), job["id"], attempt_no, outcome, http_status,
+            retry_after, consent_event_id, started_at, finished_at,
+        ),
+    )
+    cur = conn.execute(
+        "UPDATE apple_consumption_outbox SET status=?, next_attempt_at=?, "
+        "lease_expires_at='', last_status=?, last_http_status=?, "
+        "last_retry_after_seconds=?, last_consent_event_id=?, submitted_at=?, "
+        "cancelled_at=?, updated_at=? WHERE id=? AND status='sending' AND attempt_count=?",
+        (
+            status, next_attempt_at, outcome, http_status, retry_after,
+            consent_event_id, submitted_at, cancelled_at, finished_at,
+            job["id"], attempt_no,
+        ),
+    )
+    if getattr(cur, "rowcount", 0) != 1:
+        raise RuntimeError("apple consumption outbox lease lost")
+    return status
+
+
+def process_apple_consumption_outbox_job(
+        conn: sqlite3.Connection, outbox_id: str, *, now: str = "") -> str:
+    """Claim and deliver one job. Network I/O happens outside DB transactions.
+
+    A crash after Apple's success but before local finalization can replay the
+    request after the lease expires; the API operation is a PUT keyed by the
+    transaction id, so that recovery is idempotent and preferable to data loss.
+    """
+    started_at = now or now_iso()
+    job = _claim_apple_consumption_outbox_job(conn, outbox_id, started_at)
+    if not job:
+        return "skipped"
+    try:
+        transaction = json.loads(str(job.get("transaction_json") or "{}"))
+        if not isinstance(transaction, dict):
+            raise ValueError("transaction payload is not an object")
+        result = _apple_consumption_delivery_result(
+            conn, transaction, str(job.get("user_id") or "") or None
+        )
+    except (TypeError, ValueError, json.JSONDecodeError):
+        result = {
+            "status": "invalid_payload",
+            "retryable": False,
+            "http_status": 0,
+            "retry_after_seconds": 0,
+            "consent_event_id": "",
+        }
+    # A simulated/future ``now`` is useful to deterministic tests and sweeps;
+    # production still schedules from the actual response completion so a slow
+    # request or a large batch can never retry earlier than Apple's Retry-After.
+    actual_finished_at = now_iso()
+    finished_at = max(
+        _apple_consumption_outbox_time(started_at),
+        _apple_consumption_outbox_time(actual_finished_at),
+    ).isoformat()
+    return _finish_apple_consumption_outbox_attempt(
+        conn, job, result, started_at=started_at, finished_at=finished_at
+    )
+
+
+def process_apple_consumption_outbox(
+        conn: sqlite3.Connection, *, now: str = "", limit: int = APPLE_CONSUMPTION_OUTBOX_BATCH_SIZE,
+        ) -> dict[str, int]:
+    """Deliver a bounded due batch and expire work beyond Apple's deadline."""
+    now = now or now_iso()
+    conn.execute(
+        "UPDATE apple_consumption_outbox SET status='expired', lease_expires_at='', "
+        "last_status='deadline_expired', updated_at=? "
+        "WHERE status IN ('pending','sending') AND deadline_at<=?",
+        (now, now),
+    )
+    rows = conn.execute(
+        "SELECT id FROM apple_consumption_outbox WHERE deadline_at>? AND "
+        "((status='pending' AND next_attempt_at<=?) OR "
+        " (status='sending' AND lease_expires_at<>'' AND lease_expires_at<=?)) "
+        "ORDER BY next_attempt_at, created_at LIMIT ?",
+        (now, now, now, max(1, min(int(limit or 1), 100))),
+    ).fetchall()
+    counts = {
+        "processed": 0, "submitted": 0, "queued_retry": 0,
+        "cancelled": 0, "failed": 0, "expired": 0, "skipped": 0,
+    }
+    for row in rows:
+        final = process_apple_consumption_outbox_job(conn, row["id"], now=now)
+        counts["processed"] += int(final != "skipped")
+        key = "queued_retry" if final == "pending" else final
+        if key in counts:
+            counts[key] += 1
+        else:
+            counts["failed"] += 1
+    return counts
+
+
+def run_apple_consumption_outbox_pass() -> dict[str, int]:
+    """Open a worker-owned connection and process one bounded due batch."""
+    conn = db()
+    try:
+        return process_apple_consumption_outbox(conn)
+    finally:
+        conn.close()
+
+
+def start_apple_consumption_outbox_worker() -> None:
+    """Start the singleton durable-delivery loop on the scheduler process."""
+    global _APPLE_CONSUMPTION_OUTBOX_WORKER_STARTED
+    if _APPLE_CONSUMPTION_OUTBOX_WORKER_STARTED:
+        return
+    _APPLE_CONSUMPTION_OUTBOX_WORKER_STARTED = True
+
+    def _loop() -> None:
+        # Migrations finish before run() starts schedulers.  A short initial pause
+        # avoids competing with boot-time seed work while staying far inside 12h.
+        time.sleep(min(15, APPLE_CONSUMPTION_OUTBOX_INTERVAL_SECONDS))
+        while True:
+            try:
+                counts = run_apple_consumption_outbox_pass()
+                if counts.get("processed"):
+                    ACCESS_LOG.info(
+                        "apple consumption outbox processed=%d submitted=%d queued=%d cancelled=%d failed=%d",
+                        counts["processed"], counts["submitted"], counts["queued_retry"],
+                        counts["cancelled"], counts["failed"],
+                    )
+            except Exception:
+                ERR_LOG.exception("apple consumption outbox pass failed")
+            time.sleep(APPLE_CONSUMPTION_OUTBOX_INTERVAL_SECONDS)
+
+    threading.Thread(
+        target=_loop,
+        name="apple-consumption-outbox",
+        daemon=True,
+    ).start()
 
 
 # ---- email transports (no secret ever reaches the logger) ----
@@ -28491,6 +28816,7 @@ class Handler(BaseHTTPRequestHandler):
             if row:
                 return row["id"]
         original_id = str(transaction.get("originalTransactionId") or "").strip()
+        transaction_id = str(transaction.get("transactionId") or "").strip()
         if original_id:
             membership = conn.execute(
                 "SELECT user_id FROM user_memberships WHERE provider_subscription_id = ? "
@@ -28506,6 +28832,32 @@ class Handler(BaseHTTPRequestHandler):
             ).fetchone()
             if order:
                 return order["user_id"]
+        candidates = tuple(
+            dict.fromkeys(
+                value
+                for raw in (transaction_id, original_id)
+                for value in (raw, "apple:" + raw)
+                if raw
+            )
+        )
+        if candidates:
+            placeholders = ",".join("?" for _ in candidates)
+            wallet_order = conn.execute(
+                "SELECT user_id FROM wallet_topup_orders WHERE payment_provider = 'apple_iap' "
+                f"AND (provider_trade_no IN ({placeholders}) OR provider_user_id IN ({placeholders})) "
+                "ORDER BY COALESCE(fulfilled_at, paid_at, created_at) DESC LIMIT 1",
+                (*candidates, *candidates),
+            ).fetchone()
+            if wallet_order:
+                return wallet_order["user_id"]
+            guide_order = conn.execute(
+                "SELECT user_id FROM guide_orders WHERE payment_provider = 'apple_iap' "
+                f"AND provider_trade_no IN ({placeholders}) "
+                "ORDER BY COALESCE(fulfilled_at, paid_at, created_at) DESC LIMIT 1",
+                candidates,
+            ).fetchone()
+            if guide_order:
+                return guide_order["user_id"]
         return ""
 
     def api_payment_webhook_apple(self, conn: sqlite3.Connection) -> None:
@@ -28562,25 +28914,56 @@ class Handler(BaseHTTPRequestHandler):
         event_id = str(notification.get("notificationUUID") or transaction.get("transactionId") or secrets.token_hex(12))
         product_id = str(transaction.get("productId") or "").strip()
         original_id = str(transaction.get("originalTransactionId") or "").strip()
+        audit_raw = json.dumps(
+            {"notification": notification, "transaction": transaction},
+            ensure_ascii=False,
+        )
+
+        if notification_type == "CONSUMPTION_REQUEST":
+            # The audit dedup row and outbox job commit together.  A crash before
+            # either commit leaves Apple free to retry; a transient outbound
+            # failure after commit is owned by the durable worker instead.
+            uid = self._apple_notification_user_id(conn, transaction)
+            first, job = _record_and_enqueue_apple_consumption(
+                conn,
+                event_type=event_type,
+                event_id=event_id,
+                order_no=original_id or str(transaction.get("transactionId") or ""),
+                audit_raw=audit_raw,
+                transaction=transaction,
+                user_id=uid,
+                signature_valid=signature_valid,
+            )
+            if not first:
+                return self.send_json({"received": True, "duplicate": True})
+            final = process_apple_consumption_outbox_job(conn, str((job or {}).get("id") or ""))
+            if final == "pending":
+                consumption_status = "queued_retry"
+            elif final in ("cancelled", "failed", "expired"):
+                fresh = conn.execute(
+                    "SELECT last_status FROM apple_consumption_outbox WHERE id=?",
+                    (str((job or {}).get("id") or ""),),
+                ).fetchone()
+                consumption_status = str((dict(fresh) if fresh else {}).get("last_status") or final)
+            else:
+                consumption_status = final
+            return self.send_json({
+                "received": True,
+                "processed": True,
+                "consumption": consumption_status,
+            })
+
         first = record_payment_webhook(
             conn,
             "apple_iap",
             event_type,
             event_id,
             original_id or str(transaction.get("transactionId") or ""),
-            json.dumps({"notification": notification, "transaction": transaction}, ensure_ascii=False),
+            audit_raw,
             signature_valid,
         )
         if not first:
             return self.send_json({"received": True, "duplicate": True})
-
-        if notification_type == "CONSUMPTION_REQUEST":
-            # The notification itself is already audit-recorded above.  Outbound
-            # consumption data is sent only when the user resolves and their
-            # latest immutable event grants the exact current policy version.
-            uid = self._apple_notification_user_id(conn, transaction)
-            status = apple_send_consumption_info(conn, transaction, uid)
-            return self.send_json({"received": True, "processed": True, "consumption": status})
 
         user_id = self._apple_notification_user_id(conn, transaction)
         if not user_id:
@@ -43214,6 +43597,7 @@ def run() -> None:
     # them — set KAIX_ENABLE_SCHEDULERS=0 on the extra workers. Default on,
     # so single-instance deploys are unaffected.
     if _env("KAIX_ENABLE_SCHEDULERS", "1") == "1":
+        start_apple_consumption_outbox_worker()
         start_retention_janitor()
         start_guide_reminder_dispatcher()
         start_engagement_simulator()
@@ -43223,7 +43607,7 @@ def run() -> None:
         start_nightly_report_dispatcher()
         start_membership_bonus_dispatcher()
     else:
-        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — retention janitor + guide reminders + engagement sim + hot-score refresher disabled on this worker")
+        ACCESS_LOG.info("KAIX_ENABLE_SCHEDULERS=0 — Apple consumption outbox + retention janitor + guide reminders + engagement sim + hot-score refresher disabled on this worker")
     host = _env("KAIX_HOST", "127.0.0.1")
     port = int(_env("KAIX_PORT", "8787"))
     server = MachiHTTPServer((host, port), Handler)

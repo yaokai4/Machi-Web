@@ -335,6 +335,51 @@ BEGIN
     SELECT RAISE(ABORT, 'user_privacy_consent_events is append-only');
 END;
 
+-- Durable App Store consumption-report delivery.  The webhook audit row and
+-- this outbox row are committed together; transient App Store/API failures are
+-- retried until the notification's 12-hour response deadline.
+CREATE TABLE IF NOT EXISTS apple_consumption_outbox (
+    id TEXT PRIMARY KEY,
+    event_id TEXT UNIQUE NOT NULL,
+    transaction_id TEXT NOT NULL,
+    user_id TEXT NOT NULL DEFAULT '',
+    transaction_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'sending', 'submitted', 'cancelled', 'failed', 'expired')),
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT NOT NULL,
+    deadline_at TEXT NOT NULL,
+    lease_expires_at TEXT NOT NULL DEFAULT '',
+    last_status TEXT NOT NULL DEFAULT '',
+    last_http_status INTEGER NOT NULL DEFAULT 0,
+    last_retry_after_seconds INTEGER NOT NULL DEFAULT 0,
+    last_consent_event_id TEXT NOT NULL DEFAULT '',
+    submitted_at TEXT NOT NULL DEFAULT '',
+    cancelled_at TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_apple_consumption_outbox_due
+    ON apple_consumption_outbox(status, next_attempt_at, deadline_at);
+CREATE INDEX IF NOT EXISTS idx_apple_consumption_outbox_user
+    ON apple_consumption_outbox(user_id, status);
+
+CREATE TABLE IF NOT EXISTS apple_consumption_delivery_attempts (
+    id TEXT PRIMARY KEY,
+    outbox_id TEXT NOT NULL,
+    attempt_no INTEGER NOT NULL,
+    outcome TEXT NOT NULL,
+    http_status INTEGER NOT NULL DEFAULT 0,
+    retry_after_seconds INTEGER NOT NULL DEFAULT 0,
+    consent_event_id TEXT NOT NULL DEFAULT '',
+    started_at TEXT NOT NULL,
+    finished_at TEXT NOT NULL,
+    FOREIGN KEY(outbox_id) REFERENCES apple_consumption_outbox(id),
+    UNIQUE(outbox_id, attempt_no)
+);
+CREATE INDEX IF NOT EXISTS idx_apple_consumption_attempts_outbox
+    ON apple_consumption_delivery_attempts(outbox_id, attempt_no);
+
 CREATE TABLE IF NOT EXISTS site_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT '',
@@ -5824,6 +5869,55 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         CREATE TRIGGER trg_privacy_consent_no_delete
             BEFORE DELETE ON user_privacy_consent_events
             FOR EACH ROW EXECUTE FUNCTION reject_privacy_consent_event_mutation();
+        """,
+    ),
+    (
+        128,
+        "apple consumption delivery: durable outbox and attempt audit",
+        # 125-127 are reserved by the parallel JLPT exam hardening work.
+        # This DDL is intentionally portable across SQLite and PostgreSQL.
+        """
+        CREATE TABLE IF NOT EXISTS apple_consumption_outbox (
+            id TEXT PRIMARY KEY,
+            event_id TEXT UNIQUE NOT NULL,
+            transaction_id TEXT NOT NULL,
+            user_id TEXT NOT NULL DEFAULT '',
+            transaction_json TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'sending', 'submitted', 'cancelled', 'failed', 'expired')),
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT NOT NULL,
+            deadline_at TEXT NOT NULL,
+            lease_expires_at TEXT NOT NULL DEFAULT '',
+            last_status TEXT NOT NULL DEFAULT '',
+            last_http_status INTEGER NOT NULL DEFAULT 0,
+            last_retry_after_seconds INTEGER NOT NULL DEFAULT 0,
+            last_consent_event_id TEXT NOT NULL DEFAULT '',
+            submitted_at TEXT NOT NULL DEFAULT '',
+            cancelled_at TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_apple_consumption_outbox_due
+            ON apple_consumption_outbox(status, next_attempt_at, deadline_at);
+        CREATE INDEX IF NOT EXISTS idx_apple_consumption_outbox_user
+            ON apple_consumption_outbox(user_id, status);
+
+        CREATE TABLE IF NOT EXISTS apple_consumption_delivery_attempts (
+            id TEXT PRIMARY KEY,
+            outbox_id TEXT NOT NULL,
+            attempt_no INTEGER NOT NULL,
+            outcome TEXT NOT NULL,
+            http_status INTEGER NOT NULL DEFAULT 0,
+            retry_after_seconds INTEGER NOT NULL DEFAULT 0,
+            consent_event_id TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            finished_at TEXT NOT NULL,
+            FOREIGN KEY(outbox_id) REFERENCES apple_consumption_outbox(id),
+            UNIQUE(outbox_id, attempt_no)
+        );
+        CREATE INDEX IF NOT EXISTS idx_apple_consumption_attempts_outbox
+            ON apple_consumption_delivery_attempts(outbox_id, attempt_no);
         """,
     ),
 ]

@@ -18,7 +18,7 @@ import unittest
 import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 _TMP_DB = tempfile.mkstemp(prefix="machi_apple_consumption_test_", suffix=".db")[1]
 os.environ["KAIX_DB_PATH"] = _TMP_DB
@@ -124,6 +124,29 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         handler._captured = captured  # type: ignore[attr-defined]
         return handler
 
+    def _consumption_webhook(
+            self, tx_id: str, event_id: str, *, configured: bool = True,
+            token: str | None = "jwt", network: MagicMock | None = None):
+        notification = {
+            "notificationType": "CONSUMPTION_REQUEST",
+            "notificationUUID": event_id,
+            "data": {
+                "bundleId": server.APPLE_IAP_BUNDLE_ID or "com.yaokai.kaizi",
+                "environment": "Production",
+                "signedTransactionInfo": "signed-transaction",
+            },
+        }
+        transaction = self._transaction(tx_id)
+        handler = self._webhook_handler()
+        network = network or MagicMock(return_value=_response())
+        with patch.object(server, "decode_apple_jws_payload", return_value=(notification, True)), \
+             patch.object(server, "verify_apple_transaction", return_value=transaction), \
+             patch.object(server, "appstore_server_api_configured", return_value=configured), \
+             patch.object(server, "_appstore_server_api_token", return_value=token), \
+             patch.object(server.urllib.request, "urlopen", network):
+            handler.api_payment_webhook_apple(self.conn)
+        return handler, network
+
     def _send_with_capture(self, transaction: dict):
         network = MagicMock(return_value=_response())
         with patch.object(server, "appstore_server_api_configured", return_value=True) as configured, \
@@ -157,6 +180,46 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         configured.assert_not_called()
         token.assert_not_called()
         network.assert_not_called()
+
+    def test_legacy_wallet_topup_without_app_account_token_resolves_owner(self) -> None:
+        tx_id = "tx-legacy-wallet-owner"
+        self._credit_topup(tx_id)
+        transaction = self._transaction(tx_id)
+        transaction.pop("appAccountToken")
+
+        handler = self._webhook_handler()
+        self.assertEqual(
+            handler._apple_notification_user_id(self.conn, transaction),
+            self.user_id,
+        )
+
+    def test_legacy_guide_order_without_app_account_token_resolves_owner(self) -> None:
+        tx_id = "tx-legacy-guide-owner"
+        now = server.now_iso()
+        self.conn.execute(
+            "INSERT INTO guide_orders "
+            "(id, user_id, product_id, order_no, price, currency, status, payment_provider, "
+            "payment_method, provider_trade_no, created_at, paid_at, fulfilled_at) "
+            "VALUES (?, ?, ?, ?, 100, 'JPY', 'fulfilled', 'apple_iap', 'apple_iap', ?, ?, ?, ?)",
+            (
+                str(uuid.uuid4()),
+                self.user_id,
+                "legacy-guide-product",
+                "GA" + uuid.uuid4().hex[:12],
+                "apple:" + tx_id,
+                now,
+                now,
+                now,
+            ),
+        )
+        transaction = self._transaction(tx_id)
+        transaction.pop("appAccountToken")
+
+        handler = self._webhook_handler()
+        self.assertEqual(
+            handler._apple_notification_user_id(self.conn, transaction),
+            self.user_id,
+        )
 
     def test_explicit_current_consent_sends_only_v2_schema_to_production(self) -> None:
         tx_id = "tx-prod-v2"
@@ -339,6 +402,28 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         self.assertIn("before update", migration_sql)
         self.assertIn("before delete", migration_sql)
 
+    def test_fresh_schema_and_migration_128_cover_durable_delivery_audit(self) -> None:
+        outbox_columns = {
+            row["name"] for row in self.conn.execute("PRAGMA table_info(apple_consumption_outbox)")
+        }
+        self.assertTrue({
+            "event_id", "transaction_json", "status", "attempt_count",
+            "next_attempt_at", "deadline_at", "last_status",
+        } <= outbox_columns)
+        attempt_columns = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(apple_consumption_delivery_attempts)")
+        }
+        self.assertTrue({
+            "outbox_id", "attempt_no", "outcome", "http_status",
+            "retry_after_seconds", "consent_event_id",
+        } <= attempt_columns)
+        migration = [entry for entry in server.MIGRATIONS if entry[0] == 128]
+        self.assertEqual(len(migration), 1)
+        migration_sql = migration[0][2].lower()
+        self.assertIn("apple_consumption_outbox", migration_sql)
+        self.assertIn("apple_consumption_delivery_attempts", migration_sql)
+
     def test_commingled_balance_never_overstates_consumption_or_refund_preference(self) -> None:
         server.wallet_post_ledger(self.conn, self.user_id, "admin_adjustment", 1000)
         tx_id = "tx-ambiguous"
@@ -396,7 +481,185 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         ).fetchone()["c"]
         self.assertEqual(audit, 1)
 
-    def test_network_failure_returns_2xx_webhook_response_and_keeps_audit(self) -> None:
+    def test_config_token_http_500_and_429_are_retried_with_retry_after(self) -> None:
+        cases = (
+            ("unconfigured", False, "jwt", MagicMock(return_value=_response()), 0),
+            ("token_failed", True, None, MagicMock(return_value=_response()), 0),
+            (
+                "http_500",
+                True,
+                "jwt",
+                MagicMock(side_effect=HTTPError("https://apple", 500, "server", {}, None)),
+                0,
+            ),
+            (
+                "http_429",
+                True,
+                "jwt",
+                MagicMock(side_effect=HTTPError(
+                    "https://apple", 429, "rate limit", {"Retry-After": "600"}, None
+                )),
+                600,
+            ),
+        )
+        for index, (outcome, configured, token, network, retry_after) in enumerate(cases):
+            with self.subTest(outcome=outcome):
+                tx_id = f"tx-transient-{index}"
+                event_id = f"event-transient-{index}"
+                self._credit_topup(tx_id)
+                self._record_consent(True)
+                handler, _ = self._consumption_webhook(
+                    tx_id,
+                    event_id,
+                    configured=configured,
+                    token=token,
+                    network=network,
+                )
+                self.assertEqual(handler._captured["status"], 200)
+                self.assertEqual(handler._captured["data"]["consumption"], "queued_retry")
+                job = dict(self.conn.execute(
+                    "SELECT * FROM apple_consumption_outbox WHERE event_id=?", (event_id,)
+                ).fetchone())
+                self.assertEqual(job["status"], "pending")
+                self.assertEqual(job["last_status"], outcome)
+                self.assertEqual(job["last_retry_after_seconds"], retry_after)
+                if retry_after:
+                    scheduled = server.parse_iso(job["next_attempt_at"])
+                    attempted = server.parse_iso(job["updated_at"])
+                    self.assertIsNotNone(scheduled)
+                    self.assertIsNotNone(attempted)
+                    self.assertGreaterEqual((scheduled - attempted).total_seconds(), retry_after)
+
+    def test_retry_after_beyond_twelve_hour_deadline_expires_without_early_retry(self) -> None:
+        tx_id = "tx-retry-after-deadline"
+        event_id = "event-retry-after-deadline"
+        self._credit_topup(tx_id)
+        self._record_consent(True)
+        network = MagicMock(side_effect=HTTPError(
+            "https://apple", 429, "rate limit", {"Retry-After": "50000"}, None
+        ))
+
+        handler, _ = self._consumption_webhook(tx_id, event_id, network=network)
+
+        self.assertEqual(handler._captured["data"]["consumption"], "http_429")
+        job = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE event_id=?", (event_id,)
+        ).fetchone())
+        self.assertEqual(job["status"], "expired")
+        self.assertEqual(job["next_attempt_at"], job["deadline_at"])
+        with patch.object(server.urllib.request, "urlopen") as retry_network:
+            counts = server.process_apple_consumption_outbox(
+                self.conn, now=job["deadline_at"]
+            )
+        self.assertEqual(counts["processed"], 0)
+        retry_network.assert_not_called()
+
+    def test_withdrawal_immediately_cancels_pending_delivery_and_retry_rechecks(self) -> None:
+        tx_id = "tx-withdraw-pending"
+        event_id = "event-withdraw-pending"
+        self._credit_topup(tx_id)
+        self._record_consent(True)
+        handler, _ = self._consumption_webhook(
+            tx_id,
+            event_id,
+            network=MagicMock(side_effect=URLError("offline")),
+        )
+        self.assertEqual(handler._captured["data"]["consumption"], "queued_retry")
+        pending = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE event_id=?", (event_id,)
+        ).fetchone())
+        self.assertEqual(pending["status"], "pending")
+
+        self._record_consent(False)
+
+        cancelled = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE id=?", (pending["id"],)
+        ).fetchone())
+        self.assertEqual(cancelled["status"], "cancelled")
+        self.assertEqual(cancelled["last_status"], "consent_withdrawn")
+        self.assertTrue(cancelled["cancelled_at"])
+        with patch.object(server.urllib.request, "urlopen") as network:
+            counts = server.process_apple_consumption_outbox(
+                self.conn, now=pending["next_attempt_at"]
+            )
+        self.assertEqual(counts["processed"], 0)
+        network.assert_not_called()
+
+        # Simulate a stale lease/database restore that left the job pending:
+        # the worker itself must still re-read the latest consent before I/O.
+        self.conn.execute(
+            "UPDATE apple_consumption_outbox SET status='pending', next_attempt_at=? WHERE id=?",
+            (server.now_iso(), pending["id"]),
+        )
+        with patch.object(server, "appstore_server_api_configured") as configured, \
+             patch.object(server, "_appstore_server_api_token") as token, \
+             patch.object(server.urllib.request, "urlopen") as retry_network:
+            retry_counts = server.process_apple_consumption_outbox(self.conn)
+        self.assertEqual(retry_counts["cancelled"], 1)
+        configured.assert_not_called()
+        token.assert_not_called()
+        retry_network.assert_not_called()
+
+    def test_success_and_duplicate_webhook_send_exactly_once(self) -> None:
+        tx_id = "tx-success-idempotent"
+        event_id = "event-success-idempotent"
+        self._credit_topup(tx_id)
+        self._record_consent(True)
+
+        first, first_network = self._consumption_webhook(tx_id, event_id)
+        self.assertEqual(first._captured["data"]["consumption"], "submitted")
+        first_network.assert_called_once()
+
+        duplicate_network = MagicMock(return_value=_response())
+        duplicate, _ = self._consumption_webhook(
+            tx_id, event_id, network=duplicate_network
+        )
+        self.assertTrue(duplicate._captured["data"]["duplicate"])
+        duplicate_network.assert_not_called()
+        job = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE event_id=?", (event_id,)
+        ).fetchone())
+        self.assertEqual(job["status"], "submitted")
+        self.assertEqual(job["attempt_count"], 1)
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM apple_consumption_outbox WHERE event_id=?",
+                (event_id,),
+            ).fetchone()["c"],
+            1,
+        )
+
+    def test_outbox_insert_failure_rolls_back_webhook_dedup_for_apple_retry(self) -> None:
+        tx_id = "tx-outbox-atomic-failure"
+        event_id = "event-outbox-atomic-failure"
+        self._credit_topup(tx_id)
+        self._record_consent(True)
+        self.conn.execute(
+            "CREATE TRIGGER fail_apple_outbox BEFORE INSERT ON apple_consumption_outbox "
+            "BEGIN SELECT RAISE(ABORT, 'forced outbox failure'); END"
+        )
+        try:
+            with self.assertRaises(sqlite3.DatabaseError):
+                self._consumption_webhook(tx_id, event_id)
+        finally:
+            self.conn.execute("DROP TRIGGER fail_apple_outbox")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM payment_webhooks "
+                "WHERE provider='apple_iap' AND event_id=?",
+                (event_id,),
+            ).fetchone()["c"],
+            0,
+        )
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM apple_consumption_outbox WHERE event_id=?",
+                (event_id,),
+            ).fetchone()["c"],
+            0,
+        )
+
+    def test_network_failure_is_durably_retried_after_webhook_dedup(self) -> None:
         tx_id = "tx-webhook-network-failure"
         self._credit_topup(tx_id)
         self._record_consent(True)
@@ -418,12 +681,71 @@ class AppleConsumptionConsentTests(unittest.TestCase):
              patch.object(server.urllib.request, "urlopen", side_effect=URLError("offline")):
             handler.api_payment_webhook_apple(self.conn)
         self.assertEqual(handler._captured["status"], 200)
-        self.assertEqual(handler._captured["data"]["consumption"], "error")
+        self.assertEqual(handler._captured["data"]["consumption"], "queued_retry")
         audit = self.conn.execute(
             "SELECT COUNT(*) AS c FROM payment_webhooks WHERE provider='apple_iap' AND event_id=?",
             ("event-webhook-network-failure",),
         ).fetchone()["c"]
         self.assertEqual(audit, 1)
+        outbox = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE event_id=?",
+            ("event-webhook-network-failure",),
+        ).fetchone())
+        self.assertEqual(outbox["status"], "pending")
+        self.assertEqual(outbox["attempt_count"], 1)
+        self.assertEqual(outbox["last_status"], "error")
+        self.assertLess(outbox["next_attempt_at"], outbox["deadline_at"])
+
+        with patch.object(server, "appstore_server_api_configured", return_value=True), \
+             patch.object(server, "_appstore_server_api_token", return_value="jwt"), \
+             patch.object(server.urllib.request, "urlopen", return_value=_response()) as network:
+            final = server.process_apple_consumption_outbox_job(
+                self.conn,
+                outbox["id"],
+                now=outbox["next_attempt_at"],
+            )
+        self.assertEqual(final, "submitted")
+        network.assert_called_once()
+        delivered = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE id=?", (outbox["id"],)
+        ).fetchone())
+        self.assertEqual(delivered["status"], "submitted")
+        self.assertEqual(delivered["attempt_count"], 2)
+        attempts = self.conn.execute(
+            "SELECT outcome FROM apple_consumption_delivery_attempts "
+            "WHERE outbox_id=? ORDER BY attempt_no",
+            (outbox["id"],),
+        ).fetchall()
+        self.assertEqual([row["outcome"] for row in attempts], ["error", "submitted"])
+
+    def test_scheduler_pass_retries_due_jobs_without_a_new_webhook(self) -> None:
+        tx_id = "tx-scheduler-retry"
+        event_id = "event-scheduler-retry"
+        self._credit_topup(tx_id)
+        self._record_consent(True)
+        self._consumption_webhook(
+            tx_id,
+            event_id,
+            network=MagicMock(side_effect=URLError("offline")),
+        )
+        self.conn.execute(
+            "UPDATE apple_consumption_outbox SET next_attempt_at=? WHERE event_id=?",
+            (server.now_iso(), event_id),
+        )
+        worker_pass = getattr(server, "run_apple_consumption_outbox_pass", None)
+        self.assertTrue(callable(worker_pass), "the durable outbox needs an automatic worker entrypoint")
+
+        with patch.object(server, "appstore_server_api_configured", return_value=True), \
+             patch.object(server, "_appstore_server_api_token", return_value="jwt"), \
+             patch.object(server.urllib.request, "urlopen", return_value=_response()) as network:
+            counts = worker_pass()
+
+        self.assertEqual(counts["submitted"], 1)
+        network.assert_called_once()
+        status = self.conn.execute(
+            "SELECT status FROM apple_consumption_outbox WHERE event_id=?", (event_id,)
+        ).fetchone()["status"]
+        self.assertEqual(status, "submitted")
 
 
 if __name__ == "__main__":
