@@ -12014,7 +12014,8 @@ def _jlpt_start_request_digest(user_id: str, exam_id: str, request_key: str) -> 
 
 
 def _jlpt_start_payment_overlay(
-    started: dict[str, Any], session: dict[str, Any], wallet: dict[str, Any]
+    started: dict[str, Any], session: dict[str, Any], wallet: dict[str, Any],
+    *, idempotency_recorded: bool | None = None,
 ) -> dict[str, Any]:
     base = int(session.get("base_coin_cost_snapshot") or 0)
     charged = int(session.get("charged_coin_cost") or 0)
@@ -12031,8 +12032,67 @@ def _jlpt_start_payment_overlay(
             "pricingTier": tier,
         },
         "parentExamId": str(session.get("parent_exam_id_snapshot") or ""),
-        "startIdempotencyRecorded": bool(session.get("start_request_key")),
+        "startIdempotencyRecorded": (
+            bool(session.get("start_request_key"))
+            if idempotency_recorded is None else bool(idempotency_recorded)
+        ),
     }
+
+
+def _jlpt_start_request_session(
+    conn: sqlite3.Connection, *, user_id: str, exam_id: str, request_digest: str,
+) -> dict[str, Any] | None:
+    if not request_digest:
+        return None
+    mapping = conn.execute(
+        "SELECT session_id FROM jlpt_exam_start_requests "
+        "WHERE user_id=? AND exam_id=? AND request_key=?",
+        (user_id, exam_id, request_digest),
+    ).fetchone()
+    if not mapping:
+        return None
+    session = conn.execute(
+        "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=? AND exam_id=?",
+        (mapping["session_id"], user_id, exam_id),
+    ).fetchone()
+    if not session:
+        raise APIError(
+            "开考幂等记录对应的会话不存在，请联系支持。",
+            409,
+            "exam_start_request_orphaned",
+        )
+    return dict(session)
+
+
+def _bind_jlpt_start_request(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    exam_id: str,
+    request_digest: str,
+    session_id: str,
+    created_at: str,
+) -> None:
+    if not request_digest:
+        return
+    conn.execute(
+        "INSERT INTO jlpt_exam_start_requests "
+        "(user_id, exam_id, request_key, session_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id, exam_id, request_key) DO NOTHING",
+        (user_id, exam_id, request_digest, session_id, created_at),
+    )
+    bound = conn.execute(
+        "SELECT session_id FROM jlpt_exam_start_requests "
+        "WHERE user_id=? AND exam_id=? AND request_key=?",
+        (user_id, exam_id, request_digest),
+    ).fetchone()
+    if not bound or str(bound["session_id"] or "") != session_id:
+        raise APIError(
+            "该 Idempotency-Key 已绑定另一场考试。",
+            409,
+            "exam_start_idempotency_conflict",
+        )
 
 
 @money_atomic
@@ -12041,7 +12101,7 @@ def start_jlpt_exam_atomic(
     *,
     user_id: str,
     exam: dict[str, Any],
-    is_member: bool,
+    is_member: bool | None = None,
     request_key: str = "",
     now: str = "",
 ) -> dict[str, Any]:
@@ -12085,36 +12145,51 @@ def start_jlpt_exam_atomic(
         return {"status": "not_found"}
 
     request_digest = _jlpt_start_request_digest(user_id, exam_id, request_key)
-    if request_digest:
-        previous = conn.execute(
-            "SELECT * FROM jlpt_exam_sessions "
-            "WHERE user_id=? AND exam_id=? AND start_request_key=? LIMIT 1",
-            (user_id, exam_id, request_digest),
-        ).fetchone()
-        if previous and str(dict(previous).get("status") or "") != "in_progress":
-            prior = dict(previous)
+    previous = _jlpt_start_request_session(
+        conn,
+        user_id=user_id,
+        exam_id=exam_id,
+        request_digest=request_digest,
+    )
+    if previous:
+        if str(previous.get("status") or "") != "in_progress":
+            prior = previous
             return {
                 "status": "already_completed",
                 "sessionId": prior["id"],
                 "paymentStatus": prior.get("payment_status") or "legacy_unknown",
             }
-        if previous:
-            prior = dict(previous)
-            if not jlpt.exam_session_can_resume(prior, live_exam, now=now):
-                # The original idempotent attempt reached its deadline. Settle
-                # that exact session but never turn the same start key into a
-                # second paid attempt after the cache TTL expires.
-                jlpt.submit_exam_session(
-                    conn,
-                    session=prior,
-                    exam=live_exam,
-                    now=now,
-                )
-                return {
-                    "status": "already_completed",
-                    "sessionId": prior["id"],
-                    "paymentStatus": prior.get("payment_status") or "legacy_unknown",
-                }
+        prior = previous
+        if not jlpt.exam_session_can_resume(prior, live_exam, now=now):
+            # The original idempotent attempt reached its deadline. Settle
+            # that exact session but never turn the same start key into a
+            # second paid attempt after the cache TTL expires.
+            jlpt.submit_exam_session(
+                conn,
+                session=prior,
+                exam=live_exam,
+                now=now,
+            )
+            return {
+                "status": "already_completed",
+                "sessionId": prior["id"],
+                "paymentStatus": prior.get("payment_status") or "legacy_unknown",
+            }
+
+    # The caller's membership bit is only a compatibility hint. Re-resolve it
+    # after the start/exam locks are held so activation, expiry and member-only
+    # admission have one authoritative transaction boundary. An attempt that
+    # was admitted and paid while membership was live remains resumable: its
+    # immutable session/payment snapshot is the entitlement for that attempt.
+    resumable_entitlement = bool(
+        previous
+        or jlpt.has_resumable_exam_session(
+            conn, user_id=user_id, exam=live_exam, now=now
+        )
+    )
+    is_member = has_active_membership(conn, user_id)
+    if live_exam.get("is_member_only") and not is_member and not resumable_entitlement:
+        return {"status": "member_required"}
 
     started = jlpt.start_exam_session(
         conn,
@@ -12134,10 +12209,23 @@ def start_jlpt_exam_atomic(
         ).fetchone()
         if not row:
             raise RuntimeError("resumed JLPT session disappeared")
+        _bind_jlpt_start_request(
+            conn,
+            user_id=user_id,
+            exam_id=exam_id,
+            request_digest=request_digest,
+            session_id=session_id,
+            created_at=now,
+        )
         wallet = get_wallet_snapshot(conn, user_id)
         return {
             "status": "started",
-            "exam": _jlpt_start_payment_overlay(started, dict(row), wallet),
+            "exam": _jlpt_start_payment_overlay(
+                started,
+                dict(row),
+                wallet,
+                idempotency_recorded=bool(request_digest or dict(row).get("start_request_key")),
+            ),
         }
 
     base_cost = max(0, int(live_exam.get("coin_cost") or 0))
@@ -12200,6 +12288,14 @@ def start_jlpt_exam_atomic(
     )
     if getattr(updated, "rowcount", 0) != 1:
         raise RuntimeError("failed to finalize JLPT exam payment snapshot")
+    _bind_jlpt_start_request(
+        conn,
+        user_id=user_id,
+        exam_id=exam_id,
+        request_digest=request_digest,
+        session_id=session_id,
+        created_at=now,
+    )
     session = dict(
         conn.execute(
             "SELECT * FROM jlpt_exam_sessions WHERE id=?", (session_id,)
@@ -12207,7 +12303,12 @@ def start_jlpt_exam_atomic(
     )
     return {
         "status": "started",
-        "exam": _jlpt_start_payment_overlay(started, session, wallet),
+        "exam": _jlpt_start_payment_overlay(
+            started,
+            session,
+            wallet,
+            idempotency_recorded=bool(request_digest or session.get("start_request_key")),
+        ),
     }
 
 
@@ -18810,26 +18911,26 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_guide_jlpt_exam_start(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
-        is_member = has_active_membership(conn, user["id"])
         body = self.read_json()
         exam_id = str(body.get("examId") or body.get("exam_id") or "").strip()
         exam = jlpt.get_exam(conn, exam_id) if exam_id else None
         if not exam or exam.get("status") != "published":
             return self.send_error_json("exam not found", 404, "not_found")
-        if exam.get("is_member_only") and not is_member:
-            env = self._error_envelope("MEMBER_REQUIRED", "该模考为会员专属，开通会员即可参加。")
-            env["upgradeSuggested"] = True
-            return self.send_json(env, 403)
         outcome = start_jlpt_exam_atomic(
             conn,
             user_id=user["id"],
             exam=exam,
-            is_member=is_member,
             request_key=self._idempotency_key(),
             now=now_iso(),
         )
         if outcome.get("status") == "not_found":
             return self.send_error_json("exam not found", 404, "not_found")
+        if outcome.get("status") == "member_required":
+            env = self._error_envelope(
+                "MEMBER_REQUIRED", "该模考为会员专属，开通会员即可参加。"
+            )
+            env["upgradeSuggested"] = True
+            return self.send_json(env, 403)
         if outcome.get("status") == "no_questions":
             return self.send_error_json("该模考暂无可用题目。", 409, "no_questions")
         if outcome.get("status") == "insufficient":

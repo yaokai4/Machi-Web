@@ -5778,6 +5778,31 @@ MIGRATIONS: list[tuple[int, str, str]] = [
         ALTER TABLE jlpt_exam_answers ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
         """,
     ),
+    (
+        127,
+        "jlpt 开考幂等别名：每个请求键永久绑定原会话",
+        # 一个进行中会话可被多个 Idempotency-Key 续接；若只在 session 上保留
+        # 首个 key，第二个 key 在会话结束后重试会被误当成新开考并再次扣币。
+        # 映射表保留所有 key→session 关系，并回填 125 以来的首个 key。
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_exam_start_requests (
+            user_id TEXT NOT NULL,
+            exam_id TEXT NOT NULL,
+            request_key TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, exam_id, request_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_start_requests_session
+            ON jlpt_exam_start_requests(session_id);
+        INSERT INTO jlpt_exam_start_requests
+            (user_id, exam_id, request_key, session_id, created_at)
+        SELECT user_id, exam_id, start_request_key, id, started_at
+          FROM jlpt_exam_sessions
+         WHERE start_request_key <> ''
+        ON CONFLICT(user_id, exam_id, request_key) DO NOTHING;
+        """,
+    ),
 ]
 
 

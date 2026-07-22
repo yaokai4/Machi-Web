@@ -183,6 +183,43 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
         ).fetchone()["c"]
         self.assertEqual(1, active)
 
+    def test_resume_alias_key_remains_bound_after_submit_and_never_recharges(self) -> None:
+        self._credit()
+        first = self._start(key="original-key")["exam"]
+        alias = self._start(key="resume-alias")["exam"]
+        self.assertEqual(first["sessionId"], alias["sessionId"])
+        self.assertTrue(alias["startIdempotencyRecorded"])
+
+        self.conn.execute("BEGIN IMMEDIATE")
+        session = jlpt.get_session(
+            self.conn, session_id=first["sessionId"], user_id=self.user_id
+        )
+        result = jlpt.submit_exam_session(
+            self.conn, session=session, exam=self.exam, now=server.now_iso()
+        )
+        self.assertIsNotNone(result)
+        self.conn.commit()
+
+        replay = self._start(key="resume-alias")
+        self.assertEqual("already_completed", replay["status"])
+        self.assertEqual(first["sessionId"], replay["sessionId"])
+        self.assertEqual(900, server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"])
+        self.assertEqual(
+            1,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM jlpt_exam_sessions WHERE user_id=? AND exam_id=?",
+                (self.user_id, self.exam_id),
+            ).fetchone()["c"],
+        )
+        self.assertEqual(
+            1,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM wallet_ledger_entries "
+                "WHERE user_id=? AND source_type='jlpt_exam' AND points_delta < 0",
+                (self.user_id,),
+            ).fetchone()["c"],
+        )
+
     def test_same_idempotency_key_after_deadline_settles_original_without_new_charge(self) -> None:
         self._credit()
         self.conn.execute(
@@ -224,6 +261,101 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
                 (self.user_id,),
             ).fetchone()["c"],
         )
+
+    def test_timed_out_grading_failure_rolls_back_auto_finalize_and_new_start(self) -> None:
+        self._credit()
+        self.conn.execute(
+            "UPDATE jlpt_exams SET duration_seconds=1 WHERE id=?", (self.exam_id,)
+        )
+        self.exam = jlpt.get_exam(self.conn, self.exam_id)
+        first = server.start_jlpt_exam_atomic(
+            self.conn,
+            user_id=self.user_id,
+            exam=self.exam,
+            is_member=False,
+            request_key="timeout-original",
+            now="2026-01-01T00:00:00+00:00",
+        )["exam"]
+        self.conn.execute(
+            "CREATE TRIGGER fail_timed_out_grade BEFORE UPDATE OF total, correct, score "
+            "ON jlpt_exam_sessions WHEN OLD.id='" + first["sessionId"] + "' "
+            "BEGIN SELECT RAISE(ABORT, 'forced grading failure'); END"
+        )
+        try:
+            with self.assertRaises(Exception):
+                server.start_jlpt_exam_atomic(
+                    self.conn,
+                    user_id=self.user_id,
+                    exam=self.exam,
+                    is_member=False,
+                    request_key="timeout-new-key",
+                    now="2026-01-01T00:00:10+00:00",
+                )
+        finally:
+            self.conn.execute("DROP TRIGGER fail_timed_out_grade")
+        row = dict(
+            self.conn.execute(
+                "SELECT * FROM jlpt_exam_sessions WHERE id=?", (first["sessionId"],)
+            ).fetchone()
+        )
+        self.assertEqual("in_progress", row["status"])
+        self.assertEqual("", row["submitted_at"])
+        self.assertEqual(900, server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"])
+        self.assertEqual(
+            1,
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM jlpt_exam_sessions WHERE user_id=? AND exam_id=?",
+                (self.user_id, self.exam_id),
+            ).fetchone()["c"],
+        )
+
+    def test_membership_hint_cannot_forge_discount(self) -> None:
+        self._credit()
+        started = self._start(key="forged-member", member=True)["exam"]
+        self.assertEqual(100, started["coinCharged"])
+        self.assertEqual("standard", started["priceSnapshot"]["pricingTier"])
+
+    def test_authoritative_membership_overrides_stale_nonmember_hint(self) -> None:
+        self._credit()
+        server.activate_or_extend_membership(
+            self.conn,
+            self.user_id,
+            server.MEMBERSHIP_PLAN_KEY,
+            "test_fixture",
+        )
+        started = self._start(key="real-member", member=False)["exam"]
+        self.assertEqual(50, started["coinCharged"])
+        self.assertEqual("member", started["priceSnapshot"]["pricingTier"])
+
+    def test_expired_membership_does_not_lock_an_already_paid_active_attempt(self) -> None:
+        self._credit()
+        self.conn.execute(
+            "UPDATE jlpt_exams SET is_member_only=1 WHERE id=?", (self.exam_id,)
+        )
+        self.exam = jlpt.get_exam(self.conn, self.exam_id)
+        server.activate_or_extend_membership(
+            self.conn,
+            self.user_id,
+            server.MEMBERSHIP_PLAN_KEY,
+            "test_fixture",
+        )
+        first = self._start(key="member-only-first")["exam"]
+
+        self.conn.execute(
+            "UPDATE user_memberships SET status='expired', current_period_end=?, "
+            "expires_at=?, updated_at=? WHERE user_id=?",
+            (
+                "2020-01-01T00:00:00+00:00",
+                "2020-01-01T00:00:00+00:00",
+                server.now_iso(),
+                self.user_id,
+            ),
+        )
+        resumed = self._start(key="member-only-resume")
+        self.assertEqual("started", resumed["status"])
+        self.assertEqual(first["sessionId"], resumed["exam"]["sessionId"])
+        self.assertTrue(resumed["exam"]["resumed"])
+        self.assertEqual(950, server.get_wallet_snapshot(self.conn, self.user_id)["balancePoints"])
 
     def test_insufficient_balance_leaves_no_session_or_debit(self) -> None:
         result = self._start(key="insufficient")
@@ -282,6 +414,12 @@ class JLPTExamPaymentAtomicTests(unittest.TestCase):
 
     def test_member_price_is_snapshotted_and_free_exam_has_no_ledger(self) -> None:
         self._credit()
+        server.activate_or_extend_membership(
+            self.conn,
+            self.user_id,
+            server.MEMBERSHIP_PLAN_KEY,
+            "test_fixture",
+        )
         paid = self._start(key="member", member=True)["exam"]
         self.assertEqual(50, paid["coinCharged"])
         self.assertEqual("member", paid["priceSnapshot"]["pricingTier"])
