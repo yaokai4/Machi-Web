@@ -22,7 +22,10 @@ from collections import Counter, defaultdict
 def place(q, target):
     """把正确项移到 target 位，其余干扰项确定性打散。"""
     correct = q["choices"][q["answerIndex"]]
-    others = [c for j, c in enumerate(q["choices"]) if j != q["answerIndex"]]
+    # Always start from a content-canonical order.  Shuffling the current order
+    # reapplies the same permutation on every run and therefore is not
+    # idempotent, even when the RNG seed itself is deterministic.
+    others = sorted(c for j, c in enumerate(q["choices"]) if j != q["answerIndex"])
     rng = random.Random("machi-jlpt-v1:" + q["id"])
     rng.shuffle(others)
     new_choices = others[:target] + [correct] + others[target:]
@@ -32,7 +35,8 @@ def place(q, target):
 
 
 def main(path):
-    bank = json.load(open(path, encoding="utf-8"))
+    with open(path, encoding="utf-8") as bank_file:
+        bank = json.load(bank_file)
     qs = bank["questions"]
     by_id = {q["id"]: q for q in qs}
 
