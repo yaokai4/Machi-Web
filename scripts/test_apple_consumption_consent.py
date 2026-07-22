@@ -633,6 +633,165 @@ class AppleConsumptionConsentTests(unittest.TestCase):
                 self.assertIsNotNone(mismatched_payload)
                 self.assertFalse(mismatched_payload["sampleContentProvided"])
 
+    def test_guide_sample_content_uses_immutable_purchase_time_snapshot(self) -> None:
+        slug, expected_product_id = next(iter(server.GUIDE_HERO_IAP_PRODUCTS.items()))
+        product_row = self.conn.execute(
+            "SELECT * FROM guide_products WHERE slug=? AND status='published'",
+            (slug,),
+        ).fetchone()
+        self.assertIsNotNone(product_row)
+        original = dict(product_row)
+        tx_id = "tx-guide-sample-snapshot-true"
+        try:
+            purchase_result = server.guide_credit_iap_purchase(
+                self.conn,
+                self.user_id,
+                original,
+                provider_trade_no="apple:" + tx_id,
+            )
+            order = dict(self.conn.execute(
+                "SELECT * FROM guide_orders WHERE id=?",
+                (purchase_result["orderId"],),
+            ).fetchone())
+            self.assertEqual(order["apple_sample_content_provided"], 1)
+            self.assertEqual(order["apple_product_id_snapshot"], expected_product_id)
+
+            # Later catalog edits must not rewrite what the buyer saw before this
+            # specific transaction.  Consumption reports are transaction facts,
+            # not a reflection of the current mutable product record.
+            self.conn.execute(
+                "UPDATE guide_products SET status='draft', preview_content='', "
+                "apple_product_id='changed-after-purchase', "
+                "ios_iap_product_id='changed-after-purchase' WHERE id=?",
+                (original["id"],),
+            )
+            transaction = self._transaction(tx_id)
+            transaction["productId"] = expected_product_id
+            purchase = server._apple_consumption_purchase(
+                self.conn, self.user_id, transaction
+            )
+            self.assertIsNotNone(purchase)
+            payload = server._apple_consumption_payload(
+                self.conn, self.user_id, purchase
+            )
+            self.assertIsNotNone(payload)
+            self.assertTrue(payload["sampleContentProvided"])
+
+            mismatched = dict(purchase)
+            mismatched["transaction_product_id"] = "different-signed-sku"
+            mismatched_payload = server._apple_consumption_payload(
+                self.conn, self.user_id, mismatched
+            )
+            self.assertIsNotNone(mismatched_payload)
+            self.assertFalse(mismatched_payload["sampleContentProvided"])
+        finally:
+            self.conn.execute(
+                "UPDATE guide_products SET status=?, preview_content=?, "
+                "apple_product_id=?, ios_iap_product_id=? WHERE id=?",
+                (
+                    original["status"],
+                    original["preview_content"],
+                    original["apple_product_id"],
+                    original["ios_iap_product_id"],
+                    original["id"],
+                ),
+            )
+
+    def test_guide_sample_content_false_snapshot_cannot_flip_true_later(self) -> None:
+        slug, expected_product_id = list(server.GUIDE_HERO_IAP_PRODUCTS.items())[1]
+        product_row = self.conn.execute(
+            "SELECT * FROM guide_products WHERE slug=? AND status='published'",
+            (slug,),
+        ).fetchone()
+        self.assertIsNotNone(product_row)
+        original = dict(product_row)
+        tx_id = "tx-guide-sample-snapshot-false"
+        try:
+            self.conn.execute(
+                "UPDATE guide_products SET preview_content='' WHERE id=?",
+                (original["id"],),
+            )
+            no_preview = dict(self.conn.execute(
+                "SELECT * FROM guide_products WHERE id=?", (original["id"],)
+            ).fetchone())
+            purchase_result = server.guide_credit_iap_purchase(
+                self.conn,
+                self.user_id,
+                no_preview,
+                provider_trade_no="apple:" + tx_id,
+            )
+            order = dict(self.conn.execute(
+                "SELECT * FROM guide_orders WHERE id=?",
+                (purchase_result["orderId"],),
+            ).fetchone())
+            self.assertEqual(order["apple_sample_content_provided"], 0)
+            self.assertEqual(order["apple_product_id_snapshot"], expected_product_id)
+
+            # Publishing a preview after this transaction cannot retroactively
+            # claim that sample content was provided to this buyer.
+            self.conn.execute(
+                "UPDATE guide_products SET preview_content=? WHERE id=?",
+                (original["preview_content"], original["id"]),
+            )
+            transaction = self._transaction(tx_id)
+            transaction["productId"] = expected_product_id
+            purchase = server._apple_consumption_purchase(
+                self.conn, self.user_id, transaction
+            )
+            self.assertIsNotNone(purchase)
+            payload = server._apple_consumption_payload(
+                self.conn, self.user_id, purchase
+            )
+            self.assertIsNotNone(payload)
+            self.assertFalse(payload["sampleContentProvided"])
+        finally:
+            self.conn.execute(
+                "UPDATE guide_products SET status=?, preview_content=?, "
+                "apple_product_id=?, ios_iap_product_id=? WHERE id=?",
+                (
+                    original["status"],
+                    original["preview_content"],
+                    original["apple_product_id"],
+                    original["ios_iap_product_id"],
+                    original["id"],
+                ),
+            )
+
+    def test_guide_verify_never_snapshots_an_unsigned_client_product_id(self) -> None:
+        slug, product_id = next(iter(server.GUIDE_HERO_IAP_PRODUCTS.items()))
+        product = self.conn.execute(
+            "SELECT * FROM guide_products WHERE slug=? AND status='published'",
+            (slug,),
+        ).fetchone()
+        self.assertIsNotNone(product)
+        user = dict(self.conn.execute(
+            "SELECT * FROM users WHERE id=?", (self.user_id,)
+        ).fetchone())
+        handler = server.Handler.__new__(server.Handler)
+        handler.require_user = lambda _conn: user  # type: ignore[method-assign]
+        handler.read_json = lambda: {  # type: ignore[method-assign]
+            "signedTransaction": "signed-jws",
+            "productId": product_id,
+        }
+        before = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_orders WHERE user_id=? AND payment_provider='apple_iap'",
+            (self.user_id,),
+        ).fetchone()["c"]
+
+        with patch.object(
+                server,
+                "verify_apple_transaction",
+                return_value={"transactionId": "tx-missing-signed-product"},
+        ), self.assertRaises(server.APIError) as raised:
+            handler.api_apple_guide_verify(self.conn)
+
+        self.assertEqual(raised.exception.code, "verification_failed")
+        after = self.conn.execute(
+            "SELECT COUNT(*) AS c FROM guide_orders WHERE user_id=? AND payment_provider='apple_iap'",
+            (self.user_id,),
+        ).fetchone()["c"]
+        self.assertEqual(after, before)
+
     def test_nonhero_guide_preview_is_not_inferred_as_apple_sample_evidence(self) -> None:
         product = {
             "id": "guide-preview-without-audited-apple-sku",

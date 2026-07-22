@@ -5920,6 +5920,18 @@ MIGRATIONS: list[tuple[int, str, str]] = [
             ON apple_consumption_delivery_attempts(outbox_id, attempt_no);
         """,
     ),
+    (
+        131,
+        "guide Apple IAP: immutable purchase-time sample-content evidence",
+        # Consumption reports describe what happened for one transaction.  These
+        # snapshots prevent later catalog status/preview/SKU edits from changing
+        # sampleContentProvided for historical purchases.  Existing rows remain
+        # fail-closed (false + empty SKU).
+        """
+        ALTER TABLE guide_orders ADD COLUMN apple_product_id_snapshot TEXT NOT NULL DEFAULT '';
+        ALTER TABLE guide_orders ADD COLUMN apple_sample_content_provided INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
 ]
 
 

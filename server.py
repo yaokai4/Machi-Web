@@ -2797,6 +2797,8 @@ def ensure_guide_schema_extensions(conn: sqlite3.Connection) -> None:
         "wallet_ledger_entry_id": "TEXT NOT NULL DEFAULT ''",
         "entitlement_id": "TEXT NOT NULL DEFAULT ''",
         "provider_trade_no": "TEXT NOT NULL DEFAULT ''",
+        "apple_product_id_snapshot": "TEXT NOT NULL DEFAULT ''",
+        "apple_sample_content_provided": "INTEGER NOT NULL DEFAULT 0",
     })
     # initiator_id: who opened the DM (real active-DM quota). manual_unread_{a,b}:
     # let a participant flag a conversation unread even with no inbound message.
@@ -12476,9 +12478,39 @@ def _guide_iap_order_no() -> str:
     return "GA" + now_iso()[:10].replace("-", "") + uuid.uuid4().hex[:8].upper()
 
 
+def _guide_apple_sample_snapshot(
+        product_row: dict[str, Any], *, provider_product_id: str = "") -> tuple[str, bool]:
+    """Capture the signed SKU and audited preview fact at purchase time.
+
+    The returned values are persisted on ``guide_orders``.  They must never be
+    recomputed from the mutable guide catalog when Apple later asks about this
+    transaction.
+    """
+    d = dict(product_row)
+    slug = str(d.get("slug") or "")
+    expected_product_id = GUIDE_HERO_IAP_PRODUCTS.get(slug, "")
+    configured_product_ids = {
+        str(d.get(column) or "").strip()
+        for column in ("apple_product_id", "ios_iap_product_id")
+        if str(d.get(column) or "").strip()
+    }
+    signed_product_id = str(provider_product_id or "").strip()
+    if not signed_product_id and len(configured_product_ids) == 1:
+        signed_product_id = next(iter(configured_product_ids))
+    sample_content_provided = bool(
+        str(d.get("status") or "") == "published"
+        and expected_product_id
+        and signed_product_id == expected_product_id
+        and configured_product_ids == {expected_product_id}
+        and str(d.get("preview_content") or "").strip()
+    )
+    return signed_product_id, sample_content_provided
+
+
 @money_atomic
 def guide_credit_iap_purchase(conn: sqlite3.Connection, user_id: str, product_row: dict[str, Any], *,
-                              provider_trade_no: str, sandbox: bool = False) -> dict[str, Any]:
+                              provider_trade_no: str, sandbox: bool = False,
+                              provider_product_id: str = "") -> dict[str, Any]:
     """Fulfill a single-product Apple IAP purchase EXACTLY ONCE: record the
     audit order and grant the entitlement, keyed on the store transaction id.
     Apple has already charged the customer, so this never refuses to grant —
@@ -12501,12 +12533,17 @@ def guide_credit_iap_purchase(conn: sqlite3.Connection, user_id: str, product_ro
     # payment_method carries the sandbox marker (guide_orders has no
     # client_type column); revenue reports must exclude '*_sandbox'.
     payment_method = "apple_iap_sandbox" if sandbox else "apple_iap"
+    product_id_snapshot, sample_content_provided = _guide_apple_sample_snapshot(
+        d, provider_product_id=provider_product_id
+    )
     conn.execute(
         "INSERT INTO guide_orders (id, user_id, product_id, order_no, price, currency, status, payment_provider, "
-        "payment_method, price_points, provider_trade_no, created_at, paid_at, fulfilled_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, 'fulfilled', 'apple_iap', ?, 0, ?, ?, ?, ?)",
+        "payment_method, price_points, provider_trade_no, apple_product_id_snapshot, "
+        "apple_sample_content_provided, created_at, paid_at, fulfilled_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, 'fulfilled', 'apple_iap', ?, 0, ?, ?, ?, ?, ?, ?)",
         (order_id, user_id, resource_id, order_no, int(d.get("price") or 0),
-         normalize_currency(d.get("currency") or "JPY"), payment_method, provider_trade_no, now, now, now),
+         normalize_currency(d.get("currency") or "JPY"), payment_method, provider_trade_no,
+         product_id_snapshot, int(sample_content_provided), now, now, now),
     )
     ent = grant_user_entitlement(conn, user_id, resource_type, resource_id, source_type="apple_iap",
                                  source_order_id=order_id,
@@ -13921,15 +13958,9 @@ def _apple_consumption_purchase(
         return {"kind": "consumable", "order": wallet}
     guide = _apple_consumption_guide_order(conn, user_id, transaction)
     if guide:
-        product_row = conn.execute(
-            "SELECT id, slug, status, apple_product_id, ios_iap_product_id, preview_content "
-            "FROM guide_products WHERE id=? LIMIT 1",
-            (str(guide.get("product_id") or ""),),
-        ).fetchone()
         return {
             "kind": "non_consumable",
             "order": guide,
-            "product": dict(product_row) if product_row else {},
             "transaction_product_id": str(transaction.get("productId") or "").strip(),
         }
     membership = _apple_consumption_membership_order(conn, user_id, transaction)
@@ -14093,33 +14124,29 @@ def _apple_consumption_payload(
         purchase: dict[str, Any]) -> dict[str, Any] | None:
     if purchase.get("kind") == "consumable":
         return _apple_consumption_v2_payload(conn, user_id, purchase["order"])
-    if purchase.get("kind") in ("non_consumable", "subscription"):
+    if purchase.get("kind") == "non_consumable":
         # The new v2 fields are intentionally sparse: delivery is proven by the
         # settled order + entitlement above, while usage/consumption isn't
-        # recorded for guides and Apple calculates subscription consumption.
-        # Only the explicitly mapped hero SKU records have an audited
-        # pre-purchase preview flow. Other product kinds and unmapped guides
-        # remain false rather than being inferred from a generic preview field.
-        product = purchase.get("product") if purchase.get("kind") == "non_consumable" else {}
-        slug = str(product.get("slug") or "") if isinstance(product, dict) else ""
-        expected_product_id = GUIDE_HERO_IAP_PRODUCTS.get(slug, "")
-        configured_product_ids = {
-            str(product.get(column) or "").strip()
-            for column in ("apple_product_id", "ios_iap_product_id")
-            if str(product.get(column) or "").strip()
-        } if isinstance(product, dict) else set()
+        # recorded for guides.  sampleContentProvided is an immutable purchase-
+        # time fact; current catalog status, preview, and SKU fields are never
+        # consulted because admin edits cannot rewrite a historical report.
+        order = purchase.get("order") if isinstance(purchase.get("order"), dict) else {}
+        product_id_snapshot = str(order.get("apple_product_id_snapshot") or "").strip()
         sample_content_provided = bool(
-            isinstance(product, dict)
-            and str(product.get("status") or "") == "published"
-            and expected_product_id
-            and configured_product_ids == {expected_product_id}
-            and str(purchase.get("transaction_product_id") or "") == expected_product_id
-            and str(product.get("preview_content") or "").strip()
+            int(order.get("apple_sample_content_provided") or 0) == 1
+            and product_id_snapshot in set(GUIDE_HERO_IAP_PRODUCTS.values())
+            and str(purchase.get("transaction_product_id") or "") == product_id_snapshot
         )
         return {
             "customerConsented": True,
             "deliveryStatus": "DELIVERED",
             "sampleContentProvided": sample_content_provided,
+        }
+    if purchase.get("kind") == "subscription":
+        return {
+            "customerConsented": True,
+            "deliveryStatus": "DELIVERED",
+            "sampleContentProvided": False,
         }
     return None
 
@@ -29361,6 +29388,11 @@ class Handler(BaseHTTPRequestHandler):
         payload = verify_apple_transaction(signed, product_id)
         if not payload:
             raise APIError("交易验证失败", 400, "verification_failed")
+        verified_product_id = str(payload.get("productId") or "").strip()
+        if verified_product_id != product_id:
+            # The immutable order snapshot must come from Apple's signed JWS,
+            # never from the client request or mutable catalog routing alone.
+            raise APIError("交易商品不匹配", 400, "verification_failed")
         txn_id = str(data.get("transactionId") or data.get("transaction_id") or payload.get("transactionId") or "")
         orig_id = str(data.get("originalTransactionId") or data.get("original_transaction_id") or payload.get("originalTransactionId") or "")
         app_account_token = str(payload.get("appAccountToken") or "").strip()
@@ -29382,8 +29414,14 @@ class Handler(BaseHTTPRequestHandler):
                 "AND provider_trade_no = ? LIMIT 1", (dedup,)).fetchone()
             if not replay and not user_has_entitlement(conn, user["id"], _guide_product_resource_type(d), str(d.get("id"))):
                 raise APIError("内容准备中，暂不可购买。", 409, "PRODUCT_NOT_READY")
-        result = guide_credit_iap_purchase(conn, user["id"], d, provider_trade_no=dedup,
-                                           sandbox=is_sandbox_txn)
+        result = guide_credit_iap_purchase(
+            conn,
+            user["id"],
+            d,
+            provider_trade_no=dedup,
+            sandbox=is_sandbox_txn,
+            provider_product_id=verified_product_id,
+        )
         self.send_json({
             "status": result.get("status") or "fulfilled",
             "orderNo": result.get("orderNo") or "",
