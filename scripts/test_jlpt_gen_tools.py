@@ -11,6 +11,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -45,7 +46,7 @@ EXPECTED_PAPER = {
         "reading_mid": 9,
         "reading_long": 4,
         "reading_info": 2,
-        "listen_task": 6,
+        "listen_task": 5,
         "listen_point": 6,
         "listen_gist": 5,
         "listen_response": 11,
@@ -54,6 +55,7 @@ EXPECTED_PAPER = {
     "N2": {
         "kanji_reading": 5,
         "orthography": 5,
+        "word_formation": 5,
         "context": 7,
         "paraphrase": 5,
         "usage": 5,
@@ -67,7 +69,7 @@ EXPECTED_PAPER = {
         "listen_task": 5,
         "listen_point": 6,
         "listen_gist": 5,
-        "listen_response": 11,
+        "listen_response": 12,
         "listen_integrated": 4,
     },
     "N3": {
@@ -125,10 +127,101 @@ EXPECTED_PAPER = {
 EXPECTED_SECTION_DURATION = {
     "N1": {"written": 110 * 60, "listening": 55 * 60},
     "N2": {"written": 105 * 60, "listening": 50 * 60},
-    "N3": {"vocabulary": 30 * 60, "grammar_reading": 70 * 60, "listening": 40 * 60},
-    "N4": {"vocabulary": 25 * 60, "grammar_reading": 55 * 60, "listening": 35 * 60},
-    "N5": {"vocabulary": 20 * 60, "grammar_reading": 40 * 60, "listening": 30 * 60},
+    "N3": {"vocab": 30 * 60, "grammar_reading": 70 * 60, "listening": 40 * 60},
+    "N4": {"vocab": 25 * 60, "grammar_reading": 55 * 60, "listening": 35 * 60},
+    "N5": {"vocab": 20 * 60, "grammar_reading": 40 * 60, "listening": 30 * 60},
 }
+EXPECTED_QUESTION_SECTIONS = {
+    "written": {"vocab", "grammar", "reading"},
+    "vocab": {"vocab"},
+    "grammar_reading": {"grammar", "reading"},
+    "listening": {"listening"},
+}
+
+
+def _javascript_const(name: str) -> object:
+    """Evaluate one self-contained constant from the generation workflow.
+
+    The workflow itself depends on orchestrator globals and cannot be imported as
+    a Node module in this test process. Its quota/config literals are standalone,
+    so extract exactly one balanced literal and let Node evaluate that real source
+    fragment rather than maintaining a third parsed copy of the JS contract.
+    """
+    source_path = JLPT_GEN_DIR / "jlpt_bank_gen_v2.js"
+    source = source_path.read_text(encoding="utf-8")
+    marker = f"const {name} ="
+    marker_index = source.index(marker)
+    start = marker_index + len(marker)
+    while start < len(source) and source[start].isspace():
+        start += 1
+    opening = source[start]
+    closing = {"{": "}", "[": "]"}.get(opening)
+    if not closing:
+        raise AssertionError(f"{name} is not an object/array literal")
+
+    depth = 0
+    quote = ""
+    escaped = False
+    end = -1
+    for index in range(start, len(source)):
+        char = source[index]
+        if quote:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == quote:
+                quote = ""
+            continue
+        if char in ("'", '"', "`"):
+            quote = char
+        elif char == opening:
+            depth += 1
+        elif char == closing:
+            depth -= 1
+            if depth == 0:
+                end = index + 1
+                break
+    if end < 0:
+        raise AssertionError(f"unterminated JavaScript literal for {name}")
+
+    literal = source[start:end]
+    process = subprocess.run(
+        ["node", "-e", f"process.stdout.write(JSON.stringify(({literal})))"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if process.returncode != 0:
+        raise AssertionError(process.stderr)
+    return json.loads(process.stdout)
+
+
+def _seed_test_connection() -> sqlite3.Connection:
+    connection = sqlite3.connect(":memory:")
+    connection.row_factory = sqlite3.Row
+    connection.executescript(
+        """
+        CREATE TABLE jlpt_questions (
+            id TEXT PRIMARY KEY, level TEXT, section TEXT, question_type TEXT,
+            stem TEXT, passage TEXT, audio_media_id TEXT, choices_json TEXT,
+            answer_index INTEGER, explanation TEXT, difficulty INTEGER, tags TEXT,
+            is_member_only INTEGER, source TEXT, review_status TEXT, status TEXT,
+            sort_order INTEGER, created_at TEXT, updated_at TEXT
+        );
+        CREATE TABLE jlpt_exams (
+            id TEXT PRIMARY KEY, level TEXT, title TEXT, kind TEXT, section TEXT,
+            question_count INTEGER, duration_seconds INTEGER, pass_score INTEGER,
+            is_member_only INTEGER, status TEXT, sort_order INTEGER, score_mode TEXT,
+            parent_exam_id TEXT, coin_cost INTEGER, created_at TEXT
+        );
+        CREATE TABLE jlpt_exam_questions (
+            exam_id TEXT, question_id TEXT, sort_order INTEGER,
+            PRIMARY KEY (exam_id, question_id)
+        );
+        """
+    )
+    return connection
 
 
 def _text_grammar_question(
@@ -285,7 +378,24 @@ def _balance_bank(*, explanation: str = "") -> dict[str, object]:
 
 class AssembleBankTests(unittest.TestCase):
     def test_python_paper_spec_matches_generator_contract(self) -> None:
+        contract = json.loads(
+            (JLPT_GEN_DIR / "jlpt_contract_v2.json").read_text(encoding="utf-8")
+        )
         self.assertEqual(EXPECTED_PAPER, assemble_bank.PAPER)
+        self.assertEqual(EXPECTED_PAPER, contract["paperSpec"])
+        self.assertEqual(
+            {
+                level: tuple(section_durations)
+                for level, section_durations in EXPECTED_SECTION_DURATION.items()
+            },
+            jlpt_seed._FULL_PAPER_SECTION_NAMES,
+        )
+        self.assertGreaterEqual(contract["generationNeeds"]["N2"]["word_formation"], 5)
+        self.assertIn("word_formation", contract["generationGroups"]["lex"])
+        self.assertEqual(
+            "vocab", contract["qtypes"]["word_formation"]["section"]
+        )
+        self.assertIn("word_formation", _javascript_const("QTYPE_SPEC"))
         listening_qtypes = {
             "listen_task",
             "listen_point",
@@ -440,7 +550,9 @@ class AssembleBankTests(unittest.TestCase):
             )
 
             def record_fsync(fd: int) -> None:
-                events.append("fsync")
+                events.append(
+                    "directory_fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file_fsync"
+                )
                 real_fsync(fd)
 
             def record_replace(source: str, target: str) -> None:
@@ -458,7 +570,7 @@ class AssembleBankTests(unittest.TestCase):
                     with contextlib.redirect_stdout(io.StringIO()):
                         assemble_bank.main(str(source_path), str(output_path))
 
-            self.assertEqual(["fsync", "replace"], events)
+            self.assertEqual(["file_fsync", "replace", "directory_fsync"], events)
             self.assertTrue(output_path.exists())
 
     def test_canonical_pool_builds_every_qtype_to_the_exact_target(self) -> None:
@@ -483,7 +595,7 @@ class AssembleBankTests(unittest.TestCase):
                     f"{level} {qtype} must exactly match canonical paper spec",
                 )
 
-    def test_full_paper_manifest_uses_the_official_two_or_three_exam_sections(self) -> None:
+    def test_full_paper_manifest_uses_official_independent_section_timers(self) -> None:
         pool = _canonical_pool()
         with tempfile.TemporaryDirectory() as tmp:
             source_path = Path(tmp) / "source.json"
@@ -501,16 +613,16 @@ class AssembleBankTests(unittest.TestCase):
             self.assertEqual(2, paper.get("manifestVersion"))
             self.assertNotIn("笔试卷", paper.get("title", ""))
             sections = paper.get("sections") or []
+            expected_durations = EXPECTED_SECTION_DURATION[level]
             self.assertEqual(
-                list(EXPECTED_SECTION_DURATION[level]),
-                [s.get("section") for s in sections],
+                list(expected_durations), [section.get("section") for section in sections]
             )
             self.assertEqual(
                 sum(EXPECTED_SECTION_DURATION[level].values()),
                 paper.get("durationSeconds"),
             )
             self.assertEqual(
-                EXPECTED_SECTION_DURATION[level],
+                expected_durations,
                 {s["section"]: s["durationSeconds"] for s in sections},
             )
             self.assertEqual(
@@ -518,67 +630,16 @@ class AssembleBankTests(unittest.TestCase):
                 [qid for section in sections for qid in section["questionIds"]],
             )
             for section in sections:
-                self.assertTrue(section["questionIds"])
-                source_sections = {
-                    by_id[qid]["section"] for qid in section["questionIds"]
-                }
-                if section["section"] == "listening":
-                    self.assertEqual({"listening"}, source_sections)
-                elif section["section"] == "vocabulary":
-                    self.assertEqual({"vocab"}, source_sections)
-                elif section["section"] == "grammar_reading":
-                    self.assertTrue(source_sections <= {"grammar", "reading"})
-                    self.assertTrue(source_sections)
-                else:
-                    self.assertEqual("written", section["section"])
-                    self.assertNotIn("listening", source_sections)
-
-    def test_seed_accepts_three_section_n3_manifest_and_only_first_section_charges(self) -> None:
-        payloads = jlpt_seed._mock_paper_exam_payloads(
-            "N3",
-            {
-                "kind": "full-paper",
-                "manifestVersion": 2,
-                "title": "JLPT N3 全真模拟（完整卷）",
-                "durationSeconds": 140 * 60,
-                "questionIds": ["n3-vocab", "n3-grammar", "n3-reading", "n3-listening"],
-                "sections": [
-                    {
-                        "section": "vocabulary",
-                        "title": "言語知識（文字・語彙）",
-                        "durationSeconds": 30 * 60,
-                        "questionIds": ["n3-vocab"],
-                    },
-                    {
-                        "section": "grammar_reading",
-                        "title": "言語知識（文法）・読解",
-                        "durationSeconds": 70 * 60,
-                        "questionIds": ["n3-grammar", "n3-reading"],
-                    },
-                    {
-                        "section": "listening",
-                        "title": "聴解",
-                        "durationSeconds": 40 * 60,
-                        "questionIds": ["n3-listening"],
-                    },
-                ],
-            },
-            sort_order=0,
-        )
-
-        self.assertEqual(4, len(payloads))
-        parent, vocabulary, grammar_reading, listening = payloads
-        self.assertEqual("paper", parent["kind"])
-        self.assertEqual(
-            ["vocab", "", "listening"],
-            [vocabulary["section"], grammar_reading["section"], listening["section"]],
-        )
-        self.assertEqual([250, 0, 0], [
-            vocabulary["coinCost"], grammar_reading["coinCost"], listening["coinCost"]
-        ])
-        self.assertEqual(["percent", "percent", "percent"], [
-            vocabulary["scoreMode"], grammar_reading["scoreMode"], listening["scoreMode"]
-        ])
+                section_name = section["section"]
+                self.assertTrue(section["questionIds"], f"{level} {section_name}")
+                self.assertTrue(
+                    all(
+                        by_id[question_id]["section"]
+                        in EXPECTED_QUESTION_SECTIONS[section_name]
+                        for question_id in section["questionIds"]
+                    ),
+                    f"{level} {section_name} contains a question from another test section",
+                )
 
     def test_seed_installs_full_paper_as_parent_and_independently_timed_sections(self) -> None:
         bank = {
@@ -635,22 +696,11 @@ class AssembleBankTests(unittest.TestCase):
         }
 
         class FakeCursor:
-            def __init__(self, row=None):
-                self.row = row
-
             def fetchone(self):
-                return self.row
+                return None
 
         class FakeConnection:
-            def __init__(self, existing_exam_ids=()):
-                self.existing_exam_ids = set(existing_exam_ids)
-
-            def execute(self, sql, params=(), **_kwargs):
-                if sql.startswith("SELECT id FROM jlpt_exams WHERE id = ?"):
-                    exam_id = params[0]
-                    return FakeCursor(
-                        {"id": exam_id} if exam_id in self.existing_exam_ids else None
-                    )
+            def execute(self, *_args, **_kwargs):
                 return FakeCursor()
 
         upserts: list[dict[str, object]] = []
@@ -689,27 +739,6 @@ class AssembleBankTests(unittest.TestCase):
         self.assertEqual("percent", listening["scoreMode"])
         self.assertEqual(0, listening["coinCost"])
 
-        # A later fingerprint refresh must not reset an admin-adjusted price.
-        # The structural parent/listening rows remain explicitly free, while
-        # omitting the written price lets upsert_exam preserve its stored value.
-        upserts.clear()
-        existing = {
-            "mockv1-n1",
-            "mockv1-n1-written",
-            "mockv1-n1-listening",
-        }
-        with tempfile.TemporaryDirectory() as tmp:
-            bank_path = Path(tmp) / "jlpt_bank_v1.json"
-            bank_path.write_text(json.dumps(bank, ensure_ascii=False), encoding="utf-8")
-            with mock.patch.object(jlpt_seed, "_mock_bank_path", return_value=str(bank_path)):
-                with mock.patch.dict(sys.modules, {"server_jlpt": fake_jlpt}):
-                    jlpt_seed.ensure_jlpt_mock_v1(FakeConnection(existing))
-
-        parent, written, listening = upserts
-        self.assertEqual(0, parent["coinCost"])
-        self.assertNotIn("coinCost", written)
-        self.assertEqual(0, listening["coinCost"])
-
     def test_legacy_written_only_manifest_does_not_invent_a_new_price(self) -> None:
         payloads = jlpt_seed._mock_paper_exam_payloads(
             "N5",
@@ -725,9 +754,253 @@ class AssembleBankTests(unittest.TestCase):
         self.assertEqual("mock", payloads[0]["kind"])
         self.assertEqual(0, payloads[0]["coinCost"])
 
+    def test_seed_translates_n5_manifest_into_three_independent_sections(self) -> None:
+        manifest = {
+            "kind": "full-paper",
+            "manifestVersion": 2,
+            "title": "JLPT N5 全真模拟（完整卷）",
+            "durationSeconds": 90 * 60,
+            "questionIds": ["n5-vocab", "n5-grammar", "n5-listening"],
+            "sections": [
+                {
+                    "section": "vocab",
+                    "title": "言語知識（文字・語彙）",
+                    "durationSeconds": 20 * 60,
+                    "questionIds": ["n5-vocab"],
+                },
+                {
+                    "section": "grammar_reading",
+                    "title": "言語知識（文法）・読解",
+                    "durationSeconds": 40 * 60,
+                    "questionIds": ["n5-grammar"],
+                },
+                {
+                    "section": "listening",
+                    "title": "聴解",
+                    "durationSeconds": 30 * 60,
+                    "questionIds": ["n5-listening"],
+                },
+            ],
+        }
+        try:
+            payloads = jlpt_seed._mock_paper_exam_payloads(
+                "N5", manifest, sort_order=0
+            )
+        except ValueError as error:
+            self.fail(f"three-section manifest was rejected: {error}")
+
+        self.assertEqual(
+            [
+                "mockv1-n5",
+                "mockv1-n5-vocab",
+                "mockv1-n5-grammar_reading",
+                "mockv1-n5-listening",
+            ],
+            [payload["id"] for payload in payloads],
+        )
+        parent, vocab, grammar_reading, listening = payloads
+        self.assertEqual("paper", parent["kind"])
+        self.assertEqual(3, parent["questionCount"])
+        self.assertEqual(
+            [20 * 60, 40 * 60, 30 * 60],
+            [
+                vocab["durationSeconds"],
+                grammar_reading["durationSeconds"],
+                listening["durationSeconds"],
+            ],
+        )
+        self.assertEqual(
+            [["n5-vocab"], ["n5-grammar"], ["n5-listening"]],
+            [vocab["questionIds"], grammar_reading["questionIds"], listening["questionIds"]],
+        )
+        self.assertEqual(
+            [100, 0, 0],
+            [vocab["coinCost"], grammar_reading["coinCost"], listening["coinCost"]],
+        )
+        self.assertEqual(
+            ["percent", "percent", "percent"],
+            [
+                vocab["scoreMode"],
+                grammar_reading["scoreMode"],
+                listening["scoreMode"],
+            ],
+        )
+        self.assertEqual(
+            [0, 1, 2],
+            [vocab["sortOrder"], grammar_reading["sortOrder"], listening["sortOrder"]],
+        )
+
+    def test_seed_accepts_three_section_n3_manifest_and_only_first_section_charges(self) -> None:
+        payloads = jlpt_seed._mock_paper_exam_payloads(
+            "N3",
+            {
+                "kind": "full-paper",
+                "manifestVersion": 2,
+                "title": "JLPT N3 全真模拟（完整卷）",
+                "durationSeconds": 140 * 60,
+                "questionIds": ["n3-vocab", "n3-grammar", "n3-reading", "n3-listening"],
+                "sections": [
+                    {
+                        "section": "vocab",
+                        "title": "言語知識（文字・語彙）",
+                        "durationSeconds": 30 * 60,
+                        "questionIds": ["n3-vocab"],
+                    },
+                    {
+                        "section": "grammar_reading",
+                        "title": "言語知識（文法）・読解",
+                        "durationSeconds": 70 * 60,
+                        "questionIds": ["n3-grammar", "n3-reading"],
+                    },
+                    {
+                        "section": "listening",
+                        "title": "聴解",
+                        "durationSeconds": 40 * 60,
+                        "questionIds": ["n3-listening"],
+                    },
+                ],
+            },
+            sort_order=0,
+        )
+
+        self.assertEqual(4, len(payloads))
+        parent, vocab_child, grammar_reading, listening = payloads
+        self.assertEqual("paper", parent["kind"])
+        self.assertEqual(
+            ["vocab", "", "listening"],
+            [vocab_child["section"], grammar_reading["section"], listening["section"]],
+        )
+        self.assertEqual([250, 0, 0], [
+            vocab_child["coinCost"], grammar_reading["coinCost"], listening["coinCost"]
+        ])
+        self.assertEqual(["percent", "percent", "percent"], [
+            vocab_child["scoreMode"], grammar_reading["scoreMode"], listening["scoreMode"]
+        ])
+
+    def test_full_paper_upgrade_moves_legacy_parent_price_to_new_first_section(
+        self,
+    ) -> None:
+        question_specs = [
+            ("n5-vocab", "vocab", "kanji_reading"),
+            ("n5-grammar", "grammar", "grammar_form"),
+            ("n5-listening", "listening", "listen_task"),
+        ]
+        questions = [
+            {
+                "id": question_id,
+                "level": "N5",
+                "section": section,
+                "qtype": qtype,
+                "stem": f"{question_id} stem",
+                "passage": "listening script" if section == "listening" else "",
+                "choices": ["a", "b", "c", "d"],
+                "answerIndex": 0,
+                "explanation": f"{question_id} explanation",
+                "difficulty": 3,
+            }
+            for question_id, section, qtype in question_specs
+        ]
+        bank = {
+            "version": 2,
+            "questions": questions,
+            "papers": {
+                "N5": {
+                    "kind": "full-paper",
+                    "manifestVersion": 2,
+                    "title": "JLPT N5 全真模拟（完整卷）",
+                    "durationSeconds": 90 * 60,
+                    "questionIds": [question["id"] for question in questions],
+                    "sections": [
+                        {
+                            "section": "vocab",
+                            "title": "言語知識（文字・語彙）",
+                            "durationSeconds": 20 * 60,
+                            "questionIds": ["n5-vocab"],
+                        },
+                        {
+                            "section": "grammar_reading",
+                            "title": "言語知識（文法）・読解",
+                            "durationSeconds": 40 * 60,
+                            "questionIds": ["n5-grammar"],
+                        },
+                        {
+                            "section": "listening",
+                            "title": "聴解",
+                            "durationSeconds": 30 * 60,
+                            "questionIds": ["n5-listening"],
+                        },
+                    ],
+                }
+            },
+        }
+        connection = _seed_test_connection()
+        connection.execute(
+            "INSERT INTO jlpt_exams "
+            "(id, level, title, kind, section, question_count, duration_seconds, "
+            "pass_score, is_member_only, status, sort_order, score_mode, "
+            "parent_exam_id, coin_cost, created_at) "
+            "VALUES ('mockv1-n5', 'N5', 'Legacy N5', 'mock', '', 3, 5400, "
+            "60, 0, 'published', 0, 'jlpt_scaled', '', 777, '2026-07-22T00:00:00Z')"
+        )
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                bank_path = Path(tmp) / "jlpt_bank_v1.json"
+                bank_path.write_text(
+                    json.dumps(bank, ensure_ascii=False), encoding="utf-8"
+                )
+                with mock.patch.object(
+                    jlpt_seed, "_mock_bank_path", return_value=str(bank_path)
+                ):
+                    result = jlpt_seed.ensure_jlpt_mock_v1(connection)
+                    migrated_rows = {
+                        row["id"]: dict(row)
+                        for row in connection.execute(
+                            "SELECT id, kind, coin_cost FROM jlpt_exams "
+                            "WHERE id LIKE 'mockv1-n5%'"
+                        ).fetchall()
+                    }
+
+                    # A later bank refresh must preserve the administrator's
+                    # charging-child override rather than reviving any price
+                    # that happens to remain on the structural parent.
+                    connection.execute(
+                        "UPDATE jlpt_exams SET coin_cost = 888 "
+                        "WHERE id = 'mockv1-n5-vocab'"
+                    )
+                    connection.execute(
+                        "UPDATE jlpt_exams SET coin_cost = 999 "
+                        "WHERE id = 'mockv1-n5'"
+                    )
+                    bank["papers"]["N5"]["title"] += " refresh"
+                    bank_path.write_text(
+                        json.dumps(bank, ensure_ascii=False), encoding="utf-8"
+                    )
+                    refreshed = jlpt_seed.ensure_jlpt_mock_v1(connection)
+            refreshed_rows = {
+                row["id"]: dict(row)
+                for row in connection.execute(
+                    "SELECT id, kind, coin_cost FROM jlpt_exams "
+                    "WHERE id LIKE 'mockv1-n5%'"
+                ).fetchall()
+            }
+        finally:
+            connection.close()
+
+        self.assertEqual(4, result["exams"])
+        self.assertEqual("paper", migrated_rows["mockv1-n5"]["kind"])
+        self.assertEqual(0, migrated_rows["mockv1-n5"]["coin_cost"])
+        self.assertEqual(777, migrated_rows["mockv1-n5-vocab"]["coin_cost"])
+        self.assertEqual(0, migrated_rows["mockv1-n5-grammar_reading"]["coin_cost"])
+        self.assertEqual(0, migrated_rows["mockv1-n5-listening"]["coin_cost"])
+        self.assertEqual(4, refreshed["exams"])
+        self.assertEqual(0, refreshed_rows["mockv1-n5"]["coin_cost"])
+        self.assertEqual(888, refreshed_rows["mockv1-n5-vocab"]["coin_cost"])
+        self.assertEqual(0, refreshed_rows["mockv1-n5-grammar_reading"]["coin_cost"])
+        self.assertEqual(0, refreshed_rows["mockv1-n5-listening"]["coin_cost"])
+
     def test_full_paper_payloads_round_trip_through_runtime_section_contract(self) -> None:
         written_ids = [f"written-question-{index}" for index in range(64)]
-        listening_ids = [f"listening-question-{index}" for index in range(31)]
+        listening_ids = [f"listening-question-{index}" for index in range(30)]
         payloads = jlpt_seed._mock_paper_exam_payloads(
             "N1",
             {
@@ -783,11 +1056,11 @@ class AssembleBankTests(unittest.TestCase):
         parent = catalog[0]
         self.assertTrue(parent["isPaper"])
         self.assertEqual(2, parent["sectionCount"])
-        self.assertEqual(95, parent["questionCount"])
+        self.assertEqual(94, parent["questionCount"])
         self.assertEqual(9900, parent["durationSeconds"])
         self.assertEqual(400, parent["coinCost"])
         self.assertIsNotNone(detail)
-        self.assertEqual(95, detail["paper"]["questionCount"])
+        self.assertEqual(94, detail["paper"]["questionCount"])
         sections = detail["sections"]
         self.assertEqual([6600, 3300], [section["durationSeconds"] for section in sections])
         self.assertEqual([400, 0], [section["coinCost"] for section in sections])
@@ -1216,7 +1489,9 @@ class BalanceAnswersTests(unittest.TestCase):
             )
 
             def record_fsync(fd: int) -> None:
-                events.append("fsync")
+                events.append(
+                    "directory_fsync" if stat.S_ISDIR(os.fstat(fd).st_mode) else "file_fsync"
+                )
                 real_fsync(fd)
 
             def record_replace(source: str, target: str) -> None:
@@ -1231,7 +1506,7 @@ class BalanceAnswersTests(unittest.TestCase):
                 with contextlib.redirect_stdout(io.StringIO()):
                     balance_answers.main(str(bank_path))
 
-            self.assertEqual(["fsync", "replace"], events)
+            self.assertEqual(["file_fsync", "replace", "directory_fsync"], events)
             self.assertTrue(bank_path.exists())
 
 

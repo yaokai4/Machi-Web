@@ -8,64 +8,32 @@ export const meta = {
   ],
 }
 
-// args 可能以对象或 JSON 字符串到达(取决于调用方)。都兼容:字符串就 parse。
-// 之前踩坑:args 是字符串时 args.group 为 undefined → 静默回退 lex,N1-rc 没跑成。
+// args 可能以对象或 JSON 字符串到达。解析、合同或运行参数不合格都直接停止；
+// 禁止静默回退到 N1/lex/wave=1（该旧行为曾令 N1-rc 根本没有运行）。
 const A = (typeof args === 'string')
-  ? (() => { try { return JSON.parse(args) } catch (e) { return {} } })()
-  : (args || {})
-const LEVEL = A.level || 'N1'
-const GROUP = A.group || 'lex' // 'lex' = 文字語彙+文法, 'rc' = 読解+聴解
-// 同一 level×group 要跑很多波才能累积到 5000/级。wave 让每波用不同主题偏移 +
+  ? (() => { try { return JSON.parse(args) } catch (e) { throw new Error('args must be valid JSON') } })()
+  : args
+if (!A || typeof A !== 'object' || Array.isArray(A)) throw new Error('args must be an object')
+const CONTRACT = A.contract
+if (!CONTRACT || CONTRACT.contractVersion !== 2 || !CONTRACT.runSchema || !CONTRACT.qtypes) {
+  throw new Error('args.contract must be the authoritative v2 contract snapshot')
+}
+const LEVEL = A.level
+const GROUP = A.group // 'lex' = 文字語彙+文法, 'rc' = 読解+聴解
+const WAVE = A.wave
+const RUN_PROPS = CONTRACT.runSchema.properties || {}
+if (!RUN_PROPS.level || !RUN_PROPS.level.enum.includes(LEVEL)) throw new Error('level must be N1 or N2')
+if (!RUN_PROPS.group || !RUN_PROPS.group.enum.includes(GROUP)) throw new Error('group must be lex or rc')
+if (!Number.isInteger(WAVE) || WAVE < 1 || WAVE > 9999) throw new Error('wave must be an integer from 1 through 9999')
+
+// 同一 level×group 要跑多波；wave 让每波用不同主题偏移 +
 // 唯一批次标签,产出新内容(跨波按 stem 去重);每波结果单独落盘,组卷时合并去重。
-const WAVE = A.wave || 1
-
-// ── 各级各题型「已校验目标数」。N1/N2 加权。overproduction 交给 request 系数。──
-const NEEDS = {
-  N1: { kanji_reading: 110, context: 130, paraphrase: 100, usage: 100, grammar_form: 200, sentence_assembly: 100, text_grammar: 85,
-        reading_short: 55, reading_mid: 120, reading_long: 90, reading_info: 40,
-        listen_task: 100, listen_point: 100, listen_gist: 70, listen_response: 100, listen_integrated: 40 },
-  N2: { kanji_reading: 95, orthography: 80, context: 120, paraphrase: 95, usage: 95, grammar_form: 190, sentence_assembly: 95, text_grammar: 80,
-        reading_short: 55, reading_mid: 110, reading_long: 75, reading_info: 40,
-        listen_task: 95, listen_point: 95, listen_gist: 65, listen_response: 95, listen_integrated: 35 },
-  N3: { kanji_reading: 70, orthography: 60, context: 90, paraphrase: 60, usage: 60, grammar_form: 120, sentence_assembly: 55, text_grammar: 50,
-        reading_short: 40, reading_mid: 70, reading_long: 45, reading_info: 25,
-        listen_task: 55, listen_point: 55, listen_gist: 35, listen_response: 55, listen_integrated: 20 },
-  N4: { kanji_reading: 55, orthography: 45, context: 65, paraphrase: 40, usage: 35, grammar_form: 90, sentence_assembly: 40, text_grammar: 35,
-        reading_short: 30, reading_mid: 45, reading_info: 20,
-        listen_task: 40, listen_point: 40, listen_gist: 25, listen_response: 40 },
-  N5: { kanji_reading: 55, orthography: 45, context: 60, paraphrase: 40, grammar_form: 90, sentence_assembly: 40, text_grammar: 35,
-        reading_short: 30, reading_mid: 40, reading_info: 20,
-        listen_task: 40, listen_point: 40, listen_gist: 25, listen_response: 40 },
-}
-// 组卷底线（缺口检查用；实际组卷在 Python 步骤）——每级每张卷所需，各 qtype。
-const PAPER = {
-  N1: { kanji_reading: 6, context: 7, paraphrase: 6, usage: 6, grammar_form: 10, sentence_assembly: 5, text_grammar: 5,
-        reading_short: 4, reading_mid: 9, reading_long: 4, reading_info: 2,
-        listen_task: 6, listen_point: 6, listen_gist: 5, listen_response: 11, listen_integrated: 3 },
-  N2: { kanji_reading: 5, orthography: 5, context: 7, paraphrase: 5, usage: 5, grammar_form: 12, sentence_assembly: 5, text_grammar: 5,
-        reading_short: 5, reading_mid: 9, reading_long: 4, reading_info: 2,
-        listen_task: 5, listen_point: 6, listen_gist: 5, listen_response: 11, listen_integrated: 4 },
-  N3: { kanji_reading: 8, orthography: 6, context: 11, paraphrase: 5, usage: 5, grammar_form: 13, sentence_assembly: 5, text_grammar: 5,
-        reading_short: 4, reading_mid: 6, reading_long: 4, reading_info: 2,
-        listen_task: 6, listen_point: 6, listen_gist: 3, listen_response: 4 },
-  N4: { kanji_reading: 7, orthography: 5, context: 8, paraphrase: 4, usage: 4, grammar_form: 13, sentence_assembly: 4, text_grammar: 4,
-        reading_short: 4, reading_mid: 4, reading_info: 2,
-        listen_task: 6, listen_point: 6, listen_gist: 3, listen_response: 4 },
-  N5: { kanji_reading: 7, orthography: 5, context: 6, paraphrase: 3, grammar_form: 9, sentence_assembly: 4, text_grammar: 4,
-        reading_short: 3, reading_mid: 2, reading_info: 1,
-        listen_task: 5, listen_point: 5, listen_gist: 2, listen_response: 4 },
-}
-
-const LEX_QTYPES = ['kanji_reading', 'orthography', 'context', 'paraphrase', 'usage', 'grammar_form', 'sentence_assembly', 'text_grammar']
-const RC_QTYPES = ['reading_short', 'reading_mid', 'reading_long', 'reading_info', 'listen_task', 'listen_point', 'listen_gist', 'listen_response', 'listen_integrated']
-const LISTEN_QTYPES = new Set(['listen_task', 'listen_point', 'listen_gist', 'listen_response', 'listen_integrated'])
-
-const SECTION_OF = {
-  kanji_reading: 'vocab', orthography: 'vocab', context: 'vocab', paraphrase: 'vocab', usage: 'vocab',
-  grammar_form: 'grammar', sentence_assembly: 'grammar', text_grammar: 'grammar',
-  reading_short: 'reading', reading_mid: 'reading', reading_long: 'reading', reading_info: 'reading',
-  listen_task: 'listening', listen_point: 'listening', listen_gist: 'listening', listen_response: 'listening', listen_integrated: 'listening',
-}
+const NEEDS = CONTRACT.generationNeeds
+const PAPER = CONTRACT.paperSpec
+const LEX_QTYPES = CONTRACT.generationGroups.lex
+const RC_QTYPES = CONTRACT.generationGroups.rc
+const SECTION_OF = Object.fromEntries(Object.entries(CONTRACT.qtypes).map(([qtype, spec]) => [qtype, spec.section]))
+const LISTEN_QTYPES = new Set(Object.keys(SECTION_OF).filter(qtype => SECTION_OF[qtype] === 'listening'))
 
 const LEVEL_PROFILE = {
   N5: 'N5＝入门级。词汇约800语，汉字约100字。语法：です/ます体、基础助词、て形/ない形/た形、～ましょう、～てください、あります/います、形容词活用。语境全为日常生活；出现的汉字必须在N5范围，仮名为主。',
@@ -78,6 +46,7 @@ const LEVEL_PROFILE = {
 const QTYPE_SPEC = {
   kanji_reading: '漢字読み：自然句子，一词用【】标出（汉字书写），问读法。4个平假名选项，用长音/促音/浊音/音训混淆做干扰。',
   orthography: '表記：句子里一词用【】标出（平假名书写），问正确汉字写法。4个汉字候选（形近/同音异字干扰）。',
+  word_formation: '語形成：给出带前后语境的句子，考查接头辞、接尾辞或复合构词；4个同类候选中只有1个能构成自然且符合语境的词。',
   context: '文脈規定：句子挖空（　　），选最合适的词。4个同类词，覆盖名/动/形/副/カタカナ語/接续词。',
   paraphrase: '言い換え類義：句中一词/短语用【】标出，选意思最接近的替换项。4选项。',
   usage: '用法：stem 只写目标词（如「めったに」），4个选项各为一整句，只有1句用法自然正确；错误项须是真实常见误用（搭配/语义/位置错），非乱造。',
@@ -112,7 +81,25 @@ const GEN_SCHEMA = {
           group: { type: 'string' },
           choices: { type: 'array', items: { type: 'string' }, minItems: 4, maxItems: 4 },
           answerIndex: { type: 'integer', minimum: 0, maximum: 3 },
-          explanation: { type: 'string' },
+          explanation: {
+            type: 'object',
+            required: ['correctAnswerMeaningUsage', 'knowledgePoint', 'whyCorrect', 'distractorReasons'],
+            properties: {
+              correctAnswerMeaningUsage: { type: 'string', minLength: 24 },
+              knowledgePoint: { type: 'string', minLength: 24 },
+              whyCorrect: { type: 'string', minLength: 24 },
+              distractorReasons: {
+                type: 'array', minItems: 3, maxItems: 3,
+                items: {
+                  type: 'object', required: ['choice', 'reason'],
+                  properties: {
+                    choice: { type: 'string' },
+                    reason: { type: 'string', minLength: 20 },
+                  },
+                },
+              },
+            },
+          },
           difficulty: { type: 'integer', minimum: 1, maximum: 5 },
         },
       },
@@ -126,12 +113,18 @@ const VERIFY_SCHEMA = {
       type: 'array',
       items: {
         type: 'object',
-        required: ['index', 'answerIndex', 'fatal'],
+        required: [
+          'index', 'answerIndex', 'answerAccepted', 'answerFatal',
+          'explanationAccepted', 'explanationFatal', 'explanationNote',
+        ],
         properties: {
           index: { type: 'integer' },
           answerIndex: { type: 'integer', minimum: -1, maximum: 3 },
-          fatal: { type: 'boolean' },
-          note: { type: 'string' },
+          answerAccepted: { type: 'boolean' },
+          answerFatal: { type: 'boolean' },
+          explanationAccepted: { type: 'boolean' },
+          explanationFatal: { type: 'boolean' },
+          explanationNote: { type: 'string' },
         },
       },
     },
@@ -154,11 +147,13 @@ function genPrompt(level, qtype, count, themeA, themeB) {
     '1. 每题恰好 4 个选项，恰好 1 个无争议正确答案；干扰项要有迷惑性但经得起母语者推敲，不得有第二个可辩护正确项。',
     '2. 词汇语法严格限制在该级别及以下（读解/听力文本可有极少量超纲词但不影响答题）。',
     '3. stem/passage/choices 全部日语。',
-    '4. 【explanation 极详细 · 每题必写全】用简体中文，面向备考者把这道题讲透，必须逐项包含：',
-    '   ①【正确答案的意思与用法】：该词/语法/表达的准确含义、词性、读音或活用、常见搭配与语感、适用场景；',
-    '   ②【涉及的知识点】：这道题考查的语法点或词汇知识（如接续、活用形、敬语层级、近义辨析、汉字音训、惯用固定用法等），点明规则；',
-    '   ③【为什么这个选项正确】：结合句意/语境说明为何该选项唯一成立；',
-    '   ④【逐一说明每个干扰项为什么错】：对其余 3 个选项各自说明它的意思是什么、为什么在此处不对（搭配不当/语义偏差/活用错误/语体不符/张冠李戴等），不要只笼统带过。',
+    '4. 【explanation 极详细 · 每题必写全】用简体中文输出结构化对象，四个键缺一不可：',
+    '   ① correctAnswerMeaningUsage：正确项的准确含义、词性、读音或活用、搭配、语感与适用场景；',
+    '   ② knowledgePoint：本题考查规则，如接续、活用、敬语层级、近义辨析或音训；',
+    '   ③ whyCorrect：结合句意说明为何该项唯一成立；',
+    '   ④ distractorReasons：恰好 3 个 {choice, reason}，逐一覆盖三个错误选项，说明意思与具体错误原因。',
+    '   三个核心段各至少 24 个有效字符，每个错误项理由至少 20 个有效字符；含答案的段落必须写出正确选项，每条错误理由必须写出对应选项。',
+    '   禁止“占位/待补充/同上/见上/TODO/TBD”等占位表达，三个核心段不得互相复制。',
     '   宁详勿简，写成能让学习者真正学会的讲解（通常 4-8 句以上）。',
     '5. 阅读/文章语法/听力：passage 完整原创；同一篇的多题 passage 一字不差重复，group 填同一短 slug；单题 passage 留空、group 留空。',
     '6. difficulty 为该级别内部难度 1-5（3=标准）。qtype 固定填 "' + qtype + '"。',
@@ -167,13 +162,19 @@ function genPrompt(level, qtype, count, themeA, themeB) {
 }
 
 function verifyPrompt(level, qtype, qs) {
-  const stripped = qs.map((q, i) => ({ index: i, stem: q.stem, passage: q.passage || '', choices: q.choices }))
+  const stripped = qs.map((q, i) => ({
+    index: i,
+    stem: q.stem,
+    passage: q.passage || '',
+    choices: q.choices,
+    explanation: q.explanation,
+  }))
   return [
     '你是 JLPT ' + level + ' 级资深考官，盲审一批 ' + level + ' 模拟题（题型：' + qtype + '）。你看不到出题人答案，必须完全独立作答。',
     QTYPE_SPEC[qtype] ? '【题型说明】' + QTYPE_SPEC[qtype] : '',
-    '逐题：1) 独立解题给出唯一正确 answerIndex(0-3)；若无正确项/多个可辩护/组句排序不唯一/即時応答无唯一得体应答，填 -1 且 fatal=true。',
-    '2) 检查日语是否自然、有无语法用字错误、难度是否明显偏离 ' + level + '（如 ' + level + ' 题里塞了超纲考点）。有致命问题 fatal=true 并在 note 说明。',
-    '3) 轻微瑕疵不算 fatal，仅在 note 备注。',
+    '逐题：1) 独立解题给出唯一正确 answerIndex(0-3)；若无正确项/多个可辩护/组句排序不唯一/即時応答无唯一得体应答，填 -1，answerAccepted=false 且 answerFatal=true。',
+    '2) 独立检查日语是否自然、答案是否唯一、难度是否明显偏离 ' + level + '；结论写入 answerAccepted/answerFatal。',
+    '3) 单独审查 explanation：核对正确项含义与用法、知识点、为何唯一正确，以及三个干扰项逐项错误理由；任何事实错误、遗漏或模板占位都令 explanationAccepted=false，严重误导令 explanationFatal=true，并在 explanationNote 给出具体依据。',
     '题目（JSON）：',
     JSON.stringify(stripped, null, 1),
     '逐题输出 verdicts，index 与输入对应。',
@@ -219,7 +220,7 @@ function sanitize(batch, raw) {
     if (!Array.isArray(q.choices) || q.choices.length !== 4) continue
     if (q.choices.some(c => typeof c !== 'string' || !c.trim())) continue
     if (!(Number.isInteger(q.answerIndex) && q.answerIndex >= 0 && q.answerIndex <= 3)) continue
-    if (!q.explanation) continue
+    if (!q.explanation || typeof q.explanation !== 'object' || Array.isArray(q.explanation)) continue
     const needsPassage = batch.qtype === 'text_grammar' || batch.qtype.startsWith('reading_') || LISTEN_QTYPES.has(batch.qtype)
     const minPassage = LISTEN_QTYPES.has(batch.qtype) ? (batch.qtype === 'listen_response' ? 6 : 20) : 30
     if (needsPassage && (!q.passage || q.passage.trim().length < minPassage)) continue
@@ -227,7 +228,7 @@ function sanitize(batch, raw) {
       level: batch.level, section: SECTION_OF[batch.qtype], qtype: batch.qtype,
       stem: q.stem.trim(), passage: (q.passage || '').trim(), group: (q.group || '').trim(),
       choices: q.choices.map(c => c.trim()), answerIndex: q.answerIndex,
-      explanation: String(q.explanation).trim(), difficulty: Math.min(5, Math.max(1, q.difficulty || 3)),
+      explanation: q.explanation, difficulty: Math.min(5, Math.max(1, q.difficulty || 3)),
       theme: batch.themeA,
     })
   }
@@ -256,7 +257,11 @@ async function runBatches(batches, phaseGen, phaseVer) {
       pack.qs.forEach((q, i) => {
         if (maps.length < 2) return
         const a = maps[0][i], b2 = maps[1][i]
-        const ok = a && b2 && !a.fatal && !b2.fatal && a.answerIndex === q.answerIndex && b2.answerIndex === q.answerIndex
+        const ok = a && b2 &&
+          a.answerAccepted && b2.answerAccepted && !a.answerFatal && !b2.answerFatal &&
+          a.explanationAccepted && b2.explanationAccepted &&
+          !a.explanationFatal && !b2.explanationFatal &&
+          a.answerIndex === q.answerIndex && b2.answerIndex === q.answerIndex
         if (ok) kept.push(q)
       })
       return { batch: pack.b.id, kept }
