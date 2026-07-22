@@ -579,11 +579,22 @@ class AssembleBankTests(unittest.TestCase):
         }
 
         class FakeCursor:
+            def __init__(self, row=None):
+                self.row = row
+
             def fetchone(self):
-                return None
+                return self.row
 
         class FakeConnection:
-            def execute(self, *_args, **_kwargs):
+            def __init__(self, existing_exam_ids=()):
+                self.existing_exam_ids = set(existing_exam_ids)
+
+            def execute(self, sql, params=(), **_kwargs):
+                if sql.startswith("SELECT id FROM jlpt_exams WHERE id = ?"):
+                    exam_id = params[0]
+                    return FakeCursor(
+                        {"id": exam_id} if exam_id in self.existing_exam_ids else None
+                    )
                 return FakeCursor()
 
         upserts: list[dict[str, object]] = []
@@ -620,6 +631,27 @@ class AssembleBankTests(unittest.TestCase):
         self.assertEqual(3300, listening["durationSeconds"])
         self.assertEqual(["mockv1-n1-lt-001"], listening["questionIds"])
         self.assertEqual("percent", listening["scoreMode"])
+        self.assertEqual(0, listening["coinCost"])
+
+        # A later fingerprint refresh must not reset an admin-adjusted price.
+        # The structural parent/listening rows remain explicitly free, while
+        # omitting the written price lets upsert_exam preserve its stored value.
+        upserts.clear()
+        existing = {
+            "mockv1-n1",
+            "mockv1-n1-written",
+            "mockv1-n1-listening",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            bank_path = Path(tmp) / "jlpt_bank_v1.json"
+            bank_path.write_text(json.dumps(bank, ensure_ascii=False), encoding="utf-8")
+            with mock.patch.object(jlpt_seed, "_mock_bank_path", return_value=str(bank_path)):
+                with mock.patch.dict(sys.modules, {"server_jlpt": fake_jlpt}):
+                    jlpt_seed.ensure_jlpt_mock_v1(FakeConnection(existing))
+
+        parent, written, listening = upserts
+        self.assertEqual(0, parent["coinCost"])
+        self.assertNotIn("coinCost", written)
         self.assertEqual(0, listening["coinCost"])
 
     def test_legacy_written_only_manifest_does_not_invent_a_new_price(self) -> None:
