@@ -7,15 +7,21 @@
 
 import type { GuideJlptScaledResult } from "@/lib/guide";
 import { fmtDuration, type Tri } from "../JlptKit";
+import {
+  localizedScoreDivisionLabel,
+  localizedScoreReferenceNote,
+} from "./examContract";
 
 export function ScaledScorePanel({
   t,
+  language,
   scaled,
   correct,
   total,
   durationSeconds,
 }: {
   t: Tri;
+  language: string;
   scaled: GuideJlptScaledResult;
   correct?: number;
   total?: number;
@@ -28,13 +34,15 @@ export function ScaledScorePanel({
   // 分数明明 ≥ 参考线却写「未达参考线」，考生会以为出分算错了。
   const totalReached = scaled.writtenTotal >= scaled.passLineWritten;
   const failedScales = scaled.scales.filter((s) => !s.passed);
+  const label = (key: string, fallback: string) =>
+    localizedScoreDivisionLabel(language, key, fallback);
   const verdict = passRef
     ? t(`达到笔试参考线 ${scaled.passLineWritten}`, `筆記参考ライン ${scaled.passLineWritten} 到達`, `Reached written reference line ${scaled.passLineWritten}`)
     : totalReached && failedScales.length > 0
       ? t(
-          `总分达线，但「${failedScales.map((s) => s.label).join("・")}」未过基准点`,
-          `合計は到達、ただし「${failedScales.map((s) => s.label).join("・")}」が基準点未満`,
-          `Total reached, but ${failedScales.map((s) => s.label).join(" / ")} is below its section minimum`,
+          `总分达线，但「${failedScales.map((s) => label(s.key, s.label)).join("・")}」未过基准点`,
+          `合計は到達、ただし「${failedScales.map((s) => label(s.key, s.label)).join("・")}」が基準点未満`,
+          `Total reached, but ${failedScales.map((s) => label(s.key, s.label)).join(" / ")} is below its section minimum`,
         )
       : t(`未达笔试参考线 ${scaled.passLineWritten}`, `筆記参考ライン ${scaled.passLineWritten} 未達`, `Below written reference line ${scaled.passLineWritten}`);
   return (
@@ -75,7 +83,7 @@ export function ScaledScorePanel({
           return (
             <div key={scale.key}>
               <div className="flex items-baseline justify-between gap-2">
-                <p className="text-[13px] font-bold text-[rgb(var(--kx-living-ink))]">{scale.label}</p>
+                <p className="text-[13px] font-bold text-[rgb(var(--kx-living-ink))]">{label(scale.key, scale.label)}</p>
                 <p className="text-sm font-black tabular-nums">
                   <span className={scale.passed ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400"}>{scale.scaled}</span>
                   <span className="text-[11px] font-semibold text-[rgb(var(--kx-living-muted))]"> / {scale.scaledMax}</span>
@@ -102,9 +110,9 @@ export function ScaledScorePanel({
         })}
       </div>
 
-      {scaled.note ? (
-        <p className="mt-5 text-[11px] leading-relaxed text-[rgb(var(--kx-living-muted))]">{scaled.note}</p>
-      ) : null}
+      <p className="mt-5 text-[11px] leading-relaxed text-[rgb(var(--kx-living-muted))]">
+        {localizedScoreReferenceNote(language, "written")}
+      </p>
     </div>
   );
 }

@@ -5738,6 +5738,176 @@ MIGRATIONS: list[tuple[int, str, str]] = [
          WHERE kind = 'mock' AND id LIKE 'mockv1-%';
         """,
     ),
+    (
+        125,
+        "jlpt 原子开考：价格快照、扣币状态与跨进程串行锁",
+        # 2026-07 PAY-02：开考 attempt、价格快照、钱包扣款与 payment 状态必须
+        # 在同一事务。start_locks 为 (user, exam) 提供一行稳定的数据库锁，避免
+        # 多进程 PostgreSQL 同时看见“尚无进行中会话”后各自扣款；SQLite 也沿用
+        # 同一契约。旧会话不能臆测付款事实，默认 legacy_unknown，交给对账扫描。
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_exam_start_locks (
+            user_id TEXT NOT NULL,
+            exam_id TEXT NOT NULL,
+            touched_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, exam_id)
+        );
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN base_coin_cost_snapshot INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN charged_coin_cost INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN pricing_tier TEXT NOT NULL DEFAULT 'legacy';
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN payment_status TEXT NOT NULL DEFAULT 'legacy_unknown';
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN wallet_ledger_entry_id TEXT NOT NULL DEFAULT '';
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN start_request_key TEXT NOT NULL DEFAULT '';
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN parent_exam_id_snapshot TEXT NOT NULL DEFAULT '';
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jlpt_exam_session_start_request
+            ON jlpt_exam_sessions(user_id, exam_id, start_request_key)
+            WHERE start_request_key <> '';
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_session_payment
+            ON jlpt_exam_sessions(payment_status, started_at);
+        """,
+    ),
+    (
+        126,
+        "jlpt 作答乐观并发：会话全局 revision + 每题落盘 revision",
+        # 2026-07 EXAM-01：移动端/网页连续改选、弱网重试和交卷会并发到达。
+        # session.answer_revision 是服务端唯一时序；每个新写入必须声明它所基于
+        # 的 revision 并恰好推进一步。answer.revision 保留每道题最后一次被哪一
+        # 版快照写入，便于恢复、冲突诊断与审计。纯 ADD COLUMN，SQLite/PG 通用。
+        """
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN answer_revision INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE jlpt_exam_answers ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
+    (
+        127,
+        "jlpt 开考幂等别名：每个请求键永久绑定原会话",
+        # 一个进行中会话可被多个 Idempotency-Key 续接；若只在 session 上保留
+        # 首个 key，第二个 key 在会话结束后重试会被误当成新开考并再次扣币。
+        # 映射表保留所有 key→session 关系，并回填 125 以来的首个 key。
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_exam_start_requests (
+            user_id TEXT NOT NULL,
+            exam_id TEXT NOT NULL,
+            request_key TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, exam_id, request_key)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_start_requests_session
+            ON jlpt_exam_start_requests(session_id);
+        INSERT INTO jlpt_exam_start_requests
+            (user_id, exam_id, request_key, session_id, created_at)
+        SELECT user_id, exam_id, start_request_key, id, started_at
+          FROM jlpt_exam_sessions
+         WHERE start_request_key <> ''
+        ON CONFLICT(user_id, exam_id, request_key) DO NOTHING;
+        """,
+    ),
+    (
+        129,
+        "jlpt 分科整卷父级 attempt：一次付费、顺序推进与可恢复权益",
+        # 128 预留给 Apple consumption outbox。父级 attempt 固化整卷价格、
+        # 付款与当前科目；每个子科 session 明确归属同一 attempt，避免刷新、
+        # 杀进程或直接请求后续科时重复扣款/跳科。稳定 lock 行在 PostgreSQL
+        # 提供跨进程串行边界，SQLite 由外层 BEGIN IMMEDIATE 同步。
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_paper_start_locks (
+            user_id TEXT NOT NULL,
+            paper_exam_id TEXT NOT NULL,
+            touched_at TEXT NOT NULL,
+            PRIMARY KEY (user_id, paper_exam_id)
+        );
+        CREATE TABLE IF NOT EXISTS jlpt_paper_attempts (
+            id TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            paper_exam_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'in_progress',
+            current_section_index INTEGER NOT NULL DEFAULT 0,
+            current_section_exam_id TEXT NOT NULL DEFAULT '',
+            section_count INTEGER NOT NULL DEFAULT 0,
+            base_coin_cost_snapshot INTEGER NOT NULL DEFAULT 0,
+            charged_coin_cost INTEGER NOT NULL DEFAULT 0,
+            pricing_tier TEXT NOT NULL DEFAULT 'pending',
+            membership_snapshot INTEGER NOT NULL DEFAULT 0,
+            unlock_source TEXT NOT NULL DEFAULT 'pending',
+            payment_status TEXT NOT NULL DEFAULT 'pending',
+            wallet_ledger_entry_id TEXT NOT NULL DEFAULT '',
+            start_request_key TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL,
+            completed_at TEXT NOT NULL DEFAULT '',
+            refunded_at TEXT NOT NULL DEFAULT '',
+            refund_ledger_entry_id TEXT NOT NULL DEFAULT '',
+            refund_reason TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jlpt_paper_attempt_active
+            ON jlpt_paper_attempts(user_id, paper_exam_id)
+            WHERE status = 'in_progress';
+        CREATE INDEX IF NOT EXISTS idx_jlpt_paper_attempt_payment
+            ON jlpt_paper_attempts(payment_status, started_at);
+        CREATE TABLE IF NOT EXISTS jlpt_paper_section_attempts (
+            paper_attempt_id TEXT NOT NULL,
+            section_exam_id TEXT NOT NULL,
+            sort_order INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            session_id TEXT NOT NULL DEFAULT '',
+            started_at TEXT NOT NULL DEFAULT '',
+            completed_at TEXT NOT NULL DEFAULT '',
+            PRIMARY KEY (paper_attempt_id, section_exam_id)
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_jlpt_paper_section_session
+            ON jlpt_paper_section_attempts(session_id)
+            WHERE session_id <> '';
+        CREATE INDEX IF NOT EXISTS idx_jlpt_paper_section_progress
+            ON jlpt_paper_section_attempts(paper_attempt_id, sort_order, status);
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN paper_attempt_id TEXT NOT NULL DEFAULT '';
+        CREATE INDEX IF NOT EXISTS idx_jlpt_exam_sessions_paper_attempt
+            ON jlpt_exam_sessions(paper_attempt_id, exam_id, status);
+        """,
+    ),
+    (
+        130,
+        "jlpt 整卷对账审计：可监督修复付款、会话与账本断链",
+        """
+        CREATE TABLE IF NOT EXISTS jlpt_paper_reconciliation_audit (
+            run_id TEXT NOT NULL,
+            case_id TEXT NOT NULL,
+            case_type TEXT NOT NULL,
+            action TEXT NOT NULL,
+            status TEXT NOT NULL,
+            actor TEXT NOT NULL DEFAULT '',
+            reason TEXT NOT NULL DEFAULT '',
+            before_json TEXT NOT NULL DEFAULT '{}',
+            after_json TEXT NOT NULL DEFAULT '{}',
+            rollback_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (run_id, case_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_jlpt_paper_reconciliation_case
+            ON jlpt_paper_reconciliation_audit(case_type, created_at);
+        """,
+    ),
+    (
+        132,
+        "jlpt 交卷不可变结果快照：丢失响应重放与历史回看不再读取可变题库",
+        # 131 由 Apple consumption 购买时样例证据预留。每场新提交把最终
+        # passScore/scoreMode/缩放分及逐题回看内容作为一个 JSON 值与状态在同一
+        # 事务落盘。旧会话保留空串并走兼容回看路径。SQLite/Postgres 通用。
+        """
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN result_snapshot_json TEXT NOT NULL DEFAULT '';
+        """,
+    ),
+    (
+        133,
+        "jlpt 开考契约快照：固定时限、合格线、计分模式与严格听力策略",
+        # 新 attempt 在扣费/建会话事务内固化服务端考试契约。这样后台修改
+        # duration/passScore/scoreMode 后，正在进行的付费考试不会移动截止时间或
+        # 改判；严格听力的原文、拖动和重播规则也不会在恢复时漂移。旧会话空值
+        # 继续走兼容推断，SQLite/PostgreSQL 均为纯 ADD COLUMN。
+        """
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN exam_contract_snapshot_json TEXT NOT NULL DEFAULT '';
+        """,
+    ),
 ]
 
 

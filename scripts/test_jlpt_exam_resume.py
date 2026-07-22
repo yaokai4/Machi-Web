@@ -68,6 +68,16 @@ def _handler(uid):
 
 def _post(uid, method_name, body):
     h, cap = _handler(uid)
+    if method_name == "api_guide_jlpt_exam_start":
+        exam_id = str(body.get("examId") or body.get("exam_id") or "")
+        preflight = server.jlpt_exam_access_preflight(
+            _CONN, user_id=uid, exam_id=exam_id, now=server.now_iso()
+        )
+        body = {
+            **body,
+            "confirmedChargeCoins": int(preflight.get("requiredCoins") or 0),
+        }
+        h.headers = {"Idempotency-Key": "resume-start-" + uuid.uuid4().hex}
     h.read_json = lambda: body  # type: ignore[method-assign]
     getattr(h, method_name)(_CONN)
     return cap
@@ -143,12 +153,14 @@ def main() -> None:
         assert [q["id"] for q in resumed["questions"]] == n5_ids
         for q in resumed["questions"]:
             assert "answerIndex" not in q and "explanation" not in q, "resume leaked the key"
-        # Saved answers echoed — exactly the two we sent, and NOTHING that
-        # reveals grading (is_correct/correct must not be present).
+        # Saved answers echoed — exactly the two we sent, plus only their
+        # concurrency revisions. Grading still must not be exposed.
         got = {a["questionId"]: a["selectedIndex"] for a in resumed["answers"]}
         assert got == {n5_ids[0]: tq0["answer_index"], n5_ids[1]: wrong1}, got
         for a in resumed["answers"]:
-            assert set(a.keys()) == {"questionId", "selectedIndex"}, f"answer leak: {a.keys()}"
+            assert set(a.keys()) == {"questionId", "selectedIndex", "revision"}, f"answer leak: {a.keys()}"
+            assert isinstance(a["revision"], int) and a["revision"] > 0
+        assert resumed["answerRevision"] == 2
         # Server-computed clock: fresh session → close to full duration, and
         # both key spellings agree.
         rem = resumed["remainingSeconds"]
@@ -190,15 +202,51 @@ def main() -> None:
         # 4) A second timed-out start on the NEW session's exam: submit the new
         #    session normally, then the next start is fresh again (no dangling
         #    in-progress row to resume).
-        cap = _post(uid, "api_guide_jlpt_exam_submit", {"sessionId": fresh["sessionId"]})
+        submit_body = {
+            "sessionId": fresh["sessionId"],
+            "answersSnapshot": [
+                {"questionId": n5_ids[2], "selectedIndex": 0},
+            ],
+            "baseRevision": 0,
+            "revision": 1,
+        }
+        cap = _post(uid, "api_guide_jlpt_exam_submit", submit_body)
         assert cap["status"] == 200, cap
+        first_submit = cap["data"]
+        conn.commit()
+        # The response may be lost after commit. Replaying submit must return
+        # the immutable stored result instead of a 409 that strands the client
+        # (and, for a parent paper, prevents it from advancing to the next
+        # section). The replay must not re-apply a changed snapshot.
+        replay_body = {
+            **submit_body,
+            "answersSnapshot": [
+                {"questionId": n5_ids[3], "selectedIndex": 1},
+            ],
+        }
+        cap = _post(uid, "api_guide_jlpt_exam_submit", replay_body)
+        assert cap["status"] == 200, cap
+        replay = cap["data"]
+        assert replay["idempotentReplay"] is True, replay
+        first_without_replay = {
+            key: value for key, value in first_submit.items()
+            if key != "idempotentReplay"
+        }
+        replay_without_replay = {
+            key: value for key, value in replay.items()
+            if key != "idempotentReplay"
+        }
+        assert replay_without_replay == first_without_replay, (
+            first_without_replay,
+            replay_without_replay,
+        )
         conn.commit()
         cap = _post(uid, "api_guide_jlpt_exam_start", {"examId": "resume-exam-1"})
         assert cap["status"] == 200 and cap["data"]["resumed"] is False
         assert cap["data"]["sessionId"] not in (sid, fresh["sessionId"])
-        # Double-submit of the settled session is still rejected (CAS intact).
+        # An automatically settled attempt also replays its immutable result.
         cap = _post(uid, "api_guide_jlpt_exam_submit", {"sessionId": sid})
-        assert cap["status"] == 409, cap
+        assert cap["status"] == 200 and cap["data"]["idempotentReplay"] is True, cap
         conn.commit()
 
         # 5) Untimed exam (duration 0) never times out → always resumes.

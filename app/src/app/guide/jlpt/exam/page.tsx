@@ -14,17 +14,17 @@ const META = {
   zh: {
     title: "JLPT 在线模考｜N1-N5 模拟试题・限时判分・逐题解析",
     description:
-      "N2 在线模考、N1-N5 全等级模拟试题：限时作答、交卷即出分，逐题解析帮你定位弱项。原创/授权题目，不含未授权真题原文。",
+      "N2 在线模考、N1-N5 全等级模拟试题：开考前明确显示免费或所需 Machi 币与会员价，限时作答、交卷即出参考分并可逐题复盘。原创/授权题目，不含未授权真题原文。",
   },
   en: {
     title: "JLPT Online Mock Exams | Timed N1–N5 practice tests with scoring",
     description:
-      "Take timed JLPT mock exams online for N1–N5: instant scoring on submission and per-question review to find weak spots. Original/licensed questions only.",
+      "Take timed JLPT mock exams for N1–N5. Free or Machi Coin access and member pricing are shown before you start; submit for a reference score and per-question review. Original/licensed questions only.",
   },
   ja: {
-    title: "JLPT オンライン模擬試験 無料｜N1〜N5 採点・解説つき模試",
+    title: "JLPT オンライン模擬試験｜N1〜N5 採点・解説つき模試",
     description:
-      "N1〜N5 の JLPT 模擬試験をオンラインで受験。時間制限つきで提出後すぐ採点、一問ずつ解説を確認できます。オリジナル/許諾済みの問題のみ使用。",
+      "N1〜N5 の JLPT 模擬試験。無料または必要な Machi コイン・会員価格を開始前に明示し、提出後は参考スコアと一問ごとの解説を確認できます。オリジナル/許諾済み問題のみ使用。",
   },
 };
 

@@ -12004,6 +12004,1277 @@ def wallet_post_ledger(conn: sqlite3.Connection, user_id: str, entry_type: str, 
             "applied": True, "duplicate": False, "insufficient": False}
 
 
+def _jlpt_start_request_digest(user_id: str, exam_id: str, request_key: str) -> str:
+    key = str(request_key or "").strip()[:200]
+    if not key:
+        return ""
+    return hashlib.sha256(
+        f"{user_id}\x1f{exam_id}\x1f{key}".encode("utf-8")
+    ).hexdigest()
+
+
+def _jlpt_start_payment_overlay(
+    started: dict[str, Any], session: dict[str, Any], wallet: dict[str, Any],
+    *, idempotency_recorded: bool | None = None,
+) -> dict[str, Any]:
+    base = int(session.get("base_coin_cost_snapshot") or 0)
+    charged = int(session.get("charged_coin_cost") or 0)
+    tier = str(session.get("pricing_tier") or "legacy")
+    return {
+        **started,
+        "coinCharged": charged,
+        "coinBalance": int(wallet.get("balancePoints") or 0),
+        "paymentStatus": str(session.get("payment_status") or "legacy_unknown"),
+        "walletLedgerEntryId": str(session.get("wallet_ledger_entry_id") or ""),
+        "priceSnapshot": {
+            "baseCoins": base,
+            "chargedCoins": charged,
+            "pricingTier": tier,
+        },
+        "parentExamId": str(session.get("parent_exam_id_snapshot") or ""),
+        "startIdempotencyRecorded": (
+            bool(session.get("start_request_key"))
+            if idempotency_recorded is None else bool(idempotency_recorded)
+        ),
+    }
+
+
+def _jlpt_start_request_session(
+    conn: sqlite3.Connection, *, user_id: str, exam_id: str, request_digest: str,
+) -> dict[str, Any] | None:
+    if not request_digest:
+        return None
+    mapping = conn.execute(
+        "SELECT session_id FROM jlpt_exam_start_requests "
+        "WHERE user_id=? AND exam_id=? AND request_key=?",
+        (user_id, exam_id, request_digest),
+    ).fetchone()
+    if not mapping:
+        return None
+    session = conn.execute(
+        "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=? AND exam_id=?",
+        (mapping["session_id"], user_id, exam_id),
+    ).fetchone()
+    if not session:
+        raise APIError(
+            "开考幂等记录对应的会话不存在，请联系支持。",
+            409,
+            "exam_start_request_orphaned",
+        )
+    return dict(session)
+
+
+def _bind_jlpt_start_request(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    exam_id: str,
+    request_digest: str,
+    session_id: str,
+    created_at: str,
+) -> None:
+    if not request_digest:
+        return
+    conn.execute(
+        "INSERT INTO jlpt_exam_start_requests "
+        "(user_id, exam_id, request_key, session_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(user_id, exam_id, request_key) DO NOTHING",
+        (user_id, exam_id, request_digest, session_id, created_at),
+    )
+    bound = conn.execute(
+        "SELECT session_id FROM jlpt_exam_start_requests "
+        "WHERE user_id=? AND exam_id=? AND request_key=?",
+        (user_id, exam_id, request_digest),
+    ).fetchone()
+    if not bound or str(bound["session_id"] or "") != session_id:
+        raise APIError(
+            "该 Idempotency-Key 已绑定另一场考试。",
+            409,
+            "exam_start_idempotency_conflict",
+        )
+
+
+def _start_jlpt_single_exam_tx(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    exam: dict[str, Any],
+    is_member: bool | None = None,
+    request_key: str = "",
+    now: str = "",
+    paper_attempt_id: str = "",
+    charge_override: int | None = None,
+    confirmed_charge_coins: int | None = None,
+) -> dict[str, Any]:
+    """Start/resume one JLPT exam with payment and attempt in one transaction.
+
+    The durable ``jlpt_exam_start_locks`` row is updated first.  On PostgreSQL
+    that update is a cross-process row lock; on SQLite the outer BEGIN IMMEDIATE
+    already serializes writers.  Once held, a second request can only observe
+    the first request's committed session and therefore resumes without another
+    debit—even when no Idempotency-Key was supplied.
+    """
+    user_id = str(user_id or "").strip()
+    exam_id = str((exam or {}).get("id") or "").strip()
+    if not user_id or not exam_id:
+        return {"status": "not_found"}
+    now = now or now_iso()
+
+    conn.execute(
+        "INSERT INTO jlpt_exam_start_locks (user_id, exam_id, touched_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(user_id, exam_id) DO NOTHING",
+        (user_id, exam_id, now),
+    )
+    locked = conn.execute(
+        "UPDATE jlpt_exam_start_locks SET touched_at=? WHERE user_id=? AND exam_id=?",
+        (now, user_id, exam_id),
+    )
+    if getattr(locked, "rowcount", 0) != 1:
+        raise RuntimeError("failed to acquire JLPT exam start lock")
+
+    # Lock and re-read the price/status row inside the same transaction.  An
+    # admin edit racing this request is therefore ordered before or after the
+    # immutable snapshot, never half-observed.
+    exam_lock = conn.execute(
+        "UPDATE jlpt_exams SET coin_cost=coin_cost WHERE id=? AND status='published'",
+        (exam_id,),
+    )
+    if getattr(exam_lock, "rowcount", 0) != 1:
+        return {"status": "not_found"}
+    live_exam = jlpt.get_exam(conn, exam_id)
+    if not live_exam:
+        return {"status": "not_found"}
+
+    request_digest = _jlpt_start_request_digest(user_id, exam_id, request_key)
+    previous = _jlpt_start_request_session(
+        conn,
+        user_id=user_id,
+        exam_id=exam_id,
+        request_digest=request_digest,
+    )
+    if previous:
+        if str(previous.get("status") or "") != "in_progress":
+            prior = previous
+            return {
+                "status": "already_completed",
+                "sessionId": prior["id"],
+                "paymentStatus": prior.get("payment_status") or "legacy_unknown",
+            }
+        prior = previous
+        if not jlpt.exam_session_can_resume(prior, live_exam, now=now):
+            # The original idempotent attempt reached its deadline. Settle
+            # that exact session but never turn the same start key into a
+            # second paid attempt after the cache TTL expires.
+            jlpt.submit_exam_session(
+                conn,
+                session=prior,
+                exam=live_exam,
+                now=now,
+            )
+            if str(prior.get("paper_attempt_id") or ""):
+                sync_jlpt_paper_attempt_after_submit(
+                    conn,
+                    session_id=str(prior["id"]),
+                    user_id=user_id,
+                    now=now,
+                )
+            return {
+                "status": "already_completed",
+                "sessionId": prior["id"],
+                "paymentStatus": prior.get("payment_status") or "legacy_unknown",
+            }
+
+    # The caller's membership bit is only a compatibility hint. Re-resolve it
+    # after the start/exam locks are held so activation, expiry and member-only
+    # admission have one authoritative transaction boundary. An attempt that
+    # was admitted and paid while membership was live remains resumable: its
+    # immutable session/payment snapshot is the entitlement for that attempt.
+    paper_attempt_entitlement = False
+    if paper_attempt_id:
+        paper_row = conn.execute(
+            "SELECT status, payment_status FROM jlpt_paper_attempts "
+            "WHERE id=? AND user_id=?",
+            (paper_attempt_id, user_id),
+        ).fetchone()
+        paper_attempt_entitlement = bool(
+            paper_row
+            and str(paper_row["status"] or "") == "in_progress"
+            and str(paper_row["payment_status"] or "") in ("paid", "not_required")
+        )
+    resumable_entitlement = bool(
+        previous
+        or paper_attempt_entitlement
+        or jlpt.has_resumable_exam_session(
+            conn,
+            user_id=user_id,
+            exam=live_exam,
+            now=now,
+            paper_attempt_id=paper_attempt_id,
+        )
+    )
+    is_member = has_active_membership(conn, user_id)
+    if live_exam.get("is_member_only") and not is_member and not resumable_entitlement:
+        return {"status": "member_required"}
+
+    started = jlpt.start_exam_session(
+        conn,
+        user_id=user_id,
+        exam=live_exam,
+        is_member=is_member,
+        now=now,
+        paper_attempt_id=paper_attempt_id,
+    )
+    if not started:
+        return {"status": "no_questions"}
+    session_id = str(started.get("sessionId") or "")
+
+    # A concurrent submit can end the session observed by the admission gate
+    # before start_exam_session() runs. An expired member may resume the exact
+    # paid session or continue an active paid parent attempt, but that stale
+    # snapshot must never authorize an unrelated fresh member-only attempt.
+    if (
+        live_exam.get("is_member_only")
+        and not is_member
+        and not started.get("resumed")
+        and not paper_attempt_entitlement
+    ):
+        conn.execute(
+            "DELETE FROM jlpt_exam_sessions WHERE id=? AND user_id=? "
+            "AND status='in_progress'",
+            (session_id, user_id),
+        )
+        return {"status": "member_required"}
+
+    base_cost = (
+        max(0, int(charge_override))
+        if charge_override is not None
+        else max(0, int(live_exam.get("coin_cost") or 0))
+    )
+    actual_charge = (
+        0
+        if started.get("resumed")
+        else (jlpt.member_coin_cost(base_cost) if is_member else base_cost)
+    )
+    # Retrying the exact Idempotency-Key after the first paid response was lost
+    # is a replay of that original price confirmation, not a new zero-cost
+    # resume.  A different key that was later bound as a resume alias still
+    # confirms zero.  ``start_request_key`` distinguishes those two cases.
+    confirmation_charge = actual_charge
+    if (
+        previous
+        and request_digest
+        and str(previous.get("start_request_key") or "") == request_digest
+    ):
+        confirmation_charge = max(0, int(previous.get("charged_coin_cost") or 0))
+    if (
+        confirmed_charge_coins is not None
+        and int(confirmed_charge_coins) != confirmation_charge
+    ):
+        if not started.get("resumed"):
+            conn.execute(
+                "DELETE FROM jlpt_exam_sessions WHERE id=? AND user_id=? "
+                "AND status='in_progress'",
+                (session_id, user_id),
+            )
+        return {
+            "status": "price_changed",
+            "confirmedCoins": int(confirmed_charge_coins),
+            "requiredCoins": confirmation_charge,
+            "baseCoinCost": base_cost,
+            "pricingTier": (
+                str(previous.get("pricing_tier") or "entitled")
+                if previous and confirmation_charge > 0
+                else "entitled"
+                if started.get("resumed")
+                else ("free" if actual_charge <= 0 else ("member" if is_member else "standard"))
+            ),
+        }
+
+    if started.get("resumed"):
+        row = conn.execute(
+            "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=?",
+            (session_id, user_id),
+        ).fetchone()
+        if not row:
+            raise RuntimeError("resumed JLPT session disappeared")
+        _bind_jlpt_start_request(
+            conn,
+            user_id=user_id,
+            exam_id=exam_id,
+            request_digest=request_digest,
+            session_id=session_id,
+            created_at=now,
+        )
+        wallet = get_wallet_snapshot(conn, user_id)
+        return {
+            "status": "started",
+            "exam": _jlpt_start_payment_overlay(
+                started,
+                dict(row),
+                wallet,
+                idempotency_recorded=bool(request_digest or dict(row).get("start_request_key")),
+            ),
+        }
+
+    charged_cost = actual_charge
+    pricing_tier = "free" if charged_cost <= 0 else ("member" if is_member else "standard")
+    payment_status = "not_required" if charged_cost <= 0 else "pending"
+    ledger_entry_id = ""
+    wallet = get_wallet_snapshot(conn, user_id)
+    if charged_cost > 0:
+        debit = wallet_post_ledger(
+            conn,
+            user_id,
+            "spend",
+            -charged_cost,
+            source_type="jlpt_exam",
+            source_order_id=session_id,
+            product_id=exam_id,
+            idempotency_key="jlpt_exam:" + session_id,
+            metadata={
+                "examId": exam_id,
+                "level": live_exam.get("level") or "",
+                "member": bool(is_member),
+                "baseCoinCost": base_cost,
+                "chargedCoinCost": charged_cost,
+            },
+        )
+        if debit.get("insufficient"):
+            # No debit row was written.  Remove the just-created attempt before
+            # committing the outer transaction so insufficient starts leave no
+            # resumable session; process crashes instead roll the whole tx back.
+            conn.execute(
+                "DELETE FROM jlpt_exam_sessions WHERE id=? AND user_id=?",
+                (session_id, user_id),
+            )
+            balance = int((debit.get("wallet") or {}).get("balancePoints") or 0)
+            return {
+                "status": "insufficient",
+                "requiredCoins": charged_cost,
+                "balance": balance,
+            }
+        ledger_entry_id = str((debit.get("entry") or {}).get("id") or "")
+        wallet = debit.get("wallet") or get_wallet_snapshot(conn, user_id)
+        payment_status = "paid"
+
+    updated = conn.execute(
+        "UPDATE jlpt_exam_sessions SET base_coin_cost_snapshot=?, charged_coin_cost=?, "
+        "pricing_tier=?, payment_status=?, wallet_ledger_entry_id=?, start_request_key=?, "
+        "parent_exam_id_snapshot=? WHERE id=? AND user_id=? AND status='in_progress'",
+        (
+            base_cost,
+            charged_cost,
+            pricing_tier,
+            payment_status,
+            ledger_entry_id,
+            request_digest,
+            str(live_exam.get("parent_exam_id") or ""),
+            session_id,
+            user_id,
+        ),
+    )
+    if getattr(updated, "rowcount", 0) != 1:
+        raise RuntimeError("failed to finalize JLPT exam payment snapshot")
+    _bind_jlpt_start_request(
+        conn,
+        user_id=user_id,
+        exam_id=exam_id,
+        request_digest=request_digest,
+        session_id=session_id,
+        created_at=now,
+    )
+    session = dict(
+        conn.execute(
+            "SELECT * FROM jlpt_exam_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+    )
+    return {
+        "status": "started",
+        "exam": _jlpt_start_payment_overlay(
+            started,
+            session,
+            wallet,
+            idempotency_recorded=bool(request_digest or session.get("start_request_key")),
+        ),
+    }
+
+
+def _jlpt_paper_sections_for_start(
+    conn: sqlite3.Connection, paper_exam_id: str
+) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        "SELECT * FROM jlpt_exams WHERE parent_exam_id=? AND kind='section' "
+        "AND status='published' ORDER BY sort_order, id",
+        (paper_exam_id,),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _jlpt_paper_attempt_row(
+    conn: sqlite3.Connection, attempt_id: str
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM jlpt_paper_attempts WHERE id=?", (attempt_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def _jlpt_public_paper_attempt(
+    conn: sqlite3.Connection, attempt: dict[str, Any]
+) -> dict[str, Any]:
+    rows = conn.execute(
+        "SELECT * FROM jlpt_paper_section_attempts WHERE paper_attempt_id=? "
+        "ORDER BY sort_order, section_exam_id",
+        (attempt["id"],),
+    ).fetchall()
+    sections = [
+        {
+            "examId": str(row["section_exam_id"] or ""),
+            "sortOrder": int(row["sort_order"] or 0),
+            "status": str(row["status"] or "pending"),
+            "sessionId": str(row["session_id"] or ""),
+            "startedAt": str(row["started_at"] or ""),
+            "completedAt": str(row["completed_at"] or ""),
+        }
+        for row in rows
+    ]
+    return {
+        "id": str(attempt.get("id") or ""),
+        "paperExamId": str(attempt.get("paper_exam_id") or ""),
+        "status": str(attempt.get("status") or "in_progress"),
+        "currentSectionIndex": int(attempt.get("current_section_index") or 0),
+        "currentSectionExamId": str(attempt.get("current_section_exam_id") or ""),
+        "sectionCount": int(attempt.get("section_count") or 0),
+        "baseCoinCost": int(attempt.get("base_coin_cost_snapshot") or 0),
+        "chargedCoinCost": int(attempt.get("charged_coin_cost") or 0),
+        "pricingTier": str(attempt.get("pricing_tier") or "pending"),
+        "membershipSnapshot": bool(attempt.get("membership_snapshot")),
+        "unlockSource": str(attempt.get("unlock_source") or "pending"),
+        "paymentStatus": str(attempt.get("payment_status") or "pending"),
+        "walletLedgerEntryId": str(attempt.get("wallet_ledger_entry_id") or ""),
+        "startedAt": str(attempt.get("started_at") or ""),
+        "completedAt": str(attempt.get("completed_at") or ""),
+        "sections": sections,
+    }
+
+
+def _sync_jlpt_paper_attempt_progress(
+    conn: sqlite3.Connection, attempt_id: str, *, now: str
+) -> dict[str, Any]:
+    attempt = _jlpt_paper_attempt_row(conn, attempt_id)
+    if not attempt:
+        raise APIError(
+            "整卷 attempt 不存在，请联系支持。", 409, "paper_attempt_not_found"
+        )
+    if str(attempt.get("status") or "") != "in_progress":
+        return _jlpt_public_paper_attempt(conn, attempt)
+
+    section_rows = [
+        dict(row)
+        for row in conn.execute(
+            "SELECT * FROM jlpt_paper_section_attempts WHERE paper_attempt_id=? "
+            "ORDER BY sort_order, section_exam_id",
+            (attempt_id,),
+        ).fetchall()
+    ]
+    for section in section_rows:
+        session_id = str(section.get("session_id") or "")
+        if not session_id:
+            continue
+        session = conn.execute(
+            "SELECT status, submitted_at FROM jlpt_exam_sessions "
+            "WHERE id=? AND paper_attempt_id=?",
+            (session_id, attempt_id),
+        ).fetchone()
+        if not session:
+            raise APIError(
+                "整卷科目记录对应的会话不存在，请联系支持。",
+                409,
+                "paper_section_session_orphaned",
+            )
+        session_status = str(session["status"] or "")
+        desired = "completed" if session_status == "submitted" else "in_progress"
+        if desired != str(section.get("status") or ""):
+            completed_at = (
+                str(session["submitted_at"] or now) if desired == "completed" else ""
+            )
+            conn.execute(
+                "UPDATE jlpt_paper_section_attempts SET status=?, completed_at=? "
+                "WHERE paper_attempt_id=? AND section_exam_id=?",
+                (
+                    desired,
+                    completed_at,
+                    attempt_id,
+                    section["section_exam_id"],
+                ),
+            )
+            section["status"] = desired
+            section["completed_at"] = completed_at
+
+    current = next(
+        (row for row in section_rows if str(row.get("status") or "") != "completed"),
+        None,
+    )
+    if current is None:
+        conn.execute(
+            "UPDATE jlpt_paper_attempts SET status='completed', current_section_index=?, "
+            "current_section_exam_id='', completed_at=?, updated_at=? "
+            "WHERE id=? AND status='in_progress'",
+            (len(section_rows), now, now, attempt_id),
+        )
+    else:
+        conn.execute(
+            "UPDATE jlpt_paper_attempts SET current_section_index=?, "
+            "current_section_exam_id=?, updated_at=? WHERE id=? AND status='in_progress'",
+            (
+                int(current.get("sort_order") or 0),
+                str(current.get("section_exam_id") or ""),
+                now,
+                attempt_id,
+            ),
+        )
+    fresh = _jlpt_paper_attempt_row(conn, attempt_id)
+    if not fresh:
+        raise RuntimeError("JLPT paper attempt disappeared while syncing progress")
+    return _jlpt_public_paper_attempt(conn, fresh)
+
+
+def lock_jlpt_paper_attempt_for_submit(
+    conn: sqlite3.Connection, *, session: dict[str, Any], user_id: str, now: str
+) -> dict[str, Any] | None:
+    attempt_id = str(session.get("paper_attempt_id") or "")
+    if not attempt_id:
+        return None
+    attempt = _jlpt_paper_attempt_row(conn, attempt_id)
+    if not attempt or str(attempt.get("user_id") or "") != str(user_id or ""):
+        raise APIError(
+            "整卷会话权益记录不一致，请联系支持。",
+            409,
+            "paper_attempt_session_mismatch",
+        )
+    conn.execute(
+        "INSERT INTO jlpt_paper_start_locks (user_id, paper_exam_id, touched_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(user_id, paper_exam_id) DO NOTHING",
+        (user_id, attempt["paper_exam_id"], now),
+    )
+    locked = conn.execute(
+        "UPDATE jlpt_paper_start_locks SET touched_at=? "
+        "WHERE user_id=? AND paper_exam_id=?",
+        (now, user_id, attempt["paper_exam_id"]),
+    )
+    if getattr(locked, "rowcount", 0) != 1:
+        raise RuntimeError("failed to lock JLPT paper attempt for submit")
+    return attempt
+
+
+def sync_jlpt_paper_attempt_after_submit(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    user_id: str,
+    now: str = "",
+) -> dict[str, Any]:
+    now = now or now_iso()
+    row = conn.execute(
+        "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=?",
+        (session_id, user_id),
+    ).fetchone()
+    if not row:
+        raise APIError("考试会话不存在。", 404, "not_found")
+    session = dict(row)
+    attempt_id = str(session.get("paper_attempt_id") or "")
+    if not attempt_id:
+        return {}
+    if str(session.get("status") or "") != "submitted":
+        raise APIError(
+            "科目尚未交卷，不能推进整卷进度。", 409, "paper_section_not_submitted"
+        )
+    updated = conn.execute(
+        "UPDATE jlpt_paper_section_attempts SET status='completed', completed_at=? "
+        "WHERE paper_attempt_id=? AND session_id=? AND status IN ('pending', 'in_progress')",
+        (str(session.get("submitted_at") or now), attempt_id, session_id),
+    )
+    if getattr(updated, "rowcount", 0) not in (0, 1):
+        raise RuntimeError("unexpected JLPT paper section completion cardinality")
+    return _sync_jlpt_paper_attempt_progress(conn, attempt_id, now=now)
+
+
+@money_atomic
+def refund_jlpt_paper_attempt_atomic(
+    conn: sqlite3.Connection,
+    *,
+    attempt_id: str,
+    reason: str,
+    actor: str = "",
+    now: str = "",
+) -> dict[str, Any]:
+    """Credit back the exact parent-attempt charge with an idempotent audit row.
+
+    This is an operator/reconciliation primitive, not an automatic consumer
+    refund policy. It locks the same durable parent row used by starts, verifies
+    the original debit, credits exactly the immutable charged snapshot, and
+    revokes any unfinished section entitlement in one transaction.
+    """
+    attempt_id = str(attempt_id or "").strip()
+    reason = str(reason or "").strip()[:500]
+    actor = str(actor or "").strip()[:200]
+    now = now or now_iso()
+    attempt = _jlpt_paper_attempt_row(conn, attempt_id)
+    if not attempt:
+        return {"status": "not_found", "applied": False}
+
+    conn.execute(
+        "INSERT INTO jlpt_paper_start_locks (user_id, paper_exam_id, touched_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(user_id, paper_exam_id) DO NOTHING",
+        (attempt["user_id"], attempt["paper_exam_id"], now),
+    )
+    locked = conn.execute(
+        "UPDATE jlpt_paper_start_locks SET touched_at=? "
+        "WHERE user_id=? AND paper_exam_id=?",
+        (now, attempt["user_id"], attempt["paper_exam_id"]),
+    )
+    if getattr(locked, "rowcount", 0) != 1:
+        raise RuntimeError("failed to lock JLPT paper attempt for refund")
+    attempt = _jlpt_paper_attempt_row(conn, attempt_id)
+    if not attempt:
+        raise RuntimeError("JLPT paper attempt disappeared during refund")
+
+    if str(attempt.get("payment_status") or "") == "refunded":
+        refund_row = None
+        if str(attempt.get("refund_ledger_entry_id") or ""):
+            refund_row = conn.execute(
+                "SELECT * FROM wallet_ledger_entries WHERE id=? AND user_id=?",
+                (attempt["refund_ledger_entry_id"], attempt["user_id"]),
+            ).fetchone()
+        return {
+            "status": "refunded",
+            "applied": False,
+            "duplicate": True,
+            "paperAttempt": _jlpt_public_paper_attempt(conn, attempt),
+            "refundLedgerEntryId": str(attempt.get("refund_ledger_entry_id") or ""),
+            "wallet": get_wallet_snapshot(conn, attempt["user_id"]),
+            "refundEntry": serialize_wallet_ledger_entry(refund_row) if refund_row else {},
+        }
+
+    charged = int(attempt.get("charged_coin_cost") or 0)
+    if str(attempt.get("payment_status") or "") != "paid" or charged <= 0:
+        return {
+            "status": "not_refundable",
+            "applied": False,
+            "paperAttempt": _jlpt_public_paper_attempt(conn, attempt),
+        }
+    debit_id = str(attempt.get("wallet_ledger_entry_id") or "")
+    debit_row = conn.execute(
+        "SELECT * FROM wallet_ledger_entries WHERE id=? AND user_id=?",
+        (debit_id, attempt["user_id"]),
+    ).fetchone()
+    debit = dict(debit_row) if debit_row else None
+    if (
+        not debit
+        or int(debit.get("points_delta") or 0) != -charged
+        or str(debit.get("source_type") or "") != "jlpt_exam"
+    ):
+        raise APIError(
+            "原始考试扣款记录不完整，已停止自动冲正。",
+            409,
+            "jlpt_refund_debit_mismatch",
+        )
+
+    refund = wallet_post_ledger(
+        conn,
+        attempt["user_id"],
+        "refund_credit",
+        charged,
+        source_type="jlpt_paper_refund",
+        source_order_id=attempt_id,
+        source_transaction_id=debit_id,
+        product_id=str(attempt.get("paper_exam_id") or ""),
+        idempotency_key="jlpt_paper_refund:" + attempt_id,
+        metadata={
+            "reason": reason,
+            "actor": actor,
+            "paperAttemptId": attempt_id,
+            "originalLedgerEntryId": debit_id,
+            "chargedCoinCost": charged,
+        },
+        created_by=actor,
+    )
+    refund_entry_id = str((refund.get("entry") or {}).get("id") or "")
+    if not refund_entry_id:
+        raise RuntimeError("JLPT paper refund ledger entry was not created")
+
+    updated = conn.execute(
+        "UPDATE jlpt_paper_attempts SET status='refunded', payment_status='refunded', "
+        "refunded_at=?, refund_ledger_entry_id=?, refund_reason=?, updated_at=? "
+        "WHERE id=? AND payment_status='paid' AND refund_ledger_entry_id=''",
+        (now, refund_entry_id, reason, now, attempt_id),
+    )
+    if getattr(updated, "rowcount", 0) != 1:
+        raise RuntimeError("failed to finalize JLPT paper refund")
+    conn.execute(
+        "UPDATE jlpt_exam_sessions SET status='cancelled' "
+        "WHERE paper_attempt_id=? AND status='in_progress'",
+        (attempt_id,),
+    )
+    conn.execute(
+        "UPDATE jlpt_paper_section_attempts SET status='cancelled' "
+        "WHERE paper_attempt_id=? AND status IN ('pending', 'in_progress')",
+        (attempt_id,),
+    )
+    fresh = _jlpt_paper_attempt_row(conn, attempt_id)
+    if not fresh:
+        raise RuntimeError("JLPT paper attempt disappeared after refund")
+    return {
+        "status": "refunded",
+        "applied": True,
+        "duplicate": bool(refund.get("duplicate")),
+        "paperAttempt": _jlpt_public_paper_attempt(conn, fresh),
+        "refundLedgerEntryId": refund_entry_id,
+        "wallet": refund.get("wallet") or get_wallet_snapshot(conn, attempt["user_id"]),
+        "refundEntry": refund.get("entry") or {},
+    }
+
+
+def _delete_new_jlpt_paper_attempt(
+    conn: sqlite3.Connection, attempt_id: str
+) -> None:
+    conn.execute(
+        "DELETE FROM jlpt_paper_section_attempts WHERE paper_attempt_id=?",
+        (attempt_id,),
+    )
+    conn.execute(
+        "DELETE FROM jlpt_paper_attempts WHERE id=? AND payment_status IN ('pending', 'not_required')",
+        (attempt_id,),
+    )
+
+
+def _start_jlpt_paper_exam_tx(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    requested_exam: dict[str, Any],
+    request_key: str,
+    now: str,
+    confirmed_charge_coins: int | None = None,
+) -> dict[str, Any]:
+    requested_id = str(requested_exam.get("id") or "")
+    requested_kind = str(requested_exam.get("kind") or "")
+    paper_id = (
+        requested_id
+        if requested_kind == "paper"
+        else str(requested_exam.get("parent_exam_id") or "")
+    )
+    if not paper_id:
+        return {"status": "not_found"}
+
+    conn.execute(
+        "INSERT INTO jlpt_paper_start_locks (user_id, paper_exam_id, touched_at) "
+        "VALUES (?, ?, ?) ON CONFLICT(user_id, paper_exam_id) DO NOTHING",
+        (user_id, paper_id, now),
+    )
+    locked = conn.execute(
+        "UPDATE jlpt_paper_start_locks SET touched_at=? "
+        "WHERE user_id=? AND paper_exam_id=?",
+        (now, user_id, paper_id),
+    )
+    if getattr(locked, "rowcount", 0) != 1:
+        raise RuntimeError("failed to acquire JLPT paper start lock")
+
+    parent_lock = conn.execute(
+        "UPDATE jlpt_exams SET coin_cost=coin_cost WHERE id=? "
+        "AND kind='paper' AND status='published'",
+        (paper_id,),
+    )
+    if getattr(parent_lock, "rowcount", 0) != 1:
+        return {"status": "not_found"}
+    parent = jlpt.get_exam(conn, paper_id)
+    sections = _jlpt_paper_sections_for_start(conn, paper_id)
+    if not parent or not sections:
+        return {"status": "paper_has_no_sections"}
+
+    section_ids = [str(section["id"]) for section in sections]
+    if requested_kind != "paper" and requested_id not in section_ids:
+        return {"status": "not_found"}
+    # Lock and snapshot every section price/status in deterministic order.
+    for section in sections:
+        section_lock = conn.execute(
+            "UPDATE jlpt_exams SET coin_cost=coin_cost WHERE id=? "
+            "AND parent_exam_id=? AND kind='section' AND status='published'",
+            (section["id"], paper_id),
+        )
+        if getattr(section_lock, "rowcount", 0) != 1:
+            return {"status": "paper_sections_changed"}
+    sections = _jlpt_paper_sections_for_start(conn, paper_id)
+    active_row = conn.execute(
+        "SELECT * FROM jlpt_paper_attempts WHERE user_id=? AND paper_exam_id=? "
+        "AND status='in_progress' ORDER BY started_at DESC LIMIT 1",
+        (user_id, paper_id),
+    ).fetchone()
+    attempt = dict(active_row) if active_row else None
+    if attempt:
+        _sync_jlpt_paper_attempt_progress(conn, attempt["id"], now=now)
+        attempt = _jlpt_paper_attempt_row(conn, attempt["id"])
+        if attempt and str(attempt.get("status") or "") != "in_progress":
+            return {
+                "status": "paper_completed",
+                "paperAttempt": _jlpt_public_paper_attempt(conn, attempt),
+            }
+
+    if attempt:
+        # Live catalog prices may change after purchase; an existing attempt is
+        # authorized by its immutable parent snapshot, never recomputed here.
+        base_cost = int(attempt.get("base_coin_cost_snapshot") or 0)
+    else:
+        positive = [
+            section
+            for section in sections
+            if int(section.get("coin_cost") or 0) > 0
+        ]
+        if len(positive) > 1 or (
+            positive and positive[0]["id"] != sections[0]["id"]
+        ):
+            return {
+                "status": "invalid_paper_pricing",
+                "reason": "exactly the first section may be the charging point",
+            }
+        base_cost = sum(
+            max(0, int(section.get("coin_cost") or 0)) for section in sections
+        )
+
+    current_id = (
+        str(attempt.get("current_section_exam_id") or "")
+        if attempt
+        else str(sections[0]["id"])
+    )
+    target_id = current_id if requested_kind == "paper" else requested_id
+    if target_id != current_id:
+        return {
+            "status": "section_out_of_order",
+            "currentSectionExamId": current_id,
+            "currentSectionIndex": int(attempt.get("current_section_index") or 0)
+            if attempt
+            else 0,
+            "paperAttemptId": str(attempt.get("id") or "") if attempt else "",
+        }
+
+    # A timed-out current section is settled while holding the parent lock, then
+    # the authoritative pointer advances before a new section can be started.
+    if attempt:
+        progress_row = conn.execute(
+            "SELECT * FROM jlpt_paper_section_attempts "
+            "WHERE paper_attempt_id=? AND section_exam_id=?",
+            (attempt["id"], current_id),
+        ).fetchone()
+        progress = dict(progress_row) if progress_row else None
+        session_id = str((progress or {}).get("session_id") or "")
+        if session_id:
+            session_row = conn.execute(
+                "SELECT * FROM jlpt_exam_sessions WHERE id=? AND paper_attempt_id=?",
+                (session_id, attempt["id"]),
+            ).fetchone()
+            session = dict(session_row) if session_row else None
+            current_exam = jlpt.get_exam(conn, current_id)
+            if (
+                session
+                and current_exam
+                and str(session.get("status") or "") == "in_progress"
+                and not jlpt.exam_session_can_resume(session, current_exam, now=now)
+            ):
+                jlpt.submit_exam_session(
+                    conn, session=session, exam=current_exam, now=now
+                )
+                sync_jlpt_paper_attempt_after_submit(
+                    conn, session_id=session_id, user_id=user_id, now=now
+                )
+                attempt = _jlpt_paper_attempt_row(conn, attempt["id"])
+                if not attempt:
+                    raise RuntimeError(
+                        "JLPT paper attempt disappeared after timed-out section submit"
+                    )
+                if str(attempt.get("status") or "") != "in_progress":
+                    return {
+                        "status": "paper_completed",
+                        "paperAttempt": _jlpt_public_paper_attempt(conn, attempt),
+                    }
+                current_id = str(attempt.get("current_section_exam_id") or "")
+                if requested_kind != "paper" and requested_id != current_id:
+                    return {
+                        "status": "section_out_of_order",
+                        "currentSectionExamId": current_id,
+                        "currentSectionIndex": int(
+                            attempt.get("current_section_index") or 0
+                        ),
+                        "paperAttemptId": str(attempt.get("id") or ""),
+                    }
+                target_id = current_id
+
+    target = next((section for section in sections if section["id"] == target_id), None)
+    if not target:
+        return {"status": "paper_sections_changed"}
+
+    created_attempt = False
+    if not attempt:
+        is_member = has_active_membership(conn, user_id)
+        if (
+            bool(parent.get("is_member_only"))
+            or any(bool(section.get("is_member_only")) for section in sections)
+        ) and not is_member:
+            return {"status": "member_required"}
+        attempt_id = str(uuid.uuid4())
+        charged_preview = jlpt.member_coin_cost(base_cost) if is_member else base_cost
+        pricing_tier = (
+            "free" if charged_preview <= 0 else ("member" if is_member else "standard")
+        )
+        payment_status = "not_required" if charged_preview <= 0 else "pending"
+        unlock_source = "free" if charged_preview <= 0 else "pending"
+        request_digest = _jlpt_start_request_digest(user_id, paper_id, request_key)
+        conn.execute(
+            "INSERT INTO jlpt_paper_attempts "
+            "(id, user_id, paper_exam_id, status, current_section_index, "
+            "current_section_exam_id, section_count, base_coin_cost_snapshot, "
+            "charged_coin_cost, pricing_tier, membership_snapshot, unlock_source, "
+            "payment_status, wallet_ledger_entry_id, start_request_key, started_at, updated_at) "
+            "VALUES (?, ?, ?, 'in_progress', 0, ?, ?, ?, 0, ?, ?, ?, ?, '', ?, ?, ?)",
+            (
+                attempt_id,
+                user_id,
+                paper_id,
+                sections[0]["id"],
+                len(sections),
+                base_cost,
+                pricing_tier,
+                1 if is_member else 0,
+                unlock_source,
+                payment_status,
+                request_digest,
+                now,
+                now,
+            ),
+        )
+        for index, section in enumerate(sections):
+            conn.execute(
+                "INSERT INTO jlpt_paper_section_attempts "
+                "(paper_attempt_id, section_exam_id, sort_order, status) "
+                "VALUES (?, ?, ?, 'pending')",
+                (attempt_id, section["id"], index),
+            )
+        attempt = _jlpt_paper_attempt_row(conn, attempt_id)
+        created_attempt = True
+    if not attempt:
+        raise RuntimeError("failed to create or load JLPT paper attempt")
+
+    outcome = _start_jlpt_single_exam_tx(
+        conn,
+        user_id=user_id,
+        exam=target,
+        request_key=request_key,
+        now=now,
+        paper_attempt_id=str(attempt["id"]),
+        charge_override=0 if not created_attempt else None,
+        confirmed_charge_coins=confirmed_charge_coins,
+    )
+    if outcome.get("status") != "started":
+        if created_attempt:
+            _delete_new_jlpt_paper_attempt(conn, str(attempt["id"]))
+        return outcome
+
+    started = outcome["exam"]
+    session_id = str(started.get("sessionId") or "")
+    session_row = conn.execute(
+        "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=? AND paper_attempt_id=?",
+        (session_id, user_id, attempt["id"]),
+    ).fetchone()
+    if not session_row:
+        raise RuntimeError("paper section session was not linked to its parent attempt")
+    session = dict(session_row)
+    section_update = conn.execute(
+        "UPDATE jlpt_paper_section_attempts SET status='in_progress', session_id=?, "
+        "started_at=CASE WHEN started_at='' THEN ? ELSE started_at END "
+        "WHERE paper_attempt_id=? AND section_exam_id=? "
+        "AND (session_id='' OR session_id=?)",
+        (session_id, str(session.get("started_at") or now), attempt["id"], target_id, session_id),
+    )
+    if getattr(section_update, "rowcount", 0) != 1:
+        raise APIError(
+            "整卷科目已经绑定另一场会话，请联系支持。",
+            409,
+            "paper_section_session_conflict",
+        )
+
+    if created_attempt:
+        payment_status = str(session.get("payment_status") or "legacy_unknown")
+        charged = int(session.get("charged_coin_cost") or 0)
+        if payment_status not in ("paid", "not_required"):
+            raise RuntimeError("paper attempt payment did not reach a terminal start state")
+        unlock_source = "coin_per_attempt" if charged > 0 else "free"
+        finalized = conn.execute(
+            "UPDATE jlpt_paper_attempts SET charged_coin_cost=?, pricing_tier=?, "
+            "unlock_source=?, payment_status=?, "
+            "wallet_ledger_entry_id=?, updated_at=? WHERE id=? AND payment_status IN ('pending', 'not_required')",
+            (
+                charged,
+                str(session.get("pricing_tier") or "legacy"),
+                unlock_source,
+                payment_status,
+                str(session.get("wallet_ledger_entry_id") or ""),
+                now,
+                attempt["id"],
+            ),
+        )
+        if getattr(finalized, "rowcount", 0) != 1:
+            raise RuntimeError("failed to finalize JLPT paper payment snapshot")
+
+    fresh_attempt = _jlpt_paper_attempt_row(conn, str(attempt["id"]))
+    if not fresh_attempt:
+        raise RuntimeError("JLPT paper attempt disappeared after section start")
+    started["paperAttempt"] = _jlpt_public_paper_attempt(conn, fresh_attempt)
+    return {"status": "started", "exam": started}
+
+
+@money_atomic
+def start_jlpt_exam_atomic(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    exam: dict[str, Any],
+    is_member: bool | None = None,
+    request_key: str = "",
+    now: str = "",
+    confirmed_charge_coins: int | None = None,
+) -> dict[str, Any]:
+    """Start an independent exam or a parent-authorized full-paper section."""
+    user_id = str(user_id or "").strip()
+    exam_id = str((exam or {}).get("id") or "").strip()
+    if not user_id or not exam_id:
+        return {"status": "not_found"}
+    now = now or now_iso()
+    live_exam = jlpt.get_exam(conn, exam_id)
+    if not live_exam or str(live_exam.get("status") or "") != "published":
+        return {"status": "not_found"}
+    if str(live_exam.get("kind") or "") == "paper" or str(
+        live_exam.get("parent_exam_id") or ""
+    ):
+        return _start_jlpt_paper_exam_tx(
+            conn,
+            user_id=user_id,
+            requested_exam=live_exam,
+            request_key=request_key,
+            now=now,
+            confirmed_charge_coins=confirmed_charge_coins,
+        )
+    return _start_jlpt_single_exam_tx(
+        conn,
+        user_id=user_id,
+        exam=live_exam,
+        is_member=is_member,
+        request_key=request_key,
+        now=now,
+        confirmed_charge_coins=confirmed_charge_coins,
+    )
+
+
+def jlpt_exam_access_preflight(
+    conn: sqlite3.Connection,
+    *,
+    user_id: str,
+    exam_id: str,
+    now: str = "",
+) -> dict[str, Any]:
+    """Return the sole server-authoritative JLPT price/access decision."""
+    user_id = str(user_id or "").strip()
+    exam_id = str(exam_id or "").strip()
+    now = now or now_iso()
+    exam = jlpt.get_exam(conn, exam_id) if exam_id else None
+    if (
+        not user_id
+        or not exam
+        or str(exam.get("status") or "") != "published"
+    ):
+        return {"status": "not_found"}
+
+    is_member = has_active_membership(conn, user_id)
+    is_paper = str(exam.get("kind") or "") == "paper" or bool(
+        str(exam.get("parent_exam_id") or "")
+    )
+    paper_id = (
+        str(exam.get("id") or "")
+        if str(exam.get("kind") or "") == "paper"
+        else str(exam.get("parent_exam_id") or "")
+    )
+    base_cost = max(0, int(exam.get("coin_cost") or 0))
+    current_section_id = ""
+    resume_session_id = ""
+    paper_attempt: dict[str, Any] | None = None
+    unlock_source = "coins"
+    entitlement_active = False
+    member_only = bool(exam.get("is_member_only"))
+    snapshot_source = "live_catalog"
+
+    if is_paper:
+        parent = jlpt.get_exam(conn, paper_id)
+        sections = _jlpt_paper_sections_for_start(conn, paper_id)
+        if not parent or not sections:
+            return {"status": "paper_has_no_sections"}
+        if str(exam.get("kind") or "") != "paper" and exam_id not in {
+            str(section["id"]) for section in sections
+        }:
+            return {"status": "not_found"}
+        member_only = bool(parent.get("is_member_only")) or any(
+            bool(section.get("is_member_only")) for section in sections
+        )
+        active_row = conn.execute(
+            "SELECT * FROM jlpt_paper_attempts WHERE user_id=? AND paper_exam_id=? "
+            "AND status='in_progress' ORDER BY started_at DESC LIMIT 1",
+            (user_id, paper_id),
+        ).fetchone()
+        active = dict(active_row) if active_row else None
+        if active:
+            if str(active.get("payment_status") or "") not in ("paid", "not_required"):
+                return {
+                    "status": "reconciliation_required",
+                    "paperAttemptId": str(active.get("id") or ""),
+                }
+            base_cost = int(active.get("base_coin_cost_snapshot") or 0)
+            current_section_id = str(active.get("current_section_exam_id") or "")
+            paper_attempt = _jlpt_public_paper_attempt(conn, active)
+            entitlement_active = True
+            unlock_source = "paper_attempt"
+            snapshot_source = "active_attempt"
+            current_progress = conn.execute(
+                "SELECT session_id FROM jlpt_paper_section_attempts "
+                "WHERE paper_attempt_id=? AND section_exam_id=?",
+                (active["id"], current_section_id),
+            ).fetchone()
+            if current_progress and str(current_progress["session_id"] or ""):
+                session_row = conn.execute(
+                    "SELECT * FROM jlpt_exam_sessions WHERE id=? AND paper_attempt_id=?",
+                    (current_progress["session_id"], active["id"]),
+                ).fetchone()
+                current_exam = jlpt.get_exam(conn, current_section_id)
+                if (
+                    session_row
+                    and current_exam
+                    and jlpt.exam_session_can_resume(
+                        dict(session_row), current_exam, now=now
+                    )
+                ):
+                    resume_session_id = str(current_progress["session_id"] or "")
+        else:
+            positive = [
+                section
+                for section in sections
+                if int(section.get("coin_cost") or 0) > 0
+            ]
+            if len(positive) > 1 or (
+                positive and positive[0]["id"] != sections[0]["id"]
+            ):
+                return {"status": "invalid_paper_pricing"}
+            base_cost = sum(
+                max(0, int(section.get("coin_cost") or 0))
+                for section in sections
+            )
+            current_section_id = str(sections[0]["id"])
+    else:
+        session_row = conn.execute(
+            "SELECT * FROM jlpt_exam_sessions WHERE user_id=? AND exam_id=? "
+            "AND status='in_progress' AND COALESCE(paper_attempt_id, '')='' "
+            "AND payment_status IN ('paid', 'not_required') "
+            "ORDER BY started_at DESC LIMIT 1",
+            (user_id, exam_id),
+        ).fetchone()
+        if session_row and jlpt.exam_session_can_resume(dict(session_row), exam, now=now):
+            session = dict(session_row)
+            entitlement_active = True
+            unlock_source = "exam_attempt"
+            resume_session_id = str(session.get("id") or "")
+            base_cost = int(session.get("base_coin_cost_snapshot") or 0)
+            snapshot_source = "active_attempt"
+
+    member_cost = jlpt.member_coin_cost(base_cost)
+    required = 0 if entitlement_active else (member_cost if is_member else base_cost)
+    pricing_tier = (
+        "entitled"
+        if entitlement_active
+        else ("free" if required <= 0 else ("member" if is_member else "standard"))
+    )
+    locked = member_only and not is_member and not entitlement_active
+    if locked:
+        decision = "LOCKED"
+        unlock_source = "locked"
+    elif base_cost <= 0:
+        decision = "FREE_SAMPLE"
+        unlock_source = "free" if not entitlement_active else unlock_source
+    else:
+        decision = "COIN_PER_ATTEMPT"
+    wallet = get_wallet_snapshot(conn, user_id)
+    balance = int(wallet.get("balancePoints") or 0)
+    shortfall = max(0, required - balance)
+    one_time_paper = bool(is_paper)
+    confirmation_key = (
+        "jlpt.paper.pay_once"
+        if one_time_paper and required > 0
+        else (
+            "jlpt.paper.resume_entitled"
+            if one_time_paper and entitlement_active
+            else ("jlpt.exam.free" if required <= 0 else "jlpt.exam.pay_per_attempt")
+        )
+    )
+    confirmation_copy = (
+        f"本次完整卷一次扣除 {required} Machi 币，后续科目不再扣费。"
+        if one_time_paper and required > 0
+        else (
+            "本次完整卷已解锁，可继续当前科目，不会重复扣费。"
+            if one_time_paper and entitlement_active
+            else (
+                "本次考试免费。"
+                if required <= 0
+                else f"本次开考将扣除 {required} Machi 币。"
+            )
+        )
+    )
+    policy_exam = (
+        jlpt.get_exam(conn, current_section_id)
+        if current_section_id
+        else exam
+    ) or exam
+    listening_policy = jlpt.listening_policy_for_exam(policy_exam)
+    if resume_session_id:
+        resume_row = conn.execute(
+            "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=?",
+            (resume_session_id, user_id),
+        ).fetchone()
+        if resume_row:
+            listening_policy = jlpt.exam_contract_for_session(
+                dict(resume_row), policy_exam
+            )["listeningPolicy"]
+    return {
+        "status": "ok",
+        "examId": exam_id,
+        "paperExamId": paper_id if is_paper else "",
+        "accessDecision": decision,
+        "canStart": bool(not locked and shortfall == 0),
+        "baseCoinCost": base_cost,
+        "memberCoinCost": member_cost,
+        "requiredCoins": required,
+        "pricingTier": pricing_tier,
+        "balance": balance,
+        "shortfall": shortfall,
+        "unlockSource": unlock_source,
+        "oneTimePaperPayment": one_time_paper,
+        "currentSectionExamId": current_section_id,
+        "resumeSessionId": resume_session_id,
+        "paperAttempt": paper_attempt or {},
+        "priceSnapshotSource": snapshot_source,
+        "refundPolicyCode": "JLPT_ATTEMPT_TECHNICAL_FAILURE_V1",
+        "refundPolicyCopy": "开考后不自动退款；若因平台故障无法作答，可按审计记录人工冲正。",
+        "confirmationCopyKey": confirmation_key,
+        "confirmationCopy": confirmation_copy,
+        "listeningPolicy": listening_policy,
+        "serverTime": now,
+    }
+
+
 @money_atomic
 def qualify_referral_atomic(conn: sqlite3.Connection, invitee_id: str) -> dict[str, Any]:
     """@money_atomic boundary for referral.qualify_referral: the CAS on the
@@ -17229,7 +18500,10 @@ class Handler(BaseHTTPRequestHandler):
         return f"{self._idempotency_caller_tag()}\x1f{method} {path}"
 
     def _idempotency_key(self) -> str:
-        key = (self.headers.get("Idempotency-Key") or "").strip()
+        raw = self.headers.get("Idempotency-Key")
+        if not isinstance(raw, str):
+            return ""
+        key = raw.strip()
         return key[:200] if key else ""
 
     def _idempotency_lock_id(self, method: str, path: str) -> int | None:
@@ -18601,45 +19875,156 @@ class Handler(BaseHTTPRequestHandler):
             "exams": jlpt.list_exams(conn, level=query.get("level") or "", is_member=is_member),
         })
 
+    def api_guide_jlpt_exam_preflight(
+        self, conn: sqlite3.Connection, query: dict[str, str]
+    ) -> None:
+        user = self.require_user(conn)
+        exam_id = str(query.get("examId") or query.get("exam_id") or "").strip()
+        if not exam_id:
+            return self.send_error_json("examId required", 400, "invalid_query")
+        result = jlpt_exam_access_preflight(
+            conn,
+            user_id=user["id"],
+            exam_id=exam_id,
+            now=now_iso(),
+        )
+        if result.get("status") == "not_found":
+            return self.send_error_json("exam not found", 404, "not_found")
+        if result.get("status") != "ok":
+            return self.send_error_json(
+                "考试访问状态需要人工核对。",
+                409,
+                str(result.get("status") or "preflight_failed"),
+                result,
+            )
+        self.send_json(
+            {"status": "ok", **result, "disclaimer": self._JLPT_DISCLAIMER}
+        )
+
     def api_guide_jlpt_exam_start(self, conn: sqlite3.Connection) -> None:
         user = self.require_user(conn)
-        is_member = has_active_membership(conn, user["id"])
         body = self.read_json()
         exam_id = str(body.get("examId") or body.get("exam_id") or "").strip()
+        raw_request_key = self.headers.get("Idempotency-Key")
+        if raw_request_key is None or raw_request_key == "":
+            return self.send_error_json(
+                "Idempotency-Key required",
+                400,
+                "missing_idempotency_key",
+            )
+        if (
+            not isinstance(raw_request_key, str)
+            or not raw_request_key.strip()
+            or len(raw_request_key.strip()) > 200
+            or any(ord(char) < 0x20 or ord(char) == 0x7F for char in raw_request_key)
+        ):
+            return self.send_error_json(
+                "Idempotency-Key 必须是 1 至 200 个可打印字符。",
+                400,
+                "invalid_idempotency_key",
+            )
+        request_key = raw_request_key.strip()
+        confirmed_present = (
+            "confirmedChargeCoins" in body or "confirmed_charge_coins" in body
+        )
+        if not confirmed_present:
+            return self.send_error_json(
+                "confirmedChargeCoins required",
+                400,
+                "missing_confirmed_charge",
+            )
+        confirmed_raw = body.get(
+            "confirmedChargeCoins", body.get("confirmed_charge_coins")
+        )
+        if (
+            isinstance(confirmed_raw, bool)
+            or not isinstance(confirmed_raw, int)
+            or confirmed_raw < 0
+        ):
+            return self.send_error_json(
+                "confirmedChargeCoins 必须是非负整数。",
+                400,
+                "invalid_confirmed_charge",
+            )
         exam = jlpt.get_exam(conn, exam_id) if exam_id else None
         if not exam or exam.get("status") != "published":
             return self.send_error_json("exam not found", 404, "not_found")
-        if exam.get("is_member_only") and not is_member:
-            env = self._error_envelope("MEMBER_REQUIRED", "该模考为会员专属，开通会员即可参加。")
+        outcome = start_jlpt_exam_atomic(
+            conn,
+            user_id=user["id"],
+            exam=exam,
+            request_key=request_key,
+            now=now_iso(),
+            confirmed_charge_coins=int(confirmed_raw),
+        )
+        if outcome.get("status") == "not_found":
+            return self.send_error_json("exam not found", 404, "not_found")
+        if outcome.get("status") == "member_required":
+            env = self._error_envelope(
+                "MEMBER_REQUIRED", "该模考为会员专属，开通会员即可参加。"
+            )
             env["upgradeSuggested"] = True
             return self.send_json(env, 403)
-        started = jlpt.start_exam_session(conn, user_id=user["id"], exam=exam, is_member=is_member, now=now_iso())
-        if not started:
+        if outcome.get("status") == "no_questions":
             return self.send_error_json("该模考暂无可用题目。", 409, "no_questions")
-        # Machi 币扣费:仅全新开考(非续考)且该卷 coin_cost>0。会员 5 折。练习/定级/
-        # 错题本走别的端点、免费,不到这条路径。分科整卷把成本记在笔试子卷上,整卷
-        # 只在第一段扣一次。以 sessionId 作幂等键——同一会话(含 HTTP 重试经续考
-        # 命中同一 session)绝不重复扣;余额不足则作废刚建的空会话、退回未开考并
-        # 引导充值。
-        base_cost = int(exam.get("coin_cost") or 0)
-        cost = jlpt.member_coin_cost(base_cost) if is_member else base_cost
-        if cost > 0 and not started.get("resumed"):
-            debit = wallet_post_ledger(
-                conn, user["id"], "spend", -cost,
-                source_type="jlpt_exam", product_id=exam_id,
-                idempotency_key="jlpt_exam:" + str(started.get("sessionId") or ""),
-                metadata={"examId": exam_id, "level": exam.get("level") or "", "member": is_member},
+        if outcome.get("status") == "insufficient":
+            env = self._error_envelope(
+                "EXAM_INSUFFICIENT_COINS", "Machi 币不足，充值后即可开考。"
             )
-            if debit.get("insufficient"):
-                conn.execute("DELETE FROM jlpt_exam_sessions WHERE id = ?", (started.get("sessionId"),))
-                conn.commit()
-                env = self._error_envelope("EXAM_INSUFFICIENT_COINS", "Machi 币不足，充值后即可开考。")
-                env["requiredCoins"] = cost
-                env["balance"] = int((debit.get("wallet") or {}).get("balancePoints") or 0)
-                return self.send_json(env, 402)
-            started["coinCharged"] = cost
-            started["coinBalance"] = int((debit.get("wallet") or {}).get("balancePoints") or 0)
-        conn.commit()
+            env["requiredCoins"] = int(outcome.get("requiredCoins") or 0)
+            env["balance"] = int(outcome.get("balance") or 0)
+            return self.send_json(env, 402)
+        if outcome.get("status") == "price_changed":
+            return self.send_error_json(
+                "考试价格或权益状态已变化，请重新确认后开考。",
+                409,
+                "exam_price_changed",
+                {
+                    "confirmedCoins": int(outcome.get("confirmedCoins") or 0),
+                    "requiredCoins": int(outcome.get("requiredCoins") or 0),
+                    "baseCoinCost": int(outcome.get("baseCoinCost") or 0),
+                    "pricingTier": outcome.get("pricingTier") or "",
+                },
+            )
+        if outcome.get("status") == "already_completed":
+            return self.send_error_json(
+                "该 Idempotency-Key 对应的考试已经结束。",
+                409,
+                "exam_start_already_completed",
+                {
+                    "sessionId": outcome.get("sessionId") or "",
+                    "paymentStatus": outcome.get("paymentStatus") or "legacy_unknown",
+                },
+            )
+        if outcome.get("status") == "section_out_of_order":
+            return self.send_error_json(
+                "请按整卷顺序继续当前科目。",
+                409,
+                "paper_section_out_of_order",
+                {
+                    "currentSectionExamId": outcome.get("currentSectionExamId") or "",
+                    "currentSectionIndex": int(outcome.get("currentSectionIndex") or 0),
+                    "paperAttemptId": outcome.get("paperAttemptId") or "",
+                },
+            )
+        if outcome.get("status") == "paper_completed":
+            return self.send_error_json(
+                "本次整卷已经完成。",
+                409,
+                "paper_attempt_completed",
+                {"paperAttempt": outcome.get("paperAttempt") or {}},
+            )
+        if outcome.get("status") in (
+            "invalid_paper_pricing",
+            "paper_has_no_sections",
+            "paper_sections_changed",
+        ):
+            return self.send_error_json(
+                "整卷配置暂不可用，请联系支持。",
+                409,
+                str(outcome.get("status") or "invalid_paper_configuration"),
+            )
+        started = outcome["exam"]
         _guide_funnel_log("jlpt_exam_start", user_id=user["id"], examId=exam_id,
                           level=exam.get("level") or "")
         self.send_json({"status": "ok", **started, "disclaimer": self._JLPT_DISCLAIMER})
@@ -18651,17 +20036,37 @@ class Handler(BaseHTTPRequestHandler):
         question_id = str(body.get("questionId") or body.get("question_id") or "").strip()
         if not session_id or not question_id:
             return self.send_error_json("sessionId + questionId required", 400, "invalid_body")
-        session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
-        if not session:
-            return self.send_error_json("session not found", 404, "not_found")
+        selected = body.get("selectedIndex", body.get("selected_index"))
+        base_revision = body.get("baseRevision", body.get("base_revision"))
+        revision = body.get("revision")
         try:
-            selected = int(body.get("selectedIndex", body.get("selected_index", -1)))
-        except (TypeError, ValueError):
-            return self.send_error_json("selectedIndex required", 400, "invalid_body")
-        result = jlpt.save_exam_answer(conn, session=session, question_id=question_id, selected_index=selected)
-        if result is None:
-            return self.send_error_json("无法保存作答（会话已结束或题目不属于本卷）。", 409, "answer_rejected")
-        conn.commit()
+            # SQLite uses BEGIN IMMEDIATE; _pg_xlate maps it to BEGIN. Holding
+            # this transaction across the session-row lock and answer upsert is
+            # what makes answer-vs-submit ordering authoritative.
+            conn.execute("BEGIN IMMEDIATE")
+            session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
+            if not session:
+                conn.rollback()
+                return self.send_error_json("session not found", 404, "not_found")
+            result = jlpt.save_exam_answer(
+                conn,
+                session=session,
+                question_id=question_id,
+                selected_index=selected,
+                base_revision=base_revision,
+                revision=revision,
+            )
+            if result is None:
+                conn.rollback()
+                return self.send_error_json(
+                    "无法保存作答（会话已结束或题目不属于本卷）。",
+                    409,
+                    "answer_rejected",
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         self.send_json({"status": "ok", **result})
 
     def api_guide_jlpt_exam_submit(self, conn: sqlite3.Connection) -> None:
@@ -18670,17 +20075,87 @@ class Handler(BaseHTTPRequestHandler):
         session_id = str(body.get("sessionId") or body.get("session_id") or "").strip()
         if not session_id:
             return self.send_error_json("sessionId required", 400, "invalid_body")
-        session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
-        if not session:
-            return self.send_error_json("session not found", 404, "not_found")
-        exam = jlpt.get_exam(conn, session.get("exam_id") or "")
-        result = jlpt.submit_exam_session(conn, session=session, exam=exam, now=now_iso())
-        if result is None:
-            return self.send_error_json("该考试已提交。", 409, "already_submitted")
-        conn.commit()
-        _guide_funnel_log("jlpt_exam_submit", user_id=user["id"],
-                          examId=session.get("exam_id") or "", score=result.get("score"),
-                          passed=result.get("passed"))
+        snapshot_present = "answersSnapshot" in body or "answers_snapshot" in body
+        snapshot = body.get("answersSnapshot", body.get("answers_snapshot")) if snapshot_present else None
+        base_revision = body.get("baseRevision", body.get("base_revision"))
+        revision = body.get("revision")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
+            if not session:
+                conn.rollback()
+                return self.send_error_json("session not found", 404, "not_found")
+            lock_jlpt_paper_attempt_for_submit(
+                conn,
+                session=session,
+                user_id=user["id"],
+                now=now_iso(),
+            )
+            exam = jlpt.get_exam(conn, session.get("exam_id") or "")
+            submit_args = {
+                "session": session,
+                "exam": exam,
+                "now": now_iso(),
+                "base_revision": base_revision,
+                "revision": revision,
+            }
+            if snapshot_present:
+                submit_args["answer_snapshot"] = snapshot
+            result = jlpt.submit_exam_session(conn, **submit_args)
+            if result is None:
+                # A client can lose the first successful response after the
+                # transaction commits.  Reconstruct the immutable stored
+                # result instead of stranding Web/iOS on a 409.  The retried
+                # snapshot is deliberately ignored.
+                live_session = jlpt.get_session(
+                    conn, session_id=session_id, user_id=user["id"]
+                )
+                result = (
+                    jlpt.replay_submitted_exam_result(
+                        conn, session=live_session, exam=exam
+                    )
+                    if live_session
+                    else None
+                )
+                if result is None:
+                    conn.rollback()
+                    return self.send_error_json(
+                        "该考试已提交。", 409, "already_submitted"
+                    )
+            paper_progress = sync_jlpt_paper_attempt_after_submit(
+                conn,
+                session_id=session_id,
+                user_id=user["id"],
+                now=now_iso(),
+            )
+            if paper_progress:
+                if not result.get("idempotentReplay"):
+                    result["paperAttempt"] = paper_progress
+                    if not jlpt.append_exam_result_snapshot_fields(
+                        conn,
+                        session_id=session_id,
+                        fields={"paperAttempt": paper_progress},
+                    ):
+                        raise RuntimeError(
+                            "failed to finalize immutable JLPT paper result snapshot"
+                        )
+                elif "paperAttempt" not in result:
+                    # Compatibility for an auto-settled or pre-snapshot section:
+                    # the first recoverable response becomes its stable replay.
+                    result["paperAttempt"] = paper_progress
+                    jlpt.append_exam_result_snapshot_fields(
+                        conn,
+                        session_id=session_id,
+                        fields={"paperAttempt": paper_progress},
+                    )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        if not result.get("idempotentReplay"):
+            _guide_funnel_log("jlpt_exam_submit", user_id=user["id"],
+                              examId=session.get("exam_id") or "", score=result.get("score"),
+                              passed=result.get("passed"))
         self.send_json({"status": "ok", **result, "disclaimer": self._JLPT_DISCLAIMER})
 
     def api_guide_jlpt_exam_history(self, conn: sqlite3.Connection, query: dict[str, str]) -> None:
@@ -18713,11 +20188,20 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_error_json("paper not found", 404, "not_found")
         self.send_json({"status": "ok", **detail, "disclaimer": self._JLPT_DISCLAIMER})
 
-    def api_guide_jlpt_paper_result(self, conn: sqlite3.Connection, paper_id: str) -> None:
-        """分科整卷合并成绩(登录):聚合各子科目最近已提交会话——笔试缩放分 +
-        聴解百分比。逐段的判分/回看仍走 /exam/submit、/exam/session/{id}。"""
+    def api_guide_jlpt_paper_result(
+        self, conn: sqlite3.Connection, paper_id: str, query: dict[str, str]
+    ) -> None:
+        """分科整卷合并成绩(登录):按一次明确的父卷 attempt 聚合，绝不跨场
+        拼接子科目。逐段判分/回看仍走 /exam/submit、/exam/session/{id}。"""
         user = self.require_user(conn)
-        result = jlpt.paper_result(conn, user_id=user["id"], paper_id=paper_id)
+        result = jlpt.paper_result(
+            conn,
+            user_id=user["id"],
+            paper_id=paper_id,
+            paper_attempt_id=str(
+                query.get("attemptId") or query.get("attempt_id") or ""
+            ).strip(),
+        )
         if not result:
             return self.send_error_json("paper not found", 404, "not_found")
         self.send_json({"status": "ok", **result, "disclaimer": self._JLPT_DISCLAIMER})
@@ -18862,7 +20346,10 @@ class Handler(BaseHTTPRequestHandler):
         exam = body.get("exam") if isinstance(body.get("exam"), dict) else body
         if not isinstance(exam, dict):
             return self.send_error_json("exam object required", 400, "invalid_body")
-        result = jlpt.upsert_exam(conn, exam, now=now_iso())
+        try:
+            result = jlpt.upsert_exam(conn, exam, now=now_iso())
+        except ValueError as exc:
+            return self.send_error_json(str(exc), 400, "invalid_body")
         conn.commit()
         self.send_json({"status": "ok", **result})
 
@@ -26950,6 +28437,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_jlpt_vocab_quiz_submit(conn)
         if path == "/api/guide/jlpt/exams" and method == "GET":
             return self.api_guide_jlpt_exams(conn, query)
+        if path == "/api/guide/jlpt/exam/preflight" and method == "GET":
+            return self.api_guide_jlpt_exam_preflight(conn, query)
         if path == "/api/guide/jlpt/exam/start" and method == "POST":
             return self.api_guide_jlpt_exam_start(conn)
         if path == "/api/guide/jlpt/exam/answer" and method == "POST":
@@ -26962,7 +28451,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.api_guide_jlpt_exam_session(conn, unquote(path[len("/api/guide/jlpt/exam/session/"):]).strip("/"))
         if path.startswith("/api/guide/jlpt/paper/") and path.endswith("/result") and method == "GET":
             _pid = unquote(path[len("/api/guide/jlpt/paper/"):-len("/result")]).strip("/")
-            return self.api_guide_jlpt_paper_result(conn, _pid)
+            return self.api_guide_jlpt_paper_result(conn, _pid, query)
         if path.startswith("/api/guide/jlpt/paper/") and method == "GET":
             return self.api_guide_jlpt_paper(conn, unquote(path[len("/api/guide/jlpt/paper/"):]).strip("/"))
         if path == "/api/guide/categories" and method == "GET":

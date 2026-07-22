@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
@@ -27,6 +28,13 @@ _log = logging.getLogger("kaix.error")
 
 LEVELS: tuple[str, ...] = ("N5", "N4", "N3", "N2", "N1")
 SECTIONS: tuple[str, ...] = ("vocab", "grammar", "reading", "listening")
+MOCK_V1_COIN_COSTS: dict[str, int] = {
+    "N5": 100,
+    "N4": 150,
+    "N3": 250,
+    "N2": 350,
+    "N1": 400,
+}
 SECTION_LABELS_ZH = {
     "vocab": "文字·词汇", "grammar": "语法", "reading": "读解", "listening": "听解",
 }
@@ -46,11 +54,11 @@ VOCAB_QUIZ_DEFAULT_COUNT = 10
 VOCAB_QUIZ_MAX_COUNT = 20
 IMPORT_MAX_ROWS = 2000
 EXAM_DYNAMIC_MAX = 60             # cap on dynamically-sampled mock exam size
-# Grace window (seconds) added to a timed exam's deadline before the server stops
-# accepting answer saves, so an answer in-flight at the buzzer isn't lost to
-# network latency. Grading + recorded duration are still clamped to the hard
-# limit in submit_exam_session.
-EXAM_SAVE_GRACE_SEC = 5
+# The authoritative server deadline has zero scoring grace. Network tolerance
+# is provided by idempotent retries made before the boundary, never by accepting
+# an answer after the exam has ended.
+EXAM_SAVE_GRACE_SEC = 0
+_ANSWER_SNAPSHOT_UNSET = object()
 
 # ── JLPT 标准出分（全真模考）─────────────────────────────────────────────────
 # 依照官方计分结构（2010 年改定后）：N1-N3 笔试两科（言語知識〈文字・語彙・文法〉
@@ -79,6 +87,94 @@ _JLPT_SCALED_NOTE = (
     "按 JLPT 官方计分结构折算的笔试参考分（不含聴解）。正式考试的合格判定"
     "以官方成绩为准，此处仅供备考参考。"
 )
+_JLPT_PAPER_SCORE_NOTE = (
+    "按 JLPT 官方得分区分折算的参考分；正式考试采用等化后的尺度分，Machi 的"
+    "线性折算仅供备考复盘，请以官方成绩为准。"
+)
+
+EXAM_CONTRACT_VERSION = 1
+_STRICT_LISTENING_POLICY: dict[str, Any] = {
+    "mode": "strict",
+    "allowPause": True,
+    "allowSeek": False,
+    "allowReplay": False,
+    "maxPlays": 1,
+    "showTranscriptDuringAttempt": False,
+}
+_PRACTICE_LISTENING_POLICY: dict[str, Any] = {
+    "mode": "practice",
+    "allowPause": True,
+    "allowSeek": True,
+    "allowReplay": True,
+    # Zero means unlimited in the public contract.
+    "maxPlays": 0,
+    "showTranscriptDuringAttempt": True,
+}
+
+
+def listening_policy_for_exam(exam: dict[str, Any]) -> dict[str, Any]:
+    """Return the server-authoritative audio controls for one exam attempt.
+
+    Timed mocks/sections are strict.  Practice, placement and untimed tools keep
+    learner-friendly seeking, replay and transcript access.
+    """
+    kind = str((exam or {}).get("kind") or "").strip().lower()
+    duration = max(0, int((exam or {}).get("duration_seconds") or 0))
+    strict = duration > 0 and kind in ("mock", "section")
+    source = _STRICT_LISTENING_POLICY if strict else _PRACTICE_LISTENING_POLICY
+    return dict(source)
+
+
+def exam_contract_for_exam(exam: dict[str, Any]) -> dict[str, Any]:
+    """Build the immutable timing/scoring/listening contract at start time."""
+    return {
+        "version": EXAM_CONTRACT_VERSION,
+        "durationSeconds": max(0, int((exam or {}).get("duration_seconds") or 0)),
+        "passScore": max(0, min(100, int((exam or {}).get("pass_score") or 60))),
+        "scoreMode": normalize_score_mode((exam or {}).get("score_mode")),
+        "listeningPolicy": listening_policy_for_exam(exam or {}),
+    }
+
+
+def _normalized_listening_policy(raw: Any, *, fallback: dict[str, Any]) -> dict[str, Any]:
+    """Accept only the two server-owned policy shapes; malformed data fails closed."""
+    if isinstance(raw, dict) and str(raw.get("mode") or "") == "practice":
+        return dict(_PRACTICE_LISTENING_POLICY)
+    if isinstance(raw, dict) and str(raw.get("mode") or "") == "strict":
+        return dict(_STRICT_LISTENING_POLICY)
+    if str((fallback or {}).get("mode") or "") == "practice":
+        return dict(_PRACTICE_LISTENING_POLICY)
+    return dict(_STRICT_LISTENING_POLICY)
+
+
+def exam_contract_for_session(
+    session: dict[str, Any], exam: Optional[dict[str, Any]],
+) -> dict[str, Any]:
+    """Read a v1 attempt snapshot, falling back only for pre-migration sessions."""
+    fallback = exam_contract_for_exam(exam or {})
+    raw = session.get("exam_contract_snapshot_json")
+    try:
+        stored = json.loads(raw) if isinstance(raw, str) and raw else None
+    except (TypeError, ValueError, json.JSONDecodeError):
+        stored = None
+    if not isinstance(stored, dict) or int(stored.get("version") or 0) != EXAM_CONTRACT_VERSION:
+        return fallback
+    try:
+        duration = max(0, int(stored.get("durationSeconds")))
+        pass_score = max(0, min(100, int(stored.get("passScore"))))
+    except (TypeError, ValueError):
+        return fallback
+    score_mode = normalize_score_mode(stored.get("scoreMode"))
+    policy = _normalized_listening_policy(
+        stored.get("listeningPolicy"), fallback=fallback["listeningPolicy"]
+    )
+    return {
+        "version": EXAM_CONTRACT_VERSION,
+        "durationSeconds": duration,
+        "passScore": pass_score,
+        "scoreMode": score_mode,
+        "listeningPolicy": policy,
+    }
 
 
 def normalize_score_mode(raw: Any) -> str:
@@ -91,8 +187,7 @@ def compute_scaled_result(
 ) -> Optional[dict[str, Any]]:
     """JLPT 缩放分（笔试参考）。answers: question_id → jlpt_exam_answers row
     (dict, 含 is_correct)。返回 None 表示该级别无缩放配置或卷面为空。"""
-    cfg = JLPT_SCALED_CONFIG.get(normalize_level(level, default=""))
-    if not cfg or not q_ids:
+    if not q_ids:
         return None
     placeholders = ",".join("?" * len(q_ids))
     rows = conn.execute(
@@ -100,16 +195,45 @@ def compute_scaled_result(
         tuple(q_ids),
     ).fetchall()
     sec_by_id = {dict(r)["id"]: (dict(r).get("section") or "vocab") for r in rows}
+    return compute_scaled_result_from_questions(
+        level=level,
+        questions=[
+            {
+                "id": qid,
+                "section": sec_by_id.get(qid) or "vocab",
+                "correct": bool(int((answers.get(qid) or {}).get("is_correct") or 0)),
+            }
+            for qid in q_ids
+        ],
+    )
+
+
+def compute_scaled_result_from_questions(
+    *, level: str, questions: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Pure written-score aggregation from immutable question result records."""
+    normalized_level = normalize_level(level, default="")
+    cfg = JLPT_SCALED_CONFIG.get(normalized_level)
+    if not cfg or not questions:
+        return None
+    by_id = {
+        str(question.get("id") or ""): question
+        for question in questions
+        if str(question.get("id") or "")
+    }
     scales: list[dict[str, Any]] = []
     total_scaled = 0
     written_max = 0
     all_min_ok = True
     for key, label, sections, scale_max, scale_min in cfg["scales"]:
-        ids = [qid for qid in q_ids if sec_by_id.get(qid) in sections]
-        raw_max = len(ids)
+        division_questions = [
+            question
+            for question in by_id.values()
+            if str(question.get("section") or "vocab") in sections
+        ]
+        raw_max = len(division_questions)
         raw = sum(
-            1 for qid in ids
-            if int((answers.get(qid) or {}).get("is_correct") or 0) == 1
+            1 for question in division_questions if bool(question.get("correct"))
         )
         # 四舍五入用整数运算实现 ROUND_HALF_UP,不能用内建 round():后者是银行家
         # 舍入(round-half-to-even),恰好落在 .5 的分数一半进一半舍 —— 同一科内
@@ -133,7 +257,7 @@ def compute_scaled_result(
     pass_line = (pass_total * written_max + 179) // 180  # ceil(passTotal*max/180)
     return {
         "mode": "jlpt_scaled",
-        "level": normalize_level(level, default=""),
+        "level": normalized_level,
         "writtenTotal": total_scaled,
         "writtenMax": written_max,
         "passLineWritten": pass_line,
@@ -142,6 +266,59 @@ def compute_scaled_result(
         "officialPassTotal": pass_total,
         "officialTotalMax": 180,
         "note": _JLPT_SCALED_NOTE,
+    }
+
+
+def compute_official_paper_score(
+    *, level: str, questions: list[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Aggregate exam sections into official score divisions (reference scale).
+
+    Exam-section timing and score divisions are intentionally different for
+    N3-N5. The immutable question ``section`` category is therefore the source
+    of truth, not the number or title of timed child sessions.
+    """
+    written = compute_scaled_result_from_questions(level=level, questions=questions)
+    if not written:
+        return None
+    listening_questions = [
+        question
+        for question in questions
+        if str(question.get("section") or "") == "listening"
+    ]
+    listening_raw_max = len(listening_questions)
+    listening_raw = sum(
+        1 for question in listening_questions if bool(question.get("correct"))
+    )
+    listening_scaled = (
+        (listening_raw * 60 * 2 + listening_raw_max) // (listening_raw_max * 2)
+        if listening_raw_max
+        else 0
+    )
+    listening_division = {
+        "key": "listening",
+        "label": "聴解",
+        "raw": listening_raw,
+        "rawMax": listening_raw_max,
+        "scaled": listening_scaled,
+        "scaledMax": 60,
+        "sectionMin": 19,
+        "passed": bool(listening_raw_max and listening_scaled >= 19),
+    }
+    total = int(written["writtenTotal"]) + listening_scaled
+    pass_line = int(written["officialPassTotal"])
+    divisions = [*written["scales"], listening_division]
+    return {
+        "mode": "jlpt_scaled_reference",
+        "level": written["level"],
+        "total": total,
+        "totalMax": 180,
+        "passLine": pass_line,
+        "passedReference": bool(
+            total >= pass_line and all(bool(item["passed"]) for item in divisions)
+        ),
+        "divisions": divisions,
+        "note": _JLPT_PAPER_SCORE_NOTE,
     }
 
 _VALID_SOURCE_KINDS = ("practice", "placement", "review", "exam", "vocab")
@@ -200,6 +377,24 @@ def _clamp(value: Any, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
+def _parse_coin_cost(value: Any) -> int:
+    """Parse an explicitly supplied JSON price without coercing bad input.
+
+    JSON booleans are Python ``int`` subclasses, and the standard decoder can
+    accept non-standard NaN/Infinity tokens, so both need explicit rejection.
+    Prices are whole Machi coins; integral finite floats remain valid JSON
+    numbers, while strings and fractional values are not silently truncated.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("coinCost must be a finite whole number between 0 and 100000")
+    if isinstance(value, float) and (not math.isfinite(value) or not value.is_integer()):
+        raise ValueError("coinCost must be a finite whole number between 0 and 100000")
+    parsed = int(value)
+    if not 0 <= parsed <= 100_000:
+        raise ValueError("coinCost must be a finite whole number between 0 and 100000")
+    return parsed
+
+
 def _loads_choices(raw: Any) -> list[str]:
     try:
         data = json.loads(raw) if isinstance(raw, str) else raw
@@ -212,7 +407,12 @@ def _loads_choices(raw: Any) -> list[str]:
 
 # ── question serialization ───────────────────────────────────────────────────
 
-def public_question(row: Any, *, reveal_answer: bool = False) -> dict[str, Any]:
+def public_question(
+    row: Any,
+    *,
+    reveal_answer: bool = False,
+    hide_listening_transcript: bool = False,
+) -> dict[str, Any]:
     """Client-facing question shape. Hides answer_index/explanation unless
     reveal_answer (only ever set after the user has answered, e.g. review book
     or exam回看)."""
@@ -224,7 +424,16 @@ def public_question(row: Any, *, reveal_answer: bool = False) -> dict[str, Any]:
         "sectionLabel": SECTION_LABELS_ZH.get(d.get("section") or "", ""),
         "questionType": d.get("question_type") or "single",
         "stem": d.get("stem") or "",
-        "passage": d.get("passage") or "",
+        # A strict timed attempt never sends the listening transcript before
+        # grading.  Hiding it in the client alone would still leak it through
+        # the API response/devtools.  Reading passages remain visible.
+        "passage": (
+            ""
+            if hide_listening_transcript
+            and not reveal_answer
+            and str(d.get("section") or "") == "listening"
+            else d.get("passage") or ""
+        ),
         "audioMediaId": d.get("audio_media_id") or "",
         # 听力音频的可播放 URL。裸 media id 客户端无从解析,故在取数处 LEFT JOIN
         # media 表把 url 带进 row(键 audio_url);未 join 的路径(如定级只考词汇
@@ -806,22 +1015,43 @@ def _public_exam(d: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def has_resumable_exam_session(conn: Any, *, user_id: str, exam: dict[str, Any], now: Optional[str] = None) -> bool:
-    """该用户对这张 exam 是否有「未过期的 in_progress 会话」(即开考会走续考、不该
-    再扣币)。判据与 start_exam_session 的续考逻辑一致:in_progress 且未超时限。"""
-    row = conn.execute(
-        "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
-        "AND status = 'in_progress' ORDER BY started_at DESC LIMIT 1",
-        (user_id, exam["id"]),
-    ).fetchone()
-    if not row:
+def exam_session_can_resume(
+    session: dict[str, Any], exam: dict[str, Any], *, now: Optional[str] = None,
+) -> bool:
+    """Use the same server-clock rule for start, preflight and idempotent replay."""
+    if str(session.get("status") or "") != "in_progress":
         return False
-    session = dict(row)
-    duration = int(exam.get("duration_seconds") or 0)
+    duration = int(exam_contract_for_session(session, exam)["durationSeconds"])
     if duration <= 0:
         return True
     elapsed = _seconds_between(session.get("started_at") or _iso(now), _iso(now))
     return elapsed < duration
+
+
+def has_resumable_exam_session(
+    conn: Any,
+    *,
+    user_id: str,
+    exam: dict[str, Any],
+    now: Optional[str] = None,
+    paper_attempt_id: Optional[str] = None,
+) -> bool:
+    """该用户对这张 exam 是否有「未过期的 in_progress 会话」(即开考会走续考、不该
+    再扣币)。判据与 start_exam_session 的续考逻辑一致:in_progress 且未超时限。"""
+    paper_clause = ""
+    params: list[Any] = [user_id, exam["id"]]
+    if paper_attempt_id is not None:
+        paper_clause = " AND COALESCE(paper_attempt_id, '') = ?"
+        params.append(str(paper_attempt_id or ""))
+    row = conn.execute(
+        "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
+        "AND status = 'in_progress'" + paper_clause +
+        " ORDER BY started_at DESC LIMIT 1",
+        tuple(params),
+    ).fetchone()
+    if not row:
+        return False
+    return exam_session_can_resume(dict(row), exam, now=now)
 
 
 def get_exam(conn: Any, exam_id: str) -> Optional[dict[str, Any]]:
@@ -852,24 +1082,79 @@ def list_paper_sections(conn: Any, paper_id: str, *, is_member: bool = False) ->
     return {"paper": _public_exam(paper), "sections": secs}
 
 
-def paper_result(conn: Any, *, user_id: str, paper_id: str) -> Optional[dict[str, Any]]:
-    """聚合一张分科整卷的成绩：取每个子科目最近一次已提交会话，合并展示——
-    笔试子科目(含 vocab+grammar+reading)的 scaled 缩放分 + 聴解子科目的百分比。
-    submit_exam_session 保持逐段不变;这里只读不算。任一子科目未考完则该段留空。"""
+def paper_result(
+    conn: Any,
+    *,
+    user_id: str,
+    paper_id: str,
+    paper_attempt_id: str = "",
+) -> Optional[dict[str, Any]]:
+    """聚合一次明确父卷 attempt 的成绩，不跨 attempt 拼接子科目。
+
+    默认优先最近已完成 attempt；若从未完成，则展示当前 attempt 的进度。旧数据只
+    在完全没有父 attempt 时按未绑定会话回退。submit_exam_session 保持逐段不变。
+    """
     paper = get_exam(conn, paper_id)
     if not paper or (paper.get("kind") or "") != "paper":
         return None
     sections = _paper_sections_rows(conn, paper_id, is_member=True)
+    attempt = None
+    if paper_attempt_id:
+        attempt_row = conn.execute(
+            "SELECT * FROM jlpt_paper_attempts WHERE id=? AND user_id=? AND paper_exam_id=?",
+            (paper_attempt_id, user_id, paper_id),
+        ).fetchone()
+        if not attempt_row:
+            return None
+        attempt = dict(attempt_row)
+    else:
+        # Results default to the latest completed full-paper attempt. An active
+        # newer retry must never make us combine its written section with an
+        # older attempt's listening section. If none completed, expose the
+        # current exact attempt as an incomplete progress result.
+        attempt_row = conn.execute(
+            "SELECT * FROM jlpt_paper_attempts WHERE user_id=? AND paper_exam_id=? "
+            "ORDER BY CASE WHEN status='completed' THEN 0 ELSE 1 END, "
+            "CASE WHEN completed_at<>'' THEN completed_at ELSE started_at END DESC LIMIT 1",
+            (user_id, paper_id),
+        ).fetchone()
+        attempt = dict(attempt_row) if attempt_row else None
+    session_ids_by_exam: dict[str, str] = {}
+    if attempt:
+        for row in conn.execute(
+            "SELECT section_exam_id, session_id FROM jlpt_paper_section_attempts "
+            "WHERE paper_attempt_id=?",
+            (attempt["id"],),
+        ).fetchall():
+            session_ids_by_exam[str(row["section_exam_id"] or "")] = str(
+                row["session_id"] or ""
+            )
     out_sections = []
-    combined_scaled = None
-    listening = None
+    result_questions: list[dict[str, Any]] = []
+    listening_correct = 0
+    listening_total = 0
     all_submitted = True
     for sec in sections:
-        row = conn.execute(
-            "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
-            "AND status = 'submitted' ORDER BY submitted_at DESC LIMIT 1",
-            (user_id, sec["id"]),
-        ).fetchone()
+        linked_session_id = session_ids_by_exam.get(str(sec["id"]), "")
+        if attempt:
+            row = (
+                conn.execute(
+                    "SELECT * FROM jlpt_exam_sessions WHERE id=? AND user_id=? "
+                    "AND exam_id=? AND paper_attempt_id=? AND status='submitted'",
+                    (linked_session_id, user_id, sec["id"], attempt["id"]),
+                ).fetchone()
+                if linked_session_id
+                else None
+            )
+        else:
+            # Legacy fallback for sessions created before parent attempts were
+            # introduced. Never mix it with tracked attempt rows.
+            row = conn.execute(
+                "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
+                "AND status = 'submitted' AND COALESCE(paper_attempt_id, '')='' "
+                "ORDER BY submitted_at DESC LIMIT 1",
+                (user_id, sec["id"]),
+            ).fetchone()
         if not row:
             all_submitted = False
             out_sections.append({
@@ -879,7 +1164,15 @@ def paper_result(conn: Any, *, user_id: str, paper_id: str) -> Optional[dict[str
             })
             continue
         s = dict(row)
-        scaled = _loads_scaled(s.get("scaled_json"))
+        immutable_result = session_review(conn, session=s)
+        scaled = immutable_result.get("scaled")
+        immutable_questions = immutable_result.get("questions")
+        if isinstance(immutable_questions, list):
+            result_questions.extend(
+                dict(question)
+                for question in immutable_questions
+                if isinstance(question, dict)
+            )
         out_sections.append({
             "examId": sec["id"], "section": sec.get("section") or "",
             "sectionLabel": SECTION_LABELS_ZH.get(sec.get("section") or "", ""),
@@ -890,20 +1183,38 @@ def paper_result(conn: Any, *, user_id: str, paper_id: str) -> Optional[dict[str
             "durationSeconds": int(s.get("duration_seconds") or 0),
             "scaled": scaled,
         })
-        if scaled:
-            combined_scaled = scaled  # 笔试段本就产出完整笔试缩放分
         if (sec.get("section") or "") == "listening":
-            listening = {
-                "score": int(s.get("score") or 0), "correct": int(s.get("correct") or 0),
-                "total": int(s.get("total") or 0), "passed": bool(s.get("passed")),
-            }
+            listening_correct += int(s.get("correct") or 0)
+            listening_total += int(s.get("total") or 0)
+    combined_scaled = compute_scaled_result_from_questions(
+        level=paper.get("level") or "", questions=result_questions
+    )
+    listening = None
+    if listening_total:
+        listening_score = int(round(listening_correct / listening_total * 100))
+        listening = {
+            "score": listening_score,
+            "correct": listening_correct,
+            "total": listening_total,
+            "passed": listening_score >= 60,
+        }
+    official_score = (
+        compute_official_paper_score(
+            level=paper.get("level") or "", questions=result_questions
+        )
+        if all_submitted
+        else None
+    )
     return {
         "paperId": paper_id, "level": paper.get("level") or "",
         "title": paper.get("title") or "",
+        "paperAttemptId": str((attempt or {}).get("id") or ""),
+        "paperAttemptStatus": str((attempt or {}).get("status") or "legacy"),
         "complete": all_submitted,
         "sections": out_sections,
-        "scaled": combined_scaled,      # 笔试参考缩放分(不含聴解)
-        "listening": listening,          # 聴解百分比(单列)
+        "scaled": combined_scaled,      # 跨全部笔试考试段按题目 category 聚合
+        "listening": listening,          # 兼容旧客户端的聴解百分比
+        "officialScore": official_score, # 正确的 3 个得分区分（N4/N5 笔试合并）
     }
 
 
@@ -953,7 +1264,13 @@ def _resolve_exam_question_ids(conn: Any, exam: dict[str, Any], *, is_member: bo
 
 
 def start_exam_session(
-    conn: Any, *, user_id: str, exam: dict[str, Any], is_member: bool, now: Optional[str] = None,
+    conn: Any,
+    *,
+    user_id: str,
+    exam: dict[str, Any],
+    is_member: bool,
+    now: Optional[str] = None,
+    paper_attempt_id: str = "",
 ) -> Optional[dict[str, Any]]:
     """Create an in-progress session with a resolved question list; returns the
     session + answer-hidden questions. None if the exam has no usable questions.
@@ -968,16 +1285,19 @@ def start_exam_session(
     was answered, clocked at the deadline) before a new session is created —
     no new status value is introduced."""
     now = _iso(now)
-    duration = int(exam.get("duration_seconds") or 0)
+    live_contract = exam_contract_for_exam(exam)
     stale = conn.execute(
         "SELECT * FROM jlpt_exam_sessions WHERE user_id = ? AND exam_id = ? "
-        "AND status = 'in_progress' ORDER BY started_at DESC LIMIT 1",
-        (user_id, exam["id"]),
+        "AND status = 'in_progress' AND COALESCE(paper_attempt_id, '') = ? "
+        "ORDER BY started_at DESC LIMIT 1",
+        (user_id, exam["id"], str(paper_attempt_id or "")),
     ).fetchone()
     if stale:
         session = dict(stale)
+        session_contract = exam_contract_for_session(session, exam)
+        duration = int(session_contract["durationSeconds"])
         elapsed = _seconds_between(session.get("started_at") or now, now)
-        if duration <= 0 or elapsed < duration:
+        if exam_session_can_resume(session, exam, now=now):
             return _resume_exam_payload(
                 conn, session=session, exam=exam,
                 remaining=(max(0, duration - elapsed) if duration > 0 else 0),
@@ -990,25 +1310,45 @@ def start_exam_session(
     if not q_ids:
         return None
     session_id = str(uuid.uuid4())
+    contract_json = json.dumps(
+        live_contract, ensure_ascii=False, separators=(",", ":")
+    )
     conn.execute(
         "INSERT INTO jlpt_exam_sessions (id, user_id, exam_id, level, status, started_at, "
-        "submitted_at, duration_seconds, total, correct, score, passed, question_ids_json) "
-        "VALUES (?, ?, ?, ?, 'in_progress', ?, '', 0, ?, 0, 0, 0, ?)",
-        (session_id, user_id, exam["id"], exam.get("level") or "", now, len(q_ids),
-         json.dumps(q_ids)),
+        "submitted_at, duration_seconds, total, correct, score, passed, question_ids_json, "
+        "paper_attempt_id, exam_contract_snapshot_json) "
+        "VALUES (?, ?, ?, ?, 'in_progress', ?, '', 0, ?, 0, 0, 0, ?, ?, ?)",
+        (
+            session_id,
+            user_id,
+            exam["id"],
+            exam.get("level") or "",
+            now,
+            len(q_ids),
+            json.dumps(q_ids),
+            str(paper_attempt_id or ""),
+            contract_json,
+        ),
     )
-    questions = _questions_by_ids(conn, q_ids, reveal_answer=False)
+    questions = _questions_by_ids(
+        conn,
+        q_ids,
+        reveal_answer=False,
+        listening_policy=live_contract["listeningPolicy"],
+    )
     return {
         "sessionId": session_id,
         "examId": exam["id"],
         "level": exam.get("level") or "",
         "title": exam.get("title") or "",
-        "durationSeconds": int(exam.get("duration_seconds") or 0),
-        "passScore": int(exam.get("pass_score") or 60),
-        "scoreMode": normalize_score_mode(exam.get("score_mode")),
+        "durationSeconds": int(live_contract["durationSeconds"]),
+        "passScore": int(live_contract["passScore"]),
+        "scoreMode": str(live_contract["scoreMode"]),
+        "listeningPolicy": dict(live_contract["listeningPolicy"]),
         "total": len(q_ids),
         "questions": questions,
         "resumed": False,
+        "answerRevision": 0,
     }
 
 
@@ -1019,13 +1359,18 @@ def _resume_exam_payload(
     the extra keys) + the resume overlay. Only questionId/selectedIndex of the
     saved answers are exposed: is_correct would leak grading mid-exam."""
     q_ids = _loads_json_list(session.get("question_ids_json"))
+    contract = exam_contract_for_session(session, exam)
     known = set(q_ids)
     ans_rows = conn.execute(
-        "SELECT question_id, selected_index FROM jlpt_exam_answers WHERE session_id = ?",
+        "SELECT question_id, selected_index, revision FROM jlpt_exam_answers WHERE session_id = ?",
         (session["id"],),
     ).fetchall()
     answers = [
-        {"questionId": d["question_id"], "selectedIndex": int(d["selected_index"])}
+        {
+            "questionId": d["question_id"],
+            "selectedIndex": int(d["selected_index"]),
+            "revision": int(d.get("revision") or 0),
+        }
         for d in (dict(r) for r in ans_rows)
         if d["question_id"] in known
     ]
@@ -1034,13 +1379,20 @@ def _resume_exam_payload(
         "examId": exam["id"],
         "level": session.get("level") or exam.get("level") or "",
         "title": exam.get("title") or "",
-        "durationSeconds": int(exam.get("duration_seconds") or 0),
-        "passScore": int(exam.get("pass_score") or 60),
-        "scoreMode": normalize_score_mode(exam.get("score_mode")),
+        "durationSeconds": int(contract["durationSeconds"]),
+        "passScore": int(contract["passScore"]),
+        "scoreMode": str(contract["scoreMode"]),
+        "listeningPolicy": dict(contract["listeningPolicy"]),
         "total": len(q_ids),
-        "questions": _questions_by_ids(conn, q_ids, reveal_answer=False),
+        "questions": _questions_by_ids(
+            conn,
+            q_ids,
+            reveal_answer=False,
+            listening_policy=contract["listeningPolicy"],
+        ),
         "resumed": True,
         "answers": answers,
+        "answerRevision": int(session.get("answer_revision") or 0),
         # Dual-key on purpose: camelCase matches this module's contract, the
         # snake_case twin keeps loosely-typed clients tolerant.
         "remainingSeconds": remaining,
@@ -1048,7 +1400,13 @@ def _resume_exam_payload(
     }
 
 
-def _questions_by_ids(conn: Any, q_ids: list[str], *, reveal_answer: bool) -> list[dict[str, Any]]:
+def _questions_by_ids(
+    conn: Any,
+    q_ids: list[str],
+    *,
+    reveal_answer: bool,
+    listening_policy: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
     if not q_ids:
         return []
     placeholders = ",".join("?" * len(q_ids))
@@ -1058,9 +1416,20 @@ def _questions_by_ids(conn: Any, q_ids: list[str], *, reveal_answer: bool) -> li
     ).fetchall()
     by_id = {dict(r)["id"]: dict(r) for r in rows}
     out = []
+    hide_transcript = bool(
+        not reveal_answer
+        and isinstance(listening_policy, dict)
+        and not bool(listening_policy.get("showTranscriptDuringAttempt", True))
+    )
     for qid in q_ids:  # preserve exam order
         if qid in by_id:
-            out.append(public_question(by_id[qid], reveal_answer=reveal_answer))
+            out.append(
+                public_question(
+                    by_id[qid],
+                    reveal_answer=reveal_answer,
+                    hide_listening_transcript=hide_transcript,
+                )
+            )
     return out
 
 
@@ -1072,21 +1441,20 @@ def get_session(conn: Any, *, session_id: str, user_id: str) -> Optional[dict[st
 
 
 def _exam_time_limit_seconds(conn: Any, session: dict[str, Any]) -> int:
-    """Hard time limit (seconds) for a session's exam; 0 = untimed. Read from the
-    exam row — the session row's ``duration_seconds`` stores the ELAPSED time
-    (filled at submit), NOT the limit, so the limit must come from jlpt_exams."""
+    """Hard time limit (seconds) snapshotted when this attempt started.
+
+    ``duration_seconds`` on the session remains elapsed time.  Pre-migration
+    sessions fall back to the live exam row; new attempts never move their
+    deadline when an administrator edits the catalog.
+    """
     exam_id = str(session.get("exam_id") or "")
     if not exam_id:
         return 0
     row = conn.execute(
-        "SELECT duration_seconds FROM jlpt_exams WHERE id = ?", (exam_id,)
+        "SELECT * FROM jlpt_exams WHERE id = ?", (exam_id,)
     ).fetchone()
-    if not row:
-        return 0
-    try:
-        return max(0, int(dict(row).get("duration_seconds") or 0))
-    except (TypeError, ValueError):
-        return 0
+    exam = dict(row) if row else None
+    return int(exam_contract_for_session(session, exam)["durationSeconds"])
 
 
 def _exam_session_expired(
@@ -1098,18 +1466,55 @@ def _exam_session_expired(
     if limit <= 0:
         return False
     elapsed = _seconds_between(session.get("started_at") or _iso(now), _iso(now))
-    return elapsed > limit + max(0, grace)
+    return elapsed >= limit + max(0, grace)
+
+
+def _validated_revision_pair(base_revision: Any, revision: Any) -> tuple[int, int]:
+    """Validate a consecutive optimistic revision pair without bool coercion."""
+    if (isinstance(base_revision, bool) or isinstance(revision, bool)
+            or not isinstance(base_revision, int) or not isinstance(revision, int)
+            or base_revision < 0 or revision != base_revision + 1):
+        raise APIError(
+            "baseRevision/revision 必须是相邻的非负整数。",
+            400,
+            "invalid_answer_revision",
+        )
+    return base_revision, revision
+
+
+def _answer_revision_conflict(current: int) -> APIError:
+    return APIError(
+        "作答版本已变化，请先恢复服务器上的最新答案。",
+        409,
+        "answer_revision_conflict",
+        {"currentAnswerRevision": int(current)},
+    )
+
+
+def _validated_selected_index(question: dict[str, Any], raw: Any) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise APIError("selectedIndex 必须是整数。", 400, "invalid_selected_index")
+    choices = _loads_choices(question.get("choices_json"))
+    if raw < 0 or raw >= len(choices):
+        raise APIError("selectedIndex 超出选项范围。", 400, "invalid_selected_index")
+    return raw
 
 
 def save_exam_answer(
     conn: Any, *, session: dict[str, Any], question_id: str, selected_index: int,
-    now: Optional[str] = None,
+    now: Optional[str] = None, base_revision: Any = None, revision: Any = None,
 ) -> Optional[dict[str, Any]]:
-    """Persist one in-progress exam answer (no grading revealed). Rejects if the
-    question isn't in the session, the session is already submitted, OR the exam's
-    server-authoritative time limit has elapsed — otherwise the countdown is a
-    mere client-side suggestion that devtools/replay can ignore to keep answering
-    an expired paper."""
+    """Persist one answer under the session-wide optimistic revision contract.
+
+    Legacy callers that omit both revision fields remain compatible: the server
+    assigns the next revision. New callers provide ``baseRevision`` and exactly
+    ``base+1``. Retrying the exact same write is idempotent; changing content at
+    an already-used revision is a 409 conflict.
+
+    The HTTP handler opens an explicit transaction. The no-op session UPDATE
+    below then shares a row lock with submit, preventing a save from committing
+    after that session has already been graded.
+    """
     if (session.get("status") or "") != "in_progress":
         return None
     if _exam_session_expired(conn, session, now=now, grace=EXAM_SAVE_GRACE_SEC):
@@ -1117,30 +1522,189 @@ def save_exam_answer(
     q_ids = _loads_json_list(session.get("question_ids_json"))
     if question_id not in q_ids:
         return None
-    q = get_question(conn, question_id)
-    if not q:
+    question = get_question(conn, question_id)
+    if not question:
         return None
-    is_correct = 1 if int(selected_index) == int(q.get("answer_index") or 0) else 0
-    conn.execute(
-        "INSERT INTO jlpt_exam_answers (session_id, question_id, selected_index, is_correct) "
-        "VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(session_id, question_id) DO UPDATE SET selected_index = ?, is_correct = ?",
-        (session["id"], question_id, int(selected_index), is_correct, int(selected_index), is_correct),
+    selected = _validated_selected_index(question, selected_index)
+
+    lock = conn.execute(
+        "UPDATE jlpt_exam_sessions SET answer_revision=answer_revision "
+        "WHERE id=? AND status='in_progress'",
+        (session["id"],),
     )
-    return {"saved": True, "questionId": question_id}
+    if getattr(lock, "rowcount", 0) != 1:
+        return None
+    live_row = conn.execute(
+        "SELECT answer_revision FROM jlpt_exam_sessions WHERE id=?", (session["id"],)
+    ).fetchone()
+    current = int(dict(live_row).get("answer_revision") or 0) if live_row else 0
+    legacy = base_revision is None and revision is None
+    if legacy:
+        base, next_revision = current, current + 1
+    else:
+        if base_revision is None or revision is None:
+            raise APIError(
+                "baseRevision 与 revision 必须同时提供。",
+                400,
+                "invalid_answer_revision",
+            )
+        base, next_revision = _validated_revision_pair(base_revision, revision)
+        if next_revision == current and base == current - 1:
+            existing = conn.execute(
+                "SELECT selected_index, revision FROM jlpt_exam_answers "
+                "WHERE session_id=? AND question_id=?",
+                (session["id"], question_id),
+            ).fetchone()
+            if existing:
+                saved = dict(existing)
+                if (int(saved.get("revision") or 0) == next_revision
+                        and int(saved.get("selected_index")) == selected):
+                    return {
+                        "saved": True,
+                        "questionId": question_id,
+                        "revision": next_revision,
+                        "answerRevision": current,
+                        "idempotentReplay": True,
+                        "legacyRevisionAssigned": False,
+                    }
+            raise _answer_revision_conflict(current)
+        if base != current:
+            raise _answer_revision_conflict(current)
+
+    is_correct = 1 if selected == int(question.get("answer_index") or 0) else 0
+    conn.execute(
+        "INSERT INTO jlpt_exam_answers "
+        "(session_id, question_id, selected_index, is_correct, revision) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(session_id, question_id) DO UPDATE SET "
+        "selected_index=excluded.selected_index, is_correct=excluded.is_correct, revision=excluded.revision",
+        (session["id"], question_id, selected, is_correct, next_revision),
+    )
+    conn.execute(
+        "UPDATE jlpt_exam_sessions SET answer_revision=? WHERE id=? AND status='in_progress'",
+        (next_revision, session["id"]),
+    )
+    return {
+        "saved": True,
+        "questionId": question_id,
+        "revision": next_revision,
+        "answerRevision": next_revision,
+        "idempotentReplay": False,
+        "legacyRevisionAssigned": legacy,
+    }
+
+
+def _validated_answer_snapshot(
+    conn: Any, *, session: dict[str, Any], snapshot: Any, revision: int,
+) -> list[tuple[str, int, int, int]]:
+    if not isinstance(snapshot, list):
+        raise APIError("answersSnapshot 必须是数组。", 400, "invalid_answer_snapshot")
+    known = set(_loads_json_list(session.get("question_ids_json")))
+    seen: set[str] = set()
+    rows: list[tuple[str, int, int, int]] = []
+    for item in snapshot:
+        if not isinstance(item, dict):
+            raise APIError("answersSnapshot 项格式错误。", 400, "invalid_answer_snapshot")
+        question_id = str(item.get("questionId") or item.get("question_id") or "").strip()
+        if not question_id or question_id not in known or question_id in seen:
+            raise APIError(
+                "answersSnapshot 含重复或不属于本卷的题目。",
+                400,
+                "invalid_answer_snapshot",
+            )
+        question = get_question(conn, question_id)
+        if not question:
+            raise APIError("answersSnapshot 题目不存在。", 400, "invalid_answer_snapshot")
+        selected = _validated_selected_index(
+            question, item.get("selectedIndex", item.get("selected_index"))
+        )
+        correct = 1 if selected == int(question.get("answer_index") or 0) else 0
+        rows.append((question_id, selected, correct, revision))
+        seen.add(question_id)
+    return rows
 
 
 def submit_exam_session(
     conn: Any, *, session: dict[str, Any], exam: Optional[dict[str, Any]], now: Optional[str] = None,
+    answer_snapshot: Any = _ANSWER_SNAPSHOT_UNSET,
+    base_revision: Any = None,
+    revision: Any = None,
 ) -> Optional[dict[str, Any]]:
-    """Grade + finalize a session. CAS on status (in_progress→submitted) so a
-    double-submit can't re-score. Returns the graded result or None if the CAS
-    lost (already submitted / expired)."""
+    """Atomically apply an optional full answer snapshot, grade, and finalize.
+
+    The caller must hold an explicit DB transaction. Answer saves and submit
+    both lock the session row, so grading observes every committed pre-submit
+    save and no answer can land after the result is final. Once the server
+    deadline has elapsed, an attached client snapshot is deliberately ignored:
+    only answers persisted by the deadline are settled, so a failed auto-submit
+    cannot reopen the paper at 00:00.
+    """
     now = _iso(now)
+    lock = conn.execute(
+        "UPDATE jlpt_exam_sessions SET answer_revision=answer_revision "
+        "WHERE id=? AND status='in_progress'",
+        (session["id"],),
+    )
+    if getattr(lock, "rowcount", 0) != 1:
+        return None
+    live = conn.execute(
+        "SELECT * FROM jlpt_exam_sessions WHERE id=?", (session["id"],)
+    ).fetchone()
+    if not live:
+        return None
+    session = dict(live)
+    contract = exam_contract_for_session(session, exam)
+    current_revision = int(session.get("answer_revision") or 0)
+    result_revision = current_revision
+
+    # ``null`` is not the same as an omitted snapshot. Treating JSON null as
+    # the legacy submit path would silently grade only the last persisted
+    # answers even though the caller explicitly attempted a full snapshot.
+    snapshot_requested = answer_snapshot is not _ANSWER_SNAPSHOT_UNSET
+    deadline_expired = _exam_session_expired(conn, session, now=now)
+    snapshot_supplied = snapshot_requested and not deadline_expired
+    if snapshot_supplied:
+        if base_revision is None or revision is None:
+            raise APIError(
+                "提交答案快照时必须同时提供 baseRevision 与 revision。",
+                400,
+                "invalid_answer_revision",
+            )
+        base, next_revision = _validated_revision_pair(base_revision, revision)
+        if base != current_revision:
+            raise _answer_revision_conflict(current_revision)
+        snapshot_rows = _validated_answer_snapshot(
+            conn, session=session, snapshot=answer_snapshot, revision=next_revision
+        )
+        # Complete snapshot semantics: an omitted question is unanswered.
+        # Every item is validated before the first mutation.
+        conn.execute("DELETE FROM jlpt_exam_answers WHERE session_id=?", (session["id"],))
+        if snapshot_rows:
+            conn.executemany(
+                "INSERT INTO jlpt_exam_answers "
+                "(session_id, question_id, selected_index, is_correct, revision) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (session["id"], question_id, selected, correct, row_revision)
+                    for question_id, selected, correct, row_revision in snapshot_rows
+                ],
+            )
+        conn.execute(
+            "UPDATE jlpt_exam_sessions SET answer_revision=? WHERE id=?",
+            (next_revision, session["id"]),
+        )
+        result_revision = next_revision
+    elif not deadline_expired and (base_revision is not None or revision is not None):
+        raise APIError(
+            "未提供 answersSnapshot 时不得单独提交 revision。",
+            400,
+            "invalid_answer_snapshot",
+        )
+
     # CAS: only the request that flips in_progress→submitted proceeds to score.
     cur = conn.execute(
-        "UPDATE jlpt_exam_sessions SET status = 'submitted', submitted_at = ? "
-        "WHERE id = ? AND status = 'in_progress'",
+        "UPDATE jlpt_exam_sessions SET status='submitted', submitted_at=? "
+        "WHERE id=? AND status='in_progress'",
         (now, session["id"]),
     )
     if getattr(cur, "rowcount", 0) != 1:
@@ -1154,7 +1718,7 @@ def submit_exam_session(
     answers = {dict(r)["question_id"]: dict(r) for r in ans_rows}
     correct = sum(1 for a in answers.values() if int(a["is_correct"]) == 1)
     score = int(round(correct / total * 100)) if total else 0
-    pass_score = int((exam or {}).get("pass_score") or 60)
+    pass_score = int(contract["passScore"])
     passed = 1 if score >= pass_score else 0
     started = session.get("started_at") or now
     # Clamp the recorded time to the exam's hard limit. A session left
@@ -1162,11 +1726,11 @@ def submit_exam_session(
     # absurd elapsed time (and any post-deadline answers are already refused by
     # save_exam_answer), so the stored duration must never exceed the limit.
     elapsed = _seconds_between(started, now)
-    time_limit = int((exam or {}).get("duration_seconds") or 0)
+    time_limit = int(contract["durationSeconds"])
     duration = min(elapsed, time_limit) if time_limit > 0 else elapsed
     # 全真模考：JLPT 缩放分整块随会话持久化（历史/回看直接反序列化）。老字段
     # (score 0-100 / passed) 语义不变，老客户端零感知。
-    score_mode = normalize_score_mode((exam or {}).get("score_mode"))
+    score_mode = str(contract["scoreMode"])
     scaled: Optional[dict[str, Any]] = None
     if score_mode == "jlpt_scaled":
         scaled = compute_scaled_result(
@@ -1191,6 +1755,10 @@ def submit_exam_session(
         })
     out = {
         "sessionId": session["id"],
+        "answerRevision": result_revision,
+        "idempotentReplay": False,
+        "deadlineExpired": deadline_expired,
+        "snapshotAccepted": bool(snapshot_requested and not deadline_expired),
         "total": total, "correct": correct, "score": score,
         "passed": bool(passed), "passScore": pass_score,
         "scoreMode": score_mode,
@@ -1199,6 +1767,13 @@ def submit_exam_session(
     }
     if scaled:
         out["scaled"] = scaled
+    snapshotted = conn.execute(
+        "UPDATE jlpt_exam_sessions SET result_snapshot_json=? "
+        "WHERE id=? AND result_snapshot_json=''",
+        (json.dumps(out, ensure_ascii=False, separators=(",", ":")), session["id"]),
+    )
+    if getattr(snapshotted, "rowcount", 0) != 1:
+        raise RuntimeError("failed to persist immutable JLPT result snapshot")
     return out
 
 
@@ -1238,6 +1813,20 @@ def exam_history(conn: Any, *, user_id: str, level: str = "") -> list[dict[str, 
 
 def session_review(conn: Any, *, session: dict[str, Any]) -> dict[str, Any]:
     """Full回看 of a (usually submitted) session with answers revealed."""
+    stored = _loads_result_snapshot(session.get("result_snapshot_json"))
+    if stored:
+        # Return a fresh object from the committed result snapshot. In particular,
+        # do not re-read mutable question/exam catalog rows for completed sessions.
+        # The stable session identity/status fields remain part of the historical
+        # review API contract even though they are not part of the submit payload.
+        stored.pop("idempotentReplay", None)
+        return {
+            "sessionId": session["id"],
+            "examId": session.get("exam_id") or "",
+            "level": session.get("level") or "",
+            "status": session.get("status") or "",
+            **stored,
+        }
     q_ids = _loads_json_list(session.get("question_ids_json"))
     ans_rows = conn.execute(
         "SELECT question_id, selected_index, is_correct FROM jlpt_exam_answers WHERE session_id = ?",
@@ -1265,6 +1854,72 @@ def session_review(conn: Any, *, session: dict[str, Any]) -> dict[str, Any]:
         out["scaled"] = scaled
         out["scoreMode"] = "jlpt_scaled"
     return out
+
+
+def replay_submitted_exam_result(
+    conn: Any, *, session: dict[str, Any], exam: Optional[dict[str, Any]]
+) -> Optional[dict[str, Any]]:
+    """Return the immutable stored submit result after a response was lost.
+
+    A retry never reapplies the caller's snapshot.  It only reconstructs the
+    already-persisted breakdown and score, so a changed retry cannot alter a
+    completed attempt while Web/iOS can still close the result flow.
+    """
+    if str(session.get("status") or "") != "submitted":
+        return None
+    stored = _loads_result_snapshot(session.get("result_snapshot_json"))
+    if stored:
+        stored["idempotentReplay"] = True
+        return stored
+    out = session_review(conn, session=session)
+    out.pop("status", None)
+    out["passScore"] = int((exam or {}).get("pass_score") or 60)
+    out["answerRevision"] = int(session.get("answer_revision") or 0)
+    out["idempotentReplay"] = True
+    return out
+
+
+def append_exam_result_snapshot_fields(
+    conn: Any, *, session_id: str, fields: dict[str, Any]
+) -> bool:
+    """Append final response fields before the submit transaction commits.
+
+    A paper submit learns its authoritative parent progress only after the
+    session has been graded. The base snapshot is already durable at that
+    point, so this append-only CAS completes the same response snapshot without
+    allowing a later retry to rewrite any existing field.
+    """
+    if not fields:
+        return True
+    row = conn.execute(
+        "SELECT result_snapshot_json FROM jlpt_exam_sessions WHERE id=?",
+        (session_id,),
+    ).fetchone()
+    raw = str(row["result_snapshot_json"] or "") if row else ""
+    stored = _loads_result_snapshot(raw)
+    if not stored:
+        return False
+    changed = False
+    for key, value in fields.items():
+        if key in stored:
+            if stored[key] != value:
+                raise RuntimeError(
+                    f"immutable JLPT result snapshot field already differs: {key}"
+                )
+            continue
+        stored[key] = value
+        changed = True
+    if not changed:
+        return True
+    encoded = json.dumps(stored, ensure_ascii=False, separators=(",", ":"))
+    updated = conn.execute(
+        "UPDATE jlpt_exam_sessions SET result_snapshot_json=? "
+        "WHERE id=? AND result_snapshot_json=?",
+        (encoded, session_id, raw),
+    )
+    if getattr(updated, "rowcount", 0) != 1:
+        raise RuntimeError("JLPT result snapshot changed while finalizing response")
+    return True
 
 
 # ── vocab quiz (考单词在线考试) ──────────────────────────────────────────────
@@ -1635,22 +2290,42 @@ def upsert_exam(conn: Any, exam: dict[str, Any], *, now: Optional[str] = None) -
     # 分科整卷：子科目(kind='section')挂在父卷(kind='paper')下，靠 parent_exam_id
     # 关联、sort_order 排序推进。父卷本身不组卷不计时。
     parent_exam_id = str(exam.get("parentExamId") or exam.get("parent_exam_id") or "").strip()[:64]
-    # 开考消耗的 Machi 币(分科卷记在笔试子科目上,整卷只扣一次)。
-    coin_cost = _clamp(exam.get("coinCost", exam.get("coin_cost")), 0, 0, 100_000)
+    existing = conn.execute(
+        "SELECT id, coin_cost FROM jlpt_exams WHERE id = ?", (exam_id,)
+    ).fetchone()
+    # 开考消耗的 Machi 币(分科卷记在笔试子科目上,整卷只扣一次)。后台 upsert
+    # 允许编辑其它字段而不重报价格，所以字段缺失时保留已有值；显式 0 才改为免费。
+    coin_cost_supplied = "coinCost" in exam or "coin_cost" in exam
+    if coin_cost_supplied:
+        raw_coin_cost = exam["coinCost"] if "coinCost" in exam else exam.get("coin_cost")
+        # JSON null means "not supplied" for PATCH-like admin upserts. Only an
+        # actual numeric zero is allowed to turn a paid exam into a free exam.
+        coin_cost_supplied = raw_coin_cost is not None
+    if coin_cost_supplied:
+        coin_cost = _parse_coin_cost(raw_coin_cost)
+    elif existing:
+        coin_cost = int(dict(existing).get("coin_cost") or 0)
+    else:
+        coin_cost = 0
 
     raw_qids = exam.get("questionIds") or exam.get("question_ids") or []
     question_ids = [str(q).strip() for q in raw_qids if str(q).strip()] if isinstance(raw_qids, list) else []
     # Fixed set → count is its length; else honor a caller-supplied count (for
-    # dynamic mocks), clamped to a sane sampling ceiling.
+    # dynamic mocks), clamped to a sane sampling ceiling. A paper parent never
+    # samples questions itself, so its manifest total must not be truncated by
+    # the dynamic-exam cap (full N1 currently contains 95 questions).
     if question_ids:
         question_count = len(question_ids)
+    elif kind == "paper":
+        question_count = _clamp(
+            exam.get("questionCount", exam.get("question_count")), 0, 0, IMPORT_MAX_ROWS
+        )
     else:
         question_count = _clamp(exam.get("questionCount", exam.get("question_count")), 20, 1, EXAM_DYNAMIC_MAX)
 
     row = (level, title, kind, section, question_count, duration, pass_score,
            is_member_only, status, sort_order, score_mode, parent_exam_id, coin_cost)
-    exists = conn.execute("SELECT id FROM jlpt_exams WHERE id = ?", (exam_id,)).fetchone()
-    if exists:
+    if existing:
         conn.execute(
             "UPDATE jlpt_exams SET level=?, title=?, kind=?, section=?, question_count=?, "
             "duration_seconds=?, pass_score=?, is_member_only=?, status=?, sort_order=?, "
@@ -1732,6 +2407,21 @@ def _loads_scaled(raw: Any) -> Optional[dict[str, Any]]:
         return None
     data = _loads_json_obj(raw)
     return data if isinstance(data, dict) else None
+
+
+def _loads_result_snapshot(raw: Any) -> Optional[dict[str, Any]]:
+    """Strictly decode a committed submit response stored on the session row."""
+    if not raw:
+        return None
+    data = _loads_json_obj(raw)
+    if (
+        not isinstance(data, dict)
+        or not str(data.get("sessionId") or "")
+        or not isinstance(data.get("questions"), list)
+    ):
+        return None
+    # Round-trip through JSON so no caller can mutate a shared decoded object.
+    return json.loads(json.dumps(data, ensure_ascii=False))
 
 
 def _add_seconds_iso(start_iso: str, seconds: int) -> str:

@@ -14,6 +14,7 @@
     "route-scan": "node scripts/route-scan.mjs",
     "lint": "eslint . --max-warnings=0",
     "test:home:ssr": "node scripts/check-home-ssr.mjs",
+    "test:jlpt:contract": "node --test scripts/test-jlpt-exam-contract.mjs",
     "type-check": "rm -rf .next/types tsconfig.tsbuildinfo && tsc --noEmit --incremental false",
     "typecheck": "npm run type-check",
     "seed:japan-news-demo": "python3 ../scripts/seed_japan_news_demo.py",
