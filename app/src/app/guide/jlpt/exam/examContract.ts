@@ -54,6 +54,49 @@ export function listeningPlaybackCanStart(
 }
 
 
+export type ListeningPlaybackStartState = {
+  playsStarted: number;
+  pendingNewPlay: boolean;
+};
+
+
+export function requestListeningPlaybackStart(
+  policy: GuideJlptListeningPolicy,
+  state: ListeningPlaybackStartState,
+  currentSeconds: number,
+  ended: boolean,
+): ListeningPlaybackStartState {
+  if (!listeningPlaybackCanStart(policy, state.playsStarted, currentSeconds, ended)) {
+    return state;
+  }
+  const startsNewLimitedPlay = policy.maxPlays > 0 && (ended || currentSeconds <= 0.05);
+  return startsNewLimitedPlay
+    ? { ...state, pendingNewPlay: true }
+    : state;
+}
+
+
+export function confirmListeningPlaybackStart(
+  policy: GuideJlptListeningPolicy,
+  state: ListeningPlaybackStartState,
+): ListeningPlaybackStartState {
+  if (!state.pendingNewPlay || policy.maxPlays <= 0) return state;
+  return {
+    playsStarted: state.playsStarted + 1,
+    pendingNewPlay: false,
+  };
+}
+
+
+export function failListeningPlaybackStart(
+  state: ListeningPlaybackStartState,
+): ListeningPlaybackStartState {
+  return state.pendingNewPlay
+    ? { ...state, pendingNewPlay: false }
+    : state;
+}
+
+
 function scoreLocale(language: string): "zh" | "ja" | "en" {
   const normalized = String(language || "").toLowerCase();
   if (normalized.startsWith("ja")) return "ja";

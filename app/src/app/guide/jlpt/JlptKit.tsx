@@ -11,7 +11,7 @@
 // accent gradient moment, never from a rainbow of hues.
 
 import Link from "next/link";
-import { useState, useRef, useEffect, useCallback, type ComponentType, type ReactNode } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, type ComponentType, type ReactNode } from "react";
 import {
   Flame, Timer, Check, X, Lock, Sparkles, Loader, ChevronRight, Trophy,
   Play, Pause, RotateCcw, Headphones, ChevronDown,
@@ -26,8 +26,11 @@ import {
 import { APIError, isAuthRequiredError } from "@/lib/api";
 import { useAuthPrompt } from "@/lib/store";
 import {
+  confirmListeningPlaybackStart,
+  failListeningPlaybackStart,
   listeningPlaybackCanStart,
   normalizeListeningPolicy,
+  requestListeningPlaybackStart,
 } from "./exam/examContract";
 
 export type Tri = (zh: string, ja: string, en: string) => string;
@@ -720,14 +723,21 @@ export function JlptAudioPlayer({
   playbackKey?: string;
 }) {
   const ref = useRef<HTMLAudioElement | null>(null);
-  const policy = normalizeListeningPolicy(rawPolicy);
+  const rawPolicyMode = rawPolicy?.mode;
+  const policy = useMemo(
+    () => normalizeListeningPolicy(rawPolicyMode ? { mode: rawPolicyMode } : undefined),
+    [rawPolicyMode],
+  );
   const [playing, setPlaying] = useState(false);
   const [cur, setCur] = useState(0);
   const [dur, setDur] = useState(0);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
   const [ended, setEnded] = useState(false);
-  const [playsStarted, setPlaysStarted] = useState(0);
+  const [playbackStart, setPlaybackStart] = useState({
+    playsStarted: 0,
+    pendingNewPlay: false,
+  });
   const storageKey = playbackKey ? `machi:jlpt:listening-play:${playbackKey}` : "";
 
   useEffect(() => {
@@ -735,18 +745,36 @@ export function JlptAudioPlayer({
     setPlaying(false); setCur(0); setDur(0); setReady(false); setFailed(false); setEnded(false);
     if (policy.mode === "strict" && storageKey && typeof window !== "undefined") {
       const stored = Number(window.localStorage.getItem(storageKey) || 0);
-      setPlaysStarted(Number.isFinite(stored) ? Math.max(0, Math.trunc(stored)) : 0);
+      setPlaybackStart({
+        playsStarted: Number.isFinite(stored) ? Math.max(0, Math.trunc(stored)) : 0,
+        pendingNewPlay: false,
+      });
     } else {
-      setPlaysStarted(0);
+      setPlaybackStart({ playsStarted: 0, pendingNewPlay: false });
     }
   }, [src, storageKey, policy.mode]);
 
-  const recordPlayStart = useCallback((next: number) => {
-    setPlaysStarted(next);
-    if (policy.mode === "strict" && storageKey && typeof window !== "undefined") {
-      window.localStorage.setItem(storageKey, String(next));
-    }
-  }, [policy.mode, storageKey]);
+  const confirmPlaybackStarted = useCallback(() => {
+    setPlaying(true);
+    setPlaybackStart((current) => {
+      const next = confirmListeningPlaybackStart(policy, current);
+      if (
+        next.playsStarted !== current.playsStarted
+        && policy.mode === "strict"
+        && storageKey
+        && typeof window !== "undefined"
+      ) {
+        window.localStorage.setItem(storageKey, String(next.playsStarted));
+      }
+      return next;
+    });
+  }, [policy, storageKey]);
+
+  const failPlaybackStart = useCallback(() => {
+    setPlaying(false);
+    setFailed(true);
+    setPlaybackStart((current) => failListeningPlaybackStart(current));
+  }, []);
 
   const toggle = useCallback(() => {
     const a = ref.current;
@@ -755,24 +783,29 @@ export function JlptAudioPlayer({
       if (policy.allowPause) a.pause();
       return;
     }
-    if (!listeningPlaybackCanStart(policy, playsStarted, a.currentTime, ended)) return;
-    const startingNewPlay = ended || a.currentTime <= 0.05;
+    if (!listeningPlaybackCanStart(policy, playbackStart.playsStarted, a.currentTime, ended)) return;
+    setPlaybackStart(requestListeningPlaybackStart(
+      policy,
+      playbackStart,
+      a.currentTime,
+      ended,
+    ));
     if (ended) {
       a.currentTime = 0;
       setCur(0);
       setEnded(false);
     }
-    if (startingNewPlay) recordPlayStart(playsStarted + 1);
-    a.play().catch(() => setFailed(true));
-  }, [ended, playsStarted, policy, recordPlayStart]);
+    setFailed(false);
+    a.play().catch(failPlaybackStart);
+  }, [ended, failPlaybackStart, playbackStart, policy]);
   const replay = useCallback(() => {
     const a = ref.current;
     if (!a || !policy.allowReplay) return;
     a.currentTime = 0;
     setEnded(false);
-    recordPlayStart(playsStarted + 1);
-    a.play().catch(() => setFailed(true));
-  }, [playsStarted, policy.allowReplay, recordPlayStart]);
+    setFailed(false);
+    a.play().catch(failPlaybackStart);
+  }, [failPlaybackStart, policy.allowReplay]);
   const seek = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const a = ref.current;
     if (!a || !dur) return;
@@ -782,7 +815,7 @@ export function JlptAudioPlayer({
 
   const pct = dur > 0 ? Math.min(1000, (cur / dur) * 1000) : 0;
   const playBlocked = !playing && !listeningPlaybackCanStart(
-    policy, playsStarted, cur, ended,
+    policy, playbackStart.playsStarted, cur, ended,
   );
 
   return (
@@ -793,10 +826,11 @@ export function JlptAudioPlayer({
         preload="metadata"
         onLoadedMetadata={(e) => { setDur(e.currentTarget.duration || 0); setReady(true); }}
         onTimeUpdate={(e) => setCur(e.currentTarget.currentTime)}
-        onPlay={() => setPlaying(true)}
+        onPlaying={confirmPlaybackStarted}
         onPause={() => setPlaying(false)}
         onEnded={() => { setPlaying(false); setEnded(true); }}
-        onError={() => setFailed(true)}
+        onError={failPlaybackStart}
+        onAbort={() => setPlaybackStart((current) => failListeningPlaybackStart(current))}
       />
       <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-[rgb(var(--kx-living-accent))]">
         <Headphones className="h-3.5 w-3.5" />
@@ -811,8 +845,8 @@ export function JlptAudioPlayer({
         <p className="mt-2 text-[13px] font-semibold text-[rgb(var(--kx-living-muted))]">
           {t("音频加载失败，请检查网络后重试。", "音声を読み込めませんでした。", "Couldn't load the audio.")}
         </p>
-      ) : (
-        <div className="mt-2.5 flex items-center gap-3">
+      ) : null}
+      <div className="mt-2.5 flex items-center gap-3">
           <button
             type="button"
             onClick={toggle}
@@ -862,8 +896,7 @@ export function JlptAudioPlayer({
               <RotateCcw className="h-4 w-4" />
             </button>
           ) : null}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

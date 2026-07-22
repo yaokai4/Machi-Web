@@ -19,12 +19,15 @@ const compiled = ts.transpileModule(source, {
 const contractUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
 const {
   answerInputLocked,
+  confirmListeningPlaybackStart,
   examDeadlineReached,
+  failListeningPlaybackStart,
   fullAnswerSnapshot,
   listeningPlaybackCanStart,
   localizedScoreDivisionLabel,
   localizedScoreReferenceNote,
   normalizeListeningPolicy,
+  requestListeningPlaybackStart,
   resolvePaperSectionIndex,
   restoreAuthoritativeJlptSession,
   retryTransientJlptWrite,
@@ -56,6 +59,32 @@ test("strict listening policy is fail-closed and allows only its first play", ()
   assert.equal(listeningPlaybackCanStart(strict, 1, 0, true), false);
   // Pausing and resuming the same in-progress play is still allowed.
   assert.equal(listeningPlaybackCanStart(strict, 1, 12.5, false), true);
+});
+
+test("strict listening consumes its one play only after playback really starts", () => {
+  const strict = normalizeListeningPolicy(undefined, "strict");
+  const initial = { playsStarted: 0, pendingNewPlay: false };
+  const requested = requestListeningPlaybackStart(strict, initial, 0, false);
+  assert.deepEqual(requested, { playsStarted: 0, pendingNewPlay: true });
+
+  // A browser/media failure before the playing event must leave the attempt
+  // available. Merely tapping Play is not evidence that audio was delivered.
+  const failed = failListeningPlaybackStart(requested);
+  assert.deepEqual(failed, initial);
+  assert.equal(listeningPlaybackCanStart(strict, failed.playsStarted, 0, false), true);
+
+  const retried = requestListeningPlaybackStart(strict, failed, 0, false);
+  const confirmed = confirmListeningPlaybackStart(strict, retried);
+  assert.deepEqual(confirmed, { playsStarted: 1, pendingNewPlay: false });
+  assert.equal(listeningPlaybackCanStart(strict, confirmed.playsStarted, 0, true), false);
+});
+
+test("pausing and resuming a confirmed strict play never consumes a second play", () => {
+  const strict = normalizeListeningPolicy(undefined, "strict");
+  const confirmed = { playsStarted: 1, pendingNewPlay: false };
+  const resumed = requestListeningPlaybackStart(strict, confirmed, 12.5, false);
+  assert.deepEqual(resumed, confirmed);
+  assert.deepEqual(confirmListeningPlaybackStart(strict, resumed), confirmed);
 });
 
 test("practice listening keeps seek, replay and unlimited playback", () => {
