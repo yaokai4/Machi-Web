@@ -14,6 +14,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from pathlib import Path
@@ -34,6 +35,17 @@ import server  # noqa: E402
 
 def _make_user(conn: sqlite3.Connection) -> str:
     user_id = str(uuid.uuid4())
+    handle = "consent_" + uuid.uuid4().hex[:8]
+    now = server.now_iso()
+    conn.execute(
+        "INSERT INTO users (id, handle, display_name, email, password_hash, joined_at, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, 'x', ?, ?, ?)",
+        (user_id, handle, handle, f"{handle}@example.com", now, now, now),
+    )
+    return user_id
+
+
+def _make_user_with_id(conn: sqlite3.Connection, user_id: str) -> str:
     handle = "consent_" + uuid.uuid4().hex[:8]
     now = server.now_iso()
     conn.execute(
@@ -170,11 +182,13 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         network.assert_not_called()
 
     def test_unresolved_user_never_checks_config_mints_token_or_calls_network(self) -> None:
+        transaction = self._transaction("tx-no-user")
+        transaction.pop("appAccountToken")
         with patch.object(server, "appstore_server_api_configured") as configured, \
              patch.object(server, "_appstore_server_api_token") as token, \
              patch.object(server.urllib.request, "urlopen") as network:
             status = server.apple_send_consumption_info(
-                self.conn, self._transaction("tx-no-user"), None
+                self.conn, transaction, None
             )
         self.assertEqual(status, "unresolved_user")
         configured.assert_not_called()
@@ -451,6 +465,114 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         self.assertEqual(body["consumptionPercentage"], 100000)
         self.assertEqual(body["refundPreference"], "DECLINE")
 
+    def test_target_transaction_attribution_ignores_another_orders_chargeback(self) -> None:
+        old = self._credit_topup("tx-old-chargeback")
+        granted = int(old["total_points"])
+        server.wallet_post_ledger(
+            self.conn,
+            self.user_id,
+            "spend",
+            -granted,
+            source_type="wallet_purchase",
+            source_order_id="old-order-usage",
+        )
+        target = self._credit_topup("tx-target-never-spent")
+
+        # A late chargeback for the OLD order claws its debt from the current
+        # fungible balance.  That must not be misreported as consumption of the
+        # untouched target App Store transaction.
+        server.wallet_refund_topup(
+            self.conn,
+            old["order_no"],
+            reason="late chargeback",
+        )
+        payload = server._apple_consumption_v2_payload(
+            self.conn, self.user_id, target
+        )
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["consumptionPercentage"], 0)
+        self.assertNotEqual(payload.get("refundPreference"), "DECLINE")
+
+    def test_guide_iap_uses_delivery_evidence_without_inventing_consumption(self) -> None:
+        tx_id = "tx-guide-consumption"
+        product_row = self.conn.execute(
+            "SELECT * FROM guide_products WHERE status='published' "
+            "AND COALESCE(is_service, 0)=0 LIMIT 1"
+        ).fetchone()
+        self.assertIsNotNone(product_row)
+        product = dict(product_row)
+        server.guide_credit_iap_purchase(
+            self.conn,
+            self.user_id,
+            product,
+            provider_trade_no="apple:" + tx_id,
+        )
+        self._record_consent(True)
+        transaction = self._transaction(tx_id)
+        transaction["productId"] = str(
+            product.get("apple_product_id")
+            or product.get("ios_iap_product_id")
+            or "legacy-guide-product"
+        )
+        network = MagicMock(return_value=_response())
+
+        with patch.object(server, "appstore_server_api_configured", return_value=True), \
+             patch.object(server, "_appstore_server_api_token", return_value="jwt"), \
+             patch.object(server.urllib.request, "urlopen", network):
+            result = server._apple_consumption_delivery_result(
+                self.conn, transaction, self.user_id
+            )
+
+        self.assertEqual(result["status"], "submitted")
+        body = json.loads(network.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(body["deliveryStatus"], "DELIVERED")
+        self.assertNotIn("consumptionPercentage", body)
+        self.assertNotIn("refundPreference", body)
+
+    def test_subscription_iap_omits_consumption_percentage(self) -> None:
+        tx_id = "tx-subscription-consumption"
+        plan_row = self.conn.execute(
+            "SELECT * FROM membership_plans WHERE is_active=1 "
+            "AND (apple_product_id<>'' OR ios_iap_product_id<>'') LIMIT 1"
+        ).fetchone()
+        self.assertIsNotNone(plan_row)
+        plan = dict(plan_row)
+        order = server.create_payment_order(
+            self.conn, self.user_id, plan["plan_key"], "apple_iap", "ios"
+        )
+        server.mark_order_paid(
+            self.conn,
+            order["order_no"],
+            provider_trade_no="apple:" + tx_id,
+            provider_user_id=tx_id,
+            expected_provider="apple_iap",
+            provider_subscription_id=tx_id,
+            provider_price_id=str(
+                plan.get("apple_product_id") or plan.get("ios_iap_product_id") or ""
+            ),
+            notify_email=False,
+        )
+        self._record_consent(True)
+        transaction = self._transaction(tx_id)
+        transaction["productId"] = str(
+            plan.get("apple_product_id") or plan.get("ios_iap_product_id") or ""
+        )
+        network = MagicMock(return_value=_response())
+
+        with patch.object(server, "appstore_server_api_configured", return_value=True), \
+             patch.object(server, "_appstore_server_api_token", return_value="jwt"), \
+             patch.object(server.urllib.request, "urlopen", network):
+            result = server._apple_consumption_delivery_result(
+                self.conn, transaction, self.user_id
+            )
+
+        self.assertEqual(result["status"], "submitted")
+        body = json.loads(network.call_args.args[0].data.decode("utf-8"))
+        self.assertEqual(body["deliveryStatus"], "DELIVERED")
+        self.assertNotIn("consumptionPercentage", body)
+        self.assertNotIn("refundPreference", body)
+
     def test_webhook_without_consent_is_2xx_audited_and_never_calls_out(self) -> None:
         tx_id = "tx-webhook-no-consent"
         notification = {
@@ -600,6 +722,164 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         token.assert_not_called()
         retry_network.assert_not_called()
 
+    def test_account_deletion_records_withdrawal_and_cancels_pending_delivery(self) -> None:
+        tx_id = "tx-delete-withdrawal"
+        event_id = "event-delete-withdrawal"
+        self._credit_topup(tx_id)
+        self._record_consent(True)
+        self._consumption_webhook(
+            tx_id,
+            event_id,
+            network=MagicMock(side_effect=URLError("offline")),
+        )
+        pending = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE event_id=?", (event_id,)
+        ).fetchone())
+        self.assertEqual(pending["status"], "pending")
+
+        server.anonymize_user_account(self.conn, self.user_id)
+
+        latest = self.conn.execute(
+            "SELECT decision FROM user_privacy_consent_events "
+            "WHERE user_id=? AND purpose=? ORDER BY created_at DESC, id DESC LIMIT 1",
+            (self.user_id, server.APPLE_CONSUMPTION_CONSENT_PURPOSE),
+        ).fetchone()
+        job = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE id=?", (pending["id"],)
+        ).fetchone())
+        self.assertEqual(latest["decision"], "withdrawn")
+        self.assertEqual(job["status"], "cancelled")
+        self.assertEqual(job["last_status"], "consent_withdrawn")
+        self.assertFalse(
+            server.apple_consumption_consent_state(self.conn, self.user_id)["granted"]
+        )
+
+    def test_unresolved_user_and_order_recover_within_response_window(self) -> None:
+        future_user_id = str(uuid.uuid4())
+        tx_id = "tx-late-owner-and-order"
+        event_id = "event-late-owner-and-order"
+        notification = {
+            "notificationType": "CONSUMPTION_REQUEST",
+            "notificationUUID": event_id,
+            "data": {
+                "bundleId": server.APPLE_IAP_BUNDLE_ID or "com.yaokai.kaizi",
+                "environment": "Production",
+                "signedTransactionInfo": "signed-transaction",
+            },
+        }
+        transaction = self._transaction(tx_id)
+        transaction["appAccountToken"] = future_user_id
+        handler = self._webhook_handler()
+        with patch.object(server, "decode_apple_jws_payload", return_value=(notification, True)), \
+             patch.object(server, "verify_apple_transaction", return_value=transaction), \
+             patch.object(server, "appstore_server_api_configured") as configured, \
+             patch.object(server, "_appstore_server_api_token") as token, \
+             patch.object(server.urllib.request, "urlopen") as network:
+            handler.api_payment_webhook_apple(self.conn)
+
+        job = dict(self.conn.execute(
+            "SELECT * FROM apple_consumption_outbox WHERE event_id=?", (event_id,)
+        ).fetchone())
+        self.assertEqual(job["status"], "pending")
+        self.assertEqual(job["last_status"], "unresolved_user")
+        configured.assert_not_called()
+        token.assert_not_called()
+        network.assert_not_called()
+
+        _make_user_with_id(self.conn, future_user_id)
+        pack = server.get_topup_product_by_apple(self.conn, "machi_points_600")
+        self.assertIsNotNone(pack)
+        server.wallet_credit_iap_topup(
+            self.conn,
+            future_user_id,
+            pack,
+            "apple_iap",
+            "ios",
+            "apple:" + tx_id,
+            provider_product_id="machi_points_600",
+            provider_user_id=tx_id,
+        )
+        server.record_apple_consumption_consent_event(
+            self.conn,
+            future_user_id,
+            granted=True,
+            policy_version=server.APPLE_CONSUMPTION_CONSENT_POLICY_VERSION,
+            locale="en",
+            source="test",
+        )
+        with patch.object(server, "appstore_server_api_configured", return_value=True), \
+             patch.object(server, "_appstore_server_api_token", return_value="jwt"), \
+             patch.object(server.urllib.request, "urlopen", return_value=_response()) as retry_network:
+            final = server.process_apple_consumption_outbox_job(
+                self.conn, job["id"], now=job["next_attempt_at"]
+            )
+        self.assertEqual(final, "submitted")
+        retry_network.assert_called_once()
+
+    def test_concurrent_duplicate_webhook_audit_is_a_clean_true_false_result(self) -> None:
+        event_id = "event-concurrent-" + uuid.uuid4().hex
+        barrier = threading.Barrier(2)
+
+        class BarrierCursor:
+            def __init__(self, cursor):
+                self._cursor = cursor
+
+            def fetchone(self):
+                row = self._cursor.fetchone()
+                barrier.wait(timeout=5)
+                return row
+
+        class RaceConnection:
+            def __init__(self, connection):
+                self._connection = connection
+
+            def execute(self, sql, params=None):
+                cursor = self._connection.execute(sql, params or ())
+                if sql.lstrip().upper().startswith("SELECT 1 FROM PAYMENT_WEBHOOKS"):
+                    return BarrierCursor(cursor)
+                return cursor
+
+        results: list[bool] = []
+        errors: list[BaseException] = []
+        result_lock = threading.Lock()
+
+        def insert_once() -> None:
+            connection = server.db()
+            try:
+                result = server.record_payment_webhook(
+                    RaceConnection(connection),
+                    "apple_iap",
+                    "CONSUMPTION_REQUEST",
+                    event_id,
+                    "",
+                    "{}",
+                    True,
+                )
+                with result_lock:
+                    results.append(result)
+            except BaseException as exc:
+                with result_lock:
+                    errors.append(exc)
+            finally:
+                connection.close()
+
+        threads = [threading.Thread(target=insert_once) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+
+        self.assertFalse(errors)
+        self.assertEqual(sorted(results), [False, True])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) AS c FROM payment_webhooks "
+                "WHERE provider='apple_iap' AND event_id=?",
+                (event_id,),
+            ).fetchone()["c"],
+            1,
+        )
+
     def test_success_and_duplicate_webhook_send_exactly_once(self) -> None:
         tx_id = "tx-success-idempotent"
         event_id = "event-success-idempotent"
@@ -614,6 +894,7 @@ class AppleConsumptionConsentTests(unittest.TestCase):
         duplicate, _ = self._consumption_webhook(
             tx_id, event_id, network=duplicate_network
         )
+        self.assertEqual(duplicate._captured["status"], 200)
         self.assertTrue(duplicate._captured["data"]["duplicate"])
         duplicate_network.assert_not_called()
         job = dict(self.conn.execute(

@@ -11677,17 +11677,27 @@ def record_payment_webhook(conn: sqlite3.Connection, provider: str, event_type: 
     """Audit-log a provider callback. Returns False if this exact event
     was already recorded (dedup on provider+event_id) so the caller can
     skip re-processing."""
+    webhook_id = str(uuid.uuid4())
+    created_at = now_iso()
+    values = (
+        webhook_id, provider, event_type or "", event_id or "", order_no or "",
+        (raw or "")[:8000], 1 if signature_valid else 0, created_at, created_at,
+    )
     if event_id:
-        dupe = conn.execute(
-            "SELECT 1 FROM payment_webhooks WHERE provider = ? AND event_id = ?", (provider, event_id)
-        ).fetchone()
-        if dupe:
-            return False
+        # PostgreSQL has no process-wide DB_LOCK: let the partial unique index
+        # arbitrate concurrent callbacks atomically. The loser gets rowcount=0
+        # and callers can return a clean 2xx duplicate acknowledgement.
+        cur = conn.execute(
+            "INSERT INTO payment_webhooks (id, provider, event_type, event_id, order_no, raw_payload, "
+            "signature_valid, processed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(provider, event_id) WHERE event_id <> '' DO NOTHING",
+            values,
+        )
+        return getattr(cur, "rowcount", 0) == 1
     conn.execute(
         "INSERT INTO payment_webhooks (id, provider, event_type, event_id, order_no, raw_payload, "
         "signature_valid, processed_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        (str(uuid.uuid4()), provider, event_type or "", event_id or "", order_no or "",
-         (raw or "")[:8000], 1 if signature_valid else 0, now_iso(), now_iso()),
+        values,
     )
     return True
 
@@ -13702,9 +13712,10 @@ def record_apple_consumption_consent_event(
     if not granted:
         conn.execute(
             "UPDATE apple_consumption_outbox SET status='cancelled', "
-            "lease_expires_at='', last_status='consent_withdrawn', cancelled_at=?, updated_at=? "
+            "lease_expires_at='', last_status='consent_withdrawn', last_consent_event_id=?, "
+            "cancelled_at=?, updated_at=? "
             "WHERE user_id=? AND status IN ('pending','sending')",
-            (created_at, created_at, user_id),
+            (event_id, created_at, created_at, user_id),
         )
     row = conn.execute(
         "SELECT * FROM user_privacy_consent_events WHERE id = ?", (event_id,)
@@ -13721,7 +13732,9 @@ def apple_consumption_consent_state(
     """
     if not user_id:
         return {"granted": False, "status": "unresolved_user", "consented_at": ""}
-    if not conn.execute("SELECT 1 FROM users WHERE id = ?", (user_id,)).fetchone():
+    if not conn.execute(
+            "SELECT 1 FROM users WHERE id = ? AND deleted_at IS NULL", (user_id,)
+    ).fetchone():
         return {"granted": False, "status": "unresolved_user", "consented_at": ""}
     row = conn.execute(
         "SELECT * FROM user_privacy_consent_events "
@@ -13741,16 +13754,98 @@ def apple_consumption_consent_state(
             "consented_at": str(event.get("created_at") or ""), "event": event}
 
 
+def _apple_active_user_id(conn: sqlite3.Connection, user_id: str | None) -> str:
+    candidate = str(user_id or "").strip()
+    if not candidate:
+        return ""
+    row = conn.execute(
+        "SELECT id FROM users WHERE lower(id)=lower(?) AND deleted_at IS NULL LIMIT 1",
+        (candidate,),
+    ).fetchone()
+    return str(row["id"] or "") if row else ""
+
+
+def _apple_transaction_candidates(transaction: dict[str, Any]) -> tuple[str, ...]:
+    transaction_id = str(transaction.get("transactionId") or "").strip()
+    original_id = str(transaction.get("originalTransactionId") or "").strip()
+    return tuple(dict.fromkeys(
+        value
+        for raw in (transaction_id, original_id)
+        for value in (raw, "apple:" + raw)
+        if raw
+    ))
+
+
+def _apple_notification_user_id(
+        conn: sqlite3.Connection, transaction: dict[str, Any]) -> str:
+    """Resolve only a live Machi account from signed StoreKit identifiers."""
+    app_account_token = str(transaction.get("appAccountToken") or "").strip()
+    active = _apple_active_user_id(conn, app_account_token)
+    if active:
+        return active
+
+    candidates = _apple_transaction_candidates(transaction)
+    if candidates:
+        placeholders = ",".join("?" for _ in candidates)
+        membership = conn.execute(
+            f"SELECT user_id FROM user_memberships WHERE provider_subscription_id IN ({placeholders}) "
+            "ORDER BY updated_at DESC LIMIT 1",
+            candidates,
+        ).fetchone()
+        active = _apple_active_user_id(
+            conn, str(membership["user_id"] or "") if membership else ""
+        )
+        if active:
+            return active
+        order = conn.execute(
+            "SELECT user_id FROM payment_orders "
+            "WHERE payment_provider = 'apple_iap' AND "
+            f"(provider_trade_no IN ({placeholders}) OR provider_user_id IN ({placeholders})) "
+            "ORDER BY paid_at DESC, created_at DESC LIMIT 1",
+            (*candidates, *candidates),
+        ).fetchone()
+        active = _apple_active_user_id(
+            conn, str(order["user_id"] or "") if order else ""
+        )
+        if active:
+            return active
+    if not candidates:
+        return ""
+    placeholders = ",".join("?" for _ in candidates)
+    wallet_order = conn.execute(
+        "SELECT user_id FROM wallet_topup_orders WHERE payment_provider = 'apple_iap' "
+        f"AND (provider_trade_no IN ({placeholders}) OR provider_user_id IN ({placeholders})) "
+        "ORDER BY COALESCE(fulfilled_at, paid_at, created_at) DESC LIMIT 1",
+        (*candidates, *candidates),
+    ).fetchone()
+    active = _apple_active_user_id(
+        conn, str(wallet_order["user_id"] or "") if wallet_order else ""
+    )
+    if active:
+        return active
+    guide_order = conn.execute(
+        "SELECT user_id FROM guide_orders WHERE payment_provider = 'apple_iap' "
+        f"AND provider_trade_no IN ({placeholders}) "
+        "ORDER BY COALESCE(fulfilled_at, paid_at, created_at) DESC LIMIT 1",
+        candidates,
+    ).fetchone()
+    return _apple_active_user_id(
+        conn, str(guide_order["user_id"] or "") if guide_order else ""
+    )
+
+
 def _apple_consumption_wallet_order(
         conn: sqlite3.Connection, user_id: str, transaction: dict[str, Any]) -> dict[str, Any] | None:
-    tx_id = str(transaction.get("transactionId") or "").strip()
-    original_id = str(transaction.get("originalTransactionId") or "").strip()
-    candidates = [tx_id, original_id, "apple:" + tx_id, "apple:" + original_id]
+    candidates = _apple_transaction_candidates(transaction)
+    if not candidates:
+        return None
+    placeholders = ",".join("?" for _ in candidates)
     row = conn.execute(
         "SELECT * FROM wallet_topup_orders WHERE user_id = ? AND payment_provider = 'apple_iap' "
-        "AND provider_trade_no IN (?, ?, ?, ?) AND provider_trade_no <> '' "
+        f"AND (provider_trade_no IN ({placeholders}) OR provider_user_id IN ({placeholders})) "
+        "AND provider_trade_no <> '' "
         "ORDER BY COALESCE(fulfilled_at, paid_at, created_at) DESC LIMIT 1",
-        (user_id, *candidates),
+        (user_id, *candidates, *candidates),
     ).fetchone()
     if not row:
         return None
@@ -13758,32 +13853,178 @@ def _apple_consumption_wallet_order(
     return order if order.get("status") in ("paid", "fulfilled") else None
 
 
+def _apple_consumption_guide_order(
+        conn: sqlite3.Connection, user_id: str,
+        transaction: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = _apple_transaction_candidates(transaction)
+    if not candidates:
+        return None
+    placeholders = ",".join("?" for _ in candidates)
+    row = conn.execute(
+        "SELECT * FROM guide_orders WHERE user_id=? AND payment_provider='apple_iap' "
+        f"AND provider_trade_no IN ({placeholders}) "
+        "AND status IN ('paid','fulfilled') "
+        "ORDER BY COALESCE(fulfilled_at, paid_at, created_at) DESC LIMIT 1",
+        (user_id, *candidates),
+    ).fetchone()
+    if not row:
+        return None
+    order = dict(row)
+    entitlement = conn.execute(
+        "SELECT 1 FROM user_entitlements WHERE user_id=? AND status='active' "
+        "AND (id=? OR source_order_id=?) LIMIT 1",
+        (user_id, str(order.get("entitlement_id") or ""), str(order.get("id") or "")),
+    ).fetchone()
+    return order if entitlement else None
+
+
+def _apple_consumption_membership_order(
+        conn: sqlite3.Connection, user_id: str,
+        transaction: dict[str, Any]) -> dict[str, Any] | None:
+    candidates = _apple_transaction_candidates(transaction)
+    if not candidates:
+        return None
+    placeholders = ",".join("?" for _ in candidates)
+    order_row = conn.execute(
+        "SELECT * FROM payment_orders WHERE user_id=? AND payment_provider='apple_iap' "
+        "AND status='paid' AND "
+        f"(provider_trade_no IN ({placeholders}) OR provider_user_id IN ({placeholders})) "
+        "ORDER BY paid_at DESC, created_at DESC LIMIT 1",
+        (user_id, *candidates, *candidates),
+    ).fetchone()
+    order = dict(order_row) if order_row else None
+    original_id = str(transaction.get("originalTransactionId") or "").strip()
+    if order:
+        membership_row = conn.execute(
+            "SELECT * FROM user_memberships WHERE user_id=? AND plan_key=? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (user_id, str(order.get("plan_key") or "")),
+        ).fetchone()
+    elif original_id:
+        membership_row = conn.execute(
+            "SELECT * FROM user_memberships WHERE user_id=? AND provider_subscription_id=? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (user_id, original_id),
+        ).fetchone()
+    else:
+        membership_row = None
+    if not membership_row:
+        return None
+    return {"order": order or {}, "membership": dict(membership_row)}
+
+
+def _apple_consumption_purchase(
+        conn: sqlite3.Connection, user_id: str,
+        transaction: dict[str, Any]) -> dict[str, Any] | None:
+    wallet = _apple_consumption_wallet_order(conn, user_id, transaction)
+    if wallet:
+        return {"kind": "consumable", "order": wallet}
+    guide = _apple_consumption_guide_order(conn, user_id, transaction)
+    if guide:
+        return {"kind": "non_consumable", "order": guide}
+    membership = _apple_consumption_membership_order(conn, user_id, transaction)
+    if membership:
+        return {"kind": "subscription", **membership}
+    return None
+
+
+def _apple_target_transaction_consumption(
+        conn: sqlite3.Connection, user_id: str,
+        order: dict[str, Any]) -> dict[str, int] | None:
+    """Replay immutable wallet lots and attribute actual ``spend`` debits FIFO.
+
+    Refund/chargeback/admin debits still remove coins from lots, but never count
+    as customer consumption.  If historical balance evidence doesn't reconcile
+    or the target credit is incomplete, return None so the optional percentage
+    is omitted instead of guessed.
+    """
+    target_order_no = str(order.get("order_no") or "")
+    granted = int(order.get("total_points") or 0)
+    if not target_order_no or granted <= 0:
+        return None
+    rows = conn.execute(
+        "SELECT entry_type, points_delta, balance_after, source_type, source_order_id, created_at, id "
+        "FROM wallet_ledger_entries WHERE user_id=? ORDER BY created_at, id",
+        (user_id,),
+    ).fetchall()
+    lots: list[dict[str, Any]] = []
+    running_balance = 0
+    target_credited = 0
+    target_consumed = 0
+    target_removed = 0
+    for raw in rows:
+        row = dict(raw)
+        delta = int(row.get("points_delta") or 0)
+        running_balance += delta
+        if running_balance != int(row.get("balance_after") or 0):
+            return None
+        if delta > 0:
+            is_target = (
+                str(row.get("source_order_id") or "") == target_order_no
+                and str(row.get("entry_type") or "") in ("topup", "bonus")
+            )
+            lots.append({"remaining": delta, "target": is_target})
+            if is_target:
+                target_credited += delta
+            continue
+        if delta >= 0:
+            continue
+        remaining_debit = -delta
+        is_consumption = str(row.get("entry_type") or "") == "spend"
+        for lot in lots:
+            available = int(lot["remaining"])
+            if available <= 0:
+                continue
+            taken = min(available, remaining_debit)
+            lot["remaining"] = available - taken
+            remaining_debit -= taken
+            if lot["target"]:
+                if is_consumption:
+                    target_consumed += taken
+                else:
+                    target_removed += taken
+            if remaining_debit == 0:
+                break
+        if remaining_debit:
+            return None
+    balance_row = conn.execute(
+        "SELECT balance_points FROM wallet_accounts WHERE user_id=?", (user_id,)
+    ).fetchone()
+    if (not balance_row
+            or running_balance != int(balance_row["balance_points"] or 0)
+            or target_credited != granted):
+        return None
+    target_remaining = sum(
+        int(lot["remaining"]) for lot in lots if bool(lot["target"])
+    )
+    return {
+        "granted": granted,
+        "consumed": min(granted, target_consumed),
+        "removed": min(granted, target_removed),
+        "remaining": min(granted, target_remaining),
+    }
+
+
 def _apple_consumption_v2_payload(
         conn: sqlite3.Connection, user_id: str, order: dict[str, Any]) -> dict[str, Any] | None:
     granted = int(order.get("total_points") or 0)
     if granted <= 0:
         return None
-    balance_row = conn.execute(
-        "SELECT balance_points FROM wallet_accounts WHERE user_id = ?", (user_id,)
-    ).fetchone()
-    if not balance_row:
-        return None
-    # Wallet coins are fungible.  At most min(balance, this grant) can still be
-    # attributed to this purchase, so max(0, grant-balance) is only a LOWER
-    # BOUND on consumption.  Reporting that bound can understate consumption,
-    # but can never exaggerate it when other top-ups/bonuses are commingled.
-    balance = max(0, int(balance_row["balance_points"] or 0))
-    consumed_lower_bound = max(0, granted - balance)
-    percentage = max(0, min(100000, (consumed_lower_bound * 100000) // granted))
     payload: dict[str, Any] = {
         "customerConsented": True,
         "deliveryStatus": "DELIVERED",
         "sampleContentProvided": False,
-        "consumptionPercentage": percentage,
     }
-    if percentage == 100000:
+    attribution = _apple_target_transaction_consumption(conn, user_id, order)
+    if not attribution:
+        return payload
+    consumed = int(attribution["consumed"])
+    percentage = max(0, min(100000, (consumed * 100000) // granted))
+    payload["consumptionPercentage"] = percentage
+    if percentage == 100000 and int(attribution["removed"]) == 0:
         payload["refundPreference"] = "DECLINE"
-    elif percentage == 0:
+    elif (percentage == 0 and int(attribution["removed"]) == 0
+          and int(attribution["remaining"]) == granted):
         credit = conn.execute(
             "SELECT created_at FROM wallet_ledger_entries "
             "WHERE user_id = ? AND source_order_id = ? AND entry_type = 'topup' "
@@ -13798,6 +14039,23 @@ def _apple_consumption_v2_payload(
         if credit and not spent_after_delivery:
             payload["refundPreference"] = "GRANT_FULL"
     return payload
+
+
+def _apple_consumption_payload(
+        conn: sqlite3.Connection, user_id: str,
+        purchase: dict[str, Any]) -> dict[str, Any] | None:
+    if purchase.get("kind") == "consumable":
+        return _apple_consumption_v2_payload(conn, user_id, purchase["order"])
+    if purchase.get("kind") in ("non_consumable", "subscription"):
+        # The new v2 fields are intentionally sparse: delivery is proven by the
+        # settled order + entitlement above, while usage/consumption isn't
+        # recorded for guides and Apple calculates subscription consumption.
+        return {
+            "customerConsented": True,
+            "deliveryStatus": "DELIVERED",
+            "sampleContentProvided": False,
+        }
+    return None
 
 
 def _apple_retry_after_seconds(headers: Any, *, now: datetime | None = None) -> int:
@@ -13828,8 +14086,20 @@ def _apple_consumption_delivery_result(
         "http_status": 0,
         "retry_after_seconds": 0,
         "consent_event_id": "",
+        "resolved_user_id": "",
     }
-    consent = apple_consumption_consent_state(conn, user_id)
+    resolved_user_id = (
+        _apple_active_user_id(conn, user_id)
+        or _apple_notification_user_id(conn, transaction)
+    )
+    result["resolved_user_id"] = resolved_user_id
+    if not resolved_user_id:
+        # Client-side verify/restore may make ownership resolvable later. Keep
+        # the durable job retryable inside Apple's response window, but do not
+        # inspect credentials or send anything until that happens.
+        result.update(status="unresolved_user", retryable=True)
+        return result
+    consent = apple_consumption_consent_state(conn, resolved_user_id)
     event = consent.get("event") or {}
     result["consent_event_id"] = str(event.get("id") or "")
     if not consent.get("granted"):
@@ -13839,13 +14109,13 @@ def _apple_consumption_delivery_result(
     if not tx_id:
         result["status"] = "missing_transaction"
         return result
-    order = _apple_consumption_wallet_order(conn, str(user_id), transaction)
-    if not order:
-        result["status"] = "purchase_unresolved"
+    purchase = _apple_consumption_purchase(conn, resolved_user_id, transaction)
+    if not purchase:
+        result.update(status="purchase_unresolved", retryable=True)
         return result
-    payload = _apple_consumption_v2_payload(conn, str(user_id), order)
+    payload = _apple_consumption_payload(conn, resolved_user_id, purchase)
     if not payload:
-        result["status"] = "purchase_unresolved"
+        result.update(status="purchase_unresolved", retryable=True)
         return result
     if not appstore_server_api_configured():
         ACCESS_LOG.warning("apple consumption request skipped: server api unconfigured")
@@ -13989,6 +14259,7 @@ def _finish_apple_consumption_outbox_attempt(
     http_status = int(result.get("http_status") or 0)
     retry_after = max(0, int(result.get("retry_after_seconds") or 0))
     consent_event_id = str(result.get("consent_event_id") or "")
+    resolved_user_id = str(result.get("resolved_user_id") or "")
     deadline = _apple_consumption_outbox_time(str(job.get("deadline_at") or ""))
     finished = _apple_consumption_outbox_time(finished_at)
 
@@ -13998,8 +14269,7 @@ def _finish_apple_consumption_outbox_attempt(
         submitted_at = finished_at
         cancelled_at = ""
     elif outcome in {
-        "unresolved_user", "consent_missing", "consent_withdrawn",
-        "consent_version_mismatch",
+        "consent_missing", "consent_withdrawn", "consent_version_mismatch",
     }:
         status = "cancelled"
         next_attempt_at = finished_at
@@ -14034,11 +14304,12 @@ def _finish_apple_consumption_outbox_attempt(
     cur = conn.execute(
         "UPDATE apple_consumption_outbox SET status=?, next_attempt_at=?, "
         "lease_expires_at='', last_status=?, last_http_status=?, "
-        "last_retry_after_seconds=?, last_consent_event_id=?, submitted_at=?, "
+        "last_retry_after_seconds=?, last_consent_event_id=?, "
+        "user_id=COALESCE(NULLIF(?, ''), user_id), submitted_at=?, "
         "cancelled_at=?, updated_at=? WHERE id=? AND status='sending' AND attempt_count=?",
         (
             status, next_attempt_at, outcome, http_status, retry_after,
-            consent_event_id, submitted_at, cancelled_at, finished_at,
+            consent_event_id, resolved_user_id, submitted_at, cancelled_at, finished_at,
             job["id"], attempt_no,
         ),
     )
@@ -16505,6 +16776,18 @@ def anonymize_user_account(conn: sqlite3.Connection, user_id: str) -> None:
     mere `deleted_at` flag. Backend-agnostic (no FK-cascade surgery), so it
     behaves identically on SQLite and Postgres."""
     now = now_iso()
+    # Withdraw first and synchronously cancel queued/in-flight consumption
+    # reporting before marking the account deleted. If the process crashes,
+    # this ordering can leave a live account opted out; it can never leave a
+    # deleted account whose stale consent still authorizes outbound data.
+    record_apple_consumption_consent_event(
+        conn,
+        user_id,
+        granted=False,
+        policy_version=APPLE_CONSUMPTION_CONSENT_POLICY_VERSION,
+        locale="",
+        source="account_deletion",
+    )
     short = uuid.uuid4().hex[:12]
     # A random hash with no known preimage — the account can never be signed
     # into again, even by its former owner.
@@ -28807,58 +29090,7 @@ class Handler(BaseHTTPRequestHandler):
         user UUID from iOS). Older purchases may not, so fall back to the
         original transaction id recorded during the client-side verify call.
         """
-        app_account_token = str(transaction.get("appAccountToken") or "").strip()
-        if app_account_token:
-            row = conn.execute(
-                "SELECT id FROM users WHERE lower(id) = lower(?) LIMIT 1",
-                (app_account_token,),
-            ).fetchone()
-            if row:
-                return row["id"]
-        original_id = str(transaction.get("originalTransactionId") or "").strip()
-        transaction_id = str(transaction.get("transactionId") or "").strip()
-        if original_id:
-            membership = conn.execute(
-                "SELECT user_id FROM user_memberships WHERE provider_subscription_id = ? "
-                "ORDER BY updated_at DESC LIMIT 1",
-                (original_id,),
-            ).fetchone()
-            if membership:
-                return membership["user_id"]
-            order = conn.execute(
-                "SELECT user_id FROM payment_orders WHERE payment_provider = 'apple_iap' AND provider_user_id = ? "
-                "ORDER BY paid_at DESC, created_at DESC LIMIT 1",
-                (original_id,),
-            ).fetchone()
-            if order:
-                return order["user_id"]
-        candidates = tuple(
-            dict.fromkeys(
-                value
-                for raw in (transaction_id, original_id)
-                for value in (raw, "apple:" + raw)
-                if raw
-            )
-        )
-        if candidates:
-            placeholders = ",".join("?" for _ in candidates)
-            wallet_order = conn.execute(
-                "SELECT user_id FROM wallet_topup_orders WHERE payment_provider = 'apple_iap' "
-                f"AND (provider_trade_no IN ({placeholders}) OR provider_user_id IN ({placeholders})) "
-                "ORDER BY COALESCE(fulfilled_at, paid_at, created_at) DESC LIMIT 1",
-                (*candidates, *candidates),
-            ).fetchone()
-            if wallet_order:
-                return wallet_order["user_id"]
-            guide_order = conn.execute(
-                "SELECT user_id FROM guide_orders WHERE payment_provider = 'apple_iap' "
-                f"AND provider_trade_no IN ({placeholders}) "
-                "ORDER BY COALESCE(fulfilled_at, paid_at, created_at) DESC LIMIT 1",
-                candidates,
-            ).fetchone()
-            if guide_order:
-                return guide_order["user_id"]
-        return ""
+        return _apple_notification_user_id(conn, transaction)
 
     def api_payment_webhook_apple(self, conn: sqlite3.Connection) -> None:
         """App Store Server Notifications v2 callback.
