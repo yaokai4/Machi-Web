@@ -143,12 +143,14 @@ def main() -> None:
         assert [q["id"] for q in resumed["questions"]] == n5_ids
         for q in resumed["questions"]:
             assert "answerIndex" not in q and "explanation" not in q, "resume leaked the key"
-        # Saved answers echoed — exactly the two we sent, and NOTHING that
-        # reveals grading (is_correct/correct must not be present).
+        # Saved answers echoed — exactly the two we sent, plus only their
+        # concurrency revisions. Grading still must not be exposed.
         got = {a["questionId"]: a["selectedIndex"] for a in resumed["answers"]}
         assert got == {n5_ids[0]: tq0["answer_index"], n5_ids[1]: wrong1}, got
         for a in resumed["answers"]:
-            assert set(a.keys()) == {"questionId", "selectedIndex"}, f"answer leak: {a.keys()}"
+            assert set(a.keys()) == {"questionId", "selectedIndex", "revision"}, f"answer leak: {a.keys()}"
+            assert isinstance(a["revision"], int) and a["revision"] > 0
+        assert resumed["answerRevision"] == 2
         # Server-computed clock: fresh session → close to full duration, and
         # both key spellings agree.
         rem = resumed["remainingSeconds"]

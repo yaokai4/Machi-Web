@@ -18651,17 +18651,37 @@ class Handler(BaseHTTPRequestHandler):
         question_id = str(body.get("questionId") or body.get("question_id") or "").strip()
         if not session_id or not question_id:
             return self.send_error_json("sessionId + questionId required", 400, "invalid_body")
-        session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
-        if not session:
-            return self.send_error_json("session not found", 404, "not_found")
+        selected = body.get("selectedIndex", body.get("selected_index"))
+        base_revision = body.get("baseRevision", body.get("base_revision"))
+        revision = body.get("revision")
         try:
-            selected = int(body.get("selectedIndex", body.get("selected_index", -1)))
-        except (TypeError, ValueError):
-            return self.send_error_json("selectedIndex required", 400, "invalid_body")
-        result = jlpt.save_exam_answer(conn, session=session, question_id=question_id, selected_index=selected)
-        if result is None:
-            return self.send_error_json("无法保存作答（会话已结束或题目不属于本卷）。", 409, "answer_rejected")
-        conn.commit()
+            # SQLite uses BEGIN IMMEDIATE; _pg_xlate maps it to BEGIN. Holding
+            # this transaction across the session-row lock and answer upsert is
+            # what makes answer-vs-submit ordering authoritative.
+            conn.execute("BEGIN IMMEDIATE")
+            session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
+            if not session:
+                conn.rollback()
+                return self.send_error_json("session not found", 404, "not_found")
+            result = jlpt.save_exam_answer(
+                conn,
+                session=session,
+                question_id=question_id,
+                selected_index=selected,
+                base_revision=base_revision,
+                revision=revision,
+            )
+            if result is None:
+                conn.rollback()
+                return self.send_error_json(
+                    "无法保存作答（会话已结束或题目不属于本卷）。",
+                    409,
+                    "answer_rejected",
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         self.send_json({"status": "ok", **result})
 
     def api_guide_jlpt_exam_submit(self, conn: sqlite3.Connection) -> None:
@@ -18670,14 +18690,34 @@ class Handler(BaseHTTPRequestHandler):
         session_id = str(body.get("sessionId") or body.get("session_id") or "").strip()
         if not session_id:
             return self.send_error_json("sessionId required", 400, "invalid_body")
-        session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
-        if not session:
-            return self.send_error_json("session not found", 404, "not_found")
-        exam = jlpt.get_exam(conn, session.get("exam_id") or "")
-        result = jlpt.submit_exam_session(conn, session=session, exam=exam, now=now_iso())
-        if result is None:
-            return self.send_error_json("该考试已提交。", 409, "already_submitted")
-        conn.commit()
+        snapshot_present = "answersSnapshot" in body or "answers_snapshot" in body
+        snapshot = body.get("answersSnapshot", body.get("answers_snapshot")) if snapshot_present else None
+        base_revision = body.get("baseRevision", body.get("base_revision"))
+        revision = body.get("revision")
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            session = jlpt.get_session(conn, session_id=session_id, user_id=user["id"])
+            if not session:
+                conn.rollback()
+                return self.send_error_json("session not found", 404, "not_found")
+            exam = jlpt.get_exam(conn, session.get("exam_id") or "")
+            submit_args = {
+                "session": session,
+                "exam": exam,
+                "now": now_iso(),
+                "base_revision": base_revision,
+                "revision": revision,
+            }
+            if snapshot_present:
+                submit_args["answer_snapshot"] = snapshot
+            result = jlpt.submit_exam_session(conn, **submit_args)
+            if result is None:
+                conn.rollback()
+                return self.send_error_json("该考试已提交。", 409, "already_submitted")
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         _guide_funnel_log("jlpt_exam_submit", user_id=user["id"],
                           examId=session.get("exam_id") or "", score=result.get("score"),
                           passed=result.get("passed"))

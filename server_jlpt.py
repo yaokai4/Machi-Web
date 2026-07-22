@@ -59,6 +59,7 @@ EXAM_DYNAMIC_MAX = 60             # cap on dynamically-sampled mock exam size
 # network latency. Grading + recorded duration are still clamped to the hard
 # limit in submit_exam_session.
 EXAM_SAVE_GRACE_SEC = 5
+_ANSWER_SNAPSHOT_UNSET = object()
 
 # ── JLPT 标准出分（全真模考）─────────────────────────────────────────────────
 # 依照官方计分结构（2010 年改定后）：N1-N3 笔试两科（言語知識〈文字・語彙・文法〉
@@ -1035,6 +1036,7 @@ def start_exam_session(
         "total": len(q_ids),
         "questions": questions,
         "resumed": False,
+        "answerRevision": 0,
     }
 
 
@@ -1047,11 +1049,15 @@ def _resume_exam_payload(
     q_ids = _loads_json_list(session.get("question_ids_json"))
     known = set(q_ids)
     ans_rows = conn.execute(
-        "SELECT question_id, selected_index FROM jlpt_exam_answers WHERE session_id = ?",
+        "SELECT question_id, selected_index, revision FROM jlpt_exam_answers WHERE session_id = ?",
         (session["id"],),
     ).fetchall()
     answers = [
-        {"questionId": d["question_id"], "selectedIndex": int(d["selected_index"])}
+        {
+            "questionId": d["question_id"],
+            "selectedIndex": int(d["selected_index"]),
+            "revision": int(d.get("revision") or 0),
+        }
         for d in (dict(r) for r in ans_rows)
         if d["question_id"] in known
     ]
@@ -1067,6 +1073,7 @@ def _resume_exam_payload(
         "questions": _questions_by_ids(conn, q_ids, reveal_answer=False),
         "resumed": True,
         "answers": answers,
+        "answerRevision": int(session.get("answer_revision") or 0),
         # Dual-key on purpose: camelCase matches this module's contract, the
         # snake_case twin keeps loosely-typed clients tolerant.
         "remainingSeconds": remaining,
@@ -1127,15 +1134,52 @@ def _exam_session_expired(
     return elapsed > limit + max(0, grace)
 
 
+def _validated_revision_pair(base_revision: Any, revision: Any) -> tuple[int, int]:
+    """Validate a consecutive optimistic revision pair without bool coercion."""
+    if (isinstance(base_revision, bool) or isinstance(revision, bool)
+            or not isinstance(base_revision, int) or not isinstance(revision, int)
+            or base_revision < 0 or revision != base_revision + 1):
+        raise APIError(
+            "baseRevision/revision 必须是相邻的非负整数。",
+            400,
+            "invalid_answer_revision",
+        )
+    return base_revision, revision
+
+
+def _answer_revision_conflict(current: int) -> APIError:
+    return APIError(
+        "作答版本已变化，请先恢复服务器上的最新答案。",
+        409,
+        "answer_revision_conflict",
+        {"currentAnswerRevision": int(current)},
+    )
+
+
+def _validated_selected_index(question: dict[str, Any], raw: Any) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise APIError("selectedIndex 必须是整数。", 400, "invalid_selected_index")
+    choices = _loads_choices(question.get("choices_json"))
+    if raw < 0 or raw >= len(choices):
+        raise APIError("selectedIndex 超出选项范围。", 400, "invalid_selected_index")
+    return raw
+
+
 def save_exam_answer(
     conn: Any, *, session: dict[str, Any], question_id: str, selected_index: int,
-    now: Optional[str] = None,
+    now: Optional[str] = None, base_revision: Any = None, revision: Any = None,
 ) -> Optional[dict[str, Any]]:
-    """Persist one in-progress exam answer (no grading revealed). Rejects if the
-    question isn't in the session, the session is already submitted, OR the exam's
-    server-authoritative time limit has elapsed — otherwise the countdown is a
-    mere client-side suggestion that devtools/replay can ignore to keep answering
-    an expired paper."""
+    """Persist one answer under the session-wide optimistic revision contract.
+
+    Legacy callers that omit both revision fields remain compatible: the server
+    assigns the next revision. New callers provide ``baseRevision`` and exactly
+    ``base+1``. Retrying the exact same write is idempotent; changing content at
+    an already-used revision is a 409 conflict.
+
+    The HTTP handler opens an explicit transaction. The no-op session UPDATE
+    below then shares a row lock with submit, preventing a save from committing
+    after that session has already been graded.
+    """
     if (session.get("status") or "") != "in_progress":
         return None
     if _exam_session_expired(conn, session, now=now, grace=EXAM_SAVE_GRACE_SEC):
@@ -1143,30 +1187,183 @@ def save_exam_answer(
     q_ids = _loads_json_list(session.get("question_ids_json"))
     if question_id not in q_ids:
         return None
-    q = get_question(conn, question_id)
-    if not q:
+    question = get_question(conn, question_id)
+    if not question:
         return None
-    is_correct = 1 if int(selected_index) == int(q.get("answer_index") or 0) else 0
-    conn.execute(
-        "INSERT INTO jlpt_exam_answers (session_id, question_id, selected_index, is_correct) "
-        "VALUES (?, ?, ?, ?) "
-        "ON CONFLICT(session_id, question_id) DO UPDATE SET selected_index = ?, is_correct = ?",
-        (session["id"], question_id, int(selected_index), is_correct, int(selected_index), is_correct),
+    selected = _validated_selected_index(question, selected_index)
+
+    lock = conn.execute(
+        "UPDATE jlpt_exam_sessions SET answer_revision=answer_revision "
+        "WHERE id=? AND status='in_progress'",
+        (session["id"],),
     )
-    return {"saved": True, "questionId": question_id}
+    if getattr(lock, "rowcount", 0) != 1:
+        return None
+    live_row = conn.execute(
+        "SELECT answer_revision FROM jlpt_exam_sessions WHERE id=?", (session["id"],)
+    ).fetchone()
+    current = int(dict(live_row).get("answer_revision") or 0) if live_row else 0
+    legacy = base_revision is None and revision is None
+    if legacy:
+        base, next_revision = current, current + 1
+    else:
+        if base_revision is None or revision is None:
+            raise APIError(
+                "baseRevision 与 revision 必须同时提供。",
+                400,
+                "invalid_answer_revision",
+            )
+        base, next_revision = _validated_revision_pair(base_revision, revision)
+        if next_revision == current and base == current - 1:
+            existing = conn.execute(
+                "SELECT selected_index, revision FROM jlpt_exam_answers "
+                "WHERE session_id=? AND question_id=?",
+                (session["id"], question_id),
+            ).fetchone()
+            if existing:
+                saved = dict(existing)
+                if (int(saved.get("revision") or 0) == next_revision
+                        and int(saved.get("selected_index")) == selected):
+                    return {
+                        "saved": True,
+                        "questionId": question_id,
+                        "revision": next_revision,
+                        "answerRevision": current,
+                        "idempotentReplay": True,
+                        "legacyRevisionAssigned": False,
+                    }
+            raise _answer_revision_conflict(current)
+        if base != current:
+            raise _answer_revision_conflict(current)
+
+    is_correct = 1 if selected == int(question.get("answer_index") or 0) else 0
+    conn.execute(
+        "INSERT INTO jlpt_exam_answers "
+        "(session_id, question_id, selected_index, is_correct, revision) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(session_id, question_id) DO UPDATE SET "
+        "selected_index=excluded.selected_index, is_correct=excluded.is_correct, revision=excluded.revision",
+        (session["id"], question_id, selected, is_correct, next_revision),
+    )
+    conn.execute(
+        "UPDATE jlpt_exam_sessions SET answer_revision=? WHERE id=? AND status='in_progress'",
+        (next_revision, session["id"]),
+    )
+    return {
+        "saved": True,
+        "questionId": question_id,
+        "revision": next_revision,
+        "answerRevision": next_revision,
+        "idempotentReplay": False,
+        "legacyRevisionAssigned": legacy,
+    }
+
+
+def _validated_answer_snapshot(
+    conn: Any, *, session: dict[str, Any], snapshot: Any, revision: int,
+) -> list[tuple[str, int, int, int]]:
+    if not isinstance(snapshot, list):
+        raise APIError("answersSnapshot 必须是数组。", 400, "invalid_answer_snapshot")
+    known = set(_loads_json_list(session.get("question_ids_json")))
+    seen: set[str] = set()
+    rows: list[tuple[str, int, int, int]] = []
+    for item in snapshot:
+        if not isinstance(item, dict):
+            raise APIError("answersSnapshot 项格式错误。", 400, "invalid_answer_snapshot")
+        question_id = str(item.get("questionId") or item.get("question_id") or "").strip()
+        if not question_id or question_id not in known or question_id in seen:
+            raise APIError(
+                "answersSnapshot 含重复或不属于本卷的题目。",
+                400,
+                "invalid_answer_snapshot",
+            )
+        question = get_question(conn, question_id)
+        if not question:
+            raise APIError("answersSnapshot 题目不存在。", 400, "invalid_answer_snapshot")
+        selected = _validated_selected_index(
+            question, item.get("selectedIndex", item.get("selected_index"))
+        )
+        correct = 1 if selected == int(question.get("answer_index") or 0) else 0
+        rows.append((question_id, selected, correct, revision))
+        seen.add(question_id)
+    return rows
 
 
 def submit_exam_session(
     conn: Any, *, session: dict[str, Any], exam: Optional[dict[str, Any]], now: Optional[str] = None,
+    answer_snapshot: Any = _ANSWER_SNAPSHOT_UNSET,
+    base_revision: Any = None,
+    revision: Any = None,
 ) -> Optional[dict[str, Any]]:
-    """Grade + finalize a session. CAS on status (in_progress→submitted) so a
-    double-submit can't re-score. Returns the graded result or None if the CAS
-    lost (already submitted / expired)."""
+    """Atomically apply an optional full answer snapshot, grade, and finalize.
+
+    The caller must hold an explicit DB transaction. Answer saves and submit
+    both lock the session row, so grading observes every committed pre-submit
+    save and no answer can land after the result is final.
+    """
     now = _iso(now)
+    lock = conn.execute(
+        "UPDATE jlpt_exam_sessions SET answer_revision=answer_revision "
+        "WHERE id=? AND status='in_progress'",
+        (session["id"],),
+    )
+    if getattr(lock, "rowcount", 0) != 1:
+        return None
+    live = conn.execute(
+        "SELECT * FROM jlpt_exam_sessions WHERE id=?", (session["id"],)
+    ).fetchone()
+    if not live:
+        return None
+    session = dict(live)
+    current_revision = int(session.get("answer_revision") or 0)
+    result_revision = current_revision
+
+    # ``null`` is not the same as an omitted snapshot. Treating JSON null as
+    # the legacy submit path would silently grade only the last persisted
+    # answers even though the caller explicitly attempted a full snapshot.
+    snapshot_supplied = answer_snapshot is not _ANSWER_SNAPSHOT_UNSET
+    if snapshot_supplied:
+        if base_revision is None or revision is None:
+            raise APIError(
+                "提交答案快照时必须同时提供 baseRevision 与 revision。",
+                400,
+                "invalid_answer_revision",
+            )
+        base, next_revision = _validated_revision_pair(base_revision, revision)
+        if base != current_revision:
+            raise _answer_revision_conflict(current_revision)
+        snapshot_rows = _validated_answer_snapshot(
+            conn, session=session, snapshot=answer_snapshot, revision=next_revision
+        )
+        # Complete snapshot semantics: an omitted question is unanswered.
+        # Every item is validated before the first mutation.
+        conn.execute("DELETE FROM jlpt_exam_answers WHERE session_id=?", (session["id"],))
+        if snapshot_rows:
+            conn.executemany(
+                "INSERT INTO jlpt_exam_answers "
+                "(session_id, question_id, selected_index, is_correct, revision) "
+                "VALUES (?, ?, ?, ?, ?)",
+                [
+                    (session["id"], question_id, selected, correct, row_revision)
+                    for question_id, selected, correct, row_revision in snapshot_rows
+                ],
+            )
+        conn.execute(
+            "UPDATE jlpt_exam_sessions SET answer_revision=? WHERE id=?",
+            (next_revision, session["id"]),
+        )
+        result_revision = next_revision
+    elif base_revision is not None or revision is not None:
+        raise APIError(
+            "未提供 answersSnapshot 时不得单独提交 revision。",
+            400,
+            "invalid_answer_snapshot",
+        )
+
     # CAS: only the request that flips in_progress→submitted proceeds to score.
     cur = conn.execute(
-        "UPDATE jlpt_exam_sessions SET status = 'submitted', submitted_at = ? "
-        "WHERE id = ? AND status = 'in_progress'",
+        "UPDATE jlpt_exam_sessions SET status='submitted', submitted_at=? "
+        "WHERE id=? AND status='in_progress'",
         (now, session["id"]),
     )
     if getattr(cur, "rowcount", 0) != 1:
@@ -1217,6 +1414,7 @@ def submit_exam_session(
         })
     out = {
         "sessionId": session["id"],
+        "answerRevision": result_revision,
         "total": total, "correct": correct, "score": score,
         "passed": bool(passed), "passScore": pass_score,
         "scoreMode": score_mode,

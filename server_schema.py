@@ -5738,6 +5738,18 @@ MIGRATIONS: list[tuple[int, str, str]] = [
          WHERE kind = 'mock' AND id LIKE 'mockv1-%';
         """,
     ),
+    (
+        123,
+        "jlpt 作答乐观并发：会话全局 revision + 每题落盘 revision",
+        # 2026-07 EXAM-01：移动端/网页连续改选、弱网重试和交卷会并发到达。
+        # session.answer_revision 是服务端唯一时序；每个新写入必须声明它所基于
+        # 的 revision 并恰好推进一步。answer.revision 保留每道题最后一次被哪一
+        # 版快照写入，便于恢复、冲突诊断与审计。纯 ADD COLUMN，SQLite/PG 通用。
+        """
+        ALTER TABLE jlpt_exam_sessions ADD COLUMN answer_revision INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE jlpt_exam_answers ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+        """,
+    ),
 ]
 
 
