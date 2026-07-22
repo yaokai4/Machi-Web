@@ -22,30 +22,95 @@ from collections import Counter, defaultdict
 from atomic_json import dump_json_atomic
 
 
-_POSITION_REFERENCE = re.compile(
-    r"(?P<prefix>(?:选项|選項|選択肢|故选|故選)\s*)(?P<digit>[1-4])"
-    r"|第(?P<ordinal>[一二三四1-4])(?P<suffix>[项項])"
-)
+_DIGITS = "1234"
+_CIRCLED = "①②③④"
+_LETTERS = "ABCD"
+_LOWER_LETTERS = "abcd"
+_FULLWIDTH_LETTERS = "ＡＢＣＤ"
+_FULLWIDTH_LOWER_LETTERS = "ａｂｃｄ"
 _CHINESE_POSITION = ("一", "二", "三", "四")
-_CHINESE_POSITION_INDEX = {value: index for index, value in enumerate(_CHINESE_POSITION)}
+_TOKEN_STYLES = (
+    _DIGITS,
+    _CIRCLED,
+    _LETTERS,
+    _LOWER_LETTERS,
+    _FULLWIDTH_LETTERS,
+    _FULLWIDTH_LOWER_LETTERS,
+    "".join(_CHINESE_POSITION),
+)
+_TOKEN_TO_INDEX = {
+    token: index
+    for style in _TOKEN_STYLES
+    for index, token in enumerate(style)
+}
+_SUPPORTED_TOKEN = r"[1-4①②③④A-Da-dＡ-Ｄａ-ｄ一二三四]"
+_POSITION_REFERENCE = re.compile(
+    rf"(?P<prefix>(?:选项|選項|選択肢|故选|故選|[Oo]ption\b)\s*)"
+    rf"(?P<prefix_open>[（(]?)(?P<prefix_token>{_SUPPORTED_TOKEN})"
+    rf"(?P<prefix_close>[）)]?)(?![0-9A-Za-zＡ-Ｚａ-ｚ])"
+    rf"|第(?P<ordinal_token>{_SUPPORTED_TOKEN})(?P<ordinal_middle>个|個|の)?"
+    rf"(?P<ordinal_suffix>选项|選項|選択肢|项|項)"
+    rf"|(?<![0-9A-Za-zＡ-Ｚａ-ｚ])(?P<suffix_token>[A-Da-dＡ-Ｄａ-ｄ])"
+    rf"(?P<suffix_space>\s*)(?P<suffix_word>选项|選項|選択肢|项|項)"
+)
+_SUSPECT_POSITION_REFERENCE = re.compile(
+    r"(?:选项|選項|選択肢|故选|故選|[Oo]ption\b)\s*"
+    r"(?:[（(]\s*)?(?:[0-9]+|[①-⑩]|[A-Za-zＡ-Ｚａ-ｚ一二三四五六七八九十])(?:\s*[）)])?"
+    r"|第\s*[0-9一二三四五六七八九十]+\s*(?:个|個|の)?\s*(?:选项|選項|選択肢|项|項)"
+    r"|(?<![0-9A-Za-zＡ-Ｚａ-ｚ])[A-Za-zＡ-Ｚａ-ｚ]\s*(?:选项|選項|選択肢|项|項)"
+    r"|(?:答案|正解|答え)(?:是|为|為|は|:|：)\s*[0-9①-⑩A-Za-zＡ-Ｚａ-ｚ]+"
+)
 
 
-def remap_explanation_positions(explanation, old_to_new):
-    """Move explicit 1-based choice references with their original choice."""
+class BalanceValidationError(ValueError):
+    """Raised before write when explanation references cannot be transformed safely."""
+
+
+def _render_position_token(original, new_index):
+    for style in _TOKEN_STYLES:
+        if original in style:
+            return style[new_index]
+    raise BalanceValidationError(f"unsupported position token: {original}")
+
+
+def remap_explanation_positions(explanation, old_to_new, *, question_id=""):
+    """Move canonical position references or fail closed on suspicious syntax."""
     if not isinstance(explanation, str) or not explanation:
         return explanation
 
-    def replace(match):
-        digit = match.group("digit")
-        if digit:
-            new_position = old_to_new[int(digit) - 1] + 1
-            return f"{match.group('prefix')}{new_position}"
+    supported_matches = list(_POSITION_REFERENCE.finditer(explanation))
+    supported_spans = [match.span() for match in supported_matches]
+    for suspect in _SUSPECT_POSITION_REFERENCE.finditer(explanation):
+        start, end = suspect.span()
+        if not any(ok_start <= start and end <= ok_end for ok_start, ok_end in supported_spans):
+            fragment = suspect.group(0)
+            raise BalanceValidationError(
+                f"{question_id or '<unknown>'}: unsupported position reference {fragment!r}"
+            )
 
-        ordinal = match.group("ordinal")
-        old_index = int(ordinal) - 1 if ordinal.isdigit() else _CHINESE_POSITION_INDEX[ordinal]
-        new_index = old_to_new[old_index]
-        rewritten = str(new_index + 1) if ordinal.isdigit() else _CHINESE_POSITION[new_index]
-        return f"第{rewritten}{match.group('suffix')}"
+    def replace(match):
+        prefix_token = match.group("prefix_token")
+        if prefix_token:
+            new_index = old_to_new[_TOKEN_TO_INDEX[prefix_token]]
+            return (
+                f"{match.group('prefix')}{match.group('prefix_open') or ''}"
+                f"{_render_position_token(prefix_token, new_index)}"
+                f"{match.group('prefix_close') or ''}"
+            )
+
+        ordinal_token = match.group("ordinal_token")
+        if ordinal_token:
+            new_index = old_to_new[_TOKEN_TO_INDEX[ordinal_token]]
+            rewritten = _render_position_token(ordinal_token, new_index)
+            return (
+                f"第{rewritten}{match.group('ordinal_middle') or ''}"
+                f"{match.group('ordinal_suffix')}"
+            )
+
+        suffix_token = match.group("suffix_token")
+        new_index = old_to_new[_TOKEN_TO_INDEX[suffix_token]]
+        rewritten = _render_position_token(suffix_token, new_index)
+        return f"{rewritten}{match.group('suffix_space')}{match.group('suffix_word')}"
 
     return _POSITION_REFERENCE.sub(replace, explanation)
 
@@ -53,6 +118,14 @@ def remap_explanation_positions(explanation, old_to_new):
 def place(q, target):
     """把正确项移到 target 位，其余干扰项确定性打散。"""
     old_choices = list(q["choices"])
+    if (
+        len(old_choices) != 4
+        or not all(isinstance(choice, str) for choice in old_choices)
+        or len(set(old_choices)) != 4
+        or type(q.get("answerIndex")) is not int
+        or not 0 <= q["answerIndex"] <= 3
+    ):
+        raise BalanceValidationError(f"{q.get('id', '<unknown>')}: invalid choice schema")
     correct = old_choices[q["answerIndex"]]
     # Always start from a content-canonical order.  Shuffling the current order
     # reapplies the same permutation on every run and therefore is not
@@ -63,7 +136,9 @@ def place(q, target):
     new_choices = others[:target] + [correct] + others[target:]
     assert len(new_choices) == 4 and new_choices[target] == correct, q["id"]
     old_to_new = {old_index: new_choices.index(choice) for old_index, choice in enumerate(old_choices)}
-    q["explanation"] = remap_explanation_positions(q.get("explanation"), old_to_new)
+    q["explanation"] = remap_explanation_positions(
+        q.get("explanation"), old_to_new, question_id=str(q.get("id") or "")
+    )
     q["choices"] = new_choices
     q["answerIndex"] = target
 
